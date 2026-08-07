@@ -1231,9 +1231,6 @@ const SendBox: React.FC<{
     onFilesAdded,
     conversation_id:
       conversationContext?.conversation_id != null ? conversationContext.conversation_id : undefined,
-    onTextPaste: (text: string) => {
-      tokenInputRef.current?.insertTextAtSelection(text);
-    },
   });
   const markMobileFocusIntent = useCallback(() => {
     if (!isMobile) return;

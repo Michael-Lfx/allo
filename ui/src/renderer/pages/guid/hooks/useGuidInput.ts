@@ -3,7 +3,6 @@
 import { useDragUpload } from '@/renderer/hooks/file/useDragUpload';
 import { usePasteService } from '@/renderer/hooks/file/usePasteService';
 import { allSupportedExts, type FileMetadata } from '@/renderer/services/FileService';
-import { measureCaretTop, scrollCaretToLastLine } from '../utils/caretUtils';
 import { useCallback, useEffect, useState } from 'react';
 
 export type GuidInputResult = {
@@ -79,25 +78,6 @@ export const useGuidInput = ({ locationState, containerRef }: UseGuidInputOption
   const { onPaste, onFocus } = usePasteService({
     supportedExts: allSupportedExts,
     onFilesAdded: handleFilesPasted,
-    onTextPaste: (text: string) => {
-      const textarea = document.activeElement as HTMLTextAreaElement | null;
-      if (textarea && textarea.tagName === 'TEXTAREA') {
-        const start = textarea.selectionStart ?? textarea.value.length;
-        const end = textarea.selectionEnd ?? start;
-        const current_value = textarea.value;
-        const newValue = current_value.slice(0, start) + text + current_value.slice(end);
-        setInput(newValue);
-
-        setTimeout(() => {
-          const newPos = start + text.length;
-          textarea.setSelectionRange(newPos, newPos);
-          const caretTop = measureCaretTop(textarea, newPos);
-          scrollCaretToLastLine(textarea, caretTop);
-        }, 0);
-      } else {
-        setInput((prev) => prev + text);
-      }
-    },
   });
 
   const handleTextareaFocus = useCallback(() => {

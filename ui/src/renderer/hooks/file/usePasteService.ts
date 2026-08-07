@@ -11,7 +11,6 @@ import type { ConversationId } from '@/common/types/ids';
 interface UsePasteServiceProps {
   supportedExts: string[];
   onFilesAdded?: (files: FileMetadata[]) => void;
-  onTextPaste?: (text: string) => void;
   /** Conversation ID for WebUI file uploads */
   conversation_id?: ConversationId;
   source?: UploadSource;
@@ -24,7 +23,6 @@ interface UsePasteServiceProps {
 export const usePasteService = ({
   supportedExts,
   onFilesAdded,
-  onTextPaste,
   conversation_id,
   source = 'sendbox',
 }: UsePasteServiceProps) => {
@@ -59,23 +57,17 @@ export const usePasteService = ({
           event,
           supportedExts,
           onFilesAdded || (() => {}),
-          onTextPaste,
           conversation_id,
           source,
           imageCounter
         );
-        if (handled && (!files || files.length === 0)) {
-          // 如果不是文件粘贴但被处理了（比如纯文本粘贴），也阻止默认行为
-          event.preventDefault();
-          event.stopPropagation();
-        }
         return handled;
       } catch (err) {
         Message.error(t('common.fileAttach.failed'));
         return false;
       }
     },
-    [conversation_id, source, supportedExts, onFilesAdded, onTextPaste, imageCounter, t]
+    [conversation_id, source, supportedExts, onFilesAdded, imageCounter, t]
   );
 
   // 焦点处理

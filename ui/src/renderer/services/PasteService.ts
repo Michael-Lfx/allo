@@ -100,6 +100,9 @@ class PasteServiceClass {
   // 注销组件的粘贴处理器
   unregisterHandler(componentId: string) {
     this.handlers.delete(componentId);
+    if (this.lastFocusedComponent === componentId) {
+      this.lastFocusedComponent = null;
+    }
   }
 
   // 设置当前焦点组件
@@ -109,8 +112,12 @@ class PasteServiceClass {
 
   // 全局粘贴事件处理
   private handleGlobalPaste = async (event: ClipboardEvent) => {
+    if (event.defaultPrevented) {
+      return;
+    }
+
     // 当粘贴目标是可编辑元素（input/textarea/contentEditable）时，直接交给浏览器原生行为，避免拦截其他输入框
-    if (this.shouldAllowNativePaste(event)) {
+    if (this.isEditablePasteTarget(event)) {
       return;
     }
 
@@ -126,45 +133,65 @@ class PasteServiceClass {
     }
   };
 
-  private shouldAllowNativePaste(event: ClipboardEvent): boolean {
-    const target = event.target;
-    if (!target || !(target instanceof Element)) {
-      return false;
-    }
+  private isEditablePasteTarget(event: ClipboardEvent): boolean {
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [event.target];
 
-    const editableElement = target.closest('input, textarea, [contenteditable]');
-    if (!editableElement) {
-      return false;
-    }
+    for (const target of path) {
+      const element =
+        (typeof Element !== 'undefined' && target instanceof Element)
+          ? target
+          : typeof Node !== 'undefined' && target instanceof Node
+            ? target.parentElement
+            : null;
+      if (!element) {
+        continue;
+      }
 
-    if (editableElement instanceof HTMLInputElement || editableElement instanceof HTMLTextAreaElement) {
-      return true;
-    }
+      const editableElement = element.closest('input, textarea, [contenteditable]');
+      if (!editableElement) {
+        continue;
+      }
 
-    if (editableElement instanceof HTMLElement) {
-      if (editableElement.isContentEditable) {
+      const contentEditableValue =
+        typeof HTMLElement !== 'undefined' && editableElement instanceof HTMLElement
+          ? editableElement.getAttribute('contenteditable')?.toLowerCase()
+          : undefined;
+      if (contentEditableValue === 'false') {
+        return false;
+      }
+
+      if (
+        (typeof HTMLInputElement !== 'undefined' && editableElement instanceof HTMLInputElement) ||
+        (typeof HTMLTextAreaElement !== 'undefined' && editableElement instanceof HTMLTextAreaElement)
+      ) {
         return true;
       }
-      const attr = editableElement.getAttribute('contenteditable');
-      return !!attr && attr.toLowerCase() !== 'false';
+
+      if (typeof HTMLElement !== 'undefined' && editableElement instanceof HTMLElement) {
+        if (editableElement.isContentEditable) {
+          return true;
+        }
+
+        if (contentEditableValue !== undefined) {
+          return true;
+        }
+      }
     }
 
     return false;
   }
 
-  // 通用粘贴处理逻辑
+  // 文件/图片粘贴处理逻辑
   async handlePaste(
     event: React.ClipboardEvent | ClipboardEvent,
     supportedExts: string[],
     onFilesAdded: (files: FileMetadata[]) => void,
-    onTextPaste?: (text: string) => void,
     conversation_id?: ConversationId,
     source: UploadSource = 'sendbox',
     imageCounter?: ImageCounter
   ): Promise<boolean> {
     // 立即事件冒泡,避免全局监听器重复处理
     event.stopPropagation();
-    const clipboardText = event.clipboardData?.getData('text');
     const files = event.clipboardData?.files;
     // If caller passes an empty array, treat it as "allow all file types"
     const allowAll = !supportedExts || supportedExts.length === 0;
@@ -314,22 +341,6 @@ class PasteServiceClass {
         onFilesAdded(fileList);
       }
       return true; // 阻止默认行为，不插入文件名文本
-    }
-
-    // 处理纯文本粘贴（只在没有文件时）
-    if (clipboardText && (!files || files.length === 0)) {
-      // 在 iOS 上, 让 Safari 自己处理纯文本粘贴, 以避免粘贴菜单/键盘抖动问题
-      const isIOS = typeof navigator !== 'undefined' && /iP(hone|ad|od)/.test(navigator.userAgent);
-      if (isIOS) {
-        return false;
-      }
-      if (onTextPaste) {
-        // 清理文本中多余的换行符，特别是末尾的换行符
-        const cleanedText = clipboardText.replace(/\n\s*$/, '');
-        onTextPaste(cleanedText);
-        return true; // 已处理，阻止默认行为
-      }
-      return false; // 如果没有回调，允许默认行为
     }
 
     return false;

@@ -76,6 +76,40 @@ interface ComposerSkillTokenInputProps {
   value: string;
 }
 
+type ComposerPasteEvent = Pick<
+  React.ClipboardEvent<HTMLDivElement>,
+  'clipboardData' | 'defaultPrevented' | 'preventDefault' | 'stopPropagation'
+>;
+
+function normalizePastedText(text: string): string {
+  return text.replace(/\n\s*$/, '');
+}
+
+/**
+ * Owns the Composer's paste decision so the event boundary can be tested
+ * without mounting a browser-only contentEditable tree.
+ */
+export function handleComposerPasteEvent(
+  event: ComposerPasteEvent,
+  replaceSelectionWithText: (text: string) => void,
+  delegateToPasteService?: () => void
+): void {
+  if (event.defaultPrevented) {
+    return;
+  }
+
+  const clipboardFiles = event.clipboardData.files;
+  const text = event.clipboardData.getData('text/plain');
+  if (clipboardFiles.length === 0 && text) {
+    event.preventDefault();
+    event.stopPropagation();
+    replaceSelectionWithText(normalizePastedText(text));
+    return;
+  }
+
+  delegateToPasteService?.();
+}
+
 function areSkillListsEqual(left: ComposerSkillChip[], right: ComposerSkillChip[]): boolean {
   return left.length === right.length && left.every((skill, index) => skill.skillId === right[index]?.skillId);
 }
@@ -657,14 +691,10 @@ const ComposerSkillTokenInput = forwardRef<ComposerSkillTokenInputHandle, Compos
     };
 
     const handlePaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
-      const clipboardFiles = event.clipboardData.files;
-      const text = event.clipboardData.getData('text/plain');
-      if (clipboardFiles.length === 0 && text) {
-        event.preventDefault();
-        replaceSelectionWithText(text.replace(/\n\s*$/, ''));
+      if (disabled) {
         return;
       }
-      onPaste?.(event);
+      handleComposerPasteEvent(event, replaceSelectionWithText, onPaste ? () => onPaste(event) : undefined);
     };
 
     const hasVisibleText = getComposerDraftText(draft).length > 0;
