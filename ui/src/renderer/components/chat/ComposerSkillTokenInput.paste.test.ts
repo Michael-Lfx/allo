@@ -7,6 +7,7 @@ function createPasteEvent(options: { text?: string; files?: unknown[]; defaultPr
   const counters = {
     preventDefault: 0,
     stopPropagation: 0,
+    order: [] as string[],
   };
   const event = {
     clipboardData: {
@@ -15,10 +16,12 @@ function createPasteEvent(options: { text?: string; files?: unknown[]; defaultPr
     },
     defaultPrevented: options.defaultPrevented ?? false,
     preventDefault() {
+      counters.order.push('preventDefault');
       counters.preventDefault += 1;
       event.defaultPrevented = true;
     },
     stopPropagation() {
+      counters.order.push('stopPropagation');
       counters.stopPropagation += 1;
     },
   } as unknown as ComposerPasteEvent;
@@ -45,12 +48,20 @@ describe('ComposerSkillTokenInput paste ownership', () => {
     const inserted: string[] = [];
     let delegated = 0;
 
-    handleComposerPasteEvent(event, (text) => inserted.push(text), () => delegated++);
+    handleComposerPasteEvent(
+      event,
+      (text) => {
+        counters.order.push('replaceSelectionWithText');
+        inserted.push(text);
+      },
+      () => delegated++
+    );
 
     expect(inserted).toEqual(['ABC']);
     expect(delegated).toBe(0);
     expect(counters.preventDefault).toBe(1);
     expect(counters.stopPropagation).toBe(1);
+    expect(counters.order).toEqual(['preventDefault', 'stopPropagation', 'replaceSelectionWithText']);
   });
 
   test('delegates file paste without inserting file text', () => {

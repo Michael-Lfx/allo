@@ -5,6 +5,9 @@ notes at a high level rather than a complete historical log.
 
 ## Unreleased
 
+- Composer paste handling no longer inserts plain text twice after page or
+  conversation switches; plain text remains owned by the Composer while files
+  and images continue through PasteService.
 - AutoWork/IDMM: bypass-model (sidecar) decisions with confidence below 0.4
   now fall back to the conservative rule action instead of being applied
   verbatim, restoring the Phase-1 safety posture. Previously the floor was
