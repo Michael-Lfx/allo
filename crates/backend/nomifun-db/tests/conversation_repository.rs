@@ -487,6 +487,50 @@ async fn delete_conversation_cleans_up_messages() {
 }
 
 #[tokio::test]
+async fn latest_user_text_query_ignores_history_window_and_uses_message_id_tiebreaker() {
+    let (repo, _db) = setup().await;
+    let mut conversation = make_conversation("latest-user-text");
+    conversation.conversation_id = repo.create(&conversation).await.unwrap();
+
+    let mut target = make_message(&conversation.conversation_id, "old latest user");
+    target.created_at = 100;
+    repo.insert_message(&target).await.unwrap();
+
+    // More than 200 newer rows must not hide the actual latest user message.
+    for index in 0..220 {
+        let mut assistant = make_message(&conversation.conversation_id, &format!("assistant {index}"));
+        assistant.position = Some("left".to_owned());
+        assistant.created_at = 200 + index;
+        repo.insert_message(&assistant).await.unwrap();
+    }
+
+    let latest = repo
+        .get_latest_user_text_message(&conversation.conversation_id)
+        .await
+        .unwrap()
+        .expect("the older user message remains the latest user text");
+    assert_eq!(latest.message_id, target.message_id);
+
+    let mut tie_a = make_message(&conversation.conversation_id, "tie a");
+    tie_a.message_id = "0190f5fe-7c00-7a00-8000-000000000501".to_owned();
+    tie_a.msg_id = Some(tie_a.message_id.clone());
+    tie_a.created_at = 10_000;
+    let mut tie_b = make_message(&conversation.conversation_id, "tie b");
+    tie_b.message_id = "0190f5fe-7c00-7a00-8000-000000000502".to_owned();
+    tie_b.msg_id = Some(tie_b.message_id.clone());
+    tie_b.created_at = 10_000;
+    repo.insert_message(&tie_a).await.unwrap();
+    repo.insert_message(&tie_b).await.unwrap();
+
+    let latest_tie = repo
+        .get_latest_user_text_message(&conversation.conversation_id)
+        .await
+        .unwrap()
+        .expect("same-timestamp user message exists");
+    assert_eq!(latest_tie.message_id, tie_b.message_id);
+}
+
+#[tokio::test]
 async fn session_deletion_retains_only_ambiguous_typed_owners_and_survives_reopen() {
     let database_root = tempfile::tempdir().unwrap();
     let database_path = database_root.path().join("deleted-owner-history.sqlite3");

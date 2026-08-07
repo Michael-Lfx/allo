@@ -940,6 +940,17 @@ pub trait IConversationRepository: Send + Sync {
         Ok(None)
     }
 
+    /// Returns the latest user-authored text message using the same stable
+    /// ordering as edit/resubmit admission. This is intentionally unbounded by
+    /// a history window: an older target must not be mistaken for the latest
+    /// user message merely because the conversation is long.
+    async fn get_latest_user_text_message(
+        &self,
+        _conversation_id: &str,
+    ) -> Result<Option<MessageRow>, DbError> {
+        Ok(None)
+    }
+
     /// Inserts a new message row.
     async fn insert_message(&self, message: &MessageRow) -> Result<(), DbError>;
 

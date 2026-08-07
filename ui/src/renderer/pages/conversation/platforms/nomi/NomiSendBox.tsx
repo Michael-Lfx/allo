@@ -3,8 +3,8 @@
 import { conversationTarget, type ConversationId, type MessageId, parseMessageId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
-import type { ISendMessageResult } from '@/common/adapter/ipcBridge';
-import { isBackendRequestError } from '@/common/adapter/httpBridge';
+import type { IEditResubmitObservation, ISendMessageResult } from '@/common/adapter/ipcBridge';
+import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { uuid, uuidv7 } from '@/common/utils';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
@@ -76,6 +76,12 @@ import { guidTransitionMark } from '@/renderer/pages/guid/hooks/guidTransitionTi
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage, collectSelectedFiles, removeSubmittedAttachments } from '@/renderer/utils/file/messageFiles';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
+import type { EditingMessagePhase } from '@/renderer/pages/conversation/Messages/editingMessageStore';
+import type { EditResubmitResolution } from '@/renderer/components/chat/SendBox/editResubmitTypes';
+import {
+  resolveEditResubmitRecovery,
+  type EditResubmitRequestOutcome,
+} from './editResubmitRecovery';
 import { Alert, Button, Message, Tag } from '@arco-design/web-react';
 import { Brain, Shield } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -101,6 +107,10 @@ const useNomiSendBoxDraft = getSendBoxDraftHook('nomi', {
 
 const EMPTY_AT_PATH: Array<string | FileOrFolderItem> = [];
 const EMPTY_UPLOAD_FILES: string[] = [];
+const EDIT_RESUBMIT_CONFIRMATION_DELAYS_MS = [0, 100, 250, 500, 1_000, 2_000, 4_000, 8_000, 15_000] as const;
+
+const isDefinitivePreAdmissionError = (error: unknown): boolean =>
+  isBackendHttpError(error) && error.status === 400;
 
 const useSendBoxDraft = (conversation_id: ConversationId) => {
   const { data, mutate } = useNomiSendBoxDraft(conversation_id);
@@ -133,34 +143,6 @@ const useSendBoxDraft = (conversation_id: ConversationId) => {
     content,
     setContent,
   };
-};
-
-// P1-2: a 'network'/'timeout' rejection is AMBIGUOUS — it cannot prove the
-// backend never executed (connection reset or lost response AFTER a durable
-// truncate looks identical to a refused connection). Consult the authoritative
-// DB: if the edit target is gone from the newest window, the truncate is
-// durable and the request must be treated as succeeded. The edit target is by
-// construction inside the visible tail (the windowed list renders the newest
-// ~60 rows), so a single 200-row window needs no cursor walk. A verification
-// that itself fails returns false (not proven ⇒ true failure path), which is
-// the safe degradation: revoke + failed refresh, exactly like before.
-const verifyEditResubmitTarget = async (
-  conversationId: ConversationId,
-  msgId: MessageId
-): Promise<boolean> => {
-  try {
-    const page = await ipcBridge.database.getConversationMessages.invoke({
-      conversation_id: conversationId,
-      cursor: '',
-      page_size: 200,
-      content_mode: 'compact',
-    });
-    return !(page?.items ?? []).some(
-      (message) => message.message_id === msgId || message.msg_id === msgId
-    );
-  } catch {
-    return false;
-  }
 };
 
 const NomiSendBox: React.FC<{
@@ -687,20 +669,24 @@ const NomiSendBox: React.FC<{
     [atPath, clearFiles, executeCommand, hasPendingCommands, isBusy, t, uploadFile]
   );
 
-  // 编辑最近一条用户消息并截断重跑。请求成功前不改动消息列表与附件；成功后通过
-  // 会话消息协调器收束：arm 屏障挡住陈旧 fetch 复活旧消息/报错行，成功时翻转至
-  // reconciling 并按 mergeKeys/serverIds/localIds 清理后缀，再发权威刷新让各消费者确认。
+  // 编辑最近一条用户消息并截断重跑。每一个结果都先经过后端 receipt +
+  // 精确消息身份观察，再决定是否 reconciliation；窗口分页和 HTTP 错误本身
+  // 都不能证明 destructive transcript 是否已经发生。
   const handleEditResubmit = useCallback(
-    async (msgId: MessageId, createdAt: number, message: string) => {
+    async (
+      msgId: MessageId,
+      createdAt: number,
+      message: string,
+      requestedOperationId?: string,
+      onPhaseChange?: (phase: EditingMessagePhase, continueConfirmation?: () => void) => void
+    ): Promise<EditResubmitResolution> => {
       const filesToSend = collectSelectedFiles(uploadFile, atPath);
       maybeWarnNonVisionModel(filesToSend);
-      // 稳定 id = 路径：成功后仅精确移除本次提交项，保留飞行中新增的附件。
-      // Stable id = path: on success remove only the items submitted this turn,
-      // preserving attachments added mid-flight (set-difference, not full clear).
       const submittedAttachmentIds = new Set(filesToSend);
-      const operationId = uuid();
-      // Fail closed: if the target row can't be located by durable identity, do
-      // not arm, do not send — surface a generic error and keep the user's edit.
+      // The SendBox mints this once per logical user operation. The fallback is
+      // only for non-SendBox callers; the same value is used by the coordinator
+      // and the backend receipt namespace.
+      const operationId = requestedOperationId ?? uuidv7();
       const capture = captureBarrier(messageListRef.current, msgId, createdAt);
       if (!capture) {
         Message.error(t('conversation.editMessage.failed'));
@@ -709,74 +695,57 @@ const NomiSendBox: React.FC<{
       armBarrier(conversation_id, operationId, capture);
       setWaitingResponse(true);
       const displayMessage = buildDisplayMessage(message, filesToSend, workspacePath);
-      // Domain 1 (transport): a rejection here means the request never settled
-      // with a definitive answer. Only this domain may revoke the barrier.
-      let res: ISendMessageResult;
+      let initialDelivery: ISendMessageResult | null = null;
+      let requestOutcome: EditResubmitRequestOutcome = 'accepted';
+      let requestError: unknown = null;
+      let forceConfirmation = false;
+      let wakeConfirmation: (() => void) | null = null;
+      const continueConfirmation = (): void => {
+        forceConfirmation = true;
+        wakeConfirmation?.();
+      };
       try {
-        res = await ipcBridge.conversation.editResubmit.invoke({
+        initialDelivery = await ipcBridge.conversation.editResubmit.invoke({
           conversation_id,
           msg_id: msgId,
           input: displayMessage,
           files: filesToSend,
-          idempotency_key: uuidv7(),
+          idempotency_key: operationId,
         });
       } catch (error) {
-        // P1-2: a network/timeout rejection is ambiguous — the truncate may
-        // already be durable. Verify against the authoritative DB first: target
-        // gone ⇒ treat as success (no revoke, no failure toast; without `res`
-        // there is no optimistic bubble, so the reconcile refresh alone
-        // reconverges the transcript). Only a proven failure revokes.
-        if (isBackendRequestError(error) && (error.kind === 'network' || error.kind === 'timeout')) {
-          const targetGone = await verifyEditResubmitTarget(conversation_id, msgId);
-          if (targetGone) {
-            emitter.emit('conversation.messages.refresh', {
-              conversationId: conversation_id,
-              reason: 'edit-resubmit-reconcile',
-            });
-            return;
-          }
-        }
-        // 失败：撤销屏障（恢复对陈旧 fetch 的放行），发失败刷新恢复权威历史。
-        revokeBarrier(conversation_id, operationId);
-        emitter.emit('conversation.messages.refresh', {
-          conversationId: conversation_id,
-          reason: 'edit-resubmit-failed',
-        });
-        setWaitingResponse(false);
-        Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
-        throw error;
+        requestError = error;
+        requestOutcome = isDefinitivePreAdmissionError(error)
+          ? 'definitive_pre_admission_failure'
+          : 'ambiguous_failure';
       }
-      // Domain 2 (post-accept): the 202 means the DB truncate is already
-      // durable. A local exception in here must NEVER revoke the (already
-      // reconciling) barrier — the transcript reconverges via the reconcile
-      // refresh regardless of what fails below.
-      try {
-        // 成功：翻转屏障为 reconciling（原子递增会话 epoch），再直删本实例旧后缀。
-        const reconciledEpoch = beginEditResubmitReconciliation(conversation_id, operationId);
-        if (reconciledEpoch === undefined) {
-          // P2-2 fail-closed: the barrier armed above must still exist. Losing
-          // it is an invariant violation, not a request failure — surface as such.
-          throw new Error('edit-resubmit reconciliation barrier missing');
-        }
-        updateMessageList((list) => purgeCurrentRows(list, conversation_id));
-        // 附件集合差：函数式更新读取最新 uploadFile，atPath 经 ref 取最新值；
-        // 仅移除已提交项，飞行中新增的附件保留。nomi.selected.file.clear 为零监听死事件，不再发射。
-        // Attachment set-difference: functional update reads the latest uploadFile, atPath via ref;
-        // remove only submitted items, keep attachments added mid-flight.
-        // nomi.selected.file.clear has zero listeners (dead event) — no longer emitted.
+      onPhaseChange?.('confirming', continueConfirmation);
+
+      let reconciled = false;
+      let submittedAttachmentsCleaned = false;
+      const clearSubmittedDraftAttachments = (): void => {
+        if (submittedAttachmentsCleaned) return;
+        submittedAttachmentsCleaned = true;
         setUploadFile((prev) => removeSubmittedAttachments(prev, submittedAttachmentIds));
         const currentAtPath = atPathRef.current;
         const remainingAtPath = removeSubmittedAttachments(currentAtPath, submittedAttachmentIds);
         if (remainingAtPath.length !== currentAtPath.length) {
           setAtPath(remainingAtPath);
         }
-        const disposition = classifyPublicMessageDelivery(res);
-        if (disposition === 'fresh') {
+        if (filesToSend.length > 0) emitter.emit('nomi.workspace.refresh');
+      };
+      const reconcileConfirmedEditMutation = (delivery: ISendMessageResult | null): void => {
+        if (reconciled) return;
+        const reconciledEpoch = beginEditResubmitReconciliation(conversation_id, operationId);
+        if (reconciledEpoch === undefined) {
+          throw new Error('edit-resubmit reconciliation barrier missing');
+        }
+        reconciled = true;
+        updateMessageList((list) => purgeCurrentRows(list, conversation_id));
+        if (delivery && classifyPublicMessageDelivery(delivery) === 'fresh') {
           markTurnAccepted();
-          // 乐观插入新用户气泡（compose 模式按 msg_id 去重，避免 DB 行重复）。
           addOrUpdateMessage({
             id: uuid(),
-            msg_id: res.msg_id,
+            msg_id: delivery.msg_id,
             type: 'text',
             position: 'right',
             conversation_id,
@@ -785,29 +754,112 @@ const NomiSendBox: React.FC<{
             },
             created_at: Date.now(),
           });
-          setActiveMsgId(res.msg_id);
+          setActiveMsgId(delivery.msg_id);
         } else {
           setActiveMsgId(null);
-          reconcilePublicDeliveryReplay(res.completed);
+          if (delivery) reconcilePublicDeliveryReplay(delivery.completed);
         }
         emitter.emit('chat.history.refresh');
-        if (filesToSend.length > 0) emitter.emit('nomi.workspace.refresh');
-        // 权威刷新：用截断后的 DB 重建转录，并让每个消费者确认其屏障。
         emitter.emit('conversation.messages.refresh', {
           conversationId: conversation_id,
           reason: 'edit-resubmit-reconcile',
         });
-      } catch (error) {
-        // Post-accept failure: the barrier stays (never revoked) — re-emit the
-        // reconcile refresh so the transcript reconverges from the truncated
-        // DB, then surface the local error.
-        emitter.emit('conversation.messages.refresh', {
-          conversationId: conversation_id,
-          reason: 'edit-resubmit-reconcile',
-        });
-        setWaitingResponse(false);
-        Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
-        throw error;
+      };
+
+      // A response/observation can remain accepted while the owner is still
+      // preparing the replacement. Keep the same key and wait until an
+      // authoritative terminal classification exists; no new destructive edit
+      // is allowed during this loop.
+      let attempt = 0;
+      for (;;) {
+        const delay = EDIT_RESUBMIT_CONFIRMATION_DELAYS_MS[
+          Math.min(attempt, EDIT_RESUBMIT_CONFIRMATION_DELAYS_MS.length - 1)
+        ];
+        if (delay > 0 && !forceConfirmation) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(() => {
+              wakeConfirmation = null;
+              resolve();
+            }, delay);
+            wakeConfirmation = () => {
+              clearTimeout(timer);
+              wakeConfirmation = null;
+              resolve();
+            };
+          });
+        }
+        forceConfirmation = false;
+
+        let observation: IEditResubmitObservation;
+        try {
+          observation = await ipcBridge.conversation.editResubmitState.invoke({
+            conversation_id,
+            msg_id: msgId,
+            idempotency_key: operationId,
+          });
+        } catch {
+          attempt += 1;
+          continue;
+        }
+
+        const recovery = resolveEditResubmitRecovery({ observation, requestOutcome });
+        if (recovery.kind === 'unknown') {
+          emitter.emit('conversation.messages.refresh', {
+            conversationId: conversation_id,
+            reason: 'edit-resubmit-reconcile',
+          });
+        } else if (recovery.shouldReconcile) {
+          try {
+            reconcileConfirmedEditMutation(initialDelivery ?? observation.delivery);
+          } catch (error) {
+            setWaitingResponse(false);
+            Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+            return { kind: 'post_mutation_failure', error };
+          }
+        }
+
+        if (recovery.kind === 'success') {
+          clearSubmittedDraftAttachments();
+          setWaitingResponse(false);
+          return { kind: 'success' };
+        }
+        if (recovery.kind === 'post_mutation_failure') {
+          setWaitingResponse(false);
+          const error = requestError ?? new Error('edit-resubmit delivery failed after transcript mutation');
+          Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+          return { kind: 'post_mutation_failure', error };
+        }
+        if (recovery.kind === 'safe_failure') {
+          revokeBarrier(conversation_id, operationId);
+          emitter.emit('conversation.messages.refresh', {
+            conversationId: conversation_id,
+            reason: 'edit-resubmit-failed',
+          });
+          setWaitingResponse(false);
+          const error = requestError ?? new Error('edit-resubmit was rejected before admission');
+          Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+          throw error;
+        }
+
+        // `accepted`, `claimed_pending`, `transcript_truncated`, and unknown
+        // all retain the same durable operation. A replay is read/admission
+        // idempotent and lets a completed worker expose its terminal receipt.
+        try {
+          initialDelivery = await ipcBridge.conversation.editResubmit.invoke({
+            conversation_id,
+            msg_id: msgId,
+            input: displayMessage,
+            files: filesToSend,
+            idempotency_key: operationId,
+          });
+          requestOutcome = 'accepted';
+        } catch (error) {
+          requestError = error;
+          requestOutcome = isDefinitivePreAdmissionError(error)
+            ? 'definitive_pre_admission_failure'
+            : 'ambiguous_failure';
+        }
+        attempt += 1;
       }
     },
     [

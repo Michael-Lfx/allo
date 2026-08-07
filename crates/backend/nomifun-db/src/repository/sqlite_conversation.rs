@@ -4641,6 +4641,20 @@ impl IConversationRepository for SqliteConversationRepository {
         Ok(row)
     }
 
+    async fn get_latest_user_text_message(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<MessageRow>, DbError> {
+        Ok(sqlx::query_as::<_, MessageRow>(
+            "SELECT * FROM messages \
+             WHERE conversation_id = ? AND position = 'right' AND type = 'text' \
+             ORDER BY created_at DESC, message_id DESC LIMIT 1",
+        )
+        .bind(conversation_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     async fn insert_message(&self, message: &MessageRow) -> Result<(), DbError> {
         let mut tx = self.pool.begin().await?;
         lock_required_parent(

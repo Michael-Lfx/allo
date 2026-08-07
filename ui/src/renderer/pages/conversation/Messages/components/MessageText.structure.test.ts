@@ -76,4 +76,11 @@ describe('MessageText process action chrome', () => {
     expect(source.includes('parseMessageFileMarker(contentToRender, message.position)')).toBe(true);
     expect(source.includes('const parseFileMarker')).toBe(false);
   });
+
+  test('offers only same-key confirmation continuation while confirming an edit', () => {
+    expect(source.includes("import { Alert, Button, Message, Tooltip } from '@arco-design/web-react';")).toBe(true);
+    expect(source.includes("editingState?.phase === 'confirming' && editingState.continueConfirmation")).toBe(true);
+    expect(source.includes('editingState.continueConfirmation?.();')).toBe(true);
+    expect(source.includes("t('conversation.editMessage.continueConfirmation')")).toBe(true);
+  });
 });

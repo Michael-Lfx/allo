@@ -8,7 +8,7 @@ import type { MessageId } from '@/common/types/ids';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { iconColors } from '@/renderer/styles/colors';
-import { Alert, Message, Tooltip } from '@arco-design/web-react';
+import { Alert, Button, Message, Tooltip } from '@arco-design/web-react';
 import { CheckOne, CloseOne, Copy, Edit, Info, Loading, Star } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -629,7 +629,24 @@ const MessageText: React.FC<{
             ) : (
               <Edit theme='outline' size='13' />
             )}
-            <span>{t('conversation.editMessage.editingBadge')}</span>
+            <span>
+              {editingState?.phase === 'confirming'
+                ? t('conversation.editMessage.confirmingBadge')
+                : t('conversation.editMessage.editingBadge')}
+            </span>
+            {editingState?.phase === 'confirming' && editingState.continueConfirmation && (
+              <Button
+                type='text'
+                size='mini'
+                className='!h-20px !px-4px'
+                onClick={(event) => {
+                  event.stopPropagation();
+                  editingState.continueConfirmation?.();
+                }}
+              >
+                {t('conversation.editMessage.continueConfirmation')}
+              </Button>
+            )}
           </div>
         )}
         {hasRenderableContent && (

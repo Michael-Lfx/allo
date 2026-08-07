@@ -268,6 +268,27 @@ pub enum PublicTurnDeliveryState {
     Completed(IdempotentMessageDelivery),
 }
 
+/// Read-only durable state for one edit/resubmit operation.
+///
+/// This deliberately has its own namespace and state boundary instead of
+/// reusing [`PublicTurnDeliveryState`]. An edit may have already removed the
+/// target transcript row while its replacement delivery is still pending, so
+/// receipt state alone is not enough for safe client recovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditResubmitDeliveryState {
+    Missing,
+    Accepted(IdempotentMessageDelivery),
+    Completed(IdempotentMessageDelivery),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditResubmitObservation {
+    pub delivery_state: EditResubmitDeliveryState,
+    pub replacement_message_id: Option<String>,
+    pub target_exists: bool,
+    pub replacement_exists: Option<bool>,
+}
+
 /// Trusted runtime preparation applied only after a durable keyed turn has
 /// won receiver-side admission.
 ///
@@ -7338,6 +7359,110 @@ impl ConversationService {
         }
     }
 
+    /// Observe one edit/resubmit receipt and the exact transcript identities it
+    /// owns. This method is strictly read-only: it never reconstructs runtime
+    /// state, claims a receipt, changes a fence, or revokes an admission.
+    pub async fn edit_resubmit_delivery_state(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        target_message_id: &str,
+        idempotency_key: &str,
+    ) -> Result<EditResubmitObservation, AppError> {
+        validate_public_idempotency_key(idempotency_key)?;
+        let conversation_key = parse_conv_id(conversation_id)?;
+        let target_message_id = parse_message_id(target_message_id)?;
+        self.conversation_repo
+            .get(conversation_key)
+            .await?
+            .filter(|row| row.user_id == user_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Conversation {conversation_id} not found"))
+            })?;
+
+        let operation_id =
+            Self::public_edit_resubmit_operation_id(user_id, conversation_key, idempotency_key);
+        let target_exists = self
+            .conversation_repo
+            .get_message(conversation_key, target_message_id)
+            .await?
+            .is_some();
+        let Some(receipt) = self
+            .conversation_repo
+            .get_delivery_receipt(user_id, conversation_key, &operation_id)
+            .await?
+        else {
+            return Ok(EditResubmitObservation {
+                delivery_state: EditResubmitDeliveryState::Missing,
+                replacement_message_id: None,
+                target_exists,
+                replacement_exists: None,
+            });
+        };
+
+        if receipt.kind != "turn"
+            || receipt.user_id != user_id
+            || receipt.conversation_id != conversation_key
+            || receipt.operation_id != operation_id
+        {
+            return Err(AppError::Conflict(
+                "edit/resubmit receipt identity does not match its exact scope".to_owned(),
+            ));
+        }
+        let payload: serde_json::Value = serde_json::from_str(&receipt.request_payload)
+            .map_err(|error| {
+                AppError::Conflict(format!(
+                    "edit/resubmit receipt request payload is invalid: {error}"
+                ))
+            })?;
+        if payload.get("workflow").and_then(serde_json::Value::as_str) != Some("edit-resubmit")
+            || payload.get("target_message_id").and_then(serde_json::Value::as_str)
+                != Some(target_message_id)
+        {
+            return Err(AppError::Conflict(
+                "edit/resubmit receipt target does not match the requested scope".to_owned(),
+            ));
+        }
+        parse_message_id(&receipt.message_id).map_err(|error| {
+            AppError::Conflict(format!(
+                "edit/resubmit receipt replacement message id is invalid: {error}"
+            ))
+        })?;
+
+        let replacement_message_id = receipt.message_id.clone();
+        let replacement_exists = Some(
+            self.conversation_repo
+                .get_message(conversation_key, &replacement_message_id)
+                .await?
+                .is_some(),
+        );
+        let delivery = IdempotentMessageDelivery {
+            message_id: replacement_message_id.clone(),
+            replayed: true,
+            completed: receipt.status == "completed",
+            result_ok: receipt.result_ok,
+            result_text: receipt.result_text,
+            result_error: receipt.result_error,
+            result_error_code: receipt.result_error_code,
+            result_error_retryable: receipt.result_error_retryable,
+        };
+        let delivery_state = match receipt.status.as_str() {
+            "accepted" => EditResubmitDeliveryState::Accepted(delivery),
+            "completed" => EditResubmitDeliveryState::Completed(delivery),
+            status => {
+                return Err(AppError::Conflict(format!(
+                    "edit/resubmit receipt has unsupported durable state '{status}'"
+                )))
+            }
+        };
+        Ok(EditResubmitObservation {
+            delivery_state,
+            replacement_message_id: Some(replacement_message_id),
+            target_exists,
+            replacement_exists,
+        })
+    }
+
     /// Read-only AutoWork receipt observation used while renewing one exact
     /// Requirement claim. It never constructs a runtime, repairs lifecycle, or
     /// treats receipt absence as execution authority.
@@ -11138,21 +11263,12 @@ impl ConversationService {
             ));
         }
 
-        let recent = self
+        let target = self
             .conversation_repo
-            .get_messages_keyset(conv_id, None, 50)
+            .get_latest_user_text_message(conv_id)
             .await?;
         runtime_build_lease.ensure_active()?;
-        let target = recent
-            .items
-            .iter()
-            .find(|message| {
-                message.position.as_deref() == Some("right")
-                    && message.r#type == "text"
-            })
-            .ok_or_else(|| {
-                AppError::BadRequest("No editable user message found".into())
-            })?;
+        let target = target.ok_or_else(|| AppError::BadRequest("No editable user message found".into()))?;
         if target.message_id != message_id {
             return Err(AppError::BadRequest(
                 "Only the most recent user message can be edited".into(),
@@ -11539,12 +11655,11 @@ impl ConversationService {
 
         // 3. 目标必须是最近一条用户(right/text)消息（保证引擎"回退最后一个 turn"
         //    与 DB"删除该条及其后"对齐）。
-        let recent = self.conversation_repo.get_messages_keyset(conv_id, None, 50).await?;
+        let latest_user = self
+            .conversation_repo
+            .get_latest_user_text_message(conv_id)
+            .await?;
         runtime_build_lease.ensure_active()?;
-        let latest_user = recent
-            .items
-            .iter()
-            .find(|m| m.position.as_deref() == Some("right") && m.r#type == "text");
         let Some(target) = latest_user else {
             return Err(AppError::BadRequest("No editable user message found".into()));
         };

@@ -60,10 +60,12 @@ import ComposerSkillTokenInput, {
 import type { ComposerDraft } from '@/renderer/components/chat/composerDraft';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { getConversationInputHistory } from '@/renderer/utils/chat/messageHistory';
-import { uuid } from '@/common/utils';
+import { uuid, uuidv7 } from '@/common/utils';
 import { resolveEditResubmitOutcome } from '@/renderer/components/chat/SendBox/editResubmitOutcome';
+import type { EditResubmitResolution } from '@/renderer/components/chat/SendBox/editResubmitTypes';
 import {
   clearEditingMessage,
+  type EditingMessagePhase,
   setEditingMessage,
   updateEditingMessage,
 } from '@/renderer/pages/conversation/Messages/editingMessageStore';
@@ -206,7 +208,13 @@ const SendBox: React.FC<{
   /** When provided (Nomi only), enables "edit a sent message" mode: the message text is
    *  recalled into the composer via the `sendbox.edit` event and submitting calls this
    *  instead of onSend, which truncates the conversation and re-runs from that message. */
-  onEditResubmit?: (msgId: MessageId, createdAt: number, message: string) => Promise<void>;
+  onEditResubmit?: (
+    msgId: MessageId,
+    createdAt: number,
+    message: string,
+    operationId?: string,
+    onPhaseChange?: (phase: EditingMessagePhase, continueConfirmation?: () => void) => void
+  ) => Promise<EditResubmitResolution>;
   /** Clear the agent's conversation context (release model context). When set, a `/clear` builtin appears. */
   onClearContext?: () => void | Promise<void>;
   disabled?: boolean;
@@ -406,7 +414,12 @@ const SendBox: React.FC<{
       // C3: register the bubble being edited (recalled, not yet submitted).
       const cid = conversationIdRef.current;
       if (cid) {
-        setEditingMessage(cid, { ownerId: editingOwnerId(), msgId: payload.msgId, pending: false });
+        setEditingMessage(cid, {
+          ownerId: editingOwnerId(),
+          msgId: payload.msgId,
+          pending: false,
+          phase: 'editing',
+        });
       }
     },
     [onEditResubmit, onSkillChipsChange, isLoading]
@@ -435,7 +448,7 @@ const SendBox: React.FC<{
       const content = payload.content?.trim();
       if (!content) return;
       void (async () => {
-        const retryOperationId = uuid();
+        const retryOperationId = uuidv7();
         activeRetryOperationRef.current = retryOperationId;
         // Snapshot the input revision so a retry failure restores the retried
         // text only when the user never touched the composer mid-flight — never
@@ -444,7 +457,29 @@ const SendBox: React.FC<{
         setIsLoading(true);
         try {
           if (onEditResubmit && payload.msgId && payload.createdAt) {
-            await onEditResubmit(payload.msgId, payload.createdAt, content);
+            const resolution = await onEditResubmit(
+              payload.msgId,
+              payload.createdAt,
+              content,
+              retryOperationId,
+              (phase, continueConfirmation) => {
+                if (activeRetryOperationRef.current !== retryOperationId) return;
+                const retryConversationId = conversationIdRef.current;
+                if (retryConversationId) {
+                  updateEditingMessage(retryConversationId, editingOwnerId(), {
+                    pending: phase !== 'editing',
+                    phase,
+                    operationId: retryOperationId,
+                    continueConfirmation,
+                  });
+                }
+              }
+            );
+            if (resolution.kind !== 'success') {
+              throw resolution.error instanceof Error
+                ? resolution.error
+                : new Error('edit-resubmit delivery failed after transcript mutation');
+            }
           } else {
             setInputRef.current(content);
             await onSend(content);
@@ -1603,7 +1638,7 @@ const SendBox: React.FC<{
       // revision. Edit state + input are cleared ONLY after backend acceptance
       // (the .then below); a stale operation or a user who typed mid-flight must
       // not have its input/edit/loading state touched.
-      const operationId = uuid();
+      const operationId = uuidv7();
       activeEditOperationRef.current = operationId;
       const submittedInputRevision = inputRevisionRef.current;
       const isCurrentOperation = () => activeEditOperationRef.current === operationId;
@@ -1612,12 +1647,42 @@ const SendBox: React.FC<{
       setIsLoading(true);
       // C3: 重发在飞 → 徽章转「重发中」（仅 owner 匹配生效）。
       // C3: resubmit in flight → badge flips to "resubmitting" (owner-guarded).
-      if (cid) updateEditingMessage(cid, ownerId, { pending: true, operationId });
-      onEditResubmit(targetId, targetCreatedAt, finalMessage)
-        .then(() => {
+      if (cid) {
+        updateEditingMessage(cid, ownerId, {
+          pending: true,
+          phase: 'submitting',
+          operationId,
+          continueConfirmation: undefined,
+        });
+      }
+      onEditResubmit(
+        targetId,
+        targetCreatedAt,
+        finalMessage,
+        operationId,
+        (phase, continueConfirmation) => {
+          if (!isCurrentOperation()) return;
+          if (cid) {
+            updateEditingMessage(cid, ownerId, {
+              pending: phase !== 'editing',
+              phase,
+              operationId,
+              continueConfirmation,
+            });
+          }
+        }
+      )
+        .then((resolution) => {
           // Backend accepted: exit edit mode. Only clear the composer when the
           // user never modified it after submit (revision unchanged); otherwise
           // preserve whatever they are now typing.
+          if (resolution.kind === 'post_mutation_failure') {
+            if (!isCurrentOperation()) return;
+            setEditingMsgId(null);
+            editPrevDraftRef.current = null;
+            if (cid) clearEditingMessage(cid, ownerId);
+            return;
+          }
           const outcome = resolveEditResubmitOutcome({
             isCurrentOperation: isCurrentOperation(),
             revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
@@ -1645,7 +1710,13 @@ const SendBox: React.FC<{
           if (outcome.restoreSubmittedInput) setInput(finalMessage);
           // C3: 失败后仍处编辑态，徽章回落为「编辑中」。
           // C3: still editing after a failure — badge drops back to "editing".
-          if (cid) updateEditingMessage(cid, ownerId, { pending: false });
+          if (cid) {
+            updateEditingMessage(cid, ownerId, {
+              pending: false,
+              phase: 'editing',
+              continueConfirmation: undefined,
+            });
+          }
         })
         .finally(() => {
           // Lowering isLoading depends only on the operation token, not the

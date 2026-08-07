@@ -57,7 +57,7 @@ use tokio::sync::{Notify, broadcast};
 
 use crate::service::{
     BackgroundTurnReconciliationDisposition, ConversationService,
-    PublicTurnDeliveryState, QuiescentOrphanReconciliation,
+    EditResubmitDeliveryState, PublicTurnDeliveryState, QuiescentOrphanReconciliation,
 };
 use crate::RepositoryExecutionConversationBoundary;
 use crate::skill_resolver::{
@@ -6624,6 +6624,163 @@ async fn empty_final_text_finish_persists_structured_error_code_on_receipt() {
         receipt.result_error, None,
         "the legacy free-text column keeps its historical Finish shape"
     );
+}
+
+#[tokio::test]
+async fn edit_resubmit_delivery_state_uses_receipt_namespace_and_exact_message_ids() {
+    const USER_ID: &str = SQLITE_TEST_OWNER;
+    const CLIENT_KEY: &str = "0190f5fe-7c00-7a00-8000-000000000881";
+    const REPLACEMENT_ID: &str = "0190f5fe-7c00-7a00-8000-000000000882";
+
+    let database = init_database_memory().await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> =
+        Arc::new(SlowAgentRuntimeRegistry::new(Duration::from_millis(1)));
+    let svc = ConversationService::new(
+        Arc::<str>::from(USER_ID),
+        std::env::temp_dir(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry,
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let request = serde_json::from_value(json!({
+        "type": "nomi",
+        "extra": { "workspace": isolated_test_workspace("edit-state") }
+    }))
+    .unwrap();
+    let conversation = svc.create(USER_ID, request).await.unwrap();
+    nomifun_db::sqlx::query(
+        "UPDATE conversations SET status = 'finished' WHERE conversation_id = ?",
+    )
+        .bind(&conversation.conversation_id)
+        .execute(database.pool())
+        .await
+        .unwrap();
+
+    let target_id = "0190f5fe-7c00-7a00-8000-000000000883";
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: target_id.to_owned(),
+        conversation_id: conversation.conversation_id.clone(),
+        msg_id: Some(target_id.to_owned()),
+        r#type: "text".to_owned(),
+        content: json!({ "content": "original" }).to_string(),
+        position: Some("right".to_owned()),
+        status: Some("finish".to_owned()),
+        hidden: false,
+        created_at: 100,
+    })
+    .await
+    .unwrap();
+
+    let operation_id = format!(
+        "public-edit-resubmit:v1:{USER_ID}:{}:{CLIENT_KEY}",
+        conversation.conversation_id
+    );
+    let request_payload = json!({
+        "workflow": "edit-resubmit",
+        "target_message_id": target_id,
+        "content": "edited",
+    })
+    .to_string();
+    nomifun_db::sqlx::query(
+        "INSERT INTO conversation_delivery_receipts (\
+            operation_id, message_id, conversation_id, projected_conversation_id, \
+            projected_message_id, user_id, kind, request_payload, status, created_at, updated_at\
+         ) VALUES (?, ?, ?, NULL, NULL, ?, 'turn', ?, 'accepted', 100, 100)",
+    )
+    .bind(&operation_id)
+    .bind(REPLACEMENT_ID)
+    .bind(&conversation.conversation_id)
+    .bind(USER_ID)
+    .bind(&request_payload)
+    .execute(database.pool())
+    .await
+    .unwrap();
+
+    let accepted = svc
+        .edit_resubmit_delivery_state(
+            USER_ID,
+            &conversation.conversation_id,
+            target_id,
+            CLIENT_KEY,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        accepted.delivery_state,
+        EditResubmitDeliveryState::Accepted(ref delivery)
+            if delivery.message_id == REPLACEMENT_ID && !delivery.completed
+    ));
+    assert_eq!(accepted.replacement_message_id.as_deref(), Some(REPLACEMENT_ID));
+    assert!(accepted.target_exists);
+    assert_eq!(accepted.replacement_exists, Some(false));
+
+    nomifun_db::sqlx::query(
+        "DELETE FROM messages WHERE conversation_id = ? AND message_id = ?",
+    )
+        .bind(&conversation.conversation_id)
+        .bind(target_id)
+        .execute(database.pool())
+        .await
+        .unwrap();
+    let truncated = svc
+        .edit_resubmit_delivery_state(
+            USER_ID,
+            &conversation.conversation_id,
+            target_id,
+            CLIENT_KEY,
+        )
+        .await
+        .unwrap();
+    assert!(!truncated.target_exists);
+    assert_eq!(truncated.replacement_message_id.as_deref(), Some(REPLACEMENT_ID));
+    assert_eq!(truncated.replacement_exists, Some(false));
+
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: REPLACEMENT_ID.to_owned(),
+        conversation_id: conversation.conversation_id.clone(),
+        msg_id: Some(REPLACEMENT_ID.to_owned()),
+        r#type: "text".to_owned(),
+        content: json!({ "content": "edited" }).to_string(),
+        position: Some("right".to_owned()),
+        status: Some("pending".to_owned()),
+        hidden: false,
+        created_at: 101,
+    })
+    .await
+    .unwrap();
+    let replacement = svc
+        .edit_resubmit_delivery_state(
+            USER_ID,
+            &conversation.conversation_id,
+            target_id,
+            CLIENT_KEY,
+        )
+        .await
+        .unwrap();
+    assert!(!replacement.target_exists);
+    assert_eq!(replacement.replacement_message_id.as_deref(), Some(REPLACEMENT_ID));
+    assert_eq!(replacement.replacement_exists, Some(true));
+
+    assert!(matches!(
+        svc.edit_resubmit_delivery_state(
+            USER_ID,
+            &conversation.conversation_id,
+            target_id,
+            "0190f5fe-7c00-7a00-0000-000000000884",
+        )
+        .await
+        .unwrap()
+        .delivery_state,
+        EditResubmitDeliveryState::Missing
+    ));
 }
 
 #[tokio::test]

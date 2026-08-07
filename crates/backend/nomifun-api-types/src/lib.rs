@@ -133,7 +133,7 @@ pub use conversation::{
     ConversationListResponse, ConversationMcpStatus, ConversationMcpStatusKind,
     ConversationNameSource, ConversationResponse, ConversationRuntimeStateKind,
     ConversationRuntimeSummary, CreateConversationRequest, ListConversationsQuery,
-    ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchItem,
+    EditResubmitReceiptState, EditResubmitStateResponse, ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchItem,
     MessageSearchResponse, SearchMessagesQuery, SendMessageRequest, SendMessageResponse,
     UpdateConversationArtifactRequest, UpdateConversationRequest,
 };
