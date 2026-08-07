@@ -24,7 +24,7 @@ export function canvasNodeToAsset(node: CanvasNodeData, options: CanvasNodeAsset
     };
     const base = {
         title,
-        coverUrl: node.type === CanvasNodeType.Image ? content : "",
+        coverUrl: node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video ? content : "",
         tags: node.metadata?.assetTags || [],
         category: canvasNodeAssetCategory(node),
         status: "confirmed" as const,

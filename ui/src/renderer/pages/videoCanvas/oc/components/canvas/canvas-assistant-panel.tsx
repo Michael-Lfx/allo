@@ -100,7 +100,7 @@ const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
     toolDefinition("canvas_create_node", "创建任意类型节点：text、image、video、audio。适合创建文本、媒体占位或自定义 metadata 节点。", { nodeType: NODE_TYPE_SCHEMA, title: { type: "string" }, x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" }, metadata: JSON_RECORD_SCHEMA }, ["nodeType"]),
     toolDefinition("canvas_create_text_node", "在当前画布创建单个文本节点。", { text: { type: "string" }, x: { type: "number" }, y: { type: "number" }, title: { type: "string" }, width: { type: "number" }, height: { type: "number" } }),
     toolDefinition("canvas_create_text_nodes", "批量创建文本节点，适合生成标题、段落、脚本、说明等内容块。", { items: { type: "array", minItems: 1, items: { type: "object", properties: { text: { type: "string" }, title: { type: "string" }, x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, required: ["text"], additionalProperties: false } }, x: { type: "number" }, y: { type: "number" }, gap: { type: "number" }, direction: { type: "string", enum: ["row", "column"] } }, ["items"]),
-    toolDefinition("canvas_create_cinematic_session", "把自然语言创作指令提交给后端影视 Agent 会话，后端拆解为剧本、场景、分镜、镜头和成片节点，并返回可写回画布的操作。", { prompt: { type: "string" } }, ["prompt"]),
+    // 影视会话曾依赖 OC 服务端 Agent；allo 仅代理模型对话，业务工具一律走客户端 canvas_* ops。
     toolDefinition("canvas_create_image_prompt_flow", "创建提示词文本节点和图片目标节点并自动连线，可选择立即触发生图。", { prompt: { type: "string" }, x: { type: "number" }, y: { type: "number" }, autoRun: { type: "boolean" }, ...GENERATION_OPTION_PROPERTIES }, ["prompt"]),
     generationToolDefinition("canvas_create_generation_flow", "创建通用生成流程：提示词文本节点、对应类型的生成目标节点和参考节点连线，可用于文案、生图、视频或音频。"),
     generationToolDefinition("canvas_generate_text", "创建通用文本生成流程并立即触发生成。", "text"),
@@ -511,15 +511,10 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
                 return { ok: true, message: `当前选中 ${ids.size} 个节点。`, data: { nodes: compactSnapshot({ ...current, nodes: current.nodes.filter((node) => ids.has(node.id)) }).nodes } };
             }
             if (name === "canvas_create_cinematic_session") {
-                const cinematic = await runCinematicSession(sessionId, requireString(args.prompt, "prompt"), current, effectiveConfig);
-                try {
-                    const result = executeOps(cinematic.ops);
-                    completeCinematicSession(sessionId, cinematic.backendSessionId, cinematic.ops);
-                    return { ok: result.changed, message: result.changed ? summarizeCanvasAgentOps(cinematic.ops) || "后端影视 Agent 已写回画布。" : result.noopReason, data: result };
-                } catch (error) {
-                    failCinematicSession(sessionId, cinematic.backendSessionId, error);
-                    throw error;
-                }
+                return {
+                    ok: false,
+                    message: "影视会话 Agent 未在 allo 服务端提供；请用客户端画布工具（创建节点 / 生成流程）完成同样目标。",
+                };
             }
             const ops = onlineToolToOps(name, args, current, effectiveConfig);
             const result = executeOps(ops);
@@ -606,44 +601,18 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
 
     useEffect(() => {
         if (!cinematicEntry) return;
-        setCinematicEntryActive(true);
+        // allo 不提供服务端影视 Agent：入口降级为普通在线 Agent 对话。
+        setCinematicEntryActive(false);
         setView("chat");
-        setPrompt("");
+        onAgentModeChange("online");
         onCinematicEntryConsumed?.();
-    }, [cinematicEntry, onCinematicEntryConsumed]);
+    }, [cinematicEntry, onAgentModeChange, onCinematicEntryConsumed]);
 
     const submitCinematicProject = async (text: string) => {
         const value = text.trim();
         if (!value || agentBusy) return;
-        const requestConfig = { ...effectiveConfig, model: effectiveConfig.textModel || effectiveConfig.model };
-        if (!isAiConfigReady(requestConfig, requestConfig.model)) {
-            navigateToSettings({ continueCreation: true });
-            return;
-        }
-        const session = activeSession || createSession();
-        if (!activeSession) {
-            setLocalSessions([session]);
-            setLocalActiveSessionId(session.id);
-        }
-        appendMessage(session.id, { id: nanoid(), role: "user", text: value });
-        setPrompt("");
-        setIsRunning(true);
-        let backendSessionId = "";
-        try {
-            const cinematic = await runCinematicSession(session.id, value, snapshotRef.current, effectiveConfig, (createdId) => {
-                backendSessionId = createdId;
-            });
-            const next = onApplyOps(cinematic.ops);
-            snapshotRef.current = next;
-            completeCinematicSession(session.id, cinematic.backendSessionId, cinematic.ops);
-            setCinematicEntryActive(false);
-        } catch (error) {
-            if (isAgentSessionPollingAbort(error)) return;
-            if (backendSessionId) failCinematicSession(session.id, backendSessionId, error);
-            else appendMessage(session.id, { id: nanoid(), role: "error", title: "影视项目生成失败", text: error instanceof Error ? error.message : "影视项目生成失败" });
-        } finally {
-            setIsRunning(false);
-        }
+        setCinematicEntryActive(false);
+        await sendMessage(value, messages);
     };
 
     const resumePendingCinematicSession = async (sessionId: string, pending: CanvasAssistantPendingBackendSession) => {

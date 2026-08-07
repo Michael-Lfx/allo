@@ -46,12 +46,27 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
 }
 
 export async function getMediaBlob(storageKey: string) {
-    if (resourceIdFromStorageKey(storageKey)) return getCachedResourceBlob(storageKey);
+    if (resourceIdFromStorageKey(storageKey)) {
+        try {
+            const cached = await getCachedResourceBlob(storageKey);
+            if (cached) return cached;
+        } catch {
+            // Fall through to direct media download.
+        }
+        const { getResourceBlob } = await import("@oc/services/api/resources");
+        return getResourceBlob(storageKey);
+    }
     return store.getItem<Blob>(storageKey);
 }
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {
-    if (resourceIdFromStorageKey(storageKey)) return primeResourceBlobCache(storageKey, blob);
+    if (resourceIdFromStorageKey(storageKey)) {
+        return primeResourceBlobCache(storageKey, blob).catch(() => {
+            const url = URL.createObjectURL(blob);
+            objectUrls.set(storageKey, url);
+            return url;
+        });
+    }
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);

@@ -1,6 +1,6 @@
 import axios from "axios";
 
-import { buildApiUrl, isSystemProxyBaseUrl, resolveBackendApiUrl, resolveModelRequestConfig, type AiConfig, type ModelChannel } from "@oc/stores/use-config-store";
+import { buildApiUrl, isSystemProxyBaseUrl, prefersChatCompletions, resolveBackendApiUrl, resolveModelRequestConfig, type AiConfig, type ModelChannel } from "@oc/stores/use-config-store";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@oc/lib/image-utils";
 import { buildImageReferencePromptText } from "@oc/lib/image-reference-prompt";
@@ -9,6 +9,7 @@ import { channelRequest } from "@oc/services/api/custom-channel-relay";
 import { imageToDataUrl } from "@oc/services/image-storage";
 import type { ReferenceImage } from "@oc/types/image";
 import { withOpenAIPromptCacheKey } from "@oc/lib/openai-prompt-cache";
+import { isCanvasLlmConfig, streamCanvasChatCompletions } from "@renderer/pages/videoCanvas/lib/canvasLlm";
 
 export type AiTextMessage = {
     role: "system" | "user" | "assistant";
@@ -247,6 +248,7 @@ function readAxiosError(error: unknown, fallback: string) {
 function readStatusError(status: number | undefined, fallback: string) {
     if (status === 401 || status === 403) return "鉴权失败，请检查 API Key、套餐权限或模型权限";
     if (status === 429) return "请求被限流或额度不足，请稍后重试";
+    if (status === 404) return `${fallback}：404（LLM 请求未打到后端；桌面模式应访问 127.0.0.1:backendPort/api/video-canvas/llm/...）`;
     return status ? `${fallback}：${status}` : fallback;
 }
 
@@ -561,6 +563,12 @@ function consumeChatCompletionStreamText(state: ChatCompletionStreamState, text:
 }
 
 async function requestStreamingChatCompletion(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
+    // Allo canvas: use the same getBaseUrl + auth-header transport as workshop/vimax.
+    if (isCanvasLlmConfig(config.baseUrl)) {
+        const result = await streamCanvasChatCompletions(body, { onDelta, signal: options?.signal });
+        return { content: result.content, toolCalls: result.toolCalls };
+    }
+
     const request = channelRequest(config, aiApiUrl(config, "/chat/completions"), { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" });
     const response = await fetch(request.url, {
         method: "POST",
@@ -935,10 +943,11 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
 export async function requestToolResponse(config: AiConfig, messages: ResponseInputMessage[], tools: ResponseFunctionTool[], toolChoice: ToolChoice = "auto", onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
     try {
-        if (requestConfig.apiFormat === "gemini") {
+        if (requestConfig.apiFormat === "gemini" && !isCanvasLlmConfig(requestConfig.baseUrl)) {
             return await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages, toGeminiToolOptions(tools, toolChoice)), onDelta, options);
         }
-        if (requestConfig.interfaceType === "chat-completion") {
+        // Allo canvas LLM proxy + OpenAI chat-completion channels.
+        if (isCanvasLlmConfig(requestConfig.baseUrl) || prefersChatCompletions(requestConfig.baseUrl, requestConfig.interfaceType) || requestConfig.interfaceType === "chat-completion") {
             return await requestStreamingChatCompletion(requestConfig, {
                 model: requestConfig.model,
                 messages: toChatCompletionMessages(withSystemMessage(requestConfig, messages)),

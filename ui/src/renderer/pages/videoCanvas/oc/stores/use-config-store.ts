@@ -87,7 +87,7 @@ export const defaultConfig: AiConfig = {
     channels: [
         {
             id: "default",
-            name: "éťčŽ¤ć¸ é",
+            name: "ÄĹ ÄšÄ˝ĂÂĂÂÄšËĂÂ¤ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ",
             baseUrl: OPENAI_BASE_URL,
             apiKey: "",
             apiFormat: "openai",
@@ -207,17 +207,17 @@ export function filterModelsByCapability(models: string[], capability?: ModelCap
         const channel = decoded ? channels?.find((item) => item.id === decoded.channelId) : undefined;
         const modelName = decoded?.model || modelOptionName(model);
         const costEntry = channel?.modelCosts?.find((item) => item.model === modelName);
-        // ĺčŽŽĺąäźĺçş§ćéŤďźĺčŽŽĺłĺŽ API çŤŻçšďźćçĄŽĺąäşĺśäťč˝ĺćśç´ćĽćé¤ďź
-        // é˛ć­˘ç¨ćˇĺ° video/image/audio ĺčŽŽçć¨ĄĺčŻŻć ä¸ş text ĺćˇˇĺĽććŹä¸ćă
+        // ĂĹĂÂĂÂĂÂÄšËÄšËĂĹĂÂĂÂÄÂ¤ÄšĹĂÂĂĹĂÂĂÂÄÂ§ÄšÂĂÂ§ĂÂĂÂĂÂÄĹ ÄšÂ¤ĂÂĂÂÄšĹĂÂĂĹĂÂĂÂĂÂÄšËÄšËĂĹĂÂÄšÂĂĹÄšËĂÂ API ÄÂ§ÄšÂ¤ÄšĹĽÄÂ§ĂÂÄšÄĂÂÄšĹĂÂĂÂĂÂĂÂÄÂ§ĂÂÄšËĂĹĂÂĂÂÄÂ¤ÄšÂĂÂĂĹĂÂÄšÂÄÂ¤ÄšÄ˝ĂÂĂÂĂÂĂÂĂĹĂÂĂÂĂÂĂÂÄšÂÄÂ§ĂÂĂÂ´ĂÂĂÂĂËĂÂĂÂĂÂÄĹ ĂÂĂÂ¤ĂÂÄšĹĂÂ
+        // ÄĹ ĂÂĂÂĂÂĂÂ­ĂÂÄÂ§ĂÂĂÂ¨ĂÂĂÂĂÂĂĹĂÂ°ĂÂ video/image/audio ĂĹĂÂĂÂĂÂÄšËÄšËÄÂ§ĂÂĂÂĂÂĂÂ¨ĂÂĂĹĂÂĂÂĂÂÄšĹĽÄšĹĽĂÂĂÂ ĂÂÄÂ¤ĂÂ¸ÄšÂ text ĂĹĂÂĂÂĂÂĂÂĂÂĂĹĂÂĂËĂÂĂÂĂÂĂÂĂÂÄšĹĄÄÂ¤ĂÂ¸ĂÂĂÂĂÂĂÂĂÂĂÂĂÂ
         const protocolCapability = modelProtocolCapability(costEntry?.protocol);
         if (protocolCapability) return protocolCapability === capability;
-        // ć¸ éćĽĺŁĺąďźć¸ éçş§ĺčŽŽć¨ć­č˝ĺ
+        // ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂĂÂĂÂĂËĂĹĂÂÄšÂĂĹĂÂĂÂĂÂÄšĹĂÂĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂÄÂ§ÄšÂĂÂ§ĂĹĂÂĂÂĂÂÄšËÄšËĂÂĂÂĂÂ¨ĂÂĂÂĂÂ­ĂÂĂÂĂÂĂĹĂÂĂÂ
         const channelCapability = capabilityForChannelInterface(channel?.interfaceType);
         if (channelCapability) return channelCapability === capability;
-        // éç˝Žč˝ĺĺąďźç¨ćˇćžĺźć čŽ°ç capability
+        // ÄĹ ĂÂĂÂÄÂ§ĂÂÄšËĂÂĂÂĂÂĂĹĂÂĂÂĂĹĂÂĂÂĂÂÄšĹĂÂÄÂ§ĂÂĂÂ¨ĂÂĂÂĂÂĂÂĂÂÄšĹžĂĹÄšĹĂÂĂÂĂÂ ĂÂĂÂÄšËĂÂ°ÄÂ§ĂÂĂÂ capability
         const configuredCapability = costEntry?.capability;
         if (configuredCapability) return configuredCapability === capability;
-        // ć¨ĄĺĺĺŻĺĺźďźćĺĺé
+        // ĂÂĂÂ¨ĂÂĂĹĂÂĂÂĂĹĂÂĂÂĂĹĂÂÄšĹĽĂĹĂÂĂÂĂĹÄšĹĂÂĂÂÄšĹĂÂĂÂĂÂĂÂĂĹĂÂĂÂĂĹĂÂĂÂÄĹ ĂÂĂÂ
         return modelMatchesCapability(model, capability);
     });
 }
@@ -268,7 +268,7 @@ export const useConfigStore = create<ConfigStore>()(
                         createModelChannel({
                             ...channel,
                             id: channel.id || `system-${index + 1}`,
-                            name: channel.name || `çłťçťć¸ é ${index + 1}`,
+                            name: channel.name || `ÄÂ§ÄšÂÄšÄ˝ÄÂ§ÄšÄ˝ĂÂĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ ${index + 1}`,
                             scope: "system",
                             apiKey: channel.apiKey || "system",
                         }),
@@ -294,7 +294,7 @@ export const useConfigStore = create<ConfigStore>()(
 );
 
 export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefined = {}) {
-    // ĺĺ­ĺ¨/ć§çćŹĺżŤç§ĺŻč˝ćŻ undefined ćçźş configďźĺĺşä¸ş defaultConfigďźäżčŻć¸˛ćä¸ĺ´Šćş
+    // ĂĹĂÂĂÂĂĹĂÂ­ĂÂĂĹĂÂĂÂ¨/ĂÂĂÂĂÂ§ÄÂ§ĂÂĂÂĂÂĂÂÄšĹĄĂĹÄšĹşÄšÂ¤ÄÂ§ĂÂĂÂ§ĂĹĂÂÄšĹĽĂÂĂÂĂÂĂÂĂÂÄšĹĽ undefined ĂÂĂÂĂÂÄÂ§ÄšĹÄšÂ configĂÂÄšĹĂÂĂĹĂÂĂÂĂĹÄšÂĂÂÄÂ¤ĂÂ¸ÄšÂ defaultConfigĂÂÄšĹĂÂÄÂ¤ÄšĹşĂÂĂÂÄšĹĽĂÂĂÂĂÂ¸ĂÂĂÂĂÂĂÂÄÂ¤ĂÂ¸ĂÂĂĹĂÂ´ÄšÂ ĂÂÄšÂĂÂ
     const persistedConfig = (snapshot?.config || {}) as Partial<AiConfig>;
     const config = { ...defaultConfig, ...persistedConfig };
     const hasPersistedChannels = Array.isArray(persistedConfig.channels);
@@ -322,7 +322,7 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
             audioFormat: config.audioFormat || defaultConfig.audioFormat,
             audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
 			audioInstructions: config.audioInstructions || "",
-            // ć§çĺ¨ĺą systemPrompt äźčˇ¨äťťĺĄćąĄćčŻˇćąďźćç¤şčŻĺŽĺśç°ĺˇ˛ć operation çąćĺĄçŤŻçźčŻă
+            // ĂÂĂÂĂÂ§ÄÂ§ĂÂĂÂĂĹĂÂĂÂ¨ĂĹĂÂĂÂ systemPrompt ÄÂ¤ÄšĹĂÂĂÂĂÂĂÂ¨ÄÂ¤ÄšÄ˝ÄšÄ˝ĂĹĂÂĂÂĂÂĂÂĂÂĂÂĂÂĂÂĂÂÄšĹĽĂÂĂÂĂÂĂÂĂÂÄšĹĂÂĂÂĂÂĂÂÄÂ§ĂÂ¤ÄšÂĂÂÄšĹĽĂÂĂĹÄšËĂÂĂĹĂÂÄšÂÄÂ§ĂÂĂÂ°ĂĹĂÂĂÂĂÂĂÂĂÂ operation ÄÂ§ĂÂĂÂĂÂĂÂĂÂĂĹĂÂĂÂÄÂ§ÄšÂ¤ÄšĹĽÄÂ§ÄšĹĂÂĂÂÄšĹĽĂÂĂÂĂÂĂÂ
             systemPrompt: "",
             videoSeconds: normalizeVideoDuration(config.videoSeconds),
             vquality: normalizeVideoResolution(config.vquality),
@@ -354,7 +354,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
     const providedBaseUrl = channel?.baseUrl?.trim();
     return {
         id: channel?.id?.trim() || nanoid(),
-        name: channel?.name?.trim() || "ć°ć¸ é",
+        name: channel?.name?.trim() || "ĂÂĂÂĂÂ°ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ",
         baseUrl: providedBaseUrl || (interfaceType ? defaultBaseUrlForChannelInterface(interfaceType) : defaultBaseUrlForApiFormat(apiFormat)),
         apiKey: channel?.apiKey || "",
         secretKey: channel?.secretKey || "",
@@ -393,7 +393,7 @@ export function modelDisplayName(config: AiConfig, value: string) {
     const channel = resolveModelChannel(config, value);
     const displayName = channel.modelCosts?.find((item) => item.model === model)?.displayName?.trim();
     if (displayName) return displayName;
-    return channel.scope === "system" ? "çłťçťć¨Ąĺ" : model;
+    return channel.scope === "system" ? "ÄÂ§ÄšÂÄšÄ˝ÄÂ§ÄšÄ˝ĂÂĂÂĂÂ¨ĂÂĂĹĂÂĂÂ" : model;
 }
 
 export function modelOptionLabel(config: AiConfig, value: string) {
@@ -401,7 +401,7 @@ export function modelOptionLabel(config: AiConfig, value: string) {
     if (!decoded) return modelDisplayName(config, value);
     const channel = config.channels.find((item) => item.id === decoded.channelId);
     const displayName = modelDisplayName(config, value);
-    return channel ? `${displayName}ďź${channel.name}ďź` : displayName;
+    return channel ? `${displayName}ĂÂÄšĹĂÂ${channel.name}ĂÂÄšĹĂÂ` : displayName;
 }
 
 export function modelOptionsFromChannels(channels: ModelChannel[]) {
@@ -437,7 +437,7 @@ export function resolveModelChannel(config: AiConfig, value: string) {
     const decoded = decodeChannelModel(value);
     const model = decoded?.model || value;
     const matched = decoded ? config.channels.find((channel) => channel.id === decoded.channelId) : config.channels.find((channel) => channel.models.includes(model));
-    return matched || config.channels[0] || createModelChannel({ id: "default", name: "éťčŽ¤ć¸ é", baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName) });
+    return matched || config.channels[0] || createModelChannel({ id: "default", name: "ÄĹ ÄšÄ˝ĂÂĂÂÄšËĂÂ¤ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ", baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName) });
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {
@@ -465,7 +465,7 @@ function normalizeChannels(config: AiConfig, ensureDefault = true) {
             createModelChannel({
                 ...channel,
                 id: channel.id || (index === 0 ? "default" : `channel-${index + 1}`),
-                name: channel.name || (index === 0 ? "éťčŽ¤ć¸ é" : `ć¸ é ${index + 1}`),
+                name: channel.name || (index === 0 ? "ÄĹ ÄšÄ˝ĂÂĂÂÄšËĂÂ¤ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ" : `ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ ${index + 1}`),
                 models: uniqueRawModels(channel.models || []),
             }),
         )
@@ -474,7 +474,7 @@ function normalizeChannels(config: AiConfig, ensureDefault = true) {
         channels.push(
             createModelChannel({
                 id: "default",
-                name: "éťčŽ¤ć¸ é",
+                name: "ÄĹ ÄšÄ˝ĂÂĂÂÄšËĂÂ¤ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ",
                 baseUrl: config.baseUrl || defaultConfig.baseUrl,
                 apiKey: config.apiKey || "",
                 apiFormat: config.apiFormat || defaultConfig.apiFormat,
@@ -487,7 +487,7 @@ function normalizeChannels(config: AiConfig, ensureDefault = true) {
 
 function isEmptyDefaultChannel(channel: ModelChannel) {
     if (channel.scope === "system") return false;
-    if (channel.id !== "default" || channel.name.trim() !== "éťčŽ¤ć¸ é" || channel.apiKey.trim()) return false;
+    if (channel.id !== "default" || channel.name.trim() !== "ÄĹ ÄšÄ˝ĂÂĂÂÄšËĂÂ¤ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ" || channel.apiKey.trim()) return false;
     const baseUrl = channel.baseUrl.trim().replace(/\/+$/, "");
     const defaultBaseUrl = defaultConfig.baseUrl.trim().replace(/\/+$/, "");
     if (baseUrl && baseUrl !== defaultBaseUrl) return false;
@@ -548,12 +548,34 @@ export function resolveBackendApiUrl(value: string) {
     return backendBaseUrl === "/api" ? url : `${backendBaseUrl}${url.slice("/api".length)}`;
 }
 
+/**
+ * Prefix a canvas `/api/...` path with the desktop loopback origin when needed.
+ * WebUI passes `backendOrigin === ""` and keeps same-origin relative URLs.
+ */
+export function withCanvasBackendOrigin(pathOrUrl: string, backendOrigin: string) {
+    const trimmed = pathOrUrl.trim();
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    const path = resolveBackendApiUrl(trimmed.startsWith("/") ? trimmed : `/${trimmed}`);
+    if (/^https?:\/\//i.test(path)) return path;
+    const base = backendOrigin.replace(/\/+$/, "");
+    return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 export function isSystemProxyBaseUrl(baseUrl: string) {
+    const resolved = resolveBackendApiUrl(baseUrl).toLowerCase();
+    // Canvas Agent LLM: same-origin Flowy chat proxy (credentials / session auth).
+    if (resolved.includes("/api/video-canvas/llm") || baseUrl.toLowerCase().includes("/api/video-canvas/llm")) return true;
     const marker = "/api/ai/system/";
-    const index = baseUrl.toLowerCase().indexOf(marker);
+    const index = resolved.indexOf(marker);
     if (index < 0) return false;
-    const channelId = baseUrl.slice(index + marker.length);
+    const channelId = resolved.slice(index + marker.length);
     return Boolean(channelId && !channelId.includes("/") && !channelId.includes("?") && !channelId.includes("#"));
+}
+
+/** Whether this OpenAI-compatible base should use chat/completions (not /responses). */
+export function prefersChatCompletions(baseUrl: string, interfaceType?: ChannelInterfaceType) {
+    if (interfaceType === "chat-completion") return true;
+    return isSystemProxyBaseUrl(baseUrl) && (baseUrl.toLowerCase().includes("/api/video-canvas/llm") || resolveBackendApiUrl(baseUrl).toLowerCase().includes("/api/video-canvas/llm"));
 }
 
 function normalizeArkPlanBaseUrl(baseUrl: string) {

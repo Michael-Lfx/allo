@@ -16,7 +16,9 @@ import { getVideoCanvasAntTheme } from './lib/ocAntTheme';
 import { useCanvasStore } from '@oc/stores/canvas/use-canvas-store';
 import { useThemeStore } from '@oc/stores/use-theme-store';
 import { useUserStore } from '@oc/stores/use-user-store';
+import { setActiveUserScope } from '@oc/lib/user-scope';
 import { getFeatureAvailability } from '@oc/services/api/auth';
+import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import styles from './index.module.css';
 
 // Ant Design styles for the ported open-ai-canvas workspace.
@@ -52,6 +54,27 @@ const VideoCanvasProjectPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const hydrated = useCanvasStore((s) => s.hydrated);
   const colorTheme = useVideoCanvasThemeSync();
+  const { whoami, authState } = useCloudAuth();
+
+  useEffect(() => {
+    const accountId =
+      (authState.phase === 'authenticated' && authState.accountId) ||
+      whoami?.userId ||
+      whoami?.email ||
+      whoami?.username ||
+      null;
+    setActiveUserScope(accountId);
+    if (accountId) {
+      useUserStore.getState().setUser({
+        id: accountId,
+        username: whoami?.username || accountId,
+        email: whoami?.email,
+        displayName: whoami?.username || whoami?.email || accountId,
+        role: 'user',
+        status: 'active',
+      });
+    }
+  }, [authState, whoami]);
 
   useEffect(() => {
     void getFeatureAvailability()

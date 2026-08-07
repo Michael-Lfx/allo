@@ -427,7 +427,7 @@ function InfiniteCanvasPage() {
     const {
         assetPickerOpen,
         closeAssetPicker,
-        createImageAssetNode,
+        createMediaAssetNode,
         fileDropActive,
         handleAssetInsert,
         handleDrop,
@@ -698,6 +698,7 @@ function InfiniteCanvasPage() {
         setDialogNodeId,
         setToolbarNodeId,
         setHoveredNodeId,
+        onAssetSaved: () => openAssetsAtPosition(),
     });
 
     const {
@@ -710,14 +711,14 @@ function InfiniteCanvasPage() {
         annotationNode,
         batchChildCountById,
         batchMotionById,
-        canvasImageNodes,
+        canvasMediaNodes,
         configInputsById,
         connectionLayerBounds,
         contextMenuNode,
         cropNode,
         displayConnections,
         frameChildrenById,
-        imageAssets,
+        mediaAssets,
         infoNode,
         maskEditNode,
         mentionReferencesByNodeId,
@@ -1710,7 +1711,7 @@ function InfiniteCanvasPage() {
                         onToggleDialog={(node) => setDialogNodeId((current) => (current === node.id ? null : node.id))}
                         onGenerateImage={generateImageFromTextNode}
                         onUpload={(node) => handleUploadRequest(node.id)}
-                        onDownload={downloadNodeImage}
+                        onDownload={(node) => void downloadNodeImage(node)}
                         onSaveAsset={(node) => void saveNodeAsset(node)}
                         onAnnotate={(node) => setAnnotationNodeId(node.id)}
                         onMaskEdit={(node) => setMaskEditNodeId(node.id)}
@@ -1757,12 +1758,12 @@ function InfiniteCanvasPage() {
                                 onOpenShortcuts={() => setShortcutRequestNonce((value) => value + 1)}
                             />
                             <CanvasAssetTray
-                                assetImages={imageAssets}
-                                canvasImages={canvasImageNodes}
+                                mediaAssets={mediaAssets}
+                                canvasMediaNodes={canvasMediaNodes}
                                 showLibrary={!currentProject?.projectId}
                                 activeNodeId={selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null}
-                                onInsertAssetImage={(asset) => void createImageAssetNode(asset)}
-                                onFocusCanvasImage={focusCanvasImageNode}
+                                onInsertMediaAsset={(asset) => void createMediaAssetNode(asset)}
+                                onFocusCanvasMedia={focusCanvasImageNode}
                             />
                         </div>
                     ) : null}

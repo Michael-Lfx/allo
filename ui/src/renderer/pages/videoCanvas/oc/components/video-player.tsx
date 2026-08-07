@@ -77,6 +77,8 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
     };
     const type = mimeType && supportedVideoMimeTypes.has(mimeType as VideoMimeType) ? (mimeType as VideoMimeType) : "video/mp4";
     const mediaSource = useMemo(() => ({ src, type }), [src, type]);
+    // 画布节点与预览都用大布局，保证音量滑条可用（进度/时间在大布局下也正常）。
+    const smallLayoutWhen = false;
 
     return (
         <MediaPlayer
@@ -96,7 +98,7 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
             onMouseDown={stopCanvasControlInteraction}
         >
             <MediaProvider />
-            <DefaultVideoLayout icons={defaultLayoutIcons} translations={zhCNTranslations} />
+            <DefaultVideoLayout icons={defaultLayoutIcons} translations={zhCNTranslations} smallLayoutWhen={smallLayoutWhen} />
         </MediaPlayer>
     );
 }

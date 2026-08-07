@@ -11,7 +11,32 @@
     object-fit: contain;
 }
 
-/* 画布节点顶部还有标题和存储状态，隐藏 Vidstack 小布局的顶部控制组避免互相遮挡。 */
-.canvas-video-player-compact .vds-video-layout[data-sm] .vds-controls-group:first-child {
+/* 画布节点顶部还有标题和存储状态，隐藏顶部控制组避免互相遮挡。 */
+.canvas-video-player-compact .vds-controls-group:first-child {
     display: none;
+}
+
+/* 大布局下确保音量可调，并限制宽度以免挤占进度条。 */
+.canvas-video-player .vds-volume {
+    display: inline-flex !important;
+    align-items: center;
+    flex: 0 0 auto;
+    max-width: 96px;
+}
+
+.canvas-video-player .vds-volume media-volume-slider,
+.canvas-video-player .vds-volume .vds-volume-slider {
+    display: inline-block !important;
+    width: 56px;
+    min-width: 48px;
+}
+
+.canvas-video-player-compact .vds-volume {
+    max-width: 80px;
+}
+
+.canvas-video-player-compact .vds-volume media-volume-slider,
+.canvas-video-player-compact .vds-volume .vds-volume-slider {
+    width: 48px;
+    min-width: 40px;
 }
