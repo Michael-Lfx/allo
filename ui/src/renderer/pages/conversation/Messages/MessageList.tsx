@@ -1748,6 +1748,7 @@ const MessageList: React.FC<{
       <button
         type='button'
         className='message-list-scroll-button'
+        data-button-shape='circle'
         data-visible={showScrollButton ? 'true' : 'false'}
         onClick={handleScrollButtonClick}
         title={t('messages.scrollToBottom')}

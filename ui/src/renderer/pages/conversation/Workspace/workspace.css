@@ -2,6 +2,7 @@
 
 .chat-workspace {
   --workspace-control-size: 28px;
+  --workspace-tree-inset: 16px;
   --workspace-tree-row-height: 28px;
   --workspace-tree-radius: 6px;
 }
@@ -173,7 +174,7 @@
 }
 
 .chat-workspace .workspace-tree {
-  padding: 0 8px 12px !important;
+  padding: 0 var(--workspace-tree-inset) 12px !important;
   color: var(--color-text-1);
   font-family: inherit;
 }
@@ -308,6 +309,7 @@
 @media (max-width: 767px) {
   .chat-workspace {
     --workspace-control-size: 32px;
+    --workspace-tree-inset: 8px;
     --workspace-tree-row-height: 32px;
   }
 
