@@ -12,7 +12,7 @@ describe('Knowledge detail document action bar', () => {
     expect(detailSource.includes("<Left theme='outline' size='14' />\n          <span>")).toBe(false);
   });
 
-  test('uses a soft borderless action bar for new and upload actions', () => {
+  test('uses a soft borderless action bar for folder and upload actions', () => {
     expect(detailSource.includes('knowledge-doc-actions')).toBe(true);
     expect(detailSource.includes('knowledge-doc-action')).toBe(true);
     expect(detailSource.includes('Bottom actions: new + upload */}\n                <div className=\'flex gap-7px mt-8px border-t')).toBe(false);
@@ -35,7 +35,7 @@ describe('Knowledge detail document action bar', () => {
     expect(detailSource.includes('knowledge-tree-node-action')).toBe(true);
     expect(detailSource.includes('knowledge-tree-node-more')).toBe(true);
     expect(detailSource.includes('handleTreeNodeMenuClick')).toBe(true);
-    expect(detailSource.includes("key='new-file'")).toBe(true);
+    expect(detailSource.includes("key='new-file'")).toBe(false);
     expect(detailSource.includes("key='new-folder'")).toBe(true);
     expect(detailSource.includes("key='rename'")).toBe(true);
     expect(detailSource.includes("key='delete'")).toBe(true);
@@ -62,14 +62,18 @@ describe('Knowledge detail document action bar', () => {
     expect(detailSource.includes('syncSource')).toBe(false);
   });
 
-  test('uses canvas + activity/settings drawers instead of four primary tabs', () => {
-    expect(detailSource.includes('knowledge-detail-canvas')).toBe(true);
-    expect(detailSource.includes("setPanel('activity')")).toBe(true);
-    expect(detailSource.includes("setPanel('settings')")).toBe(true);
-    expect(detailSource.includes('KnowledgeSearchPanel')).toBe(true);
+  test('uploads markdown documents and folders through the knowledge batch API', () => {
+    expect(detailSource.includes('handleUploadFiles')).toBe(true);
     expect(detailSource.includes('handleUpload')).toBe(true);
+    expect(detailSource.includes('uploadFiles.invoke')).toBe(true);
+    expect(detailSource.includes('openUploadModal')).toBe(true);
+    expect(detailSource.includes('pendingUploadSource')).toBe(true);
+    expect(detailSource.includes('clearPendingUpload')).toBe(true);
+    expect(detailSource.includes('uploadTargetPath')).toBe(true);
+    expect(detailSource.includes('uploadTargetFolders')).toBe(true);
+    expect(detailSource.includes("accept='.md,text/markdown'")).toBe(true);
+    expect(detailSource.includes("setAttribute('webkitdirectory', '')")).toBe(true);
     expect(detailSource.includes('uploadTodo')).toBe(false);
-    expect(detailSource.includes('检索功能开发中')).toBe(false);
   });
 
   test('uses theme-aware contrast for detail badges and settings fields', () => {
@@ -84,5 +88,15 @@ describe('Knowledge detail document action bar', () => {
     expect(detailSource.includes("textClass: 'text-[rgb(var(--success-5))]'")).toBe(false);
     expect(detailSource.includes("textClass: 'text-[rgb(var(--warning-5))]'")).toBe(false);
     expect(detailSource.includes('!bg-primary-1 !text-primary-6 font-600')).toBe(false);
+  });
+
+  test('keeps document actions below the viewer and stabilizes scrollbar layout', () => {
+    expect(detailSource.includes("className='box-border flex h-56px")).toBe(true);
+    expect(detailSource.includes('autoSize={{ minRows: 14, maxRows: 16 }}')).toBe(true);
+    expect(detailSource.includes('[scrollbar-gutter:stable]')).toBe(true);
+    expect(detailSource.includes('justify-between gap-10px mt-12px')).toBe(true);
+    expect(detailSource.includes("className='flex items-center justify-end gap-8px'")).toBe(true);
+    expect(detailSource.includes("t('knowledge.detail.docs.edit'")).toBe(true);
+    expect(detailSource.includes('overflow-y-auto')).toBe(true);
   });
 });

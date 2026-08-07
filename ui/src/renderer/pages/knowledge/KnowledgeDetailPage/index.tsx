@@ -16,7 +16,7 @@
  */
 
 import classNames from 'classnames';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { parseKnowledgeBaseId } from '@/common/types/ids';
 import { useTranslation } from 'react-i18next';
@@ -31,6 +31,7 @@ import {
   Message,
   Modal,
   Result,
+  Select,
   Spin,
   Tabs,
   Tag,
@@ -38,6 +39,7 @@ import {
 } from '@arco-design/web-react';
 import {
   Delete,
+  Close,
   EditTwo,
   FileText,
   FolderOpen,
@@ -47,7 +49,6 @@ import {
   LinkOne,
   MagicHat,
   More,
-  Plus,
   Refresh,
   Search,
   SettingTwo,
@@ -423,8 +424,11 @@ const KnowledgeDetailPage: React.FC = () => {
   const [editMode, setEditMode] = useState(false);
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
-  const [newFileVisible, setNewFileVisible] = useState(false);
-  const [newFilePath, setNewFilePath] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadModalVisible, setUploadModalVisible] = useState(false);
+  const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
+  const [pendingUploadSource, setPendingUploadSource] = useState<'files' | 'folder' | null>(null);
+  const [uploadTargetPath, setUploadTargetPath] = useState('');
   const [newFolderVisible, setNewFolderVisible] = useState(false);
   const [newFolderPath, setNewFolderPath] = useState('');
   const [renameVisible, setRenameVisible] = useState(false);
@@ -437,6 +441,9 @@ const KnowledgeDetailPage: React.FC = () => {
   const [selectedFolderPath, setSelectedFolderPath] = useState('');
   const [selectedTreeKey, setSelectedTreeKey] = useState<string | null>(null);
   const [fileSearch, setFileSearch] = useState('');
+  const markdownFileInputRef = useRef<HTMLInputElement | null>(null);
+  const markdownFolderInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadPickerKindRef = useRef<'files' | 'folder'>('files');
   const isTreeSearch = fileSearch.trim().length > 0;
 
   const source = getBaseSource(base);
@@ -444,6 +451,13 @@ const KnowledgeDetailPage: React.FC = () => {
   useEffect(() => {
     setTreeData((prev) => preserveKnowledgeTreeChildren(tree, prev));
   }, [tree]);
+
+  useEffect(() => {
+    const input = markdownFolderInputRef.current;
+    if (!input) return;
+    input.setAttribute('webkitdirectory', '');
+    input.setAttribute('directory', '');
+  }, []);
 
   const handleInboxChanged = () => {
     void refresh();
@@ -548,10 +562,95 @@ const KnowledgeDetailPage: React.FC = () => {
     [id]
   );
 
-  const openNewFileModal = (folderOverride?: string) => {
-    const folder = folderOverride ?? (selectedFolderPath || parentDirOfKnowledgePath(selectedPath));
-    setNewFilePath(folder ? `${folder}/` : '');
-    setNewFileVisible(true);
+  const handleUploadFiles = useCallback(
+    async (incomingFiles: File[], targetFolderPath: string) => {
+      if (!id || uploading) return;
+
+      const markdownFiles = incomingFiles.filter((file) => file.name.toLowerCase().endsWith('.md'));
+      if (markdownFiles.length === 0) {
+        Message.warning(
+          t('knowledge.detail.docs.uploadNoMarkdown', {
+            defaultValue: '请选择 Markdown 文件或包含 Markdown 文件的文件夹',
+          })
+        );
+        return;
+      }
+
+      setUploading(true);
+      try {
+        const targetPath = targetFolderPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+        const filesToUpload = await Promise.all(
+          markdownFiles.map(async (file) => ({
+            path: [targetPath, (file.webkitRelativePath || file.name).replace(/\\/g, '/').replace(/^\/+/, '')]
+              .filter(Boolean)
+              .join('/'),
+            content: await file.text(),
+          }))
+        );
+        const result = await ipcBridge.knowledge.uploadFiles.invoke({ knowledge_base_id: id, files: filesToUpload });
+        const firstPath = filesToUpload[0]?.path;
+
+        setFileSearch('');
+        await refresh();
+        await reloadTreePath('');
+        if (firstPath) {
+          const parent = parentDirOfKnowledgePath(firstPath);
+          setExpandedTreeKeys((prev) => [...new Set([...prev, ...knowledgeFolderPathChain(parent)])]);
+          setSelectedFolderPath(parent);
+          setSelectedPath(firstPath);
+          setSelectedTreeKey(firstPath);
+        }
+        setUploadModalVisible(false);
+        setPendingUploadFiles([]);
+        setPendingUploadSource(null);
+        Message.success(
+          t('knowledge.detail.docs.uploadSuccess', { defaultValue: '已上传 {{n}} 篇文档', n: result.written })
+        );
+      } catch (e) {
+        Message.error(String(e));
+      } finally {
+        setUploading(false);
+      }
+    },
+    [id, reloadTreePath, refresh, t, uploading]
+  );
+
+  const openUploadPicker = (kind: 'files' | 'folder') => {
+    if (uploading) return;
+    uploadPickerKindRef.current = kind;
+    const input = kind === 'files' ? markdownFileInputRef.current : markdownFolderInputRef.current;
+    input?.click();
+  };
+
+  const openUploadModal = () => {
+    if (uploading) return;
+    setPendingUploadFiles([]);
+    setPendingUploadSource(null);
+    setUploadTargetPath(selectedFolderPath);
+    setUploadModalVisible(true);
+  };
+
+  const clearPendingUpload = () => {
+    setPendingUploadFiles([]);
+    setPendingUploadSource(null);
+  };
+
+  const handleUploadInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = '';
+    const markdownFiles = selectedFiles.filter((file) => file.name.toLowerCase().endsWith('.md'));
+    if (markdownFiles.length === 0) {
+      Message.warning(
+        t('knowledge.detail.docs.uploadNoMarkdown', {
+          defaultValue: '请选择 Markdown 文件或包含 Markdown 文件的文件夹',
+        })
+      );
+      return;
+    }
+    setPendingUploadFiles(markdownFiles);
+    setPendingUploadSource(uploadPickerKindRef.current);
+    setUploadTargetPath(selectedFolderPath);
+    setUploadModalVisible(true);
   };
 
   const openNewFolderModal = (folderOverride?: string) => {
@@ -564,28 +663,6 @@ const KnowledgeDetailPage: React.FC = () => {
     setRenameTarget(item);
     setRenameName(item.name);
     setRenameVisible(true);
-  };
-
-  const handleCreateFile = async () => {
-    if (!id) return;
-    let path = newFilePath.trim();
-    if (!path) return;
-    if (!path.toLowerCase().endsWith('.md')) path = `${path}.md`;
-    const parent = parentDirOfKnowledgePath(path);
-    const fileTitle = path.split('/').filter(Boolean).at(-1)?.replace(/\.md$/i, '') || path.replace(/\.md$/i, '');
-    try {
-      await ipcBridge.knowledge.writeFile.invoke({ knowledge_base_id: id, path, content: `# ${fileTitle}\n` });
-      setNewFileVisible(false);
-      setNewFilePath('');
-      await refresh();
-      setFileSearch('');
-      await reloadTreePath(parent);
-      setSelectedPath(path);
-      setSelectedTreeKey(path);
-      Message.success(t('knowledge.actions.createOk'));
-    } catch (e) {
-      Message.error(String(e));
-    }
   };
 
   const handleCreateFolder = async () => {
@@ -710,10 +787,6 @@ const KnowledgeDetailPage: React.FC = () => {
   };
 
   const handleTreeNodeMenuClick = (key: string, item: IKnowledgeTreeEntry) => {
-    if (key === 'new-file' && item.is_dir) {
-      openNewFileModal(item.rel_path);
-      return;
-    }
     if (key === 'new-folder' && item.is_dir) {
       openNewFolderModal(item.rel_path);
       return;
@@ -774,6 +847,15 @@ const KnowledgeDetailPage: React.FC = () => {
     () => (isTreeSearch ? buildKnowledgeSearchTree(files, fileSearch) : treeData),
     [files, fileSearch, isTreeSearch, treeData]
   );
+  const uploadTargetFolders = useMemo(() => {
+    const folders = new Set(collectKnowledgeDirKeys(treeData));
+    for (const file of files) {
+      for (const folder of knowledgeFolderPathChain(parentDirOfKnowledgePath(file.rel_path))) {
+        folders.add(folder);
+      }
+    }
+    return [...folders].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  }, [files, treeData]);
   const visibleTreeExpandedKeys = useMemo(
     () => (isTreeSearch ? collectKnowledgeDirKeys(displayedTreeData) : expandedTreeKeys),
     [displayedTreeData, expandedTreeKeys, isTreeSearch]
@@ -818,7 +900,7 @@ const KnowledgeDetailPage: React.FC = () => {
   return (
     <div
       className={classNames(
-        'size-full box-border overflow-y-auto',
+        'size-full box-border overflow-y-auto [scrollbar-gutter:stable]',
         isMobile ? 'px-16px py-14px' : 'px-12px py-24px md:px-40px md:py-32px'
       )}
     >
@@ -958,16 +1040,7 @@ const KnowledgeDetailPage: React.FC = () => {
                 )}
               >
                 {/* Document actions */}
-                <div className='knowledge-doc-actions mb-8px grid grid-cols-3 gap-4px rounded-10px bg-[var(--color-fill-2)] p-3px'>
-                  <button
-                    type='button'
-                    className='knowledge-doc-action inline-flex min-w-0 appearance-none items-center justify-center gap-4px rounded-8px border-none bg-transparent px-6px py-7px font-[inherit] text-11px font-500 text-[var(--color-text-2)] cursor-pointer transition-colors hover:bg-[var(--color-fill-3)] hover:text-[var(--color-text-1)] focus-visible:outline-none focus-visible:bg-[var(--color-fill-3)] focus-visible:text-[var(--color-text-1)]'
-                    onClick={() => openNewFileModal()}
-                    title={t('knowledge.detail.docs.newFile', { defaultValue: '新建文档' })}
-                  >
-                    <Plus theme='outline' size='12' className='shrink-0' />
-                    <span className='truncate'>{t('knowledge.detail.docs.newFile', { defaultValue: '新建文档' })}</span>
-                  </button>
+                <div className='knowledge-doc-actions mb-8px grid grid-cols-2 gap-4px rounded-10px bg-[var(--color-fill-2)] p-3px'>
                   <button
                     type='button'
                     className='knowledge-doc-action inline-flex min-w-0 appearance-none items-center justify-center gap-4px rounded-8px border-none bg-transparent px-6px py-7px font-[inherit] text-11px font-500 text-[var(--color-text-2)] cursor-pointer transition-colors hover:bg-[var(--color-fill-3)] hover:text-[var(--color-text-1)] focus-visible:outline-none focus-visible:bg-[var(--color-fill-3)] focus-visible:text-[var(--color-text-1)]'
@@ -979,14 +1052,36 @@ const KnowledgeDetailPage: React.FC = () => {
                   </button>
                   <button
                     type='button'
-                    className='knowledge-doc-action inline-flex min-w-0 appearance-none items-center justify-center gap-4px rounded-8px border-none bg-transparent px-6px py-7px font-[inherit] text-11px font-500 text-[var(--color-text-2)] cursor-pointer transition-colors hover:bg-[var(--color-fill-3)] hover:text-[var(--color-text-1)] focus-visible:outline-none focus-visible:bg-[var(--color-fill-3)] focus-visible:text-[var(--color-text-1)]'
-                    onClick={() => Message.info(t('knowledge.detail.docs.uploadTodo', { defaultValue: '上传功能开发中' }))}
+                    disabled={uploading}
+                    className='knowledge-doc-action inline-flex min-w-0 appearance-none items-center justify-center gap-4px rounded-8px border-none bg-transparent px-6px py-7px font-[inherit] text-11px font-500 text-[var(--color-text-2)] cursor-pointer transition-colors hover:bg-[var(--color-fill-3)] hover:text-[var(--color-text-1)] active:translate-y-px focus-visible:outline-none focus-visible:bg-[var(--color-fill-3)] focus-visible:text-[var(--color-text-1)] disabled:cursor-not-allowed disabled:opacity-60'
+                    onClick={openUploadModal}
                     title={t('knowledge.detail.docs.upload', { defaultValue: '上传' })}
                   >
                     <Upload theme='outline' size='12' className='shrink-0' />
-                    <span className='truncate'>{t('knowledge.detail.docs.upload', { defaultValue: '上传' })}</span>
+                    <span className='truncate'>
+                      {uploading
+                        ? t('knowledge.detail.docs.uploading', { defaultValue: '上传中…' })
+                        : t('knowledge.detail.docs.upload', { defaultValue: '上传' })}
+                    </span>
                   </button>
                 </div>
+
+                <input
+                  ref={markdownFileInputRef}
+                  type='file'
+                  accept='.md,text/markdown'
+                  multiple
+                  hidden
+                  onChange={handleUploadInputChange}
+                />
+                <input
+                  ref={markdownFolderInputRef}
+                  type='file'
+                  accept='.md,text/markdown'
+                  multiple
+                  hidden
+                  onChange={handleUploadInputChange}
+                />
 
                 {/* Search box */}
                 <div className='knowledge-doc-search flex items-center gap-7px rounded-8px bg-[var(--color-fill-2)] border border-solid border-[var(--color-border-3)] px-10px py-7px mb-8px'>
@@ -1071,12 +1166,6 @@ const KnowledgeDetailPage: React.FC = () => {
                                     >
                                       {item.is_dir && (
                                         <>
-                                          <Menu.Item key='new-file'>
-                                            <span className='inline-flex items-center gap-6px'>
-                                              <Plus theme='outline' size='13' />
-                                              {t('knowledge.detail.docs.newFile', { defaultValue: '新建文档' })}
-                                            </span>
-                                          </Menu.Item>
                                           <Menu.Item key='new-folder'>
                                             <span className='inline-flex items-center gap-6px'>
                                               <FolderPlus theme='outline' size='13' />
@@ -1129,8 +1218,8 @@ const KnowledgeDetailPage: React.FC = () => {
                   </div>
                 ) : (
                   <>
-                    {/* Toolbar: breadcrumb + toggle + save */}
-                    <div className='flex items-center justify-between gap-8px px-16px py-11px border-b border-solid border-[var(--color-border-2)]'>
+                    {/* Toolbar: breadcrumb */}
+                    <div className='box-border flex h-56px items-center gap-8px px-16px border-b border-solid border-[var(--color-border-2)]'>
                       {/* Breadcrumb */}
                       <div className='text-12px text-[var(--color-text-3)] truncate'>
                         {breadcrumbSegments.map((seg, idx) => (
@@ -1144,50 +1233,16 @@ const KnowledgeDetailPage: React.FC = () => {
                           </React.Fragment>
                         ))}
                       </div>
-                      {/* Right side controls */}
-                      <div className='flex items-center gap-10px shrink-0'>
-                        {/* Preview / Edit segmented toggle */}
-                        <div className='inline-flex bg-[var(--color-fill-2)] border border-solid border-[var(--color-border-3)] rd-8px p-2px'>
-                          <button
-                            className={classNames(
-                              'bg-transparent text-12px px-12px py-5px rd-6px cursor-pointer font-inherit transition-colors',
-                              !editMode
-                                ? `${knowledgeDetailSoftActiveClass} font-600`
-                                : knowledgeDetailSegmentIdleClass
-                            )}
-                            onClick={() => setEditMode(false)}
-                          >
-                            {t('knowledge.detail.docs.preview', { defaultValue: '预览' })}
-                          </button>
-                          <button
-                            className={classNames(
-                              'bg-transparent text-12px px-12px py-5px rd-6px cursor-pointer font-inherit transition-colors',
-                              editMode
-                                ? `${knowledgeDetailSoftActiveClass} font-600`
-                                : knowledgeDetailSegmentIdleClass
-                            )}
-                            onClick={startEdit}
-                          >
-                            {t('knowledge.detail.docs.edit', { defaultValue: '编辑' })}
-                          </button>
-                        </div>
-                        {/* Save button (visible when editing) */}
-                        {editMode && (
-                          <Button size='small' type='primary' loading={saving} onClick={() => void handleSave()}>
-                            {t('knowledge.actions.save')}
-                          </Button>
-                        )}
-                      </div>
                     </div>
                     {/* Content area */}
-                    <div className='flex-1 overflow-y-auto p-20px'>
+                    <div className='flex-1 min-h-0 overflow-y-auto p-20px [scrollbar-gutter:stable]'>
                       <Spin loading={fileLoading} className='w-full'>
                         {editMode ? (
                           <Input.TextArea
                             value={draft}
                             onChange={setDraft}
-                            autoSize={{ minRows: 18, maxRows: 40 }}
-                            className='font-mono text-13px'
+                            autoSize={{ minRows: 14, maxRows: 16 }}
+                            className='resize-none font-mono text-13px leading-20px [&_textarea]:resize-none'
                           />
                         ) : (
                           <Markdown>{content}</Markdown>
@@ -1199,27 +1254,47 @@ const KnowledgeDetailPage: React.FC = () => {
               </div>
             </div>
             {/* AI actions row (autogen / refresh source) */}
-            <div className='flex flex-wrap items-center gap-8px mt-12px'>
-              <Button
-                shape='round'
-                size='small'
-                loading={autogenLoading}
-                icon={<MagicHat theme='outline' size='14' />}
-                onClick={() => void handleAutogen()}
-              >
-                {t('knowledge.actions.aiGenerateOverview')}
-              </Button>
-              <KnowledgeModelSelector size='small' choice={modelChoice} onChange={(c) => void setModelChoice(c)} />
-              {source && (
+            <div className='flex flex-wrap items-center justify-between gap-10px mt-12px'>
+              <div className='flex flex-wrap items-center gap-8px'>
                 <Button
                   shape='round'
                   size='small'
-                  icon={<Refresh theme='outline' size='12' />}
-                  loading={refreshingSource}
-                  onClick={() => void handleRefreshSource()}
+                  loading={autogenLoading}
+                  icon={<MagicHat theme='outline' size='14' />}
+                  onClick={() => void handleAutogen()}
                 >
-                  {t('knowledge.source.refresh')}
+                  {t('knowledge.actions.aiGenerateOverview')}
                 </Button>
+                <KnowledgeModelSelector size='small' choice={modelChoice} onChange={(c) => void setModelChoice(c)} />
+                {source && (
+                  <Button
+                    shape='round'
+                    size='small'
+                    icon={<Refresh theme='outline' size='12' />}
+                    loading={refreshingSource}
+                    onClick={() => void handleRefreshSource()}
+                  >
+                    {t('knowledge.source.refresh')}
+                  </Button>
+                )}
+              </div>
+              {selectedPath != null && (
+                <div className='flex items-center justify-end gap-8px'>
+                  {editMode ? (
+                    <>
+                      <Button size='small' onClick={() => setEditMode(false)}>
+                        {t('knowledge.actions.cancel', { defaultValue: '取消' })}
+                      </Button>
+                      <Button size='small' type='primary' loading={saving} onClick={() => void handleSave()}>
+                        {t('knowledge.actions.save', { defaultValue: '保存' })}
+                      </Button>
+                    </>
+                  ) : (
+                    <Button size='small' icon={<EditTwo theme='outline' size='14' />} onClick={startEdit}>
+                      {t('knowledge.detail.docs.edit', { defaultValue: '编辑' })}
+                    </Button>
+                  )}
+                </div>
               )}
             </div>
           </Tabs.TabPane>
@@ -1392,20 +1467,101 @@ const KnowledgeDetailPage: React.FC = () => {
         </Tabs>
       </div>
 
-      {/* ─── New file modal (preserved) ────────────────────────────────────── */}
       <Modal
-        title={t('knowledge.newFile')}
-        visible={newFileVisible}
-        onOk={() => void handleCreateFile()}
-        onCancel={() => setNewFileVisible(false)}
+        title={t('knowledge.detail.docs.uploadTitle', { defaultValue: '导入 Markdown 文档' })}
+        visible={uploadModalVisible}
+        confirmLoading={uploading}
+        okText={t('knowledge.detail.docs.uploadConfirm', { defaultValue: '上传' })}
+        onOk={() => void handleUploadFiles(pendingUploadFiles, uploadTargetPath)}
+        okButtonProps={{ disabled: pendingUploadFiles.length === 0 }}
+        onCancel={() => {
+          if (uploading) return;
+          setUploadModalVisible(false);
+          clearPendingUpload();
+        }}
         autoFocus={false}
       >
-        <Input
-          placeholder={t('knowledge.newFilePlaceholder')}
-          value={newFilePath}
-          onChange={setNewFilePath}
-          onPressEnter={() => void handleCreateFile()}
-        />
+        <div className='flex flex-col gap-18px'>
+          <div className='flex flex-col gap-7px'>
+            <label className='text-13px font-600 text-[var(--color-text-1)]'>
+              {t('knowledge.detail.docs.uploadTargetLabel', { defaultValue: '知识库内的目标文件夹' })}
+            </label>
+            <Select
+              showSearch
+              value={uploadTargetPath}
+              onChange={(value) => setUploadTargetPath(String(value))}
+              prefix={<FolderOpen theme='outline' size='15' className='text-[var(--color-text-3)]' />}
+            >
+              <Select.Option value=''>
+                {t('knowledge.detail.docs.uploadTargetRoot', { defaultValue: '知识库根目录' })}
+              </Select.Option>
+              {uploadTargetFolders.map((folder) => (
+                <Select.Option key={folder} value={folder}>
+                  {folder}
+                </Select.Option>
+              ))}
+            </Select>
+          </div>
+
+          <div className='flex flex-col gap-8px border-0 border-t border-solid border-[var(--color-border-2)] pt-16px'>
+            <span className='text-13px font-600 text-[var(--color-text-1)]'>
+              {t('knowledge.detail.docs.uploadSourceLabel', { defaultValue: '选择来源' })}
+            </span>
+            <div className='grid grid-cols-2 gap-8px'>
+              <Button icon={<FileText theme='outline' size='15' />} onClick={() => openUploadPicker('files')}>
+                {t('knowledge.detail.docs.uploadFiles', { defaultValue: '选择 Markdown 文档' })}
+              </Button>
+              <Button icon={<FolderOpen theme='outline' size='15' />} onClick={() => openUploadPicker('folder')}>
+                {t('knowledge.detail.docs.uploadFolder', { defaultValue: '选择文件夹' })}
+              </Button>
+            </div>
+          </div>
+
+          {pendingUploadFiles.length > 0 && (
+            <div className='flex flex-col gap-8px rounded-8px bg-[var(--color-fill-2)] p-10px'>
+              <div className='flex items-center justify-between gap-8px'>
+                <span className='inline-flex min-w-0 items-center gap-6px text-12px font-600 text-[var(--color-text-1)]'>
+                  {pendingUploadSource === 'folder' ? (
+                    <FolderOpen theme='outline' size='14' className='shrink-0 text-[var(--color-text-2)]' />
+                  ) : (
+                    <FileText theme='outline' size='14' className='shrink-0 text-[var(--color-text-2)]' />
+                  )}
+                  {t('knowledge.detail.docs.uploadSelectionCount', {
+                    defaultValue: '已选择 {{n}} 篇 Markdown 文档',
+                    n: pendingUploadFiles.length,
+                  })}
+                </span>
+                <button
+                  type='button'
+                  className='grid h-24px w-24px shrink-0 place-items-center rounded-6px border-0 bg-transparent p-0 text-[var(--color-text-3)] cursor-pointer hover:bg-[var(--color-fill-3)] hover:text-[var(--color-text-1)] focus-visible:outline-none focus-visible:bg-[var(--color-fill-3)]'
+                  onClick={clearPendingUpload}
+                  title={t('knowledge.detail.docs.clearSelection', { defaultValue: '清除选择' })}
+                  aria-label={t('knowledge.detail.docs.clearSelection', { defaultValue: '清除选择' })}
+                >
+                  <Close theme='outline' size='14' />
+                </button>
+              </div>
+              <div className='flex flex-col gap-3px text-12px text-[var(--color-text-3)]'>
+                {pendingUploadFiles.slice(0, 3).map((file) => {
+                  const path = file.webkitRelativePath || file.name;
+                  return (
+                    <span key={`${path}-${file.size}`} className='truncate' title={path}>
+                      {path}
+                    </span>
+                  );
+                })}
+                {pendingUploadFiles.length > 3 && (
+                  <span>
+                    {t('knowledge.detail.docs.uploadMoreFiles', {
+                      defaultValue: '另有 {{n}} 篇文档',
+                      n: pendingUploadFiles.length - 3,
+                    })}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </Modal>
 
       <Modal
