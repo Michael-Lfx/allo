@@ -35,11 +35,11 @@
   margin: 0 2px;
   align-items: center;
   gap: 3px;
-  vertical-align: middle;
+  vertical-align: top;
   color: #2e82d2;
   font: inherit;
   font-weight: 500;
-  line-height: 1;
+  line-height: inherit;
   white-space: nowrap;
   user-select: all;
 }
