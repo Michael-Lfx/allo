@@ -8,6 +8,7 @@ import { buildAudioGenerationMetadata, buildVideoGenerationMetadata, generationR
 import { storeGeneratedAudio } from "@oc/services/api/audio";
 import { storeGeneratedVideo } from "@oc/services/api/video";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
+import { preserveAlloVimaxOnRegenerate } from "@renderer/pages/videoCanvas/lib/alloVimaxBridge";
 
 import type { CanvasGenerationExecution } from "./canvas-generation-executor-types";
 
@@ -57,6 +58,7 @@ export async function executeVideoGeneration({
             generateAudio: generationConfig.videoGenerateAudio,
             watermark: generationConfig.videoWatermark,
             references: generationReferenceUrls(generationContext),
+            ...preserveAlloVimaxOnRegenerate(sourceNode),
             ...videoGenerationMetadata,
         },
     };

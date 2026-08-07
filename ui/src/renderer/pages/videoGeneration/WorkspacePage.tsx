@@ -23,7 +23,7 @@ import {
   Spin,
   Tag,
 } from '@arco-design/web-react';
-import { ArrowLeft, Delete, Export, Eyes, FolderOpen, Play, Refresh, Share, VideoOne } from '@icon-park/react';
+import { ArrowLeft, Delete, Export, Eyes, FolderOpen, Play, Refresh, Share, VideoOne, Cube } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
@@ -46,6 +46,7 @@ import {
   planSession,
   publishSessionToTvShow,
   renderSession,
+  materializeSessionToCanvas,
   writeArtifactText,
 } from './api';
 import type { ArtifactContent, ArtifactNode, SessionStatus, VimaxSession, VimaxWorkflow } from './types';
@@ -130,6 +131,7 @@ const WorkspacePage: React.FC = () => {
   const [deleting, setDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [materializing, setMaterializing] = useState(false);
 
   const [runStatus, setRunStatus] = useState<SessionStatus | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactNode[]>([]);
@@ -856,6 +858,40 @@ const WorkspacePage: React.FC = () => {
     (runStatus?.status ?? session?.status) === 'succeeded' &&
     Boolean(runStatus?.final_video || session?.final_video) &&
     Boolean(runStatus?.cover || session?.cover);
+  const canOpenInCanvas =
+    !busy &&
+    !materializing &&
+    (hasStoryboard ||
+      Boolean(runStatus?.final_video || session?.final_video) ||
+      (runStatus?.status ?? session?.status) === 'succeeded');
+
+  const handleOpenInCanvas = useCallback(async () => {
+    if (!sessionId || materializing || busy) return;
+    setMaterializing(true);
+    try {
+      const result = await materializeSessionToCanvas(sessionId);
+      const warnText =
+        result.warnings?.length > 0
+          ? `（注意：${result.warnings.slice(0, 2).join('；')}${result.warnings.length > 2 ? '…' : ''}）`
+          : '';
+      message.success(
+        t('videoGeneration.actions.openInCanvasOk', {
+          defaultValue: '已打开到 Canvas：{{shots}} 镜 · {{media}} 个媒体',
+          shots: result.shot_count,
+          media: result.media_count,
+        }) + warnText
+      );
+      navigate(`/video-generation/canvas/${encodeURIComponent(result.project_id)}`);
+    } catch (e) {
+      message.error(
+        `${t('videoGeneration.actions.openInCanvasFailed', { defaultValue: '打开到 Canvas 失败' })}: ${
+          e instanceof Error ? e.message : String(e)
+        }`
+      );
+    } finally {
+      setMaterializing(false);
+    }
+  }, [busy, materializing, message, navigate, sessionId, t]);
 
   useEffect(() => {
     if (!hasStoryboard || storyboardVisibleTracked.current) return;
@@ -950,6 +986,18 @@ const WorkspacePage: React.FC = () => {
               <span className='inline-flex items-center gap-4px'>
                 <Refresh theme='outline' size={14} fill='currentColor' />
                 {t('videoGeneration.workspace.refresh', { defaultValue: '刷新' })}
+              </span>
+            </Button>
+            <Button
+              type='outline'
+              size='small'
+              loading={materializing}
+              disabled={!canOpenInCanvas}
+              onClick={() => void handleOpenInCanvas()}
+            >
+              <span className='inline-flex items-center gap-4px'>
+                <Cube theme='outline' size={14} fill='currentColor' />
+                {t('videoGeneration.actions.openInCanvas', { defaultValue: '打开到 Canvas' })}
               </span>
             </Button>
             <Button

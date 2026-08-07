@@ -163,6 +163,22 @@ impl VimaxService {
         self.index.artifact_abs_path(id, rel)
     }
 
+    /// Absolute session working directory (`.working_dir/<id>`).
+    pub fn working_dir(&self, id: &str) -> VimaxResult<PathBuf> {
+        self.index.working_dir(id)
+    }
+
+    /// Update `final_video` after an external edit (e.g. Canvas write-back).
+    pub fn set_final_video(
+        &self,
+        id: &str,
+        final_video: Option<String>,
+    ) -> VimaxResult<SessionRecord> {
+        self.index.update_fields(id, |record| {
+            record.final_video = final_video;
+        })
+    }
+
     /// List Cameo photos for a session (scrubs orphan entries).
     pub fn list_cameos(&self, id: &str) -> VimaxResult<Vec<CameoPhotoEntry>> {
         let working = self.index.working_dir(id)?;

@@ -13,6 +13,7 @@ import type { Skill } from "@oc/services/api/skills";
 import type { GenerationTask } from "@oc/services/api/task-center";
 import { useConfigStore, useEffectiveConfig } from "@oc/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@oc/types/canvas";
+import { enrichPromptWithVimaxVoiceGuards } from "@renderer/pages/videoCanvas/lib/alloVimaxBridge";
 
 import { executeImageGeneration } from "./canvas-image-generation-executor";
 import { executeAudioGeneration, executeVideoGeneration } from "./canvas-media-generation-executors";
@@ -143,7 +144,14 @@ export function useCanvasGenerationExecutor({
             }
 
             const expandedPrompt = expandSkillMentions(rawGenerationContext.prompt, addedSkills);
-            const effectivePrompt = expandedPrompt.trim();
+            let effectivePrompt = expandedPrompt.trim();
+            if (mode === "video") {
+                effectivePrompt = enrichPromptWithVimaxVoiceGuards(
+                    effectivePrompt,
+                    sourceNode,
+                    nodesRef.current,
+                );
+            }
             const generationContext = { ...rawGenerationContext, prompt: effectivePrompt };
             if (mode === "audio" && generationContext.characterReferences.length) {
                 if (generationContext.characterReferences.length !== 1) {

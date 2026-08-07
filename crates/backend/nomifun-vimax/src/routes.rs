@@ -76,6 +76,14 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
             "/api/vimax/sessions/{id}/tv-show/publish",
             post(publish_session_to_tv_show),
         )
+        .route(
+            "/api/vimax/sessions/{id}/materialize-to-canvas",
+            post(materialize_to_canvas),
+        )
+        .route(
+            "/api/vimax/sessions/{id}/sync-from-canvas",
+            post(sync_from_canvas),
+        )
         .route("/api/vimax/tv-show/list", get(tv_show_list))
         .route("/api/vimax/tv-show/mine", get(tv_show_mine))
         .route(
@@ -454,6 +462,33 @@ async fn export_session(
     Ok(Json(ApiResponse::ok(json!({
         "dest_path": path.to_string_lossy(),
     }))))
+}
+
+async fn materialize_to_canvas(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::materialize::MaterializeToCanvasResult>>, AppError> {
+    let result =
+        crate::materialize::materialize_session_to_canvas(&state.service, &state.canvas, &id)
+            .await?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+async fn sync_from_canvas(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<crate::materialize::SyncFromCanvasRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<crate::materialize::SyncFromCanvasResult>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    if req.project_id.trim().is_empty() {
+        return Err(AppError::BadRequest("project_id is required".into()));
+    }
+    let result =
+        crate::materialize::sync_canvas_shots_to_session(&state.service, &state.canvas, &id, req)
+            .await?;
+    Ok(Json(ApiResponse::ok(result)))
 }
 
 #[derive(Deserialize)]

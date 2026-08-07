@@ -326,7 +326,10 @@ fn is_path_safe_ideograph(c: char) -> bool {
 
 /// Workflow root that owns the shared cast + portrait registry.
 /// Scene dirs climb to the parent idea/novel/script working directory.
-pub(crate) fn resolve_film_root(working_dir: &Path) -> std::path::PathBuf {
+/// Workflow root that owns the shared cast + portrait registry.
+///
+/// Scene dirs climb to the parent idea/novel/script working directory.
+pub fn resolve_film_root(working_dir: &Path) -> std::path::PathBuf {
     let mut best = working_dir.to_path_buf();
     let mut cur = working_dir.to_path_buf();
     for _ in 0..8 {

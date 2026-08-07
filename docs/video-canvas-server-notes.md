@@ -78,5 +78,6 @@ Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Agent / nomi-vi
 
 - Agent：`/video-generation`
 - Canvas（DEV）：`/video-generation/canvas`、`/video-generation/canvas/:id`
+- **互通**：Agent 工作区「打开到 Canvas」→ `POST /api/vimax/sessions/{id}/materialize-to-canvas`（见 [agent-canvas-interop.md](./agent-canvas-interop.md)）
 
 Canvas 编辑器为 **open-ai-canvas 完整 UX 移植**（Leafer 无限画布、节点面板、工具栏、连线），源码在 `ui/src/renderer/pages/videoCanvas/oc/`，经 `@oc/*` 别名接入。云端生成 / 媒体走本机 `/api/video-canvas`；影策原 Go 后端的积分、分享、领域项目等为本地 stub。
