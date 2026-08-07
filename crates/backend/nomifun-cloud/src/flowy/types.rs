@@ -349,7 +349,7 @@ pub struct ClawModelEntry {
 
 /// Capability payload inside `ClawModelEntry.extra` (JSON string from model_dev).
 ///
-/// Example: `{"input":["text","image"],"reasoning":false,"tools":true,"context_window":128000,"credit_rate":1}`
+/// Example: `{"input":["text","image"],"reasoning":false,"tools":true,"context_window":128000,"max_tokens":8192,"credit_rate":1}`
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ClawModelExtra {
     #[serde(default)]
@@ -360,6 +360,9 @@ pub struct ClawModelExtra {
     pub tools: bool,
     #[serde(default)]
     pub context_window: Option<u64>,
+    /// Maximum output tokens accepted by this cloud model.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     #[serde(default)]
     pub credit_rate: Option<f64>,
 }
@@ -393,6 +396,11 @@ impl ClawModelExtra {
     /// Positive context window when present; `0` / missing → `None`.
     pub fn context_window_tokens(&self) -> Option<u64> {
         self.context_window.filter(|v| *v > 0)
+    }
+
+    /// Positive output limit when present; `0` / missing → `None`.
+    pub fn max_output_tokens(&self) -> Option<u32> {
+        self.max_tokens.filter(|v| *v > 0)
     }
 }
 
@@ -502,12 +510,13 @@ mod plan_label_tests {
     #[test]
     fn claw_model_extra_parses_model_dev_fields() {
         let extra = ClawModelExtra::parse(
-            r#"{"input":["text","image"],"reasoning":false,"tools":true,"context_window":128000,"credit_rate":1}"#,
+            r#"{"input":["text","image"],"reasoning":false,"tools":true,"context_window":128000,"max_tokens":8192,"credit_rate":1}"#,
         );
         assert_eq!(extra.input, vec!["text", "image"]);
         assert!(!extra.reasoning);
         assert!(extra.tools);
         assert_eq!(extra.context_window_tokens(), Some(128_000));
+        assert_eq!(extra.max_output_tokens(), Some(8192));
         assert_eq!(extra.credit_rate, Some(1.0));
         assert!(extra.supports_vision());
         assert!(!extra.supports_audio());
@@ -516,8 +525,13 @@ mod plan_label_tests {
     #[test]
     fn claw_model_extra_treats_zero_or_empty_as_unset() {
         assert_eq!(ClawModelExtra::parse("").context_window_tokens(), None);
+        assert_eq!(ClawModelExtra::parse("").max_output_tokens(), None);
         assert_eq!(
             ClawModelExtra::parse(r#"{"context_window":0}"#).context_window_tokens(),
+            None
+        );
+        assert_eq!(
+            ClawModelExtra::parse(r#"{"max_tokens":0}"#).max_output_tokens(),
             None
         );
         assert_eq!(ClawModelExtra::parse("not-json").context_window_tokens(), None);

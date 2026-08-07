@@ -7,7 +7,7 @@
 //! when callers ignored soft errors, and previously also re-injected a config
 //! default that the server no longer lists.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use nomifun_api_types::derive_tasks_and_traits;
@@ -51,13 +51,16 @@ pub async fn sync_flowy_builtin_provider(
     // so a blip cannot silently leave callers believing a soft-failed sync
     // "updated" anything — and so we never invent a fake one-model catalog
     // that masks the real failure mode (stale DB until the next success).
-    let (catalog_fields, catalog_synced) = match fetch_chat_models(server, &session, data_dir).await {
-        Ok(entries) => (Some(build_model_fields(&entries, server)), true),
+    let (catalog_entries, catalog_fields, catalog_synced) = match fetch_chat_models(server, &session, data_dir).await {
+        Ok(entries) => {
+            let fields = build_model_fields(&entries, server);
+            (Some(entries), Some(fields), true)
+        }
         Err(e) => {
             warn!(
                 "Failed to fetch Flowy chat model catalog: {e}; keeping existing local model list"
             );
-            (None, false)
+            (None, None, false)
         }
     };
 
@@ -78,11 +81,11 @@ pub async fn sync_flowy_builtin_provider(
         .as_ref()
         .map(|fields| fields.context_limits_json.as_str());
 
-    let profile_seeds = if catalog_synced {
-        build_profile_seeds(&profile_fields.model_ids, "openai")?
-    } else {
-        Vec::new()
-    };
+    let profile_seeds = catalog_entries
+        .as_deref()
+        .map(|entries| build_profile_seeds(entries, "openai"))
+        .transpose()?
+        .unwrap_or_default();
     let provider_exists = provider_repo
         .find_by_id(FLOWY_BUILTIN_PROVIDER_ID)
         .await
@@ -171,23 +174,29 @@ pub async fn sync_flowy_builtin_provider(
 }
 
 fn build_profile_seeds(
-    catalog_models: &[String],
+    entries: &[ClawModelEntry],
     platform: &str,
 ) -> Result<Vec<ProviderModelProfileSeed>, String> {
-    catalog_models
-        .iter()
-        .filter(|model| !model.trim().is_empty())
-        .map(|model| {
-            let (tasks, traits) = derive_tasks_and_traits(platform, model);
-            Ok(ProviderModelProfileSeed {
-                model: model.clone(),
-                tasks: serde_json::to_string(&tasks)
-                    .map_err(|error| format!("serialize Flowy model tasks: {error}"))?,
-                traits: serde_json::to_string(&traits)
-                    .map_err(|error| format!("serialize Flowy model traits: {error}"))?,
-            })
-        })
-        .collect()
+    let mut seen = HashSet::new();
+    let mut profiles = Vec::new();
+
+    for entry in entries {
+        let model = entry.api_model_id();
+        if model.trim().is_empty() || !seen.insert(model.clone()) {
+            continue;
+        }
+        let (tasks, traits) = derive_tasks_and_traits(platform, &model);
+        profiles.push(ProviderModelProfileSeed {
+            model,
+            tasks: serde_json::to_string(&tasks)
+                .map_err(|error| format!("serialize Flowy model tasks: {error}"))?,
+            traits: serde_json::to_string(&traits)
+                .map_err(|error| format!("serialize Flowy model traits: {error}"))?,
+            catalog_max_tokens: entry.model_extra().max_output_tokens(),
+        });
+    }
+
+    Ok(profiles)
 }
 
 async fn fetch_chat_models(
@@ -201,6 +210,13 @@ async fn fetch_chat_models(
         .get_available_models_claw(session, None)
         .await
         .map_err(|e| e.to_string())?;
+    for entry in &resp.cloud {
+        info!(
+            model = %entry.api_model_id(),
+            max_tokens = ?entry.model_extra().max_output_tokens(),
+            "Flowy cloud catalog model output limit"
+        );
+    }
     Ok(resp.cloud)
 }
 
@@ -304,8 +320,20 @@ mod tests {
 
     use nomifun_db::{
         CreateProviderParams, ProviderModelUpdate, SqliteProviderModelRepository,
-        SqliteProviderRepository,
+        SqliteProviderRepository, FLOWY_CATALOG_MAX_TOKENS_PARAM,
     };
+
+    fn catalog_entry(id: &str, extra: &str) -> ClawModelEntry {
+        ClawModelEntry {
+            id: id.into(),
+            name: id.into(),
+            extra: extra.into(),
+            endpoint: String::new(),
+            anthropic_endpoint: String::new(),
+            icon: String::new(),
+            category: 1,
+        }
+    }
 
     #[test]
     fn promote_default_model_reorders_when_present() {
@@ -419,6 +447,24 @@ mod tests {
         assert!(!limits.contains_key("AIPC-no-extra"));
     }
 
+    #[test]
+    fn build_profile_seeds_projects_catalog_max_tokens() {
+        let entries = vec![
+            catalog_entry("AIPC-gpt-4o", r#"{"max_tokens":4096}"#),
+            // Duplicate catalog ids do not create duplicate profile rows; the
+            // first server entry remains authoritative for the sync.
+            catalog_entry("AIPC-gpt-4o", r#"{"max_tokens":8192}"#),
+            catalog_entry("AIPC-no-output-limit", r#"{"max_tokens":0}"#),
+        ];
+
+        let seeds = build_profile_seeds(&entries, "openai").unwrap();
+        assert_eq!(seeds.len(), 2);
+        assert_eq!(seeds[0].model, "AIPC-gpt-4o");
+        assert_eq!(seeds[0].catalog_max_tokens, Some(4096));
+        assert_eq!(seeds[1].model, "AIPC-no-output-limit");
+        assert_eq!(seeds[1].catalog_max_tokens, None);
+    }
+
     #[tokio::test]
     async fn cloud_sync_backfills_chat_profiles_without_overwriting_user_edits() {
         let database = nomifun_db::init_database_memory().await.unwrap();
@@ -446,7 +492,11 @@ mod tests {
             .await
             .unwrap();
 
-        let seeds = build_profile_seeds(&["gpt-4o".to_string()], "openai").unwrap();
+        let seeds = build_profile_seeds(
+            &[catalog_entry("gpt-4o", r#"{"max_tokens":4096}"#)],
+            "openai",
+        )
+        .unwrap();
         provider_repo
             .update_with_model_profiles(
                 FLOWY_BUILTIN_PROVIDER_ID,
@@ -463,10 +513,18 @@ mod tests {
             .unwrap();
         assert_eq!(row.tasks, r#"["chat"]"#);
         assert_eq!(row.source, "inferred");
+        let params: serde_json::Value = serde_json::from_str(&row.params).unwrap();
+        assert_eq!(
+            params
+                .get(FLOWY_CATALOG_MAX_TOKENS_PARAM)
+                .and_then(serde_json::Value::as_u64),
+            Some(4096)
+        );
 
         let user_tasks = r#"["image_generation"]"#;
         let user_traits = "[]";
         let user_source = "user";
+        let user_params = r#"{"temperature":0.2,"_flowy_catalog_max_tokens":4096}"#;
         provider_model_repo
             .update(
                 FLOWY_BUILTIN_PROVIDER_ID,
@@ -475,17 +533,23 @@ mod tests {
                     tasks: Some(user_tasks),
                     traits: Some(user_traits),
                     source: Some(user_source),
+                    params: Some(user_params),
                     ..Default::default()
                 },
             )
             .await
             .unwrap();
 
+        let updated_seeds = build_profile_seeds(
+            &[catalog_entry("gpt-4o", r#"{"max_tokens":2048}"#)],
+            "openai",
+        )
+        .unwrap();
         provider_repo
             .update_with_model_profiles(
                 FLOWY_BUILTIN_PROVIDER_ID,
                 UpdateProviderParams::default(),
-                &seeds,
+                &updated_seeds,
                 provider_model_repo.as_ref(),
             )
             .await
@@ -497,5 +561,35 @@ mod tests {
             .unwrap();
         assert_eq!(user_row.tasks, user_tasks);
         assert_eq!(user_row.source, user_source);
+        let params: serde_json::Value = serde_json::from_str(&user_row.params).unwrap();
+        assert_eq!(params.get("temperature"), Some(&serde_json::json!(0.2)));
+        assert_eq!(
+            params
+                .get(FLOWY_CATALOG_MAX_TOKENS_PARAM)
+                .and_then(serde_json::Value::as_u64),
+            Some(2048)
+        );
+
+        let no_limit_seeds =
+            build_profile_seeds(&[catalog_entry("gpt-4o", "{}")], "openai").unwrap();
+        provider_repo
+            .update_with_model_profiles(
+                FLOWY_BUILTIN_PROVIDER_ID,
+                UpdateProviderParams::default(),
+                &no_limit_seeds,
+                provider_model_repo.as_ref(),
+            )
+            .await
+            .unwrap();
+        let user_row = provider_model_repo
+            .get(FLOWY_BUILTIN_PROVIDER_ID, "gpt-4o")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(user_row.tasks, user_tasks);
+        assert_eq!(user_row.source, user_source);
+        let params: serde_json::Value = serde_json::from_str(&user_row.params).unwrap();
+        assert_eq!(params.get("temperature"), Some(&serde_json::json!(0.2)));
+        assert!(params.get(FLOWY_CATALOG_MAX_TOKENS_PARAM).is_none());
     }
 }

@@ -10,7 +10,9 @@ use nomi_providers::{LlmProvider, ProviderError, create_provider};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role};
 use nomifun_common::{AppError, ProviderId};
-use nomifun_db::{IProviderModelRepository, IProviderRepository};
+use nomifun_db::{
+    FLOWY_CATALOG_MAX_TOKENS_PARAM, IProviderModelRepository, IProviderRepository,
+};
 
 use crate::types::NomiCompatOverrides;
 
@@ -40,6 +42,9 @@ pub(crate) struct ResolvedProviderFields {
     pub compat_overrides: NomiCompatOverrides,
     pub bedrock_config: Option<nomi_config::config::BedrockConfig>,
     pub context_limit: Option<i64>,
+    /// Server-authoritative output limit from the Flowy cloud catalog. Only
+    /// populated for the built-in Flowy provider.
+    pub model_max_tokens: Option<u32>,
     /// Raw provider row platform name (the models.dev catalog key — NOT the
     /// mapped nomi provider name). Carried so callers can do further catalog
     /// lookups (e.g. MoA slot pricing) without reloading the row.
@@ -51,7 +56,8 @@ pub(crate) struct ResolvedProviderFields {
 /// per-model protocol override comes from the model's `provider_models` row
 /// (absent row → no override). Context window is resolved as: explicit
 /// `provider_models.context_limit` → models.dev catalog → unset (128k default
-/// applied later by compact budget fitting).
+/// applied later by compact budget fitting). Flowy cloud catalog output limits
+/// are read from the catalog-owned `provider_models.params` key only.
 ///
 /// This is the shared extraction used by both the full `resolve_provider_config`
 /// (which also calls `Config::resolve`) and the nomi factory `build()` (which
@@ -77,6 +83,9 @@ pub(crate) async fn resolve_provider_fields(
 
     let protocol = model_row.as_ref().and_then(|m| m.protocol.as_deref());
     let provider = map_nomi_provider(&row.platform, protocol);
+    let model_max_tokens = model_row
+        .as_ref()
+        .and_then(|model_row| flowy_catalog_max_tokens(provider_id, &model_row.params));
 
     let (base_url, mut compat_overrides) =
         resolve_nomi_url_and_compat(&row.platform, &row.base_url, &provider, row.is_full_url);
@@ -102,7 +111,7 @@ pub(crate) async fn resolve_provider_fields(
     // 1. explicit per-model override on provider_models.context_limit
     // 2. models.dev catalog for mapped public platforms
     // 3. None → CompactConfig default (128k) at apply_provider_context_budget
-    let user_context = model_row.and_then(|m| m.context_limit);
+    let user_context = model_row.as_ref().and_then(|m| m.context_limit);
     let catalog_context = catalog_context_window(&row.platform, model);
 
     Ok(ResolvedProviderFields {
@@ -113,8 +122,25 @@ pub(crate) async fn resolve_provider_fields(
         compat_overrides,
         bedrock_config,
         context_limit: resolve_model_context_limit(user_context, catalog_context),
+        model_max_tokens,
         platform: row.platform.clone(),
     })
+}
+
+/// Read the cloud-catalog output limit only for Flowy's built-in provider.
+/// Invalid JSON, non-integers, zero, negative values, and values beyond `u32`
+/// are deliberately treated as absent so user-controlled model parameters
+/// cannot make runtime construction fail.
+fn flowy_catalog_max_tokens(provider_id: &str, params: &str) -> Option<u32> {
+    if provider_id != nomifun_common::FLOWY_BUILTIN_PROVIDER_ID {
+        return None;
+    }
+
+    let value = serde_json::from_str::<serde_json::Value>(params)
+        .ok()?
+        .get(FLOWY_CATALOG_MAX_TOKENS_PARAM)?
+        .as_u64()?;
+    u32::try_from(value).ok().filter(|value| *value > 0)
 }
 
 /// Prefer an explicit per-model override; otherwise take models.dev when known.
@@ -683,6 +709,27 @@ mod tests {
     fn resolve_model_context_limit_returns_none_without_sources() {
         assert_eq!(resolve_model_context_limit(None, None), None);
         assert_eq!(resolve_model_context_limit(Some(0), Some(0)), None);
+    }
+
+    #[test]
+    fn flowy_catalog_max_tokens_accepts_only_positive_u32() {
+        let flowy_provider = nomifun_common::FLOWY_BUILTIN_PROVIDER_ID;
+        let valid = r#"{"_flowy_catalog_max_tokens":8192}"#;
+        assert_eq!(flowy_catalog_max_tokens(flowy_provider, valid), Some(8192));
+
+        for params in [
+            "{}",
+            r#"{"_flowy_catalog_max_tokens":0}"#,
+            r#"{"_flowy_catalog_max_tokens":-1}"#,
+            r#"{"_flowy_catalog_max_tokens":1.5}"#,
+            r#"{"_flowy_catalog_max_tokens":"8192"}"#,
+            r#"{"_flowy_catalog_max_tokens":4294967296}"#,
+            "not-json",
+        ] {
+            assert_eq!(flowy_catalog_max_tokens(flowy_provider, params), None, "{params}");
+        }
+
+        assert_eq!(flowy_catalog_max_tokens("external-provider", valid), None);
     }
 
     #[test]

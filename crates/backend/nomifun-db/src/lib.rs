@@ -70,7 +70,8 @@ pub use repository::cron::{
 pub use repository::mcp_server::{CreateMcpServerParams, UpdateMcpServerParams};
 pub use repository::oauth_token::UpsertOAuthTokenParams;
 pub use repository::provider::{
-    CreateProviderParams, ProviderModelProfileSeed, UpdateProviderParams,
+    CreateProviderParams, FLOWY_CATALOG_MAX_TOKENS_PARAM, ProviderModelProfileSeed,
+    UpdateProviderParams,
 };
 pub use repository::remote_agent::{CreateRemoteAgentParams, UpdateRemoteAgentParams};
 pub use repository::{

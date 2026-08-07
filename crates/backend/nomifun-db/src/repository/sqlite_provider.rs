@@ -8,7 +8,7 @@ use crate::repository::{
     provider_preference_delete_action, IProviderRepository, ProviderPreferenceDeleteAction,
 };
 use crate::repository::provider::{
-    CreateProviderParams, ProviderModelProfileSeed, UpdateProviderParams,
+    CreateProviderParams, ProviderModelProfileSeed, UpdateProviderParams, merge_catalog_max_tokens,
 };
 
 const PROVIDER_HARD_BINDING_DELETE_CONFLICT: &str =
@@ -531,9 +531,9 @@ async fn sync_provider_models_tx(
 }
 
 /// Apply inferred capability profiles while the provider membership update is
-/// still inside the same SQLite transaction.  A catalog row is only enriched
-/// when it is still the untouched inferred shape (`tasks=[]`,
-/// `source=inferred`); user edits remain authoritative.
+/// still inside the same SQLite transaction. A catalog row only replaces
+/// capabilities when it is still the untouched inferred shape; catalog-owned
+/// parameter metadata is merged independently so user parameters survive.
 async fn sync_inferred_profiles_tx(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     provider_id: &str,
@@ -549,31 +549,62 @@ async fn sync_inferred_profiles_tx(
         .filter(|seed| !seed.model.trim().is_empty())
         .map(|seed| (seed.model.as_str(), seed))
         .collect::<HashMap<_, _>>();
-    let rows = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT model, tasks, source FROM provider_models WHERE provider_id = ?",
+    let rows = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT model, tasks, source, params FROM provider_models WHERE provider_id = ?",
     )
     .bind(provider_id)
     .fetch_all(&mut **transaction)
     .await?;
 
-    for (model, tasks, source) in rows {
-        if tasks.trim() != "[]" || source != "inferred" {
-            continue;
-        }
+    for (model, tasks, source, existing_params) in rows {
         let Some(seed) = seeds.get(model.as_str()) else {
             continue;
         };
-        sqlx::query(
-            "UPDATE provider_models SET tasks = ?, traits = ?, updated_at = ? \
-             WHERE provider_id = ? AND model = ?",
-        )
-        .bind(&seed.tasks)
-        .bind(&seed.traits)
-        .bind(now)
-        .bind(provider_id)
-        .bind(model)
-        .execute(&mut **transaction)
-        .await?;
+        let fill_inferred_profile = tasks.trim() == "[]" && source == "inferred";
+        let params = merge_catalog_max_tokens(&existing_params, seed.catalog_max_tokens);
+
+        match (fill_inferred_profile, params.as_deref()) {
+            (true, Some(params)) => {
+                sqlx::query(
+                    "UPDATE provider_models SET tasks = ?, traits = ?, params = ?, updated_at = ? \
+                     WHERE provider_id = ? AND model = ?",
+                )
+                .bind(&seed.tasks)
+                .bind(&seed.traits)
+                .bind(params)
+                .bind(now)
+                .bind(provider_id)
+                .bind(model)
+                .execute(&mut **transaction)
+                .await?;
+            }
+            (true, None) => {
+                sqlx::query(
+                    "UPDATE provider_models SET tasks = ?, traits = ?, updated_at = ? \
+                     WHERE provider_id = ? AND model = ?",
+                )
+                .bind(&seed.tasks)
+                .bind(&seed.traits)
+                .bind(now)
+                .bind(provider_id)
+                .bind(model)
+                .execute(&mut **transaction)
+                .await?;
+            }
+            (false, Some(params)) => {
+                sqlx::query(
+                    "UPDATE provider_models SET params = ?, updated_at = ? \
+                     WHERE provider_id = ? AND model = ?",
+                )
+                .bind(params)
+                .bind(now)
+                .bind(provider_id)
+                .bind(model)
+                .execute(&mut **transaction)
+                .await?;
+            }
+            (false, None) => {}
+        }
     }
 
     Ok(())
@@ -1043,6 +1074,7 @@ mod tests {
             model: "new-model".into(),
             tasks: r#"["chat"]"#.into(),
             traits: "[]".into(),
+            catalog_max_tokens: None,
         }];
         let result = repo
             .update_with_model_profiles(
@@ -1097,11 +1129,13 @@ mod tests {
                 model: "new-model-1".into(),
                 tasks: r#"["chat"]"#.into(),
                 traits: "[]".into(),
+                catalog_max_tokens: None,
             },
             ProviderModelProfileSeed {
                 model: "new-model-2".into(),
                 tasks: r#"["chat"]"#.into(),
                 traits: "[]".into(),
+                catalog_max_tokens: None,
             },
         ];
         let result = repo

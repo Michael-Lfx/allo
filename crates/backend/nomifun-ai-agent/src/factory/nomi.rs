@@ -67,6 +67,13 @@ fn persist_repaired_session(manager: &SessionManager, session: &Session) -> Resu
     Ok(())
 }
 
+/// The Flowy cloud catalog is authoritative when it provides a model output
+/// ceiling. All other providers (and uncataloged Flowy models) retain the
+/// session-level `extra.max_tokens` setting.
+fn resolve_nomi_max_tokens(catalog_max_tokens: Option<u32>, session_max_tokens: u32) -> u32 {
+    catalog_max_tokens.unwrap_or(session_max_tokens)
+}
+
 /// Sanitize a resumed transcript without losing an exact rewind boundary.
 ///
 /// The sanitizer removes messages but never reorders or inserts them. Splitting
@@ -693,13 +700,15 @@ pub(super) async fn build(
             },
         };
 
+    let max_tokens = resolve_nomi_max_tokens(fields.model_max_tokens, overrides.max_tokens);
+
     let config = NomiResolvedConfig {
         provider: fields.provider,
         api_key: fields.api_key,
         model: fields.model.clone(),
         base_url: fields.base_url,
         system_prompt: overrides.system_prompt,
-        max_tokens: overrides.max_tokens,
+        max_tokens,
         max_turns: overrides.max_turns,
         context_limit: fields.context_limit.map(|v| v as u64),
         compat_overrides: fields.compat_overrides,
@@ -1653,6 +1662,16 @@ fn gateway_mcp_to_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_nomi_max_tokens_prefers_catalog_limit() {
+        assert_eq!(resolve_nomi_max_tokens(Some(4096), 8192), 4096);
+    }
+
+    #[test]
+    fn resolve_nomi_max_tokens_falls_back_to_session_extra() {
+        assert_eq!(resolve_nomi_max_tokens(None, 8192), 8192);
+    }
 
     #[test]
     fn bool_pref_parse_matches_the_boot_time_reader_semantics() {

@@ -844,6 +844,18 @@ impl LlmProvider for OpenAIProvider {
                 sanitize_tool_schemas,
                 include_stream_usage,
             );
+            let max_tokens_field = self
+                .compat
+                .max_tokens_field
+                .as_deref()
+                .unwrap_or("max_tokens");
+            tracing::info!(
+                target: "nomi_providers",
+                model = %request.model,
+                max_tokens_field,
+                max_tokens = request.max_tokens,
+                "Sending OpenAI-compatible SSE request"
+            );
             tracing::debug!(target: "nomi_providers", body = %serde_json::to_string_pretty(&body).unwrap_or_default(), "outgoing request");
 
             match self

@@ -2,17 +2,61 @@ use crate::error::DbError;
 use crate::models::Provider;
 use crate::repository::provider_model::IProviderModelRepository;
 
+/// Reserved `provider_models.params` key for a server-authoritative Flowy
+/// catalog output limit. It is maintained during catalog sync and is not a
+/// user-authored model parameter.
+pub const FLOWY_CATALOG_MAX_TOKENS_PARAM: &str = "_flowy_catalog_max_tokens";
+
 /// Inferred capability data for a catalog model.
 ///
 /// Cloud catalog reconciliation uses this small owned value so the provider
 /// row and the model-profile rows can be committed by one repository
-/// operation.  User-authored profile rows are never represented here and are
-/// therefore never overwritten by catalog sync.
+/// operation. User-authored profile fields remain authoritative; catalog-owned
+/// metadata is merged through its reserved parameter key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderModelProfileSeed {
     pub model: String,
     pub tasks: String,
     pub traits: String,
+    /// Cloud catalog output limit. `None` removes the managed key while
+    /// preserving all other model parameters.
+    pub catalog_max_tokens: Option<u32>,
+}
+
+pub(crate) fn initial_catalog_params(max_tokens: Option<u32>) -> String {
+    match max_tokens {
+        Some(max_tokens) => serde_json::json!({ FLOWY_CATALOG_MAX_TOKENS_PARAM: max_tokens }).to_string(),
+        None => "{}".to_string(),
+    }
+}
+
+/// Merge catalog-owned output metadata into an existing user-extensible
+/// parameter object. Invalid/non-object JSON is left untouched rather than
+/// replacing user data during a background sync.
+pub(crate) fn merge_catalog_max_tokens(params: &str, max_tokens: Option<u32>) -> Option<String> {
+    let mut value: serde_json::Value = serde_json::from_str(params).ok()?;
+    let object = value.as_object_mut()?;
+    match max_tokens {
+        Some(max_tokens) => {
+            if object
+                .get(FLOWY_CATALOG_MAX_TOKENS_PARAM)
+                .and_then(serde_json::Value::as_u64)
+                == Some(u64::from(max_tokens))
+            {
+                return None;
+            }
+            object.insert(
+                FLOWY_CATALOG_MAX_TOKENS_PARAM.to_string(),
+                serde_json::json!(max_tokens),
+            );
+        }
+        None => {
+            if object.remove(FLOWY_CATALOG_MAX_TOKENS_PARAM).is_none() {
+                return None;
+            }
+        }
+    }
+    serde_json::to_string(&value).ok()
 }
 
 async fn reconcile_inferred_model_profiles(
@@ -39,6 +83,7 @@ async fn reconcile_inferred_model_profiles(
         if seed.model.trim().is_empty() || known.contains(seed.model.as_str()) {
             continue;
         }
+        let params = initial_catalog_params(seed.catalog_max_tokens);
         let inserted = model_repo
             .insert_if_absent(
                 provider_id,
@@ -48,7 +93,7 @@ async fn reconcile_inferred_model_profiles(
                     sort_order: next_sort,
                     tasks: &seed.tasks,
                     traits: &seed.traits,
-                    params: "{}",
+                    params: &params,
                     source: "inferred",
                     ..Default::default()
                 },
@@ -65,19 +110,22 @@ async fn reconcile_inferred_model_profiles(
         .map(|seed| (seed.model.as_str(), seed))
         .collect::<std::collections::HashMap<_, _>>();
     for row in model_repo.list_for_provider(provider_id).await? {
-        if row.tasks.trim() != "[]" || row.source != "inferred" {
-            continue;
-        }
         let Some(seed) = seeds.get(row.model.as_str()) else {
             continue;
         };
+        let fill_inferred_profile = row.tasks.trim() == "[]" && row.source == "inferred";
+        let params = merge_catalog_max_tokens(&row.params, seed.catalog_max_tokens);
+        if !fill_inferred_profile && params.is_none() {
+            continue;
+        }
         model_repo
             .update(
                 provider_id,
                 &row.model,
                 &crate::models::ProviderModelUpdate {
-                    tasks: Some(&seed.tasks),
-                    traits: Some(&seed.traits),
+                    tasks: fill_inferred_profile.then_some(seed.tasks.as_str()),
+                    traits: fill_inferred_profile.then_some(seed.traits.as_str()),
+                    params: params.as_deref(),
                     ..Default::default()
                 },
             )
