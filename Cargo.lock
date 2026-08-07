@@ -5386,6 +5386,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomi-agent-eval"
+version = "0.3.7"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "clap",
+ "nomi-agent-trace",
+ "nomi-redact",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "nomi-agent-trace"
+version = "0.3.7"
+dependencies = [
+ "chrono",
+ "nomi-redact",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "nomi-auxiliary"
 version = "0.3.7"
 dependencies = [
@@ -5850,6 +5883,7 @@ dependencies = [
  "image",
  "libc",
  "nomi-agent",
+ "nomi-agent-trace",
  "nomi-auxiliary",
  "nomi-browser",
  "nomi-config",

@@ -609,10 +609,42 @@ async fn pack_support_logs(
 ) -> Result<Json<ApiResponse<SupportLogsPackResponse>>, AppError> {
     let Json(request) = body.map_err(|error| AppError::BadRequest(error.to_string()))?;
     let info = crate::sysinfo::get_system_info();
+
+    let mut agent_trace_paths = Vec::new();
+    if let Some(conversation_id) = request
+        .conversation_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        let prefs = state
+            .client_pref_service
+            .get_preferences(Some(&["system.developerMode"]))
+            .await?;
+        let developer_mode = prefs
+            .get("system.developerMode")
+            .map(|value| match value {
+                serde_json::Value::Bool(enabled) => *enabled,
+                serde_json::Value::String(text) => {
+                    matches!(text.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes")
+                }
+                serde_json::Value::Number(number) => number.as_i64() == Some(1),
+                _ => false,
+            })
+            .unwrap_or(false);
+        if developer_mode {
+            agent_trace_paths = crate::support_logs::list_agent_trace_files_for_conversation(
+                &state.data_dir,
+                conversation_id,
+            )?;
+        }
+    }
+
     let packed = crate::support_logs::pack_support_logs_with_failed_sse(
         std::path::Path::new(&info.log_dir),
         &state.data_dir,
         request.turn_id.as_deref(),
+        &agent_trace_paths,
     )?;
     Ok(Json(ApiResponse::ok(packed)))
 }

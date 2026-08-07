@@ -18,6 +18,9 @@ pub const MAX_AGE_DAYS: u64 = 3;
 const FAILED_PROVIDER_SSE_DIRECTORY: &str = "diagnostics/failed-provider-sse";
 const MAX_FAILED_SSE_FILES: usize = 4;
 const MAX_FAILED_SSE_BYTES: u64 = 1024 * 1024;
+const AGENT_TRACES_DIRECTORY: &str = "diagnostics/agent-traces";
+const MAX_AGENT_TRACE_FILES: usize = 20;
+const MAX_AGENT_TRACE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 struct CandidateLog {
@@ -278,11 +281,13 @@ pub fn pack_support_logs(log_dir: &Path) -> Result<SupportLogsPackResponse, AppE
 }
 
 /// Pack application logs and, when the report names a failed turn, its bounded
-/// provider SSE capture. The ZIP uses Deflate compression for both inputs.
+/// provider SSE capture. Optionally include agent-turn JSON traces under
+/// `agent-traces/` in the ZIP. The ZIP uses Deflate compression for all inputs.
 pub fn pack_support_logs_with_failed_sse(
     log_dir: &Path,
     data_dir: &Path,
     turn_id: Option<&str>,
+    agent_trace_paths: &[PathBuf],
 ) -> Result<SupportLogsPackResponse, AppError> {
     pack_support_logs_inner(
         log_dir,
@@ -290,6 +295,7 @@ pub fn pack_support_logs_with_failed_sse(
         MAX_RAW_BYTES,
         MAX_AGE_DAYS,
         turn_id.map(|turn_id| (data_dir, turn_id)),
+        agent_trace_paths,
     )
 }
 
@@ -299,7 +305,94 @@ pub fn pack_support_logs_with_limits(
     max_raw_bytes: u64,
     max_age_days: u64,
 ) -> Result<SupportLogsPackResponse, AppError> {
-    pack_support_logs_inner(log_dir, now, max_raw_bytes, max_age_days, None)
+    pack_support_logs_inner(log_dir, now, max_raw_bytes, max_age_days, None, &[])
+}
+
+/// List on-disk agent-turn JSON files for a conversation under
+/// `{data_dir}/diagnostics/agent-traces/turns/{sanitize(conversation_id)}/`.
+///
+/// Newest-first by mtime, capped at [`MAX_AGENT_TRACE_FILES`] / [`MAX_AGENT_TRACE_BYTES`].
+pub fn list_agent_trace_files_for_conversation(
+    data_dir: &Path,
+    conversation_id: &str,
+) -> Result<Vec<PathBuf>, AppError> {
+    let safe = sanitize_path_segment(conversation_id);
+    let turns_dir = data_dir
+        .join(AGENT_TRACES_DIRECTORY)
+        .join("turns")
+        .join(safe);
+    if !turns_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut candidates = Vec::new();
+    let entries = std::fs::read_dir(&turns_dir).map_err(|error| {
+        AppError::Internal(format!(
+            "cannot read agent-traces dir '{}': {error}",
+            turns_dir.display()
+        ))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            AppError::Internal(format!("agent-traces dir entry: {error}"))
+        })?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".json") {
+            continue;
+        }
+        let meta = std::fs::metadata(&path).map_err(|error| {
+            AppError::Internal(format!(
+                "cannot stat agent-trace '{}': {error}",
+                path.display()
+            ))
+        })?;
+        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        candidates.push((path, meta.len(), modified));
+    }
+
+    candidates.sort_by(|a, b| b.2.cmp(&a.2));
+
+    let mut selected = Vec::new();
+    let mut total_bytes = 0u64;
+    for (path, size, _) in candidates {
+        if selected.len() >= MAX_AGENT_TRACE_FILES {
+            break;
+        }
+        if total_bytes.saturating_add(size) > MAX_AGENT_TRACE_BYTES && !selected.is_empty() {
+            break;
+        }
+        if size > MAX_AGENT_TRACE_BYTES && selected.is_empty() {
+            // Allow a single oversized file; packing will still redact it.
+            selected.push(path);
+            break;
+        }
+        if size > MAX_AGENT_TRACE_BYTES {
+            break;
+        }
+        total_bytes = total_bytes.saturating_add(size);
+        selected.push(path);
+    }
+    Ok(selected)
+}
+
+/// Keep only ASCII alphanumeric, `-`, and `_`. Empty → `"unknown"`.
+/// Mirrors `nomi_agent_trace::sanitize_path_segment` without taking that crate
+/// as a dependency of `nomifun-system`.
+fn sanitize_path_segment(raw: &str) -> String {
+    let filtered: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .take(128)
+        .collect();
+    if filtered.is_empty() {
+        "unknown".to_owned()
+    } else {
+        filtered
+    }
 }
 
 fn pack_support_logs_inner(
@@ -308,6 +401,7 @@ fn pack_support_logs_inner(
     max_raw_bytes: u64,
     max_age_days: u64,
     failed_sse_request: Option<(&Path, &str)>,
+    agent_trace_paths: &[PathBuf],
 ) -> Result<SupportLogsPackResponse, AppError> {
     let candidates = list_candidates(log_dir, now, max_age_days)?;
     let (selected, truncated) = select_files(candidates, max_raw_bytes);
@@ -316,9 +410,9 @@ fn pack_support_logs_inner(
         None => Vec::new(),
     };
 
-    if selected.is_empty() && failed_sse_captures.is_empty() {
+    if selected.is_empty() && failed_sse_captures.is_empty() && agent_trace_paths.is_empty() {
         return Err(AppError::BadRequest(
-            "no recent log files or matching failed provider SSE diagnostics found to upload".into(),
+            "no recent log files, matching failed provider SSE diagnostics, or agent traces found to upload".into(),
         ));
     }
 
@@ -370,6 +464,16 @@ fn pack_support_logs_inner(
             &capture.metadata_path,
         )?;
         included_files.push(metadata_entry_name);
+    }
+
+    for path in agent_trace_paths {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("trace.json");
+        let entry_name = format!("agent-traces/{file_name}");
+        write_redacted_file_entry(&mut zip, options, &entry_name, path)?;
+        included_files.push(entry_name);
     }
 
     zip.finish().map_err(|e| {
@@ -530,6 +634,7 @@ mod tests {
             log_dir.path(),
             data_dir.path(),
             Some("turn-feedback"),
+            &[],
         )
         .unwrap();
         assert_eq!(

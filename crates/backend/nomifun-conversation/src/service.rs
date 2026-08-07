@@ -1214,6 +1214,10 @@ pub struct ConversationService {
     /// registry has been reaped; `None` (default / tests / hosts without the
     /// lock) keeps every restart-orphan seam fail-closed exactly as before.
     terminal_proof_provider: Arc<RwLock<Option<Arc<dyn TurnTerminalProofProvider>>>>,
+    /// Developer-mode agent turn trace hub (same post-construction slot
+    /// pattern as `cron_service`). Wired by `nomifun-app`; `None` in tests
+    /// and hosts that do not record traces.
+    agent_trace_hub: Arc<RwLock<Option<Arc<nomifun_ai_agent::AgentTraceHub>>>>,
 }
 
 // ── Construction & Dependency Injection ──────────────────────────────
@@ -2441,6 +2445,7 @@ impl ConversationService {
             session_lifecycle: Arc::new(RwLock::new(None)),
             execution_conversation_boundary,
             terminal_proof_provider: Arc::new(RwLock::new(None)),
+            agent_trace_hub: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -2456,6 +2461,12 @@ impl ConversationService {
     pub fn with_cron_service(&self, cron_service: Option<Arc<dyn ICronService>>) {
         if let Ok(mut guard) = self.cron_service.write() {
             *guard = cron_service;
+        }
+    }
+
+    pub fn with_agent_trace_hub(&self, hub: Arc<nomifun_ai_agent::AgentTraceHub>) {
+        if let Ok(mut guard) = self.agent_trace_hub.write() {
+            *guard = Some(hub);
         }
     }
 
@@ -9393,6 +9404,24 @@ impl ConversationService {
                 }
 
                 let rx = agent.subscribe();
+                if let Some(hub) = service.current_agent_trace_hub() {
+                    let trace_rx = agent.subscribe();
+                    nomifun_ai_agent::TurnTraceCollector::spawn(
+                        hub,
+                        trace_rx,
+                        nomifun_ai_agent::TurnTraceContext {
+                            conversation_id: conv_id.clone(),
+                            msg_id: turn_msg_id.clone(),
+                            root_turn_id: stable_turn_id.clone(),
+                            origin: origin.clone(),
+                            companion,
+                            channel_platform: channel_platform.clone(),
+                            provider: None,
+                            model: None,
+                            session_dialogue_only: true,
+                        },
+                    );
+                }
                 let send_agent = agent.clone();
                 let conv_id_send = conv_id.clone();
                 let send_cancellation = turn_token.clone();
@@ -13470,6 +13499,13 @@ impl ConversationService {
 
     fn current_cron_service(&self) -> Option<Arc<dyn ICronService>> {
         match self.cron_service.read() {
+            Ok(guard) => guard.as_ref().map(Arc::clone),
+            Err(_) => None,
+        }
+    }
+
+    fn current_agent_trace_hub(&self) -> Option<Arc<nomifun_ai_agent::AgentTraceHub>> {
+        match self.agent_trace_hub.read() {
             Ok(guard) => guard.as_ref().map(Arc::clone),
             Err(_) => None,
         }

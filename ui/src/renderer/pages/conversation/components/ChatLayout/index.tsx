@@ -7,6 +7,7 @@ import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
 import ChatTitleEditor from '@/renderer/pages/conversation/components/ChatTitleEditor';
+import AgentTraceInspector from '@/renderer/pages/conversation/components/AgentTraceInspector';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { SummonHeaderBadge } from '@/renderer/pages/conversation/components/SummonPanel';
 import MobileWorkspaceOverlay from './MobileWorkspaceOverlay';
@@ -309,6 +310,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
             {/* 召唤伙伴徽标（设计 B5）：仅已召唤会话渲染，被动展示伙伴名。 */}
             <SummonHeaderBadge conversationId={conversation_id} />
             <KnowledgeControl target={{ kind: 'conversation', id: conversation_id }} />
+            <AgentTraceInspector conversationId={conversation_id} />
           </>
         )}
         {props.headerExtra}
