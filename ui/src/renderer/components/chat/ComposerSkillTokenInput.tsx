@@ -724,7 +724,7 @@ const ComposerSkillTokenInput = forwardRef<ComposerSkillTokenInputHandle, Compos
               title={node.skill.name}
             >
               <span className={styles.skillIcon} aria-hidden='true'>
-                <Cube theme='outline' size={18} fill='currentColor' />
+                <Cube theme='outline' size={16} fill='currentColor' />
               </span>
               <span className={styles.skillName}>{node.skill.name}</span>
             </span>
