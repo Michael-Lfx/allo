@@ -40,33 +40,22 @@ V5.2 已落地在分支 `fix/conversation-error-edit`，目标是把编辑重提
 当前未完成的不是自动化实现，而是人工验收：需要真实长会话、目标不在最新 200 条、truncate
 后错误、同 key replay/in-flight replay、post-truncate 草稿/附件保留、requires-reset 显式重置和
 barrier 最终退休。若下一 agent 继续，先运行第 5 节命令并检查 `git status`/远端 HEAD；不要
-reset、清理或覆盖已有脏改动。Windows cold-runtime `拒绝访问 (os error 5)` 仍是独立环境阻塞。
+reset、清理或覆盖已有脏改动。Windows cold-runtime `拒绝访问 (os error 5)` 在本轮未复现，原阻塞测试已通过。
 
-### 执行停点与 resume point
+### 执行完成记录（2026-08-08）
 
-- 实现文件和本 README 已在 `fix/conversation-error-edit` 工作树中，当前代码基线仍为
-  `70e4754a`；本轮改动尚未提交。最后一次 `git status` 只有本轮 14 个预期文件 modified，
-  没有未跟踪构建产物。
-- 本轮验证已完成，但当前 Codex 工具额度耗尽，平台拒绝写入 `.git/index`，因此暂未完成
-  `git add/commit/fetch/rebase/push`。这不是代码验证失败，也不是孤立 `index.lock`；下一 agent
-  必须从暂存开始，不要重做实现。
-- 下一步命令（先重新确认远端，不要相信旧的 `origin/main` SHA）：
-
-  ```bash
-  git status --short --branch
-  git diff --check
-  git add -- crates/backend/nomifun-api-types/src/conversation.rs crates/backend/nomifun-conversation/src/routes.rs crates/backend/nomifun-conversation/src/service.rs crates/backend/nomifun-conversation/src/service_test.rs docs/conversation-messages/README.md ui/src/common/adapter/ipcBridge.conversation-send-wire.test.ts ui/src/common/adapter/ipcBridge.ts ui/src/renderer/pages/conversation/Messages/editResubmitState.test.ts ui/src/renderer/pages/conversation/platforms/nomi/NomiSendBox.tsx ui/src/renderer/pages/conversation/platforms/nomi/editResubmitRecovery.test.ts ui/src/renderer/pages/conversation/platforms/nomi/editResubmitRecovery.ts ui/src/renderer/services/i18n/i18n-keys.d.ts ui/src/renderer/services/i18n/locales/en-US/conversation.json ui/src/renderer/services/i18n/locales/zh-CN/conversation.json
-  git diff --cached --check
-  git commit -m "fix(conversation): stop ambiguous edit recovery loops"
-  git fetch origin
-  git branch backup/fix-conversation-error-edit-before-rebase-20260807 HEAD
-  git rebase origin/main
-  git push --force-with-lease origin fix/conversation-error-edit
-  git ls-remote origin refs/heads/fix/conversation-error-edit
-  ```
-
-  Rebase 冲突时只检查 edit-resubmit 相关文件并保留本轮契约；推送后把最终 commit SHA、
-  backup branch、`origin/main` 基线和 `ls-remote` 结果补回本节。
+- V5.2 已落地：最终提交 `be8168d8`（`fix(conversation): stop ambiguous edit recovery loops`，
+  14 个文件 / +444 -189），rebase 基线 `origin/main` = `31638c21`，分支现有 4 个提交
+  （`4f7d7ac0` → `4eca2527` → `d07ba556` → `be8168d8`）。
+- 备份分支：`backup/fix-conversation-error-edit-before-rebase-20260807`（指向原 `70e4754a`）。
+- `ls-remote`：`fix/conversation-error-edit` → `be8168d87776dcb67b13122cf0da5d4aadf2de2c`，
+  `main` → `31638c212ebf16ad9a1557c4868704d7ecdfad5d`。
+- 验证：`git diff --check`、`cargo fmt --all -- --check`、`cargo check --workspace`、4 条
+  edit-resubmit 聚焦 Rust 测试（含原 Windows runtime-lock 测试，本次通过）、UI 定向 448 pass /
+  7 预存失败、i18n 检查、theme/icons/codemirror/process/browser/help 门禁与 UI build 全部通过。
+  typecheck 与 agent-vocabulary 失败均已在 `origin/main` 复现（videoCanvas `Blob` 类型、
+  `nomi-agent-eval` 文档注释），与本分支无关。
+- 剩余事项不变：真实 UI 人工验收清单见第 5 节；rebase 全程无冲突。
 
 ## 1. 文件地图
 
@@ -312,6 +301,7 @@ TurnDeliverablesCard、conversation.update merge_extra。
 
 ## 8. 变更历史
 
+- **2026-08-08 V5.2 落地收尾**：`fix/conversation-error-edit` rebase 到 `origin/main` `31638c21` 并推送，最终提交 `be8168d8`（备份分支 `backup/fix-conversation-error-edit-before-rebase-20260807`）。rebase 无冲突，V5.2 契约与远端 learning/trace/canvas 改动共存；聚焦验证通过，typecheck/agent-vocabulary 失败均为 `origin/main` 预存问题。
 - **2026-08-07 V5.2 review-hardening**：在既有 edit-resubmit state observation 上加入
   `requires_reset`，复用 accepted receipt fence + process-local durable guard 判定正常 in-flight
   与重启后遗留；前端 recovery 收敛为 `safe_failure/pending/mutated/requires_reset`，修复
