@@ -262,3 +262,61 @@ describe('edit submit mutex (P0-2 / P2-3)', () => {
     expect(enterEdit).toBeGreaterThan(inFlightGuard);
   });
 });
+describe('requires-reset fail-closed contract', () => {
+  test('handleEditResubmit guards requiresConversationReset before capture/arm', () => {
+    const nomiHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
+      nomiSendBoxSource.indexOf('// Steering injects into the turn')
+    );
+    const guard = nomiHandler.indexOf('if (requiresConversationReset) {');
+    const capture = nomiHandler.indexOf('captureBarrier(');
+    const arm = nomiHandler.indexOf('armBarrier(conversation_id, operationId, capture);');
+
+    expect(guard).toBeGreaterThan(-1);
+    // Correctness gate: no capture, no arm, no backend invoke while reset is required.
+    expect(capture).toBeGreaterThan(guard);
+    expect(arm).toBeGreaterThan(guard);
+    // The single-operation reset ref is gone; reset is conversation-wide.
+    expect(nomiSendBoxSource.includes('resetRequiredOperationRef')).toBe(false);
+  });
+
+  test('SendBox stays disabled while a conversation reset is required', () => {
+    expect(
+      nomiSendBoxSource.includes(
+        'disabled={requiresConversationReset || !current_model?.use_model || !modelSelection.isCurrentModelAvailable}'
+      )
+    ).toBe(true);
+  });
+
+  test('authoritative reset commits the coordinator generation before refresh', () => {
+    const resetHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleResetRequiredConversation = useCallback('),
+      nomiSendBoxSource.indexOf('const modelUnavailable =')
+    );
+    const commit = resetHandler.indexOf('commitAuthoritativeConversationReset(conversation_id);');
+    const resetState = resetHandler.indexOf('resetState();');
+    const resetExec = resetHandler.indexOf("resetActiveExecution('external-reset');");
+    const clearFlag = resetHandler.indexOf('setRequiresConversationReset(false);');
+    const historyRefresh = resetHandler.indexOf("emitter.emit('chat.history.refresh')");
+    const messagesRefresh = resetHandler.indexOf("emitter.emit('conversation.messages.refresh'");
+
+    expect(commit).toBeGreaterThan(-1);
+    expect(resetState).toBeGreaterThan(commit);
+    expect(resetExec).toBeGreaterThan(resetState);
+    expect(clearFlag).toBeGreaterThan(resetExec);
+    expect(historyRefresh).toBeGreaterThan(clearFlag);
+    expect(messagesRefresh).toBeGreaterThan(historyRefresh);
+  });
+
+  test('reset failure never optimistically clears the reset-required authority', () => {
+    const resetHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleResetRequiredConversation = useCallback('),
+      nomiSendBoxSource.indexOf('const modelUnavailable =')
+    );
+    const catchIndex = resetHandler.indexOf('} catch (error) {');
+    const failurePath = resetHandler.slice(catchIndex);
+    expect(catchIndex).toBeGreaterThan(-1);
+    expect(failurePath.includes('setRequiresConversationReset(false)')).toBe(false);
+    expect(failurePath.includes('commitAuthoritativeConversationReset')).toBe(false);
+  });
+});

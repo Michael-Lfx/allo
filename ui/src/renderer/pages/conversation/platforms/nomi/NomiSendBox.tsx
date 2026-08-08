@@ -38,6 +38,7 @@ import {
   armBarrier,
   beginEditResubmitReconciliation,
   captureBarrier,
+  commitAuthoritativeConversationReset,
   purgeCurrentRows,
   revokeBarrier,
 } from '@/renderer/pages/conversation/Messages/conversationMessageCoordinator';
@@ -186,19 +187,16 @@ const NomiSendBox: React.FC<{
   const mountedRef = useRef(false);
   const lifecycleGenerationRef = useRef(0);
   const confirmationWaitRef = useRef<(() => void) | null>(null);
-  const resetRequiredOperationRef = useRef<string | null>(null);
 
   useEffect(() => {
     const generation = lifecycleGenerationRef.current + 1;
     lifecycleGenerationRef.current = generation;
     mountedRef.current = true;
     setRequiresConversationReset(false);
-    resetRequiredOperationRef.current = null;
     return () => {
       mountedRef.current = false;
       confirmationWaitRef.current?.();
       confirmationWaitRef.current = null;
-      resetRequiredOperationRef.current = null;
     };
   }, [conversation_id]);
 
@@ -706,6 +704,10 @@ const NomiSendBox: React.FC<{
       requestedOperationId?: string,
       onPhaseChange?: (phase: EditingMessagePhase, continueConfirmation?: () => void) => void
     ): Promise<EditResubmitResolution> => {
+      if (requiresConversationReset) {
+        Message.error(t('conversation.editMessage.resetRequired'));
+        throw new Error('conversation reset is required');
+      }
       const filesToSend = collectSelectedFiles(uploadFile, atPath);
       maybeWarnNonVisionModel(filesToSend);
       const submittedAttachmentIds = new Set(filesToSend);
@@ -855,7 +857,6 @@ const NomiSendBox: React.FC<{
         }
 
         if (recovery.kind === 'requires_reset') {
-          resetRequiredOperationRef.current = operationId;
           // The exact target absence still proves a mutation happened. Reconcile
           // that local snapshot before stopping; reset itself remains explicit.
           if (!observation.target_exists) {
@@ -949,6 +950,7 @@ const NomiSendBox: React.FC<{
       setActiveMsgId,
       setWaitingResponse,
       setRequiresConversationReset,
+      requiresConversationReset,
       t,
     ]
   );
@@ -1278,9 +1280,9 @@ const NomiSendBox: React.FC<{
       ) {
         return;
       }
-      const operationId = resetRequiredOperationRef.current;
-      if (operationId) revokeBarrier(conversation_id, operationId);
-      resetRequiredOperationRef.current = null;
+      commitAuthoritativeConversationReset(conversation_id);
+      resetState();
+      resetActiveExecution('external-reset');
       setRequiresConversationReset(false);
       emitter.emit('chat.history.refresh');
       emitter.emit('conversation.messages.refresh', {
@@ -1364,7 +1366,7 @@ const NomiSendBox: React.FC<{
           setAtPath(items);
         }}
         loading={isBusy}
-        disabled={!current_model?.use_model || !modelSelection.isCurrentModelAvailable}
+        disabled={requiresConversationReset || !current_model?.use_model || !modelSelection.isCurrentModelAvailable}
         placeholder={
           current_model?.use_model && modelSelection.isCurrentModelAvailable
             ? t('acp.sendbox.placeholder', {
