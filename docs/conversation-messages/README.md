@@ -6,7 +6,7 @@ SendBox 编辑/重试入口、NomiSendBox 编辑重发事务、两条 refresh �
 
 改本链路任何代码前，先读完「架构」与「坑点」；改完必跑「验证门禁」。
 
-## 0. V5.2 当前交接（2026-08-07）
+## 0. V5.2 当前交接（2026-08-07，review hardening）
 
 V5.2 已落地在分支 `fix/conversation-error-edit`，目标是把编辑重提交的结果判定从
 「前端最新消息窗口 + HTTP 结果」提升为「同一个 idempotency key 的后端 receipt + 精确
@@ -18,20 +18,55 @@ V5.2 已落地在分支 `fix/conversation-error-edit`，目标是把编辑重提
 - 后端新增只读 `GET /api/conversations/{conversation_id}/messages/{message_id}/edit-resubmit/state`，
   使用同一 `Idempotency-Key` 和 `public-edit-resubmit:v1` 命名空间，返回
   `missing | accepted | completed`、delivery、replacement candidate、精确
-  `target_exists/replacement_exists`；观察失败在前端保持 `unknown`，不会当作目标消失。
+  `target_exists/replacement_exists` 和权威 `requires_reset`。`requires_reset` 只在
+  conversation 仍有 accepted edit fence、但本进程没有对应 live durable owner 时为 true；
+  正常本进程 in-flight guard 不会误触发 reset。观察失败在前端保持 `pending`，不会当作目标消失。
 - 后端新增 `created_at DESC, message_id DESC LIMIT 1` 的 latest-user text 查询，替换生产
   预检和测试辅助路径的 latest-50 扫描；claim/truncate 事务和数据库围栏未改写、无迁移。
 - 前端主编辑提交和 retry 都由一次 `uuidv7` 生成 operation/key；`editingMessageStore`
   明确记录 `editing | submitting | confirming`，confirming 阶段只允许同 key 的观察/幂等
   replay，禁止新的 destructive edit，并提供只唤醒当前同 key 观察/重放的「继续确认」入口。
-- `editResubmitRecovery.ts` 只在明确的 pre-admission 拒绝 + receipt missing + target 仍在时
-  revoke；timeout、network、普通 HTTP、观察失败、accepted、目标消失或状态不一致均不 revoke。
-  transcript mutation 确认后统一走 reconciliation；post-truncate 失败清除编辑目标/徽章，
-  保留当前正文和附件草稿，且不二次 destructive edit。
+- `editResubmitRecovery.ts` 的结果收敛为 `safe_failure | pending | mutated | requires_reset`：
+  `Missing + server_rejected + target_exists` 才能 revoke；timeout/network/观察失败、accepted、
+  目标消失、replacement 缺失或状态不一致均不 revoke。目标精确消失即 mutation proof，统一走
+  reconciliation；completed error 在 mutation 之后返回 typed `post_mutation_failure`，保留当前
+  正文和附件草稿，且不二次 destructive edit。
+- `requires_reset` 最高优先级：停止确认 loop，不 replay、不生成新 key、不自动 reset；Nomi 只显示
+  明确的「重置会话」入口，用户点击后才调用现有 `conversation.reset` 并清理当前 armed barrier。
+- Nomi confirmation loop 增加 conversation lifecycle generation 和 timer wake：POST、state GET、
+  replay、sleep 每个 async boundary 后都检查 mounted/generation；切换会话或卸载后不再发新 IPC、
+  refresh、reconcile 或 stale UI side effect，也不取消后端已启动的 durable operation。
 
 当前未完成的不是自动化实现，而是人工验收：需要真实长会话、目标不在最新 200 条、truncate
-后错误、同 key replay/in-flight replay、post-truncate 草稿/附件保留和 barrier 最终退休。
-若下一 agent 继续，先运行第 5 节的命令并检查 `git status`，不要 reset、清理或覆盖已有脏改动。
+后错误、同 key replay/in-flight replay、post-truncate 草稿/附件保留、requires-reset 显式重置和
+barrier 最终退休。若下一 agent 继续，先运行第 5 节命令并检查 `git status`/远端 HEAD；不要
+reset、清理或覆盖已有脏改动。Windows cold-runtime `拒绝访问 (os error 5)` 仍是独立环境阻塞。
+
+### 执行停点与 resume point
+
+- 实现文件和本 README 已在 `fix/conversation-error-edit` 工作树中，当前代码基线仍为
+  `70e4754a`；本轮改动尚未提交。最后一次 `git status` 只有本轮 14 个预期文件 modified，
+  没有未跟踪构建产物。
+- 本轮验证已完成，但当前 Codex 工具额度耗尽，平台拒绝写入 `.git/index`，因此暂未完成
+  `git add/commit/fetch/rebase/push`。这不是代码验证失败，也不是孤立 `index.lock`；下一 agent
+  必须从暂存开始，不要重做实现。
+- 下一步命令（先重新确认远端，不要相信旧的 `origin/main` SHA）：
+
+  ```bash
+  git status --short --branch
+  git diff --check
+  git add -- crates/backend/nomifun-api-types/src/conversation.rs crates/backend/nomifun-conversation/src/routes.rs crates/backend/nomifun-conversation/src/service.rs crates/backend/nomifun-conversation/src/service_test.rs docs/conversation-messages/README.md ui/src/common/adapter/ipcBridge.conversation-send-wire.test.ts ui/src/common/adapter/ipcBridge.ts ui/src/renderer/pages/conversation/Messages/editResubmitState.test.ts ui/src/renderer/pages/conversation/platforms/nomi/NomiSendBox.tsx ui/src/renderer/pages/conversation/platforms/nomi/editResubmitRecovery.test.ts ui/src/renderer/pages/conversation/platforms/nomi/editResubmitRecovery.ts ui/src/renderer/services/i18n/i18n-keys.d.ts ui/src/renderer/services/i18n/locales/en-US/conversation.json ui/src/renderer/services/i18n/locales/zh-CN/conversation.json
+  git diff --cached --check
+  git commit -m "fix(conversation): stop ambiguous edit recovery loops"
+  git fetch origin
+  git branch backup/fix-conversation-error-edit-before-rebase-20260807 HEAD
+  git rebase origin/main
+  git push --force-with-lease origin fix/conversation-error-edit
+  git ls-remote origin refs/heads/fix/conversation-error-edit
+  ```
+
+  Rebase 冲突时只检查 edit-resubmit 相关文件并保留本轮契约；推送后把最终 commit SHA、
+  backup branch、`origin/main` 基线和 `ls-remote` 结果补回本节。
 
 ## 1. 文件地图
 
@@ -41,7 +76,7 @@ V5.2 已落地在分支 `fix/conversation-error-edit`，目标是把编辑重提
 | `ui/src/renderer/pages/conversation/Messages/hooks.ts` | 消息列表 store + `useMessageLstCache`（loadMessages/loadOlder/refresh 监听/consumer 注册） |
 | `ui/src/renderer/pages/conversation/Messages/messageRowKeys.ts` | 行身份：`getFetchedMergeKey`（`${type}:${msg_id}`，tool_call 用 `${turnId}:${callId}`） |
 | `ui/src/renderer/pages/conversation/platforms/nomi/NomiSendBox.tsx` | 编辑重发事务（capture → arm → invoke → exact observation → reconciliation） |
-| `ui/src/renderer/pages/conversation/platforms/nomi/editResubmitRecovery.ts` | receipt/精确身份恢复纯函数：safe_failure / pending / truncated / success / post_mutation_failure / unknown |
+| `ui/src/renderer/pages/conversation/platforms/nomi/editResubmitRecovery.ts` | receipt/精确身份恢复纯函数：safe_failure / pending / mutated / requires_reset |
 | `ui/src/renderer/components/chat/SendBox/index.tsx` | 编辑模式/retry 入口、operation mutex、inputRevision、编辑态时序（C2） |
 | `ui/src/renderer/components/chat/SendBox/editResubmitOutcome.ts` | 编辑提交结果的纯决策函数（stale/clearInput/restoreSubmittedInput/exitEditMode） |
 | `ui/src/renderer/components/chat/SendBox/editResubmitTypes.ts` | SendBox 与 Nomi 之间的 typed success/post-mutation failure 边界 |
@@ -94,16 +129,16 @@ SendBox 编辑分支 (components/chat/SendBox/index.tsx sendMessageHandler)
       → armBarrier → editResubmit.invoke（同一个 uuidv7 operationId/key）
       → 首次响应或任意错误都进入 editResubmitState.invoke（5s timeout）
           → exact receipt namespace + target/replacement message ID observation
-          → resolveEditResubmitRecovery（纯函数）
-          → unknown / claimed_pending：保留 barrier，按同 key replay，不生成新 key
-          → transcript_truncated / success：确认 mutation 后统一 reconciliation
-          → post_mutation_failure：reconcile 后清 edit target/badge，保留正文和附件草稿
-          → safe_failure：仅 definitive pre-admission 400 + receipt missing + target 仍在时
-             revokeBarrier + failed refresh；网络/timeout/普通 HTTP/观察失败绝不直接 revoke
+      → resolveEditResubmitRecovery（纯函数）
+          → pending：保留 barrier，按同 key replay，不生成新 key
+          → mutated：目标已精确消失，统一 reconciliation；completed error 再返回 post_mutation_failure
+          → requires_reset：停止 loop，不 replay / 不 revoke / 不自动 reset，显示显式 reset 入口
+          → safe_failure：仅 server_rejected + receipt missing + target 仍在时
+             revokeBarrier + failed refresh；transport/观察失败绝不直接 revoke
       → reconcileConfirmedEditMutation
           → beginEditResubmitReconciliation（undefined = invariant 破坏 → typed failure）
           → purgeCurrentRows（live 版）→ 乐观气泡（仅 fresh delivery）→ refresh 两条通道
-          → replacement 权威成功后才 removeSubmittedAttachments；飞行中新增附件保留
+          → completed 且非失败后才 removeSubmittedAttachments；飞行中新增附件保留
   → useMessageLstCache.loadMessages (Messages/hooks.ts)
       捕获 epoch → invoke → epoch 校验 → captureReconciliationSnapshot
       → update(updater)（updater 内 applyFetchedMessages 用冻结 snapshot）
@@ -156,18 +191,19 @@ SendBox 编辑分支 (components/chat/SendBox/index.tsx sendMessageHandler)
 6. **state 挡不住同 tick 双发，ref 才行；mutex 的 ref 必须在 finally 清**。不清 → 首次提交后
    ref 永非 null → 编辑模式永久死锁。清的位置在 `if (isCurrentOperation())` 内；`.then/.catch`
    先于 `.finally` 执行，读 token 时 ref 尚未清。
-7. **transport/HTTP/观察失败都是 ambiguous**：连接被拒、连接重置、timeout、普通 HTTP
-   错误和 state GET 失败都不能证明 destructive transcript 没发生。必须用同一个 key 观察
-   receipt + 精确 target/replacement；观察失败保持 `unknown`，不转换成目标不存在，也不 revoke。
-8. **唯一安全 revoke 证据**：`receipt_state=missing`、target 精确存在、且本次请求是明确的
-   admission 前拒绝。completed failure、target 消失、replacement 缺失、状态不一致都不能
-   revoke；reconciling barrier 也禁止 revoke。
+7. **transport/HTTP/观察失败都不能单独证明 mutation**：连接被拒、连接重置、timeout、普通
+   HTTP 错误和 state GET 失败都必须回到同 key 的 receipt + 精确 target/replacement observation；
+   state GET 失败保持 `pending`，不转换成目标不存在，也不发新 key。
+8. **唯一安全 revoke 证据**：`receipt_state=missing`、target 精确存在、且最新请求已明确被
+   HTTP server rejected。目标消失、completed failure、replacement 缺失、状态不一致都不能 revoke；
+   reconciling barrier 也禁止 revoke。`requires_reset` 优先于所有其他字段，不能被 Missing/null
+   误判为 safe failure。
 9. **同 key 是一次逻辑操作的边界**：SendBox 主编辑和 retry 各生成一次 `uuidv7`，同时交给
    coordinator 和 POST/GET。确认阶段的 replay 必须复用该 key + 原正文/附件，不能生成新 key；
    用户在 safe failure 后重新主动编辑才是新的 logical operation。
 10. **confirmed mutation 后附件不能过早清理**：accepted + target 消失但 replacement 尚未
-   存在时只能进入 confirming/reconciliation，不能清掉附件；只有 replacement 权威存在或
-   明确成功才清理本次提交附件，post-mutation failure 要保留为草稿。
+   存在时只能进入 confirming/reconciliation，不能清掉附件；只有 completed 且非失败（或
+   明确成功）才清理本次提交附件，post-mutation failure 要保留为草稿。
 11. **`useAddEventListener` 按 deps 重绑闭包**：listener 体内读到的 state 是绑定时的快照；
     用 `isLoading` 做守卫必须进 deps（参照 retry 监听器写法）。
 12. **结构测试很脆**：断言源码字面量与相对位置。inline 重构（filter 提成 helper）会让断言
@@ -178,6 +214,9 @@ SendBox 编辑分支 (components/chat/SendBox/index.tsx sendMessageHandler)
 14. **branded type**：`MessageId`/`ConversationId` 是 branded string，测试字面量要
     `as MessageId`（或既有用例的 `MID()` helper）。
 15. **i18n 脚本在根 package.json**：`bun run gen:i18n` 在仓库根跑，ui/ 下没有该 script。
+16. **confirmation lifecycle 是独立于后端 owner 的前端边界**：卸载/切换只停止本地
+    confirmation timer、观察和 replay；不要取消或猜测后端 durable operation。每个 await 返回后
+    必须检查 lifecycle generation，再做 state、refresh、reconcile、revoke 或 Message side effect。
 
 ## 4. 有意保留的取舍（勿当 bug 修）
 
@@ -190,8 +229,9 @@ SendBox 编辑分支 (components/chat/SendBox/index.tsx sendMessageHandler)
 - **NomiSendBox 成功路径用 live `purgeCurrentRows` 而非 snapshot**：begin 与 purge 同步同
   task，barrier 不可能在此期间被 ack 删除，无需冻结。
 - **重发等待态**：首次 POST 返回不等于成功；`confirming` 期间保持 waiting 和 edit mutex，
-  直到 exact observation 得到 success / safe_failure / post_mutation_failure。confirmed mutation
-  的 barrier 仍由 `conversation.messages.refresh` 的 consumer ack 退休，不由 waiting state 代替。
+  直到 exact observation 得到 safe_failure / mutated terminal success / post_mutation_failure /
+  requires_reset。confirmed mutation 的 barrier 仍由 `conversation.messages.refresh` 的 consumer
+  ack 退休，不由 waiting state 代替；requires_reset 的 armed barrier 由用户显式 reset 后清理。
 - **编辑报错弹窗与源消息的关联靠 `findLast`**：够用，不做显式关联。
 
 ## 5. 验证门禁（改动后必跑）
@@ -208,12 +248,19 @@ cargo test -p nomifun-conversation edit_resubmit_delivery_state_uses_receipt_nam
 bun run build:ui
 ```
 
-2026-08-07 V5.2 实测：前端定向回归 133 pass / 0 fail（含 coordinator、loadOlder、merge、
-send idempotency、exact observation、recovery resolver）；`bun run typecheck`、`bun run check`、
-`bun run build:ui`、`cargo fmt --all -- --check`、`cargo check --workspace` 和上述三项 Rust
-focused test 均通过。沙箱内直接执行 Bun 曾返回 `Operation not permitted`，需使用受控
-PowerShell 工作区命令重试；这不是 TypeScript 编译错误。UI build 的动态导入/大 chunk 是既有
-warning，不是本次失败。
+2026-08-07 review-hardening 实测：本轮 UI 定向回归 24 pass / 0 fail（recovery 8 cases、wire、
+pipeline/lifecycle）；`node ui/node_modules/typescript/bin/tsc --noEmit -p ui/tsconfig.json`、
+`node scripts/generate-i18n-types.mjs --check`、`cargo fmt --all -- --check`、
+`cargo check --workspace`、UI Vite build、theme/icon/CodeMirror/process/browser/vocabulary/help
+脚本均通过。`bun run gen:i18n`、`bun run --filter=./ui typecheck` 和 `bun run check` 在当前
+Windows 沙箱直接调用 Bun 子命令返回 `Operation not permitted`，已使用等价 Node/脚本入口完成
+可验证门禁；这不是 TypeScript 编译错误。UI build 的动态导入/大 chunk 是既有 warning。
+
+UI 全量 `bun test --cwd ui` 为 2054 pass / 18 pre-existing fail（共 2072）；失败均为既有
+视觉/结构契约，未命中本轮 edit-resubmit 文件。Rust `cargo test -p nomifun-conversation
+edit_resubmit --lib` 为新 observation test 通过，另有既有
+`edit_resubmit_rebuilds_a_missing_terminal_runtime_before_rewind` 因 Windows knowledge
+workspace runtime-lock `拒绝访问 (os error 5)` 失败；DB crash-fence focused test 通过。
 
 预存基线失败 18 个（与本链路无关，勿修也别慌）：Guid preset picker ×2、PresetSettings
 shell ×2、theme control、speech input CORS、capabilities checkbox、SkillsSettingsPage tabs、
@@ -236,8 +283,8 @@ TurnDeliverablesCard、conversation.update merge_extra。
 |---|---|---|
 | `Messages/editResubmitResurrection.test.ts` | 行为（真实 coordinator + deferred Promise / pendingUpdaters FIFO 模拟 React 调度） | 变体 A/B、乱序、连续编辑、失败收敛、多消费者、生命周期泄漏、P0-1 deferred race、P0-3 单调性、P2-2 fail-closed |
 | `Messages/editResubmitState.test.ts` | 结构（readFileSync + indexOf 断言源码顺序） | pipeline 顺序、C2 时序、revision 守卫、P0-2/P2-3 mutex、双域拆分、P1-1 retry mutex、P1-2 核对先行 |
-| `platforms/nomi/editResubmitRecovery.test.ts` | 纯函数 | receipt accepted/completed/missing、精确 target/replacement、truncate 后失败、状态不一致、唯一 safe revoke |
-| `common/adapter/ipcBridge.conversation-send-wire.test.ts` | wire contract | edit-resubmit state GET、同 key header、candidate replacement identity |
+| `platforms/nomi/editResubmitRecovery.test.ts` | 纯函数 | Missing/null safe-vs-pending、accepted pending、target absence mutation、completed error、requires_reset 优先级、identity mismatch |
+| `common/adapter/ipcBridge.conversation-send-wire.test.ts` | wire contract | edit-resubmit state GET、同 key header、candidate replacement identity、requires_reset default |
 | `Messages/hooks.loadOlderEpoch.structure.test.ts` | 结构 | P2-1 捕获/比较位置 |
 | `Messages/refreshChannelDrift.structure.test.ts` | 结构（递归扫 renderer） | 通道单消费者契约 |
 | `SendBox/editResubmitOutcome.test.ts` | 纯函数 | C2 结果决策 |
@@ -256,6 +303,8 @@ TurnDeliverablesCard、conversation.update merge_extra。
    要么先修基线，要么 CI 只跑本链路目录。
 4. **确认等待 UX**：当前 confirming 使用同 key 的自动 backoff/观察/replay，并提供「继续确认」
    入口；按钮只唤醒当前观察/重放，不能解锁 SendBox、创建新 key 或再次 destructive edit。
+   `requires_reset` 会停止该 loop，必须由用户点击 Nomi 中的「重置会话」入口；不能在恢复函数
+   或 timeout/error 分支自动调用 reset。
 5. **渲染测试基建**：当前零 React 渲染测试能力，deferred race 靠纯 TS 模型保真（FIFO 假设
    成立但不验证批处理重入）。引入 testing-library 后可升级为真实组件级回归。
 6. **死事件清理评估**：`nomi.selected.file.clear`（5 emit / 0 listener）等历史通道可单开
@@ -263,15 +312,13 @@ TurnDeliverablesCard、conversation.update merge_extra。
 
 ## 8. 变更历史
 
-- **2026-08-07 V5.2 编辑重提交可靠性修复**：新增 edit-specific state GET 和
-  `EditResubmitObservation`（receipt namespace、candidate replacement、精确 target/replacement
-  查询），latest-user 查询改为 `created_at DESC, message_id DESC LIMIT 1`；前端统一 uuidv7
-  operation/key，加入 `editing/submitting/confirming` 和纯函数 recovery resolver。timeout、
-  network、普通 HTTP、观察失败和状态不一致 fail closed；只在明确 pre-admission 失败时 revoke，
-  truncate 后失败保留正文/附件草稿；保留原 epoch/barrier/snapshot/loadOlder 机制。自动验证：
-  UI focused 133 pass / 0 fail，typecheck/check/UI build、workspace check、格式和新增 Rust
-  focused tests 通过；既有 cold-runtime edit test 的 Windows authority lock `os error 5` 仍是
-  环境阻塞，真实 UI 手工验收待 owner 执行。
+- **2026-08-07 V5.2 review-hardening**：在既有 edit-resubmit state observation 上加入
+  `requires_reset`，复用 accepted receipt fence + process-local durable guard 判定正常 in-flight
+  与重启后遗留；前端 recovery 收敛为 `safe_failure/pending/mutated/requires_reset`，修复
+  Missing/null contract，所有 replay 保持同 key，requires-reset 只显示用户触发的现有 reset
+  入口，不自动 reset/revoke。Nomi 增加 lifecycle generation/timer fence，卸载后停止 observation
+  loop 和 stale side effects；补齐 24 项 UI 定向测试与 backend observation live-guard assertions。
+  保留 epoch/barrier/snapshot/loadOlder；真实 UI 手工验收和 Windows runtime-lock 权限仍待 owner。
 - **2026-08-07 竞态根治（V5 + V5.1）**：分支 `fix/conversation-error-edit`。V5 `6d804ade`
   建 coordinator 三件套（epoch/barrier/consumer ack）+ C2 编辑态时序与附件集合差 + C3 徽章
   + C4 可观测性；V5.1 `a2a78822` 收口 review 边界：P0-1 snapshot 冻结（updater 不再查 live

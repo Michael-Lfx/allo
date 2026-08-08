@@ -373,6 +373,7 @@ async fn edit_resubmit_state(
         replacement_message_id: observation.replacement_message_id,
         target_exists: observation.target_exists,
         replacement_exists: observation.replacement_exists,
+        requires_reset: observation.requires_reset,
     })))
 }
 

@@ -287,6 +287,7 @@ pub struct EditResubmitObservation {
     pub replacement_message_id: Option<String>,
     pub target_exists: bool,
     pub replacement_exists: Option<bool>,
+    pub requires_reset: bool,
 }
 
 /// Trusted runtime preparation applied only after a durable keyed turn has
@@ -1411,6 +1412,26 @@ impl ConversationService {
     }
 
     #[cfg(test)]
+    pub(crate) fn install_durable_operation_guard_for_test(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        operation_id: &str,
+    ) {
+        let key = Self::durable_operation_key(user_id, conversation_id, operation_id);
+        self.durable_operations_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                key,
+                DurableOperationLease {
+                    message_id: "test-replacement".to_owned(),
+                    generation: 1,
+                },
+            );
+    }
+
+    #[cfg(test)]
     async fn reach_public_admission_cutpoint(&self, stage: PublicAdmissionCutpoint) {
         let control = {
             let mut slot = self
@@ -2094,6 +2115,42 @@ impl ConversationService {
         conversation_id: &str,
     ) -> String {
         format!("public-edit-resubmit:v1:{user_id}:{conversation_id}:")
+    }
+
+    fn has_live_edit_resubmit_guard(&self, user_id: &str, conversation_id: &str) -> bool {
+        let key_prefix = format!(
+            "{user_id}\0{conversation_id}\0{}",
+            Self::public_edit_resubmit_operation_prefix(user_id, conversation_id)
+        );
+        self.durable_operations_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .any(|key| key.starts_with(&key_prefix))
+    }
+
+    async fn edit_resubmit_requires_reset(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<bool, AppError> {
+        let prefix = Self::public_edit_resubmit_operation_prefix(user_id, conversation_id);
+        if !self
+            .conversation_repo
+            .has_accepted_delivery_receipt_operation_prefix(
+                user_id,
+                conversation_id,
+                &prefix,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+
+        // An accepted receipt with a live process-local lease is the normal
+        // in-flight state. Only an accepted fence left without its owner is
+        // authoritative proof that an explicit Conversation reset is needed.
+        Ok(!self.has_live_edit_resubmit_guard(user_id, conversation_id))
     }
 
     fn edit_resubmit_request_payload(
@@ -3308,15 +3365,8 @@ impl ConversationService {
         conversation_id: &str,
     ) -> Result<(), AppError> {
         let conversation_id = parse_conv_id(conversation_id)?;
-        let prefix =
-            Self::public_edit_resubmit_operation_prefix(user_id, conversation_id);
         if self
-            .conversation_repo
-            .has_accepted_delivery_receipt_operation_prefix(
-                user_id,
-                conversation_id,
-                &prefix,
-            )
+            .edit_resubmit_requires_reset(user_id, conversation_id)
             .await?
         {
             return Err(AppError::Conflict(
@@ -7387,6 +7437,9 @@ impl ConversationService {
             .get_message(conversation_key, target_message_id)
             .await?
             .is_some();
+        let requires_reset = self
+            .edit_resubmit_requires_reset(user_id, conversation_key)
+            .await?;
         let Some(receipt) = self
             .conversation_repo
             .get_delivery_receipt(user_id, conversation_key, &operation_id)
@@ -7397,6 +7450,7 @@ impl ConversationService {
                 replacement_message_id: None,
                 target_exists,
                 replacement_exists: None,
+                requires_reset,
             });
         };
 
@@ -7460,6 +7514,7 @@ impl ConversationService {
             replacement_message_id: Some(replacement_message_id),
             target_exists,
             replacement_exists,
+            requires_reset,
         })
     }
 

@@ -109,8 +109,14 @@ const EMPTY_AT_PATH: Array<string | FileOrFolderItem> = [];
 const EMPTY_UPLOAD_FILES: string[] = [];
 const EDIT_RESUBMIT_CONFIRMATION_DELAYS_MS = [0, 100, 250, 500, 1_000, 2_000, 4_000, 8_000, 15_000] as const;
 
-const isDefinitivePreAdmissionError = (error: unknown): boolean =>
-  isBackendHttpError(error) && error.status === 400;
+const classifyEditResubmitError = (
+  error: unknown
+): Exclude<EditResubmitRequestOutcome, 'accepted'> =>
+  isBackendHttpError(error) ? 'server_rejected' : 'transport_ambiguous';
+
+const EDIT_RESUBMIT_LIFECYCLE_ABORT = new Error(
+  'edit-resubmit confirmation stopped because the conversation view was unmounted'
+);
 
 const useSendBoxDraft = (conversation_id: ConversationId) => {
   const { data, mutate } = useNomiSendBoxDraft(conversation_id);
@@ -176,6 +182,26 @@ const NomiSendBox: React.FC<{
   );
   const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
   const [goalModeArmed, setGoalModeArmed] = useState(false);
+  const [requiresConversationReset, setRequiresConversationReset] = useState(false);
+  const mountedRef = useRef(false);
+  const lifecycleGenerationRef = useRef(0);
+  const confirmationWaitRef = useRef<(() => void) | null>(null);
+  const resetRequiredOperationRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const generation = lifecycleGenerationRef.current + 1;
+    lifecycleGenerationRef.current = generation;
+    mountedRef.current = true;
+    setRequiresConversationReset(false);
+    resetRequiredOperationRef.current = null;
+    return () => {
+      mountedRef.current = false;
+      confirmationWaitRef.current?.();
+      confirmationWaitRef.current = null;
+      resetRequiredOperationRef.current = null;
+    };
+  }, [conversation_id]);
+
   const layout = useLayoutContext();
   const isMobile = Boolean(layout?.isMobile);
   const conversationContext = useConversationContextSafe();
@@ -687,6 +713,12 @@ const NomiSendBox: React.FC<{
       // only for non-SendBox callers; the same value is used by the coordinator
       // and the backend receipt namespace.
       const operationId = requestedOperationId ?? uuidv7();
+      const lifecycleGeneration = lifecycleGenerationRef.current;
+      const isOperationLive = (): boolean =>
+        mountedRef.current && lifecycleGenerationRef.current === lifecycleGeneration;
+      const ensureOperationLive = (): void => {
+        if (!isOperationLive()) throw EDIT_RESUBMIT_LIFECYCLE_ABORT;
+      };
       const capture = captureBarrier(messageListRef.current, msgId, createdAt);
       if (!capture) {
         Message.error(t('conversation.editMessage.failed'));
@@ -701,6 +733,7 @@ const NomiSendBox: React.FC<{
       let forceConfirmation = false;
       let wakeConfirmation: (() => void) | null = null;
       const continueConfirmation = (): void => {
+        if (!isOperationLive()) return;
         forceConfirmation = true;
         wakeConfirmation?.();
       };
@@ -714,15 +747,17 @@ const NomiSendBox: React.FC<{
         });
       } catch (error) {
         requestError = error;
-        requestOutcome = isDefinitivePreAdmissionError(error)
-          ? 'definitive_pre_admission_failure'
-          : 'ambiguous_failure';
+        requestOutcome = classifyEditResubmitError(error);
       }
+      // The POST may resolve after the conversation switched or the composer
+      // unmounted. Never publish a stale phase or start another IPC operation.
+      ensureOperationLive();
       onPhaseChange?.('confirming', continueConfirmation);
 
       let reconciled = false;
       let submittedAttachmentsCleaned = false;
       const clearSubmittedDraftAttachments = (): void => {
+        ensureOperationLive();
         if (submittedAttachmentsCleaned) return;
         submittedAttachmentsCleaned = true;
         setUploadFile((prev) => removeSubmittedAttachments(prev, submittedAttachmentIds));
@@ -734,6 +769,7 @@ const NomiSendBox: React.FC<{
         if (filesToSend.length > 0) emitter.emit('nomi.workspace.refresh');
       };
       const reconcileConfirmedEditMutation = (delivery: ISendMessageResult | null): void => {
+        ensureOperationLive();
         if (reconciled) return;
         const reconciledEpoch = beginEditResubmitReconciliation(conversation_id, operationId);
         if (reconciledEpoch === undefined) {
@@ -772,6 +808,7 @@ const NomiSendBox: React.FC<{
       // is allowed during this loop.
       let attempt = 0;
       for (;;) {
+        ensureOperationLive();
         const delay = EDIT_RESUBMIT_CONFIRMATION_DELAYS_MS[
           Math.min(attempt, EDIT_RESUBMIT_CONFIRMATION_DELAYS_MS.length - 1)
         ];
@@ -779,16 +816,20 @@ const NomiSendBox: React.FC<{
           await new Promise<void>((resolve) => {
             const timer = setTimeout(() => {
               wakeConfirmation = null;
+              confirmationWaitRef.current = null;
               resolve();
             }, delay);
             wakeConfirmation = () => {
               clearTimeout(timer);
               wakeConfirmation = null;
+              confirmationWaitRef.current = null;
               resolve();
             };
+            confirmationWaitRef.current = wakeConfirmation;
           });
         }
         forceConfirmation = false;
+        ensureOperationLive();
 
         let observation: IEditResubmitObservation;
         try {
@@ -798,38 +839,66 @@ const NomiSendBox: React.FC<{
             idempotency_key: operationId,
           });
         } catch {
+          ensureOperationLive();
           attempt += 1;
           continue;
         }
+        ensureOperationLive();
 
         const recovery = resolveEditResubmitRecovery({ observation, requestOutcome });
-        if (recovery.kind === 'unknown') {
+        if (recovery.kind === 'pending') {
+          ensureOperationLive();
           emitter.emit('conversation.messages.refresh', {
             conversationId: conversation_id,
             reason: 'edit-resubmit-reconcile',
           });
-        } else if (recovery.shouldReconcile) {
+        }
+
+        if (recovery.kind === 'requires_reset') {
+          resetRequiredOperationRef.current = operationId;
+          // The exact target absence still proves a mutation happened. Reconcile
+          // that local snapshot before stopping; reset itself remains explicit.
+          if (!observation.target_exists) {
+            try {
+              reconcileConfirmedEditMutation(initialDelivery ?? observation.delivery);
+            } catch (error) {
+              ensureOperationLive();
+              setWaitingResponse(false);
+              Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+              return { kind: 'post_mutation_failure', error };
+            }
+          }
+          ensureOperationLive();
+          setRequiresConversationReset(true);
+          setWaitingResponse(false);
+          Message.error(t('conversation.editMessage.resetRequired'));
+          throw new Error('edit-resubmit requires an explicit Conversation reset');
+        }
+
+        if (recovery.kind === 'mutated') {
           try {
             reconcileConfirmedEditMutation(initialDelivery ?? observation.delivery);
           } catch (error) {
+            ensureOperationLive();
             setWaitingResponse(false);
             Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
             return { kind: 'post_mutation_failure', error };
           }
-        }
-
-        if (recovery.kind === 'success') {
-          clearSubmittedDraftAttachments();
-          setWaitingResponse(false);
-          return { kind: 'success' };
-        }
-        if (recovery.kind === 'post_mutation_failure') {
-          setWaitingResponse(false);
-          const error = requestError ?? new Error('edit-resubmit delivery failed after transcript mutation');
-          Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
-          return { kind: 'post_mutation_failure', error };
+          ensureOperationLive();
+          if (observation.receipt_state === 'completed') {
+            if (observation.delivery?.result_ok === false) {
+              setWaitingResponse(false);
+              const error = requestError ?? new Error('edit-resubmit delivery failed after transcript mutation');
+              Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+              return { kind: 'post_mutation_failure', error };
+            }
+            clearSubmittedDraftAttachments();
+            setWaitingResponse(false);
+            return { kind: 'success' };
+          }
         }
         if (recovery.kind === 'safe_failure') {
+          ensureOperationLive();
           revokeBarrier(conversation_id, operationId);
           emitter.emit('conversation.messages.refresh', {
             conversationId: conversation_id,
@@ -841,9 +910,11 @@ const NomiSendBox: React.FC<{
           throw error;
         }
 
-        // `accepted`, `claimed_pending`, `transcript_truncated`, and unknown
-        // all retain the same durable operation. A replay is read/admission
-        // idempotent and lets a completed worker expose its terminal receipt.
+        // `pending` and an accepted `mutated` observation retain the same
+        // durable operation. A replay is read/admission idempotent and lets a
+        // completed worker expose its terminal receipt; it never creates a new
+        // destructive edit key.
+        ensureOperationLive();
         try {
           initialDelivery = await ipcBridge.conversation.editResubmit.invoke({
             conversation_id,
@@ -854,11 +925,11 @@ const NomiSendBox: React.FC<{
           });
           requestOutcome = 'accepted';
         } catch (error) {
+          ensureOperationLive();
           requestError = error;
-          requestOutcome = isDefinitivePreAdmissionError(error)
-            ? 'definitive_pre_admission_failure'
-            : 'ambiguous_failure';
+          requestOutcome = classifyEditResubmitError(error);
         }
+        ensureOperationLive();
         attempt += 1;
       }
     },
@@ -877,6 +948,7 @@ const NomiSendBox: React.FC<{
       addOrUpdateMessage,
       setActiveMsgId,
       setWaitingResponse,
+      setRequiresConversationReset,
       t,
     ]
   );
@@ -1196,6 +1268,38 @@ const NomiSendBox: React.FC<{
     }
   };
 
+  const handleResetRequiredConversation = useCallback(async (): Promise<void> => {
+    const lifecycleGeneration = lifecycleGenerationRef.current;
+    try {
+      await ipcBridge.conversation.reset.invoke({ conversation_id });
+      if (
+        !mountedRef.current ||
+        lifecycleGenerationRef.current !== lifecycleGeneration
+      ) {
+        return;
+      }
+      const operationId = resetRequiredOperationRef.current;
+      if (operationId) revokeBarrier(conversation_id, operationId);
+      resetRequiredOperationRef.current = null;
+      setRequiresConversationReset(false);
+      emitter.emit('chat.history.refresh');
+      emitter.emit('conversation.messages.refresh', {
+        conversationId: conversation_id,
+        reason: 'edit-resubmit-reconcile',
+      });
+      Message.success(t('conversation.editMessage.resetSuccess'));
+    } catch (error) {
+      if (
+        !mountedRef.current ||
+        lifecycleGenerationRef.current !== lifecycleGeneration
+      ) {
+        return;
+      }
+      console.warn('[NomiSendBox] explicit conversation reset failed', error);
+      Message.error(t('conversation.editMessage.resetFailed'));
+    }
+  }, [conversation_id, t]);
+
   const modelUnavailable =
     !hideModeSelector &&
     !modelSelection.isModelCatalogLoading &&
@@ -1216,6 +1320,20 @@ const NomiSendBox: React.FC<{
         onRemove={remove}
         onClear={clear}
       />
+      {requiresConversationReset && (
+        <Alert
+          className='mb-8px'
+          type='error'
+          content={
+            <div className='flex flex-wrap items-center gap-8px'>
+              <span>{t('conversation.editMessage.resetRequired')}</span>
+              <Button type='text' size='small' onClick={() => void handleResetRequiredConversation()}>
+                {t('conversation.editMessage.resetAction')}
+              </Button>
+            </div>
+          }
+        />
+      )}
       {modelUnavailable && (
         <Alert
           className='mb-8px'

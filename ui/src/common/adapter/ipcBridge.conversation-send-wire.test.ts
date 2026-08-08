@@ -195,6 +195,7 @@ describe('conversation send-message wire contract', () => {
                 replacement_message_id: '0190f5fe-7c00-7a00-8000-000000000215',
                 target_exists: false,
                 replacement_exists: false,
+                requires_reset: false,
               },
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -221,6 +222,7 @@ describe('conversation send-message wire contract', () => {
       );
       expect(result.target_exists).toBe(false);
       expect(result.replacement_exists).toBe(false);
+      expect(result.requires_reset).toBe(false);
     } finally {
       globalThis.fetch = realFetch;
     }

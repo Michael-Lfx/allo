@@ -2939,6 +2939,7 @@ export interface IEditResubmitObservation {
   replacement_message_id: MessageId | null;
   target_exists: boolean;
   replacement_exists: boolean | null;
+  requires_reset: boolean;
 }
 
 const fromApiEditResubmitObservation = (
@@ -2951,6 +2952,7 @@ const fromApiEditResubmitObservation = (
       ? null
       : parseMessageId(result.replacement_message_id),
   replacement_exists: result.replacement_exists ?? null,
+  requires_reset: result.requires_reset === true,
 });
 
 export interface IConfirmMessageParams {
