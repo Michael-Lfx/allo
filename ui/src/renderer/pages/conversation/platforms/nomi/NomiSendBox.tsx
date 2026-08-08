@@ -184,6 +184,7 @@ const NomiSendBox: React.FC<{
   const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
   const [goalModeArmed, setGoalModeArmed] = useState(false);
   const [requiresConversationReset, setRequiresConversationReset] = useState(false);
+  const [isResettingConversation, setIsResettingConversation] = useState(false);
   const mountedRef = useRef(false);
   const lifecycleGenerationRef = useRef(0);
   const confirmationWaitRef = useRef<(() => void) | null>(null);
@@ -1271,7 +1272,9 @@ const NomiSendBox: React.FC<{
   };
 
   const handleResetRequiredConversation = useCallback(async (): Promise<void> => {
+    if (isResettingConversation) return;
     const lifecycleGeneration = lifecycleGenerationRef.current;
+    setIsResettingConversation(true);
     try {
       await ipcBridge.conversation.reset.invoke({ conversation_id });
       if (
@@ -1299,8 +1302,15 @@ const NomiSendBox: React.FC<{
       }
       console.warn('[NomiSendBox] explicit conversation reset failed', error);
       Message.error(t('conversation.editMessage.resetFailed'));
+    } finally {
+      if (
+        mountedRef.current &&
+        lifecycleGenerationRef.current === lifecycleGeneration
+      ) {
+        setIsResettingConversation(false);
+      }
     }
-  }, [conversation_id, t]);
+  }, [conversation_id, isResettingConversation, t]);
 
   const modelUnavailable =
     !hideModeSelector &&
@@ -1329,7 +1339,7 @@ const NomiSendBox: React.FC<{
           content={
             <div className='flex flex-wrap items-center gap-8px'>
               <span>{t('conversation.editMessage.resetRequired')}</span>
-              <Button type='text' size='small' onClick={() => void handleResetRequiredConversation()}>
+              <Button type='text' size='small' loading={isResettingConversation} disabled={isResettingConversation} onClick={() => void handleResetRequiredConversation()}>
                 {t('conversation.editMessage.resetAction')}
               </Button>
             </div>

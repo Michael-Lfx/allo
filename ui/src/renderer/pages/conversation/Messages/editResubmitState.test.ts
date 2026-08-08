@@ -308,6 +308,21 @@ describe('requires-reset fail-closed contract', () => {
     expect(messagesRefresh).toBeGreaterThan(historyRefresh);
   });
 
+  test('reset button guards against concurrent double-click', () => {
+    const resetHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleResetRequiredConversation = useCallback('),
+      nomiSendBoxSource.indexOf('const modelUnavailable =')
+    );
+    const guard = resetHandler.indexOf('if (isResettingConversation) return;');
+    const invoke = resetHandler.indexOf('ipcBridge.conversation.reset.invoke({ conversation_id });');
+    const release = resetHandler.indexOf('setIsResettingConversation(false);');
+
+    expect(guard).toBeGreaterThan(-1);
+    expect(invoke).toBeGreaterThan(guard);
+    expect(release).toBeGreaterThan(guard);
+    expect(nomiSendBoxSource.includes('loading={isResettingConversation}')).toBe(true);
+  });
+
   test('reset failure never optimistically clears the reset-required authority', () => {
     const resetHandler = nomiSendBoxSource.slice(
       nomiSendBoxSource.indexOf('const handleResetRequiredConversation = useCallback('),
