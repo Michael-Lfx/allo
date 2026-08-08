@@ -20,7 +20,8 @@ import { getFetchedMergeKey } from './messageRowKeys';
  * This coordinator closes that window with two layers of versioning plus
  * per-operation barriers:
  *
- *  - conversation `epoch` bumps ONLY on edit-resubmit success. A fetch that
+ *  - conversation `epoch` bumps whenever the authoritative transcript generation
+ *    changes: edit-resubmit commit or an explicit Conversation reset. A fetch that
  *    captured a stale epoch is discarded wholesale before its merge, so a
  *    pre-truncate snapshot can never be applied after the truncate commits.
  *    Plain fetches never touch the epoch, so one consumer's refresh cannot
@@ -232,6 +233,23 @@ export const revokeBarrier = (conversationId: ConversationId, operationId: strin
   console.debug('[conversation-message-coordinator]', `revoke conv=${conversationId}`, { operationId });
   maybeDestroy(conversationId);
   return true;
+};
+
+/**
+ * Commit an authoritative Conversation reset as a message generation
+ * boundary: bump the epoch and invalidate every edit barrier. Call only after
+ * the backend reset succeeded. A missing coordinator is a no-op — no
+ * in-flight consumer/fetch is managed by this process, so there is nothing to
+ * fence.
+ */
+export const commitAuthoritativeConversationReset = (
+  conversationId: ConversationId
+): void => {
+  const coordinator = coordinators.get(conversationId);
+  if (!coordinator) return;
+  coordinator.epoch += 1;
+  coordinator.barriers.clear();
+  maybeDestroy(conversationId);
 };
 
 /**

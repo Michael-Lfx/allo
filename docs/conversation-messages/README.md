@@ -37,9 +37,9 @@ V5.2 已落地在分支 `fix/conversation-error-edit`，目标是把编辑重提
   replay、sleep 每个 async boundary 后都检查 mounted/generation；切换会话或卸载后不再发新 IPC、
   refresh、reconcile 或 stale UI side effect，也不取消后端已启动的 durable operation。
 
-当前未完成的不是自动化实现，而是人工验收：需要真实长会话、目标不在最新 200 条、truncate
-后错误、同 key replay/in-flight replay、post-truncate 草稿/附件保留、requires-reset 显式重置和
-barrier 最终退休。若下一 agent 继续，先运行第 5 节命令并检查 `git status`/远端 HEAD；不要
+当前未完成的是人工验收：需要真实长会话、目标不在最新 200 条、truncate
+后错误、同 key replay/in-flight replay、post-truncate 草稿/附件保留，以及 reset 后重新发送的
+手动冒烟。若下一 agent 继续，先运行第 5 节命令并检查 `git status`/远端 HEAD；不要
 reset、清理或覆盖已有脏改动。Windows cold-runtime `拒绝访问 (os error 5)` 在本轮未复现，原阻塞测试已通过。
 
 ### 执行完成记录（2026-08-08）
@@ -300,6 +300,8 @@ TurnDeliverablesCard、conversation.update merge_extra。
    cleanup 轮次统一处理（contract 变更需全链路 grep）。
 
 ## 8. 变更历史
+
+- **2026-08-08 V5.3 最终收口**：`requires_reset` 成为前端真正 fail-closed 边界（SendBox `disabled` + `handleEditResubmit` pre-arm guard，删除单 operation `resetRequiredOperationRef`）；backend `edit_resubmit_requires_reset` 复用 preparation gate liveness（`has_active_preparation`），覆盖 claim → admit → durable-guard 注册窗口，不再误判 live reservation；`commitAuthoritativeConversationReset` 把成功 reset 提升为消息 generation boundary（epoch+1、清全部 barriers），成功路径按序 resetState / resetActiveExecution / 权威 refresh，失败路径不改前端状态；Missing fixture 补齐 `replacement_exists: null`。新增 backend B1/B5 与 runtime_state gate 测试、coordinator reset 行为测试和 requires-reset 结构测试。
 
 - **2026-08-08 V5.2 落地收尾**：`fix/conversation-error-edit` rebase 到 `origin/main` `31638c21` 并推送，最终提交 `be8168d8`（备份分支 `backup/fix-conversation-error-edit-before-rebase-20260807`）。rebase 无冲突，V5.2 契约与远端 learning/trace/canvas 改动共存；聚焦验证通过，typecheck/agent-vocabulary 失败均为 `origin/main` 预存问题。
 - **2026-08-07 V5.2 review-hardening**：在既有 edit-resubmit state observation 上加入

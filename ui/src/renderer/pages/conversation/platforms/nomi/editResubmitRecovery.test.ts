@@ -36,6 +36,7 @@ describe('resolveEditResubmitRecovery', () => {
           receipt_state: 'missing',
           delivery: null,
           replacement_message_id: null,
+          replacement_exists: null,
         }),
         requestOutcome: 'server_rejected',
       })
@@ -49,6 +50,7 @@ describe('resolveEditResubmitRecovery', () => {
           receipt_state: 'missing',
           delivery: null,
           replacement_message_id: null,
+          replacement_exists: null,
         }),
         requestOutcome: 'transport_ambiguous',
       })
