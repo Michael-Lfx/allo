@@ -92,8 +92,9 @@ reset、清理或覆盖已有脏改动。Windows cold-runtime `拒绝访问 (os 
 
 ### 2.2 三件套（coordinator）
 
-- **epoch**：会话级计数器，**仅** `beginEditResubmitReconciliation` 成功路径 +1。fetch 发起时
-  捕获、返回时比较，不等即整体丢弃——挡「跨越 edit 成功的陈旧 fetch」。普通 fetch 不动
+- **epoch**：会话级计数器，**仅** `beginEditResubmitReconciliation` 成功路径与
+  `commitAuthoritativeConversationReset` 成功路径 +1。fetch 发起时捕获、返回时比较，不等即
+  整体丢弃——挡「跨越 edit 成功或 conversation reset 的陈旧 fetch」。普通 fetch 不动
   epoch（consumer 之间互不误杀）。`maybeDestroy` 在无消费者且无 armed barrier 时销毁
   coordinator，epoch 归零。
 - **barrier**（按 operationId）：`armed`（invoke 前建立）→ `reconciling`（202 后翻转：原子
