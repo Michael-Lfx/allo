@@ -6720,6 +6720,7 @@ async fn edit_resubmit_delivery_state_uses_receipt_namespace_and_exact_message_i
     assert_eq!(accepted.replacement_message_id.as_deref(), Some(REPLACEMENT_ID));
     assert!(accepted.target_exists);
     assert_eq!(accepted.replacement_exists, Some(false));
+    assert!(accepted.requires_reset);
 
     nomifun_db::sqlx::query(
         "DELETE FROM messages WHERE conversation_id = ? AND message_id = ?",
@@ -6741,6 +6742,7 @@ async fn edit_resubmit_delivery_state_uses_receipt_namespace_and_exact_message_i
     assert!(!truncated.target_exists);
     assert_eq!(truncated.replacement_message_id.as_deref(), Some(REPLACEMENT_ID));
     assert_eq!(truncated.replacement_exists, Some(false));
+    assert!(truncated.requires_reset);
 
     repo.insert_message(&MessageRow {
         id: 0,
@@ -6768,19 +6770,40 @@ async fn edit_resubmit_delivery_state_uses_receipt_namespace_and_exact_message_i
     assert!(!replacement.target_exists);
     assert_eq!(replacement.replacement_message_id.as_deref(), Some(REPLACEMENT_ID));
     assert_eq!(replacement.replacement_exists, Some(true));
+    assert!(replacement.requires_reset);
 
-    assert!(matches!(
-        svc.edit_resubmit_delivery_state(
+    let missing_current_operation = svc
+        .edit_resubmit_delivery_state(
             USER_ID,
             &conversation.conversation_id,
             target_id,
             "0190f5fe-7c00-7a00-0000-000000000884",
         )
         .await
-        .unwrap()
-        .delivery_state,
+        .unwrap();
+    assert!(matches!(
+        missing_current_operation.delivery_state,
         EditResubmitDeliveryState::Missing
     ));
+    assert!(missing_current_operation.requires_reset);
+
+    // A receipt that is still owned by this process is normal in-flight state,
+    // even though the durable accepted fence is visible to the observer.
+    svc.install_durable_operation_guard_for_test(
+        USER_ID,
+        &conversation.conversation_id,
+        &operation_id,
+    );
+    let live = svc
+        .edit_resubmit_delivery_state(
+            USER_ID,
+            &conversation.conversation_id,
+            target_id,
+            CLIENT_KEY,
+        )
+        .await
+        .unwrap();
+    assert!(!live.requires_reset);
 }
 
 #[tokio::test]

@@ -208,6 +208,11 @@ pub struct EditResubmitStateResponse {
     /// `None` while no accepted receipt has supplied a replacement message ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement_exists: Option<bool>,
+    /// The conversation has an accepted edit fence without a live local owner.
+    /// The client must stop replaying and ask the user to explicitly reset the
+    /// conversation; this is never an instruction to reset automatically.
+    #[serde(default)]
+    pub requires_reset: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

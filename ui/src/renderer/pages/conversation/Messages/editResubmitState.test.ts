@@ -182,13 +182,28 @@ describe('authoritative failure domains (P0-3)', () => {
       nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
       nomiSendBoxSource.indexOf('// Steering injects into the turn')
     );
-    expect(nomiHandler).toContain("recovery.kind === 'post_mutation_failure'");
+    expect(nomiHandler).toContain("recovery.kind === 'mutated'");
+    expect(nomiHandler).toContain("observation.delivery?.result_ok === false");
     expect(nomiHandler).toContain("return { kind: 'post_mutation_failure', error }");
     expect(nomiHandler).toContain("reason: 'edit-resubmit-reconcile'");
     expect(nomiHandler).toContain("reason: 'edit-resubmit-failed'");
     expect(nomiHandler.indexOf("reason: 'edit-resubmit-failed'")).toBeGreaterThan(
       nomiHandler.indexOf("recovery.kind === 'safe_failure'")
     );
+  });
+});
+
+describe('edit confirmation lifecycle (P1)', () => {
+  test('stops stale confirmation work after unmount or conversation switch', () => {
+    const nomiHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
+      nomiSendBoxSource.indexOf('// Steering injects into the turn')
+    );
+    expect(nomiSendBoxSource).toContain('confirmationWaitRef.current?.();');
+    expect(nomiSendBoxSource).toContain('lifecycleGenerationRef.current !== lifecycleGeneration');
+    expect(nomiHandler).toContain('ensureOperationLive();');
+    expect(nomiHandler).toContain("recovery.kind === 'requires_reset'");
+    expect(nomiHandler).not.toContain('ipcBridge.conversation.reset.invoke({ conversation_id });');
   });
 });
 

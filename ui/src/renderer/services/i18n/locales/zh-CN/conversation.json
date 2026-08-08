@@ -773,7 +773,11 @@
     "editingBadge": "编辑中",
     "confirmingBadge": "正在确认重发结果",
     "continueConfirmation": "继续确认",
-    "failed": "重发编辑后的消息失败，请重试。"
+    "failed": "重发编辑后的消息失败，请重试。",
+    "resetRequired": "编辑重发的结果无法安全确认，请先重置会话后再继续。",
+    "resetAction": "重置会话",
+    "resetSuccess": "会话已重置",
+    "resetFailed": "重置会话失败，请稍后重试。"
   },
   "slashCommands": {
     "compact": {
