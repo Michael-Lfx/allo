@@ -2147,9 +2147,18 @@ impl ConversationService {
             return Ok(false);
         }
 
-        // An accepted receipt with a live process-local lease is the normal
-        // in-flight state. Only an accepted fence left without its owner is
+        // An accepted receipt with a live process-local owner is the normal
+        // in-flight state: either a reservation/admission still holding the
+        // conversation preparation gate (the durable guard is registered only
+        // after admission), or an admitted operation with a durable execution
+        // lease. Only an accepted fence left without any live owner is
         // authoritative proof that an explicit Conversation reset is needed.
+        if self
+            .runtime_state
+            .has_active_preparation(conversation_id)?
+        {
+            return Ok(false);
+        }
         Ok(!self.has_live_edit_resubmit_guard(user_id, conversation_id))
     }
 

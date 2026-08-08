@@ -6804,6 +6804,219 @@ async fn edit_resubmit_delivery_state_uses_receipt_namespace_and_exact_message_i
         .await
         .unwrap();
     assert!(!live.requires_reset);
+}#[tokio::test]
+async fn edit_resubmit_state_accepted_receipt_with_live_preparation_gate_is_not_reset() {
+    const USER_ID: &str = SQLITE_TEST_OWNER;
+    const CLIENT_KEY: &str = "0190f5fe-7c00-7a00-8000-000000000891";
+    const REPLACEMENT_ID: &str = "0190f5fe-7c00-7a00-8000-000000000892";
+
+    let database = init_database_memory().await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> =
+        Arc::new(SlowAgentRuntimeRegistry::new(Duration::from_millis(1)));
+    let svc = ConversationService::new(
+        Arc::<str>::from(USER_ID),
+        std::env::temp_dir(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry,
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let request = serde_json::from_value(json!({
+        "type": "nomi",
+        "extra": { "workspace": isolated_test_workspace("edit-state-gate") }
+    }))
+    .unwrap();
+    let conversation = svc.create(USER_ID, request).await.unwrap();
+    nomifun_db::sqlx::query(
+        "UPDATE conversations SET status = 'finished' WHERE conversation_id = ?",
+    )
+        .bind(&conversation.conversation_id)
+        .execute(database.pool())
+        .await
+        .unwrap();
+
+    let target_id = "0190f5fe-7c00-7a00-8000-000000000893";
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: target_id.to_owned(),
+        conversation_id: conversation.conversation_id.clone(),
+        msg_id: Some(target_id.to_owned()),
+        r#type: "text".to_owned(),
+        content: json!({ "content": "original" }).to_string(),
+        position: Some("right".to_owned()),
+        status: Some("finish".to_owned()),
+        hidden: false,
+        created_at: 100,
+    })
+    .await
+    .unwrap();
+
+    let operation_id = format!(
+        "public-edit-resubmit:v1:{USER_ID}:{}:{CLIENT_KEY}",
+        conversation.conversation_id
+    );
+    let request_payload = json!({
+        "workflow": "edit-resubmit",
+        "target_message_id": target_id,
+        "content": "edited",
+    })
+    .to_string();
+    nomifun_db::sqlx::query(
+        "INSERT INTO conversation_delivery_receipts (\
+            operation_id, message_id, conversation_id, projected_conversation_id, \
+            projected_message_id, user_id, kind, request_payload, status, created_at, updated_at\
+         ) VALUES (?, ?, ?, NULL, NULL, ?, 'turn', ?, 'accepted', 100, 100)",
+    )
+    .bind(&operation_id)
+    .bind(REPLACEMENT_ID)
+    .bind(&conversation.conversation_id)
+    .bind(USER_ID)
+    .bind(&request_payload)
+    .execute(database.pool())
+    .await
+    .unwrap();
+
+    // The request owner is still alive between durable claim and durable-guard
+    // registration: the per-conversation preparation gate is held.
+    let _preparation_guard = svc
+        .runtime_state()
+        .acquire_preparation_gate(
+            &conversation.conversation_id,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let accepted = svc
+        .edit_resubmit_delivery_state(
+            USER_ID,
+            &conversation.conversation_id,
+            target_id,
+            CLIENT_KEY,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        accepted.delivery_state,
+        EditResubmitDeliveryState::Accepted(ref delivery)
+            if delivery.message_id == REPLACEMENT_ID && !delivery.completed
+    ));
+    assert!(
+        !accepted.requires_reset,
+        "a live reservation/admission owner must not be reported as requires_reset"
+    );
+}
+
+#[tokio::test]
+async fn edit_resubmit_state_completed_receipt_never_requires_reset() {
+    const USER_ID: &str = SQLITE_TEST_OWNER;
+    const CLIENT_KEY: &str = "0190f5fe-7c00-7a00-8000-000000000901";
+    const REPLACEMENT_ID: &str = "0190f5fe-7c00-7a00-8000-000000000902";
+
+    let database = init_database_memory().await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> =
+        Arc::new(SlowAgentRuntimeRegistry::new(Duration::from_millis(1)));
+    let svc = ConversationService::new(
+        Arc::<str>::from(USER_ID),
+        std::env::temp_dir(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry,
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let request = serde_json::from_value(json!({
+        "type": "nomi",
+        "extra": { "workspace": isolated_test_workspace("edit-state-completed") }
+    }))
+    .unwrap();
+    let conversation = svc.create(USER_ID, request).await.unwrap();
+    nomifun_db::sqlx::query(
+        "UPDATE conversations SET status = 'finished' WHERE conversation_id = ?",
+    )
+        .bind(&conversation.conversation_id)
+        .execute(database.pool())
+        .await
+        .unwrap();
+
+    let target_id = "0190f5fe-7c00-7a00-8000-000000000903";
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: target_id.to_owned(),
+        conversation_id: conversation.conversation_id.clone(),
+        msg_id: Some(target_id.to_owned()),
+        r#type: "text".to_owned(),
+        content: json!({ "content": "original" }).to_string(),
+        position: Some("right".to_owned()),
+        status: Some("finish".to_owned()),
+        hidden: false,
+        created_at: 100,
+    })
+    .await
+    .unwrap();
+
+    let operation_id = format!(
+        "public-edit-resubmit:v1:{USER_ID}:{}:{CLIENT_KEY}",
+        conversation.conversation_id
+    );
+    let request_payload = json!({
+        "workflow": "edit-resubmit",
+        "target_message_id": target_id,
+        "content": "edited",
+    })
+    .to_string();
+    nomifun_db::sqlx::query(
+        "INSERT INTO conversation_delivery_receipts (\
+            operation_id, message_id, conversation_id, projected_conversation_id, \
+            projected_message_id, user_id, kind, request_payload, status, created_at, updated_at\
+         ) VALUES (?, ?, ?, NULL, NULL, ?, 'turn', ?, 'accepted', 100, 100)",
+    )
+    .bind(&operation_id)
+    .bind(REPLACEMENT_ID)
+    .bind(&conversation.conversation_id)
+    .bind(USER_ID)
+    .bind(&request_payload)
+    .execute(database.pool())
+    .await
+    .unwrap();
+
+    repo.complete_delivery_receipt(
+        USER_ID,
+        &conversation.conversation_id,
+        &operation_id,
+        false,
+        Some("empty_final_text"),
+        None,
+        Some("empty_final_text"),
+        Some(false),
+        101,
+    )
+    .await
+    .unwrap();
+
+    let observed = svc
+        .edit_resubmit_delivery_state(
+            USER_ID,
+            &conversation.conversation_id,
+            target_id,
+            CLIENT_KEY,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(observed.delivery_state, EditResubmitDeliveryState::Completed(_)));
+    assert!(
+        !observed.requires_reset,
+        "a terminal completed receipt is not an accepted orphan fence"
+    );
 }
 
 #[tokio::test]
