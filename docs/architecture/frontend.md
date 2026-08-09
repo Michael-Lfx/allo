@@ -90,6 +90,47 @@ navigation does not introduce another product object.
 - Realtime events arrive through a singleton WebSocket and are demuxed by event
   name.
 
+## Desktop Conversation Streaming Presentation
+
+The desktop conversation surface separates an active assistant reply into a
+stable Markdown prefix and a lightweight trailing block. The split is local to
+[`MessageText.tsx`](../../ui/src/renderer/pages/conversation/Messages/components/MessageText.tsx): completed
+paragraphs and closed fenced blocks render through `MarkdownView`, while the
+unfinished final paragraph stays plain text. An open fenced block is shown as a
+lightweight code preview until it closes, avoiding raw fence markers and a
+full-Markdown parse for every token.
+
+Markdown renders in a Shadow DOM so message typography and code controls have
+an explicit local style contract:
+
+- message body remains `14px / 22px`; headings use a restrained
+  `18 / 16 / 15 / 14px` hierarchy;
+- links receive theme-derived normal, hover, and keyboard-focus colors;
+- desktop code actions reveal on hover or keyboard focus inside the Shadow DOM;
+- process-row text uses a neutral readable color while icons carry running,
+  waiting, failed, or canceled state color; reduced-motion disables the
+  associated animations.
+
+### Current Scope And Follow-Up
+
+Updated in the current streaming presentation work:
+
+- stable-prefix / trailing-block rendering and open-code preview;
+- Markdown hierarchy, themed links, and Shadow-DOM code-toolbar states;
+- process status contrast and quieter live-step animation;
+- focused coverage for the splitter, Markdown typography, code toolbar, and
+  process layout.
+
+Not updated by this work:
+
+- mobile touch targets, safe-area spacing, and narrow-screen disclosure layout;
+- keyboard semantics and bounded scrolling for `MessageThinking`;
+- Mermaid toolbar styling inside Shadow DOM, including its preview/source
+  segmented control;
+- remaining light focus-ring tokens on receipt, trace, and scroll controls;
+- visual screenshot coverage across desktop themes (the current checks are
+  source/behavior tests plus the normal frontend quality gate).
+
 ## Desktop-Specific UX
 
 Desktop shell behavior is implemented by Tauri commands and plugins:

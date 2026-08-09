@@ -124,6 +124,35 @@ UnoCSS 与 Arco 并行提供 utility 类 —— 其配置位于仓库根目录�
 
 [`ui/src/renderer/services/i18n`](../../ui/src/renderer/services/) 用上述五种语言初始化 `i18next`。字符串按功能组织，解析后的语言通过 `main.tsx` 中的 `arcoLocales` map 流入 Arco。切换语言无需重新加载 —— i18next 与 Arco 都会按新语言重新计算。
 
+## 桌面端对话流式呈现
+
+桌面端的活跃助手回复会被拆成稳定的 Markdown 前缀与轻量的末尾区块。拆分逻辑位于
+[`MessageText.tsx`](../../ui/src/renderer/pages/conversation/Messages/components/MessageText.tsx)：完整段落和已经闭合的围栏代码块通过 `MarkdownView` 渲染；最后仍在生成的段落保持纯文本。尚未闭合的围栏代码块会先显示为轻量代码预览，直到闭合后再进入完整 Markdown，避免把围栏标记暴露给用户，也避免每个 token 都完整解析 Markdown。
+
+Markdown 在 Shadow DOM 中渲染，因此消息排版和代码控件具有明确的局部样式约定：
+
+- 消息正文保持 `14px / 22px`；标题使用克制的 `18 / 16 / 15 / 14px` 层级；
+- 链接使用主题派生的常态、hover 与键盘焦点颜色；
+- 桌面端代码操作在 Shadow DOM 内通过 hover 或键盘焦点显示；
+- 过程行文字使用中性的可读颜色，运行、等待、失败和取消状态主要由图标承载；reduced-motion 会关闭相关动画。
+
+### 当前范围与后续项
+
+本轮已经更新：
+
+- 稳定前缀 / 末尾区块渲染，以及未闭合代码的轻量预览；
+- Markdown 标题层级、主题链接和 Shadow DOM 代码工具栏状态；
+- 过程状态对比度与更轻的实时步骤动画；
+- 分段器、Markdown 排版、代码工具栏和过程布局的聚焦测试。
+
+本轮没有更新：
+
+- 移动端触控热区、安全区间距和窄屏披露区布局；
+- `MessageThinking` 的键盘语义与有界滚动；
+- Mermaid 在 Shadow DOM 内的工具栏样式，以及预览 / 原文分段控件；
+- receipt、trace 与滚动控件中仍使用浅色 token 的焦点环；
+- 跨桌面主题的视觉截图覆盖（当前只有源码/行为测试和常规前端质量门）。
+
 ## 一点平台特定的 UX
 
 桌面外壳在 Windows / Linux 上是**无边框**的（[`ui/src/renderer/components/layout/Titlebar/`](../../ui/src/renderer/components/layout/Titlebar/) 中的 React 标题栏通过 `@tauri-apps/api/window` 绘制最小化 / 最大化 / 关闭按钮）；macOS 通过 `TitleBarStyle::Overlay` 保留原生交通灯按钮。同一份 SPA 在浏览器中会隐藏标题栏，让浏览器外框处理它。区别在运行时通过 `isTauri()`（定义于 `tauriShell.ts`）来检测。
