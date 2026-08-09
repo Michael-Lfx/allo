@@ -44,6 +44,7 @@ import {
   type ReconciliationSnapshot,
 } from './conversationMessageCoordinator';
 import { getFetchedMergeKey, getToolLifecycleKey } from './messageRowKeys';
+import { createRefreshRetryController } from './refreshRetry';
 
 const [useMessageList, MessageListProvider, useUpdateMessageList] = createContext([] as TMessage[]);
 const [useMessageListLoading, MessageListLoadingProvider, useUpdateMessageListLoading] = createContext(false);
@@ -992,6 +993,37 @@ export const applyFetchedMessages = (
   return purgeRowsBySnapshot(merged, snapshot);
 };
 
+export const applyOlderKeysetPage = (
+  currentList: TMessage[],
+  olderRows: TMessage[],
+  capturedEpoch: number,
+  currentEpoch: number,
+  snapshot: ReconciliationSnapshot
+): TMessage[] => {
+  if (capturedEpoch !== currentEpoch) return currentList;
+  const current = purgeRowsBySnapshot(currentList, snapshot);
+  const older = filterRowsBySnapshot(olderRows, snapshot);
+  const isStrictlyEarlier = (left: TMessage, right: TMessage): boolean =>
+    (left.created_at ?? 0) < (right.created_at ?? 0) ||
+    ((left.created_at ?? 0) === (right.created_at ?? 0) &&
+      (left.message_id ?? left.id) < (right.message_id ?? right.id));
+  const oldest = current.reduce<TMessage | undefined>((candidate, message) => {
+    if (!candidate) return message;
+    return isStrictlyEarlier(message, candidate) ? message : candidate;
+  }, undefined);
+  const existingIds = new Set(
+    current
+      .map((message) => message.message_id)
+      .filter((messageId): messageId is MessageId => messageId !== undefined)
+  );
+  const fresh = older.filter((message) => {
+    if (existingIds.has(getPersistedMessageId(message))) return false;
+    if (!oldest) return true;
+    return isStrictlyEarlier(message, oldest);
+  });
+  return fresh.length ? [...fresh, ...current] : current;
+};
+
 /**
  * Loads a conversation's message history into the shared message-list store.
  *
@@ -1117,14 +1149,15 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
       setHasMore(hasMoreRef.current);
       if (older.length) {
         oldestCursorRef.current = messageCursorOf(older[0]);
+        const snapshot = captureReconciliationSnapshot(key);
         update((currentList) => {
-          const existingIds = new Set(
-            currentList
-              .map((message) => message.message_id)
-              .filter((messageId): messageId is MessageId => messageId !== undefined)
+          return applyOlderKeysetPage(
+            currentList,
+            older,
+            capturedEpoch,
+            getEpoch(key),
+            snapshot
           );
-          const fresh = older.filter((message) => !existingIds.has(getPersistedMessageId(message)));
-          return fresh.length ? [...fresh, ...currentList] : currentList;
         });
       }
     } catch (error) {
@@ -1229,12 +1262,19 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   // refreshChannelDrift.structure.test.ts).
   useEffect(() => {
     if (!key) return;
-    return addEventListener('conversation.messages.refresh', (event) => {
-      if (event.conversationId !== key) return;
-      void loadMessages().catch((error) => {
-        console.warn('[useMessageLstCache] Failed to refresh messages after edit-resubmit:', error);
-      });
+    const refresh = createRefreshRetryController({
+      load: async () => {
+        await loadMessages();
+      },
     });
+    const removeListener = addEventListener('conversation.messages.refresh', (event) => {
+      if (event.conversationId !== key) return;
+      refresh.trigger();
+    });
+    return () => {
+      removeListener();
+      refresh.dispose();
+    };
   }, [key, loadMessages]);
 
   return { loadOlder, hasMore, loadingOlder };

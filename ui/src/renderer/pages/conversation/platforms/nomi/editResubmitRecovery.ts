@@ -7,13 +7,32 @@ export type EditResubmitRequestOutcome =
 
 export type EditResubmitRecoveryKind =
   | 'safe_failure'
-  | 'pending'
-  | 'mutated'
+  | 'claimed_pending'
+  | 'transcript_truncated'
+  | 'success'
+  | 'post_mutation_failure'
+  | 'unknown'
   | 'requires_reset';
 
 export interface EditResubmitRecovery {
   kind: EditResubmitRecoveryKind;
 }
+
+export const shouldReplayEditResubmit = ({
+  recovery,
+  observation,
+  requestOutcome,
+  replayedThisCycle,
+}: {
+  recovery: EditResubmitRecovery;
+  observation: IEditResubmitObservation;
+  requestOutcome: EditResubmitRequestOutcome;
+  replayedThisCycle: boolean;
+}): boolean =>
+  recovery.kind === 'unknown' &&
+  observation.receipt_state === 'missing' &&
+  requestOutcome === 'transport_ambiguous' &&
+  !replayedThisCycle;
 
 /**
  * Resolve one exact edit/resubmit observation. The target's durable presence
@@ -36,26 +55,29 @@ export const resolveEditResubmitRecovery = ({
     observation.replacement_message_id !== null &&
     observation.delivery.msg_id !== observation.replacement_message_id
   ) {
-    return { kind: 'pending' };
+    return { kind: 'unknown' };
   }
 
   if (observation.receipt_state === 'missing') {
-    return observation.target_exists && requestOutcome === 'server_rejected'
+    if (!observation.target_exists) {
+      return { kind: 'post_mutation_failure' };
+    }
+    return requestOutcome === 'server_rejected'
       ? { kind: 'safe_failure' }
-      : { kind: 'pending' };
+      : { kind: 'unknown' };
   }
 
-  // Once the exact target is gone, the destructive boundary has happened.
-  // This remains true even when the replacement is not visible yet.
-  if (!observation.target_exists) {
-    return { kind: 'mutated' };
+  if (observation.receipt_state === 'accepted') {
+    return observation.target_exists
+      ? { kind: 'claimed_pending' }
+      : { kind: 'transcript_truncated' };
   }
 
-  if (observation.receipt_state === 'completed' && observation.delivery?.result_ok === false) {
-    return { kind: 'safe_failure' };
+  if (observation.target_exists) {
+    return { kind: 'requires_reset' };
   }
 
-  // Accepted receipts are still owned by a worker; completed receipts whose
-  // target remains present are inconsistent and must be observed again.
-  return { kind: 'pending' };
+  return observation.delivery?.result_ok === true && observation.replacement_exists === true
+    ? { kind: 'success' }
+    : { kind: 'post_mutation_failure' };
 };

@@ -5,6 +5,12 @@ notes at a high level rather than a complete historical log.
 
 ## Unreleased
 
+- Editing or retrying a conversation message now recovers from response loss,
+  timeouts, remounts, and post-truncation failures with one durable operation
+  key. Ambiguous outcomes no longer revoke transcript barriers, current drafts
+  and newly added attachments are preserved, and orphaned edits require an
+  explicit single-flight Conversation reset.
+
 - Composer paste handling no longer inserts plain text twice after page or
   conversation switches; plain text remains owned by the Composer while files
   and images continue through PasteService.

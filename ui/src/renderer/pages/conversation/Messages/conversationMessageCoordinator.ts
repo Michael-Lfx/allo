@@ -100,6 +100,11 @@ const getOrCreate = (conversationId: ConversationId): ConversationMessageCoordin
 export const getEpoch = (conversationId: ConversationId): number =>
   coordinators.get(conversationId)?.epoch ?? 0;
 
+export const hasEditResubmitBarrier = (
+  conversationId: ConversationId,
+  operationId: string
+): boolean => coordinators.get(conversationId)?.barriers.has(operationId) ?? false;
+
 /**
  * Capture the durable/stream identity of the old suffix starting at the target
  * user message. Returns `null` when the target cannot be located by durable
@@ -143,6 +148,12 @@ export const armBarrier = (
   capture: EditResubmitBarrierCapture
 ): void => {
   const coordinator = getOrCreate(conversationId);
+  const existing = coordinator.barriers.get(operationId);
+  if (existing) {
+    // Remount recovery re-adopts the same logical operation. Never replace a
+    // reconciling barrier or change its frozen identities.
+    return;
+  }
   coordinator.barriers.set(operationId, {
     operationId,
     mergeKeys: capture.mergeKeys,
@@ -188,6 +199,9 @@ export const beginEditResubmitReconciliation = (
       { operationId }
     );
     return undefined;
+  }
+  if (barrier.phase === 'reconciling') {
+    return barrier.successEpoch;
   }
   coordinator.epoch += 1;
   const newEpoch = coordinator.epoch;

@@ -37,6 +37,80 @@ async fn setup() -> (SqliteConversationRepository, nomifun_db::Database) {
     (repo, db)
 }
 
+#[tokio::test]
+async fn edit_resubmit_snapshot_returns_exact_receipt_and_message_identities_together() {
+    let (repo, db) = setup().await;
+    let mut conversation = make_conversation("edit-resubmit-snapshot");
+    conversation.conversation_id = repo.create(&conversation).await.unwrap();
+    let target_id = MessageId::new().into_string();
+    let replacement_id = MessageId::new().into_string();
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: target_id.clone(),
+        conversation_id: conversation.conversation_id.clone(),
+        msg_id: Some(target_id.clone()),
+        r#type: "text".to_owned(),
+        content: r#"{"content":"original"}"#.to_owned(),
+        position: Some("right".to_owned()),
+        status: Some("finish".to_owned()),
+        hidden: false,
+        created_at: 10,
+    })
+    .await
+    .unwrap();
+    let prefix = format!(
+        "public-edit-resubmit:v1:{USER_ID}:{}:",
+        conversation.conversation_id
+    );
+    let operation_id = format!("{prefix}client-key");
+    sqlx::query(
+        "INSERT INTO conversation_delivery_receipts (operation_id, message_id, \
+         conversation_id, user_id, kind, request_payload, status, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, 'turn', '{}', 'accepted', 10, 10)",
+    )
+    .bind(&operation_id)
+    .bind(&replacement_id)
+    .bind(&conversation.conversation_id)
+    .bind(USER_ID)
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let before = repo
+        .get_edit_resubmit_state_snapshot(
+            USER_ID,
+            &conversation.conversation_id,
+            &operation_id,
+            &target_id,
+            &prefix,
+        )
+        .await
+        .unwrap();
+    assert!(before.target_exists);
+    assert_eq!(before.replacement_exists, Some(false));
+    assert!(before.accepted_edit_fence_exists);
+    assert_eq!(before.receipt.unwrap().message_id, replacement_id);
+
+    sqlx::query("DELETE FROM messages WHERE conversation_id = ? AND message_id = ?")
+        .bind(&conversation.conversation_id)
+        .bind(&target_id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let after = repo
+        .get_edit_resubmit_state_snapshot(
+            USER_ID,
+            &conversation.conversation_id,
+            &operation_id,
+            &target_id,
+            &prefix,
+        )
+        .await
+        .unwrap();
+    assert!(!after.target_exists);
+    assert_eq!(after.replacement_exists, Some(false));
+}
+
 async fn insert_requirement_owner_fixture(
     pool: &sqlx::SqlitePool,
     display_no: i64,

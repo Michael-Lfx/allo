@@ -199,19 +199,18 @@ pub enum EditResubmitReceiptState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditResubmitStateResponse {
     pub receipt_state: EditResubmitReceiptState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub delivery: Option<SendMessageResponse>,
     /// The durable replacement candidate owned by the exact edit receipt.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub replacement_message_id: Option<String>,
     pub target_exists: bool,
     /// `None` while no accepted receipt has supplied a replacement message ID.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub replacement_exists: Option<bool>,
     /// The conversation has an accepted edit fence without a live local owner.
     /// The client must stop replaying and ask the user to explicitly reset the
     /// conversation; this is never an instruction to reset automatically.
-    #[serde(default)]
     pub requires_reset: bool,
 }
 
@@ -567,6 +566,33 @@ mod tests {
         assert_eq!(response.result_ok, Some(false));
         assert_eq!(response.result_text.as_deref(), Some("partial"));
         assert_eq!(response.result_error.as_deref(), Some("model failed"));
+    }
+
+    #[test]
+    fn edit_resubmit_missing_snapshot_serializes_required_nulls_and_reset_flag() {
+        let value = serde_json::to_value(EditResubmitStateResponse {
+            receipt_state: EditResubmitReceiptState::Missing,
+            delivery: None,
+            replacement_message_id: None,
+            target_exists: true,
+            replacement_exists: None,
+            requires_reset: false,
+        })
+        .unwrap();
+        assert_eq!(value["delivery"], serde_json::Value::Null);
+        assert_eq!(value["replacement_message_id"], serde_json::Value::Null);
+        assert_eq!(value["replacement_exists"], serde_json::Value::Null);
+        assert_eq!(value["requires_reset"], false);
+        assert!(
+            serde_json::from_value::<EditResubmitStateResponse>(json!({
+                "receipt_state": "missing",
+                "delivery": null,
+                "replacement_message_id": null,
+                "target_exists": true,
+                "replacement_exists": null
+            }))
+            .is_err()
+        );
     }
 
     #[test]

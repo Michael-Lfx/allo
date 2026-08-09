@@ -2942,18 +2942,93 @@ export interface IEditResubmitObservation {
   requires_reset: boolean;
 }
 
-const fromApiEditResubmitObservation = (
-  result: IEditResubmitObservation
-): IEditResubmitObservation => ({
-  ...result,
-  delivery: result.delivery ? fromApiSendMessageResult(result.delivery) : null,
-  replacement_message_id:
-    result.replacement_message_id == null
-      ? null
-      : parseMessageId(result.replacement_message_id),
-  replacement_exists: result.replacement_exists ?? null,
-  requires_reset: result.requires_reset === true,
-});
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const requireBoolean = (record: Record<string, unknown>, key: string): boolean => {
+  const value = record[key];
+  if (typeof value !== 'boolean') {
+    throw new TypeError(`Invalid edit/resubmit observation: ${key} must be boolean`);
+  }
+  return value;
+};
+
+export const decodeEditResubmitObservation = (result: unknown): IEditResubmitObservation => {
+  if (!isRecord(result)) {
+    throw new TypeError('Invalid edit/resubmit observation: expected object');
+  }
+  const receiptState = result.receipt_state;
+  if (receiptState !== 'missing' && receiptState !== 'accepted' && receiptState !== 'completed') {
+    throw new TypeError('Invalid edit/resubmit observation: unsupported receipt_state');
+  }
+  const targetExists = requireBoolean(result, 'target_exists');
+  const requiresReset = requireBoolean(result, 'requires_reset');
+
+  if (receiptState === 'missing') {
+    if (
+      result.delivery !== null ||
+      result.replacement_message_id !== null ||
+      result.replacement_exists !== null
+    ) {
+      throw new TypeError('Invalid edit/resubmit observation: missing receipt has candidate data');
+    }
+    return {
+      receipt_state: receiptState,
+      delivery: null,
+      replacement_message_id: null,
+      target_exists: targetExists,
+      replacement_exists: null,
+      requires_reset: requiresReset,
+    };
+  }
+
+  if (!isRecord(result.delivery) || typeof result.replacement_message_id !== 'string') {
+    throw new TypeError('Invalid edit/resubmit observation: receipt is missing delivery identity');
+  }
+  const rawDelivery = result.delivery;
+  if (
+    typeof rawDelivery.msg_id !== 'string' ||
+    typeof rawDelivery.replayed !== 'boolean' ||
+    typeof rawDelivery.completed !== 'boolean' ||
+    (rawDelivery.result_ok !== null && typeof rawDelivery.result_ok !== 'boolean') ||
+    (rawDelivery.result_text !== null && typeof rawDelivery.result_text !== 'string') ||
+    (rawDelivery.result_error !== null && typeof rawDelivery.result_error !== 'string') ||
+    (rawDelivery.result_error_code !== undefined &&
+      rawDelivery.result_error_code !== null &&
+      typeof rawDelivery.result_error_code !== 'string') ||
+    (rawDelivery.result_error_retryable !== undefined &&
+      rawDelivery.result_error_retryable !== null &&
+      typeof rawDelivery.result_error_retryable !== 'boolean')
+  ) {
+    throw new TypeError('Invalid edit/resubmit observation: malformed delivery');
+  }
+  const replacementExists = requireBoolean(result, 'replacement_exists');
+  const delivery = fromApiSendMessageResult(rawDelivery as unknown as ISendMessageResult);
+  const replacementMessageId = parseMessageId(result.replacement_message_id);
+  if (delivery.msg_id !== replacementMessageId) {
+    throw new TypeError('Invalid edit/resubmit observation: candidate identities disagree');
+  }
+  if (delivery.completed !== (receiptState === 'completed')) {
+    throw new TypeError('Invalid edit/resubmit observation: delivery terminal state disagrees');
+  }
+  if (
+    receiptState === 'accepted' &&
+    (delivery.result_ok !== null || delivery.result_text !== null || delivery.result_error !== null)
+  ) {
+    throw new TypeError('Invalid edit/resubmit observation: accepted receipt has terminal result');
+  }
+
+  return {
+    receipt_state: receiptState,
+    delivery,
+    replacement_message_id: replacementMessageId,
+    target_exists: targetExists,
+    replacement_exists: replacementExists,
+    requires_reset: requiresReset,
+  };
+};
+
+const fromApiEditResubmitObservation = decodeEditResubmitObservation;
 
 export interface IConfirmMessageParams {
   confirm_key: string;

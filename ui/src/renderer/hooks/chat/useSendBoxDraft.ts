@@ -37,6 +37,7 @@ type Draft =
   | {
       _type: 'nomi';
       content: string;
+      contentRevision: number;
       atPath: Array<string | FileOrFolderItem>;
       uploadFile: string[];
     };

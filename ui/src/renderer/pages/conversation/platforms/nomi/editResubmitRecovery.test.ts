@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { parseMessageId } from '@/common/types/ids';
 import type { IEditResubmitObservation } from '@/common/adapter/ipcBridge';
-import { resolveEditResubmitRecovery } from './editResubmitRecovery';
+import { resolveEditResubmitRecovery, shouldReplayEditResubmit } from './editResubmitRecovery';
 
 const replacementId = parseMessageId('0190f5fe-7c00-7a00-8000-000000000901');
 
@@ -43,7 +43,7 @@ describe('resolveEditResubmitRecovery', () => {
     ).toEqual({ kind: 'safe_failure' });
   });
 
-  test('ambiguous transport failure plus missing receipt remains pending', () => {
+  test('ambiguous transport failure plus missing receipt remains unknown', () => {
     expect(
       resolveEditResubmitRecovery({
         observation: observation({
@@ -54,7 +54,7 @@ describe('resolveEditResubmitRecovery', () => {
         }),
         requestOutcome: 'transport_ambiguous',
       })
-    ).toEqual({ kind: 'pending' });
+    ).toEqual({ kind: 'unknown' });
   });
 
   test('accepted receipt with target present remains pending', () => {
@@ -63,26 +63,26 @@ describe('resolveEditResubmitRecovery', () => {
         observation: observation({ target_exists: true, replacement_exists: false }),
         requestOutcome: 'accepted',
       })
-    ).toEqual({ kind: 'pending' });
+    ).toEqual({ kind: 'claimed_pending' });
   });
 
-  test('target absence is mutation proof even before replacement appears', () => {
+  test('accepted target absence proves transcript truncation', () => {
     expect(
       resolveEditResubmitRecovery({
         observation: observation({ target_exists: false, replacement_exists: false }),
         requestOutcome: 'accepted',
       })
-    ).toEqual({ kind: 'mutated' });
+    ).toEqual({ kind: 'transcript_truncated' });
 
     expect(
       resolveEditResubmitRecovery({
         observation: observation({ target_exists: false, replacement_exists: true }),
         requestOutcome: 'accepted',
       })
-    ).toEqual({ kind: 'mutated' });
+    ).toEqual({ kind: 'transcript_truncated' });
   });
 
-  test('completed error with target present is a safe failure', () => {
+  test('completed error with target present requires reset and never revokes', () => {
     expect(
       resolveEditResubmitRecovery({
         observation: observation({
@@ -92,7 +92,7 @@ describe('resolveEditResubmitRecovery', () => {
         }),
         requestOutcome: 'server_rejected',
       })
-    ).toEqual({ kind: 'safe_failure' });
+    ).toEqual({ kind: 'requires_reset' });
   });
 
   test('completed error after target removal remains a mutation', () => {
@@ -106,7 +106,7 @@ describe('resolveEditResubmitRecovery', () => {
         }),
         requestOutcome: 'transport_ambiguous',
       })
-    ).toEqual({ kind: 'mutated' });
+    ).toEqual({ kind: 'post_mutation_failure' });
   });
 
   test('authoritative reset requirement stops every recovery path', () => {
@@ -137,6 +137,81 @@ describe('resolveEditResubmitRecovery', () => {
         }),
         requestOutcome: 'accepted',
       })
-    ).toEqual({ kind: 'pending' });
+    ).toEqual({ kind: 'unknown' });
+  });
+
+  test('missing receipt after external target removal is post-mutation failure', () => {
+    expect(
+      resolveEditResubmitRecovery({
+        observation: observation({
+          receipt_state: 'missing',
+          delivery: null,
+          replacement_message_id: null,
+          target_exists: false,
+          replacement_exists: null,
+        }),
+        requestOutcome: 'transport_ambiguous',
+      })
+    ).toEqual({ kind: 'post_mutation_failure' });
+  });
+
+  test('completed success requires the exact replacement to exist', () => {
+    expect(
+      resolveEditResubmitRecovery({
+        observation: observation({
+          receipt_state: 'completed',
+          delivery: delivery({ completed: true, result_ok: true }),
+          target_exists: false,
+          replacement_exists: true,
+        }),
+        requestOutcome: 'accepted',
+      })
+    ).toEqual({ kind: 'success' });
+
+    expect(
+      resolveEditResubmitRecovery({
+        observation: observation({
+          receipt_state: 'completed',
+          delivery: delivery({ completed: true, result_ok: true }),
+          target_exists: false,
+          replacement_exists: false,
+        }),
+        requestOutcome: 'accepted',
+      })
+    ).toEqual({ kind: 'post_mutation_failure' });
+  });
+
+  test('accepted receipts are GET-only and ambiguous missing receipts replay once per cycle', () => {
+    const acceptedObservation = observation();
+    expect(
+      shouldReplayEditResubmit({
+        recovery: { kind: 'claimed_pending' },
+        observation: acceptedObservation,
+        requestOutcome: 'accepted',
+        replayedThisCycle: false,
+      })
+    ).toBe(false);
+    const missingObservation = observation({
+      receipt_state: 'missing',
+      delivery: null,
+      replacement_message_id: null,
+      replacement_exists: null,
+    });
+    expect(
+      shouldReplayEditResubmit({
+        recovery: { kind: 'unknown' },
+        observation: missingObservation,
+        requestOutcome: 'transport_ambiguous',
+        replayedThisCycle: false,
+      })
+    ).toBe(true);
+    expect(
+      shouldReplayEditResubmit({
+        recovery: { kind: 'unknown' },
+        observation: missingObservation,
+        requestOutcome: 'transport_ambiguous',
+        replayedThisCycle: true,
+      })
+    ).toBe(false);
   });
 });

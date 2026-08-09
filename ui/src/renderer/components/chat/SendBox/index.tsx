@@ -66,9 +66,14 @@ import type { EditResubmitResolution } from '@/renderer/components/chat/SendBox/
 import {
   clearEditingMessage,
   type EditingMessagePhase,
+  getEditingMessage,
   setEditingMessage,
   updateEditingMessage,
 } from '@/renderer/pages/conversation/Messages/editingMessageStore';
+import {
+  beginEditResubmitOperation,
+  getEditResubmitOperation,
+} from '@/renderer/pages/conversation/Messages/editResubmitOperationController';
 import { markRetrySucceeded } from '@/renderer/utils/analytics/productFunnel';
 import PinnedPlan from '@renderer/pages/conversation/Messages/components/PinnedPlan';
 import { derivePinnedPlan } from '@renderer/pages/conversation/Messages/components/pinnedPlanModel';
@@ -400,7 +405,13 @@ const SendBox: React.FC<{
       // P2-3: a resubmit already in flight owns the composer — a second edit
       // request mid-flight would rewrite the input under a destructive request.
       // isLoading covers the settled-render case; the ref covers same-tick.
-      if (isLoading || activeEditOperationRef.current !== null) return;
+      if (
+        isLoading ||
+        activeEditOperationRef.current !== null ||
+        activeRetryOperationRef.current !== null
+      ) return;
+      const editConversationId = conversationIdRef.current;
+      if (editConversationId && getEditResubmitOperation(editConversationId)) return;
       editPrevDraftRef.current = latestInputRef.current;
       editingCreatedAtRef.current = payload.createdAt;
       setEditingMsgId(payload.msgId);
@@ -432,7 +443,10 @@ const SendBox: React.FC<{
     return () => {
       const owner = editingOwnerIdRef.current;
       const cid = conversationIdRef.current;
-      if (owner !== undefined && cid) clearEditingMessage(cid, owner);
+      const state = cid ? getEditingMessage(cid) : undefined;
+      if (owner !== undefined && cid && (!state || state.phase === 'editing')) {
+        clearEditingMessage(cid, owner);
+      }
     };
   }, []);
 
@@ -449,6 +463,21 @@ const SendBox: React.FC<{
       if (!content) return;
       void (async () => {
         const retryOperationId = uuidv7();
+        const retryConversationId = conversationIdRef.current;
+        if (
+          retryConversationId && onEditResubmit && payload.msgId && payload.createdAt &&
+          !beginEditResubmitOperation({
+            conversationId: retryConversationId,
+            operationId: retryOperationId,
+            targetMessageId: payload.msgId,
+            targetCreatedAt: payload.createdAt,
+            originalContent: content,
+            attachmentPaths: [],
+            draftRevision: inputRevisionRef.current,
+            source: 'retry',
+            phase: 'submitting',
+          })
+        ) return;
         activeRetryOperationRef.current = retryOperationId;
         // Snapshot the input revision so a retry failure restores the retried
         // text only when the user never touched the composer mid-flight — never
@@ -457,6 +486,15 @@ const SendBox: React.FC<{
         setIsLoading(true);
         try {
           if (onEditResubmit && payload.msgId && payload.createdAt) {
+            if (retryConversationId) {
+              setEditingMessage(retryConversationId, {
+                ownerId: editingOwnerId(),
+                msgId: payload.msgId,
+                pending: true,
+                phase: 'submitting',
+                operationId: retryOperationId,
+              });
+            }
             const resolution = await onEditResubmit(
               payload.msgId,
               payload.createdAt,
@@ -1621,6 +1659,15 @@ const SendBox: React.FC<{
 
   const sendMessageHandler = () => {
     if (isUploading || isStopping) return;
+    const controllerConversationId = conversationIdRef.current;
+    if (
+      controllerConversationId &&
+      getEditResubmitOperation(controllerConversationId) &&
+      activeEditOperationRef.current === null &&
+      activeRetryOperationRef.current === null
+    ) {
+      return;
+    }
     // 编辑模式：提交走截断重跑而非普通发送。
     if (editingMsgId && onEditResubmit) {
       if (isLoading || !input.trim()) return;
@@ -1634,16 +1681,30 @@ const SendBox: React.FC<{
       const finalMessage = input;
       const targetId = editingMsgId;
       const targetCreatedAt = editingCreatedAtRef.current;
+      const cid = conversationIdRef.current;
       // Stamp this resubmit with an operation token and snapshot the input
       // revision. Edit state + input are cleared ONLY after backend acceptance
       // (the .then below); a stale operation or a user who typed mid-flight must
       // not have its input/edit/loading state touched.
       const operationId = uuidv7();
+      if (
+        cid &&
+        !beginEditResubmitOperation({
+          conversationId: cid,
+          operationId,
+          targetMessageId: targetId,
+          targetCreatedAt,
+          originalContent: finalMessage,
+          attachmentPaths: [],
+          draftRevision: inputRevisionRef.current,
+          source: 'edit',
+          phase: 'submitting',
+        })
+      ) return;
       activeEditOperationRef.current = operationId;
       const submittedInputRevision = inputRevisionRef.current;
       const isCurrentOperation = () => activeEditOperationRef.current === operationId;
       const ownerId = editingOwnerId();
-      const cid = conversationIdRef.current;
       setIsLoading(true);
       // C3: 重发在飞 → 徽章转「重发中」（仅 owner 匹配生效）。
       // C3: resubmit in flight → badge flips to "resubmitting" (owner-guarded).
@@ -1701,6 +1762,9 @@ const SendBox: React.FC<{
         .catch(() => {
           // Backend rejected: stay in edit mode so the user can adjust and retry.
           // Restore the submitted text only if the user didn't change it mid-flight.
+          // Lifecycle detach / requires-reset keeps the durable controller
+          // record: do not downgrade that confirming operation to a fresh edit.
+          if (cid && getEditResubmitOperation(cid)?.operationId === operationId) return;
           const outcome = resolveEditResubmitOutcome({
             isCurrentOperation: isCurrentOperation(),
             revisionUnchanged: inputRevisionRef.current === submittedInputRevision,

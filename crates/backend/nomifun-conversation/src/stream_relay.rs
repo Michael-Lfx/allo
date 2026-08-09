@@ -11638,6 +11638,26 @@ mod tests {
                 .find(|row| row.message_id == message_id)
                 .cloned())
         }
+        async fn get_latest_user_text_message(
+            &self,
+            conv_id: &str,
+        ) -> Result<Option<MessageRow>, DbError> {
+            Ok(self
+                .inserts
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|row| {
+                    row.conversation_id == conv_id
+                        && row.position.as_deref() == Some("right")
+                        && row.r#type == "text"
+                })
+                .max_by(|left, right| {
+                    (left.created_at, left.message_id.as_str())
+                        .cmp(&(right.created_at, right.message_id.as_str()))
+                })
+                .cloned())
+        }
         async fn insert_message(&self, row: &MessageRow) -> Result<(), DbError> {
             self.message_insert_attempts
                 .fetch_add(1, AtomicOrdering::SeqCst);

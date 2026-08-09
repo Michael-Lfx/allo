@@ -4,11 +4,13 @@ import type { ConversationId, MessageId } from '@/common/types/ids';
 import {
   __resetEditingMessageStore,
   clearEditingMessage,
+  clearEditingMessageByOperation,
   getEditingMessage,
   getEditingMessageSnapshot,
   setEditingMessage,
   subscribeEditingMessage,
   updateEditingMessage,
+  updateEditingMessageByOperation,
 } from '@/renderer/pages/conversation/Messages/editingMessageStore';
 
 const CID = 'conv-1' as ConversationId;
@@ -51,6 +53,24 @@ describe('editingMessageStore', () => {
       pending: true,
       operationId: 'op1',
     });
+  });
+
+  test('a remounted owner can update and clear only the same durable operation', () => {
+    setEditingMessage(CID, {
+      ownerId: 'old-owner',
+      msgId: MID('m1'),
+      pending: true,
+      phase: 'confirming',
+      operationId: 'op-a',
+    });
+    updateEditingMessageByOperation(CID, 'op-b', { phase: 'editing' });
+    expect(getEditingMessage(CID)?.phase).toBe('confirming');
+    updateEditingMessageByOperation(CID, 'op-a', { continueConfirmation: () => undefined });
+    expect(typeof getEditingMessage(CID)?.continueConfirmation).toBe('function');
+    clearEditingMessageByOperation(CID, 'op-b');
+    expect(getEditingMessage(CID)).toBeDefined();
+    clearEditingMessageByOperation(CID, 'op-a');
+    expect(getEditingMessage(CID)).toBeUndefined();
   });
 
   test('updateEditingMessage on a missing conversation is a no-op', () => {

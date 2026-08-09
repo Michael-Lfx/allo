@@ -2162,6 +2162,17 @@ impl ConversationService {
         Ok(!self.has_live_edit_resubmit_guard(user_id, conversation_id))
     }
 
+    fn accepted_edit_snapshot_requires_reset(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<bool, AppError> {
+        if self.runtime_state.has_active_preparation(conversation_id)? {
+            return Ok(false);
+        }
+        Ok(!self.has_live_edit_resubmit_guard(user_id, conversation_id))
+    }
+
     fn edit_resubmit_request_payload(
         target_message_id: &str,
         req: &SendMessageRequest,
@@ -7441,23 +7452,28 @@ impl ConversationService {
 
         let operation_id =
             Self::public_edit_resubmit_operation_id(user_id, conversation_key, idempotency_key);
-        let target_exists = self
+        let operation_prefix = Self::public_edit_resubmit_operation_prefix(user_id, conversation_key);
+        let snapshot = self
             .conversation_repo
-            .get_message(conversation_key, target_message_id)
-            .await?
-            .is_some();
-        let requires_reset = self
-            .edit_resubmit_requires_reset(user_id, conversation_key)
+            .get_edit_resubmit_state_snapshot(
+                user_id,
+                conversation_key,
+                &operation_id,
+                target_message_id,
+                &operation_prefix,
+            )
             .await?;
-        let Some(receipt) = self
-            .conversation_repo
-            .get_delivery_receipt(user_id, conversation_key, &operation_id)
-            .await?
+        let requires_reset = if snapshot.accepted_edit_fence_exists {
+            self.accepted_edit_snapshot_requires_reset(user_id, conversation_key)?
+        } else {
+            false
+        };
+        let Some(receipt) = snapshot.receipt
         else {
             return Ok(EditResubmitObservation {
                 delivery_state: EditResubmitDeliveryState::Missing,
                 replacement_message_id: None,
-                target_exists,
+                target_exists: snapshot.target_exists,
                 replacement_exists: None,
                 requires_reset,
             });
@@ -7493,12 +7509,7 @@ impl ConversationService {
         })?;
 
         let replacement_message_id = receipt.message_id.clone();
-        let replacement_exists = Some(
-            self.conversation_repo
-                .get_message(conversation_key, &replacement_message_id)
-                .await?
-                .is_some(),
-        );
+        let replacement_exists = snapshot.replacement_exists;
         let delivery = IdempotentMessageDelivery {
             message_id: replacement_message_id.clone(),
             replayed: true,
@@ -7521,9 +7532,10 @@ impl ConversationService {
         Ok(EditResubmitObservation {
             delivery_state,
             replacement_message_id: Some(replacement_message_id),
-            target_exists,
+            target_exists: snapshot.target_exists,
             replacement_exists,
-            requires_reset,
+            requires_reset: requires_reset
+                || (receipt.status == "completed" && snapshot.target_exists),
         })
     }
 

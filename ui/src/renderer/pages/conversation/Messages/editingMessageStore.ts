@@ -116,6 +116,48 @@ export const clearEditingMessage = (conversationId: ConversationId, ownerId: str
 export const getEditingMessage = (conversationId: ConversationId): EditingMessageState | undefined =>
   store.get(conversationId);
 
+/** Terminal recovery may finish under a remounted owner. Match the durable
+ * operation rather than a stale component owner when clearing its badge. */
+export const clearEditingMessageByOperation = (
+  conversationId: ConversationId,
+  operationId: string
+): void => {
+  const existing = store.get(conversationId);
+  if (!existing || existing.operationId !== operationId) return;
+  const next = new Map(store);
+  next.delete(conversationId);
+  replaceStore(next);
+};
+
+export const returnEditingMessageToDraftByOperation = (
+  conversationId: ConversationId,
+  operationId: string
+): void => {
+  const existing = store.get(conversationId);
+  if (!existing || existing.operationId !== operationId) return;
+  const next = new Map(store);
+  next.set(conversationId, {
+    ...existing,
+    pending: false,
+    phase: 'editing',
+    operationId: undefined,
+    continueConfirmation: undefined,
+  });
+  replaceStore(next);
+};
+
+export const updateEditingMessageByOperation = (
+  conversationId: ConversationId,
+  operationId: string,
+  patch: Partial<Omit<EditingMessageState, 'ownerId' | 'operationId'>>
+): void => {
+  const existing = store.get(conversationId);
+  if (!existing || existing.operationId !== operationId) return;
+  const next = new Map(store);
+  next.set(conversationId, { ...existing, ...patch, operationId });
+  replaceStore(next);
+};
+
 /**
  * 响应式订阅某会话的编辑状态；无则 undefined。
  * Reactive subscription to a conversation's editing state (undefined if none).

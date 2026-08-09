@@ -182,8 +182,8 @@ describe('authoritative failure domains (P0-3)', () => {
       nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
       nomiSendBoxSource.indexOf('// Steering injects into the turn')
     );
-    expect(nomiHandler).toContain("recovery.kind === 'mutated'");
-    expect(nomiHandler).toContain("observation.delivery?.result_ok === false");
+    expect(nomiHandler).toContain("recovery.kind === 'post_mutation_failure'");
+    expect(nomiHandler).toContain("recovery.kind === 'transcript_truncated'");
     expect(nomiHandler).toContain("return { kind: 'post_mutation_failure', error }");
     expect(nomiHandler).toContain("reason: 'edit-resubmit-reconcile'");
     expect(nomiHandler).toContain("reason: 'edit-resubmit-failed'");
@@ -252,14 +252,14 @@ describe('edit submit mutex (P0-2 / P2-3)', () => {
       sendBoxSource.indexOf("'sendbox.retry'")
     );
     const capability = editListener.indexOf('if (!onEditResubmit) return;');
-    const inFlightGuard = editListener.indexOf(
-      'if (isLoading || activeEditOperationRef.current !== null) return;'
-    );
+    const inFlightGuard = editListener.indexOf('activeRetryOperationRef.current !== null');
+    const controllerGuard = editListener.indexOf('getEditResubmitOperation(editConversationId)');
     const enterEdit = editListener.indexOf('setEditingMsgId(payload.msgId);');
 
     expect(capability).toBeGreaterThan(-1);
     expect(inFlightGuard).toBeGreaterThan(capability);
-    expect(enterEdit).toBeGreaterThan(inFlightGuard);
+    expect(controllerGuard).toBeGreaterThan(inFlightGuard);
+    expect(enterEdit).toBeGreaterThan(controllerGuard);
   });
 });
 describe('requires-reset fail-closed contract', () => {
@@ -313,7 +313,7 @@ describe('requires-reset fail-closed contract', () => {
       nomiSendBoxSource.indexOf('const handleResetRequiredConversation = useCallback('),
       nomiSendBoxSource.indexOf('const modelUnavailable =')
     );
-    const guard = resetHandler.indexOf('if (isResettingConversation) return;');
+    const guard = resetHandler.indexOf('runSingleFlight(resetInFlightRef');
     const invoke = resetHandler.indexOf('ipcBridge.conversation.reset.invoke({ conversation_id });');
     const release = resetHandler.indexOf('setIsResettingConversation(false);');
 

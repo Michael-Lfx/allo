@@ -16,7 +16,7 @@ use crate::models::{
 use crate::repository::bind::{BindValue, bind_value, bind_value_as};
 use crate::repository::conversation::{
     ConversationDeliveryReceiptClaim, ConversationFilters, ConversationMessageProjection,
-    ConversationSkillLoadCommit,
+    ConversationSkillLoadCommit, EditResubmitStateSnapshot,
     ConversationRowUpdate, ConversationTurnAdmissionState, IConversationRepository, MessageRowUpdate, MessageSearchRow,
     MAX_UNSETTLED_TURN_ADMISSION_PAGE_SIZE,
     RequirementConversationTurnAuthority, SortOrder, TurnArtifactMessageCommit,
@@ -3426,6 +3426,72 @@ impl IConversationRepository for SqliteConversationRepository {
         .bind(user_id)
         .fetch_optional(&self.pool)
         .await?)
+    }
+
+    async fn get_edit_resubmit_state_snapshot(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        operation_id: &str,
+        target_message_id: &str,
+        operation_id_prefix: &str,
+    ) -> Result<EditResubmitStateSnapshot, DbError> {
+        if operation_id_prefix.is_empty() {
+            return Err(DbError::Conflict(
+                "delivery receipt operation prefix must not be empty".to_owned(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let receipt = sqlx::query_as::<_, ConversationDeliveryReceiptRow>(
+            "SELECT * FROM conversation_delivery_receipts \
+             WHERE operation_id = ? AND conversation_id = ? AND user_id = ?",
+        )
+        .bind(operation_id)
+        .bind(conversation_id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let target_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM messages \
+             WHERE conversation_id = ? AND message_id = ?)",
+        )
+        .bind(conversation_id)
+        .bind(target_message_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let replacement_exists = match receipt.as_ref() {
+            Some(receipt) => Some(
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS(SELECT 1 FROM messages \
+                     WHERE conversation_id = ? AND message_id = ?)",
+                )
+                .bind(conversation_id)
+                .bind(&receipt.message_id)
+                .fetch_one(&mut *tx)
+                .await?,
+            ),
+            None => None,
+        };
+        let accepted_edit_fence_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM conversation_delivery_receipts \
+             WHERE conversation_id = ? AND user_id = ? AND status = 'accepted' \
+               AND substr(operation_id, 1, length(?)) = ?)",
+        )
+        .bind(conversation_id)
+        .bind(user_id)
+        .bind(operation_id_prefix)
+        .bind(operation_id_prefix)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        Ok(EditResubmitStateSnapshot {
+            receipt,
+            target_exists,
+            replacement_exists,
+            accepted_edit_fence_exists,
+        })
     }
 
     async fn has_accepted_delivery_receipt_operation_prefix(
