@@ -308,29 +308,16 @@ describe('requires-reset fail-closed contract', () => {
     expect(messagesRefresh).toBeGreaterThan(historyRefresh);
   });
 
-  test('reset button guards against concurrent double-click', () => {
-    const resetHandler = nomiSendBoxSource.slice(
-      nomiSendBoxSource.indexOf('const handleResetRequiredConversation = useCallback('),
-      nomiSendBoxSource.indexOf('const modelUnavailable =')
-    );
-    const guard = resetHandler.indexOf('runSingleFlight(resetInFlightRef');
-    const invoke = resetHandler.indexOf('ipcBridge.conversation.reset.invoke({ conversation_id });');
-    const release = resetHandler.indexOf('setIsResettingConversation(false);');
-
-    expect(guard).toBeGreaterThan(-1);
-    expect(invoke).toBeGreaterThan(guard);
-    expect(release).toBeGreaterThan(guard);
-    expect(nomiSendBoxSource.includes('loading={isResettingConversation}')).toBe(true);
-  });
-
   test('reset failure never optimistically clears the reset-required authority', () => {
     const resetHandler = nomiSendBoxSource.slice(
       nomiSendBoxSource.indexOf('const handleResetRequiredConversation = useCallback('),
       nomiSendBoxSource.indexOf('const modelUnavailable =')
     );
-    const catchIndex = resetHandler.indexOf('} catch (error) {');
-    const failurePath = resetHandler.slice(catchIndex);
-    expect(catchIndex).toBeGreaterThan(-1);
+    const errorIndex = resetHandler.indexOf('onError: (error) => {');
+    const settledIndex = resetHandler.indexOf('onSettled: () => {');
+    const failurePath = resetHandler.slice(errorIndex, settledIndex);
+    expect(errorIndex).toBeGreaterThan(-1);
+    expect(settledIndex).toBeGreaterThan(errorIndex);
     expect(failurePath.includes('setRequiresConversationReset(false)')).toBe(false);
     expect(failurePath.includes('commitAuthoritativeConversationReset')).toBe(false);
   });

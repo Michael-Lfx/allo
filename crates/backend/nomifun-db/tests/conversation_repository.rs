@@ -7,6 +7,10 @@ use nomifun_db::{
 };
 use nomifun_common::{ConversationId, MessageId, RequirementId, TerminalId, UserId};
 use sha2::{Digest, Sha256};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 const USER_ID: &str = "0190f5fe-7c00-7a00-8000-000000000001";
 const PROVIDER_ID: &str = "0190f5fe-7c00-7a00-8000-000000000002";
@@ -109,6 +113,145 @@ async fn edit_resubmit_snapshot_returns_exact_receipt_and_message_identities_tog
         .unwrap();
     assert!(!after.target_exists);
     assert_eq!(after.replacement_exists, Some(false));
+}
+
+#[tokio::test]
+async fn edit_resubmit_snapshot_never_mixes_concurrent_transcript_generations() {
+    let (repo, db) = setup().await;
+    let mut conversation = make_conversation("edit-resubmit-concurrent-snapshot");
+    conversation.conversation_id = repo.create(&conversation).await.unwrap();
+    let conversation_id = conversation.conversation_id.clone();
+    let target_id = MessageId::new().into_string();
+    let replacement_id = MessageId::new().into_string();
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: target_id.clone(),
+        conversation_id: conversation_id.clone(),
+        msg_id: Some(target_id.clone()),
+        r#type: "text".to_owned(),
+        content: r#"{"content":"original"}"#.to_owned(),
+        position: Some("right".to_owned()),
+        status: Some("finish".to_owned()),
+        hidden: false,
+        created_at: 10,
+    })
+    .await
+    .unwrap();
+    let prefix = format!("public-edit-resubmit:v1:{USER_ID}:{conversation_id}:");
+    let operation_id = format!("{prefix}client-key");
+    sqlx::query(
+        "INSERT INTO conversation_delivery_receipts (operation_id, message_id, \
+         conversation_id, user_id, kind, request_payload, status, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, 'turn', '{}', 'accepted', 10, 10)",
+    )
+    .bind(&operation_id)
+    .bind(&replacement_id)
+    .bind(&conversation_id)
+    .bind(USER_ID)
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let start = Arc::new(tokio::sync::Barrier::new(3));
+    let stopped = Arc::new(AtomicBool::new(false));
+    let writer_pool = db.pool().clone();
+    let writer_start = Arc::clone(&start);
+    let writer_stopped = Arc::clone(&stopped);
+    let writer_conversation_id = conversation_id.clone();
+    let writer_target_id = target_id.clone();
+    let writer_replacement_id = replacement_id.clone();
+    let writer = tokio::spawn(async move {
+        writer_start.wait().await;
+        for generation in 0..80 {
+            let replacement_generation = generation % 2 == 0;
+            let mut tx = writer_pool.begin().await.unwrap();
+            if replacement_generation {
+                sqlx::query("DELETE FROM messages WHERE message_id = ?")
+                    .bind(&writer_target_id)
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                sqlx::query(
+                    "INSERT OR IGNORE INTO messages (message_id, conversation_id, msg_id, type, \
+                     content, position, status, hidden, created_at) \
+                     VALUES (?, ?, ?, 'text', '{}', 'right', 'finish', 0, 20)",
+                )
+                .bind(&writer_replacement_id)
+                .bind(&writer_conversation_id)
+                .bind(&writer_replacement_id)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            } else {
+                sqlx::query("DELETE FROM messages WHERE message_id = ?")
+                    .bind(&writer_replacement_id)
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                sqlx::query(
+                    "INSERT OR IGNORE INTO messages (message_id, conversation_id, msg_id, type, \
+                     content, position, status, hidden, created_at) \
+                     VALUES (?, ?, ?, 'text', '{}', 'right', 'finish', 0, 10)",
+                )
+                .bind(&writer_target_id)
+                .bind(&writer_conversation_id)
+                .bind(&writer_target_id)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            }
+            tx.commit().await.unwrap();
+            tokio::task::yield_now().await;
+        }
+        writer_stopped.store(true, Ordering::Release);
+    });
+
+    let mut readers = Vec::new();
+    for _ in 0..2 {
+        let reader = SqliteConversationRepository::new(db.pool().clone());
+        let reader_start = Arc::clone(&start);
+        let reader_stopped = Arc::clone(&stopped);
+        let reader_conversation_id = conversation_id.clone();
+        let reader_operation_id = operation_id.clone();
+        let reader_target_id = target_id.clone();
+        let reader_prefix = prefix.clone();
+        readers.push(tokio::spawn(async move {
+            reader_start.wait().await;
+            let mut reads = 0;
+            while !reader_stopped.load(Ordering::Acquire) || reads < 80 {
+                let snapshot = reader
+                    .get_edit_resubmit_state_snapshot(
+                        USER_ID,
+                        &reader_conversation_id,
+                        &reader_operation_id,
+                        &reader_target_id,
+                        &reader_prefix,
+                    )
+                    .await
+                    .unwrap();
+                let status = snapshot.receipt.as_ref().unwrap().status.as_str();
+                let is_complete_before = status == "accepted"
+                    && snapshot.target_exists
+                    && snapshot.replacement_exists == Some(false)
+                    && snapshot.accepted_edit_fence_exists;
+                let is_complete_after = status == "accepted"
+                    && !snapshot.target_exists
+                    && snapshot.replacement_exists == Some(true)
+                    && snapshot.accepted_edit_fence_exists;
+                assert!(
+                    is_complete_before || is_complete_after,
+                    "mixed edit snapshot: {snapshot:?}"
+                );
+                reads += 1;
+                tokio::task::yield_now().await;
+            }
+        }));
+    }
+
+    writer.await.unwrap();
+    for reader in readers {
+        reader.await.unwrap();
+    }
 }
 
 async fn insert_requirement_owner_fixture(

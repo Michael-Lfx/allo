@@ -15,6 +15,7 @@ describe('createRefreshRetryController', () => {
       load: async () => {
         calls += 1;
         if (calls === 1) throw new Error('temporary');
+        return true;
       },
     });
     controller.trigger();
@@ -39,5 +40,21 @@ describe('createRefreshRetryController', () => {
     controller.dispose();
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(calls).toBe(1);
+  });
+
+  test('retries a resolved refresh until it authoritatively applies', async () => {
+    let calls = 0;
+    const controller = createRefreshRetryController({
+      delaysMs: [0],
+      load: async () => {
+        calls += 1;
+        return calls > 1;
+      },
+    });
+    controller.trigger();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await flush();
+    expect(calls).toBe(2);
+    controller.dispose();
   });
 });

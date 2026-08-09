@@ -8,6 +8,7 @@ import {
   claimEditResubmitRunner,
   getEditResubmitOperation,
   releaseEditResubmitRunner,
+  subscribeRecoverableEditResubmitOperation,
   updateEditResubmitOperation,
 } from './editResubmitOperationController';
 
@@ -51,5 +52,36 @@ describe('editResubmitOperationController', () => {
       backendInput: 'exact payload',
       attachmentPaths: ['a.png'],
     });
+  });
+
+  test('notifies a waiting remount when the previous renderer releases its runner', () => {
+    __resetEditResubmitOperations();
+    beginEditResubmitOperation({ ...record('op-a'), phase: 'confirming' });
+    claimEditResubmitRunner(conversationId, 'op-a', 'renderer-a');
+    const available: string[] = [];
+    const unsubscribe = subscribeRecoverableEditResubmitOperation(
+      conversationId,
+      (operation) => available.push(operation.operationId)
+    );
+
+    expect(available).toEqual([]);
+    releaseEditResubmitRunner(conversationId, 'op-a', 'renderer-a');
+    expect(available).toEqual(['op-a']);
+
+    unsubscribe();
+  });
+
+  test('does not auto-adopt an unsubmitted editing operation', () => {
+    __resetEditResubmitOperations();
+    beginEditResubmitOperation({ ...record('op-a'), phase: 'editing' });
+    let calls = 0;
+    const unsubscribe = subscribeRecoverableEditResubmitOperation(
+      conversationId,
+      () => {
+        calls += 1;
+      }
+    );
+    expect(calls).toBe(0);
+    unsubscribe();
   });
 });

@@ -101,6 +101,35 @@ export const subscribeEditResubmitOperations = (listener: () => void): (() => vo
   return () => listeners.delete(listener);
 };
 
+/**
+ * Observe a submitted operation becoming runner-free. This closes the overlap
+ * window where a remount can subscribe while the previous renderer still owns
+ * the runner and must resume only after that owner releases it.
+ */
+export const subscribeRecoverableEditResubmitOperation = (
+  conversationId: ConversationId,
+  listener: (operation: EditResubmitOperationRecord) => void
+): (() => void) => {
+  let notifiedOperationId: string | undefined;
+  const notifyIfAvailable = (): void => {
+    const operation = operations.get(conversationId);
+    if (
+      !operation ||
+      operation.phase === 'editing' ||
+      operation.runnerOwnerId !== undefined
+    ) {
+      notifiedOperationId = undefined;
+      return;
+    }
+    if (notifiedOperationId === operation.operationId) return;
+    notifiedOperationId = operation.operationId;
+    listener(operation);
+  };
+  const unsubscribe = subscribeEditResubmitOperations(notifyIfAvailable);
+  notifyIfAvailable();
+  return unsubscribe;
+};
+
 export const __resetEditResubmitOperations = (): void => {
   operations.clear();
   emit();

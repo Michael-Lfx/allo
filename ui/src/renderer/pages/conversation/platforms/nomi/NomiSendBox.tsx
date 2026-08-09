@@ -49,6 +49,7 @@ import {
   getEditResubmitOperation,
   releaseEditResubmitOperation,
   releaseEditResubmitRunner,
+  subscribeRecoverableEditResubmitOperation,
   updateEditResubmitOperation,
 } from '@/renderer/pages/conversation/Messages/editResubmitOperationController';
 import { savePreferredMode } from '@/renderer/pages/guid/hooks/agentSelectionUtils';
@@ -104,7 +105,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import type { NomiMessageRuntime } from './useNomiMessage';
 import NomiModelSelector from './NomiModelSelector';
-import { runSingleFlight } from './resetSingleFlight';
+import { runConversationResetSingleFlight } from './resetSingleFlight';
 import { ContextUsageRing } from './ContextUsageRing';
 import type { NomiModelSelection } from './useNomiModelSelection';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
@@ -1088,23 +1089,18 @@ const NomiSendBox: React.FC<{
   );
 
   useEffect(() => {
-    const operation = getEditResubmitOperation(conversation_id);
-    if (
-      !operation ||
-      operation.phase === 'editing' ||
-      operation.runnerOwnerId !== undefined
-    ) {
-      return;
-    }
-    void handleEditResubmit(
-      operation.targetMessageId,
-      operation.targetCreatedAt,
-      operation.originalContent,
-      operation.operationId
-    ).catch((error) => {
-      if (error !== EDIT_RESUBMIT_LIFECYCLE_ABORT) {
-        console.error('[edit-resubmit] remount recovery failed', error);
-      }
+    return subscribeRecoverableEditResubmitOperation(conversation_id, (operation) => {
+      if (!mountedRef.current) return;
+      void handleEditResubmit(
+        operation.targetMessageId,
+        operation.targetCreatedAt,
+        operation.originalContent,
+        operation.operationId
+      ).catch((error) => {
+        if (error !== EDIT_RESUBMIT_LIFECYCLE_ABORT) {
+          console.error('[edit-resubmit] remount recovery failed', error);
+        }
+      });
     });
   }, [conversation_id, handleEditResubmit]);
 
@@ -1424,49 +1420,55 @@ const NomiSendBox: React.FC<{
   };
 
   const handleResetRequiredConversation = useCallback(async (): Promise<void> => {
-    await runSingleFlight(resetInFlightRef, async () => {
-      const lifecycleGeneration = lifecycleGenerationRef.current;
-      setIsResettingConversation(true);
-      try {
-        await ipcBridge.conversation.reset.invoke({ conversation_id });
-      if (
-        !mountedRef.current ||
-        lifecycleGenerationRef.current !== lifecycleGeneration
-      ) {
-        return;
-      }
-      commitAuthoritativeConversationReset(conversation_id);
-      const operation = getEditResubmitOperation(conversation_id);
-      if (operation) {
-        clearEditingMessageByOperation(conversation_id, operation.operationId);
-        releaseEditResubmitOperation(conversation_id, operation.operationId);
-      }
-      resetState();
-      resetActiveExecution('external-reset');
-      setRequiresConversationReset(false);
-      emitter.emit('chat.history.refresh');
-      emitter.emit('conversation.messages.refresh', {
-        conversationId: conversation_id,
-        reason: 'edit-resubmit-reconcile',
-      });
-      Message.success(t('conversation.editMessage.resetSuccess'));
-      } catch (error) {
-      if (
-        !mountedRef.current ||
-        lifecycleGenerationRef.current !== lifecycleGeneration
-      ) {
-        return;
-      }
-      console.warn('[NomiSendBox] explicit conversation reset failed', error);
-      Message.error(t('conversation.editMessage.resetFailed'));
-      } finally {
-      if (
-        mountedRef.current &&
-        lifecycleGenerationRef.current === lifecycleGeneration
-      ) {
-        setIsResettingConversation(false);
-      }
-      }
+    const lifecycleGeneration = lifecycleGenerationRef.current;
+    await runConversationResetSingleFlight({
+      inFlightRef: resetInFlightRef,
+      conversationId: conversation_id,
+      invokeReset: (params) => ipcBridge.conversation.reset.invoke(params),
+      onStart: () => {
+        setIsResettingConversation(true);
+      },
+      onSuccess: () => {
+        if (
+          !mountedRef.current ||
+          lifecycleGenerationRef.current !== lifecycleGeneration
+        ) {
+          return;
+        }
+        commitAuthoritativeConversationReset(conversation_id);
+        const operation = getEditResubmitOperation(conversation_id);
+        if (operation) {
+          clearEditingMessageByOperation(conversation_id, operation.operationId);
+          releaseEditResubmitOperation(conversation_id, operation.operationId);
+        }
+        resetState();
+        resetActiveExecution('external-reset');
+        setRequiresConversationReset(false);
+        emitter.emit('chat.history.refresh');
+        emitter.emit('conversation.messages.refresh', {
+          conversationId: conversation_id,
+          reason: 'edit-resubmit-reconcile',
+        });
+        Message.success(t('conversation.editMessage.resetSuccess'));
+      },
+      onError: (error) => {
+        if (
+          !mountedRef.current ||
+          lifecycleGenerationRef.current !== lifecycleGeneration
+        ) {
+          return;
+        }
+        console.warn('[NomiSendBox] explicit conversation reset failed', error);
+        Message.error(t('conversation.editMessage.resetFailed'));
+      },
+      onSettled: () => {
+        if (
+          mountedRef.current &&
+          lifecycleGenerationRef.current === lifecycleGeneration
+        ) {
+          setIsResettingConversation(false);
+        }
+      },
     });
   }, [conversation_id, t]);
 

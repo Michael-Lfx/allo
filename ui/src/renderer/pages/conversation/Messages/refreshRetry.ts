@@ -8,7 +8,8 @@ export const createRefreshRetryController = ({
   load,
   delaysMs = [0, 100, 250, 500, 1_000, 2_000, 5_000],
 }: {
-  load: () => Promise<void>;
+  /** Resolve true only after the authoritative page was applied and acked. */
+  load: () => Promise<boolean>;
   delaysMs?: readonly number[];
 }): RefreshRetryController => {
   let disposed = false;
@@ -17,23 +18,32 @@ export const createRefreshRetryController = ({
   let attempt = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
+  const scheduleRetry = (): void => {
+    if (disposed) return;
+    const delay = delaysMs[Math.min(attempt, delaysMs.length - 1)] ?? 0;
+    attempt += 1;
+    timer = setTimeout(() => {
+      timer = undefined;
+      run();
+    }, delay);
+  };
+
   const run = (): void => {
     if (disposed || running) return;
     running = true;
     pending = false;
     void load()
-      .then(() => {
-        attempt = 0;
+      .then((applied) => {
+        if (applied) {
+          attempt = 0;
+          return;
+        }
+        scheduleRetry();
       })
       .catch((error) => {
         if (disposed) return;
         console.warn('[useMessageLstCache] Failed to refresh messages after edit-resubmit:', error);
-        const delay = delaysMs[Math.min(attempt, delaysMs.length - 1)] ?? 0;
-        attempt += 1;
-        timer = setTimeout(() => {
-          timer = undefined;
-          run();
-        }, delay);
+        scheduleRetry();
       })
       .finally(() => {
         running = false;

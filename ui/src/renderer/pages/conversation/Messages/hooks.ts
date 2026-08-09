@@ -1082,7 +1082,7 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
     [key, update]
   );
 
-  const loadMessages = useCallback(async (): Promise<TMessage[]> => {
+  const loadMessages = useCallback(async (): Promise<TMessage[] | null> => {
     const loadSequence = newestLoadSequenceRef.current + 1;
     newestLoadSequenceRef.current = loadSequence;
     // Capture the conversation epoch at request start. An edit-resubmit that
@@ -1101,7 +1101,7 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
       newestLoadSequenceRef.current !== loadSequence ||
       capturedEpoch !== getEpoch(key)
     ) {
-      return [];
+      return null;
     }
     if (windowed) {
       hasMoreRef.current = Boolean(result?.has_more);
@@ -1264,7 +1264,7 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
     if (!key) return;
     const refresh = createRefreshRetryController({
       load: async () => {
-        await loadMessages();
+        return (await loadMessages()) !== null;
       },
     });
     const removeListener = addEventListener('conversation.messages.refresh', (event) => {

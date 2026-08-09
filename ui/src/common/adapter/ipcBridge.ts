@@ -3005,6 +3005,9 @@ export const decodeEditResubmitObservation = (result: unknown): IEditResubmitObs
   const replacementExists = requireBoolean(result, 'replacement_exists');
   const delivery = fromApiSendMessageResult(rawDelivery as unknown as ISendMessageResult);
   const replacementMessageId = parseMessageId(result.replacement_message_id);
+  if (!delivery.replayed) {
+    throw new TypeError('Invalid edit/resubmit observation: delivery must be a durable replay');
+  }
   if (delivery.msg_id !== replacementMessageId) {
     throw new TypeError('Invalid edit/resubmit observation: candidate identities disagree');
   }
@@ -3013,9 +3016,22 @@ export const decodeEditResubmitObservation = (result: unknown): IEditResubmitObs
   }
   if (
     receiptState === 'accepted' &&
-    (delivery.result_ok !== null || delivery.result_text !== null || delivery.result_error !== null)
+    (delivery.result_ok !== null ||
+      delivery.result_text !== null ||
+      delivery.result_error !== null ||
+      delivery.result_error_code != null ||
+      delivery.result_error_retryable != null)
   ) {
     throw new TypeError('Invalid edit/resubmit observation: accepted receipt has terminal result');
+  }
+  if (
+    receiptState === 'completed' &&
+    delivery.result_ok === true &&
+      (delivery.result_error !== null ||
+        delivery.result_error_code != null ||
+        delivery.result_error_retryable != null)
+  ) {
+    throw new TypeError('Invalid edit/resubmit observation: contradictory terminal result');
   }
 
   return {

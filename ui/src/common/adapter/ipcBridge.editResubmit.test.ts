@@ -65,4 +65,57 @@ describe('decodeEditResubmitObservation', () => {
       replacement_message_id: '0190f5fe-7c00-7a00-8000-000000000902',
     });
   });
+
+  test('rejects observation deliveries that are not durable replays', () => {
+    expectDecodeFailure({
+      ...accepted(),
+      delivery: { ...accepted().delivery, replayed: false },
+    });
+  });
+
+  test('rejects terminal metadata on accepted receipts', () => {
+    expectDecodeFailure({
+      ...accepted(),
+      delivery: {
+        ...accepted().delivery,
+        result_error_code: 'provider_failed',
+        result_error_retryable: true,
+      },
+    });
+  });
+
+  test('rejects contradictory completed success and error outcomes', () => {
+    expectDecodeFailure({
+      ...accepted(),
+      receipt_state: 'completed',
+      delivery: {
+        ...accepted().delivery,
+        completed: true,
+        result_ok: true,
+        result_text: 'replacement',
+        result_error: 'cannot be both success and failure',
+      },
+      replacement_exists: true,
+    });
+  });
+
+  test('accepts completed failures that preserve partial output', () => {
+    expect(
+      decodeEditResubmitObservation({
+        ...accepted(),
+        receipt_state: 'completed',
+        delivery: {
+          ...accepted().delivery,
+          completed: true,
+          result_ok: false,
+          result_text: 'partial output',
+          result_error: 'provider failed after partial output',
+          result_error_code: 'provider_failed',
+          result_error_retryable: false,
+        },
+        target_exists: false,
+        replacement_exists: true,
+      }).delivery
+    ).toMatchObject({ result_ok: false, result_text: 'partial output' });
+  });
 });

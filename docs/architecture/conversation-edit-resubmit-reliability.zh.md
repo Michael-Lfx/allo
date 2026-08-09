@@ -29,7 +29,9 @@ revoke 证据，也不会触发自动 reset。
 ## 前端状态机
 
 wire decoder 对 receipt enum、必填 boolean、delivery/candidate/replacement 组合做运行时校验。
-字段缺失、未知枚举或身份不一致都作为 observation failure，fail closed。
+observation delivery 必须是 durable replay；accepted receipt 不允许携带任何 terminal metadata，
+completed receipt 的 success/error 字段也不能互相矛盾。字段缺失、未知枚举或身份不一致都作为
+observation failure，fail closed。
 
 | Observation | 结果 | 行为 |
 | --- | --- | --- |
@@ -54,18 +56,22 @@ wire decoder 对 receipt enum、必填 boolean、delivery/candidate/replacement 
 observation。模块级同步 admission 同时覆盖 edit、retry、Enter、click 和双 SendBox 实例。
 
 会话切换或 unmount 只释放 runner lease 和 timer。`submitting/confirming` record、armed barrier、
-key 和 payload 留在同一 renderer；返回会话或 remount 后自动 adopt。应用/renderer 重启不持久化
-敏感草稿和 payload，accepted orphan 仍要求显式 reset。
+key 和 payload 留在同一 renderer；返回会话或 remount 后通过 runner-availability subscription
+自动 adopt。新旧 renderer 短暂重叠时，新实例会等待旧 owner 释放后再恢复，不依赖一次性 effect
+的执行顺序。应用/renderer 重启不持久化敏感草稿和 payload，accepted orphan 仍要求显式 reset。
 
 Nomi draft 的 `contentRevision` 跨 remount 保留。成功只在 revision 未变化且来源为 edit 时清正文；
 附件始终按提交路径集合做精确差集，飞行中新附件保留。post-mutation failure 不清正文或附件。
 
 coordinator 对同 operation 的 `arm` 和 `begin` 幂等：remount 不覆盖 reconciling barrier、不重复
 bump epoch。所有已确认 transcript mutation 都调用统一 reconciliation。`conversation.messages.refresh`
-使用可取消、去重、capped-backoff 的 retry-until-success；成功 load 后由既有 consumer ack 退休 barrier。
+使用可取消、去重、capped-backoff 的 retry-until-success；只有页面通过 sequence/epoch fence、实际
+应用并执行 consumer ack 才返回成功。被其他请求淘汰的 stale/no-op refresh 会继续退避，不会泄漏
+barrier。
 
-显式 reset 使用 promise single-flight；同 tick 双击复用同一 Promise，只发一次 IPC。reset 成功才
-提交新 generation、清 operation/barrier 和触发权威 refresh，失败不清 `requires_reset`。
+显式 reset 使用生产级 promise single-flight handler；同 tick 双击复用同一 Promise，只发一次 IPC，
+start/success/settled lifecycle 也各执行一次。reset 成功才提交新 generation、清 operation/barrier
+和触发权威 refresh，失败不清 `requires_reset`。
 
 ## 关键文件
 
@@ -101,14 +107,20 @@ git diff --check
 测试不属于本功能。Windows incremental/runtime-lock 的 `拒绝访问 (os error 5)` 也属于环境阻塞，
 不能归因于本变更。
 
-2026-08-09 本次实测：新增/定向 UI 测试通过；UI 全量为 2090 pass / 18 个既有结构基线失败；
+2026-08-09 本次实测：新增/定向 UI 测试通过；UI 全量为 2097 pass / 18 个既有结构基线失败；
 direct Vite production build、`cargo fmt --check`、`cargo check --workspace`、repository snapshot、
 latest-user、服务级 >200 行旧目标拒绝、observation namespace/permission/reset 测试通过。
-`cargo test -p nomifun-conversation edit_resubmit --lib` 为 3 pass / 1 Windows runtime-lock
+`cargo test -p nomifun-conversation edit_resubmit --lib` 为 4 pass / 1 Windows runtime-lock
 `拒绝访问 (os error 5)`。直接 TypeScript 检查只报告未改动的 videoCanvas `Blob` 基线；直接
 quality scripts 除未改动的 agent-vocabulary 注释基线外通过。`bun run typecheck/check/build:ui`
 的 workspace 子进程在当前 Windows 沙箱返回 `Operation not permitted`，等价 Node 入口已执行。
 人工验收尚未由 owner 完成，不能由自动测试替代。
+
+2026-08-09 合并审查修复追加：strict decoder 已覆盖非 replay、accepted terminal metadata 和矛盾
+completed outcome；runner 释放后 remount subscription、stale refresh retry、生产 reset handler 的
+deferred 双击均有行为测试。repository 增加并发 writer/readers 测试，在 80 次原子 transcript
+generation 切换期间只允许完整的 mutation 前/后 snapshot。该修复没有布局、样式或可见控件变化，
+因此无需新增截图；交互层人工验收仍按下列清单执行。
 
 人工验收仍必须覆盖：长会话且 target 在最新 200 行之外、同时间戳 latest-user tie-break、
 double click、会话切换后同-key 恢复、response loss、truncate 后 HTTP/terminal error、附件差集、
