@@ -35,8 +35,8 @@ describe('PinnedPlan composer popover layout', () => {
     expect(source.includes("className='ml-18px whitespace-nowrap text-12px leading-none tabular-nums'")).toBe(false);
     expect(source.includes("className='whitespace-nowrap text-12px leading-none tabular-nums'")).toBe(true);
     expect(source.includes("data-testid='pinned-plan-popover'")).toBe(true);
-    expect(source.includes('absolute left-1/2 w-[min(320px,calc(100vw-32px))] -translate-x-1/2 bottom-[calc(100%+4px)]')).toBe(true);
-    expect(source.includes('bottom-[calc(100%+8px)]')).toBe(false);
+    expect(source.includes('absolute left-1/2 w-[min(320px,calc(100vw-32px))] -translate-x-1/2 bottom-full z-10 pb-4px')).toBe(true);
+    expect(source.includes('bottom-[calc(100%+4px)]')).toBe(false);
     expect(source.includes('max-h-[164px] flex-col overflow-y-auto rd-10px p-4px')).toBe(true);
     expect(source.includes("background: 'color-mix(in srgb, var(--color-bg-2) 92%, rgb(var(--primary-6)))'")).toBe(false);
     expect(source.includes("boxShadow: '0 10px 28px rgba(15, 23, 42, 0.12)'")).toBe(true);
@@ -45,6 +45,11 @@ describe('PinnedPlan composer popover layout', () => {
     expect(source.includes('min-w-0 flex-1 line-clamp-2')).toBe(true);
     expect(source.includes('onMouseEnter={handleDesktopOpen}')).toBe(true);
     expect(source.includes('onMouseLeave={handleDesktopClose}')).toBe(true);
+    expect(source.includes('const DESKTOP_CLOSE_DELAY_MS = 300;')).toBe(true);
+    expect(source.includes('const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);')).toBe(true);
+    expect(source.includes('clearTimeout(closeTimerRef.current);')).toBe(true);
+    expect(source.includes('closeTimerRef.current = setTimeout(() => {')).toBe(true);
+    expect(source.includes('}, DESKTOP_CLOSE_DELAY_MS);')).toBe(true);
     expect(source.includes('if (!isMobile) return;')).toBe(true);
     expect(source.includes('w-full max-w-800px')).toBe(false);
   });

@@ -2,11 +2,13 @@
 
 import { IconCheckCircle } from '@arco-design/web-react/icon';
 import { Loading } from '@icon-park/react';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useMessageList } from '@renderer/pages/conversation/Messages/hooks';
 import { derivePinnedPlan, type PinnedPlanData } from './pinnedPlanModel';
+
+const DESKTOP_CLOSE_DELAY_MS = 300;
 
 /**
  * Pinned plan bar: centered above the composer, it surfaces the conversation's
@@ -29,6 +31,15 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
   );
   const plan = suppliedPlan === undefined ? derivedPlan : suppliedPlan;
   const [expanded, setExpanded] = useState(false);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current !== null) {
+        clearTimeout(closeTimerRef.current);
+      }
+    };
+  }, []);
 
   if (!plan) return null;
 
@@ -40,11 +51,21 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
   };
   const handleDesktopOpen = () => {
     if (isMobile) return;
+    if (closeTimerRef.current !== null) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
     setExpanded(true);
   };
   const handleDesktopClose = () => {
     if (isMobile) return;
-    setExpanded(false);
+    if (closeTimerRef.current !== null) {
+      clearTimeout(closeTimerRef.current);
+    }
+    closeTimerRef.current = setTimeout(() => {
+      setExpanded(false);
+      closeTimerRef.current = null;
+    }, DESKTOP_CLOSE_DELAY_MS);
   };
   const handleSummaryKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -100,7 +121,7 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
       {expanded && (
         <div
           data-testid='pinned-plan-popover'
-          className='absolute left-1/2 w-[min(320px,calc(100vw-32px))] -translate-x-1/2 bottom-[calc(100%+4px)] z-10'
+          className='absolute left-1/2 w-[min(320px,calc(100vw-32px))] -translate-x-1/2 bottom-full z-10 pb-4px'
         >
           <div
             data-testid='pinned-plan-list'
