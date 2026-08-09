@@ -1,5 +1,6 @@
 .container {
   width: 100%;
+  min-width: 0;
   margin: 4px 0;
 }
 
@@ -9,17 +10,30 @@
 
 .header {
   display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  border: 0;
+  background: transparent;
   color: var(--color-text-3, #86909c);
   cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 0;
+  text-align: left;
   user-select: none;
   line-height: 20px;
 }
 
 .header:hover {
   color: var(--color-text-2, #4e5969);
+}
+
+.header:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--color-primary-6, #165dff);
+  outline-offset: 2px;
 }
 
 .headerProcess {
@@ -99,7 +113,17 @@
 }
 
 .summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (min-width: 768px) {
+  .body {
+    max-height: 320px;
+    overflow-y: auto;
+  }
 }
 
 @media (max-width: 767px) {

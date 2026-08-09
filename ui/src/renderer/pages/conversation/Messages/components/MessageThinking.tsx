@@ -4,7 +4,7 @@ import type { IMessageThinking } from '@/common/chat/chatLib';
 import { toDisplayText } from '@/common/chat/displayText';
 import { Spin } from '@arco-design/web-react';
 import { Brain, Right } from '@icon-park/react';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import styles from './MessageThinking.module.css';
 
@@ -12,6 +12,7 @@ interface MessageThinkingProps {
   message: IMessageThinking;
   variant?: 'standalone' | 'process';
   completed?: boolean;
+  forceDone?: boolean;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
 }
@@ -20,6 +21,7 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
   message,
   variant = 'standalone',
   completed,
+  forceDone,
   expanded,
   onExpandedChange,
 }) => {
@@ -38,7 +40,7 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
 
   const { status, subject } = message.content;
   const text = toDisplayText(message.content.content);
-  const isDone = completed === true || status === 'done';
+  const isDone = completed === true || forceDone === true || status === 'done';
   const defaultExpanded = expanded ?? (isProcessVariant ? !isDone : true);
   const [internalExpanded, setInternalExpanded] = useState(() => defaultExpanded);
   const resolvedExpanded = expanded ?? internalExpanded;
@@ -48,6 +50,7 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
   });
   const startTimeRef = useRef<number>(message.created_at ?? Date.now());
   const bodyRef = useRef<HTMLDivElement>(null);
+  const bodyId = useId();
 
   useEffect(() => {
     if (expanded !== undefined) return;
@@ -88,18 +91,24 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
 
   return (
     <div className={`${styles.container} ${isProcessVariant ? styles.containerProcess : ''}`}>
-      <div
+      <button
+        type='button'
         className={`${styles.header} ${isProcessVariant ? styles.headerProcess : ''}`}
         onClick={handleToggle}
+        aria-expanded={resolvedExpanded}
+        aria-controls={bodyId}
       >
         <span className={styles.headerIcon}>{!isDone ? <Spin size={12} /> : <Brain theme='outline' size='14' />}</span>
-        <span className={styles.summary}>{summaryText}</span>
+        <span className={styles.summary} title={summaryText}>
+          {summaryText}
+        </span>
         <span className={`${styles.arrow} ${resolvedExpanded ? styles.arrowExpanded : ''}`}>
           <Right theme='outline' size='12' />
         </span>
-      </div>
+      </button>
       <div
         ref={bodyRef}
+        id={bodyId}
         className={`${styles.body} ${isProcessVariant ? styles.bodyProcess : ''} ${!resolvedExpanded ? styles.collapsed : ''}`}
       >
         {text}

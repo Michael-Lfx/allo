@@ -7,7 +7,8 @@ const cssSource = readFileSync(new URL('./MessageThinking.module.css', import.me
 describe('MessageThinking expansion', () => {
   test('allows a closed process to override a stale streaming status', () => {
     expect(source.includes('completed?: boolean')).toBe(true);
-    expect(source.includes("const isDone = completed === true || status === 'done';")).toBe(true);
+    expect(source.includes('forceDone?: boolean')).toBe(true);
+    expect(source.includes("const isDone = completed === true || forceDone === true || status === 'done';")).toBe(true);
   });
 
   test('collapses completed process thinking by default while keeping live thinking open', () => {
@@ -18,9 +19,18 @@ describe('MessageThinking expansion', () => {
     expect(source.includes('setExpanded(false)')).toBe(false);
   });
 
-  test('treats soft-closed process thinking as done even when message status stays thinking', () => {
-    expect(source.includes('forceDone?: boolean')).toBe(true);
-    expect(source.includes('const isDone = status === \'done\' || forceDone')).toBe(true);
+  test('uses a semantic toggle with a labelled bounded detail region', () => {
+    expect(source.includes("import React, { useEffect, useId, useRef, useState } from 'react';")).toBe(true);
+    expect(source.includes('<button')).toBe(true);
+    expect(source.includes("type='button'")).toBe(true);
+    expect(source.includes('aria-expanded={resolvedExpanded}')).toBe(true);
+    expect(source.includes('aria-controls={bodyId}')).toBe(true);
+    expect(source.includes('id={bodyId}')).toBe(true);
+    expect(cssSource.includes('.header:focus-visible')).toBe(true);
+    expect(cssSource.includes('min-width: 0')).toBe(true);
+    expect(cssSource.includes('text-overflow: ellipsis')).toBe(true);
+    expect(cssSource.includes('max-height: 320px')).toBe(true);
+    expect(cssSource.includes('overflow-y: auto')).toBe(true);
   });
 
   test('supports a neutral process timeline variant', () => {

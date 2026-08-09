@@ -38,4 +38,19 @@ describe('CodeBlock streaming behavior', () => {
     expect(source.includes("className='markdown-code-action'")).toBe(true);
     expect(source.includes('group-hover')).toBe(false);
   });
+
+  test('uses Shadow DOM theme classes for code chrome and footer interaction', () => {
+    const source = readSource(new URL('./CodeBlock.tsx', import.meta.url));
+    const shadowSource = readSource(new URL('./ShadowView.tsx', import.meta.url));
+
+    expect(source.includes("className='markdown-code-surface'")).toBe(true);
+    expect(source.includes("className='markdown-code-language'")).toBe(true);
+    expect(source.includes("className='markdown-code-footer'")).toBe(true);
+    expect(source.includes("className='markdown-code-footer-label'")).toBe(true);
+    expect(source.includes("fill='currentColor'")).toBe(true);
+    expect(source.includes('rgba(255,255,255,0.55)')).toBe(false);
+    expect(shadowSource.includes('.markdown-code-footer:hover')).toBe(true);
+    expect(shadowSource.includes('.markdown-code-footer:active')).toBe(true);
+    expect(shadowSource.includes('.markdown-code-footer:focus-visible')).toBe(true);
+  });
 });

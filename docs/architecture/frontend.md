@@ -117,19 +117,20 @@ Updated in the current streaming presentation work:
 
 - stable-prefix / trailing-block rendering and open-code preview;
 - Markdown hierarchy, themed links, and Shadow-DOM code-toolbar states;
-- process status contrast and quieter live-step animation;
-- focused coverage for the splitter, Markdown typography, code toolbar, and
-  process layout.
+- semantic `MessageThinking` toggles with keyboard focus, labelled detail
+  regions, and bounded desktop scrolling;
+- Mermaid's Shadow-DOM toolbar and preview/source segmented control;
+- code footer states, process status contrast, primary focus rings, and
+  icon-only live-step animation;
+- focused coverage for the splitter, Markdown typography, thinking controls,
+  Mermaid and code toolbars, and process layout.
 
 Not updated by this work:
 
 - mobile touch targets, safe-area spacing, and narrow-screen disclosure layout;
-- keyboard semantics and bounded scrolling for `MessageThinking`;
-- Mermaid toolbar styling inside Shadow DOM, including its preview/source
-  segmented control;
-- remaining light focus-ring tokens on receipt, trace, and scroll controls;
 - visual screenshot coverage across desktop themes (the current checks are
-  source/behavior tests plus the normal frontend quality gate).
+  source/behavior tests plus the normal frontend quality gate); the planned
+  1440x900 and 1280x800 light/dark visual review is not yet recorded.
 
 ## Desktop-Specific UX
 

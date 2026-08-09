@@ -87,4 +87,3 @@ describe('ProcessTraceItem Codex-style execution rows', () => {
     expect(source.includes('forceDone={state !== \'running\' && state !== \'waiting\'}')).toBe(true);
   });
 });
-

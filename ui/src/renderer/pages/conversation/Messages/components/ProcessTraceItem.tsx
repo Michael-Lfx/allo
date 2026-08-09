@@ -746,6 +746,7 @@ const ProcessTraceItem: React.FC<{
           message={item}
           variant='process'
           completed={state === 'completed'}
+          forceDone={state !== 'running' && state !== 'waiting'}
           expanded={thinkingExpansion?.expanded}
           onExpandedChange={thinkingExpansion?.onExpandedChange}
         />

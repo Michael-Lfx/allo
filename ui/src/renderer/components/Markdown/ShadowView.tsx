@@ -178,11 +178,35 @@ const createInitStyle = (
     min-width: 0;
     max-width: 100%;
   }
+  .markdown-code-surface {
+    overflow: hidden;
+    border: 1px solid var(--bg-3);
+    border-radius: 8px;
+    background: var(--bg-2);
+  }
+  .markdown-code-header {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+  }
+  .markdown-code-language,
+  .markdown-code-footer-label {
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .markdown-code-content {
+    min-width: 0;
+  }
   .markdown-code-toolbar {
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 6px;
+    color: var(--text-secondary);
   }
   .markdown-code-action {
     display: inline-flex;
@@ -199,10 +223,141 @@ const createInitStyle = (
   }
   .markdown-code-action:hover {
     background: var(--bg-3);
+    color: var(--text-primary);
+  }
+  .markdown-code-action:active {
+    background: var(--bg-1);
   }
   .markdown-code-action:focus-visible {
     outline: 2px solid var(--color-link, ${theme.Color.PrimaryColor});
     outline-offset: 1px;
+  }
+  .markdown-code-footer {
+    display: flex;
+    width: 100%;
+    min-height: 30px;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border: 0;
+    border-top: 1px solid var(--bg-3);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 6px 12px;
+  }
+  .markdown-code-footer:hover {
+    background: var(--bg-3);
+    color: var(--text-primary);
+  }
+  .markdown-code-footer:active {
+    background: var(--bg-1);
+  }
+  .markdown-code-footer:focus-visible {
+    outline: 2px solid var(--color-link, ${theme.Color.PrimaryColor});
+    outline-offset: -2px;
+  }
+  .markdown-mermaid-block {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .markdown-mermaid-surface {
+    overflow: hidden;
+    overflow-x: auto;
+    border: 1px solid var(--bg-3);
+    border-radius: 6px;
+    background: var(--bg-1);
+  }
+  .markdown-mermaid-header {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid var(--bg-3);
+    background: var(--bg-2);
+    padding: 6px 10px;
+  }
+  .markdown-mermaid-leading,
+  .markdown-mermaid-toolbar,
+  .markdown-mermaid-segmented {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+  }
+  .markdown-mermaid-leading {
+    gap: 8px;
+  }
+  .markdown-mermaid-toolbar {
+    flex: none;
+    color: var(--text-secondary);
+  }
+  .markdown-mermaid-language {
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 20px;
+  }
+  .markdown-mermaid-segmented {
+    gap: 2px;
+    border: 1px solid var(--bg-3);
+    border-radius: 4px;
+    background: var(--bg-1);
+    padding: 2px;
+  }
+  .markdown-mermaid-segment {
+    min-height: 24px;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 20px;
+    padding: 1px 6px;
+  }
+  .markdown-mermaid-segment:hover {
+    background: var(--bg-3);
+    color: var(--text-primary);
+  }
+  .markdown-mermaid-segment:active {
+    background: var(--bg-2);
+  }
+  .markdown-mermaid-segment[aria-pressed='true'] {
+    background: var(--bg-3);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .markdown-mermaid-segment:focus-visible {
+    outline: 2px solid var(--color-link, ${theme.Color.PrimaryColor});
+    outline-offset: 1px;
+  }
+  .markdown-mermaid-diagram {
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+    background: var(--bg-1);
+    padding: 12px;
+  }
+  .markdown-mermaid-loading {
+    display: flex;
+    min-height: 52px;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: var(--bg-1);
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 20px;
+    padding: 16px 12px;
+  }
+  .markdown-mermaid-loading-indicator {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--bg-3);
+    border-radius: 999px;
+    border-top-color: var(--text-secondary);
   }
   @media (hover: hover) and (pointer: fine) {
     .markdown-code-toolbar {
@@ -211,7 +366,9 @@ const createInitStyle = (
       transition: opacity 0.16s ease;
     }
     .markdown-code-block:hover .markdown-code-toolbar,
-    .markdown-code-block:focus-within .markdown-code-toolbar {
+    .markdown-code-block:focus-within .markdown-code-toolbar,
+    .markdown-mermaid-block:hover .markdown-mermaid-toolbar,
+    .markdown-mermaid-block:focus-within .markdown-mermaid-toolbar {
       opacity: 1;
       pointer-events: auto;
     }

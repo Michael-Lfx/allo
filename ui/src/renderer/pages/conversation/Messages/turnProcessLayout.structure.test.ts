@@ -150,7 +150,7 @@ describe('turn process disclosure content layout', () => {
     expect(rowRule.includes('line-height: var(--conversation-message-line-height)')).toBe(true);
   });
 
-  test('keeps running process chrome neutral instead of bright blue', () => {
+  test('keeps process text neutral while status color stays on icons', () => {
     expect(cssRuleFor('.turn-process-disclosure--running').includes('color: var(--color-text-2')).toBe(true);
     expect(
       cssRuleFor('.turn-process-disclosure__body .turn-process-trace__row--running').includes(
@@ -159,7 +159,18 @@ describe('turn process disclosure content layout', () => {
     ).toBe(true);
     expect(cssRuleFor('.turn-process-trace__row--running').includes('color: var(--color-text-2')).toBe(true);
     expect(cssSource.includes('.turn-process-trace__row--waiting .turn-process-trace__row-icon')).toBe(true);
-    expect(cssSource.includes('opacity: 0.82')).toBe(true);
+    expect(cssRuleFor('.turn-process-disclosure--waiting').includes('color: var(--color-text-2')).toBe(true);
+    expect(cssRuleFor('.turn-process-receipt').includes('color: var(--color-text-2')).toBe(true);
+    expect(cssRuleFor('.turn-process-trace__row').includes('color: var(--color-text-2')).toBe(true);
+    expect(cssSource.includes('.turn-process-receipt--waiting .turn-process-receipt__label')).toBe(false);
+    expect(cssSource.includes('turn-process-running-label')).toBe(false);
+    expect(cssSource.includes('opacity: 0.82')).toBe(false);
+  });
+
+  test('uses the primary token for all process and transcript focus rings', () => {
+    expect(cssRuleFor('.turn-process-receipt__header:focus-visible')).toContain('var(--color-primary-6');
+    expect(cssRuleFor('button.turn-process-trace__row:focus-visible')).toContain('var(--color-primary-6');
+    expect(cssRuleFor('.message-list-scroll-button:focus-visible')).toContain('var(--color-primary-6');
   });
 
   test('defines the shared conversation body typography token once', () => {

@@ -138,52 +138,18 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
       : t('preview.mermaidTitle');
 
   return (
-    <div style={{ width: '100%', minWidth: 0, maxWidth: '100%', ...style }}>
-      <div
-        style={{
-          border: '1px solid var(--bg-3)',
-          borderRadius: '0.3rem',
-          overflow: 'hidden',
-          overflowX: 'auto',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: '8px',
-            backgroundColor: 'var(--bg-2)',
-            borderTopLeftRadius: '0.3rem',
-            borderTopRightRadius: '0.3rem',
-            padding: '6px 10px',
-            borderBottom: '1px solid var(--bg-3)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span
-              style={{
-                textDecoration: 'none',
-                color: 'var(--text-secondary)',
-                fontSize: '12px',
-                lineHeight: '20px',
-              }}
-            >
+    <div className='markdown-mermaid-block' style={style}>
+      <div className='markdown-mermaid-surface'>
+        <div className='markdown-mermaid-header'>
+          <div className='markdown-mermaid-leading'>
+            <span className='markdown-mermaid-language'>
               {'<mermaid>'}
             </span>
             {svg && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }} role='group' aria-label={t('preview.preview')}>
+              <div className='markdown-mermaid-segmented' role='group' aria-label={t('preview.preview')}>
                 <button
                   type='button'
-                  style={{
-                    cursor: 'pointer',
-                    color: viewMode === 'preview' ? 'var(--text-primary)' : 'var(--text-secondary)',
-                    fontSize: '12px',
-                    lineHeight: '20px',
-                    border: 0,
-                    background: 'transparent',
-                    padding: 0,
-                  }}
+                  className='markdown-mermaid-segment'
                   aria-pressed={viewMode === 'preview'}
                   onClick={() => {
                     preferredViewModeRef.current = 'preview';
@@ -192,20 +158,9 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
                 >
                   {t('preview.preview')}
                 </button>
-                <span style={{ color: 'var(--text-secondary)', fontSize: '12px', lineHeight: '20px' }} aria-hidden='true'>
-                  /
-                </span>
                 <button
                   type='button'
-                  style={{
-                    cursor: 'pointer',
-                    color: viewMode === 'source' ? 'var(--text-primary)' : 'var(--text-secondary)',
-                    fontSize: '12px',
-                    lineHeight: '20px',
-                    border: 0,
-                    background: 'transparent',
-                    padding: 0,
-                  }}
+                  className='markdown-mermaid-segment'
                   aria-pressed={viewMode === 'source'}
                   onClick={() => {
                     preferredViewModeRef.current = 'source';
@@ -217,12 +172,12 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
               </div>
             )}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          <div className='markdown-mermaid-toolbar markdown-code-toolbar'>
             {showOpenInPanelButton && canOpenInPanel && (
               <button
                 type='button'
                 data-testid='mermaid-open-in-panel'
-                className='border-0 bg-transparent p-0 cursor-pointer flex items-center'
+                className='markdown-mermaid-action markdown-code-action'
                 aria-label={t('preview.openInPanelTooltip')}
                 title={t('preview.openInPanelTooltip')}
                 onClick={() => {
@@ -232,13 +187,13 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
                   });
                 }}
               >
-                <PreviewOpen theme='outline' size='18' style={{ flexShrink: 0 }} fill='var(--text-secondary)' />
+                <PreviewOpen theme='outline' size='16' fill='currentColor' />
               </button>
             )}
             <button
               type='button'
               data-testid='mermaid-copy'
-              className='border-0 bg-transparent p-0 cursor-pointer flex items-center'
+              className='markdown-mermaid-action markdown-code-action'
               aria-label={t('common.copy')}
               title={t('common.copy')}
               onClick={() => {
@@ -251,7 +206,7 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
                   });
               }}
             >
-              <Copy theme='outline' size='18' style={{ flexShrink: 0 }} fill='var(--text-secondary)' />
+              <Copy theme='outline' size='16' fill='currentColor' />
             </button>
           </div>
         </div>
@@ -259,41 +214,17 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
         {svg && viewMode === 'preview' ? (
           <div
             data-testid='mermaid-diagram'
-            style={{
-              backgroundColor: 'var(--bg-1)',
-              padding: '12px',
-              overflowX: 'auto',
-              display: 'flex',
-              justifyContent: 'center',
-            }}
+            className='markdown-mermaid-diagram'
             dangerouslySetInnerHTML={{ __html: svg }}
           />
         ) : shouldShowLoading ? (
           <div
             data-testid='mermaid-loading'
-            style={{
-              backgroundColor: 'var(--bg-1)',
-              padding: '16px 12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px',
-              color: 'var(--text-secondary)',
-              fontSize: '13px',
-              lineHeight: '20px',
-            }}
+            className='markdown-mermaid-loading'
           >
             <div
               aria-hidden='true'
-              className='loading'
-              style={{
-                width: '12px',
-                height: '12px',
-                borderRadius: '999px',
-                border: '2px solid var(--bg-3)',
-                borderTopColor: 'var(--text-secondary)',
-                flexShrink: 0,
-              }}
+              className='markdown-mermaid-loading-indicator loading'
             />
             <span>{t('preview.loading')}</span>
           </div>

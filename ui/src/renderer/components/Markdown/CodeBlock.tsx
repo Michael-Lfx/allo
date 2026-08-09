@@ -114,10 +114,6 @@ function CodeBlock(props: CodeBlockProps) {
       });
   };
 
-  const iconFill = isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.45)';
-  const footerTextColor = isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.35)';
-  const borderColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
-  const bgColor = isDark ? 'rgba(255,255,255,0.04)' : 'var(--bg-2)';
   const codeContentId = `${blockId}-content`;
   const footerId = `${blockId}-footer`;
 
@@ -127,23 +123,15 @@ function CodeBlock(props: CodeBlockProps) {
       style={{ width: '100%', minWidth: 0, maxWidth: '100%', ...props.codeStyle }}
       className='markdown-code-block'
     >
-      <div style={{ backgroundColor: bgColor, borderRadius: '8px', overflow: 'hidden' }}>
+      <div className='markdown-code-surface'>
         {/* Header */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            padding: '8px 12px',
-          }}
-        >
-          <span style={{ color: footerTextColor, fontSize: '12px', lineHeight: '16px' }}>
+        <div className='markdown-code-header'>
+          <span className='markdown-code-language'>
             {language.toLocaleLowerCase()}
           </span>
           {/* Buttons: always visible on touch devices, hover-only on pointer devices */}
           <div
             className='markdown-code-toolbar'
-            style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
           >
             {canCollapse && !isStreaming && (
               <button
@@ -156,9 +144,9 @@ function CodeBlock(props: CodeBlockProps) {
                 onClick={toggleExpanded}
               >
                 {expanded ? (
-                  <Up theme='outline' size='14' style={{ display: 'block' }} fill={iconFill} />
+                  <Up theme='outline' size='14' style={{ display: 'block' }} fill='currentColor' />
                 ) : (
-                  <Down theme='outline' size='14' style={{ display: 'block' }} fill={iconFill} />
+                  <Down theme='outline' size='14' style={{ display: 'block' }} fill='currentColor' />
                 )}
               </button>
             )}
@@ -170,7 +158,7 @@ function CodeBlock(props: CodeBlockProps) {
                 className='markdown-code-action'
                 onClick={handleCopy}
               >
-                <Copy theme='outline' size='14' style={{ display: 'block' }} fill={iconFill} />
+                <Copy theme='outline' size='14' style={{ display: 'block' }} fill='currentColor' />
               </button>
             )}
           </div>
@@ -185,6 +173,7 @@ function CodeBlock(props: CodeBlockProps) {
               }
             }}
           id={codeContentId}
+          className='markdown-code-content'
           style={{
             maxHeight: canCollapse && !isEffectivelyExpanded ? `${COLLAPSED_HEIGHT}px` : 'none',
             overflowY: isStreaming ? 'auto' : 'hidden',
@@ -238,29 +227,16 @@ function CodeBlock(props: CodeBlockProps) {
                 ? t('common.collapse')
                 : t('common.viewMoreLines', { count: totalLines - PREVIEW_LINES })
             }
-            style={{
-              display: 'flex',
-              justifyContent: 'center',
-              alignItems: 'center',
-              width: '100%',
-              padding: '6px 12px',
-              cursor: 'pointer',
-              gap: '4px',
-              borderTop: `1px solid ${borderColor}`,
-              borderLeft: 0,
-              borderRight: 0,
-              borderBottom: 0,
-              background: 'transparent',
-            }}
+            className='markdown-code-footer'
             onClick={toggleExpanded}
           >
-            <span style={{ color: footerTextColor, fontSize: '12px' }}>
+            <span className='markdown-code-footer-label'>
               {expanded ? t('common.collapse') : t('common.viewMoreLines', { count: totalLines - PREVIEW_LINES })}
             </span>
             {expanded ? (
-              <Up theme='outline' size='12' fill={footerTextColor} />
+              <Up theme='outline' size='12' fill='currentColor' />
             ) : (
-              <Down theme='outline' size='12' fill={footerTextColor} />
+              <Down theme='outline' size='12' fill='currentColor' />
             )}
           </button>
         )}
