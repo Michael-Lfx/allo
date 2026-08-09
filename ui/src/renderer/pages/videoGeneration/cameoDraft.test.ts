@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { suggestCameoCharacterName } from './components/CameoCastEditor';
 import type { VideoCreateDraft } from './components/VideoCreateComposer';
 import type { CameoDraftItem } from './types';
 
@@ -101,5 +102,20 @@ describe('create → upload → plan order', () => {
       // expected
     }
     expect(calls).toEqual(['upload']);
+  });
+});
+
+describe('suggestCameoCharacterName', () => {
+  test('keeps short cast-like stems', () => {
+    expect(suggestCameoCharacterName('陈树生.png', 0)).toBe('陈树生');
+    expect(suggestCameoCharacterName('Alice.jpg', 0)).toBe('Alice');
+  });
+
+  test('replaces camera and scene-prompt stems with placeholders', () => {
+    expect(suggestCameoCharacterName('05382109.jpg', 0)).toBe('角色1');
+    expect(suggestCameoCharacterName('IMG_1234.png', 1)).toBe('角色2');
+    expect(
+      suggestCameoCharacterName('cramnped old style chinese workers vilage rental.webp', 0)
+    ).toBe('角色1');
   });
 });

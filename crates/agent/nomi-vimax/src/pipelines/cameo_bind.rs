@@ -152,6 +152,12 @@ fn match_cameo_to_character<'a>(
 ) -> VimaxResult<&'a CharacterInScene> {
     let cameo_name = photo.character_name.trim();
     let anonymous = is_anonymous_cameo_name(cameo_name);
+    // When the filename/prompt leaked into character_name, users often put the real
+    // cast id in description — try that before idx-order fallback.
+    let desc_name = photo.description.trim();
+    let desc_as_name = !desc_name.is_empty()
+        && !is_anonymous_cameo_name(desc_name)
+        && (anonymous || !cameo::names_match(cameo_name, desc_name));
 
     // 1) Explicit prior binding (re-plan / resume).
     if let Some(bound) = photo
@@ -168,39 +174,16 @@ fn match_cameo_to_character<'a>(
         }
     }
 
-    // 2) Exact name match among unused cast.
+    // 2) Exact / fuzzy match on character_name (skip when it's a prompt/camera stem).
     if !anonymous {
-        let name_hits: Vec<&&CharacterInScene> = visible
-            .iter()
-            .filter(|c| {
-                !used.contains(&c.identifier_in_scene)
-                    && cameo::names_match(cameo_name, &c.identifier_in_scene)
-            })
-            .collect();
-        if name_hits.len() == 1 {
-            return Ok(name_hits[0]);
+        if let Some(hit) = match_by_label(cameo_name, photo, visible, used)? {
+            return Ok(hit);
         }
-        if name_hits.len() > 1 {
-            return Err(VimaxError::InvalidParams(format!(
-                "cameo character_name {:?} matches multiple cast members — rename the photo or characters",
-                photo.character_name
-            )));
-        }
+    }
 
-        // Same identity already bound (second photo for the same role) → overwrite.
-        let used_name_hits: Vec<&&CharacterInScene> = visible
-            .iter()
-            .filter(|c| {
-                used.contains(&c.identifier_in_scene)
-                    && cameo::names_match(cameo_name, &c.identifier_in_scene)
-            })
-            .collect();
-        if used_name_hits.len() == 1 {
-            return Ok(used_name_hits[0]);
-        }
-
-        // 3) Unique fuzzy containment (e.g. cameo "小林" ↔ cast "林").
-        if let Some(hit) = unique_fuzzy_name_hit(cameo_name, visible, used) {
+    // 2b) Exact / fuzzy match on description when it looks like a real cast label.
+    if desc_as_name {
+        if let Some(hit) = match_by_label(desc_name, photo, visible, used)? {
             return Ok(hit);
         }
     }
@@ -210,17 +193,17 @@ fn match_cameo_to_character<'a>(
         .filter(|c| !used.contains(&c.identifier_in_scene))
         .collect();
 
-    // 4) Single remaining cast member — always safe (covers camera-filename cameos).
+    // 3) Single remaining cast member — always safe (covers camera-filename cameos).
     if remaining.len() == 1 {
         return Ok(remaining[0]);
     }
 
-    // 5) Only one visible cast in the whole scene (extra photos overwrite the same cameo).
+    // 4) Only one visible cast in the whole scene (extra photos overwrite the same cameo).
     if visible.len() == 1 {
         return Ok(visible[0]);
     }
 
-    // 6) Anonymous multi-photo / multi-cast: bind by ascending idx order.
+    // 5) Anonymous / prompt-stem multi-photo / multi-cast: bind by ascending idx order.
     if anonymous && !remaining.is_empty() {
         let mut ordered = remaining;
         ordered.sort_by_key(|c| c.idx);
@@ -239,7 +222,47 @@ set character_name to match identifier_in_scene (candidates: {})",
     )))
 }
 
-/// True when the "name" is almost certainly a camera / export stem, not a cast label.
+/// Exact name → used overwrite → unique fuzzy. `None` means no unique hit (caller falls back).
+fn match_by_label<'a>(
+    label: &str,
+    photo: &CameoPhotoEntry,
+    visible: &[&'a CharacterInScene],
+    used: &HashSet<String>,
+) -> VimaxResult<Option<&'a CharacterInScene>> {
+    let name_hits: Vec<&&CharacterInScene> = visible
+        .iter()
+        .filter(|c| {
+            !used.contains(&c.identifier_in_scene)
+                && cameo::names_match(label, &c.identifier_in_scene)
+        })
+        .collect();
+    if name_hits.len() == 1 {
+        return Ok(Some(name_hits[0]));
+    }
+    if name_hits.len() > 1 {
+        return Err(VimaxError::InvalidParams(format!(
+            "cameo label {:?} matches multiple cast members — rename the photo or characters",
+            photo.character_name
+        )));
+    }
+
+    // Same identity already bound (second photo for the same role) → overwrite.
+    let used_name_hits: Vec<&&CharacterInScene> = visible
+        .iter()
+        .filter(|c| {
+            used.contains(&c.identifier_in_scene)
+                && cameo::names_match(label, &c.identifier_in_scene)
+        })
+        .collect();
+    if used_name_hits.len() == 1 {
+        return Ok(Some(used_name_hits[0]));
+    }
+
+    // Unique fuzzy containment (e.g. cameo "小林" ↔ cast "林").
+    Ok(unique_fuzzy_name_hit(label, visible, used))
+}
+
+/// True when the "name" is almost certainly a camera / export / prompt stem, not a cast label.
 pub(crate) fn is_anonymous_cameo_name(name: &str) -> bool {
     let t = name.trim();
     if t.is_empty() {
@@ -282,6 +305,42 @@ pub(crate) fn is_anonymous_cameo_name(name: &str) -> bool {
     // `IMG_1234` / `DSC01234` / `mmexport1712345678901`
     if looks_like_camera_stem(&lower) {
         return true;
+    }
+    // AI image / scene-prompt stems used as filenames, e.g.
+    // "cramped old style chinese workers village rental" — not a cast id.
+    if looks_like_scene_prompt_stem(t) {
+        return true;
+    }
+    false
+}
+
+/// Heuristic: multi-token or long caption-like stems are scene/prompt labels, not 姓名.
+fn looks_like_scene_prompt_stem(name: &str) -> bool {
+    let tokens: Vec<&str> = name
+        .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+        .filter(|s| !s.is_empty())
+        .collect();
+    // Four+ tokens almost never form a cast identifier ("Mary Jane Watson" is 3).
+    if tokens.len() >= 4 {
+        return true;
+    }
+    let has_cjk = name.chars().any(is_cjk_char);
+    if !has_cjk {
+        let alnum_len = name.chars().filter(|c| c.is_ascii_alphanumeric()).count();
+        // Long latin phrases with several words (common Midjourney/SD stems).
+        if alnum_len >= 28 && tokens.len() >= 3 {
+            return true;
+        }
+    } else {
+        // Long CJK-only captions (person names are typically 2–4 chars).
+        let cjk_count = name.chars().filter(|c| is_cjk_char(*c)).count();
+        let significant = name
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '_' && *c != '-')
+            .count();
+        if cjk_count >= 10 && cjk_count * 2 >= significant {
+            return true;
+        }
     }
     false
 }
@@ -601,8 +660,58 @@ mod tests {
         assert!(is_anonymous_cameo_name("IMG_1234"));
         assert!(is_anonymous_cameo_name("mmexport1712345678901"));
         assert!(is_anonymous_cameo_name("Character"));
+        assert!(is_anonymous_cameo_name(
+            "cramnped old style chinese workers vilage rental"
+        ));
+        assert!(is_anonymous_cameo_name(
+            "cramped_old_style_chinese_workers_village_rental"
+        ));
+        assert!(is_anonymous_cameo_name("拥挤的老式中国工人村出租屋街景"));
         assert!(!is_anonymous_cameo_name("小"));
         assert!(!is_anonymous_cameo_name("Alice"));
+        assert!(!is_anonymous_cameo_name("陈树生"));
+        assert!(!is_anonymous_cameo_name("Mary Jane Watson"));
+    }
+
+    #[test]
+    fn scene_prompt_cameo_binds_multi_cast_by_idx() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path();
+        let film = session.join("idea2video");
+        std::fs::create_dir_all(&film).unwrap();
+        cameo::upload_photo(
+            session,
+            &jpeg_bytes(),
+            "cramnped old style chinese workers vilage rental",
+            "",
+        )
+        .unwrap();
+        let characters = vec![char(0, "陈树生"), char(1, "林秀兰")];
+        let mut registry = HashMap::new();
+        let bindings = bind_cameos_to_registry(session, &film, &characters, &mut registry).unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].1, "陈树生");
+        assert!(has_usable_cameo(&registry, "陈树生"));
+    }
+
+    #[test]
+    fn description_label_binds_when_name_is_prompt_stem() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path();
+        let film = session.join("idea2video");
+        std::fs::create_dir_all(&film).unwrap();
+        cameo::upload_photo(
+            session,
+            &jpeg_bytes(),
+            "cramnped old style chinese workers vilage rental",
+            "林秀兰",
+        )
+        .unwrap();
+        let characters = vec![char(0, "陈树生"), char(1, "林秀兰")];
+        let mut registry = HashMap::new();
+        let bindings = bind_cameos_to_registry(session, &film, &characters, &mut registry).unwrap();
+        assert_eq!(bindings[0].1, "林秀兰");
+        assert!(has_usable_cameo(&registry, "林秀兰"));
     }
 
     #[test]

@@ -17,7 +17,7 @@ function newLocalId(): string {
   return `local_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Avoid using camera / WeChat export stems as cast names (e.g. `05382109.jpg`). */
+/** Avoid using camera / WeChat / AI-prompt stems as cast names (e.g. `05382109.jpg`). */
 export function suggestCameoCharacterName(fileName: string, indexInBatch: number): string {
   const stem = fileName.replace(/\.[^.]+$/, '').trim();
   if (!stem) return `角色${indexInBatch + 1}`;
@@ -28,6 +28,18 @@ export function suggestCameoCharacterName(fileName: string, indexInBatch: number
   }
   if (/^[0-9a-f]{6,}$/i.test(stem) && !/[\u4e00-\u9fff]/.test(stem)) {
     return `角色${indexInBatch + 1}`;
+  }
+  // Scene / Midjourney-style prompt stems are not cast ids.
+  const tokens = stem.split(/[\s_-]+/).filter(Boolean);
+  if (tokens.length >= 4) return `角色${indexInBatch + 1}`;
+  const hasCjk = /[\u4e00-\u9fff]/.test(stem);
+  if (!hasCjk) {
+    const alnumLen = (stem.match(/[0-9a-zA-Z]/g) || []).length;
+    if (alnumLen >= 28 && tokens.length >= 3) return `角色${indexInBatch + 1}`;
+  } else {
+    const cjkCount = (stem.match(/[\u4e00-\u9fff]/g) || []).length;
+    const significant = stem.replace(/[\s_-]+/g, '').length;
+    if (cjkCount >= 10 && cjkCount * 2 >= significant) return `角色${indexInBatch + 1}`;
   }
   return stem.slice(0, 48);
 }
