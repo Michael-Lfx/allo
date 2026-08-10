@@ -55,6 +55,36 @@ pub struct TraceSpan {
     pub preview: Option<String>,
 }
 
+/// Lightweight verified-artifact metadata attached to tool spans / turn summaries.
+///
+/// Absolute host paths are intentionally omitted — use `relative_path` for
+/// workspace-scoped locators. Binary payloads are never stored here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TraceArtifactMeta {
+    pub id: String,
+    /// `"image"` | `"audio"` | `"video"` | `"text"` | `"file"` (snake_case).
+    pub kind: String,
+    pub mime_type: String,
+    pub relative_path: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+}
+
+/// One session-scoped artifact row (turn provenance + metadata).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TraceArtifactIndexEntry {
+    pub schema_version: u32,
+    pub trace_id: String,
+    pub conversation_id: String,
+    pub msg_id: String,
+    pub started_at_ms: u64,
+    pub artifact: TraceArtifactMeta,
+}
+
 /// Aggregate counters and outcome for a turn.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct TurnSummary {
@@ -80,6 +110,12 @@ pub struct TurnSummary {
     pub tool_error_count: u32,
     #[serde(default)]
     pub llm_round_count: u32,
+    /// Count of verified tool artifacts recorded on this turn.
+    #[serde(default)]
+    pub artifact_count: u32,
+    /// Compact artifact receipts (metadata only) for this turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<TraceArtifactMeta>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub success: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,6 +140,8 @@ pub struct TraceIndexEntry {
     pub elapsed_ms: Option<i64>,
     pub tool_call_count: u32,
     pub tool_error_count: u32,
+    #[serde(default)]
+    pub artifact_count: u32,
     pub input_tokens: u64,
     pub output_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,6 +166,7 @@ impl TraceIndexEntry {
             elapsed_ms: trace.summary.elapsed_ms,
             tool_call_count: trace.summary.tool_call_count,
             tool_error_count: trace.summary.tool_error_count,
+            artifact_count: trace.summary.artifact_count,
             input_tokens: trace.summary.input_tokens,
             output_tokens: trace.summary.output_tokens,
             stop_reason: trace.summary.stop_reason.clone(),
@@ -244,6 +283,7 @@ mod tests {
         let entry = TraceIndexEntry::from_trace(&trace, "turns/c1/t1.json".into());
         assert_eq!(entry.relative_path, "turns/c1/t1.json");
         assert_eq!(entry.tool_call_count, 3);
+        assert_eq!(entry.artifact_count, 0);
         assert_eq!(entry.success, Some(false));
     }
 }

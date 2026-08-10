@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use uuid::Uuid;
 
-use crate::types::{TraceIndexEntry, TurnTrace};
+use crate::types::{TraceArtifactIndexEntry, TraceIndexEntry, TurnTrace, SCHEMA_VERSION};
 
 /// Errors from [`FileTraceStore`] I/O. Callers may log and continue.
 #[derive(Debug, thiserror::Error)]
@@ -146,6 +146,57 @@ impl FileTraceStore {
             .collect())
     }
 
+    /// Session-scoped verified artifact metadata across recent turns.
+    ///
+    /// Newest-first. Prefer turns that already advertise `artifact_count > 0`
+    /// in the index; fall back to loading turn JSON when the index predates
+    /// that field. Caps the number of turn files scanned at `turn_limit`.
+    pub fn list_artifacts_for_conversation(
+        &self,
+        conversation_id: &str,
+        turn_limit: usize,
+    ) -> Result<Vec<TraceArtifactIndexEntry>, TraceStoreError> {
+        let entries = self.list_for_conversation(conversation_id, turn_limit)?;
+        let mut out = Vec::new();
+        for entry in entries {
+            // Skip turn files that are known empty when the field is present.
+            // Older index lines default `artifact_count` to 0, so still load when
+            // tools ran — they may carry artifacts without the new counter.
+            let likely_empty = entry.artifact_count == 0 && entry.tool_call_count == 0;
+            if likely_empty {
+                continue;
+            }
+            let trace = match self.load_relative(&entry.relative_path) {
+                Ok(t) => t,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        relative_path = %entry.relative_path,
+                        "skipping unreadable agent-trace turn while listing artifacts"
+                    );
+                    continue;
+                }
+            };
+            let artifacts = if !trace.summary.artifacts.is_empty() {
+                trace.summary.artifacts.clone()
+            } else {
+                // Recover from span attributes for older traces / partial writes.
+                collect_artifacts_from_spans(&trace)
+            };
+            for artifact in artifacts {
+                out.push(TraceArtifactIndexEntry {
+                    schema_version: SCHEMA_VERSION,
+                    trace_id: trace.trace_id.clone(),
+                    conversation_id: trace.conversation_id.clone(),
+                    msg_id: trace.msg_id.clone(),
+                    started_at_ms: trace.started_at_ms,
+                    artifact,
+                });
+            }
+        }
+        Ok(out)
+    }
+
     /// Delete traces with `started_at_ms < older_than_ms`. Rewrites the index.
     /// Returns the number of traces removed.
     pub fn delete_older_than(&self, older_than_ms: u64) -> Result<usize, TraceStoreError> {
@@ -252,6 +303,26 @@ impl FileTraceStore {
     }
 }
 
+fn collect_artifacts_from_spans(trace: &TurnTrace) -> Vec<crate::types::TraceArtifactMeta> {
+    let mut out = Vec::new();
+    for span in &trace.spans {
+        let Some(value) = span.attributes.get("artifacts") else {
+            continue;
+        };
+        match serde_json::from_value::<Vec<crate::types::TraceArtifactMeta>>(value.clone()) {
+            Ok(items) => out.extend(items),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    span_id = %span.span_id,
+                    "skipping corrupt artifacts attribute on span"
+                );
+            }
+        }
+    }
+    out
+}
+
 /// Keep only ASCII alphanumeric, `-`, and `_`. Empty → `"unknown"`.
 pub fn sanitize_path_segment(raw: &str) -> String {
     let filtered: String = raw
@@ -303,7 +374,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), TraceStoreError> {
 mod tests {
     use super::*;
     use crate::builder::{TokenCounts, TurnTraceBuilder, TurnTraceMeta};
-    use crate::types::{SpanKind, SpanStatus, SCHEMA_VERSION};
+    use crate::types::{SpanKind, SpanStatus, TraceArtifactMeta, SCHEMA_VERSION};
     use std::collections::BTreeMap;
 
     fn sample_trace(conversation_id: &str, msg_id: &str) -> TurnTrace {
@@ -386,5 +457,46 @@ mod tests {
         let recent = store.list_recent(10).unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].trace_id, new.trace_id);
+    }
+
+    #[test]
+    fn list_artifacts_for_conversation_aggregates_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileTraceStore::new(dir.path());
+        let mut b = TurnTraceBuilder::new(TurnTraceMeta {
+            conversation_id: "conv-art".into(),
+            msg_id: "m-art".into(),
+            root_turn_id: "root".into(),
+            session_kind: "session_dialogue".into(),
+            origin: None,
+            companion: false,
+            channel_platform: None,
+            provider: None,
+            model: None,
+        });
+        b.note_tool_start("c1", "generate_image", None);
+        b.note_tool_end(
+            "c1",
+            SpanStatus::Ok,
+            Some("ok"),
+            &[TraceArtifactMeta {
+                id: "art-1".into(),
+                kind: "image".into(),
+                mime_type: "image/png".into(),
+                relative_path: "nomifun-artifacts/a.png".into(),
+                size_bytes: 9,
+                sha256: "aa".into(),
+                call_id: Some("c1".into()),
+                tool_name: Some("generate_image".into()),
+            }],
+        );
+        let trace = b.finalize();
+        store.persist(&trace).unwrap();
+
+        let arts = store.list_artifacts_for_conversation("conv-art", 20).unwrap();
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].msg_id, "m-art");
+        assert_eq!(arts[0].artifact.relative_path, "nomifun-artifacts/a.png");
+        assert_eq!(arts[0].trace_id, trace.trace_id);
     }
 }

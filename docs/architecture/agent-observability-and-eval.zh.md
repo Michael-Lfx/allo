@@ -14,16 +14,20 @@ Agent 回合会写入结构化 turn trace（spans、token、工具计数），�
 | --- | --- | --- |
 | GET | `/api/debug/agent-traces?conversationId=&limit=` | 按会话列出索引 |
 | GET | `/api/debug/agent-traces/recent?limit=` | 最近条目 |
+| GET | `/api/debug/agent-traces/artifacts?conversationId=&limit=` | 会话级已验证产物元数据（无二进制） |
 | GET | `/api/debug/agent-traces/{trace_id}` | 完整 turn（含 spans） |
 
 实现：`nomi-agent-trace`（存储 / 脱敏）→ `nomifun-ai-agent::AgentTraceHub` → `nomifun-conversation::routes_trace`。
+
+工具完成后，collector 会把 `PersistedArtifact` **元数据**（id / kind / mime / relative_path / size / sha）写入 tool span attributes 与 turn summary；不写入绝对路径或文件内容。
 
 ### UI
 
 会话页 `ChatLayout` 在开发者模式开启且存在 `conversation_id` 时显示 **Trace** 按钮，打开嵌入式 Drawer（`AgentTraceInspector`）：
 
-- 列出该会话的 turn 索引
-- 点击行查看 span 瀑布与 tokens / tools / elapsed
+- 会话产物列表（跨 turn 聚合，点击跳到对应 turn）
+- 列出该会话的 turn 索引（含 artifact 计数）
+- 点击行查看 span 瀑布、tokens / tools / artifacts、可展开 attributes / preview
 
 未开启开发者模式时组件不渲染；API 在未开启时返回 403。
 

@@ -4,7 +4,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use nomifun_db::IClientPreferenceRepository;
-use nomi_agent_trace::{FileTraceStore, TraceIndexEntry, TraceStoreError, TurnTrace};
+use nomi_agent_trace::{
+    FileTraceStore, TraceArtifactIndexEntry, TraceIndexEntry, TraceStoreError, TurnTrace,
+};
 
 use super::prefs::developer_mode_enabled;
 
@@ -66,6 +68,17 @@ impl AgentTraceHub {
     pub async fn get_trace(&self, trace_id: &str) -> Result<Option<TurnTrace>, TraceApiError> {
         self.require_developer_mode().await?;
         self.store.get(trace_id).map_err(TraceApiError::Store)
+    }
+
+    pub async fn list_artifacts_for_conversation(
+        &self,
+        conversation_id: &str,
+        turn_limit: usize,
+    ) -> Result<Vec<TraceArtifactIndexEntry>, TraceApiError> {
+        self.require_developer_mode().await?;
+        self.store
+            .list_artifacts_for_conversation(conversation_id, turn_limit)
+            .map_err(TraceApiError::Store)
     }
 
     pub async fn export_paths_for_conversation(

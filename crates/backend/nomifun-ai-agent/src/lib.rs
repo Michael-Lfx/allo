@@ -66,8 +66,8 @@ pub use nomi_config;
 pub use nomi_types;
 
 pub use agent_trace::{
-    AgentTraceHub, TraceApiError, TraceIndexEntry, TurnTrace, TurnTraceCollector, TurnTraceContext,
-    DEVELOPER_MODE_PREF_KEY,
+    AgentTraceHub, TraceApiError, TraceArtifactIndexEntry, TraceArtifactMeta, TraceIndexEntry,
+    TurnTrace, TurnTraceCollector, TurnTraceContext, DEVELOPER_MODE_PREF_KEY,
 };
 pub use runtime_state::AgentRuntimeState;
 pub use boot_process_reaper::{

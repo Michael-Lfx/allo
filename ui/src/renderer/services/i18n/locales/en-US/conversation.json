@@ -820,6 +820,13 @@
     "outcomeFail": "Failed",
     "outcomeCancelled": "Cancelled",
     "outcomeUnknown": "Unknown",
-    "turnCount": "{{count}} turns"
+    "turnCount": "{{count}} turns",
+    "artifacts": "Artifacts",
+    "turnArtifacts": "Turn artifacts",
+    "sessionArtifacts": "Session artifacts",
+    "sessionArtifactsHint": "Metadata only · click to open turn",
+    "emptyArtifacts": "No verified artifacts for this conversation",
+    "artifactCount": "{{count}} artifacts",
+    "copyPath": "Copy path"
   }
 }
