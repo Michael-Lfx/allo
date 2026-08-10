@@ -48,6 +48,8 @@ type MarkdownViewProps = {
   allowHtml?: boolean;
   /** Model/tool Markdown is not a verified artifact-delivery receipt. */
   allowUnverifiedImages?: boolean;
+  /** When true, code blocks stay expanded and tail-follow during streaming. */
+  isStreaming?: boolean;
 };
 
 const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
@@ -60,6 +62,7 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
     lineHeight,
     allowHtml,
     allowUnverifiedImages = true,
+    isStreaming = false,
     children: childrenProp,
   }) => {
     const { t } = useTranslation();
@@ -99,6 +102,7 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
             {...(props as Parameters<typeof CodeBlock>[0])}
             codeStyle={codeStyle}
             hiddenCodeCopyButton={hiddenCodeCopyButton}
+            isStreaming={isStreaming}
           />
         ),
         a: ({ node: _node, ...rest }: React.JSX.IntrinsicElements['a'] & ExtraProps) => (
@@ -144,7 +148,7 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
           return <img {...imgProps} />;
         },
       }),
-      [allowUnverifiedImages, codeStyle, hiddenCodeCopyButton, handleLinkClick]
+      [allowUnverifiedImages, codeStyle, hiddenCodeCopyButton, handleLinkClick, isStreaming]
     );
 
     const rehypePlugins = useMemo(() => (allowHtml ? [rehypeRaw, rehypeKatex] : [rehypeKatex]), [allowHtml]);

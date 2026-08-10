@@ -23,6 +23,13 @@ const cssRuleFor = (selector: string) => {
   return match?.[1] ?? '';
 };
 
+const cssRulesFor = (selector: string) => {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return Array.from(cssSource.matchAll(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, 'g'))).map(
+    (match) => match[1]
+  );
+};
+
 describe('turn process disclosure content layout', () => {
   test('tags disclosure items by content kind for grouped spacing', () => {
     expect(disclosureSource.includes('getProcessItemLayoutKind')).toBe(true);
@@ -71,7 +78,8 @@ describe('turn process disclosure content layout', () => {
   test('does not render an empty disclosure body before process rows arrive', () => {
     expect(disclosureSource.includes('const hasProcessItems = item.processItems.length > 0')).toBe(true);
     expect(disclosureSource.includes('const disclosureExpanded = hasProcessItems && expanded')).toBe(true);
-    expect(disclosureSource.includes('{hasProcessItems && (')).toBe(true);
+    expect(disclosureSource.includes('{!hasProcessItems ? (')).toBe(true);
+    expect(disclosureSource.includes('turn-process-disclosure__label--static')).toBe(true);
     expect(disclosureSource.includes('{disclosureExpanded && (')).toBe(true);
   });
 
@@ -112,12 +120,14 @@ describe('turn process disclosure content layout', () => {
     expect(disclosureSource.includes("hasHeaderActions && 'turn-process-disclosure__header--with-actions'")).toBe(
       true
     );
-    expect(disclosureSource.includes('{hasHeaderActions && (')).toBe(true);
+    expect(disclosureSource.includes('{hasProcessItems && hasHeaderActions && (')).toBe(true);
     expect(headerRule.includes('position: relative')).toBe(true);
     expect(headerWithActionsRule.includes('padding-right')).toBe(true);
-    expect(headerActionsRule.includes('position: absolute')).toBe(true);
-    expect(headerActionsRule.includes('top: 50%')).toBe(true);
-    expect(headerActionsRule.includes('transform: translateY(-50%)')).toBe(true);
+    expect(headerActionsRule.includes('grid-area: actions')).toBe(true);
+    expect(cssRulesFor('.turn-process-disclosure__header-actions').every((rule) => !rule.includes('position: absolute'))).toBe(
+      true
+    );
+    expect(/grid-template-areas:\s*'label'\s*'actions'/.test(cssSource)).toBe(true);
   });
 
   test('uses tighter same-kind spacing and clearer cross-kind spacing', () => {
@@ -135,19 +145,32 @@ describe('turn process disclosure content layout', () => {
     expect(paragraphRule.includes('color: var(--color-text-1')).toBe(true);
     expect(paragraphRule.includes('font-size: var(--conversation-message-font-size)')).toBe(true);
     expect(paragraphRule.includes('line-height: var(--conversation-message-line-height)')).toBe(true);
-    expect(rowRule.includes('color: var(--color-text-3')).toBe(true);
+    expect(rowRule.includes('color: var(--color-text-2')).toBe(true);
     expect(rowRule.includes('font-size: var(--conversation-message-font-size)')).toBe(true);
     expect(rowRule.includes('line-height: var(--conversation-message-line-height)')).toBe(true);
   });
 
-  test('keeps running process chrome neutral instead of bright blue', () => {
-    expect(cssRuleFor('.turn-process-disclosure--running').includes('color: var(--color-text-3')).toBe(true);
+  test('keeps process text neutral while status color stays on icons', () => {
+    expect(cssRuleFor('.turn-process-disclosure--running').includes('color: var(--color-text-2')).toBe(true);
     expect(
       cssRuleFor('.turn-process-disclosure__body .turn-process-trace__row--running').includes(
-        'color: var(--color-text-3'
+        'color: var(--color-text-2'
       )
     ).toBe(true);
-    expect(cssRuleFor('.turn-process-trace__row--running').includes('color: var(--color-text-3')).toBe(true);
+    expect(cssRuleFor('.turn-process-trace__row--running').includes('color: var(--color-text-2')).toBe(true);
+    expect(cssSource.includes('.turn-process-trace__row--waiting .turn-process-trace__row-icon')).toBe(true);
+    expect(cssRuleFor('.turn-process-disclosure--waiting').includes('color: var(--color-text-2')).toBe(true);
+    expect(cssRuleFor('.turn-process-receipt').includes('color: var(--color-text-2')).toBe(true);
+    expect(cssRuleFor('.turn-process-trace__row').includes('color: var(--color-text-2')).toBe(true);
+    expect(cssSource.includes('.turn-process-receipt--waiting .turn-process-receipt__label')).toBe(false);
+    expect(cssSource.includes('turn-process-running-label')).toBe(false);
+    expect(cssSource.includes('opacity: 0.82')).toBe(false);
+  });
+
+  test('uses the primary token for all process and transcript focus rings', () => {
+    expect(cssRuleFor('.turn-process-receipt__header:focus-visible')).toContain('var(--color-primary-6');
+    expect(cssRuleFor('button.turn-process-trace__row:focus-visible')).toContain('var(--color-primary-6');
+    expect(cssRuleFor('.message-list-scroll-button:focus-visible')).toContain('var(--color-primary-6');
   });
 
   test('defines the shared conversation body typography token once', () => {

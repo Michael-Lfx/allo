@@ -248,17 +248,17 @@ function TurnProcessDisclosure<T>({
           !hasProcessItems && 'turn-process-disclosure__header--static'
         )}
       >
-        <button
-          type='button'
-          className='turn-process-disclosure__toggle'
-          onClick={() => {
-            if (hasProcessItems) setExpanded((value) => !value);
-          }}
-          aria-expanded={hasProcessItems ? disclosureExpanded : undefined}
-          aria-controls={hasProcessItems ? bodyId : undefined}
-        >
-          <span className='turn-process-disclosure__label'>{label}</span>
-          {hasProcessItems && (
+        {!hasProcessItems ? (
+          <div className='turn-process-disclosure__label turn-process-disclosure__label--static'>{label}</div>
+        ) : (
+          <button
+            type='button'
+            className='turn-process-disclosure__toggle'
+            onClick={() => setExpanded((value) => !value)}
+            aria-expanded={disclosureExpanded}
+            aria-controls={bodyId}
+          >
+            <span className='turn-process-disclosure__label'>{label}</span>
             <Down
               theme='outline'
               size='14'
@@ -268,9 +268,9 @@ function TurnProcessDisclosure<T>({
                 disclosureExpanded && 'turn-process-disclosure__arrow--open'
               )}
             />
-          )}
-        </button>
-        {hasHeaderActions && (
+          </button>
+        )}
+        {hasProcessItems && hasHeaderActions && (
           <div className='turn-process-disclosure__header-actions'>
             <button
               type='button'

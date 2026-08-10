@@ -1,6 +1,7 @@
 
 
 import { useThemeContext } from '@/renderer/hooks/context/ThemeContext';
+import { prefersReducedMotion } from '@renderer/utils/motion/flowyMotion';
 import { Down, Up } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -173,14 +174,21 @@ const CollapsibleContent: React.FC<CollapsibleContentProps> = ({
   const bgGradient = useMemo(() => {
     return theme === 'dark' ? BG_GRADIENT_DARK : BG_GRADIENT_LIGHT;
   }, [theme]);
+  const reduceMotion = prefersReducedMotion();
 
   return (
     <div className={classNames('relative', className)}>
       {/* 内容区域 Content area */}
       <div
         ref={contentRef}
-        className={classNames('transition-all duration-300', contentClassName)}
-        style={contentStyle}
+        className={classNames(
+          reduceMotion ? undefined : 'transition-[max-height,opacity] duration-300',
+          contentClassName
+        )}
+        style={{
+          ...contentStyle,
+          transitionDuration: reduceMotion ? '0ms' : undefined,
+        }}
       >
         {children}
       </div>

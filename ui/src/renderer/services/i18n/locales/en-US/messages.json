@@ -117,6 +117,7 @@
   "downloadFailed": "Failed to download",
   "imageLoadFailed": "Failed to load image",
   "scrollToBottom": "Scroll to bottom",
+  "newContentBelow": "View latest content",
   "availableCommands": "{{count}} Available Commands",
   "atFile.hint": "Type to search for files",
   "atFile.menuLabel": "File mentions",

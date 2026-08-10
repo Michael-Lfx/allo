@@ -32,6 +32,19 @@ describe('useNomiMessage terminal lifecycle fence', () => {
     );
   });
 
+  test('clears streamed text buffers on normal, error, and fenced terminal paths', () => {
+    const source = readFileSync(new URL('./useNomiMessage.ts', import.meta.url), 'utf8');
+    const cleanup = 'messageBufferRef.current.delete(message.msg_id)';
+
+    expect(source.split(cleanup).length - 1).toBe(3);
+    expect(source.indexOf(cleanup, source.indexOf("case 'finish':"))).toBeGreaterThan(
+      source.indexOf("case 'finish':")
+    );
+    expect(source.indexOf(cleanup, source.indexOf("message.type === 'error'"))).toBeGreaterThan(
+      source.indexOf("message.type === 'error'")
+    );
+  });
+
   test('fresh idle hydration keeps late prior-turn stream events projection-only', () => {
     const fence = getNomiHydrationLifecycleFence(false);
 

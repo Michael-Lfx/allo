@@ -90,6 +90,48 @@ navigation does not introduce another product object.
 - Realtime events arrive through a singleton WebSocket and are demuxed by event
   name.
 
+## Desktop Conversation Streaming Presentation
+
+The desktop conversation surface separates an active assistant reply into a
+stable Markdown prefix and a lightweight trailing block. The split is local to
+[`MessageText.tsx`](../../ui/src/renderer/pages/conversation/Messages/components/MessageText.tsx): completed
+paragraphs and closed fenced blocks render through `MarkdownView`, while the
+unfinished final paragraph stays plain text. An open fenced block is shown as a
+lightweight code preview until it closes, avoiding raw fence markers and a
+full-Markdown parse for every token.
+
+Markdown renders in a Shadow DOM so message typography and code controls have
+an explicit local style contract:
+
+- message body remains `14px / 22px`; headings use a restrained
+  `18 / 16 / 15 / 14px` hierarchy;
+- links receive theme-derived normal, hover, and keyboard-focus colors;
+- desktop code actions reveal on hover or keyboard focus inside the Shadow DOM;
+- process-row text uses a neutral readable color while icons carry running,
+  waiting, failed, or canceled state color; reduced-motion disables the
+  associated animations.
+
+### Current Scope And Follow-Up
+
+Updated in the current streaming presentation work:
+
+- stable-prefix / trailing-block rendering and open-code preview;
+- Markdown hierarchy, themed links, and Shadow-DOM code-toolbar states;
+- semantic `MessageThinking` toggles with keyboard focus, labelled detail
+  regions, and bounded desktop scrolling;
+- Mermaid's Shadow-DOM toolbar and preview/source segmented control;
+- code footer states, process status contrast, primary focus rings, and
+  icon-only live-step animation;
+- focused coverage for the splitter, Markdown typography, thinking controls,
+  Mermaid and code toolbars, and process layout.
+
+Not updated by this work:
+
+- mobile touch targets, safe-area spacing, and narrow-screen disclosure layout;
+- visual screenshot coverage across desktop themes (the current checks are
+  source/behavior tests plus the normal frontend quality gate); the planned
+  1440x900 and 1280x800 light/dark visual review is not yet recorded.
+
 ## Desktop-Specific UX
 
 Desktop shell behavior is implemented by Tauri commands and plugins:

@@ -73,4 +73,12 @@ describe('ComposerSkillTokenInput', () => {
     expect(source.includes('const paddingStart = style?.paddingInlineStart ?? style?.paddingLeft;')).toBe(true);
     expect(source.includes("'--composer-placeholder-inset': placeholderInset")).toBe(true);
   });
+
+  test('keeps Skill tokens aligned with the composer text line box', () => {
+    const skillRule = styles.match(/\.skill\s*\{[\s\S]*?\}/)?.[0];
+
+    expect(skillRule).toContain('line-height: inherit;');
+    expect(skillRule).toContain('vertical-align: top;');
+    expect(source.includes("<Cube theme='outline' size={16} fill='currentColor' />")).toBe(true);
+  });
 });

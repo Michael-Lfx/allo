@@ -8,6 +8,12 @@ notes at a high level rather than a complete historical log.
 - Composer paste handling no longer inserts plain text twice after page or
   conversation switches; plain text remains owned by the Composer while files
   and images continue through PasteService.
+- Desktop conversation streaming now keeps completed Markdown blocks visually
+  stable while the trailing block is generated, gives Markdown headings a clear
+  reading hierarchy, and makes code actions reveal on hover or keyboard focus.
+- Conversation streaming now follows new output without click-induced pauses,
+  preserves responsive process controls, keeps streamed code blocks expanded,
+  and avoids rebuilding settled history for every token across basic runtimes.
 - AutoWork/IDMM: bypass-model (sidecar) decisions with confidence below 0.4
   now fall back to the conservative rule action instead of being applied
   verbatim, restoring the Phase-1 safety posture. Previously the floor was

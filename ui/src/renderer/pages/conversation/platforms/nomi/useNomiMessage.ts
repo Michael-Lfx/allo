@@ -533,6 +533,9 @@ export const useNomiMessage = (
             });
           }
         }
+        if ((message.type === 'finish' || message.type === 'error') && message.msg_id) {
+          messageBufferRef.current.delete(message.msg_id);
+        }
         addOrUpdateMessage(transformMessage(message));
         return;
       }
@@ -549,8 +552,17 @@ export const useNomiMessage = (
         const chunk = extractResponseTextChunk(message.data);
 
         if (chunk) {
-          const previous = messageBufferRef.current.get(message.msg_id) ?? '';
-          messageBufferRef.current.set(message.msg_id, previous + chunk);
+          const transformed = transformMessage(message);
+          const shouldReplace =
+            transformed?.type === 'text' &&
+            typeof transformed.content === 'object' &&
+            transformed.content.replace === true;
+          if (shouldReplace) {
+            messageBufferRef.current.set(message.msg_id, chunk);
+          } else {
+            const previous = messageBufferRef.current.get(message.msg_id) ?? '';
+            messageBufferRef.current.set(message.msg_id, previous + chunk);
+          }
         }
       }
 
@@ -643,6 +655,7 @@ export const useNomiMessage = (
             dispatchPresentationEvent({ type: 'streamFinished' });
             if (message.msg_id) {
               void processCompletedAssistantMessage(message.msg_id);
+              messageBufferRef.current.delete(message.msg_id);
             }
             // Flowy billing turnId == root turn id (msg_id at send time). Prefer
             // the authoritative root over Finish-row msg_id when turn_id is absent.
@@ -752,6 +765,9 @@ export const useNomiMessage = (
               type: 'failed',
               detail: typeof message.data === 'string' ? message.data : undefined,
             });
+            if (message.msg_id) {
+              messageBufferRef.current.delete(message.msg_id);
+            }
             onError?.(message as IResponseMessage);
             const creditTurnId =
               message.turn_id ?? rootTurnIdRef.current ?? message.msg_id;

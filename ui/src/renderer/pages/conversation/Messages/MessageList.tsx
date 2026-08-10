@@ -26,15 +26,14 @@ import { uuid } from '@renderer/utils/common';
 import './messages.css';
 import HOC from '@renderer/utils/ui/HOC';
 import { useLatestRef } from '@renderer/hooks/ui/useLatestRef';
+import { prefersReducedMotion } from '@renderer/utils/motion/flowyMotion';
 import type { FileChangeInfo } from './MessageFileChanges';
-import { parseDiff } from './MessageFileChanges';
 import { useConversationArtifacts } from './artifacts';
 import { useKnowledgeWritebackEvents, useMessageList, useMessageListLoading } from './hooks';
 import MessageAgentStatus from './components/MessageAgentStatus';
 import MessageTips from './components/MessageTips';
 import MessageToolCall from './components/MessageToolCall';
 import MessageToolGroup from './components/MessageToolGroup';
-import { isSuccessfulWriteFileResult } from './components/toolGroupArtifactVisibility';
 import MessageCronTrigger from './components/MessageCronTrigger';
 import MessageSkillSuggest from './components/MessageSkillSuggest';
 import MessageText from './components/MessageText';
@@ -59,7 +58,6 @@ import ProcessTraceItem, { type ProcessTraceItemExpansionControls } from './comp
 import { isContextCompressionTip } from './processTipModel';
 import { formatFileTargetPreview, splitToolReceiptTargets } from './processFileTargetLabel';
 import { useFirstWinMode } from '@/renderer/utils/onboarding/firstWinMode';
-import type { WriteFileResult } from './types';
 import { useAutoScroll } from './useAutoScroll';
 import { useAutoPreviewOfficeFiles } from '@/renderer/hooks/file/useAutoPreviewOfficeFiles';
 import SelectionReplyButton from './components/SelectionReplyButton';
@@ -80,9 +78,12 @@ import {
   type TurnGateInfo,
 } from './turnDeliverablesModel';
 import TurnDeliverablesCard from './components/TurnDeliverablesCard';
-import { isSupersededPlanToolFailure } from './planToolVisibility';
 import type { MessageId } from '@/common/types/ids';
-import { ExplicitToolRetryReceiptIndex } from './toolRetryReceiptModel';
+import {
+  buildProcessedMessageList,
+  buildUserPrefixFingerprint,
+  findLastUserTextIndex,
+} from './buildProcessedMessageList';
 
 type SourceMessageId = MessageId;
 
@@ -169,6 +170,23 @@ type IProcessedItem =
   | ITurnDeliverablesVO
   | ITurnActionsVO
   | ITurnLiveStepVO;
+
+type DisplayListCache = {
+  processedList: IRenderableItem[];
+  displayList: IProcessedItem[];
+  activeTurnId?: MessageId;
+  activeRequestMessageId?: MessageId;
+  workspaceRoots: string[];
+  translate: ReturnType<typeof useTranslation>['t'];
+};
+
+const hasStablePrefix = <T,>(previous: readonly T[], next: readonly T[], endIndex: number): boolean => {
+  if (previous.length < endIndex || next.length < endIndex) return false;
+  for (let index = 0; index < endIndex; index += 1) {
+    if (previous[index] !== next[index]) return false;
+  }
+  return true;
+};
 
 type ConversationLocationState = {
   targetMessageId?: MessageId;
@@ -759,9 +777,9 @@ const TurnProcessDisclosureHost: React.FC<{
   );
 });
 
-const MessageItem: React.FC<{ message: TMessage; highlighted?: boolean; hideActions?: boolean }> = React.memo(
+const MessageItem: React.FC<{ message: TMessage; highlighted?: boolean; hideActions?: boolean; isStreaming?: boolean }> = React.memo(
   HOC((props) => {
-    const { message, highlighted } = props as { message: TMessage; highlighted?: boolean; hideActions?: boolean };
+    const { message, highlighted } = props as { message: TMessage; highlighted?: boolean; hideActions?: boolean; isStreaming?: boolean };
     return (
       <div
         id={`message-${message.id}`}
@@ -786,11 +804,11 @@ const MessageItem: React.FC<{ message: TMessage; highlighted?: boolean; hideActi
         {props.children}
       </div>
     );
-  })(({ message, hideActions }) => {
+  })(({ message, hideActions, isStreaming }) => {
     const { t } = useTranslation();
     switch (message.type) {
       case 'text':
-        return <MessageText message={message} hideActions={hideActions}></MessageText>;
+        return <MessageText message={message} hideActions={hideActions} isStreaming={isStreaming}></MessageText>;
       case 'tips':
         return <MessageTips message={message}></MessageTips>;
       case 'tool_call':
@@ -828,7 +846,8 @@ const MessageItem: React.FC<{ message: TMessage; highlighted?: boolean; hideActi
     prev.message.position === next.message.position &&
     prev.message.type === next.message.type &&
     prev.highlighted === next.highlighted &&
-    prev.hideActions === next.hideActions
+    prev.hideActions === next.hideActions &&
+    prev.isStreaming === next.isStreaming
 );
 
 const MessageList: React.FC<{
@@ -860,174 +879,45 @@ const MessageList: React.FC<{
   const [highlightedMessageId, setHighlightedMessageId] = useState<MessageId | undefined>();
   const handledTargetKeyRef = useRef<string>('');
 
+  const lastRawUserTextIndex = useMemo(() => findLastUserTextIndex(list), [list]);
+
+  const userPrefixFingerprint = useMemo(
+    () => buildUserPrefixFingerprint(list, lastRawUserTextIndex),
+    [list, lastRawUserTextIndex]
+  );
+
+  const prefixProcessedListCacheRef = useRef<{
+    fingerprint: string;
+    endIndex: number;
+    sourceList: TMessage[];
+    items: IMessageVO[];
+  } | null>(null);
+  const prefixEndIndex = lastRawUserTextIndex + 1;
+  let prefixProcessedList = prefixProcessedListCacheRef.current?.items ?? [];
+  if (
+    prefixProcessedListCacheRef.current?.fingerprint !== userPrefixFingerprint ||
+    prefixProcessedListCacheRef.current.endIndex !== prefixEndIndex ||
+    !hasStablePrefix(prefixProcessedListCacheRef.current.sourceList, list, prefixEndIndex)
+  ) {
+    prefixProcessedList =
+      lastRawUserTextIndex < 0
+        ? []
+        : (buildProcessedMessageList(list, 0, prefixEndIndex) as IMessageVO[]);
+    prefixProcessedListCacheRef.current = {
+      fingerprint: userPrefixFingerprint,
+      endIndex: prefixEndIndex,
+      sourceList: list,
+      items: prefixProcessedList,
+    };
+  }
+
   // Pre-process message list to group tool outputs into summary cards
   const processedList = useMemo(() => {
-    const result: Array<IMessageVO> = [];
-    let diffsChanges: FileChangeInfo[] = [];
-    let diffsSourceMessageIds: SourceMessageId[] = [];
-    let diffsTurnId: MessageId | undefined;
-    let toolList: Array<IMessageToolGroup | IMessageAcpToolCall | IMessageToolCall> = [];
-    let toolSourceMessageIds: SourceMessageId[] = [];
-    const retrySummaries = new ExplicitToolRetryReceiptIndex<ToolSummaryVO>();
+    const result: IMessageVO[] =
+      lastRawUserTextIndex < 0
+        ? (buildProcessedMessageList(list) as IMessageVO[])
+        : [...prefixProcessedList, ...(buildProcessedMessageList(list, lastRawUserTextIndex + 1) as IMessageVO[])];
 
-    const pushFileDffChanges = (
-      changes: FileChangeInfo,
-      sourceMessageId: SourceMessageId,
-      created_at: number,
-      msg_id?: MessageId,
-      turn_id?: MessageId
-    ) => {
-      if (diffsChanges.length && diffsTurnId && turn_id && diffsTurnId !== turn_id) {
-        diffsChanges = [];
-        diffsSourceMessageIds = [];
-      }
-      if (!diffsChanges.length) {
-        diffsSourceMessageIds = [];
-        diffsTurnId = turn_id;
-        result.push({
-          type: 'file_summary',
-          id: `summary-${sourceMessageId}`,
-          msg_id,
-          turn_id,
-          diffs: diffsChanges,
-          sourceMessageIds: diffsSourceMessageIds,
-          created_at,
-        });
-      }
-      diffsChanges.push(changes);
-      diffsSourceMessageIds.push(sourceMessageId);
-      toolList = [];
-      toolSourceMessageIds = [];
-    };
-    const pushToolList = (message: IMessageToolGroup | IMessageAcpToolCall | IMessageToolCall) => {
-      const existingRetry = message.type === 'tool_call' ? retrySummaries.takeContinuation(message) : undefined;
-      if (message.type === 'tool_call' && existingRetry) {
-        existingRetry.messages.push(message);
-        const sourceMessageId = getMessageBusinessIdentity(message);
-        if (sourceMessageId) existingRetry.sourceMessageIds.push(sourceMessageId);
-        // A retry can be separated from its first attempt by thinking/text.
-        // Keep the durable summary reference above, but do not accidentally
-        // append an unrelated following tool to that earlier receipt.
-        toolList = [];
-        toolSourceMessageIds = [];
-        diffsChanges = [];
-        diffsSourceMessageIds = [];
-        diffsTurnId = undefined;
-        return;
-      }
-      const groupedTurnId = toolList.find((tool) => tool.turn_id)?.turn_id;
-      if (groupedTurnId && message.turn_id && groupedTurnId !== message.turn_id) {
-        // A delayed event from another explicit turn must start a new receipt;
-        // otherwise the synthetic summary would inherit the first tool's turn
-        // and visually attach the delayed failure to the wrong request.
-        toolList = [];
-        toolSourceMessageIds = [];
-      }
-      if (!toolList.length) {
-        toolSourceMessageIds = [];
-        const summary: ToolSummaryVO = {
-          type: 'tool_summary',
-          id: `tool-summary-${message.id}`,
-          msg_id: message.msg_id,
-          turn_id: message.turn_id,
-          messages: toolList,
-          sourceMessageIds: toolSourceMessageIds,
-          created_at: message.created_at ?? 0,
-        };
-        result.push(summary);
-      }
-      toolList.push(message);
-      const sourceMessageId = getMessageBusinessIdentity(message);
-      if (sourceMessageId) toolSourceMessageIds.push(sourceMessageId);
-      if (message.type === 'tool_call') {
-        const summary = result.findLast(
-          (item): item is ToolSummaryVO => item.type === 'tool_summary' && item.messages === toolList
-        );
-        if (summary) {
-          retrySummaries.rememberFirst(message, summary);
-        }
-      }
-      diffsChanges = [];
-      diffsSourceMessageIds = [];
-      diffsTurnId = undefined;
-    };
-
-    for (let i = 0, len = list.length; i < len; i++) {
-      const message = list[i];
-      // Skip hidden and available_commands messages
-      if (message.hidden) continue;
-      // A Skill-only load has no user prose. Its immutable skill_load event is
-      // the visible history record; rendering this empty transport row would
-      // leave a blank user bubble ahead of it.
-      if (message.type === 'text' && message.position === 'right' && message.content.content.trim().length === 0) {
-        continue;
-      }
-      if (
-        message.type === 'tool_call' &&
-        message.content.name === 'update_plan' &&
-        isSupersededPlanToolFailure(message, list.slice(i + 1))
-      ) {
-        continue;
-      }
-      if (message.type === 'available_commands') continue;
-      // Plans are no longer rendered inline — they surface in the docked
-      // PinnedPlan bar above the composer, which reads the raw list directly.
-      // A plan also closes the preceding tool receipt. Without this boundary,
-      // update_plan and the next unrelated file operation are merged and a
-      // failure can be labelled with the later operation's target.
-      if (message.type === 'plan') {
-        toolList = [];
-        toolSourceMessageIds = [];
-        diffsChanges = [];
-        diffsSourceMessageIds = [];
-        diffsTurnId = undefined;
-        continue;
-      }
-      // Connection-handshake status banners (connecting/connected/authenticated/
-      // session_active) are implementation noise: never render them as chat
-      // items, and never let them fragment the tool-execution trace below.
-      // Actionable 'error' status still surfaces. (Phase 3 UX)
-      if (message.type === 'agent_status') {
-        const st = (message.content as { status?: string })?.status;
-        if (st === 'connecting' || st === 'connected' || st === 'authenticated' || st === 'session_active') {
-          continue;
-        }
-      }
-      if (message.type === 'tool_group') {
-        if (message.content.length === 1) {
-          const writeFileResults = message.content
-            .filter(isSuccessfulWriteFileResult)
-            .map((item) => item.result_display as WriteFileResult);
-          const sourceMessageId = getMessageBusinessIdentity(message);
-          if (writeFileResults.length && writeFileResults[0].file_diff && sourceMessageId) {
-            pushFileDffChanges(
-              parseDiff(writeFileResults[0].file_diff, writeFileResults[0].file_name),
-              sourceMessageId,
-              message.created_at ?? 0,
-              message.msg_id,
-              message.turn_id
-            );
-            continue;
-          }
-        }
-        pushToolList(message);
-        continue;
-      }
-      if (message.type === 'acp_tool_call') {
-        pushToolList(message);
-        continue;
-      }
-      if (message.type === 'tool_call') {
-        pushToolList(message);
-        continue;
-      }
-      toolList = [];
-      toolSourceMessageIds = [];
-      diffsChanges = [];
-      diffsSourceMessageIds = [];
-      diffsTurnId = undefined;
-      result.push(message);
-    }
     const visibleArtifacts = artifacts
       .filter((artifact) => {
         if (artifact.kind === 'cron_trigger') return artifact.status === 'active';
@@ -1050,9 +940,58 @@ const MessageList: React.FC<{
     return [...result, ...visibleArtifacts].toSorted(
       (a, b) => getProcessedItemCreatedAt(a) - getProcessedItemCreatedAt(b)
     );
-  }, [artifacts, list]);
+  }, [artifacts, list, lastRawUserTextIndex, prefixProcessedList]);
 
+  const displayListCacheRef = useRef<DisplayListCache | null>(null);
   const displayList = useMemo<IProcessedItem[]>(() => {
+    const previous = displayListCacheRef.current;
+    const previousTail = previous?.processedList.at(-1);
+    const nextTail = processedList.at(-1);
+    const canReuseStreamingTail =
+      conversationContext?.isProcessing === true &&
+      !conversationContext.stopNotice &&
+      previous != null &&
+      previous.activeTurnId === conversationContext.activeTurnId &&
+      previous.activeRequestMessageId === conversationContext.activeRequestMessageId &&
+      previous.workspaceRoots === workspaceRoots &&
+      previous.translate === t &&
+      previous.processedList.length === processedList.length &&
+      previousTail?.type === 'text' &&
+      previousTail.position === 'left' &&
+      nextTail?.type === 'text' &&
+      nextTail.position === 'left' &&
+      previousTail.id === nextTail.id &&
+      hasStablePrefix(previous.processedList, processedList, processedList.length - 1);
+
+    if (canReuseStreamingTail) {
+      const displayIndex = previous.displayList.indexOf(previousTail);
+      if (displayIndex >= 0) {
+        const nextDisplayList = previous.displayList.slice();
+        nextDisplayList[displayIndex] = nextTail;
+        displayListCacheRef.current = {
+          processedList,
+          displayList: nextDisplayList,
+          activeTurnId: conversationContext.activeTurnId,
+          activeRequestMessageId: conversationContext.activeRequestMessageId,
+          workspaceRoots,
+          translate: t,
+        };
+        return nextDisplayList;
+      }
+    }
+
+    const cacheDisplayList = (nextDisplayList: IProcessedItem[]): IProcessedItem[] => {
+      displayListCacheRef.current = {
+        processedList,
+        displayList: nextDisplayList,
+        activeTurnId: conversationContext?.activeTurnId,
+        activeRequestMessageId: conversationContext?.activeRequestMessageId,
+        workspaceRoots,
+        translate: t,
+      };
+      return nextDisplayList;
+    };
+
     const itemById = new Map<string, IRenderableItem>();
     const rawModelInput: TurnDisclosureInputItem[] = processedList.map((item) => {
       const id = getProcessedItemAnchorId(item);
@@ -1225,7 +1164,9 @@ const MessageList: React.FC<{
     const deliverablesByTurn = collectTurnDeliverables(candidates, { workspaceRoots, turnGates });
     const liveStepForDisclosures = buildTurnLiveStep(disclosureItems);
     if (deliverablesByTurn.size === 0) {
-      return liveStepForDisclosures ? [...disclosureItems, liveStepForDisclosures] : disclosureItems;
+      return cacheDisplayList(
+        liveStepForDisclosures ? [...disclosureItems, liveStepForDisclosures] : disclosureItems
+      );
     }
 
     const turnIdByAnchorId = new Map<string, MessageId | undefined>();
@@ -1284,7 +1225,7 @@ const MessageList: React.FC<{
     });
 
     const liveStep = buildTurnLiveStep(withDeliverables);
-    return liveStep ? [...withDeliverables, liveStep] : withDeliverables;
+    return cacheDisplayList(liveStep ? [...withDeliverables, liveStep] : withDeliverables);
   }, [
     conversationContext?.activeRequestMessageId,
     conversationContext?.activeTurnId,
@@ -1342,6 +1283,26 @@ const MessageList: React.FC<{
     setOutcomeDismissed(false);
   }, [conversationContext?.conversation_id]);
 
+  const lastLiveStepLabelRef = useRef<string | undefined>(undefined);
+  const [liveStepAnnouncement, setLiveStepAnnouncement] = useState('');
+
+  useEffect(() => {
+    const liveStep = displayList.findLast(
+      (item): item is ITurnLiveStepVO => 'type' in item && item.type === 'turn_live_step'
+    );
+    const nextLabel = liveStep?.label;
+    if (nextLabel && nextLabel !== lastLiveStepLabelRef.current) {
+      lastLiveStepLabelRef.current = nextLabel;
+      setLiveStepAnnouncement(nextLabel);
+      return;
+    }
+    if (!nextLabel) {
+      lastLiveStepLabelRef.current = undefined;
+    }
+  }, [displayList]);
+
+  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
+
   // Use auto-scroll hook
   const {
     handleScrollerRef,
@@ -1350,17 +1311,19 @@ const MessageList: React.FC<{
     handleWheel,
     handlePointerDown,
     showScrollButton,
+    hasNewContentBelow,
     scrollToBottom,
     scrollElementIntoView,
-    hideScrollButton,
+    pauseAutoFollow,
+    resolveFollowOutput,
   } = useAutoScroll({
     messages: list,
     itemCount: displayList.length,
+    virtuosoMode: scrollParent != null,
   });
 
   // ── Windowed history: load older messages on scroll-up with a scroll-anchor ──
   const scrollerElRef = useRef<HTMLDivElement | null>(null);
-  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
   const lastScrollTopRef = useRef(0);
   // Set when a load-older was triggered; the layout effect below restores the
   // viewport once the prepend grows the content so the position doesn't jump.
@@ -1454,12 +1417,11 @@ const MessageList: React.FC<{
 
     handledTargetKeyRef.current = targetKey;
     setHighlightedMessageId(targetMessageId);
-    hideScrollButton();
 
     requestAnimationFrame(() => {
       const targetElement = document.getElementById(`message-${getProcessedItemAnchorId(displayList[targetIndex])}`);
       scrollElementIntoView(targetElement, {
-        behavior: 'smooth',
+        behavior: prefersReducedMotion() ? 'auto' : 'smooth',
         block: 'center',
       });
     });
@@ -1469,7 +1431,7 @@ const MessageList: React.FC<{
     }, 2400);
 
     return () => window.clearTimeout(timer);
-  }, [displayList, hideScrollButton, location.key, scrollElementIntoView, targetMessageId]);
+  }, [displayList, location.key, scrollElementIntoView, targetMessageId]);
 
   useEffect(() => {
     const handleMessageJump = (event: Event) => {
@@ -1486,15 +1448,15 @@ const MessageList: React.FC<{
       });
       if (targetIndex < 0) return;
 
-      hideScrollButton();
       // Virtualized list: scrollToIndex mounts the (possibly off-screen) target
       // row before scrolling — getElementById cannot do this for unmounted items.
       // Fall back to the element-based path only when Virtuoso isn't rendering.
       if (virtuosoRef.current) {
+        pauseAutoFollow();
         virtuosoRef.current.scrollToIndex({
           index: targetIndex,
           align: detail.align || 'start',
-          behavior: detail.behavior || 'smooth',
+          behavior: prefersReducedMotion() ? 'auto' : detail.behavior || 'smooth',
         });
         return;
       }
@@ -1504,7 +1466,7 @@ const MessageList: React.FC<{
         );
         scrollElementIntoView(targetElement, {
           block: detail.align || 'start',
-          behavior: detail.behavior || 'smooth',
+          behavior: prefersReducedMotion() ? 'auto' : detail.behavior || 'smooth',
         });
       });
     };
@@ -1513,12 +1475,15 @@ const MessageList: React.FC<{
     return () => {
       window.removeEventListener(CHAT_MESSAGE_JUMP_EVENT, handleMessageJump);
     };
-  }, [conversationContext?.conversation_id, displayList, hideScrollButton, scrollElementIntoView]);
+  }, [conversationContext?.conversation_id, displayList, pauseAutoFollow, scrollElementIntoView]);
+
+  const scrollButtonLabel = hasNewContentBelow
+    ? t('messages.newContentBelow', { defaultValue: 'View latest content' })
+    : t('messages.scrollToBottom');
 
   // Click scroll button
   const handleScrollButtonClick = () => {
-    hideScrollButton();
-    scrollToBottom('smooth');
+    scrollToBottom(prefersReducedMotion() ? 'auto' : 'smooth');
   };
 
   const renderTurnDisclosure = (item: ITurnProcessDisclosureVO, highlighted: boolean) => (
@@ -1664,6 +1629,7 @@ const MessageList: React.FC<{
           isActiveProcessTextItem(item, _index) ||
           movedActionMessageIds.has((item as TMessage).id)
         }
+        isStreaming={isActiveProcessTextItem(item, _index)}
       ></MessageItem>
     );
   };
@@ -1678,6 +1644,9 @@ const MessageList: React.FC<{
 
   return (
     <div className='message-list-root relative flex-1 h-full'>
+      <div className='sr-only' role='status' aria-live='polite' aria-atomic='true'>
+        {liveStepAnnouncement}
+      </div>
       <ConversationQuestionLocator
         conversation_id={conversationContext?.conversation_id}
         rangeRef={virtuosoRangeRef}
@@ -1712,6 +1681,7 @@ const MessageList: React.FC<{
                   ref={virtuosoRef}
                   data={displayList}
                   customScrollParent={scrollParent}
+                  followOutput={resolveFollowOutput}
                   computeItemKey={(_index, item) => item.id}
                   increaseViewportBy={{ top: 800, bottom: 800 }}
                   rangeChanged={({ startIndex, endIndex }) => {
@@ -1748,10 +1718,11 @@ const MessageList: React.FC<{
       <button
         type='button'
         className='message-list-scroll-button'
+        data-button-shape='circle'
         data-visible={showScrollButton ? 'true' : 'false'}
         onClick={handleScrollButtonClick}
-        title={t('messages.scrollToBottom')}
-        aria-label={t('messages.scrollToBottom')}
+        title={scrollButtonLabel}
+        aria-label={scrollButtonLabel}
         aria-hidden={!showScrollButton}
         tabIndex={showScrollButton ? 0 : -1}
       >
