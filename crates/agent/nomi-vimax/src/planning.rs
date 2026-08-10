@@ -23,8 +23,9 @@ const SPEECH_LEAD_SECS: u32 = 1;
 const SPEECH_TAIL_SECS: u32 = 5;
 /// Dialogue shots should not be shorter than this even when the line is brief.
 const MIN_DIALOGUE_CLIP_SECS: u32 = 9;
-/// Extra seconds appended to every allocated shot after budget fitting so the
-/// clip has a soft landing before the next splice (Seedance max still applies).
+/// Soft-landing seconds preferred at the end of each shot before a splice.
+/// Reserved **from** the user target before budget fitting, then re-applied, so
+/// the rendered sum stays near the advertised length (never `target + 2×shots`).
 pub const SHOT_SPLICE_TAIL_PADDING_SECS: u32 = 2;
 
 /// Default look when the user leaves style empty.
@@ -727,17 +728,19 @@ pub fn clip_duration_secs(target_total: Option<u32>, shot_count: usize) -> u32 {
 /// Prefer this over repeating [`clip_duration_secs`] when shot lengths should vary
 /// slightly so the last clip absorbs remainder seconds.
 ///
-/// After fitting the budget, each shot gets [`SHOT_SPLICE_TAIL_PADDING_SECS`]
-/// (still clamped to [`MAX_CLIP_DURATION_SECS`]) so concatenated clips are less abrupt.
+/// Soft-landing ([`SHOT_SPLICE_TAIL_PADDING_SECS`]) is reserved from `target` first
+/// so the final sum stays near the user budget instead of overshooting by
+/// `padding × shot_count`.
 pub fn allocate_clip_durations(target_total: Option<u32>, shot_count: usize) -> Vec<u32> {
     let n = shot_count.max(1);
     let target = normalize_target_duration_secs(target_total);
-    let base = clip_duration_secs(Some(target), n);
+    let (fit_budget, will_pad) = fit_budget_reserving_splice_padding(target, n);
+    let base = clip_duration_secs(Some(fit_budget), n);
     let mut durs = vec![base; n];
-    // Cap total near target when base*n would overshoot (min-clip floor).
+    // Cap total near fit budget when base*n would overshoot (min-clip floor).
     let planned: u32 = base.saturating_mul(n as u32);
-    if planned <= target {
-        let mut rem = target.saturating_sub(planned);
+    if planned <= fit_budget {
+        let mut rem = fit_budget.saturating_sub(planned);
         for d in durs.iter_mut().rev() {
             if rem == 0 {
                 break;
@@ -748,8 +751,21 @@ pub fn allocate_clip_durations(target_total: Option<u32>, shot_count: usize) -> 
             rem -= add;
         }
     }
-    apply_shot_splice_tail_padding(&mut durs);
+    reapply_splice_tail_padding(&mut durs, fit_budget, target, will_pad);
     durs
+}
+
+/// Carve soft-landing room out of the advertised target when there is enough
+/// headroom above `MIN_CLIP × shots`.
+fn fit_budget_reserving_splice_padding(target: u32, shot_count: usize) -> (u32, bool) {
+    let n = shot_count.max(1) as u32;
+    let pad_total = SHOT_SPLICE_TAIL_PADDING_SECS.saturating_mul(n);
+    let min_content = MIN_CLIP_DURATION_SECS.saturating_mul(n);
+    if target >= pad_total.saturating_add(min_content) {
+        (target - pad_total, true)
+    } else {
+        (target, false)
+    }
 }
 
 /// Add splice-tail padding to finalized per-shot durations (≤ Seedance max).
@@ -758,6 +774,41 @@ fn apply_shot_splice_tail_padding(durs: &mut [u32]) {
         *d = d
             .saturating_add(SHOT_SPLICE_TAIL_PADDING_SECS)
             .clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS);
+    }
+}
+
+/// Re-apply reserved soft-landing only when content still fits the pre-pad budget
+/// (or fill leftover seconds toward `target` without exceeding it).
+fn reapply_splice_tail_padding(
+    durs: &mut [u32],
+    fit_budget: u32,
+    target: u32,
+    will_pad: bool,
+) {
+    if !will_pad || durs.is_empty() {
+        return;
+    }
+    let sum: u32 = durs.iter().sum();
+    if sum <= fit_budget {
+        apply_shot_splice_tail_padding(durs);
+        return;
+    }
+    if sum >= target {
+        return;
+    }
+    // Content overshot the reserved fit budget but is still under target — spend
+    // only the remaining spare seconds on soft landings.
+    let mut rem = target - sum;
+    for d in durs.iter_mut() {
+        if rem == 0 {
+            break;
+        }
+        let room = MAX_CLIP_DURATION_SECS
+            .saturating_sub(*d)
+            .min(SHOT_SPLICE_TAIL_PADDING_SECS)
+            .min(rem);
+        *d += room;
+        rem -= room;
     }
 }
 
@@ -932,8 +983,9 @@ pub fn text_looks_like_dialogue(text: &str) -> bool {
 /// That can make the rendered sum slightly exceed `target` — preferred over
 /// cutting spoken lines mid-sentence.
 ///
-/// Finally each shot receives [`SHOT_SPLICE_TAIL_PADDING_SECS`] (≤ max) so
-/// endings are less abrupt when clips are concatenated.
+/// Soft-landing ([`SHOT_SPLICE_TAIL_PADDING_SECS`]) is reserved from `target`
+/// before fitting and re-applied only when content still fits, so happy-path
+/// totals stay near the user budget (not `target + 2×shots`).
 pub fn allocate_clip_durations_for_content(
     target_total: Option<u32>,
     needs: &[u32],
@@ -942,15 +994,16 @@ pub fn allocate_clip_durations_for_content(
         return allocate_clip_durations(target_total, 1);
     }
     let target = normalize_target_duration_secs(target_total);
+    let (fit_budget, will_pad) = fit_budget_reserving_splice_padding(target, needs.len());
     let mut durs: Vec<u32> = needs
         .iter()
         .map(|&n| n.clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS))
         .collect();
     let sum: u32 = durs.iter().sum();
 
-    if sum < target {
+    if sum < fit_budget {
         // Give spare seconds to the neediest shots first (usually dialogue-heavy).
-        let mut rem = target - sum;
+        let mut rem = fit_budget - sum;
         let mut order: Vec<usize> = (0..durs.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(needs[i]));
         while rem > 0 {
@@ -971,9 +1024,9 @@ pub fn allocate_clip_durations_for_content(
                 break;
             }
         }
-    } else if sum > target {
+    } else if sum > fit_budget {
         // Phase 1: shrink surplus above each shot's content floor.
-        let mut excess = sum - target;
+        let mut excess = sum - fit_budget;
         let mut order: Vec<usize> = (0..durs.len()).collect();
         order.sort_by_key(|&i| needs[i]); // smallest need first
         while excess > 0 {
@@ -996,8 +1049,8 @@ pub fn allocate_clip_durations_for_content(
         // Phase 2: still over → compress toward dialogue-safe floors (not bare Seedance min).
         // Prefer cutting longer shots first, but never drop dialogue below MIN_DIALOGUE_CLIP_SECS.
         let sum2: u32 = durs.iter().sum();
-        if sum2 > target {
-            let mut excess = sum2 - target;
+        if sum2 > fit_budget {
+            let mut excess = sum2 - fit_budget;
             let mut order: Vec<usize> = (0..durs.len()).collect();
             order.sort_by_key(|&i| std::cmp::Reverse(durs[i]));
             while excess > 0 {
@@ -1018,26 +1071,27 @@ pub fn allocate_clip_durations_for_content(
                 }
             }
             let final_sum: u32 = durs.iter().sum();
-            if final_sum > target {
+            if final_sum > fit_budget {
                 tracing::info!(
                     target,
+                    fit_budget,
                     rendered = final_sum,
                     needs = ?needs,
                     durations = ?durs,
-                    "kept dialogue-safe clip floors; rendered length exceeds target"
+                    "kept dialogue-safe clip floors; rendered length exceeds reserved fit budget"
                 );
             } else {
                 tracing::info!(
                     target,
+                    fit_budget,
                     needs = ?needs,
                     durations = ?durs,
-                    "compressed clip durations to fit target (dialogue floors preserved)"
+                    "compressed clip durations to fit reserved budget (dialogue floors preserved)"
                 );
             }
         }
     }
-    // Apply after budget fitting so compression cannot eat the splice breathing room.
-    apply_shot_splice_tail_padding(&mut durs);
+    reapply_splice_tail_padding(&mut durs, fit_budget, target, will_pad);
     durs
 }
 
@@ -1281,9 +1335,9 @@ mod tests {
         let durs = allocate_clip_durations(Some(30), 3);
         assert_eq!(durs.len(), 3);
         assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
-        assert!(durs.iter().sum::<u32>() >= 30.min(3 * MAX_CLIP_DURATION_SECS));
-        // Equal-ish spread for clean budgets, then +splice tail padding.
-        assert!(durs.iter().all(|&d| d == 10 + SHOT_SPLICE_TAIL_PADDING_SECS));
+        // Soft-landing is reserved from target then re-applied → sum stays ≈ 30.
+        assert_eq!(durs.iter().sum::<u32>(), 30);
+        assert!(durs.iter().all(|&d| d == 10));
     }
 
     #[test]
@@ -1340,23 +1394,21 @@ eleven twelve thirteen fourteen";
         let durs = allocate_clip_durations_for_content(Some(20), &needs);
         assert_eq!(durs.len(), 2);
         assert!(durs[0] >= 12);
-        assert!(durs[1] >= 5 + SHOT_SPLICE_TAIL_PADDING_SECS);
+        assert!(durs[1] >= MIN_CLIP_DURATION_SECS);
         assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
+        assert_eq!(durs.iter().sum::<u32>(), 20);
         // Spare seconds go to the needier (dialogue) shot first.
         assert!(durs[0] >= durs[1]);
     }
 
     #[test]
     fn allocate_for_content_fits_target_when_floors_overshoot() {
-        // Dialogue floors that exceed target compress toward dialogue-safe floors,
-        // then each shot gets splice-tail padding (may exceed the nominal target).
+        // Dialogue floors that exceed the reserved fit budget still land near
+        // the advertised target after soft-landing is re-applied only when safe.
         let needs = vec![12, 12];
         let durs = allocate_clip_durations_for_content(Some(18), &needs);
-        assert_eq!(
-            durs.iter().sum::<u32>(),
-            18 + SHOT_SPLICE_TAIL_PADDING_SECS * 2
-        );
-        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS + SHOT_SPLICE_TAIL_PADDING_SECS));
+        assert_eq!(durs.iter().sum::<u32>(), 18);
+        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
         assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
     }
 
@@ -1364,11 +1416,8 @@ eleven twelve thirteen fourteen";
     fn allocate_for_content_caps_four_max_clips_to_forty() {
         let needs = vec![15, 15, 15, 15];
         let durs = allocate_clip_durations_for_content(Some(40), &needs);
-        // Budget fits to 40, then +2s/shot (capped at max) for splice tails.
-        assert_eq!(
-            durs.iter().sum::<u32>(),
-            40 + SHOT_SPLICE_TAIL_PADDING_SECS * 4
-        );
+        // Budget + reserved soft-landing re-applied → sum stays at the user target.
+        assert_eq!(durs.iter().sum::<u32>(), 40);
         assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
         assert!(durs.iter().all(|&d| d <= MAX_CLIP_DURATION_SECS));
     }
@@ -1378,11 +1427,18 @@ eleven twelve thirteen fourteen";
         // Extreme under-budget: prefer exceeding target over 5s dialogue clips.
         let needs = vec![12, 12];
         let durs = allocate_clip_durations_for_content(Some(12), &needs);
-        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS + SHOT_SPLICE_TAIL_PADDING_SECS));
-        assert_eq!(
-            durs.iter().sum::<u32>(),
-            (MIN_DIALOGUE_CLIP_SECS + SHOT_SPLICE_TAIL_PADDING_SECS) * 2
-        );
+        assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
+        // Too tight to reserve soft-landing; dialogue floors alone sum to 18.
+        assert_eq!(durs.iter().sum::<u32>(), MIN_DIALOGUE_CLIP_SECS * 2);
+    }
+
+    #[test]
+    fn fifty_five_second_target_does_not_gain_two_secs_per_shot() {
+        // Regression: max-shot packing at 55s used to become 55 + 2*11 = 77.
+        let needs = vec![5; 11];
+        let durs = allocate_clip_durations_for_content(Some(55), &needs);
+        assert_eq!(durs.len(), 11);
+        assert_eq!(durs.iter().sum::<u32>(), 55);
     }
 
     #[test]
