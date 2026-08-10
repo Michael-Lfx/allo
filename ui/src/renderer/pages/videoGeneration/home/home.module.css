@@ -26,6 +26,15 @@
   font-style: normal;
 }
 
+.heroHint {
+  max-width: 34em;
+  margin: 12px auto 0;
+  color: var(--color-text-3);
+  font-size: 15px;
+  line-height: 1.55;
+  letter-spacing: -0.01em;
+}
+
 .composer {
   position: relative;
   width: min(100%, 860px);
@@ -973,7 +982,7 @@
   max-width: 100%;
   box-sizing: border-box;
   overflow: visible;
-  border-radius: 14px;
+  border-radius: 12px;
 }
 
 .preferenceField {

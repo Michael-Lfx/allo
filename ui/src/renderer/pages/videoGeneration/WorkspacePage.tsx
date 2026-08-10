@@ -53,7 +53,7 @@ import type { ArtifactContent, ArtifactNode, SessionStatus, VimaxSession, VimaxW
 import ArtifactTree from './components/ArtifactTree';
 import ArtifactPreviewPanel from './components/ArtifactPreviewPanel';
 import AspectRatioPicker from './components/AspectRatioPicker';
-import DurationTimelineBar from './components/DurationTimelineBar';
+import DurationTimelineBar, { clampDuration } from './components/DurationTimelineBar';
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
 import ProgressTimeline from './components/ProgressTimeline';
 import VideoQualityPickers from './components/VideoQualityPickers';
@@ -454,7 +454,7 @@ const WorkspacePage: React.FC = () => {
         [sourceField]: trimmed,
         user_requirement: requirement.trim() || undefined,
         style: style.trim() || undefined,
-        target_duration_secs: targetDurationSecs,
+        target_duration_secs: clampDuration(targetDurationSecs),
         aspect_ratio: aspectRatio,
         resolution,
         fps,

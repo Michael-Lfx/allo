@@ -161,8 +161,18 @@ impl Idea2VideoPipeline {
             }
         }
 
-        emit_pct(&progress, "cameo_bind", "正在绑定用户角色参考图", 30.0);
-        apply_session_cameos(&self.working_dir, &characters).await?;
+        emit_pct(
+            &progress,
+            "cameo_bind",
+            "正在绑定用户角色参考图并做隐私安全换脸",
+            30.0,
+        );
+        apply_session_cameos(
+            &self.working_dir,
+            &characters,
+            Arc::clone(&self.backends.image),
+        )
+        .await?;
 
         // Global cast bible during planning (before per-scene storyboards).
         emit_pct(
@@ -366,7 +376,12 @@ impl Idea2VideoPipeline {
             &tokio::fs::read_to_string(self.working_dir.join("characters.json")).await?,
         )?;
 
-        apply_session_cameos(&self.working_dir, &characters).await?;
+        apply_session_cameos(
+            &self.working_dir,
+            &characters,
+            Arc::clone(&self.backends.image),
+        )
+        .await?;
 
         // Global portraits at idea root — single source of truth for all scenes.
         let registry_path = self.working_dir.join("character_portraits_registry.json");

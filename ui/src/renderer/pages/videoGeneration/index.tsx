@@ -35,6 +35,9 @@ import {
   CLIP_DURATION_MIN_SECS,
   CLIP_DURATION_STEP_SECS,
   clampDuration,
+  DURATION_MAX_SECS,
+  DURATION_MIN_SECS,
+  DURATION_STEP_SECS,
 } from './components/DurationTimelineBar';
 import {
   deleteCanvasMedia,
@@ -54,7 +57,12 @@ function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
   const common: PlanBody = {
     user_requirement: draft.requirement.trim() || undefined,
     style: draft.style.trim() || undefined,
-    target_duration_secs: draft.preferences.targetDurationSecs,
+    target_duration_secs: clampDuration(
+      draft.preferences.targetDurationSecs,
+      DURATION_MIN_SECS,
+      DURATION_MAX_SECS,
+      DURATION_STEP_SECS
+    ),
     aspect_ratio: draft.preferences.aspectRatio,
     resolution: draft.preferences.resolution,
     fps: draft.preferences.fps,

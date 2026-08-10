@@ -109,6 +109,8 @@
     "heroSubtitle": "先生成可编辑分镜，确认故事与画面后再渲染成片。",
     "homeHeroPrefix": "开启你的",
     "homeHeroSuffix": "，即刻造梦！",
+    "homeHintAgent": "写下故事或想法，Flowy 帮你变成成片。",
+    "homeHintCreation": "描述画面与镜头，在无限画布里自由编排生成。",
     "advanced": "风格与模型",
     "generateStoryboard": "生成分镜",
     "enterCanvas": "进入画布",
@@ -209,7 +211,7 @@
     },
     "cameo": {
       "title": "角色参考图（Cameo）",
-      "hint": "可选：上传人物照片并填写角色名，成片会尽量保持外貌一致。",
+      "hint": "可选：上传人物照片并填写角色名。规划时会自动把人脸替换为不可识别的通用脸，保留服装体态与整体外貌，降低真人肖像风控。",
       "add": "添加照片",
       "dropHint": "拖拽或点击上传 PNG / JPEG / WEBP（最多 8 张）",
       "namePlaceholder": "角色名（需与故事中角色对应）",
@@ -349,6 +351,7 @@
     "source": {
       "durationLabel": "目标成片时长（秒）",
       "durationHint": "每个镜头视频至少 5 秒；规划会据此控制镜头数量。",
+      "durationHintShort": "拖动或点击刻度选择",
       "durationCreditsHint": "预估约 {{credits}} 积分（约 {{rate}}/秒）",
       "resolutionLabel": "清晰度",
       "resolutionHint": "可选档位随当前视频模型变化（Fast/Mini 最高 720p）",
