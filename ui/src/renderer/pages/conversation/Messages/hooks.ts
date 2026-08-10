@@ -29,7 +29,7 @@ import {
   preferTextMessageVersion,
   transformKnowledgeWritebackEvent,
 } from '@/common/chat/chatLib';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createContext } from '@renderer/utils/ui/createContext';
 import { addEventListener } from '@/renderer/utils/emitter';
 import { isAuthoritativeCompletionRuntimeIdle } from '../platforms/authoritativeTurnLifecyclePolicy';
@@ -1053,6 +1053,14 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   // This instance's coordinator consumer id (released on unmount/conversation
   // switch). Held in a ref so loadMessages can ack its own reconciliation.
   const consumerIdRef = useRef<ConsumerId | null>(null);
+  const [reconciliationCommitVersion, setReconciliationCommitVersion] = useState(0);
+  const pendingReconciliationCommitsRef = useRef<
+    Array<{
+      conversationId: ConversationId;
+      epoch: number;
+      resolve: (applied: boolean) => void;
+    }>
+  >([]);
 
   // Providers are shared by the mounted chat surface. Invalidate outstanding
   // fetches synchronously when routing to another conversation so a slower old
@@ -1070,16 +1078,25 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   // at acceptance time, so a pre-truncate snapshot cannot resurrect the old
   // message/error tip even if the updater runs after the barrier retired.
   const mergeIntoList = useCallback(
-    (messages: TMessage[]) => {
-      // Freeze the reconciliation rules NOW, before enqueueing: React may defer
-      // the updater past the barrier's retirement (a later consumer ack deletes
-      // it), and a live lookup inside the updater would then silently no-op.
-      const snapshot = captureReconciliationSnapshot(key);
-      update((currentList) => {
-        return applyFetchedMessages(currentList, messages, snapshot);
-      });
+    (messages: TMessage[], snapshot: ReconciliationSnapshot) => {
+      update((currentList) => applyFetchedMessages(currentList, messages, snapshot));
     },
-    [key, update]
+    [update]
+  );
+
+  const waitForReconciliationCommit = useCallback(
+    (epoch: number): Promise<boolean> =>
+      new Promise((resolve) => {
+        pendingReconciliationCommitsRef.current.push({
+          conversationId: key,
+          epoch,
+          resolve,
+        });
+        // The message-list update and this ticket are scheduled in the same
+        // batch. The layout effect below is the commit boundary for ack.
+        setReconciliationCommitVersion((version) => version + 1);
+      }),
+    [key]
   );
 
   const loadMessages = useCallback(async (): Promise<TMessage[] | null> => {
@@ -1111,18 +1128,14 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
         messages && messages.length ? messageCursorOf(messages[0]) : null;
     }
     if (messages && Array.isArray(messages)) {
-      mergeIntoList(messages);
-      // This replace fetch reflects the current epoch, so it confirms this
-      // consumer has reconciled past every earlier edit-resubmit barrier. The
-      // ack intentionally fires synchronously here — it may retire the barrier
-      // BEFORE the updater above commits; that is safe because the updater
-      // already captured its reconciliation snapshot at acceptance time.
-      const consumerId = consumerIdRef.current;
-      if (consumerId) ackConsumerReconciled(key, consumerId, getEpoch(key));
-      return messages;
+      const snapshot = captureReconciliationSnapshot(key);
+      const appliedEpoch = getEpoch(key);
+      mergeIntoList(messages, snapshot);
+      if (!snapshot.purge) return messages;
+      return (await waitForReconciliationCommit(appliedEpoch)) ? messages : null;
     }
     return [];
-  }, [key, mergeIntoList, windowed]);
+  }, [key, mergeIntoList, waitForReconciliationCommit, windowed]);
 
   // Prepend the next older window (scroll-up). Older rows never overlap the live
   // streaming tail, so an id-dedup prepend suffices (no content merge needed).
@@ -1179,6 +1192,29 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
     return () => {
       consumerIdRef.current = null;
       release();
+    };
+  }, [key]);
+
+  useLayoutEffect(() => {
+    const pending = pendingReconciliationCommitsRef.current;
+    if (!pending.length) return;
+    pendingReconciliationCommitsRef.current = [];
+    const consumerId = consumerIdRef.current;
+    for (const ticket of pending) {
+      if (consumerId && ticket.conversationId === key) {
+        ackConsumerReconciled(ticket.conversationId, consumerId, ticket.epoch);
+        ticket.resolve(true);
+      } else {
+        ticket.resolve(false);
+      }
+    }
+  }, [key, reconciliationCommitVersion]);
+
+  useEffect(() => {
+    return () => {
+      const pending = pendingReconciliationCommitsRef.current;
+      pendingReconciliationCommitsRef.current = [];
+      for (const ticket of pending) ticket.resolve(false);
     };
   }, [key]);
 

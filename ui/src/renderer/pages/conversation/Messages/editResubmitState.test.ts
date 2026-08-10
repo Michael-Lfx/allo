@@ -39,7 +39,7 @@ describe('edit/resubmit pipeline structure', () => {
       'reconcileConfirmedEditMutation(initialDelivery ?? observation.delivery);'
     );
     const cleanup = nomiHandler.indexOf('clearSubmittedDraftAttachments();');
-    const purge = nomiHandler.indexOf('purgeCurrentRows(list, conversation_id)');
+    const purge = nomiHandler.indexOf('purgeRowsBySnapshot(list, reconciliationSnapshot)');
     // 附件集合差：提交时捕获已提交附件路径快照，成功后仅精确移除已提交项。
     // Attachment set-difference: snapshot the submitted attachment paths at submit,
     // then remove only those from the current selection after acceptance.
@@ -118,7 +118,7 @@ describe('retry operation mutex (P1-1)', () => {
     const catchGuard = retryBranch.indexOf(
       'activeRetryOperationRef.current === retryOperationId &&'
     );
-    const restoreInput = retryBranch.indexOf('setInput(content);');
+    const restoreInput = retryBranch.indexOf('setInput(content);', catchGuard);
     const finallyIndex = retryBranch.indexOf('} finally {');
     const release = retryBranch.indexOf('activeRetryOperationRef.current = null;', finallyIndex);
     const clearLoading = retryBranch.indexOf('setIsLoading(false);', finallyIndex);

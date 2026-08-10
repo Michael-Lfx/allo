@@ -221,7 +221,7 @@ const SendBox: React.FC<{
     msgId: MessageId,
     createdAt: number,
     message: string,
-    operationId?: string,
+    operationId: string,
     onLifecycleEvent?: (event: EditResubmitLifecycleEvent) => void
   ) => Promise<EditResubmitResolution>;
   /** Clear the agent's conversation context (release model context). When set, a `/clear` builtin appears. */
@@ -520,6 +520,13 @@ const SendBox: React.FC<{
                     )
                   ) return;
                   committedTerminalOperationsRef.current.add(retryOperationId);
+                  const outcome = resolveEditResubmitOutcome({
+                    isCurrentOperation: true,
+                    revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
+                    status: event.resolution.kind,
+                    source: 'retry',
+                  });
+                  if (outcome.restoreSubmittedInput) setInput(content);
                   if (retryConversationId) {
                     clearEditingMessage(retryConversationId, editingOwnerId());
                   }
@@ -545,6 +552,13 @@ const SendBox: React.FC<{
               )
             ) {
               committedTerminalOperationsRef.current.add(retryOperationId);
+              const outcome = resolveEditResubmitOutcome({
+                isCurrentOperation: true,
+                revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
+                status: resolution.kind,
+                source: 'retry',
+              });
+              if (outcome.restoreSubmittedInput) setInput(content);
               if (retryConversationId) {
                 clearEditingMessage(retryConversationId, editingOwnerId());
               }
@@ -1819,6 +1833,7 @@ const SendBox: React.FC<{
             isCurrentOperation: isCurrentOperation(),
             revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
             status: 'safe_failure',
+            source: 'edit',
           });
           if (outcome.stale) return;
           if (outcome.restoreSubmittedInput) setInput(finalMessage);
@@ -1989,8 +2004,7 @@ const SendBox: React.FC<{
       });
   };
 
-  const stopHandler = async (event: Event) => {
-    const clickDetail = event instanceof UIEvent ? event.detail : 0;
+  const stopHandler = async (clickDetail: number) => {
     if (
       !onStop ||
       isStoppingRef.current ||

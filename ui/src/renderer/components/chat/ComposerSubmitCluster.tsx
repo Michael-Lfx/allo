@@ -20,7 +20,7 @@ export type ComposerSubmitClusterProps = {
   onSend: () => void;
   onSpeechTranscript: (text: string) => void;
   showStop?: boolean;
-  onStop?: (event: Event) => void;
+  onStop?: (clickDetail: number) => void;
   showSteer?: boolean;
   steerAvailable?: boolean;
   onSteer?: () => void;
@@ -95,7 +95,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
           type='secondary'
           className='send-button-custom sendbox-stop-button'
           icon={<div className='sendbox-stop-icon' aria-hidden='true' />}
-          onClick={onStop}
+          onClick={(event) => onStop?.((event as MouseEvent).detail)}
           data-testid='composer-stop-btn'
           aria-label={t('conversation.chat.stop', { defaultValue: 'Stop' })}
           title={t('conversation.chat.stop', { defaultValue: 'Stop generating' })}

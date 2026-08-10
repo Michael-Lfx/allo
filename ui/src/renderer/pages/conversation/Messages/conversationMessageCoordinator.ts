@@ -307,93 +307,6 @@ export const ackConsumerReconciled = (
 };
 
 /**
- * Drop fetched DB rows that belong to any active (armed or reconciling)
- * barrier. Fetched rows are durable, so only mergeKeys/serverIds apply —
- * localIds live in a different id space and never match a DB row.
- */
-export const filterFetchedRows = (
-  rows: TMessage[],
-  conversationId: ConversationId
-): TMessage[] => {
-  const coordinator = coordinators.get(conversationId);
-  if (!coordinator || !coordinator.barriers.size) return rows;
-
-  const mergeKeys = new Set<string>();
-  const serverIds = new Set<string>();
-  for (const barrier of coordinator.barriers.values()) {
-    for (const key of barrier.mergeKeys) mergeKeys.add(key);
-    for (const id of barrier.serverIds) serverIds.add(id);
-  }
-  if (!mergeKeys.size && !serverIds.size) return rows;
-
-  const operationIds = Array.from(coordinator.barriers.keys());
-  const filtered = rows.filter((row) => {
-    const key = getFetchedMergeKey(row);
-    if (key && mergeKeys.has(key)) return false;
-    if (row.message_id && serverIds.has(row.message_id)) return false;
-    return true;
-  });
-  // C4: 过滤命中（陈旧 fetch 的旧后缀行被丢弃）。Fetched rows dropped (stale
-  // suffix from a pre-truncate fetch).
-  if (filtered.length !== rows.length) {
-    console.debug('[conversation-message-coordinator]', `filtered conv=${conversationId}`, {
-      dropped: rows.length - filtered.length,
-      of: rows.length,
-      barriers: operationIds,
-    });
-  }
-  return filtered;
-};
-
-/**
- * Drop rows from a consumer's *current* in-memory list that belong to any
- * `reconciling` barrier. Unlike `filterFetchedRows`, this also removes
- * stream-only rows via localIds (which only the capturing instance can match).
- * Armed barriers deliberately leave the current list alone.
- */
-export const purgeCurrentRows = (
-  list: TMessage[],
-  conversationId: ConversationId
-): TMessage[] => {
-  const coordinator = coordinators.get(conversationId);
-  if (!coordinator || !coordinator.barriers.size) return list;
-
-  const mergeKeys = new Set<string>();
-  const serverIds = new Set<string>();
-  const localIds = new Set<string>();
-  let active = false;
-  for (const barrier of coordinator.barriers.values()) {
-    if (barrier.phase !== 'reconciling') continue;
-    active = true;
-    for (const key of barrier.mergeKeys) mergeKeys.add(key);
-    for (const id of barrier.serverIds) serverIds.add(id);
-    for (const id of barrier.localIds) localIds.add(id);
-  }
-  if (!active || (!mergeKeys.size && !serverIds.size && !localIds.size)) return list;
-
-  const reconcilingOperations = Array.from(coordinator.barriers.values())
-    .filter((barrier) => barrier.phase === 'reconciling')
-    .map((barrier) => barrier.operationId);
-  const purged = list.filter((row) => {
-    const key = getFetchedMergeKey(row);
-    if (key && mergeKeys.has(key)) return false;
-    if (row.message_id && serverIds.has(row.message_id)) return false;
-    if (localIds.has(row.id)) return false;
-    return true;
-  });
-  // C4: 当前列表清理命中（消费者收敛前移除旧后缀）。Current list purged
-  // (old suffix removed before the consumer converges).
-  if (purged.length !== list.length) {
-    console.debug('[conversation-message-coordinator]', `purged conv=${conversationId}`, {
-      removed: list.length - purged.length,
-      of: list.length,
-      barriers: reconcilingOperations,
-    });
-  }
-  return purged;
-};
-
-/**
  * Immutable reconciliation rule-set frozen at the moment a fetch is ACCEPTED
  * (epoch check passed). React functional updaters may execute long after
  * enqueue — by then another consumer's ack may have retired the barrier, so an
@@ -404,12 +317,12 @@ export const purgeCurrentRows = (
  *
  * Field semantics mirror the live helpers exactly:
  *  - `mergeKeys`/`serverIds`: union over ALL barriers (armed + reconciling) —
- *    the fetched-row filter predicate (same as `filterFetchedRows`). Armed
+ *    the fetched-row filter predicate. Armed
  *    barriers must be included: in a multi-edit chain one refresh can ack and
  *    retire an earlier barrier before this updater runs, and dropping armed
  *    rules would regress the armed-phase filtering V5 established.
  *  - `purgeMergeKeys`/`purgeServerIds`/`localIds`: reconciling barriers only —
- *    the current-list purge predicate (same as `purgeCurrentRows`). An armed
+ *    the current-list purge predicate. An armed
  *    barrier's suffix is still legitimate until its own success, so it must
  *    never purge the current list.
  *  - `purge`: whether any reconciling barrier existed at capture time.
@@ -451,7 +364,7 @@ export const captureReconciliationSnapshot = (
   return { conversationId, mergeKeys, serverIds, purgeMergeKeys, purgeServerIds, localIds, purge };
 };
 
-/** Snapshot-based twin of `filterFetchedRows`: drop fetched DB rows captured in
+/** Drop fetched DB rows captured in
  * the snapshot (fetched rows are durable, so localIds never apply). */
 export const filterRowsBySnapshot = (
   rows: TMessage[],
@@ -466,7 +379,7 @@ export const filterRowsBySnapshot = (
   });
 };
 
-/** Snapshot-based twin of `purgeCurrentRows`: drop current-list rows belonging
+/** Drop current-list rows belonging
  * to barriers that were reconciling at capture time (localIds included). */
 export const purgeRowsBySnapshot = (
   rows: TMessage[],

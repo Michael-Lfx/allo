@@ -178,4 +178,34 @@ describe('resolveEditResubmitOutcome', () => {
       });
     }
   });
+
+  test('retry post-mutation failure restores the retry text when the draft is unchanged', () => {
+    expect(
+      resolveEditResubmitOutcome({
+        isCurrentOperation: true,
+        revisionUnchanged: true,
+        status: 'post_mutation_failure',
+        source: 'retry',
+      })
+    ).toMatchObject({
+      clearInput: false,
+      exitEditMode: true,
+      restoreSubmittedInput: true,
+    });
+  });
+
+  test('retry post-mutation failure preserves new user input after a revision change', () => {
+    expect(
+      resolveEditResubmitOutcome({
+        isCurrentOperation: true,
+        revisionUnchanged: false,
+        status: 'post_mutation_failure',
+        source: 'retry',
+      })
+    ).toMatchObject({
+      clearInput: false,
+      exitEditMode: true,
+      restoreSubmittedInput: false,
+    });
+  });
 });

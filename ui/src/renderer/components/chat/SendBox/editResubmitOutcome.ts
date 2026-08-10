@@ -32,6 +32,8 @@ export interface EditResubmitOutcomeInput {
   /** True when the composer input has not changed since submit (revision equal). */
   revisionUnchanged: boolean;
   status: EditResubmitStatus;
+  /** The entry point determines whether post-mutation text must be restored. */
+  source?: 'edit' | 'retry';
 }
 
 export interface EditResubmitOutcome {
@@ -51,6 +53,7 @@ export const resolveEditResubmitOutcome = ({
   isCurrentOperation,
   revisionUnchanged,
   status,
+  source = 'edit',
 }: EditResubmitOutcomeInput): EditResubmitOutcome => {
   if (!isCurrentOperation) {
     return {
@@ -75,7 +78,7 @@ export const resolveEditResubmitOutcome = ({
       stale: false,
       clearInput: false,
       exitEditMode: true,
-      restoreSubmittedInput: false,
+      restoreSubmittedInput: source === 'retry' && revisionUnchanged,
       clearLoading: true,
     };
   }

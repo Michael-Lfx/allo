@@ -38,9 +38,10 @@ import {
   armBarrier,
   beginEditResubmitReconciliation,
   captureBarrier,
+  captureReconciliationSnapshot,
   commitAuthoritativeConversationReset,
   hasEditResubmitBarrier,
-  purgeCurrentRows,
+  purgeRowsBySnapshot,
   revokeBarrier,
 } from '@/renderer/pages/conversation/Messages/conversationMessageCoordinator';
 import {
@@ -109,7 +110,6 @@ import { useTranslation } from 'react-i18next';
 import type { NomiMessageRuntime } from './useNomiMessage';
 import NomiModelSelector from './NomiModelSelector';
 import { runConversationResetSingleFlight } from './resetSingleFlight';
-import { resolveEditTargetChangedNotice } from './editTargetChangedNotice';
 import { ContextUsageRing } from './ContextUsageRing';
 import type { NomiModelSelection } from './useNomiModelSelection';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
@@ -384,9 +384,7 @@ const NomiSendBox: React.FC<{
 
   useEffect(() => {
     setIsStopping(false);
-    setEditTargetChangedNotice((current) =>
-      resolveEditTargetChangedNotice(current, 'conversation_changed')
-    );
+    setEditTargetChangedNotice(false);
   }, [conversation_id]);
 
   useEffect(() => {
@@ -746,17 +744,15 @@ const NomiSendBox: React.FC<{
       msgId: MessageId,
       createdAt: number,
       message: string,
-      requestedOperationId?: string,
+      requestedOperationId: string,
       onLifecycleEvent?: (event: EditResubmitLifecycleEvent) => void
     ): Promise<EditResubmitResolution> => {
-      setEditTargetChangedNotice((current) =>
-        resolveEditTargetChangedNotice(current, 'operation_started')
-      );
+      setEditTargetChangedNotice(false);
       if (requiresConversationReset) {
         Message.error(t('conversation.editMessage.resetRequired'));
         throw new Error('conversation reset is required');
       }
-      const operationId = requestedOperationId ?? uuidv7();
+      const operationId = requestedOperationId;
       const existingOperation = getEditResubmitOperation(conversation_id);
       if (existingOperation && existingOperation.operationId !== operationId) {
         throw new Error('another edit-resubmit operation already owns this conversation');
@@ -766,9 +762,8 @@ const NomiSendBox: React.FC<{
         : collectSelectedFiles(uploadFile, atPath);
       maybeWarnNonVisionModel(filesToSend);
       const submittedAttachmentIds = new Set(filesToSend);
-      // The SendBox mints this once per logical user operation. The fallback is
-      // only for non-SendBox callers; the same value is used by the coordinator
-      // and the backend receipt namespace.
+      // SendBox mints this once per logical user operation; keep the same value
+      // for coordinator ownership and the backend receipt namespace.
       const displayMessage = existingOperation?.backendInput
         ?? buildDisplayMessage(message, filesToSend, workspacePath);
       if (!existingOperation) {
@@ -900,7 +895,8 @@ const NomiSendBox: React.FC<{
           throw new Error('edit-resubmit reconciliation barrier missing');
         }
         reconciled = true;
-        updateMessageList((list) => purgeCurrentRows(list, conversation_id));
+        const reconciliationSnapshot = captureReconciliationSnapshot(conversation_id);
+        updateMessageList((list) => purgeRowsBySnapshot(list, reconciliationSnapshot));
         if (delivery && classifyPublicMessageDelivery(delivery) === 'fresh') {
           markTurnAccepted();
           addOrUpdateMessage({
@@ -1046,9 +1042,7 @@ const NomiSendBox: React.FC<{
             const error =
               requestError ?? new Error('edit-resubmit failed after transcript mutation');
             if (recovery.notice === 'target_changed') {
-              setEditTargetChangedNotice((current) =>
-                resolveEditTargetChangedNotice(current, 'target_changed')
-              );
+              setEditTargetChangedNotice(true);
             } else {
               Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
             }
@@ -1554,9 +1548,7 @@ const NomiSendBox: React.FC<{
                 type='text'
                 size='small'
                 onClick={() =>
-                  setEditTargetChangedNotice((current) =>
-                    resolveEditTargetChangedNotice(current, 'dismissed')
-                  )
+                  setEditTargetChangedNotice(false)
                 }
               >
                 {t('common.close')}

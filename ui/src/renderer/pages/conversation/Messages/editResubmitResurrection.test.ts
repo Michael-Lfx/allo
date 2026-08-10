@@ -11,9 +11,9 @@ import {
   captureBarrier,
   captureReconciliationSnapshot,
   describeConversation,
-  filterFetchedRows,
+  filterRowsBySnapshot,
   getEpoch,
-  purgeCurrentRows,
+  purgeRowsBySnapshot,
   retainConsumer,
   revokeBarrier,
 } from './conversationMessageCoordinator';
@@ -119,7 +119,10 @@ describe('edit-resubmit resurrection', () => {
       { ...errorTip('old-error-tip', 102, errorTipMessageId), id: `db:${errorTipMessageId}` },
     ];
 
-    const purged = purgeCurrentRows(swappedList, conversationId);
+    const purged = purgeRowsBySnapshot(
+      swappedList,
+      captureReconciliationSnapshot(conversationId)
+    );
     expect(ids(purged)).toEqual(['prefix']);
 
     ackConsumerReconciled(conversationId, consumerId, getEpoch(conversationId));
@@ -207,7 +210,10 @@ describe('failure convergence', () => {
     armBarrier(conversationId, 'op-fail', capture);
 
     // While armed, a stale fetched page is filtered (suffix not yet reconciled).
-    const filteredWhileArmed = filterFetchedRows(oldSuffix(), conversationId);
+    const filteredWhileArmed = filterRowsBySnapshot(
+      oldSuffix(),
+      captureReconciliationSnapshot(conversationId)
+    );
     expect(ids(filteredWhileArmed)).toEqual(['prefix']);
 
     // The backend rejects the edit: revoke the barrier, then the failed-refresh
@@ -362,7 +368,10 @@ describe('row identity coverage & isolation', () => {
 
     armBarrier(conversationId, 'op-stream', capture);
     beginEditResubmitReconciliation(conversationId, 'op-stream');
-    const purged = purgeCurrentRows(list, conversationId);
+    const purged = purgeRowsBySnapshot(
+      list,
+      captureReconciliationSnapshot(conversationId)
+    );
     expect(ids(purged)).toEqual([]);
   });
 
@@ -378,9 +387,9 @@ describe('row identity coverage & isolation', () => {
       ...message,
       conversation_id: otherConversationId,
     }));
-    expect(ids(filterFetchedRows(otherRows, otherConversationId))).toEqual(
-      ids(otherRows)
-    );
+    expect(
+      ids(filterRowsBySnapshot(otherRows, captureReconciliationSnapshot(otherConversationId)))
+    ).toEqual(ids(otherRows));
   });
 
   test('the optimistic new bubble yields exactly one copy after the authoritative fetch', () => {
