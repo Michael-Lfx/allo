@@ -1947,8 +1947,8 @@ const LearningPage: React.FC = () => {
     target: CourseSummary | QuestionEntry;
   } | null>(null);
   const [allTags, setAllTags] = useState<string[]>([]);
-  // 开始复习横幅的筛选维度：课程（含“其它”孤立问题）与标签
-  const [reviewCourseFilter, setReviewCourseFilter] = useState<string | undefined>(undefined);
+  // 开始复习横幅的筛选维度：课程（可多选，含“其它”孤立问题）与标签
+  const [reviewCourseFilter, setReviewCourseFilter] = useState<string[]>([]);
   const [reviewTagFilter, setReviewTagFilter] = useState<string[]>([]);
   const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   const [diagnosticLimit] = useConfig('learning.diagnosticLimit');
@@ -1959,11 +1959,11 @@ const LearningPage: React.FC = () => {
     if (!initialLoaded.current) setLoading(true);
     setError(null);
     try {
-      const isOrphan = reviewCourseFilter === ORPHAN_COURSE_FILTER;
-      const courseId = isOrphan || !reviewCourseFilter ? undefined : reviewCourseFilter;
+      const isOrphan = reviewCourseFilter.includes(ORPHAN_COURSE_FILTER);
+      const courseIds = reviewCourseFilter.filter((value) => value !== ORPHAN_COURSE_FILTER);
       const [nextCourses, nextReviews, nextDetail, nextTags] = await Promise.all([
         learningApi.listCourses(),
-        learningApi.listDueReviews(reviewSessionLimit, courseId, {
+        learningApi.listDueReviews(reviewSessionLimit, courseIds, {
           dueOnly: true,
           orphan: isOrphan,
           tags: reviewTagFilter,
@@ -2192,9 +2192,9 @@ const LearningPage: React.FC = () => {
     setBusyId('review-session');
     try {
       // 每次开刷前重新拉取到期队列，避免使用会话期间过期的快照
-      const isOrphan = reviewCourseFilter === ORPHAN_COURSE_FILTER;
-      const courseId = isOrphan || !reviewCourseFilter ? undefined : reviewCourseFilter;
-      const fresh = await learningApi.listDueReviews(reviewSessionLimit, courseId, {
+      const isOrphan = reviewCourseFilter.includes(ORPHAN_COURSE_FILTER);
+      const courseIds = reviewCourseFilter.filter((value) => value !== ORPHAN_COURSE_FILTER);
+      const fresh = await learningApi.listDueReviews(reviewSessionLimit, courseIds, {
         dueOnly: true,
         orphan: isOrphan,
         tags: reviewTagFilter,
@@ -2383,7 +2383,7 @@ const LearningPage: React.FC = () => {
       {error && <Alert key='load-error' type='error' content={`${t('learning.loadFailed')}: ${error}`} />}
       <Alert key='pack-contract' type='info' content={t('learning.packContract')} />
 
-      {(reviews.length > 0 || reviewCourseFilter !== undefined || reviewTagFilter.length > 0) && (
+      {(reviews.length > 0 || reviewCourseFilter.length > 0 || reviewTagFilter.length > 0) && (
         <div className='flex flex-wrap items-center justify-between gap-12px rounded-12px border border-solid border-[var(--color-primary-6)] bg-[var(--color-primary-light-1)] px-20px py-16px'>
           <div className='flex flex-wrap items-center gap-12px'>
             <div className='flex items-baseline gap-8px'>
@@ -2395,11 +2395,14 @@ const LearningPage: React.FC = () => {
               </Text>
             </div>
             <Select
-              className='w-180px'
+              className='w-240px'
+              mode='multiple'
               allowClear
               placeholder={t('learning.reviewFilterCourse')}
               value={reviewCourseFilter}
-              onChange={(value: string | undefined) => setReviewCourseFilter(value)}
+              onChange={(value: string[] | undefined) =>
+                setReviewCourseFilter((value ?? []) as string[])
+              }
             >
               {courses.map((course) => (
                 <Select.Option key={course.id} value={course.id}>

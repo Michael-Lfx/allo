@@ -47,11 +47,12 @@ export const learningApi = {
     }),
   listDueReviews: (
     limit = 30,
-    courseId?: string,
+    courseId?: string | string[],
     options?: { dueOnly?: boolean; orphan?: boolean; tags?: string[] }
   ) => {
     const query = new URLSearchParams({ limit: String(limit) });
-    if (courseId) query.set('course_id', courseId);
+    const courseIds = courseId === undefined ? [] : Array.isArray(courseId) ? courseId : [courseId];
+    for (const id of courseIds) query.append('course_id', id);
     if (options?.dueOnly) query.set('due_only', 'true');
     if (options?.orphan) query.set('orphan', 'true');
     for (const tag of options?.tags ?? []) query.append('tag', tag);

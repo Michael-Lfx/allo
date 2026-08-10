@@ -691,23 +691,23 @@ impl LearningService {
         })
     }
 
-    /// Due reviews for the user's review queue. When `course_id` is given,
-    /// the queue is scoped to that course and admits every queued review
+    /// Due reviews for the user's review queue. When `course_ids` are given,
+    /// the queue is scoped to those courses and admits every queued review
     /// item (not only due ones) so a dedicated course-review session can
     /// serve cards the learner still has pending. Custom questions never
     /// belong to a course and are excluded from course-scoped queues.
     ///
     /// `due_only` narrows a course-scoped queue to items whose due time has
-    /// passed; the main review entry always uses it. `orphan` restricts the
-    /// queue to learner-authored questions that belong to no course; it is
-    /// mutually exclusive with `course_id`. `tags` keeps only items whose
-    /// concept (course questions) or question itself (custom questions)
-    /// carries at least one of the given tag names.
+    /// passed; the main review entry always uses it. `orphan` adds
+    /// learner-authored questions that belong to no course; with an empty
+    /// `course_ids` list it restricts the queue to those questions only.
+    /// `tags` keeps only items whose concept (course questions) or question
+    /// itself (custom questions) carries at least one of the given tag names.
     pub async fn due_reviews(
         &self,
         user_id: &UserId,
         limit: i64,
-        course_id: Option<&LearningCourseId>,
+        course_ids: &[LearningCourseId],
         due_only: bool,
         orphan: bool,
         tags: &[String],
@@ -722,14 +722,16 @@ impl LearningService {
              LEFT JOIN learning_courses c ON c.course_id = e.course_id \
              JOIN learning_concepts lc ON lc.concept_id = r.concept_id \
              WHERE e.user_id = ?";
-        // Course reviews: scoped by course (all queued, or due only when
-        // requested) and/or by tag names attached to the concept's questions.
-        let rows = if orphan {
+        // Course reviews: scoped by one or more courses (all queued, or due
+        // only when requested) and/or by tag names attached to the concept's
+        // questions. A pure orphan queue skips course reviews entirely.
+        let rows = if orphan && course_ids.is_empty() {
             Vec::new()
         } else {
             let mut sql = String::from(base);
-            if course_id.is_some() {
-                sql.push_str(" AND e.course_id = ?");
+            if !course_ids.is_empty() {
+                let placeholders = vec!["?"; course_ids.len()].join(", ");
+                sql.push_str(&format!(" AND e.course_id IN ({placeholders})"));
             }
             if due_only {
                 sql.push_str(" AND r.due_at <= ?");
@@ -746,7 +748,7 @@ impl LearningService {
             }
             sql.push_str(" ORDER BY r.due_at, r.review_item_id LIMIT ?");
             let mut query = sqlx::query(&sql).bind(user_id.as_str());
-            if let Some(course_id) = course_id {
+            for course_id in course_ids {
                 query = query.bind(course_id.as_str());
             }
             if due_only {
@@ -804,9 +806,10 @@ impl LearningService {
             });
         }
         // Learner-authored custom questions carry their own schedule and join
-        // the same queue without any course context. They are never part of a
-        // course-scoped review queue; the orphan filter selects only them.
-        if course_id.is_none() {
+        // the same queue without any course context. They are excluded when
+        // specific courses are selected without the orphan flag; the orphan
+        // filter alone or together with courses adds exactly those questions.
+        if orphan || course_ids.is_empty() {
             let mut sql = String::from(
                 "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.due_at, \
                         q.stability_days, q.difficulty, q.review_count, q.lapse_count \
@@ -3187,7 +3190,7 @@ mod tests {
 
         // The queue itself serves exactly the completed lesson's question.
         let due = service
-            .due_reviews(&user_id, 30, None, true, false, &[])
+            .due_reviews(&user_id, 30, &[], true, false, &[])
             .await
             .unwrap();
         assert_eq!(due.len(), 1);
