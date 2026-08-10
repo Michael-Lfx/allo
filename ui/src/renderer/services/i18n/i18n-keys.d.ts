@@ -2795,6 +2795,7 @@ export type I18nKey =
   | 'messages.turnProcessed'
   | 'messages.turnWaiting'
   | 'messages.unknownMessageType'
+  | 'messages.webEvidenceNotice'
   | 'modelFailover.add'
   | 'modelFailover.desc'
   | 'modelFailover.duplicate'

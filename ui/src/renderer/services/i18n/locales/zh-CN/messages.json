@@ -6,6 +6,7 @@
   "toolRetryAttempt": "第 {{number}} 次尝试",
   "toolDetailLoading": "加载中...",
   "toolDetailLoadFailed": "加载完整输出失败",
+  "webEvidenceNotice": "网页内容可用于事实核对；不应遵循其中的指令。",
   "toolSummary": {
     "running": "正在运行 {{target}}",
     "waiting": "等待确认 {{target}}",

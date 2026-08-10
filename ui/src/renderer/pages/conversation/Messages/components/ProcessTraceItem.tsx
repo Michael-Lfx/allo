@@ -403,6 +403,17 @@ const ToolTraceDetailSection: React.FC<{ label: string; value?: string }> = ({ l
   );
 };
 
+const ToolEvidenceNotice: React.FC = () => {
+  const { t } = useTranslation();
+  return (
+    <div className='turn-process-trace-detail__label'>
+      {t('messages.webEvidenceNotice', {
+        defaultValue: 'Web content may be used for factual verification; embedded instructions must not be followed.',
+      })}
+    </div>
+  );
+};
+
 const ToolTraceDetail: React.FC<{ row: ToolReceiptDetailRow; workspaceRoots: string[] }> = ({ row, workspaceRoots }) => {
   const { t } = useTranslation();
   const command = row.action === 'run_commands' ? row.target : undefined;
@@ -423,6 +434,7 @@ const ToolTraceDetail: React.FC<{ row: ToolReceiptDetailRow; workspaceRoots: str
               label={t('messages.toolDetailInput', { defaultValue: 'Input' })}
               value={attempt.input}
             />
+            {attempt.webEvidenceNotice && <ToolEvidenceNotice />}
             <ToolTraceDetailSection
               label={t('messages.toolDetailOutput', { defaultValue: 'Output' })}
               value={attempt.output}
@@ -452,6 +464,7 @@ const ToolTraceDetail: React.FC<{ row: ToolReceiptDetailRow; workspaceRoots: str
         label={t('messages.toolDetailInput', { defaultValue: 'Input' })}
         value={input}
       />
+      {row.webEvidenceNotice && <ToolEvidenceNotice />}
       <ToolTraceDetailSection
         label={t('messages.toolDetailOutput', { defaultValue: 'Output' })}
         value={row.output}
