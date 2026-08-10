@@ -9,6 +9,7 @@ use crate::repository::{
 };
 use crate::repository::provider::{
     CreateProviderParams, ProviderModelProfileSeed, UpdateProviderParams, merge_catalog_params,
+    merge_catalog_vision_trait,
 };
 
 const PROVIDER_HARD_BINDING_DELETE_CONFLICT: &str =
@@ -549,14 +550,14 @@ async fn sync_inferred_profiles_tx(
         .filter(|seed| !seed.model.trim().is_empty())
         .map(|seed| (seed.model.as_str(), seed))
         .collect::<HashMap<_, _>>();
-    let rows = sqlx::query_as::<_, (String, String, String, String)>(
-        "SELECT model, tasks, source, params FROM provider_models WHERE provider_id = ?",
+    let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
+        "SELECT model, tasks, traits, source, params FROM provider_models WHERE provider_id = ?",
     )
     .bind(provider_id)
     .fetch_all(&mut **transaction)
     .await?;
 
-    for (model, tasks, source, existing_params) in rows {
+    for (model, tasks, existing_traits, source, existing_params) in rows {
         let Some(seed) = seeds.get(model.as_str()) else {
             continue;
         };
@@ -566,48 +567,82 @@ async fn sync_inferred_profiles_tx(
             seed.catalog_max_tokens,
             seed.catalog_reasoning_effort.as_deref(),
         );
+        let promote_catalog_source = seed.catalog_vision.is_some() && source == "inferred";
+        let traits = seed
+            .catalog_vision
+            .and_then(|supports_vision| merge_catalog_vision_trait(&existing_traits, supports_vision));
 
-        match (fill_inferred_profile, params.as_deref()) {
-            (true, Some(params)) => {
+        match (fill_inferred_profile, params.as_deref(), traits.as_deref()) {
+            (true, Some(params), _) => {
                 sqlx::query(
-                    "UPDATE provider_models SET tasks = ?, traits = ?, params = ?, updated_at = ? \
+                    "UPDATE provider_models SET tasks = ?, traits = ?, params = ?, source = CASE WHEN ? THEN 'catalog' ELSE source END, updated_at = ? \
                      WHERE provider_id = ? AND model = ?",
                 )
                 .bind(&seed.tasks)
                 .bind(&seed.traits)
                 .bind(params)
+                .bind(promote_catalog_source)
                 .bind(now)
                 .bind(provider_id)
                 .bind(model)
                 .execute(&mut **transaction)
                 .await?;
             }
-            (true, None) => {
+            (true, None, _) => {
                 sqlx::query(
-                    "UPDATE provider_models SET tasks = ?, traits = ?, updated_at = ? \
+                    "UPDATE provider_models SET tasks = ?, traits = ?, source = CASE WHEN ? THEN 'catalog' ELSE source END, updated_at = ? \
                      WHERE provider_id = ? AND model = ?",
                 )
                 .bind(&seed.tasks)
                 .bind(&seed.traits)
+                .bind(promote_catalog_source)
                 .bind(now)
                 .bind(provider_id)
                 .bind(model)
                 .execute(&mut **transaction)
                 .await?;
             }
-            (false, Some(params)) => {
+            (false, Some(params), Some(traits)) => {
                 sqlx::query(
-                    "UPDATE provider_models SET params = ?, updated_at = ? \
+                    "UPDATE provider_models SET traits = ?, params = ?, source = CASE WHEN ? THEN 'catalog' ELSE source END, updated_at = ? \
+                     WHERE provider_id = ? AND model = ?",
+                )
+                .bind(traits)
+                .bind(params)
+                .bind(promote_catalog_source)
+                .bind(now)
+                .bind(provider_id)
+                .bind(model)
+                .execute(&mut **transaction)
+                .await?;
+            }
+            (false, Some(params), None) => {
+                sqlx::query(
+                    "UPDATE provider_models SET params = ?, source = CASE WHEN ? THEN 'catalog' ELSE source END, updated_at = ? \
                      WHERE provider_id = ? AND model = ?",
                 )
                 .bind(params)
+                .bind(promote_catalog_source)
                 .bind(now)
                 .bind(provider_id)
                 .bind(model)
                 .execute(&mut **transaction)
                 .await?;
             }
-            (false, None) => {}
+            (false, None, Some(traits)) => {
+                sqlx::query(
+                    "UPDATE provider_models SET traits = ?, source = CASE WHEN ? THEN 'catalog' ELSE source END, updated_at = ? \
+                     WHERE provider_id = ? AND model = ?",
+                )
+                .bind(traits)
+                .bind(promote_catalog_source)
+                .bind(now)
+                .bind(provider_id)
+                .bind(model)
+                .execute(&mut **transaction)
+                .await?;
+            }
+            (false, None, None) => {}
         }
     }
 
@@ -735,6 +770,7 @@ impl IProviderRepository for SqliteProviderRepository {
                 OR key = 'nomi.defaultModel' \
                 OR key = 'knowledge.autogenModel' \
                 OR key = 'tools.imageGenerationModel' \
+                OR key = 'tools.imageAnalysisModel' \
                 OR key = 'tools.speechToText' \
                 OR key LIKE 'channels.%.defaultModel'",
         )
@@ -1080,6 +1116,7 @@ mod tests {
             traits: "[]".into(),
             catalog_max_tokens: None,
             catalog_reasoning_effort: None,
+            catalog_vision: None,
         }];
         let result = repo
             .update_with_model_profiles(
@@ -1136,6 +1173,7 @@ mod tests {
                 traits: "[]".into(),
                 catalog_max_tokens: None,
                 catalog_reasoning_effort: None,
+                catalog_vision: None,
             },
             ProviderModelProfileSeed {
                 model: "new-model-2".into(),
@@ -1143,6 +1181,7 @@ mod tests {
                 traits: "[]".into(),
                 catalog_max_tokens: None,
                 catalog_reasoning_effort: None,
+                catalog_vision: None,
             },
         ];
         let result = repo

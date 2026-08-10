@@ -29,6 +29,9 @@ pub struct ProviderModelProfileSeed {
     /// Cloud-advertised reasoning effort levels when the model supports
     /// deep thinking. `None` removes the managed key.
     pub catalog_reasoning_effort: Option<Vec<String>>,
+    /// Whether the authoritative catalog declares image input. `None` means
+    /// this seed has no catalog-owned vision capability.
+    pub catalog_vision: Option<bool>,
 }
 
 pub(crate) fn initial_catalog_params(
@@ -110,6 +113,22 @@ pub(crate) fn merge_catalog_params(
     serde_json::to_string(&value).ok()
 }
 
+/// Merge only the catalog-owned `vision_input` trait. Other model traits are
+/// user-extensible and deliberately remain untouched during a catalog sync.
+pub(crate) fn merge_catalog_vision_trait(traits: &str, supports_vision: bool) -> Option<String> {
+    let mut traits: Vec<String> = serde_json::from_str(traits).ok()?;
+    let has_vision = traits.iter().any(|trait_name| trait_name == "vision_input");
+    if supports_vision == has_vision {
+        return None;
+    }
+    if supports_vision {
+        traits.push("vision_input".to_owned());
+    } else {
+        traits.retain(|trait_name| trait_name != "vision_input");
+    }
+    serde_json::to_string(&traits).ok()
+}
+
 async fn reconcile_inferred_model_profiles(
     provider_id: &str,
     profiles: &[ProviderModelProfileSeed],
@@ -148,7 +167,11 @@ async fn reconcile_inferred_model_profiles(
                     tasks: &seed.tasks,
                     traits: &seed.traits,
                     params: &params,
-                    source: "inferred",
+                    source: if seed.catalog_vision.is_some() {
+                        "catalog"
+                    } else {
+                        "inferred"
+                    },
                     ..Default::default()
                 },
             )
@@ -173,7 +196,11 @@ async fn reconcile_inferred_model_profiles(
             seed.catalog_max_tokens,
             seed.catalog_reasoning_effort.as_deref(),
         );
-        if !fill_inferred_profile && params.is_none() {
+        let promote_catalog_source = seed.catalog_vision.is_some() && row.source == "inferred";
+        let traits = seed
+            .catalog_vision
+            .and_then(|supports_vision| merge_catalog_vision_trait(&row.traits, supports_vision));
+        if !fill_inferred_profile && !promote_catalog_source && params.is_none() && traits.is_none() {
             continue;
         }
         model_repo
@@ -182,8 +209,13 @@ async fn reconcile_inferred_model_profiles(
                 &row.model,
                 &crate::models::ProviderModelUpdate {
                     tasks: fill_inferred_profile.then_some(seed.tasks.as_str()),
-                    traits: fill_inferred_profile.then_some(seed.traits.as_str()),
+                    traits: if fill_inferred_profile {
+                        Some(seed.traits.as_str())
+                    } else {
+                        traits.as_deref()
+                    },
                     params: params.as_deref(),
+                    source: promote_catalog_source.then_some("catalog"),
                     ..Default::default()
                 },
             )

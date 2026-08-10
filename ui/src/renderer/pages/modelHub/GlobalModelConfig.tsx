@@ -7,6 +7,7 @@ import { Info } from '@icon-park/react';
 import IdmmSettingsContent from '@/renderer/pages/settings/IdmmSettingsContent';
 import IdmmActivityContent from '@/renderer/pages/modelHub/IdmmActivityContent';
 import ModelFailoverContent from '@/renderer/pages/modelHub/ModelFailoverContent';
+import ImageAnalysisModelContent from '@/renderer/pages/modelHub/ImageAnalysisModelContent';
 
 /**
  * GlobalModelConfig — the "Global Model Config" section of Model Management.
@@ -33,6 +34,9 @@ const GlobalModelConfig: React.FC = () => {
         </Tabs.TabPane>
         <Tabs.TabPane key='failover' title={t('settings.modelHub.failoverTab')}>
           <ModelFailoverContent />
+        </Tabs.TabPane>
+        <Tabs.TabPane key='image-analysis' title={t('settings.modelHub.imageAnalysis.tab')}>
+          <ImageAnalysisModelContent />
         </Tabs.TabPane>
         <Tabs.TabPane key='activity' title={t('settings.modelHub.activityTab')}>
           <IdmmActivityContent />

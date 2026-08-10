@@ -9,6 +9,7 @@ use nomi_config::config::{CliArgs, Config};
 use nomi_providers::{LlmProvider, ProviderError, create_provider};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role};
+use nomifun_api_types::ModelTrait;
 use nomifun_common::{AppError, ProviderId};
 use nomifun_db::{
     FLOWY_CATALOG_MAX_TOKENS_PARAM, FLOWY_CATALOG_REASONING_EFFORT_PARAM,
@@ -93,9 +94,17 @@ pub(crate) async fn resolve_provider_fields(
 
     let (base_url, mut compat_overrides) =
         resolve_nomi_url_and_compat(&row.platform, &row.base_url, &provider, row.is_full_url);
-    // 依进程级 registry 命中把「不支持图片」透传为 compat override(主动剔除)。
-    // 未命中 → None → 下游默认 supports_image=true,现有行为不变。
-    compat_overrides.supports_image = image_support_override(provider_id, model);
+    // A persisted model profile is authoritative for image input. The runtime
+    // rejection registry wins over the catalog so a provider's observed
+    // capability regression fails closed until the next restart.
+    let declared_image_support = model_row
+        .as_ref()
+        .and_then(|row| serde_json::from_str::<Vec<ModelTrait>>(&row.traits).ok())
+        .map(|traits| traits.contains(&ModelTrait::VisionInput));
+    compat_overrides.supports_image = image_support_override(provider_id, model)
+        .or(declared_image_support)
+        // Flowy catalog entries must never fall back to name heuristics.
+        .or_else(|| (provider_id == nomifun_common::FLOWY_BUILTIN_PROVIDER_ID).then_some(false));
     if provider_id == nomifun_common::FLOWY_BUILTIN_PROVIDER_ID {
         compat_overrides.mirror_bearer_header = Some("token".to_string());
     }

@@ -432,6 +432,7 @@
     "defaultModelUnavailable": "原默认模型不可用，请重新选择模型",
     "modelHealedToDefault": "已回退到默认模型 {{model}}",
     "visionModelHint": "当前模型 {{model}} 可能不支持图片输入，图片附件可能被忽略或导致报错。",
+    "imageAttachmentLimit": "每条消息最多可添加 {{limit}} 张不同图片。",
     "sendMessageTo": "发送消息到 {{model}}",
     "send": "发送",
     "stop": "停止生成",

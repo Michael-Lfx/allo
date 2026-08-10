@@ -10,11 +10,14 @@ use tokio::io::AsyncReadExt;
 
 /// A small, explicit envelope keeps a local file from turning into an
 /// unbounded request body or decoder allocation.
-const MAX_IMAGE_ATTACHMENTS: usize = 4;
+const MAX_IMAGE_ATTACHMENTS: usize = 10;
 const MAX_SOURCE_BYTES: u64 = 12 * 1024 * 1024;
-const MAX_SOURCE_PIXELS: u64 = 40_000_000;
+// Common high-DPI screenshots routinely exceed 40MP. The allocation ceiling
+// remains the real decode safety boundary; this upper bound only rejects
+// images that could never be prepared safely before downscaling.
+const MAX_SOURCE_PIXELS: u64 = 64_000_000;
 const MAX_SOURCE_EDGE: u32 = 16_384;
-const MAX_DECODE_ALLOC_BYTES: u64 = 192 * 1024 * 1024;
+const MAX_DECODE_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_MODEL_EDGE: u32 = 1_568;
 const MAX_MODEL_IMAGE_BYTES: usize = 1_500 * 1024;
 
@@ -52,7 +55,14 @@ pub(super) async fn load_image_blocks(
         })
         .collect::<Result<_, _>>()?;
 
-    if candidates.len() > MAX_IMAGE_ATTACHMENTS {
+    // The frontend may surface the same path through both a local attachment
+    // and an @workspace reference. Count distinct references so duplication
+    // cannot turn one physical image into five attachments.
+    let distinct_candidates = candidates
+        .iter()
+        .map(|(reference, _)| *reference)
+        .collect::<HashSet<_>>();
+    if distinct_candidates.len() > MAX_IMAGE_ATTACHMENTS {
         return Err(attachment_error(format!(
             "at most {MAX_IMAGE_ATTACHMENTS} image attachments are allowed"
         )));
@@ -230,7 +240,7 @@ fn prepare_image(
     }
     if pixels > MAX_SOURCE_PIXELS {
         return Err(attachment_error(format!(
-            "image attachment '{display_name}' exceeds the 40 megapixel limit"
+            "image attachment '{display_name}' exceeds the 64 megapixel limit"
         )));
     }
 
@@ -442,7 +452,22 @@ mod tests {
             .map(|index| format!("C:\\images\\{index}.png"))
             .collect::<Vec<_>>();
         let error = load_image_blocks(&references, None).await.unwrap_err();
-        assert!(error.to_string().contains("at most 4"));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("at most {MAX_IMAGE_ATTACHMENTS}"))
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_image_reference_is_counted_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("single.png");
+        write_png(&path, 24, 16);
+        let references = vec![path.to_string_lossy().into_owned(); MAX_IMAGE_ATTACHMENTS + 1];
+
+        let blocks = load_image_blocks(&references, None).await.unwrap();
+        assert_eq!(blocks.len(), 1);
     }
 
     #[tokio::test]

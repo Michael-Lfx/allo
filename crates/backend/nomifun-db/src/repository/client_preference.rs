@@ -7,6 +7,7 @@ const COLLABORATION_MODELS_KEY: &str = "nomi.collaborationModels";
 const NOMI_DEFAULT_MODEL_KEY: &str = "nomi.defaultModel";
 const KNOWLEDGE_AUTOGEN_MODEL_KEY: &str = "knowledge.autogenModel";
 const IMAGE_GENERATION_MODEL_KEY: &str = "tools.imageGenerationModel";
+const IMAGE_ANALYSIS_MODEL_KEY: &str = "tools.imageAnalysisModel";
 const SPEECH_TO_TEXT_KEY: &str = "tools.speechToText";
 
 /// Client preference data access abstraction.
@@ -71,7 +72,10 @@ fn provider_preference_kind(key: &str) -> Option<ProviderPreferenceKind> {
         IDMM_BACKUP_PROVIDER_KEY => Some(ProviderPreferenceKind::IdmmBackupProvider),
         MODEL_FAILOVER_KEY => Some(ProviderPreferenceKind::ModelFailover),
         COLLABORATION_MODELS_KEY => Some(ProviderPreferenceKind::CollaborationModels),
-        NOMI_DEFAULT_MODEL_KEY | KNOWLEDGE_AUTOGEN_MODEL_KEY | IMAGE_GENERATION_MODEL_KEY => {
+        NOMI_DEFAULT_MODEL_KEY
+        | KNOWLEDGE_AUTOGEN_MODEL_KEY
+        | IMAGE_GENERATION_MODEL_KEY
+        | IMAGE_ANALYSIS_MODEL_KEY => {
             Some(ProviderPreferenceKind::RequiredModelObject)
         }
         SPEECH_TO_TEXT_KEY => Some(ProviderPreferenceKind::OptionalObjectProviderId),

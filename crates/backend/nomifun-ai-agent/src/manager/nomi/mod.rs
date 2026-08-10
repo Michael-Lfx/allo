@@ -4,6 +4,7 @@ pub mod browser_approval;
 pub mod distill;
 pub mod history_sanitize;
 mod image_attachments;
+mod image_analyze;
 
 pub use agent::NomiAgentManager;
 pub use agent::NomiSummonWiring;

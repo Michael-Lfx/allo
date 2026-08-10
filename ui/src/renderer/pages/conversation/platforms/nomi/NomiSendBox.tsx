@@ -82,7 +82,7 @@ import {
   warmupConversationForPassiveMount,
 } from '@/renderer/pages/conversation/utils/warmupConversation';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
-import { allSupportedExts, imageExts } from '@/renderer/services/FileService';
+import { allSupportedExts, imageExts, type FileMetadata } from '@/renderer/services/FileService';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { guidTransitionMark } from '@/renderer/pages/guid/hooks/guidTransitionTiming';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
@@ -119,6 +119,12 @@ import { catalogReasoningEffortForModel } from '@/renderer/utils/model/reasoning
 
 /** Trait refinement for the vision guard (stable identity for the SWR key). */
 const VISION_INPUT_TRAITS: ModelTrait[] = ['vision_input'];
+const MAX_IMAGE_ATTACHMENTS = 10;
+
+const isImageAttachment = (path: string) => {
+  const normalized = path.toLowerCase();
+  return imageExts.some((extension) => normalized.endsWith(extension));
+};
 
 const useNomiSendBoxDraft = getSendBoxDraftHook('nomi', {
   _type: 'nomi',
@@ -426,6 +432,49 @@ const NomiSendBox: React.FC<{
     setUploadFile,
   });
 
+  const admitImageAttachments = useCallback(
+    (paths: string[]) => {
+      const known = new Set(collectSelectedFiles(uploadFile, atPath));
+      let imageCount = [...known].filter(isImageAttachment).length;
+      const accepted: string[] = [];
+      let rejected = 0;
+
+      for (const path of paths) {
+        if (known.has(path)) continue;
+        if (isImageAttachment(path) && imageCount >= MAX_IMAGE_ATTACHMENTS) {
+          rejected += 1;
+          continue;
+        }
+        known.add(path);
+        accepted.push(path);
+        if (isImageAttachment(path)) imageCount += 1;
+      }
+      if (rejected > 0) {
+        Message.warning(t('conversation.chat.imageAttachmentLimit', { limit: MAX_IMAGE_ATTACHMENTS }));
+      }
+      return accepted;
+    },
+    [atPath, t, uploadFile]
+  );
+
+  const canSendImageAttachments = useCallback(
+    (files: string[]) => {
+      const imageCount = new Set(files.filter(isImageAttachment)).size;
+      if (imageCount <= MAX_IMAGE_ATTACHMENTS) return true;
+      Message.warning(t('conversation.chat.imageAttachmentLimit', { limit: MAX_IMAGE_ATTACHMENTS }));
+      return false;
+    },
+    [t]
+  );
+
+  const handleNomiFilesAdded = useCallback(
+    (files: FileMetadata[]) => {
+      const accepted = new Set(admitImageAttachments(files.map((file) => file.path)));
+      handleFilesAdded(files.filter((file) => accepted.has(file.path)));
+    },
+    [admitImageAttachments, handleFilesAdded]
+  );
+
   const executeCommand = useCallback(
     async (
       {
@@ -443,6 +492,9 @@ const NomiSendBox: React.FC<{
       execution?: ConversationCommandQueueExecution,
       deferLocalTurnUntilFresh = execution !== undefined
     ) => {
+      if (!canSendImageAttachments(files)) {
+        throw new Error('Too many image attachments');
+      }
       if (!current_model?.use_model) {
         Message.warning(t('conversation.chat.noModelSelected'));
         throw new Error('No model selected');
@@ -1221,9 +1273,12 @@ const NomiSendBox: React.FC<{
 
   const appendSelectedFiles = useCallback(
     (files: string[]) => {
-      setUploadFile((prev) => [...prev, ...files]);
+      const accepted = admitImageAttachments(files);
+      if (accepted.length > 0) {
+        setUploadFile((prev) => Array.from(new Set([...prev, ...accepted])));
+      }
     },
-    [setUploadFile]
+    [admitImageAttachments, setUploadFile]
   );
   const { openFileSelector, onSlashBuiltinCommand } = useOpenFileSelector({
     onFilesSelected: appendSelectedFiles,
@@ -1231,7 +1286,7 @@ const NomiSendBox: React.FC<{
 
   const { entries: attachEntries, hiddenFileInput: attachHiddenInput } = useAttachEntry({
     openFileSelector,
-    onLocalFilesAdded: handleFilesAdded,
+    onLocalFilesAdded: handleNomiFilesAdded,
     dividerBefore: true,
   });
 
@@ -1599,7 +1654,7 @@ const NomiSendBox: React.FC<{
         onStop={handleStop}
         onClearContext={handleClearContext}
         className='z-10'
-        onFilesAdded={handleFilesAdded}
+        onFilesAdded={handleNomiFilesAdded}
         hasPendingAttachments={uploadFile.length > 0 || atPath.length > 0}
         supportedExts={allSupportedExts}
         defaultMultiLine={!isMobile}
@@ -1608,7 +1663,7 @@ const NomiSendBox: React.FC<{
           <div className='composer-toolbar-tools flex items-center min-w-0'>
             <FileAttachButton
               openFileSelector={openFileSelector}
-              onLocalFilesAdded={handleFilesAdded}
+              onLocalFilesAdded={handleNomiFilesAdded}
               loadedMcpStatuses={loadedMcpStatuses}
             />
             {!hideModeSelector && (

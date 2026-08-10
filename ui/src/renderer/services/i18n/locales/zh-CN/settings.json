@@ -1261,6 +1261,13 @@
     "idmmTab": "IDMM 默认配置",
     "failoverTab": "故障转移队列",
     "activityTab": "决策活动",
+    "imageAnalysis": {
+      "tab": "图片解析",
+      "title": "图片解析模型",
+      "subtitle": "当当前对话模型不支持图片时，此模型会先提取与问题相关的视觉信息。不会改变对话主模型。",
+      "autoDefault": "自动选择（MiniMax-M3 优先）",
+      "useAutomatic": "使用自动选择"
+    },
     "provider": {
       "title": "供应商模型",
       "subtitle": "使用自己的 API 密钥，接入云端模型供应商。",

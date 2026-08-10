@@ -57,6 +57,9 @@ export type ConfigKeyMap = {
   // backend falls back to the conversation's own session model.
   'conversation.titleModel': { provider_id: ProviderId; model: string } | undefined;
   'tools.imageGenerationModel': { provider_id: ProviderId; model: string; switch?: boolean };
+  // Separate vision model used to describe image attachments for text-only
+  // Nomi conversation models. It never changes the conversation's main model.
+  'tools.imageAnalysisModel': { provider_id: ProviderId; model: string } | undefined;
   'tools.speechToText': SpeechToTextConfig | undefined;
   'workspace.pasteConfirm': boolean | undefined;
   'upload.saveToWorkspace': boolean | undefined;

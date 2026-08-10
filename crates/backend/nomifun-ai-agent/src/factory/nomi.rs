@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use nomi_agent::session::{Session, SessionManager};
-use nomi_config::config::{McpServerConfig, TransportType};
+use nomi_config::config::{CliArgs, Config, McpServerConfig, TransportType};
 use nomifun_api_types::{
-    GatewayMcpConfig, McpServerId, NomiBuildExtra, SessionMcpServer, SessionMcpTransport,
+    GatewayMcpConfig, HealthStatus, McpServerId, ModelHealthStatus, ModelTask, ModelTrait,
+    NomiBuildExtra, SessionMcpServer, SessionMcpTransport,
 };
 use nomifun_common::{
     AppError, DelegationPolicy, ExecutionAuthority, LoopbackCapabilityLease,
-    LoopbackCapabilityLeaseSet, ProviderId,
+    LoopbackCapabilityLeaseSet, ProviderId, ProviderWithModel,
 };
 use nomifun_db::IMcpServerRepository;
 use nomifun_db::ISettingsRepository;
@@ -23,7 +24,9 @@ use crate::factory::platform_table;
 use crate::manager::nomi::{
     NomiAgentManager, NomiHostWiring, NomiSummonWiring, sanitize_session_messages,
 };
-use crate::types::{AgentRuntimeBuildOptions, NomiCompatOverrides, NomiResolvedConfig};
+use crate::types::{
+    AgentRuntimeBuildOptions, ImageAnalysisModelConfig, NomiCompatOverrides, NomiResolvedConfig,
+};
 
 /// Apply the complete ceiling for an authenticated principal that does not own
 /// this installation.  This is model-only execution: no OS tools, configured
@@ -442,6 +445,12 @@ pub(super) async fn build(
     )
     .await?;
 
+    let image_analysis_model = if fields.compat_overrides.supports_image == Some(false) {
+        resolve_image_analysis_model(&deps, &ctx.workspace).await?
+    } else {
+        None
+    };
+
     let session_directory = deps.data_dir.join("nomi-sessions");
 
     // Stable identity of this conversation instance (row `created_at`).
@@ -737,6 +746,7 @@ pub(super) async fn build(
         max_turns: overrides.max_turns,
         context_limit: fields.context_limit.map(|v| v as u64),
         compat_overrides: fields.compat_overrides,
+        image_analysis_model,
         session_directory,
         // 默认授权模式 = 全自动（yolo）。产品决策：所有 nomi 会话默认自动批准
         // 标准工具类别（info/edit/exec/mcp —— 文件编辑 / Shell / 标准工具 & MCP），
@@ -970,6 +980,159 @@ const BROWSER_SOURCE_DEFAULT: &str = "system";
 /// `GET/PUT /api/settings/client` key-value endpoints; read here per session as
 /// the fallback when the conversation carries no explicit `extra.moa`.
 const PREF_MOA_SETTINGS: &str = "moa_settings";
+const PREF_IMAGE_ANALYSIS_MODEL: &str = "tools.imageAnalysisModel";
+
+fn is_usable_image_analysis_model(
+    provider_enabled: bool,
+    model: &nomifun_db::models::ProviderModelRow,
+) -> bool {
+    if !provider_enabled || !model.enabled {
+        return false;
+    }
+    let tasks = serde_json::from_str::<Vec<ModelTask>>(&model.tasks).unwrap_or_default();
+    let traits = serde_json::from_str::<Vec<ModelTrait>>(&model.traits).unwrap_or_default();
+    let health = model
+        .health
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<ModelHealthStatus>(value).ok())
+        .map(|status| status.status);
+    tasks.contains(&ModelTask::Chat)
+        && traits.contains(&ModelTrait::VisionInput)
+        && health != Some(HealthStatus::Unhealthy)
+}
+
+fn parse_image_analysis_preference(raw: &str) -> Result<ProviderWithModel, AppError> {
+    let parsed = serde_json::from_str(raw)
+        .or_else(|_| serde_json::from_str::<String>(raw).and_then(|value| serde_json::from_str(&value)))
+        .map_err(|error| AppError::BadRequest(format!("Invalid image analysis model setting: {error}")))?;
+    let selection: ProviderWithModel = serde_json::from_value(parsed)
+        .map_err(|error| AppError::BadRequest(format!("Invalid image analysis model setting: {error}")))?;
+    selection
+        .validate()
+        .map_err(|error| AppError::BadRequest(format!("Invalid image analysis model setting: {error}")))?;
+    if selection.use_model.is_some() {
+        return Err(AppError::BadRequest(
+            "Invalid image analysis model setting: use_model is not supported".to_owned(),
+        ));
+    }
+    Ok(selection)
+}
+
+fn config_for_image_analysis(
+    fields: super::provider_config::ResolvedProviderFields,
+    workspace: &str,
+) -> Result<Config, AppError> {
+    let cli_args = CliArgs {
+        provider: Some(fields.provider),
+        api_key: Some(fields.api_key),
+        base_url: fields.base_url,
+        model: Some(fields.model),
+        max_tokens: Some(1200),
+        max_turns: Some(1),
+        system_prompt: None,
+        profile: None,
+        auto_approve: false,
+        project_dir: Some(std::path::PathBuf::from(workspace)),
+    };
+    let mut config = Config::resolve(&cli_args)
+        .map_err(|error| AppError::Internal(format!("Image analysis config resolve failed: {error}")))?;
+    config.bedrock = fields.bedrock_config;
+    if let Some(field) = fields.compat_overrides.max_tokens_field {
+        config.compat.max_tokens_field = Some(field);
+    }
+    if let Some(path) = fields.compat_overrides.api_path {
+        config.compat.api_path = Some(path);
+    }
+    if let Some(supports_image) = fields.compat_overrides.supports_image {
+        config.compat.supports_image = Some(supports_image);
+    }
+    if let Some(header) = fields.compat_overrides.mirror_bearer_header {
+        config.compat.mirror_bearer_header = Some(header);
+    }
+    if let Some(required) = fields.compat_overrides.require_reasoning_content {
+        config.compat.require_reasoning_content = Some(required);
+    }
+    Ok(config)
+}
+
+/// Resolve the separately configured image analyzer. An explicit preference is
+/// strict: a removed, disabled, unhealthy, or text-only model is a user-visible
+/// configuration error. The absence of a preference is intentionally lenient
+/// until a non-vision conversation actually attaches an image.
+async fn resolve_image_analysis_model(
+    deps: &AgentFactoryDeps,
+    workspace: &str,
+) -> Result<Option<ImageAnalysisModelConfig>, AppError> {
+    let providers = deps
+        .provider_repo
+        .list()
+        .await
+        .map_err(|error| AppError::Internal(format!("Failed to list providers: {error}")))?;
+    let configured = read_raw_pref(deps, PREF_IMAGE_ANALYSIS_MODEL).await;
+    let explicit = configured
+        .as_deref()
+        .map(parse_image_analysis_preference)
+        .transpose()?;
+
+    let candidate = if let Some(selection) = explicit {
+        let provider = providers
+            .iter()
+            .find(|provider| provider.provider_id == selection.provider_id)
+            .ok_or_else(|| AppError::BadRequest("Configured image analysis provider no longer exists".to_owned()))?;
+        let model = deps
+            .provider_model_repo
+            .get(&selection.provider_id, &selection.model)
+            .await
+            .map_err(|error| AppError::Internal(format!("Failed to load image analysis model: {error}")))?
+            .ok_or_else(|| AppError::BadRequest("Configured image analysis model no longer exists".to_owned()))?;
+        if !is_usable_image_analysis_model(provider.enabled, &model) {
+            return Err(AppError::BadRequest(
+                "Configured image analysis model must be enabled, healthy, chat-capable, and support image input".to_owned(),
+            ));
+        }
+        Some((selection.provider_id, selection.model))
+    } else {
+        let mut fallback = None;
+        for provider in &providers {
+            let models = deps
+                .provider_model_repo
+                .list_for_provider(&provider.provider_id)
+                .await
+                .map_err(|error| AppError::Internal(format!("Failed to list provider models: {error}")))?;
+            for model in models {
+                if !is_usable_image_analysis_model(provider.enabled, &model) {
+                    continue;
+                }
+                let candidate = (provider.provider_id.clone(), model.model.clone());
+                if model.model.eq_ignore_ascii_case("MiniMax-M3") {
+                    fallback = Some(candidate);
+                    break;
+                }
+                fallback.get_or_insert(candidate);
+            }
+            if fallback.as_ref().is_some_and(|(_, model)| model.eq_ignore_ascii_case("MiniMax-M3")) {
+                break;
+            }
+        }
+        fallback
+    };
+
+    let Some((provider_id, model)) = candidate else {
+        return Ok(None);
+    };
+    let fields = super::provider_config::resolve_provider_fields(
+        &deps.provider_repo,
+        &deps.provider_model_repo,
+        &deps.encryption_key,
+        &provider_id,
+        &model,
+    )
+    .await?;
+    Ok(Some(ImageAnalysisModelConfig {
+        config: config_for_image_analysis(fields, workspace)?,
+        label: format!("{provider_id}/{model}"),
+    }))
+}
 
 /// Read a boolean `client_preferences` toggle live, falling back to
 /// `host_default` when there is no setting row (fresh install) or no

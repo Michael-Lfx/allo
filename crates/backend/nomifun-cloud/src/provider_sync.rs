@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use nomifun_api_types::derive_tasks_and_traits;
+use nomifun_api_types::{ModelTrait, derive_tasks_and_traits};
 use nomi_config::ServerConfig;
 use nomifun_common::encrypt_string;
 use nomifun_db::{
@@ -195,7 +195,9 @@ fn build_profile_seeds(
         if extra.tools && !traits.contains(&nomifun_api_types::ModelTrait::FunctionCalling) {
             traits.push(nomifun_api_types::ModelTrait::FunctionCalling);
         }
-        if extra.supports_vision() && !traits.contains(&nomifun_api_types::ModelTrait::VisionInput) {
+        let supports_vision = extra.supports_vision();
+        traits.retain(|trait_value| *trait_value != ModelTrait::VisionInput);
+        if supports_vision {
             traits.push(nomifun_api_types::ModelTrait::VisionInput);
         }
         if tasks.is_empty() {
@@ -209,6 +211,7 @@ fn build_profile_seeds(
                 .map_err(|error| format!("serialize Flowy model traits: {error}"))?,
             catalog_max_tokens: extra.max_output_tokens(),
             catalog_reasoning_effort: extra.reasoning_effort_levels(),
+            catalog_vision: Some(supports_vision),
         });
     }
 
@@ -507,6 +510,26 @@ mod tests {
         assert!(!traits_no.iter().any(|t| t == "reasoning"));
     }
 
+    #[test]
+    fn build_profile_seeds_uses_catalog_image_input_for_vision_trait() {
+        let seeds = build_profile_seeds(
+            &[
+                catalog_entry("vision", r#"{"input":["text","image"]}"#),
+                catalog_entry("text-only", r#"{"input":["text"]}"#),
+                catalog_entry("invalid-extra", "not json"),
+            ],
+            "openai",
+        )
+        .unwrap();
+
+        assert!(seeds[0].traits.contains("vision_input"));
+        assert_eq!(seeds[0].catalog_vision, Some(true));
+        assert!(!seeds[1].traits.contains("vision_input"));
+        assert_eq!(seeds[1].catalog_vision, Some(false));
+        assert!(!seeds[2].traits.contains("vision_input"));
+        assert_eq!(seeds[2].catalog_vision, Some(false));
+    }
+
     #[tokio::test]
     async fn cloud_sync_backfills_chat_profiles_without_overwriting_user_edits() {
         let database = nomifun_db::init_database_memory().await.unwrap();
@@ -554,7 +577,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.tasks, r#"["chat"]"#);
-        assert_eq!(row.source, "inferred");
+        assert_eq!(row.source, "catalog");
         let params: serde_json::Value = serde_json::from_str(&row.params).unwrap();
         assert_eq!(
             params

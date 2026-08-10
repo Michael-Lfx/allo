@@ -1260,6 +1260,13 @@
     "idmmTab": "IDMM Defaults",
     "failoverTab": "Failover Queue",
     "activityTab": "Decision Activity",
+    "imageAnalysis": {
+      "tab": "Image Analysis",
+      "title": "Image Analysis Model",
+      "subtitle": "When the conversation model cannot accept images, this model extracts visual facts relevant to the question. It does not change the conversation model.",
+      "autoDefault": "Automatic (MiniMax-M3 preferred)",
+      "useAutomatic": "Use automatic selection"
+    },
     "provider": {
       "title": "Provider Models",
       "subtitle": "Connect cloud model providers with your own API key.",

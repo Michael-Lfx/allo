@@ -178,6 +178,14 @@ pub struct NomiCompatOverrides {
     pub effort_levels: Option<Vec<String>>,
 }
 
+/// A separately resolved multimodal model used only to analyze image
+/// attachments for text-only Nomi conversation models.
+#[derive(Debug, Clone)]
+pub struct ImageAnalysisModelConfig {
+    pub config: nomi_config::config::Config,
+    pub label: String,
+}
+
 /// Fully resolved Nomi configuration passed to the agent manager.
 #[derive(Debug, Clone)]
 pub struct NomiResolvedConfig {
@@ -200,6 +208,9 @@ pub struct NomiResolvedConfig {
     pub context_limit: Option<u64>,
     /// Provider-specific compat overrides.
     pub compat_overrides: NomiCompatOverrides,
+    /// Optional independent vision model. It is used only when the selected
+    /// conversation model does not accept image input.
+    pub image_analysis_model: Option<ImageAnalysisModelConfig>,
     /// Directory for nomi session persistence files.
     pub session_directory: PathBuf,
     /// Session mode (default, auto_edit, yolo).
