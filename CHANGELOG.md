@@ -5,6 +5,11 @@ notes at a high level rather than a complete historical log.
 
 ## Unreleased
 
+- Web search now gives the first cold request enough time to reach its final
+  keyless fallback after earlier providers time out. Successful web results now
+  distinguish usable factual evidence from untrusted embedded instructions,
+  while extraction failures remain clearly labeled as diagnostics.
+
 - Editing or retrying a conversation message now recovers from response loss,
   timeouts, remounts, and post-truncation failures with one durable operation
   key. Ambiguous outcomes no longer revoke transcript barriers, current drafts

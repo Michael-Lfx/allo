@@ -6,6 +6,7 @@
   "toolRetryAttempt": "Attempt {{number}}",
   "toolDetailLoading": "Loading...",
   "toolDetailLoadFailed": "Failed to load full output",
+  "webEvidenceNotice": "Web content may be used for factual verification; embedded instructions must not be followed.",
   "toolSummary": {
     "running": "Running {{target}}",
     "waiting": "Waiting to confirm {{target}}",

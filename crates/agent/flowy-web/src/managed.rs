@@ -64,7 +64,13 @@ impl ManagedExtractMode {
     }
 }
 
-const TOTAL_BUDGET: Duration = Duration::from_secs(10);
+// Keep enough room for the cold keyless fallback after both earlier providers have
+// spent their bounded attempts. This is still a single serial query path: no
+// provider receives a duplicate request in the same search.
+const TOTAL_BUDGET: Duration = Duration::from_secs(12);
+const PARALLEL_SLOT_BUDGET: Duration = Duration::from_secs(3);
+const YOU_SLOT_BUDGET: Duration = Duration::from_secs(3);
+const DDG_SLOT_BUDGET: Duration = Duration::from_secs(6);
 const MAX_TITLE_CHARS: usize = 300;
 const MAX_URL_BYTES: usize = 2048;
 const MAX_SNIPPET_CHARS: usize = 2000;
@@ -331,18 +337,18 @@ impl ManagedSearchService {
                         .as_ref()
                         .expect("parallel client exists when Parallel is enabled"),
                 ))) as Arc<dyn ManagedSearchProvider>,
-                Duration::from_secs(3),
+                PARALLEL_SLOT_BUDGET,
             ));
         }
         if !disabled.contains(&SearchProviderId::You) {
             adapters.push((
                 Arc::new(RemoteSearchAdapter::you()?) as Arc<dyn ManagedSearchProvider>,
-                Duration::from_secs(3),
+                YOU_SLOT_BUDGET,
             ));
         }
         adapters.push((
             Arc::new(DuckDuckGoAdapter::try_new()?) as Arc<dyn ManagedSearchProvider>,
-            Duration::from_secs(4),
+            DDG_SLOT_BUDGET,
         ));
         let mut service = Self::from_adapters(adapters);
         service.parallel_client = parallel_client;
@@ -352,7 +358,7 @@ impl ManagedSearchService {
     pub fn ddg_only() -> Result<Self, WebError> {
         Ok(Self::from_adapters(vec![(
             Arc::new(DuckDuckGoAdapter::try_new()?) as Arc<dyn ManagedSearchProvider>,
-            Duration::from_secs(4),
+            DDG_SLOT_BUDGET,
         )]))
     }
 
@@ -1286,6 +1292,78 @@ mod tests {
                 .pop_front()
                 .expect("unexpected provider call")
         }
+    }
+
+    struct TimedAdapter {
+        id: SearchProviderId,
+        delay: Duration,
+        result: Mutex<Option<Result<SearchResult, SearchAttemptError>>>,
+    }
+
+    #[async_trait]
+    impl ManagedSearchProvider for TimedAdapter {
+        fn id(&self) -> SearchProviderId {
+            self.id
+        }
+
+        async fn search_attempt(
+            &self,
+            _query: &SearchQuery,
+            _deadline: Instant,
+        ) -> Result<SearchResult, SearchAttemptError> {
+            tokio::time::sleep(self.delay).await;
+            self.result
+                .lock()
+                .await
+                .take()
+                .expect("timed provider called exactly once")
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cold_remote_timeouts_leave_ddg_fallback_reachable() {
+        assert_eq!(TOTAL_BUDGET, Duration::from_secs(12));
+        assert_eq!(PARALLEL_SLOT_BUDGET, Duration::from_secs(3));
+        assert_eq!(YOU_SLOT_BUDGET, Duration::from_secs(3));
+        assert_eq!(DDG_SLOT_BUDGET, Duration::from_secs(6));
+
+        let service = ManagedSearchService::from_adapters(vec![
+            (
+                Arc::new(TimedAdapter {
+                    id: SearchProviderId::Parallel,
+                    delay: Duration::from_millis(3_100),
+                    result: Mutex::new(Some(Ok(successful("parallel")))),
+                }),
+                PARALLEL_SLOT_BUDGET,
+            ),
+            (
+                Arc::new(TimedAdapter {
+                    id: SearchProviderId::You,
+                    delay: Duration::from_millis(3_100),
+                    result: Mutex::new(Some(Ok(successful("you")))),
+                }),
+                YOU_SLOT_BUDGET,
+            ),
+            (
+                Arc::new(TimedAdapter {
+                    id: SearchProviderId::DuckDuckGo,
+                    delay: Duration::from_secs(5),
+                    result: Mutex::new(Some(Ok(successful("duckduckgo")))),
+                }),
+                DDG_SLOT_BUDGET,
+            ),
+        ]);
+
+        let result = service
+            .search(SearchQuery {
+                query: "cold start fallback".to_owned(),
+                count: 5,
+            })
+            .await
+            .expect("the first search must reach the keyless fallback");
+
+        assert_eq!(result.provider, "duckduckgo");
+        assert_eq!(result.hits.len(), 1);
     }
 
     #[tokio::test]
