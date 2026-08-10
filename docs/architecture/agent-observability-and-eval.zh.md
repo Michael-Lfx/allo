@@ -19,7 +19,12 @@ Agent 回合会写入结构化 turn trace（spans、token、工具计数），�
 
 实现：`nomi-agent-trace`（存储 / 脱敏）→ `nomifun-ai-agent::AgentTraceHub` → `nomifun-conversation::routes_trace`。
 
-工具完成后，collector 会把 `PersistedArtifact` **元数据**（id / kind / mime / relative_path / size / sha）写入 tool span attributes 与 turn summary；不写入绝对路径或文件内容。
+工具完成后，collector 会写入两类产物元数据（不写绝对路径 / 二进制）：
+
+1. **receipt**：已验证的 `PersistedArtifact`（媒体/导出类工具）
+2. **reported**：`Write` / `Edit` / `ApplyPatch` 等文件变更工具的 `file_path`（以及工具输出里的 `Created/Updated/Edited …` 回填）
+
+会话级列表 API 也会对历史 turn 做 span preview 回填，因此开发者模式开启后产生的 Write/Edit 脚本与文档会出现在 Session artifacts 中。
 
 ### UI
 

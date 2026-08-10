@@ -824,10 +824,12 @@
     "artifacts": "Artifacts",
     "turnArtifacts": "Turn artifacts",
     "sessionArtifacts": "Session artifacts",
-    "sessionArtifactsHint": "Metadata only · click to open turn",
-    "emptyArtifacts": "No verified artifacts for this conversation",
+    "sessionArtifactsHint": "Metadata only · includes Write/Edit files · click to open turn",
+    "emptyArtifacts": "No artifacts yet (Write/Edit files or verified media)",
     "artifactCount": "{{count}} artifacts",
-    "copyPath": "Copy path"
+    "copyPath": "Copy path",
+    "reported": "reported",
+    "receipt": "receipt"
   },
   "reasoningEffort": {
     "switchFailed": "Failed to update reasoning effort",

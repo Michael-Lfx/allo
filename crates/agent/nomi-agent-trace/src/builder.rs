@@ -159,6 +159,9 @@ impl TurnTraceBuilder {
     }
 
     /// Record a tool call start (`call_id` is the provider tool-call id).
+    ///
+    /// Idempotent for an already-open `call_id` (ACP emits many Running updates):
+    /// refreshes preview/name instead of opening a new span.
     pub fn note_tool_start(
         &mut self,
         call_id: impl Into<String>,
@@ -167,6 +170,20 @@ impl TurnTraceBuilder {
     ) -> String {
         let call_id = call_id.into();
         let name = name.into();
+
+        if let Some(existing) = self.tool_spans.get(&call_id).cloned() {
+            if let Some(&idx) = self.open_spans.get(&existing) {
+                let span = &mut self.trace.spans[idx];
+                span.name = name.clone();
+                span.attributes
+                    .insert("tool_name".into(), serde_json::Value::String(name));
+                if let Some(args) = args_preview {
+                    span.preview = Some(redact_preview(args));
+                }
+                return existing;
+            }
+        }
+
         let span_id = self.start_span(SpanKind::Tool, name.clone());
         self.tool_spans.insert(call_id.clone(), span_id.clone());
         self.trace.summary.tool_call_count =
@@ -408,6 +425,7 @@ mod tests {
             sha256: "abc".into(),
             call_id: Some("call_a".into()),
             tool_name: Some("generate_image".into()),
+            source: Some("receipt".into()),
         }];
         b.note_tool_end("call_a", SpanStatus::Ok, Some("ok"), &artifacts);
         let trace = b.finalize();
