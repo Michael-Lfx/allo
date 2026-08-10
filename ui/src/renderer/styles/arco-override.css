@@ -1069,22 +1069,3 @@ body[arco-theme='dark'] .arco-message-error {
 .knowledge-tree-node-grow {
   animation: knowledge-grow-flash 1.4s ease-out;
 }
-
-/* Knowledge tree rows stay easy to target while the document pane is loading. */
-.knowledge-doc-tree .arco-tree-node-title {
-  min-height: 30px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
-}
-
-.knowledge-doc-tree .arco-tree-node-title:hover {
-  background-color: var(--color-fill-2);
-}
-
-.knowledge-doc-tree .arco-tree-node-selected .arco-tree-node-title,
-.knowledge-doc-tree .arco-tree-node-selected .arco-tree-node-title:hover {
-  background-color: rgba(var(--primary-6), 0.12);
-  color: var(--color-text-1);
-  box-shadow: inset 2px 0 0 rgb(var(--primary-6));
-}

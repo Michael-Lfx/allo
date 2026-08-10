@@ -16,7 +16,7 @@
  */
 
 import classNames from 'classnames';
-import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { parseKnowledgeBaseId } from '@/common/types/ids';
 import { useTranslation } from 'react-i18next';
@@ -441,11 +441,6 @@ const KnowledgeDetailPage: React.FC = () => {
   const [selectedFolderPath, setSelectedFolderPath] = useState('');
   const [selectedTreeKey, setSelectedTreeKey] = useState<string | null>(null);
   const [fileSearch, setFileSearch] = useState('');
-  // Keep lazy tree requests idempotent. Arco calls `loadMore` again for an
-  // empty directory after it has been collapsed, which otherwise makes the
-  // folder feel slow on repeated clicks.
-  const treeLoadedPathsRef = useRef(new Set<string>());
-  const treeLoadingPathsRef = useRef(new Set<string>());
   const markdownFileInputRef = useRef<HTMLInputElement | null>(null);
   const markdownFolderInputRef = useRef<HTMLInputElement | null>(null);
   const uploadPickerKindRef = useRef<'files' | 'folder'>('files');
@@ -492,8 +487,6 @@ const KnowledgeDetailPage: React.FC = () => {
     setExpandedTreeKeys([]);
     setSelectedFolderPath('');
     setSelectedTreeKey(null);
-    treeLoadedPathsRef.current.clear();
-    treeLoadingPathsRef.current.clear();
   }, [id]);
 
   // Load file content
@@ -545,17 +538,8 @@ const KnowledgeDetailPage: React.FC = () => {
   const handleLoadTreeChildren = useCallback(
     async (node: IKnowledgeTreeEntry) => {
       if (!id || node.is_file || isTreeSearch) return;
-      const path = node.rel_path;
-      if (treeLoadedPathsRef.current.has(path) || treeLoadingPathsRef.current.has(path)) return;
-
-      treeLoadingPathsRef.current.add(path);
-      try {
-        const children = await ipcBridge.knowledge.listTree.invoke({ knowledge_base_id: id, path });
-        setTreeData((prev) => mergeKnowledgeTreeChildren(prev, path, children));
-        treeLoadedPathsRef.current.add(path);
-      } finally {
-        treeLoadingPathsRef.current.delete(path);
-      }
+      const children = await ipcBridge.knowledge.listTree.invoke({ knowledge_base_id: id, path: node.rel_path });
+      setTreeData((prev) => mergeKnowledgeTreeChildren(prev, node.rel_path, children));
     },
     [id, isTreeSearch]
   );
@@ -570,7 +554,6 @@ const KnowledgeDetailPage: React.FC = () => {
       for (const branchPath of branchesToReload) {
         const children = await ipcBridge.knowledge.listTree.invoke({ knowledge_base_id: id, path: branchPath });
         setTreeData((prev) => mergeKnowledgeTreeChildren(prev, branchPath, children));
-        treeLoadedPathsRef.current.add(branchPath);
       }
       if (branchesToReload.length > 0) {
         setExpandedTreeKeys((prev) => [...new Set([...prev, ...branchesToReload])]);
@@ -1126,7 +1109,6 @@ const KnowledgeDetailPage: React.FC = () => {
                     ) : (
                       <Tree
                         className='knowledge-doc-tree text-13px [&_.arco-tree-node]:w-full [&_.arco-tree-node-title-wrapper]:flex [&_.arco-tree-node-title-wrapper]:w-full [&_.arco-tree-node-title-wrapper]:min-w-0 [&_.arco-tree-node-title-wrapper]:items-center [&_.arco-tree-node-title]:min-w-0 [&_.arco-tree-node-title]:flex-1 [&_.arco-tree-node-title]:!pr-0'
-                        blockNode
                         showLine
                         actionOnClick={['select', 'expand']}
                         selectedKeys={selectedTreeKey ? [selectedTreeKey] : []}
@@ -1144,25 +1126,19 @@ const KnowledgeDetailPage: React.FC = () => {
                           if (!dataRef) return;
                           setSelectedTreeKey(dataRef.rel_path);
                           if (dataRef.is_file) {
-                            startTransition(() => {
-                              setSelectedPath(dataRef.rel_path);
-                              setSelectedFolderPath(parentDirOfKnowledgePath(dataRef.rel_path));
-                            });
+                            setSelectedPath(dataRef.rel_path);
+                            setSelectedFolderPath(parentDirOfKnowledgePath(dataRef.rel_path));
                           } else {
                             setSelectedFolderPath(dataRef.rel_path);
                           }
                         }}
-                        onExpand={(keys, extra) => {
-                          if (isTreeSearch) return;
-                          setExpandedTreeKeys(keys.map(String));
-                          if (!extra?.expanded) return;
-
-                          const dataRef = (extra.node as { props?: { dataRef?: IKnowledgeTreeEntry } } | undefined)?.props
-                            ?.dataRef;
-                          if (!dataRef || dataRef.is_file) return;
-                          // Expansion is controlled locally so the row responds
-                          // immediately; children arrive in the background.
-                          void handleLoadTreeChildren(dataRef).catch((e: unknown) => {
+                        onExpand={(keys) => {
+                          if (!isTreeSearch) setExpandedTreeKeys(keys.map(String));
+                        }}
+                        loadMore={(treeNode) => {
+                          const dataRef = (treeNode.props as { dataRef?: IKnowledgeTreeEntry }).dataRef;
+                          if (!dataRef || dataRef.is_file || isTreeSearch) return Promise.resolve();
+                          return handleLoadTreeChildren(dataRef).catch((e: unknown) => {
                             Message.error(String(e));
                           });
                         }}
