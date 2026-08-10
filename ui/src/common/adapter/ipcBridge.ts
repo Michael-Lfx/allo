@@ -408,6 +408,12 @@ const fromApiSendMessageResult = (result: ISendMessageResult): ISendMessageResul
   result_ok: result.result_ok ?? null,
   result_text: result.result_text ?? null,
   result_error: result.result_error ?? null,
+  ...(result.result_error_code !== undefined
+    ? { result_error_code: result.result_error_code ?? null }
+    : {}),
+  ...(result.result_error_retryable !== undefined
+    ? { result_error_retryable: result.result_error_retryable ?? null }
+    : {}),
 });
 
 const requireConversationIdempotencyKey = (value: unknown): string => {
@@ -568,6 +574,18 @@ export interface ISetSummonParams {
   memory_ids?: CompanionMemoryId[];
   skill_exclusions?: string[];
 }
+
+/**
+ * Deadline for the destructive edit-resubmit POST. Without it `httpRequest`
+ * never settles on a hung connection, leaving the barrier armed and the
+ * composer locked forever. 30s matches the KB-read convention; the rewind +
+ * truncate + insert itself is millisecond-scale, so this is pure headroom. On
+ * expiry the request aborts with `BackendRequestError kind:'timeout'` — the
+ * backend may STILL be executing (abort ≠ not-executed), so the renderer
+ * verifies against the authoritative DB before treating it as a failure.
+ */
+const EDIT_RESUBMIT_TIMEOUT_MS = 30_000;
+const EDIT_RESUBMIT_STATE_TIMEOUT_MS = 5_000;
 
 export const conversation = {
   create: withResponseMap(
@@ -739,9 +757,26 @@ export const conversation = {
         content: p.input,
         files: p.files,
         },
-        { idempotencyKey }
+        { idempotencyKey, timeoutMs: EDIT_RESUBMIT_TIMEOUT_MS }
       );
       return fromApiSendMessageResult(result);
+    },
+  },
+  editResubmitState: {
+    provider: () => {},
+    invoke: async (p: {
+      conversation_id: ConversationId;
+      msg_id: MessageId;
+      idempotency_key: string;
+    }): Promise<IEditResubmitObservation> => {
+      const idempotencyKey = requireConversationIdempotencyKey(p.idempotency_key);
+      const result = await httpRequest<IEditResubmitObservation>(
+        'GET',
+        `/api/conversations/${p.conversation_id}/messages/${p.msg_id}/edit-resubmit/state`,
+        undefined,
+        { idempotencyKey, timeoutMs: EDIT_RESUBMIT_STATE_TIMEOUT_MS }
+      );
+      return fromApiEditResubmitObservation(result);
     },
   },
   getSlashCommands: httpGet<
@@ -2892,7 +2927,124 @@ export interface ISendMessageResult {
   result_ok: boolean | null;
   result_text: string | null;
   result_error: string | null;
+  result_error_code?: string | null;
+  result_error_retryable?: boolean | null;
 }
+
+export type EditResubmitReceiptState = 'missing' | 'accepted' | 'completed';
+
+export interface IEditResubmitObservation {
+  receipt_state: EditResubmitReceiptState;
+  delivery: ISendMessageResult | null;
+  replacement_message_id: MessageId | null;
+  target_exists: boolean;
+  replacement_exists: boolean | null;
+  requires_reset: boolean;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const requireBoolean = (record: Record<string, unknown>, key: string): boolean => {
+  const value = record[key];
+  if (typeof value !== 'boolean') {
+    throw new TypeError(`Invalid edit/resubmit observation: ${key} must be boolean`);
+  }
+  return value;
+};
+
+export const decodeEditResubmitObservation = (result: unknown): IEditResubmitObservation => {
+  if (!isRecord(result)) {
+    throw new TypeError('Invalid edit/resubmit observation: expected object');
+  }
+  const receiptState = result.receipt_state;
+  if (receiptState !== 'missing' && receiptState !== 'accepted' && receiptState !== 'completed') {
+    throw new TypeError('Invalid edit/resubmit observation: unsupported receipt_state');
+  }
+  const targetExists = requireBoolean(result, 'target_exists');
+  const requiresReset = requireBoolean(result, 'requires_reset');
+
+  if (receiptState === 'missing') {
+    if (
+      result.delivery !== null ||
+      result.replacement_message_id !== null ||
+      result.replacement_exists !== null
+    ) {
+      throw new TypeError('Invalid edit/resubmit observation: missing receipt has candidate data');
+    }
+    return {
+      receipt_state: receiptState,
+      delivery: null,
+      replacement_message_id: null,
+      target_exists: targetExists,
+      replacement_exists: null,
+      requires_reset: requiresReset,
+    };
+  }
+
+  if (!isRecord(result.delivery) || typeof result.replacement_message_id !== 'string') {
+    throw new TypeError('Invalid edit/resubmit observation: receipt is missing delivery identity');
+  }
+  const rawDelivery = result.delivery;
+  if (
+    typeof rawDelivery.msg_id !== 'string' ||
+    typeof rawDelivery.replayed !== 'boolean' ||
+    typeof rawDelivery.completed !== 'boolean' ||
+    (rawDelivery.result_ok !== null && typeof rawDelivery.result_ok !== 'boolean') ||
+    (rawDelivery.result_text !== null && typeof rawDelivery.result_text !== 'string') ||
+    (rawDelivery.result_error !== null && typeof rawDelivery.result_error !== 'string') ||
+    (rawDelivery.result_error_code !== undefined &&
+      rawDelivery.result_error_code !== null &&
+      typeof rawDelivery.result_error_code !== 'string') ||
+    (rawDelivery.result_error_retryable !== undefined &&
+      rawDelivery.result_error_retryable !== null &&
+      typeof rawDelivery.result_error_retryable !== 'boolean')
+  ) {
+    throw new TypeError('Invalid edit/resubmit observation: malformed delivery');
+  }
+  const replacementExists = requireBoolean(result, 'replacement_exists');
+  const delivery = fromApiSendMessageResult(rawDelivery as unknown as ISendMessageResult);
+  const replacementMessageId = parseMessageId(result.replacement_message_id);
+  if (!delivery.replayed) {
+    throw new TypeError('Invalid edit/resubmit observation: delivery must be a durable replay');
+  }
+  if (delivery.msg_id !== replacementMessageId) {
+    throw new TypeError('Invalid edit/resubmit observation: candidate identities disagree');
+  }
+  if (delivery.completed !== (receiptState === 'completed')) {
+    throw new TypeError('Invalid edit/resubmit observation: delivery terminal state disagrees');
+  }
+  if (
+    receiptState === 'accepted' &&
+    (delivery.result_ok !== null ||
+      delivery.result_text !== null ||
+      delivery.result_error !== null ||
+      delivery.result_error_code != null ||
+      delivery.result_error_retryable != null)
+  ) {
+    throw new TypeError('Invalid edit/resubmit observation: accepted receipt has terminal result');
+  }
+  if (
+    receiptState === 'completed' &&
+    delivery.result_ok === true &&
+      (delivery.result_error !== null ||
+        delivery.result_error_code != null ||
+        delivery.result_error_retryable != null)
+  ) {
+    throw new TypeError('Invalid edit/resubmit observation: contradictory terminal result');
+  }
+
+  return {
+    receipt_state: receiptState,
+    delivery,
+    replacement_message_id: replacementMessageId,
+    target_exists: targetExists,
+    replacement_exists: replacementExists,
+    requires_reset: requiresReset,
+  };
+};
+
+const fromApiEditResubmitObservation = decodeEditResubmitObservation;
 
 export interface IConfirmMessageParams {
   confirm_key: string;

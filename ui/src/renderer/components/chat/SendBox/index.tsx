@@ -60,6 +60,29 @@ import ComposerSkillTokenInput, {
 import type { ComposerDraft } from '@/renderer/components/chat/composerDraft';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { getConversationInputHistory } from '@/renderer/utils/chat/messageHistory';
+import { uuid, uuidv7 } from '@/common/utils';
+import { resolveEditResubmitOutcome } from '@/renderer/components/chat/SendBox/editResubmitOutcome';
+import {
+  commitComposerDraftChange,
+  createComposerDraftRevisionState,
+  recordComposerDraftChange,
+  shouldCommitEditResubmitTerminal,
+} from '@/renderer/components/chat/SendBox/editResubmitLifecycle';
+import { createComposerStopHandoffGate } from '@/renderer/components/chat/SendBox/composerStopHandoffGate';
+import type {
+  EditResubmitLifecycleEvent,
+  EditResubmitResolution,
+} from '@/renderer/components/chat/SendBox/editResubmitTypes';
+import {
+  clearEditingMessage,
+  getEditingMessage,
+  setEditingMessage,
+  updateEditingMessage,
+} from '@/renderer/pages/conversation/Messages/editingMessageStore';
+import {
+  beginEditResubmitOperation,
+  getEditResubmitOperation,
+} from '@/renderer/pages/conversation/Messages/editResubmitOperationController';
 import { markRetrySucceeded } from '@/renderer/utils/analytics/productFunnel';
 import PinnedPlan from '@renderer/pages/conversation/Messages/components/PinnedPlan';
 import { derivePinnedPlan } from '@renderer/pages/conversation/Messages/components/pinnedPlanModel';
@@ -199,7 +222,13 @@ const SendBox: React.FC<{
   /** When provided (Nomi only), enables "edit a sent message" mode: the message text is
    *  recalled into the composer via the `sendbox.edit` event and submitting calls this
    *  instead of onSend, which truncates the conversation and re-runs from that message. */
-  onEditResubmit?: (msgId: MessageId, createdAt: number, message: string) => Promise<void>;
+  onEditResubmit?: (
+    msgId: MessageId,
+    createdAt: number,
+    message: string,
+    operationId: string,
+    onLifecycleEvent?: (event: EditResubmitLifecycleEvent) => void
+  ) => Promise<EditResubmitResolution>;
   /** Clear the agent's conversation context (release model context). When set, a `/clear` builtin appears. */
   onClearContext?: () => void | Promise<void>;
   disabled?: boolean;
@@ -328,6 +357,35 @@ const SendBox: React.FC<{
   const [editingMsgId, setEditingMsgId] = useState<MessageId | null>(null);
   const editingCreatedAtRef = useRef<number>(0);
   const editPrevDraftRef = useRef<string | null>(null);
+  // C3: 编辑态 store 的 owner 标识（本实例唯一、仅 owner 可清，双实例护栏）与
+  // 最新会话 id（事件监听器闭包可能捕获旧 conversationContext，写 store 前取 ref）。
+  // C3: owner identity in the editing store (unique per instance, only the owner
+  // may clear — dual-instance guard) plus the latest conversation id (event
+  // listener closures may capture a stale conversationContext; read the ref).
+  const editingOwnerIdRef = useRef<string | undefined>(undefined);
+  const conversationIdRef = useLatestRef(conversationContext?.conversation_id);
+  const editingOwnerId = (): string => {
+    if (editingOwnerIdRef.current === undefined) {
+      editingOwnerIdRef.current = uuid();
+    }
+    return editingOwnerIdRef.current;
+  };
+  // Edit-resubmit operation token: every UI side effect in the submit
+  // promise chain (.then/.catch/.finally) is gated on this so a stale
+  // operation can never clobber a newer one's input/edit/loading state.
+  const activeEditOperationRef = useRef<string | null>(null);
+  // Retry operation token (P1-1): the sendbox.retry path shares the composer
+  // with edit-resubmit, so it gets the same mutex treatment — admission,
+  // token-gated callbacks, and release in finally.
+  const activeRetryOperationRef = useRef<string | null>(null);
+  // Terminal delivery is authoritative and can also be repeated by the returned
+  // Promise. Commit it once per operation even if shared ownership was retired.
+  const committedTerminalOperationsRef = useRef<Set<string>>(new Set());
+  const stopHandoffGateRef = useRef(createComposerStopHandoffGate());
+  // Monotonic input revision (bumped on every `input` change) so the success
+  // callback can tell "user typed during the request" from "string happened to
+  // match" — only clear input when the user never touched it post-submit.
+  const inputRevisionStateRef = useRef(createComposerDraftRevisionState(input));
   const [caretPosition, setCaretPosition] = useState(0);
   const [workspaceMentionItems, setWorkspaceMentionItems] = useState<FileOrFolderItem[]>([]);
   const [workspaceMentionLoading, setWorkspaceMentionLoading] = useState(false);
@@ -357,6 +415,16 @@ const SendBox: React.FC<{
     'sendbox.edit',
     (payload) => {
       if (!onEditResubmit) return;
+      // P2-3: a resubmit already in flight owns the composer — a second edit
+      // request mid-flight would rewrite the input under a destructive request.
+      // isLoading covers the settled-render case; the ref covers same-tick.
+      if (
+        isLoading ||
+        activeEditOperationRef.current !== null ||
+        activeRetryOperationRef.current !== null
+      ) return;
+      const editConversationId = conversationIdRef.current;
+      if (editConversationId && getEditResubmitOperation(editConversationId)) return;
       editPrevDraftRef.current = latestInputRef.current;
       editingCreatedAtRef.current = payload.createdAt;
       setEditingMsgId(payload.msgId);
@@ -366,21 +434,132 @@ const SendBox: React.FC<{
       requestAnimationFrame(() => {
         tokenInputRef.current?.focusAtTextOffset(payload.content.length);
       });
+      // C3: 登记编辑中气泡（待提交，pending=false）。
+      // C3: register the bubble being edited (recalled, not yet submitted).
+      const cid = conversationIdRef.current;
+      if (cid) {
+        setEditingMessage(cid, {
+          ownerId: editingOwnerId(),
+          msgId: payload.msgId,
+          pending: false,
+          phase: 'editing',
+        });
+      }
     },
-    [onEditResubmit, onSkillChipsChange]
+    [onEditResubmit, onSkillChipsChange, isLoading]
   );
+
+  // C3: 卸载时清理本实例在编辑 store 中的登记（owner-guarded，双实例互不干扰）。
+  // C3: clear this instance's editing-store registration on unmount (owner-guarded;
+  // a sibling SendBox's registration is untouched).
+  useEffect(() => {
+    return () => {
+      const owner = editingOwnerIdRef.current;
+      const cid = conversationIdRef.current;
+      const state = cid ? getEditingMessage(cid) : undefined;
+      if (owner !== undefined && cid && (!state || state.phase === 'editing')) {
+        clearEditingMessage(cid, owner);
+      }
+    };
+  }, []);
 
   useAddEventListener(
     'sendbox.retry',
     (payload) => {
       if (disabled || loading || isLoading) return;
+      // P1-1: isLoading is React state and cannot block two retry events in the
+      // same render tick — the synchronously-updated ref is the real mutex.
+      if (activeRetryOperationRef.current !== null) return;
+      // Cross-entry: an edit resubmit in flight owns the composer.
+      if (activeEditOperationRef.current !== null) return;
       const content = payload.content?.trim();
       if (!content) return;
       void (async () => {
+        const retryOperationId = uuidv7();
+        const retryConversationId = conversationIdRef.current;
+        if (
+          retryConversationId && onEditResubmit && payload.msgId && payload.createdAt &&
+          !beginEditResubmitOperation({
+            conversationId: retryConversationId,
+            operationId: retryOperationId,
+            targetMessageId: payload.msgId,
+            targetCreatedAt: payload.createdAt,
+            originalContent: content,
+            attachmentPaths: [],
+            draftRevision: inputRevisionStateRef.current.current,
+            source: 'retry',
+            phase: 'submitting',
+          })
+        ) return;
+        activeRetryOperationRef.current = retryOperationId;
+        // Snapshot the input revision so a retry failure restores the retried
+        // text only when the user never touched the composer mid-flight — never
+        // overwriting new typing (same protection as the edit-resubmit path).
+        const submittedInputRevision = inputRevisionStateRef.current.current;
         setIsLoading(true);
         try {
           if (onEditResubmit && payload.msgId && payload.createdAt) {
-            await onEditResubmit(payload.msgId, payload.createdAt, content);
+            const commitRetryTerminalResolution = (
+              resolution: EditResubmitResolution,
+              authoritative: boolean
+            ): void => {
+              if (
+                !shouldCommitEditResubmitTerminal(
+                  activeRetryOperationRef.current,
+                  committedTerminalOperationsRef.current,
+                  retryOperationId,
+                  authoritative
+                )
+              ) return;
+              committedTerminalOperationsRef.current.add(retryOperationId);
+              const outcome = resolveEditResubmitOutcome({
+                isCurrentOperation: true,
+                revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
+                status: resolution.kind,
+                source: 'retry',
+              });
+              if (outcome.restoreSubmittedInput) setInput(content);
+              if (retryConversationId) {
+                clearEditingMessage(retryConversationId, editingOwnerId());
+              }
+            };
+            if (retryConversationId) {
+              setEditingMessage(retryConversationId, {
+                ownerId: editingOwnerId(),
+                msgId: payload.msgId,
+                pending: true,
+                phase: 'submitting',
+                operationId: retryOperationId,
+              });
+            }
+            const resolution = await onEditResubmit(
+              payload.msgId,
+              payload.createdAt,
+              content,
+              retryOperationId,
+              (event) => {
+                if (event.operationId !== retryOperationId) return;
+                if (event.kind === 'terminal') {
+                  commitRetryTerminalResolution(event.resolution, true);
+                  return;
+                }
+                if (activeRetryOperationRef.current !== event.operationId) return;
+                if (retryConversationId) {
+                  updateEditingMessage(retryConversationId, editingOwnerId(), {
+                    pending: true,
+                    phase: event.phase,
+                    operationId: retryOperationId,
+                    continueConfirmation: event.continueConfirmation,
+                  });
+                }
+              }
+            );
+            commitRetryTerminalResolution(resolution, false);
+            if (resolution.kind !== 'success') {
+              throw resolution.error instanceof Error
+                ? resolution.error
+                : new Error('edit-resubmit delivery failed after transcript mutation');
+            }
           } else {
             setInputRef.current(content);
             await onSend(content);
@@ -389,14 +568,41 @@ const SendBox: React.FC<{
             conversation_type: conversationContext?.type,
           });
         } catch {
-          setInput(content);
+          // Restore the retried text only when THIS retry is still the current
+          // operation AND the user never touched the composer mid-flight.
+          if (
+            !committedTerminalOperationsRef.current.has(retryOperationId) &&
+            activeRetryOperationRef.current === retryOperationId &&
+            inputRevisionStateRef.current.current === submittedInputRevision
+          ) {
+            setInput(content);
+          }
         } finally {
-          setIsLoading(false);
+          if (activeRetryOperationRef.current === retryOperationId) {
+            activeRetryOperationRef.current = null;
+            setIsLoading(false);
+          }
         }
       })();
     },
     [conversationContext?.type, disabled, loading, isLoading, onEditResubmit, onSend]
   );
+
+  // Observe parent-driven draft changes. User typing advances this same state
+  // synchronously in handleTokenInputChange, before a deferred terminal can
+  // race the controlled React render/effect cycle.
+  useEffect(() => {
+    recordComposerDraftChange(inputRevisionStateRef.current, input);
+  }, [input]);
+
+  // Invalidate any in-flight edit-resubmit operation on unmount so its late
+  // callbacks cannot touch state (the token check makes them no-ops).
+  useEffect(() => {
+    return () => {
+      activeEditOperationRef.current = null;
+      activeRetryOperationRef.current = null;
+    };
+  }, []);
 
   // 集成预览面板的"添加到聊天"功能 / Integrate preview panel's "Add to chat" functionality
   const { setSendBoxHandler, domSnippets, removeDomSnippet, clearDomSnippets } = usePreviewContext();
@@ -887,7 +1093,7 @@ const SendBox: React.FC<{
     if (conversationExport.isOpen && value) {
       conversationExport.closeExportFlow();
     }
-    setInput(value);
+    commitComposerDraftChange(inputRevisionStateRef.current, value, setInput);
   };
 
   const handleOverlayKeyDown = (event: React.KeyboardEvent) => {
@@ -1459,10 +1665,18 @@ const SendBox: React.FC<{
   };
 
   const cancelEdit = () => {
+    // A submit is already in flight — its promise chain owns the edit state
+    // until the backend accepts/rejects; canceling mid-flight would strand
+    // isLoading. Ignore the cancel click while a resubmit is pending.
+    if (isLoading) return;
     setEditingMsgId(null);
     const prev = editPrevDraftRef.current ?? '';
     editPrevDraftRef.current = null;
     setInput(prev);
+    // C3: 取消编辑 → 清除编辑中徽章（仅 owner 匹配才生效）。
+    // C3: cancel edit → clear the editing badge (owner-guarded).
+    const cid = conversationIdRef.current;
+    if (cid) clearEditingMessage(cid, editingOwnerId());
   };
 
   const submitGoalObjective = (objective: string) => {
@@ -1488,26 +1702,154 @@ const SendBox: React.FC<{
 
   const sendMessageHandler = () => {
     if (isUploading || isStopping) return;
+    const controllerConversationId = conversationIdRef.current;
+    if (
+      controllerConversationId &&
+      getEditResubmitOperation(controllerConversationId) &&
+      activeEditOperationRef.current === null &&
+      activeRetryOperationRef.current === null
+    ) {
+      return;
+    }
     // 编辑模式：提交走截断重跑而非普通发送。
     if (editingMsgId && onEditResubmit) {
       if (isLoading || !input.trim()) return;
+      // P0-2: isLoading is React state and cannot block two submits inside the
+      // same render tick — the synchronously-updated operation ref is the real
+      // mutex. A resubmit already in flight rejects the second one outright, so
+      // only one destructive truncate request is ever sent.
+      if (activeEditOperationRef.current !== null) return;
+      // Cross-entry: a retry in flight owns the composer.
+      if (activeRetryOperationRef.current !== null) return;
       const finalMessage = input;
       const targetId = editingMsgId;
       const targetCreatedAt = editingCreatedAtRef.current;
-      const previousDraft = editPrevDraftRef.current ?? '';
-      setEditingMsgId(null);
-      editPrevDraftRef.current = null;
-      setInput('');
+      const cid = conversationIdRef.current;
+      // Stamp this resubmit with an operation token and snapshot the input
+      // revision. Edit state + input are cleared ONLY after backend acceptance
+      // (the .then below); a stale operation or a user who typed mid-flight must
+      // not have its input/edit/loading state touched.
+      const operationId = uuidv7();
+      if (
+        cid &&
+        !beginEditResubmitOperation({
+          conversationId: cid,
+          operationId,
+          targetMessageId: targetId,
+          targetCreatedAt,
+          originalContent: finalMessage,
+          attachmentPaths: [],
+          draftRevision: inputRevisionStateRef.current.current,
+          source: 'edit',
+          phase: 'submitting',
+        })
+      ) return;
+      activeEditOperationRef.current = operationId;
+      // A double-click can land its second click on the Stop button that
+      // replaces Send after this synchronous admission. Keep that click from
+      // cancelling the preparation lease of the operation it just created.
+      stopHandoffGateRef.current.armAfterEditSubmit();
+      const submittedInputRevision = inputRevisionStateRef.current.current;
+      const isCurrentOperation = () => activeEditOperationRef.current === operationId;
+      const ownerId = editingOwnerId();
+      const commitTerminalResolution = (
+        resolution: EditResubmitResolution,
+        authoritative: boolean
+      ): void => {
+        if (
+          !shouldCommitEditResubmitTerminal(
+            activeEditOperationRef.current,
+            committedTerminalOperationsRef.current,
+            operationId,
+            authoritative
+          )
+        ) return;
+        committedTerminalOperationsRef.current.add(operationId);
+        const outcome = resolveEditResubmitOutcome({
+          isCurrentOperation: true,
+          revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
+          status: resolution.kind,
+        });
+        if (outcome.clearInput) setInput('');
+        if (outcome.exitEditMode) {
+          setEditingMsgId(null);
+          editPrevDraftRef.current = null;
+        }
+        if (cid) clearEditingMessage(cid, ownerId);
+      };
       setIsLoading(true);
-      onEditResubmit(targetId, targetCreatedAt, finalMessage)
+      // C3: 重发在飞 → 徽章转「重发中」（仅 owner 匹配生效）。
+      // C3: resubmit in flight → badge flips to "resubmitting" (owner-guarded).
+      if (cid) {
+        updateEditingMessage(cid, ownerId, {
+          pending: true,
+          phase: 'submitting',
+          operationId,
+          continueConfirmation: undefined,
+        });
+      }
+      onEditResubmit(
+        targetId,
+        targetCreatedAt,
+        finalMessage,
+        operationId,
+        (event) => {
+          if (event.operationId !== operationId) return;
+          if (event.kind === 'terminal') {
+            commitTerminalResolution(event.resolution, true);
+            return;
+          }
+          if (!isCurrentOperation()) return;
+          if (cid) {
+            updateEditingMessage(cid, ownerId, {
+              pending: true,
+              phase: event.phase,
+              operationId,
+              continueConfirmation: event.continueConfirmation,
+            });
+          }
+        }
+      )
+        .then((resolution) => {
+          // The lifecycle terminal event is the primary synchronous commit.
+          // The Promise result is an idempotent fallback for non-Nomi callers.
+          commitTerminalResolution(resolution, false);
+        })
         .catch(() => {
-          setInput(finalMessage);
-          editPrevDraftRef.current = previousDraft;
-          setEditingMsgId(targetId);
-          editingCreatedAtRef.current = targetCreatedAt;
+          // Backend rejected: stay in edit mode so the user can adjust and retry.
+          // Restore the submitted text only if the user didn't change it mid-flight.
+          // Lifecycle detach / requires-reset keeps the durable controller
+          // record: do not downgrade that confirming operation to a fresh edit.
+          if (cid && getEditResubmitOperation(cid)?.operationId === operationId) return;
+          const outcome = resolveEditResubmitOutcome({
+            isCurrentOperation: isCurrentOperation(),
+            revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
+            status: 'safe_failure',
+            source: 'edit',
+          });
+          if (outcome.stale) return;
+          if (outcome.restoreSubmittedInput) setInput(finalMessage);
+          // C3: 失败后仍处编辑态，徽章回落为「编辑中」。
+          // C3: still editing after a failure — badge drops back to "editing".
+          if (cid) {
+            updateEditingMessage(cid, ownerId, {
+              pending: false,
+              phase: 'editing',
+              continueConfirmation: undefined,
+            });
+          }
         })
         .finally(() => {
-          setIsLoading(false);
+          // Lowering isLoading depends only on the operation token, not the
+          // outcome status — a stale operation's promise must not toggle it.
+          // Releasing the ref here is what unlocks the admission mutex above:
+          // without it every later submit would be rejected forever. .then and
+          // .catch run before .finally in the same chain, so their
+          // isCurrentOperation() reads still see the token.
+          if (isCurrentOperation()) {
+            activeEditOperationRef.current = null;
+            setIsLoading(false);
+          }
         });
       return;
     }
@@ -1654,8 +1996,12 @@ const SendBox: React.FC<{
       });
   };
 
-  const stopHandler = async () => {
-    if (!onStop || isStoppingRef.current) return;
+  const stopHandler = async (clickDetail: number) => {
+    if (
+      !onStop ||
+      isStoppingRef.current ||
+      stopHandoffGateRef.current.shouldIgnoreStop(clickDetail)
+    ) return;
     isStoppingRef.current = true;
     setIsStopping(true);
     try {

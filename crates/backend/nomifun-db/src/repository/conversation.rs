@@ -109,6 +109,18 @@ pub struct ConversationDeliveryReceiptClaim {
     pub claimed_new: bool,
 }
 
+/// One consistent read of every durable fact used to recover an
+/// edit/resubmit operation. Implementations must obtain these fields from one
+/// database snapshot so callers can never combine a pre-mutation target with
+/// a post-mutation receipt.
+#[derive(Debug, Clone)]
+pub struct EditResubmitStateSnapshot {
+    pub receipt: Option<ConversationDeliveryReceiptRow>,
+    pub target_exists: bool,
+    pub replacement_exists: Option<bool>,
+    pub accepted_edit_fence_exists: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationTurnAdmissionState {
     pub epoch: i64,
@@ -651,6 +663,19 @@ pub trait IConversationRepository: Send + Sync {
         Ok(None)
     }
 
+    async fn get_edit_resubmit_state_snapshot(
+        &self,
+        _user_id: &str,
+        _conversation_id: &str,
+        _operation_id: &str,
+        _target_message_id: &str,
+        _operation_id_prefix: &str,
+    ) -> Result<EditResubmitStateSnapshot, DbError> {
+        Err(DbError::Init(
+            "conversation repository cannot atomically observe edit/resubmit state".to_owned(),
+        ))
+    }
+
     async fn has_accepted_delivery_receipt_operation_prefix(
         &self,
         _user_id: &str,
@@ -939,6 +964,15 @@ pub trait IConversationRepository: Send + Sync {
     ) -> Result<Option<MessageRow>, DbError> {
         Ok(None)
     }
+
+    /// Returns the latest user-authored text message using the same stable
+    /// ordering as edit/resubmit admission. This is intentionally unbounded by
+    /// a history window: an older target must not be mistaken for the latest
+    /// user message merely because the conversation is long.
+    async fn get_latest_user_text_message(
+        &self,
+        _conversation_id: &str,
+    ) -> Result<Option<MessageRow>, DbError>;
 
     /// Inserts a new message row.
     async fn insert_message(&self, message: &MessageRow) -> Result<(), DbError>;

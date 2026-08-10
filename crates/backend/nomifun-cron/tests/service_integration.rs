@@ -250,6 +250,12 @@ impl StubConvRepo {
 
 #[async_trait::async_trait]
 impl IConversationRepository for StubConvRepo {
+    async fn get_latest_user_text_message(
+        &self,
+        _conversation_id: &str,
+    ) -> Result<Option<nomifun_db::models::MessageRow>, nomifun_db::DbError> {
+        Ok(None)
+    }
     async fn get(
         &self,
         id: &str,

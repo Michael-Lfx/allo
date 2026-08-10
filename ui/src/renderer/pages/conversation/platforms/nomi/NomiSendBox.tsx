@@ -3,6 +3,8 @@
 import { conversationTarget, type ConversationId, type MessageId, parseMessageId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
+import type { IEditResubmitObservation, ISendMessageResult } from '@/common/adapter/ipcBridge';
+import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { uuid, uuidv7 } from '@/common/utils';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
@@ -27,12 +29,30 @@ import { useSlashCommands } from '@/renderer/hooks/chat/useSlashCommands';
 import { useOpenFileSelector } from '@/renderer/hooks/file/useOpenFileSelector';
 import { useLatestRef } from '@/renderer/hooks/ui/useLatestRef';
 import {
-  snapshotEditSuffixLocalIds,
   useAddOrUpdateMessage,
   useMessageList,
   useRemoveMessageByMsgId,
-  useRemoveMessagesByLocalIds,
+  useUpdateMessageList,
 } from '@/renderer/pages/conversation/Messages/hooks';
+import {
+  armBarrier,
+  beginEditResubmitReconciliation,
+  captureBarrier,
+  captureReconciliationSnapshot,
+  commitAuthoritativeConversationReset,
+  hasEditResubmitBarrier,
+  purgeRowsBySnapshot,
+  revokeBarrier,
+} from '@/renderer/pages/conversation/Messages/conversationMessageCoordinator';
+import {
+  beginEditResubmitOperation,
+  claimEditResubmitRunner,
+  getEditResubmitOperation,
+  releaseEditResubmitOperation,
+  releaseEditResubmitRunner,
+  subscribeRecoverableEditResubmitOperation,
+  updateEditResubmitOperation,
+} from '@/renderer/pages/conversation/Messages/editResubmitOperationController';
 import { savePreferredMode } from '@/renderer/pages/guid/hooks/agentSelectionUtils';
 import {
   shouldEnqueueConversationCommand,
@@ -66,14 +86,30 @@ import { allSupportedExts, imageExts } from '@/renderer/services/FileService';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { guidTransitionMark } from '@/renderer/pages/guid/hooks/guidTransitionTiming';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
-import { buildDisplayMessage, collectSelectedFiles } from '@/renderer/utils/file/messageFiles';
+import { buildDisplayMessage, collectSelectedFiles, removeSubmittedAttachments } from '@/renderer/utils/file/messageFiles';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
+import {
+  clearEditingMessageByOperation,
+  returnEditingMessageToDraftByOperation,
+  updateEditingMessageByOperation,
+} from '@/renderer/pages/conversation/Messages/editingMessageStore';
+import type {
+  EditResubmitLifecycleEvent,
+  EditResubmitResolution,
+} from '@/renderer/components/chat/SendBox/editResubmitTypes';
+import { commitEditResubmitTerminal } from '@/renderer/components/chat/SendBox/editResubmitLifecycle';
+import {
+  resolveEditResubmitRecovery,
+  shouldReplayEditResubmit,
+  type EditResubmitRequestOutcome,
+} from './editResubmitRecovery';
 import { Alert, Button, Message, Tag } from '@arco-design/web-react';
 import { Brain, Shield } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { NomiMessageRuntime } from './useNomiMessage';
 import NomiModelSelector from './NomiModelSelector';
+import { runConversationResetSingleFlight } from './resetSingleFlight';
 import { ContextUsageRing } from './ContextUsageRing';
 import type { NomiModelSelection } from './useNomiModelSelection';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
@@ -88,11 +124,22 @@ const useNomiSendBoxDraft = getSendBoxDraftHook('nomi', {
   _type: 'nomi',
   atPath: [],
   content: '',
+  contentRevision: 0,
   uploadFile: [],
 });
 
 const EMPTY_AT_PATH: Array<string | FileOrFolderItem> = [];
 const EMPTY_UPLOAD_FILES: string[] = [];
+const EDIT_RESUBMIT_CONFIRMATION_DELAYS_MS = [0, 100, 250, 500, 1_000, 2_000, 4_000, 8_000, 15_000] as const;
+
+const classifyEditResubmitError = (
+  error: unknown
+): Exclude<EditResubmitRequestOutcome, 'accepted'> =>
+  isBackendHttpError(error) ? 'server_rejected' : 'transport_ambiguous';
+
+const EDIT_RESUBMIT_LIFECYCLE_ABORT = new Error(
+  'edit-resubmit confirmation stopped because the conversation view was unmounted'
+);
 
 const useSendBoxDraft = (conversation_id: ConversationId) => {
   const { data, mutate } = useNomiSendBoxDraft(conversation_id);
@@ -100,6 +147,7 @@ const useSendBoxDraft = (conversation_id: ConversationId) => {
   const atPath = data?.atPath ?? EMPTY_AT_PATH;
   const uploadFile = data?.uploadFile ?? EMPTY_UPLOAD_FILES;
   const content = data?.content ?? '';
+  const contentRevision = data?.contentRevision ?? 0;
 
   const setAtPath = useCallback(
     (nextAtPath: Array<string | FileOrFolderItem>) => {
@@ -112,7 +160,11 @@ const useSendBoxDraft = (conversation_id: ConversationId) => {
 
   const setContent = useCallback(
     (nextContent: string) => {
-      mutate((prev) => ({ ...prev, content: nextContent }));
+      mutate((prev) => ({
+        ...prev,
+        content: nextContent,
+        contentRevision: (prev.contentRevision ?? 0) + 1,
+      }));
     },
     [data, mutate]
   );
@@ -123,6 +175,7 @@ const useSendBoxDraft = (conversation_id: ConversationId) => {
     setAtPath,
     setUploadFile,
     content,
+    contentRevision,
     setContent,
   };
 };
@@ -158,6 +211,35 @@ const NomiSendBox: React.FC<{
   );
   const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
   const [goalModeArmed, setGoalModeArmed] = useState(false);
+  const [requiresConversationReset, setRequiresConversationReset] = useState(false);
+  const [isResettingConversation, setIsResettingConversation] = useState(false);
+  const resetInFlightRef = useRef<Promise<void> | null>(null);
+  const mountedRef = useRef(false);
+  const lifecycleGenerationRef = useRef(0);
+  const confirmationWaitRef = useRef<(() => void) | null>(null);
+  const editRunnerOwnerIdRef = useRef(uuid());
+
+  useEffect(() => {
+    const generation = lifecycleGenerationRef.current + 1;
+    lifecycleGenerationRef.current = generation;
+    resetInFlightRef.current = null;
+    mountedRef.current = true;
+    setRequiresConversationReset(false);
+    return () => {
+      mountedRef.current = false;
+      confirmationWaitRef.current?.();
+      confirmationWaitRef.current = null;
+      const operation = getEditResubmitOperation(conversation_id);
+      if (operation) {
+        releaseEditResubmitRunner(
+          conversation_id,
+          operation.operationId,
+          editRunnerOwnerIdRef.current
+        );
+      }
+    };
+  }, [conversation_id]);
+
   const layout = useLayoutContext();
   const isMobile = Boolean(layout?.isMobile);
   const conversationContext = useConversationContextSafe();
@@ -238,7 +320,8 @@ const NomiSendBox: React.FC<{
     tokenUsage.context_window > 0 &&
     typeof tokenUsage?.context_tokens === 'number';
 
-  const { atPath, uploadFile, setAtPath, setUploadFile, content, setContent } = useSendBoxDraft(conversation_id);
+  const { atPath, uploadFile, setAtPath, setUploadFile, content, contentRevision, setContent } = useSendBoxDraft(conversation_id);
+  const contentRevisionRef = useLatestRef(contentRevision);
   const { skills: skillChips, setSkills: setSkillChips } = useComposerSkillChips();
 
   const handleContentChange = useCallback(
@@ -284,9 +367,10 @@ const NomiSendBox: React.FC<{
   const removeMessageByMsgId = useRemoveMessageByMsgId();
   const messageList = useMessageList();
   const messageListRef = useLatestRef(messageList);
-  const removeMessagesByLocalIds = useRemoveMessagesByLocalIds();
+  const updateMessageList = useUpdateMessageList();
   const { setSendBoxHandler } = usePreviewContext();
   const [isStopping, setIsStopping] = useState(false);
+  const [editTargetChangedNotice, setEditTargetChangedNotice] = useState(false);
   const showStrongBusy =
     (running || presentation.phase === 'local_pending' || presentation.phase === 'accepted') &&
     presentation.showStop !== false &&
@@ -300,6 +384,7 @@ const NomiSendBox: React.FC<{
 
   useEffect(() => {
     setIsStopping(false);
+    setEditTargetChangedNotice(false);
   }, [conversation_id]);
 
   useEffect(() => {
@@ -651,37 +736,172 @@ const NomiSendBox: React.FC<{
     [atPath, clearFiles, executeCommand, hasPendingCommands, isBusy, t, uploadFile]
   );
 
-  // 编辑最近一条用户消息并截断重跑。请求成功前保留旧消息和附件；成功后只移除
-  // 请求发出时捕获的旧本地行，避免误删 HTTP 返回前已到达的 replacement stream。
+  // 编辑最近一条用户消息并截断重跑。每一个结果都先经过后端 receipt +
+  // 精确消息身份观察，再决定是否 reconciliation；窗口分页和 HTTP 错误本身
+  // 都不能证明 destructive transcript 是否已经发生。
   const handleEditResubmit = useCallback(
-    async (msgId: MessageId, createdAt: number, message: string) => {
-      const filesToSend = collectSelectedFiles(uploadFile, atPath);
+    async (
+      msgId: MessageId,
+      createdAt: number,
+      message: string,
+      requestedOperationId: string,
+      onLifecycleEvent?: (event: EditResubmitLifecycleEvent) => void
+    ): Promise<EditResubmitResolution> => {
+      setEditTargetChangedNotice(false);
+      if (requiresConversationReset) {
+        Message.error(t('conversation.editMessage.resetRequired'));
+        throw new Error('conversation reset is required');
+      }
+      const operationId = requestedOperationId;
+      const existingOperation = getEditResubmitOperation(conversation_id);
+      if (existingOperation && existingOperation.operationId !== operationId) {
+        throw new Error('another edit-resubmit operation already owns this conversation');
+      }
+      const filesToSend = existingOperation?.backendInput
+        ? [...existingOperation.attachmentPaths]
+        : collectSelectedFiles(uploadFile, atPath);
       maybeWarnNonVisionModel(filesToSend);
-      const oldSuffixLocalIds = snapshotEditSuffixLocalIds(
-        messageListRef.current,
-        msgId,
-        createdAt
-      );
-      setWaitingResponse(true);
-      const displayMessage = buildDisplayMessage(message, filesToSend, workspacePath);
-      try {
-        const res = await ipcBridge.conversation.editResubmit.invoke({
-          conversation_id,
-          msg_id: msgId,
-          input: displayMessage,
-          files: filesToSend,
-          idempotency_key: uuidv7(),
+      const submittedAttachmentIds = new Set(filesToSend);
+      // SendBox mints this once per logical user operation; keep the same value
+      // for coordinator ownership and the backend receipt namespace.
+      const displayMessage = existingOperation?.backendInput
+        ?? buildDisplayMessage(message, filesToSend, workspacePath);
+      if (!existingOperation) {
+        const admitted = beginEditResubmitOperation({
+          conversationId: conversation_id,
+          operationId,
+          targetMessageId: msgId,
+          targetCreatedAt: createdAt,
+          originalContent: message,
+          backendInput: displayMessage,
+          attachmentPaths: filesToSend,
+          draftRevision: contentRevision,
+          source: 'edit',
+          phase: 'submitting',
         });
-        removeMessagesByLocalIds(oldSuffixLocalIds);
-        clearFiles();
-        emitter.emit('nomi.selected.file.clear');
-        const disposition = classifyPublicMessageDelivery(res);
-        if (disposition === 'fresh') {
+        if (!admitted) throw new Error('edit-resubmit admission was lost');
+      } else {
+        updateEditResubmitOperation(conversation_id, operationId, {
+          backendInput: displayMessage,
+          attachmentPaths: filesToSend,
+          draftRevision: existingOperation.backendInput
+            ? existingOperation.draftRevision
+            : contentRevision,
+        });
+      }
+      if (
+        !claimEditResubmitRunner(
+          conversation_id,
+          operationId,
+          editRunnerOwnerIdRef.current
+        )
+      ) {
+        throw new Error('edit-resubmit operation already has a live renderer owner');
+      }
+      const resumeConfirmation = existingOperation?.phase === 'confirming';
+      const lifecycleGeneration = lifecycleGenerationRef.current;
+      const isOperationLive = (): boolean =>
+        mountedRef.current && lifecycleGenerationRef.current === lifecycleGeneration;
+      const ensureOperationLive = (): void => {
+        if (!isOperationLive()) throw EDIT_RESUBMIT_LIFECYCLE_ABORT;
+      };
+      const finishTerminal = (
+        resolution: EditResubmitResolution,
+        afterPublish?: (published: boolean) => void
+      ): EditResubmitResolution =>
+        commitEditResubmitTerminal({
+          event: { kind: 'terminal', operationId, resolution },
+          publish: onLifecycleEvent,
+          onPublishError: (error) => {
+            console.error('[edit-resubmit] terminal lifecycle callback failed', error);
+          },
+          afterPublish,
+          clearSharedState: () => clearEditingMessageByOperation(conversation_id, operationId),
+          releaseOperation: () => releaseEditResubmitOperation(conversation_id, operationId),
+        });
+      if (!hasEditResubmitBarrier(conversation_id, operationId)) {
+        const capture = captureBarrier(messageListRef.current, msgId, createdAt);
+        if (!capture) {
+          releaseEditResubmitOperation(conversation_id, operationId);
+          Message.error(t('conversation.editMessage.failed'));
+          throw new Error('edit-resubmit target message not found');
+        }
+        armBarrier(conversation_id, operationId, capture);
+      }
+      setWaitingResponse(true);
+      let initialDelivery: ISendMessageResult | null = null;
+      let requestOutcome: EditResubmitRequestOutcome =
+        existingOperation?.requestOutcome ?? 'accepted';
+      let requestError: unknown = null;
+      let forceConfirmation = false;
+      let wakeConfirmation: (() => void) | null = null;
+      const continueConfirmation = (): void => {
+        if (!isOperationLive()) return;
+        forceConfirmation = true;
+        wakeConfirmation?.();
+      };
+      if (!resumeConfirmation) {
+        try {
+          initialDelivery = await ipcBridge.conversation.editResubmit.invoke({
+            conversation_id,
+            msg_id: msgId,
+            input: displayMessage,
+            files: filesToSend,
+            idempotency_key: operationId,
+          });
+        } catch (error) {
+          requestError = error;
+          requestOutcome = classifyEditResubmitError(error);
+        }
+      }
+      // The POST may resolve after the conversation switched or the composer
+      // unmounted. Never publish a stale phase or start another IPC operation.
+      ensureOperationLive();
+      onLifecycleEvent?.({
+        kind: 'phase',
+        operationId,
+        phase: 'confirming',
+        continueConfirmation,
+      });
+      updateEditingMessageByOperation(conversation_id, operationId, {
+        pending: true,
+        phase: 'confirming',
+        continueConfirmation,
+      });
+      updateEditResubmitOperation(conversation_id, operationId, {
+        phase: 'confirming',
+        requestOutcome,
+      });
+
+      let reconciled = false;
+      let submittedAttachmentsCleaned = false;
+      const clearSubmittedDraftAttachments = (): void => {
+        ensureOperationLive();
+        if (submittedAttachmentsCleaned) return;
+        submittedAttachmentsCleaned = true;
+        setUploadFile((prev) => removeSubmittedAttachments(prev, submittedAttachmentIds));
+        const currentAtPath = atPathRef.current;
+        const remainingAtPath = removeSubmittedAttachments(currentAtPath, submittedAttachmentIds);
+        if (remainingAtPath.length !== currentAtPath.length) {
+          setAtPath(remainingAtPath);
+        }
+        if (filesToSend.length > 0) emitter.emit('nomi.workspace.refresh');
+      };
+      const reconcileConfirmedEditMutation = (delivery: ISendMessageResult | null): void => {
+        ensureOperationLive();
+        if (reconciled) return;
+        const reconciledEpoch = beginEditResubmitReconciliation(conversation_id, operationId);
+        if (reconciledEpoch === undefined) {
+          throw new Error('edit-resubmit reconciliation barrier missing');
+        }
+        reconciled = true;
+        const reconciliationSnapshot = captureReconciliationSnapshot(conversation_id);
+        updateMessageList((list) => purgeRowsBySnapshot(list, reconciliationSnapshot));
+        if (delivery && classifyPublicMessageDelivery(delivery) === 'fresh') {
           markTurnAccepted();
-          // 乐观插入新用户气泡（compose 模式按 msg_id 去重，避免 DB 行重复）。
           addOrUpdateMessage({
             id: uuid(),
-            msg_id: res.msg_id,
+            msg_id: delivery.msg_id,
             type: 'text',
             position: 'right',
             conversation_id,
@@ -690,17 +910,188 @@ const NomiSendBox: React.FC<{
             },
             created_at: Date.now(),
           });
-          setActiveMsgId(res.msg_id);
+          setActiveMsgId(delivery.msg_id);
         } else {
           setActiveMsgId(null);
-          reconcilePublicDeliveryReplay(res.completed);
+          if (delivery) reconcilePublicDeliveryReplay(delivery.completed);
         }
         emitter.emit('chat.history.refresh');
-        if (filesToSend.length > 0) emitter.emit('nomi.workspace.refresh');
-      } catch (error) {
-        setWaitingResponse(false);
-        Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
-        throw error;
+        emitter.emit('conversation.messages.refresh', {
+          conversationId: conversation_id,
+          reason: 'edit-resubmit-reconcile',
+        });
+      };
+
+      // A response/observation can remain accepted while the owner is still
+      // preparing the replacement. Keep the same key and wait until an
+      // authoritative terminal classification exists; no new destructive edit
+      // is allowed during this loop.
+      let attempt = 0;
+      let replayedMissingReceiptThisCycle = false;
+      for (;;) {
+        ensureOperationLive();
+        if (attempt >= EDIT_RESUBMIT_CONFIRMATION_DELAYS_MS.length) {
+          await new Promise<void>((resolve) => {
+            wakeConfirmation = () => {
+              wakeConfirmation = null;
+              confirmationWaitRef.current = null;
+              resolve();
+            };
+            confirmationWaitRef.current = wakeConfirmation;
+          });
+          ensureOperationLive();
+          forceConfirmation = false;
+          attempt = 0;
+          replayedMissingReceiptThisCycle = false;
+        }
+        const delay = EDIT_RESUBMIT_CONFIRMATION_DELAYS_MS[
+          attempt
+        ];
+        if (delay > 0 && !forceConfirmation) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(() => {
+              wakeConfirmation = null;
+              confirmationWaitRef.current = null;
+              resolve();
+            }, delay);
+            wakeConfirmation = () => {
+              clearTimeout(timer);
+              wakeConfirmation = null;
+              confirmationWaitRef.current = null;
+              resolve();
+            };
+            confirmationWaitRef.current = wakeConfirmation;
+          });
+        }
+        forceConfirmation = false;
+        ensureOperationLive();
+
+        let observation: IEditResubmitObservation;
+        try {
+          observation = await ipcBridge.conversation.editResubmitState.invoke({
+            conversation_id,
+            msg_id: msgId,
+            idempotency_key: operationId,
+          });
+        } catch {
+          ensureOperationLive();
+          attempt += 1;
+          continue;
+        }
+        ensureOperationLive();
+
+        const recovery = resolveEditResubmitRecovery({ observation, requestOutcome });
+        updateEditResubmitOperation(conversation_id, operationId, {
+          lastObservation: observation,
+          requestOutcome,
+        });
+
+        if (recovery.kind === 'requires_reset') {
+          // The exact target absence still proves a mutation happened. Reconcile
+          // that local snapshot before stopping; reset itself remains explicit.
+          if (!observation.target_exists) {
+            try {
+              reconcileConfirmedEditMutation(initialDelivery ?? observation.delivery);
+            } catch (error) {
+              ensureOperationLive();
+              setWaitingResponse(false);
+              Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+              return finishTerminal({ kind: 'post_mutation_failure', error });
+            }
+          }
+          ensureOperationLive();
+          setRequiresConversationReset(true);
+          setWaitingResponse(false);
+          Message.error(t('conversation.editMessage.resetRequired'));
+          throw new Error('edit-resubmit requires an explicit Conversation reset');
+        }
+
+        if (
+          recovery.kind === 'transcript_truncated' ||
+          recovery.kind === 'success' ||
+          recovery.kind === 'post_mutation_failure'
+        ) {
+          try {
+            reconcileConfirmedEditMutation(initialDelivery ?? observation.delivery);
+          } catch (error) {
+            ensureOperationLive();
+            setWaitingResponse(false);
+            Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+            return finishTerminal({ kind: 'post_mutation_failure', error });
+          }
+          ensureOperationLive();
+          if (recovery.kind === 'success') {
+            const resolution: EditResubmitResolution = { kind: 'success' };
+            setWaitingResponse(false);
+            return finishTerminal(resolution, (terminalPublished) => {
+              if (!terminalPublished) {
+                const operation = getEditResubmitOperation(conversation_id);
+                if (
+                  operation?.operationId === operationId &&
+                  operation.source === 'edit' &&
+                  contentRevisionRef.current === operation.draftRevision
+                ) {
+                  setContent('');
+                }
+              }
+              clearSubmittedDraftAttachments();
+            });
+          }
+          if (recovery.kind === 'post_mutation_failure') {
+            setWaitingResponse(false);
+            const error =
+              requestError ?? new Error('edit-resubmit failed after transcript mutation');
+            if (recovery.notice === 'target_changed') {
+              setEditTargetChangedNotice(true);
+            } else {
+              Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+            }
+            return finishTerminal({ kind: 'post_mutation_failure', error });
+          }
+        }
+        if (recovery.kind === 'safe_failure') {
+          ensureOperationLive();
+          revokeBarrier(conversation_id, operationId);
+          returnEditingMessageToDraftByOperation(conversation_id, operationId);
+          releaseEditResubmitOperation(conversation_id, operationId);
+          emitter.emit('conversation.messages.refresh', {
+            conversationId: conversation_id,
+            reason: 'edit-resubmit-failed',
+          });
+          setWaitingResponse(false);
+          const error = requestError ?? new Error('edit-resubmit was rejected before admission');
+          Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+          throw error;
+        }
+
+        // Accepted receipts are observation-only. Only an absent receipt after
+        // an ambiguous transport result may replay the exact POST, once per
+        // bounded confirmation cycle and always with the original key/payload.
+        if (shouldReplayEditResubmit({
+          recovery,
+          observation,
+          requestOutcome,
+          replayedThisCycle: replayedMissingReceiptThisCycle,
+        })) {
+          replayedMissingReceiptThisCycle = true;
+          ensureOperationLive();
+          try {
+            initialDelivery = await ipcBridge.conversation.editResubmit.invoke({
+              conversation_id,
+              msg_id: msgId,
+              input: displayMessage,
+              files: filesToSend,
+              idempotency_key: operationId,
+            });
+            requestOutcome = 'accepted';
+          } catch (error) {
+            ensureOperationLive();
+            requestError = error;
+            requestOutcome = classifyEditResubmitError(error);
+          }
+        }
+        ensureOperationLive();
+        attempt += 1;
       }
     },
     [
@@ -708,18 +1099,40 @@ const NomiSendBox: React.FC<{
       conversation_id,
       uploadFile,
       workspacePath,
-      clearFiles,
+      contentRevision,
+      contentRevisionRef,
+      setContent,
+      setAtPath,
+      setUploadFile,
       markTurnAccepted,
       maybeWarnNonVisionModel,
       reconcilePublicDeliveryReplay,
       messageListRef,
-      removeMessagesByLocalIds,
+      updateMessageList,
       addOrUpdateMessage,
       setActiveMsgId,
       setWaitingResponse,
+      setRequiresConversationReset,
+      requiresConversationReset,
       t,
     ]
   );
+
+  useEffect(() => {
+    return subscribeRecoverableEditResubmitOperation(conversation_id, (operation) => {
+      if (!mountedRef.current) return;
+      void handleEditResubmit(
+        operation.targetMessageId,
+        operation.targetCreatedAt,
+        operation.originalContent,
+        operation.operationId
+      ).catch((error) => {
+        if (error !== EDIT_RESUBMIT_LIFECYCLE_ABORT) {
+          console.error('[edit-resubmit] remount recovery failed', error);
+        }
+      });
+    });
+  }, [conversation_id, handleEditResubmit]);
 
   // Steering injects into the turn that is ALREADY running — it does NOT start a
   // new turn, so we deliberately skip setWaitingResponse(true) (unlike
@@ -1036,6 +1449,59 @@ const NomiSendBox: React.FC<{
     }
   };
 
+  const handleResetRequiredConversation = useCallback(async (): Promise<void> => {
+    const lifecycleGeneration = lifecycleGenerationRef.current;
+    await runConversationResetSingleFlight({
+      inFlightRef: resetInFlightRef,
+      conversationId: conversation_id,
+      invokeReset: (params) => ipcBridge.conversation.reset.invoke(params),
+      onStart: () => {
+        setIsResettingConversation(true);
+      },
+      onSuccess: () => {
+        if (
+          !mountedRef.current ||
+          lifecycleGenerationRef.current !== lifecycleGeneration
+        ) {
+          return;
+        }
+        commitAuthoritativeConversationReset(conversation_id);
+        const operation = getEditResubmitOperation(conversation_id);
+        if (operation) {
+          clearEditingMessageByOperation(conversation_id, operation.operationId);
+          releaseEditResubmitOperation(conversation_id, operation.operationId);
+        }
+        resetState();
+        resetActiveExecution('external-reset');
+        setRequiresConversationReset(false);
+        emitter.emit('chat.history.refresh');
+        emitter.emit('conversation.messages.refresh', {
+          conversationId: conversation_id,
+          reason: 'edit-resubmit-reconcile',
+        });
+        Message.success(t('conversation.editMessage.resetSuccess'));
+      },
+      onError: (error) => {
+        if (
+          !mountedRef.current ||
+          lifecycleGenerationRef.current !== lifecycleGeneration
+        ) {
+          return;
+        }
+        console.warn('[NomiSendBox] explicit conversation reset failed', error);
+        Message.error(t('conversation.editMessage.resetFailed'));
+      },
+      onSettled: () => {
+        if (
+          mountedRef.current &&
+          lifecycleGenerationRef.current === lifecycleGeneration
+        ) {
+          setIsResettingConversation(false);
+        }
+      },
+    });
+  }, [conversation_id, t]);
+
   const modelUnavailable =
     !hideModeSelector &&
     !modelSelection.isModelCatalogLoading &&
@@ -1056,6 +1522,41 @@ const NomiSendBox: React.FC<{
         onRemove={remove}
         onClear={clear}
       />
+      {requiresConversationReset && (
+        <Alert
+          className='mb-8px'
+          type='error'
+          content={
+            <div className='flex flex-wrap items-center gap-8px'>
+              <span>{t('conversation.editMessage.resetRequired')}</span>
+              <Button type='text' size='small' loading={isResettingConversation} disabled={isResettingConversation} onClick={() => void handleResetRequiredConversation()}>
+                {t('conversation.editMessage.resetAction')}
+              </Button>
+            </div>
+          }
+        />
+      )}
+      {editTargetChangedNotice && (
+        <Alert
+          className='mb-8px'
+          type='warning'
+          data-testid='edit-target-changed-notice'
+          content={
+            <div className='flex flex-wrap items-center gap-8px'>
+              <span>{t('conversation.editMessage.targetChanged')}</span>
+              <Button
+                type='text'
+                size='small'
+                onClick={() =>
+                  setEditTargetChangedNotice(false)
+                }
+              >
+                {t('common.close')}
+              </Button>
+            </div>
+          }
+        />
+      )}
       {modelUnavailable && (
         <Alert
           className='mb-8px'
@@ -1086,7 +1587,7 @@ const NomiSendBox: React.FC<{
           setAtPath(items);
         }}
         loading={isBusy}
-        disabled={!current_model?.use_model || !modelSelection.isCurrentModelAvailable}
+        disabled={requiresConversationReset || !current_model?.use_model || !modelSelection.isCurrentModelAvailable}
         placeholder={
           current_model?.use_model && modelSelection.isCurrentModelAvailable
             ? t('acp.sendbox.placeholder', {

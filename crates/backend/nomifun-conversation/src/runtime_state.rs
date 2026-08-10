@@ -306,6 +306,25 @@ impl ConversationRuntimeStateService {
         Ok(ConversationPreparationGuard { _guard: guard })
     }
 
+    /// Read-only liveness probe: true when this conversation's preparation
+    /// gate is currently held by a live owner. Used by edit-resubmit state
+    /// observation to distinguish a reservation → admission owner that has not
+    /// yet registered its durable execution guard from a true orphan.
+    ///
+    /// Never awaits the gate: observation must not block on the owner.
+    pub fn has_active_preparation(&self, conversation_id: &str) -> Result<bool, AppError> {
+        let mut gates = self.preparation_gates.lock().map_err(|_| {
+            AppError::Internal("conversation preparation gate map poisoned".into())
+        })?;
+        gates.retain(|_, gate| gate.strong_count() > 0);
+        let Some(gate) = gates.get(conversation_id).and_then(Weak::upgrade) else {
+            return Ok(false);
+        };
+        // try_lock succeeds only when nobody holds it; a held gate (including
+        // one held by this process's edit admission) means a live owner.
+        Ok(gate.try_lock().is_err())
+    }
+
     pub fn try_acquire_turn(self: &Arc<Self>, conversation_id: &str) -> Result<AgentTurnHandle, AppError> {
         self.try_acquire_turn_with_wire_id(conversation_id, None)
     }
@@ -3123,5 +3142,31 @@ mod tests {
         assert!(gates.contains_key("conv-current"));
         drop(gates);
         drop(current);
+    }
+
+    #[tokio::test]
+    async fn has_active_preparation_reflects_gate_ownership() {
+        let state = Arc::new(ConversationRuntimeStateService::default());
+        let token = CancellationToken::new();
+        assert_eq!(
+            state.has_active_preparation("conv-unknown").unwrap(),
+            false,
+            "unknown conversation has no gate"
+        );
+        let guard = state
+            .acquire_preparation_gate("conv-live", &token)
+            .await
+            .unwrap();
+        assert_eq!(
+            state.has_active_preparation("conv-live").unwrap(),
+            true,
+            "held gate must report an active preparation owner"
+        );
+        drop(guard);
+        assert_eq!(
+            state.has_active_preparation("conv-live").unwrap(),
+            false,
+            "released gate must not report an active owner"
+        );
     }
 }

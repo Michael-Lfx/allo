@@ -1,15 +1,20 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 
-import type { TMessage } from '@/common/chat/chatLib';
-import type { ConversationId, MessageId } from '@/common/types/ids';
-import {
-  removeMessagesByLocalIds,
-  snapshotEditSuffixLocalIds,
-} from './hooks';
+/**
+ * Structural contract tests for the edit/resubmit pipeline. These assert on the
+ * *ordering* of source-level operations (read from disk) rather than runtime
+ * behavior — the behavioral race/resurrection coverage lives in
+ * `editResubmitResurrection.test.ts`.
+ *
+ * The contract under test:
+ *  - the old suffix is captured and the barrier armed BEFORE the request;
+ *  - a read-only exact edit receipt observation decides whether reconciliation
+ *    is allowed; a response or a paginated window never does that by itself;
+ *  - terminal UI behavior is covered through the production outcome/lifecycle
+ *    seams rather than source-position assertions.
+ */
 
-const conversationId = '019fa2b0-6dc2-75c1-9b50-2742e02df27a' as ConversationId;
-const targetMessageId = '019fa2b0-6dc2-75c1-9b50-2742e02df27b' as MessageId;
 const sendBoxSource = readFileSync(
   new URL('../../../components/chat/SendBox/index.tsx', import.meta.url),
   'utf8'
@@ -19,81 +24,257 @@ const nomiSendBoxSource = readFileSync(
   'utf8'
 );
 
-const textMessage = (
-  id: string,
-  position: 'left' | 'right',
-  createdAt: number,
-  messageId?: MessageId
-): TMessage => ({
-  id,
-  message_id: messageId,
-  msg_id: messageId,
-  conversation_id: conversationId,
-  type: 'text',
-  position,
-  created_at: createdAt,
-  content: { content: id },
+describe('edit/resubmit pipeline structure', () => {
+  test('NomiSendBox captures + arms before the request and tears down only after acceptance', () => {
+    const nomiHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
+      nomiSendBoxSource.indexOf('// Steering injects into the turn')
+    );
+    const capture = nomiHandler.indexOf('captureBarrier(');
+    const arm = nomiHandler.indexOf('armBarrier(conversation_id, operationId, capture);');
+    const invoke = nomiHandler.indexOf('editResubmit.invoke({');
+    const observe = nomiHandler.indexOf('editResubmitState.invoke({');
+    const confirming = nomiHandler.indexOf("phase: 'confirming'");
+    const reconcile = nomiHandler.indexOf(
+      'reconcileConfirmedEditMutation(initialDelivery ?? observation.delivery);'
+    );
+    const cleanup = nomiHandler.indexOf('clearSubmittedDraftAttachments();');
+    const purge = nomiHandler.indexOf('purgeRowsBySnapshot(list, reconciliationSnapshot)');
+    // 附件集合差：提交时捕获已提交附件路径快照，成功后仅精确移除已提交项。
+    // Attachment set-difference: snapshot the submitted attachment paths at submit,
+    // then remove only those from the current selection after acceptance.
+    const submittedAttachmentSnapshot = nomiHandler.indexOf(
+      'const submittedAttachmentIds = new Set(filesToSend);'
+    );
+    const removeSubmitted = nomiHandler.indexOf('removeSubmittedAttachments(', invoke);
+    const fullClear = nomiHandler.indexOf('clearFiles();', invoke);
+    const failedRefresh = nomiHandler.indexOf("'edit-resubmit-failed'");
+
+    // Durable capture, then arm, then the request.
+    expect(capture).toBeGreaterThan(-1);
+    expect(arm).toBeGreaterThan(capture);
+    expect(invoke).toBeGreaterThan(arm);
+    expect(submittedAttachmentSnapshot).toBeGreaterThan(-1);
+    expect(invoke).toBeGreaterThan(submittedAttachmentSnapshot);
+    // Post-acceptance only: reconcile flips the barrier, the suffix purge runs,
+    // and the submitted attachments are removed via set-difference — all after invoke.
+    expect(observe).toBeGreaterThan(invoke);
+    expect(confirming).toBeGreaterThan(invoke);
+    expect(reconcile).toBeGreaterThan(observe);
+    expect(cleanup).toBeGreaterThan(nomiHandler.indexOf("recovery.kind === 'success'"));
+    expect(purge).toBeGreaterThan(-1);
+    expect(removeSubmitted).toBeGreaterThan(invoke);
+    // The full-clear helper must NOT appear in the edit-resubmit path (would wipe
+    // attachments added mid-flight).
+    expect(fullClear).toBe(-1);
+    // Failure path revokes the barrier and emits a failed refresh.
+    expect(failedRefresh).toBeGreaterThan(-1);
+  });
 });
 
-describe('edit/resubmit local suffix replacement', () => {
-  test('uses the durable target identity instead of deleting every same-millisecond row', () => {
-    const list = [
-      textMessage('same-ms-before-target', 'left', 100),
-      textMessage('target', 'right', 100, targetMessageId),
-      textMessage('old-assistant-tail', 'left', 101),
-    ];
+describe('retry operation mutex (P1-1)', () => {
+  test('the retry branch rejects re-entry and gates its callbacks on an operation token', () => {
+    // The error-popup retry shares the composer with the edit path: without its
+    // own mutex, two retry events in the same tick (or a retry racing an edit
+    // submit) would double-send and double-restore the input.
+    expect(
+      sendBoxSource.includes('const activeRetryOperationRef = useRef<string | null>(null);')
+    ).toBe(true);
 
-    const captured = snapshotEditSuffixLocalIds(list, targetMessageId, 100);
+    const retryBranch = sendBoxSource.slice(
+      sendBoxSource.indexOf("'sendbox.retry'"),
+      sendBoxSource.indexOf('// Bump the input revision on every composer change')
+    );
+    const admission = retryBranch.indexOf('if (activeRetryOperationRef.current !== null) return;');
+    const stamp = retryBranch.indexOf('activeRetryOperationRef.current = retryOperationId;');
+    const setLoading = retryBranch.indexOf('setIsLoading(true);');
+    const catchGuard = retryBranch.indexOf(
+      'activeRetryOperationRef.current === retryOperationId &&'
+    );
+    const restoreInput = retryBranch.indexOf('setInput(content);', catchGuard);
+    const finallyIndex = retryBranch.indexOf('} finally {');
+    const release = retryBranch.indexOf('activeRetryOperationRef.current = null;', finallyIndex);
+    const clearLoading = retryBranch.indexOf('setIsLoading(false);', finallyIndex);
 
-    expect([...captured]).toEqual(['target', 'old-assistant-tail']);
+    // Admission before any work; the token is stamped synchronously before the
+    // request starts.
+    expect(admission).toBeGreaterThan(-1);
+    expect(stamp).toBeGreaterThan(admission);
+    expect(setLoading).toBeGreaterThan(stamp);
+    // Failure restore requires BOTH the token and the untouched input revision.
+    expect(catchGuard).toBeGreaterThan(-1);
+    expect(restoreInput).toBeGreaterThan(catchGuard);
+    // finally releases the mutex before lowering the loading flag.
+    expect(finallyIndex).toBeGreaterThan(-1);
+    expect(release).toBeGreaterThan(finallyIndex);
+    expect(clearLoading).toBeGreaterThan(release);
   });
+});
 
-  test('keeps replacement stream rows that arrive before the HTTP response', () => {
-    const oldList = [
-      textMessage('stable-prefix', 'left', 99),
-      textMessage('target', 'right', 100, targetMessageId),
-      textMessage('old-assistant-tail', 'left', 101),
-    ];
-    const captured = snapshotEditSuffixLocalIds(oldList, targetMessageId, 100);
-    const replacement = textMessage('replacement-stream', 'left', 102);
-
-    const result = removeMessagesByLocalIds([...oldList, replacement], captured);
-
-    expect(result.map((message) => message.id)).toEqual([
-      'stable-prefix',
-      'replacement-stream',
-    ]);
+describe('authoritative edit outcome verification (P1-2)', () => {
+  test('ambiguous failures use the exact receipt observation and never scan a history window', () => {
+    // A transport or HTTP rejection cannot prove the backend did NOT execute.
+    // Recovery must use the edit-specific receipt plus exact target/replacement
+    // identities, and it must reuse the same operation key.
+    const nomiHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
+      nomiSendBoxSource.indexOf('// Steering injects into the turn')
+    );
+    expect(nomiHandler).toContain('editResubmitState.invoke({');
+    expect(nomiHandler).toContain('idempotency_key: operationId');
+    expect(nomiHandler).toContain('resolveEditResubmitRecovery');
+    expect(nomiHandler).not.toContain('verifyEditResubmitTarget');
+    expect(nomiHandler).not.toContain('getConversationMessages');
+    expect(nomiHandler).not.toContain('page_size: 200');
+    expect(nomiHandler.indexOf('revokeBarrier(')).toBeGreaterThan(
+      nomiHandler.indexOf("recovery.kind === 'safe_failure'")
+    );
   });
+});
 
-  test('clears edit state and the old suffix only after backend acceptance', () => {
+describe('authoritative failure domains (P0-3)', () => {
+  test('post-mutation failure keeps the barrier and returns a typed draft-preserving result', () => {
+    const nomiHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
+      nomiSendBoxSource.indexOf('// Steering injects into the turn')
+    );
+    expect(nomiHandler).toContain("recovery.kind === 'post_mutation_failure'");
+    expect(nomiHandler).toContain("recovery.kind === 'transcript_truncated'");
+    expect(nomiHandler).toContain("finishTerminal({ kind: 'post_mutation_failure', error })");
+    expect(nomiHandler).toContain("reason: 'edit-resubmit-reconcile'");
+    expect(nomiHandler).toContain("reason: 'edit-resubmit-failed'");
+    expect(nomiHandler.indexOf("reason: 'edit-resubmit-failed'")).toBeGreaterThan(
+      nomiHandler.indexOf("recovery.kind === 'safe_failure'")
+    );
+  });
+});
+
+describe('edit confirmation lifecycle (P1)', () => {
+  test('stops stale confirmation work after unmount or conversation switch', () => {
+    const nomiHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
+      nomiSendBoxSource.indexOf('// Steering injects into the turn')
+    );
+    expect(nomiSendBoxSource).toContain('confirmationWaitRef.current?.();');
+    expect(nomiSendBoxSource).toContain('lifecycleGenerationRef.current !== lifecycleGeneration');
+    expect(nomiHandler).toContain('ensureOperationLive();');
+    expect(nomiHandler).toContain("recovery.kind === 'requires_reset'");
+    expect(nomiHandler).not.toContain('ipcBridge.conversation.reset.invoke({ conversation_id });');
+  });
+});
+
+describe('edit submit mutex (P0-2 / P2-3)', () => {
+  test('the edit branch rejects a second same-tick submit via the operation ref', () => {
+    // isLoading is React state — it cannot block two submits in the same render
+    // tick. The synchronously-updated activeEditOperationRef is the real mutex:
+    // admission must reject when a resubmit is already in flight, and the
+    // promise chain must release the ref in .finally (after .then/.catch).
     const editSubmitBranch = sendBoxSource.slice(
       sendBoxSource.indexOf('if (editingMsgId && onEditResubmit) {'),
       sendBoxSource.indexOf('// Cancel any pending warmup:')
     );
     const submit = editSubmitBranch.indexOf(
-      'onEditResubmit(targetId, targetCreatedAt, finalMessage)'
+      'onEditResubmit(\n        targetId,\n        targetCreatedAt,\n        finalMessage,\n        operationId,'
     );
-    const accepted = editSubmitBranch.indexOf('.then(() => {', submit);
-    const exitEditMode = editSubmitBranch.indexOf('setEditingMsgId(null);', submit);
-    const clearInput = editSubmitBranch.indexOf("setInput('');", submit);
+    const mutexAdmission = editSubmitBranch.indexOf(
+      'if (activeEditOperationRef.current !== null) return;'
+    );
+    const stamp = editSubmitBranch.indexOf('activeEditOperationRef.current = operationId;');
 
     expect(submit).toBeGreaterThan(-1);
-    expect(accepted).toBeGreaterThan(submit);
-    expect(exitEditMode).toBeGreaterThan(accepted);
-    expect(clearInput).toBeGreaterThan(accepted);
+    expect(mutexAdmission).toBeGreaterThan(-1);
+    // Admission guard runs before the request is stamped and sent.
+    expect(mutexAdmission).toBeLessThan(stamp);
+    expect(stamp).toBeLessThan(submit);
 
+    // The ref is released in .finally, AFTER the .then/.catch outcome logic
+    // (their isCurrentOperation() reads must still see the token).
+    const finallyIndex = editSubmitBranch.indexOf('.finally(() => {', submit);
+    const release = editSubmitBranch.indexOf('activeEditOperationRef.current = null;', finallyIndex);
+    const clearLoading = editSubmitBranch.indexOf('setIsLoading(false);', finallyIndex);
+    expect(finallyIndex).toBeGreaterThan(submit);
+    expect(release).toBeGreaterThan(finallyIndex);
+    expect(clearLoading).toBeGreaterThan(release);
+
+    // The token guard still gates the .then/.catch side effects.
+    expect(editSubmitBranch.indexOf('isCurrentOperation()', submit)).toBeGreaterThan(-1);
+  });
+
+  test('the sendbox.edit listener ignores a second edit while a resubmit is in flight', () => {
+    // P2-3: entering edit mode mid-resubmit would let the user rewrite the
+    // composer under an in-flight destructive request.
+    const editListener = sendBoxSource.slice(
+      sendBoxSource.indexOf("'sendbox.edit'"),
+      sendBoxSource.indexOf("'sendbox.retry'")
+    );
+    const capability = editListener.indexOf('if (!onEditResubmit) return;');
+    const inFlightGuard = editListener.indexOf('activeRetryOperationRef.current !== null');
+    const controllerGuard = editListener.indexOf('getEditResubmitOperation(editConversationId)');
+    const enterEdit = editListener.indexOf('setEditingMsgId(payload.msgId);');
+
+    expect(capability).toBeGreaterThan(-1);
+    expect(inFlightGuard).toBeGreaterThan(capability);
+    expect(controllerGuard).toBeGreaterThan(inFlightGuard);
+    expect(enterEdit).toBeGreaterThan(controllerGuard);
+  });
+});
+describe('requires-reset fail-closed contract', () => {
+  test('handleEditResubmit guards requiresConversationReset before capture/arm', () => {
     const nomiHandler = nomiSendBoxSource.slice(
       nomiSendBoxSource.indexOf('const handleEditResubmit = useCallback('),
       nomiSendBoxSource.indexOf('// Steering injects into the turn')
     );
-    const invoke = nomiHandler.indexOf('editResubmit.invoke({');
-    const removeOldSuffix = nomiHandler.indexOf(
-      'removeMessagesByLocalIds(oldSuffixLocalIds);'
-    );
-    const clearAttachments = nomiHandler.indexOf('clearFiles();', invoke);
+    const guard = nomiHandler.indexOf('if (requiresConversationReset) {');
+    const capture = nomiHandler.indexOf('captureBarrier(');
+    const arm = nomiHandler.indexOf('armBarrier(conversation_id, operationId, capture);');
 
-    expect(invoke).toBeGreaterThan(-1);
-    expect(removeOldSuffix).toBeGreaterThan(invoke);
-    expect(clearAttachments).toBeGreaterThan(invoke);
+    expect(guard).toBeGreaterThan(-1);
+    // Correctness gate: no capture, no arm, no backend invoke while reset is required.
+    expect(capture).toBeGreaterThan(guard);
+    expect(arm).toBeGreaterThan(guard);
+    // The single-operation reset ref is gone; reset is conversation-wide.
+    expect(nomiSendBoxSource.includes('resetRequiredOperationRef')).toBe(false);
+  });
+
+  test('SendBox stays disabled while a conversation reset is required', () => {
+    expect(
+      nomiSendBoxSource.includes(
+        'disabled={requiresConversationReset || !current_model?.use_model || !modelSelection.isCurrentModelAvailable}'
+      )
+    ).toBe(true);
+  });
+
+  test('authoritative reset commits the coordinator generation before refresh', () => {
+    const resetHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleResetRequiredConversation = useCallback('),
+      nomiSendBoxSource.indexOf('const modelUnavailable =')
+    );
+    const commit = resetHandler.indexOf('commitAuthoritativeConversationReset(conversation_id);');
+    const resetState = resetHandler.indexOf('resetState();');
+    const resetExec = resetHandler.indexOf("resetActiveExecution('external-reset');");
+    const clearFlag = resetHandler.indexOf('setRequiresConversationReset(false);');
+    const historyRefresh = resetHandler.indexOf("emitter.emit('chat.history.refresh')");
+    const messagesRefresh = resetHandler.indexOf("emitter.emit('conversation.messages.refresh'");
+
+    expect(commit).toBeGreaterThan(-1);
+    expect(resetState).toBeGreaterThan(commit);
+    expect(resetExec).toBeGreaterThan(resetState);
+    expect(clearFlag).toBeGreaterThan(resetExec);
+    expect(historyRefresh).toBeGreaterThan(clearFlag);
+    expect(messagesRefresh).toBeGreaterThan(historyRefresh);
+  });
+
+  test('reset failure never optimistically clears the reset-required authority', () => {
+    const resetHandler = nomiSendBoxSource.slice(
+      nomiSendBoxSource.indexOf('const handleResetRequiredConversation = useCallback('),
+      nomiSendBoxSource.indexOf('const modelUnavailable =')
+    );
+    const errorIndex = resetHandler.indexOf('onError: (error) => {');
+    const settledIndex = resetHandler.indexOf('onSettled: () => {');
+    const failurePath = resetHandler.slice(errorIndex, settledIndex);
+    expect(errorIndex).toBeGreaterThan(-1);
+    expect(settledIndex).toBeGreaterThan(errorIndex);
+    expect(failurePath.includes('setRequiresConversationReset(false)')).toBe(false);
+    expect(failurePath.includes('commitAuthoritativeConversationReset')).toBe(false);
   });
 });

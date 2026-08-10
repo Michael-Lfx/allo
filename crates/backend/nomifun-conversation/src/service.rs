@@ -268,6 +268,28 @@ pub enum PublicTurnDeliveryState {
     Completed(IdempotentMessageDelivery),
 }
 
+/// Read-only durable state for one edit/resubmit operation.
+///
+/// This deliberately has its own namespace and state boundary instead of
+/// reusing [`PublicTurnDeliveryState`]. An edit may have already removed the
+/// target transcript row while its replacement delivery is still pending, so
+/// receipt state alone is not enough for safe client recovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditResubmitDeliveryState {
+    Missing,
+    Accepted(IdempotentMessageDelivery),
+    Completed(IdempotentMessageDelivery),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditResubmitObservation {
+    pub delivery_state: EditResubmitDeliveryState,
+    pub replacement_message_id: Option<String>,
+    pub target_exists: bool,
+    pub replacement_exists: Option<bool>,
+    pub requires_reset: bool,
+}
+
 /// Trusted runtime preparation applied only after a durable keyed turn has
 /// won receiver-side admission.
 ///
@@ -1390,6 +1412,26 @@ impl ConversationService {
     }
 
     #[cfg(test)]
+    pub(crate) fn install_durable_operation_guard_for_test(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        operation_id: &str,
+    ) {
+        let key = Self::durable_operation_key(user_id, conversation_id, operation_id);
+        self.durable_operations_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                key,
+                DurableOperationLease {
+                    message_id: "test-replacement".to_owned(),
+                    generation: 1,
+                },
+            );
+    }
+
+    #[cfg(test)]
     async fn reach_public_admission_cutpoint(&self, stage: PublicAdmissionCutpoint) {
         let control = {
             let mut slot = self
@@ -1969,6 +2011,42 @@ impl ConversationService {
         }
     }
 
+    async fn settle_edit_resubmit_failure(
+        &self,
+        runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
+        admission_custodian: &EditResubmitAdmissionCustodian,
+        user_id: &str,
+        conversation_id: &str,
+        target_created_at: i64,
+        delivery: &DurableDeliveryLease,
+        error: &AppError,
+    ) {
+        if admission_custodian.destructive_runtime_mutation_started() {
+            Self::quarantine_edit_runtime_until_confirmed(
+                runtime_registry,
+                &self.runtime_state,
+                conversation_id,
+                target_created_at,
+            )
+            .await;
+        }
+        self.finalize_durable_admission_after_error(
+            user_id,
+            conversation_id,
+            delivery,
+            &format!("{}", ErrorChain(error)),
+            relay_error_code::PREPARATION_FAILED,
+        )
+        .await;
+        if !delivery.receipt_was_handed_off() {
+            Self::release_durable_operation_guard(
+                &self.durable_operations_in_flight,
+                &delivery.guard_key,
+                delivery.guard_generation,
+            );
+        }
+    }
+
     async fn try_complete_delivery_receipt(
         repo: &Arc<dyn IConversationRepository>,
         user_id: &str,
@@ -2073,6 +2151,62 @@ impl ConversationService {
         conversation_id: &str,
     ) -> String {
         format!("public-edit-resubmit:v1:{user_id}:{conversation_id}:")
+    }
+
+    fn has_live_edit_resubmit_guard(&self, user_id: &str, conversation_id: &str) -> bool {
+        let key_prefix = format!(
+            "{user_id}\0{conversation_id}\0{}",
+            Self::public_edit_resubmit_operation_prefix(user_id, conversation_id)
+        );
+        self.durable_operations_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .any(|key| key.starts_with(&key_prefix))
+    }
+
+    async fn edit_resubmit_requires_reset(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<bool, AppError> {
+        let prefix = Self::public_edit_resubmit_operation_prefix(user_id, conversation_id);
+        if !self
+            .conversation_repo
+            .has_accepted_delivery_receipt_operation_prefix(
+                user_id,
+                conversation_id,
+                &prefix,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+
+        // An accepted receipt with a live process-local owner is the normal
+        // in-flight state: either a reservation/admission still holding the
+        // conversation preparation gate (the durable guard is registered only
+        // after admission), or an admitted operation with a durable execution
+        // lease. Only an accepted fence left without any live owner is
+        // authoritative proof that an explicit Conversation reset is needed.
+        if self
+            .runtime_state
+            .has_active_preparation(conversation_id)?
+        {
+            return Ok(false);
+        }
+        Ok(!self.has_live_edit_resubmit_guard(user_id, conversation_id))
+    }
+
+    fn accepted_edit_snapshot_requires_reset(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<bool, AppError> {
+        if self.runtime_state.has_active_preparation(conversation_id)? {
+            return Ok(false);
+        }
+        Ok(!self.has_live_edit_resubmit_guard(user_id, conversation_id))
     }
 
     fn edit_resubmit_request_payload(
@@ -3287,15 +3421,8 @@ impl ConversationService {
         conversation_id: &str,
     ) -> Result<(), AppError> {
         let conversation_id = parse_conv_id(conversation_id)?;
-        let prefix =
-            Self::public_edit_resubmit_operation_prefix(user_id, conversation_id);
         if self
-            .conversation_repo
-            .has_accepted_delivery_receipt_operation_prefix(
-                user_id,
-                conversation_id,
-                &prefix,
-            )
+            .edit_resubmit_requires_reset(user_id, conversation_id)
             .await?
         {
             return Err(AppError::Conflict(
@@ -7338,6 +7465,116 @@ impl ConversationService {
         }
     }
 
+    /// Observe one edit/resubmit receipt and the exact transcript identities it
+    /// owns. This method is strictly read-only: it never reconstructs runtime
+    /// state, claims a receipt, changes a fence, or revokes an admission.
+    pub async fn edit_resubmit_delivery_state(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        target_message_id: &str,
+        idempotency_key: &str,
+    ) -> Result<EditResubmitObservation, AppError> {
+        validate_public_idempotency_key(idempotency_key)?;
+        let conversation_key = parse_conv_id(conversation_id)?;
+        let target_message_id = parse_message_id(target_message_id)?;
+        self.conversation_repo
+            .get(conversation_key)
+            .await?
+            .filter(|row| row.user_id == user_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Conversation {conversation_id} not found"))
+            })?;
+
+        let operation_id =
+            Self::public_edit_resubmit_operation_id(user_id, conversation_key, idempotency_key);
+        let operation_prefix = Self::public_edit_resubmit_operation_prefix(user_id, conversation_key);
+        let snapshot = self
+            .conversation_repo
+            .get_edit_resubmit_state_snapshot(
+                user_id,
+                conversation_key,
+                &operation_id,
+                target_message_id,
+                &operation_prefix,
+            )
+            .await?;
+        let requires_reset = if snapshot.accepted_edit_fence_exists {
+            self.accepted_edit_snapshot_requires_reset(user_id, conversation_key)?
+        } else {
+            false
+        };
+        let Some(receipt) = snapshot.receipt
+        else {
+            return Ok(EditResubmitObservation {
+                delivery_state: EditResubmitDeliveryState::Missing,
+                replacement_message_id: None,
+                target_exists: snapshot.target_exists,
+                replacement_exists: None,
+                requires_reset,
+            });
+        };
+
+        if receipt.kind != "turn"
+            || receipt.user_id != user_id
+            || receipt.conversation_id != conversation_key
+            || receipt.operation_id != operation_id
+        {
+            return Err(AppError::Conflict(
+                "edit/resubmit receipt identity does not match its exact scope".to_owned(),
+            ));
+        }
+        let payload: serde_json::Value = serde_json::from_str(&receipt.request_payload)
+            .map_err(|error| {
+                AppError::Conflict(format!(
+                    "edit/resubmit receipt request payload is invalid: {error}"
+                ))
+            })?;
+        if payload.get("workflow").and_then(serde_json::Value::as_str) != Some("edit-resubmit")
+            || payload.get("target_message_id").and_then(serde_json::Value::as_str)
+                != Some(target_message_id)
+        {
+            return Err(AppError::Conflict(
+                "edit/resubmit receipt target does not match the requested scope".to_owned(),
+            ));
+        }
+        parse_message_id(&receipt.message_id).map_err(|error| {
+            AppError::Conflict(format!(
+                "edit/resubmit receipt replacement message id is invalid: {error}"
+            ))
+        })?;
+
+        let replacement_message_id = receipt.message_id.clone();
+        let replacement_exists = snapshot.replacement_exists;
+        let delivery = IdempotentMessageDelivery {
+            message_id: replacement_message_id.clone(),
+            replayed: true,
+            completed: receipt.status == "completed",
+            result_ok: receipt.result_ok,
+            result_text: receipt.result_text,
+            result_error: receipt.result_error,
+            result_error_code: receipt.result_error_code,
+            result_error_retryable: receipt.result_error_retryable,
+        };
+        let delivery_state = match receipt.status.as_str() {
+            "accepted" => EditResubmitDeliveryState::Accepted(delivery),
+            "completed" => EditResubmitDeliveryState::Completed(delivery),
+            status => {
+                return Err(AppError::Conflict(format!(
+                    "edit/resubmit receipt has unsupported durable state '{status}'"
+                )))
+            }
+        };
+        Ok(EditResubmitObservation {
+            delivery_state,
+            replacement_message_id: Some(replacement_message_id),
+            target_exists: snapshot.target_exists,
+            replacement_exists,
+            requires_reset: requires_reset
+                || (receipt.status == "completed" && snapshot.target_exists),
+        })
+    }
+
     /// Read-only AutoWork receipt observation used while renewing one exact
     /// Requirement claim. It never constructs a runtime, repairs lifecycle, or
     /// treats receipt absence as execution authority.
@@ -11138,21 +11375,12 @@ impl ConversationService {
             ));
         }
 
-        let recent = self
+        let target = self
             .conversation_repo
-            .get_messages_keyset(conv_id, None, 50)
+            .get_latest_user_text_message(conv_id)
             .await?;
         runtime_build_lease.ensure_active()?;
-        let target = recent
-            .items
-            .iter()
-            .find(|message| {
-                message.position.as_deref() == Some("right")
-                    && message.r#type == "text"
-            })
-            .ok_or_else(|| {
-                AppError::BadRequest("No editable user message found".into())
-            })?;
+        let target = target.ok_or_else(|| AppError::BadRequest("No editable user message found".into()))?;
         if target.message_id != message_id {
             return Err(AppError::BadRequest(
                 "Only the most recent user message can be edited".into(),
@@ -11402,30 +11630,16 @@ impl ConversationService {
         }
         .await;
         if let Err(error) = preparation_result {
-            if edit_admission_custodian.destructive_runtime_mutation_started() {
-                Self::quarantine_edit_runtime_until_confirmed(
-                    runtime_registry,
-                    &self.runtime_state,
-                    conv_id,
-                    row.created_at,
-                )
-                .await;
-            }
-            self.finalize_durable_admission_after_error(
+            self.settle_edit_resubmit_failure(
+                runtime_registry,
+                &edit_admission_custodian,
                 user_id,
                 conv_id,
+                row.created_at,
                 &delivery,
-                &format!("{}", ErrorChain(&error)),
-                relay_error_code::PREPARATION_FAILED,
+                &error,
             )
             .await;
-            if !delivery.receipt_was_handed_off() {
-                Self::release_durable_operation_guard(
-                    &self.durable_operations_in_flight,
-                    &delivery.guard_key,
-                    delivery.guard_generation,
-                );
-            }
             return Err(error);
         }
 
@@ -11456,30 +11670,16 @@ impl ConversationService {
                 message_id
             }
             Err(error) => {
-                if edit_admission_custodian.destructive_runtime_mutation_started() {
-                    Self::quarantine_edit_runtime_until_confirmed(
-                        runtime_registry,
-                        &self.runtime_state,
-                        conv_id,
-                        row.created_at,
-                    )
-                    .await;
-                }
-                self.finalize_durable_admission_after_error(
+                self.settle_edit_resubmit_failure(
+                    runtime_registry,
+                    &edit_admission_custodian,
                     user_id,
                     conv_id,
+                    row.created_at,
                     &delivery,
-                    &format!("{}", ErrorChain(&error)),
-                    relay_error_code::PREPARATION_FAILED,
+                    &error,
                 )
                 .await;
-                if !delivery.receipt_was_handed_off() {
-                    Self::release_durable_operation_guard(
-                        &self.durable_operations_in_flight,
-                        &delivery.guard_key,
-                        delivery.guard_generation,
-                    );
-                }
                 return Err(error);
             }
         };
@@ -11539,12 +11739,11 @@ impl ConversationService {
 
         // 3. 目标必须是最近一条用户(right/text)消息（保证引擎"回退最后一个 turn"
         //    与 DB"删除该条及其后"对齐）。
-        let recent = self.conversation_repo.get_messages_keyset(conv_id, None, 50).await?;
+        let latest_user = self
+            .conversation_repo
+            .get_latest_user_text_message(conv_id)
+            .await?;
         runtime_build_lease.ensure_active()?;
-        let latest_user = recent
-            .items
-            .iter()
-            .find(|m| m.position.as_deref() == Some("right") && m.r#type == "text");
         let Some(target) = latest_user else {
             return Err(AppError::BadRequest("No editable user message found".into()));
         };

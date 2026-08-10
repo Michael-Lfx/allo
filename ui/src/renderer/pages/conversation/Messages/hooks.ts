@@ -29,10 +29,22 @@ import {
   preferTextMessageVersion,
   transformKnowledgeWritebackEvent,
 } from '@/common/chat/chatLib';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createContext } from '@renderer/utils/ui/createContext';
 import { addEventListener } from '@/renderer/utils/emitter';
 import { isAuthoritativeCompletionRuntimeIdle } from '../platforms/authoritativeTurnLifecyclePolicy';
+import {
+  ackConsumerReconciled,
+  captureReconciliationSnapshot,
+  filterRowsBySnapshot,
+  getEpoch,
+  purgeRowsBySnapshot,
+  retainConsumer,
+  type ConsumerId,
+  type ReconciliationSnapshot,
+} from './conversationMessageCoordinator';
+import { getFetchedMergeKey, getToolLifecycleKey } from './messageRowKeys';
+import { createRefreshRetryController } from './refreshRetry';
 
 const [useMessageList, MessageListProvider, useUpdateMessageList] = createContext([] as TMessage[]);
 const [useMessageListLoading, MessageListLoadingProvider, useUpdateMessageListLoading] = createContext(false);
@@ -47,11 +59,6 @@ interface MessageIndex {
   tool_call_idIndex: Map<string, number>; // turn + acp tool_call_id -> index
   permission_call_idIndex: Map<string, number>; // permission.content.call_id -> index
 }
-
-const getToolLifecycleKey = (message: TMessage, callId: string): string => {
-  const turnId = message.turn_id || message.msg_id || message.message_id || message.id;
-  return `${turnId}:${callId}`;
-};
 
 function getMessageIndexKey(message: TMessage): string | undefined {
   if (!message.msg_id) return undefined;
@@ -576,51 +583,6 @@ export const useRemoveMessageByMsgId = () => {
   );
 };
 
-/**
- * Capture the frontend-local rows that belong to the old edit suffix.
- *
- * The target row's durable identity wins over timestamps. The timestamp
- * fallback only covers a stale/incomplete local cache. Capturing local `id`s
- * before the request means replacement stream rows that arrive before the HTTP
- * response are not accidentally removed on success.
- */
-export function snapshotEditSuffixLocalIds(
-  list: TMessage[],
-  targetMessageId: MessageId,
-  targetCreatedAt: number
-): Set<string> {
-  const targetIndex = list.findIndex(
-    (message) =>
-      message.position === 'right' &&
-      message.type === 'text' &&
-      (message.message_id === targetMessageId || message.msg_id === targetMessageId)
-  );
-  const suffix =
-    targetIndex >= 0
-      ? list.slice(targetIndex)
-      : list.filter((message) => (message.created_at ?? 0) >= targetCreatedAt);
-  return new Set(suffix.map((message) => message.id));
-}
-
-export function removeMessagesByLocalIds(
-  list: TMessage[],
-  localIds: ReadonlySet<string>
-): TMessage[] {
-  if (localIds.size === 0) return list;
-  return list.filter((message) => !localIds.has(message.id));
-}
-
-export const useRemoveMessagesByLocalIds = () => {
-  const update = useUpdateMessageList();
-
-  return useCallback(
-    (localIds: ReadonlySet<string>) => {
-      update((list) => removeMessagesByLocalIds(list, localIds));
-    },
-    [update]
-  );
-};
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -880,17 +842,6 @@ const getPersistedMessageId = (message: TMessage): MessageId => {
 const messageCursorOf = (message: TMessage): string =>
   `${message.created_at ?? 0}:${getPersistedMessageId(message)}`;
 
-const getFetchedMergeKey = (message: TMessage): string | undefined => {
-  if (!message.msg_id) return undefined;
-  if (message.type === 'tool_call' && message.content?.call_id) {
-    return `tool_call:${getToolLifecycleKey(message, message.content.call_id)}`;
-  }
-  if (message.type === 'acp_tool_call' && message.content?.update?.tool_call_id) {
-    return `acp_tool_call:${getToolLifecycleKey(message, message.content.update.tool_call_id)}`;
-  }
-  return `${message.type}:${message.msg_id}`;
-};
-
 const compareTranscriptOrder = (left: TMessage, right: TMessage): number => {
   const leftCreatedAt = left.created_at ?? Number.MAX_SAFE_INTEGER;
   const rightCreatedAt = right.created_at ?? Number.MAX_SAFE_INTEGER;
@@ -1014,6 +965,66 @@ export const mergeFetchedMessagesForConversation = (
 };
 
 /**
+ * Apply a freshly fetched DB page under a FROZEN reconciliation snapshot (the
+ * testable seam, also used by `useMessageLstCache`):
+ *
+ *  1. `filterRowsBySnapshot` drops stale rows that belong to an armed/
+ *     reconciling barrier BEFORE the chronological union, so a pre-truncate DB
+ *     snapshot can never re-enter the list after the old suffix was removed.
+ *  2. `mergeFetchedMessagesForConversation` builds the chronological union.
+ *  3. `purgeRowsBySnapshot` strips any barrier rows that still linger in the
+ *     current list (only when the snapshot held a reconciling barrier).
+ *
+ * The snapshot must be captured by the caller at fetch-acceptance time (before
+ * enqueueing the React updater). React may run the updater after the barrier
+ * has been ack-retired; a live coordinator lookup here would then find no
+ * barrier and silently skip the purge, resurrecting the old suffix.
+ *
+ * The standalone `mergeFetchedMessagesForConversation` export stays pure for
+ * callers that manage their own barrier filtering.
+ */
+export const applyFetchedMessages = (
+  currentList: TMessage[],
+  messages: TMessage[],
+  snapshot: ReconciliationSnapshot
+): TMessage[] => {
+  const filtered = filterRowsBySnapshot(messages, snapshot);
+  const merged = mergeFetchedMessagesForConversation(currentList, filtered, snapshot.conversationId);
+  return purgeRowsBySnapshot(merged, snapshot);
+};
+
+export const applyOlderKeysetPage = (
+  currentList: TMessage[],
+  olderRows: TMessage[],
+  capturedEpoch: number,
+  currentEpoch: number,
+  snapshot: ReconciliationSnapshot
+): TMessage[] => {
+  if (capturedEpoch !== currentEpoch) return currentList;
+  const current = purgeRowsBySnapshot(currentList, snapshot);
+  const older = filterRowsBySnapshot(olderRows, snapshot);
+  const isStrictlyEarlier = (left: TMessage, right: TMessage): boolean =>
+    (left.created_at ?? 0) < (right.created_at ?? 0) ||
+    ((left.created_at ?? 0) === (right.created_at ?? 0) &&
+      (left.message_id ?? left.id) < (right.message_id ?? right.id));
+  const oldest = current.reduce<TMessage | undefined>((candidate, message) => {
+    if (!candidate) return message;
+    return isStrictlyEarlier(message, candidate) ? message : candidate;
+  }, undefined);
+  const existingIds = new Set(
+    current
+      .map((message) => message.message_id)
+      .filter((messageId): messageId is MessageId => messageId !== undefined)
+  );
+  const fresh = older.filter((message) => {
+    if (existingIds.has(getPersistedMessageId(message))) return false;
+    if (!oldest) return true;
+    return isStrictlyEarlier(message, oldest);
+  });
+  return fresh.length ? [...fresh, ...current] : current;
+};
+
+/**
  * Loads a conversation's message history into the shared message-list store.
  *
  * Two modes:
@@ -1039,6 +1050,17 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   const loadingOlderRef = useRef(false);
   const newestLoadSequenceRef = useRef(0);
   const activeConversationRef = useRef<ConversationId>(key);
+  // This instance's coordinator consumer id (released on unmount/conversation
+  // switch). Held in a ref so loadMessages can ack its own reconciliation.
+  const consumerIdRef = useRef<ConsumerId | null>(null);
+  const [reconciliationCommitVersion, setReconciliationCommitVersion] = useState(0);
+  const pendingReconciliationCommitsRef = useRef<
+    Array<{
+      conversationId: ConversationId;
+      epoch: number;
+      resolve: (applied: boolean) => void;
+    }>
+  >([]);
 
   // Providers are shared by the mounted chat surface. Invalidate outstanding
   // fetches synchronously when routing to another conversation so a slower old
@@ -1051,19 +1073,40 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   // Merge a freshly fetched DB page (newest window or full list) with any
   // in-flight streaming messages for this conversation. During streaming the DB
   // may hold an older snapshot (2000ms save debounce), so we keep whichever
-  // version has more content and build a stable chronological union.
+  // version has more content and build a stable chronological union. The
+  // composition applies the edit-resubmit barrier rules frozen into a snapshot
+  // at acceptance time, so a pre-truncate snapshot cannot resurrect the old
+  // message/error tip even if the updater runs after the barrier retired.
   const mergeIntoList = useCallback(
-    (messages: TMessage[]) => {
-      update((currentList) => {
-        return mergeFetchedMessagesForConversation(currentList, messages, key);
-      });
+    (messages: TMessage[], snapshot: ReconciliationSnapshot) => {
+      update((currentList) => applyFetchedMessages(currentList, messages, snapshot));
     },
-    [key, update]
+    [update]
   );
 
-  const loadMessages = useCallback(async (): Promise<TMessage[]> => {
+  const waitForReconciliationCommit = useCallback(
+    (epoch: number): Promise<boolean> =>
+      new Promise((resolve) => {
+        pendingReconciliationCommitsRef.current.push({
+          conversationId: key,
+          epoch,
+          resolve,
+        });
+        // The message-list update and this ticket are scheduled in the same
+        // batch. The layout effect below is the commit boundary for ack.
+        setReconciliationCommitVersion((version) => version + 1);
+      }),
+    [key]
+  );
+
+  const loadMessages = useCallback(async (): Promise<TMessage[] | null> => {
     const loadSequence = newestLoadSequenceRef.current + 1;
     newestLoadSequenceRef.current = loadSequence;
+    // Capture the conversation epoch at request start. An edit-resubmit that
+    // succeeds while this fetch is in flight bumps the epoch; on return the
+    // captured epoch no longer matches and the (pre-truncate) snapshot is
+    // discarded wholesale instead of merged.
+    const capturedEpoch = getEpoch(key);
     const result = await ipcBridge.database.getConversationMessages.invoke(
       windowed
         ? { conversation_id: key, cursor: '', page_size: HISTORY_WINDOW_SIZE, content_mode: 'compact' }
@@ -1072,9 +1115,10 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
     const messages = result?.items?.map(normalizeDbMessage);
     if (
       activeConversationRef.current !== key ||
-      newestLoadSequenceRef.current !== loadSequence
+      newestLoadSequenceRef.current !== loadSequence ||
+      capturedEpoch !== getEpoch(key)
     ) {
-      return [];
+      return null;
     }
     if (windowed) {
       hasMoreRef.current = Boolean(result?.has_more);
@@ -1084,11 +1128,14 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
         messages && messages.length ? messageCursorOf(messages[0]) : null;
     }
     if (messages && Array.isArray(messages)) {
-      mergeIntoList(messages);
-      return messages;
+      const snapshot = captureReconciliationSnapshot(key);
+      const appliedEpoch = getEpoch(key);
+      mergeIntoList(messages, snapshot);
+      if (!snapshot.purge) return messages;
+      return (await waitForReconciliationCommit(appliedEpoch)) ? messages : null;
     }
     return [];
-  }, [key, mergeIntoList, windowed]);
+  }, [key, mergeIntoList, waitForReconciliationCommit, windowed]);
 
   // Prepend the next older window (scroll-up). Older rows never overlap the live
   // streaming tail, so an id-dedup prepend suffices (no content merge needed).
@@ -1098,6 +1145,10 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
     if (!cursor) return;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
+    // P2-1: fence on the conversation epoch, same as loadMessages — an
+    // edit-resubmit success mid-flight bumps it, and applying this pre-truncate
+    // page would prepend the old suffix back above the live tail.
+    const capturedEpoch = getEpoch(key);
     try {
       const result = await ipcBridge.database.getConversationMessages.invoke({
         conversation_id: key,
@@ -1106,19 +1157,20 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
         content_mode: 'compact',
       });
       const older = result?.items?.map(normalizeDbMessage) ?? [];
-      if (activeConversationRef.current !== key) return;
+      if (activeConversationRef.current !== key || capturedEpoch !== getEpoch(key)) return;
       hasMoreRef.current = Boolean(result?.has_more);
       setHasMore(hasMoreRef.current);
       if (older.length) {
         oldestCursorRef.current = messageCursorOf(older[0]);
+        const snapshot = captureReconciliationSnapshot(key);
         update((currentList) => {
-          const existingIds = new Set(
-            currentList
-              .map((message) => message.message_id)
-              .filter((messageId): messageId is MessageId => messageId !== undefined)
+          return applyOlderKeysetPage(
+            currentList,
+            older,
+            capturedEpoch,
+            getEpoch(key),
+            snapshot
           );
-          const fresh = older.filter((message) => !existingIds.has(getPersistedMessageId(message)));
-          return fresh.length ? [...fresh, ...currentList] : currentList;
         });
       }
     } catch (error) {
@@ -1128,6 +1180,43 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
       setLoadingOlder(false);
     }
   }, [key, update, windowed]);
+
+  // Register this message-list instance as a coordinator consumer for the
+  // conversation. Re-released on conversation switch/unmount so barriers do not
+  // wait on a dead consumer. A consumer mounting mid-reconciliation joins the
+  // in-flight barrier's pending set (see retainConsumer).
+  useEffect(() => {
+    if (!key) return;
+    const { consumerId, release } = retainConsumer(key);
+    consumerIdRef.current = consumerId;
+    return () => {
+      consumerIdRef.current = null;
+      release();
+    };
+  }, [key]);
+
+  useLayoutEffect(() => {
+    const pending = pendingReconciliationCommitsRef.current;
+    if (!pending.length) return;
+    pendingReconciliationCommitsRef.current = [];
+    const consumerId = consumerIdRef.current;
+    for (const ticket of pending) {
+      if (consumerId && ticket.conversationId === key) {
+        ackConsumerReconciled(ticket.conversationId, consumerId, ticket.epoch);
+        ticket.resolve(true);
+      } else {
+        ticket.resolve(false);
+      }
+    }
+  }, [key, reconciliationCommitVersion]);
+
+  useEffect(() => {
+    return () => {
+      const pending = pendingReconciliationCommitsRef.current;
+      pendingReconciliationCommitsRef.current = [];
+      for (const ticket of pending) ticket.resolve(false);
+    };
+  }, [key]);
 
   useEffect(() => {
     if (!key) return;
@@ -1195,6 +1284,33 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
         console.warn('[useMessageLstCache] Failed to refresh messages after turn settle:', error);
       });
     });
+  }, [key, loadMessages]);
+
+  // Edit-resubmit reconciliation/failure refresh. On success the capturing
+  // instance already purged its suffix optimistically and inserted the new
+  // bubble; this authoritative reload replaces the optimistic state with the
+  // post-truncate DB and lets every consumer ack its barrier. On failure it
+  // restores the authoritative (un-truncated) history.
+  // CHANNEL CONTRACT: this event is the ONLY message-list refresh channel —
+  // its sole consumer is this hook (per mounted list instance). The sibling
+  // 'chat.history.refresh' event refreshes the sidebar conversation list only
+  // and must never gain a message-list listener (drift is pinned by
+  // refreshChannelDrift.structure.test.ts).
+  useEffect(() => {
+    if (!key) return;
+    const refresh = createRefreshRetryController({
+      load: async () => {
+        return (await loadMessages()) !== null;
+      },
+    });
+    const removeListener = addEventListener('conversation.messages.refresh', (event) => {
+      if (event.conversationId !== key) return;
+      refresh.trigger();
+    });
+    return () => {
+      removeListener();
+      refresh.dispose();
+    };
   }, [key, loadMessages]);
 
   return { loadOlder, hasMore, loadingOlder };

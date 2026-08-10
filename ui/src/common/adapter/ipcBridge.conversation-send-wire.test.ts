@@ -165,6 +165,69 @@ describe('conversation send-message wire contract', () => {
     }
   });
 
+  test('observes edit receipt state with the same key and exact identity fields', async () => {
+    const conversationId = parseConversationId(
+      '0190f5fe-7c00-7a00-8000-000000000214'
+    );
+    const targetMessageId = parseMessageId(
+      '0190f5fe-7c00-7a00-8000-000000000213'
+    );
+    let requestedUrl = '';
+    let requestedKey = '';
+    try {
+      globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+        requestedUrl = String(input);
+        requestedKey = new Headers(init?.headers).get('Idempotency-Key') ?? '';
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              success: true,
+              data: {
+                receipt_state: 'accepted',
+                delivery: {
+                  msg_id: '0190f5fe-7c00-7a00-8000-000000000215',
+                  replayed: true,
+                  completed: false,
+                  result_ok: null,
+                  result_text: null,
+                  result_error: null,
+                },
+                replacement_message_id: '0190f5fe-7c00-7a00-8000-000000000215',
+                target_exists: false,
+                replacement_exists: false,
+                requires_reset: false,
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+        );
+      }) as typeof fetch;
+
+      const result = await conversation.editResubmitState.invoke({
+        conversation_id: conversationId,
+        msg_id: targetMessageId,
+        idempotency_key: '0190f5fe-7c00-7a00-0000-000000000216',
+      });
+
+      expect(requestedUrl).toContain(
+        `/messages/${targetMessageId}/edit-resubmit/state`
+      );
+      expect(requestedKey).toBe('0190f5fe-7c00-7a00-0000-000000000216');
+      expect(result.receipt_state).toBe('accepted');
+      expect(result.delivery?.msg_id).toBe(
+        '0190f5fe-7c00-7a00-8000-000000000215'
+      );
+      expect(result.replacement_message_id).toBe(
+        '0190f5fe-7c00-7a00-8000-000000000215'
+      );
+      expect(result.target_exists).toBe(false);
+      expect(result.replacement_exists).toBe(false);
+      expect(result.requires_reset).toBe(false);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   test('fails closed when a legacy response omits replay authority', async () => {
     const msgId = '0190f5fe-7c00-7a00-8000-000000000204';
     try {

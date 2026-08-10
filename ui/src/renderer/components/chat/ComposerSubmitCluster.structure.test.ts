@@ -2,6 +2,8 @@
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
+import { isValidElement, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react';
+import { ComposerStopButton } from './ComposerSubmitCluster';
 
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
@@ -22,6 +24,25 @@ describe('ComposerSubmitCluster', () => {
     expect(source.includes('const showStopButton = showStop && Boolean(onStop)')).toBe(true);
     expect(source.includes('const showSendButton = !autoWorkMode && !showStopButton')).toBe(true);
     expect(source.includes('const showSteerButton = showSteer && !showStopButton')).toBe(true);
+  });
+
+  test('forwards React click detail 0, 1, and 2 through the rendered stop button', () => {
+    const received: number[] = [];
+    const button = ComposerStopButton({
+      label: 'Stop',
+      title: 'Stop generating',
+      onStop: (clickDetail) => received.push(clickDetail),
+    });
+
+    expect(isValidElement(button)).toBe(true);
+    const onClick = (button as ReactElement<{ onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void }>).props
+      .onClick;
+
+    for (const detail of [0, 1, 2]) {
+      onClick({ detail } as ReactMouseEvent<HTMLButtonElement>);
+    }
+
+    expect(received).toEqual([0, 1, 2]);
   });
 
   test('autoWorkMode renders robot button alongside speech', () => {

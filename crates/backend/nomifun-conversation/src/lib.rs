@@ -43,7 +43,8 @@ pub use routes_trace::conversation_trace_routes;
 pub use service::{
     ConversationService, ConversationSupervisionHook, DELIVERY_NOTIFY_ORIGIN,
     DeliveryNotifyRegistration, IdempotentMessageDelivery, IdmmTurnScope,
-    PublicTurnDeliveryState, TurnCompletionObserver,
+    EditResubmitDeliveryState, EditResubmitObservation, PublicTurnDeliveryState,
+    TurnCompletionObserver,
 };
 pub use state::ConversationRouterState;
 

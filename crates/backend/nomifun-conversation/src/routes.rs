@@ -8,15 +8,17 @@ use nomifun_api_types::{
     ActiveCountResponse, ApiResponse, ApprovalCheckQuery, ApprovalCheckResponse, CloneConversationRequest,
     ConfirmRequest, ConfirmationListResponse, ConversationArtifactListResponse, ConversationArtifactResponse,
     ConversationListResponse, ConversationResponse, CreateConversationRequest, ListConversationsQuery,
-    ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchResponse, SearchMessagesQuery,
-    SendMessageRequest, SendMessageResponse, UpdateConversationArtifactRequest, UpdateConversationRequest,
+    EditResubmitReceiptState, EditResubmitStateResponse, ListMessagesQuery, MessageListResponse,
+    MessageResponse, MessageSearchResponse, SearchMessagesQuery, SendMessageRequest,
+    SendMessageResponse, UpdateConversationArtifactRequest, UpdateConversationRequest,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::{AppError, ConversationId, MessageId};
 
 use crate::service::summon::SetSummonRequest;
 use crate::service::{
-    IdempotentMessageDelivery, strip_clone_instance_state, validate_public_idempotency_key,
+    EditResubmitDeliveryState, IdempotentMessageDelivery, strip_clone_instance_state,
+    validate_public_idempotency_key,
 };
 use crate::state::ConversationRouterState;
 
@@ -43,6 +45,10 @@ pub fn conversation_routes(state: ConversationRouterState) -> Router {
         .route(
             "/api/conversations/{conversation_id}/messages/{message_id}/edit-resubmit",
             post(edit_resubmit),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/messages/{message_id}/edit-resubmit/state",
+            get(edit_resubmit_state),
         )
         .route(
             "/api/conversations/{conversation_id}/messages/{message_id}/knowledge-writeback/retry",
@@ -332,6 +338,43 @@ async fn edit_resubmit(
         StatusCode::ACCEPTED,
         Json(ApiResponse::ok(send_message_response(delivery))),
     ))
+}
+
+async fn edit_resubmit_state(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(params): Path<MessagePathParams>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<EditResubmitStateResponse>>, AppError> {
+    let idempotency_key = public_idempotency_key_from_headers(&headers)?;
+    let observation = state
+        .service
+        .edit_resubmit_delivery_state(
+            &user.id,
+            params.conversation_id.as_str(),
+            params.message_id.as_str(),
+            &idempotency_key,
+        )
+        .await?;
+    let (receipt_state, delivery) = match observation.delivery_state {
+        EditResubmitDeliveryState::Missing => (EditResubmitReceiptState::Missing, None),
+        EditResubmitDeliveryState::Accepted(delivery) => (
+            EditResubmitReceiptState::Accepted,
+            Some(send_message_response(delivery)),
+        ),
+        EditResubmitDeliveryState::Completed(delivery) => (
+            EditResubmitReceiptState::Completed,
+            Some(send_message_response(delivery)),
+        ),
+    };
+    Ok(Json(ApiResponse::ok(EditResubmitStateResponse {
+        receipt_state,
+        delivery,
+        replacement_message_id: observation.replacement_message_id,
+        target_exists: observation.target_exists,
+        replacement_exists: observation.replacement_exists,
+        requires_reset: observation.requires_reset,
+    })))
 }
 
 async fn retry_knowledge_writeback(

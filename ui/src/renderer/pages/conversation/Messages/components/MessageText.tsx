@@ -8,7 +8,7 @@ import type { MessageId } from '@/common/types/ids';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { iconColors } from '@/renderer/styles/colors';
-import { Alert, Message, Tooltip } from '@arco-design/web-react';
+import { Alert, Button, Message, Tooltip } from '@arco-design/web-react';
 import { CheckOne, CloseOne, Copy, Edit, Info, Loading, Star } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -17,6 +17,7 @@ import useSWR from 'swr';
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import { emitter } from '@/renderer/utils/emitter';
 import { useMessageList } from '../hooks';
+import { useEditingMessage } from '../editingMessageStore';
 import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
 import FilePreview from '@renderer/components/media/FilePreview';
 import HorizontalFileList from '@renderer/components/media/HorizontalFileList';
@@ -434,6 +435,11 @@ const MessageText: React.FC<{
   // 仅 Nomi、且为最近一条用户文本消息时可编辑（与后端"仅最近一条"对齐）。
   const messageList = useMessageList();
   const editableMessageId = message.message_id ?? message.msg_id;
+  // C3: 编辑中徽章——SendBox 在编辑 store 登记的 msgId 与本气泡 durable id 一致。
+  // C3: editing badge — SendBox registered this message's durable id in the
+  // editing store, so this bubble shows the badge (+ pending = resubmitting).
+  const editingState = useEditingMessage(conversationId);
+  const isEditingThis = editingState != null && editableMessageId != null && editingState.msgId === editableMessageId;
   const isLatestUserMessage = useMemo(() => {
     if (!isUserMessage || !editableMessageId) return false;
     const lastRight = [...messageList].reverse().find((m) => m.position === 'right' && m.type === 'text');
@@ -611,6 +617,38 @@ const MessageText: React.FC<{
             )}
           </div>
         )}
+        {isEditingThis && (
+          <div
+            className={classNames(
+              'mt-2px mb-2px flex items-center gap-4px text-12px text-t-secondary select-none',
+              { 'self-end': isUserMessage }
+            )}
+          >
+            {editingState?.pending ? (
+              <Loading theme='outline' size='13' className='animate-spin' />
+            ) : (
+              <Edit theme='outline' size='13' />
+            )}
+            <span>
+              {editingState?.phase === 'confirming'
+                ? t('conversation.editMessage.confirmingBadge')
+                : t('conversation.editMessage.editingBadge')}
+            </span>
+            {editingState?.phase === 'confirming' && editingState.continueConfirmation && (
+              <Button
+                type='text'
+                size='mini'
+                className='!h-20px !px-4px'
+                onClick={(event) => {
+                  event.stopPropagation();
+                  editingState.continueConfirmation?.();
+                }}
+              >
+                {t('conversation.editMessage.continueConfirmation')}
+              </Button>
+            )}
+          </div>
+        )}
         {hasRenderableContent && (
           <div
             className={classNames(
@@ -622,6 +660,10 @@ const MessageText: React.FC<{
                 'message-bubble--user bg-aou-2': bubbleVariant === 'user',
                 'message-bubble--agent bg-3': bubbleVariant === 'agent',
                 'message-bubble-enter': shouldPlayEnterAnimation,
+                // C3: 编辑中气泡轻微置灰（正在回填/重发，行即将被替换）。
+                // C3: slightly dim the bubble while its message is being edited
+                // (recalled into the composer, or about to be replaced by resubmit).
+                'opacity-70': isEditingThis,
               }
             )}
           >

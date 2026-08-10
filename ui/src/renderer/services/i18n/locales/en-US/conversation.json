@@ -769,7 +769,16 @@
   },
   "editMessage": {
     "action": "Edit",
-    "banner": "Editing message — sending will re-run from here"
+    "banner": "Editing message — sending will re-run from here",
+    "editingBadge": "Editing",
+    "confirmingBadge": "Confirming resend result",
+    "continueConfirmation": "Continue checking",
+    "failed": "Couldn't resend the edited message. Please try again.",
+    "targetChanged": "The original message changed, so the conversation was refreshed. Your current content remains as a normal draft.",
+    "resetRequired": "The edit result cannot be confirmed safely. Reset the conversation before continuing.",
+    "resetAction": "Reset conversation",
+    "resetSuccess": "Conversation reset",
+    "resetFailed": "Couldn't reset the conversation. Please try again."
   },
   "slashCommands": {
     "compact": {
