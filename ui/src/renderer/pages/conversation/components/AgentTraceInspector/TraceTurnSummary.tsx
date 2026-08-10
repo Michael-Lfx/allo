@@ -10,6 +10,7 @@ import { Button, Message, Tag, Tooltip } from '@arco-design/web-react';
 import { Copy } from '@icon-park/react';
 import { copyText } from '@renderer/utils/ui/clipboard';
 import type { AgentTurnTrace } from './useAgentTraces';
+import { ArtifactRowMeta } from './TraceSessionArtifacts';
 import {
   contextOccupancyPercent,
   formatClock,
@@ -202,7 +203,24 @@ const TraceTurnSummary: React.FC<TraceTurnSummaryProps> = ({ trace }) => {
           }`}
           warn={(summary?.tool_error_count ?? 0) > 0}
         />
+        <MetricCell
+          label={t('conversation.agentTrace.artifacts')}
+          value={summary?.artifact_count ?? summary?.artifacts?.length ?? 0}
+        />
       </div>
+
+      {(summary?.artifacts?.length ?? 0) > 0 ? (
+        <div className='px-12px pb-8px'>
+          <div className='text-11px text-[var(--color-text-3)] mb-4px'>
+            {t('conversation.agentTrace.turnArtifacts')}
+          </div>
+          <div className='rounded-4px bg-[var(--color-fill-1)] px-8px py-6px flex flex-col gap-6px'>
+            {summary?.artifacts?.map((artifact) => (
+              <ArtifactRowMeta key={artifact.id} artifact={artifact} />
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {(trace.provider || trace.model) && (
         <div className='px-12px pb-6px text-12px text-[var(--color-text-2)]'>

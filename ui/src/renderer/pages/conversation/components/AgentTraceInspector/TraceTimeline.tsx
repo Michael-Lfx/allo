@@ -10,6 +10,8 @@ import { Button, Collapse, Input, Message, Tag, Tooltip } from '@arco-design/web
 import { Copy } from '@icon-park/react';
 import { copyText } from '@renderer/utils/ui/clipboard';
 import type { AgentTraceSpan } from './useAgentTraces';
+import { spanArtifacts } from './useAgentTraces';
+import { ArtifactRowMeta } from './TraceSessionArtifacts';
 import { formatElapsed, formatJson, shortId } from './format';
 
 export interface TraceTimelineProps {
@@ -84,9 +86,13 @@ const HighlightChips: React.FC<{ span: AgentTraceSpan }> = ({ span }) => {
   const toolName = attrString(span.attributes, 'tool_name');
   const callId = attrString(span.attributes, 'call_id');
   const textChars = attrString(span.attributes, 'text_chars');
+  const artifactCount = attrString(span.attributes, 'artifact_count');
   if (toolName && toolName !== span.name) chips.push({ label: 'tool', value: toolName });
   if (callId) chips.push({ label: 'call', value: shortId(callId, 10) });
   if (textChars) chips.push({ label: 'chars', value: textChars });
+  if (artifactCount && artifactCount !== '0') {
+    chips.push({ label: 'arts', value: artifactCount });
+  }
   if (chips.length === 0) return null;
   return (
     <span className='hidden sm:inline-flex items-center gap-4px shrink-0 max-w-[40%] overflow-hidden'>
@@ -273,7 +279,8 @@ const TraceTimeline: React.FC<TraceTimelineProps> = ({ spans, turnStartedAtMs })
           {filtered.map((span, index) => {
             const duration = spanDurationMs(span);
             const offset = Math.max(0, span.started_at_ms - turnStartedAtMs);
-            const attrs = attrEntries(span.attributes);
+            const artifacts = spanArtifacts(span.attributes);
+            const attrs = attrEntries(span.attributes).filter(([key]) => key !== 'artifacts');
             const header = (
               <div className='flex items-center gap-6px min-w-0 pr-8px w-full'>
                 <span className='text-10px text-[var(--color-text-3)] tabular-nums shrink-0 w-18px'>
@@ -368,6 +375,19 @@ const TraceTimeline: React.FC<TraceTimelineProps> = ({ spans, turnStartedAtMs })
                       <pre className='m-0 max-h-220px overflow-auto rounded-4px bg-[var(--color-fill-1)] px-8px py-6px text-11px text-[var(--color-text-1)] whitespace-pre-wrap break-all font-mono'>
                         {span.preview}
                       </pre>
+                    </div>
+                  ) : null}
+
+                  {artifacts.length > 0 ? (
+                    <div>
+                      <div className='text-11px text-[var(--color-text-3)] mb-2px'>
+                        {t('conversation.agentTrace.artifacts')} · {artifacts.length}
+                      </div>
+                      <div className='rounded-4px bg-[var(--color-fill-1)] px-8px py-6px flex flex-col gap-6px'>
+                        {artifacts.map((artifact) => (
+                          <ArtifactRowMeta key={artifact.id} artifact={artifact} />
+                        ))}
+                      </div>
                     </div>
                   ) : null}
 

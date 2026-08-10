@@ -15,6 +15,7 @@ import {
   capabilityHeaderButtonClass,
   capabilityHeaderButtonStyle,
 } from '../CapabilityHeaderButton';
+import TraceSessionArtifacts from './TraceSessionArtifacts';
 import TraceTimeline from './TraceTimeline';
 import TraceTurnSummary from './TraceTurnSummary';
 import {
@@ -26,7 +27,9 @@ import {
 } from './format';
 import {
   getAgentTrace,
+  listAgentTraceArtifacts,
   listAgentTraces,
+  type AgentTraceArtifactIndexEntry,
   type AgentTraceIndexEntry,
   type AgentTurnTrace,
 } from './useAgentTraces';
@@ -48,16 +51,23 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
   const [loading, setLoading] = useState(false);
   const [errorKey, setErrorKey] = useState<'loadFailed' | 'developerModeRequired' | null>(null);
   const [entries, setEntries] = useState<AgentTraceIndexEntry[]>([]);
+  const [artifacts, setArtifacts] = useState<AgentTraceArtifactIndexEntry[]>([]);
+  const [artifactsLoading, setArtifactsLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<AgentTurnTrace | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   const loadList = useCallback(async () => {
     setLoading(true);
+    setArtifactsLoading(true);
     setErrorKey(null);
     try {
-      const rows = await listAgentTraces(String(conversationId), 100);
+      const [rows, arts] = await Promise.all([
+        listAgentTraces(String(conversationId), 100),
+        listAgentTraceArtifacts(String(conversationId), 100).catch(() => [] as AgentTraceArtifactIndexEntry[]),
+      ]);
       setEntries(rows);
+      setArtifacts(arts);
       if (rows.length === 0) {
         setSelectedId(null);
         setDetail(null);
@@ -66,6 +76,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
       }
     } catch (err) {
       setEntries([]);
+      setArtifacts([]);
       setDetail(null);
       setSelectedId(null);
       if (isBackendHttpError(err) && err.status === 403) {
@@ -75,6 +86,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
       }
     } finally {
       setLoading(false);
+      setArtifactsLoading(false);
     }
   }, [conversationId, selectedId]);
 
@@ -141,6 +153,9 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
             <div className='text-11px text-[var(--color-text-3)] truncate'>{conversationId}</div>
             <div className='text-10px text-[var(--color-text-4)]'>
               {t('conversation.agentTrace.turnCount', { count: entries.length })}
+              {artifacts.length > 0
+                ? ` · ${t('conversation.agentTrace.artifactCount', { count: artifacts.length })}`
+                : ''}
             </div>
           </div>
           <Button
@@ -166,10 +181,18 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
           <Empty className='py-40px' description={t('conversation.agentTrace.empty')} />
         ) : (
           <div className='flex flex-col min-h-0' style={{ height: 'calc(100% - 49px)' }}>
-            <div className='max-h-[30%] overflow-auto border-b border-solid border-[var(--color-border-2)] shrink-0'>
+            <TraceSessionArtifacts
+              entries={artifacts}
+              loading={artifactsLoading}
+              selectedTraceId={selectedId}
+              onSelectTrace={setSelectedId}
+            />
+
+            <div className='max-h-[26%] overflow-auto border-b border-solid border-[var(--color-border-2)] shrink-0'>
               {entries.map((entry) => {
                 const active = entry.trace_id === selectedId;
                 const outcome = outcomeLabel(entry.success, entry.stop_reason);
+                const artCount = entry.artifact_count ?? 0;
                 return (
                   <button
                     key={entry.trace_id}
@@ -227,6 +250,11 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
                           ? ` · ${entry.tool_error_count} err`
                           : ''}
                       </span>
+                      {artCount > 0 ? (
+                        <span>
+                          {t('conversation.agentTrace.artifacts')}: {artCount}
+                        </span>
+                      ) : null}
                       <span className='font-mono' title={entry.msg_id}>
                         msg={shortId(entry.msg_id)}
                       </span>

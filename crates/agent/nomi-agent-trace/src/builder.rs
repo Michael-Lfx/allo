@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::redact::redact_preview;
 use crate::types::{
-    SpanKind, SpanStatus, TraceSpan, TurnSummary, TurnTrace, SCHEMA_VERSION,
+    SpanKind, SpanStatus, TraceArtifactMeta, TraceSpan, TurnSummary, TurnTrace, SCHEMA_VERSION,
 };
 
 /// Identity / routing metadata supplied when a turn starts.
@@ -186,11 +186,15 @@ impl TurnTraceBuilder {
     }
 
     /// Record a tool call end by `call_id`.
+    ///
+    /// `artifacts` is metadata-only (id / kind / relative_path / size / sha).
+    /// Absolute paths and binary payloads must never be passed here.
     pub fn note_tool_end(
         &mut self,
         call_id: &str,
         status: SpanStatus,
         output_preview: Option<&str>,
+        artifacts: &[TraceArtifactMeta],
     ) {
         if matches!(status, SpanStatus::Error) {
             self.trace.summary.tool_error_count =
@@ -204,6 +208,17 @@ impl TurnTraceBuilder {
             "call_id".into(),
             serde_json::Value::String(call_id.to_owned()),
         );
+        if !artifacts.is_empty() {
+            let count = artifacts.len() as u32;
+            attrs.insert("artifact_count".into(), serde_json::json!(count));
+            attrs.insert(
+                "artifacts".into(),
+                serde_json::to_value(artifacts).unwrap_or_else(|_| serde_json::json!([])),
+            );
+            self.trace.summary.artifact_count =
+                self.trace.summary.artifact_count.saturating_add(count);
+            self.trace.summary.artifacts.extend(artifacts.iter().cloned());
+        }
         self.end_span(&span_id, status, output_preview, attrs);
     }
 
@@ -353,7 +368,7 @@ mod tests {
         b.note_text_delta("world");
         let tool = b.note_tool_start("call_1", "bash", Some(r#"{"cmd":"echo hi"}"#));
         assert_ne!(llm, tool);
-        b.note_tool_end("call_1", SpanStatus::Ok, Some("hi"));
+        b.note_tool_end("call_1", SpanStatus::Ok, Some("hi"), &[]);
         b.end_span(&llm, SpanStatus::Ok, None, BTreeMap::new());
         b.apply_turn_completed(
             Some(42),
@@ -378,6 +393,36 @@ mod tests {
         let tool_span = trace.spans.iter().find(|s| s.kind == SpanKind::Tool).unwrap();
         assert_eq!(tool_span.status, SpanStatus::Ok);
         assert!(tool_span.preview.is_some());
+    }
+
+    #[test]
+    fn tool_artifacts_attach_to_span_and_summary() {
+        let mut b = TurnTraceBuilder::new(meta());
+        b.note_tool_start("call_a", "generate_image", Some("{}"));
+        let artifacts = vec![TraceArtifactMeta {
+            id: "art_1".into(),
+            kind: "image".into(),
+            mime_type: "image/png".into(),
+            relative_path: "nomifun-artifacts/out.png".into(),
+            size_bytes: 128,
+            sha256: "abc".into(),
+            call_id: Some("call_a".into()),
+            tool_name: Some("generate_image".into()),
+        }];
+        b.note_tool_end("call_a", SpanStatus::Ok, Some("ok"), &artifacts);
+        let trace = b.finalize();
+        assert_eq!(trace.summary.artifact_count, 1);
+        assert_eq!(trace.summary.artifacts.len(), 1);
+        assert_eq!(
+            trace.summary.artifacts[0].relative_path,
+            "nomifun-artifacts/out.png"
+        );
+        let tool_span = trace.spans.iter().find(|s| s.kind == SpanKind::Tool).unwrap();
+        assert_eq!(
+            tool_span.attributes.get("artifact_count"),
+            Some(&serde_json::json!(1))
+        );
+        assert!(tool_span.attributes.get("artifacts").is_some());
     }
 
     #[test]
@@ -411,7 +456,7 @@ mod tests {
     fn tool_error_increments_counter() {
         let mut b = TurnTraceBuilder::new(meta());
         b.note_tool_start("c1", "x", None);
-        b.note_tool_end("c1", SpanStatus::Error, Some("fail"));
+        b.note_tool_end("c1", SpanStatus::Error, Some("fail"), &[]);
         assert_eq!(b.trace.summary.tool_call_count, 1);
         assert_eq!(b.trace.summary.tool_error_count, 1);
     }

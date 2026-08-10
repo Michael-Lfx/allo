@@ -17,5 +17,6 @@ pub use redact::{
 pub use session::{classify_session_kind, is_session_dialogue};
 pub use store::{FileTraceStore, TraceStoreError};
 pub use types::{
-    SpanKind, SpanStatus, TraceIndexEntry, TraceSpan, TurnSummary, TurnTrace, SCHEMA_VERSION,
+    SpanKind, SpanStatus, TraceArtifactIndexEntry, TraceArtifactMeta, TraceIndexEntry, TraceSpan,
+    TurnSummary, TurnTrace, SCHEMA_VERSION,
 };

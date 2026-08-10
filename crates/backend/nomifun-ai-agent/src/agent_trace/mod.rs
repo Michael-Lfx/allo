@@ -14,6 +14,6 @@ pub use hub::{AgentTraceHub, TraceApiError};
 pub use prefs::{DEVELOPER_MODE_PREF_KEY, developer_mode_enabled};
 
 pub use nomi_agent_trace::{
-    FileTraceStore, TraceIndexEntry, TraceStoreError, TurnTrace, classify_session_kind,
-    is_session_dialogue,
+    FileTraceStore, TraceArtifactIndexEntry, TraceArtifactMeta, TraceIndexEntry, TraceStoreError,
+    TurnTrace, classify_session_kind, is_session_dialogue,
 };

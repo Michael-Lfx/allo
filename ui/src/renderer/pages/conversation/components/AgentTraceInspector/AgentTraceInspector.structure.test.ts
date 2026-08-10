@@ -30,16 +30,24 @@ describe('AgentTraceInspector', () => {
     expect(summary.includes('copyJson')).toBe(true);
     expect(summary.includes('trace_id')).toBe(true);
     expect(summary.includes('cache_read_tokens')).toBe(true);
+    expect(summary.includes('turnArtifacts')).toBe(true);
     expect(timeline.includes('attributes')).toBe(true);
     expect(timeline.includes('Collapse')).toBe(true);
     expect(timeline.includes('preview')).toBe(true);
     expect(timeline.includes('searchSpans')).toBe(true);
     expect(timeline.includes('copySpan')).toBe(true);
+    expect(timeline.includes('spanArtifacts')).toBe(true);
   });
 
-  test('fetch helper targets debug agent-traces endpoints', () => {
+  test('session artifacts panel and fetch helpers are wired', () => {
+    const inspector = readSource(new URL('./index.tsx', import.meta.url));
+    const session = readSource(new URL('./TraceSessionArtifacts.tsx', import.meta.url));
     const hook = readSource(new URL('./useAgentTraces.ts', import.meta.url));
+    expect(inspector.includes('TraceSessionArtifacts')).toBe(true);
+    expect(inspector.includes('listAgentTraceArtifacts')).toBe(true);
+    expect(session.includes('sessionArtifacts')).toBe(true);
     expect(hook.includes('/api/debug/agent-traces?')).toBe(true);
+    expect(hook.includes('/api/debug/agent-traces/artifacts?')).toBe(true);
     expect(hook.includes('/api/debug/agent-traces/${encodeURIComponent(traceId)}')).toBe(true);
     expect(hook.includes('conversation_id')).toBe(true);
   });

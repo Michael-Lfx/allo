@@ -7,12 +7,13 @@ use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use nomi_agent_trace::{
-    SpanStatus, TokenCounts, TurnTraceBuilder, TurnTraceMeta, classify_session_kind,
-    is_session_dialogue, redact_json_value, redact_preview,
+    SpanStatus, TokenCounts, TraceArtifactMeta, TurnTraceBuilder, TurnTraceMeta,
+    classify_session_kind, is_session_dialogue, redact_json_value, redact_preview,
 };
 
+use crate::artifact_store::{ArtifactKind, PersistedArtifact};
 use crate::protocol::events::{
-    AgentStreamEvent, ToolCallStatus, TurnCompletedEventData, TurnStopReason,
+    AgentStreamEvent, ToolCallEventData, ToolCallStatus, TurnCompletedEventData, TurnStopReason,
 };
 
 use super::hub::AgentTraceHub;
@@ -168,24 +169,30 @@ fn observe_event(builder: &mut TurnTraceBuilder, event: &AgentStreamEvent) -> bo
                     builder.note_tool_start(&data.call_id, &data.name, preview_str.as_deref());
                 }
                 ToolCallStatus::Completed => {
+                    let artifacts = artifact_metas(data);
                     builder.note_tool_end(
                         &data.call_id,
                         SpanStatus::Ok,
                         data.output.as_deref(),
+                        &artifacts,
                     );
                 }
                 ToolCallStatus::Error => {
+                    let artifacts = artifact_metas(data);
                     builder.note_tool_end(
                         &data.call_id,
                         SpanStatus::Error,
                         data.output.as_deref(),
+                        &artifacts,
                     );
                 }
                 ToolCallStatus::Canceled => {
+                    let artifacts = artifact_metas(data);
                     builder.note_tool_end(
                         &data.call_id,
                         SpanStatus::Cancelled,
                         data.output.as_deref(),
+                        &artifacts,
                     );
                 }
             }
@@ -282,5 +289,77 @@ fn stop_reason_label(reason: TurnStopReason) -> &'static str {
         TurnStopReason::MaxTurnRequests => "max_turn_requests",
         TurnStopReason::Refusal => "refusal",
         TurnStopReason::Cancelled => "cancelled",
+    }
+}
+
+/// Map verified receipts into trace metadata (no absolute paths / no bytes).
+fn artifact_metas(data: &ToolCallEventData) -> Vec<TraceArtifactMeta> {
+    data.artifacts
+        .iter()
+        .map(|artifact| to_trace_artifact(artifact, Some(data.call_id.as_str()), Some(data.name.as_str())))
+        .collect()
+}
+
+fn to_trace_artifact(
+    artifact: &PersistedArtifact,
+    call_id: Option<&str>,
+    tool_name: Option<&str>,
+) -> TraceArtifactMeta {
+    TraceArtifactMeta {
+        id: artifact.id.clone(),
+        kind: artifact_kind_label(artifact.kind).to_owned(),
+        mime_type: artifact.mime_type.clone(),
+        relative_path: artifact.relative_path.clone(),
+        size_bytes: artifact.size_bytes,
+        sha256: artifact.sha256.clone(),
+        call_id: call_id.map(str::to_owned),
+        tool_name: tool_name.map(str::to_owned),
+    }
+}
+
+fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::Image => "image",
+        ArtifactKind::Audio => "audio",
+        ArtifactKind::Video => "video",
+        ArtifactKind::Text => "text",
+        ArtifactKind::File => "file",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::artifact_store::ArtifactKind;
+
+    #[test]
+    fn maps_persisted_artifact_without_absolute_path() {
+        let data = ToolCallEventData {
+            call_id: "call-1".into(),
+            name: "generate_image".into(),
+            args: serde_json::json!({}),
+            status: ToolCallStatus::Completed,
+            input: None,
+            output: Some("ok".into()),
+            description: None,
+            retry: None,
+            artifacts: vec![PersistedArtifact {
+                id: "art-1".into(),
+                kind: ArtifactKind::Image,
+                mime_type: "image/png".into(),
+                path: "C:/secret/workspace/nomifun-artifacts/a.png".into(),
+                relative_path: "nomifun-artifacts/a.png".into(),
+                size_bytes: 42,
+                sha256: "deadbeef".into(),
+            }],
+        };
+        let metas = artifact_metas(&data);
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].relative_path, "nomifun-artifacts/a.png");
+        assert_eq!(metas[0].kind, "image");
+        assert_eq!(metas[0].call_id.as_deref(), Some("call-1"));
+        let json = serde_json::to_string(&metas[0]).unwrap();
+        assert!(!json.contains("C:/secret"));
+        assert!(!json.contains("workspace"));
     }
 }

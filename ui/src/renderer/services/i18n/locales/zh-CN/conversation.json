@@ -820,6 +820,13 @@
     "outcomeFail": "失败",
     "outcomeCancelled": "已取消",
     "outcomeUnknown": "未知",
-    "turnCount": "{{count}} 条 turn"
+    "turnCount": "{{count}} 条 turn",
+    "artifacts": "Artifacts",
+    "turnArtifacts": "本 turn 产物",
+    "sessionArtifacts": "会话产物",
+    "sessionArtifactsHint": "仅元数据 · 点击跳转 turn",
+    "emptyArtifacts": "当前会话暂无已验证产物",
+    "artifactCount": "{{count}} 个产物",
+    "copyPath": "复制路径"
   }
 }

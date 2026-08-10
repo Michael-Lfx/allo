@@ -9,7 +9,7 @@ use serde::Deserialize;
 use nomifun_api_types::ApiResponse;
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
-use nomifun_ai_agent::{TraceIndexEntry, TurnTrace};
+use nomifun_ai_agent::{TraceArtifactIndexEntry, TraceIndexEntry, TurnTrace};
 
 use crate::state::ConversationRouterState;
 
@@ -51,6 +51,8 @@ pub fn conversation_trace_routes() -> Router<ConversationRouterState> {
     Router::new()
         .route("/api/debug/agent-traces", get(list_for_conversation))
         .route("/api/debug/agent-traces/recent", get(list_recent))
+        // Static segment must be registered before `{trace_id}`.
+        .route("/api/debug/agent-traces/artifacts", get(list_artifacts))
         .route("/api/debug/agent-traces/{trace_id}", get(get_trace))
 }
 
@@ -81,6 +83,25 @@ async fn list_recent(
     let hub = require_hub(&state)?;
     let entries = hub
         .list_recent(clamp_limit(query.limit))
+        .await
+        .map_err(|error| error.into_app_error())?;
+    Ok(axum::Json(ApiResponse::ok(entries)))
+}
+
+async fn list_artifacts(
+    State(state): State<ConversationRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<ListConversationTracesQuery>,
+) -> Result<axum::Json<ApiResponse<Vec<TraceArtifactIndexEntry>>>, AppError> {
+    let hub = require_hub(&state)?;
+    let conversation_id = query.conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err(AppError::BadRequest(
+            "conversation_id query parameter is required".into(),
+        ));
+    }
+    let entries = hub
+        .list_artifacts_for_conversation(conversation_id, clamp_limit(query.limit))
         .await
         .map_err(|error| error.into_app_error())?;
     Ok(axum::Json(ApiResponse::ok(entries)))
