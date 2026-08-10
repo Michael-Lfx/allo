@@ -238,36 +238,38 @@ const DeliverableRow: React.FC<{
               )}
             </span>
           )}
-          {previewSupported && (
-            <span
-              className='flex items-center cursor-pointer rd-4px p-1px hover:bg-4'
-              style={{ lineHeight: 0 }}
-              title={t('preview.preview')}
-              onClick={handlePreview}
-            >
-              <PreviewOpen theme='outline' size='14' fill={iconColors.secondary} />
-            </span>
-          )}
-          {showShellActions && (
-            <>
+          <div className='flex shrink-0 items-center gap-6px'>
+            {previewSupported && (
               <span
                 className='flex items-center cursor-pointer rd-4px p-1px hover:bg-4'
                 style={{ lineHeight: 0 }}
-                title={t('messages.turnDeliverables.open', { defaultValue: 'Open' })}
-                onClick={() => void ipcBridge.shell.openFile.invoke(item.statPath!)}
+                title={t('preview.preview')}
+                onClick={handlePreview}
               >
-                <Export theme='outline' size='14' fill={iconColors.secondary} />
+                <PreviewOpen theme='outline' size='14' fill={iconColors.secondary} />
               </span>
-              <span
-                className='flex items-center cursor-pointer rd-4px p-1px hover:bg-4'
-                style={{ lineHeight: 0 }}
-                title={t('messages.turnDeliverables.reveal', { defaultValue: 'Reveal in folder' })}
-                onClick={() => void ipcBridge.shell.showItemInFolder.invoke(item.statPath!)}
-              >
-                <FolderOpen theme='outline' size='14' fill={iconColors.secondary} />
-              </span>
-            </>
-          )}
+            )}
+            {showShellActions && (
+              <>
+                <span
+                  className='flex items-center cursor-pointer rd-4px p-1px hover:bg-4'
+                  style={{ lineHeight: 0 }}
+                  title={t('messages.turnDeliverables.open', { defaultValue: 'Open' })}
+                  onClick={() => void ipcBridge.shell.openFile.invoke(item.statPath!)}
+                >
+                  <Export theme='outline' size='14' fill={iconColors.secondary} />
+                </span>
+                <span
+                  className='flex items-center cursor-pointer rd-4px p-1px hover:bg-4'
+                  style={{ lineHeight: 0 }}
+                  title={t('messages.turnDeliverables.reveal', { defaultValue: 'Reveal in folder' })}
+                  onClick={() => void ipcBridge.shell.showItemInFolder.invoke(item.statPath!)}
+                >
+                  <FolderOpen theme='outline' size='14' fill={iconColors.secondary} />
+                </span>
+              </>
+            )}
+          </div>
         </div>
       </div>
     </div>

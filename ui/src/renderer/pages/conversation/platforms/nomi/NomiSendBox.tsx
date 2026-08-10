@@ -82,11 +82,17 @@ import {
   warmupConversationForPassiveMount,
 } from '@/renderer/pages/conversation/utils/warmupConversation';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
-import { allSupportedExts, imageExts, type FileMetadata } from '@/renderer/services/FileService';
+import { allSupportedExts, type FileMetadata } from '@/renderer/services/FileService';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { guidTransitionMark } from '@/renderer/pages/guid/hooks/guidTransitionTiming';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage, collectSelectedFiles, removeSubmittedAttachments } from '@/renderer/utils/file/messageFiles';
+import {
+  MAX_IMAGE_ATTACHMENTS,
+  admitImageAttachments,
+  hasTooManyImageAttachments,
+  isImageAttachment,
+} from '@/renderer/utils/file/imageAttachments';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
 import {
   clearEditingMessageByOperation,
@@ -114,13 +120,6 @@ import { ContextUsageRing } from './ContextUsageRing';
 import type { NomiModelSelection } from './useNomiModelSelection';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import { catalogReasoningEffortForModel } from '@/renderer/utils/model/reasoningEffort';
-
-const MAX_IMAGE_ATTACHMENTS = 10;
-
-const isImageAttachment = (path: string) => {
-  const normalized = path.toLowerCase();
-  return imageExts.some((extension) => normalized.endsWith(extension));
-};
 
 const imageAttachmentSignature = (paths: string[]) =>
   Array.from(new Set(paths.filter(isImageAttachment))).sort().join('\u0000');
@@ -409,35 +408,20 @@ const NomiSendBox: React.FC<{
     [t]
   );
 
-  const admitImageAttachments = useCallback(
+  const admitNomiImageAttachments = useCallback(
     (paths: string[]) => {
-      const known = new Set(collectSelectedFiles(uploadFile, atPath));
-      let imageCount = [...known].filter(isImageAttachment).length;
-      const accepted: string[] = [];
-      let rejected = 0;
-
-      for (const path of paths) {
-        if (known.has(path)) continue;
-        if (isImageAttachment(path) && imageCount >= MAX_IMAGE_ATTACHMENTS) {
-          rejected += 1;
-          continue;
-        }
-        known.add(path);
-        accepted.push(path);
-        if (isImageAttachment(path)) imageCount += 1;
-      }
-      if (rejected > 0) {
+      const admission = admitImageAttachments(collectSelectedFiles(uploadFile, atPath), paths);
+      if (admission.rejectedImageCount > 0) {
         warnImageAttachmentLimit(paths);
       }
-      return accepted;
+      return admission.acceptedPaths;
     },
     [atPath, uploadFile, warnImageAttachmentLimit]
   );
 
   const canSendImageAttachments = useCallback(
     (files: string[]) => {
-      const imageCount = new Set(files.filter(isImageAttachment)).size;
-      if (imageCount <= MAX_IMAGE_ATTACHMENTS) {
+      if (!hasTooManyImageAttachments(files)) {
         imageLimitWarningKeyRef.current = null;
         return true;
       }
@@ -449,10 +433,10 @@ const NomiSendBox: React.FC<{
 
   const handleNomiFilesAdded = useCallback(
     (files: FileMetadata[]) => {
-      const accepted = new Set(admitImageAttachments(files.map((file) => file.path)));
+      const accepted = new Set(admitNomiImageAttachments(files.map((file) => file.path)));
       handleFilesAdded(files.filter((file) => accepted.has(file.path)));
     },
-    [admitImageAttachments, handleFilesAdded]
+    [admitNomiImageAttachments, handleFilesAdded]
   );
 
   const executeCommand = useCallback(
@@ -1249,12 +1233,12 @@ const NomiSendBox: React.FC<{
 
   const appendSelectedFiles = useCallback(
     (files: string[]) => {
-      const accepted = admitImageAttachments(files);
+      const accepted = admitNomiImageAttachments(files);
       if (accepted.length > 0) {
         setUploadFile((prev) => Array.from(new Set([...prev, ...accepted])));
       }
     },
-    [admitImageAttachments, setUploadFile]
+    [admitNomiImageAttachments, setUploadFile]
   );
   const { openFileSelector, onSlashBuiltinCommand } = useOpenFileSelector({
     onFilesSelected: appendSelectedFiles,

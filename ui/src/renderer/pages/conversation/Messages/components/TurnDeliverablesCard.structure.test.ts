@@ -47,6 +47,7 @@ describe('TurnDeliverablesCard structure', () => {
     expect(cardSource.includes("className='block w-520px min-w-0 shrink truncate text-14px leading-20px'")).toBe(true);
     expect(cardSource.includes("className='mr-10px w-3.5rem shrink-0 text-right text-12px text-t-secondary tabular-nums'")).toBe(true);
     expect(cardSource.includes("className='ml-auto flex shrink-0 items-center gap-2px'")).toBe(true);
+    expect(cardSource.includes("className='flex shrink-0 items-center gap-6px'")).toBe(true);
     expect(cardSource.includes("title={t('preview.preview')}")).toBe(true);
     expect(cardSource.includes('splitFileDisplayPath(item.relativePath, item.fileName)')).toBe(true);
     expect(

@@ -3,7 +3,10 @@
 import { useDragUpload } from '@/renderer/hooks/file/useDragUpload';
 import { usePasteService } from '@/renderer/hooks/file/usePasteService';
 import { allSupportedExts, type FileMetadata } from '@/renderer/services/FileService';
+import { MAX_IMAGE_ATTACHMENTS, admitImageAttachments } from '@/renderer/utils/file/imageAttachments';
+import { Message } from '@arco-design/web-react';
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export type GuidInputResult = {
   input: string;
@@ -38,6 +41,7 @@ type UseGuidInputOptions = {
  * Hook that manages input state, file handling, and drag/paste for the Guid page.
  */
 export const useGuidInput = ({ locationState, containerRef }: UseGuidInputOptions): GuidInputResult => {
+  const { t } = useTranslation();
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<string[]>([]);
   const [dir, setDir] = useState<string>('');
@@ -51,18 +55,30 @@ export const useGuidInput = ({ locationState, containerRef }: UseGuidInputOption
     }
   }, [locationState]);
 
-  // Handle pasted files (append mode to support multiple pastes)
-  // Do NOT clear dir here: paste/drag should coexist with a selected workspace,
-  // matching the dialog-upload path (handleFilesUploaded).
-  const handleFilesPasted = useCallback((pastedFiles: FileMetadata[]) => {
-    const file_paths = pastedFiles.map((file) => file.path);
-    setFiles((prevFiles) => [...prevFiles, ...file_paths]);
-  }, []);
+  const appendFilesWithinImageLimit = useCallback(
+    (candidatePaths: string[]) => {
+      const admission = admitImageAttachments(files, candidatePaths);
+      if (admission.rejectedImageCount > 0) {
+        Message.warning(t('conversation.chat.imageAttachmentLimit', { limit: MAX_IMAGE_ATTACHMENTS }));
+      }
+      if (admission.acceptedPaths.length > 0) {
+        setFiles((prevFiles) => Array.from(new Set([...prevFiles, ...admission.acceptedPaths])));
+      }
+    },
+    [files, t]
+  );
 
-  // Handle files uploaded via dialog (append mode)
-  const handleFilesUploaded = useCallback((uploadedPaths: string[]) => {
-    setFiles((prevFiles) => [...prevFiles, ...uploadedPaths]);
-  }, []);
+  // Paste, drag, and file selection all use the same message-image admission rule.
+  // Do NOT clear dir here: attached files coexist with a selected workspace.
+  const handleFilesPasted = useCallback(
+    (pastedFiles: FileMetadata[]) => appendFilesWithinImageLimit(pastedFiles.map((file) => file.path)),
+    [appendFilesWithinImageLimit]
+  );
+
+  const handleFilesUploaded = useCallback(
+    (uploadedPaths: string[]) => appendFilesWithinImageLimit(uploadedPaths),
+    [appendFilesWithinImageLimit]
+  );
 
   const handleRemoveFile = useCallback((targetPath: string) => {
     setFiles((prevFiles) => prevFiles.filter((file) => file !== targetPath));
