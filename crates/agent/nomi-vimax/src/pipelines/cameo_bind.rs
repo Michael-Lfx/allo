@@ -3,6 +3,10 @@
 //! After copy, Cameo plates are privacy-anonymized via the image model: keep
 //! photoreal wardrobe / pose / lighting, replace faces with a generic
 //! unrecognizable virtual face so Seedance does not reject real-person refs.
+//!
+//! Separately, people-free **atmosphere** plates are generated for world-asset
+//! (env/prop) img2img style locking — never feed portrait Cameo into vacant
+//! plates, or Seedream may bake faces into “props” like group photos.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -24,6 +28,16 @@ correspond to any real person. Weaken real portrait identity cues; do not preser
 Keep skin texture, light direction, perspective, and overall photorealism consistent. \
 Do not change the image style, body shape, hair silhouette, wardrobe, props, or background. \
 Single subject. Photorealistic photography. No text, watermark, logo, or extra people.";
+
+/// Img2img: strip every person from a Cameo photo; keep only vacant scene/atmosphere.
+pub(crate) const CAMEO_ATMOSPHERE_PROMPT: &str = "\
+Using this photo only as a scene and style reference, generate a completely people-free atmosphere plate. \
+Erase every person, face, body, hand, silhouette, crowd, mannequin, and human figure — leave no human trace. \
+Keep only the empty environment: architecture, furniture, set dressing, materials, color palette, lighting mood, \
+weather, and era. If the source is a close-up portrait, invent a matching vacant interior/exterior of the same era \
+and palette instead of keeping a face crop. Photorealistic vacant location plate. \
+No group photos, no portraits, no framed photos of people, no reflections of people, no posters of faces. \
+No text, watermark, or logo.";
 
 /// Session working root that owns `cameo/` (parent of idea2video/script2video/novel2video).
 pub(crate) fn resolve_session_root(working_dir: &Path) -> PathBuf {
@@ -112,7 +126,9 @@ pub(crate) async fn apply_session_cameos(
     .await
     .map_err(|e| VimaxError::msg(format!("cameo bind join error: {e}")))??;
 
-    anonymize_bound_cameo_faces(&film_root, &mut registry, image).await?;
+    anonymize_bound_cameo_faces(&film_root, &mut registry, Arc::clone(&image)).await?;
+    // Vacant atmosphere plates for env/prop style lock (never pass portrait Cameo).
+    ensure_cameo_atmosphere_plates(&film_root, &registry, image).await?;
 
     crate::session::write_json_artifact(&registry_path, &registry).await?;
     if film_root != working_dir {
@@ -128,7 +144,7 @@ pub(crate) async fn apply_session_cameos(
 /// Run img2img face anonymization for every bound Cameo plate.
 ///
 /// Keeps `{id}_cameo_raw.png` as the user upload; writes privacy-safe
-/// `{id}_cameo.png` used by Seedance / world-asset refs.
+/// `{id}_cameo.png` used by Seedance cast identity refs (not world-asset style).
 async fn anonymize_bound_cameo_faces(
     film_root: &Path,
     registry: &mut HashMap<String, HashMap<String, HashMap<String, String>>>,
@@ -202,6 +218,87 @@ Resume after checking the image model, or use a more illustrated style."
     Ok(())
 }
 
+/// Build people-free atmosphere plates used as style refs for env/prop generation.
+///
+/// Never fails the Cameo bind pipeline: on image-model errors we log and continue so
+/// planning can still proceed with text-only `[CAMEO SCENE LOCK]` hints.
+async fn ensure_cameo_atmosphere_plates(
+    film_root: &Path,
+    registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+    image: Arc<dyn VimaxImage>,
+) -> VimaxResult<()> {
+    for (identifier, views) in registry.iter() {
+        let Some(item) = views.get("cameo") else {
+            continue;
+        };
+        let Some(path_raw) = item.get("path") else {
+            continue;
+        };
+        let plate = crate::session::resolve_stored_asset_path(path_raw, film_root);
+        if !is_usable_image_file(&plate) {
+            continue;
+        }
+        let raw_path = cameo_raw_path(&plate);
+        let _ = ensure_cameo_raw_plate(&plate, &raw_path);
+        let source = if is_usable_image_file(&raw_path) {
+            raw_path.clone()
+        } else {
+            plate.clone()
+        };
+        let atmos = cameo_atmosphere_path(&plate);
+        let marker = cameo_atmosphere_marker(&atmos);
+        let src_fp = file_fingerprint(&source).unwrap_or_default();
+        if is_usable_image_file(&atmos)
+            && marker.exists()
+            && std::fs::read_to_string(&marker)
+                .map(|s| s.trim() == src_fp)
+                .unwrap_or(false)
+        {
+            continue;
+        }
+
+        tracing::info!(
+            character = %identifier,
+            source = %source.display(),
+            out = %atmos.display(),
+            "generating people-free Cameo atmosphere plate for world-asset style lock"
+        );
+        let tmp = atmos.with_extension("atmosphere_tmp.png");
+        if let Err(err) = image
+            .generate(CAMEO_ATMOSPHERE_PROMPT, &[source.as_path()], &tmp)
+            .await
+        {
+            let _ = std::fs::remove_file(&tmp);
+            tracing::warn!(
+                character = %identifier,
+                error = %err,
+                "cameo atmosphere plate failed; world assets will use text scene lock only"
+            );
+            continue;
+        }
+        if !is_usable_image_file(&tmp) {
+            let _ = std::fs::remove_file(&tmp);
+            tracing::warn!(
+                character = %identifier,
+                "cameo atmosphere plate produced no image; skipping style ref"
+            );
+            continue;
+        }
+        if let Err(err) = copy_image_file_atomic(&tmp, &atmos) {
+            let _ = std::fs::remove_file(&tmp);
+            tracing::warn!(
+                character = %identifier,
+                error = %err,
+                "failed to persist cameo atmosphere plate"
+            );
+            continue;
+        }
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::write(&marker, src_fp.as_bytes());
+    }
+    Ok(())
+}
+
 fn cameo_raw_path(plate: &Path) -> PathBuf {
     let name = plate
         .file_name()
@@ -219,6 +316,25 @@ fn cameo_raw_path(plate: &Path) -> PathBuf {
 
 fn cameo_privacy_marker(plate: &Path) -> PathBuf {
     PathBuf::from(format!("{}.privacy_safe", plate.display()))
+}
+
+fn cameo_atmosphere_path(plate: &Path) -> PathBuf {
+    let name = plate
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("cameo.png");
+    let atmos_name = if let Some(stem) = name.strip_suffix("_cameo.png") {
+        format!("{stem}_cameo_atmosphere.png")
+    } else if let Some(stem) = name.strip_suffix(".png") {
+        format!("{stem}_atmosphere.png")
+    } else {
+        format!("{name}_atmosphere.png")
+    };
+    plate.with_file_name(atmos_name)
+}
+
+fn cameo_atmosphere_marker(atmosphere: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.atmosphere_safe", atmosphere.display()))
 }
 
 fn ensure_cameo_raw_plate(plate: &Path, raw_path: &Path) -> VimaxResult<()> {
@@ -316,12 +432,14 @@ fn match_cameo_to_character<'a>(
 ) -> VimaxResult<&'a CharacterInScene> {
     let cameo_name = photo.character_name.trim();
     let anonymous = is_anonymous_cameo_name(cameo_name);
+    let descriptive = is_descriptive_role_label(cameo_name);
     // When the filename/prompt leaked into character_name, users often put the real
     // cast id in description — try that before idx-order fallback.
     let desc_name = photo.description.trim();
     let desc_as_name = !desc_name.is_empty()
         && !is_anonymous_cameo_name(desc_name)
-        && (anonymous || !cameo::names_match(cameo_name, desc_name));
+        && !is_descriptive_role_label(desc_name)
+        && (anonymous || descriptive || !cameo::names_match(cameo_name, desc_name));
 
     // 1) Explicit prior binding (re-plan / resume).
     if let Some(bound) = photo
@@ -338,8 +456,9 @@ fn match_cameo_to_character<'a>(
         }
     }
 
-    // 2) Exact / fuzzy match on character_name (skip when it's a prompt/camera stem).
-    if !anonymous {
+    // 2) Exact / fuzzy match on character_name (skip when it's a prompt/camera stem
+    // or a demographic shorthand like "中年男人").
+    if !anonymous && !descriptive {
         if let Some(hit) = match_by_label(cameo_name, photo, visible, used)? {
             return Ok(hit);
         }
@@ -349,6 +468,18 @@ fn match_cameo_to_character<'a>(
     if desc_as_name {
         if let Some(hit) = match_by_label(desc_name, photo, visible, used)? {
             return Ok(hit);
+        }
+    }
+
+    // 2c) Demographic shorthand ↔ cast static_features (e.g. "中年男人" ↔ "中年男性…").
+    if descriptive || anonymous {
+        if let Some(hit) = unique_feature_hit(cameo_name, visible, used) {
+            return Ok(hit);
+        }
+        if !desc_name.is_empty() {
+            if let Some(hit) = unique_feature_hit(desc_name, visible, used) {
+                return Ok(hit);
+            }
         }
     }
 
@@ -367,8 +498,8 @@ fn match_cameo_to_character<'a>(
         return Ok(visible[0]);
     }
 
-    // 5) Anonymous / prompt-stem multi-photo / multi-cast: bind by ascending idx order.
-    if anonymous && !remaining.is_empty() {
+    // 5) Anonymous / descriptive / prompt-stem multi-photo / multi-cast: bind by ascending idx.
+    if (anonymous || descriptive) && !remaining.is_empty() {
         let mut ordered = remaining;
         ordered.sort_by_key(|c| c.idx);
         return Ok(ordered[0]);
@@ -475,7 +606,93 @@ pub(crate) fn is_anonymous_cameo_name(name: &str) -> bool {
     if looks_like_scene_prompt_stem(t) {
         return true;
     }
+    // Demographic shorthand ("中年男人", "young woman") — not a script identifier.
+    if is_descriptive_role_label(t) {
+        return true;
+    }
     false
+}
+
+/// Casting shorthand / demographic label rather than a script `identifier_in_scene`.
+///
+/// Users often name Cameo uploads "中年男人" / "年轻女人" while the story uses 陈树生 / 林秀兰.
+pub(crate) fn is_descriptive_role_label(name: &str) -> bool {
+    let t = name.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    const EN_NEEDLES: &[&str] = &[
+        "middle-aged",
+        "middle aged",
+        "young man",
+        "young woman",
+        "young boy",
+        "young girl",
+        "old man",
+        "old woman",
+        "old lady",
+        "elderly",
+        "gentleman",
+        "lady",
+        "boy",
+        "girl",
+        "man",
+        "woman",
+        "guy",
+        "dude",
+    ];
+    // Short English demographic phrases (avoid matching real names like "Norman").
+    if !t.chars().any(is_cjk_char) {
+        let words: Vec<&str> = lower
+            .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+            .filter(|s| !s.is_empty())
+            .collect();
+        if words.len() <= 4
+            && EN_NEEDLES
+                .iter()
+                .any(|n| lower == *n || lower.contains(n))
+            && words.iter().all(|w| {
+                matches!(
+                    *w,
+                    "a" | "an"
+                        | "the"
+                        | "middle"
+                        | "aged"
+                        | "young"
+                        | "old"
+                        | "elderly"
+                        | "man"
+                        | "woman"
+                        | "boy"
+                        | "girl"
+                        | "lady"
+                        | "gentleman"
+                        | "guy"
+                        | "dude"
+                        | "male"
+                        | "female"
+                        | "person"
+                )
+            })
+        {
+            return true;
+        }
+    }
+
+    const CJK_ROLE: &[&str] = &[
+        "男人", "女人", "男子", "女子", "男性", "女性", "大叔", "阿姨", "大爷", "大妈", "老头",
+        "老太太", "帅哥", "美女", "小伙", "姑娘", "男孩", "女孩", "小孩", "儿童", "老人", "青年",
+        "中年", "少年", "少女", "孕妇", "汉子", "妇人", "少妇", "大叔",
+    ];
+    let has_role = CJK_ROLE.iter().any(|w| t.contains(w));
+    if !has_role {
+        return false;
+    }
+    // Typical proper names are 2–4 CJK chars without role nouns; descriptors are short too
+    // but always include a role/age cue ("中年男人", "年轻女子").
+    let cjk_count = t.chars().filter(|c| is_cjk_char(*c)).count();
+    cjk_count >= 2 && cjk_count <= 10
 }
 
 /// Heuristic: multi-token or long caption-like stems are scene/prompt labels, not 姓名.
@@ -554,6 +771,79 @@ fn unique_fuzzy_name_hit<'a>(
     }
 }
 
+/// Match demographic Cameo labels against cast `static_features` (unique hit only).
+fn unique_feature_hit<'a>(
+    label: &str,
+    visible: &[&'a CharacterInScene],
+    used: &HashSet<String>,
+) -> Option<&'a CharacterInScene> {
+    let cues = demographic_cues(label);
+    if cues.is_empty() {
+        return None;
+    }
+    let hits: Vec<&&CharacterInScene> = visible
+        .iter()
+        .filter(|c| {
+            if used.contains(&c.identifier_in_scene) {
+                return false;
+            }
+            let feats = c.static_features.to_ascii_lowercase();
+            let feats_norm = cameo::normalize_match_key(&c.static_features);
+            cues.iter().any(|cue| feats.contains(cue) || feats_norm.contains(cue))
+        })
+        .collect();
+    if hits.len() == 1 {
+        Some(hits[0])
+    } else {
+        None
+    }
+}
+
+fn demographic_cues(label: &str) -> Vec<String> {
+    let t = label.trim();
+    if t.is_empty() {
+        return Vec::new();
+    }
+    let lower = t.to_ascii_lowercase();
+    let mut cues = Vec::new();
+    const PAIRS: &[(&str, &[&str])] = &[
+        ("中年", &["中年"]),
+        ("年轻", &["年轻", "青年"]),
+        ("老年", &["老年", "年迈", "老人"]),
+        ("男人", &["男人", "男性", "男子", "汉子"]),
+        ("女人", &["女人", "女性", "女子", "妇人"]),
+        ("男子", &["男人", "男性", "男子"]),
+        ("女子", &["女人", "女性", "女子"]),
+        ("男性", &["男人", "男性", "男子"]),
+        ("女性", &["女人", "女性", "女子"]),
+        ("大叔", &["大叔", "中年", "男性"]),
+        ("阿姨", &["阿姨", "中年", "女性"]),
+        ("男孩", &["男孩", "少年", "儿童"]),
+        ("女孩", &["女孩", "少女", "儿童"]),
+        ("小孩", &["小孩", "儿童"]),
+        ("儿童", &["儿童", "小孩"]),
+        ("少年", &["少年", "男孩"]),
+        ("少女", &["少女", "女孩"]),
+        ("middle-aged", &["中年", "middle"]),
+        ("middle aged", &["中年", "middle"]),
+        ("young man", &["年轻", "青年", "男性", "男人"]),
+        ("young woman", &["年轻", "青年", "女性", "女人"]),
+        ("old man", &["老年", "老人", "男性"]),
+        ("old woman", &["老年", "老人", "女性"]),
+    ];
+    for (needle, outs) in PAIRS {
+        if t.contains(needle) || lower.contains(needle) {
+            for o in *outs {
+                let s = (*o).to_string();
+                if !cues.iter().any(|c| c == &s) {
+                    cues.push(s);
+                }
+            }
+        }
+    }
+    cues
+}
+
 fn write_cameo_portrait(
     film_root: &Path,
     character: &CharacterInScene,
@@ -603,8 +893,11 @@ fn session_photo_abs(film_root: &Path, photo: &CameoPhotoEntry) -> VimaxResult<P
     Ok(session_root.join(cleaned))
 }
 
-/// Usable Cameo portrait paths from the film-root character registry (max `max`).
+/// Usable **people-free** Cameo atmosphere paths from film-root portrait dirs (max `max`).
+///
 /// Used as style/scene context refs for vacant environment/prop plates.
+/// Portrait Cameo (`*_cameo.png`) is intentionally never returned — feeding faces into
+/// prop img2img can bake people into “group photo” style props and trip Seedance privacy.
 pub(crate) fn cameo_style_ref_paths(film_root: &Path, max: usize) -> Vec<PathBuf> {
     if max == 0 {
         return Vec::new();
@@ -629,9 +922,10 @@ pub(crate) fn cameo_style_ref_paths(film_root: &Path, max: usize) -> Vec<PathBuf
         let Some(path) = item.get("path") else {
             continue;
         };
-        let p = crate::session::resolve_stored_asset_path(path, film_root);
-        if is_usable_image_file(&p) {
-            out.push(p);
+        let plate = crate::session::resolve_stored_asset_path(path, film_root);
+        let atmos = cameo_atmosphere_path(&plate);
+        if is_usable_image_file(&atmos) {
+            out.push(atmos);
         }
     }
     out
@@ -670,7 +964,8 @@ pub(crate) fn cameo_scene_context_hint(session_root: &Path) -> String {
     format!(
         "\n\n[CAMEO SCENE LOCK]\nThe user uploaded reference photos. Environments and props MUST match the \
 visual world implied by these photos (era, location type, lighting mood, materials, color palette). \
-Do NOT invent a conflicting setting. Keep plates empty-set (no people):\n{}\n",
+Do NOT invent a conflicting setting. Keep plates empty-set (no people). \
+Do NOT invent props that are portraits, group photos, selfies, or any image-of-people objects:\n{}\n",
         lines.join("\n")
     )
 }
@@ -741,11 +1036,15 @@ mod tests {
     }
 
     fn char(idx: i32, id: &str) -> CharacterInScene {
+        char_with_features(idx, id, "tall")
+    }
+
+    fn char_with_features(idx: i32, id: &str, features: &str) -> CharacterInScene {
         CharacterInScene {
             idx,
             identifier_in_scene: id.into(),
             is_visible: true,
-            static_features: "tall".into(),
+            static_features: features.into(),
             dynamic_features: None,
             voice_profile: None,
         }
@@ -848,6 +1147,42 @@ mod tests {
         assert!(!is_anonymous_cameo_name("Alice"));
         assert!(!is_anonymous_cameo_name("陈树生"));
         assert!(!is_anonymous_cameo_name("Mary Jane Watson"));
+        assert!(is_descriptive_role_label("中年男人"));
+        assert!(is_descriptive_role_label("年轻女人"));
+        assert!(is_anonymous_cameo_name("中年男人"));
+        assert!(!is_descriptive_role_label("陈树生"));
+        assert!(!is_descriptive_role_label("林秀兰"));
+    }
+
+    #[test]
+    fn descriptive_role_label_binds_by_features_or_idx() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path();
+        let film = session.join("idea2video");
+        std::fs::create_dir_all(&film).unwrap();
+        cameo::upload_photo(session, &jpeg_bytes(), "中年男人", "").unwrap();
+        let characters = vec![
+            char_with_features(0, "陈树生", "中年男性，短发，工人打扮"),
+            char_with_features(1, "林秀兰", "年轻女性，长发"),
+        ];
+        let mut registry = HashMap::new();
+        let bindings = bind_cameos_to_registry(session, &film, &characters, &mut registry).unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].1, "陈树生");
+        assert!(has_usable_cameo(&registry, "陈树生"));
+    }
+
+    #[test]
+    fn descriptive_role_falls_back_to_idx_without_features() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path();
+        let film = session.join("idea2video");
+        std::fs::create_dir_all(&film).unwrap();
+        cameo::upload_photo(session, &jpeg_bytes(), "中年男人", "").unwrap();
+        let characters = vec![char(0, "陈树生"), char(1, "林秀兰")];
+        let mut registry = HashMap::new();
+        let bindings = bind_cameos_to_registry(session, &film, &characters, &mut registry).unwrap();
+        assert_eq!(bindings[0].1, "陈树生");
     }
 
     #[test]
@@ -932,12 +1267,27 @@ mod tests {
         std::fs::write(reg_path, serde_json::to_string_pretty(&registry).unwrap()).unwrap();
 
         let (refs, hint, token) = world_cameo_context(&film);
-        assert_eq!(refs.len(), 1);
-        assert!(is_usable_image_file(&refs[0]));
+        // Portrait Cameo must not be used as world style refs (faces → prop leakage).
+        assert!(refs.is_empty());
         assert!(hint.contains("CAMEO SCENE LOCK"));
         assert!(hint.contains("rainy street"));
         assert!(!token.is_empty());
         assert_eq!(cameo_style_lock_token(session), token);
+
+        // Once an atmosphere plate exists, style refs prefer it over the portrait.
+        let plate = PathBuf::from(
+            registry
+                .get("Alice")
+                .and_then(|v| v.get("cameo"))
+                .and_then(|i| i.get("path"))
+                .unwrap(),
+        );
+        let atmos = cameo_atmosphere_path(&plate);
+        std::fs::copy(&plate, &atmos).unwrap();
+        let refs2 = cameo_style_ref_paths(&film, 2);
+        assert_eq!(refs2.len(), 1);
+        assert!(refs2[0].ends_with("Alice_cameo_atmosphere.png"));
+        assert!(!refs2[0].to_string_lossy().ends_with("Alice_cameo.png"));
     }
 
     #[test]
@@ -961,9 +1311,16 @@ mod tests {
             cameo_raw_path(&plate),
             PathBuf::from("character_portraits/0_Alice/Alice_cameo_raw.png")
         );
+        assert_eq!(
+            cameo_atmosphere_path(&plate),
+            PathBuf::from("character_portraits/0_Alice/Alice_cameo_atmosphere.png")
+        );
         assert!(cameo_privacy_marker(&plate)
             .to_string_lossy()
             .ends_with("Alice_cameo.png.privacy_safe"));
+        assert!(cameo_atmosphere_marker(&cameo_atmosphere_path(&plate))
+            .to_string_lossy()
+            .ends_with("Alice_cameo_atmosphere.png.atmosphere_safe"));
     }
 
     #[test]
@@ -971,5 +1328,7 @@ mod tests {
         assert!(CAMEO_FACE_PRIVACY_PROMPT.contains("unrecognizable generic virtual face"));
         assert!(CAMEO_FACE_PRIVACY_PROMPT.contains("clothing"));
         assert!(CAMEO_FACE_PRIVACY_PROMPT.contains("photorealistic"));
+        assert!(CAMEO_ATMOSPHERE_PROMPT.contains("people-free"));
+        assert!(CAMEO_ATMOSPHERE_PROMPT.contains("Erase every person"));
     }
 }

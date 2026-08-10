@@ -107,6 +107,15 @@ impl WorldAssetsPlanner {
         }
         spec.props
             .retain(|p| !p.name.trim().is_empty() || !p.description.trim().is_empty());
+        let before_people_filter = spec.props.len();
+        spec.props
+            .retain(|p| !is_people_centric_prop(&p.name, &p.description));
+        if spec.props.len() < before_people_filter {
+            tracing::info!(
+                dropped = before_people_filter - spec.props.len(),
+                "dropped people-centric prop concepts (portraits / group photos)"
+            );
+        }
         if spec.environments.len() > 5 {
             spec.environments.truncate(5);
         }
@@ -414,13 +423,19 @@ impl WorldAssetsPlanner {
         }
     }
 
-    /// Generate vacant plate; optional Cameo style refs; fall back to text-only if people leak.
+    /// Generate vacant plate; optional people-free style refs; fall back to text-only if people leak.
     async fn generate_empty_plate(
         &self,
         prompt: &str,
         style_refs: &[&Path],
         out: &Path,
     ) -> VimaxResult<()> {
+        // Defense in depth: never feed portrait Cameo / cast sheets into vacant plates.
+        let style_refs: Vec<&Path> = style_refs
+            .iter()
+            .copied()
+            .filter(|p| is_safe_world_style_ref(p))
+            .collect();
         let prompted = if style_refs.is_empty() {
             prompt.to_string()
         } else {
@@ -428,26 +443,28 @@ impl WorldAssetsPlanner {
                 "{prompt}\n\n\
 STYLE/SCENE CONTEXT from reference image(s): match era, palette, materials, lighting mood, \
 and setting type from the references. Do NOT copy any person, face, body, hand, or silhouette \
-from the references. Output must remain a completely unoccupied empty-set plate."
+from the references. Output must remain a completely unoccupied empty-set plate — never a \
+group photo, portrait, selfie, or framed photo of people."
             )
         };
 
-        self.image.generate(&prompted, style_refs, out).await?;
+        self.image.generate(&prompted, &style_refs, out).await?;
         if !self.plate_has_people(out).await {
             return Ok(());
         }
 
-        // Cameo refs often contain faces — if they leak into the plate, drop refs and retry.
+        // Style refs can still leak faces — drop refs and retry.
         if !style_refs.is_empty() {
             tracing::warn!(
                 path = %out.display(),
                 refs = style_refs.len(),
-                "world asset plate contains people with Cameo style refs; retrying without image refs"
+                "world asset plate contains people with style refs; retrying without image refs"
             );
             let _ = tokio::fs::remove_file(out).await;
             let no_ref_prompt = format!(
                 "{prompt}\nCRITICAL: match the era/palette/materials described in Theme, but \
-                 draw a vacant plate only — ZERO people, ZERO faces, ZERO silhouettes, ZERO hands."
+                 draw a vacant plate only — ZERO people, ZERO faces, ZERO silhouettes, ZERO hands. \
+                 Never output a group photo, portrait, or selfie."
             );
             self.image.generate(&no_ref_prompt, &[], out).await?;
             if !self.plate_has_people(out).await {
@@ -647,17 +664,70 @@ fn strip_people_mentions(text: &str) -> String {
         "人影", "人群", "人们", "行人", "顾客", "客人", "路人", "男人", "女人", "小孩", "儿童",
         "店员", "服务员", "职员", "乘客", "观众", "游客", "士兵", "警察", "司机", "老板", "主角",
         "角色", "身影", "背影", "侧影", "有人", "众人", "男女老少", "熙熙攘攘", "站着", "坐着的人",
+        "合照", "全家福", "自拍", "人像", "肖像", "证件照", "大头照",
     ] {
         s = s.replace(p, "");
     }
     if let Ok(re) = regex::RegexBuilder::new(
-        r"(?i)\b(crowds?|people|persons?|someone|somebody|pedestrians?|passers?-?by|patrons?|customers?|waiters?|waitresses?|baristas?|tourists?|staff|silhouettes?|figures?|(?:a|the|several|many|few)\s+(?:man|woman|men|women|boy|girl|boys|girls|child|children|kids?))\b",
+        r"(?i)\b(crowds?|people|persons?|someone|somebody|pedestrians?|passers?-?by|patrons?|customers?|waiters?|waitresses?|baristas?|tourists?|staff|silhouettes?|figures?|selfies?|portraits?|headshots?|group\s+photos?|family\s+photos?|(?:a|the|several|many|few)\s+(?:man|woman|men|women|boy|girl|boys|girls|child|children|kids?))\b",
     )
     .build()
     {
         s = re.replace_all(&s, " ").into_owned();
     }
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Props that are essentially images-of-people (would bake faces into world plates).
+fn is_people_centric_prop(name: &str, desc: &str) -> bool {
+    let blob = format!("{name} {desc}").to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        "合照",
+        "全家福",
+        "自拍",
+        "人像",
+        "肖像",
+        "证件照",
+        "大头照",
+        "毕业照",
+        "婚纱照",
+        "结婚照",
+        "人物照",
+        "照片墙",
+        "group photo",
+        "family photo",
+        "wedding photo",
+        "graduation photo",
+        "selfie",
+        "portrait",
+        "headshot",
+        "photo of people",
+        "photo of a person",
+        "picture of people",
+        "framed photo of",
+    ];
+    NEEDLES.iter().any(|n| blob.contains(n))
+}
+
+/// Style refs safe for vacant env/prop img2img (atmosphere plates only; never cast portraits).
+fn is_safe_world_style_ref(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if name.contains("atmosphere") {
+        return true;
+    }
+    // Explicitly reject cast identity plates.
+    if name.contains("cameo")
+        || name.contains("three_view")
+        || name.contains("portrait")
+        || name.contains("character")
+    {
+        return false;
+    }
+    true
 }
 
 fn safe_component(s: &str) -> String {
@@ -805,8 +875,11 @@ fn match_tokens(blob: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{WorldAssetsSpec, rank_world_pairs_for_frame, strip_people_mentions};
-    use std::path::PathBuf;
+    use super::{
+        WorldAssetsSpec, is_people_centric_prop, is_safe_world_style_ref, rank_world_pairs_for_frame,
+        strip_people_mentions,
+    };
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn strips_people_keeps_set_words() {
@@ -818,6 +891,23 @@ mod tests {
         assert!(!lower.contains("people"));
         assert!(!lower.contains("woman"));
         assert!(lower.contains("permanent"));
+    }
+
+    #[test]
+    fn drops_people_centric_prop_concepts() {
+        assert!(is_people_centric_prop("全家福合照", "墙上的照片"));
+        assert!(is_people_centric_prop("Family portrait", "framed photo"));
+        assert!(!is_people_centric_prop("红伞", "油纸伞，无人物"));
+    }
+
+    #[test]
+    fn rejects_portrait_cameo_as_world_style_ref() {
+        assert!(!is_safe_world_style_ref(Path::new(
+            "character_portraits/0_Alice/Alice_cameo.png"
+        )));
+        assert!(is_safe_world_style_ref(Path::new(
+            "character_portraits/0_Alice/Alice_cameo_atmosphere.png"
+        )));
     }
 
     #[test]
