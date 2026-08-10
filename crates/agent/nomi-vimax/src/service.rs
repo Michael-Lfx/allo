@@ -838,11 +838,12 @@ impl VimaxService {
             &target_secs.to_string(),
         )
         .await;
-        // Also keep session field in sync when client omitted it.
-        if record.target_duration_secs == 0 {
+        // Keep session field aligned with the normalized budget used for planning.
+        if record.target_duration_secs != target_secs {
             let _ = self
                 .index
                 .update_fields(id, |r| r.target_duration_secs = target_secs);
+            // Local copy used below stays consistent for logging / cover.
         }
         let style_s = crate::planning::resolve_visual_style(if record.style.is_empty() {
             ""

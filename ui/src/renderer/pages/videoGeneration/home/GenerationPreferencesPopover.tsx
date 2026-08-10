@@ -8,6 +8,7 @@ import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
 import { SEEDANCE_ASPECT_RATIOS, type SeedanceAspectRatio } from '../aspectRatios';
 import DurationTimelineBar, {
+  AGENT_TICKS,
   CLIP_DURATION_MAX_SECS,
   CLIP_DURATION_MIN_SECS,
   CLIP_DURATION_STEP_SECS,
@@ -142,7 +143,7 @@ function durationBounds(mode: VideoHomeMode) {
     min: DURATION_MIN_SECS,
     max: DURATION_MAX_SECS,
     step: DURATION_STEP_SECS,
-    ticks: undefined as readonly number[] | undefined,
+    ticks: AGENT_TICKS,
   };
 }
 
@@ -165,6 +166,8 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     maxHeight: 640,
   });
   const [panelPos, setPanelPos] = useState<PanelPlacement>(panelPosRef.current);
+  const valueRef = useRef(value);
+  valueRef.current = value;
 
   const llmModels = useGeneratorModels('text');
   const { imageModels, videoModels, isLoading: mediaLoading } = useMediaModels();
@@ -194,6 +197,12 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   });
 
   // Keep summary width stable; content still tracks the active media tab.
+  const durationSummarySecs = clampDuration(
+    value.targetDurationSecs,
+    duration.min,
+    duration.max,
+    duration.step
+  );
   const summary = value.automatic
     ? automaticLabel
     : mediaKind === 'image'
@@ -201,7 +210,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
           value.models.image_model,
           noModelLabel
         )}`
-      : `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()}`;
+      : mode === 'agent'
+        ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${durationSummarySecs}s · ${value.resolution.toUpperCase()}`
+        : `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()}`;
 
   const summaryTitle = value.automatic
     ? automaticLabel
@@ -209,7 +220,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
         value.smartAspect ? smartLabel : value.aspectRatio
       } · ${
         mediaKind === 'video'
-          ? value.resolution.toUpperCase()
+          ? mode === 'agent'
+            ? `${durationSummarySecs}s · ${value.resolution.toUpperCase()}`
+            : value.resolution.toUpperCase()
           : shortModelLabel(value.models.image_model, noModelLabel)
       }`;
 
@@ -366,14 +379,15 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
   // Clamp resolution / fps whenever the video model allow-list changes.
   useEffect(() => {
-    if (!value.models.video_model) return;
+    const current = valueRef.current;
+    if (!current.models.video_model) return;
     const resolution = normalizeVideoResolution(
-      value.models.video_model,
-      value.resolution
+      current.models.video_model,
+      current.resolution
     );
-    const fps = normalizeVideoFps(value.models.video_model, value.fps);
-    if (resolution === value.resolution && fps === value.fps) return;
-    onChange({ ...value, resolution, fps });
+    const fps = normalizeVideoFps(current.models.video_model, current.fps);
+    if (resolution === current.resolution && fps === current.fps) return;
+    onChange({ ...current, resolution, fps });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-clamp on model / allow-list
   }, [value.models.video_model, resolutionOptions.join(',')]);
 
@@ -382,31 +396,32 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     if (!open) return;
     if (mediaLoading && imageOptions.length === 0 && videoOptions.length === 0) return;
 
+    const current = valueRef.current;
     const patch: Partial<GenerationPreferences['models']> = {};
-    if (!value.models.llm_model && llmOptions[0]) {
+    if (!current.models.llm_model && llmOptions[0]) {
       patch.llm_model = llmOptions[0].value;
     }
-    if (!value.models.image_model && imageOptions[0]) {
+    if (!current.models.image_model && imageOptions[0]) {
       patch.image_model = imageOptions[0].value;
     } else if (
-      value.models.image_model &&
+      current.models.image_model &&
       imageOptions.length > 0 &&
-      !imageOptions.some((option) => option.value === value.models.image_model)
+      !imageOptions.some((option) => option.value === current.models.image_model)
     ) {
       patch.image_model = imageOptions[0].value;
     }
-    if (!value.models.video_model) {
+    if (!current.models.video_model) {
       const preferred = pickDefaultVideoModel(videoModels);
       if (preferred) patch.video_model = preferred;
     } else if (
       videoOptions.length > 0 &&
-      !videoOptions.some((option) => option.value === value.models.video_model)
+      !videoOptions.some((option) => option.value === current.models.video_model)
     ) {
       const preferred = pickDefaultVideoModel(videoModels);
       if (preferred) patch.video_model = preferred;
     }
     if (Object.keys(patch).length === 0) return;
-    onChange({ ...value, models: { ...value.models, ...patch } });
+    onChange({ ...current, models: { ...current.models, ...patch } });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     open,

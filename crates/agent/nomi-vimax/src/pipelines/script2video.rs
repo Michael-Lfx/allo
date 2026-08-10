@@ -76,8 +76,18 @@ impl Script2VideoPipeline {
         emit_pct(&progress, "voice_profiles", "正在标定角色声音特征", 15.0);
         let characters = self.ensure_character_voices(characters, script, &style).await?;
 
-        emit_pct(&progress, "cameo_bind", "正在绑定用户角色参考图", 18.0);
-        apply_session_cameos(&self.working_dir, &characters).await?;
+        emit_pct(
+            &progress,
+            "cameo_bind",
+            "正在绑定用户角色参考图并做隐私安全换脸",
+            18.0,
+        );
+        apply_session_cameos(
+            &self.working_dir,
+            &characters,
+            Arc::clone(&self.backends.image),
+        )
+        .await?;
 
         // Global cast bible during planning (ViMax generates before frames; we also
         // expose portraits as plan artifacts so users can review identity early).
@@ -179,7 +189,7 @@ impl Script2VideoPipeline {
         let shot_descriptions: Vec<ShotDescription> =
             read_json_artifact(&wd.join("shot_descriptions.json")).await?;
         let camera_tree: Vec<Camera> = read_json_artifact(&wd.join("camera_tree.json")).await?;
-        apply_session_cameos(wd, &characters).await?;
+        apply_session_cameos(wd, &characters, Arc::clone(&self.backends.image)).await?;
         Ok(PlanArtifacts {
             characters,
             storyboard,

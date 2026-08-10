@@ -631,6 +631,15 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             defaultValue: '，即刻造梦！',
           })}
         </h1>
+        <p className={styles.heroHint}>
+          {mode === 'agent'
+            ? t('videoGeneration.create.homeHintAgent', {
+                defaultValue: '写下故事或想法，Flowy 帮你变成成片。',
+              })
+            : t('videoGeneration.create.homeHintCreation', {
+                defaultValue: '描述画面与镜头，在无限画布里自由编排生成。',
+              })}
+        </p>
       </div>
 
       <div

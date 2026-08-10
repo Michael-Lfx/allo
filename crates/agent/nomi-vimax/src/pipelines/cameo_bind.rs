@@ -1,14 +1,29 @@
 //! Bind session Cameo photos into the film-root portrait registry.
+//!
+//! After copy, Cameo plates are privacy-anonymized via the image model: keep
+//! photoreal wardrobe / pose / lighting, replace faces with a generic
+//! unrecognizable virtual face so Seedance does not reject real-person refs.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use crate::backends::VimaxImage;
 use crate::domain::CharacterInScene;
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local::{copy_image_file_atomic, is_usable_image_file};
 use crate::session::cameo::{self, CameoPhotoEntry};
 
 use super::{resolve_film_root, safe_component};
+
+/// Img2img edit: keep photoreal plate, swap face to a generic unrecognizable one.
+pub(crate) const CAMEO_FACE_PRIVACY_PROMPT: &str = "\
+Keep the original photorealistic style, human pose, clothing, scene, lighting and composition unchanged. \
+Only replace the face with an unrecognizable generic virtual face whose features look natural but do not \
+correspond to any real person. Weaken real portrait identity cues; do not preserve identifiable facial identity. \
+Keep skin texture, light direction, perspective, and overall photorealism consistent. \
+Do not change the image style, body shape, hair silhouette, wardrobe, props, or background. \
+Single subject. Photorealistic photography. No text, watermark, logo, or extra people.";
 
 /// Session working root that owns `cameo/` (parent of idea2video/script2video/novel2video).
 pub(crate) fn resolve_session_root(working_dir: &Path) -> PathBuf {
@@ -65,10 +80,11 @@ fallback to the matching cast member — do NOT invent identifiers from numeric 
     )
 }
 
-/// Load film registry, bind session Cameos, persist registry (+ scene mirror).
+/// Load film registry, bind session Cameos, privacy-anonymize faces, persist registry.
 pub(crate) async fn apply_session_cameos(
     working_dir: &Path,
     characters: &[CharacterInScene],
+    image: Arc<dyn VimaxImage>,
 ) -> VimaxResult<()> {
     let film_root = resolve_film_root(working_dir);
     let session_root = resolve_session_root(working_dir);
@@ -96,6 +112,8 @@ pub(crate) async fn apply_session_cameos(
     .await
     .map_err(|e| VimaxError::msg(format!("cameo bind join error: {e}")))??;
 
+    anonymize_bound_cameo_faces(&film_root, &mut registry, image).await?;
+
     crate::session::write_json_artifact(&registry_path, &registry).await?;
     if film_root != working_dir {
         crate::session::write_json_artifact(
@@ -105,6 +123,152 @@ pub(crate) async fn apply_session_cameos(
         .await?;
     }
     Ok(())
+}
+
+/// Run img2img face anonymization for every bound Cameo plate.
+///
+/// Keeps `{id}_cameo_raw.png` as the user upload; writes privacy-safe
+/// `{id}_cameo.png` used by Seedance / world-asset refs.
+async fn anonymize_bound_cameo_faces(
+    film_root: &Path,
+    registry: &mut HashMap<String, HashMap<String, HashMap<String, String>>>,
+    image: Arc<dyn VimaxImage>,
+) -> VimaxResult<()> {
+    let mut updates: Vec<(String, String)> = Vec::new();
+    for (identifier, views) in registry.iter() {
+        let Some(item) = views.get("cameo") else {
+            continue;
+        };
+        let Some(path_raw) = item.get("path") else {
+            continue;
+        };
+        let plate = crate::session::resolve_stored_asset_path(path_raw, film_root);
+        if !is_usable_image_file(&plate) {
+            continue;
+        }
+        let raw_path = cameo_raw_path(&plate);
+        let marker = cameo_privacy_marker(&plate);
+        ensure_cameo_raw_plate(&plate, &raw_path)?;
+
+        let raw_fp = file_fingerprint(&raw_path).unwrap_or_default();
+        if is_usable_image_file(&plate)
+            && marker.exists()
+            && std::fs::read_to_string(&marker)
+                .map(|s| s.trim() == raw_fp)
+                .unwrap_or(false)
+        {
+            continue;
+        }
+
+        tracing::info!(
+            character = %identifier,
+            raw = %raw_path.display(),
+            out = %plate.display(),
+            "anonymizing cameo face for Seedance privacy"
+        );
+        let tmp = plate.with_extension("privacy_tmp.png");
+        if let Err(err) = image
+            .generate(CAMEO_FACE_PRIVACY_PROMPT, &[raw_path.as_path()], &tmp)
+            .await
+        {
+            // Keep the raw plate usable so planning can continue; Seedance may still
+            // reject it, but we surface a clear privacy-anonymize failure.
+            let _ = std::fs::remove_file(&tmp);
+            return Err(VimaxError::msg(format!(
+                "cameo face privacy anonymize failed for <{identifier}>: {err}. \
+Resume after checking the image model, or use a more illustrated style."
+            )));
+        }
+        if !is_usable_image_file(&tmp) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(VimaxError::msg(format!(
+                "cameo face privacy anonymize produced no image for <{identifier}>"
+            )));
+        }
+        copy_image_file_atomic(&tmp, &plate)?;
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::write(&marker, raw_fp.as_bytes());
+        updates.push((identifier.clone(), privacy_safe_registry_description(identifier, item)));
+    }
+
+    for (identifier, desc) in updates {
+        if let Some(item) = registry
+            .get_mut(&identifier)
+            .and_then(|views| views.get_mut("cameo"))
+        {
+            item.insert("description".into(), desc);
+        }
+    }
+    Ok(())
+}
+
+fn cameo_raw_path(plate: &Path) -> PathBuf {
+    let name = plate
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("cameo.png");
+    let raw_name = if let Some(stem) = name.strip_suffix("_cameo.png") {
+        format!("{stem}_cameo_raw.png")
+    } else if let Some(stem) = name.strip_suffix(".png") {
+        format!("{stem}_raw.png")
+    } else {
+        format!("{name}_raw.png")
+    };
+    plate.with_file_name(raw_name)
+}
+
+fn cameo_privacy_marker(plate: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.privacy_safe", plate.display()))
+}
+
+fn ensure_cameo_raw_plate(plate: &Path, raw_path: &Path) -> VimaxResult<()> {
+    if is_usable_image_file(raw_path) {
+        return Ok(());
+    }
+    if !is_usable_image_file(plate) {
+        return Err(VimaxError::InvalidParams(format!(
+            "cameo plate missing for privacy anonymize: {}",
+            plate.display()
+        )));
+    }
+    copy_image_file_atomic(plate, raw_path)
+}
+
+fn file_fingerprint(path: &Path) -> VimaxResult<String> {
+    let bytes = std::fs::read(path)?;
+    let len = bytes.len();
+    // Cheap stable token (sha256 of file) so re-uploads force re-anonymize.
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    };
+    Ok(format!("{len}:{digest}"))
+}
+
+fn privacy_safe_registry_description(
+    identifier: &str,
+    prior: &HashMap<String, String>,
+) -> String {
+    let prior_desc = prior.get("description").map(|s| s.as_str()).unwrap_or("");
+    let feats = prior_desc
+        .split("Features:")
+        .nth(1)
+        .map(str::trim)
+        .unwrap_or("")
+        .trim_end_matches('.')
+        .to_string();
+    let extra = if feats.is_empty() {
+        String::new()
+    } else {
+        format!(" Features: {feats}.")
+    };
+    format!(
+        "File = USER CAMEO identity plate for <{identifier}> (privacy-safe face). \
+Match body, hair silhouette, wardrobe, age, and overall look. The face is a generic \
+unrecognizable virtual face — do NOT restore a real-person likeness.{extra}"
+    )
 }
 
 /// Copy Cameo photos into film-root portrait dirs and register a `cameo` view.
@@ -412,9 +576,21 @@ fn write_cameo_portrait(
         "{}_cameo.png",
         safe_component(&character.identifier_in_scene)
     ));
+    let raw = cameo_raw_path(&dest);
+    let marker = cameo_privacy_marker(&dest);
     // Cameo uploads are already normalized PNG — copy instead of decode/re-encode
     // (phone photos are often 20–50MP; re-encoding OOM / Windows rename flakes).
-    copy_image_file_atomic(&src, &dest)?;
+    copy_image_file_atomic(&src, &raw)?;
+    let raw_fp = file_fingerprint(&raw).unwrap_or_default();
+    let keep_anonymized = is_usable_image_file(&dest)
+        && marker.exists()
+        && std::fs::read_to_string(&marker)
+            .map(|s| s.trim() == raw_fp)
+            .unwrap_or(false);
+    if !keep_anonymized {
+        copy_image_file_atomic(&src, &dest)?;
+        let _ = std::fs::remove_file(&marker);
+    }
     Ok(dest)
 }
 
@@ -543,8 +719,9 @@ fn cameo_registry_description(
         format!(" User note: {user_desc}.")
     };
     format!(
-        "File [{file_name}] = USER CAMEO identity lock for <{}>. Match face/hair/body EXACTLY. \
-Do not redesign identity. Features: {feats}.{extra}",
+        "File [{file_name}] = USER CAMEO identity plate for <{}> (privacy-safe face pending/applied). \
+Match body, hair silhouette, wardrobe, and overall look. Face is a generic unrecognizable virtual \
+face — do NOT restore a real-person likeness. Features: {feats}.{extra}",
         character.identifier_in_scene
     )
 }
@@ -761,5 +938,38 @@ mod tests {
         assert!(hint.contains("rainy street"));
         assert!(!token.is_empty());
         assert_eq!(cameo_style_lock_token(session), token);
+    }
+
+    #[test]
+    fn write_cameo_keeps_raw_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path();
+        let film = session.join("idea2video");
+        std::fs::create_dir_all(&film).unwrap();
+        cameo::upload_photo(session, &jpeg_bytes(), "Alice", "").unwrap();
+        let photos = cameo::list_photos(session).unwrap();
+        let dest = write_cameo_portrait(&film, &char(0, "Alice"), &photos[0]).unwrap();
+        assert!(is_usable_image_file(&dest));
+        assert!(is_usable_image_file(&cameo_raw_path(&dest)));
+        assert!(!cameo_privacy_marker(&dest).exists());
+    }
+
+    #[test]
+    fn cameo_raw_and_marker_paths() {
+        let plate = PathBuf::from("character_portraits/0_Alice/Alice_cameo.png");
+        assert_eq!(
+            cameo_raw_path(&plate),
+            PathBuf::from("character_portraits/0_Alice/Alice_cameo_raw.png")
+        );
+        assert!(cameo_privacy_marker(&plate)
+            .to_string_lossy()
+            .ends_with("Alice_cameo.png.privacy_safe"));
+    }
+
+    #[test]
+    fn privacy_prompt_keeps_photoreal_and_swaps_face() {
+        assert!(CAMEO_FACE_PRIVACY_PROMPT.contains("unrecognizable generic virtual face"));
+        assert!(CAMEO_FACE_PRIVACY_PROMPT.contains("clothing"));
+        assert!(CAMEO_FACE_PRIVACY_PROMPT.contains("photorealistic"));
     }
 }

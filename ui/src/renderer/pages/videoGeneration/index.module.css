@@ -544,101 +544,165 @@
 .durationTimeline {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px 11px;
-  border: 1px solid var(--color-border-2);
-  border-radius: 14px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-bg-2) 88%, rgb(var(--primary-6)) 12%), var(--color-bg-2));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--color-fill-1);
 }
 
 .durationTimelineWide {
   grid-column: 1 / -1;
 }
 
+.durationTimelineCompact {
+  padding: 10px 12px 12px;
+}
+
 .durationTimelineDisabled {
-  opacity: 0.72;
+  opacity: 0.55;
+}
+
+.durationTimelineDisabled .durationTimelineScrub,
+.durationTimelineDisabled .durationTimelineTick {
+  pointer-events: none;
+  cursor: default;
 }
 
 .durationTimelineHeader {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
+  min-height: 28px;
 }
 
-.durationTimelineLabel {
+.durationTimelineLabel,
+.durationTimelineHint {
   font-size: 12px;
+  line-height: 18px;
   color: var(--color-text-3);
 }
 
+.durationTimelineHint {
+  font-weight: 500;
+}
+
 .durationTimelineValue {
-  font-size: 22px;
-  font-weight: 750;
-  letter-spacing: -0.03em;
-  line-height: 1;
-  color: var(--color-text-1);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 4px 9px 4px 10px;
+  border-radius: 999px;
+  background: var(--color-bg-2);
+  box-shadow: inset 0 0 0 1px var(--color-border-2);
   font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.durationTimelineValueNum {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--color-text-1);
 }
 
 .durationTimelineUnit {
-  margin-left: 2px;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 650;
   color: var(--color-text-3);
 }
 
-.durationTimelineTrackWrap {
-  position: relative;
-  height: 52px;
-  margin-bottom: 2px;
+.durationTimelineBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
 }
 
-.durationTimelineTrack {
+/* Dedicated drag surface — ticks live in a separate row so they never steal scrubbing. */
+.durationTimelineScrub {
+  position: relative;
+  height: 28px;
+  margin: 0 -4px;
+  padding: 0 4px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.durationTimelineScrub:active {
+  cursor: grabbing;
+}
+
+.durationTimelineRail {
   position: absolute;
-  top: 16px;
-  right: 0;
-  left: 0;
-  height: 8px;
+  top: 50%;
+  right: 4px;
+  left: 4px;
+  height: 6px;
   overflow: visible;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-fill-3) 88%, rgb(var(--primary-6)) 12%);
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.12);
+  background: color-mix(in srgb, var(--color-fill-3) 82%, var(--color-bg-2));
+  box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.06);
+  transform: translateY(-50%);
+  pointer-events: none;
 }
 
 .durationTimelineFill {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(
-    90deg,
-    rgba(var(--primary-6), 0.72),
-    rgb(var(--primary-6))
-  );
-  box-shadow: 0 0 12px rgba(var(--primary-6), 0.28);
-  transition: width 120ms ease;
+  background: color-mix(in srgb, rgb(var(--primary-6)) 88%, #fff 12%);
+  pointer-events: none;
+}
+
+.durationTimelineThumb {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-bg-2);
+  border-radius: 50%;
+  background: rgb(var(--primary-6));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, rgb(var(--primary-6)) 28%, transparent),
+    0 2px 6px rgba(15, 23, 42, 0.14);
+  transform: translate(-50%, -50%);
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease;
+  pointer-events: none;
+}
+
+.durationTimelineScrub:hover .durationTimelineThumb,
+.durationTimelineScrub:active .durationTimelineThumb {
+  transform: translate(-50%, -50%) scale(1.08);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, rgb(var(--primary-6)) 16%, transparent),
+    0 3px 8px rgba(15, 23, 42, 0.16);
 }
 
 .durationTimelineTicks {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
+  position: relative;
+  height: 28px;
+  margin: 0 4px;
 }
 
 .durationTimelineTick {
   position: absolute;
-  top: 50%;
+  top: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
+  gap: 3px;
+  width: 28px;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--color-text-4);
   font: inherit;
-  transform: translate(-50%, -50%);
-  pointer-events: auto;
+  transform: translateX(-50%);
   cursor: pointer;
 }
 
@@ -647,93 +711,84 @@
 }
 
 .durationTimelineTickMark {
-  width: 2px;
-  height: 10px;
+  width: 1px;
+  height: 6px;
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.18);
+  background: color-mix(in srgb, var(--color-text-4) 55%, transparent);
+  transition:
+    height 120ms ease,
+    background 120ms ease;
 }
 
 .durationTimelineTickActive .durationTimelineTickMark {
-  background: rgba(255, 255, 255, 0.72);
+  background: color-mix(in srgb, rgb(var(--primary-6)) 45%, var(--color-text-4));
+}
+
+.durationTimelineTickCurrent .durationTimelineTickMark {
+  height: 8px;
+  background: rgb(var(--primary-6));
+}
+
+.durationTimelineTickLabel {
+  padding: 1px 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 550;
+  line-height: 14px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  color: var(--color-text-4);
+  font-variant-numeric: tabular-nums;
+  transition:
+    color 120ms ease,
+    background 120ms ease,
+    font-weight 120ms ease;
+}
+
+.durationTimelineTick:hover:not(:disabled) .durationTimelineTickLabel {
+  color: var(--color-text-2);
 }
 
 .durationTimelineTickCurrent .durationTimelineTickLabel {
   color: rgb(var(--primary-6));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 12%, transparent);
   font-weight: 700;
-}
-
-.durationTimelineTickLabel {
-  position: absolute;
-  top: 14px;
-  font-size: 10px;
-  line-height: 1;
-  white-space: nowrap;
-  color: var(--color-text-4);
 }
 
 .durationTimelineRange {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 1;
   width: 100%;
   margin: 0;
   appearance: none;
-  background: transparent;
-  cursor: pointer;
-}
-
-.durationTimelineRange:disabled {
-  cursor: not-allowed;
-}
-
-.durationTimelineRange::-webkit-slider-runnable-track {
-  height: 8px;
-  background: transparent;
-}
-
-.durationTimelineRange::-moz-range-track {
-  height: 8px;
-  background: transparent;
-  border: none;
-}
-
-.durationTimelineRange::-webkit-slider-thumb {
-  appearance: none;
-  width: 18px;
-  height: 18px;
-  margin-top: -5px;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  background: rgb(var(--primary-6));
-  box-shadow:
-    0 0 0 4px rgba(var(--primary-6), 0.16),
-    0 6px 14px rgba(15, 23, 42, 0.22);
-  transition: transform 120ms ease;
-}
-
-.durationTimelineRange::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  background: rgb(var(--primary-6));
-  box-shadow:
-    0 0 0 4px rgba(var(--primary-6), 0.16),
-    0 6px 14px rgba(15, 23, 42, 0.22);
-}
-
-.durationTimelineRange:hover:not(:disabled)::-webkit-slider-thumb {
-  transform: scale(1.08);
+  opacity: 0;
+  cursor: inherit;
+  pointer-events: none;
 }
 
 .durationTimelineRange:focus-visible {
   outline: none;
+  pointer-events: auto;
+  opacity: 1;
 }
 
-.durationTimelineRange:focus-visible::-webkit-slider-thumb {
-  box-shadow:
-    0 0 0 4px rgba(var(--primary-6), 0.28),
-    0 6px 14px rgba(15, 23, 42, 0.22);
+.durationTimelineRange::-webkit-slider-runnable-track,
+.durationTimelineRange::-moz-range-track {
+  height: 6px;
+  background: transparent;
+  border: none;
+}
+
+.durationTimelineRange::-webkit-slider-thumb,
+.durationTimelineRange::-moz-range-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
 }
 
 .durationTimelineFooter {
@@ -741,27 +796,26 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  font-size: 11px;
-  line-height: 16px;
-  color: var(--color-text-4);
+  min-height: 18px;
 }
 
 .durationTimelineCredits {
-  display: inline-flex;
-  align-items: center;
-  max-width: 100%;
-  padding: 5px 10px;
-  border: 1px solid rgba(var(--warning-6), 0.28);
-  border-radius: 999px;
-  background: rgba(var(--warning-6), 0.12);
-  color: rgb(var(--warning-6));
-  font-size: 12px;
-  font-weight: 650;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-3);
+  font-size: 11px;
+  font-weight: 500;
   line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .durationTimelineRangeHint {
   flex-shrink: 0;
+  color: var(--color-text-4);
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
 }
 
