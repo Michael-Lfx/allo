@@ -105,7 +105,7 @@ start/success/settled lifecycle 也各执行一次。reset 成功才提交新 ge
 - `ui/src/renderer/pages/conversation/platforms/nomi/NomiSendBox.tsx`
 - `ui/src/renderer/components/chat/SendBox/index.tsx`
 - `ui/src/renderer/components/chat/SendBox/editResubmitLifecycle.ts`
-- `ui/src/renderer/components/chat/composerBeforeInput.ts`
+- `ui/src/renderer/components/chat/ComposerSubmitCluster.tsx`
 
 ## 验证
 
@@ -140,14 +140,15 @@ quality scripts 除未改动的 agent-vocabulary 注释基线外通过。`bun ru
 2026-08-09 合并审查修复追加：strict decoder 已覆盖非 replay、accepted terminal metadata 和矛盾
 completed outcome；runner 释放后 remount subscription、stale refresh retry、生产 reset handler 的
 deferred 双击均有行为测试。repository 增加并发 writer/readers 测试，在 80 次原子 transcript
-generation 切换期间只允许完整的 mutation 前/后 snapshot。该修复没有布局、样式或可见控件变化，
-因此无需新增截图；交互层人工验收仍按下列清单执行。
+generation 切换期间只允许完整的 mutation 前/后 snapshot。后续 V5.6 增加了 stale-target 的
+Composer 内 Alert，因此该可见 UI 变化必须以截图或短录屏补充人工证据，不能再使用“没有可见控件变化”
+作为豁免。
 
 人工验收清单包括：长会话且 target 在最新 200 行之外、同时间戳 latest-user tie-break、double click、
 会话切换后同-key 恢复、response loss、truncate 后 HTTP/terminal error、附件差集、refresh 首次失败后
 重试并 ack，以及 accepted orphan 的显式 reset。后文逐次记录已完成项目，未明确记录的项目仍待验收。
 
-2026-08-10 V5.5 Web 实测追加：逐键输入 `v55逐键输入` 后浏览器控制台为 0 error，不再出现
+2026-08-10 独立 Composer beforeinput 分支 Web 实测追加：逐键输入 `v55逐键输入` 后浏览器控制台为 0 error，不再出现
 `undefined.includes`。最终 post-mutation failure 场景双击只产生 1 个 POST，POST 与 observation
 共用 key `019fe76a-d12a-77e4-8600-6b7dc66afc68`；observation 为 completed failure、target 消失，
 同一挂载立即移除 Editing badge/banner，并把 `编辑可靠性实测：V5.5 final acceptance。` 保留为
@@ -181,8 +182,18 @@ CodeMirror/runtime/browser boundary、help、Rust format 和 `git diff --check` 
 报告主干已有的 `nomi-agent-eval/src/runner.rs` retired reference。冷运行正向测试在当前 Windows 环境
 被 knowledge-workspace lock `拒绝访问 (os error 5)` 阻塞，未记为功能失败。
 
+2026-08-10 PR #70 减负收口：Send→Stop 现在直接使用 React click detail，只有同一多击序列的第二击
+会被 handoff gate 消费；主动单击和键盘 Stop 不受影响。retry 的 post-mutation failure 在当前
+draft revision 未变化时恢复 retry 正文，用户中途输入则不覆盖。消息刷新在快照入队后等待实际 React
+commit，再执行 consumer ack；reconciliation purge 使用冻结 snapshot，不再从延迟 updater 查询 live
+coordinator。移除了 trivial target-notice helper 与 production live filter/purge 双轨路径；Composer
+beforeinput 解码、测试和 changelog 已移到独立 `fix/composer-beforeinput` 分支，不属于 PR #70。
+
+当前 PR #70 的手工截图/短录屏证据仍需在最终 PR 描述中附加，至少覆盖 stale-target Alert；自动化测试
+不能替代这项可见 UI 验收。
+
 ## 交付边界
 
-当前实现分支为 `fix/conversation-error-edit`，对照基线为 `origin/main` `958c5e48f3f6`。文档不记录
-易过期的“最终提交数量”或历史最终 SHA；交付时以 `git rev-parse HEAD`、`git merge-base HEAD
-origin/main` 和远端 ref 的实时结果为准。
+当前实现分支为 `fix/conversation-error-edit`，Composer 独立分支为 `fix/composer-beforeinput`，对照
+基线和 HEAD 不写死在本文中；交付时以 `git rev-parse HEAD`、`git merge-base HEAD origin/main` 和
+远端 ref 的实时结果为准。本文不记录易过期的“最终提交数量”或历史最终 SHA。

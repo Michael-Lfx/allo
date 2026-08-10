@@ -21,6 +21,7 @@ notes at a high level rather than a complete historical log.
 - Composer paste handling no longer inserts plain text twice after page or
   conversation switches; plain text remains owned by the Composer while files
   and images continue through PasteService.
+<<<<<<< HEAD
 - Desktop conversation streaming now keeps completed Markdown blocks visually
   stable while the trailing block is generated, gives Markdown headings a clear
   reading hierarchy, and makes code actions reveal on hover or keyboard focus.
