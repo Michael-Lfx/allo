@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 
 const source = readFileSync(new URL('./index.tsx', import.meta.url), 'utf8');
+const submitClusterSource = readFileSync(
+  new URL('../ComposerSubmitCluster.tsx', import.meta.url),
+  'utf8'
+);
 const platformSendBoxes = [
   // remote/openclaw/nanobot share the BasicRuntime implementation.
   '../../../pages/conversation/platforms/BasicRuntimeSendBox.tsx',
@@ -12,16 +16,16 @@ const platformSendBoxes = [
 describe('SendBox stop interaction', () => {
   test('deduplicates stop clicks and blocks send/steer until stop settles', () => {
     expect(source.includes('const [isStopping, setIsStopping] = useState(false)')).toBe(true);
-    expect(source.includes('if (!onStop || isStoppingRef.current) return;')).toBe(true);
+    expect(source.includes('!onStop')).toBe(true);
+    expect(source.includes('isStoppingRef.current')).toBe(true);
+    expect(source.includes('shouldIgnoreStop(clickDetail)')).toBe(true);
     expect(source.includes('isStoppingRef.current = true;')).toBe(true);
     expect(source.includes('isStoppingRef.current = false;')).toBe(true);
     expect(source.includes('setIsStopping(true);')).toBe(true);
     expect(source.includes('setIsStopping(false);')).toBe(true);
     expect(source.includes('if (isUploading || isStopping) return;')).toBe(true);
     expect(source.includes('if (!onSteer || isUploading || isStopping) return;')).toBe(true);
-    expect(source.includes("data-testid='sendbox-stop-btn'")).toBe(true);
-    expect(source.includes('disabled={isStopping}')).toBe(true);
-    expect(source.includes('loading={isStopping}')).toBe(true);
+    expect(submitClusterSource.includes("data-testid='composer-stop-btn'")).toBe(true);
   });
 
   test('remounts shared stop state when switching conversations', () => {

@@ -122,7 +122,7 @@ describe('message visibility across batching and conversation switches', () => {
     const loadSource = source.slice(loadStart, loadEnd);
     const activeGuard = loadSource.indexOf('activeConversationRef.current !== key');
     const sequenceGuard = loadSource.indexOf('newestLoadSequenceRef.current !== loadSequence');
-    const merge = loadSource.indexOf('mergeIntoList(messages)');
+    const merge = loadSource.indexOf('mergeIntoList(messages, snapshot)');
 
     expect(activeGuard).toBeGreaterThanOrEqual(0);
     expect(sequenceGuard).toBeGreaterThan(activeGuard);

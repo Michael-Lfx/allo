@@ -24,6 +24,12 @@ describe('ComposerSubmitCluster', () => {
     expect(source.includes('const showSteerButton = showSteer && !showStopButton')).toBe(true);
   });
 
+  test('forwards the React click detail to the stop handler', () => {
+    const source = readSource(new URL('./ComposerSubmitCluster.tsx', import.meta.url));
+
+    expect(source.includes('onClick={(event) => onStop?.((event as MouseEvent).detail)}')).toBe(true);
+  });
+
   test('autoWorkMode renders robot button alongside speech', () => {
     const source = readSource(new URL('./ComposerSubmitCluster.tsx', import.meta.url));
 

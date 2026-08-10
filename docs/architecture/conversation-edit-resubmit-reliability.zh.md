@@ -190,7 +190,8 @@ coordinator。移除了 trivial target-notice helper 与 production live filter/
 beforeinput 解码、测试和 changelog 已移到独立 `fix/composer-beforeinput` 分支，不属于 PR #70。
 
 当前 PR #70 的手工截图/短录屏证据仍需在最终 PR 描述中附加，至少覆盖 stale-target Alert；自动化测试
-不能替代这项可见 UI 验收。
+不能替代这项可见 UI 验收。本次本地 Web 实测已保存一张证据图：
+[`pr70-stale-target-alert-2026-08-10.png`](../images/pr70-stale-target-alert-2026-08-10.png)。
 
 ## 交付边界
 
