@@ -4,8 +4,12 @@
   "mode": {
     "agent": "Agent",
     "canvas": "Canvas",
+    "agentLabel": "Agent 模式",
+    "creationLabel": "创作模式",
     "agentHint": "Agent 模式：一句话规划分镜并渲染成片。",
-    "canvasHint": "Canvas 模式（dev）：节点画布精准控制生成参数与链路。"
+    "canvasHint": "Canvas 模式（dev）：节点画布精准控制生成参数与链路。",
+    "agentMenuDesc": "自动规划分镜并渲染成片",
+    "creationMenuDesc": "进入无限画布自由编排"
   },
   "nav": {
     "entry": "视频生成",
@@ -103,20 +107,100 @@
     "eyebrow": "AI 叙事导演",
     "heroTitle": "一个想法，变成一支完整影片",
     "heroSubtitle": "先生成可编辑分镜，确认故事与画面后再渲染成片。",
+    "homeHeroPrefix": "开启你的",
+    "homeHeroSuffix": "，即刻造梦！",
     "advanced": "风格与模型",
     "generateStoryboard": "生成分镜",
-    "modelRequired": "生成分镜前需要一个可用的规划模型。",
+    "enterCanvas": "进入画布",
+    "customize": "自定义生成偏好",
+    "modelRequired": "生成前需要可用的规划模型。",
     "configureModels": "前往模型中心",
     "tryExample": "试试：",
+    "skillsMenuTitle": "选择技能",
+    "skillsMenuAria": "选择技能",
+    "canvasTitleFromSkill": "{{skill}}创作",
     "modes": {
       "idea": "一个想法",
       "script": "完整剧本",
       "novel": "小说文本"
     },
+    "skills": {
+      "ideaDesc": "从一句灵感扩写成完整影片",
+      "scriptDesc": "按剧情结构自动拆解镜头",
+      "novelDesc": "提炼长文情节并设计分镜",
+      "cinematic": {
+        "label": "电影写实",
+        "desc": "纪实光影 · 叙事镜头"
+      },
+      "anime": {
+        "label": "二次元",
+        "desc": "鲜明线稿 · 动漫质感"
+      },
+      "cyberpunk": {
+        "label": "赛博霓虹",
+        "desc": "未来都市 · 高对比"
+      },
+      "inkWash": {
+        "label": "水墨意境",
+        "desc": "留白构图 · 东方美学"
+      }
+    },
+    "preferences": {
+      "customize": "自定义",
+      "title": "生成偏好",
+      "dialogAria": "生成偏好",
+      "automatic": "自动",
+      "automaticHint": "已开启自动，比例与模型选项已锁定；提交时使用当前已选配置。",
+      "mediaKindAria": "生成类型",
+      "image": "图片",
+      "video": "视频",
+      "aspectLabel": "选择比例",
+      "aspectAria": "生成比例",
+      "smart": "智能",
+      "imageModel": "图片模型",
+      "modelAndResolution": "模型与清晰度",
+      "resolutionAria": "清晰度",
+      "targetDuration": "目标时长",
+      "clipDuration": "单段时长",
+      "planningModel": "规划模型",
+      "loading": "加载中…",
+      "noModelSelected": "未选模型"
+    },
     "composer": {
       "ideaPlaceholder": "描述你想看到的故事、情绪或产品画面…",
       "scriptPlaceholder": "粘贴剧本，Flowy 会自动拆成可编辑镜头…",
-      "novelPlaceholder": "粘贴小说片段，Flowy 会提炼剧情并设计分镜…"
+      "novelPlaceholder": "粘贴小说片段，Flowy 会提炼剧情并设计分镜…",
+      "creationPlaceholder": "描述你想创作的画面、镜头或氛围，支持 / 唤起风格技能…",
+      "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 唤起技能…"
+    },
+    "upload": {
+      "aria": "上传图片、剧本或其他文档",
+      "removeDocument": "移除文档",
+      "removeReference": "移除 {{name}}",
+      "unsupported": "部分文件格式暂不支持，请上传图片、DOCX 或纯文本文档。",
+      "cameoNameRequired": "请为每张角色参考图填写角色名。",
+      "docUnsupported": "暂不支持该文档格式，请上传 DOCX、TXT、Markdown、JSON、CSV、SRT 或 VTT。",
+      "docTooLarge": "文档不能超过 5 MB。",
+      "docEmpty": "文档内容为空。",
+      "docxCorrupt": "DOCX 文件已损坏或无法读取。",
+      "docxNoBody": "DOCX 中未找到正文内容。",
+      "untitledAsset": "未命名素材"
+    },
+    "gallery": {
+      "title": "最近画布",
+      "subtitle": "继续编辑已有项目，或从一个空白画布开始。",
+      "searchPlaceholder": "搜索画布…",
+      "createBlank": "新建空白画布",
+      "untitled": "未命名画布",
+      "loadError": "画布加载失败",
+      "emptyTitle": "创建你的第一张无限画布",
+      "emptyDesc": "在上方输入创意直接开始，或点击这里新建空白画布。",
+      "filterEmpty": "没有匹配的画布",
+      "nodes": "{{count}} 个节点",
+      "deleteAria": "删除 {{title}}",
+      "deleteOk": "画布已删除",
+      "createFailed": "创建失败：{{error}}",
+      "deleteFailed": "删除失败：{{error}}"
     },
     "examples": {
       "product": "为一款极简咖啡机制作 30 秒发布短片",
@@ -132,7 +216,8 @@
       "descPlaceholder": "可选描述（身份/服装提示）",
       "remove": "移除",
       "uploading": "正在上传角色参考图…",
-      "uploadFailed": "角色参考图上传失败"
+      "uploadFailed": "角色参考图上传失败",
+      "defaultName": "角色{{n}}"
     }
   },
   "workflow": {
@@ -229,7 +314,11 @@
     "exportBusy": "规划或渲染进行中，请完成后再导出。",
     "exportOk": "工程已导出",
     "exportFailed": "导出失败",
-    "exportFilter": "Flowy 视频工程"
+    "exportFilter": "Flowy 视频工程",
+    "openInCanvas": "打开到 Canvas",
+    "openInCanvasOk": "已打开到 Canvas：{{shots}} 镜 · {{media}} 个媒体",
+    "openInCanvasReused": "已打开该工程对应的 Canvas（未新建）",
+    "openInCanvasFailed": "打开到 Canvas 失败"
   },
   "workspace": {
     "back": "返回列表",
@@ -261,6 +350,11 @@
       "durationLabel": "目标成片时长（秒）",
       "durationHint": "每个镜头视频至少 5 秒；规划会据此控制镜头数量。",
       "durationCreditsHint": "预估约 {{credits}} 积分（约 {{rate}}/秒）",
+      "resolutionLabel": "清晰度",
+      "resolutionHint": "可选档位随当前视频模型变化（Fast/Mini 最高 720p）",
+      "fpsLabel": "帧率",
+      "fpsHint": "可选帧率随当前视频模型变化",
+      "fpsLockedHint": "当前模型固定 {{fps}}fps（电影感帧率）",
       "aspectLabel": "视频比例",
       "aspectHint": "同时作用于 Seedance 成片与海报封面",
       "aspectPreview": "画幅预览 {{ratio}}",

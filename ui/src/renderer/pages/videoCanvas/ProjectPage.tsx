@@ -152,7 +152,7 @@ const VideoCanvasProjectPage: React.FC = () => {
     return (
       <div className={styles.centerFull}>
         <p>{error}</p>
-        <Button onClick={() => navigate('/video-generation/canvas')}>
+        <Button onClick={() => navigate('/video-generation?mode=creation')}>
           {t('videoCanvas.project.back', { defaultValue: '返回' })}
         </Button>
       </div>

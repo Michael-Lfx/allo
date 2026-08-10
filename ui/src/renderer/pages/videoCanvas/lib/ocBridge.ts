@@ -2,7 +2,15 @@
  * Bridge allo `/api/video-canvas` projects into the ported open-ai-canvas Zustand store.
  */
 
-import { getCanvasProject, putCanvasDoc, listCanvasProjects, createCanvasProject } from '../api';
+import {
+  canvasMediaUrl,
+  deleteCanvasProject,
+  getCanvasProject,
+  putCanvasDoc,
+  listCanvasProjects,
+  createCanvasProject,
+  type CanvasMediaMeta,
+} from '../api';
 import type { CanvasDocument } from '../types';
 import {
   useCanvasStore,
@@ -10,6 +18,144 @@ import {
   flushCanvasStorePersistence,
 } from '@oc/stores/canvas/use-canvas-store';
 import type { CanvasNodeData, CanvasConnection, ViewportTransform } from '@oc/types/canvas';
+import { CanvasNodeType } from '@oc/types/canvas';
+import { createCanvasNode } from '@oc/lib/canvas/canvas-project-domain';
+import { encodeChannelModel } from '@oc/stores/use-config-store';
+
+export type CanvasHomeLaunch = {
+  prompt: string;
+  requirement?: string;
+  mediaKind: 'image' | 'video';
+  skill: {
+    id: string;
+    label: string;
+    description: string;
+    stylePrompt: string;
+  };
+  preferences: {
+    automatic: boolean;
+    aspectRatio: string;
+    resolution: string;
+    fps: number;
+    targetDurationSecs: number;
+    imageModel?: string;
+    videoModel?: string;
+  };
+  references?: CanvasMediaMeta[];
+};
+
+function connection(fromNodeId: string, toNodeId: string): CanvasConnection {
+  return {
+    id: `connection-${fromNodeId}-${toNodeId}`,
+    fromNodeId,
+    toNodeId,
+  };
+}
+
+function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLaunch): CanvasProject {
+  const promptNode = {
+    ...createCanvasNode(CanvasNodeType.Text, { x: 220, y: 190 }, {
+      content: launch.prompt,
+      prompt: launch.prompt,
+      status: 'success',
+      workflowKind: 'story_input',
+      workflowTitle: '创作输入',
+      workflowDescription: launch.requirement,
+    }),
+    title: '创作提示',
+  };
+  const skillNode = {
+    ...createCanvasNode(CanvasNodeType.Skill, { x: 220, y: 500 }, {
+      content: launch.skill.stylePrompt,
+      prompt: launch.skill.stylePrompt,
+      status: 'success',
+      skillId: launch.skill.id,
+      skillVersion: 1,
+      stylePresetId: launch.skill.id,
+      skillSnapshot: {
+        id: launch.skill.id,
+        name: launch.skill.label,
+        description: launch.skill.description,
+        category: launch.mediaKind,
+        template: launch.skill.stylePrompt,
+        outputMode: launch.mediaKind === 'image' ? 'image_prompt' : 'workflow',
+        outputContract: 'Apply the selected visual style to the connected generation node.',
+        version: 1,
+        tags: ['video-home', 'style'],
+      },
+    }),
+    title: launch.skill.label,
+  };
+  const selectedModel =
+    launch.mediaKind === 'image'
+      ? launch.preferences.imageModel
+      : launch.preferences.videoModel;
+  const configNode = {
+    ...createCanvasNode(CanvasNodeType.Config, { x: 1050, y: 310 }, {
+      content: launch.requirement ?? '',
+      composerContent: launch.prompt,
+      prompt: [launch.prompt, launch.skill.stylePrompt, launch.requirement]
+        .filter(Boolean)
+        .join('\n\n'),
+      status: 'idle',
+      generationMode: launch.mediaKind,
+      model: selectedModel
+        ? encodeChannelModel('allo-media', selectedModel)
+        : undefined,
+      size: launch.preferences.aspectRatio,
+      seconds: String(launch.preferences.targetDurationSecs),
+      vquality: launch.preferences.resolution.replace(/p$/i, ''),
+      workflowKind: 'styleboard',
+      workflowTitle: `${launch.skill.label}创作`,
+      workflowDescription: launch.requirement,
+      stylePresetId: launch.skill.id,
+      skillId: launch.skill.id,
+    }),
+    title: launch.mediaKind === 'image' ? '图片生成配置' : '视频生成配置',
+  };
+  const referenceNodes = (launch.references ?? []).map((reference, index) => ({
+    ...createCanvasNode(
+      CanvasNodeType.Image,
+      { x: 600, y: 150 + index * 210 },
+      {
+        content: canvasMediaUrl(reference.media_id),
+        status: 'success',
+        mimeType: reference.mime,
+        bytes: reference.bytes,
+        naturalWidth: reference.width ?? undefined,
+        naturalHeight: reference.height ?? undefined,
+        assetId: reference.media_id,
+        workflowKind: 'reference_set',
+      }
+    ),
+    title: reference.title || `参考图 ${index + 1}`,
+  }));
+  const nodes = [promptNode, skillNode, ...referenceNodes, configNode];
+  const connections = [
+    connection(promptNode.id, configNode.id),
+    connection(skillNode.id, configNode.id),
+    ...referenceNodes.map((node) => connection(node.id, configNode.id)),
+  ];
+  return {
+    ...project,
+    nodes,
+    connections,
+    viewport: { x: 80, y: 60, k: referenceNodes.length > 2 ? 0.72 : 0.86 },
+    alloCreative: {
+      ...(project.alloCreative ?? {}),
+      homeLaunch: {
+        schema: 1,
+        prompt: launch.prompt,
+        requirement: launch.requirement,
+        mediaKind: launch.mediaKind,
+        skill: launch.skill,
+        preferences: launch.preferences,
+        referenceMediaIds: (launch.references ?? []).map((item) => item.media_id),
+        createdAt: new Date().toISOString(),
+      },
+    },
+  };
+}
 
 function docToProject(projectId: string, title: string, doc: CanvasDocument): CanvasProject {
   const now = new Date().toISOString();
@@ -80,8 +226,30 @@ export async function ensureServerProjectsInStore(): Promise<void> {
   store.replaceProjects([...byId.values()]);
 }
 
-export async function createServerBackedCanvasProject(title?: string): Promise<string> {
+export async function createServerBackedCanvasProject(
+  title?: string,
+  launch?: CanvasHomeLaunch
+): Promise<string> {
   const meta = await createCanvasProject(title);
-  await hydrateCanvasProjectFromServer(meta.project_id);
-  return meta.project_id;
+  try {
+    const project = await hydrateCanvasProjectFromServer(meta.project_id);
+    if (launch) {
+      const initialized = initializeProjectFromHome(project, launch);
+      const store = useCanvasStore.getState();
+      store.replaceProjects([
+        ...store.projects.filter((item) => item.id !== initialized.id),
+        initialized,
+      ]);
+      await syncCanvasProjectToServer(meta.project_id);
+    }
+    return meta.project_id;
+  } catch (error) {
+    useCanvasStore
+      .getState()
+      .replaceProjects(
+        useCanvasStore.getState().projects.filter((item) => item.id !== meta.project_id)
+      );
+    await deleteCanvasProject(meta.project_id).catch(() => undefined);
+    throw error;
+  }
 }

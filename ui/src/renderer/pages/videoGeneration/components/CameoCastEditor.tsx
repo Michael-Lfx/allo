@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Button, Input } from '@arco-design/web-react';
 import { Delete, Plus, Peoples } from '@icon-park/react';
 import type { CameoDraftItem } from '../types';
+import { suggestCameoCharacterName } from '../cameoUtils';
 
 const ACCEPT = 'image/png,image/jpeg,image/jpg,image/webp';
 const MAX_CAMEOS = 8;
@@ -15,33 +16,6 @@ export interface CameoCastEditorProps {
 
 function newLocalId(): string {
   return `local_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-/** Avoid using camera / WeChat / AI-prompt stems as cast names (e.g. `05382109.jpg`). */
-export function suggestCameoCharacterName(fileName: string, indexInBatch: number): string {
-  const stem = fileName.replace(/\.[^.]+$/, '').trim();
-  if (!stem) return `角色${indexInBatch + 1}`;
-  const lower = stem.toLowerCase();
-  if (/^\d{4,}$/.test(stem)) return `角色${indexInBatch + 1}`;
-  if (/^(img[_-]?|dscn?|photo[_-]?|pic[_-]?|mmexport|wx_camera[_-]?|screenshot)/i.test(lower)) {
-    return `角色${indexInBatch + 1}`;
-  }
-  if (/^[0-9a-f]{6,}$/i.test(stem) && !/[\u4e00-\u9fff]/.test(stem)) {
-    return `角色${indexInBatch + 1}`;
-  }
-  // Scene / Midjourney-style prompt stems are not cast ids.
-  const tokens = stem.split(/[\s_-]+/).filter(Boolean);
-  if (tokens.length >= 4) return `角色${indexInBatch + 1}`;
-  const hasCjk = /[\u4e00-\u9fff]/.test(stem);
-  if (!hasCjk) {
-    const alnumLen = (stem.match(/[0-9a-zA-Z]/g) || []).length;
-    if (alnumLen >= 28 && tokens.length >= 3) return `角色${indexInBatch + 1}`;
-  } else {
-    const cjkCount = (stem.match(/[\u4e00-\u9fff]/g) || []).length;
-    const significant = stem.replace(/[\s_-]+/g, '').length;
-    if (cjkCount >= 10 && cjkCount * 2 >= significant) return `角色${indexInBatch + 1}`;
-  }
-  return stem.slice(0, 48);
 }
 
 const CameoCastEditor: React.FC<CameoCastEditorProps> = ({ value, onChange, disabled }) => {

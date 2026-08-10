@@ -62,7 +62,7 @@ import StoryboardBoard from './components/StoryboardBoard';
 import StudioStageRail from './components/StudioStageRail';
 import VisualStyleSelect from './components/VisualStyleSelect';
 import WorkspaceCameoStrip from './components/WorkspaceCameoStrip';
-import type { VideoCreateDraft } from './components/VideoCreateComposer';
+import type { VideoCreateDraft } from './home/types';
 import type { StoryboardScene } from './artifactPresentation';
 import { findStoryboardPath, patchShotDescriptionsInArtifact } from './artifactPresentation';
 import { progressStatusText } from './stageI18n';
@@ -193,23 +193,27 @@ const WorkspacePage: React.FC = () => {
       setTargetDurationSecs(
         typeof s.target_duration_secs === 'number' && s.target_duration_secs > 0
           ? s.target_duration_secs
-          : launchDraft?.targetDurationSecs ?? 30
+          : launchDraft?.preferences.targetDurationSecs ?? 30
       );
       setAspectRatio(
         normalizeSeedanceAspectRatio(
-          s.aspect_ratio || launchDraft?.aspectRatio || DEFAULT_SEEDANCE_ASPECT_RATIO
+          s.aspect_ratio ||
+            launchDraft?.preferences.aspectRatio ||
+            DEFAULT_SEEDANCE_ASPECT_RATIO
         )
       );
-      const videoModel = s.video_model || launchDraft?.models.video_model || '';
+      const videoModel = s.video_model || launchDraft?.preferences.models.video_model || '';
       setModels({
-        llm_model: s.llm_model || launchDraft?.models.llm_model || '',
-        image_model: s.image_model || launchDraft?.models.image_model || '',
+        llm_model: s.llm_model || launchDraft?.preferences.models.llm_model || '',
+        image_model: s.image_model || launchDraft?.preferences.models.image_model || '',
         video_model: videoModel,
       });
       setResolution(
         normalizeVideoResolution(
           videoModel,
-          s.resolution || launchDraft?.resolution || DEFAULT_VIDEO_RESOLUTION
+          s.resolution ||
+            launchDraft?.preferences.resolution ||
+            DEFAULT_VIDEO_RESOLUTION
         )
       );
       setFps(
@@ -217,7 +221,7 @@ const WorkspacePage: React.FC = () => {
           videoModel,
           typeof s.fps === 'number' && s.fps > 0
             ? s.fps
-            : launchDraft?.fps ?? DEFAULT_VIDEO_FPS
+            : launchDraft?.preferences.fps ?? DEFAULT_VIDEO_FPS
         )
       );
       setLoadError(null);

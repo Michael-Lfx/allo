@@ -1,8 +1,8 @@
 
 /**
- * VideoGeneration list page (`/video-generation`) — session gallery with
- * workflow-picker create flow. Visual language mirrors Knowledge / Workshop
- * (theme tokens, rd-*, fill/primary).
+ * Unified video creation home (`/video-generation`).
+ * Agent and infinite-canvas creation share one composer while keeping their
+ * skills, drafts, submissions, and project galleries independent.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -26,10 +26,22 @@ import {
 import type { PlanBody, SessionSummary } from './types';
 import SessionCard from './components/SessionCard';
 import TvShowPanel from './components/TvShowPanel';
-import VideoCreateComposer, {
-  clearVideoCreateDraft,
-  type VideoCreateDraft,
-} from './components/VideoCreateComposer';
+import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
+import type { VideoCreateDraft, VideoHomeMode } from './home/types';
+import CanvasProjectGallery from './home/CanvasProjectGallery';
+import {
+  CLIP_DURATION_DEFAULT_SECS,
+  CLIP_DURATION_MAX_SECS,
+  CLIP_DURATION_MIN_SECS,
+  CLIP_DURATION_STEP_SECS,
+  clampDuration,
+} from './components/DurationTimelineBar';
+import {
+  deleteCanvasMedia,
+  uploadCanvasMedia,
+  type CanvasMediaMeta,
+} from '../videoCanvas/api';
+import { createServerBackedCanvasProject } from '../videoCanvas/lib/ocBridge';
 import {
   clearVideoGenerationSessionMemory,
   rememberVideoGenerationSession,
@@ -37,19 +49,18 @@ import {
 import styles from './index.module.css';
 
 type ListTab = 'recent' | 'tvShow';
-type WorkMode = 'agent' | 'canvas';
 
 function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
   const common: PlanBody = {
     user_requirement: draft.requirement.trim() || undefined,
     style: draft.style.trim() || undefined,
-    target_duration_secs: draft.targetDurationSecs,
-    aspect_ratio: draft.aspectRatio,
-    resolution: draft.resolution,
-    fps: draft.fps,
-    llm_model: draft.models.llm_model,
-    image_model: draft.models.image_model || undefined,
-    video_model: draft.models.video_model || undefined,
+    target_duration_secs: draft.preferences.targetDurationSecs,
+    aspect_ratio: draft.preferences.aspectRatio,
+    resolution: draft.preferences.resolution,
+    fps: draft.preferences.fps,
+    llm_model: draft.preferences.models.llm_model,
+    image_model: draft.preferences.models.image_model || undefined,
+    video_model: draft.preferences.models.video_model || undefined,
   };
   switch (draft.workflow) {
     case 'idea2video':
@@ -72,44 +83,15 @@ function titleForDraft(draft: VideoCreateDraft): string {
 const VideoGenerationListPage: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const [message, messageHolder] = useArcoMessage();
 
-  const workMode: WorkMode =
-    searchParams.get('mode') === 'canvas' ? 'canvas' : 'agent';
-
-  const modeItems: SegmentedTabItem[] = useMemo(
-    () => [
-      {
-        key: 'agent',
-        label: t('videoGeneration.mode.agent', { defaultValue: 'Agent' }),
-      },
-      {
-        key: 'canvas',
-        label: (
-          <span className='inline-flex items-center gap-6px'>
-            {t('videoGeneration.mode.canvas', { defaultValue: 'Canvas' })}
-            <span
-              className='text-9px font-600 leading-none tracking-wide uppercase px-4px py-2px rd-4px bg-[rgba(var(--primary-6),0.12)] text-[rgb(var(--primary-6))]'
-              aria-hidden='true'
-            >
-              {t('videoCanvas.dev.tag', { defaultValue: 'dev' })}
-            </span>
-          </span>
-        ),
-      },
-    ],
-    [t]
-  );
-
-  // Canvas mode lives on its own route tree.
-  useEffect(() => {
-    if (workMode === 'canvas') {
-      navigate('/video-generation/canvas', { replace: true });
-    }
-  }, [navigate, workMode]);
+  const workMode: VideoHomeMode =
+    searchParams.get('mode') === 'creation' || searchParams.get('mode') === 'canvas'
+      ? 'creation'
+      : 'agent';
 
   const [listTab, setListTab] = useState<ListTab>('tvShow');
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -148,8 +130,8 @@ const VideoGenerationListPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (workMode === 'agent') void refresh();
+  }, [refresh, workMode]);
 
   const displayed = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -192,7 +174,7 @@ const VideoGenerationListPage: React.FC = () => {
             workflow: draft.workflow,
             session_id: created.id,
           });
-          clearVideoCreateDraft();
+          clearVideoHomeDraft();
         } catch (planError) {
           message.error(
             `${t('videoGeneration.workspace.planFailed', { defaultValue: '规划失败' })}: ${
@@ -218,6 +200,102 @@ const VideoGenerationListPage: React.FC = () => {
       }
     },
     [creating, navigate, message, t]
+  );
+
+  const handleModeChange = useCallback(
+    (mode: VideoHomeMode) => {
+      const next = new URLSearchParams(searchParams);
+      if (mode === 'creation') next.set('mode', 'creation');
+      else next.delete('mode');
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams]
+  );
+
+  const handleCreateCanvas = useCallback(
+    async (draft: VideoCreateDraft) => {
+      if (creating) return;
+      setCreating(true);
+      const references: CanvasMediaMeta[] = [];
+      let canvasCreated = false;
+      try {
+        for (const reference of draft.canvasReferences) {
+          references.push(
+            await uploadCanvasMedia(reference.file, reference.file.name)
+          );
+        }
+        const skillId = draft.creationSkillId;
+        const skillDefaults = {
+          cinematic: { label: '电影写实', desc: '纪实光影 · 叙事镜头' },
+          anime: { label: '二次元', desc: '鲜明线稿 · 动漫质感' },
+          cyberpunk: { label: '赛博霓虹', desc: '未来都市 · 高对比' },
+          inkWash: { label: '水墨意境', desc: '留白构图 · 东方美学' },
+        } as const;
+        const defaults = skillDefaults[skillId];
+        const skillLabel = t(`videoGeneration.create.skills.${skillId}.label`, {
+          defaultValue: defaults.label,
+        });
+        const skillDescription = t(`videoGeneration.create.skills.${skillId}.desc`, {
+          defaultValue: defaults.desc,
+        });
+        const title =
+          draft.creationPrompt.split(/\r?\n/, 1)[0]?.trim().slice(0, 36) ||
+          t('videoGeneration.create.canvasTitleFromSkill', {
+            skill: skillLabel,
+            defaultValue: '{{skill}}创作',
+          });
+        const id = await createServerBackedCanvasProject(title, {
+          prompt: draft.creationPrompt,
+          requirement: draft.requirement.trim() || undefined,
+          mediaKind: draft.preferences.mediaKind,
+          skill: {
+            id: draft.creationSkillId,
+            label: skillLabel,
+            description: skillDescription,
+            stylePrompt: draft.style,
+          },
+          preferences: {
+            automatic: draft.preferences.automatic,
+            aspectRatio: draft.preferences.aspectRatio,
+            resolution: draft.preferences.resolution,
+            fps: draft.preferences.fps,
+            // Canvas nodes expect single-clip seconds (≈4–15), not Agent film length.
+            targetDurationSecs: clampDuration(
+              draft.preferences.targetDurationSecs,
+              CLIP_DURATION_MIN_SECS,
+              CLIP_DURATION_MAX_SECS,
+              CLIP_DURATION_STEP_SECS
+            ) || CLIP_DURATION_DEFAULT_SECS,
+            imageModel: draft.preferences.models.image_model || undefined,
+            videoModel: draft.preferences.models.video_model || undefined,
+          },
+          references,
+        });
+        canvasCreated = true;
+        trackFunnelEvent('task_accepted', {
+          feature: 'video_generation',
+          mode: 'creation',
+          skill: draft.creationSkillId,
+          project_id: id,
+        });
+        clearVideoHomeDraft();
+        navigate(`/video-generation/canvas/${encodeURIComponent(id)}`);
+      } catch (cause) {
+        if (!canvasCreated && references.length > 0) {
+          await Promise.allSettled(
+            references.map((reference) => deleteCanvasMedia(reference.media_id))
+          );
+        }
+        message.error(
+          `${t('videoCanvas.actions.createFailed', { defaultValue: '创建失败' })}: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`
+        );
+      } finally {
+        setCreating(false);
+      }
+    },
+    [creating, message, navigate, t]
   );
 
   const openSession = useCallback(
@@ -303,157 +381,149 @@ const VideoGenerationListPage: React.FC = () => {
     >
       {messageHolder}
       <div className='mx-auto flex w-full max-w-1180px box-border flex-col gap-26px'>
-        <div className='flex flex-wrap items-center justify-between gap-12px'>
-          <div>
-            <div className='flex items-center gap-10px mb-6px'>
-              <h1 className='m-0 text-22px font-650 text-[var(--color-text-1)]'>
-                {t('videoGeneration.title', { defaultValue: '视频生成' })}
-              </h1>
-            </div>
-            <p className='m-0 text-13px text-[var(--color-text-3)]'>
-              {t('videoGeneration.mode.agentHint', {
-                defaultValue: 'Agent 模式：一句话规划分镜并渲染成片。',
-              })}
-            </p>
-          </div>
-          <SegmentedTabs
-            size='sm'
-            items={modeItems}
-            activeKey={workMode}
-            onChange={(key) => {
-              if (key === 'canvas') {
-                navigate('/video-generation/canvas');
-              } else {
-                navigate('/video-generation');
-              }
-            }}
-          />
-        </div>
+        <VideoHomeComposer
+          mode={workMode}
+          loading={creating}
+          onModeChange={handleModeChange}
+          onSubmitAgent={(draft) => void handleCreate(draft)}
+          onSubmitCreation={(draft) => void handleCreateCanvas(draft)}
+        />
 
-        <VideoCreateComposer loading={creating} onSubmit={(draft) => void handleCreate(draft)} />
-
-        <section className='flex flex-col gap-12px'>
-          <div className='flex flex-wrap items-center justify-between gap-12px'>
-            <div>
-              <div className='mb-8px'>
-                <SegmentedTabs
-                  size='sm'
-                  items={listTabItems}
-                  activeKey={listTab}
-                  onChange={(key) => setListTab(key as ListTab)}
-                />
-              </div>
-              <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-                {listTab === 'tvShow'
-                  ? t('videoGeneration.tvShow.title', { defaultValue: 'TV Show' })
-                  : t('videoGeneration.list.recentTitle', { defaultValue: '最近创作' })}
-              </h2>
-              <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
-                {listTab === 'tvShow'
-                  ? t('videoGeneration.tvShow.subtitle', {
-                      defaultValue: '浏览社区已上架的作品，或查看你的发布审核状态。',
-                    })
-                  : t('videoGeneration.list.recentSubtitle', {
-                      defaultValue: '继续分镜、渲染或查看已经完成的影片。',
-                    })}
-              </p>
-            </div>
-            {listTab === 'recent' ? (
-              <div className='flex flex-wrap items-center gap-10px'>
-                <Button
-                  type='outline'
-                  size='small'
-                  loading={importing}
-                  disabled={creating || importing}
-                  onClick={() => void handleImportProject()}
-                >
-                  <span className='inline-flex items-center gap-4px'>
-                    <Upload theme='outline' size={14} fill='currentColor' />
-                    {t('videoGeneration.list.importProject', { defaultValue: '导入工程' })}
-                  </span>
-                </Button>
-                {!error && sessions.length > 0 ? (
-                  <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
-                    <Search
-                      theme='outline'
-                      size={14}
-                      className='flex-none text-[var(--color-text-3)]'
-                    />
-                    <input
-                      className='w-full border-none bg-transparent text-13px text-[var(--color-text-1)] outline-none font-[inherit] placeholder:text-[var(--color-text-3)]'
-                      placeholder={t('videoGeneration.list.searchPlaceholder', {
-                        defaultValue: '搜索项目...',
-                      })}
-                      value={searchQuery}
-                      onChange={(event) => setSearchQuery(event.target.value)}
-                    />
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-
-          {listTab === 'tvShow' ? (
-            <TvShowPanel enabled={listTab === 'tvShow'} />
-          ) : error ? (
-            <Result
-              status='error'
-              title={t('videoGeneration.list.loadError', { defaultValue: '加载失败' })}
-              subTitle={error}
-              extra={
-                <Button onClick={() => void refresh()}>
-                  {t('videoGeneration.list.retry', { defaultValue: '重试' })}
-                </Button>
-              }
-            />
-          ) : loading ? (
-            <div className='flex justify-center py-38px'>
-              <Spin />
-            </div>
-          ) : sessions.length === 0 ? (
-            <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-              <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
-                <VideoOne theme='outline' size={19} fill='currentColor' />
-              </span>
+        {workMode === 'creation' ? (
+          <CanvasProjectGallery />
+        ) : (
+          <section className='flex flex-col gap-12px'>
+            <div className='flex flex-wrap items-center justify-between gap-12px'>
               <div>
-                <div className='text-13px font-600 text-[var(--color-text-1)]'>
-                  {t('videoGeneration.list.empty.title', {
-                    defaultValue: '你的第一支影片从上方开始',
-                  })}
-                </div>
-                <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.list.empty.desc', {
-                    defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
-                  })}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div
-                className='grid gap-12px'
-                style={{
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
-                }}
-              >
-                {displayed.map((session) => (
-                  <SessionCard
-                    key={session.id}
-                    session={session}
-                    onOpen={openSession}
-                    onDelete={(s) => void handleDelete(s)}
-                    deleting={deletingId === session.id}
+                <div className='mb-8px'>
+                  <SegmentedTabs
+                    size='sm'
+                    items={listTabItems}
+                    activeKey={listTab}
+                    onChange={(key) => setListTab(key as ListTab)}
                   />
-                ))}
-              </div>
-              {displayed.length === 0 && (
-                <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
-                  {t('videoGeneration.list.filterEmpty', { defaultValue: '没有匹配的任务' })}
                 </div>
-              )}
-            </>
-          )}
-        </section>
+                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+                  {listTab === 'tvShow'
+                    ? t('videoGeneration.tvShow.title', { defaultValue: 'TV Show' })
+                    : t('videoGeneration.list.recentTitle', {
+                        defaultValue: '最近创作',
+                      })}
+                </h2>
+                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
+                  {listTab === 'tvShow'
+                    ? t('videoGeneration.tvShow.subtitle', {
+                        defaultValue: '浏览社区已上架的作品，或查看你的发布审核状态。',
+                      })
+                    : t('videoGeneration.list.recentSubtitle', {
+                        defaultValue: '继续分镜、渲染或查看已经完成的影片。',
+                      })}
+                </p>
+              </div>
+              {listTab === 'recent' ? (
+                <div className='flex flex-wrap items-center gap-10px'>
+                  <Button
+                    type='outline'
+                    size='small'
+                    loading={importing}
+                    disabled={creating || importing}
+                    onClick={() => void handleImportProject()}
+                  >
+                    <span className='inline-flex items-center gap-4px'>
+                      <Upload theme='outline' size={14} fill='currentColor' />
+                      {t('videoGeneration.list.importProject', {
+                        defaultValue: '导入工程',
+                      })}
+                    </span>
+                  </Button>
+                  {!error && sessions.length > 0 ? (
+                    <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
+                      <Search
+                        theme='outline'
+                        size={14}
+                        className='flex-none text-[var(--color-text-3)]'
+                      />
+                      <input
+                        className='w-full border-none bg-transparent text-13px text-[var(--color-text-1)] outline-none font-[inherit] placeholder:text-[var(--color-text-3)]'
+                        placeholder={t('videoGeneration.list.searchPlaceholder', {
+                          defaultValue: '搜索项目...',
+                        })}
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
+            {listTab === 'tvShow' ? (
+              <TvShowPanel enabled={listTab === 'tvShow'} />
+            ) : error ? (
+              <Result
+                status='error'
+                title={t('videoGeneration.list.loadError', {
+                  defaultValue: '加载失败',
+                })}
+                subTitle={error}
+                extra={
+                  <Button onClick={() => void refresh()}>
+                    {t('videoGeneration.list.retry', { defaultValue: '重试' })}
+                  </Button>
+                }
+              />
+            ) : loading ? (
+              <div className='flex justify-center py-38px'>
+                <Spin />
+              </div>
+            ) : sessions.length === 0 ? (
+              <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
+                <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
+                  <VideoOne theme='outline' size={19} fill='currentColor' />
+                </span>
+                <div>
+                  <div className='text-13px font-600 text-[var(--color-text-1)]'>
+                    {t('videoGeneration.list.empty.title', {
+                      defaultValue: '你的第一支影片从上方开始',
+                    })}
+                  </div>
+                  <div className='mt-2px text-12px text-[var(--color-text-3)]'>
+                    {t('videoGeneration.list.empty.desc', {
+                      defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div
+                  className='grid gap-12px'
+                  style={{
+                    gridTemplateColumns:
+                      'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
+                  }}
+                >
+                  {displayed.map((session) => (
+                    <SessionCard
+                      key={session.id}
+                      session={session}
+                      onOpen={openSession}
+                      onDelete={(s) => void handleDelete(s)}
+                      deleting={deletingId === session.id}
+                    />
+                  ))}
+                </div>
+                {displayed.length === 0 && (
+                  <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
+                    {t('videoGeneration.list.filterEmpty', {
+                      defaultValue: '没有匹配的任务',
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+        )}
       </div>
     </div>
   );

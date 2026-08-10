@@ -199,6 +199,13 @@ export async function uploadCanvasMedia(
   });
 }
 
+export async function deleteCanvasMedia(mediaId: string): Promise<void> {
+  await httpRequest<unknown>(
+    'DELETE',
+    `/api/video-canvas/media/${encodeURIComponent(mediaId)}`
+  );
+}
+
 export async function waitForGenerationTask(
   taskId: string,
   opts?: {

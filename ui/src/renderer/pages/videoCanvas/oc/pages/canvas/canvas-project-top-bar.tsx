@@ -77,7 +77,7 @@ export function CanvasTopBar({
     const { availableMicrocredits, refreshing } = useWalletBalance(user?.id, creditsEnabled);
     const titleRef = useRef<HTMLDivElement>(null);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
-    const goCanvasList = () => navigate("/video-generation/canvas");
+    const goCanvasList = () => navigate("/video-generation?mode=creation");
 
     const handleShortDramaGuideToggle = () => {
         shortDramaGuide?.onToggle();
