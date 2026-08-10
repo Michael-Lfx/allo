@@ -56,7 +56,7 @@ describe('execution transcript capability boundary', () => {
     expect(chatSource.includes('readOnly,')).toBe(true);
     expect(messageSource.includes('if (readOnly || !msgId')).toBe(true);
     expect(messageSource.includes('if (!readOnly) {')).toBe(true);
-    expect(messageSource.includes('ipcBridge.conversation.update.invoke')).toBe(true);
+    expect(/ipcBridge\.conversation\.update\s*\.invoke/.test(messageSource)).toBe(true);
   });
 
   test('removes every confirmation action from transcript rendering', () => {

@@ -11,7 +11,10 @@ describe('PresetSettings page shell', () => {
 
     expect(source.includes("searchParams.get('highlight')")).toBe(true);
     expect(source.includes('handleHighlightConsumed')).toBe(true);
-    expect(source.includes('activeTab')).toBe(false);
+    // Highlight consumption is driven by the URL alone; the library/market tab
+    // state may never gate it or the highlight survives a tab switch.
+    expect(source.includes('}, [searchParams, setSearchParams]);')).toBe(true);
+    expect(/handleHighlightConsumed[\s\S]*?\}, \[[^\]]*activeTab/.test(source)).toBe(false);
     expect(source.includes('assistant-skills-hub-tabs')).toBe(false);
   });
 

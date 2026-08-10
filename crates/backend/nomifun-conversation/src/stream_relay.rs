@@ -463,16 +463,14 @@ fn turn_writeback_final_state(
     finished_at: i64,
     prior_written: &[Value],
     prior_failures: &[Value],
-    _scope: &str,
 ) -> Value {
+    // Rows persisted before the staged-inbox retirement may still carry an
+    // _inbox/{scope}/ prefix; they simply key differently and a retry
+    // re-proposes rather than mis-deduplicating against the base document.
     let target_key = |kb_id: &str, rel_path: &str| {
-        let logical =
-            nomifun_knowledge::service::logical_writeback_target_from_storage_path(
-                rel_path,
-            );
         format!(
             "{kb_id}\0{}",
-            nomifun_knowledge::service::portable_writeback_path_identity(&logical)
+            nomifun_knowledge::service::portable_writeback_path_identity(rel_path)
         )
     };
     let value_target_key = |item: &Value| {
@@ -495,7 +493,6 @@ fn turn_writeback_final_state(
         let item = json!({
             "kb_id": outcome.kb_id.clone(),
             "rel_path": outcome.final_rel_path.clone(),
-            "staged": outcome.staged,
         });
         let key = target_key(
             outcome.kb_id.as_str(),
@@ -843,7 +840,6 @@ pub(crate) struct TurnWritebackAttempt {
     conversation_id: String,
     msg_id: String,
     source_message_id: String,
-    scope: String,
     assistant_text: String,
     prior_written: Vec<Value>,
     prior_failures: Vec<Value>,
@@ -1019,7 +1015,6 @@ impl TurnWritebackAttempt {
         conversation_id: String,
         msg_id: String,
         source_message_id: String,
-        scope: String,
         assistant_text: String,
         prior_written: Vec<Value>,
         prior_failures: Vec<Value>,
@@ -1032,7 +1027,6 @@ impl TurnWritebackAttempt {
             user_id,
             conversation_id,
             source_message_id,
-            scope,
             assistant_text: nomifun_knowledge::turn_writeback::bounded_assistant_text(
                 &assistant_text,
             ),
@@ -1054,7 +1048,6 @@ impl TurnWritebackAttempt {
                 "source_message_id".to_owned(),
                 json!(self.source_message_id),
             );
-            obj.insert("scope".to_owned(), json!(self.scope));
             obj.insert("assistant_text".to_owned(), json!(self.assistant_text));
         }
         state
@@ -1583,7 +1576,6 @@ async fn persist_turn_writeback_report_terminal(
             now_ms(),
             &attempt.prior_written,
             &attempt.prior_failures,
-            &attempt.scope,
         ),
     )
     .await;
@@ -5688,7 +5680,6 @@ mod tests {
                 kb_id: kb_id.clone(),
                 final_rel_path: "Foo.md".into(),
                 op: nomifun_knowledge::WriteOp::Create,
-                staged: false,
             }],
             failures: Vec::new(),
         };
@@ -5727,7 +5718,6 @@ mod tests {
         let prior_written = vec![json!({
             "kb_id": kb_id,
             "rel_path": "A.md",
-            "staged": false,
         })];
         let prior_failures = vec![json!({
             "kb_id": kb_id,
@@ -5762,7 +5752,6 @@ mod tests {
                 kb_id: written_kb,
                 final_rel_path: "Unrelated.md".into(),
                 op: nomifun_knowledge::WriteOp::Create,
-                staged: false,
             }],
             failures: Vec::new(),
         };

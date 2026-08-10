@@ -48,6 +48,7 @@ import cloudLogin from './cloudLogin.json';
 import learning from './learning.json';
 import videoGeneration from './videoGeneration.json';
 import videoCanvas from './videoCanvas.json';
+import ssh from './ssh.json';
 
 export default {
   common,
@@ -95,4 +96,5 @@ export default {
   learning,
   videoGeneration,
   videoCanvas,
+  ssh,
 };

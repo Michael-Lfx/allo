@@ -128,6 +128,7 @@ fn make_factory_with_summon(
         learning_course: None,
         poi_service: None,
         goal_repo: None,
+        ssh_provider: None,
     })
 }
 

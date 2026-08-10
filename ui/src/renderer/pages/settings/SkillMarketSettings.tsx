@@ -35,8 +35,8 @@ const SkillMarketSettings: React.FC = () => {
   );
 
   return (
-    <div className='flex flex-col h-full w-full'>
-      <div className='space-y-16px pb-24px'>
+    <div className='w-full pb-16px'>
+      <div className='space-y-16px'>
         <MarketSettingsPanel
           title={t('settings.skillsMarket.title', { defaultValue: '技能市场' })}
           description={t('settings.skillsMarket.description', {

@@ -81,8 +81,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             last_reinforced_at: 0,
-            scope_kind: "user".into(),
-            scope_companion_id: None,
+            companion_id: None,
         }
     }
 

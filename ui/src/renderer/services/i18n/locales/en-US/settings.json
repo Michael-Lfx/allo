@@ -238,9 +238,6 @@
   "presetKnowledge": "Knowledge scope",
   "presetKnowledgeHint": "Bind knowledge bases to each launch without changing workspace defaults.",
   "presetKnowledgeBasesPlaceholder": "Choose knowledge bases",
-  "presetKnowledgeModeInherit": "Inherit defaults",
-  "presetKnowledgeModeStaged": "Selected bases (staged)",
-  "presetKnowledgeModeDirect": "Selected bases (direct)",
   "presetKnowledgeGrounded": "Require grounding",
   "presetKnowledgeWriteback": "Allow write-back",
   "presetAgentsShort": "Agents",
@@ -1248,11 +1245,30 @@
     "remoteSetupConversationName": "Connect remote execution engine ({{protocol}})",
     "remoteSetupPrompt": "Please help me connect a remote execution engine to NomiFun.\n\nI want to use the **{{protocol}}** protocol. Please:\n1. Explain what I need on the remote side (the gateway/execution engine service and how to start it).\n2. Walk me through getting the connection URL and any auth token/password.\n3. Tell me exactly what to fill into NomiFun's \"Connect Remote Engine\" form.\n\nKeep it concise and step-by-step."
   },
+  "taskModel": {
+    "providerPlaceholder": "Select a provider",
+    "modelPlaceholder": "Select a model",
+    "voicePlaceholder": "Default voice",
+    "unavailableOption": "{{model}} (unavailable)",
+    "staleHint": "\"{{model}}\" is no longer available. Please pick another one.",
+    "emptyHint": "No model can do this yet. Add one under Model Management → Provider Models and tag it.",
+    "voiceFreeTextHint": "You can type a provider voice id directly."
+  },
   "modelHub": {
     "title": "Model Management",
     "subtitle": "Choose free or provider models by how you want to use them.",
     "railTitle": "Models",
+    "groupAccess": "Access",
+    "groupCapability": "Capabilities",
+    "groupAdvanced": "Advanced",
     "sectionModels": "Provider Models",
+    "sectionChat": "Chat",
+    "sectionAsr": "Speech Recognition",
+    "sectionTts": "Speech Synthesis",
+    "sectionVision": "Vision",
+    "sectionImage": "Image Generation",
+    "sectionVideo": "Video Generation",
+    "sectionEmbedding": "Embedding & Retrieval",
     "sectionFree": "Free Models",
     "sectionCreation": "Creation Capabilities",
     "sectionGlobal": "Global Model Settings",
@@ -1272,6 +1288,31 @@
       "subtitle": "Connect cloud model providers with your own API key.",
       "noticeTitle": "Conversations are sent to the model provider",
       "note": "Provider models run in the cloud, so avoid sending sensitive information. Custom provider models are currently available to Nomi only."
+    },
+    "modality": {
+      "chatTitle": "Chat Models",
+      "chatSubtitle": "Models that can hold a conversation. The default model for new sessions is set here too.",
+      "visionTitle": "Vision Models",
+      "visionSubtitle": "Chat models that can also read images.",
+      "embeddingTitle": "Embedding & Retrieval",
+      "embeddingSubtitle": "Embedding and reranking models used by knowledge-base retrieval.",
+      "modelCount": "{{count}} models",
+      "empty": "No model in this category yet",
+      "emptyHint": "Add a model under Provider Models and tag it with the matching task.",
+      "manageModels": "Go to Provider Models",
+      "toggleFailed": "Failed to save the model switch",
+      "descriptionPlaceholder": "Describe this model in one line; it shows up in selectors",
+      "descriptionSave": "Save description",
+      "descriptionFailed": "Failed to save the description",
+      "defaultRow": "Default model for this category",
+      "chatDefaultHint": "The chat model preselected for a new session.",
+      "noDefault": "This category has no global default; each feature picks its own.",
+      "untaggedTitle": "Models without a task tag",
+      "untaggedHint": "These models carry no task tag, so no section or selector lists them. Tag them under Provider Models.",
+      "taskChat": "Chat",
+      "taskEmbedding": "Embedding",
+      "taskRerank": "Rerank",
+      "traitVision": "Vision"
     },
     "free": {
       "title": "Free Models",
@@ -1361,9 +1402,12 @@
       "modelCount": "{{count}} models",
       "empty": "No creation models",
       "emptyHint": "No configured model is tagged for image/video generation. Tag the capable models on the model management page.",
-      "emptyNoProviders": "No model providers are configured. Add a provider and model under \"Provider Models\" first."
+      "emptyNoProviders": "No model providers are configured. Add a provider and model under \"Provider Models\" first.",
+      "imageTitle": "Image Generation",
+      "imageSubtitle": "Models that can produce images, including image-editing ones.",
+      "videoTitle": "Video Generation",
+      "videoSubtitle": "Models that can produce video."
     },
-    "sectionSpeech": "Speech to Text",
     "speech": {
       "title": "Speech to Text",
       "subtitle": "Choose a configured cloud speech model.",
@@ -1373,7 +1417,14 @@
       "languagePlaceholder": "Leave empty for automatic detection, for example zh or en",
       "enabled": "Enable speech to text in input boxes",
       "noSources": "No speech-to-text model is available. Add a speech recognition model to a provider first.",
-      "manageProviders": "Manage Provider Models"
+      "manageProviders": "Manage Provider Models",
+      "ttsTitle": "Speech Synthesis (TTS)",
+      "ttsSubtitle": "The default model and voice used to read text aloud whenever a companion has none of its own.",
+      "ttsSource": "Default Synthesis Model",
+      "ttsNoSources": "No speech-synthesis model is available. Add one under Provider Models first.",
+      "ttsSaved": "Speech-synthesis default saved",
+      "ttsSaveFailed": "Failed to save the speech-synthesis default",
+      "ttsClear": "Clear default"
     }
   },
   "otherHub": {

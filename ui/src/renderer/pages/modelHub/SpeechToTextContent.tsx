@@ -4,14 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Button, Empty, Form, Input, Switch } from '@arco-design/web-react';
+import { Button, Form, Input, Switch } from '@arco-design/web-react';
 import { HeadsetOne, LinkCloud } from '@icon-park/react';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import type { SpeechToTextConfig, SpeechToTextProvider } from '@/common/types/provider/speech';
-import NomiSelect from '@/renderer/components/base/NomiSelect';
-import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
+import type { SpeechToTextConfig } from '@/common/types/provider/speech';
+import TaskModelSelect from '@/renderer/components/model/TaskModelSelect';
 import {
   DEFAULT_SPEECH_TO_TEXT_CONFIG,
   getSpeechToTextConfig,
@@ -20,26 +19,20 @@ import {
   SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT,
 } from '@/renderer/services/speechToTextConfig';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
-import type { ProviderId } from '@/common/types/ids';
-import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 
-type SpeechSourceOption = {
-  value: string;
-  label: string;
-  provider: SpeechToTextProvider;
-  providerId?: ProviderId;
-  model: string;
-};
-
+/**
+ * ASR 区：全局默认的「语音识别模型」。
+ *
+ * Candidates come from the authoritative catalog resolution for
+ * `speech_recognition` — `TaskModelSelect` owns that query, so this panel does
+ * not build its own option list and a saved model that has since disappeared
+ * stays visible as an explicit "(unavailable)" option instead of blanking.
+ */
 const SpeechToTextContent: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [message, messageContext] = useArcoMessage({ maxCount: 2 });
   const [config, setConfig] = useState<SpeechToTextConfig>(DEFAULT_SPEECH_TO_TEXT_CONFIG);
-  // Candidates = the authoritative catalog resolution for speech_recognition
-  // (per-model task tags via /api/model-profiles/resolve; no name guessing).
-  const { groups: speechGroups } = useModelsForTask('speech_recognition');
-  const providerLabel = useModelSelectorProviderLabel();
 
   useEffect(() => {
     const syncConfig = () => setConfig(getSpeechToTextConfig());
@@ -47,29 +40,6 @@ const SpeechToTextContent: React.FC = () => {
     window.addEventListener(SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT, syncConfig);
     return () => window.removeEventListener(SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT, syncConfig);
   }, []);
-
-  const cloudOptions = useMemo<SpeechSourceOption[]>(() => {
-    return speechGroups.flatMap(({ provider, models }) =>
-      models.map((model) => ({
-        value: `cloud\u0000${provider.id}\u0000${model}`,
-        label: `${providerLabel(provider)} · ${model}`,
-        // The stored `provider` enum is legacy: transcription executes by
-        // provider_id + model and the backend ignores this field. Keep the
-        // 'openai' constant so persisted configs stay shape-compatible.
-        provider: 'openai' as const,
-        providerId: provider.id,
-        model,
-      }))
-    );
-  }, [speechGroups, providerLabel]);
-
-  const sourceOptions = cloudOptions;
-
-  const selectedSource = useMemo(() => {
-    return cloudOptions.find(
-      (option) => option.providerId === config.provider_id && option.model === config.model
-    )?.value;
-  }, [cloudOptions, config.model, config.provider_id]);
 
   const persist = useCallback(
     (next: SpeechToTextConfig) => {
@@ -84,20 +54,7 @@ const SpeechToTextContent: React.FC = () => {
     [message, t]
   );
 
-  const selectSource = useCallback(
-    (value: string) => {
-      const option = sourceOptions.find((candidate) => candidate.value === value);
-      if (!option) return;
-      persist({
-        ...config,
-        enabled: true,
-        provider: option.provider,
-        provider_id: option.providerId,
-        model: option.model,
-      });
-    },
-    [config, persist, sourceOptions]
-  );
+  const hasSource = Boolean(config.provider_id && config.model);
 
   return (
     <div className='flex min-h-0 flex-col rd-16px bg-2 px-24px py-16px'>
@@ -116,63 +73,58 @@ const SpeechToTextContent: React.FC = () => {
         </div>
       </header>
 
-      {sourceOptions.length === 0 ? (
-        <div className='py-42px'>
-          <Empty
-            icon={<HeadsetOne theme='outline' size='42' className='text-t-tertiary' />}
-            description={t('settings.modelHub.speech.noSources')}
+      <Form layout='vertical' className='mt-18px'>
+        <Form.Item label={t('settings.modelHub.speech.source')}>
+          <TaskModelSelect
+            task='speech_recognition'
+            size='default'
+            value={
+              config.provider_id && config.model
+                ? { provider_id: config.provider_id, model: config.model }
+                : null
+            }
+            emptyHint={t('settings.modelHub.speech.noSources')}
+            onChange={({ provider_id, model }) =>
+              persist({
+                ...config,
+                enabled: true,
+                // The stored `provider` enum is legacy: transcription executes by
+                // provider_id + model and the backend ignores this field. Keep the
+                // 'openai' constant so persisted configs stay shape-compatible.
+                provider: 'openai',
+                provider_id,
+                model,
+              })
+            }
           />
-          <div className='mt-14px flex items-center justify-center gap-8px flex-wrap'>
-            <Button icon={<LinkCloud theme='outline' size='14' />} onClick={() => navigate('/models?section=models')}>
-              {t('settings.modelHub.speech.manageProviders')}
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <>
-          <Form layout='vertical' className='mt-18px'>
-            <Form.Item label={t('settings.modelHub.speech.source')}>
-              <NomiSelect value={selectedSource} onChange={selectSource}>
-                {cloudOptions.length > 0 && (
-                  <NomiSelect.OptGroup label={t('settings.modelHub.speech.cloud')}>
-                    {cloudOptions.map((option) => (
-                      <NomiSelect.Option key={option.value} value={option.value}>
-                        {option.label}
-                      </NomiSelect.Option>
-                    ))}
-                  </NomiSelect.OptGroup>
-                )}
-              </NomiSelect>
-            </Form.Item>
-            <Form.Item label={t('settings.modelHub.speech.defaultLanguage')}>
-              <Input
-                value={config.language}
-                placeholder={t('settings.modelHub.speech.languagePlaceholder')}
-                onBlur={() => persist(config)}
-                onChange={(language) => setConfig((current) => ({ ...current, language }))}
-              />
-            </Form.Item>
-            <Form.Item label={t('settings.modelHub.speech.enabled')}>
-              <Switch
-                checked={config.enabled && Boolean(selectedSource)}
-                disabled={!selectedSource}
-                onChange={(enabled) => persist({ ...config, enabled })}
-              />
-            </Form.Item>
-          </Form>
+        </Form.Item>
+        <Form.Item label={t('settings.modelHub.speech.defaultLanguage')}>
+          <Input
+            value={config.language}
+            placeholder={t('settings.modelHub.speech.languagePlaceholder')}
+            onBlur={() => persist(config)}
+            onChange={(language) => setConfig((current) => ({ ...current, language }))}
+          />
+        </Form.Item>
+        <Form.Item label={t('settings.modelHub.speech.enabled')}>
+          <Switch
+            checked={config.enabled && hasSource}
+            disabled={!hasSource}
+            onChange={(enabled) => persist({ ...config, enabled })}
+          />
+        </Form.Item>
+      </Form>
 
-          <div className='mt-6px flex items-center gap-8px flex-wrap'>
-            <Button
-              type='text'
-              size='small'
-              icon={<LinkCloud theme='outline' size='14' />}
-              onClick={() => navigate('/models?section=models')}
-            >
-              {t('settings.modelHub.speech.manageProviders')}
-            </Button>
-          </div>
-        </>
-      )}
+      <div className='mt-6px flex items-center gap-8px flex-wrap'>
+        <Button
+          type='text'
+          size='small'
+          icon={<LinkCloud theme='outline' size='14' />}
+          onClick={() => navigate('/models?section=models')}
+        >
+          {t('settings.modelHub.speech.manageProviders')}
+        </Button>
+      </div>
     </div>
   );
 };

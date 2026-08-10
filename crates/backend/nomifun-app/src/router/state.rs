@@ -80,6 +80,7 @@ pub struct ModuleStates {
     pub system: SystemRouterState,
     pub conversation: ConversationRouterState,
     pub remote_agent: RemoteAgentRouterState,
+    pub ssh_host: nomifun_ssh::SshHostRouterState,
     pub agent: AgentRouterState,
 
     pub connection_test: ConnectionTestRouterState,
@@ -591,6 +592,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         system: build_system_state(services),
         conversation,
         remote_agent: build_remote_agent_state(services),
+        ssh_host: build_ssh_host_state(services),
         agent: AgentRouterState {
             agent_registry: services.agent_registry.clone(),
             service: agent_service,
@@ -815,6 +817,11 @@ pub fn build_conversation_state(
     conversation_service.with_delete_hook(Arc::new(ConversationTerminalCascade {
         terminals: services.terminal_service.clone(),
     }) as Arc<dyn OnConversationDelete>);
+    // Same rule for a remote session's SSH link: the socket, the remote shell and
+    // its cwd belong to the conversation, so they go when it does — with close
+    // forensics, not by letting the transport rot.
+    conversation_service
+        .with_delete_hook(Arc::new(services.ssh_pool.clone()) as Arc<dyn OnConversationDelete>);
     // Drop this conversation's IDMM decision records (disposable audit trail,
     // polymorphic target_id with no FK —app-level cascade).
     conversation_service.with_delete_hook(Arc::new(IdmmRecordCascade {
@@ -1263,6 +1270,17 @@ pub async fn build_channel_state(
 }
 
 /// Build the default `TerminalRouterState` from application services.
+/// Build the SSH host-book router state on the process connection pool. The pool
+/// carries its own host book, so the routes edit the exact credentials the next
+/// redial will use and the test-connection probe dials through the same gate a
+/// session does.
+pub fn build_ssh_host_state(services: &AppServices) -> nomifun_ssh::SshHostRouterState {
+    nomifun_ssh::SshHostRouterState {
+        service: services.ssh_pool.host_service(),
+        pool: Some(services.ssh_pool.clone()),
+    }
+}
+
 pub fn build_terminal_state(services: &AppServices) -> TerminalRouterState {
     // Late-wire the knowledge service into the terminal singleton (same
     // pattern as `ConversationService::with_knowledge_service`): terminal

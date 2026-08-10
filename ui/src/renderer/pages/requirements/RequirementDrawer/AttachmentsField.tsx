@@ -157,7 +157,7 @@ const AttachmentsField: React.FC<AttachmentsFieldProps> = ({
 
       {/* ── Expanded body: dropzone + previews ─────────────────────────── */}
       {open ? (
-        <div className='border-t border-solid border-border-2 px-12px py-12px flex flex-col gap-8px'>
+        <div className='border-t border-t-solid border-arco-2 px-12px py-12px flex flex-col gap-8px'>
           <div className='text-12px text-t-secondary'>{t('requirements.form.attachmentsHelp')}</div>
           <div
             ref={dropzoneRef}

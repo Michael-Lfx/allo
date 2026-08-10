@@ -29,7 +29,7 @@ describe('Nomi session metrics panel notice', () => {
 describe('conversation update body must not forward merge_extra', () => {
   test('ipcBridge conversation.update omits the client-only merge_extra flag', () => {
     const source = readSource(new URL('../../../../../common/adapter/ipcBridge.ts', import.meta.url));
-    const updateStart = source.indexOf('update: httpPatch<boolean, { id: ConversationId;');
+    const updateStart = source.indexOf('update: httpPatch<boolean, { conversation_id: ConversationId;');
     expect(updateStart).toBeGreaterThan(-1);
     const updateChunk = source.slice(updateStart, updateStart + 700);
 

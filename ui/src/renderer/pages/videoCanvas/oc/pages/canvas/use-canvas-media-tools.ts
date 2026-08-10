@@ -261,16 +261,7 @@ export function useCanvasMediaTools({
         try {
             const merged = await mergeVideos(videos.map((node) => ({ id: node.id, url: node.metadata?.content, storageKey: node.metadata?.storageKey })), setMergeVideoProgress);
             setMergeVideoProgress({ phase: "encoding", progress: 98 });
-            const uploaded = merged.storageKey && merged.url
-                ? {
-                    url: merged.url,
-                    storageKey: merged.storageKey,
-                    bytes: merged.blob.size,
-                    mimeType: merged.blob.type || "video/mp4",
-                    width: 1280,
-                    height: 720,
-                }
-                : await storeGeneratedVideo({ blob: merged.blob });
+            const uploaded = await storeGeneratedVideo({ blob: merged });
             const size = fitNodeSize(uploaded.width || 1280, uploaded.height || 720, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
             const left = Math.max(...videos.map((node) => node.position.x + node.width)) + 120;
             const top = Math.min(...videos.map((node) => node.position.y));

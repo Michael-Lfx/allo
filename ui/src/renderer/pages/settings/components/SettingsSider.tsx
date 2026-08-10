@@ -16,6 +16,7 @@ import {
   CloudStorage,
   Puzzle,
   Robot,
+  Server,
   System,
   Tool,
   TreeDiagram,
@@ -31,6 +32,7 @@ import { buildSettingsNavItems } from './settingsNavigation';
 /** Builtin settings tab IDs in display order (must match router paths). */
 export const BUILTIN_TAB_IDS = [
   'system',
+  'ssh-hosts',
   'browser-use',
   'computer-use',
   'poi',
@@ -82,6 +84,12 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
     // Build builtin items
     const builtinMap: Record<string, SiderItem> = {
       system: { id: 'system', label: t('settings.system'), icon: <System />, path: 'system' },
+      'ssh-hosts': {
+        id: 'ssh-hosts',
+        label: t('ssh.title'),
+        icon: <Server />,
+        path: 'ssh-hosts',
+      },
       'browser-use': {
         id: 'browser-use',
         label: t('settings.browserUseNav'),

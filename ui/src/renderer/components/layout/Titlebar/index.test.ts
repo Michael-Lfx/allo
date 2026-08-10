@@ -8,7 +8,7 @@ describe('Titlebar instant icon tooltips', () => {
   test('uses the local instant hover tooltip for icon-only titlebar actions', () => {
     expect(titlebarSource.includes('InstantHoverTooltip')).toBe(true);
     expect(languageMenuSource.includes('InstantHoverTooltip')).toBe(true);
-    expect(titlebarSource.includes("position='bottom'")).toBe(true);
+    expect(titlebarSource.includes("position={position ?? 'bottom'}")).toBe(true);
     expect(languageMenuSource.includes("position='bottom'")).toBe(true);
   });
 

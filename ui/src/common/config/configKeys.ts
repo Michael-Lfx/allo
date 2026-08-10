@@ -1,5 +1,5 @@
 import type { AcpInitializeResult, AcpSessionConfigOption, AcpSessionModes } from '@/common/types/platform/acpTypes';
-import type { SpeechToTextConfig } from '@/common/types/provider/speech';
+import type { SpeechToTextConfig, TextToSpeechConfig } from '@/common/types/provider/speech';
 import type { ICssTheme } from '@/common/config/storage';
 import type { CompanionId, ProviderId } from '@/common/types/ids';
 
@@ -61,6 +61,9 @@ export type ConfigKeyMap = {
   // Nomi conversation models. It never changes the conversation's main model.
   'tools.imageAnalysisModel': { provider_id: ProviderId; model: string } | undefined;
   'tools.speechToText': SpeechToTextConfig | undefined;
+  // Install-wide speech-synthesis default. Absent = no default; every companion
+  // whose own `voice.tts` slot is empty falls back to this one.
+  'tools.textToSpeech': TextToSpeechConfig | undefined;
   'workspace.pasteConfirm': boolean | undefined;
   'upload.saveToWorkspace': boolean | undefined;
   'guid.lastSelectedAgent': string | undefined;

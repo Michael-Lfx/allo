@@ -610,7 +610,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
             </Tag>
           </div>
 
-          <div className='flex-shrink-0 p-12px rd-10px border border-solid border-border-2 bg-bg-1'>
+          <div className='flex-shrink-0 p-12px rd-10px border border-solid border-arco-2 bg-bg-1'>
             <Typography.Text bold>{t('settings.presetApplication', { defaultValue: 'Application' })}</Typography.Text>
             <Checkbox.Group
               className='preset-scope-selection-checkbox mt-10px flex flex-wrap gap-x-16px gap-y-8px'
@@ -639,7 +639,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
             </div>
           </div>
 
-          <div className='flex-shrink-0 p-12px rd-10px border border-solid border-border-2 bg-bg-1'>
+          <div className='flex-shrink-0 p-12px rd-10px border border-solid border-arco-2 bg-bg-1'>
             <div className='flex items-center justify-between gap-12px'>
               <div>
                 <Typography.Text bold>{t('settings.presetKnowledge', { defaultValue: 'Knowledge scope' })}</Typography.Text>
@@ -671,16 +671,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                     <NomiSelect.Option key={base.knowledge_base_id} value={base.knowledge_base_id}>{base.name}</NomiSelect.Option>
                   ))}
                 </NomiSelect>
-                <div className='grid grid-cols-1 md:grid-cols-3 gap-10px'>
-                  <Select
-                    value={knowledgePolicy.mode}
-                    disabled={readOnly}
-                    onChange={(mode) => setKnowledgePolicy({ ...knowledgePolicy, mode: String(mode) })}
-                  >
-                    <Select.Option value='inherit'>{t('settings.presetKnowledgeModeInherit', { defaultValue: 'Inherit defaults' })}</Select.Option>
-                    <Select.Option value='staged'>{t('settings.presetKnowledgeModeStaged', { defaultValue: 'Selected bases (staged)' })}</Select.Option>
-                    <Select.Option value='direct'>{t('settings.presetKnowledgeModeDirect', { defaultValue: 'Selected bases (direct)' })}</Select.Option>
-                  </Select>
+                <div className='grid grid-cols-1 md:grid-cols-2 gap-10px'>
                   <Checkbox checked={knowledgePolicy.grounded} disabled={readOnly} onChange={(grounded) => setKnowledgePolicy({ ...knowledgePolicy, grounded })}>
                     {t('settings.presetKnowledgeGrounded', { defaultValue: 'Require grounding' })}
                   </Checkbox>
@@ -691,23 +682,23 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 {knowledgePolicy.writeback && (
                   <div className='grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(180px,0.45fr)] gap-10px items-center'>
                     <div className='text-12px text-t-secondary'>
-                      {t('knowledge.mount.eagernessLabel', { defaultValue: 'Write-back eagerness' })}
+                      {t('knowledge.mount.eagernessLabel', { defaultValue: 'Write-back disposition' })}
                     </div>
                     <Select
-                      value={knowledgePolicy.eagerness ?? 'conservative'}
+                      value={knowledgePolicy.eagerness ?? 'manual'}
                       disabled={readOnly}
                       onChange={(eagerness) =>
                         setKnowledgePolicy({
                           ...knowledgePolicy,
-                          eagerness: eagerness as 'conservative' | 'aggressive',
+                          eagerness: eagerness as 'manual' | 'auto',
                         })
                       }
                     >
-                      <Select.Option value='conservative'>
-                        {t('knowledge.control.eagernessConservative', { defaultValue: 'Conservative' })}
+                      <Select.Option value='manual'>
+                        {t('knowledge.control.eagernessManual', { defaultValue: 'Manual (recommended)' })}
                       </Select.Option>
-                      <Select.Option value='aggressive'>
-                        {t('knowledge.control.eagernessAggressive', { defaultValue: 'Aggressive' })}
+                      <Select.Option value='auto'>
+                        {t('knowledge.control.eagernessAuto', { defaultValue: 'Automatic' })}
                       </Select.Option>
                     </Select>
                   </div>
@@ -794,11 +785,11 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
               </Button>
             </div>
             <div
-              className='mt-10px border border-border-2 overflow-hidden rounded-4px'
+              className='mt-10px border border-arco-2 overflow-hidden rounded-4px'
               style={{ height: rulesContainerHeight }}
             >
               {isRuleEditable && (
-                <div className='flex items-center h-36px bg-fill-2 border-b border-border-2 flex-shrink-0'>
+                <div className='flex items-center h-36px bg-fill-2 border-b border-arco-2 flex-shrink-0'>
                   <div
                     className={`flex items-center h-full px-16px cursor-pointer transition-all text-13px font-medium ${promptViewMode === 'edit' ? 'text-primary border-b-2 border-primary bg-bg-1' : 'text-t-secondary hover:text-t-primary'}`}
                     onClick={() => setPromptViewMode('edit')}
@@ -1139,7 +1130,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                             skill={skill}
                             localeKey={localeKey}
                             badge={
-                              <span className='bg-[rgba(var(--success-6),0.08)] text-[rgb(var(--success-6))] border border-[rgba(var(--success-6),0.2)] text-10px px-4px py-1px rd-4px font-medium uppercase'>
+                              <span className='bg-[rgba(var(--success-6),0.08)] text-success-6 border border-[rgba(var(--success-6),0.2)] text-10px px-4px py-1px rd-4px font-medium uppercase'>
                                 {t('settings.autoInjectedSkillsBadge', { defaultValue: 'Auto' })}
                               </span>
                             }

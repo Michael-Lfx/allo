@@ -29,8 +29,10 @@ export interface ResultViewProps {
   onToTextNode: (content: string) => void;
 }
 
+// `border-2` is the --bg-2 colour, not a width: the track loses its width (falls back to the CSS
+// initial medium) and the author's track colour gets overridden. `border-2px` is the width.
 const Spinner: React.FC = () => (
-  <span className='h-16px w-16px animate-spin rounded-full border-2 border-solid border-[var(--color-fill-3)] border-t-[rgb(var(--primary-6))]' />
+  <span className='h-16px w-16px animate-spin rounded-full border-2px border-solid border-[var(--color-fill-3)] border-t-[rgb(var(--primary-6))]' />
 );
 
 const ContinueBox: React.FC<{ onSubmit: (v: string) => void }> = ({ onSubmit }) => {
