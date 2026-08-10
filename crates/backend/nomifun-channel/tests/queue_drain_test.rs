@@ -1,4 +1,4 @@
-//! Integration tests for the busy-time queue drain (spec D1, Task 3).
+﻿//! Integration tests for the busy-time queue drain (spec D1, Task 3).
 //!
 //! A real in-memory database, a real `ConversationService`, and a real
 //! `BroadcastEventBus` are wired exactly like production: the drain consumes
@@ -524,6 +524,7 @@ async fn turn_completion_drains_queue_fifo() {
         order: Some("ASC".into()),
         content_mode: None,
         cursor: None,
+        day: None,
     };
     let messages = stack
         .conversation_svc

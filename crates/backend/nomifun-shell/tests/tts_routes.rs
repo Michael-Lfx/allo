@@ -1,4 +1,4 @@
-//! Black-box tests for `POST /api/tts`: real in-memory catalog + wiremock
+﻿//! Black-box tests for `POST /api/tts`: real in-memory catalog + wiremock
 //! provider behind the unified invoke layer. Covers the binary happy path
 //! (audio bytes + Content-Type, no ApiResponse envelope), the local input
 //! validation (empty / oversized text), and catalog gating (unprofiled model).
@@ -46,6 +46,7 @@ async fn setup() -> (axum::Router, nomifun_db::SqlitePool) {
         client_pref_service: nomifun_system::ClientPrefService::new(Arc::new(
             nomifun_db::SqliteClientPreferenceRepository::new(pool.clone()),
         )),
+        data_dir: std::env::temp_dir(),
         provider_service: None,
         model_invoke_service: Some(invoke),
     };
@@ -282,6 +283,7 @@ async fn tts_unwired_invoke_service_is_500() {
         client_pref_service: nomifun_system::ClientPrefService::new(Arc::new(
             nomifun_db::SqliteClientPreferenceRepository::new(pool),
         )),
+        data_dir: std::env::temp_dir(),
         provider_service: None,
         model_invoke_service: None,
     };

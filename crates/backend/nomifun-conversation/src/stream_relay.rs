@@ -5779,7 +5779,6 @@ mod tests {
             conversation_id,
             msg_id,
             TEST_TURN_A.to_owned(),
-            "conversation".to_owned(),
             "answer".to_owned(),
             Vec::new(),
             Vec::new(),
@@ -5814,7 +5813,6 @@ mod tests {
             2,
             &[],
             &prior_failures,
-            "scope",
         );
 
         assert_eq!(state["status"], "written");
@@ -5850,7 +5848,6 @@ mod tests {
             2,
             &prior_written,
             &prior_failures,
-            "scope",
         );
 
         assert_eq!(state["status"], "partial");
@@ -5886,7 +5883,6 @@ mod tests {
             2,
             &[],
             &prior_failures,
-            "scope",
         );
 
         assert_eq!(state["status"], "partial");

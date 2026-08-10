@@ -1,4 +1,4 @@
-//! Integration tests for agent type implementations and auxiliary features.
+﻿//! Integration tests for agent type implementations and auxiliary features.
 //!
 //! These tests validate:
 //! - Each agent manager implements AgentRuntimeControl correctly
@@ -130,12 +130,13 @@ fn make_nomi_config() -> NomiResolvedConfig {
         allowed_tools: Vec::new(),
         write_root: None,
         reasoning_effort: None,
+        image_analysis_model: None,
     }
 }
 
 #[tokio::test]
 async fn nomi_agent_kill_succeeds() {
-    let agent = NomiAgentManager::new(NOMI_CONVERSATION_ID.into(), "/proj".into(), make_nomi_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+    let agent = NomiAgentManager::new(NOMI_CONVERSATION_ID.into(), "/proj".into(), make_nomi_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
         .await
         .unwrap();
     assert!(agent.kill(None).is_ok());
@@ -144,7 +145,7 @@ async fn nomi_agent_kill_succeeds() {
 
 #[tokio::test]
 async fn nomi_agent_confirm_succeeds() {
-    let agent = NomiAgentManager::new(NOMI_CONVERSATION_ID.into(), "/proj".into(), make_nomi_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+    let agent = NomiAgentManager::new(NOMI_CONVERSATION_ID.into(), "/proj".into(), make_nomi_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
         .await
         .unwrap();
     // `confirm` is an inherent method on `NomiAgentManager` (reached via
@@ -156,7 +157,7 @@ async fn nomi_agent_confirm_succeeds() {
 
 #[tokio::test]
 async fn nomi_agent_metadata() {
-    let agent = NomiAgentManager::new(NOMI_CONVERSATION_ID.into(), "/work".into(), make_nomi_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+    let agent = NomiAgentManager::new(NOMI_CONVERSATION_ID.into(), "/work".into(), make_nomi_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
         .await
         .unwrap();
     assert_eq!(agent.agent_type(), AgentType::Nomi);

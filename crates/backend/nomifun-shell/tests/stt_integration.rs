@@ -1,4 +1,4 @@
-//! Black-box tests for `POST /api/stt`: real in-memory catalog + client
+﻿//! Black-box tests for `POST /api/stt`: real in-memory catalog + client
 //! preferences + wiremock provider behind the unified invoke layer.
 //!
 //! The execution protocol is decided by the invoke layer's platform routing —
@@ -51,6 +51,7 @@ async fn setup() -> (axum::Router, nomifun_db::SqlitePool) {
         client_pref_service: ClientPrefService::new(Arc::new(
             nomifun_db::SqliteClientPreferenceRepository::new(pool.clone()),
         )),
+        data_dir: std::env::temp_dir(),
         provider_service: Some(ProviderService::new(
             Arc::new(SqliteProviderRepository::new(pool.clone())),
             Arc::new(SqliteProviderModelRepository::new(pool.clone())),

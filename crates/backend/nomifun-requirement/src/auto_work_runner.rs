@@ -1,4 +1,4 @@
-use std::sync::Arc;
+﻿use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
@@ -3262,6 +3262,7 @@ mod tests {
                 result_error: None,
                 result_error_code: None,
                 result_error_retryable: None,
+                turn_id: None,
             },
             3,
             false,
@@ -3319,6 +3320,7 @@ mod tests {
                 result_error: Some("provider stream ended after tools may have run".to_owned()),
                 result_error_code: None,
                 result_error_retryable: None,
+                turn_id: None,
             },
             9,
             false,
@@ -3354,6 +3356,7 @@ mod tests {
                 result_error: None,
                 result_error_code: None,
                 result_error_retryable: None,
+                turn_id: None,
             },
             4,
             true,

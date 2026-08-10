@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+﻿use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -3834,6 +3834,7 @@ mod tests {
             goal_runtime: std::sync::RwLock::new(None),
             goal_repo: std::sync::RwLock::new(None),
             goal_registry_data_dir: std::env::temp_dir(),
+            ssh_lease: None,
         }
     }
 
@@ -4037,6 +4038,7 @@ mod tests {
             goal_runtime: std::sync::RwLock::new(None),
             goal_repo: std::sync::RwLock::new(None),
             goal_registry_data_dir: std::env::temp_dir(),
+            ssh_lease: None,
         };
         let attachment_dir = tempfile::tempdir().unwrap();
         let non_image_attachment = attachment_dir
@@ -4870,7 +4872,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_returns_correct_type() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert_eq!(agent.agent_type(), AgentType::Nomi);
@@ -4894,7 +4896,6 @@ mod tests {
             None,
             None,
             Vec::new(),
-            false,
             None,
         )
         .await
@@ -4941,7 +4942,6 @@ mod tests {
             None,
             None,
             Vec::new(),
-            false,
             None,
         )
         .await
@@ -4969,7 +4969,6 @@ mod tests {
             None,
             None,
             Vec::new(),
-            false,
             None,
         )
         .await
@@ -4984,7 +4983,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_initial_status_is_pending() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert_eq!(agent.status(), Some(ConversationStatus::Pending));
@@ -5035,7 +5034,6 @@ mod tests {
             None,
             None,
             Vec::new(),
-            false,
             None,
             Some(stub_summon_wiring()),
             NomiHostWiring::default(),
@@ -5069,7 +5067,6 @@ mod tests {
             None,
             None,
             Vec::new(),
-            false,
             None,
         )
         .await
@@ -5081,7 +5078,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_subscribe_returns_receiver() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         let _rx = agent.subscribe();
@@ -5089,7 +5086,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_kill_succeeds() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert!(agent.kill(None).is_ok());
@@ -5102,7 +5099,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_kill_with_reason_succeeds() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert!(agent.kill(Some(AgentKillReason::IdleTimeout)).is_ok());
@@ -5110,7 +5107,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_kill_running_turn_cancels_turn_token() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         agent.runtime.reset_for_new_turn(ConversationStatus::Running);
@@ -5131,7 +5128,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_kill_idle_turn_does_not_leave_stale_stop_signal() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
 
@@ -5235,7 +5232,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_confirmations_initially_empty() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert!(agent.get_confirmations().is_empty());
@@ -5243,7 +5240,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_get_slash_commands_does_not_wait_for_engine_lock() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
 
@@ -5258,7 +5255,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_check_approval_returns_false_by_default() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert!(!agent.check_approval("any_action", None));
@@ -5270,7 +5267,7 @@ mod tests {
         // event and transition to Finished — otherwise a subscribed relay hangs
         // forever in a 'running' spinner because no Finish/Error ever arrives.
         // (Phase 0 F0.2)
-        let agent = NomiAgentManager::new("conv-stop".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-stop".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         let mut rx = agent.subscribe();
@@ -5384,7 +5381,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_can_emit_error_and_finish() {
-        let agent = NomiAgentManager::new("conv-err".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-err".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         let mut rx = agent.subscribe();
