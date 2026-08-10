@@ -37,6 +37,8 @@ export interface AgentTraceArtifactMeta {
   sha256: string;
   call_id?: string | null;
   tool_name?: string | null;
+  /** `receipt` = verified PersistedArtifact; `reported` = Write/Edit-style path. */
+  source?: string | null;
 }
 
 export interface AgentTraceArtifactIndexEntry {
@@ -160,6 +162,7 @@ export function spanArtifacts(
       sha256: typeof row.sha256 === 'string' ? row.sha256 : '',
       call_id: typeof row.call_id === 'string' ? row.call_id : null,
       tool_name: typeof row.tool_name === 'string' ? row.tool_name : null,
+      source: typeof row.source === 'string' ? row.source : null,
     });
   }
   return out;

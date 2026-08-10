@@ -6,7 +6,7 @@
 
 import React, { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Empty, Message, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Message, Tag, Tooltip } from '@arco-design/web-react';
 import { Copy } from '@icon-park/react';
 import { copyText } from '@renderer/utils/ui/clipboard';
 import { formatBytes, formatClock, shortId } from './format';
@@ -45,6 +45,15 @@ function ArtifactRowMeta({
         <Tag size='small' color='cyan'>
           {artifact.kind || 'file'}
         </Tag>
+        {artifact.source === 'reported' ? (
+          <Tag size='small' color='orangered'>
+            {t('conversation.agentTrace.reported')}
+          </Tag>
+        ) : artifact.source === 'receipt' ? (
+          <Tag size='small' color='green'>
+            {t('conversation.agentTrace.receipt')}
+          </Tag>
+        ) : null}
         <span
           className='text-12px text-[var(--color-text-1)] font-mono truncate flex-1'
           title={artifact.relative_path}
@@ -98,10 +107,9 @@ const TraceSessionArtifacts: React.FC<TraceSessionArtifactsProps> = ({
       {loading ? (
         <div className='px-12px pb-10px text-12px text-[var(--color-text-3)]'>…</div>
       ) : entries.length === 0 ? (
-        <Empty
-          className='py-12px'
-          description={t('conversation.agentTrace.emptyArtifacts')}
-        />
+        <div className='px-12px pb-10px text-11px text-[var(--color-text-3)]'>
+          {t('conversation.agentTrace.emptyArtifacts')}
+        </div>
       ) : (
         <div className='max-h-160px overflow-auto px-8px pb-8px flex flex-col gap-4px'>
           {entries.map((row) => {

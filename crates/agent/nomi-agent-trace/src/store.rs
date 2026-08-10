@@ -304,19 +304,49 @@ impl FileTraceStore {
 }
 
 fn collect_artifacts_from_spans(trace: &TurnTrace) -> Vec<crate::types::TraceArtifactMeta> {
+    use crate::reported::reported_artifacts_from_tool_span;
+    use crate::types::{SpanKind, TraceArtifactMeta};
+
     let mut out = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for span in &trace.spans {
-        let Some(value) = span.attributes.get("artifacts") else {
-            continue;
+        let mut from_attrs: Vec<TraceArtifactMeta> = Vec::new();
+        if let Some(value) = span.attributes.get("artifacts") {
+            match serde_json::from_value::<Vec<TraceArtifactMeta>>(value.clone()) {
+                Ok(items) => from_attrs = items,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        span_id = %span.span_id,
+                        "skipping corrupt artifacts attribute on span"
+                    );
+                }
+            }
+        }
+
+        let recovered = if span.kind == SpanKind::Tool {
+            let tool_name = span
+                .attributes
+                .get("tool_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(span.name.as_str());
+            let call_id = span
+                .attributes
+                .get("call_id")
+                .and_then(|v| v.as_str());
+            reported_artifacts_from_tool_span(
+                tool_name,
+                call_id,
+                span.preview.as_deref(),
+                &from_attrs,
+            )
+        } else {
+            from_attrs
         };
-        match serde_json::from_value::<Vec<crate::types::TraceArtifactMeta>>(value.clone()) {
-            Ok(items) => out.extend(items),
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    span_id = %span.span_id,
-                    "skipping corrupt artifacts attribute on span"
-                );
+
+        for artifact in recovered {
+            if seen.insert(artifact.relative_path.clone()) {
+                out.push(artifact);
             }
         }
     }
@@ -488,6 +518,7 @@ mod tests {
                 sha256: "aa".into(),
                 call_id: Some("c1".into()),
                 tool_name: Some("generate_image".into()),
+                source: Some("receipt".into()),
             }],
         );
         let trace = b.finalize();
@@ -498,5 +529,40 @@ mod tests {
         assert_eq!(arts[0].msg_id, "m-art");
         assert_eq!(arts[0].artifact.relative_path, "nomifun-artifacts/a.png");
         assert_eq!(arts[0].trace_id, trace.trace_id);
+    }
+
+    #[test]
+    fn list_artifacts_recovers_reported_paths_from_write_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileTraceStore::new(dir.path());
+        let mut b = TurnTraceBuilder::new(TurnTraceMeta {
+            conversation_id: "conv-write".into(),
+            msg_id: "m-write".into(),
+            root_turn_id: "root".into(),
+            session_kind: "session_dialogue".into(),
+            origin: None,
+            companion: false,
+            channel_platform: None,
+            provider: None,
+            model: None,
+        });
+        b.note_tool_start("cw", "Write", Some(r#"{"file_path":"scripts/app.py"}"#));
+        // Historical traces often only kept the tool output as preview (no artifacts attr).
+        b.note_tool_end(
+            "cw",
+            SpanStatus::Ok,
+            Some("Created scripts/app.py (4 lines)"),
+            &[],
+        );
+        let trace = b.finalize();
+        assert_eq!(trace.summary.artifact_count, 0);
+        store.persist(&trace).unwrap();
+
+        let arts = store
+            .list_artifacts_for_conversation("conv-write", 20)
+            .unwrap();
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].artifact.relative_path, "scripts/app.py");
+        assert_eq!(arts[0].artifact.source.as_deref(), Some("reported"));
     }
 }

@@ -33,6 +33,9 @@ pub fn redact_preview(s: &str) -> String {
 ///
 /// Object keys that look like secret names (`api_key`, `token`, `password`, …)
 /// have their string values fully replaced with `[REDACTED_SECRET]`.
+///
+/// Bulky Write/Edit payload keys (`content`, `old_string`, …) are replaced with
+/// a short length placeholder so trace collection cannot stall the event bus.
 pub fn redact_json_value(value: &Value) -> Value {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
@@ -41,6 +44,10 @@ pub fn redact_json_value(value: &Value) -> Value {
         Value::Object(map) => {
             let mut out = Map::new();
             for (k, v) in map {
+                if is_bulky_tool_arg_key(k) {
+                    out.insert(k.clone(), bulky_placeholder(v));
+                    continue;
+                }
                 let redacted = if is_sensitive_key(k) {
                     match v {
                         Value::String(_) => {
@@ -56,6 +63,37 @@ pub fn redact_json_value(value: &Value) -> Value {
             Value::Object(out)
         }
     }
+}
+
+fn is_bulky_tool_arg_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "content"
+            | "contents"
+            | "file_text"
+            | "filetext"
+            | "old_string"
+            | "new_string"
+            | "old_str"
+            | "new_str"
+            | "oldtext"
+            | "newtext"
+            | "patch"
+            | "diff"
+            | "data"
+            | "bytes"
+            | "base64"
+    )
+}
+
+fn bulky_placeholder(value: &Value) -> Value {
+    let chars = match value {
+        Value::String(s) => s.chars().count(),
+        Value::Array(items) => items.len(),
+        Value::Object(map) => map.len(),
+        _ => 0,
+    };
+    Value::String(format!("[{chars} omitted]"))
 }
 
 fn is_sensitive_key(key: &str) -> bool {
@@ -108,6 +146,19 @@ mod tests {
         let out = redact_preview("key is sk-ABCDEFGHIJ0123456789xyz here");
         assert!(out.contains("[REDACTED_SECRET]"));
         assert!(!out.contains("sk-ABCDEFGHIJ"));
+    }
+
+    #[test]
+    fn redact_json_omits_bulky_write_content() {
+        let value = json!({
+            "file_path": "a.py",
+            "content": "x".repeat(10_000)
+        });
+        let out = redact_json_value(&value);
+        assert_eq!(out["file_path"], "a.py");
+        let content = out["content"].as_str().unwrap();
+        assert!(content.contains("omitted"));
+        assert!(!content.contains('x'));
     }
 
     #[test]

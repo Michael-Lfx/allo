@@ -72,6 +72,9 @@ pub struct TraceArtifactMeta {
     pub call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    /// `"receipt"` = verified PersistedArtifact; `"reported"` = file-mutation tool args/output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// One session-scoped artifact row (turn provenance + metadata).

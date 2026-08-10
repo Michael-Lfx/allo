@@ -1713,9 +1713,11 @@
     "artifacts": "Artifacts",
     "turnArtifacts": "本 turn 产物",
     "sessionArtifacts": "会话产物",
-    "sessionArtifactsHint": "仅元数据 · 点击跳转 turn",
-    "emptyArtifacts": "当前会话暂无已验证产物",
+    "sessionArtifactsHint": "仅元数据 · 含 Write/Edit 文件 · 点击跳转 turn",
+    "emptyArtifacts": "当前会话暂无产物（含 Write/Edit 文件与已验证媒体）",
     "artifactCount": "{{count}} 个产物",
-    "copyPath": "复制路径"
+    "copyPath": "复制路径",
+    "reported": "reported",
+    "receipt": "receipt"
   }
 }
