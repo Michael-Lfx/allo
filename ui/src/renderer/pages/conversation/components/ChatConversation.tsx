@@ -217,6 +217,11 @@ const NomiConversationLayout: React.FC<{
         workspace={conversation.extra.workspace}
         modelSelection={modelSelection}
         session_mode={conversation.extra?.session_mode}
+        reasoning_effort={
+          typeof conversation.extra?.reasoning_effort === 'string'
+            ? conversation.extra.reasoning_effort
+            : undefined
+        }
         cron_job_id={conversation.cron_job_id}
         loadedSkills={(conversation.extra as { skills?: string[] } | undefined)?.skills}
         loadedMcpStatuses={

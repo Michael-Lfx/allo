@@ -616,6 +616,12 @@ impl NomiAgentManager {
         if let Some(header) = config_extra.compat_overrides.mirror_bearer_header {
             config.compat.mirror_bearer_header = Some(header);
         }
+        if let Some(supports_effort) = config_extra.compat_overrides.supports_effort {
+            config.compat.supports_effort = Some(supports_effort);
+        }
+        if let Some(levels) = config_extra.compat_overrides.effort_levels.clone() {
+            config.compat.effort_levels = Some(levels);
+        }
 
         // Make the engine compact against the provider's declared context
         // window when set (else keep the resolved default). Same value the
@@ -847,6 +853,10 @@ impl NomiAgentManager {
             .map_err(|e| AppError::Internal(format!("Agent bootstrap failed: {e}")))?;
 
         let mut engine = result.engine;
+        // Catalog / user-selected reasoning depth for OpenAI-compatible Flowy
+        // chat models. Must land before the first turn so every LlmRequest
+        // carries `reasoning_effort` when the catalog advertises levels.
+        engine.set_initial_reasoning_effort(config_extra.reasoning_effort.clone());
         // MoA bridge: inject the factory-resolved reference slots. Not calling
         // `set_moa_state` keeps the engine byte-identical to a no-MoA build.
         if let Some(moa) = config_extra.moa.clone() {
@@ -3424,6 +3434,7 @@ mod tests {
             install_embedded_agent_execution: true,
             allowed_tools: Vec::new(),
             write_root: None,
+            reasoning_effort: None,
         }
     }
 

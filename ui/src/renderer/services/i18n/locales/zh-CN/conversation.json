@@ -828,5 +828,16 @@
     "emptyArtifacts": "当前会话暂无已验证产物",
     "artifactCount": "{{count}} 个产物",
     "copyPath": "复制路径"
+  },
+  "reasoningEffort": {
+    "switchFailed": "更新推理深度失败",
+    "level": {
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "xhigh": "极高",
+      "minimal": "最低",
+      "none": "关闭"
+    }
   }
 }

@@ -23,6 +23,9 @@ describe('Nomi sendbox control layout', () => {
     expect(rightToolsIndex).toBeGreaterThan(sendBoxIndex);
     expect(contextRingIndex).toBeGreaterThan(rightToolsIndex);
     expect(modelIndex).toBeGreaterThan(contextRingIndex);
+    const reasoningIndex = source.indexOf('<ReasoningEffortSelector', rightToolsIndex);
+    expect(reasoningIndex).toBeGreaterThan(contextRingIndex);
+    expect(modelIndex).toBeGreaterThan(reasoningIndex);
     expect(source.includes('collaboratorSelectorNode')).toBe(false);
     expect(source.includes('topRightTools={')).toBe(false);
     expect(source.includes('ContextUsagePill')).toBe(false);

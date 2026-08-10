@@ -7,12 +7,17 @@ use crate::repository::provider_model::IProviderModelRepository;
 /// user-authored model parameter.
 pub const FLOWY_CATALOG_MAX_TOKENS_PARAM: &str = "_flowy_catalog_max_tokens";
 
+/// Reserved `provider_models.params` key for server-advertised
+/// `reasoning_effort` levels (Flowy catalog `extra.reasoning_effort`).
+/// Maintained during catalog sync; not a user-authored model parameter.
+pub const FLOWY_CATALOG_REASONING_EFFORT_PARAM: &str = "_flowy_catalog_reasoning_effort";
+
 /// Inferred capability data for a catalog model.
 ///
 /// Cloud catalog reconciliation uses this small owned value so the provider
 /// row and the model-profile rows can be committed by one repository
 /// operation. User-authored profile fields remain authoritative; catalog-owned
-/// metadata is merged through its reserved parameter key.
+/// metadata is merged through its reserved parameter keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderModelProfileSeed {
     pub model: String,
@@ -21,40 +26,86 @@ pub struct ProviderModelProfileSeed {
     /// Cloud catalog output limit. `None` removes the managed key while
     /// preserving all other model parameters.
     pub catalog_max_tokens: Option<u32>,
+    /// Cloud-advertised reasoning effort levels when the model supports
+    /// deep thinking. `None` removes the managed key.
+    pub catalog_reasoning_effort: Option<Vec<String>>,
 }
 
-pub(crate) fn initial_catalog_params(max_tokens: Option<u32>) -> String {
-    match max_tokens {
-        Some(max_tokens) => serde_json::json!({ FLOWY_CATALOG_MAX_TOKENS_PARAM: max_tokens }).to_string(),
-        None => "{}".to_string(),
+pub(crate) fn initial_catalog_params(
+    max_tokens: Option<u32>,
+    reasoning_effort: Option<&[String]>,
+) -> String {
+    let mut object = serde_json::Map::new();
+    if let Some(max_tokens) = max_tokens {
+        object.insert(
+            FLOWY_CATALOG_MAX_TOKENS_PARAM.to_string(),
+            serde_json::json!(max_tokens),
+        );
     }
+    if let Some(levels) = reasoning_effort {
+        object.insert(
+            FLOWY_CATALOG_REASONING_EFFORT_PARAM.to_string(),
+            serde_json::json!(levels),
+        );
+    }
+    serde_json::Value::Object(object).to_string()
 }
 
-/// Merge catalog-owned output metadata into an existing user-extensible
-/// parameter object. Invalid/non-object JSON is left untouched rather than
-/// replacing user data during a background sync.
-pub(crate) fn merge_catalog_max_tokens(params: &str, max_tokens: Option<u32>) -> Option<String> {
+/// Merge catalog-owned metadata into an existing user-extensible parameter
+/// object. Invalid/non-object JSON is left untouched rather than replacing
+/// user data during a background sync.
+///
+/// Returns `None` when the merged object is identical to the input (no write).
+pub(crate) fn merge_catalog_params(
+    params: &str,
+    max_tokens: Option<u32>,
+    reasoning_effort: Option<&[String]>,
+) -> Option<String> {
     let mut value: serde_json::Value = serde_json::from_str(params).ok()?;
     let object = value.as_object_mut()?;
+    let mut changed = false;
+
     match max_tokens {
         Some(max_tokens) => {
             if object
                 .get(FLOWY_CATALOG_MAX_TOKENS_PARAM)
                 .and_then(serde_json::Value::as_u64)
-                == Some(u64::from(max_tokens))
+                != Some(u64::from(max_tokens))
             {
-                return None;
+                object.insert(
+                    FLOWY_CATALOG_MAX_TOKENS_PARAM.to_string(),
+                    serde_json::json!(max_tokens),
+                );
+                changed = true;
             }
-            object.insert(
-                FLOWY_CATALOG_MAX_TOKENS_PARAM.to_string(),
-                serde_json::json!(max_tokens),
-            );
         }
         None => {
-            if object.remove(FLOWY_CATALOG_MAX_TOKENS_PARAM).is_none() {
-                return None;
+            if object.remove(FLOWY_CATALOG_MAX_TOKENS_PARAM).is_some() {
+                changed = true;
             }
         }
+    }
+
+    match reasoning_effort {
+        Some(levels) => {
+            let next = serde_json::json!(levels);
+            if object.get(FLOWY_CATALOG_REASONING_EFFORT_PARAM) != Some(&next) {
+                object.insert(FLOWY_CATALOG_REASONING_EFFORT_PARAM.to_string(), next);
+                changed = true;
+            }
+        }
+        None => {
+            if object
+                .remove(FLOWY_CATALOG_REASONING_EFFORT_PARAM)
+                .is_some()
+            {
+                changed = true;
+            }
+        }
+    }
+
+    if !changed {
+        return None;
     }
     serde_json::to_string(&value).ok()
 }
@@ -83,7 +134,10 @@ async fn reconcile_inferred_model_profiles(
         if seed.model.trim().is_empty() || known.contains(seed.model.as_str()) {
             continue;
         }
-        let params = initial_catalog_params(seed.catalog_max_tokens);
+        let params = initial_catalog_params(
+            seed.catalog_max_tokens,
+            seed.catalog_reasoning_effort.as_deref(),
+        );
         let inserted = model_repo
             .insert_if_absent(
                 provider_id,
@@ -114,7 +168,11 @@ async fn reconcile_inferred_model_profiles(
             continue;
         };
         let fill_inferred_profile = row.tasks.trim() == "[]" && row.source == "inferred";
-        let params = merge_catalog_max_tokens(&row.params, seed.catalog_max_tokens);
+        let params = merge_catalog_params(
+            &row.params,
+            seed.catalog_max_tokens,
+            seed.catalog_reasoning_effort.as_deref(),
+        );
         if !fill_inferred_profile && params.is_none() {
             continue;
         }

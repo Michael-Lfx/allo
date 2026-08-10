@@ -30,6 +30,7 @@ const NomiChat: React.FC<{
   workspace: string;
   modelSelection: NomiModelSelection;
   session_mode?: string;
+  reasoning_effort?: string;
   cron_job_id?: CronJobId;
   hideSendBox?: boolean;
   readOnly?: boolean;
@@ -45,6 +46,7 @@ const NomiChat: React.FC<{
   workspace,
   modelSelection,
   session_mode,
+  reasoning_effort,
   cron_job_id,
   hideSendBox,
   readOnly,
@@ -138,6 +140,7 @@ const NomiChat: React.FC<{
                 conversation_id={conversation_id}
                 modelSelection={modelSelection}
                 session_mode={session_mode}
+                reasoning_effort={reasoning_effort}
                 agent_name={agent_name}
                 hideModeSelector={hideModeSelector}
                 dynamicModes={dynamicModes}

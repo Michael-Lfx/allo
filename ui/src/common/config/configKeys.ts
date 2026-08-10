@@ -44,7 +44,7 @@ export type ConfigKeyMap = {
   customCss: string;
   'css.themes': ICssTheme[];
   'css.activeThemeId': string;
-  'nomi.config': { preferredMode?: string } | undefined;
+  'nomi.config': { preferredMode?: string; preferredReasoningEffort?: string } | undefined;
   'nomi.defaultModel': { provider_id: ProviderId; model: string } | undefined;
   // 智能协作的模型偏好：除主模型（nomi.defaultModel）外，可为不同任务选择的
   // 额外模型。仅创建 Nomi 对话时使用；空数组表示只使用主模型。

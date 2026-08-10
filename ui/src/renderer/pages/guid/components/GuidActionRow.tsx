@@ -22,6 +22,8 @@ type GuidActionRowProps = {
 
   // Model selector node (rendered by parent)
   modelSelectorNode: React.ReactNode;
+  /** Optional reasoning-effort pill shown before the model selector (Nomi only). */
+  reasoningEffortSelectorNode?: React.ReactNode;
 
   // Agent mode
   selectedAgent: string | 'custom';
@@ -68,6 +70,7 @@ type GuidActionRowProps = {
 const GuidActionRow: React.FC<GuidActionRowProps> = ({
   onOpenAddMenu,
   modelSelectorNode,
+  reasoningEffortSelectorNode,
   selectedAgent,
   effectiveModeAgent,
   selectedMode,
@@ -100,6 +103,8 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   const modeBackend = effectiveModeAgent || selectedAgent;
   const showModeSwitch = supportsModeSwitch(modeBackend);
   const hasModelSelector = Boolean(modelSelectorNode);
+  const hasReasoningEffortSelector = Boolean(reasoningEffortSelectorNode);
+  const hasConfigControls = hasModelSelector || hasReasoningEffortSelector;
 
   const getModeDisplayLabel = (mode: AgentModeOption): string =>
     t(`agentMode.${mode.value}`, { defaultValue: mode.label });
@@ -200,11 +205,12 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
         )}
       </div>
       <div className={`${styles.actionSubmit} ${!isMobile ? styles.actionSubmitResponsive : ''}`}>
-        {hasModelSelector && (
+        {hasConfigControls && (
           <div
             className={`${styles.actionConfigGroup} ${!isMobile ? styles.actionConfigGroupResponsive : ''}`}
             data-mobile={isMobile ? 'true' : undefined}
           >
+            {reasoningEffortSelectorNode}
             {modelSelectorNode}
           </div>
         )}

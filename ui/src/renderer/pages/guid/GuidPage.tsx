@@ -38,6 +38,12 @@ import GuidResourceCards from './components/GuidResourceCards';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import QuickActionButtons from './components/QuickActionButtons';
 import PresetPickerDrawer from './components/PresetPickerDrawer';
+import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
+import { catalogReasoningEffortForModel } from '@/renderer/utils/model/reasoningEffort';
+import {
+  readPreferredReasoningEffort,
+  savePreferredReasoningEffort,
+} from './hooks/agentSelectionUtils';
 import { consumeKnowledgeActivation } from '@/renderer/pages/knowledge/knowledgeActivation';
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
 import { useGuidAdvancedConfig } from './hooks/useGuidAdvancedConfig';
@@ -106,6 +112,9 @@ const GuidPage: React.FC = () => {
   // `/goal` arms the first message as the conversation goal. The state is
   // intentionally command-driven rather than exposed as a persistent toolbar toggle.
   const [goalMode, setGoalMode] = useState(false);
+  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | undefined>(() =>
+    readPreferredReasoningEffort()
+  );
   const [isHomeAddMenuOpen, setIsHomeAddMenuOpen] = useState(false);
   const [homeAddMenuActiveIndex, setHomeAddMenuActiveIndex] = useState(0);
   const pendingAutoSendRef = useRef(false);
@@ -485,6 +494,7 @@ const GuidPage: React.FC = () => {
     selectedMode: agentSelection.selectedMode,
     selectedAcpModel: agentSelection.selectedAcpModel,
     current_model: modelSelection.current_model,
+    reasoningEffort: selectedReasoningEffort,
 
     // Agent helpers
     findAgentByKey: agentSelection.findAgentByKey,
@@ -856,6 +866,38 @@ const GuidPage: React.FC = () => {
       setSelectedAcpModel={agentSelection.setSelectedAcpModel}
     />
   );
+
+  const reasoningEffortLevels = useMemo(() => {
+    if (!isGeminiMode || !modelSelection.current_model?.use_model) return [];
+    const provider =
+      modelSelection.modelList.find((entry) => entry.id === modelSelection.current_model?.id) ??
+      modelSelection.current_model;
+    return catalogReasoningEffortForModel(provider, modelSelection.current_model.use_model);
+  }, [isGeminiMode, modelSelection.current_model, modelSelection.modelList]);
+
+  useEffect(() => {
+    if (reasoningEffortLevels.length === 0 && selectedReasoningEffort) {
+      setSelectedReasoningEffort(undefined);
+    }
+  }, [reasoningEffortLevels.length, selectedReasoningEffort]);
+
+  const handleReasoningEffortChanged = useCallback((effort: string | undefined) => {
+    setSelectedReasoningEffort(effort);
+    if (effort) {
+      void savePreferredReasoningEffort(effort);
+    }
+  }, []);
+
+  const reasoningEffortSelectorNode =
+    reasoningEffortLevels.length > 0 ? (
+      <ReasoningEffortSelector
+        levels={reasoningEffortLevels}
+        initialEffort={selectedReasoningEffort}
+        onEffortChanged={handleReasoningEffortChanged}
+        className='guid-config-btn'
+      />
+    ) : null;
+
   // Build the action row
   // When AutoWork is enabled (with a tag) the primary button becomes a
   // "Start AutoWork" action: clickable without typed input, and it creates the
@@ -866,6 +908,7 @@ const GuidPage: React.FC = () => {
     <GuidActionRow
       onOpenAddMenu={handleOpenHomeAddMenu}
       modelSelectorNode={modelSelectorNode}
+      reasoningEffortSelectorNode={reasoningEffortSelectorNode}
       selectedAgent={agentSelection.selectedAgent}
       effectiveModeAgent={agentSelection.currentEffectiveAgentInfo.agent_type}
       selectedMode={agentSelection.selectedMode}

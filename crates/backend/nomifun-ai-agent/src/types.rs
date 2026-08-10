@@ -171,6 +171,11 @@ pub struct NomiCompatOverrides {
     pub mirror_bearer_header: Option<String>,
     /// Some(true) = gateway requires assistant reasoning_content placeholders.
     pub require_reasoning_content: Option<bool>,
+    /// Catalog-advertised OpenAI-style `reasoning_effort` support. When set,
+    /// overrides the provider-type default from [`nomi_config::ProviderCompat`].
+    pub supports_effort: Option<bool>,
+    /// Allowed effort levels from the Flowy catalog (`extra.reasoning_effort`).
+    pub effort_levels: Option<Vec<String>>,
 }
 
 /// Fully resolved Nomi configuration passed to the agent manager.
@@ -287,6 +292,10 @@ pub struct NomiResolvedConfig {
     /// manager 灌进 `config.tools.write_root`。与 gateway file-service 的
     /// `PathAuthority` 同一信任模型（见 file-access-authority spec）。
     pub write_root: Option<String>,
+    /// User-selected OpenAI-style `reasoning_effort` for this session.
+    /// Validated against catalog/`compat` effort levels in the factory; `None`
+    /// means the engine omits the field (provider default).
+    pub reasoning_effort: Option<String>,
 }
 
 /// Host-resolved Mixture-of-Agents payload carried from the factory to the

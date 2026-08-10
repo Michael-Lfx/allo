@@ -229,6 +229,7 @@ impl ProviderHealthCheckService {
             install_embedded_agent_execution: false,
             allowed_tools: Vec::new(),
             write_root: None,
+            reasoning_effort: None,
 })
     }
 }
@@ -705,6 +706,7 @@ mod tests {
             install_embedded_agent_execution: false,
             allowed_tools: Vec::new(),
             write_root: None,
+            reasoning_effort: None,
         }
     }
 
@@ -798,6 +800,7 @@ mod tests {
             install_embedded_agent_execution: false,
             allowed_tools: Vec::new(),
             write_root: None,
+            reasoning_effort: None,
 };
 
         assert!(should_use_openai_model_probe("custom", &config));

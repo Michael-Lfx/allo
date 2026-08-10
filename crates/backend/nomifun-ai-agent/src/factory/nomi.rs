@@ -74,6 +74,27 @@ fn resolve_nomi_max_tokens(catalog_max_tokens: Option<u32>, session_max_tokens: 
     catalog_max_tokens.unwrap_or(session_max_tokens)
 }
 
+/// Keep a user-selected effort only when the active model advertises it.
+/// When the catalog lists levels but the session has no (valid) selection,
+/// default to `medium` (or the first advertised level) so reasoning models
+/// still receive an explicit `reasoning_effort` on the wire.
+fn resolve_session_reasoning_effort(
+    selected: Option<&str>,
+    effort_levels: Option<&[String]>,
+) -> Option<String> {
+    let levels = effort_levels.filter(|levels| !levels.is_empty())?;
+    if let Some(selected) = selected.map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(matched) = levels.iter().find(|level| level.as_str() == selected) {
+            return Some(matched.clone());
+        }
+    }
+    levels
+        .iter()
+        .find(|level| level.as_str() == "medium")
+        .cloned()
+        .or_else(|| levels.first().cloned())
+}
+
 /// Sanitize a resumed transcript without losing an exact rewind boundary.
 ///
 /// The sanitizer removes messages but never reorders or inserts them. Splitting
@@ -701,6 +722,10 @@ pub(super) async fn build(
         };
 
     let max_tokens = resolve_nomi_max_tokens(fields.model_max_tokens, overrides.max_tokens);
+    let reasoning_effort = resolve_session_reasoning_effort(
+        overrides.reasoning_effort.as_deref(),
+        fields.compat_overrides.effort_levels.as_deref(),
+    );
 
     let config = NomiResolvedConfig {
         provider: fields.provider,
@@ -784,6 +809,7 @@ pub(super) async fn build(
         } else {
             Some(ctx.workspace.clone())
         },
+        reasoning_effort,
     };
 
     // Scope of the native knowledge_search / knowledge_read tools, derived
@@ -1681,6 +1707,33 @@ mod tests {
     #[test]
     fn resolve_nomi_max_tokens_falls_back_to_session_extra() {
         assert_eq!(resolve_nomi_max_tokens(None, 8192), 8192);
+    }
+
+    #[test]
+    fn resolve_session_reasoning_effort_requires_catalog_allowlist() {
+        let levels = ["low".to_owned(), "medium".to_owned(), "xhigh".to_owned()];
+        assert_eq!(
+            resolve_session_reasoning_effort(Some("xhigh"), Some(&levels)).as_deref(),
+            Some("xhigh")
+        );
+        // Invalid selection falls back to medium when advertised.
+        assert_eq!(
+            resolve_session_reasoning_effort(Some("high"), Some(&levels)).as_deref(),
+            Some("medium")
+        );
+        assert_eq!(
+            resolve_session_reasoning_effort(None, Some(&levels)).as_deref(),
+            Some("medium")
+        );
+        assert_eq!(
+            resolve_session_reasoning_effort(Some("medium"), None),
+            None
+        );
+        let low_only = ["low".to_owned(), "xhigh".to_owned()];
+        assert_eq!(
+            resolve_session_reasoning_effort(None, Some(&low_only)).as_deref(),
+            Some("low")
+        );
     }
 
     #[test]

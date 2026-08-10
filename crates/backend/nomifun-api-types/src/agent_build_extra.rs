@@ -451,6 +451,12 @@ pub struct NomiBuildExtra {
     /// `None` = not summoned (today's behavior, zero regression).
     #[serde(default)]
     pub summon: Option<SummonConfig>,
+    /// User-selected OpenAI-style reasoning effort (`low` / `medium` / `xhigh` / …).
+    /// Sourced from `conversation.extra.reasoning_effort`. Only applied when the
+    /// active catalog model advertises matching levels (`extra.reasoning` +
+    /// `extra.reasoning_effort`).
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 fn default_nomi_max_tokens() -> u32 {
