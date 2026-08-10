@@ -131,7 +131,7 @@ async fn tts_returns_audio_bytes_with_content_type() {
         .await;
 
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, &server.uri()).await;
+    let pid = seed_provider(&pool, &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "tts-1", r#"["speech_synthesis"]"#).await;
 
     let resp = app
@@ -169,7 +169,7 @@ async fn tts_passes_voice_and_format_through() {
         .await;
 
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, &server.uri()).await;
+    let pid = seed_provider(&pool, &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "tts-1", r#"["speech_synthesis"]"#).await;
 
     let resp = app
@@ -195,7 +195,7 @@ async fn tts_unprofiled_model_is_400_without_network() {
     let server = MockServer::start().await;
     // No mock mounted: the catalog gate must refuse before the wire.
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, &server.uri()).await;
+    let pid = seed_provider(&pool, &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "gpt-4o", r#"["chat"]"#).await;
 
     let resp = app
@@ -257,7 +257,7 @@ async fn tts_upstream_401_maps_to_bad_gateway() {
         .await;
 
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, &server.uri()).await;
+    let pid = seed_provider(&pool, &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "tts-1", r#"["speech_synthesis"]"#).await;
 
     let resp = app
