@@ -9,7 +9,14 @@ notes at a high level rather than a complete historical log.
   timeouts, remounts, and post-truncation failures with one durable operation
   key. Ambiguous outcomes no longer revoke transcript barriers, current drafts
   and newly added attachments are preserved, and orphaned edits require an
-  explicit single-flight Conversation reset.
+  explicit single-flight Conversation reset. Terminal failures now clear the
+  Editing UI immediately in the current composer before releasing shared
+  operation ownership. A double-click can no longer cross from the submitted
+  Send button into the replacement Stop button and cancel its own edit, while
+  an intentional Stop remains available immediately. Long error transcripts
+  no longer hide the editable user turn behind a fixed history window; if the
+  target truly disappeared, the composer refreshes in place and preserves the
+  draft instead of showing a detached global error toast.
 
 - Composer paste handling no longer inserts plain text twice after page or
   conversation switches; plain text remains owned by the Composer while files

@@ -20,7 +20,7 @@ export type ComposerSubmitClusterProps = {
   onSend: () => void;
   onSpeechTranscript: (text: string) => void;
   showStop?: boolean;
-  onStop?: () => void;
+  onStop?: (event: Event) => void;
   showSteer?: boolean;
   steerAvailable?: boolean;
   onSteer?: () => void;

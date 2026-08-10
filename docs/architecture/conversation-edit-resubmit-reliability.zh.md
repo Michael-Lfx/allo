@@ -38,11 +38,11 @@ observation failure，fail closed。
 | `requires_reset=true` | `requires_reset` | 停止 replay，不 revoke，等待用户显式 reset |
 | missing + target 存在 + server 明确拒绝 | `safe_failure` | 唯一允许 revoke 的路径 |
 | missing + target 存在 + transport/观察不确定 | `unknown` | 保留 key/barrier；每确认周期最多一次同-key POST |
-| missing + target 消失 | `post_mutation_failure` | reconciliation，保留草稿，停止 replay |
+| missing + target 消失 | `post_mutation_failure` | reconciliation，保留草稿并显示 Composer 内 target-changed 提示，停止 replay |
 | accepted + target 存在 | `claimed_pending` | 只 GET |
 | accepted + target 消失 | `transcript_truncated` | 立即 reconciliation，继续 GET terminal receipt |
 | completed + target 消失 + success + replacement 存在 | `success` | reconciliation 后清未修改正文和本次附件 |
-| completed + target 消失但失败/结果缺失/replacement 不一致 | `post_mutation_failure` | 清旧 target/badge，正文和附件保留为普通草稿 |
+| completed + target 消失但失败/结果缺失/replacement 不一致 | `post_mutation_failure` | 同挂载同步清旧 target/badge，正文和附件保留为普通草稿 |
 | completed + target 存在或其他不可能组合 | `requires_reset` / `unknown` | 绝不 revoke |
 
 自动确认使用 capped backoff。accepted receipt 不重复 POST；只有 missing + transport ambiguous
@@ -62,6 +62,25 @@ key 和 payload 留在同一 renderer；返回会话或 remount 后通过 runner
 
 Nomi draft 的 `contentRevision` 跨 remount 保留。成功只在 revision 未变化且来源为 edit 时清正文；
 附件始终按提交路径集合做精确差集，飞行中新附件保留。post-mutation failure 不清正文或附件。
+
+Nomi 在权威 terminal 分类后按 `reconciliation → terminal lifecycle event → shared editing store clear
+→ controller release` 提交终态。SendBox 使用当前挂载生命周期内的 operation ID ledger 幂等消费
+terminal，因此 A→B→A 的旧终态不会再次污染 B；`success` 退出编辑并仅在
+revision 未变时清正文，`post_mutation_failure` 立即退出编辑但不清、不恢复正文。terminal subscriber
+抛错不会阻止共享状态和 controller 清理；Promise resolution 只作为非 Nomi 调用方的幂等回退。
+
+operation controller 的 recovery subscriber 使用微任务 adoption：同一 tick 新建操作时，发起它的
+SendBox/Nomi 调用先获得 runner lease，subscriber 不得抢先以无 terminal callback 的恢复路径执行；
+旧 renderer 真正释放 runner 后，subscriber 会重新检查 operation ID、phase 和 owner 再恢复同一 key。
+
+编辑提交还使用事件归属明确的 Send→Stop handoff gate：首击同步接纳 operation 后，只有 500ms 内
+`click.detail >= 2` 的同一多击序列会被消费，避免第二击落到刚替换出来的 Stop 并取消自己的
+preparation lease。`detail=1` 的主动单击、`detail=0` 的键盘触发和后续 operation 始终允许 Stop。
+
+latest-user admission 使用无窗口的 `created_at DESC, message_id DESC LIMIT 1` 精确 SQL。若 observation
+权威确认 `receipt=missing + target_exists=false`，该状态表示目标已被其他操作改变：前端统一
+reconciliation、退出旧编辑态并保留正文/附件，在 Composer 上方显示可关闭的本地化提示，不解析
+英文错误字符串，也不使用全局 Arco error toast。其他 terminal/model failure 仍沿用原错误展示。
 
 coordinator 对同 operation 的 `arm` 和 `begin` 幂等：remount 不覆盖 reconciling barrier、不重复
 bump epoch。所有已确认 transcript mutation 都调用统一 reconciliation。`conversation.messages.refresh`
@@ -85,6 +104,8 @@ start/success/settled lifecycle 也各执行一次。reset 成功才提交新 ge
 - `ui/src/renderer/pages/conversation/platforms/nomi/editResubmitRecovery.ts`
 - `ui/src/renderer/pages/conversation/platforms/nomi/NomiSendBox.tsx`
 - `ui/src/renderer/components/chat/SendBox/index.tsx`
+- `ui/src/renderer/components/chat/SendBox/editResubmitLifecycle.ts`
+- `ui/src/renderer/components/chat/composerBeforeInput.ts`
 
 ## 验证
 
@@ -114,7 +135,7 @@ latest-user、服务级 >200 行旧目标拒绝、observation namespace/permissi
 `拒绝访问 (os error 5)`。直接 TypeScript 检查只报告未改动的 videoCanvas `Blob` 基线；直接
 quality scripts 除未改动的 agent-vocabulary 注释基线外通过。`bun run typecheck/check/build:ui`
 的 workspace 子进程在当前 Windows 沙箱返回 `Operation not permitted`，等价 Node 入口已执行。
-人工验收尚未由 owner 完成，不能由自动测试替代。
+截至 2026-08-09，自动验证已完成；当时尚未进行 owner 交互验收，不能由自动测试替代。
 
 2026-08-09 合并审查修复追加：strict decoder 已覆盖非 replay、accepted terminal metadata 和矛盾
 completed outcome；runner 释放后 remount subscription、stale refresh retry、生产 reset handler 的
@@ -122,12 +143,46 @@ deferred 双击均有行为测试。repository 增加并发 writer/readers 测�
 generation 切换期间只允许完整的 mutation 前/后 snapshot。该修复没有布局、样式或可见控件变化，
 因此无需新增截图；交互层人工验收仍按下列清单执行。
 
-人工验收仍必须覆盖：长会话且 target 在最新 200 行之外、同时间戳 latest-user tie-break、
-double click、会话切换后同-key 恢复、response loss、truncate 后 HTTP/terminal error、附件差集、
-refresh 首次失败后重试并 ack，以及 accepted orphan 的显式 reset。
+人工验收清单包括：长会话且 target 在最新 200 行之外、同时间戳 latest-user tie-break、double click、
+会话切换后同-key 恢复、response loss、truncate 后 HTTP/terminal error、附件差集、refresh 首次失败后
+重试并 ack，以及 accepted orphan 的显式 reset。后文逐次记录已完成项目，未明确记录的项目仍待验收。
+
+2026-08-10 V5.5 Web 实测追加：逐键输入 `v55逐键输入` 后浏览器控制台为 0 error，不再出现
+`undefined.includes`。最终 post-mutation failure 场景双击只产生 1 个 POST，POST 与 observation
+共用 key `019fe76a-d12a-77e4-8600-6b7dc66afc68`；observation 为 completed failure、target 消失，
+同一挂载立即移除 Editing badge/banner，并把 `编辑可靠性实测：V5.5 final acceptance。` 保留为
+普通草稿。该轮后端 terminal error 是 `preparation_failed`；此前同会话已取得免费模型
+`USER_LLM_PROVIDER_RATE_LIMITED` 的 completed-failure 证据。
+本地验收会话按约定保留，未自动删除。
+
+后续使用运行时实际提供的 `mimo-v2.5-free` 补齐成功路径：普通 turn、单击 edit-resubmit 和修复后的
+双击 edit-resubmit 均 completed success。双击操作只产生 1 个 POST、没有 `/cancel`，operation key 为
+`019fe948-83c1-732c-b711-42a16449e4b3`，receipt `result_ok=true`、replacement
+`019fe948-83c9-72c2-943d-1c976a4906ba`、terminal text `双击成功`。终态后 Editing badge/banner 清零，
+composer 清为空草稿。当前 managed catalog 没有名为 Kimi 2.5 的条目，实测模型名称必须记录为 MiMo。
+
+V5.5 定向 UI 测试通过；UI 全量为 2110 pass / 18 个既有基线失败。direct Vite
+production build 通过（13507 modules），直接 TypeScript 检查仍只报告未改动的 videoCanvas
+`Blob` 7 项基线。`git diff --check` 通过，`.github/workflows` 下不存在 YAML workflow。根级 Bun
+workspace wrapper 在 Web dev 子进程并存时仍可能返回 Windows `Operation not permitted`，因此构建和
+typecheck 同时记录 direct Node 入口结果，未把该运行时锁归因于 V5.5。
+
+2026-08-10 V5.6 收口：terminal ledger 覆盖 A→B→A，Stop gate 只消费多击事件；missing receipt 且
+target 已消失时，统一 reconciliation 并显示 Composer 内提示，正文和附件保持普通草稿。原服务级
+“>200 行旧目标拒绝”测试此前误用 ACP fixture，只验证到任意 BadRequest；现已改用 Nomi fixture并
+断言精确 old-target 错误及无 receipt。冷运行成功 fixture 增加 220 条 assistant/error suffix，以锁定
+长 transcript 的正向 admission。Windows knowledge-workspace runtime lock 仍可能阻塞该冷运行测试，
+单独按环境基线记录。
+
+V5.6 自动验证：定向 UI 91 pass / 0 fail；同步 `origin/main` 后 UI 全量 2119 pass / 18 个既有基线失败；两个精确
+service admission 测试通过。direct TypeScript 只报告未改动的 videoCanvas `Blob` 7 项基线，direct
+Vite production build 通过（13509 modules），`cargo check --workspace`、i18n、theme、icons、
+CodeMirror/runtime/browser boundary、help、Rust format 和 `git diff --check` 通过。agent-vocabulary 仍只
+报告主干已有的 `nomi-agent-eval/src/runner.rs` retired reference。冷运行正向测试在当前 Windows 环境
+被 knowledge-workspace lock `拒绝访问 (os error 5)` 阻塞，未记为功能失败。
 
 ## 交付边界
 
-当前实现分支为 `fix/conversation-error-edit`，对照基线为 `origin/main` `31638c21`。文档不记录
+当前实现分支为 `fix/conversation-error-edit`，对照基线为 `origin/main` `958c5e48f3f6`。文档不记录
 易过期的“最终提交数量”或历史最终 SHA；交付时以 `git rev-parse HEAD`、`git merge-base HEAD
 origin/main` 和远端 ref 的实时结果为准。

@@ -24,7 +24,7 @@
  *   the stale failure callback must not overwrite it.
  * - clearLoading is set for the current operation's .finally regardless of status.
  */
-export type EditResubmitStatus = 'success' | 'failure';
+export type EditResubmitStatus = 'success' | 'safe_failure' | 'post_mutation_failure';
 
 export interface EditResubmitOutcomeInput {
   /** Whether this callback belongs to the still-active operation token. */
@@ -65,6 +65,15 @@ export const resolveEditResubmitOutcome = ({
     return {
       stale: false,
       clearInput: revisionUnchanged,
+      exitEditMode: true,
+      restoreSubmittedInput: false,
+      clearLoading: true,
+    };
+  }
+  if (status === 'post_mutation_failure') {
+    return {
+      stale: false,
+      clearInput: false,
       exitEditMode: true,
       restoreSubmittedInput: false,
       clearLoading: true,

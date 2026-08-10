@@ -11,6 +11,7 @@ import React, {
   useState,
 } from 'react';
 import type { ComposerSkillChip } from './composerSkill';
+import { decodeComposerBeforeInput, resolveComposerBeforeInputAction } from './composerBeforeInput';
 import {
   COMPOSER_SKILL_ATOM,
   createComposerDraft,
@@ -609,32 +610,26 @@ const ComposerSkillTokenInput = forwardRef<ComposerSkillTokenInputHandle, Compos
       if (disabled) {
         return;
       }
-      const nativeEvent = event.nativeEvent as InputEvent;
-      if (isComposingRef.current || nativeEvent.isComposing || nativeEvent.inputType.includes('Composition')) {
+      const nativeEvent = decodeComposerBeforeInput(event.nativeEvent as InputEvent);
+      if (isComposingRef.current) {
         return;
       }
 
-      switch (nativeEvent.inputType) {
+      const action = resolveComposerBeforeInputAction(nativeEvent);
+      switch (action.kind) {
         case 'insertText':
-          if (nativeEvent.data !== null) {
-            event.preventDefault();
-            replaceSelectionWithText(nativeEvent.data);
-          }
+          event.preventDefault();
+          replaceSelectionWithText(action.text);
           break;
         case 'insertLineBreak':
-        case 'insertParagraph':
           event.preventDefault();
           replaceSelectionWithText('\n');
           break;
-        case 'deleteContentBackward':
+        case 'delete':
           event.preventDefault();
-          deleteSelection('backward');
+          deleteSelection(action.direction);
           break;
-        case 'deleteContentForward':
-          event.preventDefault();
-          deleteSelection('forward');
-          break;
-        default:
+        case 'browser':
           break;
       }
     };

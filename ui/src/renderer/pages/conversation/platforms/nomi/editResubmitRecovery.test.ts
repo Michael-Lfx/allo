@@ -152,7 +152,7 @@ describe('resolveEditResubmitRecovery', () => {
         }),
         requestOutcome: 'transport_ambiguous',
       })
-    ).toEqual({ kind: 'post_mutation_failure' });
+    ).toEqual({ kind: 'post_mutation_failure', notice: 'target_changed' });
   });
 
   test('completed success requires the exact replacement to exist', () => {

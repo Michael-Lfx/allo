@@ -64,7 +64,7 @@ describe('resolveEditResubmitOutcome', () => {
     const outcome = resolveEditResubmitOutcome({
       isCurrentOperation: true,
       revisionUnchanged: true,
-      status: 'failure',
+      status: 'safe_failure',
     });
     expect(outcome.restoreSubmittedInput).toBe(true);
     expect(outcome.exitEditMode).toBe(false);
@@ -80,7 +80,7 @@ describe('resolveEditResubmitOutcome', () => {
     const outcome = resolveEditResubmitOutcome({
       isCurrentOperation: true,
       revisionUnchanged: false,
-      status: 'failure',
+      status: 'safe_failure',
     });
     expect(outcome.restoreSubmittedInput).toBe(false);
     expect(outcome.exitEditMode).toBe(false);
@@ -89,11 +89,11 @@ describe('resolveEditResubmitOutcome', () => {
 
   test('failure never exits edit mode regardless of revision', () => {
     expect(
-      resolveEditResubmitOutcome({ isCurrentOperation: true, revisionUnchanged: true, status: 'failure' })
+      resolveEditResubmitOutcome({ isCurrentOperation: true, revisionUnchanged: true, status: 'safe_failure' })
         .exitEditMode
     ).toBe(false);
     expect(
-      resolveEditResubmitOutcome({ isCurrentOperation: true, revisionUnchanged: false, status: 'failure' })
+      resolveEditResubmitOutcome({ isCurrentOperation: true, revisionUnchanged: false, status: 'safe_failure' })
         .exitEditMode
     ).toBe(false);
   });
@@ -121,7 +121,7 @@ describe('resolveEditResubmitOutcome', () => {
       const outcome = resolveEditResubmitOutcome({
         isCurrentOperation: false,
         revisionUnchanged: true,
-        status: 'failure',
+        status: 'safe_failure',
       });
       expect(outcome.stale).toBe(true);
       expect(outcome.restoreSubmittedInput).toBe(false);
@@ -152,12 +152,30 @@ describe('resolveEditResubmitOutcome', () => {
         .clearLoading
     ).toBe(true);
     expect(
-      resolveEditResubmitOutcome({ isCurrentOperation: true, revisionUnchanged: true, status: 'failure' })
+      resolveEditResubmitOutcome({ isCurrentOperation: true, revisionUnchanged: true, status: 'safe_failure' })
         .clearLoading
     ).toBe(true);
     expect(
       resolveEditResubmitOutcome({ isCurrentOperation: false, revisionUnchanged: true, status: 'success' })
         .clearLoading
     ).toBe(false);
+  });
+
+  test('post-mutation failure exits edit mode without clearing or restoring the draft', () => {
+    for (const revisionUnchanged of [true, false]) {
+      expect(
+        resolveEditResubmitOutcome({
+          isCurrentOperation: true,
+          revisionUnchanged,
+          status: 'post_mutation_failure',
+        })
+      ).toEqual({
+        stale: false,
+        clearInput: false,
+        exitEditMode: true,
+        restoreSubmittedInput: false,
+        clearLoading: true,
+      });
+    }
   });
 });

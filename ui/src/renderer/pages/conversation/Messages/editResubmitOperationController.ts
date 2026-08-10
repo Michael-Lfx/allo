@@ -111,6 +111,8 @@ export const subscribeRecoverableEditResubmitOperation = (
   listener: (operation: EditResubmitOperationRecord) => void
 ): (() => void) => {
   let notifiedOperationId: string | undefined;
+  let scheduledOperationId: string | undefined;
+  let subscribed = true;
   const notifyIfAvailable = (): void => {
     const operation = operations.get(conversationId);
     if (
@@ -119,15 +121,37 @@ export const subscribeRecoverableEditResubmitOperation = (
       operation.runnerOwnerId !== undefined
     ) {
       notifiedOperationId = undefined;
+      scheduledOperationId = undefined;
       return;
     }
-    if (notifiedOperationId === operation.operationId) return;
-    notifiedOperationId = operation.operationId;
-    listener(operation);
+    if (
+      notifiedOperationId === operation.operationId ||
+      scheduledOperationId === operation.operationId
+    ) return;
+    const operationId = operation.operationId;
+    scheduledOperationId = operationId;
+    queueMicrotask(() => {
+      if (!subscribed) return;
+      if (scheduledOperationId !== operationId) return;
+      scheduledOperationId = undefined;
+      const current = operations.get(conversationId);
+      if (
+        !current ||
+        current.operationId !== operationId ||
+        current.phase === 'editing' ||
+        current.runnerOwnerId !== undefined ||
+        notifiedOperationId === operationId
+      ) return;
+      notifiedOperationId = operationId;
+      listener(current);
+    });
   };
   const unsubscribe = subscribeEditResubmitOperations(notifyIfAvailable);
   notifyIfAvailable();
-  return unsubscribe;
+  return () => {
+    subscribed = false;
+    unsubscribe();
+  };
 };
 
 export const __resetEditResubmitOperations = (): void => {

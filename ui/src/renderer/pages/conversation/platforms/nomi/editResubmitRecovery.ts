@@ -16,6 +16,7 @@ export type EditResubmitRecoveryKind =
 
 export interface EditResubmitRecovery {
   kind: EditResubmitRecoveryKind;
+  notice?: 'target_changed';
 }
 
 export const shouldReplayEditResubmit = ({
@@ -60,7 +61,7 @@ export const resolveEditResubmitRecovery = ({
 
   if (observation.receipt_state === 'missing') {
     if (!observation.target_exists) {
-      return { kind: 'post_mutation_failure' };
+      return { kind: 'post_mutation_failure', notice: 'target_changed' };
     }
     return requestOutcome === 'server_rejected'
       ? { kind: 'safe_failure' }

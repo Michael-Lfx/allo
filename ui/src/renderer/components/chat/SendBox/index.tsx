@@ -62,10 +62,14 @@ import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { getConversationInputHistory } from '@/renderer/utils/chat/messageHistory';
 import { uuid, uuidv7 } from '@/common/utils';
 import { resolveEditResubmitOutcome } from '@/renderer/components/chat/SendBox/editResubmitOutcome';
-import type { EditResubmitResolution } from '@/renderer/components/chat/SendBox/editResubmitTypes';
+import { shouldCommitEditResubmitTerminal } from '@/renderer/components/chat/SendBox/editResubmitLifecycle';
+import { createComposerStopHandoffGate } from '@/renderer/components/chat/SendBox/composerStopHandoffGate';
+import type {
+  EditResubmitLifecycleEvent,
+  EditResubmitResolution,
+} from '@/renderer/components/chat/SendBox/editResubmitTypes';
 import {
   clearEditingMessage,
-  type EditingMessagePhase,
   getEditingMessage,
   setEditingMessage,
   updateEditingMessage,
@@ -218,7 +222,7 @@ const SendBox: React.FC<{
     createdAt: number,
     message: string,
     operationId?: string,
-    onPhaseChange?: (phase: EditingMessagePhase, continueConfirmation?: () => void) => void
+    onLifecycleEvent?: (event: EditResubmitLifecycleEvent) => void
   ) => Promise<EditResubmitResolution>;
   /** Clear the agent's conversation context (release model context). When set, a `/clear` builtin appears. */
   onClearContext?: () => void | Promise<void>;
@@ -369,6 +373,10 @@ const SendBox: React.FC<{
   // with edit-resubmit, so it gets the same mutex treatment — admission,
   // token-gated callbacks, and release in finally.
   const activeRetryOperationRef = useRef<string | null>(null);
+  // Terminal delivery is authoritative and can also be repeated by the returned
+  // Promise. Commit it once per operation even if shared ownership was retired.
+  const committedTerminalOperationsRef = useRef<Set<string>>(new Set());
+  const stopHandoffGateRef = useRef(createComposerStopHandoffGate());
   // Monotonic input revision (bumped on every `input` change) so the success
   // callback can tell "user typed during the request" from "string happened to
   // match" — only clear input when the user never touched it post-submit.
@@ -500,19 +508,47 @@ const SendBox: React.FC<{
               payload.createdAt,
               content,
               retryOperationId,
-              (phase, continueConfirmation) => {
-                if (activeRetryOperationRef.current !== retryOperationId) return;
-                const retryConversationId = conversationIdRef.current;
+              (event) => {
+                if (event.operationId !== retryOperationId) return;
+                if (event.kind === 'terminal') {
+                  if (
+                    !shouldCommitEditResubmitTerminal(
+                      activeRetryOperationRef.current,
+                      committedTerminalOperationsRef.current,
+                      event.operationId,
+                      true
+                    )
+                  ) return;
+                  committedTerminalOperationsRef.current.add(retryOperationId);
+                  if (retryConversationId) {
+                    clearEditingMessage(retryConversationId, editingOwnerId());
+                  }
+                  return;
+                }
+                if (activeRetryOperationRef.current !== event.operationId) return;
                 if (retryConversationId) {
                   updateEditingMessage(retryConversationId, editingOwnerId(), {
-                    pending: phase !== 'editing',
-                    phase,
+                    pending: true,
+                    phase: event.phase,
                     operationId: retryOperationId,
-                    continueConfirmation,
+                    continueConfirmation: event.continueConfirmation,
                   });
                 }
               }
             );
+            if (
+              shouldCommitEditResubmitTerminal(
+                activeRetryOperationRef.current,
+                committedTerminalOperationsRef.current,
+                retryOperationId,
+                false
+              )
+            ) {
+              committedTerminalOperationsRef.current.add(retryOperationId);
+              if (retryConversationId) {
+                clearEditingMessage(retryConversationId, editingOwnerId());
+              }
+            }
             if (resolution.kind !== 'success') {
               throw resolution.error instanceof Error
                 ? resolution.error
@@ -529,6 +565,7 @@ const SendBox: React.FC<{
           // Restore the retried text only when THIS retry is still the current
           // operation AND the user never touched the composer mid-flight.
           if (
+            !committedTerminalOperationsRef.current.has(retryOperationId) &&
             activeRetryOperationRef.current === retryOperationId &&
             inputRevisionRef.current === submittedInputRevision
           ) {
@@ -1702,9 +1739,38 @@ const SendBox: React.FC<{
         })
       ) return;
       activeEditOperationRef.current = operationId;
+      // A double-click can land its second click on the Stop button that
+      // replaces Send after this synchronous admission. Keep that click from
+      // cancelling the preparation lease of the operation it just created.
+      stopHandoffGateRef.current.armAfterEditSubmit();
       const submittedInputRevision = inputRevisionRef.current;
       const isCurrentOperation = () => activeEditOperationRef.current === operationId;
       const ownerId = editingOwnerId();
+      const commitTerminalResolution = (
+        resolution: EditResubmitResolution,
+        authoritative: boolean
+      ): void => {
+        if (
+          !shouldCommitEditResubmitTerminal(
+            activeEditOperationRef.current,
+            committedTerminalOperationsRef.current,
+            operationId,
+            authoritative
+          )
+        ) return;
+        committedTerminalOperationsRef.current.add(operationId);
+        const outcome = resolveEditResubmitOutcome({
+          isCurrentOperation: true,
+          revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
+          status: resolution.kind,
+        });
+        if (outcome.clearInput) setInput('');
+        if (outcome.exitEditMode) {
+          setEditingMsgId(null);
+          editPrevDraftRef.current = null;
+        }
+        if (cid) clearEditingMessage(cid, ownerId);
+      };
       setIsLoading(true);
       // C3: 重发在飞 → 徽章转「重发中」（仅 owner 匹配生效）。
       // C3: resubmit in flight → badge flips to "resubmitting" (owner-guarded).
@@ -1721,43 +1787,27 @@ const SendBox: React.FC<{
         targetCreatedAt,
         finalMessage,
         operationId,
-        (phase, continueConfirmation) => {
+        (event) => {
+          if (event.operationId !== operationId) return;
+          if (event.kind === 'terminal') {
+            commitTerminalResolution(event.resolution, true);
+            return;
+          }
           if (!isCurrentOperation()) return;
           if (cid) {
             updateEditingMessage(cid, ownerId, {
-              pending: phase !== 'editing',
-              phase,
+              pending: true,
+              phase: event.phase,
               operationId,
-              continueConfirmation,
+              continueConfirmation: event.continueConfirmation,
             });
           }
         }
       )
         .then((resolution) => {
-          // Backend accepted: exit edit mode. Only clear the composer when the
-          // user never modified it after submit (revision unchanged); otherwise
-          // preserve whatever they are now typing.
-          if (resolution.kind === 'post_mutation_failure') {
-            if (!isCurrentOperation()) return;
-            setEditingMsgId(null);
-            editPrevDraftRef.current = null;
-            if (cid) clearEditingMessage(cid, ownerId);
-            return;
-          }
-          const outcome = resolveEditResubmitOutcome({
-            isCurrentOperation: isCurrentOperation(),
-            revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
-            status: 'success',
-          });
-          if (outcome.stale) return;
-          if (outcome.clearInput) setInput('');
-          if (outcome.exitEditMode) {
-            setEditingMsgId(null);
-            editPrevDraftRef.current = null;
-          }
-          // C3: 接受后消息已被替换，清除编辑中徽章（owner-guarded）。
-          // C3: after acceptance the message is replaced — clear the badge.
-          if (cid) clearEditingMessage(cid, ownerId);
+          // The lifecycle terminal event is the primary synchronous commit.
+          // The Promise result is an idempotent fallback for non-Nomi callers.
+          commitTerminalResolution(resolution, false);
         })
         .catch(() => {
           // Backend rejected: stay in edit mode so the user can adjust and retry.
@@ -1768,7 +1818,7 @@ const SendBox: React.FC<{
           const outcome = resolveEditResubmitOutcome({
             isCurrentOperation: isCurrentOperation(),
             revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
-            status: 'failure',
+            status: 'safe_failure',
           });
           if (outcome.stale) return;
           if (outcome.restoreSubmittedInput) setInput(finalMessage);
@@ -1939,8 +1989,13 @@ const SendBox: React.FC<{
       });
   };
 
-  const stopHandler = async () => {
-    if (!onStop || isStoppingRef.current) return;
+  const stopHandler = async (event: Event) => {
+    const clickDetail = event instanceof UIEvent ? event.detail : 0;
+    if (
+      !onStop ||
+      isStoppingRef.current ||
+      stopHandoffGateRef.current.shouldIgnoreStop(clickDetail)
+    ) return;
     isStoppingRef.current = true;
     setIsStopping(true);
     try {

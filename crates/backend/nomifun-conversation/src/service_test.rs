@@ -1718,11 +1718,28 @@ fn make_create_req() -> CreateConversationRequest {
     .unwrap()
 }
 
+fn make_nomi_create_req(label: &str) -> CreateConversationRequest {
+    serde_json::from_value(json!({
+        "type": "nomi",
+        "model": {
+            "provider_id": PROVIDER_ID_1,
+            "model": "m1"
+        },
+        "extra": {
+            "workspace": isolated_test_workspace(label)
+        }
+    }))
+    .unwrap()
+}
+
 #[tokio::test]
 async fn edit_resubmit_service_rejects_old_user_target_beyond_large_history_windows() {
     let (service, _broadcaster, repo, runtime_registry) = make_service();
     let conversation = service
-        .create(TEST_USER_1, make_create_req())
+        .create(
+            TEST_USER_1,
+            make_nomi_create_req("old-edit-target-beyond-window"),
+        )
         .await
         .unwrap();
     let old_target = MessageId::new().into_string();
@@ -1784,7 +1801,12 @@ async fn edit_resubmit_service_rejects_old_user_target_beyond_large_history_wind
         )
         .await
         .expect_err("an old user target must fail before destructive admission");
-    assert!(matches!(error, AppError::BadRequest(_)));
+    match error {
+        AppError::BadRequest(message) => {
+            assert_eq!(message, "Only the most recent user message can be edited")
+        }
+        other => panic!("expected exact old-target rejection, got {other:?}"),
+    }
     let operation_id = format!(
         "public-edit-resubmit:v1:{}:{}:{}",
         TEST_USER_1, conversation.conversation_id, "old-target-beyond-200"
@@ -1795,6 +1817,49 @@ async fn edit_resubmit_service_rejects_old_user_target_beyond_large_history_wind
             .unwrap()
             .is_none(),
         "pre-admission rejection must not claim an edit receipt"
+    );
+}
+
+#[tokio::test]
+async fn edit_resubmit_service_reports_no_editable_message_only_when_no_user_text_exists() {
+    let (service, _broadcaster, repo, runtime_registry) = make_service();
+    let conversation = service
+        .create(
+            TEST_USER_1,
+            make_nomi_create_req("edit-target-missing"),
+        )
+        .await
+        .unwrap();
+    let target = MessageId::new().into_string();
+    let key = "missing-edit-target";
+
+    let error = service
+        .edit_and_resubmit_with_idempotency_key(
+            TEST_USER_1,
+            &conversation.conversation_id,
+            &target,
+            key,
+            make_send_req(),
+            &runtime_registry,
+        )
+        .await
+        .expect_err("a conversation without user text has no editable target");
+    match error {
+        AppError::BadRequest(message) => {
+            assert_eq!(message, "No editable user message found")
+        }
+        other => panic!("expected exact missing-target rejection, got {other:?}"),
+    }
+    let operation_id = format!(
+        "public-edit-resubmit:v1:{}:{}:{}",
+        TEST_USER_1, conversation.conversation_id, key
+    );
+    assert!(
+        repo.get_delivery_receipt(TEST_USER_1, &conversation.conversation_id, &operation_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "missing-target admission rejection must not claim an edit receipt"
     );
 }
 
@@ -15003,10 +15068,11 @@ async fn edit_resubmit_rebuilds_a_missing_terminal_runtime_before_rewind() {
             &original_request_payload,
             original_admission.epoch,
             now_ms(),
-        )
-        .await
-        .unwrap();
+    )
+    .await
+    .unwrap();
     assert!(original_claim.claimed_new);
+    let target_created_at = now_ms();
     repo.insert_message(&MessageRow {
         id: 0,
         message_id: target_message_id.clone(),
@@ -15017,10 +15083,34 @@ async fn edit_resubmit_rebuilds_a_missing_terminal_runtime_before_rewind() {
         position: Some("right".to_owned()),
         status: Some("finish".to_owned()),
         hidden: false,
-        created_at: now_ms(),
+        created_at: target_created_at,
     })
     .await
     .unwrap();
+    // A long terminal suffix must not hide the latest persisted user turn from
+    // edit admission. The former latest-50 scan returned
+    // `No editable user message found` for this exact shape.
+    for index in 0..220 {
+        let suffix_message_id = MessageId::new().into_string();
+        repo.insert_message(&MessageRow {
+            id: 0,
+            message_id: suffix_message_id.clone(),
+            conversation_id: conversation.conversation_id.clone(),
+            msg_id: Some(suffix_message_id),
+            r#type: if index % 3 == 0 {
+                "error".to_owned()
+            } else {
+                "text".to_owned()
+            },
+            content: json!({ "content": format!("terminal suffix {index}") }).to_string(),
+            position: Some("left".to_owned()),
+            status: Some("finish".to_owned()),
+            hidden: false,
+            created_at: target_created_at + i64::from(index) + 1,
+        })
+        .await
+        .unwrap();
+    }
     assert_eq!(
         repo.finalize_exact_turn_operation(
             USER_ID,

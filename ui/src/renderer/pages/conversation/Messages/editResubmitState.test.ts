@@ -11,7 +11,8 @@ import { describe, expect, test } from 'bun:test';
  *  - the old suffix is captured and the barrier armed BEFORE the request;
  *  - a read-only exact edit receipt observation decides whether reconciliation
  *    is allowed; a response or a paginated window never does that by itself;
- *  - SendBox clears edit state only after the typed resolution is terminal.
+ *  - terminal UI behavior is covered through the production outcome/lifecycle
+ *    seams rather than source-position assertions.
  */
 
 const sendBoxSource = readFileSync(
@@ -33,7 +34,7 @@ describe('edit/resubmit pipeline structure', () => {
     const arm = nomiHandler.indexOf('armBarrier(conversation_id, operationId, capture);');
     const invoke = nomiHandler.indexOf('editResubmit.invoke({');
     const observe = nomiHandler.indexOf('editResubmitState.invoke({');
-    const confirming = nomiHandler.indexOf("onPhaseChange?.('confirming', continueConfirmation)");
+    const confirming = nomiHandler.indexOf("phase: 'confirming'");
     const reconcile = nomiHandler.indexOf(
       'reconcileConfirmedEditMutation(initialDelivery ?? observation.delivery);'
     );
@@ -68,24 +69,6 @@ describe('edit/resubmit pipeline structure', () => {
     expect(fullClear).toBe(-1);
     // Failure path revokes the barrier and emits a failed refresh.
     expect(failedRefresh).toBeGreaterThan(-1);
-  });
-
-  test('SendBox clears edit state and the old suffix only after backend acceptance', () => {
-    const editSubmitBranch = sendBoxSource.slice(
-      sendBoxSource.indexOf('if (editingMsgId && onEditResubmit) {'),
-      sendBoxSource.indexOf('// Cancel any pending warmup:')
-    );
-    const submit = editSubmitBranch.indexOf(
-      'onEditResubmit(\n        targetId,\n        targetCreatedAt,\n        finalMessage,\n        operationId,'
-    );
-    const accepted = editSubmitBranch.indexOf('.then((resolution) => {', submit);
-    const exitEditMode = editSubmitBranch.indexOf('setEditingMsgId(null);', submit);
-    const clearInput = editSubmitBranch.indexOf("setInput('');", submit);
-
-    expect(submit).toBeGreaterThan(-1);
-    expect(accepted).toBeGreaterThan(submit);
-    expect(exitEditMode).toBeGreaterThan(accepted);
-    expect(clearInput).toBeGreaterThan(accepted);
   });
 
   test('retry path restores the retried text only when the input revision is unchanged', () => {
@@ -184,7 +167,7 @@ describe('authoritative failure domains (P0-3)', () => {
     );
     expect(nomiHandler).toContain("recovery.kind === 'post_mutation_failure'");
     expect(nomiHandler).toContain("recovery.kind === 'transcript_truncated'");
-    expect(nomiHandler).toContain("return { kind: 'post_mutation_failure', error }");
+    expect(nomiHandler).toContain("finishTerminal({ kind: 'post_mutation_failure', error })");
     expect(nomiHandler).toContain("reason: 'edit-resubmit-reconcile'");
     expect(nomiHandler).toContain("reason: 'edit-resubmit-failed'");
     expect(nomiHandler.indexOf("reason: 'edit-resubmit-failed'")).toBeGreaterThan(

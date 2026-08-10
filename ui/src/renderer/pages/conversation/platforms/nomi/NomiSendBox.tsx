@@ -87,13 +87,16 @@ import { guidTransitionMark } from '@/renderer/pages/guid/hooks/guidTransitionTi
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage, collectSelectedFiles, removeSubmittedAttachments } from '@/renderer/utils/file/messageFiles';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
-import type { EditingMessagePhase } from '@/renderer/pages/conversation/Messages/editingMessageStore';
 import {
   clearEditingMessageByOperation,
   returnEditingMessageToDraftByOperation,
   updateEditingMessageByOperation,
 } from '@/renderer/pages/conversation/Messages/editingMessageStore';
-import type { EditResubmitResolution } from '@/renderer/components/chat/SendBox/editResubmitTypes';
+import type {
+  EditResubmitLifecycleEvent,
+  EditResubmitResolution,
+} from '@/renderer/components/chat/SendBox/editResubmitTypes';
+import { commitEditResubmitTerminal } from '@/renderer/components/chat/SendBox/editResubmitLifecycle';
 import {
   resolveEditResubmitRecovery,
   shouldReplayEditResubmit,
@@ -106,6 +109,7 @@ import { useTranslation } from 'react-i18next';
 import type { NomiMessageRuntime } from './useNomiMessage';
 import NomiModelSelector from './NomiModelSelector';
 import { runConversationResetSingleFlight } from './resetSingleFlight';
+import { resolveEditTargetChangedNotice } from './editTargetChangedNotice';
 import { ContextUsageRing } from './ContextUsageRing';
 import type { NomiModelSelection } from './useNomiModelSelection';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
@@ -366,6 +370,7 @@ const NomiSendBox: React.FC<{
   const updateMessageList = useUpdateMessageList();
   const { setSendBoxHandler } = usePreviewContext();
   const [isStopping, setIsStopping] = useState(false);
+  const [editTargetChangedNotice, setEditTargetChangedNotice] = useState(false);
   const showStrongBusy =
     (running || presentation.phase === 'local_pending' || presentation.phase === 'accepted') &&
     presentation.showStop !== false &&
@@ -379,6 +384,9 @@ const NomiSendBox: React.FC<{
 
   useEffect(() => {
     setIsStopping(false);
+    setEditTargetChangedNotice((current) =>
+      resolveEditTargetChangedNotice(current, 'conversation_changed')
+    );
   }, [conversation_id]);
 
   useEffect(() => {
@@ -739,8 +747,11 @@ const NomiSendBox: React.FC<{
       createdAt: number,
       message: string,
       requestedOperationId?: string,
-      onPhaseChange?: (phase: EditingMessagePhase, continueConfirmation?: () => void) => void
+      onLifecycleEvent?: (event: EditResubmitLifecycleEvent) => void
     ): Promise<EditResubmitResolution> => {
+      setEditTargetChangedNotice((current) =>
+        resolveEditTargetChangedNotice(current, 'operation_started')
+      );
       if (requiresConversationReset) {
         Message.error(t('conversation.editMessage.resetRequired'));
         throw new Error('conversation reset is required');
@@ -799,6 +810,20 @@ const NomiSendBox: React.FC<{
       const ensureOperationLive = (): void => {
         if (!isOperationLive()) throw EDIT_RESUBMIT_LIFECYCLE_ABORT;
       };
+      const finishTerminal = (
+        resolution: EditResubmitResolution,
+        afterPublish?: (published: boolean) => void
+      ): EditResubmitResolution =>
+        commitEditResubmitTerminal({
+          event: { kind: 'terminal', operationId, resolution },
+          publish: onLifecycleEvent,
+          onPublishError: (error) => {
+            console.error('[edit-resubmit] terminal lifecycle callback failed', error);
+          },
+          afterPublish,
+          clearSharedState: () => clearEditingMessageByOperation(conversation_id, operationId),
+          releaseOperation: () => releaseEditResubmitOperation(conversation_id, operationId),
+        });
       if (!hasEditResubmitBarrier(conversation_id, operationId)) {
         const capture = captureBarrier(messageListRef.current, msgId, createdAt);
         if (!capture) {
@@ -837,7 +862,12 @@ const NomiSendBox: React.FC<{
       // The POST may resolve after the conversation switched or the composer
       // unmounted. Never publish a stale phase or start another IPC operation.
       ensureOperationLive();
-      onPhaseChange?.('confirming', continueConfirmation);
+      onLifecycleEvent?.({
+        kind: 'phase',
+        operationId,
+        phase: 'confirming',
+        continueConfirmation,
+      });
       updateEditingMessageByOperation(conversation_id, operationId, {
         pending: true,
         phase: 'confirming',
@@ -970,7 +1000,7 @@ const NomiSendBox: React.FC<{
               ensureOperationLive();
               setWaitingResponse(false);
               Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
-              return { kind: 'post_mutation_failure', error };
+              return finishTerminal({ kind: 'post_mutation_failure', error });
             }
           }
           ensureOperationLive();
@@ -991,32 +1021,38 @@ const NomiSendBox: React.FC<{
             ensureOperationLive();
             setWaitingResponse(false);
             Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
-            return { kind: 'post_mutation_failure', error };
+            return finishTerminal({ kind: 'post_mutation_failure', error });
           }
           ensureOperationLive();
           if (recovery.kind === 'success') {
-            const operation = getEditResubmitOperation(conversation_id);
-            if (
-              operation?.operationId === operationId &&
-              operation.source === 'edit' &&
-              contentRevisionRef.current === operation.draftRevision
-            ) {
-              setContent('');
-            }
-            clearSubmittedDraftAttachments();
+            const resolution: EditResubmitResolution = { kind: 'success' };
             setWaitingResponse(false);
-            clearEditingMessageByOperation(conversation_id, operationId);
-            releaseEditResubmitOperation(conversation_id, operationId);
-            return { kind: 'success' };
+            return finishTerminal(resolution, (terminalPublished) => {
+              if (!terminalPublished) {
+                const operation = getEditResubmitOperation(conversation_id);
+                if (
+                  operation?.operationId === operationId &&
+                  operation.source === 'edit' &&
+                  contentRevisionRef.current === operation.draftRevision
+                ) {
+                  setContent('');
+                }
+              }
+              clearSubmittedDraftAttachments();
+            });
           }
           if (recovery.kind === 'post_mutation_failure') {
             setWaitingResponse(false);
             const error =
               requestError ?? new Error('edit-resubmit failed after transcript mutation');
-            Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
-            clearEditingMessageByOperation(conversation_id, operationId);
-            releaseEditResubmitOperation(conversation_id, operationId);
-            return { kind: 'post_mutation_failure', error };
+            if (recovery.notice === 'target_changed') {
+              setEditTargetChangedNotice((current) =>
+                resolveEditTargetChangedNotice(current, 'target_changed')
+              );
+            } else {
+              Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
+            }
+            return finishTerminal({ kind: 'post_mutation_failure', error });
           }
         }
         if (recovery.kind === 'safe_failure') {
@@ -1501,6 +1537,29 @@ const NomiSendBox: React.FC<{
               <span>{t('conversation.editMessage.resetRequired')}</span>
               <Button type='text' size='small' loading={isResettingConversation} disabled={isResettingConversation} onClick={() => void handleResetRequiredConversation()}>
                 {t('conversation.editMessage.resetAction')}
+              </Button>
+            </div>
+          }
+        />
+      )}
+      {editTargetChangedNotice && (
+        <Alert
+          className='mb-8px'
+          type='warning'
+          data-testid='edit-target-changed-notice'
+          content={
+            <div className='flex flex-wrap items-center gap-8px'>
+              <span>{t('conversation.editMessage.targetChanged')}</span>
+              <Button
+                type='text'
+                size='small'
+                onClick={() =>
+                  setEditTargetChangedNotice((current) =>
+                    resolveEditTargetChangedNotice(current, 'dismissed')
+                  )
+                }
+              >
+                {t('common.close')}
               </Button>
             </div>
           }

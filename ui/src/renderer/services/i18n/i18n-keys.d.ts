@@ -1026,6 +1026,7 @@ export type I18nKey =
   | 'conversation.editMessage.resetFailed'
   | 'conversation.editMessage.resetRequired'
   | 'conversation.editMessage.resetSuccess'
+  | 'conversation.editMessage.targetChanged'
   | 'conversation.emptyCards.companionAction'
   | 'conversation.emptyCards.companionDescription'
   | 'conversation.emptyCards.companionTitle'
