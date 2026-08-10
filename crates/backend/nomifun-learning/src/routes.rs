@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use axum::extract::{Extension, Json, Path, Query, State};
+use axum::extract::{Extension, Json, Path, Query, RawQuery, State};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use nomifun_api_types::ApiResponse;
@@ -10,6 +10,7 @@ use nomifun_common::{
     UuidV7Error,
 };
 use serde::Deserialize;
+use url::form_urlencoded;
 
 use crate::models::{
     AnswerReviewRequest, CoursePack, CreateCustomQuestionRequest, DeleteCourseRequest,
@@ -194,18 +195,12 @@ async fn submit_attempt(
 struct DueReviewQuery {
     #[serde(default = "default_review_limit")]
     limit: i64,
-    /// Course scope; may repeat to select several courses at once.
-    #[serde(default)]
-    course_id: Vec<String>,
     /// Keep only reviews whose due time has passed (main review entry).
     #[serde(default)]
     due_only: bool,
     /// Also include learner-authored questions that belong to no course.
     #[serde(default)]
     orphan: bool,
-    /// Keep only items carrying at least one of these tag names.
-    #[serde(default)]
-    tag: Vec<String>,
 }
 
 const fn default_review_limit() -> i64 {
@@ -216,24 +211,30 @@ async fn due_reviews(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Query(query): Query<DueReviewQuery>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<ApiResponse<Vec<crate::models::DueReview>>>, AppError> {
-    let course_ids = query
-        .course_id
-        .iter()
-        .cloned()
+    // serde_urlencoded 0.7 cannot map repeated query keys onto Vec fields
+    // (it rejects them with "expected a sequence"), so the multi-valued
+    // course/tag parameters are collected manually from the raw query string.
+    let mut course_ids: Vec<String> = Vec::new();
+    let mut tags: Vec<String> = Vec::new();
+    if let Some(raw) = raw {
+        for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
+            match key.as_ref() {
+                "course_id" => course_ids.push(value.into_owned()),
+                "tag" => tags.push(value.into_owned()),
+                _ => {}
+            }
+        }
+    }
+    let course_ids = course_ids
+        .into_iter()
         .map(parse_id::<LearningCourseId>)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .due_reviews(
-                &user.id,
-                query.limit,
-                &course_ids,
-                query.due_only,
-                query.orphan,
-                &query.tag,
-            )
+            .due_reviews(&user.id, query.limit, &course_ids, query.due_only, query.orphan, &tags)
             .await?,
     )))
 }
