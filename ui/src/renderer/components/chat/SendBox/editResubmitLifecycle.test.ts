@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+  commitComposerDraftChange,
   commitEditResubmitTerminal,
+  createComposerDraftRevisionState,
   shouldCommitEditResubmitTerminal,
 } from '@/renderer/components/chat/SendBox/editResubmitLifecycle';
+import { resolveEditResubmitOutcome } from '@/renderer/components/chat/SendBox/editResubmitOutcome';
 
 describe('commitEditResubmitTerminal', () => {
   test('accepts the current terminal exactly once without consulting controller state', () => {
@@ -60,5 +63,36 @@ describe('commitEditResubmitTerminal', () => {
       releaseOperation: () => calls.push('release'),
     });
     expect(calls).toEqual(['publish', 'publish-error', 'after:false', 'clear', 'release']);
+  });
+
+  test('user input advances revision before a deferred retry terminal can restore stale text', async () => {
+    const revision = createComposerDraftRevisionState('retry text');
+    const submittedRevision = revision.current;
+    let composerText = 'retry text';
+    let revisionObservedBySetter = submittedRevision;
+    let resolveTerminal!: (status: 'post_mutation_failure') => void;
+    const terminal = new Promise<'post_mutation_failure'>((resolve) => {
+      resolveTerminal = resolve;
+    });
+
+    const resolved = terminal.then((status) =>
+      resolveEditResubmitOutcome({
+        isCurrentOperation: true,
+        revisionUnchanged: revision.current === submittedRevision,
+        status,
+        source: 'retry',
+      })
+    );
+
+    commitComposerDraftChange(revision, 'new user draft', (nextInput) => {
+      revisionObservedBySetter = revision.current;
+      composerText = nextInput;
+    });
+    resolveTerminal('post_mutation_failure');
+    const outcome = await resolved;
+    if (outcome.restoreSubmittedInput) composerText = 'retry text';
+
+    expect(revisionObservedBySetter).toBeGreaterThan(submittedRevision);
+    expect(composerText).toBe('new user draft');
   });
 });

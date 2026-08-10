@@ -2011,6 +2011,42 @@ impl ConversationService {
         }
     }
 
+    async fn settle_edit_resubmit_failure(
+        &self,
+        runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
+        admission_custodian: &EditResubmitAdmissionCustodian,
+        user_id: &str,
+        conversation_id: &str,
+        target_created_at: i64,
+        delivery: &DurableDeliveryLease,
+        error: &AppError,
+    ) {
+        if admission_custodian.destructive_runtime_mutation_started() {
+            Self::quarantine_edit_runtime_until_confirmed(
+                runtime_registry,
+                &self.runtime_state,
+                conversation_id,
+                target_created_at,
+            )
+            .await;
+        }
+        self.finalize_durable_admission_after_error(
+            user_id,
+            conversation_id,
+            delivery,
+            &format!("{}", ErrorChain(error)),
+            relay_error_code::PREPARATION_FAILED,
+        )
+        .await;
+        if !delivery.receipt_was_handed_off() {
+            Self::release_durable_operation_guard(
+                &self.durable_operations_in_flight,
+                &delivery.guard_key,
+                delivery.guard_generation,
+            );
+        }
+    }
+
     async fn try_complete_delivery_receipt(
         repo: &Arc<dyn IConversationRepository>,
         user_id: &str,
@@ -11594,30 +11630,16 @@ impl ConversationService {
         }
         .await;
         if let Err(error) = preparation_result {
-            if edit_admission_custodian.destructive_runtime_mutation_started() {
-                Self::quarantine_edit_runtime_until_confirmed(
-                    runtime_registry,
-                    &self.runtime_state,
-                    conv_id,
-                    row.created_at,
-                )
-                .await;
-            }
-            self.finalize_durable_admission_after_error(
+            self.settle_edit_resubmit_failure(
+                runtime_registry,
+                &edit_admission_custodian,
                 user_id,
                 conv_id,
+                row.created_at,
                 &delivery,
-                &format!("{}", ErrorChain(&error)),
-                relay_error_code::PREPARATION_FAILED,
+                &error,
             )
             .await;
-            if !delivery.receipt_was_handed_off() {
-                Self::release_durable_operation_guard(
-                    &self.durable_operations_in_flight,
-                    &delivery.guard_key,
-                    delivery.guard_generation,
-                );
-            }
             return Err(error);
         }
 
@@ -11648,30 +11670,16 @@ impl ConversationService {
                 message_id
             }
             Err(error) => {
-                if edit_admission_custodian.destructive_runtime_mutation_started() {
-                    Self::quarantine_edit_runtime_until_confirmed(
-                        runtime_registry,
-                        &self.runtime_state,
-                        conv_id,
-                        row.created_at,
-                    )
-                    .await;
-                }
-                self.finalize_durable_admission_after_error(
+                self.settle_edit_resubmit_failure(
+                    runtime_registry,
+                    &edit_admission_custodian,
                     user_id,
                     conv_id,
+                    row.created_at,
                     &delivery,
-                    &format!("{}", ErrorChain(&error)),
-                    relay_error_code::PREPARATION_FAILED,
+                    &error,
                 )
                 .await;
-                if !delivery.receipt_was_handed_off() {
-                    Self::release_durable_operation_guard(
-                        &self.durable_operations_in_flight,
-                        &delivery.guard_key,
-                        delivery.guard_generation,
-                    );
-                }
                 return Err(error);
             }
         };

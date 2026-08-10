@@ -3,6 +3,37 @@ import type {
   EditResubmitResolution,
 } from '@/renderer/components/chat/SendBox/editResubmitTypes';
 
+export interface ComposerDraftRevisionState {
+  current: number;
+  input: string;
+}
+
+export const createComposerDraftRevisionState = (input: string): ComposerDraftRevisionState => ({
+  current: 0,
+  input,
+});
+
+/** Advance synchronously at the input boundary; repeated observation is a no-op. */
+export const recordComposerDraftChange = (
+  state: ComposerDraftRevisionState,
+  nextInput: string
+): number => {
+  if (state.input !== nextInput) {
+    state.input = nextInput;
+    state.current += 1;
+  }
+  return state.current;
+};
+
+export const commitComposerDraftChange = (
+  state: ComposerDraftRevisionState,
+  nextInput: string,
+  commit: (nextInput: string) => void
+): void => {
+  recordComposerDraftChange(state, nextInput);
+  commit(nextInput);
+};
+
 interface CommitEditResubmitTerminalOptions {
   event: Extract<EditResubmitLifecycleEvent, { kind: 'terminal' }>;
   publish?: (event: EditResubmitLifecycleEvent) => void;

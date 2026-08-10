@@ -11,7 +11,8 @@ notes at a high level rather than a complete historical log.
   and newly added attachments are preserved, and orphaned edits require an
   explicit single-flight Conversation reset. Terminal failures now clear the
   Editing UI immediately in the current composer before releasing shared
-  operation ownership. A double-click can no longer cross from the submitted
+  operation ownership, without overwriting text typed while confirmation was
+  pending. A double-click can no longer cross from the submitted
   Send button into the replacement Stop button and cancel its own edit, while
   an intentional Stop remains available immediately. Long error transcripts
   no longer hide the editable user turn behind a fixed history window; if the

@@ -70,33 +70,6 @@ describe('edit/resubmit pipeline structure', () => {
     // Failure path revokes the barrier and emits a failed refresh.
     expect(failedRefresh).toBeGreaterThan(-1);
   });
-
-  test('retry path restores the retried text only when the input revision is unchanged', () => {
-    // The error-popup retry also goes through onEditResubmit; its failure must
-    // never overwrite what the user typed mid-flight (C2 inputRevision guard).
-    const retryBranch = sendBoxSource.slice(
-      sendBoxSource.indexOf("'sendbox.retry'"),
-      sendBoxSource.indexOf('// Bump the input revision on every composer change')
-    );
-    const revisionSnapshot = retryBranch.indexOf(
-      'const submittedInputRevision = inputRevisionRef.current;',
-      retryBranch.indexOf("'sendbox.retry'")
-    );
-    const setLoading = retryBranch.indexOf('setIsLoading(true);', retryBranch.indexOf("'sendbox.retry'"));
-    const restoreInput = retryBranch.indexOf('setInput(content);', retryBranch.indexOf("'sendbox.retry'"));
-    const guard = retryBranch.indexOf(
-      'inputRevisionRef.current === submittedInputRevision',
-      retryBranch.indexOf("'sendbox.retry'")
-    );
-
-    expect(revisionSnapshot).toBeGreaterThan(-1);
-    expect(setLoading).toBeGreaterThan(-1);
-    // Snapshot before the request starts, guard before any restore.
-    expect(setLoading).toBeGreaterThan(revisionSnapshot);
-    expect(restoreInput).toBeGreaterThan(-1);
-    expect(guard).toBeGreaterThan(-1);
-    expect(restoreInput).toBeGreaterThan(guard);
-  });
 });
 
 describe('retry operation mutex (P1-1)', () => {

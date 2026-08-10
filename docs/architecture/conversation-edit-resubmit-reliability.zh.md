@@ -128,73 +128,12 @@ git diff --check
 测试不属于本功能。Windows incremental/runtime-lock 的 `拒绝访问 (os error 5)` 也属于环境阻塞，
 不能归因于本变更。
 
-2026-08-09 本次实测：新增/定向 UI 测试通过；UI 全量为 2097 pass / 18 个既有结构基线失败；
-direct Vite production build、`cargo fmt --check`、`cargo check --workspace`、repository snapshot、
-latest-user、服务级 >200 行旧目标拒绝、observation namespace/permission/reset 测试通过。
-`cargo test -p nomifun-conversation edit_resubmit --lib` 为 4 pass / 1 Windows runtime-lock
-`拒绝访问 (os error 5)`。直接 TypeScript 检查只报告未改动的 videoCanvas `Blob` 基线；直接
-quality scripts 除未改动的 agent-vocabulary 注释基线外通过。`bun run typecheck/check/build:ui`
-的 workspace 子进程在当前 Windows 沙箱返回 `Operation not permitted`，等价 Node 入口已执行。
-截至 2026-08-09，自动验证已完成；当时尚未进行 owner 交互验收，不能由自动测试替代。
+## 验收与交付证据
 
-2026-08-09 合并审查修复追加：strict decoder 已覆盖非 replay、accepted terminal metadata 和矛盾
-completed outcome；runner 释放后 remount subscription、stale refresh retry、生产 reset handler 的
-deferred 双击均有行为测试。repository 增加并发 writer/readers 测试，在 80 次原子 transcript
-generation 切换期间只允许完整的 mutation 前/后 snapshot。后续 V5.6 增加了 stale-target 的
-Composer 内 Alert，因此该可见 UI 变化必须以截图或短录屏补充人工证据，不能再使用“没有可见控件变化”
-作为豁免。
+可见 UI 变化必须提供真实运行截图或短录屏；自动化测试不能替代 owner 交互验收。长会话、同时间戳
+latest-user、同-key recovery、response loss、truncate 后失败、附件差集、commit 后 ack 和 accepted
+orphan reset 均需要通过对应的服务级、行为级或人工场景证明，不能由宽泛的成功计数替代。
 
-人工验收清单包括：长会话且 target 在最新 200 行之外、同时间戳 latest-user tie-break、double click、
-会话切换后同-key 恢复、response loss、truncate 后 HTTP/terminal error、附件差集、refresh 首次失败后
-重试并 ack，以及 accepted orphan 的显式 reset。后文逐次记录已完成项目，未明确记录的项目仍待验收。
-
-2026-08-10 独立 Composer beforeinput 分支 Web 实测追加：逐键输入 `v55逐键输入` 后浏览器控制台为 0 error，不再出现
-`undefined.includes`。最终 post-mutation failure 场景双击只产生 1 个 POST，POST 与 observation
-共用 key `019fe76a-d12a-77e4-8600-6b7dc66afc68`；observation 为 completed failure、target 消失，
-同一挂载立即移除 Editing badge/banner，并把 `编辑可靠性实测：V5.5 final acceptance。` 保留为
-普通草稿。该轮后端 terminal error 是 `preparation_failed`；此前同会话已取得免费模型
-`USER_LLM_PROVIDER_RATE_LIMITED` 的 completed-failure 证据。
-本地验收会话按约定保留，未自动删除。
-
-后续使用运行时实际提供的 `mimo-v2.5-free` 补齐成功路径：普通 turn、单击 edit-resubmit 和修复后的
-双击 edit-resubmit 均 completed success。双击操作只产生 1 个 POST、没有 `/cancel`，operation key 为
-`019fe948-83c1-732c-b711-42a16449e4b3`，receipt `result_ok=true`、replacement
-`019fe948-83c9-72c2-943d-1c976a4906ba`、terminal text `双击成功`。终态后 Editing badge/banner 清零，
-composer 清为空草稿。当前 managed catalog 没有名为 Kimi 2.5 的条目，实测模型名称必须记录为 MiMo。
-
-V5.5 定向 UI 测试通过；UI 全量为 2110 pass / 18 个既有基线失败。direct Vite
-production build 通过（13507 modules），直接 TypeScript 检查仍只报告未改动的 videoCanvas
-`Blob` 7 项基线。`git diff --check` 通过，`.github/workflows` 下不存在 YAML workflow。根级 Bun
-workspace wrapper 在 Web dev 子进程并存时仍可能返回 Windows `Operation not permitted`，因此构建和
-typecheck 同时记录 direct Node 入口结果，未把该运行时锁归因于 V5.5。
-
-2026-08-10 V5.6 收口：terminal ledger 覆盖 A→B→A，Stop gate 只消费多击事件；missing receipt 且
-target 已消失时，统一 reconciliation 并显示 Composer 内提示，正文和附件保持普通草稿。原服务级
-“>200 行旧目标拒绝”测试此前误用 ACP fixture，只验证到任意 BadRequest；现已改用 Nomi fixture并
-断言精确 old-target 错误及无 receipt。冷运行成功 fixture 增加 220 条 assistant/error suffix，以锁定
-长 transcript 的正向 admission。Windows knowledge-workspace runtime lock 仍可能阻塞该冷运行测试，
-单独按环境基线记录。
-
-V5.6 自动验证：定向 UI 91 pass / 0 fail；同步 `origin/main` 后 UI 全量 2119 pass / 18 个既有基线失败；两个精确
-service admission 测试通过。direct TypeScript 只报告未改动的 videoCanvas `Blob` 7 项基线，direct
-Vite production build 通过（13509 modules），`cargo check --workspace`、i18n、theme、icons、
-CodeMirror/runtime/browser boundary、help、Rust format 和 `git diff --check` 通过。agent-vocabulary 仍只
-报告主干已有的 `nomi-agent-eval/src/runner.rs` retired reference。冷运行正向测试在当前 Windows 环境
-被 knowledge-workspace lock `拒绝访问 (os error 5)` 阻塞，未记为功能失败。
-
-2026-08-10 PR #70 减负收口：Send→Stop 现在直接使用 React click detail，只有同一多击序列的第二击
-会被 handoff gate 消费；主动单击和键盘 Stop 不受影响。retry 的 post-mutation failure 在当前
-draft revision 未变化时恢复 retry 正文，用户中途输入则不覆盖。消息刷新在快照入队后等待实际 React
-commit，再执行 consumer ack；reconciliation purge 使用冻结 snapshot，不再从延迟 updater 查询 live
-coordinator。移除了 trivial target-notice helper 与 production live filter/purge 双轨路径；Composer
-beforeinput 解码、测试和 changelog 已移到独立 `fix/composer-beforeinput` 分支，不属于 PR #70。
-
-当前 PR #70 的手工截图/短录屏证据仍需在最终 PR 描述中附加，至少覆盖 stale-target Alert；自动化测试
-不能替代这项可见 UI 验收。本次本地 Web 实测已保存一张证据图：
-[`pr70-stale-target-alert-2026-08-10.png`](../images/pr70-stale-target-alert-2026-08-10.png)。
-
-## 交付边界
-
-当前实现分支为 `fix/conversation-error-edit`，Composer 独立分支为 `fix/composer-beforeinput`，对照
-基线和 HEAD 不写死在本文中；交付时以 `git rev-parse HEAD`、`git merge-base HEAD origin/main` 和
-远端 ref 的实时结果为准。本文不记录易过期的“最终提交数量”或历史最终 SHA。
+架构文档只维护稳定协议。当前分支、测试结果、环境阻塞和人工验收记录位于
+[PR #70 编辑重提交可靠性交接](../handoffs/2026-08-10-conversation-edit-resubmit-pr70.md)，交付时以
+实时 Git refs 和该记录中的证据边界为准。

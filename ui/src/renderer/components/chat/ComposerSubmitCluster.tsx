@@ -28,6 +28,30 @@ export type ComposerSubmitClusterProps = {
   sendTestId?: string;
 };
 
+export type ComposerStopButtonProps = {
+  label: string;
+  title: string;
+  onStop: (clickDetail: number) => void;
+};
+
+const readClickDetail = (event: Event): number => {
+  const detail = (event as Event & { detail?: unknown }).detail;
+  return typeof detail === 'number' ? detail : 0;
+};
+
+export const ComposerStopButton: React.FC<ComposerStopButtonProps> = ({ label, title, onStop }) => (
+  <Button
+    shape='circle'
+    type='secondary'
+    className='send-button-custom sendbox-stop-button'
+    icon={<div className='sendbox-stop-icon' aria-hidden='true' />}
+    onClick={(event) => onStop(readClickDetail(event))}
+    data-testid='composer-stop-btn'
+    aria-label={label}
+    title={title}
+  />
+);
+
 const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
   hasDraft,
   loading = false,
@@ -89,15 +113,10 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
         </div>
       ) : null}
 
-      {showStopButton ? (
-        <Button
-          shape='circle'
-          type='secondary'
-          className='send-button-custom sendbox-stop-button'
-          icon={<div className='sendbox-stop-icon' aria-hidden='true' />}
-          onClick={(event) => onStop?.((event as MouseEvent).detail)}
-          data-testid='composer-stop-btn'
-          aria-label={t('conversation.chat.stop', { defaultValue: 'Stop' })}
+      {showStopButton && onStop ? (
+        <ComposerStopButton
+          onStop={onStop}
+          label={t('conversation.chat.stop', { defaultValue: 'Stop' })}
           title={t('conversation.chat.stop', { defaultValue: 'Stop generating' })}
         />
       ) : null}

@@ -62,7 +62,12 @@ import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { getConversationInputHistory } from '@/renderer/utils/chat/messageHistory';
 import { uuid, uuidv7 } from '@/common/utils';
 import { resolveEditResubmitOutcome } from '@/renderer/components/chat/SendBox/editResubmitOutcome';
-import { shouldCommitEditResubmitTerminal } from '@/renderer/components/chat/SendBox/editResubmitLifecycle';
+import {
+  commitComposerDraftChange,
+  createComposerDraftRevisionState,
+  recordComposerDraftChange,
+  shouldCommitEditResubmitTerminal,
+} from '@/renderer/components/chat/SendBox/editResubmitLifecycle';
 import { createComposerStopHandoffGate } from '@/renderer/components/chat/SendBox/composerStopHandoffGate';
 import type {
   EditResubmitLifecycleEvent,
@@ -380,7 +385,7 @@ const SendBox: React.FC<{
   // Monotonic input revision (bumped on every `input` change) so the success
   // callback can tell "user typed during the request" from "string happened to
   // match" — only clear input when the user never touched it post-submit.
-  const inputRevisionRef = useRef(0);
+  const inputRevisionStateRef = useRef(createComposerDraftRevisionState(input));
   const [caretPosition, setCaretPosition] = useState(0);
   const [workspaceMentionItems, setWorkspaceMentionItems] = useState<FileOrFolderItem[]>([]);
   const [workspaceMentionLoading, setWorkspaceMentionLoading] = useState(false);
@@ -481,7 +486,7 @@ const SendBox: React.FC<{
             targetCreatedAt: payload.createdAt,
             originalContent: content,
             attachmentPaths: [],
-            draftRevision: inputRevisionRef.current,
+            draftRevision: inputRevisionStateRef.current.current,
             source: 'retry',
             phase: 'submitting',
           })
@@ -490,10 +495,34 @@ const SendBox: React.FC<{
         // Snapshot the input revision so a retry failure restores the retried
         // text only when the user never touched the composer mid-flight — never
         // overwriting new typing (same protection as the edit-resubmit path).
-        const submittedInputRevision = inputRevisionRef.current;
+        const submittedInputRevision = inputRevisionStateRef.current.current;
         setIsLoading(true);
         try {
           if (onEditResubmit && payload.msgId && payload.createdAt) {
+            const commitRetryTerminalResolution = (
+              resolution: EditResubmitResolution,
+              authoritative: boolean
+            ): void => {
+              if (
+                !shouldCommitEditResubmitTerminal(
+                  activeRetryOperationRef.current,
+                  committedTerminalOperationsRef.current,
+                  retryOperationId,
+                  authoritative
+                )
+              ) return;
+              committedTerminalOperationsRef.current.add(retryOperationId);
+              const outcome = resolveEditResubmitOutcome({
+                isCurrentOperation: true,
+                revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
+                status: resolution.kind,
+                source: 'retry',
+              });
+              if (outcome.restoreSubmittedInput) setInput(content);
+              if (retryConversationId) {
+                clearEditingMessage(retryConversationId, editingOwnerId());
+              }
+            };
             if (retryConversationId) {
               setEditingMessage(retryConversationId, {
                 ownerId: editingOwnerId(),
@@ -511,25 +540,7 @@ const SendBox: React.FC<{
               (event) => {
                 if (event.operationId !== retryOperationId) return;
                 if (event.kind === 'terminal') {
-                  if (
-                    !shouldCommitEditResubmitTerminal(
-                      activeRetryOperationRef.current,
-                      committedTerminalOperationsRef.current,
-                      event.operationId,
-                      true
-                    )
-                  ) return;
-                  committedTerminalOperationsRef.current.add(retryOperationId);
-                  const outcome = resolveEditResubmitOutcome({
-                    isCurrentOperation: true,
-                    revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
-                    status: event.resolution.kind,
-                    source: 'retry',
-                  });
-                  if (outcome.restoreSubmittedInput) setInput(content);
-                  if (retryConversationId) {
-                    clearEditingMessage(retryConversationId, editingOwnerId());
-                  }
+                  commitRetryTerminalResolution(event.resolution, true);
                   return;
                 }
                 if (activeRetryOperationRef.current !== event.operationId) return;
@@ -543,26 +554,7 @@ const SendBox: React.FC<{
                 }
               }
             );
-            if (
-              shouldCommitEditResubmitTerminal(
-                activeRetryOperationRef.current,
-                committedTerminalOperationsRef.current,
-                retryOperationId,
-                false
-              )
-            ) {
-              committedTerminalOperationsRef.current.add(retryOperationId);
-              const outcome = resolveEditResubmitOutcome({
-                isCurrentOperation: true,
-                revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
-                status: resolution.kind,
-                source: 'retry',
-              });
-              if (outcome.restoreSubmittedInput) setInput(content);
-              if (retryConversationId) {
-                clearEditingMessage(retryConversationId, editingOwnerId());
-              }
-            }
+            commitRetryTerminalResolution(resolution, false);
             if (resolution.kind !== 'success') {
               throw resolution.error instanceof Error
                 ? resolution.error
@@ -581,7 +573,7 @@ const SendBox: React.FC<{
           if (
             !committedTerminalOperationsRef.current.has(retryOperationId) &&
             activeRetryOperationRef.current === retryOperationId &&
-            inputRevisionRef.current === submittedInputRevision
+            inputRevisionStateRef.current.current === submittedInputRevision
           ) {
             setInput(content);
           }
@@ -596,11 +588,11 @@ const SendBox: React.FC<{
     [conversationContext?.type, disabled, loading, isLoading, onEditResubmit, onSend]
   );
 
-  // Bump the input revision on every composer change so the edit-resubmit
-  // success/failure callbacks can detect mid-flight user edits by revision
-  // drift rather than brittle string equality.
+  // Observe parent-driven draft changes. User typing advances this same state
+  // synchronously in handleTokenInputChange, before a deferred terminal can
+  // race the controlled React render/effect cycle.
   useEffect(() => {
-    inputRevisionRef.current += 1;
+    recordComposerDraftChange(inputRevisionStateRef.current, input);
   }, [input]);
 
   // Invalidate any in-flight edit-resubmit operation on unmount so its late
@@ -1101,7 +1093,7 @@ const SendBox: React.FC<{
     if (conversationExport.isOpen && value) {
       conversationExport.closeExportFlow();
     }
-    setInput(value);
+    commitComposerDraftChange(inputRevisionStateRef.current, value, setInput);
   };
 
   const handleOverlayKeyDown = (event: React.KeyboardEvent) => {
@@ -1747,7 +1739,7 @@ const SendBox: React.FC<{
           targetCreatedAt,
           originalContent: finalMessage,
           attachmentPaths: [],
-          draftRevision: inputRevisionRef.current,
+          draftRevision: inputRevisionStateRef.current.current,
           source: 'edit',
           phase: 'submitting',
         })
@@ -1757,7 +1749,7 @@ const SendBox: React.FC<{
       // replaces Send after this synchronous admission. Keep that click from
       // cancelling the preparation lease of the operation it just created.
       stopHandoffGateRef.current.armAfterEditSubmit();
-      const submittedInputRevision = inputRevisionRef.current;
+      const submittedInputRevision = inputRevisionStateRef.current.current;
       const isCurrentOperation = () => activeEditOperationRef.current === operationId;
       const ownerId = editingOwnerId();
       const commitTerminalResolution = (
@@ -1775,7 +1767,7 @@ const SendBox: React.FC<{
         committedTerminalOperationsRef.current.add(operationId);
         const outcome = resolveEditResubmitOutcome({
           isCurrentOperation: true,
-          revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
+          revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
           status: resolution.kind,
         });
         if (outcome.clearInput) setInput('');
@@ -1831,7 +1823,7 @@ const SendBox: React.FC<{
           if (cid && getEditResubmitOperation(cid)?.operationId === operationId) return;
           const outcome = resolveEditResubmitOutcome({
             isCurrentOperation: isCurrentOperation(),
-            revisionUnchanged: inputRevisionRef.current === submittedInputRevision,
+            revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
             status: 'safe_failure',
             source: 'edit',
           });

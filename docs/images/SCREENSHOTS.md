@@ -64,6 +64,7 @@ window chrome from the installed app.
 | `channels-` | guides/channels |
 | `mcp-` | guides/mcp-and-skills |
 | `presets-` | guides/presets |
+| `conversation-` | architecture/conversation-edit-resubmit-reliability.zh.md and related handoffs |
 | `readme-` | root README showcase |
 
 ## Manifest
@@ -105,6 +106,7 @@ see notes).
 | `channels-02-pairing.png` | `#/nomi?tab=remote` (connect) | web | Channel connect / settings dialog | guides/channels | live |
 | `mcp-01-capabilities.png` | `#/mcp` | web | MCP page | guides/mcp-and-skills | live |
 | `mcp-03-skills.png` | `#/skills` | web | Skills library | guides/mcp-and-skills | refresh required |
+| `conversation-01-stale-target-alert.png` | `#/conversation/:id` | web | Stale edit target is reconciled with an in-composer warning while preserving the draft | architecture/conversation edit-resubmit PR #70 handoff | live |
 | `webserver-02-first-run-setup.png` | `#/login` (no admin) | web (auth) | First-run admin setup | guides/web-server-deployment | live |
 
 ## Not screenshots (rendered as commands / diagrams)
