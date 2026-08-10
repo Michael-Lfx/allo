@@ -43,7 +43,7 @@ describe('KnowledgeControl search helpers', () => {
     expect(source.includes('text-white')).toBe(false);
     expect(source.includes('bg-[rgb(var(--primary-6))]')).toBe(false);
     expect(source.includes('border-[rgba(var(--primary-6),0.38)]')).toBe(true);
-    expect(source.includes('bg-[rgba(var(--primary-6),0.12)] text-[rgb(var(--primary-6))]')).toBe(true);
+    expect(source.includes('bg-[rgba(var(--primary-6),0.12)] text-primary-6')).toBe(true);
   });
 
   test('keeps kind and freshness/file-count metadata on the title row', () => {

@@ -89,6 +89,8 @@ Flowy 启动时进入三种鉴权策略之一：
 | Agent Execution | `/api/agent-executions/*` | 已鉴权 | [`nomifun-agent-execution/src/routes.rs`](../../crates/backend/nomifun-agent-execution/src/routes.rs) |
 | 终端 | `/api/terminals/*` | 已鉴权 | [`nomifun-terminal/src/routes.rs`](../../crates/backend/nomifun-terminal/src/routes.rs) |
 | 知识库 | `/api/knowledge/*` | 已鉴权 | [`nomifun-knowledge/src/routes.rs`](../../crates/backend/nomifun-knowledge/src/routes.rs) |
+| 小程序 | `GET/POST /api/miniapps`、`POST /api/miniapps/validate`、`POST /api/miniapps/import`、`GET/PUT/DELETE /api/miniapps/{miniapp_id}`、`POST /api/miniapps/{miniapp_id}/publish`、`POST /api/miniapps/{miniapp_id}/workspace`（幂等物化工作副本并返回其绝对源码路径；不创建任何会话） | 仅实例主人 | [`nomifun-miniapp/src/routes.rs`](../../crates/backend/nomifun-miniapp/src/routes.rs) |
+| 小程序运行（直出已发布快照） | `GET /api/miniapps/{miniapp_id}/serve` | 公共 —— 有意免鉴权：iframe 子资源请求不携带信任头，鉴权之下运行页与会话内预览根本渲染不出来；防护依赖不可猜测的 UUIDv7（沿用 workshop 公共文件路由的先例） | 同上 |
 | 伙伴 | `/api/companion/*` | 已鉴权 | [`nomifun-companion/src/routes.rs`](../../crates/backend/nomifun-companion/src/routes.rs) |
 | WebUI/public 能力 companion token | `/api/webui/companions/{id}/access-token` | 已鉴权 / 本地 WebUI admin 流 | [`router/companion_token_routes.rs`](../../crates/backend/nomifun-app/src/router/companion_token_routes.rs) |
 | Browser-use secrets | `/api/browser-secrets/*` | 已鉴权 | [`nomifun-secret/src/routes.rs`](../../crates/backend/nomifun-secret/src/routes.rs) |

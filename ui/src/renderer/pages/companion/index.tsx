@@ -786,7 +786,7 @@ const CompanionPage: React.FC = () => {
     // bubble note, but only when idle so it never clobbers an in-flight reply.
     // Editing/managing is a right-click away (打开记忆 → the scope-aware tab).
     const unsubMemoryCreated = ipcBridge.companion.onMemoryCreated.on((m) => {
-      if (!companionId || m.scope_companion_id !== companionId) return;
+      if (!companionId || m.companion_id !== companionId) return;
       if (turnActiveRef.current) return;
       const brief = m.content.length > 40 ? `${m.content.slice(0, 40)}…` : m.content;
       popBubble(t('nomi.companion.memorySavedToast', { brief }));

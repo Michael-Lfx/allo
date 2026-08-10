@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+﻿use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -126,6 +126,11 @@ pub struct NomiAgentManager {
     /// this runtime; final Drop is the construction/abrupt-teardown backstop.
     #[cfg(feature = "browser-use")]
     browser_lane_binding: Option<crate::BrowserLaneBinding>,
+    /// This runtime's claim on the pooled SSH link behind an SSH-bound session.
+    /// Held for the runtime's whole life and released — never closed — at
+    /// teardown; the link belongs to the conversation, which outlives every
+    /// runtime the operator's model switches create and destroy.
+    ssh_lease: Option<Arc<dyn crate::SshSessionLease>>,
     approval_manager: Arc<ToolApprovalManager>,
     confirmations: Arc<std::sync::RwLock<Vec<Confirmation>>>,
     /// Durable per-turn cancellation token. Unlike `Notify`, cancellation is
@@ -419,6 +424,13 @@ pub(crate) fn map_engine_stop_reason(
 pub(crate) struct NomiHostWiring {
     #[cfg(feature = "browser-use")]
     pub browser_lane_binding: Option<crate::BrowserLaneBinding>,
+    /// A ready remote backend when the session is SSH-bound (the factory already
+    /// connected it via the SshBackendProvider). Selects the remote tool family.
+    pub ssh_backend: Option<Arc<dyn crate::SshBackend>>,
+    /// This runtime's claim on that remote session. Retained (not moved into the
+    /// engine) so teardown has something to report on: a runtime that dropped its
+    /// lease could never say whether the operator's shell survived it.
+    pub ssh_lease: Option<Arc<dyn crate::SshSessionLease>>,
 }
 
 impl Default for NomiHostWiring {
@@ -426,6 +438,8 @@ impl Default for NomiHostWiring {
         Self {
             #[cfg(feature = "browser-use")]
             browser_lane_binding: None,
+            ssh_backend: None,
+            ssh_lease: None,
         }
     }
 }
@@ -459,7 +473,6 @@ impl NomiAgentManager {
             Arc<dyn nomi_agent::knowledge_tools::KnowledgeWritebackSink>,
         >,
         knowledge_write_bases: Vec<(nomifun_common::KnowledgeBaseId, String)>,
-        knowledge_writeback_staged: bool,
         companion_skill_sink: Option<Arc<dyn CompanionSkillSink>>,
     ) -> Result<Self, AppError> {
         Self::new_with_host_wiring(
@@ -474,7 +487,6 @@ impl NomiAgentManager {
             knowledge_prelude,
             knowledge_writeback_sink,
             knowledge_write_bases,
-            knowledge_writeback_staged,
             companion_skill_sink,
             None,
             NomiHostWiring::default(),
@@ -495,7 +507,6 @@ impl NomiAgentManager {
         knowledge_prelude: Option<String>,
         knowledge_writeback_sink: Option<Arc<dyn nomi_agent::knowledge_tools::KnowledgeWritebackSink>>,
         knowledge_write_bases: Vec<(nomifun_common::KnowledgeBaseId, String)>,
-        knowledge_writeback_staged: bool,
         companion_skill_sink: Option<Arc<dyn CompanionSkillSink>>,
         summon_wiring: Option<NomiSummonWiring>,
         host_wiring: NomiHostWiring,
@@ -512,7 +523,6 @@ impl NomiAgentManager {
             knowledge_prelude,
             knowledge_writeback_sink,
             knowledge_write_bases,
-            knowledge_writeback_staged,
             // The course-generation tool is only wired through the factory
             // path (new_with_search_provider); host-wiring/legacy constructors
             // leave it unregistered.
@@ -539,7 +549,6 @@ impl NomiAgentManager {
         knowledge_prelude: Option<String>,
         knowledge_writeback_sink: Option<Arc<dyn nomi_agent::knowledge_tools::KnowledgeWritebackSink>>,
         knowledge_write_bases: Vec<(nomifun_common::KnowledgeBaseId, String)>,
-        knowledge_writeback_staged: bool,
         learning_course_sink: Option<Arc<dyn nomi_agent::learning_tools::LearningCourseSink>>,
         companion_skill_sink: Option<Arc<dyn CompanionSkillSink>>,
         search_provider: nomi_agent::SearchProviderBinding,
@@ -551,8 +560,7 @@ impl NomiAgentManager {
         let loopback_capability_leases = config_extra.loopback_capability_leases.clone();
         #[cfg(feature = "browser-use")]
         let browser_lane_binding = host_wiring.browser_lane_binding;
-        #[cfg(not(feature = "browser-use"))]
-        let _ = host_wiring;
+        let ssh_lease = host_wiring.ssh_lease;
         let image_read_root = config_extra
             .write_root
             .as_deref()
@@ -851,6 +859,18 @@ impl NomiAgentManager {
             bootstrap = bootstrap.resume(session);
         }
 
+        // SSH-bound session: hand the runtime the pre-connected remote backend so
+        // the remote tool family takes over Read/Write/Edit/Bash/Grep/Glob. The
+        // backend is cloned rather than moved: the engine gets one handle, and the
+        // lease kept above is what reports on the link when this runtime dies.
+        if let Some(ssh_backend) = &host_wiring.ssh_backend {
+            info!(
+                conversation_id = %conversation_id,
+                "Nomi session bound to a remote SSH host"
+            );
+            bootstrap = bootstrap.ssh_session(Arc::clone(ssh_backend));
+        }
+
         let result = bootstrap
             .build()
             .await
@@ -993,28 +1013,20 @@ impl NomiAgentManager {
                 );
             }
         }
-        // Native knowledge_write (回血): registered only when the binding has
-        // write-back enabled (factory passes the sink) AND there are bound bases.
-        // STAGED placement is encoded as `WriteMode::Staged { scope }` (the
-        // service prepends `_inbox/{scope}/`); DIRECT writes the base body. The
-        // tool was already added to the engine allow_list above so it bypasses
-        // the approval gate. Placement enforcement now lives in the service
-        // (write_document), so the tool only forwards the mode.
+        // Native knowledge_write: registered only when the binding has write-back
+        // enabled (factory passes the sink) AND there are bound bases. The tool
+        // was already added to the engine allow_list above so it bypasses the
+        // approval gate. Whether a write may land is enforced entirely in the
+        // service (write_document); the tool carries no placement of its own.
         if let Some(sink) = knowledge_writeback_sink {
             if register_knowledge_write {
-                let mode = if knowledge_writeback_staged {
-                    nomi_agent::knowledge_tools::WriteMode::Staged { scope: conversation_id.clone() }
-                } else {
-                    nomi_agent::knowledge_tools::WriteMode::Direct
-                };
                 let bound_kb_ids: Vec<nomifun_common::KnowledgeBaseId> =
                     knowledge_write_bases.iter().map(|(id, _)| id.clone()).collect();
                 engine
                     .registry_mut()
-                    .register(Box::new(KnowledgeWriteTool::new(sink, knowledge_write_bases, mode, bound_kb_ids)));
+                    .register(Box::new(KnowledgeWriteTool::new(sink, knowledge_write_bases, bound_kb_ids)));
                 debug!(
                     conversation_id = %conversation_id,
-                    staged = knowledge_writeback_staged,
                     "Registered knowledge_write tool"
                 );
             }
@@ -1091,6 +1103,7 @@ impl NomiAgentManager {
             loopback_capability_leases,
             #[cfg(feature = "browser-use")]
             browser_lane_binding,
+            ssh_lease,
             approval_manager,
             confirmations,
             turn_cancel: std::sync::Mutex::new(tokio_util::sync::CancellationToken::new()),
@@ -1974,6 +1987,7 @@ struct NomiTeardownResults {
     process: Result<(), AppError>,
     #[cfg(feature = "browser-use")]
     browser_lane_binding: Option<crate::BrowserLaneBinding>,
+    ssh_lease: Option<Arc<dyn crate::SshSessionLease>>,
 }
 
 #[derive(Default)]
@@ -2030,6 +2044,29 @@ impl NomiTeardownFailures {
     }
 }
 
+/// Turn a released SSH lease into a teardown verdict.
+///
+/// A link the pool deliberately kept for the conversation is the ordinary outcome
+/// of a model switch, and a proven close is a clean one — both are success. A link
+/// that went away without proof its remote shell died is a genuine failure, for
+/// the same reason `PtyExit::Lost` is never accepted as one: an unproven cleanup
+/// is indistinguishable from a leaked process on someone else's machine.
+fn describe_ssh_release(release: crate::SshLeaseRelease) -> Result<(), AppError> {
+    match release {
+        crate::SshLeaseRelease::Retained { detail } => {
+            debug!(detail = %detail, "SSH session link retained for the conversation");
+            Ok(())
+        }
+        crate::SshLeaseRelease::Reaped { detail } => {
+            debug!(detail = %detail, "SSH session link closed with exit evidence");
+            Ok(())
+        }
+        crate::SshLeaseRelease::Lost { detail } => Err(AppError::Internal(format!(
+            "Nomi SSH session link was let go of without proof the remote shell died: {detail}"
+        ))),
+    }
+}
+
 /// Finish every already-started Nomi teardown stage without allowing an early
 /// failure to skip the Browser owner cleanup. In particular, `kill()` already
 /// issues a synchronous best-effort revoke, but this function is the
@@ -2046,6 +2083,13 @@ async fn finish_nomi_teardown(results: NomiTeardownResults) -> Result<(), AppErr
         // on their success. The Hub retains the cleanup flight if this waiter
         // itself reports a timeout, so a later lifecycle sweep can retry it.
         failures.record("Browser owner lease", binding.shutdown().await);
+    }
+
+    // Same posture for the remote session: last, and unconditional. A failed kill
+    // must not cost us the one report that says whether the operator's shell is
+    // still there — releasing is not closing, so this is safe to do late.
+    if let Some(lease) = results.ssh_lease {
+        failures.record("SSH session link", describe_ssh_release(lease.release().await));
     }
 
     failures.finish()
@@ -2174,6 +2218,7 @@ impl NomiAgentManager {
         let mcp_managers = self.mcp_managers.clone();
         #[cfg(feature = "browser-use")]
         let browser_lane_binding = self.browser_lane_binding.clone();
+        let ssh_lease = self.ssh_lease.clone();
         Box::pin(async move {
             // Every cleanup stage is attempted even if an earlier one failed.
             // In particular, a synchronous `kill()` failure or an inexact MCP
@@ -2200,6 +2245,7 @@ impl NomiAgentManager {
                 process: process_result,
                 #[cfg(feature = "browser-use")]
                 browser_lane_binding,
+                ssh_lease,
             })
             .await?;
             // No total timeout: runtime-registry quarantine remains authoritative
@@ -3093,6 +3139,7 @@ mod tests {
             mcp,
             process,
             browser_lane_binding: Some(binding),
+            ssh_lease: None,
         }));
 
         tokio::select! {
@@ -3171,6 +3218,7 @@ mod tests {
             mcp: Err(AppError::Internal("MCP failed".to_owned())),
             process: Err(AppError::Internal("process failed".to_owned())),
             browser_lane_binding: Some(binding),
+            ssh_lease: None,
         })
         .await
         .expect_err("all teardown failures should be reported");
@@ -3786,6 +3834,7 @@ mod tests {
             goal_runtime: std::sync::RwLock::new(None),
             goal_repo: std::sync::RwLock::new(None),
             goal_registry_data_dir: std::env::temp_dir(),
+            ssh_lease: None,
         }
     }
 
@@ -3989,6 +4038,7 @@ mod tests {
             goal_runtime: std::sync::RwLock::new(None),
             goal_repo: std::sync::RwLock::new(None),
             goal_registry_data_dir: std::env::temp_dir(),
+            ssh_lease: None,
         };
         let attachment_dir = tempfile::tempdir().unwrap();
         let non_image_attachment = attachment_dir
@@ -4822,7 +4872,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_returns_correct_type() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert_eq!(agent.agent_type(), AgentType::Nomi);
@@ -4846,7 +4896,6 @@ mod tests {
             None,
             None,
             Vec::new(),
-            false,
             None,
         )
         .await
@@ -4893,7 +4942,6 @@ mod tests {
             None,
             None,
             Vec::new(),
-            false,
             None,
         )
         .await
@@ -4921,7 +4969,6 @@ mod tests {
             None,
             None,
             Vec::new(),
-            false,
             None,
         )
         .await
@@ -4936,7 +4983,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_initial_status_is_pending() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert_eq!(agent.status(), Some(ConversationStatus::Pending));
@@ -4987,7 +5034,6 @@ mod tests {
             None,
             None,
             Vec::new(),
-            false,
             None,
             Some(stub_summon_wiring()),
             NomiHostWiring::default(),
@@ -5021,7 +5067,6 @@ mod tests {
             None,
             None,
             Vec::new(),
-            false,
             None,
         )
         .await
@@ -5033,7 +5078,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_subscribe_returns_receiver() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         let _rx = agent.subscribe();
@@ -5041,7 +5086,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_kill_succeeds() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert!(agent.kill(None).is_ok());
@@ -5054,7 +5099,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_kill_with_reason_succeeds() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert!(agent.kill(Some(AgentKillReason::IdleTimeout)).is_ok());
@@ -5062,7 +5107,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_kill_running_turn_cancels_turn_token() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         agent.runtime.reset_for_new_turn(ConversationStatus::Running);
@@ -5083,7 +5128,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_kill_idle_turn_does_not_leave_stale_stop_signal() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
 
@@ -5187,7 +5232,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_confirmations_initially_empty() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert!(agent.get_confirmations().is_empty());
@@ -5195,7 +5240,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_get_slash_commands_does_not_wait_for_engine_lock() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
 
@@ -5210,7 +5255,7 @@ mod tests {
 
     #[tokio::test]
     async fn nomi_agent_check_approval_returns_false_by_default() {
-        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         assert!(!agent.check_approval("any_action", None));
@@ -5222,7 +5267,7 @@ mod tests {
         // event and transition to Finished — otherwise a subscribed relay hangs
         // forever in a 'running' spinner because no Finish/Error ever arrives.
         // (Phase 0 F0.2)
-        let agent = NomiAgentManager::new("conv-stop".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-stop".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         let mut rx = agent.subscribe();
@@ -5336,7 +5381,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_can_emit_error_and_finish() {
-        let agent = NomiAgentManager::new("conv-err".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), false, None)
+        let agent = NomiAgentManager::new("conv-err".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
             .await
             .unwrap();
         let mut rx = agent.subscribe();

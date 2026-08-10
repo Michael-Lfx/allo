@@ -21,17 +21,21 @@ export type ComposerSubmitClusterProps = {
   onSpeechTranscript: (text: string) => void;
   showStop?: boolean;
   onStop?: (clickDetail: number) => void;
+  stopPending?: boolean;
   showSteer?: boolean;
   steerAvailable?: boolean;
   onSteer?: () => void;
   speechHidden?: boolean;
   sendTestId?: string;
+  stopTestId?: string;
 };
 
 export type ComposerStopButtonProps = {
   label: string;
   title: string;
   onStop: (clickDetail: number) => void;
+  pending?: boolean;
+  testId?: string;
 };
 
 const readClickDetail = (event: Event): number => {
@@ -39,14 +43,22 @@ const readClickDetail = (event: Event): number => {
   return typeof detail === 'number' ? detail : 0;
 };
 
-export const ComposerStopButton: React.FC<ComposerStopButtonProps> = ({ label, title, onStop }) => (
+export const ComposerStopButton: React.FC<ComposerStopButtonProps> = ({
+  label,
+  title,
+  onStop,
+  pending = false,
+  testId = 'composer-stop-btn',
+}) => (
   <Button
     shape='circle'
     type='secondary'
     className='send-button-custom sendbox-stop-button'
     icon={<div className='sendbox-stop-icon' aria-hidden='true' />}
     onClick={(event) => onStop(readClickDetail(event))}
-    data-testid='composer-stop-btn'
+    disabled={pending}
+    loading={pending}
+    data-testid={testId}
     aria-label={label}
     title={title}
   />
@@ -64,11 +76,13 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
   onSpeechTranscript,
   showStop = false,
   onStop,
+  stopPending = false,
   showSteer = false,
   steerAvailable = false,
   onSteer,
   speechHidden = false,
   sendTestId = 'composer-send-btn',
+  stopTestId = 'composer-stop-btn',
 }) => {
   const { t } = useTranslation();
   const { ready, available } = useClawAsrAvailable();
@@ -116,6 +130,8 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
       {showStopButton && onStop ? (
         <ComposerStopButton
           onStop={onStop}
+          pending={stopPending}
+          testId={stopTestId}
           label={t('conversation.chat.stop', { defaultValue: 'Stop' })}
           title={t('conversation.chat.stop', { defaultValue: 'Stop generating' })}
         />

@@ -14,8 +14,10 @@ import type {
 } from '@/common/update/updateTypes';
 import { useTranslation } from 'react-i18next';
 import { getUpdateErrorMessageKey } from './updateErrorMessage';
+import { deriveUpdateStatus, shouldApplyDownloadEvent } from './deriveUpdateStatus';
 import { reportNoUpdateAvailable, reportUpdateAvailable } from '@renderer/hooks/system/useUpdateAvailability';
 import { isDesktopShell } from '@/renderer/utils/platform';
+import type { TauriUpdatePackageState } from '@/common/adapter/tauriShell';
 
 type UpdateStatus =
   | 'checking'
@@ -48,6 +50,13 @@ const UpdateModal: React.FC = () => {
   const [autoUpdateAvailable, setAutoUpdateAvailable] = useState(false);
   const [autoUpdateInfo, setAutoUpdateInfo] = useState<{ version: string; releaseNotes?: string } | null>(null);
   const installRequestedRef = useRef(false);
+  // A download already in flight. `startDownload` had no re-entrancy guard, so a
+  // second trigger started a second flow whose independent byte counter fought
+  // the first one over the single progress bar.
+  const downloadRequestedRef = useRef(false);
+  // Version the in-flight download belongs to, so a progress frame from a
+  // superseded flow cannot repaint the bar.
+  const downloadVersionRef = useRef<string | null>(null);
 
   const resetState = () => {
     setStatus('checking');
@@ -57,6 +66,8 @@ const UpdateModal: React.FC = () => {
     setProgress({ percent: 0, speed: '', total: 0, transferred: 0 });
     setInstallPhase('preparing');
     installRequestedRef.current = false;
+    downloadRequestedRef.current = false;
+    downloadVersionRef.current = null;
     setErrorMsg('');
     setDownloadPath('');
     setAutoUpdateAvailable(false);
@@ -93,7 +104,21 @@ const UpdateModal: React.FC = () => {
           if (detail.data?.latest) {
             setUpdateInfo(detail.data.latest);
           }
-          setStatus('available');
+          // The native slot is the only thing that knows whether bytes are
+          // already retained or a download is still running; derive from it so a
+          // re-check can happen at any time and always lands on the truth.
+          const derived = deriveUpdateStatus({
+            availableVersion: res.data.updateInfo.version,
+            retainedVersion: res.data.retainedVersion ?? null,
+            slotState: res.data.packageState ?? null,
+            slotVersion: res.data.packageVersion ?? null,
+          });
+          if (derived === 'downloading') {
+            // Re-attach to the running download rather than re-arming Download.
+            downloadRequestedRef.current = true;
+            downloadVersionRef.current = res.data.packageVersion ?? null;
+          }
+          setStatus(derived);
           return;
         }
 
@@ -111,10 +136,20 @@ const UpdateModal: React.FC = () => {
 
       // WebUI / legacy manual download path (GitHub assets + optional mirrors).
       let autoUpdateOk = false;
+      let retainedVersion: string | null = null;
+      let packageState: TauriUpdatePackageState | null = null;
+      let packageVersion: string | null = null;
+      // Captured locally: setAutoUpdateInfo below only lands on the NEXT render,
+      // so reading that state back in this same pass would see a stale version.
+      let autoUpdateVersion = '';
       try {
         const res = await ipcBridge.autoUpdate.check.invoke({ includePrerelease });
+        retainedVersion = res?.data?.retainedVersion ?? null;
+        packageState = res?.data?.packageState ?? null;
+        packageVersion = res?.data?.packageVersion ?? null;
         if (res?.success && res.data?.updateInfo) {
           autoUpdateOk = true;
+          autoUpdateVersion = res.data.updateInfo.version;
           reportUpdateAvailable(res.data.updateInfo.version);
           setAutoUpdateInfo({
             version: res.data.updateInfo.version,
@@ -140,7 +175,22 @@ const UpdateModal: React.FC = () => {
         if (res.data?.latest) {
           setUpdateInfo(res.data.latest);
         }
-        setStatus('available');
+        // The native slot is the only thing that knows whether bytes are already
+        // retained or a download is still running; derive from it so a re-check
+        // can happen at any time and always lands on the truth.
+        const availableVersion = res.data?.latest?.version || autoUpdateVersion;
+        const derived = deriveUpdateStatus({
+          availableVersion,
+          retainedVersion,
+          slotState: packageState,
+          slotVersion: packageVersion,
+        });
+        if (derived === 'downloading') {
+          // Re-attach to the running download rather than re-arming Download.
+          downloadRequestedRef.current = true;
+          downloadVersionRef.current = packageVersion;
+        }
+        setStatus(derived);
         return;
       }
 
@@ -172,8 +222,12 @@ const UpdateModal: React.FC = () => {
   };
 
   const startDownload = async () => {
+    if (downloadRequestedRef.current) return;
     if (!updateInfo && !autoUpdateAvailable) return;
+    downloadRequestedRef.current = true;
+    downloadVersionRef.current = updateInfo?.version || autoUpdateInfo?.version || null;
     setStatus('downloading');
+    setProgress({ percent: 0, speed: '', total: 0, transferred: 0 });
     try {
       if (isNativeUpdater) {
         if (!autoUpdateAvailable) {
@@ -183,6 +237,10 @@ const UpdateModal: React.FC = () => {
         if (!res?.success) {
           throw new Error(res?.msg || t('update.downloadStartFailed'));
         }
+        // The native download is complete once this resolves (the status emitter
+        // has already moved the UI to 'downloaded'), so the guard can be released
+        // for a genuine future retry.
+        downloadRequestedRef.current = false;
         return;
       }
 
@@ -211,6 +269,10 @@ const UpdateModal: React.FC = () => {
         if (!res?.success) {
           throw new Error(res?.msg || t('update.downloadStartFailed'));
         }
+        // The native download is complete once this resolves (the status emitter
+        // has already moved the UI to 'downloaded'), so the guard can be
+        // released for a genuine future retry.
+        downloadRequestedRef.current = false;
         return;
       }
 
@@ -218,6 +280,9 @@ const UpdateModal: React.FC = () => {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Download failed:', err);
+      // A failed download must be retryable; only a LIVE download holds the guard.
+      downloadRequestedRef.current = false;
+      downloadVersionRef.current = null;
       setErrorMsg(msg);
       setStatus('error');
     }
@@ -234,10 +299,20 @@ const UpdateModal: React.FC = () => {
       await ipcBridge.autoUpdate.quitAndInstall.invoke();
     } catch (err: unknown) {
       installRequestedRef.current = false;
-      setStatus('downloaded');
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Install failed:', err);
-      Message.error(t(getUpdateErrorMessageKey(msg)));
+      const messageKey = getUpdateErrorMessageKey(msg);
+      Message.error(t(messageKey));
+      if (messageKey === 'update.packageNoLongerReady') {
+        // The native side no longer holds this package, so the 'downloaded'
+        // screen would offer an Install button that can only fail again — and its
+        // only other affordance is the manual mirror, not the re-download the
+        // message asks for. Re-check instead: the status is then derived from the
+        // slot and the user lands on a screen that can actually act.
+        void checkForUpdates();
+        return;
+      }
+      setStatus('downloaded');
     }
   };
 
@@ -258,6 +333,12 @@ const UpdateModal: React.FC = () => {
   const handleOpenUpdateModal = () => {
     setVisible(true);
     if (installRequestedRef.current) return;
+    // Always re-check, even while a download is running. Skipping the reset here
+    // instead looked safer but disabled the ONLY recovery path: a download whose
+    // invoke never settles (sleep / network switch) would leave the guard set and
+    // the modal frozen for the rest of the session. checkForUpdates re-derives
+    // 'downloading' from the native slot, so a live download is re-attached
+    // rather than hidden behind a re-armed Download button.
     resetState();
     void checkForUpdates();
   };
@@ -276,6 +357,15 @@ const UpdateModal: React.FC = () => {
   useEffect(() => {
     const removeListener = ipcBridge.autoUpdate.status.on((evt: AutoUpdateStatus) => {
       if (!evt) return;
+      // Discard every frame from a superseded download flow, terminal ones
+      // included: a stale completion used to flip the modal to the Install screen
+      // while the live download was still mid-transfer.
+      if (
+        (evt.status === 'downloading' || evt.status === 'downloaded' || evt.status === 'error') &&
+        !shouldApplyDownloadEvent(evt.version, downloadVersionRef.current)
+      ) {
+        return;
+      }
 
       switch (evt.status) {
         case 'checking':
@@ -295,6 +385,9 @@ const UpdateModal: React.FC = () => {
           setStatus('upToDate');
           break;
         case 'downloading':
+          // Ignore a series from a superseded download: two live flows keep
+          // separate byte counters, and letting both write here is what made one
+          // bar flip between two unrelated progress readings.
           if (evt.progress) {
             setProgress({
               percent: Math.round(evt.progress.percent),
@@ -305,6 +398,7 @@ const UpdateModal: React.FC = () => {
           }
           break;
         case 'downloaded':
+          downloadRequestedRef.current = false;
           setStatus('downloaded');
           break;
         case 'installing':
@@ -344,11 +438,13 @@ const UpdateModal: React.FC = () => {
       });
 
       if (evt.status === 'completed') {
+        downloadRequestedRef.current = false;
         setStatus('success');
         if (evt.file_path) {
           setDownloadPath(evt.file_path);
         }
       } else if (evt.status === 'error' || evt.status === 'cancelled') {
+        downloadRequestedRef.current = false;
         setStatus('error');
         setErrorMsg(evt.error || t('update.downloadFailed'));
       }
@@ -424,9 +520,13 @@ const UpdateModal: React.FC = () => {
       case 'checking':
         return (
           <div className='flex flex-col items-center justify-center py-48px'>
+            {/* 环形 spinner：border-3 是颜色类（--bg-3）而不是 3px 宽度，配上本仓库没有
+                border-style 全局重置，两层圆环一条边都画不出来。宽度/样式/颜色分开写。
+                `border-3` is a colour (--bg-3), not a width — with no border-style
+                reset in this repo both rings painted nothing. */}
             <div className='w-48px h-48px mb-20px relative'>
-              <div className='absolute inset-0 border-3 border-fill-3 rounded-full' />
-              <div className='absolute inset-0 border-3 border-primary border-t-transparent rounded-full animate-spin' />
+              <div className='absolute inset-0 border-3px border-solid border-[var(--color-fill-3)] rounded-full' />
+              <div className='absolute inset-0 border-3px border-solid border-primary border-t-transparent rounded-full animate-spin' />
             </div>
             <div className='text-15px text-t-primary font-500'>{t('update.checking')}</div>
             <div className='mt-16px'>{renderBaiduManualDownloadButton()}</div>
@@ -451,7 +551,7 @@ const UpdateModal: React.FC = () => {
         return (
           <div className='flex flex-col h-full'>
             {/* Version info header */}
-            <div className='flex items-center justify-between px-24px py-16px border-b border-border-2 bg-fill-1'>
+            <div className='flex items-center justify-between px-24px py-16px border-b border-b-solid border-arco-2 bg-fill-1'>
               <div className='flex items-center gap-12px'>
                 <div className='w-40px h-40px bg-[rgb(var(--primary-6))]/12 rounded-10px flex items-center justify-center'>
                   <Download size='20' fill='rgb(var(--primary-6))' />
@@ -467,15 +567,9 @@ const UpdateModal: React.FC = () => {
                 </div>
               </div>
               <div className='flex flex-wrap items-center justify-end gap-8px'>
-                {isNativeUpdater || autoUpdateAvailable ? (
-                  <Button type='primary' size='small' onClick={startDownload} className='!px-16px'>
-                    {t('update.downloadAndInstall')}
-                  </Button>
-                ) : (
-                  <Button type='primary' size='small' onClick={startDownload} className='!px-16px'>
-                    {t('update.downloadButton')}
-                  </Button>
-                )}
+                <Button type='primary' size='small' onClick={startDownload} className='!px-16px'>
+                  {t('update.downloadButton')}
+                </Button>
                 {renderBaiduManualDownloadButton()}
               </div>
             </div>
@@ -519,7 +613,11 @@ const UpdateModal: React.FC = () => {
               />
               <div className='flex justify-between text-12px text-t-tertiary'>
                 <span>
-                  {formatSize(progress.transferred)} / {formatSize(progress.total)}
+                  {/* A missing Content-Length leaves the total unknown; showing
+                      "12.4 MB / 0.0 KB" read as a broken download. */}
+                  {progress.total > 0
+                    ? `${formatSize(progress.transferred)} / ${formatSize(progress.total)}`
+                    : formatSize(progress.transferred)}
                 </span>
                 <span className='text-[rgb(var(--primary-6))] font-500'>{progress.speed}</span>
               </div>
@@ -554,13 +652,12 @@ const UpdateModal: React.FC = () => {
         );
 
       case 'installing': {
-        const isDownloadingPackage = installPhase === 'downloading';
         const isHandingOff = installPhase === 'installing';
         return (
           <div className='flex flex-col items-center justify-center py-48px px-32px'>
             <div className='w-56px h-56px mb-20px relative'>
-              <div className='absolute inset-0 border-3 border-fill-3 rounded-full' />
-              <div className='absolute inset-0 border-3 border-primary border-t-transparent rounded-full animate-spin' />
+              <div className='absolute inset-0 border-3px border-solid border-[var(--color-fill-3)] rounded-full' />
+              <div className='absolute inset-0 border-3px border-solid border-primary border-t-transparent rounded-full animate-spin' />
               <div className='absolute inset-0 flex items-center justify-center'>
                 <Install size='20' fill='rgb(var(--primary-6))' />
               </div>
@@ -573,25 +670,6 @@ const UpdateModal: React.FC = () => {
                 {isHandingOff ? t('update.installingDesc') : t('update.preparingInstallDesc')}
               </div>
             </div>
-            {isDownloadingPackage && (
-              <div className='w-full max-w-320px mt-20px'>
-                <Progress
-                  percent={progress.percent}
-                  status='normal'
-                  showText={false}
-                  strokeWidth={6}
-                  className='!mb-12px'
-                />
-                <div className='flex justify-between text-12px text-t-tertiary'>
-                  <span>
-                    {progress.total > 0
-                      ? `${formatSize(progress.transferred)} / ${formatSize(progress.total)}`
-                      : formatSize(progress.transferred)}
-                  </span>
-                  <span className='text-[rgb(var(--primary-6))] font-500'>{progress.speed}</span>
-                </div>
-              </div>
-            )}
           </div>
         );
       }

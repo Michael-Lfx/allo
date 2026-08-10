@@ -58,6 +58,10 @@ type MarketSettingsPanelProps = {
   searchPlaceholder: string;
   emptyText: string;
   onAdd: (item: ISkillMarketItem) => void | Promise<void>;
+  /** True when this market entry already has a live installed resource. */
+  isAdded?: (item: ISkillMarketItem) => boolean;
+  /** Prevent a false enabled flash while the installed catalog is loading. */
+  addedStateLoading?: boolean;
   /** Render the shared audience/scenario tag filter bar (used by the skill market). */
   enableTagFilter?: boolean;
   /**
@@ -78,6 +82,8 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
   searchPlaceholder,
   emptyText,
   onAdd,
+  isAdded,
+  addedStateLoading = false,
   enableTagFilter = false,
   testIdPrefix,
   text,
@@ -90,6 +96,8 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
   const [message, messageContext] = useArcoMessage({ maxCount: 10 });
   const autoSyncStartedRef = useRef(false);
   const itemsRef = useRef<ISkillMarketItem[]>([]);
+  const pendingAddIdsRef = useRef<Set<string>>(new Set());
+  const [pendingAddIds, setPendingAddIds] = useState<Set<string>>(new Set());
 
   const [activeSource, setActiveSource] = useState<SkillMarketSource>(defaultSource);
   const [items, setItems] = useState<ISkillMarketItem[]>([]);
@@ -234,6 +242,29 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
     }
   }, [activeSource, message, t, text]);
 
+  const handleMarketAdd = useCallback(
+    async (item: ISkillMarketItem) => {
+      if (addedStateLoading || isAdded?.(item) || pendingAddIdsRef.current.has(item.id)) return;
+      const started = new Set(pendingAddIdsRef.current);
+      started.add(item.id);
+      pendingAddIdsRef.current = started;
+      setPendingAddIds(started);
+      try {
+        await onAdd(item);
+      } catch (error) {
+        // Consumers normally own their user-facing error message. Keep the
+        // shared callback boundary rejection-safe for future consumers.
+        console.error('Market add callback failed:', error);
+      } finally {
+        const finished = new Set(pendingAddIdsRef.current);
+        finished.delete(item.id);
+        pendingAddIdsRef.current = finished;
+        setPendingAddIds(finished);
+      }
+    },
+    [addedStateLoading, isAdded, onAdd]
+  );
+
   const isSearchVisible = searchExpanded || searchQuery.length > 0;
   const activeSearch = searchQuery.trim().length > 0;
   const resolvedEmptyText = loading
@@ -335,15 +366,21 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
 
       {filteredItems.length > 0 ? (
         <div className='grid gap-12px' style={{ gridTemplateColumns: CARD_GRID_COLS }}>
-          {filteredItems.map((item) => (
-            <SkillMarketCard
-              key={item.id}
-              item={item}
-              tagByKey={tags.tagByKey}
-              localeKey={localeKey}
-              onAdd={(marketItem) => void onAdd(marketItem)}
-            />
-          ))}
+          {filteredItems.map((item) => {
+            const added = isAdded?.(item) ?? false;
+            return (
+              <SkillMarketCard
+                key={item.id}
+                item={item}
+                tagByKey={tags.tagByKey}
+                localeKey={localeKey}
+                adding={pendingAddIds.has(item.id)}
+                added={added}
+                addedStateLoading={addedStateLoading}
+                onAdd={(marketItem) => void handleMarketAdd(marketItem)}
+              />
+            );
+          })}
         </div>
       ) : (
         <div className='text-center text-t-secondary py-40px'>{resolvedEmptyText}</div>

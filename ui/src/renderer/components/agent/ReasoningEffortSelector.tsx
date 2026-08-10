@@ -98,7 +98,6 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
       .invoke({
         conversation_id,
         updates: { extra: { reasoning_effort: healed } },
-        merge_extra: true,
       })
       .then((ok) => {
         if (ok) onEffortChanged?.(healed);
@@ -119,7 +118,6 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
       const ok = await ipcBridge.conversation.update.invoke({
         conversation_id,
         updates: { extra: { reasoning_effort: effort } },
-        merge_extra: true,
       });
       if (ok) onEffortChanged?.(effort);
       return Boolean(ok);

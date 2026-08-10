@@ -11,6 +11,9 @@ type SkillMarketCardProps = {
   item: ISkillMarketItem;
   tagByKey: Map<string, PresetTag>;
   localeKey: string;
+  adding?: boolean;
+  added?: boolean;
+  addedStateLoading?: boolean;
   onAdd: (item: ISkillMarketItem) => void;
 };
 
@@ -41,7 +44,15 @@ const MarketSourceBadge: React.FC<{ source: ISkillMarketItem['source'] }> = ({ s
   );
 };
 
-const SkillMarketCard: React.FC<SkillMarketCardProps> = ({ item, tagByKey, localeKey, onAdd }) => {
+const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
+  item,
+  tagByKey,
+  localeKey,
+  adding = false,
+  added = false,
+  addedStateLoading = false,
+  onAdd,
+}) => {
   const { t } = useTranslation();
   const testId = normalizeTestId(item.id);
   const requiresApiKey = item.tags?.includes('requires_api_key') ?? false;
@@ -70,10 +81,12 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({ item, tagByKey, local
         type='primary'
         data-testid={`btn-add-market-skill-${testId}`}
         className='!absolute !right-12px !top-12px !rounded-[100px] !h-26px !px-10px !text-12px'
-        icon={<Plus theme='outline' size={12} strokeWidth={3} />}
+        icon={added ? undefined : <Plus theme='outline' size={12} strokeWidth={3} />}
+        loading={adding}
+        disabled={adding || added || addedStateLoading}
         onClick={() => onAdd(item)}
       >
-        {t('common.add', { defaultValue: 'Add' })}
+        {added ? t('common.added', { defaultValue: 'Added' }) : t('common.add', { defaultValue: 'Add' })}
       </Button>
 
       <div className='flex items-start gap-10px pr-68px'>

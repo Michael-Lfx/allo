@@ -61,8 +61,17 @@ describe('speech input recording handling', () => {
     const service = readSource(
       new URL('../../services/SpeechToTextService.ts', import.meta.url)
     );
+    const bridge = readSource(new URL('../../../common/adapter/httpBridge.ts', import.meta.url));
 
     expect(service.includes('xhr.withCredentials = true')).toBe(false);
-    expect(service.includes("buildBackendAuthHeaders('POST')")).toBe(true);
+    expect(service.includes("credentials: 'include'")).toBe(false);
+    expect(service.includes('speechToText.transcribe.invoke')).toBe(true);
+
+    const multipartStart = bridge.indexOf('export async function httpMultipartRequest');
+    const multipart = bridge.slice(multipartStart, bridge.indexOf('export function withResponseMap'));
+    expect(multipartStart).toBeGreaterThan(-1);
+    expect(multipart.includes("buildBackendAuthHeaders('POST')")).toBe(true);
+    expect(multipart.includes('withCredentials')).toBe(false);
+    expect(multipart.includes("credentials: 'include'")).toBe(false);
   });
 });

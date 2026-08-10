@@ -24,6 +24,8 @@ pub mod plan;
 pub mod requirement_tools;
 pub mod session;
 pub mod skill_tool;
+pub mod ssh_backend;
+pub mod ssh_tools;
 pub mod summon_tools;
 mod local_agent_invocation;
 mod local_delegation_progress;

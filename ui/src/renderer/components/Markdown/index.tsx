@@ -36,6 +36,9 @@ const markdownUrlTransform: UrlTransform = (url, key, node) => {
   return defaultUrlTransform(url);
 };
 
+const COMPACT_FONT_SIZE = '14px';
+const COMPACT_LINE_HEIGHT = '22px';
+
 type MarkdownViewProps = {
   children: string;
   hiddenCodeCopyButton?: boolean;
@@ -44,6 +47,8 @@ type MarkdownViewProps = {
   onRef?: (el?: HTMLDivElement | null) => void;
   fontSize?: string;
   lineHeight?: string;
+  /** Document-density typography for preview surfaces (prompt/knowledge previews). */
+  compact?: boolean;
   /** Enable raw HTML rendering in markdown content. Use with caution — only for trusted sources. */
   allowHtml?: boolean;
   /** Model/tool Markdown is not a verified artifact-delivery receipt. */
@@ -58,14 +63,19 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
     codeStyle,
     className,
     onRef,
-    fontSize,
-    lineHeight,
+    fontSize: fontSizeProp,
+    lineHeight: lineHeightProp,
+    compact = false,
     allowHtml,
     allowUnverifiedImages = true,
     isStreaming = false,
     children: childrenProp,
   }) => {
     const { t } = useTranslation();
+
+    // `compact` is the document-preview density; explicit props still win.
+    const fontSize = fontSizeProp ?? (compact ? COMPACT_FONT_SIZE : undefined);
+    const lineHeight = lineHeightProp ?? (compact ? COMPACT_LINE_HEIGHT : undefined);
 
     const normalizedChildren = useMemo(() => {
       if (typeof childrenProp === 'string') {

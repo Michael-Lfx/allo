@@ -169,7 +169,7 @@ const CompanionAccessTokenPanel: React.FC<{
       </div>
 
       {!hasCompanions ? (
-        <div className='rd-10px border border-line bg-fill-1 px-10px py-8px text-12px text-t-tertiary leading-relaxed'>
+        <div className='rd-10px border border-solid border-arco-2 bg-fill-1 px-10px py-8px text-12px text-t-tertiary leading-relaxed'>
           {companionsLoading ? t('common.loading') : t('settings.webui.companionToken.noCompanions')}
         </div>
       ) : (
@@ -212,8 +212,8 @@ const CompanionAccessTokenPanel: React.FC<{
           {/* 一次性明文令牌块（仅本次铸造可见，镜像初始密码块）/ One-time plaintext token */}
           {plaintext && (
             <div className='flex flex-col gap-4px'>
-              <div className='inline-flex items-center gap-8px rd-100px border border-[rgb(var(--primary-6))]/40 bg-[rgb(var(--primary-1))] px-10px py-4px min-w-0'>
-                <Key theme='outline' size='14' className='text-[rgb(var(--primary-6))] shrink-0' />
+              <div className='inline-flex items-center gap-8px rd-100px border border-solid border-[rgba(var(--primary-6),0.4)] bg-primary-1 px-10px py-4px min-w-0'>
+                <Key theme='outline' size='14' className='text-primary-6 shrink-0' />
                 <span className='text-13px text-t-primary font-mono truncate flex-1'>{plaintext}</span>
                 <Tooltip content={t('common.copy')}>
                   <Button

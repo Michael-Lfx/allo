@@ -9,7 +9,9 @@ const layoutCss = readFileSync(new URL('../../../styles/layout.css', import.meta
 describe('SessionList dark-theme contrast', () => {
   test('uses readable secondary text for workspace labels and metadata', () => {
     for (const source of [workpathDrawerSource, sessionKindGroupSource]) {
-      expect(source.includes('text-t-tertiary')).toBe(false);
+      // Sized text — labels and metadata — may not drop to the tertiary tone,
+      // which is unreadable on dark themes. Hover-only action icons still may.
+      expect(/text-\d+px[^'"`]*text-t-tertiary|text-t-tertiary[^'"`]*text-\d+px/.test(source)).toBe(false);
       expect(source.includes('text-t-secondary')).toBe(true);
     }
   });

@@ -33,6 +33,7 @@ interface TurnProcessDisclosureProps<T> {
 export interface TurnProcessDisclosureExpansionSnapshot {
   itemId: string;
   hasProcessItems: boolean;
+  defaultCollapsed: boolean;
 }
 
 export interface TurnProcessDisclosureExpansionControls {
@@ -77,6 +78,7 @@ export function shouldResetTurnProcessDisclosureExpansion(
 ): boolean {
   if (previous.itemId !== next.itemId) return true;
   if (previous.hasProcessItems !== next.hasProcessItems) return true;
+  if (previous.defaultCollapsed !== next.defaultCollapsed) return true;
   return false;
 }
 
@@ -119,12 +121,17 @@ function TurnProcessDisclosure<T>({
   const expansionSnapshotRef = useRef<TurnProcessDisclosureExpansionSnapshot>({
     itemId: item.id,
     hasProcessItems,
+    defaultCollapsed: item.defaultCollapsed,
   });
 
   const expandableProcessItemKeysRef = useRef<readonly string[]>(EMPTY_PROCESS_ITEM_KEYS);
 
   useEffect(() => {
-    const nextSnapshot: TurnProcessDisclosureExpansionSnapshot = { itemId: item.id, hasProcessItems };
+    const nextSnapshot: TurnProcessDisclosureExpansionSnapshot = {
+      itemId: item.id,
+      hasProcessItems,
+      defaultCollapsed: item.defaultCollapsed,
+    };
     const shouldReset = shouldResetTurnProcessDisclosureExpansion(expansionSnapshotRef.current, nextSnapshot);
     expansionSnapshotRef.current = nextSnapshot;
 

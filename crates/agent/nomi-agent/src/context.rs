@@ -54,6 +54,13 @@ impl SystemPromptCache {
         self.sections.insert("agents_md", instructions);
         self.joined = None;
     }
+
+    /// Override the environment section. Used when the default local cwd
+    /// rendering would be wrong — an SSH-bound session has no local cwd.
+    pub fn set_environment(&mut self, environment: String) {
+        self.sections.insert("environment", environment);
+        self.joined = None;
+    }
 }
 
 impl Default for SystemPromptCache {

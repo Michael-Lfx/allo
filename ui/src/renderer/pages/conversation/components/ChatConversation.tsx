@@ -1,6 +1,6 @@
 
 
-import type { ConversationId } from '@/common/types/ids';
+import type { ConversationId, SshHostId } from '@/common/types/ids';
 import { ipcBridge } from '@/common';
 import type { IConversationMcpStatus, IProvider, TChatConversation, TProviderWithModel } from '@/common/config/storage';
 import addChatIcon from '@/renderer/assets/icons/add-chat.svg';
@@ -38,6 +38,8 @@ import ReadOnlyConversationView from '../execution/ReadOnlyConversationView';
 import StarOfficeMonitorCard from '../platforms/openclaw/StarOfficeMonitorCard.tsx';
 import NomiSessionMetricsPanel from '../platforms/nomi/NomiSessionMetricsPanel';
 import ConversationTerminalPanel from './ConversationTerminalPanel';
+import { useConversationMiniAppTab } from '@/renderer/pages/conversation/Workspace/MiniAppPanel/tab';
+import SshHostStatusPill from './SshHostStatusPill';
 import { useExecutionModelPool } from '../execution/useExecutionModelPool';
 import { reconcileModelRefs, sameModelRefs } from '../execution/executionModelRefs';
 
@@ -175,6 +177,10 @@ const _AddNewConversation: React.FC<{ conversation: TChatConversation }> = ({ co
 
 type NomiConversation = Extract<TChatConversation, { type: 'nomi' }>;
 
+/** `extra.ssh_host_id` is the only place a session records the host it drives. */
+const sshHostIdOf = (conversation: TChatConversation): SshHostId | undefined =>
+  (conversation.extra as { ssh_host_id?: SshHostId } | undefined)?.ssh_host_id;
+
 const NomiConversationLayout: React.FC<{
   conversation: NomiConversation;
   chatLayoutProps: Omit<ChatLayoutProps, 'children' | 'workspaceCollaboration' | 'workspaceExtraTabs'>;
@@ -187,6 +193,7 @@ const NomiConversationLayout: React.FC<{
   presetPresetName,
 }) => {
   const { t } = useTranslation();
+  const miniAppTab = useConversationMiniAppTab();
   const workspaceExtraTabs = useMemo(
     () => [
       {
@@ -195,6 +202,7 @@ const NomiConversationLayout: React.FC<{
         icon: <Terminal size={18} />,
         content: <ConversationTerminalPanel conversationId={conversation.id} />,
       },
+      miniAppTab,
       {
         key: 'nomi-session-metrics',
         title: t('conversation.sessionMetrics.tab'),
@@ -202,7 +210,7 @@ const NomiConversationLayout: React.FC<{
         content: <NomiSessionMetricsPanel conversation={conversation} />,
       },
     ],
-    [conversation, t],
+    [conversation, miniAppTab, t],
   );
 
   return (
@@ -382,6 +390,7 @@ const NomiConversationPanel: React.FC<{
 
   const workspaceEnabled = Boolean(conversation.extra?.workspace);
   const { info: presetPresetInfo } = usePresetInfo(conversation);
+  const sshHostId = sshHostIdOf(conversation);
 
   const chatLayoutProps = {
     title: conversation.name,
@@ -391,6 +400,9 @@ const NomiConversationPanel: React.FC<{
       <div className='flex items-center gap-8px'>
         {/* The collaboration canvas lives beside the mounted conversation; the
             header keeps the existing capability controls. */}
+        {sshHostId != null && (
+          <SshHostStatusPill conversationId={conversation.id} sshHostId={sshHostId} />
+        )}
         <CronJobManager
           conversation_id={conversation.id}
           cron_job_id={conversation.cron_job_id}
@@ -505,6 +517,7 @@ const ChatConversation: React.FC<{
     );
   }, [t]);
 
+  const miniAppTab = useConversationMiniAppTab();
   const workspaceExtraTabs = useMemo(
     () =>
       conversation?.extra?.workspace
@@ -515,9 +528,10 @@ const ChatConversation: React.FC<{
               icon: <Terminal size={18} />,
               content: <ConversationTerminalPanel conversationId={conversation.id} />,
             },
+            miniAppTab,
           ]
         : [],
-    [conversation?.id, conversation?.extra?.workspace, t],
+    [conversation?.id, conversation?.extra?.workspace, miniAppTab, t],
   );
 
   const isRetainedAttemptTranscript = Boolean(

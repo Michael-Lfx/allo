@@ -18,6 +18,7 @@ const ModelHubPage = React.lazy(() => import('@renderer/pages/modelHub'));
 const McpPage = React.lazy(() => import('@renderer/pages/mcp'));
 const BrowserPage = React.lazy(() => import('@renderer/pages/browser'));
 const SystemSettings = React.lazy(() => import('@renderer/pages/settings/SystemSettings'));
+const SshHostSettings = React.lazy(() => import('@renderer/pages/settings/SshHostSettings'));
 const ExecutionEngineSettings = React.lazy(() => import('@renderer/pages/settings/AgentSettings'));
 const ExtensionSettingsPage = React.lazy(() => import('@renderer/pages/settings/ExtensionSettingsPage'));
 const LoginPage = React.lazy(() => import('@renderer/pages/login'));
@@ -39,6 +40,8 @@ const LearningPage = React.lazy(() => import('@renderer/pages/learning'));
 const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
 const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
 const VideoCanvasProjectPage = React.lazy(() => import('@renderer/pages/videoCanvas/ProjectPage'));
+const MiniAppsListPage = React.lazy(() => import('@renderer/pages/miniApps'));
+const MiniAppRunnerPage = React.lazy(() => import('@renderer/pages/miniApps/RunnerPage'));
 // TODO: workshop/assets stay deferred (no routes until explicitly published)
 // const WorkshopListPage = React.lazy(() => import('@renderer/pages/workshop'));
 // const WorkshopCanvasPage = React.lazy(() => import('@renderer/pages/workshop/CanvasPage'));
@@ -286,6 +289,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/skills' element={withRouteFallback(SkillsSettingsPage)} />
           <Route path='/settings/mcp' element={withRouteFallback(McpPage)} />
           <Route path='/settings/system' element={withRouteFallback(SystemSettings)} />
+          <Route path='/settings/ssh-hosts' element={withRouteFallback(SshHostSettings)} />
           <Route path='/settings/execution-engines' element={withRouteFallback(ExecutionEngineSettings)} />
           <Route path='/settings/agent-runtime' element={<Navigate to='/settings/execution-engines?tab=runtime' replace />} />
           <Route path='/settings/browser-use' element={withRouteFallback(SystemSettings)} />
@@ -351,6 +355,9 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/workshop' element={withRouteFallback(WorkshopListPage)} />
           <Route path='/workshop/:id' element={withRouteFallback(WorkshopCanvasPage)} />
           */}
+          {/* 小程序 (Mini-apps) — the solidified library and its full-page runner. */}
+          <Route path='/mini-apps' element={withRouteFallback(MiniAppsListPage)} />
+          <Route path='/mini-apps/:id' element={withRouteFallback(MiniAppRunnerPage)} />
         </Route>
         <Route
           path='*'

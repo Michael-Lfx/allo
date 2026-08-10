@@ -283,7 +283,7 @@ impl KnowledgeStdioServer {
 
     #[tool(
         name = "knowledge_write",
-        description = "Persist reusable knowledge INTO a mounted knowledge base. To UPDATE an existing document, pass its `handle` from a knowledge_search result; to CREATE a new one, pass `base` + a descriptive `.md` `rel_path`. Always include the full markdown `content`. Whether the write lands directly or is staged for review is decided by the workspace's write-back setting — you do not manage placement."
+        description = "Persist reusable knowledge INTO a mounted knowledge base. To UPDATE an existing document, pass its `handle` from a knowledge_search result; to CREATE a new one, pass `base` + a descriptive `.md` `rel_path`. Pass the new material as `content` (append-friendly; do not resend the whole document). Whether the write is allowed is decided by the workspace's write-back setting — you do not manage placement."
     )]
     async fn knowledge_write(&self, Parameters(params): Parameters<WriteParams>) -> CallToolResult {
         eprintln!("[mcp-knowledge-stdio] tools/call: knowledge_write");

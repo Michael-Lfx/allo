@@ -25,7 +25,13 @@ describe('SendBox stop interaction', () => {
     expect(source.includes('setIsStopping(false);')).toBe(true);
     expect(source.includes('if (isUploading || isStopping) return;')).toBe(true);
     expect(source.includes('if (!onSteer || isUploading || isStopping) return;')).toBe(true);
-    expect(submitClusterSource.includes("data-testid='composer-stop-btn'")).toBe(true);
+    expect(source.includes("stopTestId='sendbox-stop-btn'")).toBe(true);
+    expect(source.includes('stopPending={isStopping}')).toBe(true);
+    expect(submitClusterSource.includes('pending={stopPending}')).toBe(true);
+    expect(submitClusterSource.includes('testId={stopTestId}')).toBe(true);
+    expect(submitClusterSource.includes('data-testid={testId}')).toBe(true);
+    expect(submitClusterSource.includes('disabled={pending}')).toBe(true);
+    expect(submitClusterSource.includes('loading={pending}')).toBe(true);
   });
 
   test('remounts shared stop state when switching conversations', () => {

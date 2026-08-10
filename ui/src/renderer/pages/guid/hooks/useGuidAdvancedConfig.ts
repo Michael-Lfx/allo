@@ -49,16 +49,13 @@ export const useGuidAdvancedConfig = (): GuidAdvancedConfig => {
       const { knowledge: kb, autoWork: aw, idmm: idm } = draftsRef.current;
       const tasks: Array<{ label: string; run: () => Promise<unknown> }> = [];
 
-      // Persist any non-default binding (not just enabled ones) so the
-      // conversation header shows the same picks the user made here — e.g.
-      // pre-selected bases. Default writeback=true alone is not a touch.
+      // Persist any non-default binding so the conversation header shows the
+      // same picks the user made here.
       const kbTouched =
         kb.enabled ||
+        kb.writeback ||
         kb.kb_ids.length > 0 ||
-        kb.writeback_mode !== 'staged' ||
-        kb.writeback_eagerness !== 'conservative' ||
-        kb.writeback === false ||
-        kb.channel_write_enabled;
+        kb.writeback_eagerness !== 'manual';
       if (kbTouched) {
         tasks.push({
           label: t('knowledge.control.label'),

@@ -236,7 +236,7 @@ pub use poi::{
 pub use provider::{
     BedrockAuthMethod, BedrockConfig, CloneProviderRequest, CreateProviderRequest,
     DetectProtocolRequest, DetectedProtocol, DetectionSuggestion, FetchModelsAnonymousRequest,
-    FetchModelsRequest, FetchModelsResponse, HealthStatus, KeyTestResult,
+    FetchModelsRequest, FetchModelsResponse, FetchedModelProfile, HealthStatus, KeyTestResult,
     ModelHealthStatus, ModelInfo, ModelType, MultiKeyResult, ProtocolDetectionResponse,
     ProviderHealthCheckErrorKind, ProviderHealthCheckRequest, ProviderHealthCheckResponse,
     ProviderResponse, SuggestionType, UpdateProviderRequest,
@@ -262,7 +262,7 @@ pub use shell::{
     CheckToolInstalledRequest, CheckToolInstalledResponse, DeepgramSpeechToTextConfig,
     OpenAISpeechToTextConfig, OpenExternalRequest, OpenFileRequest, OpenFolderWithRequest,
     ShowItemInFolderRequest, SpeechToTextConfig, SpeechToTextProvider, SpeechToTextResult,
-    ToolType, TtsApiRequest,
+    TEXT_TO_SPEECH_PREFERENCE_KEY, TextToSpeechConfig, ToolType, TtsApiRequest,
 };
 pub use skill::{
     AddExternalPathRequest, BuiltinAutoSkillResponse, ExportSkillRequest,

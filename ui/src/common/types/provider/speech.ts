@@ -34,6 +34,20 @@ export type SpeechToTextConfig = {
   openai?: OpenAISpeechToTextConfig;
 };
 
+/**
+ * Install-wide speech-synthesis default (`tools.textToSpeech`).
+ *
+ * Deliberately parallel to {@link SpeechToTextConfig} minus the `enabled`
+ * switch: synthesis has no input-box affordance to gate, so the key's presence
+ * IS the configuration. `voice` is free text — provider voice ids differ and
+ * change often.
+ */
+export type TextToSpeechConfig = {
+  provider_id: ProviderId;
+  model: string;
+  voice: string | null;
+};
+
 export type SpeechToTextRequest = {
   blob: Blob;
   languageHint?: string;

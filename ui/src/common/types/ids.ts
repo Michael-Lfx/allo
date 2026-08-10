@@ -71,7 +71,10 @@ export type EntityKind =
   | 'asset'
   | 'creation-task'
   | 'workshop-node'
-  | 'workshop-edge';
+  | 'workshop-edge'
+  | 'ssh-host'
+  | 'robot'
+  | 'miniapp';
 
 export type ConversationId = EntityId<'conversation'>;
 export type TerminalId = EntityId<'terminal'>;
@@ -79,6 +82,7 @@ export type RequirementId = EntityId<'requirement'>;
 export type ConversationArtifactId = EntityId<'conversation-artifact'>;
 export type McpServerId = EntityId<'mcp-server'>;
 export type RemoteAgentId = EntityId<'remote-agent'>;
+export type SshHostId = EntityId<'ssh-host'>;
 export type WebhookId = EntityId<'webhook'>;
 export type KnowledgeBaseId = EntityId<'knowledge-base'>;
 export type KnowledgeBindingId = EntityId<'knowledge-binding'>;
@@ -122,6 +126,7 @@ export type AssetId = EntityId<'asset'>;
 export type CreationTaskId = EntityId<'creation-task'>;
 export type WorkshopNodeId = EntityId<'workshop-node'>;
 export type WorkshopEdgeId = EntityId<'workshop-edge'>;
+export type MiniAppId = EntityId<'miniapp'>;
 
 export class InvalidEntityIdError extends TypeError {
   readonly entityKind: string;
@@ -210,6 +215,8 @@ export const parseMcpServerId = (value: unknown): McpServerId =>
   parseEntityId('mcp-server', value);
 export const parseRemoteAgentId = (value: unknown): RemoteAgentId =>
   parseEntityId('remote-agent', value);
+export const parseSshHostId = (value: unknown): SshHostId =>
+  parseEntityId('ssh-host', value);
 export const parseWebhookId = (value: unknown): WebhookId => parseEntityId('webhook', value);
 export const parseKnowledgeBaseId = (value: unknown): KnowledgeBaseId =>
   parseEntityId('knowledge-base', value);
@@ -286,6 +293,7 @@ export const parseWorkshopNodeId = (value: unknown): WorkshopNodeId =>
   parseEntityId('workshop-node', value);
 export const parseWorkshopEdgeId = (value: unknown): WorkshopEdgeId =>
   parseEntityId('workshop-edge', value);
+export const parseMiniAppId = (value: unknown): MiniAppId => parseEntityId('miniapp', value);
 
 export type SessionTarget =
   | { readonly kind: 'conversation'; readonly id: ConversationId }

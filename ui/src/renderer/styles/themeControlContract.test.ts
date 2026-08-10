@@ -110,8 +110,8 @@ describe('theme control contract', () => {
     }
   });
 
-  test('uses a matte black and white active state for preset tag filters', () => {
-    expect(presetTagFilterSource.includes('bg-[#151515] text-white border-white')).toBe(true);
+  test('uses a solid accent active state for preset tag filters', () => {
+    expect(presetTagFilterSource.includes('bg-primary-6 text-white border-primary-6 font-medium')).toBe(true);
     expect(presetTagFilterSource.includes('shadow-[0_1px_2px_rgba(var(--primary-6),0.08)]')).toBe(false);
   });
 

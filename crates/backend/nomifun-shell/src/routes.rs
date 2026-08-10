@@ -709,10 +709,11 @@ mod tests {
             shell_service: Arc::new(crate::shell::ShellService::new(Arc::new(
                 crate::opener::NoopSystemOpener,
             ))),
-            stt_service: Arc::new(crate::stt::SttService::new(reqwest::Client::new())),
+            stt_service: Arc::new(crate::stt::SttService::new(None)),
             client_pref_service: nomifun_system::ClientPrefService::new(repo),
             data_dir: tmp.path().to_path_buf(),
             provider_service: None,
+            model_invoke_service: None,
         };
         let app = shell_routes(state);
 

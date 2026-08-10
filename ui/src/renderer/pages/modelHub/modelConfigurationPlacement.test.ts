@@ -35,11 +35,12 @@ describe('model-owned tool configuration placement', () => {
       '../../components/settings/SettingsModal/contents/ModelModalContent.tsx'
     );
 
-    expect(hubSource.includes("key: 'speech'")).toBe(true);
+    expect(hubSource.includes("key: 'asr'")).toBe(true);
     expect(hubSource.includes('<SpeechToTextContent />')).toBe(true);
-    // Candidates come from the authoritative catalog resolve, not provider
-    // rows + name guessing.
-    expect(speechSource.includes("useModelsForTask('speech_recognition')")).toBe(true);
+    // Candidates come from the authoritative catalog resolve (owned by
+    // TaskModelSelect), not provider rows + name guessing.
+    expect(speechSource.includes("task='speech_recognition'")).toBe(true);
+    expect(speechSource.includes('<TaskModelSelect')).toBe(true);
     expect(speechSource.includes('inferCloudSpeechService')).toBe(false);
     expect(creationSource.includes('ImageGenerationToolSettings')).toBe(false);
     expect(providerSource.includes('SpeechToTextCloudSettings')).toBe(false);

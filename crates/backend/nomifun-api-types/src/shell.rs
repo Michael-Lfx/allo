@@ -69,6 +69,29 @@ pub struct TtsApiRequest {
     pub format: Option<String>,
 }
 
+/// Preference key holding the install-wide speech-synthesis default.
+pub const TEXT_TO_SPEECH_PREFERENCE_KEY: &str = "tools.textToSpeech";
+
+/// Install-wide speech-synthesis default: catalog model + optional voice.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextToSpeechConfig {
+    #[serde(deserialize_with = "crate::serde_util::deserialize_provider_id")]
+    pub provider_id: String,
+    #[serde(deserialize_with = "crate::serde_util::deserialize_model_name")]
+    pub model: String,
+    #[serde(default)]
+    pub voice: Option<String>,
+}
+
+impl TextToSpeechConfig {
+    pub fn from_preferences(prefs: &crate::ClientPreferencesResponse) -> Option<Self> {
+        prefs
+            .get(TEXT_TO_SPEECH_PREFERENCE_KEY)
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Speech-to-text types
 // ---------------------------------------------------------------------------

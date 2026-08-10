@@ -24,7 +24,12 @@ Platform notes:
 
 - Windows: MSVC C++ build tools and WebView2 runtime.
 - macOS: Xcode Command Line Tools.
-- Linux: `build-essential cmake clang pkg-config perl git`; desktop builds also need WebKitGTK 4.1 development headers.
+- Linux: `build-essential cmake pkg-config git`, plus the system libraries the
+  desktop shell and its screen-capture stack link against. The verified
+  `apt install` line for Debian/Ubuntu lives in
+  [Linux system packages](../guides/desktop-app.md#linux-system-packages-debianubuntu)
+  — treat that block as the single source of truth instead of copying the list
+  around.
 
 ## Install
 

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+﻿use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -974,7 +974,7 @@ mod tests {
         let pid = seed_catalog(
             &pool,
             "stepfun-plan",
-            &server.uri(),
+            &format!("{}/v1", server.uri()),
             "step-image-edit-2",
             r#"["image_generation"]"#,
             true,
@@ -1023,7 +1023,7 @@ mod tests {
         let pid = seed_catalog(
             &pool,
             "stepfun-plan",
-            &server.uri(),
+            &format!("{}/v1", server.uri()),
             "x",
             r#"["image_generation"]"#,
             true,

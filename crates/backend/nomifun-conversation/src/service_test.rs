@@ -12336,6 +12336,167 @@ async fn build_runtime_options_rebases_managed_workspace_after_restore() {
 }
 
 #[tokio::test]
+async fn binding_a_workspace_retires_the_temp_marker_so_the_bind_survives_reads() {
+    // The bug: `update` wrote `extra.workspace`, but `get`/`list` re-derived the
+    // workspace from the still-present `temp_workspace_id` marker and silently
+    // overwrote the directory the user had just chosen. Binding therefore
+    // "succeeded" and rolled back on the very next read.
+    let workspace_root =
+        std::env::temp_dir().join(format!("nomifun-bind-root-{}", nomifun_common::generate_id()));
+    let bound_workspace =
+        std::env::temp_dir().join(format!("nomifun-bind-target-{}", nomifun_common::generate_id()));
+    std::fs::create_dir_all(&bound_workspace).unwrap();
+    let (svc, _broadcaster, repo, runtime_registry) =
+        make_service_with_workspace_root(workspace_root.clone());
+
+    let create: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "extra": { "agent_id": TEST_ACP_AGENT_ID, "backend": "claude" }
+    }))
+    .unwrap();
+    let conv = svc.create(TEST_USER_1, create).await.unwrap();
+    let temp_workspace_id = conv.extra["temp_workspace_id"]
+        .as_str()
+        .expect("create must stamp temp_workspace_id")
+        .to_owned();
+    assert_eq!(conv.extra["is_temporary_workspace"], true);
+
+    let patch: UpdateConversationRequest = serde_json::from_value(json!({
+        "extra": { "workspace": bound_workspace.to_string_lossy() }
+    }))
+    .unwrap();
+    let updated = svc
+        .update(TEST_USER_1, &conv.conversation_id, patch, &runtime_registry)
+        .await
+        .unwrap();
+    assert_eq!(
+        PathBuf::from(updated.extra["workspace"].as_str().unwrap()),
+        bound_workspace
+    );
+
+    // The whole point: a later read must return the bound directory, not the
+    // derived temp path.
+    let after_get = svc.get(TEST_USER_1, &conv.conversation_id).await.unwrap();
+    assert_eq!(
+        PathBuf::from(after_get.extra["workspace"].as_str().unwrap()),
+        bound_workspace,
+        "get must not rebase a bound workspace back to the temp directory"
+    );
+    assert_eq!(after_get.extra["is_temporary_workspace"], false);
+    assert!(
+        after_get.extra.get("temp_workspace_id").is_none(),
+        "the live rebase marker must be gone after a bind"
+    );
+    assert_eq!(
+        after_get.extra["retired_temp_workspace_id"], temp_workspace_id,
+        "the token must be retained under its retired name so delete can still reclaim the temp dir"
+    );
+
+    let listed = svc
+        .list(TEST_USER_1, ListConversationsQuery::default(), false)
+        .await
+        .unwrap();
+    let listed = listed
+        .items
+        .iter()
+        .find(|item| item.conversation_id == conv.conversation_id)
+        .expect("bound conversation should be listed");
+    assert_eq!(
+        PathBuf::from(listed.extra["workspace"].as_str().unwrap()),
+        bound_workspace,
+        "list must not rebase a bound workspace either"
+    );
+    assert_eq!(listed.extra["is_temporary_workspace"], false);
+
+    // The runtime the next message builds must run in the bound directory.
+    let row = repo.get(&conv.conversation_id).await.unwrap().unwrap();
+    let options = svc.build_runtime_options(&row).unwrap();
+    assert_eq!(PathBuf::from(options.workspace), bound_workspace);
+
+    let _ = std::fs::remove_dir_all(workspace_root);
+    let _ = std::fs::remove_dir_all(bound_workspace);
+}
+
+#[tokio::test]
+async fn binding_a_workspace_keeps_the_temp_directory_reclaimable_on_delete() {
+    // Renaming (not deleting) the token is what preserves this: the throwaway
+    // directory the conversation started in must still be removed when the
+    // conversation is deleted, or every bind leaks a directory forever.
+    let workspace_root = std::env::temp_dir()
+        .join(format!("nomifun-bind-cleanup-{}", nomifun_common::generate_id()));
+    let bound_workspace = std::env::temp_dir()
+        .join(format!("nomifun-bind-keep-{}", nomifun_common::generate_id()));
+    std::fs::create_dir_all(&bound_workspace).unwrap();
+    let (svc, _broadcaster, _repo, runtime_registry) =
+        make_service_with_workspace_root(workspace_root.clone());
+
+    let create: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "extra": { "agent_id": TEST_ACP_AGENT_ID, "backend": "claude" }
+    }))
+    .unwrap();
+    let conv = svc.create(TEST_USER_1, create).await.unwrap();
+    let temp_workspace_dir = PathBuf::from(
+        conv.extra["workspace"]
+            .as_str()
+            .expect("create must materialize a temp workspace"),
+    );
+    assert!(temp_workspace_dir.is_dir());
+
+    let patch: UpdateConversationRequest = serde_json::from_value(json!({
+        "extra": { "workspace": bound_workspace.to_string_lossy() }
+    }))
+    .unwrap();
+    svc.update(TEST_USER_1, &conv.conversation_id, patch, &runtime_registry)
+        .await
+        .unwrap();
+
+    svc.delete(TEST_USER_1, &conv.conversation_id).await.unwrap();
+    assert!(
+        !temp_workspace_dir.exists(),
+        "the retired temp workspace must still be reclaimed on delete"
+    );
+    assert!(
+        bound_workspace.is_dir(),
+        "the user's own project directory must never be deleted"
+    );
+
+    let _ = std::fs::remove_dir_all(workspace_root);
+    let _ = std::fs::remove_dir_all(bound_workspace);
+}
+
+#[tokio::test]
+async fn an_empty_workspace_patch_does_not_retire_the_temp_marker() {
+    // `workspace: ""` binds nothing. Retiring the marker here would strand the
+    // conversation with no rebase authority and no directory of its own.
+    let workspace_root = std::env::temp_dir()
+        .join(format!("nomifun-bind-empty-{}", nomifun_common::generate_id()));
+    let (svc, _broadcaster, _repo, runtime_registry) =
+        make_service_with_workspace_root(workspace_root.clone());
+
+    let create: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "extra": { "agent_id": TEST_ACP_AGENT_ID, "backend": "claude" }
+    }))
+    .unwrap();
+    let conv = svc.create(TEST_USER_1, create).await.unwrap();
+    let temp_workspace_id = conv.extra["temp_workspace_id"].as_str().unwrap().to_owned();
+
+    let patch: UpdateConversationRequest =
+        serde_json::from_value(json!({ "extra": { "workspace": "" } })).unwrap();
+    svc.update(TEST_USER_1, &conv.conversation_id, patch, &runtime_registry)
+        .await
+        .unwrap();
+
+    let after = svc.get(TEST_USER_1, &conv.conversation_id).await.unwrap();
+    assert_eq!(after.extra["temp_workspace_id"], temp_workspace_id);
+    assert!(after.extra.get("retired_temp_workspace_id").is_none());
+    assert_eq!(after.extra["is_temporary_workspace"], true);
+
+    let _ = std::fs::remove_dir_all(workspace_root);
+}
+
+#[tokio::test]
 async fn build_runtime_options_preserves_explicit_custom_workspace() {
     let destination_root =
         std::env::temp_dir().join(format!("nomifun-custom-{}", nomifun_common::generate_id()));
@@ -12496,8 +12657,7 @@ async fn send_message_turn_writeback_runs_after_system_continuation_final_answer
             KnowledgeBinding {
                 enabled: true,
                 writeback: true,
-                writeback_mode: "staged".into(),
-                writeback_eagerness: "aggressive".into(),
+                writeback_eagerness: "auto".into(),
                 kb_ids: vec![kb.knowledge_base_id.clone()],
                 ..Default::default()
             },
@@ -12644,8 +12804,11 @@ async fn send_message_turn_writeback_runs_after_system_continuation_final_answer
     let rel_path = writeback.data["written"][0]["rel_path"]
         .as_str()
         .expect("written rel_path");
-    assert!(rel_path.starts_with(&format!("_inbox/{}/", conv.conversation_id)));
-    assert!(rel_path.ends_with("/patterns/cron-final.md"));
+    assert!(
+        !rel_path.starts_with("_inbox/"),
+        "the staged inbox is retired; the write lands on the base document: {rel_path}"
+    );
+    assert!(rel_path.ends_with("patterns/cron-final.md"), "{rel_path}");
     let staged = knowledge
         .read_file(&kb.knowledge_base_id, rel_path)
         .await
@@ -12757,8 +12920,7 @@ async fn slow_turn_writeback_completes_turn_immediately_and_never_blocks_next_se
             KnowledgeBinding {
                 enabled: true,
                 writeback: true,
-                writeback_mode: "staged".into(),
-                writeback_eagerness: "aggressive".into(),
+                writeback_eagerness: "auto".into(),
                 kb_ids: vec![kb.knowledge_base_id.clone()],
                 ..Default::default()
             },
@@ -12932,10 +13094,6 @@ async fn slow_turn_writeback_completes_turn_immediately_and_never_blocks_next_se
     assert!(
         stored_content["knowledge_writeback"]["source_message_id"].is_string(),
         "manual retry needs the exact originating user message"
-    );
-    assert!(
-        stored_content["knowledge_writeback"]["scope"].is_string(),
-        "manual retry needs the original idempotency scope"
     );
     assert!(
         stored_content["knowledge_writeback"]["finished_at"]
@@ -15606,8 +15764,7 @@ async fn view_warmup_of_finished_writeback_session_never_builds_or_reconciles_mo
     let binding = KnowledgeBinding {
         enabled: true,
         writeback: true,
-        writeback_mode: "direct".into(),
-        writeback_eagerness: "aggressive".into(),
+        writeback_eagerness: "auto".into(),
         kb_ids: vec![kb.knowledge_base_id.clone()],
         ..Default::default()
     };

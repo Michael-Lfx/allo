@@ -1,6 +1,6 @@
 
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 
 const readSource = (url: URL) => readFileSync(url, 'utf8');
@@ -102,37 +102,16 @@ describe('Guid preset picker visual system', () => {
     expect(card.includes('flex: 0 0 auto')).toBe(true);
   });
 
-  test('uses a compact two-line Skill layout with inline tags and a fixed trailing checkbox', () => {
-    const skill = readSource(new URL('./DrawerSkillCard.tsx', import.meta.url));
+  test('keeps the retired Skill card out of the preset drawer', () => {
     const css = readSource(new URL('../index.module.css', import.meta.url));
-    const card = classBlock(css, 'drawerSkillCard');
-    const titleRow = classBlock(css, 'drawerSkillTitleRow');
-    const metaRow = classBlock(css, 'drawerSkillMetaRow');
-    const description = classBlock(css, 'drawerSkillDescription');
 
-    expect(skill.includes('styles.drawerSkillCard')).toBe(true);
-    expect(skill.indexOf('styles.drawerSkillMetaRow')).toBeLessThan(skill.indexOf('styles.drawerSkillDescription'));
-    expect(skill.lastIndexOf('styles.drawerCardStatus')).toBeGreaterThan(skill.indexOf('styles.drawerCardBody'));
-    expect(card.includes('box-sizing: border-box')).toBe(true);
-    expect(card.includes('grid-template-columns: 40px minmax(0, 1fr) 20px')).toBe(true);
-    expect(card.includes('align-items: center')).toBe(true);
-    expect(card.includes('min-height: 58px')).toBe(true);
-    expect(card.includes('padding: 8px 12px')).toBe(true);
-    expect(css.indexOf('.drawerSkillTitleRow {')).toBeGreaterThan(css.indexOf('.drawerCardTitleRow {'));
-    expect(css.indexOf('.drawerSkillMetaRow {')).toBeGreaterThan(css.indexOf('.drawerMetaRow {'));
-    expect(css.indexOf('.drawerSkillDescription {')).toBeGreaterThan(css.indexOf('.drawerDescription {'));
-    expect(titleRow.includes('height: 20px')).toBe(true);
-    expect(titleRow.includes('flex-wrap: nowrap')).toBe(true);
-    expect(titleRow.includes('overflow: hidden')).toBe(true);
-    expect(metaRow.includes('height: 20px')).toBe(true);
-    expect(metaRow.includes('flex-wrap: nowrap')).toBe(true);
-    expect(metaRow.includes('margin-top: 0')).toBe(true);
-    expect(metaRow.includes('overflow: hidden')).toBe(true);
-    expect(description.includes('height: 17px')).toBe(true);
-    expect(description.includes('margin-top: 3px')).toBe(true);
-    expect(description.includes('text-overflow: ellipsis')).toBe(true);
-    expect(description.includes('white-space: nowrap')).toBe(true);
-    expect(description.includes('-webkit-line-clamp: 1')).toBe(true);
+    // The drawer is a preset-only surface (see the shell test above), so the
+    // Skill card component and its styles must stay gone.
+    expect(existsSync(new URL('./DrawerSkillCard.tsx', import.meta.url))).toBe(false);
+    expect(css.includes('.drawerSkillCard')).toBe(false);
+    expect(css.includes('.drawerSkillTitleRow')).toBe(false);
+    expect(css.includes('.drawerSkillMetaRow')).toBe(false);
+    expect(css.includes('.drawerSkillDescription')).toBe(false);
   });
 
   test('keeps the drawer search field compact instead of a nested white box', () => {

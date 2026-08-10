@@ -8,7 +8,6 @@ import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { blurActiveElement } from '@renderer/utils/ui/focus';
 import { isDesktopShell } from '@renderer/utils/platform';
 import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
-import { useKnowledgeInboxPending } from '@renderer/pages/knowledge/useKnowledge';
 import WorkpathSessionList from '@renderer/pages/conversation/SessionList';
 import { useSidebarDisplayPreferences } from '@renderer/pages/conversation/SessionList/hooks/useSidebarDisplayPreferences';
 import {
@@ -16,6 +15,7 @@ import {
   SiderConversationEntry,
   SiderKnowledgeEntry,
   SiderLearningEntry,
+  SiderMiniAppsEntry,
   SiderModelHubEntry,
   SiderNomiEntry,
   SiderRequirementsEntry,
@@ -54,7 +54,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const isMobile = layout?.isMobile ?? false;
   const location = useLocation();
   const { pathname, search, hash } = location;
-  const { count: pendingInboxCount } = useKnowledgeInboxPending();
   const navigate = useNavigate();
   const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
   const { logout: cloudLogout, status: cloudStatus, whoami } = useCloudAuth();
@@ -122,6 +121,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleNomiClick = () => navTo('/nomi');
   const handleLearningClick = () => navTo('/learn');
   const handleRequirementsClick = () => navTo('/requirements');
+  const handleMiniAppsClick = () => navTo('/mini-apps');
   const handlePresetClick = () => navTo('/presets');
   const handleSkillsClick = () => navTo('/skills');
   const handleMcpClick = () => navTo('/mcp');
@@ -213,13 +213,20 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               onEnterHome={handleVideoGenerationHome}
               onOpenProject={handleOpenRecentVideoGeneration}
             />
+            {/* 小程序 (Mini-apps) — solidified single-file web tools, opened instantly */}
+            <SiderMiniAppsEntry
+              isMobile={isMobile}
+              isActive={pathname.startsWith('/mini-apps')}
+              collapsed={collapsed}
+              siderTooltipProps={siderTooltipProps}
+              onClick={handleMiniAppsClick}
+            />
             <SiderKnowledgeEntry
               isMobile={isMobile}
               isActive={pathname.startsWith('/knowledge')}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
               onClick={handleKnowledgeClick}
-              dot={pendingInboxCount > 0}
             />
             <SiderLearningEntry
               isMobile={isMobile}

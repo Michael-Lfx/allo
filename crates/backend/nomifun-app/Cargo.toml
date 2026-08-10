@@ -85,6 +85,14 @@ name = "remote_agent_e2e"
 path = "tests/remote_agent_e2e.rs"
 
 [[test]]
+name = "ssh_host_e2e"
+path = "tests/ssh_host_e2e.rs"
+
+[[test]]
+name = "miniapp_e2e"
+path = "tests/miniapp_e2e.rs"
+
+[[test]]
 name = "auxiliary_e2e"
 path = "tests/auxiliary_e2e.rs"
 
@@ -243,8 +251,10 @@ nomifun-canvas.workspace = true
 nomifun-cloud.workspace = true
 nomifun-agent-execution.workspace = true
 nomifun-companion.workspace = true
+nomifun-robot.workspace = true
 nomifun-customer-service.workspace = true
 nomifun-workshop.workspace = true
+nomifun-miniapp.workspace = true
 nomifun-creation.workspace = true
 nomifun-gateway.workspace = true
 nomifun-public.workspace = true
@@ -252,6 +262,7 @@ nomifun-webhook.workspace = true
 # P3-X2: per-pet browser-use credential secret CRUD endpoints (web feature mounts routes).
 nomifun-secret = { workspace = true, features = ["web"] }
 nomifun-terminal.workspace = true
+nomifun-ssh.workspace = true
 nomifun-preset.workspace = true
 nomifun-runtime.workspace = true
 nomifun-net.workspace = true

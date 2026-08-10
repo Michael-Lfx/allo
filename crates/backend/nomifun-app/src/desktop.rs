@@ -40,13 +40,57 @@ use tokio::sync::{Mutex, OnceCell, watch};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::cli::Cli;
+use crate::lan_endpoint::detect_all_lan_ipv4s;
 use crate::{AppHostCapabilities, AppServices, bootstrap, create_router};
 use nomifun_auth::AuthPolicy;
-use nomifun_db::IUserRepository;
+use nomifun_db::{IClientPreferenceRepository, IUserRepository};
 
 /// Stable, bookmarkable port for the LAN listener (matches the UI's
 /// `WEBUI_DEFAULT_PORT`). Falls back to an ephemeral port if occupied.
 pub const WEBUI_LAN_PORT: u16 = 25808;
+
+/// `client_preferences` row holding the desktop "WebUI remote access" switch.
+///
+/// The ONLY writer is the frontend `WebuiServerContext`
+/// (`ui/src/renderer/hooks/context/WebuiServerContext.tsx`, via configService →
+/// `PUT /api/settings/client`); [`DesktopServer::restore_lan_if_requested`] is
+/// the ONLY reader. Before that reader existed the preference was write-only, so
+/// every desktop restart came up loopback-only even though the user had left the
+/// switch on — phones and robots then found a closed port until someone opened
+/// the panel and toggled it again.
+const DESKTOP_WEBUI_ENABLED_PREF_KEY: &str = "webui.desktop.enabled";
+
+/// Result of the startup LAN-restore step, so the caller (and the smoke test)
+/// can tell "the user never asked" apart from "asked, but refused/failed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LanRestoreOutcome {
+    /// No stored request to expose the LAN listener: loopback only.
+    NotRequested,
+    /// Requested, but the installation still has no admin credential. Binding
+    /// `0.0.0.0` in that state would let the first visitor on the network claim
+    /// the empty-password admin via `/api/auth/setup`.
+    BlockedWithoutCredential,
+    /// The LAN listener is serving again.
+    Restored,
+    /// Restore was requested but could not be completed (preference read
+    /// failure, bind failure, missing app shell…). Startup continues.
+    Failed,
+}
+
+/// Whether the persisted preference is a positive request to expose LAN serving.
+///
+/// Fail-safe by construction: ONLY a strict JSON `true` opens a listener on
+/// `0.0.0.0`. A missing key, an empty value, `false`, the JSON *string*
+/// `"true"`, `1`, `null`, or any parse failure all read as "stay loopback-only".
+/// An ambiguous stored value must never be resolved in favour of exposing the
+/// machine to the network.
+fn lan_restore_requested(stored: Option<&str>) -> bool {
+    stored
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .is_some_and(|value| matches!(value, serde_json::Value::Bool(true)))
+}
 
 /// Whether a failed desktop startup positively verified teardown of every
 /// resource acquired before the failure was returned.
@@ -425,6 +469,15 @@ pub struct DesktopServer {
     /// so the unified shutdown path can clean up all terminal sessions before
     /// the database is closed.
     terminal_service: Arc<nomifun_terminal::TerminalService>,
+    /// The process SSH connection pool. Held here so the unified shutdown path can
+    /// close every live remote session — and write the resulting host status — while
+    /// the database is still open.
+    ssh_pool: nomifun_ssh::SshConnectionPool,
+    /// LAN robot gateway. Held here for two reasons: the unified shutdown path
+    /// stops its accept loop and loopback MCP front, and the LAN listener's
+    /// status is projected into its endpoint advertiser (the OTA response is the
+    /// only channel that can tell a device where to connect).
+    robot: Option<Arc<crate::robot_wiring::RobotServices>>,
     /// Clone of the database pool used by the embedded router. Closing this
     /// clone closes the shared pool, so fatal listener failures cannot leave
     /// the backend's persistent resources alive while the host is exiting.
@@ -684,6 +737,7 @@ impl DesktopServer {
         }
         let user_repo = services.user_repo.clone();
         let terminal_service = services.terminal_service.clone();
+        let ssh_pool = services.ssh_pool.clone();
 
         // Reserve the permanent loopback socket before router assembly. Router
         // construction starts background forwarders, so every fallible socket
@@ -745,6 +799,8 @@ impl DesktopServer {
             dev_frontend_url: dev_frontend_url.map(|u| Arc::from(u.trim_end_matches('/'))),
             runtime: Handle::current(),
             terminal_service,
+            ssh_pool,
+            robot: services.robot.clone(),
             database: services.database.clone(),
             _keep_alive: keep_alive.clone(),
             browser_platform_shutdown: services.browser_platform_shutdown.clone(),
@@ -763,12 +819,68 @@ impl DesktopServer {
             status_rx,
         });
         server.spawn_loopback(loopback);
+        server.spawn_robot_endpoint_projection();
+        // Tail of startup: the backend is ready and the app-shell source has
+        // been resolved, so re-opening LAN serving here is the earliest moment
+        // that can serve a real request. Doing it in Rust (not the webview) is
+        // what makes a headless/auto-start boot and an early robot OTA poll find
+        // an open port instead of waiting for the frontend to mount.
+        server.restore_lan_if_requested().await;
         Ok((server, keep_alive))
     }
 
     /// The loopback port the webview connects to (`window.__backendPort`).
     pub fn loopback_port(&self) -> u16 {
         self.loopback_port
+    }
+
+    /// Keep the robot endpoint advertiser in step with the LAN listener.
+    ///
+    /// A robot is told where to connect exactly once, in its OTA response, and
+    /// that address must be an interface the robot can reach — never loopback.
+    /// So the advertiser follows the LAN listener specifically: LAN off means no
+    /// reachable endpoint, and the OTA response then carries an empty websocket
+    /// URL instead of one that dials nowhere.
+    fn spawn_robot_endpoint_projection(self: &Arc<Self>) {
+        let Some(robot) = self.robot.clone() else {
+            return;
+        };
+        let mut status = self.subscribe_status();
+        tokio::spawn(async move {
+            loop {
+                let (running, port) = {
+                    let current = status.borrow_and_update();
+                    (current.running, current.port)
+                };
+                let snapshot = nomifun_robot::endpoint::LanEndpointSnapshot {
+                    enabled: running,
+                    port,
+                    // Re-detected per change rather than cached: a laptop that
+                    // moves between networks keeps the same listener.
+                    ipv4s: if running {
+                        detect_all_lan_ipv4s()
+                    } else {
+                        Vec::new()
+                    },
+                };
+                robot.endpoint_tx.send_if_modified(|current| {
+                    if *current == snapshot {
+                        return false;
+                    }
+                    tracing::info!(
+                        enabled = snapshot.enabled,
+                        port = snapshot.port,
+                        interfaces = snapshot.ipv4s.len(),
+                        "robot: reachable endpoint changed"
+                    );
+                    *current = snapshot;
+                    true
+                });
+                if status.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
     }
 
     /// The per-boot local-trust secret to inject into the webview
@@ -968,6 +1080,32 @@ impl DesktopServer {
             ),
         }
 
+        // Quiesce the SSH pool before the database closes: closing a link walks the
+        // host row back from "connected", and a link let go of without exit evidence
+        // is a real leak on someone else's machine, so it is reported rather than
+        // silently counted as clean.
+        let ssh_result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.ssh_pool.shutdown_all(),
+        )
+        .await;
+        match ssh_result {
+            Ok(report) => {
+                tracing::info!(
+                    lost = report.lost,
+                    already_down = report.already_down,
+                    "ssh links closed during desktop shutdown"
+                );
+                if report.lost > 0 {
+                    errors.push(format!(
+                        "{} ssh link(s) were let go of without proof the remote shell died",
+                        report.lost
+                    ));
+                }
+            }
+            Err(_) => errors.push("ssh pool cleanup timed out after 5 seconds".to_owned()),
+        }
+
         #[cfg(feature = "managed-search")]
         if let Some(managed_web) = self
             ._keep_alive
@@ -994,6 +1132,14 @@ impl DesktopServer {
             self.browser_platform_shutdown.shutdown().await;
         if let Err(error) = browser_result {
             errors.push(format!("browser cleanup failed: {error:#}"));
+        }
+
+        // Stop the robot gateway: its accept loop and the loopback MCP front are
+        // pure in-process tasks with nothing durable to write, so this is
+        // unconditional and cannot fail. Live sessions end with their own
+        // sockets when the listener closes.
+        if let Some(robot) = &self.robot {
+            robot.shutdown();
         }
 
         // Do not close the shared database after an earlier cleanup failure.
@@ -1045,6 +1191,79 @@ impl DesktopServer {
         // The loopback task can fail before `start` returns and before a caller
         // subscribes. Retain that early fatal value instead of dropping it.
         self.failure_tx.send_replace(Some(failure));
+    }
+
+    /// Re-open LAN serving when the user left the "WebUI remote access" switch
+    /// on, so remote access survives a desktop restart.
+    ///
+    /// Called exactly once at the tail of [`Self::start_with_outcome`]; it is
+    /// public so the desktop smoke test can drive the identical restore path
+    /// against a real backend without restarting a locked data directory.
+    ///
+    /// Two invariants:
+    /// - Nothing here can fail startup. A preference read error, a missing app
+    ///   shell, or a bind failure is logged and returns [`LanRestoreOutcome`];
+    ///   remote access is a convenience and never a reason to refuse to launch.
+    /// - No credential, no exposure. `has_users() == false` means the admin
+    ///   password was never provisioned, and `start_lan` would generate one
+    ///   silently at boot with nobody watching the one-time value — while the
+    ///   port is already reachable. We stay loopback-only and say why.
+    pub async fn restore_lan_if_requested(self: &Arc<Self>) -> LanRestoreOutcome {
+        let prefs = nomifun_db::SqliteClientPreferenceRepository::new(
+            self.database.pool().clone(),
+        );
+        let stored = match prefs.get_by_keys(&[DESKTOP_WEBUI_ENABLED_PREF_KEY]).await {
+            Ok(rows) => rows
+                .into_iter()
+                .find(|row| row.key == DESKTOP_WEBUI_ENABLED_PREF_KEY)
+                .map(|row| row.value),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    key = DESKTOP_WEBUI_ENABLED_PREF_KEY,
+                    "could not read the persisted WebUI remote-access preference; LAN access stays off — re-enable it in Settings › WebUI"
+                );
+                return LanRestoreOutcome::Failed;
+            }
+        };
+        if !lan_restore_requested(stored.as_deref()) {
+            return LanRestoreOutcome::NotRequested;
+        }
+
+        match self.user_repo.has_users().await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    "WebUI remote access was left on, but this installation has no admin password yet, \
+                     so the LAN listener was NOT restored: an exposed instance without a credential can \
+                     be claimed by the first visitor on the network. Enable WebUI once from \
+                     Settings › WebUI to provision the password; later restarts will then restore it."
+                );
+                return LanRestoreOutcome::BlockedWithoutCredential;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "could not verify that an admin credential exists; LAN access stays off"
+                );
+                return LanRestoreOutcome::Failed;
+            }
+        }
+
+        let status = self.start_lan().await;
+        if status.running {
+            tracing::info!(
+                port = status.port,
+                "restored WebUI remote access from the persisted desktop preference"
+            );
+            LanRestoreOutcome::Restored
+        } else {
+            tracing::warn!(
+                error = status.error.as_deref().unwrap_or("unknown"),
+                "could not restore WebUI remote access; the desktop continues on loopback only"
+            );
+            LanRestoreOutcome::Failed
+        }
     }
 
     /// Start LAN serving (bind `0.0.0.0:WEBUI_LAN_PORT`). Awaitable directly
@@ -1601,71 +1820,6 @@ async fn resolve_admin(user_repo: &dyn IUserRepository) -> (String, bool) {
     }
 }
 
-/// Routing-preferred source IPv4 (the address used to reach off-box hosts).
-/// Connecting a UDP socket only sets its local address; no packets are sent.
-fn routing_primary_ipv4() -> Option<Ipv4Addr> {
-    let sock = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
-    sock.connect((Ipv4Addr::new(8, 8, 8, 8), 80)).ok()?;
-    match sock.local_addr().ok()? {
-        SocketAddr::V4(a) => {
-            let ip = *a.ip();
-            is_webui_lan_ip_candidate(ip).then_some(ip)
-        }
-        _ => None,
-    }
-}
-
-fn is_webui_lan_ip_candidate(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    if ip.is_loopback() || ip.is_unspecified() || ip.is_link_local() || ip.is_multicast() {
-        return false;
-    }
-    if octets == [255, 255, 255, 255] {
-        return false;
-    }
-    // RFC 2544 benchmarking addresses are commonly created by virtual network
-    // adapters and are not reachable from a phone on the user's LAN.
-    if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
-        return false;
-    }
-    // Documentation-only ranges should never be offered as a real WebUI target.
-    if (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
-        || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
-        || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
-    {
-        return false;
-    }
-    true
-}
-
-/// All WebUI-usable IPv4 NIC addresses — routing-preferred first, then the rest
-/// (private ranges before public). A multi-homed / VPN host still yields
-/// several; obvious virtual/special-purpose addresses are filtered out.
-fn detect_all_lan_ipv4s() -> Vec<Ipv4Addr> {
-    let mut addrs: Vec<Ipv4Addr> = Vec::new();
-    if let Some(primary) = routing_primary_ipv4() {
-        addrs.push(primary);
-    }
-    let mut rest: Vec<Ipv4Addr> = Vec::new();
-    if let Ok(ifaces) = if_addrs::get_if_addrs() {
-        for iface in ifaces {
-            if iface.is_loopback() {
-                continue;
-            }
-            if let IpAddr::V4(v4) = iface.ip()
-                && is_webui_lan_ip_candidate(v4)
-                && !addrs.contains(&v4)
-                && !rest.contains(&v4)
-            {
-                rest.push(v4);
-            }
-        }
-    }
-    rest.sort_by_key(|ip| !ip.is_private()); // private (false→0) first
-    addrs.extend(rest);
-    addrs
-}
-
 /// Reverse-proxy a SPA request to the vite dev server (DEV only) so remote
 /// browsers receive the exact live frontend the desktop webview loads — instead
 /// of a stale bundled `ui/dist`. Only reached for paths the backend router did
@@ -1773,26 +1927,6 @@ mod tests {
     fn origin_shape_check() {
         assert!(origin_is_ip_or_localhost("http://192.168.1.5:25808"));
         assert!(!origin_is_ip_or_localhost("http://evil.com"));
-    }
-
-    #[test]
-    fn webui_lan_ip_candidate_filters_special_purpose_ranges() {
-        assert!(!is_webui_lan_ip_candidate(Ipv4Addr::new(0, 0, 0, 0)));
-        assert!(!is_webui_lan_ip_candidate(Ipv4Addr::new(127, 0, 0, 1)));
-        assert!(!is_webui_lan_ip_candidate(Ipv4Addr::new(169, 254, 10, 20)));
-        assert!(!is_webui_lan_ip_candidate(Ipv4Addr::new(198, 18, 0, 1)));
-        assert!(!is_webui_lan_ip_candidate(Ipv4Addr::new(198, 19, 255, 1)));
-        assert!(!is_webui_lan_ip_candidate(Ipv4Addr::new(224, 0, 0, 1)));
-        assert!(!is_webui_lan_ip_candidate(Ipv4Addr::new(
-            255, 255, 255, 255
-        )));
-    }
-
-    #[test]
-    fn webui_lan_ip_candidate_keeps_private_lan_ranges() {
-        assert!(is_webui_lan_ip_candidate(Ipv4Addr::new(10, 8, 0, 2)));
-        assert!(is_webui_lan_ip_candidate(Ipv4Addr::new(172, 16, 1, 20)));
-        assert!(is_webui_lan_ip_candidate(Ipv4Addr::new(192, 168, 31, 5)));
     }
 
     #[test]
@@ -2075,4 +2209,34 @@ mod tests {
         assert_eq!(close_calls.load(Ordering::Acquire), 0);
     }
 
+    #[test]
+    fn lan_restore_requested_only_for_strict_json_true() {
+        assert!(lan_restore_requested(Some("true")));
+        assert!(lan_restore_requested(Some(" true\n")));
+    }
+
+    #[test]
+    fn lan_restore_is_refused_for_every_ambiguous_stored_value() {
+        // Exposing 0.0.0.0 is the irreversible direction, so anything that is
+        // not a strict JSON `true` must read as "off".
+        for stored in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("false"),
+            // JSON *string* "true": what a naive string comparison would accept.
+            Some("\"true\""),
+            Some("1"),
+            Some("null"),
+            Some("TRUE"),
+            Some("on"),
+            Some("{\"enabled\":true}"),
+            Some("not json at all"),
+        ] {
+            assert!(
+                !lan_restore_requested(stored),
+                "stored value {stored:?} must not auto-expose the LAN listener"
+            );
+        }
+    }
 }

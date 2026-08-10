@@ -36,7 +36,7 @@ Mount the base onto a conversation or workpath. The agent then calls knowledge s
 
 ## Can the agent write back?
 
-Yes. With staged write-back, proposals land in `_inbox/` for your review before merging into the library.
+Yes. When write-back is enabled, the agent can persist durable notes into the library (manual disposition waits for an explicit ask; auto disposition decides on its own).
 
 ## What formats are supported?
 
@@ -213,11 +213,8 @@ impl KnowledgeService {
             binding.kb_ids.push(kb_id.clone());
         }
         binding.enabled = true;
-        if binding.writeback_mode.trim().is_empty() {
-            binding.writeback_mode = "staged".into();
-        }
         if binding.writeback_eagerness.trim().is_empty() {
-            binding.writeback_eagerness = "conservative".into();
+            binding.writeback_eagerness = "manual".into();
         }
         self.set_binding(kind, target_id, binding).await
     }

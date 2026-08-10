@@ -5,6 +5,9 @@ import React from 'react';
 import { SettingsViewModeProvider } from '@/renderer/components/settings/SettingsModal/settingsViewContext';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 
+/** Shared visual contract for top-level destinations opened from the app rail. */
+export const HUB_PAGE_TITLE_CLASS = 'text-22px font-600 text-t-primary leading-tight';
+
 interface HubPageShellProps {
   title: string;
   subtitle?: string;
@@ -49,7 +52,7 @@ const HubPageShell: React.FC<HubPageShellProps> = ({
         <div className={classNames('mx-auto w-full', maxWidthClass)}>
           {!hideHeader && (
             <div className='mb-18px'>
-              <div className='text-22px font-600 text-t-primary leading-tight'>{title}</div>
+              <div className={HUB_PAGE_TITLE_CLASS}>{title}</div>
               {subtitle && <div className='mt-6px text-13px leading-18px text-t-tertiary'>{subtitle}</div>}
             </div>
           )}

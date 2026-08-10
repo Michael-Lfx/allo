@@ -1,4 +1,4 @@
-//! Black-box tests for `POST /api/tts`: real in-memory catalog + wiremock
+﻿//! Black-box tests for `POST /api/tts`: real in-memory catalog + wiremock
 //! provider behind the unified invoke layer. Covers the binary happy path
 //! (audio bytes + Content-Type, no ApiResponse envelope), the local input
 //! validation (empty / oversized text), and catalog gating (unprofiled model).
@@ -46,6 +46,7 @@ async fn setup() -> (axum::Router, nomifun_db::SqlitePool) {
         client_pref_service: nomifun_system::ClientPrefService::new(Arc::new(
             nomifun_db::SqliteClientPreferenceRepository::new(pool.clone()),
         )),
+        data_dir: std::env::temp_dir(),
         provider_service: None,
         model_invoke_service: Some(invoke),
     };
@@ -130,7 +131,7 @@ async fn tts_returns_audio_bytes_with_content_type() {
         .await;
 
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, &server.uri()).await;
+    let pid = seed_provider(&pool, &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "tts-1", r#"["speech_synthesis"]"#).await;
 
     let resp = app
@@ -168,7 +169,7 @@ async fn tts_passes_voice_and_format_through() {
         .await;
 
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, &server.uri()).await;
+    let pid = seed_provider(&pool, &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "tts-1", r#"["speech_synthesis"]"#).await;
 
     let resp = app
@@ -194,7 +195,7 @@ async fn tts_unprofiled_model_is_400_without_network() {
     let server = MockServer::start().await;
     // No mock mounted: the catalog gate must refuse before the wire.
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, &server.uri()).await;
+    let pid = seed_provider(&pool, &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "gpt-4o", r#"["chat"]"#).await;
 
     let resp = app
@@ -256,7 +257,7 @@ async fn tts_upstream_401_maps_to_bad_gateway() {
         .await;
 
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, &server.uri()).await;
+    let pid = seed_provider(&pool, &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "tts-1", r#"["speech_synthesis"]"#).await;
 
     let resp = app
@@ -282,6 +283,7 @@ async fn tts_unwired_invoke_service_is_500() {
         client_pref_service: nomifun_system::ClientPrefService::new(Arc::new(
             nomifun_db::SqliteClientPreferenceRepository::new(pool),
         )),
+        data_dir: std::env::temp_dir(),
         provider_service: None,
         model_invoke_service: None,
     };

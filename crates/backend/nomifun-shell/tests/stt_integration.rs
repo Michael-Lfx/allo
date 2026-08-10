@@ -1,4 +1,4 @@
-//! Black-box tests for `POST /api/stt`: real in-memory catalog + client
+﻿//! Black-box tests for `POST /api/stt`: real in-memory catalog + client
 //! preferences + wiremock provider behind the unified invoke layer.
 //!
 //! The execution protocol is decided by the invoke layer's platform routing —
@@ -51,6 +51,7 @@ async fn setup() -> (axum::Router, nomifun_db::SqlitePool) {
         client_pref_service: ClientPrefService::new(Arc::new(
             nomifun_db::SqliteClientPreferenceRepository::new(pool.clone()),
         )),
+        data_dir: std::env::temp_dir(),
         provider_service: Some(ProviderService::new(
             Arc::new(SqliteProviderRepository::new(pool.clone())),
             Arc::new(SqliteProviderModelRepository::new(pool.clone())),
@@ -156,7 +157,7 @@ async fn stt_openai_platform_rides_invoke_multipart() {
         .await;
 
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, "openai", &server.uri()).await;
+    let pid = seed_provider(&pool, "openai", &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "whisper-1", true).await;
     set_speech_pref(
         &pool,
@@ -233,7 +234,7 @@ async fn stt_config_language_is_forwarded() {
         .await;
 
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, "openai", &server.uri()).await;
+    let pid = seed_provider(&pool, "openai", &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "whisper-1", true).await;
     set_speech_pref(
         &pool,
@@ -256,7 +257,7 @@ async fn stt_disabled_model_error_unchanged() {
     let server = MockServer::start().await;
     // No mock mounted: the catalog check must refuse before the wire.
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, "openai", &server.uri()).await;
+    let pid = seed_provider(&pool, "openai", &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "whisper-1", false).await;
     set_speech_pref(
         &pool,
@@ -375,7 +376,7 @@ async fn stt_upstream_401_maps_to_request_failed() {
         .await;
 
     let (app, pool) = setup().await;
-    let pid = seed_provider(&pool, "openai", &server.uri()).await;
+    let pid = seed_provider(&pool, "openai", &format!("{}/v1", server.uri())).await;
     seed_model(&pool, &pid, "whisper-1", true).await;
     set_speech_pref(
         &pool,

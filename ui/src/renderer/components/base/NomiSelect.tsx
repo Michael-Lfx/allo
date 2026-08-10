@@ -18,6 +18,10 @@ export interface NomiSelectProps extends NativeSelectProps {
   className?: string;
   /** 统一尺寸，新增 middle（32px）/ Unified size with additional "middle" (32px) */
   size?: NomiSelectSize;
+  /** Shrink the field to its visible selection instead of filling the row. */
+  contentFit?: boolean;
+  contentMinWidth?: React.CSSProperties['minWidth'];
+  contentMaxWidth?: React.CSSProperties['maxWidth'];
 }
 
 /**
@@ -30,13 +34,31 @@ const BASE_CLASS = classNames(
   '[&_.arco-select-view]:rounded-[4px]',
   '[&_.arco-select-view]:border',
   '[&_.arco-select-view]:border-solid',
-  '[&_.arco-select-view]:border-border-2',
+  '[&_.arco-select-view]:border-arco-2',
   '[&_.arco-select-view]:shadow-none',
   '[&_.arco-select-view]:transition-colors',
   '[&_.arco-select-view:hover]:border-[var(--color-primary)]',
   '[&_.arco-select-view:focus-within]:border-[var(--color-primary)]',
   '[&_.arco-select-view-disabled]:bg-[var(--color-bg-2)]',
   '[&_.arco-select-view-disabled]:opacity-80'
+);
+
+/**
+ * Arco gives the selector and its value a `width: 100%`, which prevents the
+ * outer select's `max-content` width from following the visible label. Restore
+ * intrinsic sizing only for content-fit selects; max-width still provides the
+ * responsive overflow guard.
+ */
+const CONTENT_FIT_CLASS = classNames(
+  'w-max shrink-0',
+  '[&_.arco-select-view]:w-max',
+  '[&_.arco-select-view]:max-w-full',
+  '[&_.arco-select-view-selector]:w-max',
+  '[&_.arco-select-view-selector]:max-w-full',
+  '[&_.arco-select-view-value]:w-max',
+  '[&_.arco-select-view-value]:max-w-full',
+  '[&_.arco-select-view-value-mirror]:w-max',
+  '[&_.arco-select-view-value-mirror]:max-w-full'
 );
 
 /**
@@ -107,13 +129,36 @@ type NomiSelectComponent = React.ForwardRefExoticComponent<NomiSelectProps & Rea
 };
 
 const InternalSelect = React.forwardRef<SelectHandle, NomiSelectProps>(
-  ({ className, getPopupContainer, size = 'middle', ...rest }, ref) => {
+  (
+    {
+      className,
+      getPopupContainer,
+      size = 'middle',
+      style,
+      contentFit = false,
+      contentMinWidth = 0,
+      contentMaxWidth = '100%',
+      triggerProps,
+      ...rest
+    },
+    ref
+  ) => {
     const normalizedSize = mapSizeToNative(size);
     return (
       <Select
         ref={ref}
         size={normalizedSize}
-        className={classNames(BASE_CLASS, className)}
+        className={classNames(BASE_CLASS, contentFit && CONTENT_FIT_CLASS, className)}
+        style={{
+          ...(contentFit
+            ? { width: 'max-content', minWidth: contentMinWidth, maxWidth: contentMaxWidth }
+            : undefined),
+          ...style,
+        }}
+        triggerProps={{
+          ...(contentFit ? { autoAlignPopupWidth: false } : undefined),
+          ...triggerProps,
+        }}
         getPopupContainer={getPopupContainer || defaultGetPopupContainer}
         {...rest}
       />

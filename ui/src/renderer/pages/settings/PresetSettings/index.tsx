@@ -85,6 +85,8 @@ const PresetSettings: React.FC = () => {
     activePreset,
     isExtensionPreset,
     loadPresets,
+    loadError: presetsLoadError,
+    isLoading: presetsLoading,
     localeKey,
   } = usePresetList();
 
@@ -153,11 +155,10 @@ const PresetSettings: React.FC = () => {
         activeTab={activeTab}
         onChange={handleTabChange}
         type='line'
-        lazyload
-        className='flex flex-col flex-1 min-h-0 [&>.arco-tabs-content]:pt-0'
+        className='[&>.arco-tabs-content]:pt-0'
       >
         <Tabs.TabPane key='library' title={t('settings.presetsPage.libraryTab', { defaultValue: 'Installed Presets' })}>
-          <div className='flex flex-col h-full w-full'>
+          <div className='w-full'>
             <NomiScrollArea className='flex-1 min-h-0 pb-16px scrollbar-hide' disableOverflow>
         <PresetListPanel
           presets={presets}
@@ -277,7 +278,11 @@ const PresetSettings: React.FC = () => {
           </div>
         </Tabs.TabPane>
         <Tabs.TabPane key='market' title={t('settings.presetsPage.marketTab', { defaultValue: 'Preset Market' })}>
-          <PresetPackageMarketSettings onImported={loadPresets} />
+          <PresetPackageMarketSettings
+            onImported={loadPresets}
+            presets={presets}
+            addedStateLoading={presetsLoading || Boolean(presetsLoadError)}
+          />
         </Tabs.TabPane>
       </Tabs>
     </HubPageShell>

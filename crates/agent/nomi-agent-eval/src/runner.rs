@@ -1,4 +1,4 @@
-//! Run / summarize / demo orchestration with sanitized JSONL evidence.
+//! Run / summarize / demo drivers with sanitized JSONL evidence.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};

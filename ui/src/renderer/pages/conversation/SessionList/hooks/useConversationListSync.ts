@@ -2,7 +2,7 @@
 
 import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
-import type { ConversationId, MessageId } from '@/common/types/ids';
+import type { ConversationId, MessageId, SshHostId } from '@/common/types/ids';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import {
   getConversationRuntimeAuthority,
@@ -120,8 +120,28 @@ export const shouldAcceptSidebarTurnCompletion = ({
   return !activeTurnId || !completedTurnId || activeTurnId === completedTurnId;
 };
 
+/** Host id of an SSH-bound session, or undefined for every other conversation. */
+const sshHostIdOf = (conversation: TChatConversation): SshHostId | undefined =>
+  (conversation.extra as { ssh_host_id?: SshHostId } | undefined)?.ssh_host_id;
+
+/** Device id of a robot thread, or undefined for every other conversation. A
+ *  robot thread also carries a companion marker (its companion GROUP key), so it
+ *  is matched on `robot_id` explicitly rather than being lumped with companions. */
+const robotIdOf = (conversation: TChatConversation): string | undefined =>
+  (conversation.extra as { robot_id?: string } | undefined)?.robot_id;
+
+const isSameConversationList = (previous: TChatConversation[], next: TChatConversation[]): boolean =>
+  previous.length === next.length &&
+  previous.every((item, index) => item.id === next[index].id && item.modified_at === next[index].modified_at);
+
 type ConversationListSyncSnapshot = {
   conversations: TChatConversation[];
+  /** SSH-bound sessions, excluded from `conversations` and grouped by host in
+   *  their own sidebar section (SshSessionGroup). */
+  sshConversations: TChatConversation[];
+  /** Robot threads, excluded from `conversations` and grouped by device in their
+   *  own sidebar section (RobotSessionGroup). */
+  robotConversations: TChatConversation[];
   generatingConversationIds: Set<ConversationId>;
   completionUnreadConversationIds: Set<ConversationId>;
 };
@@ -130,6 +150,8 @@ const listeners = new Set<() => void>();
 
 let isStoreInitialized = false;
 let conversationsState: TChatConversation[] = [];
+let sshConversationsState: TChatConversation[] = [];
+let robotConversationsState: TChatConversation[] = [];
 let generatingConversationIdsState = new Set<ConversationId>();
 let completionUnreadConversationIdsState = new Set<ConversationId>();
 let conversation_idsState = new Set<ConversationId>();
@@ -137,6 +159,8 @@ let activeTurnIdsState = new Map<ConversationId, MessageId>();
 let activeConversationIdState: ConversationId | null = null;
 let snapshotState: ConversationListSyncSnapshot = {
   conversations: conversationsState,
+  sshConversations: sshConversationsState,
+  robotConversations: robotConversationsState,
   generatingConversationIds: generatingConversationIdsState,
   completionUnreadConversationIds: completionUnreadConversationIdsState,
 };
@@ -144,6 +168,8 @@ let snapshotState: ConversationListSyncSnapshot = {
 const emitStoreChange = () => {
   snapshotState = {
     conversations: conversationsState,
+    sshConversations: sshConversationsState,
+    robotConversations: robotConversationsState,
     generatingConversationIds: generatingConversationIdsState,
     completionUnreadConversationIds: completionUnreadConversationIdsState,
   };
@@ -165,20 +191,39 @@ const refreshConversations = () => {
     .then((result) => {
       const items = result?.items;
       if (items && Array.isArray(items)) {
-        const filteredData = items.filter((conv) => {
-          // Legacy rows from the pre-provider-probe health check flow are hidden
-          // from normal history. New health checks must not create conversations.
-          // Companion conversations — the desktop bubble, the chat tab, AND every
-          // IM-channel turn — all share ONE per-companion session that lives in
-          // 桌面伙伴→伙伴→聊天, never in this work conversation list. Hide every
-          // companion row, identified by any companion marker in `extra`
-          // (companionSession / companionId / channelPlatform). The previous
-          // carve-out that KEPT channel-sourced companion sessions visible here
-          // is exactly what leaked IM chats into the work space — it is removed,
-          // which also fixes Slack/Discord (source==='nomifun') being mis-bucketed.
-          return isOrdinaryWorkConversation(conv);
-        });
+        // Legacy rows from the pre-provider-probe health check flow are hidden
+        // from normal history. New health checks must not create conversations.
+        // Companion conversations — the desktop bubble, the chat tab, AND every
+        // IM-channel turn — all share ONE per-companion session that lives in
+        // 桌面伙伴→伙伴→聊天, never in this work conversation list. Hide every
+        // companion row, identified by any companion marker in `extra`
+        // (companionSession / companionId / channelPlatform). The previous
+        // carve-out that KEPT channel-sourced companion sessions visible here
+        // is exactly what leaked IM chats into the work space — it is removed,
+        // which also fixes Slack/Discord (source==='nomifun') being mis-bucketed.
+        //
+        // SSH-bound sessions are the one excluded family that still needs a
+        // sidebar home (spec §10 top-level group): collect them in the SAME pass
+        // so the group never costs a second full fetch.
+        const filteredData: TChatConversation[] = [];
+        const sshConversations: TChatConversation[] = [];
+        const robotConversations: TChatConversation[] = [];
+        for (const conversation of items) {
+          if (isOrdinaryWorkConversation(conversation)) {
+            filteredData.push(conversation);
+          } else if (sshHostIdOf(conversation) != null) {
+            sshConversations.push(conversation);
+          } else if (robotIdOf(conversation) != null) {
+            robotConversations.push(conversation);
+          }
+        }
         conversationsState = filteredData;
+        sshConversationsState = isSameConversationList(sshConversationsState, sshConversations)
+          ? sshConversationsState
+          : sshConversations;
+        robotConversationsState = isSameConversationList(robotConversationsState, robotConversations)
+          ? robotConversationsState
+          : robotConversations;
         for (const conversation of items) {
           const activeTurnId = getExactSidebarActiveTurnId(conversation);
           if (activeTurnId) {
@@ -197,6 +242,8 @@ const refreshConversations = () => {
       }
 
       conversationsState = [];
+      sshConversationsState = sshConversationsState.length === 0 ? sshConversationsState : [];
+      robotConversationsState = robotConversationsState.length === 0 ? robotConversationsState : [];
       conversation_idsState = new Set();
       activeTurnIdsState = new Map();
       generatingConversationIdsState = new Set();
@@ -205,6 +252,8 @@ const refreshConversations = () => {
     .catch((error) => {
       console.error('[SessionList] Failed to load conversations:', error);
       conversationsState = [];
+      sshConversationsState = sshConversationsState.length === 0 ? sshConversationsState : [];
+      robotConversationsState = robotConversationsState.length === 0 ? robotConversationsState : [];
       conversation_idsState = new Set();
       activeTurnIdsState = new Map();
       generatingConversationIdsState = new Set();
@@ -384,7 +433,13 @@ export const useConversationListSync = () => {
     initializeConversationListSyncStore();
   }, []);
 
-  const { conversations, generatingConversationIds, completionUnreadConversationIds } = useSyncExternalStore(
+  const {
+    conversations,
+    sshConversations,
+    robotConversations,
+    generatingConversationIds,
+    completionUnreadConversationIds,
+  } = useSyncExternalStore(
     subscribeConversationListSync,
     getConversationListSyncSnapshot,
     getConversationListSyncSnapshot
@@ -414,6 +469,8 @@ export const useConversationListSync = () => {
 
   return {
     conversations,
+    sshConversations,
+    robotConversations,
     isConversationGenerating,
     hasCompletionUnread,
     clearCompletionUnread,

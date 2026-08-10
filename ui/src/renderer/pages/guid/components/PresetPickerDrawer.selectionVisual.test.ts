@@ -40,14 +40,14 @@ describe('PresetPickerDrawer selection visual language', () => {
     expect(block.includes('var(--drawer-selection-bg)')).toBe(false);
   });
 
-  test('does not add a redundant left selection rail to selected Skill cards', () => {
+  test('does not add a redundant left selection rail to selected cards', () => {
+    // The status indicator is the selection affordance; the resting card grows
+    // no second rail. Only the hover rail is neutralized.
     expect(css.includes('.drawerCardSelected::before')).toBe(false);
-    const skillCard = classBlock('drawerSkillCard');
-    expect(skillCard.includes('grid-template-columns: 40px minmax(0, 1fr) 20px')).toBe(true);
-    expect(css.includes('.drawerSkillCard::before {\n  display: none;')).toBe(true);
+    expect(css.includes('.drawerCardSelected:hover::before')).toBe(true);
   });
 
-  test('keeps selected Skill cards readable on hover', () => {
+  test('keeps selected cards readable on hover', () => {
     const start = css.indexOf('.drawerCardSelected:hover,');
     expect(start).toBeGreaterThan(-1);
     const block = css.slice(start, css.indexOf('\n}', start));

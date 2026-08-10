@@ -43,6 +43,7 @@ nomifun-preset = { path = "crates/backend/nomifun-preset" }
 nomifun-secret = { path = "crates/backend/nomifun-secret" }
 nomifun-customer-service = { path = "crates/backend/nomifun-customer-service" }
 nomifun-workshop = { path = "crates/backend/nomifun-workshop" }
+nomifun-miniapp = { path = "crates/backend/nomifun-miniapp" }
 nomifun-creation = { path = "crates/backend/nomifun-creation" }
 nomifun-app = { path = "crates/backend/nomifun-app" }
 nomifun-cloud = { path = "crates/backend/nomifun-cloud" }
@@ -51,12 +52,15 @@ nomifun-media = { path = "crates/backend/nomifun-media" }
 nomifun-vimax = { path = "crates/backend/nomifun-vimax" }
 nomifun-canvas = { path = "crates/backend/nomifun-canvas" }
 nomifun-browser-platform = { path = "crates/backend/nomifun-browser-platform" }
+nomifun-robot = { path = "crates/backend/nomifun-robot" }
+nomifun-ssh = { path = "crates/backend/nomifun-ssh" }
 
 # --- Internal crates: shared ---
 nomifun-net = { path = "crates/shared/nomifun-net" }
 nomifun-models-dev = { path = "crates/shared/nomifun-models-dev" }
 nomi-redact = { path = "crates/shared/nomi-redact" }
 nomi-process-runtime = { path = "crates/shared/nomi-process-runtime" }
+flowy-ssh = { path = "crates/shared/flowy-ssh" }
 
 # --- Internal crates: agent (from nomifun-agent-rs, now local) ---
 nomi-types = { path = "crates/agent/nomi-types" }
@@ -112,6 +116,37 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
 
+# Opus codec for the robot uplink/downlink. `opusic-sys` is used instead of the
+# higher-level `audiopus`/`opus` crates because both of those pull
+# `audiopus_sys`, whose vendored libopus still declares
+# `cmake_minimum_required(VERSION 3.1)` — removed in CMake 4 — and whose 0.1.x
+# line needs autotools. `opusic-sys` bundles a modern libopus, builds it with
+# CMake >= 3.16 and links it **statically**, so no platform needs a preinstalled
+# libopus and nothing extra has to be shipped beside the binary. The safe
+# wrappers live in `nomifun-robot/src/audio/opus.rs` and are the only FFI here.
+opusic-sys = "0.7.5"
+
+# Container decode for TTS audio that does not come back as raw PCM. Features are
+# exactly the formats providers actually return; `all-codecs` would pull video
+# and subtitle decoders we never touch.
+symphonia = { version = "0.6.0", features = ["mp3", "wav", "isomp4", "aac", "vorbis"] }
+
+bytes = "1"
+
+# Silero VAD inference. `download-binaries` fetches a prebuilt ONNX Runtime at
+# build time, so no system onnxruntime is required; if the runtime cannot be
+# loaded at all, `nomifun-robot` degrades to its energy VAD. Defaults are
+# narrowed: `tls-rustls` keeps the build off system OpenSSL, and `ndarray` is
+# dropped because the VAD reads tensors as plain slices.
+ort = { version = "2.0.0-rc.13", default-features = false, features = [
+    "std",
+    "tracing",
+    "download-binaries",
+    "tls-rustls",
+    "copy-dylibs",
+    "api-27",
+] }
+
 # --- CLI ---
 clap = { version = "4", features = ["derive", "env"] }
 
@@ -147,8 +182,6 @@ include_dir = "0.7"
 notify = "8"
 walkdir = "2"
 ignore = "0.4"
-# Unified-diff computation for the knowledge-base inbox review panel (P4).
-similar = "2"
 zip = "2"
 # Node portable-runtime archive extraction (provisioner): tar.gz on unix/macos.
 flate2 = "1"
@@ -177,6 +210,15 @@ fsrs = "6"
 
 # --- PTY / shell ---
 portable-pty = "0.8"
+
+# --- SSH remote sessions ---
+# russh: crypto backend = `ring` (0.17.14 already in the lock), which avoids the
+# aws-lc-sys native toolchain burden (NASM on Windows x86, clang-cl on ARM64).
+# Pinned exactly: russh's Handler API churns fast (8 releases in July 2026), so
+# the `flowy-ssh` adapter crate isolates it and an upgrade touches one place.
+russh = { version = "=0.62.5", default-features = false, features = ["ring", "flate2"] }
+russh-sftp = "2.4.0"
+zeroize = { version = "1.8", features = ["derive"] }
 # `shellexecute-on-windows`: launch via real ShellExecuteExW on Windows instead
 # of the default `cmd /c start "" <target>` fallback. The `start` builtin
 # mis-parses URLs/paths as window titles, runs with no console (CREATE_NO_WINDOW)
@@ -190,6 +232,7 @@ which = "7"
 # --- Office ---
 sha1 = "0.10"
 sha2 = "0.10"
+rand = "0.9"
 hmac = "0.12"
 
 # --- AWS ---

@@ -7,7 +7,7 @@ import { SettingsViewModeProvider } from '@/renderer/components/settings/Setting
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
-import { Computer, Earth, Headset, Info, Pic, BookOpen, Brain, ChartPie, CloudStorage, Puzzle, Robot, System, Tool, TreeDiagram } from '@icon-park/react';
+import { Computer, Earth, Headset, Info, Pic, BookOpen, Brain, ChartPie, CloudStorage, Puzzle, Robot, Server, System, Tool, TreeDiagram } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
@@ -31,6 +31,12 @@ export function getBuiltinSettingsNavItems(
 ): NavItem[] {
   const builtinMap: Record<string, NavItem> = {
     system: { id: 'system', label: t('settings.system'), icon: <System theme='outline' size='16' />, path: 'system' },
+    'ssh-hosts': {
+      id: 'ssh-hosts',
+      label: t('ssh.title'),
+      icon: <Server theme='outline' size='16' />,
+      path: 'ssh-hosts',
+    },
     'browser-use': {
       id: 'browser-use',
       label: t('settings.browserUseNav'),
