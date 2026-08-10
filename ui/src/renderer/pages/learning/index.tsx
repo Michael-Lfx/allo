@@ -87,6 +87,10 @@ const statusColors: Record<LessonStatus, string> = {
   completed: 'green',
 };
 
+// Sentinel value for the review-queue course filter that selects
+// learner-authored questions belonging to no course at all.
+const ORPHAN_COURSE_FILTER = '__orphan__';
+
 type Translate = ReturnType<typeof useTranslation>['t'];
 
 function statusLabel(status: LessonStatus, t: Translate): string {
@@ -193,11 +197,11 @@ function TagEditorModal({
   const { t } = useTranslation();
   const [tags, setTags] = useState<string[]>(initialTags);
   const [newTag, setNewTag] = useState('');
-  const [applyToChildren, setApplyToChildren] = useState(false);
+  const [applyToChildren, setApplyToChildren] = useState(true);
   useEffect(() => {
     setTags(initialTags);
     setNewTag('');
-    setApplyToChildren(false);
+    setApplyToChildren(true);
   }, [initialTags]);
   const addNewTag = () => {
     const name = newTag.trim();
@@ -1584,44 +1588,45 @@ function LessonSourcePanel({
   knowledgeBaseId,
   source,
 }: {
-  knowledgeBaseId: string;
+  knowledgeBaseId: string | null;
   source: NonNullable<Lesson['source']>;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
+  const toggle = () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    // 原文仅在用户主动查看时才加载；已加载或失败的内容直接复用
+    if (content !== null || loading || error !== null) return;
+    if (knowledgeBaseId === null) {
+      // 未来可能出现的无知识库课程：没有可读取的原文，给出提示而不是报错
+      setError(t('learning.sourceUnavailable'));
+      return;
+    }
     setLoading(true);
-    setError(null);
-    setContent(null);
     void ipcBridge.knowledge.readFile
       .invoke({
         knowledge_base_id: parseKnowledgeBaseId(knowledgeBaseId),
         path: source.path,
       })
-      .then((file) => {
-        if (cancelled) return;
-        setContent(sliceSourceContent(file.content, source.start, source.end));
-      })
+      .then((file) => setContent(sliceSourceContent(file.content, source.start, source.end)))
       .catch((loadError) => {
-        if (cancelled) return;
         setError(loadError instanceof Error ? loadError.message : String(loadError));
       })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [knowledgeBaseId, source.end, source.path, source.start]);
+      .finally(() => setLoading(false));
+  };
 
   return (
     <div className='rounded-10px border border-solid border-[var(--color-border-2)] p-14px'>
-      <div className='mb-10px flex flex-wrap items-center justify-between gap-8px'>
+      <div className='flex flex-wrap items-center justify-between gap-8px'>
         <div className='min-w-0'>
           <div className='font-600 text-t-primary'>{t('learning.readSource')}</div>
           <Text type='secondary' className='break-all'>
@@ -1630,26 +1635,37 @@ function LessonSourcePanel({
             {source.end !== null ? `-${source.end}` : ''}
           </Text>
         </div>
-        <Button
-          size='mini'
-          onClick={() =>
-            navigate(
-              `/knowledge/${knowledgeBaseId}?highlight=${encodeURIComponent(source.path)}`
-            )
-          }
-        >
-          {t('learning.openInKnowledge')}
-        </Button>
-      </div>
-      {loading && (
-        <div className='flex justify-center py-18px'>
-          <Spin tip={t('learning.sourceLoading')} />
+        <div className='flex shrink-0 items-center gap-8px'>
+          {knowledgeBaseId !== null && (
+            <Button
+              size='mini'
+              onClick={() =>
+                navigate(
+                  `/knowledge/${knowledgeBaseId}?highlight=${encodeURIComponent(source.path)}`
+                )
+              }
+            >
+              {t('learning.openInKnowledge')}
+            </Button>
+          )}
+          <Button size='mini' type={open ? 'text' : 'primary'} onClick={toggle}>
+            {open ? t('learning.sourceHide') : t('learning.viewSource')}
+          </Button>
         </div>
-      )}
-      {error && <Alert type='error' content={`${t('learning.sourceLoadFailed')}: ${error}`} />}
-      {!loading && !error && content !== null && (
-        <div className='max-h-420px overflow-auto rounded-8px bg-[var(--color-fill-1)] p-12px'>
-          <Markdown className='text-13px'>{content}</Markdown>
+      </div>
+      {open && (
+        <div className='mt-12px'>
+          {loading && (
+            <div className='flex justify-center py-18px'>
+              <Spin tip={t('learning.sourceLoading')} />
+            </div>
+          )}
+          {error && <Alert type='error' content={`${t('learning.sourceLoadFailed')}: ${error}`} />}
+          {!loading && !error && content !== null && (
+            <div className='max-h-420px overflow-auto rounded-8px bg-[var(--color-fill-1)] p-12px'>
+              <Markdown className='text-13px'>{content}</Markdown>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1693,13 +1709,8 @@ function LessonBlock({
           </Button>
         )}
       </div>
-      {sourceKbId && lesson.source && (
+      {lesson.source && (
         <LessonSourcePanel knowledgeBaseId={sourceKbId} source={lesson.source} />
-      )}
-      {!sourceKbId && lesson.source && (
-        <Text type='secondary'>
-          {t('learning.source')}: {lesson.source.path}
-        </Text>
       )}
       {lesson.activities.length > 0 && (
         <div className='flex flex-col gap-10px'>
@@ -1936,6 +1947,9 @@ const LearningPage: React.FC = () => {
     target: CourseSummary | QuestionEntry;
   } | null>(null);
   const [allTags, setAllTags] = useState<string[]>([]);
+  // 开始复习横幅的筛选维度：课程（含“其它”孤立问题）与标签
+  const [reviewCourseFilter, setReviewCourseFilter] = useState<string | undefined>(undefined);
+  const [reviewTagFilter, setReviewTagFilter] = useState<string[]>([]);
   const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   const [diagnosticLimit] = useConfig('learning.diagnosticLimit');
 
@@ -1945,21 +1959,29 @@ const LearningPage: React.FC = () => {
     if (!initialLoaded.current) setLoading(true);
     setError(null);
     try {
-      const [nextCourses, nextReviews, nextDetail] = await Promise.all([
+      const isOrphan = reviewCourseFilter === ORPHAN_COURSE_FILTER;
+      const courseId = isOrphan || !reviewCourseFilter ? undefined : reviewCourseFilter;
+      const [nextCourses, nextReviews, nextDetail, nextTags] = await Promise.all([
         learningApi.listCourses(),
-        learningApi.listDueReviews(reviewSessionLimit),
+        learningApi.listDueReviews(reviewSessionLimit, courseId, {
+          dueOnly: true,
+          orphan: isOrphan,
+          tags: reviewTagFilter,
+        }),
         id ? learningApi.getCourse(id) : Promise.resolve(null),
+        learningApi.listTags(),
       ]);
       setCourses(nextCourses);
       setReviews(nextReviews);
       setDetail(nextDetail);
+      setAllTags(nextTags);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       initialLoaded.current = true;
       setLoading(false);
     }
-  }, [id, reviewSessionLimit]);
+  }, [id, reviewCourseFilter, reviewTagFilter, reviewSessionLimit]);
 
   useEffect(() => {
     void load();
@@ -2170,7 +2192,13 @@ const LearningPage: React.FC = () => {
     setBusyId('review-session');
     try {
       // 每次开刷前重新拉取到期队列，避免使用会话期间过期的快照
-      const fresh = await learningApi.listDueReviews(reviewSessionLimit);
+      const isOrphan = reviewCourseFilter === ORPHAN_COURSE_FILTER;
+      const courseId = isOrphan || !reviewCourseFilter ? undefined : reviewCourseFilter;
+      const fresh = await learningApi.listDueReviews(reviewSessionLimit, courseId, {
+        dueOnly: true,
+        orphan: isOrphan,
+        tags: reviewTagFilter,
+      });
       setReviews(fresh);
       if (fresh.length === 0) {
         Message.info(t('learning.noReviews'));
@@ -2185,7 +2213,7 @@ const LearningPage: React.FC = () => {
     } finally {
       setBusyId(null);
     }
-  }, [reviewSessionLimit, t]);
+  }, [reviewCourseFilter, reviewTagFilter, reviewSessionLimit, t]);
 
   const startCourseReviewSession = useCallback(async (courseId: string) => {
     setBusyId('review-session');
@@ -2355,15 +2383,49 @@ const LearningPage: React.FC = () => {
       {error && <Alert key='load-error' type='error' content={`${t('learning.loadFailed')}: ${error}`} />}
       <Alert key='pack-contract' type='info' content={t('learning.packContract')} />
 
-      {reviews.length > 0 && (
+      {(reviews.length > 0 || reviewCourseFilter !== undefined || reviewTagFilter.length > 0) && (
         <div className='flex flex-wrap items-center justify-between gap-12px rounded-12px border border-solid border-[var(--color-primary-6)] bg-[var(--color-primary-light-1)] px-20px py-16px'>
-          <div className='flex items-baseline gap-8px'>
-            <Title heading={5} className='!m-0'>
-              {t('learning.reviews')}
-            </Title>
-            <Text type='secondary'>
-              {t('learning.reviewDueCount', { count: reviews.length })}
-            </Text>
+          <div className='flex flex-wrap items-center gap-12px'>
+            <div className='flex items-baseline gap-8px'>
+              <Title heading={5} className='!m-0'>
+                {t('learning.reviews')}
+              </Title>
+              <Text type='secondary'>
+                {t('learning.reviewDueCount', { count: reviews.length })}
+              </Text>
+            </div>
+            <Select
+              className='w-180px'
+              allowClear
+              placeholder={t('learning.reviewFilterCourse')}
+              value={reviewCourseFilter}
+              onChange={(value: string | undefined) => setReviewCourseFilter(value)}
+            >
+              {courses.map((course) => (
+                <Select.Option key={course.id} value={course.id}>
+                  {course.title}
+                </Select.Option>
+              ))}
+              <Select.Option value={ORPHAN_COURSE_FILTER}>
+                {t('learning.reviewFilterOrphan')}
+              </Select.Option>
+            </Select>
+            <Select
+              className='w-200px'
+              mode='multiple'
+              allowClear
+              placeholder={t('learning.reviewFilterTags')}
+              value={reviewTagFilter}
+              onChange={(value: string[] | undefined) =>
+                setReviewTagFilter((value ?? []) as string[])
+              }
+            >
+              {allTags.map((tag) => (
+                <Select.Option key={tag} value={tag}>
+                  {tag}
+                </Select.Option>
+              ))}
+            </Select>
           </div>
           <Badge count={reviews.length}>
             <Button

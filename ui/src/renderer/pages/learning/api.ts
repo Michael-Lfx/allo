@@ -45,9 +45,16 @@ export const learningApi = {
     httpRequest<AttemptResult>('POST', `${BASE}/activities/${encodeURIComponent(id)}/attempts`, {
       response,
     }),
-  listDueReviews: (limit = 30, courseId?: string) => {
+  listDueReviews: (
+    limit = 30,
+    courseId?: string,
+    options?: { dueOnly?: boolean; orphan?: boolean; tags?: string[] }
+  ) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (courseId) query.set('course_id', courseId);
+    if (options?.dueOnly) query.set('due_only', 'true');
+    if (options?.orphan) query.set('orphan', 'true');
+    for (const tag of options?.tags ?? []) query.append('tag', tag);
     return httpRequest<DueReview[]>('GET', `${BASE}/reviews/due?${query.toString()}`);
   },
   listTags: () => httpRequest<string[]>('GET', `${BASE}/tags`),

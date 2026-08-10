@@ -696,11 +696,21 @@ impl LearningService {
     /// item (not only due ones) so a dedicated course-review session can
     /// serve cards the learner still has pending. Custom questions never
     /// belong to a course and are excluded from course-scoped queues.
+    ///
+    /// `due_only` narrows a course-scoped queue to items whose due time has
+    /// passed; the main review entry always uses it. `orphan` restricts the
+    /// queue to learner-authored questions that belong to no course; it is
+    /// mutually exclusive with `course_id`. `tags` keeps only items whose
+    /// concept (course questions) or question itself (custom questions)
+    /// carries at least one of the given tag names.
     pub async fn due_reviews(
         &self,
         user_id: &UserId,
         limit: i64,
         course_id: Option<&LearningCourseId>,
+        due_only: bool,
+        orphan: bool,
+        tags: &[String],
     ) -> Result<Vec<DueReview>, AppError> {
         let limit = limit.clamp(1, 100);
         let now = now_ms();
@@ -712,25 +722,41 @@ impl LearningService {
              LEFT JOIN learning_courses c ON c.course_id = e.course_id \
              JOIN learning_concepts lc ON lc.concept_id = r.concept_id \
              WHERE e.user_id = ?";
-        let rows = match course_id {
-            Some(course_id) => sqlx::query(
-                &format!("{base} AND e.course_id = ? ORDER BY r.due_at, r.review_item_id LIMIT ?"),
-            )
-            .bind(user_id.as_str())
-            .bind(course_id.as_str())
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await,
-            None => sqlx::query(
-                &format!("{base} AND r.due_at <= ? ORDER BY r.due_at, r.review_item_id LIMIT ?"),
-            )
-            .bind(user_id.as_str())
-            .bind(now)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await,
-        }
-        .map_err(internal)?;
+        // Course reviews: scoped by course (all queued, or due only when
+        // requested) and/or by tag names attached to the concept's questions.
+        let rows = if orphan {
+            Vec::new()
+        } else {
+            let mut sql = String::from(base);
+            if course_id.is_some() {
+                sql.push_str(" AND e.course_id = ?");
+            }
+            if due_only {
+                sql.push_str(" AND r.due_at <= ?");
+            }
+            if !tags.is_empty() {
+                let placeholders = vec!["?"; tags.len()].join(", ");
+                sql.push_str(&format!(
+                    " AND EXISTS (SELECT 1 FROM learning_activity_concepts ac \
+                     JOIN learning_question_tags qt ON qt.question_id = ac.activity_id \
+                       AND qt.source = 'course' \
+                     JOIN learning_tags lt ON lt.tag_id = qt.tag_id \
+                     WHERE ac.concept_id = r.concept_id AND lt.name IN ({placeholders}))"
+                ));
+            }
+            sql.push_str(" ORDER BY r.due_at, r.review_item_id LIMIT ?");
+            let mut query = sqlx::query(&sql).bind(user_id.as_str());
+            if let Some(course_id) = course_id {
+                query = query.bind(course_id.as_str());
+            }
+            if due_only {
+                query = query.bind(now);
+            }
+            for tag in tags {
+                query = query.bind(tag);
+            }
+            query.bind(limit).fetch_all(&self.pool).await.map_err(internal)?
+        };
         let mut reviews = Vec::new();
         for row in rows {
             let review_id: LearningReviewItemId =
@@ -779,21 +805,33 @@ impl LearningService {
         }
         // Learner-authored custom questions carry their own schedule and join
         // the same queue without any course context. They are never part of a
-        // course-scoped review queue.
+        // course-scoped review queue; the orphan filter selects only them.
         if course_id.is_none() {
-            let custom_rows = sqlx::query(
+            let mut sql = String::from(
                 "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.due_at, \
                         q.stability_days, q.difficulty, q.review_count, q.lapse_count \
                  FROM learning_custom_questions q \
-                 WHERE q.user_id = ? AND q.due_at <= ? \
-                 ORDER BY q.due_at, q.custom_question_id LIMIT ?",
-            )
-            .bind(user_id.as_str())
-            .bind(now)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal)?;
+                 WHERE q.user_id = ? AND q.due_at <= ?",
+            );
+            if !tags.is_empty() {
+                let placeholders = vec!["?"; tags.len()].join(", ");
+                sql.push_str(&format!(
+                    " AND EXISTS (SELECT 1 FROM learning_question_tags qt \
+                     JOIN learning_tags lt ON lt.tag_id = qt.tag_id \
+                     WHERE qt.question_id = q.custom_question_id AND qt.source = 'custom' \
+                       AND lt.name IN ({placeholders}))"
+                ));
+            }
+            sql.push_str(" ORDER BY q.due_at, q.custom_question_id LIMIT ?");
+            let mut query = sqlx::query(&sql).bind(user_id.as_str()).bind(now);
+            for tag in tags {
+                query = query.bind(tag);
+            }
+            let custom_rows = query
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
             for row in custom_rows {
                 let config: StoredActivityConfig = serde_json::from_str(
                     &row.try_get::<String, _>("config_json").map_err(internal)?,
@@ -3148,7 +3186,10 @@ mod tests {
         assert_eq!(state_of(&entries, "A2"), Some("unlearned"));
 
         // The queue itself serves exactly the completed lesson's question.
-        let due = service.due_reviews(&user_id, 30, None).await.unwrap();
+        let due = service
+            .due_reviews(&user_id, 30, None, true, false, &[])
+            .await
+            .unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].question.prompt, "A1");
     }

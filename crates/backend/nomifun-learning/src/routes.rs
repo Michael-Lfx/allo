@@ -195,6 +195,15 @@ struct DueReviewQuery {
     #[serde(default = "default_review_limit")]
     limit: i64,
     course_id: Option<String>,
+    /// Keep only reviews whose due time has passed (main review entry).
+    #[serde(default)]
+    due_only: bool,
+    /// Keep only learner-authored questions that belong to no course.
+    #[serde(default)]
+    orphan: bool,
+    /// Keep only items carrying at least one of these tag names.
+    #[serde(default)]
+    tag: Vec<String>,
 }
 
 const fn default_review_limit() -> i64 {
@@ -206,6 +215,11 @@ async fn due_reviews(
     Extension(user): Extension<CurrentUser>,
     Query(query): Query<DueReviewQuery>,
 ) -> Result<Json<ApiResponse<Vec<crate::models::DueReview>>>, AppError> {
+    if query.orphan && query.course_id.is_some() {
+        return Err(AppError::BadRequest(
+            "orphan filter is mutually exclusive with course_id".into(),
+        ));
+    }
     let course_id = match query.course_id {
         Some(value) => Some(parse_id::<LearningCourseId>(value)?),
         None => None,
@@ -213,7 +227,14 @@ async fn due_reviews(
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .due_reviews(&user.id, query.limit, course_id.as_ref())
+            .due_reviews(
+                &user.id,
+                query.limit,
+                course_id.as_ref(),
+                query.due_only,
+                query.orphan,
+                &query.tag,
+            )
             .await?,
     )))
 }
