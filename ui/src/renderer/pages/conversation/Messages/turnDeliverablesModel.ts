@@ -159,6 +159,9 @@ const isFileMutationToolName = (name: unknown): boolean => {
   return FILE_MUTATION_TOOL_NAMES.has(compacted);
 };
 
+const isContextOnlyToolName = (name: unknown): boolean =>
+  typeof name === 'string' && name.trim().toLowerCase() === 'image_analyze';
+
 const collectArgsTargetPaths = (args: Record<string, unknown> | null | undefined): string[] => {
   if (!args || typeof args !== 'object') return [];
   const paths: string[] = [];
@@ -224,7 +227,7 @@ const messageSourceIds = (message: DeliverableToolMessage): MessageId[] => {
 
 const draftsFromToolCall = (message: IMessageToolCall): DeliverableDraft[] => {
   const content = message.content;
-  if (content.status !== 'completed') return [];
+  if (content.status !== 'completed' || isContextOnlyToolName(content.name)) return [];
   const sourceIds = messageSourceIds(message);
   const drafts: DeliverableDraft[] = [];
 
@@ -248,6 +251,7 @@ const draftsFromToolCall = (message: IMessageToolCall): DeliverableDraft[] => {
 const draftsFromAcpToolCall = (message: IMessageAcpToolCall): DeliverableDraft[] => {
   const update = message.content?.update;
   if (!update || update.status !== 'completed') return [];
+  if (isContextOnlyToolName(update.title)) return [];
   const sourceIds = messageSourceIds(message);
   const callId = update.tool_call_id;
   const drafts: DeliverableDraft[] = [];

@@ -113,18 +113,17 @@ import { runConversationResetSingleFlight } from './resetSingleFlight';
 import { ContextUsageRing } from './ContextUsageRing';
 import type { NomiModelSelection } from './useNomiModelSelection';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
-import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
-import type { ModelTrait } from '@/common/config/storage';
 import { catalogReasoningEffortForModel } from '@/renderer/utils/model/reasoningEffort';
 
-/** Trait refinement for the vision guard (stable identity for the SWR key). */
-const VISION_INPUT_TRAITS: ModelTrait[] = ['vision_input'];
 const MAX_IMAGE_ATTACHMENTS = 10;
 
 const isImageAttachment = (path: string) => {
   const normalized = path.toLowerCase();
   return imageExts.some((extension) => normalized.endsWith(extension));
 };
+
+const imageAttachmentSignature = (paths: string[]) =>
+  Array.from(new Set(paths.filter(isImageAttachment))).sort().join('\u0000');
 
 const useNomiSendBoxDraft = getSendBoxDraftHook('nomi', {
   _type: 'nomi',
@@ -268,39 +267,7 @@ const NomiSendBox: React.FC<{
     setCurrentReasoningEffort(reasoning_effort);
   }, [reasoning_effort]);
 
-  // ── Vision guard ──────────────────────────────────────────────────────────
-  // Chat models that accept image input, from the unified catalog resolve.
-  // When the user sends image attachments through a model that is NOT in this
-  // set, warn once per model selection — never block the send (the backend
-  // returns a typed error if the model truly cannot take images).
-  const {
-    groups: visionGroups,
-    isLoading: isVisionCatalogLoading,
-    error: visionCatalogError,
-  } = useModelsForTask('chat', VISION_INPUT_TRAITS);
-  const warnedVisionModelKeyRef = useRef<string | null>(null);
-  const maybeWarnNonVisionModel = useCallback(
-    (files: string[]) => {
-      if (!current_model?.id || !current_model.use_model) return;
-      // Unresolved/failed catalog: never emit a false-positive warning.
-      if (isVisionCatalogLoading || visionCatalogError) return;
-      const hasImageAttachment = files.some((file) => {
-        const lower = file.toLowerCase();
-        return imageExts.some((ext) => lower.endsWith(ext));
-      });
-      if (!hasImageAttachment) return;
-      const supportsVision = visionGroups.some(
-        (group) =>
-          group.provider.id === current_model.id && group.models.includes(current_model.use_model)
-      );
-      if (supportsVision) return;
-      const selectionKey = `${current_model.id}:${current_model.use_model}`;
-      if (warnedVisionModelKeyRef.current === selectionKey) return;
-      warnedVisionModelKeyRef.current = selectionKey;
-      Message.warning(t('conversation.chat.visionModelHint', { model: current_model.use_model }));
-    },
-    [current_model?.id, current_model?.use_model, isVisionCatalogLoading, visionCatalogError, visionGroups, t]
-  );
+  const imageLimitWarningKeyRef = useRef<string | null>(null);
 
   const {
     running,
@@ -432,6 +399,16 @@ const NomiSendBox: React.FC<{
     setUploadFile,
   });
 
+  const warnImageAttachmentLimit = useCallback(
+    (paths: string[]) => {
+      const key = imageAttachmentSignature(paths);
+      if (!key || imageLimitWarningKeyRef.current === key) return;
+      imageLimitWarningKeyRef.current = key;
+      Message.warning(t('conversation.chat.imageAttachmentLimit', { limit: MAX_IMAGE_ATTACHMENTS }));
+    },
+    [t]
+  );
+
   const admitImageAttachments = useCallback(
     (paths: string[]) => {
       const known = new Set(collectSelectedFiles(uploadFile, atPath));
@@ -450,21 +427,24 @@ const NomiSendBox: React.FC<{
         if (isImageAttachment(path)) imageCount += 1;
       }
       if (rejected > 0) {
-        Message.warning(t('conversation.chat.imageAttachmentLimit', { limit: MAX_IMAGE_ATTACHMENTS }));
+        warnImageAttachmentLimit(paths);
       }
       return accepted;
     },
-    [atPath, t, uploadFile]
+    [atPath, uploadFile, warnImageAttachmentLimit]
   );
 
   const canSendImageAttachments = useCallback(
     (files: string[]) => {
       const imageCount = new Set(files.filter(isImageAttachment)).size;
-      if (imageCount <= MAX_IMAGE_ATTACHMENTS) return true;
-      Message.warning(t('conversation.chat.imageAttachmentLimit', { limit: MAX_IMAGE_ATTACHMENTS }));
+      if (imageCount <= MAX_IMAGE_ATTACHMENTS) {
+        imageLimitWarningKeyRef.current = null;
+        return true;
+      }
+      warnImageAttachmentLimit(files);
       return false;
     },
-    [t]
+    [warnImageAttachmentLimit]
   );
 
   const handleNomiFilesAdded = useCallback(
@@ -739,7 +719,6 @@ const NomiSendBox: React.FC<{
 
   const onSendHandler = async (message: string) => {
     const filesToSend = collectSelectedFiles(uploadFile, atPath);
-    maybeWarnNonVisionModel(filesToSend);
 
     if (
       shouldEnqueueConversationCommand({
@@ -812,7 +791,6 @@ const NomiSendBox: React.FC<{
       const filesToSend = existingOperation?.backendInput
         ? [...existingOperation.attachmentPaths]
         : collectSelectedFiles(uploadFile, atPath);
-      maybeWarnNonVisionModel(filesToSend);
       const submittedAttachmentIds = new Set(filesToSend);
       // SendBox mints this once per logical user operation; keep the same value
       // for coordinator ownership and the backend receipt namespace.
@@ -1157,7 +1135,6 @@ const NomiSendBox: React.FC<{
       setAtPath,
       setUploadFile,
       markTurnAccepted,
-      maybeWarnNonVisionModel,
       reconcilePublicDeliveryReplay,
       messageListRef,
       updateMessageList,
@@ -1254,7 +1231,6 @@ const NomiSendBox: React.FC<{
 
   const onSteerHandler = async (message: string) => {
     const filesToSend = collectSelectedFiles(uploadFile, atPath);
-    maybeWarnNonVisionModel(filesToSend);
     clearFiles();
     emitter.emit('nomi.selected.file.clear');
     await executeSteer({ input: message, files: filesToSend });

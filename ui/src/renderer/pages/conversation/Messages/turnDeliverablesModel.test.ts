@@ -142,6 +142,28 @@ describe('collectTurnDeliverables', () => {
     expect(items![0].sources[0].sourceMessageIds).toEqual([MSG_1]);
   });
 
+  test('does not expose image_analyze input artifacts as generated files', () => {
+    const result = collect([
+      candidate({
+        toolMessages: [
+          toolCall({
+            name: 'image_analyze',
+            artifacts: [
+              artifact({
+                kind: 'image',
+                mime_type: 'image/png',
+                path: `${WORKSPACE}/nomifun-artifacts/input.png`,
+                relative_path: 'nomifun-artifacts/input.png',
+              }),
+            ],
+          }),
+        ],
+      }),
+    ]);
+
+    expect(result.size).toBe(0);
+  });
+
   test('keeps Windows verbatim artifact paths usable by the preview API', () => {
     const result = collect([
       candidate({

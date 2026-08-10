@@ -932,7 +932,10 @@ pub fn artifact_contract_with_input(
 
 pub fn is_context_only_image_tool(name: &str) -> bool {
     let words = tool_identity_words(name);
-    words.iter().any(|word| word == "screenshot")
+    words
+        .windows(2)
+        .any(|pair| pair[0] == "image" && pair[1] == "analyze")
+        || words.iter().any(|word| word == "screenshot")
         || words
             .iter()
             .any(|word| matches!(word.as_str(), "viewimage" | "imageviewer"))
@@ -1435,6 +1438,7 @@ mod tests {
         assert_eq!(artifact_expectation("exportZip"), ArtifactExpectation::File);
         assert!(is_context_only_image_tool("browserScreenshot"));
         assert!(is_context_only_image_tool("mcp__viewer__viewImages"));
+        assert!(is_context_only_image_tool("image_analyze"));
     }
 
     #[test]

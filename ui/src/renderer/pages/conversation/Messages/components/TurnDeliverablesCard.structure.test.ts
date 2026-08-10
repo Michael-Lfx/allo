@@ -38,20 +38,24 @@ describe('TurnDeliverablesCard structure', () => {
 
   test('uses compact padding across the card header, file rows and reveal control', () => {
     expect(cardSource.includes('gap-8px px-12px py-8px select-none')).toBe(true);
-    expect(cardSource.includes('gap-8px px-12px py-6px hover:bg-3 transition-colors')).toBe(true);
-    expect(cardSource.includes('gap-8px px-12px py-6px text-13px text-t-secondary')).toBe(true);
+    expect(cardSource.includes('min-w-0 box-border items-center gap-8px px-8px py-6px hover:bg-3 transition-colors')).toBe(true);
+    expect(cardSource.includes('w-full box-border flex items-center gap-8px px-12px py-6px text-13px text-t-secondary')).toBe(true);
   });
 
   test('renders one relative path with muted directories and a primary filename', () => {
-    expect(cardSource.includes("className='flex flex-1 items-center gap-8px min-w-0'")).toBe(true);
+    expect(cardSource.includes("className='flex min-w-0 flex-1 items-center gap-6px'")).toBe(true);
+    expect(cardSource.includes("className='block w-520px min-w-0 shrink truncate text-14px leading-20px'")).toBe(true);
+    expect(cardSource.includes("className='mr-10px w-3.5rem shrink-0 text-right text-12px text-t-secondary tabular-nums'")).toBe(true);
+    expect(cardSource.includes("className='ml-auto flex shrink-0 items-center gap-2px'")).toBe(true);
+    expect(cardSource.includes("title={t('preview.preview')}")).toBe(true);
     expect(cardSource.includes('splitFileDisplayPath(item.relativePath, item.fileName)')).toBe(true);
     expect(
       cardSource.includes(
         "const DIRECTORY_PATH_COLOR = 'color-mix(in srgb, var(--text-secondary) 82%, var(--bg-base))'"
       )
     ).toBe(true);
-    expect(cardSource.includes("className='min-w-0 truncate' style={{ color: DIRECTORY_PATH_COLOR }}")).toBe(true);
-    expect(cardSource.includes("'truncate text-t-primary'")).toBe(true);
+    expect(cardSource.includes("style={{ color: DIRECTORY_PATH_COLOR }}>{displayPath.directoryPath}")).toBe(true);
+    expect(cardSource.includes("className='text-t-primary'")).toBe(true);
     expect(cardSource.includes('secondaryPath')).toBe(false);
     expect(cardSource.includes('key={item.absolutePath ?? item.relativePath}')).toBe(true);
   });
@@ -73,7 +77,7 @@ describe('TurnDeliverablesCard structure', () => {
     expect(listSource.indexOf("type: 'turn_deliverables'")).toBeLessThan(
       listSource.lastIndexOf("type: 'turn_actions'")
     );
-    expect(listSource.includes('<MessageText message={item.message} actionsOnly />')).toBe(true);
+    expect(listSource.includes('<MessageText message={item.message} actionsOnly creditTurnId={item.turn_id} />')).toBe(true);
     expect(listSource.includes('movedActionMessageIds.has((item as TMessage).id)')).toBe(true);
   });
 });

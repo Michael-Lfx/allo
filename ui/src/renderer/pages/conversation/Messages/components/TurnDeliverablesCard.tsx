@@ -187,95 +187,88 @@ const DeliverableRow: React.FC<{
   return (
     <div
       data-deliverable-path={item.relativePath}
-      className='group flex items-center justify-between gap-8px px-12px py-6px hover:bg-3 transition-colors'
+      className='group flex w-full min-w-0 box-border items-center gap-8px px-8px py-6px hover:bg-3 transition-colors'
     >
-      <div className='flex flex-1 items-center gap-8px min-w-0'>
-        <span className='shrink-0 flex items-center' style={{ lineHeight: 0 }}>
-          <DeliverableIcon fileName={item.fileName} />
-        </span>
+      <span className='flex w-20px shrink-0 items-center justify-center' style={{ lineHeight: 0 }}>
+        <DeliverableIcon fileName={item.fileName} />
+      </span>
+      <div className='flex min-w-0 flex-1 items-center gap-6px'>
         <span
-          className='flex min-w-0 max-w-full items-center text-14px leading-20px'
+          className='block w-520px min-w-0 shrink truncate text-14px leading-20px'
           title={displayPath.fullPath}
         >
           {displayPath.directoryPath && (
-            <span className='min-w-0 truncate' style={{ color: DIRECTORY_PATH_COLOR }}>
-              {displayPath.directoryPath}
+            <span style={{ color: DIRECTORY_PATH_COLOR }}>{displayPath.directoryPath}</span>
+          )}
+          <span className='text-t-primary'>{displayPath.fileName}</span>
+        </span>
+        <span
+          className='flex w-16px shrink-0 items-center justify-center'
+          style={{ lineHeight: 0 }}
+          title={
+            item.tier === 'receipt'
+              ? t('messages.turnDeliverables.verified', { defaultValue: 'Integrity verified (SHA-256)' })
+              : undefined
+          }
+        >
+          {item.tier === 'receipt' && <Shield theme='outline' size='13' fill={diffColors.addition} />}
+        </span>
+        <div className='ml-auto flex shrink-0 items-center gap-2px'>
+          <span className='mr-10px w-3.5rem shrink-0 text-right text-12px text-t-secondary tabular-nums'>
+            {item.sizeBytes !== undefined && item.sizeBytes > 0 ? formatBytes(item.sizeBytes) : null}
+          </span>
+          {((item.insertions ?? 0) > 0 || (item.deletions ?? 0) > 0) && (
+            <span
+              className={classNames(
+                'flex items-center gap-4px rd-4px px-4px py-2px',
+                item.diff && 'cursor-pointer hover:bg-4 transition-colors'
+              )}
+              title={item.diff ? t('messages.turnDeliverables.viewDiff', { defaultValue: 'View changes' }) : undefined}
+              onClick={item.diff ? handleDiffPreview : undefined}
+            >
+              {(item.insertions ?? 0) > 0 && (
+                <span className='text-13px font-medium' style={{ color: diffColors.addition }}>
+                  +{item.insertions}
+                </span>
+              )}
+              {(item.deletions ?? 0) > 0 && (
+                <span className='text-13px font-medium' style={{ color: diffColors.deletion }}>
+                  -{item.deletions}
+                </span>
+              )}
             </span>
           )}
-          <span
-            className={classNames(
-              'truncate text-t-primary',
-              displayPath.directoryPath ? 'shrink-0 max-w-60%' : 'min-w-0'
-            )}
-          >
-            {displayPath.fileName}
-          </span>
-        </span>
-        {item.tier === 'receipt' && (
-          <span
-            className='shrink-0 flex items-center'
-            style={{ lineHeight: 0 }}
-            title={t('messages.turnDeliverables.verified', { defaultValue: 'Integrity verified (SHA-256)' })}
-          >
-            <Shield theme='outline' size='13' fill={diffColors.addition} />
-          </span>
-        )}
-      </div>
-
-      <div className='flex items-center gap-8px shrink-0'>
-        {item.sizeBytes !== undefined && item.sizeBytes > 0 && (
-          <span className='text-12px text-t-secondary'>{formatBytes(item.sizeBytes)}</span>
-        )}
-        {((item.insertions ?? 0) > 0 || (item.deletions ?? 0) > 0) && (
-          <span
-            className={classNames(
-              'flex items-center gap-4px rd-4px px-4px py-2px',
-              item.diff && 'cursor-pointer hover:bg-4 transition-colors'
-            )}
-            title={item.diff ? t('messages.turnDeliverables.viewDiff', { defaultValue: 'View changes' }) : undefined}
-            onClick={item.diff ? handleDiffPreview : undefined}
-          >
-            {(item.insertions ?? 0) > 0 && (
-              <span className='text-13px font-medium' style={{ color: diffColors.addition }}>
-                +{item.insertions}
-              </span>
-            )}
-            {(item.deletions ?? 0) > 0 && (
-              <span className='text-13px font-medium' style={{ color: diffColors.deletion }}>
-                -{item.deletions}
-              </span>
-            )}
-          </span>
-        )}
-        {previewSupported && (
-          <span
-            className='flex items-center gap-4px text-12px text-t-secondary cursor-pointer rd-4px px-4px py-2px hover:bg-4'
-            onClick={handlePreview}
-          >
-            <PreviewOpen className='line-height-8px' theme='outline' size='14' fill={iconColors.secondary} />
-            {t('preview.preview')}
-          </span>
-        )}
-        {showShellActions && (
-          <>
+          {previewSupported && (
             <span
-              className='flex items-center cursor-pointer rd-4px p-2px hover:bg-4'
+              className='flex items-center cursor-pointer rd-4px p-1px hover:bg-4'
               style={{ lineHeight: 0 }}
-              title={t('messages.turnDeliverables.open', { defaultValue: 'Open' })}
-              onClick={() => void ipcBridge.shell.openFile.invoke(item.statPath!)}
+              title={t('preview.preview')}
+              onClick={handlePreview}
             >
-              <Export theme='outline' size='14' fill={iconColors.secondary} />
+              <PreviewOpen theme='outline' size='14' fill={iconColors.secondary} />
             </span>
-            <span
-              className='flex items-center cursor-pointer rd-4px p-2px hover:bg-4'
-              style={{ lineHeight: 0 }}
-              title={t('messages.turnDeliverables.reveal', { defaultValue: 'Reveal in folder' })}
-              onClick={() => void ipcBridge.shell.showItemInFolder.invoke(item.statPath!)}
-            >
-              <FolderOpen theme='outline' size='14' fill={iconColors.secondary} />
-            </span>
-          </>
-        )}
+          )}
+          {showShellActions && (
+            <>
+              <span
+                className='flex items-center cursor-pointer rd-4px p-1px hover:bg-4'
+                style={{ lineHeight: 0 }}
+                title={t('messages.turnDeliverables.open', { defaultValue: 'Open' })}
+                onClick={() => void ipcBridge.shell.openFile.invoke(item.statPath!)}
+              >
+                <Export theme='outline' size='14' fill={iconColors.secondary} />
+              </span>
+              <span
+                className='flex items-center cursor-pointer rd-4px p-1px hover:bg-4'
+                style={{ lineHeight: 0 }}
+                title={t('messages.turnDeliverables.reveal', { defaultValue: 'Reveal in folder' })}
+                onClick={() => void ipcBridge.shell.showItemInFolder.invoke(item.statPath!)}
+              >
+                <FolderOpen theme='outline' size='14' fill={iconColors.secondary} />
+              </span>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -323,7 +316,7 @@ const TurnDeliverablesCard: React.FC<{
           <button
             type='button'
             aria-expanded={showAll}
-            className='w-full flex items-center gap-8px px-12px py-6px text-13px text-t-secondary cursor-pointer bg-transparent border-none hover:bg-3 transition-colors'
+            className='w-full box-border flex items-center gap-8px px-12px py-6px text-13px text-t-secondary cursor-pointer bg-transparent border-none hover:bg-3 transition-colors'
             onClick={() => setShowAll(!showAll)}
           >
             <Down

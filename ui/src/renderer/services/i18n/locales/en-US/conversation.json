@@ -431,7 +431,6 @@
     "openModelSettings": "Open model settings",
     "defaultModelUnavailable": "Your saved default model is unavailable. Choose a model again.",
     "modelHealedToDefault": "Switched to your default model {{model}}",
-    "visionModelHint": "The selected model {{model}} may not support image input; image attachments may be ignored or fail.",
     "imageAttachmentLimit": "A message can include at most {{limit}} different images.",
     "sendMessageTo": "Send message to {{model}}",
     "send": "Send",

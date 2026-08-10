@@ -964,7 +964,6 @@ export type I18nKey =
   | 'conversation.chat.tryAnotherAgent'
   | 'conversation.chat.turnMetrics.durationTooltip'
   | 'conversation.chat.turnMetrics.tokensTooltip'
-  | 'conversation.chat.visionModelHint'
   | 'conversation.clearContext.button'
   | 'conversation.clearContext.description'
   | 'conversation.clearContext.failed'
