@@ -22,7 +22,10 @@ Tauri 桌面壳。如果只是安装或部署，请先看
 
 - Windows：MSVC C++ Build Tools 与 WebView2 runtime。
 - macOS：Xcode Command Line Tools。
-- Linux：`build-essential cmake clang pkg-config perl git`；构建桌面端还需要 WebKitGTK 4.1 开发包。
+- Linux：`build-essential cmake pkg-config git`，再加上桌面壳及其截屏栈需要链接的
+  系统库。Debian/Ubuntu 上经过验证的 `apt install` 命令在
+  [Linux 系统包 (Debian/Ubuntu)](../guides/desktop-app.zh.md#linux-系统包-debianubuntu)，
+  请以那一节为唯一来源，不要把清单复制到别处。
 
 ## 安装依赖
 
