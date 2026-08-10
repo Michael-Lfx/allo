@@ -17,7 +17,7 @@ use crate::audio::OpusStreamEncoder;
 use crate::link::{AcceptedLink, Frame, RobotLinkSink};
 use crate::pipeline::{
     DownlinkPacer, SentenceSplitter, UplinkOutcome, UplinkPipeline, encode_for_downlink,
-    strip_emotion,
+    sanitize_for_display, sanitize_for_speech,
 };
 use crate::protocol::{
     DeviceMessage, ListenState, ListeningMode, ServerMessage, parse_device_message,
@@ -94,9 +94,70 @@ pub struct TurnOutcome {
     pub used_fallback: bool,
 }
 
-/// Speak one sentence: face, screen, then audio. Returns a failure only when the
-/// turn should be abandoned (a run of TTS errors), never for a single bad
-/// sentence — that one is still on the device's screen.
+/// A short line the DEVICE can display when the voice link cannot do its job,
+/// so a missing or broken model reads as a problem on screen instead of as a
+/// mute robot. It uses only the frames the firmware already renders — it shows
+/// `sentence_start` text on the OLED — and plays no audio, so it still works
+/// when TTS itself is the thing that is unconfigured.
+///
+/// The `sad` face here is STATE-driven: the gateway knows the voice link is
+/// broken, so it is a fact, not a syntax parsed out of model text. That is the
+/// difference between this send and the deleted per-sentence one.
+async fn show_voice_notice(writer: &Writer, session_id: &str, text: &str) {
+    writer
+        .send_json(&ServerMessage::TtsStart {
+            session_id: session_id.to_owned(),
+        })
+        .await;
+    writer
+        .send_json(&ServerMessage::Llm {
+            session_id: session_id.to_owned(),
+            emotion: "sad".to_owned(),
+        })
+        .await;
+    writer
+        .send_json(&ServerMessage::TtsSentence {
+            session_id: session_id.to_owned(),
+            text: text.to_owned(),
+        })
+        .await;
+    writer
+        .send_json(&ServerMessage::TtsStop {
+            session_id: session_id.to_owned(),
+        })
+        .await;
+}
+
+/// A device-friendly notice for an ASR failure. The "not configured" case is the
+/// overwhelmingly common one on a fresh install and gets an actionable line.
+fn asr_notice_for(error: &anyhow::Error) -> String {
+    if error.to_string().contains("no speech-recognition model configured") {
+        "未配置语音识别模型，请在伙伴设置里选择 ASR 模型".to_owned()
+    } else {
+        "语音识别失败，请稍后再试".to_owned()
+    }
+}
+
+/// A device-friendly notice for a TTS failure. The reply text is already on the
+/// screen; this one extra line explains why there is no voice.
+fn tts_notice_for(error: &anyhow::Error) -> String {
+    if error.to_string().contains("no speech-synthesis model configured") {
+        "（未配置语音合成模型，暂时只显示文字）".to_owned()
+    } else {
+        "（语音合成失败，暂时只显示文字）".to_owned()
+    }
+}
+
+/// Speak one sentence: screen, then audio. Returns a failure only when the turn
+/// should be abandoned (a run of TTS errors), never for a single bad sentence —
+/// that one is still on the device's screen.
+///
+/// The model's text drives no facial expression. It once carried an
+/// `[emotion:name]` marker for exactly that, the model emitted `[winking]`
+/// instead, and the result was a marker read aloud and no face at all; the whole
+/// channel is gone rather than re-syntaxed. `ServerMessage::Llm` is still sent —
+/// but only from device/turn STATE (`show_voice_notice`, `report_turn_failure`),
+/// which is a fact the gateway owns rather than a syntax it hopes for.
 #[allow(clippy::too_many_arguments)]
 async fn speak_sentence(
     writer: &Writer,
@@ -110,17 +171,18 @@ async fn speak_sentence(
     generation: u64,
     sentence: &str,
 ) -> Option<TurnFailure> {
-    let (emotion, text) = strip_emotion(sentence);
-    if text.trim().is_empty() {
-        // A marker-only chunk still sets the face; there is nothing to say.
-        if let Some(emotion) = emotion {
-            writer
-                .send_json(&ServerMessage::Llm {
-                    session_id: session_id.to_owned(),
-                    emotion: emotion.to_owned(),
-                })
-                .await;
-        }
+    // Screen copy and voice copy get the same cleaning: bracketed stage
+    // directions removed, plus emoji / non-speech symbols dropped. Sending emoji
+    // or a bracketed annotation to the TTS engine is what 400s and cuts the
+    // voice, and the device's 14px CJK font has no glyph for them either — an
+    // emoji left in the screen copy draws a hollow box. The gateway owns the wire
+    // format, so it cleans both rather than letting the firmware carry a second
+    // sanitiser.
+    let display = sanitize_for_display(sentence);
+    let voice_text = sanitize_for_speech(sentence);
+    if display.trim().is_empty() && voice_text.is_empty() {
+        // Nothing survived the guard (an emoji- or annotation-only chunk). There
+        // is nothing to show and nothing to say, so there is nothing to do.
         return None;
     }
     if !*speaking {
@@ -131,21 +193,23 @@ async fn speak_sentence(
             .await;
         *speaking = true;
     }
-    if let Some(emotion) = emotion {
+    if !display.trim().is_empty() {
         writer
-            .send_json(&ServerMessage::Llm {
+            .send_json(&ServerMessage::TtsSentence {
                 session_id: session_id.to_owned(),
-                emotion: emotion.to_owned(),
+                text: display.clone(),
             })
             .await;
     }
-    writer
-        .send_json(&ServerMessage::TtsSentence {
-            session_id: session_id.to_owned(),
-            text: text.clone(),
-        })
-        .await;
-    match speech.synthesize(ctx, &text).await {
+    // Nothing speakable remained (e.g. the sentence was only an emoji): it is on
+    // screen, but calling TTS with empty/symbol-only text is exactly what fails
+    // and breaks the audio stream. Skip synthesis — this is not a failure, so the
+    // consecutive-failure streak resets and real audio keeps flowing.
+    if voice_text.is_empty() {
+        *tts_failures = 0;
+        return None;
+    }
+    match speech.synthesize(ctx, &voice_text).await {
         Ok(audio) => {
             *tts_failures = 0;
             match encode_for_downlink(encoder, &audio) {
@@ -163,6 +227,17 @@ async fn speak_sentence(
                 tts_failures = *tts_failures,
                 "robot: TTS failed, sentence stays on screen only"
             );
+            // First failure this run: the reply text is already on the OLED, so
+            // add one line explaining why there is no voice. Once per run, so a
+            // long fully-muted reply does not spam the screen.
+            if *tts_failures == 1 {
+                writer
+                    .send_json(&ServerMessage::TtsSentence {
+                        session_id: session_id.to_owned(),
+                        text: tts_notice_for(&error),
+                    })
+                    .await;
+            }
             (*tts_failures >= MAX_CONSECUTIVE_TTS_FAILURES).then(|| TurnFailure {
                 message: format!("TTS failed {tts_failures} times: {error}", tts_failures = *tts_failures),
                 provider_fault: true,
@@ -171,7 +246,7 @@ async fn speak_sentence(
     }
 }
 
-/// Stream a reply to the device: split into sentences, drive the face, speak.
+/// Stream a reply to the device: split into sentences, then speak.
 #[allow(clippy::too_many_arguments)]
 async fn drive_turn(
     mut events: mpsc::Receiver<TurnEvent>,
@@ -282,6 +357,9 @@ async fn drive_turn(
 }
 
 /// Tell the user something went wrong without stranding the device in `speaking`.
+///
+/// The `sad` face is STATE-driven, like `show_voice_notice`'s: the turn failed,
+/// which the gateway knows for a fact. Model text drives no expression.
 async fn report_turn_failure(writer: &Writer, session_id: &str) {
     writer
         .send_json(&ServerMessage::Llm {
@@ -628,7 +706,15 @@ pub async fn run_session(link: AcceptedLink, deps: SessionDeps) {
                 Ok(text) => text,
                 Err(error) => {
                     tracing::warn!(%robot_id, %error, "robot: ASR failed");
-                    String::new()
+                    // Do not vanish: put a short notice on the device screen so a
+                    // missing/broken ASR model reads as a problem, not as a mute
+                    // robot. A genuinely silent round returns Ok("") and still
+                    // idles quietly in the branch below.
+                    show_voice_notice(&writer, &sid, &asr_notice_for(&error)).await;
+                    deps.status
+                        .publish(&robot_id, Some(&bound), RobotPhase::Idle, now_ms())
+                        .await;
+                    continue;
                 }
             };
             if transcript.trim().is_empty() {
@@ -1059,14 +1145,17 @@ mod tests {
         assert_eq!(snap[0].phase, "offline");
     }
 
+    /// A full turn, with the bracketed annotation the model actually emits. It
+    /// must reach neither the screen nor the face: the text channel drives no
+    /// expression at all any more, and the guard deletes the annotation.
     #[tokio::test]
-    async fn a_full_turn_produces_stt_emotion_sentence_audio_and_stop() {
+    async fn a_full_turn_produces_stt_sentence_audio_and_stop() {
         let (deps, link, tx, written, _dir) = harness(true).await;
         let speech = deps.speech_mock();
         let dispatcher = deps.dispatcher_mock();
         speech.push_transcript("今天天气怎么样");
         dispatcher.script_turn(vec![
-            TurnEvent::Text("[emotion:happy] 晴朗得很。".into()),
+            TurnEvent::Text("[winking] 晴朗得很。".into()),
             TurnEvent::Done,
         ]);
 
@@ -1106,8 +1195,8 @@ mod tests {
             "the transcript is shown on screen: {types:?}"
         );
         assert!(
-            types.contains(&"llm".to_owned()),
-            "the emotion marker drives the face: {types:?}"
+            !types.contains(&"llm".to_owned()),
+            "a healthy turn sets no face: model text is not an expression channel: {types:?}"
         );
         assert!(types.contains(&"tts:start".to_owned()), "{types:?}");
         assert!(types.contains(&"tts:sentence_start".to_owned()), "{types:?}");
@@ -1115,15 +1204,13 @@ mod tests {
 
         let stt = sent.iter().find(|m| m["type"] == "stt").unwrap();
         assert_eq!(stt["text"], "今天天气怎么样");
-        let llm = sent.iter().find(|m| m["type"] == "llm").unwrap();
-        assert_eq!(llm["emotion"], "happy");
         let sentence = sent
             .iter()
             .find(|m| m["type"] == "tts" && m["state"] == "sentence_start")
             .unwrap();
         assert_eq!(
             sentence["text"], "晴朗得很。",
-            "the emotion marker is stripped before display"
+            "the bracketed annotation is stripped before display"
         );
 
         let audio_frames = written
@@ -1223,6 +1310,149 @@ mod tests {
             vec!["start", "stop"],
             "an empty round returns the device to listening"
         );
+    }
+
+    #[tokio::test]
+    async fn asr_failure_shows_a_notice_instead_of_silence() {
+        let (deps, link, tx, written, _dir) = harness(true).await;
+        let speech = deps.speech_mock();
+        let dispatcher = deps.dispatcher_mock();
+        // A configured-but-unusable ASR (the fresh-install "no model" case).
+        speech.fail_next_transcribe("no speech-recognition model configured");
+
+        let task = tokio::spawn(run_session(link, deps.deps.clone()));
+        tx.send(Frame::Text(
+            r#"{"type":"hello","version":1,"transport":"websocket"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        tx.send(Frame::Text(
+            r#"{"session_id":"s","type":"listen","state":"start","mode":"manual"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        send_audio(&tx, 200, true).await;
+        tx.send(Frame::Text(
+            r#"{"session_id":"s","type":"listen","state":"stop"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        drop(tx);
+        task.await.unwrap();
+
+        assert!(
+            dispatcher.dispatched_text().is_empty(),
+            "a failed transcription must not spend a model turn"
+        );
+        let sent = texts(&written);
+        let notices: Vec<&str> = sent
+            .iter()
+            .filter(|m| m["type"] == "tts" && m["state"] == "sentence_start")
+            .filter_map(|m| m["text"].as_str())
+            .collect();
+        assert!(
+            notices.iter().any(|t| t.contains("语音识别")),
+            "the ASR failure must be visible on the device screen, got {notices:?}"
+        );
+        assert!(
+            sent.iter().any(|m| m["type"] == "llm" && m["emotion"] == "sad"),
+            "the notice still sets a face — STATE-driven expression is the part that survived"
+        );
+    }
+
+    #[tokio::test]
+    async fn tts_failure_shows_a_one_time_notice_beside_the_reply() {
+        let (deps, link, tx, written, _dir) = harness(true).await;
+        let speech = deps.speech_mock();
+        speech.push_transcript("你好");
+        speech.fail_next_synthesize("no speech-synthesis model configured");
+        deps.dispatcher_mock()
+            .script_turn(vec![TurnEvent::Text("在的。".into()), TurnEvent::Done]);
+
+        let task = tokio::spawn(run_session(link, deps.deps.clone()));
+        tx.send(Frame::Text(
+            r#"{"type":"hello","version":1,"transport":"websocket"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        tx.send(Frame::Text(
+            r#"{"session_id":"s","type":"listen","state":"start","mode":"manual"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        send_audio(&tx, 200, true).await;
+        tx.send(Frame::Text(
+            r#"{"session_id":"s","type":"listen","state":"stop"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        drop(tx);
+        task.await.unwrap();
+
+        let sent = texts(&written);
+        let sentences: Vec<&str> = sent
+            .iter()
+            .filter(|m| m["type"] == "tts" && m["state"] == "sentence_start")
+            .filter_map(|m| m["text"].as_str())
+            .collect();
+        assert!(
+            sentences.iter().any(|t| t.contains("在的")),
+            "the reply text still reaches the screen, got {sentences:?}"
+        );
+        assert!(
+            sentences.iter().any(|t| t.contains("语音合成")),
+            "the missing-voice reason must be visible once, got {sentences:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn emoji_and_markers_are_filtered_before_synthesis() {
+        let (deps, link, tx, _written, _dir) = harness(true).await;
+        let speech = deps.speech_mock();
+        speech.push_transcript("天气如何");
+        deps.dispatcher_mock().script_turn(vec![
+            // A reply with an emoji mid-sentence, then an emoji-only fragment.
+            TurnEvent::Text("北京现在是 🌤️ 挺舒服的天气呢~。".into()),
+            TurnEvent::Text("👍".into()),
+            TurnEvent::Done,
+        ]);
+
+        let task = tokio::spawn(run_session(link, deps.deps.clone()));
+        tx.send(Frame::Text(
+            r#"{"type":"hello","version":1,"transport":"websocket"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        tx.send(Frame::Text(
+            r#"{"session_id":"s","type":"listen","state":"start","mode":"manual"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        send_audio(&tx, 200, true).await;
+        tx.send(Frame::Text(
+            r#"{"session_id":"s","type":"listen","state":"stop"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        drop(tx);
+        task.await.unwrap();
+
+        let spoken = speech.synthesized_text();
+        assert!(
+            spoken.iter().any(|t| t.contains("挺舒服的天气")),
+            "the words around the emoji are still spoken: {spoken:?}"
+        );
+        assert!(
+            spoken.iter().all(|t| !t.contains('🌤') && !t.contains('👍')),
+            "no emoji ever reaches the TTS engine: {spoken:?}"
+        );
+        // The emoji-only fragment "👍" sanitizes to empty, so it produced no
+        // synthesis call at all (and thus no failure): exactly one sentence was
+        // spoken, the words one.
+        assert_eq!(spoken.len(), 1, "the emoji-only fragment is skipped, not synthesized: {spoken:?}");
     }
 
     #[tokio::test]
@@ -1365,7 +1595,7 @@ mod tests {
         let sent = texts(&written);
         assert!(
             sent.iter().any(|m| m["type"] == "llm" && m["emotion"] == "sad"),
-            "the robot looks sad about it"
+            "the robot looks sad about it — the surviving, STATE-driven face"
         );
         assert!(
             sent.iter()

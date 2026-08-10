@@ -5318,6 +5318,7 @@ impl ConversationService {
                 &row.conversation_id,
                 UpdateConversationRequest {
                     name: None,
+                    name_source: None,
                     pinned: None,
                     model: Some(model.clone()),
                     delegation_policy: None,

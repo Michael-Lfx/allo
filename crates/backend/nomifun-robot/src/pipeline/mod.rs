@@ -5,5 +5,7 @@ pub mod sentence;
 pub mod uplink;
 
 pub use downlink::{DownlinkPacer, PRIME_FRAMES, encode_for_downlink};
-pub use sentence::{EMOTIONS, SentenceSplitter, normalize_emotion, strip_emotion};
+pub use sentence::{
+    SentenceSplitter, sanitize_for_display, sanitize_for_speech, strip_stage_directions,
+};
 pub use uplink::{MAX_UTTERANCE_MS, UplinkOutcome, UplinkPipeline};
