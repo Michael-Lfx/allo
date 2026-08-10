@@ -751,6 +751,31 @@ function questionStateMeta(
 
 const QUESTION_SELECTABLE_COLUMNS = ['source', 'state', 'due_at', 'tags'];
 const QUESTION_COLUMNS_STORAGE_KEY = 'learning.questionTableColumns';
+const REVIEW_FILTERS_STORAGE_KEY = 'learning.reviewFilters';
+
+interface StoredReviewFilters {
+  courses: string[];
+  tags: string[];
+}
+
+function loadStoredReviewFilters(): StoredReviewFilters {
+  try {
+    const raw = localStorage.getItem(REVIEW_FILTERS_STORAGE_KEY);
+    if (raw !== null) {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        const { courses, tags } = parsed as { courses?: unknown; tags?: unknown };
+        return {
+          courses: Array.isArray(courses) ? courses.filter((c): c is string => typeof c === 'string') : [],
+          tags: Array.isArray(tags) ? tags.filter((t): t is string => typeof t === 'string') : [],
+        };
+      }
+    }
+  } catch {
+    // Corrupted storage falls back to empty filters.
+  }
+  return { courses: [], tags: [] };
+}
 
 function loadVisibleQuestionColumns(): string[] {
   try {
@@ -1947,9 +1972,10 @@ const LearningPage: React.FC = () => {
     target: CourseSummary | QuestionEntry;
   } | null>(null);
   const [allTags, setAllTags] = useState<string[]>([]);
-  // 开始复习横幅的筛选维度：课程（可多选，含“其它”孤立问题）与标签
-  const [reviewCourseFilter, setReviewCourseFilter] = useState<string[]>([]);
-  const [reviewTagFilter, setReviewTagFilter] = useState<string[]>([]);
+  // 开始复习横幅的筛选维度：课程（可多选，含“其它”孤立问题）与标签；
+  // 初始值从 localStorage 恢复，下次打开学习页时沿用上次的选择。
+  const [reviewCourseFilter, setReviewCourseFilter] = useState<string[]>(() => loadStoredReviewFilters().courses);
+  const [reviewTagFilter, setReviewTagFilter] = useState<string[]>(() => loadStoredReviewFilters().tags);
   const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   const [diagnosticLimit] = useConfig('learning.diagnosticLimit');
 
@@ -1975,6 +2001,20 @@ const LearningPage: React.FC = () => {
       setReviews(nextReviews);
       setDetail(nextDetail);
       setAllTags(nextTags);
+      // 持久化的筛选可能引用已删除的课程/标签，加载到最新列表后剔除失效值
+      // （“其它”孤立问题选项不依赖具体课程，始终保留）。修正后的筛选会
+      // 触发一次重载，保证队列与下拉选项同步。
+      const validCourseIds = new Set(nextCourses.map((course) => course.id));
+      const nextCourseFilter = reviewCourseFilter.filter(
+        (value) => value === ORPHAN_COURSE_FILTER || validCourseIds.has(value)
+      );
+      const nextTagFilter = reviewTagFilter.filter((tag) => nextTags.includes(tag));
+      if (nextCourseFilter.length !== reviewCourseFilter.length) {
+        setReviewCourseFilter(nextCourseFilter);
+      }
+      if (nextTagFilter.length !== reviewTagFilter.length) {
+        setReviewTagFilter(nextTagFilter);
+      }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
@@ -1986,6 +2026,14 @@ const LearningPage: React.FC = () => {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 筛选变化时持久化，下次打开学习页时复用
+  useEffect(() => {
+    localStorage.setItem(
+      REVIEW_FILTERS_STORAGE_KEY,
+      JSON.stringify({ courses: reviewCourseFilter, tags: reviewTagFilter })
+    );
+  }, [reviewCourseFilter, reviewTagFilter]);
 
   const importCourse = useCallback(async () => {
     let pack: unknown;
