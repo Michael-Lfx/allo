@@ -142,7 +142,6 @@ function publishTurnCredits(params: {
       updates: {
         extra: { turn_credit_usage: merged } as TChatConversation['extra'],
       },
-      merge_extra: true,
     })
     .then((ok) => {
       if (ok) {

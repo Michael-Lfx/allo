@@ -643,7 +643,6 @@ export const useNomiMessage = (
                     updates: {
                       extra: { last_token_usage: newTokenUsage } as TChatConversation['extra'],
                     },
-                    merge_extra: true,
                   })
                   .then((ok) => {
                     if (ok) {

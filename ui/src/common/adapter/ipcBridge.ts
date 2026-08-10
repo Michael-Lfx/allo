@@ -666,12 +666,12 @@ export const conversation = {
   // 服务端置位时自动维护 pinned_at）；body 构造的 `...rest` 原样透传该字段。
   // `name_source` 声明 name 写入来源：'user' 表示用户改名（后端据此阻止自动标题覆盖），
   // 'auto' 表示首条消息截断 preview（仅当还没有模型标题时生效）。
-  update: httpPatch<boolean, { conversation_id: ConversationId; updates: Partial<TChatConversation> & { pinned?: boolean; name_source?: 'user' | 'auto' }; merge_extra?: boolean }>(
+  update: httpPatch<boolean, { conversation_id: ConversationId; updates: Partial<TChatConversation> & { pinned?: boolean; name_source?: 'user' | 'auto' } }>(
     (p) => `/api/conversations/${p.conversation_id}`,
     (p) => {
-      // `merge_extra` is a client-only hint: the backend always merges `extra`
-      // and UpdateConversationRequest uses deny_unknown_fields, so forwarding
-      // the flag makes every metrics / workspace PATCH fail deserialization.
+      // 不要往 body 里加任何 UpdateConversationRequest 之外的字段：该 DTO 是
+      // deny_unknown_fields，多一个键整条 PATCH 直接 400。`extra` 恒为合并语义
+      // （见 nomifun-conversation/src/service.rs 的 update），无需开关字段。
       const updates = p.updates as Record<string, unknown>;
       const { model: rawModel, ...rest } = updates;
       const model = toApiModelOptional(rawModel as TProviderWithModel | undefined);
