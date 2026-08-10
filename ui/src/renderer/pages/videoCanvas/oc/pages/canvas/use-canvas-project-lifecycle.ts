@@ -81,7 +81,7 @@ export function useCanvasProjectLifecycle({
         setProjectLoaded(false);
         const project = openProject(projectId);
         if (!project) {
-            navigate("/video-generation/canvas", { replace: true });
+            navigate("/video-generation?mode=creation", { replace: true });
             return;
         }
 
@@ -180,7 +180,7 @@ export function useCanvasProjectLifecycle({
         }
         deleteProjects([projectId]);
         cleanupAssetImages();
-        navigate("/video-generation/canvas");
+        navigate("/video-generation?mode=creation");
     }, [cleanupAssetImages, deleteProjects, message, navigate, nodesRef, projectId]);
 
     const renameCurrentProject = useCallback((title: string) => {

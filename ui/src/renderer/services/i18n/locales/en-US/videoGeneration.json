@@ -4,8 +4,12 @@
   "mode": {
     "agent": "Agent",
     "canvas": "Canvas",
+    "agentLabel": "Agent mode",
+    "creationLabel": "Creation mode",
     "agentHint": "Agent mode: plan storyboards from a prompt and render a film.",
-    "canvasHint": "Canvas mode (dev): node-based canvas for precise generation control."
+    "canvasHint": "Canvas mode (dev): node-based canvas for precise generation control.",
+    "agentMenuDesc": "Auto-plan storyboards and render a film",
+    "creationMenuDesc": "Open the infinite canvas to arrange freely"
   },
   "nav": {
     "entry": "Video Generation",
@@ -103,20 +107,100 @@
     "eyebrow": "AI narrative director",
     "heroTitle": "Turn one idea into a complete film",
     "heroSubtitle": "Create an editable storyboard first, then render after the story and visuals feel right.",
+    "homeHeroPrefix": "Start your",
+    "homeHeroSuffix": " and create now!",
     "advanced": "Style & models",
     "generateStoryboard": "Generate storyboard",
-    "modelRequired": "A planning model is required before generating a storyboard.",
+    "enterCanvas": "Open canvas",
+    "customize": "Customize generation preferences",
+    "modelRequired": "A planning model is required before generating.",
     "configureModels": "Open Model Hub",
     "tryExample": "Try:",
+    "skillsMenuTitle": "Choose a skill",
+    "skillsMenuAria": "Choose a skill",
+    "canvasTitleFromSkill": "{{skill}} project",
     "modes": {
       "idea": "One idea",
       "script": "Full script",
       "novel": "Novel text"
     },
+    "skills": {
+      "ideaDesc": "Expand one spark into a complete film",
+      "scriptDesc": "Break the plot into editable shots",
+      "novelDesc": "Extract the storyline and design shots",
+      "cinematic": {
+        "label": "Cinematic",
+        "desc": "Documentary light · narrative lenses"
+      },
+      "anime": {
+        "label": "Anime",
+        "desc": "Clean line art · anime look"
+      },
+      "cyberpunk": {
+        "label": "Cyber neon",
+        "desc": "Future city · high contrast"
+      },
+      "inkWash": {
+        "label": "Ink wash",
+        "desc": "Negative space · Eastern aesthetics"
+      }
+    },
+    "preferences": {
+      "customize": "Custom",
+      "title": "Generation preferences",
+      "dialogAria": "Generation preferences",
+      "automatic": "Auto",
+      "automaticHint": "Auto is on. Aspect and model controls are locked; the current selection will be used on submit.",
+      "mediaKindAria": "Generation type",
+      "image": "Image",
+      "video": "Video",
+      "aspectLabel": "Aspect ratio",
+      "aspectAria": "Aspect ratio",
+      "smart": "Smart",
+      "imageModel": "Image model",
+      "modelAndResolution": "Model & resolution",
+      "resolutionAria": "Resolution",
+      "targetDuration": "Target duration",
+      "clipDuration": "Clip duration",
+      "planningModel": "Planning model",
+      "loading": "Loading…",
+      "noModelSelected": "No model selected"
+    },
     "composer": {
       "ideaPlaceholder": "Describe the story, mood, or product visuals you want to see…",
       "scriptPlaceholder": "Paste a script and Flowy will turn it into editable shots…",
-      "novelPlaceholder": "Paste a novel excerpt and Flowy will shape the story into shots…"
+      "novelPlaceholder": "Paste a novel excerpt and Flowy will shape the story into shots…",
+      "creationPlaceholder": "Describe the frame, camera, or mood you want — type / for style skills…",
+      "ideaPlaceholderSlash": "Enter an idea, story, or product scene — type / for skills…"
+    },
+    "upload": {
+      "aria": "Upload images, scripts, or other documents",
+      "removeDocument": "Remove document",
+      "removeReference": "Remove {{name}}",
+      "unsupported": "Some files are unsupported. Please upload images, DOCX, or plain-text documents.",
+      "cameoNameRequired": "Please name every character reference image.",
+      "docUnsupported": "Unsupported document format. Upload DOCX, TXT, Markdown, JSON, CSV, SRT, or VTT.",
+      "docTooLarge": "Documents must be 5 MB or smaller.",
+      "docEmpty": "The document is empty.",
+      "docxCorrupt": "The DOCX file is damaged or unreadable.",
+      "docxNoBody": "No document body was found in the DOCX.",
+      "untitledAsset": "Untitled asset"
+    },
+    "gallery": {
+      "title": "Recent canvases",
+      "subtitle": "Continue an existing project, or start from a blank canvas.",
+      "searchPlaceholder": "Search canvases…",
+      "createBlank": "New blank canvas",
+      "untitled": "Untitled canvas",
+      "loadError": "Failed to load canvases",
+      "emptyTitle": "Create your first infinite canvas",
+      "emptyDesc": "Start from the prompt above, or click here to create a blank canvas.",
+      "filterEmpty": "No matching canvases",
+      "nodes": "{{count}} nodes",
+      "deleteAria": "Delete {{title}}",
+      "deleteOk": "Canvas deleted",
+      "createFailed": "Failed to create: {{error}}",
+      "deleteFailed": "Failed to delete: {{error}}"
     },
     "examples": {
       "product": "Create a 30-second launch film for a minimal coffee machine",
@@ -132,7 +216,8 @@
       "descPlaceholder": "Optional note (identity / wardrobe)",
       "remove": "Remove",
       "uploading": "Uploading character references…",
-      "uploadFailed": "Failed to upload character reference"
+      "uploadFailed": "Failed to upload character reference",
+      "defaultName": "Character {{n}}"
     }
   },
   "workflow": {
@@ -229,7 +314,11 @@
     "exportBusy": "Finish planning or rendering before exporting.",
     "exportOk": "Project exported",
     "exportFailed": "Export failed",
-    "exportFilter": "Flowy video project"
+    "exportFilter": "Flowy video project",
+    "openInCanvas": "Open in Canvas",
+    "openInCanvasOk": "Opened in Canvas: {{shots}} shots · {{media}} media",
+    "openInCanvasReused": "Opened existing Canvas for this project",
+    "openInCanvasFailed": "Failed to open in Canvas"
   },
   "workspace": {
     "back": "Back to list",
@@ -261,6 +350,11 @@
       "durationLabel": "Target duration (seconds)",
       "durationHint": "Each shot clip is at least 5 seconds; planning uses this to control shot count.",
       "durationCreditsHint": "Est. ~{{credits}} credits (~{{rate}}/sec)",
+      "resolutionLabel": "Resolution",
+      "resolutionHint": "Available resolutions depend on the video model (Fast/Mini max 720p)",
+      "fpsLabel": "Frame rate",
+      "fpsHint": "Available frame rates depend on the video model",
+      "fpsLockedHint": "This model is locked to {{fps}} fps (cinematic)",
       "aspectLabel": "Aspect ratio",
       "aspectHint": "Applies to Seedance output and poster cover",
       "aspectPreview": "Aspect preview {{ratio}}",

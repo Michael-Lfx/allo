@@ -1,7 +1,7 @@
 .page {
   min-height: 100%;
   background:
-    radial-gradient(circle at 18% 0%, rgba(var(--primary-6), 0.08), transparent 34rem),
+    radial-gradient(1200px 420px at 50% -80px, rgba(var(--primary-6), 0.07), transparent 70%),
     var(--color-bg-1);
 }
 
@@ -591,7 +591,8 @@
 
 .durationTimelineTrackWrap {
   position: relative;
-  height: 44px;
+  height: 52px;
+  margin-bottom: 2px;
 }
 
 .durationTimelineTrack {

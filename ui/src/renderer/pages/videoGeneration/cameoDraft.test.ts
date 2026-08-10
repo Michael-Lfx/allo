@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { suggestCameoCharacterName } from './components/CameoCastEditor';
-import type { VideoCreateDraft } from './components/VideoCreateComposer';
+import { suggestCameoCharacterName } from './cameoUtils';
+import type { VideoCreateDraft } from './home/types';
 import type { CameoDraftItem } from './types';
 
-/** Mirrors VideoCreateComposer persistence: strip File / previewUrl before JSON. */
+/** Mirrors VideoHomeComposer persistence: strip File / previewUrl before JSON. */
 function serializeCameoDraft(draft: Pick<VideoCreateDraft, 'cameos'>) {
   return draft.cameos.map(({ localId, characterName, description }) => ({
     localId,

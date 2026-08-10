@@ -59,6 +59,10 @@ interface ModelSelectorsProps {
   onChange: (next: VimaxModelSelection) => void;
   disabled?: boolean;
   isMobile?: boolean;
+  /** Limit visible pickers for compact generation-preference surfaces. */
+  mode?: 'all' | 'agent' | 'image' | 'video' | 'llm';
+  /** Mount dropdowns on body so nested popovers do not clip or auto-close. */
+  popupContainer?: HTMLElement | (() => HTMLElement);
 }
 
 const ModelSelectors: React.FC<ModelSelectorsProps> = ({
@@ -66,10 +70,24 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
   onChange,
   disabled,
   isMobile,
+  mode = 'all',
+  popupContainer,
 }) => {
   const { t } = useTranslation();
   const llmModels = useGeneratorModels('text');
   const { imageModels, videoModels, isLoading: mediaLoading } = useMediaModels();
+  const resolvePopupContainer =
+    typeof popupContainer === 'function'
+      ? popupContainer
+      : popupContainer
+        ? () => popupContainer
+        : undefined;
+  const selectPopupProps = resolvePopupContainer
+    ? {
+        getPopupContainer: resolvePopupContainer,
+        triggerProps: { autoAlignPopupWidth: true as const },
+      }
+    : {};
 
   const llmOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -123,79 +141,109 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [llmOptions, imageOptions, videoModels]);
 
-  const grid = isMobile ? 'grid-cols-1' : 'grid-cols-3';
+  const showLlm = mode === 'all' || mode === 'agent' || mode === 'llm';
+  const showImage = mode === 'all' || mode === 'agent' || mode === 'image';
+  const showVideo = mode === 'all' || mode === 'agent' || mode === 'video';
+  const visibleCount = [showLlm, showImage, showVideo].filter(Boolean).length;
+  const grid =
+    isMobile || visibleCount === 1
+      ? 'grid-cols-1'
+      : visibleCount === 2
+        ? 'grid-cols-2'
+        : 'grid-cols-3';
 
   return (
     <div className={`grid gap-10px ${grid}`}>
-      <div className='flex flex-col gap-6px'>
-        <label className='text-12px text-[var(--color-text-3)]'>
-          {t('videoGeneration.workspace.models.llm', { defaultValue: '规划模型（LLM）' })}
-        </label>
-        <Select
-          showSearch
-          allowClear
-          disabled={disabled}
-          placeholder={t('videoGeneration.workspace.models.llmPlaceholder', {
-            defaultValue: '选择聊天模型',
-          })}
-          value={value.llm_model || undefined}
-          onChange={(v) => onChange({ ...value, llm_model: (v as string) || '' })}
-          options={llmOptions}
-          notFoundContent={
-            llmModels.hasProviders
-              ? t('videoGeneration.workspace.models.empty', { defaultValue: '暂无可用模型' })
-              : t('videoGeneration.workspace.models.noProviders', {
-                  defaultValue: '请先在模型中心配置平台',
-                })
-          }
-        />
-      </div>
-      <div className='flex flex-col gap-6px'>
-        <label className='text-12px text-[var(--color-text-3)]'>
-          {t('videoGeneration.workspace.models.image', { defaultValue: '图片模型' })}
-        </label>
-        {mediaLoading ? (
-          <Spin size={16} />
-        ) : (
+      {showLlm ? (
+        <div className='flex flex-col gap-6px'>
+          <label className='text-12px text-[var(--color-text-3)]'>
+            {t('videoGeneration.workspace.models.llm', {
+              defaultValue: '规划模型（LLM）',
+            })}
+          </label>
           <Select
             showSearch
             allowClear
             disabled={disabled}
-            placeholder={t('videoGeneration.workspace.models.imagePlaceholder', {
-              defaultValue: '选择图片模型',
+            placeholder={t('videoGeneration.workspace.models.llmPlaceholder', {
+              defaultValue: '选择聊天模型',
             })}
-            value={value.image_model || undefined}
-            onChange={(v) => onChange({ ...value, image_model: (v as string) || '' })}
-            options={imageOptions}
-            notFoundContent={t('videoGeneration.workspace.models.empty', {
-              defaultValue: '暂无可用模型',
-            })}
+            value={value.llm_model || undefined}
+            onChange={(v) => onChange({ ...value, llm_model: (v as string) || '' })}
+            options={llmOptions}
+            notFoundContent={
+              llmModels.hasProviders
+                ? t('videoGeneration.workspace.models.empty', {
+                    defaultValue: '暂无可用模型',
+                  })
+                : t('videoGeneration.workspace.models.noProviders', {
+                    defaultValue: '请先在模型中心配置平台',
+                  })
+            }
+            {...selectPopupProps}
           />
-        )}
-      </div>
-      <div className='flex flex-col gap-6px'>
-        <label className='text-12px text-[var(--color-text-3)]'>
-          {t('videoGeneration.workspace.models.video', { defaultValue: '视频模型' })}
-        </label>
-        {mediaLoading ? (
-          <Spin size={16} />
-        ) : (
-          <Select
-            showSearch
-            allowClear
-            disabled={disabled}
-            placeholder={t('videoGeneration.workspace.models.videoPlaceholder', {
-              defaultValue: '选择视频模型',
+        </div>
+      ) : null}
+      {showImage ? (
+        <div className='flex flex-col gap-6px'>
+          <label className='text-12px text-[var(--color-text-3)]'>
+            {t('videoGeneration.workspace.models.image', {
+              defaultValue: '图片模型',
             })}
-            value={value.video_model || undefined}
-            onChange={(v) => onChange({ ...value, video_model: (v as string) || '' })}
-            options={videoOptions}
-            notFoundContent={t('videoGeneration.workspace.models.empty', {
-              defaultValue: '暂无可用模型',
+          </label>
+          {mediaLoading ? (
+            <Spin size={16} />
+          ) : (
+            <Select
+              showSearch
+              allowClear
+              disabled={disabled}
+              placeholder={t('videoGeneration.workspace.models.imagePlaceholder', {
+                defaultValue: '选择图片模型',
+              })}
+              value={value.image_model || undefined}
+              onChange={(v) =>
+                onChange({ ...value, image_model: (v as string) || '' })
+              }
+              options={imageOptions}
+              notFoundContent={t('videoGeneration.workspace.models.empty', {
+                defaultValue: '暂无可用模型',
+              })}
+              {...selectPopupProps}
+            />
+          )}
+        </div>
+      ) : null}
+      {showVideo ? (
+        <div className='flex flex-col gap-6px'>
+          <label className='text-12px text-[var(--color-text-3)]'>
+            {t('videoGeneration.workspace.models.video', {
+              defaultValue: '视频模型',
             })}
-          />
-        )}
-      </div>
+          </label>
+          {mediaLoading ? (
+            <Spin size={16} />
+          ) : (
+            <Select
+              showSearch
+              allowClear
+              disabled={disabled}
+              placeholder={t('videoGeneration.workspace.models.videoPlaceholder', {
+                defaultValue: '选择视频模型',
+              })}
+              value={value.video_model || undefined}
+              onChange={(v) =>
+                onChange({ ...value, video_model: (v as string) || '' })
+              }
+              options={videoOptions}
+              notFoundContent={t('videoGeneration.workspace.models.empty', {
+                defaultValue: '暂无可用模型',
+              })}
+              {...selectPopupProps}
+            />
+          )}
+        </div>
+      ) : null}
     </div>
   );
 };
