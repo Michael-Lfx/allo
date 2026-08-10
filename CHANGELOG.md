@@ -5,6 +5,10 @@ notes at a high level rather than a complete historical log.
 
 ## Unreleased
 
+- Composer browser input handling now treats missing or non-string `beforeinput`
+  fields as browser-owned input, preventing `undefined.includes` typing errors
+  while preserving IME, line break, deletion, and paste behavior.
+
 - Composer paste handling no longer inserts plain text twice after page or
   conversation switches; plain text remains owned by the Composer while files
   and images continue through PasteService.
