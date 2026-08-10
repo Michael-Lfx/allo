@@ -129,6 +129,7 @@ fn make_nomi_config() -> NomiResolvedConfig {
         install_embedded_agent_execution: true,
         allowed_tools: Vec::new(),
         write_root: None,
+        reasoning_effort: None,
     }
 }
 

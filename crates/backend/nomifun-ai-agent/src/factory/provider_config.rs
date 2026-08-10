@@ -11,7 +11,8 @@ use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role};
 use nomifun_common::{AppError, ProviderId};
 use nomifun_db::{
-    FLOWY_CATALOG_MAX_TOKENS_PARAM, IProviderModelRepository, IProviderRepository,
+    FLOWY_CATALOG_MAX_TOKENS_PARAM, FLOWY_CATALOG_REASONING_EFFORT_PARAM,
+    IProviderModelRepository, IProviderRepository,
 };
 
 use crate::types::NomiCompatOverrides;
@@ -86,6 +87,9 @@ pub(crate) async fn resolve_provider_fields(
     let model_max_tokens = model_row
         .as_ref()
         .and_then(|model_row| flowy_catalog_max_tokens(provider_id, &model_row.params));
+    let catalog_reasoning_effort = model_row.as_ref().and_then(|model_row| {
+        flowy_catalog_reasoning_effort(provider_id, &model_row.params)
+    });
 
     let (base_url, mut compat_overrides) =
         resolve_nomi_url_and_compat(&row.platform, &row.base_url, &provider, row.is_full_url);
@@ -99,6 +103,10 @@ pub(crate) async fn resolve_provider_fields(
         && model.trim().eq_ignore_ascii_case("deepseek-v4-flash-free")
     {
         compat_overrides.require_reasoning_content = Some(true);
+    }
+    if let Some(levels) = catalog_reasoning_effort {
+        compat_overrides.supports_effort = Some(true);
+        compat_overrides.effort_levels = Some(levels);
     }
 
     let bedrock_config = if row.platform == "bedrock" {
@@ -141,6 +149,37 @@ fn flowy_catalog_max_tokens(provider_id: &str, params: &str) -> Option<u32> {
         .get(FLOWY_CATALOG_MAX_TOKENS_PARAM)?
         .as_u64()?;
     u32::try_from(value).ok().filter(|value| *value > 0)
+}
+
+/// Read catalog-advertised `reasoning_effort` levels for Flowy's built-in
+/// provider. Empty arrays / non-string entries are treated as absent.
+fn flowy_catalog_reasoning_effort(provider_id: &str, params: &str) -> Option<Vec<String>> {
+    if provider_id != nomifun_common::FLOWY_BUILTIN_PROVIDER_ID {
+        return None;
+    }
+
+    let value = serde_json::from_str::<serde_json::Value>(params).ok()?;
+    let levels = value
+        .get(FLOWY_CATALOG_REASONING_EFFORT_PARAM)?
+        .as_array()?;
+    let mut out = Vec::new();
+    for entry in levels {
+        let Some(raw) = entry.as_str() else {
+            continue;
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.iter().any(|existing| existing == trimmed) {
+            out.push(trimmed.to_owned());
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 /// Prefer an explicit per-model override; otherwise take models.dev when known.
@@ -279,6 +318,12 @@ pub async fn resolve_provider_config(
     }
     if let Some(required) = fields.compat_overrides.require_reasoning_content {
         config.compat.require_reasoning_content = Some(required);
+    }
+    if let Some(supports_effort) = fields.compat_overrides.supports_effort {
+        config.compat.supports_effort = Some(supports_effort);
+    }
+    if let Some(levels) = fields.compat_overrides.effort_levels.clone() {
+        config.compat.effort_levels = Some(levels);
     }
     // NB: compat_overrides.supports_image is intentionally NOT applied here —
     // this one-shot path (IDMM sidecar) builds text-only messages, so image
@@ -730,6 +775,33 @@ mod tests {
         }
 
         assert_eq!(flowy_catalog_max_tokens("external-provider", valid), None);
+    }
+
+    #[test]
+    fn flowy_catalog_reasoning_effort_reads_string_levels() {
+        let flowy_provider = nomifun_common::FLOWY_BUILTIN_PROVIDER_ID;
+        assert_eq!(
+            flowy_catalog_reasoning_effort(
+                flowy_provider,
+                r#"{"_flowy_catalog_reasoning_effort":["low"," medium ","xhigh","low",""]}"#
+            )
+            .as_deref(),
+            Some(["low".to_owned(), "medium".to_owned(), "xhigh".to_owned()].as_slice())
+        );
+        assert_eq!(
+            flowy_catalog_reasoning_effort(
+                flowy_provider,
+                r#"{"_flowy_catalog_reasoning_effort":[]}"#
+            ),
+            None
+        );
+        assert_eq!(
+            flowy_catalog_reasoning_effort(
+                "external-provider",
+                r#"{"_flowy_catalog_reasoning_effort":["low"]}"#
+            ),
+            None
+        );
     }
 
     #[test]

@@ -24,6 +24,21 @@ export async function savePreferredMode(agentKey: string, mode: string): Promise
   }
 }
 
+/** Persist the Guid/sendbox reasoning-effort pick for the next Nomi session. */
+export async function savePreferredReasoningEffort(effort: string): Promise<void> {
+  try {
+    const config = configService.get('nomi.config');
+    await configService.set('nomi.config', { ...config, preferredReasoningEffort: effort });
+  } catch {
+    /* silent */
+  }
+}
+
+export function readPreferredReasoningEffort(): string | undefined {
+  const preferred = configService.get('nomi.config')?.preferredReasoningEffort?.trim();
+  return preferred || undefined;
+}
+
 // NOTE: the former `savePreferredModelId` helper was removed on purpose:
 // ACP model choices are session-scoped. New conversations must initialize
 // from the agent CLI's local default config, so nothing may persist a

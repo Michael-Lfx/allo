@@ -349,13 +349,18 @@ pub struct ClawModelEntry {
 
 /// Capability payload inside `ClawModelEntry.extra` (JSON string from model_dev).
 ///
-/// Example: `{"input":["text","image"],"reasoning":false,"tools":true,"context_window":128000,"max_tokens":8192,"credit_rate":1}`
+/// Example:
+/// `{"input":["text","image"],"reasoning":true,"reasoning_effort":["low","medium","xhigh"],"tools":true,"context_window":128000,"max_tokens":8192,"credit_rate":1}`
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ClawModelExtra {
     #[serde(default)]
     pub input: Vec<String>,
     #[serde(default)]
     pub reasoning: bool,
+    /// Allowed OpenAI-style `reasoning_effort` values when [`Self::reasoning`] is true.
+    /// Empty / absent means the model does not advertise user-selectable effort.
+    #[serde(default)]
+    pub reasoning_effort: Vec<String>,
     #[serde(default)]
     pub tools: bool,
     #[serde(default)]
@@ -401,6 +406,32 @@ impl ClawModelExtra {
     /// Positive output limit when present; `0` / missing → `None`.
     pub fn max_output_tokens(&self) -> Option<u32> {
         self.max_tokens.filter(|v| *v > 0)
+    }
+
+    /// User-selectable reasoning effort levels advertised by the catalog.
+    ///
+    /// Returns `None` unless the model is a reasoning model **and** the
+    /// server listed at least one non-empty effort value. Levels are
+    /// trimmed and de-duplicated while preserving first-seen order.
+    pub fn reasoning_effort_levels(&self) -> Option<Vec<String>> {
+        if !self.reasoning {
+            return None;
+        }
+        let mut levels = Vec::new();
+        for raw in &self.reasoning_effort {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if !levels.iter().any(|existing| existing == trimmed) {
+                levels.push(trimmed.to_owned());
+            }
+        }
+        if levels.is_empty() {
+            None
+        } else {
+            Some(levels)
+        }
     }
 }
 
@@ -520,6 +551,29 @@ mod plan_label_tests {
         assert_eq!(extra.credit_rate, Some(1.0));
         assert!(extra.supports_vision());
         assert!(!extra.supports_audio());
+        assert_eq!(extra.reasoning_effort_levels(), None);
+    }
+
+    #[test]
+    fn claw_model_extra_reasoning_effort_requires_reasoning_flag() {
+        let levels = ClawModelExtra::parse(
+            r#"{"reasoning":true,"reasoning_effort":["low"," medium ","xhigh","low",""]}"#,
+        )
+        .reasoning_effort_levels();
+        assert_eq!(
+            levels.as_deref(),
+            Some(["low".to_owned(), "medium".to_owned(), "xhigh".to_owned()].as_slice())
+        );
+        assert_eq!(
+            ClawModelExtra::parse(r#"{"reasoning":false,"reasoning_effort":["low","medium"]}"#)
+                .reasoning_effort_levels(),
+            None
+        );
+        assert_eq!(
+            ClawModelExtra::parse(r#"{"reasoning":true,"reasoning_effort":[" "," "]}"#)
+                .reasoning_effort_levels(),
+            None
+        );
     }
 
     #[test]

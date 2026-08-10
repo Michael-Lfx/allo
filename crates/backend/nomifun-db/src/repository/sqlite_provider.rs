@@ -8,7 +8,7 @@ use crate::repository::{
     provider_preference_delete_action, IProviderRepository, ProviderPreferenceDeleteAction,
 };
 use crate::repository::provider::{
-    CreateProviderParams, ProviderModelProfileSeed, UpdateProviderParams, merge_catalog_max_tokens,
+    CreateProviderParams, ProviderModelProfileSeed, UpdateProviderParams, merge_catalog_params,
 };
 
 const PROVIDER_HARD_BINDING_DELETE_CONFLICT: &str =
@@ -561,7 +561,11 @@ async fn sync_inferred_profiles_tx(
             continue;
         };
         let fill_inferred_profile = tasks.trim() == "[]" && source == "inferred";
-        let params = merge_catalog_max_tokens(&existing_params, seed.catalog_max_tokens);
+        let params = merge_catalog_params(
+            &existing_params,
+            seed.catalog_max_tokens,
+            seed.catalog_reasoning_effort.as_deref(),
+        );
 
         match (fill_inferred_profile, params.as_deref()) {
             (true, Some(params)) => {
@@ -1075,6 +1079,7 @@ mod tests {
             tasks: r#"["chat"]"#.into(),
             traits: "[]".into(),
             catalog_max_tokens: None,
+            catalog_reasoning_effort: None,
         }];
         let result = repo
             .update_with_model_profiles(
@@ -1130,12 +1135,14 @@ mod tests {
                 tasks: r#"["chat"]"#.into(),
                 traits: "[]".into(),
                 catalog_max_tokens: None,
+                catalog_reasoning_effort: None,
             },
             ProviderModelProfileSeed {
                 model: "new-model-2".into(),
                 tasks: r#"["chat"]"#.into(),
                 traits: "[]".into(),
                 catalog_max_tokens: None,
+                catalog_reasoning_effort: None,
             },
         ];
         let result = repo

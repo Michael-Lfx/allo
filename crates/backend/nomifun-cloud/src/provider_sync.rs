@@ -185,14 +185,30 @@ fn build_profile_seeds(
         if model.trim().is_empty() || !seen.insert(model.clone()) {
             continue;
         }
-        let (tasks, traits) = derive_tasks_and_traits(platform, &model);
+        let extra = entry.model_extra();
+        let (mut tasks, mut traits) = derive_tasks_and_traits(platform, &model);
+        // Catalog `extra` is authoritative for Flowy chat capabilities that
+        // name heuristics cannot see (reasoning + selectable effort levels).
+        if extra.reasoning && !traits.contains(&nomifun_api_types::ModelTrait::Reasoning) {
+            traits.push(nomifun_api_types::ModelTrait::Reasoning);
+        }
+        if extra.tools && !traits.contains(&nomifun_api_types::ModelTrait::FunctionCalling) {
+            traits.push(nomifun_api_types::ModelTrait::FunctionCalling);
+        }
+        if extra.supports_vision() && !traits.contains(&nomifun_api_types::ModelTrait::VisionInput) {
+            traits.push(nomifun_api_types::ModelTrait::VisionInput);
+        }
+        if tasks.is_empty() {
+            tasks.push(nomifun_api_types::ModelTask::Chat);
+        }
         profiles.push(ProviderModelProfileSeed {
             model,
             tasks: serde_json::to_string(&tasks)
                 .map_err(|error| format!("serialize Flowy model tasks: {error}"))?,
             traits: serde_json::to_string(&traits)
                 .map_err(|error| format!("serialize Flowy model traits: {error}"))?,
-            catalog_max_tokens: entry.model_extra().max_output_tokens(),
+            catalog_max_tokens: extra.max_output_tokens(),
+            catalog_reasoning_effort: extra.reasoning_effort_levels(),
         });
     }
 
@@ -463,6 +479,32 @@ mod tests {
         assert_eq!(seeds[0].catalog_max_tokens, Some(4096));
         assert_eq!(seeds[1].model, "AIPC-no-output-limit");
         assert_eq!(seeds[1].catalog_max_tokens, None);
+    }
+
+    #[test]
+    fn build_profile_seeds_projects_reasoning_effort_when_reasoning() {
+        let entries = vec![
+            catalog_entry(
+                "AIPC-think",
+                r#"{"reasoning":true,"reasoning_effort":["low","medium","xhigh"],"tools":true}"#,
+            ),
+            catalog_entry(
+                "AIPC-no-think",
+                r#"{"reasoning":false,"reasoning_effort":["low","medium"]}"#,
+            ),
+        ];
+
+        let seeds = build_profile_seeds(&entries, "openai").unwrap();
+        assert_eq!(
+            seeds[0].catalog_reasoning_effort.as_deref(),
+            Some(["low".to_owned(), "medium".to_owned(), "xhigh".to_owned()].as_slice())
+        );
+        let traits: Vec<String> = serde_json::from_str(&seeds[0].traits).unwrap();
+        assert!(traits.iter().any(|t| t == "reasoning"));
+        assert!(traits.iter().any(|t| t == "function_calling"));
+        assert_eq!(seeds[1].catalog_reasoning_effort, None);
+        let traits_no: Vec<String> = serde_json::from_str(&seeds[1].traits).unwrap();
+        assert!(!traits_no.iter().any(|t| t == "reasoning"));
     }
 
     #[tokio::test]

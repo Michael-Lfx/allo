@@ -566,6 +566,7 @@
   }
 
   .sendbox-responsive-config-group .nomi-sendbox-model-btn,
+  .sendbox-responsive-config-group .nomi-sendbox-reasoning-effort-btn,
   .sendbox-responsive-config-group .nomi-sendbox-policy-btn,
   .sendbox-actions .sendbox-responsive-config-group .agent-mode-compact-pill {
     width: auto !important;
@@ -583,6 +584,7 @@
   }
 
   .sendbox-responsive-config-group .nomi-sendbox-model-btn .arco-btn-content,
+  .sendbox-responsive-config-group .nomi-sendbox-reasoning-effort-btn .arco-btn-content,
   .sendbox-responsive-config-group .nomi-sendbox-policy-btn .arco-btn-content,
   .sendbox-responsive-config-group .agent-mode-compact-pill .arco-btn-content {
     display: inline-flex !important;
@@ -615,6 +617,8 @@
   @container sendbox-config (max-width: 560px) {
     .sendbox-responsive-config-group .nomi-sendbox-model-btn:hover,
     .sendbox-responsive-config-group .nomi-sendbox-model-btn:focus-visible,
+    .sendbox-responsive-config-group .nomi-sendbox-reasoning-effort-btn:hover,
+    .sendbox-responsive-config-group .nomi-sendbox-reasoning-effort-btn:focus-visible,
     .sendbox-responsive-config-group .nomi-sendbox-policy-btn:hover,
     .sendbox-responsive-config-group .nomi-sendbox-policy-btn:focus-visible,
     .sendbox-responsive-config-group .agent-mode-compact-pill:hover,
@@ -632,6 +636,10 @@
     .sendbox-responsive-config-group .nomi-sendbox-model-btn:hover .sendbox-responsive-chevron,
     .sendbox-responsive-config-group .nomi-sendbox-model-btn:focus-visible .sendbox-responsive-label,
     .sendbox-responsive-config-group .nomi-sendbox-model-btn:focus-visible .sendbox-responsive-chevron,
+    .sendbox-responsive-config-group .nomi-sendbox-reasoning-effort-btn:hover .sendbox-responsive-label,
+    .sendbox-responsive-config-group .nomi-sendbox-reasoning-effort-btn:hover .sendbox-responsive-chevron,
+    .sendbox-responsive-config-group .nomi-sendbox-reasoning-effort-btn:focus-visible .sendbox-responsive-label,
+    .sendbox-responsive-config-group .nomi-sendbox-reasoning-effort-btn:focus-visible .sendbox-responsive-chevron,
     .sendbox-responsive-config-group .nomi-sendbox-policy-btn:hover .sendbox-responsive-label,
     .sendbox-responsive-config-group .nomi-sendbox-policy-btn:focus-visible .sendbox-responsive-label,
     .sendbox-responsive-config-group .agent-mode-compact-pill:hover .sendbox-responsive-label,

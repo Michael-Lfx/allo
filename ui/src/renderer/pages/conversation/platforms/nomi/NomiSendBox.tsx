@@ -5,6 +5,7 @@ import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
 import { uuid, uuidv7 } from '@/common/utils';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
+import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
 import CommandQueuePanel from '@/renderer/components/chat/CommandQueuePanel';
 import GoalModeChip from '@/renderer/components/chat/GoalModeChip';
 import MobileActionSheet, {
@@ -78,6 +79,7 @@ import type { NomiModelSelection } from './useNomiModelSelection';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import type { ModelTrait } from '@/common/config/storage';
+import { catalogReasoningEffortForModel } from '@/renderer/utils/model/reasoningEffort';
 
 /** Trait refinement for the vision guard (stable identity for the SWR key). */
 const VISION_INPUT_TRAITS: ModelTrait[] = ['vision_input'];
@@ -129,6 +131,7 @@ const NomiSendBox: React.FC<{
   conversation_id: ConversationId;
   modelSelection: NomiModelSelection;
   session_mode?: string;
+  reasoning_effort?: string;
   agent_name?: string;
   dynamicModes: AgentModeOption[];
   turnActivity: NomiMessageRuntime;
@@ -142,6 +145,7 @@ const NomiSendBox: React.FC<{
   conversation_id,
   modelSelection,
   session_mode,
+  reasoning_effort,
   agent_name,
   dynamicModes,
   turnActivity,
@@ -149,6 +153,9 @@ const NomiSendBox: React.FC<{
 }) => {
   const [workspacePath, setWorkspacePath] = useState('');
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
+  const [currentReasoningEffort, setCurrentReasoningEffort] = useState<string | undefined>(
+    reasoning_effort
+  );
   const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
   const [goalModeArmed, setGoalModeArmed] = useState(false);
   const layout = useLayoutContext();
@@ -159,6 +166,19 @@ const NomiSendBox: React.FC<{
   const providerLabel = useModelSelectorProviderLabel();
   const { checkAndUpdateTitle } = useAutoTitle();
   const { current_model } = modelSelection;
+
+  const reasoningEffortLevels = useMemo(() => {
+    if (!current_model?.id || !current_model.use_model) return [];
+    // conversation.model snapshots often omit models_detail; resolve against
+    // the live provider catalog so catalog-owned effort levels stay visible.
+    const provider =
+      modelSelection.providers.find((entry) => entry.id === current_model.id) ?? current_model;
+    return catalogReasoningEffortForModel(provider, current_model.use_model);
+  }, [current_model, modelSelection.providers]);
+
+  useEffect(() => {
+    setCurrentReasoningEffort(reasoning_effort);
+  }, [reasoning_effort]);
 
   // ── Vision guard ──────────────────────────────────────────────────────────
   // Chat models that accept image input, from the unified catalog resolve.
@@ -1107,7 +1127,7 @@ const NomiSendBox: React.FC<{
           </div>
         }
         rightTools={
-          hasContextUsage || !hideModeSelector ? (
+          hasContextUsage || !hideModeSelector || reasoningEffortLevels.length > 0 ? (
             <div
               className='sendbox-responsive-config-group'
               data-testid='nomi-sendbox-config-group'
@@ -1118,6 +1138,14 @@ const NomiSendBox: React.FC<{
                   max={tokenUsage?.context_window}
                   cacheReadTokens={tokenUsage?.cache_read_tokens}
                   breakdown={tokenUsage?.context_breakdown}
+                />
+              )}
+              {reasoningEffortLevels.length > 0 && (
+                <ReasoningEffortSelector
+                  conversation_id={conversation_id}
+                  levels={reasoningEffortLevels}
+                  initialEffort={currentReasoningEffort}
+                  onEffortChanged={setCurrentReasoningEffort}
                 />
               )}
               {!hideModeSelector && <NomiModelSelector selection={modelSelection} className='nomi-sendbox-model-btn' />}

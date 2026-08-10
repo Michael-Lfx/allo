@@ -828,5 +828,16 @@
     "emptyArtifacts": "No verified artifacts for this conversation",
     "artifactCount": "{{count}} artifacts",
     "copyPath": "Copy path"
+  },
+  "reasoningEffort": {
+    "switchFailed": "Failed to update reasoning effort",
+    "level": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "Extra high",
+      "minimal": "Minimal",
+      "none": "Off"
+    }
   }
 }
