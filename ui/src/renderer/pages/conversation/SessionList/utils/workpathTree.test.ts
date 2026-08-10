@@ -75,22 +75,49 @@ describe('buildWorkpathTree', () => {
     expect(node.interactive[0].createdAt).toBe(1_000);
     expect(node.terminal[0].createdAt).toBe(2_000);
   });
-  test('组内排序：pinned(pinnedAt 倒序) 在前，余者 activity 倒序', () => {
+  test('组内排序：pinned(pinnedAt 倒序) 在前，余者创建时间倒序', () => {
     const oldId = conversationId(20);
     const newId = conversationId(21);
     const pin1Id = conversationId(22);
     const pin2Id = conversationId(23);
     const node = buildWorkpathTree(
       [
-        conv({ id: oldId, modified_at: 10, extra: { workspace: '/p', custom_workspace: true } }),
-        conv({ id: newId, modified_at: 90, extra: { workspace: '/p', custom_workspace: true } }),
-        conv({ id: pin1Id, modified_at: 50, pinned: true, pinned_at: 1, extra: { workspace: '/p', custom_workspace: true } }),
-        conv({ id: pin2Id, modified_at: 40, pinned: true, pinned_at: 2, extra: { workspace: '/p', custom_workspace: true } }),
+        conv({ id: oldId, created_at: 10, modified_at: 90, extra: { workspace: '/p', custom_workspace: true } }),
+        conv({ id: newId, created_at: 20, modified_at: 10, extra: { workspace: '/p', custom_workspace: true } }),
+        conv({ id: pin1Id, created_at: 30, modified_at: 50, pinned: true, pinned_at: 1, extra: { workspace: '/p', custom_workspace: true } }),
+        conv({ id: pin2Id, created_at: 40, modified_at: 40, pinned: true, pinned_at: 2, extra: { workspace: '/p', custom_workspace: true } }),
       ],
       [],
       []
     );
     expect(node.find((n) => n.key === '/p')!.interactive.map((s) => s.id)).toEqual([pin2Id, pin1Id, newId, oldId]);
+  });
+  test('未置顶会话不会因系统更新 activity 而重排', () => {
+    const firstCreatedId = conversationId(24);
+    const laterCreatedId = conversationId(25);
+    const node = buildWorkpathTree(
+      [
+        conv({
+          id: firstCreatedId,
+          created_at: 10,
+          modified_at: 1_000,
+          extra: { workspace: '/stable', custom_workspace: true },
+        }),
+        conv({
+          id: laterCreatedId,
+          created_at: 20,
+          modified_at: 20,
+          extra: { workspace: '/stable', custom_workspace: true },
+        }),
+      ],
+      [],
+      []
+    );
+
+    expect(node.find((n) => n.key === '/stable')!.interactive.map((s) => s.id)).toEqual([
+      laterCreatedId,
+      firstCreatedId,
+    ]);
   });
   test('节点排序：置顶序 → default → activity 倒序', () => {
     const tree = buildWorkpathTree([conv({ id: conversationId(30), modified_at: 10, extra: { workspace: '/p-old', custom_workspace: true } }), conv({ id: conversationId(31), modified_at: 99, extra: { workspace: '/p-new', custom_workspace: true } }), conv({ id: conversationId(32), modified_at: 5, extra: { workspace: '/p-pin', custom_workspace: true } })], [], ['/p-pin']);

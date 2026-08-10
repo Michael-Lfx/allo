@@ -44,7 +44,7 @@ export type WorkpathNode = {
  * 归属/排序规则见 SessionList 统一重构 spec：
  * - 交互会话 `extra.custom_workspace === true && extra.workspace` → workpathKey(workspace)，否则 default
  * - 终端 `is_default_workpath === true` → default，否则 workpathKey(cwd)
- * - 组内：pinned 在前（pinnedAt 倒序），其余 activityAt 倒序
+ * - 组内：pinned 在前（pinnedAt 倒序），其余 createdAt 倒序
  * - 节点：pinnedWorkpathKeys 序最前 → default 节点 → 其余 activityAt 倒序
  * - default 节点恒存在；显式传入的空 workpath 节点也会产生
  */
@@ -106,7 +106,10 @@ export function buildWorkpathTree(
     });
   }
 
-  const byGroupOrder = (a: SessionEntry, b: SessionEntry) => Number(b.pinned) - Number(a.pinned) || (a.pinned ? b.pinnedAt - a.pinnedAt : 0) || b.activityAt - a.activityAt;
+  const byGroupOrder = (a: SessionEntry, b: SessionEntry) =>
+    Number(b.pinned) - Number(a.pinned) ||
+    (a.pinned ? b.pinnedAt - a.pinnedAt : 0) ||
+    b.createdAt - a.createdAt;
 
   // 置顶 key 入口处归一化，调用方传原始路径（带尾斜杠等）也不会静默失配
   const pinIndex = new Map(pinnedWorkpathKeys.map((k, i) => [workpathKey(k), i]));
