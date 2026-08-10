@@ -108,12 +108,12 @@ describe('message visibility across batching and conversation switches', () => {
     const cleanupEnd = hookSource.indexOf('return useCallback(', cleanupStart);
     const cleanupSource = hookSource.slice(cleanupStart, cleanupEnd);
 
-    expect(cleanupSource.indexOf('clearTimeout(rafRef.current)')).toBeGreaterThanOrEqual(0);
+    expect(cleanupSource.indexOf('cancelAnimationFrame(rafRef.current)')).toBeGreaterThanOrEqual(0);
     expect(cleanupSource.indexOf('rafRef.current = null')).toBeGreaterThan(
-      cleanupSource.indexOf('clearTimeout(rafRef.current)')
+      cleanupSource.indexOf('cancelAnimationFrame(rafRef.current)')
     );
     expect(cleanupSource.indexOf('flush();')).toBeGreaterThan(cleanupSource.indexOf('rafRef.current = null'));
-    expect(hookSource.match(/rafRef\.current = setTimeout\(flush\)/g)).toHaveLength(1);
+    expect(hookSource.match(/rafRef\.current = requestAnimationFrame\(flush\)/g)).toHaveLength(1);
   });
 
   test('rejects an old conversation response before it can merge into the active list', () => {
