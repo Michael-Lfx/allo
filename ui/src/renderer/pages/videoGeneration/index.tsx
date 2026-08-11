@@ -48,6 +48,7 @@ import {
   clearVideoGenerationSessionMemory,
   rememberVideoGenerationSession,
 } from './routeMemory';
+import { isInsufficientCreditsError } from './creditsError';
 import styles from './index.module.css';
 
 /** Lazily load OC bridge so the list page chunk does not pull @oc/stores. */
@@ -195,10 +196,13 @@ const VideoGenerationListPage: React.FC = () => {
           });
           clearVideoHomeDraft();
         } catch (planError) {
+          const raw = planError instanceof Error ? planError.message : String(planError);
           message.error(
-            `${t('videoGeneration.workspace.planFailed', { defaultValue: '规划失败' })}: ${
-              planError instanceof Error ? planError.message : String(planError)
-            }`
+            isInsufficientCreditsError(raw)
+              ? t('videoGeneration.workspace.failure.creditsToast', {
+                  defaultValue: '积分不足，请充值或缩短时长后从断点继续。',
+                })
+              : `${t('videoGeneration.workspace.planFailed', { defaultValue: '规划失败' })}: ${raw}`
           );
           navigate(`/video-generation/${created.id}`, {
             state: { launchDraft: draft, launchError: true },

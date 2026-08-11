@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Progress, Button, Tag, Spin } from '@arco-design/web-react';
 import type { SessionStatus, VimaxRunStatus } from '../types';
+import { isInsufficientCreditsError } from '../creditsError';
 import { statusLabel, statusTagColor } from './SessionCard';
 import { stageLabel } from '../stageI18n';
 
@@ -27,7 +28,7 @@ const STEPS: { key: VimaxRunStatus; labelKey: string }[] = [
   { key: 'succeeded', labelKey: 'videoGeneration.status.succeeded' },
 ];
 
-type FailureKind = 'llm' | 'image' | 'video' | 'unknown';
+type FailureKind = 'credits' | 'llm' | 'image' | 'video' | 'unknown';
 
 function classifyFailure(
   error: string,
@@ -37,6 +38,19 @@ function classifyFailure(
 ): { kind: FailureKind; title: string; hint: string } {
   const lower = error.toLowerCase();
   const isChannel = lower.includes('all channel models failed');
+
+  // Credits first — 402 must not fall through as a generic model failure.
+  if (isInsufficientCreditsError(error)) {
+    return {
+      kind: 'credits',
+      title: t('videoGeneration.workspace.failure.creditsTitle', {
+        defaultValue: '积分不足',
+      }),
+      hint: t('videoGeneration.workspace.failure.creditsHint', {
+        defaultValue: '当前积分不足以完成本次生成。请充值或缩短时长后，点击「从断点继续」；已成功的片段不会重复扣费。',
+      }),
+    };
+  }
 
   // Prefer the stage just before "failed" in the event log.
   const beforeFail = [...(events ?? [])]

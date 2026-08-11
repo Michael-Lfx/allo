@@ -476,6 +476,9 @@
       "videoTitle": "Video model call failed",
       "videoChannelHint": "Video channels were unavailable while generating shot clips. Switch the video model and resume.",
       "videoHint": "Check that the video model is available. Artifacts were kept — you can resume from checkpoint.",
+      "creditsTitle": "Insufficient credits",
+      "creditsHint": "Not enough credits to finish this generation. Top up or shorten the duration, then resume from checkpoint — finished clips will not be billed again.",
+      "creditsToast": "Insufficient credits. Top up or shorten the duration, then resume from checkpoint.",
       "unknownTitle": "Execution failed",
       "unknownHint": "Artifacts were kept. If the error mentions All channel models failed, switch the related model and resume from checkpoint."
     }
