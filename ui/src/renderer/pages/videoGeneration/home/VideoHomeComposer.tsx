@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Input, Popover } from '@arco-design/web-react';
 import {
-  ArrowUp,
   BookOpen,
   CloseSmall,
   Down,
@@ -30,6 +29,7 @@ import CameoCastEditor from '../components/CameoCastEditor';
 import { suggestCameoCharacterName } from '../cameoUtils';
 import type { CameoDraftItem, VimaxWorkflow } from '../types';
 import GenerationPreferencesPopover from './GenerationPreferencesPopover';
+import { BoldSendArrowIcon, SlantedDocIcon } from './ComposerIcons';
 import {
   displayFileStem,
   isSupportedImageFile,
@@ -655,22 +655,36 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             type='button'
             className={`${styles.uploadSlot} ${
               uploadPreview ? styles.uploadSlotFilled : ''
-            }`}
+            } ${documentName && !uploadPreview ? styles.uploadSlotDocument : ''}`}
             disabled={loading}
             onClick={() => fileInputRef.current?.click()}
+            title={t('videoGeneration.create.upload.aria', {
+              defaultValue:
+                '上传角色参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）',
+            })}
             aria-label={t('videoGeneration.create.upload.aria', {
-              defaultValue: '上传图片、剧本或其他文档',
+              defaultValue:
+                '上传角色参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）',
             })}
           >
             {uploadPreview ? (
               <img src={uploadPreview} alt='' className={styles.uploadPreview} />
             ) : (
-              <span className={styles.uploadPlus} aria-hidden='true'>
-                +
+              <span
+                className={`${styles.uploadGlyph} ${
+                  documentName ? styles.uploadGlyphActive : ''
+                }`}
+                aria-hidden='true'
+              >
+                <SlantedDocIcon size={24} className={styles.uploadDocIcon} />
               </span>
             )}
             {activeReferences.length > 1 ? (
               <em className={styles.uploadCount}>+{activeReferences.length - 1}</em>
+            ) : documentName && uploadPreview ? (
+              <em className={styles.uploadDocBadge} aria-hidden='true'>
+                <FileText size={11} />
+              </em>
             ) : null}
           </button>
           <input
@@ -820,6 +834,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           </div>
           <button
             type='button'
+            data-button-shape='circle'
             className={styles.submitButton}
             disabled={loading || !activeText.trim()}
             onClick={submit}
@@ -833,7 +848,11 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   })
             }
           >
-            {loading ? <span className={styles.submitSpinner} /> : <ArrowUp size={18} />}
+            {loading ? (
+              <span className={styles.submitSpinner} />
+            ) : (
+              <BoldSendArrowIcon size={17} className={styles.submitArrow} />
+            )}
           </button>
         </div>
       </div>

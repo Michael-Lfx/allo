@@ -58,7 +58,7 @@ export interface VimaxSession extends SessionSummary {
   working_dir?: string | null;
 }
 
-/** TV Show publish / plaza status from Flowy cloud. */
+/** Flowy TV publish / plaza status from Flowy cloud. */
 export type TvShowStatus = 'pending' | 'published' | 'offline' | 'deleted';
 
 export interface TvShowAuthor {

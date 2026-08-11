@@ -43,11 +43,11 @@
     },
     "tabs": {
       "recent": "Recent projects",
-      "tvShow": "TV Show"
+      "tvShow": "Flowy TV"
     }
   },
   "tvShow": {
-    "title": "TV Show",
+    "title": "Flowy TV",
     "subtitle": "Browse published community films, or check your submission status.",
     "searchPlaceholder": "Search films...",
     "scope": {
@@ -67,13 +67,13 @@
       "plazaTitle": "No films on the plaza yet",
       "plazaDesc": "Approved submissions will show up here.",
       "mineTitle": "You haven’t published yet",
-      "mineDesc": "Open a finished film and tap “Publish to TV Show”."
+      "mineDesc": "Open a finished film and tap “Publish to Flowy TV”."
     },
     "authRequired": {
-      "title": "Sign in to watch TV Show",
-      "desc": "Cloud account is required for the plaza and publishing.",
+      "title": "Sign in to watch Flowy TV",
+      "desc": "Cloud account is required for Flowy TV plaza and publishing.",
       "login": "Sign in",
-      "publish": "Sign in to your cloud account before publishing to TV Show."
+      "publish": "Sign in to your cloud account before publishing to Flowy TV."
     },
     "detail": {
       "title": "Film details",
@@ -90,11 +90,11 @@
       "importFailed": "Import failed"
     },
     "publish": {
-      "action": "Publish to TV Show",
+      "action": "Publish to Flowy TV",
       "needSucceeded": "Finish rendering the film before publishing.",
       "needCover": "A cover poster is required before publishing.",
       "busy": "Finish planning or rendering before publishing.",
-      "ok": "Submitted for review. It will appear on the plaza after approval.",
+      "ok": "Submitted for review. It will appear on the Flowy TV plaza after approval.",
       "failed": "Publish failed"
     }
   },
@@ -176,7 +176,7 @@
       "ideaPlaceholderSlash": "Enter an idea, story, or product scene — type / for skills…"
     },
     "upload": {
-      "aria": "Upload images, scripts, or other documents",
+      "aria": "Upload character references, scripts, or documents (PNG / JPEG / WEBP / DOCX / TXT / Markdown, etc.)",
       "removeDocument": "Remove document",
       "removeReference": "Remove {{name}}",
       "unsupported": "Some files are unsupported. Please upload images, DOCX, or plain-text documents.",

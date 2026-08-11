@@ -768,7 +768,7 @@ const WorkspacePage: React.FC = () => {
     if (cloudStatus !== 'authenticated') {
       message.warning(
         t('videoGeneration.tvShow.authRequired.publish', {
-          defaultValue: '发布到 TV Show 需要先登录云端账号。',
+          defaultValue: '发布到 Flowy TV 需要先登录云端账号。',
         })
       );
       navigate('/cloud-login');
@@ -808,7 +808,7 @@ const WorkspacePage: React.FC = () => {
       });
       message.success(
         t('videoGeneration.tvShow.publish.ok', {
-          defaultValue: '已提交审核，通过后会出现在 TV Show 广场。',
+          defaultValue: '已提交审核，通过后会出现在 Flowy TV 广场。',
         })
       );
     } catch (e) {
@@ -1065,7 +1065,7 @@ const WorkspacePage: React.FC = () => {
             >
               <span className='inline-flex items-center gap-4px'>
                 <Share theme='outline' size={14} fill='currentColor' />
-                {t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 TV Show' })}
+                {t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 Flowy TV' })}
               </span>
             </Button>
             <Popconfirm
