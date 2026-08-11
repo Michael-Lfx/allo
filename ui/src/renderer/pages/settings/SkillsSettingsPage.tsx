@@ -53,7 +53,7 @@ const SkillsSettingsPage: React.FC = () => {
           <SkillsHubSettings />
         </Tabs.TabPane>
         <Tabs.TabPane key='market' title={t('settings.skillsPage.marketTab', { defaultValue: 'Skill Market' })}>
-          <SkillMarketSettings />
+          <SkillMarketSettings active={activeTab === 'market'} />
         </Tabs.TabPane>
       </Tabs>
     </SettingsPageWrapper>
