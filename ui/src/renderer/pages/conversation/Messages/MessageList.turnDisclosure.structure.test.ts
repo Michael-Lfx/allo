@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 
 const source = readFileSync(new URL('./MessageList.tsx', import.meta.url), 'utf8');
+const processedMessageSource = readFileSync(new URL('./buildProcessedMessageList.ts', import.meta.url), 'utf8');
 const buildSummarySource = source.slice(
   source.indexOf('const buildProcessReceiptSummary'),
   source.indexOf('const highlightStyle')
@@ -25,6 +26,9 @@ describe('MessageList turn completion disclosure structure', () => {
     expect(source.includes("type: 'process_receipt'")).toBe(true);
     expect(source.includes('renderProcessReceipt')).toBe(true);
     expect(source.includes('components/TurnProcessReceipt')).toBe(true);
+    expect(source.includes("type: 'process_group'")).toBe(true);
+    expect(source.includes('renderProcessGroup')).toBe(true);
+    expect(source.includes("className='turn-process-group__item'")).toBe(true);
     expect(source.includes('components/ProcessTraceItem')).toBe(true);
     expect(source.includes('renderProcessTraceItem')).toBe(true);
     expect(source.includes('getProcessItemState')).toBe(true);
@@ -34,6 +38,12 @@ describe('MessageList turn completion disclosure structure', () => {
   test('uses the stable view-model id as the React reconciliation key', () => {
     expect(source.includes('<React.Fragment key={item.id}>')).toBe(true);
     expect(source.includes('<React.Fragment key={getProcessedItemAnchorId(item) || index}>')).toBe(false);
+  });
+
+  test('maps compact process groups to their source messages before rendering', () => {
+    expect(source.includes('entry.itemIds')).toBe(true);
+    expect(source.includes('new Set(items.flatMap((item) => getProcessedItemSourceMessageIds(item)))')).toBe(true);
+    expect(source.includes('created_at: getProcessedItemCreatedAt(items[0])')).toBe(true);
   });
 
   test('does not reuse legacy process cards inside receipt expansion', () => {
@@ -66,7 +76,9 @@ describe('MessageList turn completion disclosure structure', () => {
     expect(source.includes('isActiveProcessTextItem')).toBe(true);
     expect(source.includes('lastUserTextIndex')).toBe(true);
     expect(source.includes("conversationContext?.isProcessing === true")).toBe(true);
-    expect(source.includes('<MessageText message={message} hideActions={hideActions}></MessageText>')).toBe(true);
+    expect(source.includes('<MessageText message={message} hideActions={hideActions} isStreaming={isStreaming}></MessageText>')).toBe(
+      true
+    );
     expect(source.includes('isActiveProcessTextItem(item, _index) ||')).toBe(true);
     expect(source.includes('movedActionMessageIds.has((item as TMessage).id)')).toBe(true);
   });
@@ -122,7 +134,7 @@ describe('MessageList turn completion disclosure structure', () => {
   });
 
   test('uses plan events as hard boundaries between tool receipt groups', () => {
-    const planBoundary = source.match(/if \(message\.type === 'plan'\) \{[\s\S]*?continue;[\s\S]*?\}/)?.[0] ?? '';
+    const planBoundary = processedMessageSource.match(/if \(message\.type === 'plan'\) \{[\s\S]*?continue;[\s\S]*?\}/)?.[0] ?? '';
 
     expect(planBoundary.includes('toolList = [];')).toBe(true);
     expect(planBoundary.includes('toolSourceMessageIds = [];')).toBe(true);
@@ -131,7 +143,7 @@ describe('MessageList turn completion disclosure structure', () => {
   });
 
   test('suppresses only legacy synthetic plan-tool failures with a persisted plan projection', () => {
-    expect(source.includes("from './planToolVisibility'")).toBe(true);
-    expect(source.includes('isSupersededPlanToolFailure(message, list.slice(i + 1))')).toBe(true);
+    expect(processedMessageSource.includes("from './planToolVisibility'")).toBe(true);
+    expect(processedMessageSource.includes('isSupersededPlanToolFailure(message, list.slice(i + 1))')).toBe(true);
   });
 });

@@ -773,18 +773,47 @@ describe('buildTurnDisclosureItems', () => {
     expect(disclosures.find((entry) => entry.turnId === TURN_1)?.state).toBe('completed');
   });
 
-  test('renders process steps without a visible user request as inline receipts', () => {
+  test('groups contiguous compact process steps without a visible user request', () => {
     const result = buildTurnDisclosureItems([
       item('scan', 'process', { turnId: undefined, createdAt: 1000, processState: 'completed' }),
+      item('thinking', 'process_content', { turnId: undefined, createdAt: 1250, processState: 'running' }),
       item('tool', 'process', { turnId: undefined, createdAt: 1500, processState: 'completed' }),
       item('assistant-text', 'assistant', { turnId: undefined, createdAt: 2000 }),
     ]);
 
     expect(result).toEqual([
-      { type: 'process_receipt', id: 'receipt-scan', itemId: 'scan' },
-      { type: 'process_receipt', id: 'receipt-tool', itemId: 'tool' },
+      { type: 'process_group', id: 'process-group-scan', itemIds: ['scan', 'thinking', 'tool'] },
       { type: 'item', id: 'assistant-text' },
     ]);
+  });
+
+  test('keeps interactive and terminal process states outside compact groups', () => {
+    const result = buildTurnDisclosureItems([
+      item('scan', 'process', { turnId: undefined, createdAt: 1000 }),
+      item('permission', 'process', { turnId: undefined, createdAt: 1200, processState: 'waiting' }),
+      item('retry', 'process', { turnId: undefined, createdAt: 1400, processState: 'running' }),
+      item('failed-write', 'process', { turnId: undefined, createdAt: 1600, processState: 'failed' }),
+    ]);
+
+    expect(result).toEqual([
+      { type: 'process_group', id: 'process-group-scan', itemIds: ['scan'] },
+      { type: 'process_receipt', id: 'receipt-permission', itemId: 'permission' },
+      { type: 'process_group', id: 'process-group-retry', itemIds: ['retry'] },
+      { type: 'process_receipt', id: 'receipt-failed-write', itemId: 'failed-write' },
+    ]);
+  });
+
+  test('keeps a compact process group key stable as streaming events append', () => {
+    const initial = buildTurnDisclosureItems([
+      item('scan', 'process', { turnId: undefined, createdAt: 1000, processState: 'running' }),
+    ]);
+    const appended = buildTurnDisclosureItems([
+      item('scan', 'process', { turnId: undefined, createdAt: 1000, processState: 'completed' }),
+      item('edit', 'process', { turnId: undefined, createdAt: 1200, processState: 'running' }),
+    ]);
+
+    expect(initial[0]).toEqual({ type: 'process_group', id: 'process-group-scan', itemIds: ['scan'] });
+    expect(appended[0]).toEqual({ type: 'process_group', id: 'process-group-scan', itemIds: ['scan', 'edit'] });
   });
 });
 

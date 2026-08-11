@@ -138,6 +138,13 @@ type IProcessReceiptVO = {
   defaultExpanded: boolean;
   hasDetail?: boolean;
 };
+type IProcessGroupVO = {
+  type: 'process_group';
+  id: string;
+  items: IRenderableItem[];
+  sourceMessageIds: SourceMessageId[];
+  created_at: number;
+};
 type ITurnDeliverablesVO = {
   type: 'turn_deliverables';
   id: string;
@@ -168,6 +175,7 @@ type IProcessedItem =
   | IRenderableItem
   | ITurnProcessDisclosureVO
   | IProcessReceiptVO
+  | IProcessGroupVO
   | ITurnDeliverablesVO
   | ITurnActionsVO
   | ITurnLiveStepVO;
@@ -199,6 +207,7 @@ const getProcessedItemSourceMessageIds = (item: IProcessedItem): SourceMessageId
     'type' in item &&
     (item.type === 'turn_process_disclosure' ||
       item.type === 'process_receipt' ||
+      item.type === 'process_group' ||
       item.type === 'turn_deliverables' ||
       item.type === 'turn_actions' ||
       item.type === 'turn_live_step')
@@ -240,6 +249,7 @@ const getProcessedItemCreatedAt = (item: IProcessedItem): number => {
       'artifact',
       'turn_process_disclosure',
       'process_receipt',
+      'process_group',
       'turn_deliverables',
       'turn_actions',
       'turn_live_step',
@@ -1045,6 +1055,22 @@ const MessageList: React.FC<{
           };
         }
 
+        if (entry.type === 'process_group') {
+          const items = entry.itemIds
+            .map((id) => itemById.get(id))
+            .filter((item): item is IRenderableItem => Boolean(item));
+          if (!items.length) return undefined;
+          return {
+            type: 'process_group',
+            id: entry.id,
+            items,
+            sourceMessageIds: Array.from(
+              new Set(items.flatMap((item) => getProcessedItemSourceMessageIds(item)))
+            ),
+            created_at: getProcessedItemCreatedAt(items[0]),
+          };
+        }
+
         const processItems = entry.processItemIds
           .map((id) => itemById.get(id))
           .filter((item): item is IRenderableItem => Boolean(item));
@@ -1184,6 +1210,7 @@ const MessageList: React.FC<{
     const getDisplayItemTurnId = (entry: IProcessedItem): MessageId | undefined => {
       if ('type' in entry && entry.type === 'turn_process_disclosure') return entry.msg_id;
       if ('type' in entry && entry.type === 'process_receipt') return undefined;
+      if ('type' in entry && entry.type === 'process_group') return undefined;
       if ('type' in entry && entry.type === 'turn_deliverables') return entry.turn_id;
       if ('type' in entry && entry.type === 'turn_actions') return entry.turn_id;
       return turnIdByAnchorId.get(getProcessedItemAnchorId(entry));
@@ -1243,7 +1270,7 @@ const MessageList: React.FC<{
       displayList.findLastIndex(
         (item) =>
           !('type' in item &&
-            ['turn_process_disclosure', 'process_receipt', 'artifact', 'turn_live_step'].includes(item.type)) &&
+            ['turn_process_disclosure', 'process_receipt', 'process_group', 'artifact', 'turn_live_step'].includes(item.type)) &&
           (item as TMessage).type === 'text' &&
           (item as TMessage).position === 'right'
       ),
@@ -1255,7 +1282,7 @@ const MessageList: React.FC<{
       conversationContext?.isProcessing === true &&
       index > lastUserTextIndex &&
       !('type' in item &&
-        ['turn_process_disclosure', 'process_receipt', 'artifact', 'turn_live_step'].includes(item.type)) &&
+        ['turn_process_disclosure', 'process_receipt', 'process_group', 'artifact', 'turn_live_step'].includes(item.type)) &&
       (item as TMessage).type === 'text' &&
       (item as TMessage).position === 'left',
     [conversationContext?.isProcessing, lastUserTextIndex]
@@ -1502,6 +1529,16 @@ const MessageList: React.FC<{
     );
   };
 
+  const renderProcessGroup = (item: IProcessGroupVO) => (
+    <div className='turn-process-group' data-testid='turn-process-group'>
+      {item.items.map((processItem) => (
+        <div key={getProcessedItemAnchorId(processItem)} className='turn-process-group__item'>
+          {renderProcessTraceItem(processItem, 'list', workspaceRoots)}
+        </div>
+      ))}
+    </div>
+  );
+
   const firstWinOutcomeFooter =
     showFirstWinOutcome && firstWinOutcomeSnapshot ? (
       <div className='px-8px max-w-full md:max-w-780px mx-auto' data-testid='first-win-outcome-footer'>
@@ -1538,6 +1575,19 @@ const MessageList: React.FC<{
           style={highlighted ? highlightStyle : undefined}
         >
           {renderProcessReceipt(item, highlighted)}
+        </div>
+      );
+    }
+    if ('type' in item && item.type === 'process_group') {
+      return (
+        <div
+          key={item.id}
+          id={`message-${getProcessedItemAnchorId(item)}`}
+          data-testid='process-group'
+          className='min-w-0 message-item px-8px m-t-10px max-w-full md:max-w-780px mx-auto process_group'
+          style={highlighted ? highlightStyle : undefined}
+        >
+          {renderProcessGroup(item)}
         </div>
       );
     }
@@ -1591,7 +1641,7 @@ const MessageList: React.FC<{
           key={item.id}
           id={`message-${getProcessedItemAnchorId(item)}`}
           data-testid='turn-live-step'
-          className='min-w-0 message-item px-8px m-t-10px max-w-full md:max-w-780px mx-auto turn_live_step'
+          className='min-w-0 message-item px-8px max-w-full md:max-w-780px mx-auto turn_live_step'
         >
           <div className='turn-live-step'>
             <TurnProcessReceipt

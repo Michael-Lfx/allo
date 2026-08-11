@@ -18,6 +18,7 @@ type RunScenarioOptions = {
 
 type StreamController = {
   runScenario: (options?: RunScenarioOptions) => Promise<void>;
+  runProcessScenario: () => Promise<void>;
 };
 
 type StreamRegistry = {
@@ -86,6 +87,8 @@ const createStreamChunks = (lines: number): string[] => {
   );
 };
 
+const waitForStreamTick = () => new Promise<void>((resolve) => window.setTimeout(resolve, STREAM_TICK_MS));
+
 const AcpE2EStreamInjector: React.FC<{ conversationId: ConversationId }> = ({ conversationId }) => {
   const addOrUpdateMessage = useAddOrUpdateMessage();
 
@@ -140,6 +143,97 @@ const AcpE2EStreamInjector: React.FC<{ conversationId: ConversationId }> = ({ co
 
           pushNextChunk();
         });
+      },
+      runProcessScenario: async () => {
+        const turnId = parseMessageId(uuidv7());
+        const baseCreatedAt = Date.now();
+        const messages: TMessage[] = [
+          {
+            id: 'e2e-process-user',
+            msg_id: turnId,
+            turn_id: turnId,
+            conversation_id: conversationId,
+            type: 'text',
+            position: 'right',
+            created_at: baseCreatedAt,
+            content: { content: 'Create a compact process trace fixture.' },
+          },
+          {
+            id: 'e2e-process-thinking',
+            msg_id: parseMessageId(uuidv7()),
+            turn_id: turnId,
+            conversation_id: conversationId,
+            type: 'thinking',
+            position: 'left',
+            created_at: baseCreatedAt + 1,
+            content: { content: 'Preparing the file updates.', status: 'done' },
+          },
+          {
+            id: 'e2e-process-note-one',
+            msg_id: parseMessageId(uuidv7()),
+            turn_id: turnId,
+            conversation_id: conversationId,
+            type: 'text',
+            position: 'left',
+            created_at: baseCreatedAt + 2,
+            content: { content: 'Creating pages 1-5.' },
+          },
+          {
+            id: 'e2e-process-write-one',
+            msg_id: parseMessageId(uuidv7()),
+            turn_id: turnId,
+            conversation_id: conversationId,
+            type: 'tool_call',
+            position: 'left',
+            created_at: baseCreatedAt + 3,
+            content: {
+              call_id: 'e2e-process-write-one',
+              name: 'write_file',
+              status: 'completed',
+              description: 'Edited 5 files',
+            },
+          },
+          {
+            id: 'e2e-process-note-two',
+            msg_id: parseMessageId(uuidv7()),
+            turn_id: turnId,
+            conversation_id: conversationId,
+            type: 'text',
+            position: 'left',
+            created_at: baseCreatedAt + 4,
+            content: { content: 'Creating pages 6-10.' },
+          },
+          {
+            id: 'e2e-process-write-two',
+            msg_id: parseMessageId(uuidv7()),
+            turn_id: turnId,
+            conversation_id: conversationId,
+            type: 'tool_call',
+            position: 'left',
+            created_at: baseCreatedAt + 5,
+            content: {
+              call_id: 'e2e-process-write-two',
+              name: 'write_file',
+              status: 'completed',
+              description: 'Edited 5 files',
+            },
+          },
+          {
+            id: 'e2e-process-final',
+            msg_id: parseMessageId(uuidv7()),
+            turn_id: turnId,
+            conversation_id: conversationId,
+            type: 'text',
+            position: 'left',
+            created_at: baseCreatedAt + 6,
+            content: { content: 'The process trace fixture is complete.' },
+          },
+        ];
+
+        for (const message of messages) {
+          addOrUpdateMessage(message, true);
+          await waitForStreamTick();
+        }
       },
     };
 

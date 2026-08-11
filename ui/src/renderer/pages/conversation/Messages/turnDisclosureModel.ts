@@ -24,6 +24,7 @@ export interface TurnDisclosureInputItem {
 export type TurnDisclosureOutputItem =
   | { type: 'item'; id: string }
   | { type: 'process_receipt'; id: string; itemId: string }
+  | { type: 'process_group'; id: string; itemIds: string[] }
   | {
       type: 'turn_disclosure';
       id: string;
@@ -62,6 +63,20 @@ const toProcessReceipt = (entry: TurnDisclosureInputItem): TurnDisclosureOutputI
   id: `receipt-${entry.id}`,
   itemId: entry.id,
 });
+
+const toProcessGroup = (entries: TurnDisclosureInputItem[]): TurnDisclosureOutputItem => ({
+  type: 'process_group',
+  // The first event is immutable, so a streaming append never replaces the
+  // virtualized row that already owns focus, scroll position, or measurements.
+  id: `process-group-${entries[0].id}`,
+  itemIds: entries.map((entry) => entry.id),
+});
+
+const isCompactUnownedProcessItem = (entry: TurnDisclosureInputItem): boolean => {
+  if (entry.turnId || (entry.role !== 'process' && entry.role !== 'process_content')) return false;
+  const state = getProcessState(entry);
+  return state === 'completed' || state === 'running';
+};
 
 export function assignTurnIdsFromUserRequests(
   items: TurnDisclosureInputItem[],
@@ -404,6 +419,7 @@ export function buildTurnDisclosureItems(
 ): TurnDisclosureOutputItem[] {
   const output: TurnDisclosureOutputItem[] = [];
   let segment: TurnDisclosureInputItem[] = [];
+  let unownedCompactProcessItems: TurnDisclosureInputItem[] = [];
   const activeTurnId = options.tailClosed === true ? undefined : options.activeTurnId;
   const finalAssistantByTurn = new Map<MessageId, TurnDisclosureInputItem>();
   const turnStartedAtByTurn = new Map<MessageId, number>();
@@ -445,13 +461,25 @@ export function buildTurnDisclosureItems(
     segment = [];
   };
 
+  const flushUnownedCompactProcessItems = () => {
+    if (!unownedCompactProcessItems.length) return;
+    output.push(toProcessGroup(unownedCompactProcessItems));
+    unownedCompactProcessItems = [];
+  };
+
   for (const item of items) {
     if (!item.turnId) {
       flush(true);
+      if (isCompactUnownedProcessItem(item)) {
+        unownedCompactProcessItems.push(item);
+        continue;
+      }
+      flushUnownedCompactProcessItems();
       output.push(item.role === 'process' ? toProcessReceipt(item) : { type: 'item', id: item.id });
       continue;
     }
 
+    flushUnownedCompactProcessItems();
     const currentTurnId = segment[0]?.turnId;
     if (currentTurnId && currentTurnId !== item.turnId) {
       flush(true);
@@ -460,6 +488,7 @@ export function buildTurnDisclosureItems(
     segment.push(item);
   }
 
+  flushUnownedCompactProcessItems();
   flush(options.tailClosed === true);
   // Delayed events can make one logical turn appear in multiple non-contiguous
   // segments. Keep ordinary transcript items in arrival order, but fold their

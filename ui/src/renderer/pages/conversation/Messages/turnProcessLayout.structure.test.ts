@@ -132,10 +132,32 @@ describe('turn process disclosure content layout', () => {
 
   test('uses tighter same-kind spacing and clearer cross-kind spacing', () => {
     expect(cssRuleFor('.turn-process-disclosure__body').includes('gap: 0')).toBe(true);
-    expect(cssRuleFor('.turn-process-disclosure__item').includes('margin-top: 14px')).toBe(true);
+    expect(cssRuleFor('.turn-process-disclosure__item').includes('margin-top: 8px')).toBe(true);
     expect(cssSource.includes('.turn-process-disclosure__item:first-child')).toBe(true);
     expect(cssSource.includes('.turn-process-disclosure__item--text + .turn-process-disclosure__item--text')).toBe(true);
     expect(cssSource.includes('.turn-process-disclosure__item--tool + .turn-process-disclosure__item--tool')).toBe(true);
+  });
+
+  test('keeps compact process groups inside one top-level message row', () => {
+    const headerRule = cssRuleFor('.turn-process-disclosure__header');
+    const bodyRule = cssRuleFor('.turn-process-disclosure__body');
+    const groupRule = cssRuleFor('.turn-process-group');
+
+    expect(headerRule.includes('min-height: 30px')).toBe(true);
+    expect(headerRule.includes('padding: 2px 2px 6px')).toBe(true);
+    expect(bodyRule.includes('padding: 6px 0 2px')).toBe(true);
+    expect(groupRule.includes('flex-direction: column')).toBe(true);
+    expect(groupRule.includes('gap: 4px')).toBe(true);
+    expect(messageListSource.includes("type: 'process_group'")).toBe(true);
+    expect(messageListSource.includes("data-testid='process-group'")).toBe(true);
+    expect(messageListSource.includes("data-testid='turn-process-group'")).toBe(true);
+    expect(messageListSource.includes("className='turn-process-group__item'")).toBe(true);
+  });
+
+  test('keeps the live step visually adjacent to its active turn', () => {
+    expect(cssRuleFor('.turn_live_step').includes('margin-top: 6px')).toBe(true);
+    expect(messageListSource.includes("max-w-full md:max-w-780px mx-auto turn_live_step'")).toBe(true);
+    expect(messageListSource.includes("m-t-10px max-w-full md:max-w-780px mx-auto turn_live_step'")).toBe(false);
   });
 
   test('separates paragraph text from lightweight process rows', () => {
