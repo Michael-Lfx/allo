@@ -5,6 +5,112 @@
     var(--color-bg-1);
 }
 
+/* Refined Arco buttons across the video-generation surface */
+.page :global(.arco-btn),
+.studioPage :global(.arco-btn) {
+  border-radius: 10px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 140ms ease,
+    opacity 140ms ease;
+}
+
+.page :global(.arco-btn:not(.arco-btn-disabled):not(.arco-btn-loading):hover),
+.studioPage :global(.arco-btn:not(.arco-btn-disabled):not(.arco-btn-loading):hover) {
+  transform: translateY(-1px);
+}
+
+.page :global(.arco-btn:not(.arco-btn-disabled):not(.arco-btn-loading):active),
+.studioPage :global(.arco-btn:not(.arco-btn-disabled):not(.arco-btn-loading):active) {
+  transform: translateY(0) scale(0.985);
+}
+
+.page :global(.arco-btn-outline),
+.studioPage :global(.arco-btn-outline) {
+  border-color: var(--color-border-2);
+  color: var(--color-text-2);
+  background: color-mix(in srgb, var(--color-bg-2) 88%, transparent);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.35) inset;
+}
+
+.page :global(.arco-btn-outline:not(.arco-btn-disabled):hover),
+.studioPage :global(.arco-btn-outline:not(.arco-btn-disabled):hover) {
+  border-color: rgba(var(--primary-6), 0.38);
+  color: rgb(var(--primary-6));
+  background: rgba(var(--primary-6), 0.06);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+}
+
+.page :global(.arco-btn-primary),
+.studioPage :global(.arco-btn-primary) {
+  border: 0;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.18) inset,
+    0 8px 18px rgba(var(--primary-6), 0.22);
+}
+
+.page :global(.arco-btn-primary:not(.arco-btn-disabled):hover),
+.studioPage :global(.arco-btn-primary:not(.arco-btn-disabled):hover) {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.22) inset,
+    0 12px 24px rgba(var(--primary-6), 0.3);
+}
+
+.page :global(.arco-btn-primary.arco-btn-status-warning),
+.studioPage :global(.arco-btn-primary.arco-btn-status-warning) {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.16) inset,
+    0 8px 18px rgba(var(--warning-6), 0.22);
+}
+
+.page :global(.arco-btn-outline.arco-btn-status-danger),
+.studioPage :global(.arco-btn-outline.arco-btn-status-danger) {
+  border-color: rgba(var(--danger-6), 0.35);
+  color: rgb(var(--danger-6));
+  background: rgba(var(--danger-6), 0.04);
+}
+
+.page :global(.arco-btn-outline.arco-btn-status-danger:not(.arco-btn-disabled):hover),
+.studioPage :global(.arco-btn-outline.arco-btn-status-danger:not(.arco-btn-disabled):hover) {
+  border-color: rgba(var(--danger-6), 0.55);
+  color: rgb(var(--danger-6));
+  background: rgba(var(--danger-6), 0.08);
+  box-shadow: 0 8px 18px rgba(var(--danger-6), 0.1);
+}
+
+.page :global(.arco-btn-size-small),
+.studioPage :global(.arco-btn-size-small) {
+  border-radius: 9px;
+  padding: 0 12px;
+  height: 30px;
+}
+
+.page :global(.arco-btn-size-large),
+.studioPage :global(.arco-btn-size-large) {
+  border-radius: 12px;
+  padding: 0 20px;
+  height: 40px;
+  font-weight: 600;
+}
+
+.page :global(.arco-btn-text),
+.studioPage :global(.arco-btn-text) {
+  border-radius: 9px;
+  color: var(--color-text-2);
+}
+
+.page :global(.arco-btn-text:not(.arco-btn-disabled):hover),
+.studioPage :global(.arco-btn-text:not(.arco-btn-disabled):hover) {
+  color: var(--color-text-1);
+  background: var(--color-fill-2);
+  box-shadow: none;
+}
+
 .launchpad {
   position: relative;
   overflow: hidden;
@@ -940,6 +1046,16 @@
   .exampleChip:hover,
   .projectCard:hover,
   .shotCard:hover {
+    transform: none;
+  }
+
+  .page :global(.arco-btn),
+  .studioPage :global(.arco-btn),
+  .page :global(.arco-btn:not(.arco-btn-disabled):not(.arco-btn-loading):hover),
+  .studioPage :global(.arco-btn:not(.arco-btn-disabled):not(.arco-btn-loading):hover),
+  .page :global(.arco-btn:not(.arco-btn-disabled):not(.arco-btn-loading):active),
+  .studioPage :global(.arco-btn:not(.arco-btn-disabled):not(.arco-btn-loading):active) {
+    transition: none;
     transform: none;
   }
 

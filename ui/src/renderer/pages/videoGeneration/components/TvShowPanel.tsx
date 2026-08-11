@@ -1,5 +1,5 @@
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Drawer, Result, Spin } from '@arco-design/web-react';
@@ -44,6 +44,8 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
   const [detail, setDetail] = useState<TvShowVideo | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const videosRef = useRef(videos);
+  videosRef.current = videos;
 
   const scopeItems: SegmentedTabItem[] = [
     {
@@ -64,7 +66,10 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
       setLoading(false);
       return;
     }
-    setLoading(true);
+    // Keep existing cards visible while refreshing so the parent page height
+    // (and scrollTop) does not collapse when switching back to this tab.
+    const showSpinner = videosRef.current.length === 0;
+    if (showSpinner) setLoading(true);
     try {
       const data =
         scope === 'mine'
@@ -197,8 +202,8 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     }
   }, [detail, importing, message, navigate, t]);
 
-  if (!enabled) return null;
-
+  // Fetch only while visible; keep rendering so a hidden parent can still
+  // reserve layout height and avoid scroll jumps on tab switches.
   if (cloudStatus === 'checking') {
     return (
       <div className='flex justify-center py-38px'>
@@ -216,12 +221,12 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
         <div className='min-w-0 flex-1'>
           <div className='text-13px font-600 text-[var(--color-text-1)]'>
             {t('videoGeneration.tvShow.authRequired.title', {
-              defaultValue: '登录后观看 TV Show',
+              defaultValue: '登录后观看 Flowy TV',
             })}
           </div>
           <div className='mt-2px text-12px text-[var(--color-text-3)]'>
             {t('videoGeneration.tvShow.authRequired.desc', {
-              defaultValue: 'TV Show 广场与发布需要云端账号。',
+              defaultValue: 'Flowy TV 广场与发布需要云端账号。',
             })}
           </div>
         </div>
@@ -299,7 +304,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
             <div className='mt-2px text-12px text-[var(--color-text-3)]'>
               {scope === 'mine'
                 ? t('videoGeneration.tvShow.empty.mineDesc', {
-                    defaultValue: '在已完成的视频详情页点击「发布到 TV Show」。',
+                    defaultValue: '在已完成的视频详情页点击「发布到 Flowy TV」。',
                   })
                 : t('videoGeneration.tvShow.empty.plazaDesc', {
                     defaultValue: '审核通过的作品会出现在这里。',

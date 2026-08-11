@@ -88,19 +88,37 @@
   transition:
     border-color 160ms ease,
     color 160ms ease,
-    background 160ms ease;
+    background 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
 }
 
-.uploadPlus {
-  font-size: 22px;
-  font-weight: 400;
-  line-height: 1;
+.uploadGlyph {
+  display: grid;
+  place-items: center;
+  color: inherit;
+  transition: color 160ms ease;
+}
+
+.uploadDocIcon {
+  display: block;
+  transform-origin: 50% 60%;
+  will-change: transform;
+}
+
+.uploadGlyphActive {
+  color: rgb(var(--primary-6));
 }
 
 .uploadSlot:hover:not(:disabled) {
   border-color: rgba(var(--primary-6), 0.5);
   color: rgb(var(--primary-6));
   background: rgba(var(--primary-6), 0.04);
+  box-shadow: 0 8px 20px rgba(var(--primary-6), 0.08);
+}
+
+.uploadSlot:hover:not(:disabled) .uploadDocIcon {
+  animation: upload-doc-bounce 620ms cubic-bezier(0.34, 1.45, 0.64, 1);
 }
 
 .uploadSlot:disabled {
@@ -113,17 +131,29 @@
   padding: 0;
 }
 
+.uploadSlotDocument {
+  border-style: solid;
+  border-color: rgba(var(--primary-6), 0.28);
+  color: rgb(var(--primary-6));
+  background: rgba(var(--primary-6), 0.06);
+}
+
 .uploadPreview {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.uploadCount {
+.uploadCount,
+.uploadDocBadge {
   position: absolute;
   right: 5px;
   bottom: 5px;
+  display: inline-flex;
   min-width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
   padding: 1px 5px;
   border-radius: 999px;
   color: #fff;
@@ -131,6 +161,34 @@
   font-size: 10px;
   font-style: normal;
   text-align: center;
+}
+
+.uploadDocBadge {
+  min-width: 22px;
+  padding: 0;
+  background: rgb(var(--primary-6));
+}
+
+@keyframes upload-doc-bounce {
+  0% {
+    transform: translateY(0) rotate(0deg) scale(1);
+  }
+
+  28% {
+    transform: translateY(-7px) rotate(-8deg) scale(1.06);
+  }
+
+  52% {
+    transform: translateY(-1px) rotate(4deg) scale(1.02);
+  }
+
+  72% {
+    transform: translateY(-4px) rotate(-3deg) scale(1.04);
+  }
+
+  100% {
+    transform: translateY(0) rotate(0deg) scale(1);
+  }
 }
 
 .promptArea {
@@ -382,21 +440,30 @@
   gap: 6px;
   box-sizing: border-box;
   padding: 0 11px;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 999px;
   color: var(--color-text-2);
   background: transparent;
   font: inherit;
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
   transition:
     color 150ms ease,
-    background 150ms ease;
+    background 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    transform 140ms ease;
 }
 
 .toolbarButton:hover:not(:disabled) {
   color: var(--color-text-1);
   background: var(--color-fill-2);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
+}
+
+.toolbarButton:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 .toolbarButton:disabled {
@@ -405,11 +472,13 @@
 }
 
 .toolbarButtonActive {
+  border-color: rgba(var(--primary-6), 0.22);
   color: rgb(var(--primary-6));
   background: rgba(var(--primary-6), 0.1);
 }
 
 .modeButton {
+  border-color: rgba(var(--primary-6), 0.22);
   color: rgb(var(--primary-6));
   background: rgba(var(--primary-6), 0.1);
   font-weight: 600;
@@ -443,27 +512,50 @@
 
 .submitButton {
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
   flex: none;
+  padding: 0;
+  overflow: hidden;
   border: 0;
   border-radius: 50%;
+  aspect-ratio: 1 / 1;
   color: white;
   background: rgb(var(--primary-6));
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.18) inset,
+    0 8px 18px rgba(var(--primary-6), 0.28);
   cursor: pointer;
   place-items: center;
   transition:
     transform 150ms ease,
-    opacity 150ms ease;
+    opacity 150ms ease,
+    box-shadow 150ms ease,
+    background 150ms ease;
+}
+
+.submitArrow {
+  display: block;
+  margin-top: -1px;
 }
 
 .submitButton:hover:not(:disabled) {
-  transform: translateY(-1px);
+  transform: translateY(-1px) scale(1.03);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.22) inset,
+    0 12px 24px rgba(var(--primary-6), 0.34);
+}
+
+.submitButton:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
 }
 
 .submitButton:disabled {
   cursor: not-allowed;
   opacity: 0.38;
+  box-shadow: none;
 }
 
 .submitSpinner {
@@ -1224,5 +1316,16 @@
   .submitButton,
   .skillCard {
     transition: none;
+  }
+
+  .uploadSlot:hover:not(:disabled) .uploadDocIcon {
+    animation: none;
+  }
+
+  .toolbarButton:hover:not(:disabled),
+  .toolbarButton:active:not(:disabled),
+  .submitButton:hover:not(:disabled),
+  .submitButton:active:not(:disabled) {
+    transform: none;
   }
 }

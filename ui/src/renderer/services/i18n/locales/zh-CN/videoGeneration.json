@@ -43,11 +43,11 @@
     },
     "tabs": {
       "recent": "最近创作",
-      "tvShow": "TV Show"
+      "tvShow": "Flowy TV"
     }
   },
   "tvShow": {
-    "title": "TV Show",
+    "title": "Flowy TV",
     "subtitle": "浏览社区已上架的作品，或查看你的发布审核状态。",
     "searchPlaceholder": "搜索作品...",
     "scope": {
@@ -67,13 +67,13 @@
       "plazaTitle": "广场暂无作品",
       "plazaDesc": "审核通过的作品会出现在这里。",
       "mineTitle": "还没有发布作品",
-      "mineDesc": "在已完成的视频详情页点击「发布到 TV Show」。"
+      "mineDesc": "在已完成的视频详情页点击「发布到 Flowy TV」。"
     },
     "authRequired": {
-      "title": "登录后观看 TV Show",
-      "desc": "TV Show 广场与发布需要云端账号。",
+      "title": "登录后观看 Flowy TV",
+      "desc": "Flowy TV 广场与发布需要云端账号。",
       "login": "去登录",
-      "publish": "发布到 TV Show 需要先登录云端账号。"
+      "publish": "发布到 Flowy TV 需要先登录云端账号。"
     },
     "detail": {
       "title": "作品详情",
@@ -90,11 +90,11 @@
       "importFailed": "导入失败"
     },
     "publish": {
-      "action": "发布到 TV Show",
+      "action": "发布到 Flowy TV",
       "needSucceeded": "请先完成成片生成后再发布。",
       "needCover": "缺少封面海报，请完成渲染后再发布。",
       "busy": "规划或渲染进行中，请完成后再发布。",
-      "ok": "已提交审核，通过后会出现在 TV Show 广场。",
+      "ok": "已提交审核，通过后会出现在 Flowy TV 广场。",
       "failed": "发布失败"
     }
   },
@@ -176,7 +176,7 @@
       "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 唤起技能…"
     },
     "upload": {
-      "aria": "上传图片、剧本或其他文档",
+      "aria": "上传角色参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）",
       "removeDocument": "移除文档",
       "removeReference": "移除 {{name}}",
       "unsupported": "部分文件格式暂不支持，请上传图片、DOCX 或纯文本文档。",
