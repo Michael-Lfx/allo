@@ -101,5 +101,6 @@ describe('settings navigation', () => {
     expect(cloudLoginSource.includes("useConfig('system.developerMode')")).toBe(true);
     expect(cloudLoginSource.includes("Navigate to='/settings/system'")).toBe(true);
     expect(systemSource.includes('DeveloperModeSetting')).toBe(true);
+    expect(systemSource.includes('<ImageAnalysisModelContent compact />')).toBe(true);
   });
 });

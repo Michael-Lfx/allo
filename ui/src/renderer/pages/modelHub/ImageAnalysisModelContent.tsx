@@ -5,19 +5,42 @@ import { Close } from '@icon-park/react';
 import { configService } from '@/common/config/configService';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import TaskModelSelect, { type TaskModelSelection } from '@/renderer/components/agent/TaskModelSelect';
+import { useModelsForTask, type TaskModelGroup } from '@/renderer/hooks/agent/useModelsForTask';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 
 const STORAGE_KEY = 'tools.imageAnalysisModel';
 
+export const resolveAutomaticImageAnalysisModel = (
+  groups: TaskModelGroup[]
+): TaskModelSelection | null => {
+  const preferredGroup = groups.find((group) =>
+    group.models.some((model) => model.toLowerCase() === 'minimax-m3')
+  );
+  if (preferredGroup) {
+    const preferredModel = preferredGroup.models.find((model) => model.toLowerCase() === 'minimax-m3');
+    if (preferredModel) return { providerId: preferredGroup.provider.id, model: preferredModel };
+  }
+
+  const firstGroup = groups[0];
+  const firstModel = firstGroup?.models[0];
+  return firstGroup && firstModel ? { providerId: firstGroup.provider.id, model: firstModel } : null;
+};
+
 /** Global, independent vision-model preference for text-only Nomi sessions. */
-const ImageAnalysisModelContent: React.FC = () => {
+const ImageAnalysisModelContent: React.FC<{ compact?: boolean }> = ({ compact = false }) => {
   const { t } = useTranslation();
   const [message, messageContext] = useArcoMessage();
   const [stored] = useConfig(STORAGE_KEY);
-  const selection = useMemo<TaskModelSelection | null>(() => {
+  const { groups, isLoading } = useModelsForTask('chat', ['vision_input']);
+  const storedSelection = useMemo<TaskModelSelection | null>(() => {
     if (!stored?.provider_id || !stored.model) return null;
     return { providerId: stored.provider_id, model: stored.model };
   }, [stored?.model, stored?.provider_id]);
+  const automaticSelection = useMemo(
+    () => (isLoading ? null : resolveAutomaticImageAnalysisModel(groups)),
+    [groups, isLoading]
+  );
+  const selection = storedSelection ?? automaticSelection;
 
   const select = async (next: TaskModelSelection) => {
     try {
@@ -36,14 +59,16 @@ const ImageAnalysisModelContent: React.FC = () => {
   };
 
   return (
-    <div className='flex max-w-640px flex-col gap-14px'>
+    <div className={compact ? 'flex w-full items-center justify-end gap-8px' : 'flex max-w-640px flex-col gap-14px'}>
       {messageContext}
-      <div>
-        <div className='text-15px font-600 text-t-primary'>{t('settings.modelHub.imageAnalysis.title')}</div>
-        <div className='mt-4px text-12px leading-18px text-t-tertiary'>
-          {t('settings.modelHub.imageAnalysis.subtitle')}
+      {!compact && (
+        <div>
+          <div className='text-15px font-600 text-t-primary'>{t('settings.modelHub.imageAnalysis.title')}</div>
+          <div className='mt-4px text-12px leading-18px text-t-tertiary'>
+            {t('settings.modelHub.imageAnalysis.subtitle')}
+          </div>
         </div>
-      </div>
+      )}
       <div className='flex items-center gap-8px'>
         <TaskModelSelect
           task='chat'
@@ -52,7 +77,7 @@ const ImageAnalysisModelContent: React.FC = () => {
           onSelect={(next) => void select(next)}
           placeholder={t('settings.modelHub.imageAnalysis.autoDefault')}
         />
-        {selection && (
+        {storedSelection && (
           <Button
             type='text'
             icon={<Close theme='outline' size='15' />}

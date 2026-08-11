@@ -14,6 +14,7 @@ import { Alert, Button, Collapse, Form, Message, Modal, Switch, Tooltip } from '
 import { FolderSearch } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import ImageAnalysisModelContent from '@/renderer/pages/modelHub/ImageAnalysisModelContent';
 import useSWR from 'swr';
 import DeveloperModeSetting from './DeveloperModeSetting';
 import DirInputItem from './DirInputItem';
@@ -228,6 +229,12 @@ const SystemModalContent: React.FC = () => {
           <NomiSelect.Option value='mod-enter'>{t('settings.sendKeyModEnter')}</NomiSelect.Option>
         </NomiSelect>
       ),
+    },
+    {
+      key: 'imageAnalysisModel',
+      label: t('settings.modelHub.imageAnalysis.title'),
+      description: t('settings.modelHub.imageAnalysis.subtitle'),
+      component: <ImageAnalysisModelContent compact />,
     },
     {
       key: 'startOnBoot',
