@@ -169,8 +169,12 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   const valueRef = useRef(value);
   valueRef.current = value;
 
-  const llmModels = useGeneratorModels('text');
-  const { imageModels, videoModels, isLoading: mediaLoading } = useMediaModels();
+  // Defer catalog network until the panel opens — closed summary only needs
+  // already-persisted preference ids / labels.
+  const llmModels = useGeneratorModels('text', { enabled: open });
+  const { imageModels, videoModels, isLoading: mediaLoading } = useMediaModels({
+    enabled: open,
+  });
   const mediaKind = value.mediaKind;
   const duration = durationBounds(mode);
 

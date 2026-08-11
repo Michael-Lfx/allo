@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use nomi_config::{
     GatewayConfig, config_yaml_path, flowy_media_exposed, load_user_config_file, save_config_yaml,
@@ -13,10 +14,21 @@ use nomifun_api_types::{
 use nomifun_cloud::{FlowyApiClient, MODEL_CATEGORY_IMAGE, MODEL_CATEGORY_VIDEO, ensure_gateway_defaults};
 use nomifun_common::AppError;
 
+/// Short-lived catalog cache so first-enter UI / Canvas sync / preferences
+/// popovers do not each pay two Flowy round-trips.
+const MODELS_CACHE_TTL: Duration = Duration::from_secs(120);
+
+struct ModelsCatalogCache {
+    fetched_at: Instant,
+    image: Vec<nomifun_api_types::MediaModelOption>,
+    video: Vec<nomifun_api_types::MediaModelOption>,
+}
+
 pub struct MediaApiService {
     data_dir: PathBuf,
     config: Mutex<GatewayConfig>,
     workflow_store: WorkflowRunStore,
+    models_cache: Mutex<Option<ModelsCatalogCache>>,
 }
 
 impl MediaApiService {
@@ -31,6 +43,7 @@ impl MediaApiService {
             data_dir,
             config: Mutex::new(config),
             workflow_store: WorkflowRunStore::with_root(workflow_root),
+            models_cache: Mutex::new(None),
         })
     }
 
@@ -119,6 +132,7 @@ impl MediaApiService {
         }
         save_config_yaml(&self.config_path(), &cfg).map_err(|e| AppError::Internal(e))?;
         *self.config.lock().expect("media config lock") = cfg;
+        // Default model prefs don't change the cloud catalog; keep cache warm.
         Ok(self.settings())
     }
 
@@ -271,7 +285,9 @@ impl MediaApiService {
         MediaWorkflowHistoryResponse { runs }
     }
 
-    /// Fetch the latest image/video model catalog from the cloud (no local cache).
+    /// Fetch the latest image/video model catalog from the cloud.
+    /// Image and video catalogs are fetched in parallel and cached briefly
+    /// (`MODELS_CACHE_TTL`) to absorb concurrent first-enter callers.
     pub async fn list_models(
         &self,
     ) -> Result<
@@ -281,6 +297,14 @@ impl MediaApiService {
         ),
         AppError,
     > {
+        if let Ok(guard) = self.models_cache.lock() {
+            if let Some(cached) = guard.as_ref() {
+                if cached.fetched_at.elapsed() < MODELS_CACHE_TTL {
+                    return Ok((cached.image.clone(), cached.video.clone()));
+                }
+            }
+        }
+
         let cfg = self.load_effective_config()?;
         if !flowy_media_exposed(&cfg) {
             tracing::warn!(
@@ -292,18 +316,22 @@ impl MediaApiService {
         }
         let api = FlowyApiClient::new(&cfg.server).map_err(|e| AppError::Internal(e.to_string()))?;
         let session = nomifun_cloud::ServerSession::from_config(&cfg.server, &self.data_dir);
-        let image = api
-            .get_available_models_claw(&session, Some(MODEL_CATEGORY_IMAGE))
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        let video = api
-            .get_available_models_claw(&session, Some(MODEL_CATEGORY_VIDEO))
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        Ok((
-            image.cloud.into_iter().map(to_media_model_option).collect(),
-            video.cloud.into_iter().map(to_media_model_option).collect(),
-        ))
+        let (image_res, video_res) = tokio::join!(
+            api.get_available_models_claw(&session, Some(MODEL_CATEGORY_IMAGE)),
+            api.get_available_models_claw(&session, Some(MODEL_CATEGORY_VIDEO)),
+        );
+        let image = image_res.map_err(|e| AppError::Internal(e.to_string()))?;
+        let video = video_res.map_err(|e| AppError::Internal(e.to_string()))?;
+        let image_models: Vec<_> = image.cloud.into_iter().map(to_media_model_option).collect();
+        let video_models: Vec<_> = video.cloud.into_iter().map(to_media_model_option).collect();
+        if let Ok(mut guard) = self.models_cache.lock() {
+            *guard = Some(ModelsCatalogCache {
+                fetched_at: Instant::now(),
+                image: image_models.clone(),
+                video: video_models.clone(),
+            });
+        }
+        Ok((image_models, video_models))
     }
 
     pub fn data_dir(&self) -> &Path {

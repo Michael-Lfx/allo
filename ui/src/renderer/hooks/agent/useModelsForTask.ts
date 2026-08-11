@@ -84,12 +84,19 @@ export const buildTaskModelGroups = (
  * frontend name heuristics) and joins provider metadata from
  * `useModelProviderList`.
  */
-export function useModelsForTask(task: ModelTask, requiredTraits?: ModelTrait[]): ModelsForTaskResult {
-  const { providers, isLoading: isProvidersLoading } = useModelProviderList();
+export function useModelsForTask(
+  task: ModelTask,
+  requiredTraits?: ModelTrait[],
+  options?: { enabled?: boolean }
+): ModelsForTaskResult {
+  const enabled = options?.enabled ?? true;
+  const { providers, isLoading: isProvidersLoading } = useModelProviderList({
+    enabled,
+  });
 
   const key = modelsForTaskKey(task, requiredTraits);
   const { data, error, isLoading, mutate } = useSWR<CatalogModelRef[]>(
-    key,
+    enabled ? key : null,
     async () => {
       const response = await ipcBridge.modelProfile.resolve.invoke(
         buildResolveModelsRequest(task, requiredTraits)
@@ -99,11 +106,15 @@ export function useModelsForTask(task: ModelTask, requiredTraits?: ModelTrait[])
     RESOLVE_SWR_OPTIONS
   );
 
-  const groups = useMemo(() => buildTaskModelGroups(data ?? [], providers), [data, providers]);
+  const groups = useMemo(
+    () => (enabled ? buildTaskModelGroups(data ?? [], providers) : []),
+    [data, providers, enabled]
+  );
 
   const refresh = useCallback(() => {
+    if (!enabled) return;
     void mutate();
-  }, [mutate]);
+  }, [mutate, enabled]);
 
   return {
     groups,
@@ -111,8 +122,8 @@ export function useModelsForTask(task: ModelTask, requiredTraits?: ModelTrait[])
     // `isLoading` while `data` stays undefined. Keep the catalog unresolved in
     // that state so consumers never treat a failed resolve as an authoritative
     // empty catalog (and e.g. purge persisted model references).
-    isLoading: isLoading || isProvidersLoading || !Array.isArray(data),
-    error,
+    isLoading: enabled && (isLoading || isProvidersLoading || !Array.isArray(data)),
+    error: enabled ? error : undefined,
     refresh,
   };
 }

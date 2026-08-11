@@ -58,17 +58,31 @@ function flattenTaskGroups(
   return flat;
 }
 
-export function useGeneratorModels(mode: GenMode): GeneratorModels {
-  const { data: rawProviders } = useProvidersQuery();
+export function useGeneratorModels(
+  mode: GenMode,
+  options?: { enabled?: boolean }
+): GeneratorModels {
+  const enabled = options?.enabled ?? true;
+  const { data: rawProviders } = useProvidersQuery({ enabled });
   // 对话/语音合成模型来自统一 task catalog resolve（无名称启发式）。
-  const { groups: chatGroups } = useModelsForTask('chat');
-  const { groups: ttsGroups } = useModelsForTask('speech_synthesis');
-  const { entries: creationEntries } = useCreationModels();
+  const { groups: chatGroups } = useModelsForTask('chat', undefined, {
+    enabled: enabled && mode === 'text',
+  });
+  const { groups: ttsGroups } = useModelsForTask('speech_synthesis', undefined, {
+    enabled: enabled && mode === 'tts',
+  });
+  const { entries: creationEntries } = useCreationModels({
+    enabled: enabled && (mode === 'image' || mode === 'video'),
+  });
   const providerLabel = useModelSelectorProviderLabel();
 
   return useMemo<GeneratorModels>(() => {
+    if (!enabled) {
+      return { groups: [], flat: [], hasProviders: false };
+    }
     const hasProviders =
-      (rawProviders ?? []).some((p) => p.enabled !== false && modelNamesOf(p).length > 0) || chatGroups.length > 0;
+      (rawProviders ?? []).some((p) => p.enabled !== false && modelNamesOf(p).length > 0) ||
+      chatGroups.length > 0;
 
     if (mode === 'text' || mode === 'tts') {
       const flat = flattenTaskGroups(mode === 'text' ? chatGroups : ttsGroups, providerLabel);
@@ -83,5 +97,5 @@ export function useGeneratorModels(mode: GenMode): GeneratorModels {
       model: e.model,
     }));
     return { groups: group(flat), flat, hasProviders };
-  }, [mode, rawProviders, chatGroups, ttsGroups, creationEntries, providerLabel]);
+  }, [enabled, mode, rawProviders, chatGroups, ttsGroups, creationEntries, providerLabel]);
 }

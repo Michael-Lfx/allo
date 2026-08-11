@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Clock3, FileText, Image as ImageIcon, LoaderCircle, Lock, Maximize2, Music2, Pencil, Play, Plus, RefreshCw, Replace, Settings2, Square, Star, Type, Video } from "lucide-react";
 
@@ -17,7 +17,10 @@ import { CanvasNodeType, type CanvasNodeData, type Position } from "@oc/types/ca
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { loadCanvasDrawingPreview } from "@oc/lib/canvas/canvas-drawing-storage";
 import { MEDIA_NODE_MIN_SIZE } from "@oc/lib/canvas/canvas-node-size";
-import { VideoPlayer } from "@oc/components/video-player";
+
+const VideoPlayer = React.lazy(() =>
+    import("@oc/components/video-player").then((mod) => ({ default: mod.VideoPlayer }))
+);
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 type CanvasTheme = (typeof canvasThemes)[keyof typeof canvasThemes];
@@ -922,7 +925,30 @@ function VideoNodeContent({ node, theme, reduceMediaEffects }: NodeContentRender
     if (!url) {
         return <DeferredMediaLoad icon={loading ? <LoaderCircle className="size-5 animate-spin" /> : <Play className="size-5 fill-current" />} label={loading ? "正在缓存视频" : "加载并缓存视频"} disabled={loading} onClick={() => { playWhenReadyRef.current = true; void load(); }} />;
     }
-    return <VideoPlayer src={url} mimeType={node.metadata?.mimeType} title={node.title || "视频"} preload={reduceMediaEffects ? "none" : "metadata"} autoPlay={playWhenReadyRef.current} onCanPlay={() => { playWhenReadyRef.current = false; }} brandColor={theme.accent.primary} className="h-full w-full rounded-[var(--node-radius)] bg-black" dataCanvasNoZoom compactControls />;
+    return (
+        <Suspense
+            fallback={
+                <div className="flex h-full w-full items-center justify-center rounded-[var(--node-radius)] bg-black/80">
+                    <LoaderCircle className="size-5 animate-spin opacity-60" style={{ color: theme.accent.primary }} />
+                </div>
+            }
+        >
+            <VideoPlayer
+                src={url}
+                mimeType={node.metadata?.mimeType}
+                title={node.title || "视频"}
+                preload={reduceMediaEffects ? "none" : "metadata"}
+                autoPlay={playWhenReadyRef.current}
+                onCanPlay={() => {
+                    playWhenReadyRef.current = false;
+                }}
+                brandColor={theme.accent.primary}
+                className="h-full w-full rounded-[var(--node-radius)] bg-black"
+                dataCanvasNoZoom
+                compactControls
+            />
+        </Suspense>
+    );
 }
 
 function AudioNodeContent({ node, theme }: NodeContentRendererProps) {
