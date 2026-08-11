@@ -15,6 +15,7 @@ import {
   SiderConversationEntry,
   SiderKnowledgeEntry,
   SiderLearningEntry,
+  SiderMiniAppsEntry,
   SiderModelHubEntry,
   SiderNomiEntry,
   SiderRequirementsEntry,
@@ -120,6 +121,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleNomiClick = () => navTo('/nomi');
   const handleLearningClick = () => navTo('/learn');
   const handleRequirementsClick = () => navTo('/requirements');
+  const handleMiniAppsClick = () => navTo('/mini-apps');
   const handlePresetClick = () => navTo('/presets');
   const handleSkillsClick = () => navTo('/skills');
   const handleMcpClick = () => navTo('/mcp');
@@ -210,6 +212,14 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onEnterHome={handleVideoGenerationHome}
               onOpenProject={handleOpenRecentVideoGeneration}
+            />
+            {/* 小程序 (Mini-apps) — solidified single-file web tools, opened instantly */}
+            <SiderMiniAppsEntry
+              isMobile={isMobile}
+              isActive={pathname.startsWith('/mini-apps')}
+              collapsed={collapsed}
+              siderTooltipProps={siderTooltipProps}
+              onClick={handleMiniAppsClick}
             />
             <SiderKnowledgeEntry
               isMobile={isMobile}

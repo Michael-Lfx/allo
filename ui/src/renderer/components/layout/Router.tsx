@@ -40,6 +40,8 @@ const LearningPage = React.lazy(() => import('@renderer/pages/learning'));
 const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
 const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
 const VideoCanvasProjectPage = React.lazy(() => import('@renderer/pages/videoCanvas/ProjectPage'));
+const MiniAppsListPage = React.lazy(() => import('@renderer/pages/miniApps'));
+const MiniAppRunnerPage = React.lazy(() => import('@renderer/pages/miniApps/RunnerPage'));
 // TODO: workshop/assets stay deferred (no routes until explicitly published)
 // const WorkshopListPage = React.lazy(() => import('@renderer/pages/workshop'));
 // const WorkshopCanvasPage = React.lazy(() => import('@renderer/pages/workshop/CanvasPage'));
@@ -353,6 +355,9 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/workshop' element={withRouteFallback(WorkshopListPage)} />
           <Route path='/workshop/:id' element={withRouteFallback(WorkshopCanvasPage)} />
           */}
+          {/* 小程序 (Mini-apps) — the solidified library and its full-page runner. */}
+          <Route path='/mini-apps' element={withRouteFallback(MiniAppsListPage)} />
+          <Route path='/mini-apps/:id' element={withRouteFallback(MiniAppRunnerPage)} />
         </Route>
         <Route
           path='*'

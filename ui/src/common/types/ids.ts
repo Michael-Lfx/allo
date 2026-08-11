@@ -73,7 +73,8 @@ export type EntityKind =
   | 'workshop-node'
   | 'workshop-edge'
   | 'ssh-host'
-  | 'robot';
+  | 'robot'
+  | 'miniapp';
 
 export type ConversationId = EntityId<'conversation'>;
 export type TerminalId = EntityId<'terminal'>;
@@ -125,6 +126,7 @@ export type AssetId = EntityId<'asset'>;
 export type CreationTaskId = EntityId<'creation-task'>;
 export type WorkshopNodeId = EntityId<'workshop-node'>;
 export type WorkshopEdgeId = EntityId<'workshop-edge'>;
+export type MiniAppId = EntityId<'miniapp'>;
 
 export class InvalidEntityIdError extends TypeError {
   readonly entityKind: string;
@@ -291,6 +293,7 @@ export const parseWorkshopNodeId = (value: unknown): WorkshopNodeId =>
   parseEntityId('workshop-node', value);
 export const parseWorkshopEdgeId = (value: unknown): WorkshopEdgeId =>
   parseEntityId('workshop-edge', value);
+export const parseMiniAppId = (value: unknown): MiniAppId => parseEntityId('miniapp', value);
 
 export type SessionTarget =
   | { readonly kind: 'conversation'; readonly id: ConversationId }

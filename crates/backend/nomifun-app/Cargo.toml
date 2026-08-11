@@ -89,6 +89,10 @@ name = "ssh_host_e2e"
 path = "tests/ssh_host_e2e.rs"
 
 [[test]]
+name = "miniapp_e2e"
+path = "tests/miniapp_e2e.rs"
+
+[[test]]
 name = "auxiliary_e2e"
 path = "tests/auxiliary_e2e.rs"
 
@@ -250,6 +254,7 @@ nomifun-companion.workspace = true
 nomifun-robot.workspace = true
 nomifun-customer-service.workspace = true
 nomifun-workshop.workspace = true
+nomifun-miniapp.workspace = true
 nomifun-creation.workspace = true
 nomifun-gateway.workspace = true
 nomifun-public.workspace = true

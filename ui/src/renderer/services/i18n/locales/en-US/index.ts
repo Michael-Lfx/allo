@@ -49,6 +49,7 @@ import learning from './learning.json';
 import videoGeneration from './videoGeneration.json';
 import videoCanvas from './videoCanvas.json';
 import ssh from './ssh.json';
+import miniApps from './miniApps.json';
 
 export default {
   common,
@@ -97,4 +98,5 @@ export default {
   videoGeneration,
   videoCanvas,
   ssh,
+  miniApps,
 };
