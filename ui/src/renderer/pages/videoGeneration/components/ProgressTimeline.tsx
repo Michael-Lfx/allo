@@ -337,7 +337,7 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
               {t('videoGeneration.workspace.progress.currentModel', { model: relatedModel })}
             </div>
           ) : null}
-          <details className='text-11px text-[var(--color-text-3)]'>
+          <details open className='text-11px text-[var(--color-text-3)]'>
             <summary className='cursor-pointer select-none'>
               {t('videoGeneration.workspace.progress.errorDetail')}
             </summary>
