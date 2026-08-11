@@ -399,6 +399,11 @@ export const presetTags = {
 const fromApiSendMessageResult = (result: ISendMessageResult): ISendMessageResult => ({
   ...result,
   msg_id: parseMessageId(result.msg_id),
+  ...(result.turn_id
+    ? { turn_id: parseMessageId(result.turn_id) }
+    : result.turn_id === null
+      ? { turn_id: null }
+      : {}),
   // Current servers always send an explicit boolean. A legacy/malformed
   // response without replay authority must fail closed as an accepted replay:
   // authoritative GET reconciliation may reopen a running turn, but the client
@@ -2920,6 +2925,11 @@ interface ISendMessageParams {
 // local state aligns with DB rows and WebSocket stream events.
 export interface ISendMessageResult {
   msg_id: MessageId;
+  /**
+   * Wire/billing turn identity. Distinct from `msg_id` (durable user row).
+   * Prefer this for lifecycle root and `usageByTurn` lookups.
+   */
+  turn_id?: MessageId | null;
   /** The request reused an already accepted Idempotency-Key. */
   replayed: boolean;
   /** The durable receipt is terminal; this response did not open a turn. */

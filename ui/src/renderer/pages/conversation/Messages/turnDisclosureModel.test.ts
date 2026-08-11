@@ -900,6 +900,26 @@ describe('assignTurnIdsFromUserRequests', () => {
     expect(display[1].processItemIds).toEqual(['early-thinking']);
   });
 
+  test('promotes a provisional user=root seed when the wire turn id arrives on stream rows', () => {
+    // Guid / late HTTP accept often seeds activeTurnId with the user msg id
+    // (same as activeRequestMessageId). The first distinct stream turn_id must
+    // still become the billing/display root for turn_actions credit lookup.
+    const assigned = assignTurnIdsFromUserRequests(
+      [
+        item('user', 'user', { turnId: TURN_1, createdAt: 1000 }),
+        item('tool', 'process', { turnId: ACP_ROOT_1, createdAt: 1500, processState: 'completed' }),
+        item('final', 'assistant', { turnId: ACP_ROOT_1, createdAt: 2000 }),
+      ],
+      { activeRequestMessageId: TURN_1, activeTurnId: TURN_1 }
+    );
+
+    expect(assigned.map((entry) => entry.turnId)).toEqual([
+      ACP_ROOT_1,
+      ACP_ROOT_1,
+      ACP_ROOT_1,
+    ]);
+  });
+
   test('does not let an unseen delayed old turn override an authoritative active request pair', () => {
     const assigned = assignTurnIdsFromUserRequests(
       [

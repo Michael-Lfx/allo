@@ -514,9 +514,9 @@ const NomiSendBox: React.FC<{
             }
           }
           markTurnAccepted();
-          // Billing turnId == send msg_id; pass explicitly so rootTurnId is set
-          // before turn.started (avoids first-turn finish being fenced out).
-          notifyAccepted(msg_id, msg_id);
+          // Prefer wire/billing turn_id over user msg_id so lifecycle fence +
+          // usageByTurn align on Guid first-turn (user row ≠ stream root).
+          notifyAccepted(msg_id, res.turn_id ?? undefined);
           setActiveMsgId(msg_id);
           if (localMsgId && msg_id !== localMsgId) {
             removeMessageByMsgId(localMsgId);
@@ -913,6 +913,7 @@ const NomiSendBox: React.FC<{
         updateMessageList((list) => purgeRowsBySnapshot(list, reconciliationSnapshot));
         if (delivery && classifyPublicMessageDelivery(delivery) === 'fresh') {
           markTurnAccepted();
+          notifyAccepted(delivery.msg_id, delivery.turn_id ?? undefined);
           addOrUpdateMessage({
             id: uuid(),
             msg_id: delivery.msg_id,
@@ -1119,6 +1120,7 @@ const NomiSendBox: React.FC<{
       setAtPath,
       setUploadFile,
       markTurnAccepted,
+      notifyAccepted,
       reconcilePublicDeliveryReplay,
       messageListRef,
       updateMessageList,
