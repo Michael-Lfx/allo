@@ -44,12 +44,23 @@ import {
   uploadCanvasMedia,
   type CanvasMediaMeta,
 } from '../videoCanvas/api';
-import { createServerBackedCanvasProject } from '../videoCanvas/lib/ocBridge';
 import {
   clearVideoGenerationSessionMemory,
   rememberVideoGenerationSession,
 } from './routeMemory';
 import styles from './index.module.css';
+
+/** Lazily load OC bridge so the list page chunk does not pull @oc/stores. */
+async function createServerBackedCanvasProject(
+  ...args: Parameters<
+    typeof import('../videoCanvas/lib/ocBridge').createServerBackedCanvasProject
+  >
+) {
+  const { createServerBackedCanvasProject: create } = await import(
+    '../videoCanvas/lib/ocBridge'
+  );
+  return create(...args);
+}
 
 type ListTab = 'recent' | 'tvShow';
 

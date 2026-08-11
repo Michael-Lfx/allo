@@ -142,29 +142,40 @@ export interface CreationModelsResult {
  * (image mode unions the `image_generation` and `image_edit` tasks; video mode
  * is `video_generation`). The three underlying task resolutions are
  * unconditional hook calls (React rules); SWR de-duplicates them across all
- * consumers.
+ * consumers. Pass `{ enabled: false }` to skip network until needed.
  */
-export function useCreationModels(): CreationModelsResult {
+export function useCreationModels(options?: { enabled?: boolean }): CreationModelsResult {
+  const enabled = options?.enabled ?? true;
   const providerLabel = useModelSelectorProviderLabel();
-  const imageGeneration = useModelsForTask('image_generation');
-  const imageEdit = useModelsForTask('image_edit');
-  const videoGeneration = useModelsForTask('video_generation');
+  const imageGeneration = useModelsForTask('image_generation', undefined, { enabled });
+  const imageEdit = useModelsForTask('image_edit', undefined, { enabled });
+  const videoGeneration = useModelsForTask('video_generation', undefined, { enabled });
 
   const entries = useMemo(
     () =>
-      buildCreationModelEntries(
-        [
-          { capability: 'image_generation', groups: imageGeneration.groups },
-          { capability: 'image_generation', groups: imageEdit.groups },
-          { capability: 'video_generation', groups: videoGeneration.groups },
-        ],
-        providerLabel
-      ),
-    [imageGeneration.groups, imageEdit.groups, videoGeneration.groups, providerLabel]
+      enabled
+        ? buildCreationModelEntries(
+            [
+              { capability: 'image_generation', groups: imageGeneration.groups },
+              { capability: 'image_generation', groups: imageEdit.groups },
+              { capability: 'video_generation', groups: videoGeneration.groups },
+            ],
+            providerLabel
+          )
+        : [],
+    [
+      enabled,
+      imageGeneration.groups,
+      imageEdit.groups,
+      videoGeneration.groups,
+      providerLabel,
+    ]
   );
 
   return {
     entries,
-    isLoading: imageGeneration.isLoading || imageEdit.isLoading || videoGeneration.isLoading,
+    isLoading:
+      enabled &&
+      (imageGeneration.isLoading || imageEdit.isLoading || videoGeneration.isLoading),
   };
 }

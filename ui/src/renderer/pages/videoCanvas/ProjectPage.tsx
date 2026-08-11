@@ -113,10 +113,14 @@ const VideoCanvasProjectPage: React.FC = () => {
             });
           });
         await waitHydrated();
-        await syncOcConfigFromAlloMediaModels().catch((err) => {
-          console.warn('[videoCanvas] syncOcConfigFromAlloMediaModels failed', err);
-        });
-        await hydrateCanvasProjectFromServer(canvasId);
+        // Model catalog sync and project doc fetch are independent — run in
+        // parallel so Spin is not the sum of both latencies.
+        await Promise.all([
+          syncOcConfigFromAlloMediaModels().catch((err) => {
+            console.warn('[videoCanvas] syncOcConfigFromAlloMediaModels failed', err);
+          }),
+          hydrateCanvasProjectFromServer(canvasId),
+        ]);
         if (!cancelled) setReady(true);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));

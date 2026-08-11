@@ -89,7 +89,9 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
             streamType="on-demand"
             playsInline
             autoPlay={autoPlay}
-            load="eager"
+            // Prefer visible/idle so canvas with many video nodes does not
+            // initialize every Vidstack player on first paint.
+            load={autoPlay ? "eager" : "visible"}
             preload={preload}
             data-canvas-no-zoom={dataCanvasNoZoom ? "true" : undefined}
             style={{ "--video-brand": brandColor }}

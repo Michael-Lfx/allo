@@ -130,6 +130,21 @@ export default defineConfig(({ mode }) => {
       outDir: 'dist',
       emptyOutDir: true,
       reportCompressedSize: false,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            // Keep video canvas heavy deps out of the first-enter shared graph
+            // so /video-generation list can load without leafer/vidstack.
+            if (id.includes('node_modules')) {
+              if (id.includes('@vidstack') || id.includes('vidstack')) return 'vendor-vidstack';
+              if (id.includes('leafer') || id.includes('@leafer-ui') || id.includes('leafer-ui')) {
+                return 'vendor-leafer';
+              }
+            }
+            return undefined;
+          },
+        },
+      },
     },
   };
 });

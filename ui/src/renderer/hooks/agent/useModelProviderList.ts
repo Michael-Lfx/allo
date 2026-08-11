@@ -166,8 +166,13 @@ export function refreshProvidersCatalogIfStale(
   return refreshProvidersCatalog(options);
 }
 
-export const useProvidersQuery = () => {
-  return useSWR<IProvider[]>(PROVIDERS_SWR_KEY, fetchProviders, PROVIDERS_SWR_OPTIONS);
+export const useProvidersQuery = (options?: { enabled?: boolean }) => {
+  const enabled = options?.enabled ?? true;
+  return useSWR<IProvider[]>(
+    enabled ? PROVIDERS_SWR_KEY : null,
+    fetchProviders,
+    PROVIDERS_SWR_OPTIONS
+  );
 };
 
 /**
@@ -176,14 +181,20 @@ export const useProvidersQuery = () => {
  * resolved by `useModelsForTask` against the backend catalog — this hook
  * deliberately no longer filters models by capability name heuristics.
  */
-export const useModelProviderList = (): ModelProviderListResult => {
-  const { data: modelConfig, isLoading: isProvidersLoading } = useProvidersQuery();
+export const useModelProviderList = (options?: {
+  enabled?: boolean;
+}): ModelProviderListResult => {
+  const enabled = options?.enabled ?? true;
+  const { data: modelConfig, isLoading: isProvidersLoading } = useProvidersQuery({
+    enabled,
+  });
 
   useEffect(() => {
+    if (!enabled) return;
     void refreshProvidersCatalogIfStale().catch((error) => {
       console.warn('[providers] Automatic catalog refresh failed:', error);
     });
-  }, []);
+  }, [enabled]);
 
   const configuredProviders = useMemo(() => {
     const list: IProvider[] = Array.isArray(modelConfig) ? modelConfig : [];
@@ -214,7 +225,7 @@ export const useModelProviderList = (): ModelProviderListResult => {
     // the catalog unresolved in that state so consumers never reinterpret a
     // failed provider request as an authoritative empty catalog and purge every
     // persisted model reference.
-    isLoading: isProvidersLoading || !Array.isArray(modelConfig),
+    isLoading: enabled && (isProvidersLoading || !Array.isArray(modelConfig)),
     getAvailableModels,
     formatModelLabel,
   };
