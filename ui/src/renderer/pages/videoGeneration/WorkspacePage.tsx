@@ -82,6 +82,7 @@ import {
   clearVideoGenerationSessionMemory,
   rememberVideoGenerationSession,
 } from './routeMemory';
+import { isInsufficientCreditsError } from './creditsError';
 import styles from './index.module.css';
 
 const TextArea = Input.TextArea;
@@ -279,6 +280,31 @@ const WorkspacePage: React.FC = () => {
     void refreshStatus();
   }, [sessionId, loading, loadError, refreshArtifacts, refreshStatus]);
 
+  // Toast only on an active→failed transition so revisiting an old failed job
+  // does not re-spam; ProgressTimeline still shows the credits panel either way.
+  const prevRunStatusRef = useRef<string | null>(null);
+  const creditsFailToastKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    prevRunStatusRef.current = null;
+    creditsFailToastKeyRef.current = null;
+  }, [sessionId]);
+  useEffect(() => {
+    const prev = prevRunStatusRef.current;
+    const next = runStatus?.status ?? null;
+    prevRunStatusRef.current = next;
+    if (!sessionId || next !== 'failed' || !runStatus?.error) return;
+    if (prev !== 'planning' && prev !== 'rendering') return;
+    if (!isInsufficientCreditsError(runStatus.error)) return;
+    const key = `${sessionId}:${runStatus.error}`;
+    if (creditsFailToastKeyRef.current === key) return;
+    creditsFailToastKeyRef.current = key;
+    message.error(
+      t('videoGeneration.workspace.failure.creditsToast', {
+        defaultValue: '积分不足，请充值或缩短时长后从断点继续。',
+      })
+    );
+  }, [sessionId, runStatus?.status, runStatus?.error, message, t]);
+
   // Poll while planning / rendering (1s so stage text feels live).
   // Also keep a slow poll while failed/idle so a late finish_job is not missed.
   // Refresh artifacts whenever a clip lands — including repeated `video_clip_done`
@@ -475,10 +501,13 @@ const WorkspacePage: React.FC = () => {
       }
       void refreshArtifacts();
     } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e);
       message.error(
-        `${t('videoGeneration.workspace.planFailed', { defaultValue: '规划失败' })}: ${
-          e instanceof Error ? e.message : String(e)
-        }`
+        isInsufficientCreditsError(raw)
+          ? t('videoGeneration.workspace.failure.creditsToast', {
+              defaultValue: '积分不足，请充值或缩短时长后从断点继续。',
+            })
+          : `${t('videoGeneration.workspace.planFailed', { defaultValue: '规划失败' })}: ${raw}`
       );
     } finally {
       setPlanning(false);
@@ -579,10 +608,13 @@ const WorkspacePage: React.FC = () => {
         );
       }
     } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e);
       message.error(
-        `${t('videoGeneration.workspace.renderFailed', { defaultValue: '渲染失败' })}: ${
-          e instanceof Error ? e.message : String(e)
-        }`
+        isInsufficientCreditsError(raw)
+          ? t('videoGeneration.workspace.failure.creditsToast', {
+              defaultValue: '积分不足，请充值或缩短时长后从断点继续。',
+            })
+          : `${t('videoGeneration.workspace.renderFailed', { defaultValue: '渲染失败' })}: ${raw}`
       );
     } finally {
       setRendering(false);

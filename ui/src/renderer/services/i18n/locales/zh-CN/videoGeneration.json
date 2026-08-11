@@ -476,6 +476,9 @@
       "videoTitle": "视频模型调用失败",
       "videoChannelHint": "生成镜头成片时视频通道不可用。请更换「视频模型」后点击「从断点继续」。",
       "videoHint": "请检查视频模型是否可用。已保留现场，可点击「从断点继续」。",
+      "creditsTitle": "积分不足",
+      "creditsHint": "当前积分不足以完成本次生成。请充值或缩短时长后，点击「从断点继续」；已成功的片段不会重复扣费。",
+      "creditsToast": "积分不足，请充值或缩短时长后从断点继续。",
       "unknownTitle": "执行失败",
       "unknownHint": "现场产物已保留。若错误含 All channel models failed，请更换对应模型后点击「从断点继续」。"
     }

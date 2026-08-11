@@ -364,6 +364,17 @@ pub(crate) fn map_model_err(
         "Input frame/reference was flagged as a real-person likeness. A stylized redraw retry is available; if it still fails, use a more illustrated style and resume."
     } else if lower.contains("401") || lower.contains("unauthorized") {
         "Auth failed — confirm you are signed in to Flowy cloud."
+    } else if lower.contains("402")
+        || lower.contains("insufficient_credit")
+        || lower.contains("insufficient credit")
+        || lower.contains("insufficient credits")
+        || lower.contains("credit balance is too low")
+        || raw.contains("积分不足")
+        || raw.contains("余额不足")
+    {
+        // Stable marker for UI i18n (ProgressTimeline / toast). Keep the
+        // English hint readable in error details for non-localized logs.
+        "INSUFFICIENT_CREDITS — Flowy credits are too low. Top up or shorten duration, then resume from checkpoint (finished clips are not re-billed)."
     } else if lower.contains("429") || lower.contains("rate limit") {
         "Rate limited — retry shortly."
     } else {
