@@ -62,16 +62,18 @@ describe('Knowledge detail document action bar', () => {
     expect(detailSource.includes('syncSource')).toBe(false);
   });
 
-  test('uploads markdown documents and folders through the knowledge batch API', () => {
+  test('imports supported documents and folders through the multipart knowledge API', () => {
     expect(detailSource.includes('handleUploadFiles')).toBe(true);
     expect(detailSource.includes('handleUpload')).toBe(true);
-    expect(detailSource.includes('uploadFiles.invoke')).toBe(true);
+    expect(detailSource.includes('importDocument.invoke')).toBe(true);
+    expect(detailSource.includes('KNOWLEDGE_IMPORT_EXTENSIONS')).toBe(true);
+    expect(detailSource.includes('KNOWLEDGE_IMPORT_CONCURRENCY = 2')).toBe(true);
     expect(detailSource.includes('openUploadModal')).toBe(true);
     expect(detailSource.includes('pendingUploadSource')).toBe(true);
     expect(detailSource.includes('clearPendingUpload')).toBe(true);
     expect(detailSource.includes('uploadTargetPath')).toBe(true);
     expect(detailSource.includes('uploadTargetFolders')).toBe(true);
-    expect(detailSource.includes("accept='.md,text/markdown'")).toBe(true);
+    expect(detailSource.includes('accept={KNOWLEDGE_IMPORT_ACCEPT}')).toBe(true);
     expect(detailSource.includes("setAttribute('webkitdirectory', '')")).toBe(true);
     expect(detailSource.includes('uploadTodo')).toBe(false);
   });

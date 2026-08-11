@@ -19,6 +19,7 @@ import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { parseKnowledgeBaseId } from '@/common/types/ids';
+import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useTranslation } from 'react-i18next';
 import {
   Badge,
@@ -54,7 +55,13 @@ import {
   SettingTwo,
   Upload,
 } from '@icon-park/react';
-import type { IKnowledgeBase, IKnowledgeTag, IKnowledgeTreeEntry } from '@/common/adapter/ipcBridge';
+import type {
+  IKnowledgeBase,
+  IKnowledgeDocumentImportResult,
+  IKnowledgeTag,
+  IKnowledgeTreeEntry,
+  KnowledgeDocumentImportStatus,
+} from '@/common/adapter/ipcBridge';
 import Markdown from '@renderer/components/Markdown';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { ipcBridge } from '@/common';
@@ -83,8 +90,34 @@ import {
 
 // ─── Tab keys (maps to ?tab= query values) ─────────────────────────────────────
 
-type TabKey = 'docs' | 'use' | 'set';
-const ALL_TABS: TabKey[] = ['docs', 'use', 'set'];
+type TabKey = 'docs' | 'inbox' | 'use' | 'set';
+const ALL_TABS: TabKey[] = ['docs', 'inbox', 'use', 'set'];
+const KNOWLEDGE_IMPORT_EXTENSIONS = [
+  'md', 'doc', 'docx', 'docm', 'ppt', 'pps', 'pot', 'pptx', 'pptm', 'ppsx', 'ppsm',
+  'xls', 'xlsx', 'xlsm', 'xlsb', 'odt', 'ods', 'odp', 'rtf', 'epub', 'csv', 'pdf',
+] as const;
+const KNOWLEDGE_IMPORT_ACCEPT = KNOWLEDGE_IMPORT_EXTENSIONS.map((extension) => `.${extension}`).join(',');
+const KNOWLEDGE_IMPORT_CONCURRENCY = 2;
+
+type UploadItemStatus = 'pending' | 'converting' | 'network_error' | KnowledgeDocumentImportStatus;
+
+interface UploadItem {
+  key: string;
+  file: File;
+  sourcePath: string;
+  status: UploadItemStatus;
+  targetPath?: string;
+}
+
+function uploadItemForFile(file: File, index: number): UploadItem {
+  const sourcePath = (file.webkitRelativePath || file.name).replace(/\\/g, '/').replace(/^\/+/, '');
+  return {
+    key: `${sourcePath}:${file.size}:${file.lastModified}:${index}`,
+    file,
+    sourcePath,
+    status: 'pending',
+  };
+}
 
 // ─── Kind config (shared with KnowledgeCard via ../knowledgeKind) ──────────────
 
@@ -424,6 +457,7 @@ const KnowledgeDetailPage: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadModalVisible, setUploadModalVisible] = useState(false);
   const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
+  const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [pendingUploadSource, setPendingUploadSource] = useState<'files' | 'folder' | null>(null);
   const [uploadTargetPath, setUploadTargetPath] = useState('');
   const [newFolderVisible, setNewFolderVisible] = useState(false);
@@ -559,33 +593,65 @@ const KnowledgeDetailPage: React.FC = () => {
     async (incomingFiles: File[], targetFolderPath: string) => {
       if (!id || uploading) return;
 
-      const markdownFiles = incomingFiles.filter((file) => file.name.toLowerCase().endsWith('.md'));
-      if (markdownFiles.length === 0) {
+      if (incomingFiles.length === 0) {
         Message.warning(
-          t('knowledge.detail.docs.uploadNoMarkdown', {
-            defaultValue: '请选择 Markdown 文件或包含 Markdown 文件的文件夹',
+          t('knowledge.detail.docs.uploadNoSupportedFiles', {
+            defaultValue: '请选择支持的文档',
           })
         );
         return;
       }
 
+      const items = incomingFiles.map(uploadItemForFile);
+      setUploadItems(items);
       setUploading(true);
       try {
         const targetPath = targetFolderPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-        const filesToUpload = await Promise.all(
-          markdownFiles.map(async (file) => ({
-            path: [targetPath, (file.webkitRelativePath || file.name).replace(/\\/g, '/').replace(/^\/+/, '')]
-              .filter(Boolean)
-              .join('/'),
-            content: await file.text(),
-          }))
+        const results: Array<{ key: string; result: IKnowledgeDocumentImportResult }> = [];
+        let nextIndex = 0;
+        const importOne = async () => {
+          while (nextIndex < items.length) {
+            const item = items[nextIndex++];
+            setUploadItems((previous) => previous.map((entry) => (
+              entry.key === item.key ? { ...entry, status: 'converting' } : entry
+            )));
+            try {
+              const result = await ipcBridge.knowledge.importDocument.invoke({
+                knowledge_base_id: id,
+                file: item.file,
+                source_path: item.sourcePath,
+                target_folder: targetPath,
+              });
+              results.push({ key: item.key, result });
+              setUploadItems((previous) => previous.map((entry) => (
+                entry.key === item.key
+                  ? { ...entry, status: result.status, targetPath: result.targetPath }
+                  : entry
+              )));
+            } catch (error) {
+              const status: UploadItemStatus = isBackendHttpError(error) && error.status === 413
+                ? 'resource_limit'
+                : 'network_error';
+              setUploadItems((previous) => previous.map((entry) => (
+                entry.key === item.key ? { ...entry, status } : entry
+              )));
+            }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(KNOWLEDGE_IMPORT_CONCURRENCY, items.length) }, importOne));
+        const written = results.filter(({ result }) => result.status === 'written');
+        const failedKeys = new Set(
+          items
+            .filter((item) => !written.some((outcome) => outcome.key === item.key))
+            .map((item) => item.key)
         );
-        const result = await ipcBridge.knowledge.uploadFiles.invoke({ knowledge_base_id: id, files: filesToUpload });
-        const firstPath = filesToUpload[0]?.path;
+        const firstPath = written[0]?.result.targetPath;
 
-        setFileSearch('');
-        await refresh();
-        await reloadTreePath('');
+        if (written.length > 0) {
+          setFileSearch('');
+          await refresh();
+          await reloadTreePath('');
+        }
         if (firstPath) {
           const parent = parentDirOfKnowledgePath(firstPath);
           setExpandedTreeKeys((prev) => [...new Set([...prev, ...knowledgeFolderPathChain(parent)])]);
@@ -593,14 +659,24 @@ const KnowledgeDetailPage: React.FC = () => {
           setSelectedPath(firstPath);
           setSelectedTreeKey(firstPath);
         }
-        setUploadModalVisible(false);
-        setPendingUploadFiles([]);
-        setPendingUploadSource(null);
-        Message.success(
-          t('knowledge.detail.docs.uploadSuccess', { defaultValue: '已上传 {{n}} 篇文档', n: result.written })
-        );
-      } catch (e) {
-        Message.error(String(e));
+        if (failedKeys.size === 0) {
+          setUploadModalVisible(false);
+          setPendingUploadFiles([]);
+          setUploadItems([]);
+          setPendingUploadSource(null);
+          Message.success(
+            t('knowledge.detail.docs.uploadSuccess', { defaultValue: '已导入 {{n}} 篇文档', n: written.length })
+          );
+        } else {
+          setPendingUploadFiles(items.filter((item) => failedKeys.has(item.key)).map((item) => item.file));
+          Message.warning(
+            t('knowledge.detail.docs.uploadPartialSuccess', {
+              defaultValue: '已导入 {{written}} 篇，{{failed}} 篇需要处理',
+              written: written.length,
+              failed: failedKeys.size,
+            })
+          );
+        }
       } finally {
         setUploading(false);
       }
@@ -618,6 +694,7 @@ const KnowledgeDetailPage: React.FC = () => {
   const openUploadModal = () => {
     if (uploading) return;
     setPendingUploadFiles([]);
+    setUploadItems([]);
     setPendingUploadSource(null);
     setUploadTargetPath(selectedFolderPath);
     setUploadModalVisible(true);
@@ -625,22 +702,27 @@ const KnowledgeDetailPage: React.FC = () => {
 
   const clearPendingUpload = () => {
     setPendingUploadFiles([]);
+    setUploadItems([]);
     setPendingUploadSource(null);
   };
 
   const handleUploadInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(event.currentTarget.files ?? []);
     event.currentTarget.value = '';
-    const markdownFiles = selectedFiles.filter((file) => file.name.toLowerCase().endsWith('.md'));
-    if (markdownFiles.length === 0) {
+    const importFiles = selectedFiles.filter((file) => {
+      const extension = file.name.split('.').pop()?.toLowerCase();
+      return extension != null && KNOWLEDGE_IMPORT_EXTENSIONS.includes(extension as (typeof KNOWLEDGE_IMPORT_EXTENSIONS)[number]);
+    });
+    if (importFiles.length === 0) {
       Message.warning(
-        t('knowledge.detail.docs.uploadNoMarkdown', {
-          defaultValue: '请选择 Markdown 文件或包含 Markdown 文件的文件夹',
+        t('knowledge.detail.docs.uploadNoSupportedFiles', {
+          defaultValue: '请选择支持的文档',
         })
       );
       return;
     }
-    setPendingUploadFiles(markdownFiles);
+    setPendingUploadFiles(importFiles);
+    setUploadItems(importFiles.map(uploadItemForFile));
     setPendingUploadSource(uploadPickerKindRef.current);
     setUploadTargetPath(selectedFolderPath);
     setUploadModalVisible(true);
@@ -1061,7 +1143,7 @@ const KnowledgeDetailPage: React.FC = () => {
                 <input
                   ref={markdownFileInputRef}
                   type='file'
-                  accept='.md,text/markdown'
+                  accept={KNOWLEDGE_IMPORT_ACCEPT}
                   multiple
                   hidden
                   onChange={handleUploadInputChange}
@@ -1069,7 +1151,7 @@ const KnowledgeDetailPage: React.FC = () => {
                 <input
                   ref={markdownFolderInputRef}
                   type='file'
-                  accept='.md,text/markdown'
+                  accept={KNOWLEDGE_IMPORT_ACCEPT}
                   multiple
                   hidden
                   onChange={handleUploadInputChange}
@@ -1442,7 +1524,7 @@ const KnowledgeDetailPage: React.FC = () => {
       </div>
 
       <Modal
-        title={t('knowledge.detail.docs.uploadTitle', { defaultValue: '导入 Markdown 文档' })}
+        title={t('knowledge.detail.docs.uploadTitle', { defaultValue: '导入文档' })}
         visible={uploadModalVisible}
         confirmLoading={uploading}
         okText={t('knowledge.detail.docs.uploadConfirm', { defaultValue: '上传' })}
@@ -1483,7 +1565,7 @@ const KnowledgeDetailPage: React.FC = () => {
             </span>
             <div className='grid grid-cols-2 gap-8px'>
               <Button icon={<FileText theme='outline' size='15' />} onClick={() => openUploadPicker('files')}>
-                {t('knowledge.detail.docs.uploadFiles', { defaultValue: '选择 Markdown 文档' })}
+                {t('knowledge.detail.docs.uploadFiles', { defaultValue: '选择文档' })}
               </Button>
               <Button icon={<FolderOpen theme='outline' size='15' />} onClick={() => openUploadPicker('folder')}>
                 {t('knowledge.detail.docs.uploadFolder', { defaultValue: '选择文件夹' })}
@@ -1501,8 +1583,8 @@ const KnowledgeDetailPage: React.FC = () => {
                     <FileText theme='outline' size='14' className='shrink-0 text-[var(--color-text-2)]' />
                   )}
                   {t('knowledge.detail.docs.uploadSelectionCount', {
-                    defaultValue: '已选择 {{n}} 篇 Markdown 文档',
-                    n: pendingUploadFiles.length,
+                    defaultValue: '已选择 {{n}} 篇文档',
+                    n: uploadItems.length,
                   })}
                 </span>
                 <button
@@ -1515,23 +1597,25 @@ const KnowledgeDetailPage: React.FC = () => {
                   <Close theme='outline' size='14' />
                 </button>
               </div>
-              <div className='flex flex-col gap-3px text-12px text-[var(--color-text-3)]'>
-                {pendingUploadFiles.slice(0, 3).map((file) => {
-                  const path = file.webkitRelativePath || file.name;
+              <div className='max-h-220px overflow-y-auto flex flex-col gap-3px text-12px text-[var(--color-text-3)]'>
+                {uploadItems.map((item) => {
+                  const path = item.sourcePath;
                   return (
-                    <span key={`${path}-${file.size}`} className='truncate' title={path}>
-                      {path}
+                    <span key={item.key} className='flex items-center justify-between gap-8px' title={path}>
+                      <span className='truncate'>{path}</span>
+                      <span className={classNames(
+                        'shrink-0 text-11px',
+                        item.status === 'written' ? 'text-[rgb(var(--success-6))]' :
+                        item.status === 'converting' ? 'text-[var(--color-text-2)]' :
+                        item.status === 'pending' ? 'text-[var(--color-text-3)]' : 'text-[rgb(var(--danger-6))]'
+                      )}>
+                        {t(`knowledge.detail.docs.importStatus.${item.status}`, {
+                          defaultValue: item.status === 'converting' ? '转换中…' : item.status,
+                        })}
+                      </span>
                     </span>
                   );
                 })}
-                {pendingUploadFiles.length > 3 && (
-                  <span>
-                    {t('knowledge.detail.docs.uploadMoreFiles', {
-                      defaultValue: '另有 {{n}} 篇文档',
-                      n: pendingUploadFiles.length - 3,
-                    })}
-                  </span>
-                )}
               </div>
             </div>
           )}

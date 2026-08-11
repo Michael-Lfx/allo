@@ -2,10 +2,11 @@
 
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Extension, Json, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, Query, State};
 use axum::routing::{get, post};
+use tower_http::limit::RequestBodyLimitLayer;
 
-use nomifun_api_types::{ApiResponse, CreateKnowledgeTagRequest, KnowledgeSource, KnowledgeTag, UpdateKnowledgeTagRequest};
+use nomifun_api_types::{ApiResponse, CreateKnowledgeTagRequest, KnowledgeDocumentImportResult, KnowledgeSource, KnowledgeTag, UpdateKnowledgeTagRequest};
 use nomifun_auth::CurrentUser;
 use nomifun_common::{AppError, KnowledgeBaseId};
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,23 @@ use crate::service::{
 };
 use crate::state::KnowledgeRouterState;
 
+/// The parser also applies stricter expansion limits. This transport cap keeps
+/// an authenticated local client from retaining arbitrary multipart bodies.
+const MAX_DOCUMENT_IMPORT_BYTES: usize = 64 * 1024 * 1024;
+const MULTIPART_METADATA_ALLOWANCE_BYTES: usize = 1024 * 1024;
+
 pub fn knowledge_routes(state: KnowledgeRouterState) -> Router {
+    let document_import_router = Router::new()
+        .route(
+            "/api/knowledge/bases/{knowledge_base_id}/document-import",
+            post(import_document),
+        )
+        .layer(DefaultBodyLimit::disable())
+        .layer(RequestBodyLimitLayer::new(
+            MAX_DOCUMENT_IMPORT_BYTES + MULTIPART_METADATA_ALLOWANCE_BYTES,
+        ))
+        .with_state(state.clone());
+
     Router::new()
         .route("/api/knowledge/bases", get(list_bases).post(create_base))
         .route("/api/knowledge/bases/quick", post(quick_create_base))
@@ -98,6 +115,7 @@ pub fn knowledge_routes(state: KnowledgeRouterState) -> Router {
         )
         .route("/api/knowledge/search", post(search_bases))
         .with_state(state)
+        .merge(document_import_router)
 }
 
 async fn list_bases(
@@ -232,6 +250,79 @@ async fn upload_files(
         .upload_files_batch(knowledge_base_id.as_str(), &files)
         .await?;
     Ok(Json(ApiResponse::ok(UploadFilesResponse { written })))
+}
+
+struct DocumentImportFields {
+    bytes: Vec<u8>,
+    source_path: String,
+    target_folder: String,
+}
+
+async fn extract_document_import(mut multipart: Multipart) -> Result<DocumentImportFields, AppError> {
+    let mut bytes = None;
+    let mut source_path = None;
+    let mut target_folder = String::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| AppError::BadRequest(format!("multipart error: {error}")))?
+    {
+        match field.name().unwrap_or_default() {
+            "file" => {
+                if bytes.is_some() {
+                    return Err(AppError::BadRequest("exactly one file field is required".into()));
+                }
+                bytes = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|error| AppError::BadRequest(format!("failed to read upload: {error}")))?
+                        .to_vec(),
+                );
+            }
+            "source_path" => {
+                source_path = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|error| AppError::BadRequest(format!("failed to read source_path: {error}")))?,
+                );
+            }
+            "target_folder" => {
+                target_folder = field
+                    .text()
+                    .await
+                    .map_err(|error| AppError::BadRequest(format!("failed to read target_folder: {error}")))?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(DocumentImportFields {
+        bytes: bytes.ok_or_else(|| AppError::BadRequest("missing file field".into()))?,
+        source_path: source_path.ok_or_else(|| AppError::BadRequest("missing source_path field".into()))?,
+        target_folder,
+    })
+}
+
+async fn import_document(
+    State(state): State<KnowledgeRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(knowledge_base_id): Path<KnowledgeBaseId>,
+    multipart: Multipart,
+) -> Result<Json<ApiResponse<KnowledgeDocumentImportResult>>, AppError> {
+    let fields = extract_document_import(multipart).await?;
+    let result = state
+        .service
+        .import_document(
+            knowledge_base_id.as_str(),
+            &fields.source_path,
+            &fields.target_folder,
+            fields.bytes,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(result)))
 }
 
 async fn suggest_prompt(
@@ -860,6 +951,35 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(get).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn document_import_route_returns_written_then_conflict() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let app = test_app(dir.path());
+        let create = Request::post("/api/knowledge/bases")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"imports","description":""}"#))
+            .unwrap();
+        let created = json_body(app.clone().oneshot(create).await.unwrap()).await;
+        let kb_id = created["data"]["knowledge_base_id"].as_str().unwrap();
+
+        let boundary = "knowledge-import-boundary";
+        let body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"guide.md\"\r\nContent-Type: text/markdown\r\n\r\n# Guide\n\nroute searchable\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"source_path\"\r\n\r\nfolder/guide.md\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"target_folder\"\r\n\r\nimports\r\n--{boundary}--\r\n"
+        );
+        let request = || {
+            Request::post(format!("/api/knowledge/bases/{kb_id}/document-import"))
+                .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+                .body(Body::from(body.clone()))
+                .unwrap()
+        };
+
+        let written = json_body(app.clone().oneshot(request()).await.unwrap()).await;
+        assert_eq!(written["data"]["status"], "written", "{written}");
+        assert_eq!(written["data"]["targetPath"], "imports/folder/guide.md");
+        let conflict = json_body(app.oneshot(request()).await.unwrap()).await;
+        assert_eq!(conflict["data"]["status"], "conflict", "{conflict}");
     }
 
     /// An unknown binding kind stays a 400 — `workpath` is now accepted,

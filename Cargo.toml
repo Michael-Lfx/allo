@@ -192,6 +192,7 @@ git2 = { version = "0.20", default-features = false }
 mime_guess = "2"
 rust-embed = "8"
 fs2 = "0.4"
+anydoc = "=0.1.8"
 zstd = "0.13"
 glob = "0.3"
 # Windows path de-UNC-ing: `dunce::simplified` strips the `\\?\` verbatim

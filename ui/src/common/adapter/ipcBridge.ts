@@ -6747,6 +6747,25 @@ export interface IKnowledgeFileContent {
   modified_at: number | null;
 }
 
+export type KnowledgeDocumentImportStatus =
+  | 'written'
+  | 'conflict'
+  | 'unsupported'
+  | 'malformed'
+  | 'encrypted'
+  | 'resource_limit'
+  | 'missing_part'
+  | 'invalid_utf8';
+
+/** Result of importing one document through the multipart knowledge route. */
+export interface IKnowledgeDocumentImportResult {
+  sourcePath: string;
+  targetPath: string;
+  format?: string;
+  status: KnowledgeDocumentImportStatus;
+  detail?: string;
+}
+
 /** Per-target mount binding: which bases a session mounts + the write-back switch. */
 export interface IKnowledgeBinding {
   enabled: boolean;
@@ -7176,6 +7195,19 @@ export const knowledge = {
   uploadFiles: httpPost<{ written: number }, { knowledge_base_id: KnowledgeBaseId; files: Array<{ path: string; content: string }> }>(
     (p) => `/api/knowledge/bases/${p.knowledge_base_id}/upload`,
     (p) => ({ files: p.files })
+  ),
+  importDocument: httpMultipartPost<
+    IKnowledgeDocumentImportResult,
+    { knowledge_base_id: KnowledgeBaseId; file: File; source_path: string; target_folder: string }
+  >(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/document-import`,
+    (p) => {
+      const form = new FormData();
+      form.append('file', p.file, p.file.name);
+      form.append('source_path', p.source_path);
+      form.append('target_folder', p.target_folder);
+      return form;
+    }
   ),
   suggestPrompt: httpPost<{ prompt: string }, { knowledge_base_id: KnowledgeBaseId }>(
     (p) => `/api/knowledge/bases/${p.knowledge_base_id}/suggest-prompt`

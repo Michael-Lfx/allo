@@ -19,6 +19,7 @@
 
 pub mod autogen;
 pub mod context;
+pub mod document_import;
 pub mod events;
 pub mod export;
 pub mod mcp_server;

@@ -1,6 +1,38 @@
 use nomifun_common::KnowledgeBaseId;
 use serde::{Deserialize, Serialize};
 
+/// Outcome of importing one local document into a knowledge base.
+///
+/// Expected conversion failures are returned as data so a frontend can import
+/// a folder and report every file independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeDocumentImportStatus {
+    Written,
+    Conflict,
+    Unsupported,
+    Malformed,
+    Encrypted,
+    ResourceLimit,
+    MissingPart,
+    InvalidUtf8,
+}
+
+/// Result of one multipart knowledge-document import.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeDocumentImportResult {
+    pub source_path: String,
+    pub target_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    pub status: KnowledgeDocumentImportStatus,
+    /// Parser detail intended for local diagnostics; the renderer maps
+    /// `status` to localized user-facing copy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 /// A live (URL-backed) source attached to a knowledge base. Snapshots of
 /// such sources can go stale between syncs, so the knowledge context builder
 /// surfaces the URLs in a dedicated "Realtime sources" section.

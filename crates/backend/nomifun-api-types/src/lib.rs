@@ -175,7 +175,7 @@ pub use insights::{
     InsightsResetOutboxResponse, UpdateInsightsContributionRequest,
 };
 pub use knowledge::{
-    CreateKnowledgeTagRequest, KnowledgeMountInfo,
+    CreateKnowledgeTagRequest, KnowledgeDocumentImportResult, KnowledgeDocumentImportStatus, KnowledgeMountInfo,
     KnowledgeSource, KnowledgeSourceEntry, KnowledgeSourceMode, KnowledgeTag,
     UpdateKnowledgeTagRequest,
 };

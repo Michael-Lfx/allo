@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock, RwLock, Weak};
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
-use nomifun_api_types::{KnowledgeMountInfo, KnowledgeSource, KnowledgeSourceEntry, KnowledgeSourceMode, KnowledgeTag, UpdateKnowledgeTagRequest};
+use nomifun_api_types::{KnowledgeDocumentImportResult, KnowledgeDocumentImportStatus, KnowledgeMountInfo, KnowledgeSource, KnowledgeSourceEntry, KnowledgeSourceMode, KnowledgeTag, UpdateKnowledgeTagRequest};
 use nomifun_common::{
     AppError, CompanionId, ConversationId, KnowledgeBaseId,
     ProviderWithModel, TerminalId, TimestampMs, UuidV7Error, generate_id,
@@ -31,6 +31,7 @@ use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
 use crate::autogen::{self, KnowledgeCompleter};
+use crate::document_import;
 use crate::events::KnowledgeEventEmitter;
 use crate::mount::{self, MountSpec};
 use crate::source_url::{self, HttpFetcher, PageFetcher};
@@ -572,6 +573,9 @@ pub struct KnowledgeService {
     /// re-sync live terminal workspaces (README/mounts) so binding changes
     /// take effect without a PTY relaunch. `(target_kind, canonical_key)`.
     binding_changed_hook: RwLock<Option<Arc<dyn Fn(&str, &str) + Send + Sync>>>,
+    /// Document parsers are CPU-bound and synchronous. Keep the local import
+    /// surface from filling Tokio's blocking pool when a folder is uploaded.
+    document_import_limit: Arc<Semaphore>,
 }
 
 /// One source entry's fetched-and-condensed body, ready to be slugged and
@@ -626,6 +630,7 @@ impl KnowledgeService {
             root_lock_identity_cache: Arc::new(StdMutex::new(HashMap::new())),
             extra_managed_roots: RwLock::new(Vec::new()),
             binding_changed_hook: RwLock::new(None),
+            document_import_limit: Arc::new(Semaphore::new(2)),
         }
     }
 
@@ -1417,6 +1422,67 @@ impl KnowledgeService {
             content,
         )
             .await
+    }
+
+    /// Convert one uploaded document into Markdown and publish it only when
+    /// its portable target path is absent. Expected parser failures are
+    /// returned as a structured outcome so callers may continue a folder
+    /// import after one bad file.
+    pub async fn import_document(
+        &self,
+        id: &str,
+        source_path: &str,
+        target_folder: &str,
+        bytes: Vec<u8>,
+    ) -> Result<KnowledgeDocumentImportResult, AppError> {
+        let source_path = source_path.trim();
+        if source_path.is_empty() {
+            return Err(AppError::BadRequest("source_path must not be empty".into()));
+        }
+        if !document_import::supports_source_path(source_path) {
+            return Err(AppError::BadRequest("unsupported knowledge document extension".into()));
+        }
+        let target_path = document_import::target_markdown_path(source_path, target_folder);
+
+        // Fail invalid or unsafe targets before consuming parser capacity.
+        let row = self.require_base(id).await?;
+        safe_md_path_bounded(PathBuf::from(&row.root_path), target_path.clone()).await?;
+
+        let permit = self
+            .document_import_limit
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| AppError::Internal("knowledge document import limiter closed".into()))?;
+        let conversion_source_path = source_path.to_owned();
+        let outcome = tokio::task::spawn_blocking(move || {
+            // Retain the permit until the synchronous parser actually returns,
+            // even if the HTTP request future is cancelled meanwhile.
+            let _permit = permit;
+            document_import::convert_to_markdown(bytes, conversion_source_path)
+        })
+        .await
+        .map_err(|error| AppError::Internal(format!("knowledge document conversion task failed: {error}")))?;
+
+        let mut result = KnowledgeDocumentImportResult {
+            source_path: source_path.to_owned(),
+            target_path: target_path.clone(),
+            format: outcome.format,
+            status: outcome.status,
+            detail: outcome.detail,
+        };
+        let Some(markdown) = outcome.markdown else {
+            return Ok(result);
+        };
+
+        if !self
+            .write_file_if_portably_absent(id, &target_path, &markdown)
+            .await?
+        {
+            result.status = KnowledgeDocumentImportStatus::Conflict;
+            result.detail = Some("a Markdown document already exists at the target path".into());
+        }
+        Ok(result)
     }
 
     /// Create a markdown file only when no portable path alias exists.
@@ -11484,6 +11550,48 @@ mod tests {
         let tag = svc.create_tag("Hello World", None).await.unwrap();
         assert_eq!(tag.key, "hello-world");
         assert_eq!(tag.label, "Hello World");
+    }
+
+    #[tokio::test]
+    async fn document_import_writes_markdown_once_and_keeps_existing_target() {
+        let svc = test_service();
+        let base = svc.create_base("imports", "", None, None).await.unwrap();
+        let first = svc
+            .import_document(
+                base.knowledge_base_id.as_str(),
+                "source/guide.md",
+                "incoming",
+                b"# Imported guide\n\nsearchable phrase".to_vec(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status, KnowledgeDocumentImportStatus::Written);
+        assert_eq!(first.target_path, "incoming/source/guide.md");
+        assert_eq!(
+            svc.read_file(&base.knowledge_base_id, "incoming/source/guide.md")
+                .await
+                .unwrap()
+                .content,
+            "# Imported guide\n\nsearchable phrase"
+        );
+
+        let duplicate = svc
+            .import_document(
+                base.knowledge_base_id.as_str(),
+                "source/guide.md",
+                "incoming",
+                b"replacement must not win".to_vec(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(duplicate.status, KnowledgeDocumentImportStatus::Conflict);
+        assert_eq!(
+            svc.search_bases(std::slice::from_ref(&base.knowledge_base_id), "searchable phrase", 5)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
