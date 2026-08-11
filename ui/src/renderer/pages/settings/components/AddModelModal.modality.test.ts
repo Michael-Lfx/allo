@@ -9,7 +9,7 @@ describe('model modality editing UI', () => {
 
     expect(source.includes('deriveDefaultTasks')).toBe(false);
     expect(source.includes("useState<ModelTask[]>([])")).toBe(true);
-    expect(source.includes("setTasks([])")).toBe(true);
+    expect(source.includes("setDiscoveredTasks([])")).toBe(true);
     expect(source.includes("tasks: tasks.length > 0 ? tasks : ['chat']")).toBe(false);
     expect(source.includes('buildModelProfileUpsertRequest')).toBe(true);
   });
