@@ -193,8 +193,13 @@
   gap: 8px;
   min-width: 0;
   padding: 10px 12px;
+  border: none;
+  background: transparent;
   color: var(--color-text-3);
+  font: inherit;
   font-size: 12px;
+  cursor: pointer;
+  text-align: left;
 }
 
 .stageItem + .stageItem::before {

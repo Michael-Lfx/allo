@@ -1,0 +1,33 @@
+name: flat-motion
+description: >
+  Graphic, 2D-forward motion language for explainers and short animated
+  stories. Flat shapes, bold silhouettes, intentional motion — not faux
+  live-action.
+visual_language:
+  - Flat or lightly graded color fields; limited palette (3–5 colors).
+  - Bold silhouettes and simple geometric forms.
+  - Parallax and kinetic type over complex camera paths.
+  - Hard edges preferred to soft photoreal blur.
+  - Consistent character proportions across every shot.
+tone:
+  - playful
+  - lucid
+  - energetic
+  - friendly
+pacing: >
+  Snappy transitions; hold diagrams long enough to read; cut before
+  decoration outruns meaning.
+prompt_modifiers:
+  - "flat 2D motion graphics"
+  - "bold silhouette, limited color palette"
+  - "clean vector-like shapes"
+  - "kinetic typography friendly framing"
+  - "consistent character proportions"
+avoid:
+  - "photoreal skin texture"
+  - "cinematic shallow depth of field"
+  - "noisy detailed backgrounds"
+  - "inconsistent character redesign between shots"
+reference_notes:
+  - "Strong default for animated-explainer and animation pipelines."
+  - "Favor legibility of diagrams and metaphors over spectacle."

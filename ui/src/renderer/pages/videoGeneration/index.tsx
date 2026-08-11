@@ -1,8 +1,6 @@
-
 /**
  * Unified video creation home (`/video-generation`).
- * Agent and infinite-canvas creation share one composer while keeping their
- * skills, drafts, submissions, and project galleries independent.
+ * Agent / Avatar share Montage pipelines; Creation keeps the infinite canvas.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -16,14 +14,14 @@ import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import { isDesktopShell } from '@renderer/utils/platform';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import {
-  createSession,
-  deleteSession,
-  importSession,
-  listSessions,
-  planSession,
-  uploadCameo,
+  createProject,
+  deleteProject,
+  getProjectStatus,
+  importProject,
+  listProjects,
+  startProject,
 } from './api';
-import type { PlanBody, SessionSummary } from './types';
+import type { ProjectSummary } from './types';
 import SessionCard from './components/SessionCard';
 import TvShowPanel from './components/TvShowPanel';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
@@ -35,9 +33,6 @@ import {
   CLIP_DURATION_MIN_SECS,
   CLIP_DURATION_STEP_SECS,
   clampDuration,
-  DURATION_MAX_SECS,
-  DURATION_MIN_SECS,
-  DURATION_STEP_SECS,
 } from './components/DurationTimelineBar';
 import {
   deleteCanvasMedia,
@@ -65,39 +60,21 @@ async function createServerBackedCanvasProject(
 
 type ListTab = 'recent' | 'tvShow';
 
-function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
-  const common: PlanBody = {
-    user_requirement: draft.requirement.trim() || undefined,
-    style: draft.style.trim() || undefined,
-    target_duration_secs: clampDuration(
-      draft.preferences.targetDurationSecs,
-      DURATION_MIN_SECS,
-      DURATION_MAX_SECS,
-      DURATION_STEP_SECS
-    ),
-    aspect_ratio: draft.preferences.aspectRatio,
-    resolution: draft.preferences.resolution,
-    fps: draft.preferences.fps,
-    llm_model: draft.preferences.models.llm_model,
-    image_model: draft.preferences.models.image_model || undefined,
-    video_model: draft.preferences.models.video_model || undefined,
-  };
-  switch (draft.workflow) {
-    case 'idea2video':
-      return { ...common, idea: draft.sourceText };
-    case 'script2video':
-      return { ...common, script: draft.sourceText };
-    case 'novel2video':
-      return { ...common, novel_text: draft.sourceText };
-    default: {
-      const exhaustive: never = draft.workflow;
-      return exhaustive;
-    }
-  }
+function parseHomeMode(raw: string | null): VideoHomeMode {
+  if (raw === 'creation' || raw === 'canvas') return 'creation';
+  if (raw === 'avatar') return 'avatar';
+  return 'agent';
 }
 
 function titleForDraft(draft: VideoCreateDraft): string {
   return draft.sourceText.split(/\r?\n/, 1)[0]?.trim().slice(0, 48) || '';
+}
+
+function matchesListMode(project: ProjectSummary, mode: VideoHomeMode): boolean {
+  if (mode === 'avatar') {
+    return project.mode === 'avatar' || project.mode === 'talking_head';
+  }
+  return project.mode === 'agent';
 }
 
 const VideoGenerationListPage: React.FC = () => {
@@ -108,13 +85,10 @@ const VideoGenerationListPage: React.FC = () => {
   const isMobile = layout?.isMobile ?? false;
   const [message, messageHolder] = useArcoMessage();
 
-  const workMode: VideoHomeMode =
-    searchParams.get('mode') === 'creation' || searchParams.get('mode') === 'canvas'
-      ? 'creation'
-      : 'agent';
+  const workMode = parseHomeMode(searchParams.get('mode'));
 
   const [listTab, setListTab] = useState<ListTab>('tvShow');
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -139,10 +113,32 @@ const VideoGenerationListPage: React.FC = () => {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      setSessions(await listSessions());
+      const list = await listProjects();
+      const enriched = await Promise.all(
+        list.map(async (project) => {
+          try {
+            const status = await getProjectStatus(project.id);
+            return {
+              ...project,
+              status: status.status as ProjectSummary['status'],
+              current_stage: status.current_stage,
+              final_video: status.final_video ?? null,
+            } satisfies ProjectSummary;
+          } catch {
+            return { ...project } satisfies ProjectSummary;
+          }
+        })
+      );
+      // Newest first
+      enriched.sort((a, b) => {
+        const ta = Date.parse(a.updated_at || a.created_at) || 0;
+        const tb = Date.parse(b.updated_at || b.created_at) || 0;
+        return tb - ta;
+      });
+      setProjects(enriched);
       setError(null);
     } catch (e) {
-      console.error('[videoGeneration] failed to load sessions', e);
+      console.error('[videoGeneration] failed to load projects', e);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
@@ -150,67 +146,76 @@ const VideoGenerationListPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (workMode === 'agent') void refresh();
+    if (workMode === 'agent' || workMode === 'avatar') void refresh();
   }, [refresh, workMode]);
+
+  const modeProjects = useMemo(
+    () => projects.filter((p) => matchesListMode(p, workMode)),
+    [projects, workMode]
+  );
 
   const displayed = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter(
+    if (!q) return modeProjects;
+    return modeProjects.filter(
       (s) =>
         (s.title ?? '').toLowerCase().includes(q) ||
-        s.workflow.toLowerCase().includes(q) ||
-        (s.stage ?? '').toLowerCase().includes(q)
+        s.pipeline.toLowerCase().includes(q) ||
+        (s.current_stage ?? '').toLowerCase().includes(q)
     );
-  }, [sessions, searchQuery]);
+  }, [modeProjects, searchQuery]);
 
   const handleCreate = useCallback(
     async (draft: VideoCreateDraft) => {
       if (creating) return;
       setCreating(true);
       try {
-        const created = await createSession({
-          workflow: draft.workflow,
-          title: titleForDraft(draft) || undefined,
+        const title = titleForDraft(draft);
+        let created = await createProject({
+          title: title || draft.pipeline,
+          pipeline: draft.pipeline,
+          prompt: draft.sourceText,
+          style_playbook: draft.style.trim() || undefined,
+          models: {
+            chat: draft.preferences.models.llm_model || undefined,
+            image: draft.preferences.models.image_model || undefined,
+            video: draft.preferences.models.video_model || undefined,
+          },
+          output: {
+            aspect: draft.preferences.aspectRatio,
+            resolution: draft.preferences.resolution,
+            fps: draft.preferences.fps,
+            target_duration_secs: draft.preferences.targetDurationSecs,
+          },
         });
         trackFunnelEvent('task_accepted', {
           feature: 'video_generation',
-          workflow: draft.workflow,
-          session_id: created.id,
+          pipeline: draft.pipeline,
+          project_id: created.id,
+          mode: workMode,
         });
         try {
-          const pendingCameos = draft.cameos.filter((c) => c.file && c.characterName.trim());
-          for (const cameo of pendingCameos) {
-            await uploadCameo(
-              created.id,
-              cameo.file!,
-              cameo.characterName.trim(),
-              cameo.description.trim()
-            );
-          }
-          await planSession(created.id, sourceBodyForDraft(draft));
+          await startProject(created.id);
           trackFunnelEvent('first_task_started', {
             feature: 'video_generation',
-            workflow: draft.workflow,
-            session_id: created.id,
+            pipeline: draft.pipeline,
+            project_id: created.id,
           });
           clearVideoHomeDraft();
-        } catch (planError) {
-          const raw = planError instanceof Error ? planError.message : String(planError);
+        } catch (startError) {
+          const raw = startError instanceof Error ? startError.message : String(startError);
           message.error(
             isInsufficientCreditsError(raw)
               ? t('videoGeneration.workspace.failure.creditsToast', {
-                  defaultValue: '积分不足，请充值或缩短时长后从断点继续。',
+                  defaultValue: '积分不足，请充值后从工作区继续。',
                 })
-              : `${t('videoGeneration.workspace.planFailed', { defaultValue: '规划失败' })}: ${raw}`
+              : `${t('videoGeneration.workspace.startFailed', { defaultValue: '启动失败' })}: ${raw}`
           );
-          navigate(`/video-generation/${created.id}`, {
-            state: { launchDraft: draft, launchError: true },
-          });
-          rememberVideoGenerationSession(created.id, titleForDraft(draft));
+          rememberVideoGenerationSession(created.id, title || created.title);
+          navigate(`/video-generation/${created.id}`);
           return;
         }
-        rememberVideoGenerationSession(created.id, titleForDraft(draft));
+        rememberVideoGenerationSession(created.id, title || created.title);
         navigate(`/video-generation/${created.id}`);
       } catch (e) {
         message.error(
@@ -222,13 +227,14 @@ const VideoGenerationListPage: React.FC = () => {
         setCreating(false);
       }
     },
-    [creating, navigate, message, t]
+    [creating, message, navigate, t, workMode]
   );
 
   const handleModeChange = useCallback(
     (mode: VideoHomeMode) => {
       const next = new URLSearchParams(searchParams);
       if (mode === 'creation') next.set('mode', 'creation');
+      else if (mode === 'avatar') next.set('mode', 'avatar');
       else next.delete('mode');
       setSearchParams(next, { replace: true });
     },
@@ -282,7 +288,6 @@ const VideoGenerationListPage: React.FC = () => {
             aspectRatio: draft.preferences.aspectRatio,
             resolution: draft.preferences.resolution,
             fps: draft.preferences.fps,
-            // Canvas nodes expect single-clip seconds (≈4–15), not Agent film length.
             targetDurationSecs: clampDuration(
               draft.preferences.targetDurationSecs,
               CLIP_DURATION_MIN_SECS,
@@ -321,8 +326,8 @@ const VideoGenerationListPage: React.FC = () => {
     [creating, message, navigate, t]
   );
 
-  const openSession = useCallback(
-    (s: SessionSummary) => {
+  const openProject = useCallback(
+    (s: ProjectSummary) => {
       rememberVideoGenerationSession(s.id, s.title);
       navigate(`/video-generation/${s.id}`);
     },
@@ -330,13 +335,13 @@ const VideoGenerationListPage: React.FC = () => {
   );
 
   const handleDelete = useCallback(
-    async (s: SessionSummary) => {
+    async (s: ProjectSummary) => {
       if (deletingId) return;
       setDeletingId(s.id);
       try {
-        await deleteSession(s.id);
+        await deleteProject(s.id);
         clearVideoGenerationSessionMemory(s.id);
-        setSessions((prev) => prev.filter((x) => x.id !== s.id));
+        setProjects((prev) => prev.filter((x) => x.id !== s.id));
         message.success(t('videoGeneration.actions.deleteOk', { defaultValue: '已删除任务' }));
       } catch (e) {
         message.error(
@@ -366,7 +371,7 @@ const VideoGenerationListPage: React.FC = () => {
       filters: [
         {
           name: t('videoGeneration.actions.exportFilter', { defaultValue: 'Flowy 视频工程' }),
-          extensions: ['nomivimax'],
+          extensions: ['nomimontage'],
         },
       ],
     });
@@ -374,11 +379,11 @@ const VideoGenerationListPage: React.FC = () => {
     if (!source) return;
     setImporting(true);
     try {
-      const imported = await importSession(source);
+      const imported = await importProject(source);
       trackFunnelEvent('task_accepted', {
         feature: 'video_generation',
-        workflow: imported.workflow,
-        session_id: imported.id,
+        pipeline: imported.pipeline,
+        project_id: imported.id,
         source: 'project_import',
       });
       message.success(t('videoGeneration.list.importOk', { defaultValue: '工程已导入' }));
@@ -439,7 +444,7 @@ const VideoGenerationListPage: React.FC = () => {
                         defaultValue: '浏览社区已上架的作品，或查看你的发布审核状态。',
                       })
                     : t('videoGeneration.list.recentSubtitle', {
-                        defaultValue: '继续分镜、渲染或查看已经完成的影片。',
+                        defaultValue: '继续审批、导出或查看已经完成的影片。',
                       })}
                 </p>
               </div>
@@ -459,7 +464,7 @@ const VideoGenerationListPage: React.FC = () => {
                       })}
                     </span>
                   </Button>
-                  {!error && sessions.length > 0 ? (
+                  {!error && modeProjects.length > 0 ? (
                     <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
                       <Search
                         theme='outline'
@@ -499,7 +504,7 @@ const VideoGenerationListPage: React.FC = () => {
               <div className='flex justify-center py-38px'>
                 <Spin />
               </div>
-            ) : sessions.length === 0 ? (
+            ) : modeProjects.length === 0 ? (
               <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
                 <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
                   <VideoOne theme='outline' size={19} fill='currentColor' />
@@ -512,7 +517,7 @@ const VideoGenerationListPage: React.FC = () => {
                   </div>
                   <div className='mt-2px text-12px text-[var(--color-text-3)]'>
                     {t('videoGeneration.list.empty.desc', {
-                      defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
+                      defaultValue: '选择管线并写下想法，Flowy 会按阶段推进制片。',
                     })}
                   </div>
                 </div>
@@ -526,13 +531,13 @@ const VideoGenerationListPage: React.FC = () => {
                       'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
                   }}
                 >
-                  {displayed.map((session) => (
+                  {displayed.map((project) => (
                     <SessionCard
-                      key={session.id}
-                      session={session}
-                      onOpen={openSession}
+                      key={project.id}
+                      session={project}
+                      onOpen={openProject}
                       onDelete={(s) => void handleDelete(s)}
-                      deleting={deletingId === session.id}
+                      deleting={deletingId === project.id}
                     />
                   ))}
                 </div>

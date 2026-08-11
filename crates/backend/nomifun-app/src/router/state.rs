@@ -42,7 +42,8 @@ use nomifun_learning::LearningRouterState;
 use nomifun_poi::PoiRouterState;
 use nomifun_insights::InsightsRouterState;
 use nomifun_media::MediaRouterState;
-use nomifun_vimax::VimaxRouterState;
+use nomifun_montage::MontageRouterState;
+use nomifun_tv_show::TvShowRouterState;
 use nomifun_canvas::CanvasRouterState;
 use nomifun_cloud::CloudRouterState;
 use nomifun_mcp::{
@@ -97,7 +98,8 @@ pub struct ModuleStates {
     pub poi: PoiRouterState,
     pub insights: InsightsRouterState,
     pub media: MediaRouterState,
-    pub vimax: VimaxRouterState,
+    pub montage: MontageRouterState,
+    pub tv_show: TvShowRouterState,
     pub video_canvas: CanvasRouterState,
     pub cloud: CloudRouterState,
     pub companion: CompanionRouterState,
@@ -616,9 +618,13 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             services.media_service.clone(),
             services.media_service.data_dir().to_path_buf(),
         ),
-        vimax: VimaxRouterState::new(
-            services.vimax_service.clone(),
+        montage: MontageRouterState::new(
+            services.montage_service.clone(),
             services.video_canvas_service.clone(),
+        ),
+        tv_show: TvShowRouterState::new(
+            services.tv_show_service.clone(),
+            Some(services.montage_service.inner()),
         ),
         video_canvas: CanvasRouterState::new(services.video_canvas_service.clone()),
         cloud: CloudRouterState::new(

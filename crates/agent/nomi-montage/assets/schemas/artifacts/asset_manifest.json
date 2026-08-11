@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nomi.dev/schemas/montage/artifacts/asset_manifest.json",
+  "title": "Asset Manifest",
+  "description": "Maps every scene_plan shot to the generated media file that realizes it (assets/images or assets/video).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["scenes"],
+  "properties": {
+    "scenes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["key", "shots"],
+        "properties": {
+          "key": { "type": "string", "minLength": 1 },
+          "shots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": ["idx"],
+              "properties": {
+                "idx": { "type": "integer", "minimum": 0 },
+                "image_name": { "type": "string" },
+                "video_name": { "type": "string" },
+                "is_motion": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "images": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "role": { "type": "string" }
+        }
+      }
+    },
+    "videos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "scene_key": { "type": "string" },
+          "shot_idx": { "type": "integer" }
+        }
+      }
+    }
+  }
+}

@@ -4,23 +4,25 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nomi_config::{GatewayConfig, config_yaml_path, load_user_config_file};
-use nomi_vimax::{FlowyImage, FlowyVideo, FlowyVimaxServices, VimaxImage, VimaxVideo};
+use nomi_media_backends::{
+    FlowyImage, FlowyMediaServices, FlowyVideo, MediaBackendError, MediaImage, MediaVideo,
+};
 use nomifun_common::AppError;
 use tracing::{info, warn};
 
 use crate::dto::GenerationTaskStatus;
 use crate::service::{CanvasService, InternalTask};
 
-pub fn load_flowy(data_dir: &Path) -> Option<FlowyVimaxServices> {
+pub fn load_flowy(data_dir: &Path) -> Option<FlowyMediaServices> {
     let cfg: GatewayConfig = load_user_config_file(&config_yaml_path(Some(data_dir))).ok()?;
-    FlowyVimaxServices::try_new(&cfg, data_dir)
+    FlowyMediaServices::try_new(&cfg, data_dir)
 }
 
-pub fn map_vimax_err(e: nomi_vimax::VimaxError) -> AppError {
+pub fn map_media_err(e: MediaBackendError) -> AppError {
     match e {
-        nomi_vimax::VimaxError::NotAuthenticated => AppError::Unauthorized(e.to_string()),
-        nomi_vimax::VimaxError::InvalidParams(m) => AppError::BadRequest(m),
-        nomi_vimax::VimaxError::Cancelled => AppError::BadRequest("cancelled".into()),
+        MediaBackendError::NotAuthenticated => AppError::Unauthorized(e.to_string()),
+        MediaBackendError::InvalidParams(m) => AppError::BadRequest(m),
+        MediaBackendError::Cancelled => AppError::BadRequest("cancelled".into()),
         other => AppError::Internal(other.to_string()),
     }
 }
@@ -111,7 +113,7 @@ pub async fn run_generation_task(service: Arc<CanvasService>, task_id: String) {
 
 async fn run_image(
     service: &CanvasService,
-    flowy: &FlowyVimaxServices,
+    flowy: &FlowyMediaServices,
     task: &InternalTask,
     cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<String, AppError> {
@@ -123,13 +125,13 @@ async fn run_image(
     let refs = resolve_media_paths(service, &task.reference_media_ids).await?;
     let ref_refs: Vec<&Path> = refs.iter().map(PathBuf::as_path).collect();
 
-    // Seedream 等图模型：走 FlowyImage（与 Agent/vimax 同一套云端 API）。
+    // Seedream 等图模型：走 FlowyImage（与 Agent/montage 同一套云端 API）。
     let backend: FlowyImage =
         flowy.image_with_model_and_aspect(task.model.clone(), task.aspect_ratio.clone());
     backend
         .generate(&task.prompt, &ref_refs, &out_path)
         .await
-        .map_err(map_vimax_err)?;
+        .map_err(map_media_err)?;
 
     if cancel.is_some_and(|t| t.is_cancelled()) {
         let _ = tokio::fs::remove_file(&out_path).await;
@@ -153,7 +155,7 @@ async fn run_image(
 
 async fn run_video(
     service: &CanvasService,
-    flowy: &FlowyVimaxServices,
+    flowy: &FlowyMediaServices,
     task: &InternalTask,
     cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<String, AppError> {
@@ -198,7 +200,7 @@ async fn run_video(
             None,
         )
         .await
-        .map_err(map_vimax_err)?;
+        .map_err(map_media_err)?;
 
     if cancel.as_ref().is_some_and(|t| t.is_cancelled()) {
         let _ = tokio::fs::remove_file(&out_path).await;

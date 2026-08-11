@@ -1,6 +1,6 @@
 /**
  * Per-model resolution / fps capabilities for ViMax Style & Model pickers.
- * Heuristics mirror Rust `nomi_vimax::video_quality` (Seedance Ark docs).
+ * Heuristics mirror Rust `nomi_media_backends::video_quality` (Seedance Ark docs).
  */
 
 export const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'] as const;

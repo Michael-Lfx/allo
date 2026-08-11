@@ -1,12 +1,12 @@
 /**
- * Banner + explicit write-back for Canvas projects materialized from ViMax Agent.
+ * Banner + explicit write-back for Canvas projects materialized from Montage Agent.
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
 import { Button, Message } from '@arco-design/web-react';
 import { useNavigate } from 'react-router-dom';
 import { useCanvasStore } from '@oc/stores/canvas/use-canvas-store';
-import { syncSessionFromCanvas } from '@renderer/pages/videoGeneration/api';
+import { syncProjectFromCanvas } from '@renderer/pages/videoGeneration/api';
 import { readAlloCreative } from './alloVimaxBridge';
 import { syncCanvasProjectToServer } from './ocBridge';
 
@@ -14,22 +14,39 @@ type Props = {
   projectId: string;
 };
 
+type AlloCreativeMontage = {
+  source?: string;
+  montageProjectId?: string;
+  sessionId?: string;
+  writeBack?: {
+    enabled?: boolean;
+    sessionId?: string;
+    montageProjectId?: string;
+  };
+};
+
 export default function VimaxProvenanceBar({ projectId }: Props) {
   const navigate = useNavigate();
   const project = useCanvasStore((s) => s.projects.find((p) => p.id === projectId));
-  const allo = useMemo(() => readAlloCreative(project), [project]);
+  const allo = useMemo(() => readAlloCreative(project) as AlloCreativeMontage | null, [project]);
   const [syncing, setSyncing] = useState(false);
-  const sessionId = allo?.sessionId || allo?.writeBack?.sessionId || '';
-  const visible = Boolean(sessionId && allo?.writeBack?.enabled);
+  const montageProjectId =
+    allo?.montageProjectId ||
+    allo?.writeBack?.montageProjectId ||
+    allo?.sessionId ||
+    allo?.writeBack?.sessionId ||
+    '';
+  const visible = Boolean(
+    montageProjectId && (allo?.source === 'nomifun-montage' || allo?.writeBack?.enabled)
+  );
 
   const handleSync = useCallback(async () => {
-    if (!sessionId || syncing) return;
+    if (!montageProjectId || syncing) return;
     setSyncing(true);
     try {
       await syncCanvasProjectToServer(projectId);
-      const result = await syncSessionFromCanvas(sessionId, {
+      const result = await syncProjectFromCanvas(montageProjectId, {
         project_id: projectId,
-        reconcat: true,
       });
       const warn =
         result.warnings?.length > 0
@@ -41,7 +58,7 @@ export default function VimaxProvenanceBar({ projectId }: Props) {
     } finally {
       setSyncing(false);
     }
-  }, [projectId, sessionId, syncing]);
+  }, [montageProjectId, projectId, syncing]);
 
   if (!visible) return null;
 
@@ -67,18 +84,17 @@ export default function VimaxProvenanceBar({ projectId }: Props) {
       }}
     >
       <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ fontWeight: 600 }}>来自 Agent 工程 · 高保真物化</div>
+        <div style={{ fontWeight: 600 }}>来自 Agent 工程 · Montage 物化</div>
         <div style={{ opacity: 0.85, marginTop: 2 }}>
-          session {sessionId.slice(0, 8)}…
-          {allo?.workflow ? ` · ${allo.workflow}` : ''}
-          · 重生成会注入 VoiceProfile；写回为显式操作，不会静默覆盖
+          project {montageProjectId.slice(0, 8)}…
+          · 写回为显式操作，不会静默覆盖
         </div>
       </div>
       <Button
         size='mini'
         type='outline'
         style={{ color: '#fff', borderColor: 'rgba(255,255,255,0.35)' }}
-        onClick={() => navigate(`/video-generation/${encodeURIComponent(sessionId)}`)}
+        onClick={() => navigate(`/video-generation/${encodeURIComponent(montageProjectId)}`)}
       >
         打开 Agent
       </Button>

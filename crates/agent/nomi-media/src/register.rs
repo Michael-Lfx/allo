@@ -171,10 +171,10 @@ pub fn wire_flowy_media(
     registry.register(Box::new(FlowyImageGenerateTool::new(handler, data_dir)));
     result.has_image = true;
 
-    // Skip video_generate / media_workflow_* tools — replaced by nomi-vimax UI
-    // (`/api/vimax/*` + video-generation page). Keep image_generate for other
+    // Skip video_generate / media_workflow_* tools — replaced by nomi-montage UI
+    // (`/api/montage/*` + video-generation page). Keep image_generate for other
     // agent surfaces that still need single-shot images.
-    info!("Flowy image tool registered; video/workflow tools skipped (nomi-vimax UI)");
+    info!("Flowy image tool registered; video/workflow tools skipped (nomi-montage UI)");
     result
 }
 

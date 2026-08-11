@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nomi.dev/schemas/montage/artifacts/decision_log.json",
+  "title": "Decision Log",
+  "description": "Append-only record of non-obvious creative/technical decisions and why they were made (see assets/CONTRACT.md §6).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["entries"],
+  "properties": {
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["stage", "decision"],
+        "properties": {
+          "at": { "type": "string" },
+          "stage": { "type": "string" },
+          "decision": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string" },
+          "alternatives_considered": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

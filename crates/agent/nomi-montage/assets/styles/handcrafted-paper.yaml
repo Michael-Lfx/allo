@@ -1,0 +1,33 @@
+name: handcrafted-paper
+description: >
+  Illustrated, tactile paper-craft / stop-motion aesthetic for animation and
+  animated-explainer pipelines. Warm and playful without being childish.
+visual_language:
+  - Layered paper-cutout / cardboard-diorama look with visible texture and
+    soft directional shadow (as if lit on a physical tabletop set).
+  - Flat, simplified character and prop shapes; limited, cohesive color
+    palette per scene.
+  - Gentle parallax between foreground/midground/background paper layers.
+  - Subtle grain/texture rather than perfectly flat vector cleanliness.
+tone:
+  - warm
+  - playful
+  - approachable
+  - crafted
+pacing: >
+  Moderate and readable — this style leans on charm and clarity, not speed;
+  hold establishing shots slightly longer than in live-action styles so the
+  paper-craft detail registers.
+prompt_modifiers:
+  - "layered paper-cutout illustration, stop-motion diorama style"
+  - "soft directional studio light with visible paper texture and shadow"
+  - "flat simplified shapes, limited cohesive color palette"
+  - "gentle parallax depth between paper layers"
+avoid:
+  - "photorealistic rendering"
+  - "glossy 3D CGI look"
+  - "harsh neon or clashing colors"
+  - "overly complex, cluttered scene detail"
+reference_notes:
+  - "Default recommendation for the animation and animated-explainer pipelines."
+  - "Keep character shapes simple enough to stay recognizable at small sizes."

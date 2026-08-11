@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nomi.dev/schemas/montage/artifacts/cost_log.json",
+  "title": "Cost Log",
+  "description": "Snapshot of the project's credit ledger (see governance::cost::CostLedger) at a point in time.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["budget_credits", "spent_credits"],
+  "properties": {
+    "budget_credits": { "type": "integer", "minimum": 0 },
+    "spent_credits": { "type": "integer", "minimum": 0 },
+    "reserved_credits": { "type": "integer", "minimum": 0 },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["tool", "credits"],
+        "properties": {
+          "at": { "type": "string" },
+          "tool": { "type": "string" },
+          "credits": { "type": "integer" }
+        }
+      }
+    }
+  }
+}

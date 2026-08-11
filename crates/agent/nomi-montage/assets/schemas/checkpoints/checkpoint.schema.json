@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nomi.dev/schemas/montage/checkpoint.schema.json",
+  "title": "Montage Project Checkpoint",
+  "description": "Durable, resumable run state for one project (pipeline/checkpoint.json).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["project_id", "pipeline", "current_stage", "started_at", "updated_at"],
+  "properties": {
+    "project_id": { "type": "string", "minLength": 1 },
+    "pipeline": { "type": "string", "minLength": 1 },
+    "current_stage": { "type": "string", "minLength": 1 },
+    "stage_status": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": ["pending", "in_progress", "awaiting_human", "completed", "failed"]
+      }
+    },
+    "stage_counters": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "revisions": { "type": "integer", "minimum": 0 },
+          "send_backs": { "type": "integer", "minimum": 0 },
+          "tool_turns": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "started_at": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["idle", "running", "awaiting_human", "succeeded", "failed", "cancelled"]
+    },
+    "awaiting_human_stage": { "type": ["string", "null"] },
+    "last_error": { "type": ["string", "null"] },
+    "notes": { "type": "array", "items": { "type": "string" } }
+  }
+}

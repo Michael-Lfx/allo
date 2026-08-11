@@ -1,0 +1,22 @@
+[package]
+name = "nomifun-montage"
+description = "HTTP surface for Montage agent film production (/api/montage/*)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nomi-config.workspace = true
+nomi-montage.workspace = true
+nomi-media-backends.workspace = true
+nomifun-common.workspace = true
+nomifun-api-types.workspace = true
+nomifun-auth.workspace = true
+nomifun-canvas.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+mime_guess.workspace = true

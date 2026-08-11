@@ -1,0 +1,133 @@
+name: hybrid
+version: "1.0"
+description: >
+  Deliberate motion + held-still mix for pieces where a slower, editorial
+  rhythm serves the story better than continuous motion (e.g. memoir pieces,
+  archival-style brand history). The still/motion mix is a proposal-time
+  creative choice, not a fallback — enforced honestly at compose time.
+category: hybrid
+stability: production
+default_checkpoint_policy: guided
+mode: agent
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/hybrid/executive-producer
+  max_revisions_per_stage: 3
+  max_send_backs: 3
+  max_wall_time_minutes: 55
+  budget_default: 2000
+
+stages:
+  - name: research
+    skill: pipelines/hybrid/research-director
+    produces: [research_brief]
+    required_artifacts_in: []
+    tools_available: [checkpoint_note]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - factual grounding vs. invention
+    success_criteria:
+      - "research_brief.findings contains at least 3 concrete findings relevant to the topic"
+
+  - name: proposal
+    skill: pipelines/hybrid/proposal-director
+    produces: [proposal_packet]
+    required_artifacts_in: [research_brief]
+    tools_available: [checkpoint_note, decision_log_append, cost_estimate]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - the still/motion mix is a deliberate editorial choice with a stated rationale
+      - delivery_promise is 'hybrid_motion_still' unless the human explicitly overrides it
+    success_criteria:
+      - "proposal_packet.delivery_promise is set and its rationale appears in decision_log"
+
+  - name: script
+    skill: pipelines/hybrid/script-director
+    produces: [script]
+    required_artifacts_in: [proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - narrative supports a slower, reflective pace where stills are held
+    success_criteria:
+      - "each scene's narration length is compatible with any planned held-still beats"
+
+  - name: scene_plan
+    skill: pipelines/hybrid/scene-plan-director
+    produces: [scene_plan]
+    required_artifacts_in: [script, proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - motion shots are placed where movement adds meaning; stills where stillness does
+      - no more than 2 consecutive still shots without an intervening motion beat
+    success_criteria:
+      - "every shot declares is_motion explicitly (no ambiguous shots)"
+      - "the still fraction is consistent with the locked delivery_promise's minimum motion requirement"
+
+  - name: assets
+    skill: pipelines/hybrid/assets-director
+    produces: [asset_manifest]
+    required_artifacts_in: [scene_plan]
+    tools_available: [image_selector, video_selector, flowy_image, flowy_video, extract_last_frame, cost_estimate, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - generated stills are composed to hold attention on their own (not just "leftover" motion frames)
+    success_criteria:
+      - "every shot in scene_plan has a corresponding entry in asset_manifest, tagged with the correct is_motion"
+
+  - name: edit
+    skill: pipelines/hybrid/edit-director
+    produces: [edit_decisions]
+    required_artifacts_in: [asset_manifest, scene_plan]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - still hold durations are tuned to the narration, not a fixed default
+      - no long consecutive-still run pushes slideshow_risk toward the block threshold
+    success_criteria:
+      - "edit_decisions.shots sets a deliberate hold_secs for every still shot"
+
+  - name: compose
+    skill: pipelines/hybrid/compose-director
+    produces: [render_report]
+    required_artifacts_in: [edit_decisions]
+    tools_available: [video_compose, video_stitch, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - the actual motion fraction matches what hybrid_motion_still requires
+      - slideshow_risk is below the compose block threshold
+    success_criteria:
+      - "render_report.slideshow_risk is present and was not blocked"
+
+  - name: review
+    skill: pipelines/hybrid/review-director
+    produces: [final_review]
+    required_artifacts_in: [render_report]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - the hybrid rhythm reads as intentional, not as a motion pipeline that ran out of budget
+    success_criteria:
+      - "final_review.scores covers all seven rubric dimensions"
+
+  - name: publish
+    skill: pipelines/hybrid/publish-director
+    produces: [publish_log]
+    required_artifacts_in: [final_review]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - final sign-off on the finished hybrid cut
+    success_criteria:
+      - "publish_log.final_video_path points at the same file as render_report.out_name"

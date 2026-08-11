@@ -1,9 +1,0 @@
-
-<VISUAL_DESC>
-{visual_desc}
-</VISUAL_DESC>
-
-<CHARACTERS>
-{characters_str}
-</CHARACTERS>
-{continuity_block}

@@ -1,0 +1,57 @@
+name: framework-smoke
+version: "1.0"
+description: >
+  Minimal three-stage pipeline that exercises the full EP mechanism (LLM↔tool
+  loop, checkpointing, artifact validation) end to end without depending on
+  real media generation. Intended for CI: it should complete unattended in
+  well under a minute of wall-clock LLM time.
+category: smoke-test
+stability: production
+default_checkpoint_policy: auto_noncreative
+mode: agent
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/framework-smoke/executive-producer
+  max_revisions_per_stage: 2
+  max_send_backs: 1
+  max_wall_time_minutes: 10
+  budget_default: 100
+
+stages:
+  - name: brief
+    skill: pipelines/framework-smoke/brief-director
+    produces: [brief]
+    required_artifacts_in: []
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - the brief is a faithful restatement of the project prompt, nothing more
+    success_criteria:
+      - "brief.topic and brief.key_message are both non-empty and reflect the project prompt"
+
+  - name: script
+    skill: pipelines/framework-smoke/script-director
+    produces: [script]
+    required_artifacts_in: [brief]
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - a minimal, valid script exists — depth is not the point of this pipeline
+    success_criteria:
+      - "script.scenes contains at least one scene with non-empty narration"
+
+  - name: compose
+    skill: pipelines/framework-smoke/compose-director
+    produces: [render_report]
+    required_artifacts_in: [script]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - the stage honestly records that this was a mechanism smoke test, not a real render
+    success_criteria:
+      - "render_report exists and its render_runtime/out_name fields are filled with placeholder-but-valid values"
+      - "decision_log records that no real media was generated in smoke mode"

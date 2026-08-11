@@ -164,10 +164,6 @@ path = "tests/remote_mcp_smoke.rs"
 name = "content_e2e_suite"
 path = "tests/suites/content.rs"
 
-[[test]]
-name = "vimax_cameo_e2e"
-path = "tests/vimax_cameo_e2e.rs"
-
 [features]
 default = ["telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix", "mattermost", "slack", "twitch", "nostr", "qqbot"]
 telegram = ["nomifun-channel/telegram"]
@@ -238,7 +234,8 @@ nomifun-learning.workspace = true
 nomifun-poi.workspace = true
 nomifun-insights.workspace = true
 nomifun-media.workspace = true
-nomifun-vimax.workspace = true
+nomifun-montage.workspace = true
+nomifun-tv-show.workspace = true
 nomifun-canvas.workspace = true
 nomifun-cloud.workspace = true
 nomifun-agent-execution.workspace = true

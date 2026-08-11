@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nomi.dev/schemas/montage/artifacts/research_brief.json",
+  "title": "Research Brief",
+  "description": "Grounding research a proposal can be built on — real findings only, never invented.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["topic", "findings"],
+  "properties": {
+    "topic": { "type": "string", "minLength": 1 },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["claim"],
+        "properties": {
+          "claim": { "type": "string", "minLength": 1 },
+          "source": { "type": "string" },
+          "confidence": { "type": "string", "enum": ["low", "medium", "high"] }
+        }
+      }
+    },
+    "competitive_notes": { "type": "array", "items": { "type": "string" } },
+    "risks": { "type": "array", "items": { "type": "string" } },
+    "recommended_angle": { "type": "string" }
+  }
+}

@@ -177,6 +177,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   });
   const mediaKind = value.mediaKind;
   const duration = durationBounds(mode);
+  const isMontageMode = mode === 'agent' || mode === 'avatar';
 
   const automaticLabel = t('videoGeneration.create.preferences.automatic', {
     defaultValue: '自动',
@@ -214,7 +215,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
           value.models.image_model,
           noModelLabel
         )}`
-      : mode === 'agent'
+      : isMontageMode
         ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${durationSummarySecs}s · ${value.resolution.toUpperCase()}`
         : `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()}`;
 
@@ -224,7 +225,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
         value.smartAspect ? smartLabel : value.aspectRatio
       } · ${
         mediaKind === 'video'
-          ? mode === 'agent'
+          ? isMontageMode
             ? `${durationSummarySecs}s · ${value.resolution.toUpperCase()}`
             : value.resolution.toUpperCase()
           : shortModelLabel(value.models.image_model, noModelLabel)
@@ -753,7 +754,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
               </div>
             ) : null}
 
-            {mode === 'agent' ? (
+            {isMontageMode ? (
               <div
                 className={`${styles.preferenceSection} ${
                   value.automatic ? styles.preferenceSectionMuted : ''

@@ -1,11 +1,9 @@
-
-import React, { useEffect, useRef, useState } from 'react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Popconfirm, Tag } from '@arco-design/web-react';
 import { Delete, VideoOne } from '@icon-park/react';
-import type { SessionSummary, VimaxRunStatus, VimaxWorkflow } from '../types';
-import { loadArtifactMediaUrl } from '../api';
+import type { MontageRunStatus, ProjectSummary, VideoGenMode } from '../types';
 import { stageLabel } from '../stageI18n';
 import styles from '../index.module.css';
 
@@ -34,66 +32,77 @@ function formatRelativeTime(epochMs: number, t: TFunction): string {
   return t('videoGeneration.time.weeksAgo', { defaultValue: '上周' });
 }
 
-/** Normalize API workflow ids (`novel2_video` → `novel2video`). */
-export function normalizeWorkflow(workflow: string | null | undefined): VimaxWorkflow {
-  const raw = (workflow ?? '').trim().toLowerCase().replace(/_/g, '');
-  if (raw === 'script2video' || raw === 'script') return 'script2video';
-  if (raw === 'novel2video' || raw === 'novel' || raw === 'novel2movie') return 'novel2video';
-  return 'idea2video';
-}
-
-export function workflowLabel(workflow: VimaxWorkflow | string, t: TFunction): string {
-  switch (normalizeWorkflow(workflow)) {
-    case 'idea2video':
-      return t('videoGeneration.workflow.idea2video.title', { defaultValue: '灵感成片' });
-    case 'script2video':
-      return t('videoGeneration.workflow.script2video.title', { defaultValue: '剧本成片' });
-    case 'novel2video':
-      return t('videoGeneration.workflow.novel2video.title', { defaultValue: '小说成片' });
+export function modeLabel(mode: VideoGenMode | string | null | undefined, t: TFunction): string {
+  switch (mode) {
+    case 'avatar':
+      return t('videoGeneration.mode.avatarLabel', { defaultValue: '数字人' });
+    case 'talking_head':
+      return t('videoGeneration.mode.avatarLabel', { defaultValue: '数字人' });
+    case 'creation':
+      return t('videoGeneration.mode.creationLabel', { defaultValue: '创作模式' });
+    case 'agent':
     default:
-      return String(workflow);
+      return t('videoGeneration.mode.agentLabel', { defaultValue: 'Agent 模式' });
   }
 }
 
-export function statusTagColor(status: VimaxRunStatus | null | undefined): string {
+export function pipelineLabel(pipeline: string | null | undefined, t: TFunction): string {
+  const name = (pipeline ?? '').trim();
+  if (!name) return t('videoGeneration.list.untitled', { defaultValue: '未命名任务' });
+  const key = `videoGeneration.pipeline.${name}.title`;
+  const translated = t(key, { defaultValue: '' });
+  return translated || name;
+}
+
+export function pipelineDescription(
+  pipeline: string | null | undefined,
+  t: TFunction,
+  fallback = ''
+): string {
+  const name = (pipeline ?? '').trim();
+  if (!name) return fallback;
+  const key = `videoGeneration.pipeline.${name}.desc`;
+  const translated = t(key, { defaultValue: '' });
+  return translated || fallback;
+}
+
+export function statusTagColor(status: MontageRunStatus | string | null | undefined): string {
   switch (status) {
-    case 'planning':
-    case 'rendering':
+    case 'running':
       return 'arcoblue';
+    case 'awaiting_human':
+      return 'orangered';
     case 'succeeded':
       return 'green';
     case 'failed':
       return 'red';
     case 'cancelled':
-      return 'orangered';
+      return 'gray';
     case 'idle':
     default:
       return 'gray';
   }
 }
 
-export function statusLabel(status: VimaxRunStatus | null | undefined, t: TFunction): string {
+export function statusLabel(status: MontageRunStatus | string | null | undefined, t: TFunction): string {
   const key = status ?? 'idle';
-  return t(`videoGeneration.status.${key}`, { defaultValue: key });
+  return t(`videoGeneration.status.${key}`, { defaultValue: String(key) });
 }
 
 interface SessionCardProps {
-  session: SessionSummary;
-  onOpen: (s: SessionSummary) => void;
-  onDelete?: (s: SessionSummary) => void;
+  session: ProjectSummary;
+  onOpen: (s: ProjectSummary) => void;
+  onDelete?: (s: ProjectSummary) => void;
   deleting?: boolean;
 }
 
 const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, deleting }) => {
   const { t } = useTranslation();
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [coverUrl, setCoverUrl] = useState<string | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [hovering, setHovering] = useState(false);
 
   const updatedMs = toEpochMs(session.updated_at ?? session.created_at);
   const meta: string[] = [
-    workflowLabel(session.workflow, t),
+    pipelineLabel(session.pipeline, t),
+    modeLabel(session.mode, t),
     ...(updatedMs != null
       ? [
           t('videoGeneration.list.card.updatedAt', {
@@ -103,87 +112,6 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
         ]
       : []),
   ];
-
-  useEffect(() => {
-    let cancelled = false;
-    let loaded: string | null = null;
-    const coverRel = session.cover?.trim();
-    if (!coverRel) {
-      setCoverUrl((prev) => {
-        if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
-        return null;
-      });
-      return;
-    }
-    void loadArtifactMediaUrl(session.id, coverRel)
-      .then((url) => {
-        if (cancelled) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        loaded = url;
-        setCoverUrl((prev) => {
-          if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
-          return url;
-        });
-      })
-      .catch(() => {
-        /* keep gradient fallback */
-      });
-    return () => {
-      cancelled = true;
-      if (loaded?.startsWith('blob:')) URL.revokeObjectURL(loaded);
-    };
-  }, [session.id, session.cover]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let loaded: string | null = null;
-    const videoRel = session.final_video?.trim();
-    if (!videoRel) {
-      setVideoUrl((prev) => {
-        if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
-        return null;
-      });
-      return;
-    }
-    void loadArtifactMediaUrl(session.id, videoRel)
-      .then((url) => {
-        if (cancelled) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        loaded = url;
-        setVideoUrl((prev) => {
-          if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
-          return url;
-        });
-      })
-      .catch(() => {
-        /* optional hover preview */
-      });
-    return () => {
-      cancelled = true;
-      if (loaded?.startsWith('blob:')) URL.revokeObjectURL(loaded);
-    };
-  }, [session.id, session.final_video]);
-
-  const handleEnter = () => {
-    setHovering(true);
-    const el = videoRef.current;
-    if (!el || !videoUrl) return;
-    void el.play().catch(() => {
-      /* autoplay may be blocked; ignore */
-    });
-  };
-
-  const handleLeave = () => {
-    setHovering(false);
-    const el = videoRef.current;
-    if (!el) return;
-    el.pause();
-    el.currentTime = 0;
-  };
 
   return (
     <div
@@ -200,51 +128,22 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
           onOpen(session);
         }
       }}
-      onMouseEnter={handleEnter}
-      onMouseLeave={handleLeave}
     >
       <div className={`${styles.projectCover} relative overflow-hidden`}>
-        {coverUrl ? (
-          <img
-            src={coverUrl}
-            alt=''
-            className={[
-              styles.projectCoverMedia,
-              hovering && videoUrl ? styles.projectCoverHidden : '',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            draggable={false}
-          />
-        ) : null}
-        {videoUrl ? (
-          <video
-            ref={videoRef}
-            src={videoUrl}
-            muted
-            playsInline
-            loop
-            preload='metadata'
-            className={[
-              styles.projectCoverMedia,
-              styles.projectCoverVideo,
-              hovering ? styles.projectCoverVideoVisible : '',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-          />
-        ) : null}
-        {!coverUrl && !videoUrl ? (
-          <div className={styles.projectCoverFallback}>
-            <span className='flex h-28px w-28px items-center justify-center rd-8px border border-solid border-[rgba(var(--primary-6),0.2)] bg-[rgba(var(--primary-6),0.12)] text-[rgb(var(--primary-6))]'>
-              <VideoOne theme='outline' size={15} fill='currentColor' />
-            </span>
-          </div>
-        ) : null}
+        <div className={styles.projectCoverFallback}>
+          <span className='flex h-28px w-28px items-center justify-center rd-8px border border-solid border-[rgba(var(--primary-6),0.2)] bg-[rgba(var(--primary-6),0.12)] text-[rgb(var(--primary-6))]'>
+            <VideoOne theme='outline' size={15} fill='currentColor' />
+          </span>
+        </div>
         <div className={styles.projectCoverOverlay}>
           <Tag size='small' color={statusTagColor(session.status)} className='shrink-0'>
             {statusLabel(session.status, t)}
           </Tag>
+          {session.final_video ? (
+            <Tag size='small' color='green' className='shrink-0'>
+              {t('videoGeneration.list.card.hasFinal', { defaultValue: '可预览' })}
+            </Tag>
+          ) : null}
         </div>
       </div>
 
@@ -292,9 +191,9 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
               ) : null}
             </div>
           </div>
-          {session.stage ? (
+          {session.current_stage ? (
             <div className='truncate text-12px text-[var(--color-text-3)]'>
-              {stageLabel(session.stage, t)}
+              {stageLabel(session.current_stage, t)}
             </div>
           ) : null}
           <div className='truncate text-11px text-[var(--color-text-4)]'>{meta.join(' · ')}</div>

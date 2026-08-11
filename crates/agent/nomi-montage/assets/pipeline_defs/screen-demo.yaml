@@ -1,0 +1,129 @@
+name: screen-demo
+version: "1.0"
+description: >
+  Turns an existing screen recording into a narrated product demo: analyze
+  the source footage instead of doing market research, script a voiceover
+  and callouts synced to what's on screen, then edit/compose a polished cut.
+category: demo
+stability: beta
+default_checkpoint_policy: guided
+mode: agent
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/screen-demo/executive-producer
+  max_revisions_per_stage: 3
+  max_send_backs: 3
+  max_wall_time_minutes: 45
+  budget_default: 1200
+
+stages:
+  - name: video_analysis
+    skill: pipelines/screen-demo/video-analysis-director
+    produces: [video_analysis_brief]
+    required_artifacts_in: []
+    tools_available: [checkpoint_note]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - detected_scenes accurately reflect what actually happens in the source recording
+    success_criteria:
+      - "video_analysis_brief.source_video_path points at the actual uploaded recording"
+      - "detected_scenes covers the recording from 0 to its end with no large unexplained gaps"
+
+  - name: proposal
+    skill: pipelines/screen-demo/proposal-director
+    produces: [proposal_packet]
+    required_artifacts_in: [video_analysis_brief]
+    tools_available: [checkpoint_note, decision_log_append, cost_estimate]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - the narrative angle highlights the product's real value, not just narrating clicks
+      - delivery_promise reflects that most footage is reused screen capture, not generated motion
+    success_criteria:
+      - "proposal_packet.concept_summary names the specific workflow/feature being demoed"
+
+  - name: script
+    skill: pipelines/screen-demo/script-director
+    produces: [script]
+    required_artifacts_in: [proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - voiceover timing is realistic against each detected_scenes segment's actual duration
+    success_criteria:
+      - "each script scene maps to one or more video_analysis_brief.detected_scenes segments"
+
+  - name: scene_plan
+    skill: pipelines/screen-demo/scene-plan-director
+    produces: [scene_plan]
+    required_artifacts_in: [script, proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - shot list correctly separates "reused screen-capture segment" shots from any new generated callout/cutaway shots
+    success_criteria:
+      - "every shot states whether it reuses source footage or requires new generated media"
+
+  - name: assets
+    skill: pipelines/screen-demo/assets-director
+    produces: [asset_manifest]
+    required_artifacts_in: [scene_plan]
+    tools_available: [image_selector, flowy_image, extract_last_frame, cost_estimate, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - generated callout/cutaway graphics visually match the recording's real UI, not a generic mockup
+    success_criteria:
+      - "every generated-media shot in scene_plan has a corresponding asset_manifest entry"
+
+  - name: edit
+    skill: pipelines/screen-demo/edit-director
+    produces: [edit_decisions]
+    required_artifacts_in: [asset_manifest, scene_plan]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - trimmed source segments preserve the actual UI state a viewer needs to follow along
+    success_criteria:
+      - "edit_decisions.shots references only files present in asset_manifest"
+
+  - name: compose
+    skill: pipelines/screen-demo/compose-director
+    produces: [render_report]
+    required_artifacts_in: [edit_decisions]
+    tools_available: [video_compose, video_stitch, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - the composed demo stays synchronized between voiceover narration and on-screen action
+    success_criteria:
+      - "render_report.out_name points at a real file under renders/"
+
+  - name: review
+    skill: pipelines/screen-demo/review-director
+    produces: [final_review]
+    required_artifacts_in: [render_report]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - a viewer could follow and repeat the demoed workflow from the video alone
+    success_criteria:
+      - "final_review.scores covers all seven rubric dimensions"
+
+  - name: publish
+    skill: pipelines/screen-demo/publish-director
+    produces: [publish_log]
+    required_artifacts_in: [final_review]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - final sign-off before the demo goes out
+    success_criteria:
+      - "publish_log.final_video_path points at the same file as render_report.out_name"

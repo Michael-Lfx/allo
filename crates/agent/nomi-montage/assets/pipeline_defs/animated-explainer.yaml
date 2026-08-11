@@ -1,0 +1,129 @@
+name: animated-explainer
+version: "1.0"
+description: >
+  Concept/product explainer pipeline: research the topic, propose a clear
+  teaching angle, script it as a sequence of single-idea beats, and render as
+  illustrated motion graphics. Optimized for clarity over spectacle.
+category: explainer
+stability: production
+default_checkpoint_policy: guided
+mode: agent
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/animated-explainer/executive-producer
+  max_revisions_per_stage: 3
+  max_send_backs: 3
+  max_wall_time_minutes: 50
+  budget_default: 1800
+
+stages:
+  - name: research
+    skill: pipelines/animated-explainer/research-director
+    produces: [research_brief]
+    required_artifacts_in: []
+    tools_available: [checkpoint_note]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - the concept being explained is accurately understood before scripting begins
+    success_criteria:
+      - "research_brief.findings correctly states the core mechanism/concept in plain language"
+
+  - name: proposal
+    skill: pipelines/animated-explainer/proposal-director
+    produces: [proposal_packet]
+    required_artifacts_in: [research_brief]
+    tools_available: [checkpoint_note, decision_log_append, cost_estimate]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - the teaching angle reduces the concept to its clearest possible framing
+      - style_playbook choice supports legibility (e.g. handcrafted-paper or kinetic-editorial)
+    success_criteria:
+      - "proposal_packet.key_message states the single idea the whole piece must land"
+
+  - name: script
+    skill: pipelines/animated-explainer/script-director
+    produces: [script]
+    required_artifacts_in: [proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - each scene teaches exactly one sub-idea, in dependency order
+      - no jargon introduced without being explained in the same or a prior scene
+    success_criteria:
+      - "script.scenes forms a logical build: each scene depends only on ideas already introduced"
+
+  - name: scene_plan
+    skill: pipelines/animated-explainer/scene-plan-director
+    produces: [scene_plan]
+    required_artifacts_in: [script, proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - shot descriptions specify the diagram/metaphor being animated, not just mood
+    success_criteria:
+      - "every shot description names the concrete visual metaphor or on-screen diagram element"
+
+  - name: assets
+    skill: pipelines/animated-explainer/assets-director
+    produces: [asset_manifest]
+    required_artifacts_in: [scene_plan]
+    tools_available: [image_selector, video_selector, flowy_image, flowy_video, extract_last_frame, cost_estimate, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - illustrations stay legible at small size and consistent in style across shots
+    success_criteria:
+      - "every shot in scene_plan has a corresponding asset_manifest entry"
+
+  - name: edit
+    skill: pipelines/animated-explainer/edit-director
+    produces: [edit_decisions]
+    required_artifacts_in: [asset_manifest, scene_plan]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - pacing gives each new idea enough time to register before cutting away
+    success_criteria:
+      - "edit_decisions.shots references only files present in asset_manifest"
+
+  - name: compose
+    skill: pipelines/animated-explainer/compose-director
+    produces: [render_report]
+    required_artifacts_in: [edit_decisions]
+    tools_available: [video_compose, video_stitch, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - delivery_promise honored; slideshow_risk below threshold
+    success_criteria:
+      - "render_report.out_name points at a real file under renders/"
+
+  - name: review
+    skill: pipelines/animated-explainer/review-director
+    produces: [final_review]
+    required_artifacts_in: [render_report]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - a viewer unfamiliar with the topic would come away able to restate the key_message
+    success_criteria:
+      - "final_review.scores covers all seven rubric dimensions"
+
+  - name: publish
+    skill: pipelines/animated-explainer/publish-director
+    produces: [publish_log]
+    required_artifacts_in: [final_review]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - final sign-off before the explainer goes out
+    success_criteria:
+      - "publish_log.final_video_path points at the same file as render_report.out_name"

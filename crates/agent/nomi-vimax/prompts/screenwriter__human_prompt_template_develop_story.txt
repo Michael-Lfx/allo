@@ -1,8 +1,0 @@
-
-<IDEA>
-{idea}
-</IDEA>
-
-<USER_REQUIREMENT>
-{user_requirement}
-</USER_REQUIREMENT>

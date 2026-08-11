@@ -34,7 +34,8 @@ use nomifun_learning::learning_routes;
 use nomifun_poi::poi_routes;
 use nomifun_insights::insights_routes;
 use nomifun_media::media_routes;
-use nomifun_vimax::vimax_routes;
+use nomifun_montage::montage_routes;
+use nomifun_tv_show::tv_show_routes;
 use nomifun_cloud::cloud_routes;
 use nomifun_mcp::mcp_routes;
 use nomifun_office::{office_proxy_routes, office_routes};
@@ -888,8 +889,14 @@ pub fn create_router_with_all_state(
     let media_authenticated = media_routes(states.media)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
-    let vimax_authenticated = protect_instance_owner(
-        vimax_routes(states.vimax),
+    let montage_authenticated = protect_instance_owner(
+        montage_routes(states.montage),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
+
+    let tv_show_authenticated = protect_instance_owner(
+        tv_show_routes(states.tv_show),
         &auth_mw_state,
         &instance_owner_state,
     );
@@ -1138,7 +1145,8 @@ pub fn create_router_with_all_state(
         .merge(poi_authenticated)
         .merge(insights_authenticated)
         .merge(media_authenticated)
-        .merge(vimax_authenticated)
+        .merge(montage_authenticated)
+        .merge(tv_show_authenticated)
         .merge(video_canvas_authenticated)
         .merge(cloud_authenticated)
         .merge(webhook_authenticated)

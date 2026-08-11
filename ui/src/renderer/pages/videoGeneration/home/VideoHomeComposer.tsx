@@ -2,11 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Input, Popover } from '@arco-design/web-react';
 import {
   ArrowUp,
-  BookOpen,
   CloseSmall,
   Down,
   FileText,
   MagicWand,
+  People,
   Pic,
   Platte,
   RobotOne,
@@ -26,9 +26,8 @@ import {
   normalizeVideoFps,
   normalizeVideoResolution,
 } from '../videoModelCapabilities';
-import CameoCastEditor from '../components/CameoCastEditor';
-import { suggestCameoCharacterName } from '../cameoUtils';
-import type { CameoDraftItem, VimaxWorkflow } from '../types';
+import { listPipelines } from '../api';
+import type { PipelineSummary } from '../types';
 import GenerationPreferencesPopover from './GenerationPreferencesPopover';
 import {
   displayFileStem,
@@ -38,7 +37,7 @@ import {
   VIDEO_HOME_UPLOAD_ACCEPT,
 } from './documentUpload';
 import type {
-  AgentSkillDefinition,
+  AgentPipelineOption,
   CanvasReferenceDraft,
   CreationSkillDefinition,
   CreationSkillId,
@@ -46,11 +45,12 @@ import type {
   VideoCreateDraft,
   VideoHomeMode,
 } from './types';
+import { pipelineDescription, pipelineLabel } from '../components/SessionCard';
 import styles from './home.module.css';
 
 const TextArea = Input.TextArea;
-const DRAFT_KEY = 'flowy.videoGeneration.homeDraft.v2';
-const LEGACY_DRAFT_KEY = 'flowy.videoGeneration.draft.v1';
+const DRAFT_KEY = 'flowy.videoGeneration.homeDraft.v3';
+const LEGACY_DRAFT_KEY = 'flowy.videoGeneration.homeDraft.v2';
 const MAX_REFERENCES = 8;
 
 const EMPTY_MODELS = {
@@ -98,14 +98,13 @@ function makeLocalId(prefix: string): string {
 
 function defaultDraft(): VideoCreateDraft {
   return {
-    workflow: 'idea2video',
+    pipeline: '',
     sourceText: '',
     creationPrompt: '',
     creationSkillId: 'cinematic',
     requirement: '',
     style: DEFAULT_VISUAL_STYLE_PROMPT,
     preferences: DEFAULT_PREFERENCES,
-    cameos: [],
     canvasReferences: [],
   };
 }
@@ -125,10 +124,6 @@ function loadDraft(): VideoCreateDraft {
       image_model: parsedPreferences.models?.image_model ?? legacyModels.image_model ?? '',
       video_model: parsedPreferences.models?.video_model ?? legacyModels.video_model ?? '',
     };
-    const workflow: VimaxWorkflow =
-      parsed.workflow === 'script2video' || parsed.workflow === 'novel2video'
-        ? parsed.workflow
-        : 'idea2video';
     const creationSkillId = CREATION_SKILL_IDS.includes(
       parsed.creationSkillId as CreationSkillId
     )
@@ -136,7 +131,7 @@ function loadDraft(): VideoCreateDraft {
       : 'cinematic';
     return {
       ...fallback,
-      workflow,
+      pipeline: typeof parsed.pipeline === 'string' ? parsed.pipeline : '',
       sourceText: typeof parsed.sourceText === 'string' ? parsed.sourceText : '',
       creationPrompt:
         typeof parsed.creationPrompt === 'string' ? parsed.creationPrompt : '',
@@ -173,8 +168,6 @@ function loadDraft(): VideoCreateDraft {
               : 30,
         models,
       },
-      // Files intentionally cannot survive reloads.
-      cameos: [],
       canvasReferences: [],
     };
   } catch {
@@ -189,6 +182,18 @@ export function clearVideoHomeDraft(): void {
   } catch {
     // Storage may be unavailable in hardened webviews.
   }
+}
+
+function pipelineModeFilter(mode: VideoHomeMode): string {
+  return mode === 'avatar' ? 'avatar' : 'agent';
+}
+
+function matchesPipelineMode(pipeline: PipelineSummary, mode: VideoHomeMode): boolean {
+  const want = pipelineModeFilter(mode);
+  if (want === 'avatar') {
+    return pipeline.mode === 'avatar' || pipeline.mode === 'talking_head';
+  }
+  return pipeline.mode === 'agent';
 }
 
 interface VideoHomeComposerProps {
@@ -211,6 +216,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const draftedTracked = useRef(false);
   const [draft, setDraft] = useState<VideoCreateDraft>(loadDraft);
+  const [pipelines, setPipelines] = useState<PipelineSummary[]>([]);
+  const [pipelinesLoading, setPipelinesLoading] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
@@ -219,32 +226,47 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const [documentName, setDocumentName] = useState<string | null>(null);
   const draftRef = useRef(draft);
 
-  const agentSkills = useMemo<AgentSkillDefinition[]>(
-    () => [
-      {
-        id: 'idea2video',
-        label: t('videoGeneration.create.modes.idea', { defaultValue: '一个想法' }),
-        description: t('videoGeneration.create.skills.ideaDesc', {
-          defaultValue: '从一句灵感扩写成完整影片',
-        }),
-      },
-      {
-        id: 'script2video',
-        label: t('videoGeneration.create.modes.script', { defaultValue: '完整剧本' }),
-        description: t('videoGeneration.create.skills.scriptDesc', {
-          defaultValue: '按剧情结构自动拆解镜头',
-        }),
-      },
-      {
-        id: 'novel2video',
-        label: t('videoGeneration.create.modes.novel', { defaultValue: '小说文本' }),
-        description: t('videoGeneration.create.skills.novelDesc', {
-          defaultValue: '提炼长文情节并设计分镜',
-        }),
-      },
-    ],
-    [t]
-  );
+  const isMontageMode = mode === 'agent' || mode === 'avatar';
+
+  useEffect(() => {
+    if (!isMontageMode) return;
+    let cancelled = false;
+    setPipelinesLoading(true);
+    void listPipelines()
+      .then((list) => {
+        if (!cancelled) setPipelines(list);
+      })
+      .catch(() => {
+        if (!cancelled) setPipelines([]);
+      })
+      .finally(() => {
+        if (!cancelled) setPipelinesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isMontageMode]);
+
+  const agentPipelines = useMemo<AgentPipelineOption[]>(() => {
+    return pipelines
+      .filter((p) => matchesPipelineMode(p, mode))
+      .map((p) => ({
+        id: p.name,
+        label: pipelineLabel(p.name, t),
+        description: pipelineDescription(p.name, t, p.description || p.category || ''),
+        stability: p.stability,
+      }));
+  }, [pipelines, mode, t]);
+
+  useEffect(() => {
+    if (!isMontageMode || agentPipelines.length === 0) return;
+    setDraft((current) => {
+      if (current.pipeline && agentPipelines.some((p) => p.id === current.pipeline)) {
+        return current;
+      }
+      return { ...current, pipeline: agentPipelines[0].id };
+    });
+  }, [agentPipelines, isMontageMode]);
 
   const creationSkills = useMemo<CreationSkillDefinition[]>(
     () => [
@@ -295,10 +317,18 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const agentModeLabel = t('videoGeneration.mode.agentLabel', {
     defaultValue: 'Agent 模式',
   });
+  const avatarModeLabel = t('videoGeneration.mode.avatarLabel', {
+    defaultValue: '数字人',
+  });
   const creationModeLabel = t('videoGeneration.mode.creationLabel', {
     defaultValue: '创作模式',
   });
-  const modeLabel = mode === 'agent' ? agentModeLabel : creationModeLabel;
+  const modeLabel =
+    mode === 'agent'
+      ? agentModeLabel
+      : mode === 'avatar'
+        ? avatarModeLabel
+        : creationModeLabel;
 
   useEffect(() => {
     draftRef.current = draft;
@@ -307,11 +337,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         DRAFT_KEY,
         JSON.stringify({
           ...draft,
-          cameos: draft.cameos.map(({ localId, characterName, description }) => ({
-            localId,
-            characterName,
-            description,
-          })),
           canvasReferences: [],
         })
       );
@@ -323,9 +348,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   useEffect(
     () => () => {
       const current = draftRef.current;
-      for (const cameo of current.cameos) {
-        if (cameo.previewUrl) URL.revokeObjectURL(cameo.previewUrl);
-      }
       for (const reference of current.canvasReferences) {
         URL.revokeObjectURL(reference.previewUrl);
       }
@@ -337,55 +359,48 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     if (draft.preferences.models.llm_model) setModelMissing(false);
   }, [draft.preferences.models.llm_model]);
 
-  const activeText = mode === 'agent' ? draft.sourceText : draft.creationPrompt;
+  const activeText = isMontageMode ? draft.sourceText : draft.creationPrompt;
   useEffect(() => {
     if (!activeText.trim() || draftedTracked.current) return;
     draftedTracked.current = true;
     trackFunnelEvent('task_drafted', {
       feature: 'video_generation',
       mode,
-      workflow: mode === 'agent' ? draft.workflow : draft.creationSkillId,
+      pipeline: isMontageMode ? draft.pipeline : draft.creationSkillId,
     });
-  }, [activeText, draft.creationSkillId, draft.workflow, mode]);
+  }, [activeText, draft.creationSkillId, draft.pipeline, isMontageMode, mode]);
 
   const activeCreationSkill =
     creationSkills.find((skill) => skill.id === draft.creationSkillId) ??
     creationSkills[0];
-  const selectedSkillLabel =
-    mode === 'agent'
-      ? agentSkills.find((skill) => skill.id === draft.workflow)?.label
-      : activeCreationSkill.label;
+  const selectedSkillLabel = isMontageMode
+    ? agentPipelines.find((p) => p.id === draft.pipeline)?.label ??
+      t('videoGeneration.create.pipelinePick', { defaultValue: '选择管线' })
+    : activeCreationSkill.label;
   const placeholder =
     mode === 'creation'
       ? t('videoGeneration.create.composer.creationPlaceholder', {
           defaultValue: '描述你想创作的画面、镜头或氛围，支持 / 唤起风格技能…',
         })
-      : draft.workflow === 'script2video'
-        ? t('videoGeneration.create.composer.scriptPlaceholder', {
-            defaultValue: '粘贴剧本，Flowy 会自动拆成可编辑镜头…',
+      : mode === 'avatar'
+        ? t('videoGeneration.create.composer.avatarPlaceholder', {
+            defaultValue: '描述数字人口播脚本或表演内容，支持 / 选择管线…',
           })
-        : draft.workflow === 'novel2video'
-          ? t('videoGeneration.create.composer.novelPlaceholder', {
-              defaultValue: '粘贴小说片段，Flowy 会提炼剧情并设计分镜…',
-            })
-          : t('videoGeneration.create.composer.ideaPlaceholderSlash', {
-              defaultValue: '输入一个想法、故事或产品画面，支持 / 唤起技能…',
-            });
+        : t('videoGeneration.create.composer.agentPlaceholder', {
+            defaultValue: '输入一个想法、故事或产品画面，支持 / 选择制片管线…',
+          });
 
   const setActiveText = (value: string) => {
     setDraft((current) =>
-      mode === 'agent'
+      isMontageMode
         ? { ...current, sourceText: value }
         : { ...current, creationPrompt: value }
     );
     setSlashMenuOpen(/(?:^|\s)\/$/.test(value));
   };
 
-  const selectAgentSkill = (workflow: VimaxWorkflow) => {
-    setDraft((current) => ({
-      ...current,
-      workflow,
-    }));
+  const selectPipeline = (pipeline: string) => {
+    setDraft((current) => ({ ...current, pipeline }));
     setSlashMenuOpen(false);
   };
 
@@ -401,18 +416,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
 
   const removeTrailingSlash = () => {
     setActiveText(activeText.replace(/\/\s*$/, '').trimEnd());
-  };
-
-  const addAgentImages = (files: File[]) => {
-    const room = Math.max(0, MAX_REFERENCES - draft.cameos.length);
-    const added: CameoDraftItem[] = files.slice(0, room).map((file, index) => ({
-      localId: makeLocalId('cameo'),
-      characterName: suggestCameoCharacterName(file.name, draft.cameos.length + index),
-      description: '',
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }));
-    setDraft((current) => ({ ...current, cameos: [...current.cameos, ...added] }));
   };
 
   const addCanvasImages = (files: File[]) => {
@@ -437,21 +440,22 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       (file) => !isSupportedImageFile(file) && !isSupportedTextFile(file)
     );
     if (images.length > 0) {
-      if (mode === 'agent') addAgentImages(images);
-      else addCanvasImages(images);
+      if (mode === 'creation') addCanvasImages(images);
+      else {
+        setUploadError(
+          t('videoGeneration.create.upload.montageNoImageYet', {
+            defaultValue: 'Agent / 数字人模式暂不支持参考图上传，请改用文本描述。',
+          })
+        );
+      }
     }
     if (documents[0]) {
       try {
         const text = await readUploadedTextFile(documents[0]);
         setDocumentName(documents[0].name);
         setDraft((current) =>
-          mode === 'agent'
-            ? {
-                ...current,
-                workflow:
-                  current.workflow === 'idea2video' ? 'script2video' : current.workflow,
-                sourceText: text,
-              }
+          isMontageMode
+            ? { ...current, sourceText: text }
             : { ...current, creationPrompt: text }
         );
       } catch (error) {
@@ -480,32 +484,27 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
 
   const submit = () => {
     if (!activeText.trim()) return;
-    if (mode === 'agent' && !draft.preferences.models.llm_model) {
-      setModelMissing(true);
-      setPreferencesOpen(true);
-      return;
-    }
-    if (
-      mode === 'agent' &&
-      draft.cameos.some((cameo) => cameo.file && !cameo.characterName.trim())
-    ) {
+    if (isMontageMode && !draft.pipeline) {
       setUploadError(
-        t('videoGeneration.create.upload.cameoNameRequired', {
-          defaultValue: '请为每张角色参考图填写角色名。',
+        t('videoGeneration.create.pipelineRequired', {
+          defaultValue: '请先选择一条制片管线。',
         })
       );
+      setSlashMenuOpen(true);
+      return;
+    }
+    if (isMontageMode && !draft.preferences.models.llm_model) {
+      setModelMissing(true);
+      setPreferencesOpen(true);
       return;
     }
     const normalized = {
       ...draft,
       sourceText: draft.sourceText.trim(),
       creationPrompt: draft.creationPrompt.trim(),
-      style:
-        mode === 'creation'
-          ? activeCreationSkill.stylePrompt
-          : draft.style,
+      style: mode === 'creation' ? activeCreationSkill.stylePrompt : draft.style,
     };
-    if (mode === 'agent') onSubmitAgent(normalized);
+    if (isMontageMode) onSubmitAgent(normalized);
     else onSubmitCreation(normalized);
   };
 
@@ -513,9 +512,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     <div className={styles.modeMenu}>
       <button
         type='button'
-        className={`${styles.modeMenuItem} ${
-          mode === 'agent' ? styles.modeMenuItemActive : ''
-        }`}
+        className={`${styles.modeMenuItem} ${mode === 'agent' ? styles.modeMenuItemActive : ''}`}
         onClick={() => {
           onModeChange('agent');
           setModeMenuOpen(false);
@@ -526,7 +523,25 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           <strong>{agentModeLabel}</strong>
           <small>
             {t('videoGeneration.mode.agentMenuDesc', {
-              defaultValue: '自动规划分镜并渲染成片',
+              defaultValue: '多阶段制片管线，自动规划并成片',
+            })}
+          </small>
+        </span>
+      </button>
+      <button
+        type='button'
+        className={`${styles.modeMenuItem} ${mode === 'avatar' ? styles.modeMenuItemActive : ''}`}
+        onClick={() => {
+          onModeChange('avatar');
+          setModeMenuOpen(false);
+        }}
+      >
+        <People theme='outline' size={18} />
+        <span>
+          <strong>{avatarModeLabel}</strong>
+          <small>
+            {t('videoGeneration.mode.avatarMenuDesc', {
+              defaultValue: '数字人口播 / talking-head 管线',
             })}
           </small>
         </span>
@@ -563,61 +578,75 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       })}
     >
       <div className={styles.slashMenuTitle}>
-        {t('videoGeneration.create.skillsMenuTitle', {
-          defaultValue: '选择技能',
-        })}
+        {isMontageMode
+          ? t('videoGeneration.create.pipelineMenuTitle', {
+              defaultValue: '选择管线',
+            })
+          : t('videoGeneration.create.skillsMenuTitle', {
+              defaultValue: '选择技能',
+            })}
       </div>
-      {(mode === 'agent' ? agentSkills : creationSkills).map((skill) => {
-        const icons =
-          mode === 'agent'
-            ? [
-                <VideoOne key='idea' size={15} />,
-                <FileText key='script' size={15} />,
-                <BookOpen key='novel' size={15} />,
-              ]
-            : null;
-        const agentIndex =
-          mode === 'agent'
-            ? agentSkills.findIndex((item) => item.id === skill.id)
-            : -1;
-        const active =
-          mode === 'agent'
-            ? draft.workflow === skill.id
-            : draft.creationSkillId === skill.id;
-        return (
-          <button
-            key={skill.id}
-            type='button'
-            role='option'
-            aria-selected={active}
-            className={`${styles.slashMenuItem} ${
-              active ? styles.slashMenuItemActive : ''
-            }`}
-            onClick={() => {
-              removeTrailingSlash();
-              if (mode === 'agent') selectAgentSkill(skill.id as VimaxWorkflow);
-              else selectCreationSkill(skill.id as CreationSkillId);
-            }}
-          >
-            {icons?.[agentIndex] ??
-              (skill.id === 'cinematic' ? <Pic size={15} /> : <Platte size={15} />)}
-            <span>
-              <strong>{skill.label}</strong>
-              <small>{skill.description}</small>
-            </span>
-          </button>
-        );
-      })}
+      {isMontageMode
+        ? agentPipelines.map((pipeline) => {
+            const active = draft.pipeline === pipeline.id;
+            return (
+              <button
+                key={pipeline.id}
+                type='button'
+                role='option'
+                aria-selected={active}
+                className={`${styles.slashMenuItem} ${
+                  active ? styles.slashMenuItemActive : ''
+                }`}
+                onClick={() => {
+                  removeTrailingSlash();
+                  selectPipeline(pipeline.id);
+                }}
+              >
+                <VideoOne size={15} />
+                <span>
+                  <strong>{pipeline.label}</strong>
+                  <small>{pipeline.description || pipeline.stability || ''}</small>
+                </span>
+              </button>
+            );
+          })
+        : creationSkills.map((skill) => {
+            const active = draft.creationSkillId === skill.id;
+            return (
+              <button
+                key={skill.id}
+                type='button'
+                role='option'
+                aria-selected={active}
+                className={`${styles.slashMenuItem} ${
+                  active ? styles.slashMenuItemActive : ''
+                }`}
+                onClick={() => {
+                  removeTrailingSlash();
+                  selectCreationSkill(skill.id);
+                }}
+              >
+                {skill.id === 'cinematic' ? <Pic size={15} /> : <Platte size={15} />}
+                <span>
+                  <strong>{skill.label}</strong>
+                  <small>{skill.description}</small>
+                </span>
+              </button>
+            );
+          })}
+      {isMontageMode && !pipelinesLoading && agentPipelines.length === 0 ? (
+        <div className={styles.slashMenuTitle}>
+          {t('videoGeneration.create.pipelineEmpty', {
+            defaultValue: '暂无可用管线',
+          })}
+        </div>
+      ) : null}
     </div>
   );
 
-  const activeReferences =
-    mode === 'agent' ? draft.cameos : draft.canvasReferences;
-
   const uploadPreview =
-    mode === 'creation'
-      ? draft.canvasReferences[0]?.previewUrl
-      : draft.cameos[0]?.previewUrl;
+    mode === 'creation' ? draft.canvasReferences[0]?.previewUrl : null;
 
   return (
     <section className={styles.hero}>
@@ -634,11 +663,15 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         <p className={styles.heroHint}>
           {mode === 'agent'
             ? t('videoGeneration.create.homeHintAgent', {
-                defaultValue: '写下故事或想法，Flowy 帮你变成成片。',
+                defaultValue: '选择制片管线，写下故事或想法，Flowy 帮你变成成片。',
               })
-            : t('videoGeneration.create.homeHintCreation', {
-                defaultValue: '描述画面与镜头，在无限画布里自由编排生成。',
-              })}
+            : mode === 'avatar'
+              ? t('videoGeneration.create.homeHintAvatar', {
+                  defaultValue: '选择数字人管线，输入口播内容即可生成 talking-head。',
+                })
+              : t('videoGeneration.create.homeHintCreation', {
+                  defaultValue: '描述画面与镜头，在无限画布里自由编排生成。',
+                })}
         </p>
       </div>
 
@@ -669,8 +702,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 +
               </span>
             )}
-            {activeReferences.length > 1 ? (
-              <em className={styles.uploadCount}>+{activeReferences.length - 1}</em>
+            {mode === 'creation' && draft.canvasReferences.length > 1 ? (
+              <em className={styles.uploadCount}>+{draft.canvasReferences.length - 1}</em>
             ) : null}
           </button>
           <input
@@ -764,7 +797,13 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
               content={modeMenu}
             >
               <button type='button' className={`${styles.toolbarButton} ${styles.modeButton}`}>
-                {mode === 'agent' ? <RobotOne size={15} /> : <Platte size={15} />}
+                {mode === 'agent' ? (
+                  <RobotOne size={15} />
+                ) : mode === 'avatar' ? (
+                  <People size={15} />
+                ) : (
+                  <Platte size={15} />
+                )}
                 <span>{modeLabel}</span>
                 <Down size={12} />
               </button>
@@ -824,9 +863,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             disabled={loading || !activeText.trim()}
             onClick={submit}
             aria-label={
-              mode === 'agent'
-                ? t('videoGeneration.create.generateStoryboard', {
-                    defaultValue: '生成分镜',
+              isMontageMode
+                ? t('videoGeneration.create.startPipeline', {
+                    defaultValue: '开始制片',
                   })
                 : t('videoGeneration.create.enterCanvas', {
                     defaultValue: '进入画布',
@@ -837,16 +876,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           </button>
         </div>
       </div>
-
-      {mode === 'agent' && draft.cameos.length > 0 ? (
-        <div className={styles.cameoPanel}>
-          <CameoCastEditor
-            value={draft.cameos}
-            disabled={loading}
-            onChange={(cameos) => setDraft((current) => ({ ...current, cameos }))}
-          />
-        </div>
-      ) : null}
     </section>
   );
 };

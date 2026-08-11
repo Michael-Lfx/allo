@@ -1,11 +1,11 @@
 # Video Canvas 模式 — 服务端 / 本机说明
 
-Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Agent / nomi-vimax 同一套）：
+Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Montage Agent / `nomi-media-backends` 同一套）：
 
 - 模型列表：`/api/media/models`（含 **Seedance 2.0** 生视频、**Seedream 5.0** 生图等）
-- 生图 / 生视频：本机 `nomifun-canvas` → `FlowyImage` / `FlowyVideo` → flowy-cloud
+- 生图 / 生视频：本机 `nomifun-canvas` → `FlowyImage` / `FlowyVideo`（`nomi-media-backends`）→ flowy-cloud
 
-**不依赖** Creative Workshop；**不需要**再开一套云端任务中心。
+**不依赖** Creative Workshop；**不需要**再开一套云端任务中心；**不再**依赖已删除的 `nomi-vimax`。
 
 ---
 
@@ -28,7 +28,7 @@ Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Agent / nomi-vi
 
 数据目录：`{data_dir}/video-canvas/`。
 
-## 前端调用约定（与 Workshop / ViMax 对齐）
+## 前端调用约定
 
 统一走 `httpBridge`：
 
@@ -37,19 +37,18 @@ Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Agent / nomi-vi
 | JSON API | `httpRequest(method, '/api/...', body)` | `getBaseUrl()` + `buildBackendAuthHeaders` |
 | 上传 | `XMLHttpRequest` + auth 头 | 同 `uploadCanvasMedia` / workshop `uploadAsset` |
 | 媒体二进制 | `fetch(absoluteUrl, { headers: auth, credentials: 'omit' })` | 勿 `credentials: 'include'`（CORS `*`） |
-| 生图/生视频 | `POST /api/video-canvas/tasks` | 经 `task-center` → `FlowyImage` / `FlowyVideo` |
+| 生图/生视频 | `POST /api/video-canvas/tasks` | 经 task-center → `FlowyImage` / `FlowyVideo` |
 | Agent 对话 | `streamCanvasChatCompletions` → `POST /api/video-canvas/llm/v1/chat/completions` | 工具循环在客户端；服务端只透传 chat |
 
-**不要**：相对路径裸 `fetch('/api/...')`（桌面会打到 Vite）、`/api/ai/custom`、OpenAI `/responses`、影策 OSS 直连。
+**不要**：相对路径裸 `fetch('/api/...')`（桌面会打到 Vite）、`/api/ai/custom`、OpenAI `/responses`、影策 OSS 直连、旧 `/api/vimax/*`。
 
 ### Canvas Agent
 
 - **业务逻辑（工具、画布 ops、会话 UI）在前端** `oc/components/canvas/canvas-assistant-panel.tsx`
-- 服务端只做 Flowy `/chat/completions` 透传；文本模型来自 `modelProfile.resolve({ task: 'chat' })`，写入 OC `allo-chat` 渠道
+- 服务端只做 Flowy `/chat/completions` 透传；文本模型来自 `modelProfile.resolve({ task: 'chat' })`
 - 桌面开发：LLM / 媒体请求必须打到 `http://127.0.0.1:{backendPort}/api/...`，不能相对打到 Vite `5173`
-- 媒体 `fetch` 使用 `credentials: omit` + local-trust 头（后端 CORS 为 `*`，不能与 credentialed 请求共用）
-- 图/视频参考媒体用本地 `resource:` / `/api/video-canvas/media` 即可，不必经过影策 OSS 用户缓存门禁
-- 原 OC「影视 Agent 会话」依赖服务端拆解，**不迁到 allo 后端**；请用客户端 `canvas_*` 工具完成同样目标
+- 媒体 `fetch` 使用 `credentials: omit` + local-trust 头
+- 图/视频参考媒体用本地 `resource:` / `/api/video-canvas/media` 即可
 
 ### 生成映射（当前云端已支持）
 
@@ -76,8 +75,8 @@ Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Agent / nomi-vi
 
 ## 前端入口
 
-- Agent：`/video-generation`
+- Agent（Montage）：`/video-generation`、`/video-generation/:id`
 - Canvas（DEV）：`/video-generation/canvas`、`/video-generation/canvas/:id`
-- **互通**：Agent 工作区「打开到 Canvas」→ `POST /api/vimax/sessions/{id}/materialize-to-canvas`（见 [agent-canvas-interop.md](./agent-canvas-interop.md)）
+- **互通**：Agent 工作区「打开到画布」→ `POST /api/montage/projects/{id}/materialize-to-canvas`（见 [agent-canvas-interop.md](./agent-canvas-interop.md)）
 
 Canvas 编辑器为 **open-ai-canvas 完整 UX 移植**（Leafer 无限画布、节点面板、工具栏、连线），源码在 `ui/src/renderer/pages/videoCanvas/oc/`，经 `@oc/*` 别名接入。云端生成 / 媒体走本机 `/api/video-canvas`；影策原 Go 后端的积分、分享、领域项目等为本地 stub。

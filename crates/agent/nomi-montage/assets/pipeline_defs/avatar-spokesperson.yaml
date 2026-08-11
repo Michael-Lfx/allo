@@ -1,0 +1,130 @@
+name: avatar-spokesperson
+version: "1.0"
+description: >
+  Multi-segment digital-human spokesperson piece: a consistent avatar
+  delivers a scripted, multi-beat presentation. Sibling of `cinematic` under
+  the `avatar` product mode — same Executive Producer mechanism, different
+  render target (talking avatar segments instead of b-roll shots).
+category: avatar
+stability: beta
+default_checkpoint_policy: guided
+mode: avatar
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/avatar-spokesperson/executive-producer
+  max_revisions_per_stage: 3
+  max_send_backs: 3
+  max_wall_time_minutes: 45
+  budget_default: 1800
+
+stages:
+  - name: research
+    skill: pipelines/avatar-spokesperson/research-director
+    produces: [research_brief]
+    required_artifacts_in: []
+    tools_available: [checkpoint_note]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - factual grounding for whatever the spokesperson will claim on camera
+    success_criteria:
+      - "research_brief.findings contains at least 3 concrete, attributable findings"
+
+  - name: proposal
+    skill: pipelines/avatar-spokesperson/proposal-director
+    produces: [proposal_packet]
+    required_artifacts_in: [research_brief]
+    tools_available: [checkpoint_note, decision_log_append, cost_estimate]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - the avatar's persona/tone is defined and consistent with the target audience
+    success_criteria:
+      - "proposal_packet.delivery_promise is 'motion' (the avatar performance itself is always a motion clip)"
+
+  - name: script
+    skill: pipelines/avatar-spokesperson/script-director
+    produces: [script]
+    required_artifacts_in: [proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - dialogue is written to be spoken aloud (natural cadence), not read as prose
+      - each scene is a self-contained presentation beat with a clear point
+    success_criteria:
+      - "every scene's dialogue field is filled — narration alone is not sufficient for a spokesperson piece"
+
+  - name: capture_plan
+    skill: pipelines/avatar-spokesperson/capture-plan-director
+    produces: [scene_plan]
+    required_artifacts_in: [script, proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - segment breakdown maps cleanly to script scenes with sensible per-segment duration
+    success_criteria:
+      - "every script scene has exactly one corresponding capture segment (shot) in scene_plan"
+
+  - name: avatar_render
+    skill: pipelines/avatar-spokesperson/avatar-render-director
+    produces: [render_report, asset_manifest]
+    required_artifacts_in: [scene_plan]
+    tools_available: [flowy_video, video_selector, extract_last_frame, cost_estimate, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - avatar likeness/voice consistency across every rendered segment
+      - lip-sync and delivery read as natural, not uncanny
+    success_criteria:
+      - "every segment in scene_plan has a rendered clip recorded in asset_manifest"
+
+  - name: edit
+    skill: pipelines/avatar-spokesperson/edit-director
+    produces: [edit_decisions]
+    required_artifacts_in: [asset_manifest, scene_plan]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - segment order and any b-roll insert points serve the presentation's flow
+    success_criteria:
+      - "edit_decisions.shots references only files present in asset_manifest"
+
+  - name: compose
+    skill: pipelines/avatar-spokesperson/compose-director
+    produces: [render_report]
+    required_artifacts_in: [edit_decisions]
+    tools_available: [video_compose, video_stitch, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - delivery_promise ('motion') honored across the assembled cut
+    success_criteria:
+      - "render_report.out_name points at a real file under renders/"
+
+  - name: review
+    skill: pipelines/avatar-spokesperson/review-director
+    produces: [final_review]
+    required_artifacts_in: [render_report]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - the avatar reads as credible and on-brand throughout, not just in the first segment
+    success_criteria:
+      - "final_review.scores covers all seven rubric dimensions"
+
+  - name: publish
+    skill: pipelines/avatar-spokesperson/publish-director
+    produces: [publish_log]
+    required_artifacts_in: [final_review]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - final sign-off before the spokesperson piece goes out
+    success_criteria:
+      - "publish_log.final_video_path points at the same file as render_report.out_name"

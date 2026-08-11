@@ -79,7 +79,14 @@ struct MediaIndexEntry {
     created_at: i64,
 }
 
-/// session_id → canvas project_id for idempotent Agent→Canvas opens.
+/// montage project id → canvas project_id for idempotent Agent→Canvas opens.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct MontageProjectLinks {
+    #[serde(default)]
+    projects: HashMap<String, String>,
+}
+
+/// Legacy session_id → canvas project_id (ViMax era).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct VimaxSessionLinks {
     #[serde(default)]
@@ -138,7 +145,12 @@ impl CanvasService {
         self.media_dir().join("index.json")
     }
 
+    fn montage_links_path(&self) -> PathBuf {
+        self.root().join("montage_project_links.json")
+    }
+
     fn vimax_links_path(&self) -> PathBuf {
+        // Legacy filename kept for migration reads; new writes use montage_links_path.
         self.root().join("vimax_session_links.json")
     }
 
@@ -200,6 +212,7 @@ impl CanvasService {
             node_count: 0,
             created_at: now,
             updated_at: now,
+            source_montage_project_id: None,
             source_vimax_session_id: None,
         };
         let dir = self.project_dir(&id);
@@ -210,7 +223,167 @@ impl CanvasService {
         Ok(meta)
     }
 
-    /// Create a canvas project bound to a ViMax session (idempotent materialize target).
+    /// Create a canvas project bound to a Montage project (idempotent materialize target).
+    pub async fn create_project_for_montage_project(
+        &self,
+        montage_project_id: &str,
+        title: Option<String>,
+    ) -> Result<CanvasProjectMeta, AppError> {
+        let montage_project_id = montage_project_id.trim();
+        if montage_project_id.is_empty() {
+            return Err(AppError::BadRequest("montage_project_id required".into()));
+        }
+        let mut meta = self.create_project(title).await?;
+        meta.source_montage_project_id = Some(montage_project_id.to_string());
+        meta.updated_at = now_ms();
+        write_json_file(
+            &self.project_dir(&meta.project_id).join("meta.json"),
+            &meta,
+        )
+        .await?;
+        self.bind_montage_project(montage_project_id, &meta.project_id)
+            .await?;
+        Ok(meta)
+    }
+
+    /// Resolve the canvas project for a Montage project, if one still exists.
+    ///
+    /// Lookup order: link index → meta.source_montage_project_id → doc.alloCreative.montageProjectId.
+    pub async fn find_project_for_montage_project(
+        &self,
+        montage_project_id: &str,
+    ) -> Result<Option<CanvasProjectMeta>, AppError> {
+        let montage_project_id = montage_project_id.trim();
+        if montage_project_id.is_empty() {
+            return Ok(None);
+        }
+        self.ensure_dirs().await?;
+
+        if let Some(project_id) = self.load_montage_link(montage_project_id).await? {
+            if let Ok(project) = self.get_project(&project_id).await {
+                return Ok(Some(project.meta));
+            }
+            self.unbind_montage_project(montage_project_id).await?;
+        }
+
+        let mut best: Option<CanvasProjectMeta> = None;
+        for meta in self.list_projects().await? {
+            let linked = meta
+                .source_montage_project_id
+                .as_deref()
+                .is_some_and(|s| s == montage_project_id);
+            let doc_linked = if linked {
+                true
+            } else {
+                self.project_doc_links_montage(&meta.project_id, montage_project_id)
+                    .await
+                    .unwrap_or(false)
+            };
+            if !doc_linked {
+                continue;
+            }
+            let take = best
+                .as_ref()
+                .map(|b| meta.updated_at > b.updated_at)
+                .unwrap_or(true);
+            if take {
+                best = Some(meta);
+            }
+        }
+
+        if let Some(meta) = &best {
+            if meta.source_montage_project_id.as_deref() != Some(montage_project_id) {
+                let _ = self
+                    .set_montage_project_on_project(&meta.project_id, montage_project_id)
+                    .await;
+            }
+            let _ = self
+                .bind_montage_project(montage_project_id, &meta.project_id)
+                .await;
+        }
+        Ok(best)
+    }
+
+    async fn project_doc_links_montage(
+        &self,
+        project_id: &str,
+        montage_project_id: &str,
+    ) -> Result<bool, AppError> {
+        let doc: Value = read_json_file(&self.project_dir(project_id).join("doc.json")).await?;
+        let linked = doc
+            .pointer("/alloCreative/montageProjectId")
+            .and_then(|v| v.as_str())
+            == Some(montage_project_id)
+            || doc
+                .pointer("/alloCreative/writeBack/montageProjectId")
+                .and_then(|v| v.as_str())
+                == Some(montage_project_id);
+        Ok(linked)
+    }
+
+    pub async fn set_montage_project_on_project(
+        &self,
+        project_id: &str,
+        montage_project_id: &str,
+    ) -> Result<CanvasProjectMeta, AppError> {
+        validate_project_id(project_id)?;
+        let dir = self.project_dir(project_id);
+        let mut meta: CanvasProjectMeta = read_json_file(&dir.join("meta.json")).await?;
+        meta.source_montage_project_id = Some(montage_project_id.trim().to_string());
+        meta.updated_at = now_ms();
+        write_json_file(&dir.join("meta.json"), &meta).await?;
+        self.bind_montage_project(montage_project_id, project_id)
+            .await?;
+        Ok(meta)
+    }
+
+    async fn load_montage_links(&self) -> Result<MontageProjectLinks, AppError> {
+        self.ensure_dirs().await?;
+        match read_json_file::<MontageProjectLinks>(&self.montage_links_path()).await {
+            Ok(v) => Ok(v),
+            Err(_) => Ok(MontageProjectLinks::default()),
+        }
+    }
+
+    async fn save_montage_links(&self, links: &MontageProjectLinks) -> Result<(), AppError> {
+        write_json_file(&self.montage_links_path(), links).await
+    }
+
+    async fn load_montage_link(&self, montage_project_id: &str) -> Result<Option<String>, AppError> {
+        let links = self.load_montage_links().await?;
+        Ok(links.projects.get(montage_project_id).cloned())
+    }
+
+    pub async fn bind_montage_project(
+        &self,
+        montage_project_id: &str,
+        project_id: &str,
+    ) -> Result<(), AppError> {
+        let mut links = self.load_montage_links().await?;
+        links.projects.insert(
+            montage_project_id.trim().to_string(),
+            project_id.to_string(),
+        );
+        self.save_montage_links(&links).await
+    }
+
+    pub async fn unbind_montage_project(&self, montage_project_id: &str) -> Result<(), AppError> {
+        let mut links = self.load_montage_links().await?;
+        links.projects.remove(montage_project_id.trim());
+        self.save_montage_links(&links).await
+    }
+
+    pub async fn unbind_project_from_montage_links(&self, project_id: &str) -> Result<(), AppError> {
+        let mut links = self.load_montage_links().await?;
+        let before = links.projects.len();
+        links.projects.retain(|_, pid| pid != project_id);
+        if links.projects.len() != before {
+            self.save_montage_links(&links).await?;
+        }
+        Ok(())
+    }
+
+    /// Create a canvas project bound to a ViMax session (legacy — prefer montage APIs).
     pub async fn create_project_for_vimax_session(
         &self,
         session_id: &str,
@@ -439,6 +612,7 @@ impl CanvasService {
         tokio::fs::remove_dir_all(&dir)
             .await
             .map_err(|e| AppError::Internal(format!("delete project: {e}")))?;
+        let _ = self.unbind_project_from_montage_links(id).await;
         let _ = self.unbind_project_from_vimax_links(id).await;
         Ok(())
     }
@@ -819,7 +993,7 @@ impl CanvasService {
         )
         .await?;
         let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
-        nomi_vimax::media_local::concat_videos(&refs, &out_path)
+        nomi_media_backends::media_local::concat_videos(&refs, &out_path)
             .await
             .map_err(|e| AppError::Internal(format!("ffmpeg concat: {e}")))?;
         let bytes = tokio::fs::read(&out_path)

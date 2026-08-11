@@ -1,53 +1,42 @@
-# Agent ↔ Canvas 互通
+# Montage ↔ Canvas 互通
 
-高保真单向物化（Agent → Canvas）+ 显式写回（Canvas → Agent）。**不降低** ViMax 管线规划质量：Canvas 不替代多 Agent 规划，只投影资产并支持镜头级微调。
+高保真单向物化（Montage Agent → Canvas）+ 显式写回（Canvas → Montage）。Canvas 不替代多阶段 pipeline / HITL；只投影资产并支持镜头级微调。
 
 ## 用户路径
 
-1. Agent 工作区完成 plan / render 后，点 **打开到 Canvas**
-2. 后端扫描 `.working_dir` → Creative IR → 拷贝媒体入 `video-canvas/media` → 写入节点图 `doc.json`（含 `alloCreative`）
-3. Canvas 中微调 / 单镜重生成（自动注入 `FIXED SPEAKER VOICE`）
-4. 需要时点 **写回 Agent**（显式）：镜头 mp4 回写 + ffmpeg 重拼接成片
+1. Montage 工作区跑完关键 stage 后，点 **打开到画布**
+2. 后端扫描项目 Creative IR → 拷贝媒体入 `video-canvas/media` → 写入节点图 `doc.json`（含 `alloCreative` / `alloMontage`）
+3. Canvas 中微调 / 单镜重生成
+4. 需要时点 **写回 Agent**（显式）：镜头媒体回写到 Montage 项目相对路径
 
 ## API
 
 | Method | Path | 说明 |
 |--------|------|------|
-| POST | `/api/vimax/sessions/{id}/materialize-to-canvas` | 物化 → `{ project_id, …, warnings }` |
-| POST | `/api/vimax/sessions/{id}/sync-from-canvas` | body: `{ project_id, shots?, reconcat? }` |
+| POST | `/api/montage/projects/{id}/materialize-to-canvas` | 物化 → `{ project_id, montage_project_id, …, warnings, reused? }` |
+| POST | `/api/montage/projects/{id}/sync-from-canvas` | body: `{ project_id, shots? }` |
+| GET | `/api/montage/projects/{id}/files/{*path}` | 项目根下相对路径二进制（路径穿越安全；供预览 / `<img>` / `<video>`） |
 
-## 物化内容（对齐 Agent 多参考图链路）
+媒体相对路径（Creative IR）落在 Montage 项目根下，例如 `assets/images/…`、`renders/final.mp4`。前端可用 `projectFileUrl(id, relPath)` 拼出上述 files URL。
 
-打开到 Canvas 会投影：
+## 物化内容
 
-| 节点 | 来源 | 连线角色 |
-|------|------|----------|
-| 风格 / 需求 | session style | → 角色 / 环境 / 道具 / 分镜 / 成片 |
-| 角色定妆 | `character_portraits_registry` | → 分镜 · → 各镜头视频 |
-| 环境板 / 道具板 | `world_assets_registry` | → 分镜 · → 各镜头视频 |
-| 分镜 Script | storyboard + shot_descriptions | → 各镜头视频（row handle） |
-| 连续末帧 | `shots/*/video_last_frame.png` | → 下一镜视频（Seedance Image 1） |
-| 镜头视频 | `shots/*/video.mp4` | → 成片 |
-| 成片 | `final_video.mp4` | concat 结果 |
+打开到 Canvas 会投影风格 / 角色 / 环境 / 分镜 / 镜头视频 / 成片等（以 `CreativeFilm` 为准）。合并成片走本机 `POST /api/video-canvas/media/concat`。
 
-合并成片走本机 `POST /api/video-canvas/media/concat`（与 Agent ffmpeg 同源），不再依赖 unpkg WASM。
-
-**幂等**：同一 Agent `session_id` 多次「打开到 Canvas」复用同一画布项目（`meta.source_vimax_session_id` + `vimax_session_links.json`），不会新建副本；已有微调不会被覆盖。
-
+**幂等**：同一 Montage `project_id` 多次「打开到画布」复用同一画布项目，不会新建副本覆盖已有微调。
 
 ## 代码位置
 
 | 层 | 路径 |
 |----|------|
-| Creative IR | `crates/agent/nomi-vimax/src/creative/` |
-| 物化 / 写回 | `crates/backend/nomifun-vimax/src/materialize.rs` |
+| Creative IR | `crates/agent/nomi-montage`（`creative`） |
+| 物化 / 写回 | `crates/backend/nomifun-montage/src/materialize.rs` |
 | 媒体入库 | `CanvasService::ingest_local_file` |
-| 前端入口 | `WorkspacePage`「打开到 Canvas」 |
-| 溯源条 | `videoCanvas/lib/VimaxProvenanceBar.tsx` |
-| Voice 注入 | `alloVimaxBridge.ts` + generation executor |
+| 前端入口 | `WorkspacePage`「打开到画布」 |
+| 溯源条 | `videoCanvas/lib/VimaxProvenanceBar.tsx`（Montage 溯源） |
 
 ## 非目标（有意不做）
 
-- Canvas 接管 ViMax 全量 plan/render 管线
+- Canvas 接管 Montage 全量 pipeline / HITL
 - Agent / Canvas 双向 live 同步
-- 用最低公分母 Schema 抹平 camera tree / voice bible
+- 兼容旧 `/api/vimax` 物化路径

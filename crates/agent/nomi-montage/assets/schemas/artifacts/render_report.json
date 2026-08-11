@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nomi.dev/schemas/montage/artifacts/render_report.json",
+  "title": "Render Report",
+  "description": "What video_compose actually produced, including the slideshow_risk score computed at compose time.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["out_name", "total_shots", "motion_shots", "render_runtime"],
+  "properties": {
+    "out_name": { "type": "string", "minLength": 1 },
+    "total_shots": { "type": "integer", "minimum": 0 },
+    "motion_shots": { "type": "integer", "minimum": 0 },
+    "slideshow_risk": { "type": "number", "minimum": 0, "maximum": 1 },
+    "render_runtime": { "type": "string" },
+    "duration_secs": { "type": "number", "minimum": 0 }
+  }
+}

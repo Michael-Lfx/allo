@@ -2,14 +2,15 @@
 //!
 //! Independent of Creative Workshop (`nomifun-workshop`). Persists infinite-canvas
 //! projects inspired by open-ai-canvas document semantics, stores local media, and
-//! runs image/video generation through Flowy (`nomi-vimax` Flowy backends).
+//! runs image/video generation through Flowy (`nomi-media-backends`).
 //!
 //! On-disk layout under `{data_dir}/video-canvas/`:
 //! - `projects/{id}/meta.json` — gallery metadata
 //! - `projects/{id}/doc.json` — opaque frontend canvas document
 //! - `media/{id}.{ext}` — uploaded / generated binaries
 //! - `media/index.json` — media index
-//! - `vimax_session_links.json` — session_id → project_id (idempotent materialize)
+//! - `montage_project_links.json` — montage project_id → canvas project_id
+//! - `vimax_session_links.json` — legacy ViMax session links (compat)
 
 mod dto;
 mod fsio;

@@ -10,7 +10,7 @@ import { Popover, Tooltip } from '@arco-design/web-react';
 import { FolderClose, FolderOpen, Loading, VideoOne } from '@icon-park/react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
-import { isActiveStatus, listSessions } from '@renderer/pages/videoGeneration/api';
+import { getProjectStatus, isActiveStatus, listProjects } from '@renderer/pages/videoGeneration/api';
 import VideoGenerationHoverCard from '@renderer/pages/videoGeneration/components/VideoGenerationHoverCard';
 import {
   RECENT_VIDEO_GENERATION_VISIBLE,
@@ -21,7 +21,7 @@ import {
 } from '@renderer/pages/videoGeneration/routeMemory';
 
 const NAV_EXPANDED_KEY = 'flowy.videoGeneration.navExpanded';
-/** Refresh frequency while any recent project is actively planning/rendering. */
+/** Refresh frequency while any recent project is actively running. */
 const ACTIVE_POLL_MS = 4000;
 
 type RecentNavItem = {
@@ -88,10 +88,24 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
   const refresh = useCallback(async () => {
     const local = readRecentVideoGenerationSessions();
     try {
-      const sessions = await listSessions();
+      const projects = await listProjects();
+      const withStatus = await Promise.all(
+        projects.slice(0, 12).map(async (project) => {
+          try {
+            const status = await getProjectStatus(project.id);
+            return {
+              id: project.id,
+              title: project.title,
+              status: status.status,
+            };
+          } catch {
+            return { id: project.id, title: project.title, status: null };
+          }
+        })
+      );
       const merged = mergeRecentVideoGenerationProjects(
         local,
-        sessions,
+        withStatus,
         RECENT_VIDEO_GENERATION_VISIBLE
       );
       setItems((prev) => {
@@ -140,7 +154,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
     return () => window.removeEventListener('focus', onFocus);
   }, [refresh]);
 
-  // Keep sider spinners in sync while any recent project is planning/rendering.
+  // Keep sider spinners in sync while any recent project is running.
   useEffect(() => {
     if (!hasActiveRecent) return;
     const timer = window.setInterval(() => {

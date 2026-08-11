@@ -1,6 +1,6 @@
 /**
  * Seedance 2.0 aspect ratios shared by Style & models + MediaSettings.
- * Keep in sync with `nomi_vimax::aspect::SEEDANCE_ASPECT_RATIOS`.
+ * Keep in sync with `nomi_media_backends::aspect::SEEDANCE_ASPECT_RATIOS`.
  */
 export const SEEDANCE_ASPECT_RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'] as const;
 export type SeedanceAspectRatio = (typeof SEEDANCE_ASPECT_RATIOS)[number];

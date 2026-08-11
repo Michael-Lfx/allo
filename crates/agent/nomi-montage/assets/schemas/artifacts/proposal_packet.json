@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nomi.dev/schemas/montage/artifacts/proposal_packet.json",
+  "title": "Proposal Packet",
+  "description": "The creative proposal — locks the delivery promise enforced later at compose time (see assets/CONTRACT.md §2).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["concept_summary", "delivery_promise"],
+  "properties": {
+    "concept_summary": { "type": "string", "minLength": 1 },
+    "target_audience": { "type": "string" },
+    "key_message": { "type": "string" },
+    "style_playbook": { "type": "string" },
+    "delivery_promise": {
+      "type": "string",
+      "enum": ["motion", "hybrid_motion_still", "slideshow"],
+      "description": "Locked here; enforced mechanically before compose runs — never silently downgraded."
+    },
+    "estimated_shot_count": { "type": "integer", "minimum": 1 },
+    "estimated_duration_secs": { "type": "number", "minimum": 0 },
+    "budget_credits_estimate": { "type": "integer", "minimum": 0 }
+  }
+}

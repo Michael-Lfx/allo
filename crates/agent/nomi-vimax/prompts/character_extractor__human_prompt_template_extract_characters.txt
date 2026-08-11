@@ -1,5 +1,0 @@
-Visual style: {style}
-
-<SCRIPT>
-{script}
-</SCRIPT>

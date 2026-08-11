@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nomi.dev/schemas/montage/artifacts/publish_log.json",
+  "title": "Publish Log",
+  "description": "Record of the final handoff — where the finished video ended up.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["published_at", "final_video_path"],
+  "properties": {
+    "published_at": { "type": "string", "minLength": 1 },
+    "destination": { "type": "string" },
+    "final_video_path": { "type": "string", "minLength": 1 },
+    "notes": { "type": "string" }
+  }
+}

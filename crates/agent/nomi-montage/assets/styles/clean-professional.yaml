@@ -1,0 +1,33 @@
+name: clean-professional
+description: >
+  Neutral, trustworthy, high-clarity look for product explainers,
+  spokesperson pieces, and B2B shorts. Prioritizes readability and brand
+  calm over cinematic mood.
+visual_language:
+  - Soft high-key lighting with gentle falloff; avoid theatrical chiaroscuro.
+  - Uncluttered backgrounds — muted solids, light gradients, tidy desks.
+  - Stable framing (medium / medium-close); minimal camera movement.
+  - Accurate brand colors; restrained contrast grade.
+  - Headroom reserved for captions and lower-thirds.
+tone:
+  - confident
+  - clear
+  - approachable
+  - steady
+pacing: >
+  One idea per shot; cuts land on narration beats; no lingering on empty
+  frames.
+prompt_modifiers:
+  - "clean professional studio lighting"
+  - "high-key, soft shadows"
+  - "uncluttered modern background"
+  - "sharp focus, modest depth of field"
+  - "brand-accurate color palette"
+avoid:
+  - "moody noir lighting"
+  - "busy patterned backgrounds"
+  - "heavy film grain"
+  - "aggressive handheld shake"
+reference_notes:
+  - "Default-friendly for avatar-spokesperson, talking-head, and screen-demo."
+  - "Pair with delivery_promise motion when the speaker is on camera."

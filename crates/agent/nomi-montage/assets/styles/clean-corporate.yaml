@@ -1,0 +1,33 @@
+name: clean-corporate
+description: >
+  Crisp, high-key, minimal-clutter look for SaaS/product explainers and
+  spokesperson pieces. Optimizes for clarity and trust over mood.
+visual_language:
+  - Bright, even, high-key lighting with minimal hard shadows.
+  - Clean, uncluttered backgrounds — solid brand colors, soft gradients, or
+    tidy modern office/workspace environments.
+  - Centered or rule-of-thirds framing; steady, mostly static camera.
+  - Crisp, high-contrast color grade; brand-accurate primary/accent colors.
+  - Generous negative space reserved for on-screen text/UI overlays.
+tone:
+  - confident
+  - clear
+  - approachable
+  - professional
+pacing: >
+  Brisk and structured: one idea per shot, cut on the beat of the narration,
+  no shot held longer than it takes to read its on-screen text.
+prompt_modifiers:
+  - "clean modern product photography lighting"
+  - "high-key, minimal shadow"
+  - "solid or softly gradiented brand-color background"
+  - "sharp focus throughout, no heavy bokeh"
+  - "tidy modern office or studio environment"
+avoid:
+  - "cluttered or busy backgrounds"
+  - "moody low-key lighting"
+  - "gritty or grainy film texture"
+  - "chaotic handheld camera shake"
+reference_notes:
+  - "Good default for avatar-spokesperson and screen-demo pipelines."
+  - "Leave visual headroom for UI captions/lower-thirds added at compose time."

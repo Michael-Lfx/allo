@@ -1,0 +1,82 @@
+name: talking-head
+version: "1.0"
+description: >
+  Lean, single-shot digital-human narration: one avatar segment delivers one
+  scripted message end to end. Deliberately skips the research/scene-plan/
+  review stages `avatar-spokesperson` uses for multi-segment pieces — this
+  pipeline is for the "one clear message, one clip" case.
+category: avatar
+stability: beta
+default_checkpoint_policy: guided
+mode: avatar
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/talking-head/executive-producer
+  max_revisions_per_stage: 2
+  max_send_backs: 2
+  max_wall_time_minutes: 20
+  budget_default: 600
+
+stages:
+  - name: proposal
+    skill: pipelines/talking-head/proposal-director
+    produces: [proposal_packet]
+    required_artifacts_in: []
+    tools_available: [checkpoint_note, decision_log_append, cost_estimate]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - the single message is genuinely singular — one clear point, not a compressed multi-point script
+    success_criteria:
+      - "proposal_packet.key_message states exactly one point"
+      - "proposal_packet.delivery_promise is 'motion'"
+
+  - name: script
+    skill: pipelines/talking-head/script-director
+    produces: [script]
+    required_artifacts_in: [proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - dialogue is written to be spoken naturally in one continuous take
+      - length fits comfortably within proposal_packet.estimated_duration_secs
+    success_criteria:
+      - "script.scenes contains exactly one scene with non-empty dialogue"
+
+  - name: talking_head_render
+    skill: pipelines/talking-head/talking-head-render-director
+    produces: [render_report, asset_manifest]
+    required_artifacts_in: [script, proposal_packet]
+    tools_available: [flowy_video, cost_estimate, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - lip-sync, delivery, and likeness read as natural for the full clip length
+    success_criteria:
+      - "asset_manifest records the single rendered clip and its file location"
+
+  - name: compose
+    skill: pipelines/talking-head/compose-director
+    produces: [render_report]
+    required_artifacts_in: [render_report]
+    tools_available: [video_compose, video_stitch]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - the finalized clip in renders/ matches what was approved at talking_head_render
+    success_criteria:
+      - "render_report.out_name points at a real file under renders/"
+
+  - name: publish
+    skill: pipelines/talking-head/publish-director
+    produces: [publish_log]
+    required_artifacts_in: [render_report]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - final sign-off before the clip goes out
+    success_criteria:
+      - "publish_log.final_video_path points at the same file as render_report.out_name"

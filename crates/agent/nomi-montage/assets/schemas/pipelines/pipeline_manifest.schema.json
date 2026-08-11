@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nomi.dev/schemas/montage/pipeline_manifest.schema.json",
+  "title": "Montage Pipeline Manifest",
+  "description": "Shape of one assets/pipeline_defs/*.yaml file — a declarative, multi-stage Executive Producer pipeline.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["name", "version", "stability", "orchestration", "stages"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Unique pipeline id, kebab-case (e.g. 'cinematic', 'framework-smoke')."
+    },
+    "version": { "type": "string" },
+    "description": { "type": "string" },
+    "category": { "type": "string" },
+    "stability": { "type": "string", "enum": ["production", "beta"] },
+    "default_checkpoint_policy": {
+      "type": "string",
+      "enum": ["guided", "manual_all", "auto_noncreative"]
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["agent", "creation", "avatar", "talking_head"]
+    },
+    "orchestration": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["skill"],
+      "properties": {
+        "mode": { "type": "string" },
+        "skill": {
+          "type": "string",
+          "description": "Path (relative to assets/skills/, no .md extension) to the EP skill for this pipeline."
+        },
+        "max_revisions_per_stage": { "type": "integer", "minimum": 1 },
+        "max_send_backs": { "type": "integer", "minimum": 0 },
+        "max_wall_time_minutes": { "type": "integer", "minimum": 1 },
+        "budget_default": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["name", "skill"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "skill": {
+            "type": "string",
+            "description": "Path (relative to assets/skills/, no .md extension) to this stage's director skill."
+          },
+          "produces": { "type": "array", "items": { "type": "string" } },
+          "required_artifacts_in": { "type": "array", "items": { "type": "string" } },
+          "tools_available": { "type": "array", "items": { "type": "string" } },
+          "checkpoint_required": { "type": "boolean" },
+          "human_approval_default": { "type": "boolean" },
+          "review_focus": { "type": "array", "items": { "type": "string" } },
+          "success_criteria": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

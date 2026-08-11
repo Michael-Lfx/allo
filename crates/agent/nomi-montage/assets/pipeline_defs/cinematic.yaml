@@ -1,0 +1,143 @@
+name: cinematic
+version: "1.0"
+description: >
+  Flagship live-action-style brand/story film pipeline: research → proposal
+  → script → shot-by-shot scene plan → generated assets → edit → governed
+  compose → review → publish. Every shot defaults to a generated motion clip.
+category: cinematic
+stability: production
+default_checkpoint_policy: guided
+mode: agent
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/cinematic/executive-producer
+  max_revisions_per_stage: 3
+  max_send_backs: 3
+  max_wall_time_minutes: 60
+  budget_default: 2500
+
+stages:
+  - name: research
+    skill: pipelines/cinematic/research-director
+    produces: [research_brief]
+    required_artifacts_in: []
+    tools_available: [checkpoint_note]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - factual grounding vs. invention
+      - relevance to the stated topic and audience
+    success_criteria:
+      - "research_brief.findings contains at least 3 concrete, attributable findings"
+      - "no claim is presented as fact without a source or explicit low-confidence label"
+
+  - name: proposal
+    skill: pipelines/cinematic/proposal-director
+    produces: [proposal_packet]
+    required_artifacts_in: [research_brief]
+    tools_available: [checkpoint_note, decision_log_append, cost_estimate]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - delivery_promise is explicit and matches the creative ambition
+      - concept is grounded in research_brief, not generic
+    success_criteria:
+      - "proposal_packet.delivery_promise is set (default: motion) and justified"
+      - "estimated_shot_count and estimated_duration_secs are plausible for the budget"
+
+  - name: script
+    skill: pipelines/cinematic/script-director
+    produces: [script]
+    required_artifacts_in: [proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - narrative clarity and emotional arc
+      - alignment with proposal_packet.key_message
+    success_criteria:
+      - "every scene in script.scenes has narration or dialogue that advances the key message"
+      - "script length is consistent with proposal_packet.estimated_duration_secs"
+
+  - name: scene_plan
+    skill: pipelines/cinematic/scene-plan-director
+    produces: [scene_plan]
+    required_artifacts_in: [script, proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - shot coverage of every script scene
+      - is_motion flags consistent with the locked delivery_promise
+    success_criteria:
+      - "every script scene has at least one corresponding shot in scene_plan"
+      - "shot descriptions are concrete enough to drive image/video prompts directly"
+
+  - name: assets
+    skill: pipelines/cinematic/assets-director
+    produces: [asset_manifest]
+    required_artifacts_in: [scene_plan]
+    tools_available: [image_selector, video_selector, flowy_image, flowy_video, extract_last_frame, cost_estimate, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - generated media matches shot descriptions and the style playbook
+      - motion coverage matches the locked delivery_promise
+    success_criteria:
+      - "every shot in scene_plan has a corresponding entry in asset_manifest"
+      - "no shot silently downgrades from motion to still without being logged in decision_log"
+
+  - name: edit
+    skill: pipelines/cinematic/edit-director
+    produces: [edit_decisions]
+    required_artifacts_in: [asset_manifest, scene_plan]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - pacing and shot order serve the script's emotional arc
+      - held-still durations are deliberate, not filler
+    success_criteria:
+      - "edit_decisions.shots references only files present in asset_manifest"
+      - "render_runtime is set to a runtime this build actually supports (ffmpeg)"
+
+  - name: compose
+    skill: pipelines/cinematic/compose-director
+    produces: [render_report]
+    required_artifacts_in: [edit_decisions]
+    tools_available: [video_compose, video_stitch, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - delivery_promise honored (no silent slideshow downgrade)
+      - slideshow_risk score is below the compose threshold
+    success_criteria:
+      - "render_report.out_name points at a real file under renders/"
+      - "video_compose was called with render_runtime 'ffmpeg' and did not error"
+
+  - name: review
+    skill: pipelines/cinematic/review-director
+    produces: [final_review]
+    required_artifacts_in: [render_report]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - seven-dimension rubric applied honestly, not rubber-stamped
+      - weighted total_score reflects genuine viewing, not the average of guesses
+    success_criteria:
+      - "final_review.scores covers all seven rubric dimensions"
+      - "final_review.pass is false when total_score is below the publish quality gate"
+
+  - name: publish
+    skill: pipelines/cinematic/publish-director
+    produces: [publish_log]
+    required_artifacts_in: [final_review]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - final_review.pass is true, or a human explicitly overrode a soft fail
+    success_criteria:
+      - "publish_log.final_video_path points at the same file as render_report.out_name"

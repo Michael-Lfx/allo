@@ -1,0 +1,129 @@
+name: animation
+version: "1.0"
+description: >
+  Fully illustrated short-form animated story pipeline (character-driven,
+  not concept-explainer). Leans on a consistent illustrated style playbook
+  (default: handcrafted-paper) across every generated shot.
+category: animation
+stability: beta
+default_checkpoint_policy: guided
+mode: agent
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/animation/executive-producer
+  max_revisions_per_stage: 3
+  max_send_backs: 3
+  max_wall_time_minutes: 55
+  budget_default: 2200
+
+stages:
+  - name: research
+    skill: pipelines/animation/research-director
+    produces: [research_brief]
+    required_artifacts_in: []
+    tools_available: [checkpoint_note]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - reference gathering for character/world consistency, not fact-checking
+    success_criteria:
+      - "research_brief captures concrete visual/tonal references the story should stay consistent with"
+
+  - name: proposal
+    skill: pipelines/animation/proposal-director
+    produces: [proposal_packet]
+    required_artifacts_in: [research_brief]
+    tools_available: [checkpoint_note, decision_log_append, cost_estimate]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - a single consistent style_playbook is chosen and named
+      - character/world premise is concrete enough to keep every shot visually consistent
+    success_criteria:
+      - "proposal_packet.style_playbook is set to a playbook that exists in assets/styles/"
+
+  - name: script
+    skill: pipelines/animation/script-director
+    produces: [script]
+    required_artifacts_in: [proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - character voice and story beats are consistent scene to scene
+    success_criteria:
+      - "script.scenes has a clear beginning/middle/end within the target duration"
+
+  - name: scene_plan
+    skill: pipelines/animation/scene-plan-director
+    produces: [scene_plan]
+    required_artifacts_in: [script, proposal_packet]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - shot descriptions carry forward consistent character/prop descriptions verbatim
+    success_criteria:
+      - "recurring characters/props are described identically across every shot that features them"
+
+  - name: assets
+    skill: pipelines/animation/assets-director
+    produces: [asset_manifest]
+    required_artifacts_in: [scene_plan]
+    tools_available: [image_selector, video_selector, flowy_image, flowy_video, extract_last_frame, cost_estimate, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - style_playbook adherence and cross-shot character consistency, not just per-shot quality
+    success_criteria:
+      - "every shot in scene_plan has a corresponding asset_manifest entry"
+      - "no shot visibly breaks the chosen style_playbook's visual_language"
+
+  - name: edit
+    skill: pipelines/animation/edit-director
+    produces: [edit_decisions]
+    required_artifacts_in: [asset_manifest, scene_plan]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - pacing matches the style_playbook's stated pacing guidance
+    success_criteria:
+      - "edit_decisions.shots references only files present in asset_manifest"
+
+  - name: compose
+    skill: pipelines/animation/compose-director
+    produces: [render_report]
+    required_artifacts_in: [edit_decisions]
+    tools_available: [video_compose, video_stitch, cost_reconcile]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - delivery_promise honored; slideshow_risk below threshold
+    success_criteria:
+      - "render_report.out_name points at a real file under renders/"
+
+  - name: review
+    skill: pipelines/animation/review-director
+    produces: [final_review]
+    required_artifacts_in: [render_report]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - visual consistency across the whole runtime, not just individual shots
+    success_criteria:
+      - "final_review.scores covers all seven rubric dimensions"
+
+  - name: publish
+    skill: pipelines/animation/publish-director
+    produces: [publish_log]
+    required_artifacts_in: [final_review]
+    tools_available: [decision_log_append]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - final sign-off before the animated short goes out
+    success_criteria:
+      - "publish_log.final_video_path points at the same file as render_report.out_name"

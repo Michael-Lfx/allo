@@ -5,7 +5,7 @@ import type { TFunction } from 'i18next';
 import { Popconfirm, Tag } from '@arco-design/web-react';
 import { Delete, Like, VideoOne } from '@icon-park/react';
 import type { TvShowStatus, TvShowVideo } from '../types';
-import { normalizeWorkflow, workflowLabel } from './SessionCard';
+import { pipelineLabel } from './SessionCard';
 import styles from '../index.module.css';
 
 function toEpochMs(value: string | number | null | undefined): number | null {
@@ -77,7 +77,7 @@ const TvShowCard: React.FC<TvShowCardProps> = ({
   const timeMs = toEpochMs(video.publishedAt ?? video.submittedAt ?? video.updatedAt);
   const meta = useMemo(() => {
     const parts = [
-      workflowLabel(normalizeWorkflow(String(video.workflow)), t),
+      pipelineLabel(String(video.workflow), t),
       video.author?.name?.trim() || null,
       ...(timeMs != null
         ? [
@@ -129,7 +129,7 @@ const TvShowCard: React.FC<TvShowCardProps> = ({
             </Tag>
           ) : (
             <Tag size='small' color='arcoblue' className='shrink-0'>
-              {workflowLabel(normalizeWorkflow(String(video.workflow)), t)}
+              {pipelineLabel(String(video.workflow), t)}
             </Tag>
           )}
         </div>

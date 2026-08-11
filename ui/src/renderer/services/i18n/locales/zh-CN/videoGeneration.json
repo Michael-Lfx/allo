@@ -1,14 +1,18 @@
 {
   "title": "视频生成",
-  "subtitle": "从灵感、剧本或小说出发，规划产物并渲染成片。",
+  "subtitle": "Agent / 数字人制片管线，或进入创作画布自由编排。",
   "mode": {
     "agent": "Agent",
+    "avatar": "数字人",
     "canvas": "Canvas",
     "agentLabel": "Agent 模式",
+    "avatarLabel": "数字人",
     "creationLabel": "创作模式",
-    "agentHint": "Agent 模式：一句话规划分镜并渲染成片。",
-    "canvasHint": "Canvas 模式（dev）：节点画布精准控制生成参数与链路。",
-    "agentMenuDesc": "自动规划分镜并渲染成片",
+    "agentHint": "Agent 模式：多阶段制片管线，自动规划并成片。",
+    "avatarHint": "数字人模式：口播 / talking-head 管线。",
+    "canvasHint": "Canvas 模式：节点画布精准控制生成参数与链路。",
+    "agentMenuDesc": "多阶段制片管线，自动规划并成片",
+    "avatarMenuDesc": "数字人口播 / talking-head 管线",
     "creationMenuDesc": "进入无限画布自由编排"
   },
   "nav": {
@@ -24,7 +28,7 @@
     "newSession": "新建任务",
     "createFirst": "新建第一个任务",
     "recentTitle": "最近创作",
-    "recentSubtitle": "继续分镜、渲染或查看已经完成的影片。",
+    "recentSubtitle": "继续审批、导出或查看已经完成的影片。",
     "loadError": "加载失败",
     "retry": "重试",
     "filterEmpty": "没有匹配的任务",
@@ -35,11 +39,12 @@
     "importFailed": "导入失败",
     "empty": {
       "title": "你的第一支影片从上方开始",
-      "desc": "写下一个画面或故事，Flowy 会先给你一版可编辑分镜。"
+      "desc": "选择管线并写下想法，Flowy 会按阶段推进制片。"
     },
     "card": {
       "updatedAt": "{{time}} 更新",
-      "stage": "阶段：{{stage}}"
+      "stage": "阶段：{{stage}}",
+      "hasFinal": "可预览"
     },
     "tabs": {
       "recent": "最近创作",
@@ -87,32 +92,35 @@
       "deleteFailed": "删除失败",
       "import": "导入到本地",
       "importOk": "工程已导入到本地",
-      "importFailed": "导入失败"
+      "importFailed": "导入失败",
+      "importUnavailable": "从 TV Show 导入本地工程暂未开放，请使用本地工程导入。"
     },
     "publish": {
       "action": "发布到 TV Show",
       "needSucceeded": "请先完成成片生成后再发布。",
       "needCover": "缺少封面海报，请完成渲染后再发布。",
-      "busy": "规划或渲染进行中，请完成后再发布。",
+      "busy": "管线运行中，请完成后再发布。",
       "ok": "已提交审核，通过后会出现在 TV Show 广场。",
       "failed": "发布失败"
     }
   },
   "create": {
     "title": "新建视频任务",
-    "hint": "选择一种工作流。创建后工作流类型不可更改。",
+    "hint": "选择一条制片管线并输入提示词。",
     "confirm": "创建并打开",
     "titleLabel": "标题（可选）",
     "titlePlaceholder": "给这次生成起个名字",
-    "eyebrow": "AI 叙事导演",
+    "eyebrow": "AI 制片人",
     "heroTitle": "一个想法，变成一支完整影片",
-    "heroSubtitle": "先生成可编辑分镜，确认故事与画面后再渲染成片。",
+    "heroSubtitle": "按管线阶段推进，人工审批节点可随时介入。",
     "homeHeroPrefix": "开启你的",
     "homeHeroSuffix": "，即刻造梦！",
-    "homeHintAgent": "写下故事或想法，Flowy 帮你变成成片。",
+    "homeHintAgent": "选择制片管线，写下故事或想法，Flowy 帮你变成成片。",
+    "homeHintAvatar": "选择数字人管线，输入口播内容即可生成 talking-head。",
     "homeHintCreation": "描述画面与镜头，在无限画布里自由编排生成。",
     "advanced": "风格与模型",
-    "generateStoryboard": "生成分镜",
+    "generateStoryboard": "开始制片",
+    "startPipeline": "开始制片",
     "enterCanvas": "进入画布",
     "customize": "自定义生成偏好",
     "modelRequired": "生成前需要可用的规划模型。",
@@ -120,6 +128,10 @@
     "tryExample": "试试：",
     "skillsMenuTitle": "选择技能",
     "skillsMenuAria": "选择技能",
+    "pipelineMenuTitle": "选择管线",
+    "pipelinePick": "选择管线",
+    "pipelineRequired": "请先选择一条制片管线。",
+    "pipelineEmpty": "暂无可用管线",
     "canvasTitleFromSkill": "{{skill}}创作",
     "modes": {
       "idea": "一个想法",
@@ -173,7 +185,9 @@
       "scriptPlaceholder": "粘贴剧本，Flowy 会自动拆成可编辑镜头…",
       "novelPlaceholder": "粘贴小说片段，Flowy 会提炼剧情并设计分镜…",
       "creationPlaceholder": "描述你想创作的画面、镜头或氛围，支持 / 唤起风格技能…",
-      "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 唤起技能…"
+      "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 唤起技能…",
+      "agentPlaceholder": "输入一个想法、故事或产品画面，支持 / 选择制片管线…",
+      "avatarPlaceholder": "描述数字人口播脚本或表演内容，支持 / 选择管线…"
     },
     "upload": {
       "aria": "上传图片、剧本或其他文档",
@@ -181,6 +195,7 @@
       "removeReference": "移除 {{name}}",
       "unsupported": "部分文件格式暂不支持，请上传图片、DOCX 或纯文本文档。",
       "cameoNameRequired": "请为每张角色参考图填写角色名。",
+      "montageNoImageYet": "Agent / 数字人模式暂不支持参考图上传，请改用文本描述。",
       "docUnsupported": "暂不支持该文档格式，请上传 DOCX、TXT、Markdown、JSON、CSV、SRT 或 VTT。",
       "docTooLarge": "文档不能超过 5 MB。",
       "docEmpty": "文档内容为空。",
@@ -222,22 +237,44 @@
       "defaultName": "角色{{n}}"
     }
   },
-  "workflow": {
-    "idea2video": {
-      "title": "灵感成片",
-      "desc": "从一个想法出发，自动规划并生成视频。"
+  "pipeline": {
+    "cinematic": {
+      "title": "电影感短片",
+      "desc": "情绪向预告片、品牌片与蒙太奇成片。"
     },
-    "script2video": {
-      "title": "剧本成片",
-      "desc": "基于完整剧本拆解镜头并渲染成片。"
+    "animated-explainer": {
+      "title": "动画讲解",
+      "desc": "研究驱动的讲解片：脚本、画面与合成一条龙。"
     },
-    "novel2video": {
-      "title": "小说成片",
-      "desc": "从小说文本提炼剧情，规划并生成视频。"
+    "hybrid": {
+      "title": "混合成片",
+      "desc": "实拍/素材为主，生成画面补镜。"
+    },
+    "animation": {
+      "title": "动效优先",
+      "desc": "图表、kinetic type 与动画驱动成片。"
+    },
+    "screen-demo": {
+      "title": "屏幕演示",
+      "desc": "产品演示与界面动效成片。"
+    },
+    "avatar-spokesperson": {
+      "title": "数字人代言",
+      "desc": "数字主播口型与 CTA 质控成片。"
+    },
+    "talking-head": {
+      "title": "真人讲述",
+      "desc": "讲话素材转录、剪辑、字幕与混音。"
+    },
+    "framework-smoke": {
+      "title": "框架冒烟",
+      "desc": "最短制片合同链路，用于联调与验收。"
     }
   },
   "status": {
     "idle": "待命",
+    "running": "运行中",
+    "awaiting_human": "等待审批",
     "planning": "规划中",
     "rendering": "渲染中",
     "succeeded": "已完成",
@@ -245,60 +282,16 @@
     "cancelled": "已取消"
   },
   "stages": {
+    "research": "调研",
+    "proposal": "提案",
+    "script": "剧本",
+    "scene_plan": "分镜规划",
+    "assets": "资产",
+    "edit": "剪辑决策",
+    "compose": "合成",
+    "publish": "发布",
     "planning": "准备规划",
     "rendering": "准备渲染",
-    "save_novel": "保存并切分小说",
-    "compress_novel": "压缩小说分片",
-    "compress_aggregate": "汇总压缩结果",
-    "extract_events": "提取事件",
-    "event_rag": "检索相关片段",
-    "extract_scenes": "提取场景",
-    "merge_characters": "合并角色信息",
-    "plan_scene": "规划场景产物",
-    "develop_story": "扩写故事",
-    "extract_characters": "提取角色",
-    "write_script": "撰写剧本",
-    "design_storyboard": "设计分镜",
-    "decompose_shots": "分解镜头",
-    "construct_camera_tree": "构建机位树",
-    "planned": "规划完成",
-    "reuse_plan": "复用规划产物",
-    "character_portraits_start": "生成角色定妆图",
-    "character_portraits_done": "角色定妆图已就绪",
-    "character_portrait_start": "生成角色定妆图",
-    "world_assets_start": "生成环境与道具参考图",
-    "world_assets_done": "环境与道具参考图已就绪",
-    "film_cover_start": "生成影片封面",
-    "film_cover_done": "影片封面已就绪",
-    "render_start": "开始渲染",
-    "render_scene": "渲染场景",
-    "render_scene_skip": "跳过已完成场景",
-    "render_scene_done": "场景渲染完成",
-    "render_scene_failed": "场景渲染失败",
-    "render_resume": "从断点继续渲染",
-    "frames_start": "生成关键帧",
-    "frame_camera_start": "生成机位关键帧",
-    "frame_camera_done": "机位关键帧完成",
-    "frames_done": "关键帧全部完成",
-    "frames_cancelled": "关键帧已取消",
-    "frame_start": "生成镜头首帧",
-    "frame_prompt_start": "选择参考图并生成提示",
-    "frame_done": "关键帧已生成",
-    "video_clips_start": "生成视频片段",
-    "video_clip_exists": "跳过已有视频",
-    "video_clip_start": "生成镜头视频",
-    "video_clip_done": "镜头视频已保存",
-    "video_clips_partial": "部分镜头视频失败",
-    "video_clips_done": "镜头视频全部完成",
-    "video_create": "提交视频任务",
-    "video_poll": "云端渲染中",
-    "video_download": "下载镜头视频",
-    "video_generate": "生成视频",
-    "concat_start": "拼接成片",
-    "concat_done": "拼接完成",
-    "render_done": "渲染完成",
-    "final_video_exists": "成片已存在",
-    "image_generate": "生成图片",
     "failed": "失败",
     "cancelled": "已取消",
     "plan": "规划",
@@ -325,8 +318,35 @@
   "workspace": {
     "back": "返回列表",
     "loadError": "加载失败",
+    "missingId": "缺少项目 ID",
     "refresh": "刷新",
+    "prompt": "提示词",
+    "events": "最近事件",
+    "idleHint": "尚未开始。确认提示词后点击开始。",
+    "start": "开始 / 继续",
+    "startOk": "已开始运行",
+    "startFailed": "启动失败",
+    "running": "运行中",
+    "finalVideo": {
+      "title": "成片预览",
+      "loadFailed": "成片加载失败",
+      "missing": "任务已完成，但尚未找到 renders/final.mp4。可打开产物中的 render_report 核对成片路径，或导出工程包查看。"
+    },
+    "mediaClips": {
+      "title": "镜头与渲染片段"
+    },
     "workflowLocked": "工作流在创建后已锁定，不可更改。",
+    "approval": {
+      "title": "等待人工审批：{{stage}}",
+      "notePlaceholder": "可选备注…",
+      "approve": "批准并继续",
+      "sendBack": "打回",
+      "sendBackTo": "打回到",
+      "sendBackNeedTarget": "请选择要打回的阶段",
+      "reject": "拒绝",
+      "ok": "审批已提交",
+      "failed": "审批失败"
+    },
     "cameo": {
       "title": "已绑定角色参考图",
       "empty": "暂无 Cameo。可在创建时上传，删除后请重新规划以更新绑定。",
@@ -489,7 +509,8 @@
       "brief": "创意",
       "storyboard": "分镜",
       "render": "渲染",
-      "film": "成片"
+      "film": "成片",
+      "empty": "待开始"
     },
     "briefTitle": "把故事交给 Flowy",
     "briefHint": "生成的是可修改分镜，不会直接开始高成本渲染。",
@@ -541,6 +562,11 @@
     }
   },
   "artifacts": {
+    "title": "产物",
+    "noneYet": "尚无产物",
+    "empty": "选择一个阶段产物以查看或编辑。",
+    "missing": "该产物尚未生成。",
+    "mediaStrip": "媒体路径",
     "edit": "编辑",
     "save": "保存",
     "saved": "产物已更新",

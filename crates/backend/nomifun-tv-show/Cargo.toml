@@ -1,0 +1,23 @@
+[package]
+name = "nomifun-tv-show"
+description = "Shared TV Show HTTP module for video-generation modes (/api/video-generation/tv-show/*)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nomi-config.workspace = true
+nomi-montage.workspace = true
+nomifun-common.workspace = true
+nomifun-api-types.workspace = true
+nomifun-auth.workspace = true
+nomifun-cloud.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+mime_guess.workspace = true
+reqwest.workspace = true
+uuid = { workspace = true, features = ["v4"] }

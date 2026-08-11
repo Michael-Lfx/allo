@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nomi.dev/schemas/montage/artifacts/video_analysis_brief.json",
+  "title": "Video Analysis Brief",
+  "description": "Structured read-out of a reference/source video, used by pipelines that start from existing footage (e.g. screen-demo re-cuts).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["source_video_path", "detected_scenes"],
+  "properties": {
+    "source_video_path": { "type": "string", "minLength": 1 },
+    "detected_scenes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["start_secs", "end_secs"],
+        "properties": {
+          "start_secs": { "type": "number", "minimum": 0 },
+          "end_secs": { "type": "number", "minimum": 0 },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "style_notes": { "type": "array", "items": { "type": "string" } },
+    "transcript_excerpt": { "type": "string" }
+  }
+}

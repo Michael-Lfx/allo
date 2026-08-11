@@ -1,9 +1,8 @@
-import type { CameoDraftItem, VimaxWorkflow } from '../types';
 import type { SeedanceAspectRatio } from '../aspectRatios';
 import type { VideoResolution } from '../videoModelCapabilities';
 import type { VimaxModelSelection } from '../components/ModelSelectors';
 
-export type VideoHomeMode = 'agent' | 'creation';
+export type VideoHomeMode = 'agent' | 'avatar' | 'creation';
 export type GenerationMediaKind = 'image' | 'video';
 export type CreationSkillId = 'cinematic' | 'anime' | 'cyberpunk' | 'inkWash';
 
@@ -26,23 +25,23 @@ export interface GenerationPreferences {
 }
 
 export interface VideoCreateDraft {
-  workflow: VimaxWorkflow;
+  /** Montage pipeline name (agent / avatar). */
+  pipeline: string;
   sourceText: string;
   creationPrompt: string;
   creationSkillId: CreationSkillId;
   requirement: string;
   style: string;
   preferences: GenerationPreferences;
-  /** Agent-only local Cameo drafts. Files and object URLs are never persisted. */
-  cameos: CameoDraftItem[];
   /** Creation-only image references. Files and object URLs are never persisted. */
   canvasReferences: CanvasReferenceDraft[];
 }
 
-export interface AgentSkillDefinition {
-  id: VimaxWorkflow;
+export interface AgentPipelineOption {
+  id: string;
   label: string;
   description: string;
+  stability?: string;
 }
 
 export interface CreationSkillDefinition {

@@ -1212,8 +1212,10 @@ pub struct AppServices {
     pub insights_service: Arc<nomifun_insights::InsightsService>,
     /// Flowy media generation settings, credits, and workflow history.
     pub media_service: Arc<nomifun_media::MediaApiService>,
-    /// ViMax video-generation sessions / plan / render.
-    pub vimax_service: Arc<nomifun_vimax::VimaxApiService>,
+    /// Montage agent film production (`/api/montage/*`).
+    pub montage_service: Arc<nomifun_montage::MontageApiService>,
+    /// Shared TV Show browse/publish (`/api/video-generation/tv-show/*`).
+    pub tv_show_service: Arc<nomifun_tv_show::TvShowService>,
     /// Video-generation Canvas mode (open-ai-canvas port) — independent of Workshop.
     pub video_canvas_service: Arc<nomifun_canvas::CanvasService>,
     /// Flowy cloud account (email OTP login, whoami).
@@ -2897,10 +2899,14 @@ impl AppServices {
             nomifun_media::MediaApiService::new(data_dir.clone())
                 .map_err(|e| anyhow::anyhow!("Failed to open media service: {e}"))?,
         );
-        let vimax_service = Arc::new(
-            nomifun_vimax::VimaxApiService::new(data_dir.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to open vimax service: {e}"))?,
+        let montage_service = Arc::new(
+            nomifun_montage::MontageApiService::new(data_dir.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to open montage service: {e}"))?,
         );
+        // Refresh Flowy media binding once at boot (sign-in/config reload also
+        // rebinds via MontageApiService::refresh_media on start/approve).
+        montage_service.set_media_from_config();
+        let tv_show_service = Arc::new(nomifun_tv_show::TvShowService::new(data_dir.clone()));
         let video_canvas_service = nomifun_canvas::CanvasService::new(data_dir.clone());
         let cloud_service = Arc::new(
             nomifun_cloud::CloudService::new(data_dir.clone())
@@ -2999,7 +3005,8 @@ impl AppServices {
             poi_service,
             insights_service,
             media_service,
-            vimax_service,
+            montage_service,
+            tv_show_service,
             video_canvas_service,
             cloud_service,
             #[cfg(feature = "browser-use")]

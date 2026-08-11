@@ -1,0 +1,33 @@
+name: kinetic-editorial
+description: >
+  Bold, high-energy, typography-forward look for short-form social and
+  announcement content. Prioritizes momentum and punch over subtlety.
+visual_language:
+  - High-contrast, saturated color grade with a strong accent color.
+  - Dynamic angles — Dutch tilts, whip pans, quick push-ins — used
+    deliberately, not randomly.
+  - Bold sans-serif on-screen text treated as a first-class visual element,
+    not an afterthought overlay.
+  - Frequent, purposeful cuts synced to a rhythmic beat.
+  - Graphic, poster-like compositions with strong leading lines.
+pacing: >
+  Fast. Default shot length is short; every cut should land on a beat.
+  Vary rhythm deliberately (a held beat right before the payoff) rather than
+  cutting at a uniform tempo throughout.
+tone:
+  - bold
+  - energetic
+  - punchy
+  - modern
+prompt_modifiers:
+  - "bold graphic composition, strong leading lines"
+  - "high contrast, saturated color grade with one dominant accent color"
+  - "dynamic camera angle, motion energy"
+  - "poster-like framing"
+avoid:
+  - "muted or pastel color palettes"
+  - "static, centered, symmetrical framing throughout"
+  - "slow, contemplative pacing"
+reference_notes:
+  - "Good fit for kinetic-typography beats inside animated-explainer."
+  - "Vary shot duration on purpose — uniform-length cuts read as robotic."

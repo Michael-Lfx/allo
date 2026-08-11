@@ -10,14 +10,14 @@ import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import {
   deleteTvShow,
   getTvShowDetail,
-  importTvShow,
+  importTvShowToMontage,
   likeTvShow,
   listMyTvShow,
   listTvShow,
   unlikeTvShow,
 } from '../api';
 import type { TvShowVideo } from '../types';
-import { workflowLabel, normalizeWorkflow } from './SessionCard';
+import { pipelineLabel } from './SessionCard';
 import TvShowCard from './TvShowCard';
 
 type TvShowScope = 'plaza' | 'mine';
@@ -180,17 +180,19 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     if (!detail || importing) return;
     setImporting(true);
     try {
-      const imported = await importTvShow(detail.id);
+      const record = await importTvShowToMontage(detail.id);
       message.success(
-        t('videoGeneration.tvShow.actions.importOk', { defaultValue: '工程已导入到本地' })
+        t('videoGeneration.tvShow.actions.importOk', {
+          defaultValue: '已导入为本地工程',
+        })
       );
       setDetail(null);
-      navigate(`/video-generation/${imported.id}`);
+      navigate(`/video-generation/${encodeURIComponent(record.id)}`);
     } catch (e) {
       message.error(
-        `${t('videoGeneration.tvShow.actions.importFailed', { defaultValue: '导入失败' })}: ${
-          e instanceof Error ? e.message : String(e)
-        }`
+        `${t('videoGeneration.tvShow.actions.importFailed', {
+          defaultValue: '导入失败',
+        })}: ${e instanceof Error ? e.message : String(e)}`
       );
     } finally {
       setImporting(false);
@@ -348,7 +350,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
               />
             ) : null}
             <div className='text-13px text-[var(--color-text-3)]'>
-              {workflowLabel(normalizeWorkflow(String(detail.workflow)), t)}
+              {pipelineLabel(String(detail.workflow), t)}
               {detail.author?.name ? ` · ${detail.author.name}` : ''}
             </div>
             {detail.description ? (
@@ -381,7 +383,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
                 type='primary'
                 size='small'
                 loading={importing}
-                disabled={!detail.packageUrl && detailLoading}
+                disabled={!detail.packageUrl}
                 onClick={() => void handleImport()}
               >
                 <span className='inline-flex items-center gap-4px'>

@@ -22,12 +22,14 @@ export type AlloCreativeSidecar = {
   version?: number;
   source?: string;
   sessionId?: string;
+  montageProjectId?: string;
   workflow?: string;
   title?: string;
   style?: string;
   writeBack?: {
     enabled?: boolean;
     sessionId?: string;
+    montageProjectId?: string;
     policy?: string;
   };
 };

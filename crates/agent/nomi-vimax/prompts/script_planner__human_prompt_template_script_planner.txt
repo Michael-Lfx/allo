@@ -1,4 +1,0 @@
-
-<BASIC_IDEA_START>
-{basic_idea}
-<BASIC_IDEA_END>

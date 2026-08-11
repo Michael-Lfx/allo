@@ -14,7 +14,7 @@ const RECENT_VIDEO_GENERATION_STORE_LIMIT = 12;
 
 export interface RecentVideoGenerationEntry {
   id: string;
-  /** Cached title for instant sider paint before listSessions resolves. */
+  /** Cached title for instant sider paint before listProjects resolves. */
   title?: string;
   /** Epoch ms when last opened / remembered. */
   at: number;

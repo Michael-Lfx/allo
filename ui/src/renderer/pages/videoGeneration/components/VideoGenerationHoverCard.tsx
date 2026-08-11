@@ -9,7 +9,7 @@ import classNames from 'classnames';
 import CopyIconButton from '@/renderer/components/base/CopyIconButton';
 import { isActiveStatus } from '@renderer/pages/videoGeneration/api';
 import { statusLabel } from '@renderer/pages/videoGeneration/components/SessionCard';
-import type { VimaxRunStatus } from '@renderer/pages/videoGeneration/types';
+import type { MontageRunStatus } from '@renderer/pages/videoGeneration/types';
 
 export type VideoGenerationHoverCardProps = {
   id: string;
@@ -18,7 +18,8 @@ export type VideoGenerationHoverCardProps = {
 };
 
 const statusDotClass = (status: string | null | undefined) => {
-  if (status === 'planning' || status === 'rendering') return 'bg-[rgb(var(--primary-6))]';
+  if (status === 'running') return 'bg-[rgb(var(--primary-6))]';
+  if (status === 'awaiting_human') return 'bg-[rgb(var(--warning-6))]';
   if (status === 'failed') return 'bg-red-500';
   if (status === 'succeeded') return 'bg-green-500';
   return 'bg-t-tertiary';
@@ -32,7 +33,7 @@ const VideoGenerationHoverCard: React.FC<VideoGenerationHoverCardProps> = ({
   const { t } = useTranslation();
   const displayTitle =
     title.trim() || t('videoGeneration.list.untitled', { defaultValue: '未命名任务' });
-  const runStatus = (status ?? 'idle') as VimaxRunStatus;
+  const runStatus = (status ?? 'idle') as MontageRunStatus;
   const busy = isActiveStatus(runStatus);
 
   return (

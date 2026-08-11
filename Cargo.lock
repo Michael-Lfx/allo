@@ -5644,6 +5644,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomi-media-backends"
+version = "0.3.7"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "image",
+ "nomi-config",
+ "nomifun-cloud",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "nomi-memory"
 version = "0.3.7"
 dependencies = [
@@ -5657,6 +5677,31 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tracing",
+]
+
+[[package]]
+name = "nomi-montage"
+version = "0.3.7"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "jsonschema",
+ "nomi-config",
+ "nomi-media-backends",
+ "nomifun-cloud",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "walkdir",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -5807,32 +5852,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
-]
-
-[[package]]
-name = "nomi-vimax"
-version = "0.3.7"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "futures",
- "image",
- "nomi-config",
- "nomifun-cloud",
- "regex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
- "walkdir",
- "zip 2.4.2",
 ]
 
 [[package]]
@@ -6002,6 +6021,7 @@ dependencies = [
  "nomifun-mcp",
  "nomifun-media",
  "nomifun-model-invoke",
+ "nomifun-montage",
  "nomifun-net",
  "nomifun-office",
  "nomifun-poi",
@@ -6014,7 +6034,7 @@ dependencies = [
  "nomifun-shell",
  "nomifun-system",
  "nomifun-terminal",
- "nomifun-vimax",
+ "nomifun-tv-show",
  "nomifun-webhook",
  "nomifun-workshop",
  "percent-encoding",
@@ -6102,7 +6122,7 @@ dependencies = [
  "futures",
  "mime_guess",
  "nomi-config",
- "nomi-vimax",
+ "nomi-media-backends",
  "nomifun-api-types",
  "nomifun-auth",
  "nomifun-cloud",
@@ -6661,6 +6681,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomifun-montage"
+version = "0.3.7"
+dependencies = [
+ "axum",
+ "mime_guess",
+ "nomi-config",
+ "nomi-media-backends",
+ "nomi-montage",
+ "nomifun-api-types",
+ "nomifun-auth",
+ "nomifun-canvas",
+ "nomifun-common",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nomifun-net"
 version = "0.3.7"
 dependencies = [
@@ -6929,23 +6968,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "nomifun-vimax"
+name = "nomifun-tv-show"
 version = "0.3.7"
 dependencies = [
  "axum",
  "mime_guess",
  "nomi-config",
- "nomi-vimax",
+ "nomi-montage",
  "nomifun-api-types",
  "nomifun-auth",
- "nomifun-canvas",
  "nomifun-cloud",
  "nomifun-common",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
- "tower-http",
  "tracing",
  "uuid",
 ]

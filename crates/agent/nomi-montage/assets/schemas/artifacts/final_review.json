@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nomi.dev/schemas/montage/artifacts/final_review.json",
+  "title": "Final Review",
+  "description": "The seven-dimension quality rubric (see governance::scoring) applied to the finished cut before publish.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["scores", "total_score", "pass"],
+  "properties": {
+    "scores": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "concept": { "type": "number", "minimum": 0, "maximum": 10 },
+        "script_story": { "type": "number", "minimum": 0, "maximum": 10 },
+        "visual_craft": { "type": "number", "minimum": 0, "maximum": 10 },
+        "motion_continuity": { "type": "number", "minimum": 0, "maximum": 10 },
+        "sound": { "type": "number", "minimum": 0, "maximum": 10 },
+        "pacing_delivery": { "type": "number", "minimum": 0, "maximum": 10 },
+        "technical_robustness": { "type": "number", "minimum": 0, "maximum": 10 }
+      }
+    },
+    "total_score": { "type": "number", "minimum": 0, "maximum": 10 },
+    "pass": { "type": "boolean" },
+    "notes": { "type": "string" }
+  }
+}

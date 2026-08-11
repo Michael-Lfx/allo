@@ -1,69 +1,87 @@
-
-
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check } from '@icon-park/react';
-import type { VimaxRunStatus } from '../types';
+import type { BoardStage } from '../types';
+import { stageLabel } from '../stageI18n';
 import styles from '../index.module.css';
 
 interface StudioStageRailProps {
-  status?: VimaxRunStatus | null;
-  stage?: string | null;
-  hasStoryboard: boolean;
-  hasFinalVideo: boolean;
+  stages: BoardStage[];
+  currentStage?: string | null;
+  awaitingHumanStage?: string | null;
+  onSelectStage?: (stageName: string) => void;
+  selectedStage?: string | null;
 }
 
-export function studioStageIndex({
-  status,
-  stage,
-  hasStoryboard,
-  hasFinalVideo,
-}: StudioStageRailProps): number {
-  if (hasFinalVideo) return 3;
-  if (status === 'rendering') return 2;
-  if (hasStoryboard || stage === 'planned') return 1;
-  return 0;
+function stageDone(status: string): boolean {
+  return status === 'completed';
+}
+
+function stageCurrent(
+  stage: BoardStage,
+  currentStage?: string | null,
+  awaitingHumanStage?: string | null
+): boolean {
+  if (awaitingHumanStage && stage.name === awaitingHumanStage) return true;
+  if (currentStage && stage.name === currentStage) return true;
+  return stage.status === 'in_progress' || stage.status === 'awaiting_human';
 }
 
 const StudioStageRail: React.FC<StudioStageRailProps> = ({
-  status,
-  stage,
-  hasStoryboard,
-  hasFinalVideo,
+  stages,
+  currentStage,
+  awaitingHumanStage,
+  onSelectStage,
+  selectedStage,
 }) => {
   const { t } = useTranslation();
-  const activeIndex = studioStageIndex({ status, stage, hasStoryboard, hasFinalVideo });
-  const labels = [
-    t('videoGeneration.studio.stages.brief', { defaultValue: '创意' }),
-    t('videoGeneration.studio.stages.storyboard', { defaultValue: '分镜' }),
-    t('videoGeneration.studio.stages.render', { defaultValue: '渲染' }),
-    t('videoGeneration.studio.stages.film', { defaultValue: '成片' }),
-  ];
+
+  if (stages.length === 0) {
+    return (
+      <nav
+        className={styles.stageRail}
+        aria-label={t('videoGeneration.studio.stageLabel', { defaultValue: '影片制作进度' })}
+      >
+        <div className={styles.stageItem}>
+          <span className={styles.stageDot}>1</span>
+          <span className={styles.stageLabel}>
+            {t('videoGeneration.studio.stages.empty', { defaultValue: '待开始' })}
+          </span>
+        </div>
+      </nav>
+    );
+  }
 
   return (
     <nav
       className={styles.stageRail}
       aria-label={t('videoGeneration.studio.stageLabel', { defaultValue: '影片制作进度' })}
     >
-      {labels.map((label, index) => {
-        const done = index < activeIndex;
-        const current = index === activeIndex;
+      {stages.map((stage, index) => {
+        const done = stageDone(String(stage.status));
+        const current = stageCurrent(stage, currentStage, awaitingHumanStage);
+        const selected = selectedStage === stage.name;
+        const label = stageLabel(stage.name, t);
         return (
-          <div
-            key={label}
+          <button
+            key={stage.name}
+            type='button'
             className={[
               styles.stageItem,
-              done || current ? styles.stageItemActive : '',
+              done || current || selected ? styles.stageItemActive : '',
               done ? styles.stageItemDone : '',
-              current ? styles.stageItemCurrent : '',
-            ].join(' ')}
+              current || selected ? styles.stageItemCurrent : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
             aria-current={current ? 'step' : undefined}
+            onClick={() => onSelectStage?.(stage.name)}
           >
             <span className={styles.stageDot}>
               {done ? <Check theme='outline' size={12} strokeWidth={4} /> : index + 1}
             </span>
             <span className={styles.stageLabel}>{label}</span>
-          </div>
+          </button>
         );
       })}
     </nav>

@@ -1,5 +1,5 @@
 /**
- * Curated visual styles for nomi-vimax cast & film prompts.
+ * Curated visual styles for Montage cast & film prompts.
  *
  * Catalog shaped by mainstream video tools (Runway / Kling / Pika / Higgsfield /
  * Vidu / 即梦 / Midjourney): live-action film looks, genre moods, animation media,
@@ -63,7 +63,7 @@ export const VISUAL_STYLE_CATEGORIES: readonly VisualStyleCategoryMeta[] = [
   },
 ] as const;
 
-/** Matches backend `DEFAULT_VISUAL_STYLE` in nomi-vimax planning. */
+/** Matches backend default visual style used by Montage planning prompts. */
 export const DEFAULT_VISUAL_STYLE_PROMPT =
   'cinematic film look, believable designed characters, natural wardrobe and lighting, clean healthy facial skin with clear readable features';
 

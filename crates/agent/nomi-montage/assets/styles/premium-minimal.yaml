@@ -1,0 +1,32 @@
+name: premium-minimal
+description: >
+  Sparse, high-end visual system for luxury, fintech, and flagship brand
+  films. Negative space, precise composition, restrained motion.
+visual_language:
+  - Large fields of negative space; subject isolation.
+  - Desaturated or tightly controlled palette with one accent.
+  - Slow, deliberate camera moves (or locked-off frames).
+  - Soft directional light; refined material detail when photoreal.
+  - Typography-ready margins; no visual clutter.
+tone:
+  - refined
+  - calm
+  - precise
+  - elevated
+pacing: >
+  Measured — longer holds, fewer cuts, motion only when it elevates the
+  idea. Silence and stillness are tools, not gaps to fill.
+prompt_modifiers:
+  - "premium minimal composition"
+  - "generous negative space"
+  - "restrained monochrome-leaning palette with one accent"
+  - "slow deliberate camera"
+  - "refined material detail, no clutter"
+avoid:
+  - "busy product-montage energy"
+  - "saturated rainbow palettes"
+  - "chaotic multi-subject frames"
+  - "gimmicky transitions"
+reference_notes:
+  - "Works for cinematic brand films and polished avatar spokespeople."
+  - "Hybrid delivery_promise can fit when held stills are compositionally strong."

@@ -1,0 +1,34 @@
+name: cinematic-warmth
+description: >
+  Filmic, emotionally warm brand storytelling — golden-hour light, shallow
+  depth of field, and unhurried camera moves. Reaches for a lived-in,
+  documentary-adjacent realism rather than glossy commercial polish.
+visual_language:
+  - Natural and golden-hour lighting; avoid flat, shadowless studio light.
+  - Shallow depth of field (35mm/50mm equivalent) with soft, creamy bokeh.
+  - Handheld or slow-dolly camera moves over locked-off static shots.
+  - Warm, slightly desaturated color grade — amber highlights, deep but not
+    crushed shadows.
+  - Real, specific locations and props over generic stock-photo staging.
+pacing: >
+  Unhurried. Let a beat breathe for 1-2 seconds before cutting; avoid rapid-fire
+  editing except for a single deliberate montage beat near the midpoint.
+tone:
+  - warm
+  - intimate
+  - sincere
+  - understated
+prompt_modifiers:
+  - "cinematic 35mm film still"
+  - "golden hour natural lighting"
+  - "shallow depth of field, soft bokeh"
+  - "warm film color grade, slightly desaturated"
+  - "documentary realism, candid framing"
+avoid:
+  - "flat corporate studio lighting"
+  - "oversaturated, neon, or synthetic colors"
+  - "stiff posed stock-photo composition"
+  - "harsh direct flash"
+reference_notes:
+  - "Think A24-adjacent brand films: real people, real rooms, patient camera."
+  - "Reserve fast cuts for a single 3-5 shot montage beat, not the whole edit."

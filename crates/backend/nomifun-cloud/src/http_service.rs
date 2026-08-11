@@ -36,7 +36,7 @@ impl CloudService {
         let path = config_yaml_path(Some(&data_dir));
         let mut config = load_user_config_file(&path).map_err(|e| AppError::Internal(e))?;
         // Persist when the file is missing OR when base_url/provider were empty —
-        // otherwise other services that read yaml from disk (media/vimax) stay
+        // otherwise other services that read yaml from disk (media/montage) stay
         // gated off by `api_ready() == false` for the whole process lifetime.
         let should_persist = !path.exists()
             || config.server.base_url.trim().is_empty()

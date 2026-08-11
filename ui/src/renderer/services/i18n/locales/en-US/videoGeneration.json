@@ -1,15 +1,19 @@
 {
   "title": "Video Generation",
-  "subtitle": "Start from an idea, script, or novel — plan artifacts and render a finished video.",
+  "subtitle": "Agent / Avatar montage pipelines, or open the Creation canvas.",
   "mode": {
     "agent": "Agent",
     "canvas": "Canvas",
     "agentLabel": "Agent mode",
     "creationLabel": "Creation mode",
-    "agentHint": "Agent mode: plan storyboards from a prompt and render a film.",
-    "canvasHint": "Canvas mode (dev): node-based canvas for precise generation control.",
-    "agentMenuDesc": "Auto-plan storyboards and render a film",
-    "creationMenuDesc": "Open the infinite canvas to arrange freely"
+    "agentHint": "Agent mode: multi-stage montage pipelines.",
+    "canvasHint": "Canvas mode: node-based freeform creation.",
+    "agentMenuDesc": "Multi-stage pipelines that plan and deliver a film",
+    "creationMenuDesc": "Open the infinite canvas",
+    "avatar": "Avatar",
+    "avatarLabel": "Avatar",
+    "avatarHint": "Avatar mode: talking-head / digital human pipelines.",
+    "avatarMenuDesc": "Digital-human / talking-head pipelines"
   },
   "nav": {
     "entry": "Video Generation",
@@ -24,7 +28,7 @@
     "newSession": "New session",
     "createFirst": "Create your first session",
     "recentTitle": "Recent projects",
-    "recentSubtitle": "Continue storyboarding, rendering, or revisit a finished film.",
+    "recentSubtitle": "Continue approvals, export, or review finished films.",
     "loadError": "Failed to load",
     "retry": "Retry",
     "filterEmpty": "No matching sessions",
@@ -35,11 +39,12 @@
     "importFailed": "Import failed",
     "empty": {
       "title": "Your first film starts above",
-      "desc": "Describe a scene or story and Flowy will create an editable storyboard first."
+      "desc": "Pick a pipeline and write a prompt — Flowy advances stage by stage."
     },
     "card": {
       "updatedAt": "Updated {{time}}",
-      "stage": "Stage: {{stage}}"
+      "stage": "Stage: {{stage}}",
+      "hasFinal": "Preview ready"
     },
     "tabs": {
       "recent": "Recent projects",
@@ -87,13 +92,14 @@
       "deleteFailed": "Failed to delete",
       "import": "Import locally",
       "importOk": "Project imported locally",
-      "importFailed": "Import failed"
+      "importFailed": "Import failed",
+      "importUnavailable": "Importing TV Show packages locally is not available yet. Use local project import instead."
     },
     "publish": {
       "action": "Publish to TV Show",
       "needSucceeded": "Finish rendering the film before publishing.",
       "needCover": "A cover poster is required before publishing.",
-      "busy": "Finish planning or rendering before publishing.",
+      "busy": "Pipeline is running — finish before publishing.",
       "ok": "Submitted for review. It will appear on the plaza after approval.",
       "failed": "Publish failed"
     }
@@ -109,7 +115,7 @@
     "heroSubtitle": "Create an editable storyboard first, then render after the story and visuals feel right.",
     "homeHeroPrefix": "Start your",
     "homeHeroSuffix": " and create now!",
-    "homeHintAgent": "Type in stories or thoughts — Flowy turns them into a film.",
+    "homeHintAgent": "Pick a pipeline, write a story or idea, and Flowy will produce a film.",
     "homeHintCreation": "Describe scenes and shots, then arrange generation on the infinite canvas.",
     "advanced": "Style & models",
     "generateStoryboard": "Generate storyboard",
@@ -173,7 +179,9 @@
       "scriptPlaceholder": "Paste a script and Flowy will turn it into editable shots…",
       "novelPlaceholder": "Paste a novel excerpt and Flowy will shape the story into shots…",
       "creationPlaceholder": "Describe the frame, camera, or mood you want — type / for style skills…",
-      "ideaPlaceholderSlash": "Enter an idea, story, or product scene — type / for skills…"
+      "ideaPlaceholderSlash": "Enter an idea, story, or product scene — type / for skills…",
+      "agentPlaceholder": "Describe an idea, story, or product shot — type / to pick a pipeline…",
+      "avatarPlaceholder": "Describe the talking-head script or performance — type / to pick a pipeline…"
     },
     "upload": {
       "aria": "Upload images, scripts, or other documents",
@@ -186,7 +194,8 @@
       "docEmpty": "The document is empty.",
       "docxCorrupt": "The DOCX file is damaged or unreadable.",
       "docxNoBody": "No document body was found in the DOCX.",
-      "untitledAsset": "Untitled asset"
+      "untitledAsset": "Untitled asset",
+      "montageNoImageYet": "Agent / Avatar mode does not support reference uploads yet. Use text instead."
     },
     "gallery": {
       "title": "Recent canvases",
@@ -220,20 +229,46 @@
       "uploading": "Uploading character references…",
       "uploadFailed": "Failed to upload character reference",
       "defaultName": "Character {{n}}"
-    }
+    },
+    "homeHintAvatar": "Pick an avatar pipeline and enter a talking-head script.",
+    "startPipeline": "Start production",
+    "pipelineMenuTitle": "Choose pipeline",
+    "pipelinePick": "Choose pipeline",
+    "pipelineRequired": "Please select a pipeline first.",
+    "pipelineEmpty": "No pipelines available"
   },
-  "workflow": {
-    "idea2video": {
-      "title": "Idea to Video",
-      "desc": "Start from an idea and plan a video automatically."
+  "pipeline": {
+    "cinematic": {
+      "title": "Cinematic",
+      "desc": "Mood-led trailers, brand films, and montages."
     },
-    "script2video": {
-      "title": "Script to Video",
-      "desc": "Break down a full script into shots and render."
+    "animated-explainer": {
+      "title": "Animated explainer",
+      "desc": "Research-driven explainers from script to compose."
     },
-    "novel2video": {
-      "title": "Novel to Video",
-      "desc": "Extract a storyline from novel text and generate video."
+    "hybrid": {
+      "title": "Hybrid",
+      "desc": "Footage-first with generated support inserts."
+    },
+    "animation": {
+      "title": "Animation-first",
+      "desc": "Charts, kinetic type, and motion-led pieces."
+    },
+    "screen-demo": {
+      "title": "Screen demo",
+      "desc": "Product demos and UI motion films."
+    },
+    "avatar-spokesperson": {
+      "title": "Avatar spokesperson",
+      "desc": "Digital presenter with lip-sync and CTA QC."
+    },
+    "talking-head": {
+      "title": "Talking head",
+      "desc": "Speech footage: transcript, edit, captions, mix."
+    },
+    "framework-smoke": {
+      "title": "Framework smoke",
+      "desc": "Minimal production contract path for integration checks."
     }
   },
   "status": {
@@ -242,68 +277,24 @@
     "rendering": "Rendering",
     "succeeded": "Succeeded",
     "failed": "Failed",
-    "cancelled": "Cancelled"
+    "cancelled": "Cancelled",
+    "running": "Running",
+    "awaiting_human": "Awaiting approval"
   },
   "stages": {
-    "planning": "Preparing plan",
-    "rendering": "Preparing render",
-    "save_novel": "Saving and splitting novel",
-    "compress_novel": "Compressing novel chunks",
-    "compress_aggregate": "Aggregating compression results",
-    "extract_events": "Extracting events",
-    "event_rag": "Retrieving related passages",
-    "extract_scenes": "Extracting scenes",
-    "merge_characters": "Merging character info",
-    "plan_scene": "Planning scene artifacts",
-    "develop_story": "Developing story",
-    "extract_characters": "Extracting characters",
-    "write_script": "Writing script",
-    "design_storyboard": "Designing storyboard",
-    "decompose_shots": "Decomposing shots",
-    "construct_camera_tree": "Building camera tree",
-    "planned": "Planning complete",
-    "reuse_plan": "Reusing plan artifacts",
-    "character_portraits_start": "Generating character portraits",
-    "character_portraits_done": "Character portraits ready",
-    "character_portrait_start": "Generating character portrait",
-    "world_assets_start": "Generating environment & prop plates",
-    "world_assets_done": "Environment & prop plates ready",
-    "film_cover_start": "Generating film cover",
-    "film_cover_done": "Film cover ready",
-    "render_start": "Starting render",
-    "render_scene": "Rendering scene",
-    "render_scene_skip": "Skipping completed scene",
-    "render_scene_done": "Scene render complete",
-    "render_scene_failed": "Scene render failed",
-    "render_resume": "Resuming render from checkpoint",
-    "frames_start": "Generating keyframes",
-    "frame_camera_start": "Generating camera keyframes",
-    "frame_camera_done": "Camera keyframes done",
-    "frames_done": "All keyframes ready",
-    "frames_cancelled": "Keyframes cancelled",
-    "frame_start": "Generating shot first frame",
-    "frame_prompt_start": "Selecting references and building prompt",
-    "frame_done": "Keyframe generated",
-    "video_clips_start": "Generating video clips",
-    "video_clip_exists": "Skipping existing clip",
-    "video_clip_start": "Generating shot video",
-    "video_clip_done": "Shot video saved",
-    "video_clips_partial": "Some shot videos failed",
-    "video_clips_done": "All shot videos complete",
-    "video_create": "Submitting video task",
-    "video_poll": "Rendering in the cloud",
-    "video_download": "Downloading video clip",
-    "video_generate": "Generating video",
-    "concat_start": "Concatenating final video",
-    "concat_done": "Concatenation complete",
-    "render_done": "Render complete",
-    "final_video_exists": "Final video already exists",
-    "image_generate": "Generating image",
+    "research": "Research",
+    "proposal": "Proposal",
+    "script": "Script",
+    "scene_plan": "Scene plan",
+    "assets": "Assets",
+    "edit": "Edit decisions",
+    "compose": "Compose",
+    "publish": "Publish",
     "failed": "Failed",
     "cancelled": "Cancelled",
-    "plan": "Planning",
-    "render": "Rendering",
-    "revise": "Revising"
+    "plan": "Plan",
+    "render": "Render",
+    "revise": "Revise"
   },
   "actions": {
     "createFailed": "Failed to create",
@@ -318,9 +309,9 @@
     "exportFailed": "Export failed",
     "exportFilter": "Flowy video project",
     "openInCanvas": "Open in Canvas",
-    "openInCanvasOk": "Opened in Canvas: {{shots}} shots · {{media}} media",
-    "openInCanvasReused": "Opened existing Canvas for this project",
-    "openInCanvasFailed": "Failed to open in Canvas"
+    "openInCanvasOk": "Materialized to Creation Canvas",
+    "openInCanvasReused": "Opened the linked canvas",
+    "openInCanvasFailed": "Failed to open canvas"
   },
   "workspace": {
     "back": "Back to list",
@@ -343,7 +334,7 @@
     "renderStarted": "Render started",
     "renderFailed": "Render failed",
     "cancel": "Cancel",
-    "cancelOk": "Cancel requested",
+    "cancelOk": "Cancelled",
     "cancelFailed": "Cancel failed",
     "finalVideo": "Final video",
     "progressIdle": "Not started yet. Progress appears after you submit a plan.",
@@ -481,6 +472,33 @@
       "creditsToast": "Insufficient credits. Top up or shorten the duration, then resume from checkpoint.",
       "unknownTitle": "Execution failed",
       "unknownHint": "Artifacts were kept. If the error mentions All channel models failed, switch the related model and resume from checkpoint."
+    },
+    "missingId": "Missing project id",
+    "prompt": "Prompt",
+    "events": "Recent events",
+    "idleHint": "Not started yet. Confirm the prompt, then press Start.",
+    "start": "Start / Resume",
+    "startOk": "Run started",
+    "startFailed": "Failed to start",
+    "running": "Running",
+    "finalVideo": {
+      "title": "Final cut",
+      "loadFailed": "Failed to load final video",
+      "missing": "Run finished, but renders/final.mp4 was not found. Check render_report in artifacts or export the project package."
+    },
+    "mediaClips": {
+      "title": "Shots & renders"
+    },
+    "approval": {
+      "title": "Awaiting human approval: {{stage}}",
+      "notePlaceholder": "Optional note…",
+      "approve": "Approve & continue",
+      "sendBack": "Send back",
+      "sendBackTo": "Send back to",
+      "sendBackNeedTarget": "Select a stage to send back to",
+      "reject": "Reject",
+      "ok": "Approval submitted",
+      "failed": "Approval failed"
     }
   },
   "studio": {
@@ -489,7 +507,8 @@
       "brief": "Creative",
       "storyboard": "Storyboard",
       "render": "Render",
-      "film": "Film"
+      "film": "Film",
+      "empty": "Not started"
     },
     "briefTitle": "Give Flowy your story",
     "briefHint": "This creates an editable storyboard before any expensive rendering starts.",
@@ -558,7 +577,12 @@
     "promptMissingHint": "This image has no saved generation prompt (common for older runs). Enter a prompt manually; newly generated images will keep the prompt for later edits.",
     "promptSaveFailed": "Could not save image prompt",
     "savePrompt": "Save only",
-    "saveAndRegenerate": "Save & regenerate"
+    "saveAndRegenerate": "Save & regenerate",
+    "title": "Artifacts",
+    "noneYet": "No artifacts yet",
+    "empty": "Select a stage artifact to view or edit.",
+    "missing": "This artifact has not been produced yet.",
+    "mediaStrip": "Media paths"
   },
   "time": {
     "justNow": "just now",
