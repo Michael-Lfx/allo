@@ -103,8 +103,21 @@ export function assignTurnIdsFromUserRequests(
     // mint a distinct root turn id for the response. The first non-retired
     // explicit id therefore becomes the fallback for later transient rows that
     // omit turn_id. Known older ids must not move that boundary back.
+    //
+    // When activeTurnId was seeded with the user msg_id (send accept before
+    // turn.started / Guid HTTP late), authoritativeTurnId equals the request
+    // boundary and is still provisional — allow the first distinct stream
+    // turn_id to promote it so turn_actions credit lookup matches billing.
     if (entry.turnId) {
-      if (!authoritativeTurnId && !retiredTurnIds.has(entry.turnId)) {
+      const provisionalAuthority =
+        authoritativeTurnId != null &&
+        requestBoundaryTurnId != null &&
+        authoritativeTurnId === requestBoundaryTurnId &&
+        entry.turnId !== authoritativeTurnId;
+      if (
+        (!authoritativeTurnId || provisionalAuthority) &&
+        !retiredTurnIds.has(entry.turnId)
+      ) {
         authoritativeTurnId = entry.turnId;
         currentTurnId = entry.turnId;
         // Correlate the provisional user/request boundary (and any early

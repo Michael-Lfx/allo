@@ -449,6 +449,7 @@ fn initial_delivery_requested_from_headers(
 fn send_message_response(delivery: IdempotentMessageDelivery) -> SendMessageResponse {
     SendMessageResponse {
         msg_id: delivery.message_id,
+        turn_id: delivery.turn_id,
         replayed: delivery.replayed,
         completed: delivery.completed,
         result_ok: delivery.result_ok,
@@ -768,6 +769,7 @@ mod tests {
             result_error: Some("provider failed".to_owned()),
             result_error_code: Some("user_llm_provider_gateway_error".to_owned()),
             result_error_retryable: Some(true),
+            turn_id: None,
         });
 
         assert_eq!(
@@ -796,6 +798,7 @@ mod tests {
             result_error: None,
             result_error_code: None,
             result_error_retryable: None,
+            turn_id: None,
         });
 
         let value = serde_json::to_value(response).unwrap();

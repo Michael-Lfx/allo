@@ -156,6 +156,15 @@ const fn default_replayed_without_authority() -> bool {
 pub struct SendMessageResponse {
     #[serde(deserialize_with = "crate::serde_util::deserialize_message_id")]
     pub msg_id: String,
+    /// Wire/billing turn identity for this admission. Distinct from `msg_id`
+    /// (the durable user message row). Clients must use this as lifecycle root
+    /// / `usageByTurn` key — not the user `msg_id`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::serde_util::deserialize_optional_message_id"
+    )]
+    pub turn_id: Option<String>,
     /// `true` when this response acknowledges an earlier request carrying the
     /// same Idempotency-Key. A replay never proves that a new turn started.
     #[serde(default = "default_replayed_without_authority")]
@@ -542,6 +551,7 @@ mod tests {
             serde_json::from_value(json!({ "msg_id": MESSAGE_ID_1 })).unwrap();
 
         assert_eq!(response.msg_id, MESSAGE_ID_1);
+        assert_eq!(response.turn_id, None);
         assert!(response.replayed);
         assert!(!response.completed);
         assert_eq!(response.result_ok, None);
@@ -553,6 +563,7 @@ mod tests {
     fn send_response_preserves_completed_replay_outcome() {
         let response: SendMessageResponse = serde_json::from_value(json!({
             "msg_id": MESSAGE_ID_1,
+            "turn_id": MESSAGE_ID_2,
             "replayed": true,
             "completed": true,
             "result_ok": false,
@@ -561,6 +572,7 @@ mod tests {
         }))
         .unwrap();
 
+        assert_eq!(response.turn_id.as_deref(), Some(MESSAGE_ID_2));
         assert!(response.replayed);
         assert!(response.completed);
         assert_eq!(response.result_ok, Some(false));

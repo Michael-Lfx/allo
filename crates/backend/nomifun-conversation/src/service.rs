@@ -253,6 +253,10 @@ pub struct IdempotentMessageDelivery {
     pub result_error_code: Option<String>,
     /// Whether the terminal failure is safe to retry automatically.
     pub result_error_retryable: Option<bool>,
+    /// Wire/billing root turn id (`first_turn_msg_id`). Distinct from
+    /// `message_id` (durable user row). Present on fresh public admissions;
+    /// absents on receipt replays / non-turn deliveries.
+    pub turn_id: Option<String>,
 }
 
 /// Read-only durable state of one public keyed Conversation turn.
@@ -7107,6 +7111,7 @@ impl ConversationService {
             None,
         )
         .await
+        .map(|(message_id, _turn_id)| message_id)
     }
 
     #[cfg(test)]
@@ -7132,6 +7137,7 @@ impl ConversationService {
             None,
         )
         .await
+        .map(|(message_id, _turn_id)| message_id)
     }
 
     /// Trusted at-most-once execution boundary for durable internal effects.
@@ -7399,7 +7405,8 @@ impl ConversationService {
             result_error: receipt.result_error,
             result_error_code: receipt.result_error_code,
             result_error_retryable: receipt.result_error_retryable,
-        }))
+                    turn_id: None,
+}))
     }
 
     /// Observe a public turn receipt without reconstructing its request.
@@ -7457,6 +7464,7 @@ impl ConversationService {
                     result_error: receipt.result_error,
                     result_error_code: receipt.result_error_code,
                     result_error_retryable: receipt.result_error_retryable,
+                    turn_id: None,
                 },
             )),
             status => Err(AppError::Conflict(format!(
@@ -7555,7 +7563,8 @@ impl ConversationService {
             result_error: receipt.result_error,
             result_error_code: receipt.result_error_code,
             result_error_retryable: receipt.result_error_retryable,
-        };
+                    turn_id: None,
+};
         let delivery_state = match receipt.status.as_str() {
             "accepted" => EditResubmitDeliveryState::Accepted(delivery),
             "completed" => EditResubmitDeliveryState::Completed(delivery),
@@ -7636,7 +7645,8 @@ impl ConversationService {
             result_error: receipt.result_error,
             result_error_code: receipt.result_error_code,
             result_error_retryable: receipt.result_error_retryable,
-        }))
+                    turn_id: None,
+}))
     }
 
      /// Prove that a background turn never crossed receiver-side durable
@@ -7991,6 +8001,7 @@ impl ConversationService {
                 result_error: receipt.result_error,
                 result_error_code: receipt.result_error_code,
                 result_error_retryable: receipt.result_error_retryable,
+                turn_id: None,
             });
         }
 
@@ -8222,6 +8233,7 @@ impl ConversationService {
                 result_error: receipt.result_error,
                 result_error_code: receipt.result_error_code,
                 result_error_retryable: receipt.result_error_retryable,
+                turn_id: None,
             });
         }
         {
@@ -8242,6 +8254,7 @@ impl ConversationService {
                     result_error: None,
                     result_error_code: None,
                     result_error_retryable: None,
+                    turn_id: None,
                 });
             }
             operations.insert(
@@ -8297,7 +8310,7 @@ impl ConversationService {
             return Err(error);
         }
 
-        let accepted_message_id = match self
+        let (accepted_message_id, accepted_turn_id) = match self
             .send_message_inner(
                 user_id,
                 conversation_id,
@@ -8313,7 +8326,7 @@ impl ConversationService {
             )
             .await
         {
-            Ok(message_id) => {
+            Ok((message_id, turn_id)) => {
                 // A path that only observed an already-running delivery did
                 // not take ownership of receipt completion. Do not retain an
                 // unowned guard forever; the actual owner already has its own
@@ -8325,7 +8338,7 @@ impl ConversationService {
                         guard_generation,
                     );
                 }
-                message_id
+                (message_id, turn_id)
             }
             Err(error) => {
                 if delivery_lease.durable_admitted {
@@ -8387,6 +8400,7 @@ impl ConversationService {
             result_error: None,
             result_error_code: None,
             result_error_retryable: None,
+            turn_id: accepted_turn_id,
         })
     }
 
@@ -8541,7 +8555,8 @@ impl ConversationService {
             result_error: receipt.result_error,
             result_error_code: receipt.result_error_code,
             result_error_retryable: receipt.result_error_retryable,
-        }))
+                    turn_id: None,
+}))
     }
 
     async fn send_message_inner(
@@ -8559,7 +8574,7 @@ impl ConversationService {
             oneshot::Sender<(AgentRuntimeHandle, broadcast::Receiver<AgentStreamEvent>)>,
         >,
         preloaded_skill_snapshots: Option<Vec<ResolvedSkillSnapshot>>,
-    ) -> Result<String, AppError> {
+    ) -> Result<(String, Option<String>), AppError> {
         let public_cancellable = send_authority.public_cancellable();
         // Snapshot before the first await. A stop racing this request advances
         // the epoch even if no turn handle exists yet; admission later fails
@@ -8767,7 +8782,8 @@ impl ConversationService {
             // the stable message identity lets the caller await that turn
             // instead of racing a duplicate model invocation.
             if self.runtime_summary_for(conversation_id).await.is_processing {
-                return Ok(user_msg_id);
+                // No fresh wire turn was minted on this observer path.
+                return Ok((user_msg_id, None));
             }
         }
 
@@ -9206,7 +9222,7 @@ impl ConversationService {
             if let Some(delivery) = durable_delivery.as_ref() {
                 delivery.transfer_to_stop_owner();
             }
-            return Ok(user_msg_id);
+            return Ok((user_msg_id, Some(first_turn_msg_id)));
         }
 
         self.broadcast_turn_started_with_context(
@@ -9229,7 +9245,7 @@ impl ConversationService {
             if let Some(delivery) = durable_delivery.as_ref() {
                 delivery.transfer_to_stop_owner();
             }
-            return Ok(user_msg_id);
+            return Ok((user_msg_id, Some(first_turn_msg_id)));
         }
 
         let conv_id = conversation_id.to_owned();
@@ -9266,6 +9282,9 @@ impl ConversationService {
         let user_msg_id_ret = user_msg_id.clone();
         let source_user_message_id = user_msg_id.clone();
         let stable_turn_id = first_turn_msg_id.clone();
+        // Retain a copy for the HTTP admission response — the owner task moves
+        // `stable_turn_id` into the spurred turn (billing / stream root).
+        let accepted_wire_turn_id = stable_turn_id.clone();
         let owner_turn_generation = turn_handle.turn_id();
         let owner_conversation_id = conversation_key.clone();
         #[cfg(test)]
@@ -10222,10 +10241,11 @@ impl ConversationService {
 
         info!(
             msg_id = %user_msg_id_ret,
+            turn_id = %accepted_wire_turn_id,
             elapsed_ms = now_ms().saturating_sub(send_started_at),
             "Message accepted, agent work scheduled"
         );
-        Ok(user_msg_id_ret)
+        Ok((user_msg_id_ret, Some(accepted_wire_turn_id)))
     }
 
     /// Trusted idempotent steering boundary for a previously persisted
@@ -10919,6 +10939,7 @@ impl ConversationService {
                 result_error: receipt.result_error,
                 result_error_code: receipt.result_error_code,
                 result_error_retryable: receipt.result_error_retryable,
+                turn_id: None,
             });
         }
         let steer_fence_prefix =
@@ -10972,6 +10993,7 @@ impl ConversationService {
                 result_error: receipt.result_error,
                 result_error_code: receipt.result_error_code,
                 result_error_retryable: receipt.result_error_retryable,
+                turn_id: None,
             });
         }
 
@@ -11088,6 +11110,7 @@ impl ConversationService {
             result_error: None,
             result_error_code: None,
             result_error_retryable: None,
+            turn_id: None,
         })
     }
 
@@ -11332,6 +11355,7 @@ impl ConversationService {
                 result_error: receipt.result_error,
                 result_error_code: receipt.result_error_code,
                 result_error_retryable: receipt.result_error_retryable,
+                turn_id: None,
             });
         }
         let runtime_build_lease =
@@ -11529,6 +11553,7 @@ impl ConversationService {
                 result_error: receipt.result_error,
                 result_error_code: receipt.result_error_code,
                 result_error_retryable: receipt.result_error_retryable,
+                turn_id: None,
             });
         }
 
@@ -11643,7 +11668,7 @@ impl ConversationService {
             return Err(error);
         }
 
-        let replacement_message_id = match self
+        let (replacement_message_id, replacement_turn_id) = match self
             .send_message_inner(
                 user_id,
                 conversation_id,
@@ -11659,7 +11684,7 @@ impl ConversationService {
             )
             .await
         {
-            Ok(message_id) => {
+            Ok((message_id, turn_id)) => {
                 if !delivery.receipt_was_handed_off() {
                     Self::release_durable_operation_guard(
                         &self.durable_operations_in_flight,
@@ -11667,7 +11692,7 @@ impl ConversationService {
                         delivery.guard_generation,
                     );
                 }
-                message_id
+                (message_id, turn_id)
             }
             Err(error) => {
                 self.settle_edit_resubmit_failure(
@@ -11692,6 +11717,7 @@ impl ConversationService {
             result_error: None,
             result_error_code: None,
             result_error_retryable: None,
+            turn_id: replacement_turn_id,
         })
     }
 

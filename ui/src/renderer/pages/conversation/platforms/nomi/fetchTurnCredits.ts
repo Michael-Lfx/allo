@@ -72,12 +72,21 @@ function publishTurnCredits(params: {
   turn_id: MessageId;
   usage: TurnCreditUsageData;
   conversation: TChatConversation;
+  /** Extra lookup keys (e.g. provisional user msg id while UI still seeds root=msg_id). */
+  alias_turn_ids?: Array<MessageId | string | null | undefined>;
 }): void {
   const { conversation_id, turn_id, usage, conversation } = params;
+  const aliasIds = (params.alias_turn_ids ?? [])
+    .map((id) => (id == null ? '' : String(id).trim()))
+    .filter((id) => id.length > 0 && id !== String(turn_id) && id !== usage.turnId);
+
   rememberTurnCredits(conversation_id, turn_id, usage);
   // Also index under server-echoed turnId when it differs from the wire id.
   if (usage.turnId && usage.turnId !== String(turn_id)) {
     rememberTurnCredits(conversation_id, usage.turnId, usage);
+  }
+  for (const alias of aliasIds) {
+    rememberTurnCredits(conversation_id, alias, usage);
   }
 
   emitter.emit('nomi.turn_credits.updated', {
@@ -85,6 +94,13 @@ function publishTurnCredits(params: {
     turn_id,
     usage,
   });
+  for (const alias of aliasIds) {
+    emitter.emit('nomi.turn_credits.updated', {
+      conversation_id,
+      turn_id: alias as MessageId,
+      usage,
+    });
+  }
 
   // Optimistic SWR update so remounted MessageText can read persisted credits
   // immediately — do not wait for the PATCH round-trip (first-turn race).
@@ -99,6 +115,9 @@ function publishTurnCredits(params: {
   // server echo differs from the wire billing id.
   if (wireId && wireId !== usage.turnId) {
     keyed[wireId] = usage;
+  }
+  for (const alias of aliasIds) {
+    keyed[alias] = usage;
   }
   const merged = pruneTurnCreditMap(keyed, usage.turnId || wireId);
   void mutate<TChatConversation>(
@@ -146,6 +165,10 @@ export async function fetchAndPersistTurnCredits(params: {
   turn_id: MessageId;
   /** Optional short delay so the last model call can finish billing write. */
   delayMs?: number;
+  /** Also index the result under these ids (provisional user msg id, etc.). */
+  alias_turn_ids?: Array<MessageId | string | null | undefined>;
+  /** Internal: late retries after empty first-turn billing lag. */
+  retryAttempt?: number;
 }): Promise<TurnCreditUsageData | null> {
   const turnId = String(params.turn_id).trim();
   if (!turnId || turnId.length > 64) {
@@ -205,12 +228,31 @@ export async function fetchAndPersistTurnCredits(params: {
         })),
       };
 
+      // Do not persist/publish empty usage as a terminal first-turn result —
+      // billing lag after Guid session ensure can still land later.
+      if ((usage.callCount ?? 0) === 0 && (usage.creditsConsumed ?? 0) === 0) {
+        const attempt = params.retryAttempt ?? 0;
+        if (attempt < 2) {
+          const lateDelayMs = attempt === 0 ? 5000 : 10000;
+          setTimeout(() => {
+            void fetchAndPersistTurnCredits({
+              conversation_id: params.conversation_id,
+              turn_id: params.turn_id,
+              alias_turn_ids: params.alias_turn_ids,
+              retryAttempt: attempt + 1,
+            });
+          }, lateDelayMs);
+        }
+        return usage;
+      }
+
       if (conversation) {
         publishTurnCredits({
           conversation_id: params.conversation_id,
           turn_id: params.turn_id,
           usage,
           conversation,
+          alias_turn_ids: params.alias_turn_ids,
         });
       }
 

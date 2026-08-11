@@ -304,10 +304,17 @@ export const useNomiMessage = (
       markFunnelTurnAccepted(timingKey, { conversation_type: 'nomi' });
       setActiveRequestMessageId(requestMessageId);
       activeMsgIdRef.current = requestMessageId;
-      // Flowy billing turnId == send msg_id. Establish the root immediately so
-      // stream finish is not fenced out while turn.started is still verifying
-      // (Guid first-turn handoff races this hard).
-      const resolvedTurnId = turnId ?? requestMessageId;
+      // Prefer an explicit wire turn id when the caller has one. Otherwise keep
+      // an already-established backend root: Guid first-turn often lands
+      // turn.started (wire id) before the HTTP accept returns, and overwriting
+      // that root with the user msg_id fences finish + mis-keys credit lookup.
+      const existingRoot = rootTurnIdRef.current;
+      const resolvedTurnId =
+        turnId && turnId !== requestMessageId
+          ? turnId
+          : existingRoot && existingRoot !== requestMessageId
+            ? existingRoot
+            : (turnId ?? requestMessageId);
       setActiveTurnId(resolvedTurnId);
       rootTurnIdRef.current = resolvedTurnId;
       dispatchPresentation({
@@ -529,6 +536,11 @@ export const useNomiMessage = (
             void fetchAndPersistTurnCredits({
               conversation_id,
               turn_id: creditTurnId,
+              alias_turn_ids: [
+                rootTurnIdRef.current,
+                activeMsgIdRef.current,
+                message.msg_id,
+              ],
               delayMs: 800,
             });
           }
@@ -657,14 +669,18 @@ export const useNomiMessage = (
               void processCompletedAssistantMessage(message.msg_id);
               messageBufferRef.current.delete(message.msg_id);
             }
-            // Flowy billing turnId == root turn id (msg_id at send time). Prefer
-            // the authoritative root over Finish-row msg_id when turn_id is absent.
+            // Prefer stream turn_id (wire/billing root) over Finish-row msg_id.
             const creditTurnId =
               message.turn_id ?? rootTurnIdRef.current ?? message.msg_id;
             if (creditTurnId && !readOnly) {
               void fetchAndPersistTurnCredits({
                 conversation_id,
                 turn_id: creditTurnId,
+                alias_turn_ids: [
+                  rootTurnIdRef.current,
+                  activeMsgIdRef.current,
+                  message.msg_id,
+                ],
                 // Brief delay so the last model call can finish server-side billing.
                 delayMs: 800,
               });
@@ -775,6 +791,11 @@ export const useNomiMessage = (
               void fetchAndPersistTurnCredits({
                 conversation_id,
                 turn_id: creditTurnId,
+                alias_turn_ids: [
+                  rootTurnIdRef.current,
+                  activeMsgIdRef.current,
+                  message.msg_id,
+                ],
                 delayMs: 800,
               });
             }
@@ -910,13 +931,16 @@ export const useNomiMessage = (
         completedTurnId: event.turn_id,
         awaitingBackendTurn,
       });
-      // Credits are independent of settle vs reconcile — first turn often lands
-      // here with rootTurnId still null until turn.started verifies.
+      // Credits are independent of settle vs reconcile. Guid first-turn can
+      // briefly hold rootTurnId=user msg_id while completedTurnId is the wire
+      // root — action is "ignore" for lifecycle, but event.turn_id is still the
+      // billing key and must be queried.
       const creditTurnId = event.turn_id ?? rootTurnId;
-      if (creditTurnId && !readOnly && action !== 'ignore') {
+      if (creditTurnId && !readOnly) {
         void fetchAndPersistTurnCredits({
           conversation_id,
           turn_id: creditTurnId,
+          alias_turn_ids: [rootTurnId, activeMsgIdRef.current],
           delayMs: 400,
         });
       }
