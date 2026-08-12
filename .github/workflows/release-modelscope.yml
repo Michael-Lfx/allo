@@ -131,6 +131,8 @@ jobs:
       - name: Upload Windows release
         env:
           MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
         run: |
           if (-not $env:MODELSCOPE_TOKEN) {
             throw 'MODELSCOPE_TOKEN is not configured'

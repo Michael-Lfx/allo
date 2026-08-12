@@ -225,7 +225,16 @@ def upload_file(api, local_path: Path, remote_path: str, repo: str, message: str
     print(f"  [OK] {local_path.name} -> {remote_path}")
 
 
+def configure_stdio() -> None:
+    """Windows CI consoles default to cp1252 and crash on Unicode log lines."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> None:
+    configure_stdio()
     parser = argparse.ArgumentParser(description="Upload allo Tauri release to ModelScope")
     parser.add_argument("--repo", default=DEFAULT_REPO, help=f"ModelScope repo (default: {DEFAULT_REPO})")
     parser.add_argument(
@@ -352,7 +361,7 @@ def main() -> None:
     channel_local = dist_dir / "channel.yml"
     channel_local.write_text(channel_yml, encoding="utf-8")
 
-    print(f"Release {version_tag} → ModelScope {repo}/{prefix}/channels/{channel}/")
+    print(f"Release {version_tag} -> ModelScope {repo}/{prefix}/channels/{channel}/")
     print(f"  Endpoint: {modelscope_file_url(repo, remote_latest)}")
     print(f"  Artifacts ({len(artifact_remotes)}):")
     for artifact, remote_path in artifact_remotes:
