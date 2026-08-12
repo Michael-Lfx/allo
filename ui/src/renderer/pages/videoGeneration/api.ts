@@ -22,7 +22,11 @@ import type {
   TvShowListResult,
   TvShowPublishResult,
   TvShowVideo,
+  VerticalSkillDetail,
+  VerticalSkillDraft,
+  VerticalSkillSummary,
   VimaxSession,
+  VimaxWorkflow,
   ArtifactEditResult,
   ImagePromptInfo,
 } from './types';
@@ -532,3 +536,131 @@ export async function deleteTvShow(id: number): Promise<void> {
 export async function importTvShow(id: number): Promise<SessionSummary> {
   return httpRequest<SessionSummary>('POST', `${BASE}/tv-show/${id}/import`, {});
 }
+
+function encodeSkillId(id: string): string {
+  return encodeURIComponent(id);
+}
+
+export async function listVerticalSkills(params?: {
+  mode?: VimaxWorkflow | string;
+  source?: 'builtin' | 'user' | 'hub' | string;
+}): Promise<VerticalSkillSummary[]> {
+  const query = new URLSearchParams();
+  if (params?.mode) query.set('mode', params.mode);
+  if (params?.source) query.set('source', params.source);
+  const qs = query.toString();
+  const data = await httpRequest<
+    VerticalSkillSummary[] | { skills: VerticalSkillSummary[] }
+  >('GET', `${BASE}/skills${qs ? `?${qs}` : ''}`);
+  if (Array.isArray(data)) return data;
+  return data?.skills ?? [];
+}
+
+export async function getVerticalSkill(id: string): Promise<VerticalSkillDetail> {
+  return httpRequest<VerticalSkillDetail>(
+    'GET',
+    `${BASE}/skills/${encodeSkillId(id)}`
+  );
+}
+
+export async function createVerticalSkill(
+  draft: VerticalSkillDraft
+): Promise<VerticalSkillSummary> {
+  const skill = await httpRequest<{
+    id: string;
+    name: string;
+    display_name: string;
+    description: string;
+    category?: string;
+    version?: string;
+    tags?: string[];
+    compatible_modes?: string[];
+    visibility?: string;
+    style_overlay?: string;
+    requirement_overlay?: string;
+    playbook?: string;
+  }>('POST', `${BASE}/skills`, draft);
+  const source = skill.id.includes(':') ? skill.id.split(':')[0] : 'user';
+  return {
+    id: skill.id,
+    name: skill.name,
+    display_name: skill.display_name,
+    description: skill.description,
+    category: skill.category ?? '',
+    version: skill.version ?? '1.0.0',
+    tags: skill.tags ?? [],
+    compatible_modes: (skill.compatible_modes ?? []).map(String),
+    source,
+    visibility: skill.visibility ?? 'private',
+    has_style_overlay: Boolean(skill.style_overlay?.trim()),
+    has_requirement_overlay: Boolean(
+      skill.requirement_overlay?.trim() || skill.playbook?.trim()
+    ),
+  };
+}
+
+export async function updateVerticalSkill(
+  id: string,
+  draft: VerticalSkillDraft
+): Promise<VerticalSkillSummary> {
+  return httpRequest<VerticalSkillSummary>(
+    'PUT',
+    `${BASE}/skills/${encodeSkillId(id)}`,
+    draft
+  );
+}
+
+export async function deleteVerticalSkill(id: string): Promise<void> {
+  await httpRequest<unknown>('DELETE', `${BASE}/skills/${encodeSkillId(id)}`);
+}
+
+export async function publishVerticalSkill(id: string): Promise<VerticalSkillSummary> {
+  return httpRequest<VerticalSkillSummary>(
+    'POST',
+    `${BASE}/skills/${encodeSkillId(id)}/publish`,
+    {}
+  );
+}
+
+export async function unpublishVerticalSkill(id: string): Promise<void> {
+  await httpRequest<unknown>(
+    'POST',
+    `${BASE}/skills/${encodeSkillId(id)}/unpublish`,
+    {}
+  );
+}
+
+export async function importVerticalSkill(path: string): Promise<VerticalSkillSummary> {
+  const skill = await httpRequest<{
+    id: string;
+    name: string;
+    display_name: string;
+    description: string;
+    category?: string;
+    version?: string;
+    tags?: string[];
+    compatible_modes?: string[];
+    visibility?: string;
+    style_overlay?: string;
+    requirement_overlay?: string;
+    playbook?: string;
+  }>('POST', `${BASE}/skills/import`, { path });
+  const source = skill.id.includes(':') ? skill.id.split(':')[0] : 'user';
+  return {
+    id: skill.id,
+    name: skill.name,
+    display_name: skill.display_name,
+    description: skill.description,
+    category: skill.category ?? '',
+    version: skill.version ?? '1.0.0',
+    tags: skill.tags ?? [],
+    compatible_modes: (skill.compatible_modes ?? []).map(String),
+    source,
+    visibility: skill.visibility ?? 'private',
+    has_style_overlay: Boolean(skill.style_overlay?.trim()),
+    has_requirement_overlay: Boolean(
+      skill.requirement_overlay?.trim() || skill.playbook?.trim()
+    ),
+  };
+}
+

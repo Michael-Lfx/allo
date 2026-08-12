@@ -480,6 +480,10 @@ const WorkspacePage: React.FC = () => {
         [sourceField]: trimmed,
         user_requirement: requirement.trim() || undefined,
         style: style.trim() || undefined,
+        vertical_skill_ids:
+          session?.vertical_skill_ids && session.vertical_skill_ids.length > 0
+            ? session.vertical_skill_ids
+            : undefined,
         target_duration_secs: clampDuration(targetDurationSecs),
         aspect_ratio: aspectRatio,
         resolution,

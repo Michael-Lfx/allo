@@ -118,18 +118,20 @@
     "modelRequired": "生成前需要可用的规划模型。",
     "configureModels": "前往模型中心",
     "tryExample": "试试：",
-    "skillsMenuTitle": "选择技能",
+    "skillsMenuTitle": "选择风格技能",
     "skillsMenuAria": "选择技能",
+    "modesMenuTitle": "选择 Mode",
+    "modesMenuAria": "选择 Mode",
     "canvasTitleFromSkill": "{{skill}}创作",
     "modes": {
       "idea": "一个想法",
       "script": "完整剧本",
-      "novel": "小说文本"
-    },
-    "skills": {
+      "novel": "小说文本",
       "ideaDesc": "从一句灵感扩写成完整影片",
       "scriptDesc": "按剧情结构自动拆解镜头",
-      "novelDesc": "提炼长文情节并设计分镜",
+      "novelDesc": "提炼长文情节并设计分镜"
+    },
+    "skills": {
       "cinematic": {
         "label": "电影写实",
         "desc": "纪实光影 · 叙事镜头"
@@ -173,7 +175,7 @@
       "scriptPlaceholder": "粘贴剧本，Flowy 会自动拆成可编辑镜头…",
       "novelPlaceholder": "粘贴小说片段，Flowy 会提炼剧情并设计分镜…",
       "creationPlaceholder": "描述你想创作的画面、镜头或氛围，支持 / 唤起风格技能…",
-      "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 唤起技能…"
+      "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 切换 Mode…"
     },
     "upload": {
       "aria": "上传角色参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）",
@@ -559,6 +561,52 @@
     "promptSaveFailed": "提示词保存失败",
     "savePrompt": "仅保存",
     "saveAndRegenerate": "保存并重新生成"
+  },
+  "skills": {
+    "hubTitle": "垂直 Skills",
+    "hubHint": "Mode 决定从什么原料开工；垂直 Skill 决定按哪位导演的方法拍完。可多选挂载。",
+    "menuTitle": "选择 Skill",
+    "menuAria": "选择垂直 Skill",
+    "createTitle": "创建垂直 Skill",
+    "create": "创建",
+    "backToList": "取消",
+    "mountButton": "挂载 Skill",
+    "mountedCount": "Skill · {{count}}",
+    "searchPlaceholder": "搜索技能…",
+    "import": "导入",
+    "importDesktopOnly": "导入 Skill 仅桌面端可用。",
+    "importOk": "已导入 {{name}}",
+    "empty": "暂无可用 Skill",
+    "detail": "详情",
+    "closeDetail": "关闭",
+    "publish": "发布",
+    "publishOk": "已发布到本地 Skill Hub",
+    "unpublish": "下架",
+    "unpublishOk": "已从 Hub 下架",
+    "deleteOk": "已删除",
+    "createRequired": "请填写名称与描述。",
+    "createOk": "已创建 {{name}}",
+    "createSubmit": "创建并挂载",
+    "selectedCount": "已挂载 {{count}} 个",
+    "clearSelected": "清空",
+    "cloudPublishHint": "社区发布将走云端 Skill Hub（需登录）；点「发布」先同步到本机 Hub。",
+    "tabs": {
+      "all": "推荐",
+      "builtin": "官方",
+      "hub": "Hub",
+      "user": "我的",
+      "create": "创建"
+    },
+    "fields": {
+      "name": "标识名",
+      "displayName": "显示名",
+      "description": "描述",
+      "category": "分类",
+      "modes": "兼容 Mode",
+      "requirement": "叙事 Overlay",
+      "style": "视觉 Overlay",
+      "playbook": "导演 Playbook"
+    }
   },
   "time": {
     "justNow": "刚刚",

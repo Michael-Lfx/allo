@@ -17,6 +17,7 @@ pub mod rag;
 pub mod revise;
 pub mod service;
 pub mod session;
+pub mod skills;
 pub mod video_quality;
 
 pub use creative::{
@@ -44,4 +45,8 @@ pub use service::VimaxService;
 pub use session::{
     ARCHIVE_EXTENSION, ArtifactNode, CameoManifest, CameoPhotoEntry, CameoUpdate, SessionIndex,
     SessionRecord,
+};
+pub use skills::{
+    SkillCatalog, SkillId, SkillOverlay, SkillSource, SkillVisibility, VerticalSkill,
+    VerticalSkillDraft, VerticalSkillSummary,
 };

@@ -1,0 +1,210 @@
+.menuShell {
+  display: flex;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  max-height: 320px;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.tabs {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 4px 2px;
+}
+
+.tab {
+  border: 0;
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--color-text-3);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tabActive {
+  background: rgba(var(--primary-6), 0.1);
+  color: rgb(var(--primary-6));
+}
+
+.search {
+  flex: none;
+  margin: 0 4px 2px;
+}
+
+.listScroll {
+  display: block;
+  flex: none;
+  height: 168px;
+  max-height: 168px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.skillItem {
+  align-items: flex-start;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.skillText {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.skillText strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillText small {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.checkSlot {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  place-items: center;
+  margin-top: 1px;
+  color: rgb(var(--primary-6));
+}
+
+.inlineAction {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: var(--color-text-3);
+  font-size: 10px;
+  font-style: normal;
+  cursor: pointer;
+}
+
+.inlineAction:hover {
+  color: rgb(var(--primary-6));
+  background: rgba(var(--primary-6), 0.08);
+}
+
+.loading,
+.empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  min-height: 88px;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+
+.selectedHint {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 0;
+  color: var(--color-text-3);
+  font-size: 11px;
+}
+
+.selectedHint button {
+  border: 0;
+  background: transparent;
+  color: rgb(var(--primary-6));
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.menuFooter {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+  padding: 6px 4px 2px;
+  border-top: 1px solid var(--color-border-2);
+}
+
+.footerGhost,
+.footerPrimary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 8px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.footerGhost {
+  color: var(--color-text-2);
+  background: transparent;
+}
+
+.footerGhost:hover {
+  background: var(--color-fill-2);
+}
+
+.footerPrimary {
+  color: rgb(var(--primary-6));
+  background: rgba(var(--primary-6), 0.08);
+}
+
+.footerPrimary:hover {
+  background: rgba(var(--primary-6), 0.14);
+}
+
+.cloudHint {
+  flex: none;
+  margin: 0;
+  padding: 0 6px 2px;
+  color: var(--color-text-4);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.createForm {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--color-text-2);
+  font-size: 12px;
+}
+
+.createModal :global(.arco-modal-content) {
+  border-radius: 16px;
+}

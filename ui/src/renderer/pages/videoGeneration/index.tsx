@@ -69,6 +69,8 @@ function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
   const common: PlanBody = {
     user_requirement: draft.requirement.trim() || undefined,
     style: draft.style.trim() || undefined,
+    vertical_skill_ids:
+      draft.verticalSkillIds.length > 0 ? draft.verticalSkillIds : undefined,
     target_duration_secs: clampDuration(
       draft.preferences.targetDurationSecs,
       DURATION_MIN_SECS,

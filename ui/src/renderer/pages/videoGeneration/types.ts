@@ -50,6 +50,8 @@ export interface VimaxSession extends SessionSummary {
   resolution?: string | null;
   /** Output fps (Seedance fixed at 24). */
   fps?: number | null;
+  /** Source-qualified vertical skill ids attached at plan time. */
+  vertical_skill_ids?: string[] | null;
   /** Relative or absolute URL of the finished video when available. */
   final_video?: string | null;
   /** Relative path of film poster image (display-only). */
@@ -123,6 +125,45 @@ export interface CreateSessionBody {
   title?: string;
 }
 
+/** Vertical director skill summary from `GET /api/vimax/skills`. */
+export interface VerticalSkillSummary {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  category: string;
+  version: string;
+  tags: string[];
+  compatible_modes: string[];
+  source: 'builtin' | 'user' | 'hub' | string;
+  visibility: string;
+  has_style_overlay: boolean;
+  has_requirement_overlay: boolean;
+}
+
+export interface VerticalSkillDetail {
+  skill: VerticalSkillSummary & {
+    requirement_overlay?: string;
+    style_overlay?: string;
+    playbook?: string;
+    dir?: string;
+  };
+  manifest: string;
+}
+
+export interface VerticalSkillDraft {
+  name: string;
+  display_name?: string;
+  description: string;
+  category?: string;
+  version?: string;
+  tags?: string[];
+  compatible_modes?: string[];
+  requirement_overlay?: string;
+  style_overlay?: string;
+  playbook?: string;
+}
+
 export interface PlanBody {
   idea?: string;
   script?: string;
@@ -140,6 +181,8 @@ export interface PlanBody {
   resolution?: string;
   /** Output fps. */
   fps?: number;
+  /** Source-qualified vertical skill ids (`builtin:luxury-tvc`, `user:…`). */
+  vertical_skill_ids?: string[];
 }
 
 /** Server-side Cameo photo metadata (`GET/POST /api/vimax/sessions/:id/cameos`). */

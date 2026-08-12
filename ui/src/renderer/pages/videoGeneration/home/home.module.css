@@ -493,6 +493,16 @@
   max-width: min(100%, 220px);
 }
 
+.skillPopover {
+  max-width: 380px !important;
+  padding: 4px !important;
+}
+
+.skillPopover :global(.arco-popover-content) {
+  max-width: 100%;
+  overflow: hidden;
+}
+
 .toolbarLabel {
   overflow: hidden;
   text-overflow: ellipsis;

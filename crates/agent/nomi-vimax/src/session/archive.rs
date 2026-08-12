@@ -420,6 +420,7 @@ mod tests {
             novel_text: String::new(),
             user_requirement: String::new(),
             style: "cinematic".into(),
+            vertical_skill_ids: Vec::new(),
             llm_model: String::new(),
             image_model: String::new(),
             video_model: String::new(),

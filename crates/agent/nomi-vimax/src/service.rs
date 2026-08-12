@@ -21,6 +21,7 @@ use crate::session::{
     ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, apply_status_to_record,
     cameo,
 };
+use crate::skills::{SkillCatalog, VerticalSkillDraft, VerticalSkillSummary};
 
 fn first_nonempty<'a>(candidates: impl IntoIterator<Item = Option<&'a str>>) -> String {
     for c in candidates {
@@ -43,6 +44,7 @@ pub struct VimaxService {
     #[allow(dead_code)]
     data_dir: PathBuf,
     index: SessionIndex,
+    skills: SkillCatalog,
     flowy: Mutex<Option<FlowyVimaxServices>>,
     /// Sync mutex so progress callbacks never drop updates via `try_lock`.
     statuses: StdMutex<HashMap<String, RenderStatus>>,
@@ -54,6 +56,7 @@ impl VimaxService {
         Ok(Arc::new(Self {
             data_dir: data_dir.to_path_buf(),
             index: SessionIndex::open(data_dir)?,
+            skills: SkillCatalog::open(data_dir)?,
             flowy: Mutex::new(flowy),
             statuses: StdMutex::new(HashMap::new()),
             cancels: Mutex::new(HashMap::new()),
@@ -79,6 +82,62 @@ impl VimaxService {
 
     pub fn get_session(&self, id: &str) -> VimaxResult<SessionRecord> {
         self.index.get(id)
+    }
+
+    pub fn list_vertical_skills(
+        &self,
+        mode: Option<WorkflowKind>,
+        source: Option<crate::skills::SkillSource>,
+    ) -> VimaxResult<Vec<VerticalSkillSummary>> {
+        self.skills.list(mode, source)
+    }
+
+    pub fn get_vertical_skill(
+        &self,
+        id: &str,
+    ) -> VimaxResult<(crate::skills::VerticalSkill, String)> {
+        let skill_id = crate::skills::SkillId::parse(id)
+            .ok_or_else(|| VimaxError::InvalidParams(format!("invalid skill id: {id}")))?;
+        let skill = self.skills.get(&skill_id)?;
+        let manifest = self.skills.read_manifest(&skill_id)?;
+        Ok((skill, manifest))
+    }
+
+    pub fn create_vertical_skill(
+        &self,
+        draft: VerticalSkillDraft,
+    ) -> VimaxResult<crate::skills::VerticalSkill> {
+        self.skills.create_user_skill(&draft)
+    }
+
+    pub fn update_vertical_skill(
+        &self,
+        name: &str,
+        draft: VerticalSkillDraft,
+    ) -> VimaxResult<crate::skills::VerticalSkill> {
+        self.skills.update_user_skill(name, &draft)
+    }
+
+    pub fn delete_vertical_skill(&self, name: &str) -> VimaxResult<()> {
+        self.skills.delete_user_skill(name)
+    }
+
+    pub fn publish_vertical_skill(
+        &self,
+        name: &str,
+    ) -> VimaxResult<crate::skills::VerticalSkill> {
+        self.skills.publish_user_skill(name)
+    }
+
+    pub fn unpublish_vertical_skill(&self, name: &str) -> VimaxResult<()> {
+        self.skills.unpublish_skill(name)
+    }
+
+    pub fn import_vertical_skill(
+        &self,
+        path: &Path,
+    ) -> VimaxResult<crate::skills::VerticalSkill> {
+        self.skills.import_skill_dir(path)
     }
 
     pub async fn status(&self, id: &str) -> VimaxResult<RenderStatus> {
@@ -301,6 +360,7 @@ impl VimaxService {
         novel_text: Option<String>,
         user_requirement: Option<String>,
         style: Option<String>,
+        vertical_skill_ids: Option<Vec<String>>,
         llm_model: Option<String>,
         image_model: Option<String>,
         video_model: Option<String>,
@@ -328,6 +388,7 @@ impl VimaxService {
                     novel_text,
                     user_requirement,
                     style,
+                    vertical_skill_ids,
                     llm_model,
                     image_model,
                     video_model,
@@ -682,6 +743,7 @@ impl VimaxService {
         novel_text: Option<String>,
         user_requirement: Option<String>,
         style: Option<String>,
+        vertical_skill_ids: Option<Vec<String>>,
         llm_model: Option<String>,
         image_model: Option<String>,
         video_model: Option<String>,
@@ -709,6 +771,13 @@ impl VimaxService {
             }
             if let Some(v) = &style {
                 r.style = v.clone();
+            }
+            if let Some(ids) = &vertical_skill_ids {
+                r.vertical_skill_ids = ids
+                    .iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
             }
             if let Some(v) = &llm_model {
                 r.llm_model = v.trim().to_string();
@@ -820,8 +889,27 @@ impl VimaxService {
             record.novel_text.as_str(),
             record.user_requirement.as_str(),
         ];
-        let req_base = crate::planning::with_language_lock(
+        // Vertical skills inject at plan-time only — do not overwrite the user's raw requirement.
+        let skill_overlay = self.skills.compose_for_plan(
+            record.workflow,
+            &record.vertical_skill_ids,
             &record.user_requirement,
+            &record.style,
+        )?;
+        if !skill_overlay.applied_skill_ids.is_empty() {
+            let _ = crate::session::write_text_artifact(
+                &work.join("vertical_skills.txt"),
+                &skill_overlay.applied_skill_ids.join("\n"),
+            )
+            .await;
+            let _ = crate::session::write_text_artifact(
+                &work.join("vertical_skill_overlay.txt"),
+                &skill_overlay.user_requirement,
+            )
+            .await;
+        }
+        let req_base = crate::planning::with_language_lock(
+            &skill_overlay.user_requirement,
             &lang_sources,
         );
         let req = match record.workflow {
@@ -845,14 +933,18 @@ impl VimaxService {
                 .update_fields(id, |r| r.target_duration_secs = target_secs);
             // Local copy used below stays consistent for logging / cover.
         }
-        let style_s = crate::planning::resolve_visual_style(if record.style.is_empty() {
-            ""
+        let style_s = crate::planning::resolve_visual_style(if skill_overlay.style.is_empty() {
+            if record.style.is_empty() {
+                ""
+            } else {
+                record.style.as_str()
+            }
         } else {
-            record.style.as_str()
+            skill_overlay.style.as_str()
         });
         let _ = crate::session::write_text_artifact(&work.join("style.txt"), &style_s).await;
-        // Keep session field in sync when client omitted style.
-        if record.style.is_empty() {
+        // Keep session field in sync when client omitted style (store base style, not overlays).
+        if record.style.is_empty() && skill_overlay.style.is_empty() {
             let style_persist = style_s.clone();
             let _ = self
                 .index
