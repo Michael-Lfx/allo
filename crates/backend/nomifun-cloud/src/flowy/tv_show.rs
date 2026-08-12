@@ -89,7 +89,7 @@ impl FlowyApiClient {
         self.delete_no_data(&path, Some(session)).await
     }
 
-    async fn delete_data<T: serde::de::DeserializeOwned>(
+    pub(super) async fn delete_data<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
         session: Option<&ServerSession>,
@@ -98,7 +98,7 @@ impl FlowyApiClient {
         env.into_data()
     }
 
-    async fn delete_no_data(
+    pub(super) async fn delete_no_data(
         &self,
         path: &str,
         session: Option<&ServerSession>,
@@ -107,7 +107,7 @@ impl FlowyApiClient {
         env.ensure_ok_no_data()
     }
 
-    async fn delete_envelope(
+    pub(super) async fn delete_envelope(
         &self,
         path: &str,
         session: Option<&ServerSession>,

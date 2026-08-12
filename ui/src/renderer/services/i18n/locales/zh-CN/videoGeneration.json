@@ -583,6 +583,17 @@
     "closeDetail": "关闭",
     "publish": "发布",
     "publishOk": "已发布到本地 Skill Hub",
+    "publishCloud": "发布到社区",
+    "publishLocal": "仅本机",
+    "cloudPublishOk": "已提交社区审核（{{status}}）",
+    "createAndPublish": "创建并发布到社区",
+    "createAndPublishOk": "已创建并提交社区审核（{{status}}）",
+    "createPublishing": "发布中…",
+    "install": "安装",
+    "installOk": "已安装 {{name}}",
+    "useInstalled": "选用",
+    "alreadyInstalled": "已安装，已加入选用",
+    "cloudEmpty": "社区暂无已上架 Skill",
     "unpublish": "下架",
     "unpublishOk": "已从 Hub 下架",
     "deleteOk": "已删除",
@@ -593,7 +604,27 @@
     "createSaving": "创建中…",
     "selectedCount": "已选 {{count}} 个",
     "clearSelected": "清空",
-    "cloudPublishHint": "社区发布将走云端 Skill Hub（需登录）；点「发布」先同步到本机 Hub。",
+    "cloudPublishHint": "自己创建的 Skill 在「我的」；上架状态会显示审核中 / 已上架 / 已下架。",
+    "emptyMine": "还没有自己的 Skill，点下方创建",
+    "ownSkillInMine": "这是你发布的 Skill，请到「我的」中查看与选用",
+    "useOwnFromHub": "已选用你本地的同名 Skill",
+    "syncMine": "同步本地",
+    "republishCloud": "更新发布",
+    "relistCloud": "重新上架",
+    "updatePending": "更新审核",
+    "rejected": "未通过",
+    "cloudStatus": {
+      "local": "仅本地",
+      "pending": "审核中",
+      "published": "已上架",
+      "offline": "已下架",
+      "deleted": "已删除"
+    },
+    "authRequired": {
+      "publish": "发布到社区需要先登录云端账号",
+      "desc": "浏览与安装社区 Skill 需要登录云端账号。",
+      "login": "去登录"
+    },
     "insertTemplate": "插入模板",
     "uploadMd": "上传 MD 文件",
     "uploadCover": "上传封面图片",
@@ -618,7 +649,16 @@
     "source": {
       "user": "我的",
       "hub": "Hub",
-      "builtin": "官方"
+      "builtin": "官方",
+      "cloud": "社区",
+      "minePublished": "我发布的"
+    },
+    "categories": {
+      "shortDrama": "短漫剧",
+      "film": "电影",
+      "advertising": "商业广告",
+      "creativeSocial": "创意/社媒玩法",
+      "musicMv": "音乐 MV"
     },
     "tabs": {
       "all": "推荐",

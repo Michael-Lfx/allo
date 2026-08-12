@@ -140,6 +140,22 @@ impl VimaxService {
         self.skills.import_skill_dir(path)
     }
 
+    pub fn import_vertical_skill_package(
+        &self,
+        path: &Path,
+        cloud_id: Option<i64>,
+        cloud_version: Option<&str>,
+    ) -> VimaxResult<crate::skills::VerticalSkill> {
+        self.skills
+            .import_skill_package(path, cloud_id, cloud_version)
+    }
+
+    pub fn vertical_skill_dir(&self, id: &str) -> VimaxResult<PathBuf> {
+        let skill_id = crate::skills::SkillId::parse(id)
+            .ok_or_else(|| VimaxError::InvalidParams(format!("invalid skill id: {id}")))?;
+        self.skills.skill_dir(&skill_id)
+    }
+
     pub async fn status(&self, id: &str) -> VimaxResult<RenderStatus> {
         let record = self.index.get(id)?;
         let working_abs = self

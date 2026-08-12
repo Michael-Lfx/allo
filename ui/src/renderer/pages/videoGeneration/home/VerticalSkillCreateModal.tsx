@@ -3,13 +3,24 @@
  * https://www.liblib.tv/skill/create
  */
 import React, { useMemo, useRef, useState } from 'react';
-import { Input, Modal } from '@arco-design/web-react';
+import { Input, Modal, Select } from '@arco-design/web-react';
 import { CloseSmall, Upload } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
+import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
-import { createVerticalSkill } from '../api';
+import { createVerticalSkill, publishVerticalSkillToCloud } from '../api';
 import type { VerticalSkillDraft } from '../types';
 import styles from './verticalSkillHub.module.css';
+
+/** Cloud Skill Hub categories — must match server enum. */
+const SKILL_HUB_CATEGORIES = [
+  { value: 'short-drama', labelKey: 'shortDrama', defaultLabel: '短漫剧' },
+  { value: 'film', labelKey: 'film', defaultLabel: '电影' },
+  { value: 'advertising', labelKey: 'advertising', defaultLabel: '商业广告' },
+  { value: 'creative-social', labelKey: 'creativeSocial', defaultLabel: '创意/社媒玩法' },
+  { value: 'music-mv', labelKey: 'musicMv', defaultLabel: '音乐 MV' },
+] as const;
 
 const PLAYBOOK_TEMPLATE = `## 做什么
 （一句话说明用途）例：把一句话故事想法做成一条短漫剧成片
@@ -33,6 +44,7 @@ const COVER_MAX_BYTES = 5 * 1024 * 1024;
 type CreateFormState = {
   display_name: string;
   description: string;
+  category: string;
   use_scenario: string;
   how_to_use: string;
   output: string;
@@ -44,6 +56,7 @@ type CreateFormState = {
 const EMPTY_FORM: CreateFormState = {
   display_name: '',
   description: '',
+  category: 'creative-social',
   use_scenario: '',
   how_to_use: '',
   output: '',
@@ -116,6 +129,8 @@ const VerticalSkillCreateModal: React.FC<VerticalSkillCreateModalProps> = ({
   onCreated,
 }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { status: cloudStatus } = useCloudAuth();
   const [message, messageHolder] = useArcoMessage();
   const [form, setForm] = useState<CreateFormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -190,7 +205,7 @@ const VerticalSkillCreateModal: React.FC<VerticalSkillCreateModalProps> = ({
     }
   };
 
-  const handleCreate = async () => {
+  const handleCreate = async (mode: 'local' | 'cloud') => {
     const displayName = form.display_name.trim();
     if (!displayName) {
       message.warning(
@@ -204,6 +219,14 @@ const VerticalSkillCreateModal: React.FC<VerticalSkillCreateModalProps> = ({
       message.warning(
         t('videoGeneration.skills.createSkillErrDescription', {
           defaultValue: '请输入一句话介绍',
+        })
+      );
+      return;
+    }
+    if (!form.category.trim()) {
+      message.warning(
+        t('videoGeneration.skills.createSkillErrCategory', {
+          defaultValue: '请选择类型',
         })
       );
       return;
@@ -241,29 +264,50 @@ const VerticalSkillCreateModal: React.FC<VerticalSkillCreateModalProps> = ({
       return;
     }
 
+    const coverRaw = form.cover_url.trim();
+    // Avoid bloating SKILL.md with base64; pass data URLs only to cloud publish.
+    const coverForDraft =
+      coverRaw.startsWith('http://') || coverRaw.startsWith('https://')
+        ? coverRaw
+        : undefined;
+
     const draft: VerticalSkillDraft = {
       name: inferredName,
       display_name: displayName,
       description: form.description.trim(),
+      category: form.category.trim(),
       version: '1.0.0',
       tags: [],
       compatible_modes: [],
       use_scenario: form.use_scenario.trim(),
       how_to_use: form.how_to_use.trim(),
       output: form.output.trim(),
-      cover_url: form.cover_url.trim() || undefined,
+      cover_url: coverForDraft,
       playbook: composePlaybook(form),
     };
 
     setSaving(true);
     try {
       const created = await createVerticalSkill(draft);
-      message.success(
-        t('videoGeneration.skills.createOk', {
-          name: created.display_name || created.name,
-          defaultValue: '已创建 {{name}}',
-        })
-      );
+      if (mode === 'cloud') {
+        const result = await publishVerticalSkillToCloud(created.id, {
+          coverUrl: coverRaw || undefined,
+        });
+        message.success(
+          t('videoGeneration.skills.createAndPublishOk', {
+            name: created.display_name || created.name,
+            status: result.status,
+            defaultValue: '已创建并提交社区审核（{{status}}）',
+          })
+        );
+      } else {
+        message.success(
+          t('videoGeneration.skills.createOk', {
+            name: created.display_name || created.name,
+            defaultValue: '已创建 {{name}}',
+          })
+        );
+      }
       reset();
       onCreated(created.id);
       onClose();
@@ -272,6 +316,23 @@ const VerticalSkillCreateModal: React.FC<VerticalSkillCreateModalProps> = ({
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleCreateLocal = () => {
+    void handleCreate('local');
+  };
+
+  const handleCreateAndPublish = () => {
+    if (cloudStatus !== 'authenticated') {
+      message.warning(
+        t('videoGeneration.skills.authRequired.publish', {
+          defaultValue: '发布到社区需要先登录云端账号',
+        })
+      );
+      navigate('/cloud-login');
+      return;
+    }
+    void handleCreate('cloud');
   };
 
   return (
@@ -300,18 +361,34 @@ const VerticalSkillCreateModal: React.FC<VerticalSkillCreateModalProps> = ({
             >
               {t('videoGeneration.skills.backToList', { defaultValue: '取消' })}
             </button>
-            <button
-              type='button'
-              className={styles.createFooterSubmit}
-              disabled={saving}
-              onClick={() => void handleCreate()}
-            >
-              {saving
-                ? t('videoGeneration.skills.createSaving', { defaultValue: '创建中…' })
-                : t('videoGeneration.skills.createSubmit', {
-                    defaultValue: '创建并选用',
-                  })}
-            </button>
+            <div className={styles.createFooterActions}>
+              <button
+                type='button'
+                className={styles.createFooterSecondary}
+                disabled={saving}
+                onClick={handleCreateLocal}
+              >
+                {saving
+                  ? t('videoGeneration.skills.createSaving', { defaultValue: '创建中…' })
+                  : t('videoGeneration.skills.createSubmit', {
+                      defaultValue: '创建并选用',
+                    })}
+              </button>
+              <button
+                type='button'
+                className={styles.createFooterSubmit}
+                disabled={saving}
+                onClick={handleCreateAndPublish}
+              >
+                {saving
+                  ? t('videoGeneration.skills.createPublishing', {
+                      defaultValue: '发布中…',
+                    })
+                  : t('videoGeneration.skills.createAndPublish', {
+                      defaultValue: '创建并发布到社区',
+                    })}
+              </button>
+            </div>
           </div>
         }
       >
@@ -366,6 +443,35 @@ const VerticalSkillCreateModal: React.FC<VerticalSkillCreateModalProps> = ({
                   setForm((current) => ({ ...current, description: value }))
                 }
               />
+            </label>
+
+            <label className={styles.field}>
+              <span>
+                {t('videoGeneration.skills.fields.resultType', {
+                  defaultValue: '选择类型',
+                })}
+                <em className={styles.fieldRequired}>*</em>
+              </span>
+              <Select
+                value={form.category}
+                placeholder={t('videoGeneration.skills.placeholders.category', {
+                  defaultValue: '请选择类型',
+                })}
+                onChange={(value) =>
+                  setForm((current) => ({
+                    ...current,
+                    category: typeof value === 'string' ? value : 'creative-social',
+                  }))
+                }
+              >
+                {SKILL_HUB_CATEGORIES.map((item) => (
+                  <Select.Option key={item.value} value={item.value}>
+                    {t(`videoGeneration.skills.categories.${item.labelKey}`, {
+                      defaultValue: item.defaultLabel,
+                    })}
+                  </Select.Option>
+                ))}
+              </Select>
             </label>
 
             <div className={styles.field}>

@@ -47,6 +47,6 @@ pub use session::{
     SessionRecord,
 };
 pub use skills::{
-    SkillCatalog, SkillId, SkillOverlay, SkillSource, SkillVisibility, VerticalSkill,
-    VerticalSkillDraft, VerticalSkillSummary,
+    pack_skill_dir, SkillCatalog, SkillId, SkillOverlay, SkillSource, SkillVisibility,
+    VerticalSkill, VerticalSkillDraft, VerticalSkillSummary,
 };

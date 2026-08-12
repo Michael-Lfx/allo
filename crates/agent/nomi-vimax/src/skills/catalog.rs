@@ -334,6 +334,36 @@ impl SkillCatalog {
         load_skill_dir(&dest, SkillSource::User)
     }
 
+    /// Import a packed `.vimaxskill` / `.zip` into the user catalog and stamp cloud provenance.
+    pub fn import_skill_package(
+        &self,
+        package_path: &Path,
+        cloud_id: Option<i64>,
+        cloud_version: Option<&str>,
+    ) -> VimaxResult<VerticalSkill> {
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let staging = self
+            .user_dir()
+            .join(format!(".import-{}", uuid::Uuid::new_v4().simple()));
+        let skill_root = super::package::unpack_skill_package(package_path, &staging)?;
+        let loaded = load_skill_dir(&skill_root, SkillSource::User)?;
+        let dest = self.user_dir().join(&loaded.name);
+        if dest.exists() {
+            std::fs::remove_dir_all(&dest)?;
+        }
+        copy_dir_recursive(&skill_root, &dest)?;
+        let _ = std::fs::remove_dir_all(&staging);
+
+        if let Some(id) = cloud_id {
+            let version = cloud_version.unwrap_or(&loaded.version);
+            let manifest_path = dest.join(SKILL_MANIFEST);
+            let md = std::fs::read_to_string(&manifest_path)?;
+            let patched = super::package::patch_cloud_provenance(&md, id, version);
+            std::fs::write(manifest_path, patched)?;
+        }
+        load_skill_dir(&dest, SkillSource::User)
+    }
+
     /// Export skill directory path for packaging / sharing.
     pub fn skill_dir(&self, id: &SkillId) -> VimaxResult<PathBuf> {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());

@@ -135,6 +135,32 @@
   letter-spacing: 0.02em;
 }
 
+.statusLocal {
+  color: var(--color-text-3);
+}
+
+.statusPending {
+  color: #b45309;
+}
+
+.statusPublished {
+  color: #047857;
+}
+
+.statusOffline {
+  color: var(--color-text-4);
+}
+
+.rejectHint {
+  flex: none;
+  max-width: 72px;
+  overflow: hidden;
+  color: #b91c1c;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .checkSlot {
   display: grid;
   width: 16px;
@@ -162,6 +188,48 @@
 .inlineAction:hover {
   color: rgb(var(--primary-6));
   background: rgba(var(--primary-6), 0.08);
+}
+
+.actionStack {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.inlineActionMuted {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 7px;
+  color: var(--color-text-4);
+  font-size: 10px;
+  font-style: normal;
+  cursor: pointer;
+}
+
+.inlineActionMuted:hover {
+  color: var(--color-text-2);
+  background: var(--color-fill-2);
+}
+
+.authGate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 88px;
+  padding: 12px;
+  text-align: center;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+
+.authGate p {
+  margin: 0;
+  line-height: 1.45;
 }
 
 .loading,
@@ -477,11 +545,19 @@
 .createFooter {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.createFooterActions {
+  display: flex;
+  align-items: center;
   gap: 4px;
 }
 
 .createFooterCancel,
+.createFooterSecondary,
 .createFooterSubmit {
   display: inline-flex;
   min-height: 32px;
@@ -507,6 +583,15 @@
   color: var(--color-text-1);
 }
 
+.createFooterSecondary {
+  color: var(--color-text-2);
+  font-weight: 500;
+}
+
+.createFooterSecondary:hover:not(:disabled) {
+  color: var(--color-text-1);
+}
+
 .createFooterSubmit {
   color: var(--color-text-1);
   font-weight: 600;
@@ -518,6 +603,7 @@
 }
 
 .createFooterCancel:disabled,
+.createFooterSecondary:disabled,
 .createFooterSubmit:disabled {
   cursor: not-allowed;
   opacity: 0.45;
