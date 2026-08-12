@@ -17,17 +17,20 @@ describe('local-folder document sync wiring', () => {
     expect(bridgeSource.includes('/local-sync')).toBe(true);
   });
 
-  test('keeps initial sync in the backend creation transaction', () => {
+  test('leaves parsing out of the create dialog and starts it from the backend route', () => {
     expect(createStudioSource.includes("sourceType === 'local'")).toBe(true);
     expect(createStudioSource.includes('syncLocalFolder.invoke')).toBe(false);
     expect(quickCaptureSource.includes('syncLocalFolder.invoke')).toBe(false);
     expect(emptyStateSource.includes('syncLocalFolder.invoke')).toBe(false);
   });
 
-  test('shows a manual sync control and per-file errors on local knowledge bases', () => {
+  test('shows local-folder progress above the document tree and retains a manual sync control', () => {
     expect(detailSource.includes('getLocalSync')).toBe(true);
     expect(detailSource.includes('handleSyncLocalFolder')).toBe(true);
+    expect(detailSource.includes("localSync.state === 'syncing'")).toBe(true);
+    expect(detailSource.includes('localSync.processed')).toBe(true);
     expect(detailSource.includes('localSync.errors.map')).toBe(true);
+    expect(detailSource.includes("{/* File tree */}")).toBe(true);
   });
 
   test('keeps local-folder wording and sync status available in both locales', () => {

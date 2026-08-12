@@ -161,7 +161,13 @@ async fn create_base(
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
     let mut info = state
         .service
-        .create_base(&req.name, &req.description, req.root_path.as_deref(), req.source)
+        .clone()
+        .create_base_with_background_local_sync(
+            &req.name,
+            &req.description,
+            req.root_path.as_deref(),
+            req.source,
+        )
         .await?;
     // Persist tags (if provided) as a post-creation step — avoids changing the
     // 4-param `create_base` signature used by 50+ callers.
@@ -356,7 +362,8 @@ async fn sync_local_folder(
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .sync_local_folder(knowledge_base_id.as_str())
+            .clone()
+            .start_local_folder_sync(knowledge_base_id.as_str())
             .await?,
     )))
 }
@@ -1040,22 +1047,8 @@ mod tests {
         let created = json_body(app.clone().oneshot(create).await.unwrap()).await;
         let kb_id = created["data"]["knowledge_base_id"].as_str().unwrap();
 
-        let before = json_body(
-            app.clone()
-                .oneshot(
-                    Request::get(format!("/api/knowledge/bases/{kb_id}/local-sync"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(before["data"]["state"], "ready", "{before}");
-        assert_eq!(before["data"]["sourceAvailable"], true, "{before}");
-
-        let synced = json_body(
-            app.oneshot(
+        let started = json_body(
+            app.clone().oneshot(
                 Request::post(format!("/api/knowledge/bases/{kb_id}/local-sync"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1064,10 +1057,34 @@ mod tests {
             .unwrap(),
         )
         .await;
-        assert_eq!(synced["data"]["state"], "ready", "{synced}");
-        assert_eq!(synced["data"]["scanned"], 1, "{synced}");
-        assert_eq!(synced["data"]["written"], 1, "{synced}");
-        assert_eq!(synced["data"]["sourceAvailable"], true, "{synced}");
+        assert!(
+            matches!(started["data"]["state"].as_str(), Some("syncing" | "ready")),
+            "{started}"
+        );
+
+        let mut completed = started;
+        for _ in 0..40 {
+            if completed["data"]["state"] != "syncing" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            completed = json_body(
+                app.clone()
+                    .oneshot(
+                        Request::get(format!("/api/knowledge/bases/{kb_id}/local-sync"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap(),
+            )
+            .await;
+        }
+        assert_eq!(completed["data"]["state"], "ready", "{completed}");
+        assert_eq!(completed["data"]["scanned"], 1, "{completed}");
+        assert_eq!(completed["data"]["processed"], 1, "{completed}");
+        assert_eq!(completed["data"]["written"], 1, "{completed}");
+        assert_eq!(completed["data"]["sourceAvailable"], true, "{completed}");
     }
 
     /// An unknown binding kind stays a 400 — `workpath` is now accepted,

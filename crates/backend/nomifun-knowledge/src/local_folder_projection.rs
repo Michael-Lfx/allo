@@ -88,6 +88,17 @@ struct SourceDocument {
     modified_at: Option<TimestampMs>,
 }
 
+/// An in-flight local-folder materialization update. It intentionally carries
+/// only counters: detailed errors are persisted with the finished manifest.
+#[derive(Debug, Clone, Copy)]
+pub struct LocalFolderSyncProgress {
+    pub scanned: u64,
+    pub processed: u64,
+    pub written: u64,
+    pub conflicts: u64,
+    pub failed: u64,
+}
+
 #[derive(Debug, Default)]
 struct OverrideEntries {
     directories: BTreeSet<String>,
@@ -138,6 +149,20 @@ pub fn sync(
     kb_id: &str,
     source_root: &Path,
 ) -> Result<KnowledgeLocalSyncSummary, AppError> {
+    sync_with_progress(data_dir, kb_id, source_root, |_| {})
+}
+
+/// Materialize an external folder and report real conversion progress after
+/// the initial source scan and after each source document is handled.
+pub fn sync_with_progress<F>(
+    data_dir: &Path,
+    kb_id: &str,
+    source_root: &Path,
+    mut on_progress: F,
+) -> Result<KnowledgeLocalSyncSummary, AppError>
+where
+    F: FnMut(LocalFolderSyncProgress),
+{
     if !source_root.is_dir() {
         return Ok(KnowledgeLocalSyncSummary {
             state: KnowledgeLocalSyncState::Unavailable,
@@ -145,6 +170,7 @@ pub fn sync(
                 .ok()
                 .and_then(|manifest| manifest.last_synced_at),
             scanned: 0,
+            processed: 0,
             written: 0,
             conflicts: 0,
             failed: 0,
@@ -162,6 +188,7 @@ pub fn sync(
     let tombstones = read_tombstones(&projection.tombstones).unwrap_or_default();
     let source_directories = scan_source_directories(source_root)?;
     let docs = scan_source_documents(source_root)?;
+    let scanned = docs.len() as u64;
     let mut by_target: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, document) in docs.iter().enumerate() {
         by_target
@@ -187,6 +214,14 @@ pub fn sync(
     let mut written = 0u64;
     let mut conflicts = 0u64;
     let mut failed = 0u64;
+    let mut processed = 0u64;
+    on_progress(LocalFolderSyncProgress {
+        scanned,
+        processed,
+        written,
+        conflicts,
+        failed,
+    });
 
     for document in &docs {
         let target = document.target_path.clone();
@@ -203,6 +238,14 @@ pub fn sync(
             record_error(&mut manifest, &entry);
             manifest.entries.insert(document.source_path.clone(), entry);
             conflicts += 1;
+            processed += 1;
+            on_progress(LocalFolderSyncProgress {
+                scanned,
+                processed,
+                written,
+                conflicts,
+                failed,
+            });
             continue;
         }
         if tombstoned {
@@ -210,6 +253,14 @@ pub fn sync(
                 expected_view_paths.insert(target.clone());
                 copy_file(&override_path, &view_path)?;
             }
+            processed += 1;
+            on_progress(LocalFolderSyncProgress {
+                scanned,
+                processed,
+                written,
+                conflicts,
+                failed,
+            });
             continue;
         }
         expected_view_paths.insert(target.clone());
@@ -221,6 +272,14 @@ pub fn sync(
                 manifest_entry(document, ManifestStatus::Written, Some("using app-managed override".into())),
             );
             written += 1;
+            processed += 1;
+            on_progress(LocalFolderSyncProgress {
+                scanned,
+                processed,
+                written,
+                conflicts,
+                failed,
+            });
             continue;
         }
 
@@ -240,6 +299,14 @@ pub fn sync(
             let _ = std::fs::remove_file(&view_path);
         }
         manifest.entries.insert(document.source_path.clone(), entry);
+        processed += 1;
+        on_progress(LocalFolderSyncProgress {
+            scanned,
+            processed,
+            written,
+            conflicts,
+            failed,
+        });
     }
 
     // Overrides may be app-created documents with no corresponding source
@@ -269,6 +336,7 @@ pub fn sync(
     result.written = written;
     result.conflicts = conflicts;
     result.failed = failed;
+    result.processed = processed;
     result.state = if failed > 0 || conflicts > 0 {
         KnowledgeLocalSyncState::Partial
     } else {
@@ -456,6 +524,7 @@ fn summary_from_manifest(manifest: &ProjectionManifest, source_available: bool) 
         state,
         last_synced_at: manifest.last_synced_at,
         scanned: manifest.scanned,
+        processed: manifest.scanned,
         written,
         conflicts,
         failed,
@@ -817,6 +886,23 @@ mod tests {
         assert!(!projection.view.join("tables/people.csv").exists());
         assert!(!projection.view.join("ignored.txt").exists());
         assert_eq!(file_snapshot(&source_root), before, "sync must not alter the external source folder");
+    }
+
+    #[test]
+    fn sync_progress_reports_the_scan_then_each_completed_document() {
+        let (_temp, data_dir, source_root) = fixture();
+        write_source(&source_root, "guide.md", "# Guide");
+        write_source(&source_root, "people.csv", "name,score\nAlice,10\n");
+        let mut updates = Vec::new();
+
+        let result = sync_with_progress(&data_dir, "kb", &source_root, |progress| {
+            updates.push((progress.scanned, progress.processed));
+        })
+        .unwrap();
+
+        assert_eq!(updates.first(), Some(&(2, 0)));
+        assert_eq!(updates.last(), Some(&(2, 2)));
+        assert_eq!(result.processed, result.scanned);
     }
 
     #[test]

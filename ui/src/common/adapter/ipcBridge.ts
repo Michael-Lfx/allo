@@ -6787,6 +6787,7 @@ export interface IKnowledgeLocalSyncSummary {
   state: KnowledgeLocalSyncState;
   lastSyncedAt?: number;
   scanned: number;
+  processed: number;
   written: number;
   conflicts: number;
   failed: number;

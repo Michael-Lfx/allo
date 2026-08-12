@@ -66,6 +66,11 @@ pub struct KnowledgeLocalSyncSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_synced_at: Option<i64>,
     pub scanned: u64,
+    /// Number of source documents whose conversion decision has completed.
+    /// While `state` is `syncing`, this grows towards `scanned` and powers the
+    /// compact progress indicator in the knowledge-base detail page.
+    #[serde(default)]
+    pub processed: u64,
     pub written: u64,
     pub conflicts: u64,
     pub failed: u64,

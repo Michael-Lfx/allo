@@ -68,7 +68,7 @@ const getTeachRows = (sourceType: StudioSourceType): TeachRow[] => {
           labelKey: 'knowledge.studio.teachUse',
           labelDefault: '怎么用',
           textKey: 'knowledge.studio.localTeachUse',
-          textDefault: '创建时会首次同步；之后可在详情页手动同步，原目录始终不会被修改。',
+          textDefault: '创建后会在后台解析；可在详情页查看进度并随时再次同步，原目录始终不会被修改。',
         },
       ];
     case 'web':

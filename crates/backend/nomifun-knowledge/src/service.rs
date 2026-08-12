@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock, RwLock, Weak};
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
-use nomifun_api_types::{KnowledgeDocumentImportResult, KnowledgeDocumentImportStatus, KnowledgeLocalSyncSummary, KnowledgeMountInfo, KnowledgeSource, KnowledgeSourceEntry, KnowledgeSourceMode, KnowledgeTag, UpdateKnowledgeTagRequest};
+use nomifun_api_types::{KnowledgeDocumentImportResult, KnowledgeDocumentImportStatus, KnowledgeLocalSyncState, KnowledgeLocalSyncSummary, KnowledgeMountInfo, KnowledgeSource, KnowledgeSourceEntry, KnowledgeSourceMode, KnowledgeTag, UpdateKnowledgeTagRequest};
 use nomifun_common::{
     AppError, CompanionId, ConversationId, KnowledgeBaseId,
     ProviderWithModel, TerminalId, TimestampMs, UuidV7Error, generate_id,
@@ -518,6 +518,12 @@ struct SearchCacheInner {
 const MAX_SEARCH_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SEARCH_CACHE_FILE_BYTES: usize = 1024 * 1024;
 
+#[derive(Debug, Clone)]
+struct ActiveLocalSync {
+    generation: u64,
+    summary: KnowledgeLocalSyncSummary,
+}
+
 pub struct KnowledgeService {
     repo: Arc<dyn IKnowledgeRepository>,
     data_dir: PathBuf,
@@ -577,6 +583,10 @@ pub struct KnowledgeService {
     /// Document parsers are CPU-bound and synchronous. Keep the local import
     /// surface from filling Tokio's blocking pool when a folder is uploaded.
     document_import_limit: Arc<Semaphore>,
+    /// In-flight local-folder conversions. This process-local state exposes
+    /// real progress while parsing runs outside the HTTP request lifecycle.
+    local_sync_runs: Arc<StdMutex<HashMap<String, ActiveLocalSync>>>,
+    next_local_sync_generation: std::sync::atomic::AtomicU64,
 }
 
 /// One source entry's fetched-and-condensed body, ready to be slugged and
@@ -632,6 +642,8 @@ impl KnowledgeService {
             extra_managed_roots: RwLock::new(Vec::new()),
             binding_changed_hook: RwLock::new(None),
             document_import_limit: Arc::new(Semaphore::new(2)),
+            local_sync_runs: Arc::new(StdMutex::new(HashMap::new())),
+            next_local_sync_generation: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
@@ -738,6 +750,15 @@ impl KnowledgeService {
                 "local-folder sync is only available for external knowledge bases".into(),
             ));
         }
+        if let Some(active) = self
+            .local_sync_runs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&row.knowledge_base_id)
+            .cloned()
+        {
+            return Ok(active.summary);
+        }
         Ok(local_folder_projection::summary(
             &self.data_dir,
             &row.knowledge_base_id,
@@ -786,6 +807,163 @@ impl KnowledgeService {
         let info = self.row_to_info(row).await?;
         self.emitter.emit_base_updated(&info);
         Ok(summary)
+    }
+
+    /// Queue a local-folder projection rebuild and return its live status
+    /// immediately. Repeated requests for a running base reuse the same task.
+    pub async fn start_local_folder_sync(
+        self: Arc<Self>,
+        id: &str,
+    ) -> Result<KnowledgeLocalSyncSummary, AppError> {
+        let row = self.require_base(id).await?;
+        if !Self::is_local_folder_row(&row) {
+            return Err(AppError::BadRequest(
+                "local-folder sync is only available for external knowledge bases".into(),
+            ));
+        }
+        if let Some(active) = self
+            .local_sync_runs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&row.knowledge_base_id)
+            .cloned()
+        {
+            return Ok(active.summary);
+        }
+
+        let source_available = self.local_source_root_is_available(&row).await;
+        let previous = local_folder_projection::summary(
+            &self.data_dir,
+            &row.knowledge_base_id,
+            source_available,
+        );
+        if !source_available {
+            return Ok(previous);
+        }
+
+        let generation = self
+            .next_local_sync_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let running = KnowledgeLocalSyncSummary {
+            state: KnowledgeLocalSyncState::Syncing,
+            last_synced_at: previous.last_synced_at,
+            scanned: 0,
+            processed: 0,
+            written: 0,
+            conflicts: 0,
+            failed: 0,
+            errors: Vec::new(),
+            source_available: true,
+        };
+        {
+            let mut runs = self
+                .local_sync_runs
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(active) = runs.get(&row.knowledge_base_id) {
+                return Ok(active.summary.clone());
+            }
+            runs.insert(
+                row.knowledge_base_id.clone(),
+                ActiveLocalSync {
+                    generation,
+                    summary: running.clone(),
+                },
+            );
+        }
+
+        let service = Arc::clone(&self);
+        let kb_id = row.knowledge_base_id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = service
+                .run_local_folder_sync(row, generation, previous.last_synced_at)
+                .await
+            {
+                tracing::warn!(knowledge_base_id = %kb_id, %error, "background local knowledge sync failed");
+            }
+        });
+        Ok(running)
+    }
+
+    async fn run_local_folder_sync(
+        self: Arc<Self>,
+        row: KnowledgeBaseRow,
+        generation: u64,
+        previous_last_synced_at: Option<TimestampMs>,
+    ) -> Result<(), AppError> {
+        let result = async {
+            self.ensure_content_root_for_row(&row).await?;
+            let _tree_guard = self.acquire_document_tree_write_lock(&row).await?;
+            let _base_guard = self.acquire_base_lifecycle_lock(&row).await?;
+            let current = self.require_base(&row.knowledge_base_id).await?;
+            if current.root_path != row.root_path || current.managed != row.managed {
+                return Err(AppError::Conflict(
+                    "knowledge base changed while local-folder sync was starting; retry".into(),
+                ));
+            }
+            let permit = self
+                .document_import_limit
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| AppError::Internal("knowledge document import limiter closed".into()))?;
+            let data_dir = self.data_dir.clone();
+            let kb_id = row.knowledge_base_id.clone();
+            let source_root = PathBuf::from(&row.root_path);
+            let runs = Arc::clone(&self.local_sync_runs);
+            let progress_kb_id = row.knowledge_base_id.clone();
+            let summary = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                local_folder_projection::sync_with_progress(
+                    &data_dir,
+                    &kb_id,
+                    &source_root,
+                    |progress| {
+                        let mut runs = runs
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        let Some(active) = runs.get_mut(&progress_kb_id) else {
+                            return;
+                        };
+                        if active.generation != generation {
+                            return;
+                        }
+                        active.summary = KnowledgeLocalSyncSummary {
+                            state: KnowledgeLocalSyncState::Syncing,
+                            last_synced_at: previous_last_synced_at,
+                            scanned: progress.scanned,
+                            processed: progress.processed,
+                            written: progress.written,
+                            conflicts: progress.conflicts,
+                            failed: progress.failed,
+                            errors: Vec::new(),
+                            source_available: true,
+                        };
+                    },
+                )
+            })
+            .await
+            .map_err(|error| AppError::Internal(format!("local knowledge sync task failed: {error}")))??;
+            self.invalidate_search_cache_root(&self.content_root_for_row(&row));
+            let info = self.row_to_info(row.clone()).await?;
+            self.emitter.emit_base_updated(&info);
+            Ok::<KnowledgeLocalSyncSummary, AppError>(summary)
+        }
+        .await;
+
+        {
+            let mut runs = self
+                .local_sync_runs
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if runs
+                .get(&row.knowledge_base_id)
+                .is_some_and(|active| active.generation == generation)
+            {
+                runs.remove(&row.knowledge_base_id);
+            }
+        }
+        result.map(|_| ())
     }
 
     /// Late-wire the in-process binding-change observer (app layer only).
@@ -971,6 +1149,29 @@ impl KnowledgeService {
         if Self::is_local_folder_row(&row) {
             self.sync_local_folder(&row.knowledge_base_id).await?;
             info = self.get_base_info(&row.knowledge_base_id).await?;
+        }
+        match snapshot_source {
+            Some(src) => self.fetch_source_and_autogen(row, src).await,
+            None => Ok(info),
+        }
+    }
+
+    /// HTTP-create variant for local-folder bases. It registers the base and
+    /// queues its initial projection before returning, so the creation dialog
+    /// can close immediately while the detail page renders live progress.
+    /// URL snapshot behavior deliberately stays identical to [`Self::create_base`].
+    pub async fn create_base_with_background_local_sync(
+        self: Arc<Self>,
+        name: &str,
+        description: &str,
+        root_path: Option<&str>,
+        source: Option<KnowledgeSource>,
+    ) -> Result<KnowledgeBaseInfo, AppError> {
+        let (row, info, snapshot_source) = self.register_base(name, description, root_path, source).await?;
+        if Self::is_local_folder_row(&row) {
+            self.clone()
+                .start_local_folder_sync(&row.knowledge_base_id)
+                .await?;
         }
         match snapshot_source {
             Some(src) => self.fetch_source_and_autogen(row, src).await,

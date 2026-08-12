@@ -14,8 +14,8 @@
  */
 import React, { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Message, Switch } from '@arco-design/web-react';
-import { Close, FolderOpen, Info } from '@icon-park/react';
+import { Button, Input, Message, Switch, Tooltip } from '@arco-design/web-react';
+import { Close, FolderOpen, Help, Info } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import { isDesktopShell } from '@renderer/utils/platform';
 import type { StudioSourceType } from './sourceTypes';
@@ -134,9 +134,38 @@ const SourceConfig: React.FC<SourceConfigProps> = ({ sourceType, value, onChange
           {t('knowledge.studio.srcTitleLocal', { defaultValue: '来源 · 本地文件夹' })}
         </div>
         <div>
-          <label className={sourceLabelClass}>
-            {t('knowledge.studio.localFolderPath', { defaultValue: '文件夹路径' })}
-          </label>
+          <div className='mb-7px flex items-center gap-4px'>
+            <label className={sourceLabelClass.replace('mb-7px ', '')}>
+              {t('knowledge.studio.localFolderPath', { defaultValue: '文件夹路径' })}
+            </label>
+            <Tooltip
+              position='top'
+              content={
+                <div className='max-w-280px text-12px leading-5 text-white'>
+                  <div className='font-600 text-white'>
+                    {t('knowledge.studio.localFolderFormatsTitle', {
+                      defaultValue: '支持的文件类型',
+                    })}
+                  </div>
+                  <div className='mt-3px text-white/80'>
+                    {t('knowledge.studio.localFolderFormatsText', {
+                      defaultValue: '支持 Markdown、Word、PPT、Excel、PDF 等常用文档格式。',
+                    })}
+                  </div>
+                </div>
+              }
+            >
+              <button
+                type='button'
+                className='flex h-16px w-16px items-center justify-center border-0 bg-transparent p-0 text-[var(--color-text-3)] hover:text-[var(--color-text-1)] focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_rgba(var(--primary-6),0.12)]'
+                aria-label={t('knowledge.studio.localFolderFormatsAria', {
+                  defaultValue: '查看支持的文件类型',
+                })}
+              >
+                <Help theme='outline' size='14' />
+              </button>
+            </Tooltip>
+          </div>
           <div className='flex gap-9px'>
             <Input
               className={`${sourceInputClass} flex-1`}
