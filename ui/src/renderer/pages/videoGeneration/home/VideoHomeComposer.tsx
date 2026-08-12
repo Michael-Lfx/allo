@@ -28,7 +28,7 @@ import {
 } from '../videoModelCapabilities';
 import CameoCastEditor from '../components/CameoCastEditor';
 import { suggestCameoCharacterName } from '../cameoUtils';
-import type { CameoDraftItem, VimaxWorkflow } from '../types';
+import type { CameoDraftItem, VerticalSkillSummary, VimaxWorkflow } from '../types';
 import GenerationPreferencesPopover from './GenerationPreferencesPopover';
 import { BoldSendArrowIcon, SlantedDocIcon } from './ComposerIcons';
 import {
@@ -47,6 +47,7 @@ import type {
   VideoCreateDraft,
   VideoHomeMode,
 } from './types';
+import { listVerticalSkills } from '../api';
 import VerticalSkillMenu from './VerticalSkillMenu';
 import VerticalSkillCreateModal from './VerticalSkillCreateModal';
 import styles from './home.module.css';
@@ -228,10 +229,12 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const [skillHubOpen, setSkillHubOpen] = useState(false);
   const [skillCreateOpen, setSkillCreateOpen] = useState(false);
   const [skillListReloadToken, setSkillListReloadToken] = useState(0);
+  const [skillCatalog, setSkillCatalog] = useState<VerticalSkillSummary[]>([]);
   const [modelMissing, setModelMissing] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [documentName, setDocumentName] = useState<string | null>(null);
   const draftRef = useRef(draft);
+  const composerRef = useRef<HTMLDivElement>(null);
 
   const agentModes = useMemo<AgentModeDefinition[]>(
     () => [
@@ -370,13 +373,90 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     mode === 'agent'
       ? agentModes.find((item) => item.id === draft.workflow)?.label
       : activeCreationSkill.label;
-  const verticalSkillLabel =
-    draft.verticalSkillIds.length === 0
-      ? t('videoGeneration.skills.mountButton', { defaultValue: '挂载 Skill' })
-      : t('videoGeneration.skills.mountedCount', {
-          count: draft.verticalSkillIds.length,
-          defaultValue: 'Skill · {{count}}',
-        });
+  const verticalSkillLabel = t('videoGeneration.skills.mountButton', {
+    defaultValue: 'Skill',
+  });
+  const selectedVerticalSkills = useMemo(() => {
+    const byId = new Map(skillCatalog.map((skill) => [skill.id, skill]));
+    return draft.verticalSkillIds.map((id) => {
+      const skill = byId.get(id);
+      return {
+        id,
+        label: skill?.display_name || skill?.name || id.replace(/^[^:]+:/, ''),
+      };
+    });
+  }, [draft.verticalSkillIds, skillCatalog]);
+
+  useEffect(() => {
+    if (mode !== 'agent') return;
+    let cancelled = false;
+    void listVerticalSkills()
+      .then((list) => {
+        if (!cancelled) setSkillCatalog(list);
+      })
+      .catch(() => {
+        /* catalog is best-effort for chip labels */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, skillListReloadToken]);
+
+  const removeVerticalSkill = (skillId: string) => {
+    setDraft((current) => ({
+      ...current,
+      verticalSkillIds: current.verticalSkillIds.filter((id) => id !== skillId),
+    }));
+  };
+
+  const removeLastVerticalSkill = () => {
+    setDraft((current) => {
+      if (current.verticalSkillIds.length === 0) return current;
+      return {
+        ...current,
+        verticalSkillIds: current.verticalSkillIds.slice(0, -1),
+      };
+    });
+  };
+
+  const handlePromptKeyDown = (
+    event: React.KeyboardEvent<HTMLTextAreaElement>
+  ) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+      event.preventDefault();
+      submit();
+      return;
+    }
+    if (event.key === 'Escape') {
+      setSlashMenuOpen(false);
+      return;
+    }
+    if (
+      mode !== 'agent' ||
+      loading ||
+      draft.verticalSkillIds.length === 0 ||
+      (event.key !== 'Backspace' && event.key !== 'Delete')
+    ) {
+      return;
+    }
+    const target = event.target as HTMLTextAreaElement;
+    const start = target.selectionStart ?? 0;
+    const end = target.selectionEnd ?? 0;
+    const atStart = start === 0 && end === 0;
+    const empty = !activeText;
+    // Backspace/Delete at caret start (or empty prompt) removes the trailing skill chip.
+    if (event.key === 'Backspace' && (atStart || empty)) {
+      event.preventDefault();
+      removeLastVerticalSkill();
+    } else if (event.key === 'Delete' && empty) {
+      event.preventDefault();
+      removeLastVerticalSkill();
+    }
+  };
+
+  const getComposerPopupContainer = (node: HTMLElement) =>
+    composerRef.current ?? node.parentElement ?? document.body;
+
   const placeholder =
     mode === 'creation'
       ? t('videoGeneration.create.composer.creationPlaceholder', {
@@ -407,7 +487,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setDraft((current) => ({
       ...current,
       workflow,
-      // Drop skills incompatible with the new mode once hub reloads; keep ids for now.
       verticalSkillIds: current.verticalSkillIds,
     }));
     setSlashMenuOpen(false);
@@ -677,6 +756,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       </div>
 
       <div
+        ref={composerRef}
         className={styles.composer}
         onDragOver={(event) => event.preventDefault()}
         onDrop={(event) => {
@@ -776,20 +856,52 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                     : null}
                 </div>
               )}
-              <TextArea
-                value={activeText}
-                onChange={setActiveText}
-                placeholder={placeholder}
-                disabled={loading}
-                className={styles.promptInput}
-                onKeyDown={(event) => {
-                  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                    event.preventDefault();
-                    submit();
+              <div className={styles.promptEditor}>
+                {mode === 'agent'
+                  ? selectedVerticalSkills.map((skill, index) => (
+                      <React.Fragment key={skill.id}>
+                        {index > 0 ? (
+                          <span className={styles.skillDiamond} aria-hidden='true' />
+                        ) : null}
+                        <button
+                          type='button'
+                          className={styles.skillTag}
+                          disabled={loading}
+                          title={skill.label}
+                          aria-label={t('videoGeneration.skills.removeSelected', {
+                            name: skill.label,
+                            defaultValue: '移除 Skill {{name}}',
+                          })}
+                          onClick={() => removeVerticalSkill(skill.id)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Backspace' || event.key === 'Delete') {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              removeVerticalSkill(skill.id);
+                            }
+                          }}
+                        >
+                          <strong>{skill.label}</strong>
+                          <CloseSmall size={11} />
+                        </button>
+                      </React.Fragment>
+                    ))
+                  : null}
+                <TextArea
+                  value={activeText}
+                  onChange={setActiveText}
+                  placeholder={
+                    mode === 'agent' && selectedVerticalSkills.length > 0
+                      ? ''
+                      : placeholder
                   }
-                  if (event.key === 'Escape') setSlashMenuOpen(false);
-                }}
-              />
+                  disabled={loading}
+                  className={`${styles.promptInput} ${
+                    selectedVerticalSkills.length > 0 ? styles.promptInputWithSkills : ''
+                  }`}
+                  onKeyDown={handlePromptKeyDown}
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -801,11 +913,14 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             <Popover
               trigger='click'
               position='bl'
+              showArrow={false}
+              getPopupContainer={getComposerPopupContainer}
               popupVisible={modeMenuOpen}
               onVisibleChange={(open) => {
                 if (open) {
                   setPreferencesOpen(false);
                   setSlashMenuOpen(false);
+                  setSkillHubOpen(false);
                 }
                 setModeMenuOpen(open);
               }}
@@ -838,11 +953,14 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             <Popover
               trigger='click'
               position='bl'
+              showArrow={false}
+              getPopupContainer={getComposerPopupContainer}
               popupVisible={slashMenuOpen}
               onVisibleChange={(open) => {
                 if (open) {
                   setPreferencesOpen(false);
                   setModeMenuOpen(false);
+                  setSkillHubOpen(false);
                 }
                 setSlashMenuOpen(open);
               }}
@@ -873,7 +991,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
               <Popover
                 trigger='click'
                 position='bl'
-                triggerProps={{ autoFitPosition: false }}
+                showArrow={false}
+                getPopupContainer={getComposerPopupContainer}
+                triggerProps={{ autoFitPosition: false, updateOnScroll: true }}
                 className={styles.skillPopover}
                 style={{ maxWidth: 380, padding: 0 }}
                 popupVisible={skillHubOpen}
@@ -887,12 +1007,18 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 }}
                 content={
                   <VerticalSkillMenu
-                    mode={draft.workflow}
                     selectedIds={draft.verticalSkillIds}
                     reloadToken={skillListReloadToken}
                     onChangeSelected={(verticalSkillIds) =>
                       setDraft((current) => ({ ...current, verticalSkillIds }))
                     }
+                    onCatalogChange={(list) => {
+                      setSkillCatalog((prev) => {
+                        const map = new Map(prev.map((skill) => [skill.id, skill]));
+                        list.forEach((skill) => map.set(skill.id, skill));
+                        return Array.from(map.values());
+                      });
+                    }}
                     onRequestCreate={() => {
                       setSkillHubOpen(false);
                       setSkillCreateOpen(true);

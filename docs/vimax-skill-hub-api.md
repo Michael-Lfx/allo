@@ -1,8 +1,8 @@
 # ViMax Skill Hub API 需求文档（Go + MySQL）
 
 > 供云端服务端实现「垂直 Skill」的创建元数据托管、社区发布、广场浏览与安装拉取。  
-> 客户端本地已具备：Mode × Skill 挂载、本机创建 / 导入、本机 Hub。  
-> **本文定义云端契约**；风格对齐 [TV Show API](./vimax-tv-show-api.md) 与 [LibTV Skill Hub](https://www.liblib.tv/) 的「导演级可发布 Skill」产品形态。  
+> 客户端本地已具备：Skill 挂载、本机创建 / 导入、本机 Hub（创建表单对齐 LibTV）。  
+> **本文定义云端契约**；风格对齐 [TV Show API](./vimax-tv-show-api.md) 与 [LibTV 创建 Skill](https://www.liblib.tv/skill/create) 的「导演级可发布 Skill」产品形态。  
 > 上传复用已有 OSS 预签名：`POST /api/v1/uploads/oss/presignPut`。
 
 ---
@@ -34,7 +34,10 @@
 
 ---
 
-## 2. Skill 包格式（与客户端一致）
+## 2. Skill 包格式（与客户端 / LibTV 创建规范一致）
+
+> 产品创建页对标：[LibTV 创建 Skill](https://www.liblib.tv/skill/create)  
+> 广场分类对标：[LibTV Skill](https://www.liblib.tv/skill)（短漫剧 / 电影 / 商业广告 / 创意·社媒玩法 / 音乐 MV）
 
 每个 Skill 是一个目录，至少包含 `SKILL.md`：
 
@@ -42,11 +45,18 @@
 ---
 name: luxury-tvc
 display-name: 高奢版TVC
-description: 高奢品牌广告片导演方法论…
+description: 简短描述该 Skill 的能力（一句话介绍）
 category: advertising
 version: "1.0.0"
 tags: [tvc, luxury]
-compatible-modes: [idea2video, script2video]
+use-scenario: |
+  品牌 / 产品需要高级成片质感的广告短片时使用。
+how-to-use: |
+  用户提供产品卖点或一句话想法；可选参考图与时长。
+output: |
+  15–45s 高奢 TVC 成片，附分镜与脚本。
+cover-url: https://cdn.example.com/covers/luxury-tvc.jpg
+case-url: https://www.liblib.tv/canvas/share?shareId=...
 visibility: private
 requirement-overlay: |
   Direct this as a high-end luxury TVC…
@@ -54,26 +64,91 @@ style-overlay: |
   luxury commercial cinematography…
 ---
 
-# Playbook
+## 做什么
+（一句话说明用途）例：把一句话故事想法做成一条短漫剧成片
 
-## 结构
-…
+## 需要什么输入
+（最少提供什么）例：一句话想法，可选画风、时长、主角设定
+
+## 怎么做
+（写你在意的环节和要求，不用写全）例：脚本要反转多，画风固定成韩漫
+
+## 产出什么
+（最终交付什么）例：成片，附脚本和分镜
+
+## 什么时候问你
+（什么情况下停下来问你）例：拿不准题材或风格时问一次，其余自己定
 ```
+
+### 2.1 创建表单字段（客户端）
+
+| UI 字段 | Frontmatter / API | 必填 | 说明 |
+|---------|-------------------|------|------|
+| Skill 名称 | `display-name` / `displayName` | 是 | ≤64；客户端自动推导 kebab-case `name` |
+| 一句话介绍 | `description` | 是 | ≤500；广场列表摘要 |
+| 上传封面（选填） | `cover-url` / `coverUrl` | 否 | 本地创建支持选图上传（写入包内）；发布广场建议横版 |
+| Skill 内容 | 正文 playbook | 是 | Markdown；可上传 `SKILL.md` |
+| 使用场景 | `use-scenario` / `useScenario` | 是 | 何时触发 / 适用语境 |
+| 如何使用 | `how-to-use` / `howToUse` | 是 | 用户如何调用、需要哪些输入 |
+| 输出内容 | `output` | 是 | 预期交付物 |
+
+> 客户端创建页**不再**要求「选择类型 / 案例链接 / 标签 / Overlay」；`category`、`case-url`、`tags`、overlay 仍为包格式可选字段，供 Hub 发布或手工编辑 `SKILL.md` 使用。
+
+### 2.2 广场类型枚举（`category`，可选）
+
+| value | 展示名（中） | 备注 |
+|-------|--------------|------|
+| `short-drama` | 短漫剧 | LibTV「短漫剧」 |
+| `film` | 电影 | LibTV「电影 / 专业影视」 |
+| `advertising` | 商业广告 | LibTV「商业广告」 |
+| `creative-social` | 创意/社媒玩法 | LibTV「创意/社媒玩法」 |
+| `music-mv` | 音乐 MV | LibTV「音乐 MV」 |
+
+历史包可继续使用 `travel` / `action` / `drama` / `aesthetic` / `product` / `documentary` 等扩展值；**新建 Skill 优先使用上表五类**。
+
+### 2.3 Frontmatter 总表
 
 | Frontmatter | 必填 | 说明 |
 |-------------|------|------|
 | `name` | 是 | kebab-case，`^[a-z0-9]+(-[a-z0-9]+)*$`，≤64 |
-| `display-name` | 否 | 展示名，缺省用人性化 name |
-| `description` | 是 | ≤500 字 |
-| `category` | 否 | 如 `advertising` / `travel` / `action` / `drama` / `aesthetic` |
-| `version` | 否 | semver 字符串，缺省 `1.0.0` |
-| `tags` | 否 | ≤20 个，单 tag ≤32 |
-| `compatible-modes` | 否 | 空 = 全 Mode 可用 |
+| `display-name` | 否* | 展示名；创建 UI 视为必填，缺省用人性化 `name` |
+| `description` | 是 | ≤500；**一句话介绍**（能力摘要） |
+| `category` | 建议 | 见 §2.2 |
+| `version` | 否 | semver，缺省 `1.0.0` |
+| `tags` | 否 | ≤20，单 tag ≤32 |
+| `compatible-modes` | 否 | **建议省略**（空 = 全 Mode；Skill 不按 Mode 区分） |
+| `use-scenario` | 建议 | LibTV「使用场景」 |
+| `how-to-use` | 建议 | LibTV「如何使用」 |
+| `output` | 建议 | LibTV「输出内容」 |
+| `cover-url` | 否 | 封面公网 URL |
+| `case-url` | 否 | 精选案例链接 |
 | `requirement-overlay` | 否 | 注入叙事 `<USER_REQUIREMENT>` |
 | `style-overlay` | 否 | 注入视觉 `style` |
-| 正文 playbook | 否 | Markdown，计入包体积 |
+| 正文 playbook | 是* | Markdown；创建 UI 必填；建议含「做什么 / 需要什么输入 / 怎么做 / 产出什么 / 什么时候问你」 |
 
-可选子目录：`references/`、`templates/`（随 zip 打包）。
+### 2.4 Skill 内容写作模板（推荐）
+
+与 LibTV 创建页 placeholder 一致：
+
+```markdown
+## 做什么
+（一句话说明用途）例：把一句话故事想法做成一条短漫剧成片
+
+## 需要什么输入
+（最少提供什么）例：一句话想法，可选画风、时长、主角设定
+
+## 怎么做
+（写你在意的环节和要求，不用写全）例：脚本要反转多，画风固定成韩漫
+
+## 产出什么
+（最终交付什么）例：成片，附脚本和分镜
+
+## 什么时候问你
+（什么情况下停下来问你）例：拿不准题材或风格时问一次，其余自己定
+```
+
+可选子目录：`references/`、`templates/`（随 zip 打包）。  
+文件夹导入：根目录必须存在全大写 `SKILL.md`（与 LibTV `createSkillFolderPrimaryRequired` 一致）。
 
 **发布物**：将 Skill 目录打成 zip（建议扩展名 `.vimaxskill` 或 `.zip`），经 OSS 直传后把 `publicUrl` / `objectKey` 提交给 publish 接口。
 
@@ -131,13 +206,18 @@ style-overlay: |
 | `category` | VARCHAR(64) | 索引 |
 | `version` | VARCHAR(32) | 当前版本 |
 | `tags_json` | JSON | string[] |
-| `compatible_modes_json` | JSON | string[] |
+| `compatible_modes_json` | JSON | string[]；可空 |
+| `use_scenario` | TEXT | LibTV 使用场景 |
+| `how_to_use` | TEXT | LibTV 如何使用 |
+| `output_desc` | TEXT | LibTV 输出内容（列名避免 SQL 关键字 `output`） |
+| `case_url` | VARCHAR(1024) | 精选案例链接 |
 | `status` | VARCHAR(16) | pending/published/offline/deleted |
 | `package_url` | VARCHAR(1024) | zip 公网 URL |
 | `package_object_key` | VARCHAR(512) | OSS key |
 | `package_size_bytes` | BIGINT | |
 | `package_sha256` | CHAR(64) | 可选 |
-| `cover_url` | VARCHAR(1024) | 可选封面 |
+| `cover_url` | VARCHAR(1024) | 封面（选填；广场建议必填） |
+| `cover_object_key` | VARCHAR(512) | 封面 OSS key |
 | `install_count` | INT | 安装次数 |
 | `like_count` | INT | |
 | `reject_reason` | VARCHAR(500) | |
@@ -180,11 +260,14 @@ style-overlay: |
 {
   "name": "luxury-tvc",
   "displayName": "高奢版TVC",
-  "description": "高奢品牌广告片导演方法论",
+  "description": "简短描述该 Skill 的能力",
   "category": "advertising",
   "version": "1.0.0",
   "tags": ["tvc", "luxury"],
-  "compatibleModes": ["idea2video", "script2video"],
+  "useScenario": "品牌需要高级成片质感的广告短片时使用",
+  "howToUse": "用户提供产品卖点或一句话想法；可选参考图",
+  "output": "15–45s 高奢 TVC 成片，附分镜与脚本",
+  "compatibleModes": [],
   "requirementOverlay": "可选；也可只放在 package 的 SKILL.md 内",
   "styleOverlay": "可选",
   "playbook": "可选 Markdown；若 package 已含 SKILL.md 可省略",
@@ -192,8 +275,9 @@ style-overlay: |
   "packageObjectKey": "claw/presigned/42/.../skill.vimaxskill",
   "packageSizeBytes": 24576,
   "packageSha256": "可选64位十六进制",
-  "coverUrl": "可选",
+  "coverUrl": "可选，建议横版封面",
   "coverObjectKey": "可选",
+  "caseUrl": "可选精选案例 http(s) 链接",
   "clientSkillId": "user:luxury-tvc"
 }
 ```
@@ -201,12 +285,18 @@ style-overlay: |
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `name` | 是 | 与 SKILL.md `name` 一致 |
-| `displayName` | 否 | |
-| `description` | 是 | |
+| `displayName` | 是* | LibTV「Skill 名称」；服务端也可从包内读取 |
+| `description` | 是 | LibTV「一句话介绍」 |
+| `category` | 是* | 见 §2.2；非法值拒绝 |
+| `useScenario` / `howToUse` / `output` | 是* | LibTV 使用说明三件套；可从 SKILL.md frontmatter 回填 |
 | `packageUrl` + `packageObjectKey` | 是 | 必须属于当前用户 presign 路径 |
-| `compatibleModes` | 否 | 非法值拒绝 |
+| `coverUrl` | 否 | 广场展示强烈建议 |
+| `caseUrl` | 否 | 须 `http(s)://` |
+| `compatibleModes` | 否 | 建议空数组 / 省略 |
 | `clientSkillId` | 否 | 客户端本地 id，便于对账 |
 | overlay / playbook | 否 | 若提供，服务端可冗余存库便于列表检索；**以 package 内 SKILL.md 为准** |
+
+\*标「是*」：若请求体缺省但 zip 内 `SKILL.md` 已有对应 frontmatter / 正文，服务端应解析补齐；两者都缺则 400。
 
 **行为**
 
@@ -262,8 +352,12 @@ style-overlay: |
       "category": "advertising",
       "version": "1.0.0",
       "tags": ["tvc"],
-      "compatibleModes": ["idea2video", "script2video"],
+      "compatibleModes": [],
+      "useScenario": "…",
+      "howToUse": "…",
+      "output": "…",
       "coverUrl": null,
+      "caseUrl": null,
       "installCount": 12,
       "likeCount": 3,
       "publishedAt": "…",
@@ -422,9 +516,9 @@ source: cloud
 
 ## 12. 联系与参考
 
-- 产品对标：[LibTV](https://www.liblib.tv/) Agent Skills  
-- 客户端现状：`allo/crates/agent/nomi-vimax/src/skills/`、`allo/ui/.../VerticalSkillMenu.tsx`  
+- 产品对标：[LibTV](https://www.liblib.tv/) Agent Skills；创建页 [skill/create](https://www.liblib.tv/skill/create)  
+- 客户端现状：`allo/crates/agent/nomi-vimax/src/skills/`、`allo/ui/.../VerticalSkillCreateModal.tsx`  
 - 接口风格参考：`allo/docs/vimax-tv-show-api.md`
 
-**文档版本**：v1.0 · 2026-08-12  
-**对接优先级**：P0 = publish / list / detail / install / mine / admin approve；P1 = like / version 表。
+**文档版本**：v1.1 · 2026-08-12  
+**对接优先级**：P0 = publish / list / detail / install / mine / admin approve；P1 = like / version 表 / 封面与案例素材审核。

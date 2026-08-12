@@ -382,6 +382,11 @@ impl SkillCatalog {
                 .iter()
                 .map(|m| m.as_str().to_string())
                 .collect(),
+            use_scenario: None,
+            how_to_use: None,
+            output: None,
+            cover_url: None,
+            case_url: None,
             requirement_overlay: Some(skill.requirement_overlay.clone()),
             style_overlay: Some(skill.style_overlay.clone()),
             playbook: Some(skill.playbook.clone()),
@@ -451,6 +456,11 @@ mod tests {
                 version: Some("1.0.0".into()),
                 tags: vec!["test".into()],
                 compatible_modes: vec!["idea2video".into()],
+                use_scenario: Some("luxury brand spots".into()),
+                how_to_use: Some("paste a product idea".into()),
+                output: Some("15-45s TVC".into()),
+                cover_url: None,
+                case_url: None,
                 requirement_overlay: Some("Keep it premium.".into()),
                 style_overlay: Some("luxury light".into()),
                 playbook: Some("# Custom\nDo premium.".into()),

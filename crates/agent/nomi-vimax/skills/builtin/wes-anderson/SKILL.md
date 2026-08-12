@@ -1,11 +1,14 @@
 ---
 name: wes-anderson
 display-name: 韦斯·安德森美学
-description: 对称构图、马卡龙色板、舞台调度与叙事旁白感的导演方法论。
+description: >-
+  Directs Wes Anderson–inspired films with bilateral symmetry, pastel palettes,
+  planar staging, and wry sparse narration. Use when the user mentions Wes
+  Anderson, symmetry, pastel tableaux, whimsical production design, or formal
+  playful aesthetics.
 category: aesthetic
-version: "1.0.0"
-tags: [wes-anderson, symmetry, whimsical, aesthetic]
-compatible-modes: [idea2video, script2video]
+version: "1.1.0"
+tags: [wes-anderson, symmetry, whimsical, aesthetic, pastel]
 requirement-overlay: |
   Direct with Wes Anderson–inspired formal playfulness.
   Prioritize: centered symmetry, planar staging, deadpan performances,
@@ -20,6 +23,10 @@ style-overlay: |
 ---
 
 # 韦斯·安德森美学 Playbook
+
+## When to apply
+- Stylized comedy / fable tones with strong production design
+- Any request for symmetry-first, poster-like frames
 
 ## 结构
 1. 标题卡 / 章节感开场

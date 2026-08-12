@@ -159,6 +159,16 @@ export interface VerticalSkillDraft {
   version?: string;
   tags?: string[];
   compatible_modes?: string[];
+  /** LibTV-aligned: when / where to use this skill. */
+  use_scenario?: string;
+  /** LibTV-aligned: how the user should invoke it / required inputs. */
+  how_to_use?: string;
+  /** LibTV-aligned: expected output artifact. */
+  output?: string;
+  /** Optional cover image URL for Skill Hub listing. */
+  cover_url?: string;
+  /** Optional featured case / demo URL. */
+  case_url?: string;
   requirement_overlay?: string;
   style_overlay?: string;
   playbook?: string;

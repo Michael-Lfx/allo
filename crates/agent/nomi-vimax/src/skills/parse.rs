@@ -265,6 +265,15 @@ pub fn build_skill_md(draft: &VerticalSkillDraft) -> VimaxResult<String> {
         }
     }
     fm.push_str("visibility: private\n");
+    write_optional_block(&mut fm, "use-scenario", draft.use_scenario.as_deref());
+    write_optional_block(&mut fm, "how-to-use", draft.how_to_use.as_deref());
+    write_optional_block(&mut fm, "output", draft.output.as_deref());
+    if let Some(cover) = draft.cover_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        fm.push_str(&format!("cover-url: {}\n", yaml_escape(cover)));
+    }
+    if let Some(case) = draft.case_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        fm.push_str(&format!("case-url: {}\n", yaml_escape(case)));
+    }
     if let Some(req) = draft.requirement_overlay.as_deref() {
         if !req.trim().is_empty() {
             fm.push_str("requirement-overlay: |\n");
@@ -292,6 +301,20 @@ pub fn build_skill_md(draft: &VerticalSkillDraft) -> VimaxResult<String> {
         }
     }
     Ok(fm)
+}
+
+fn write_optional_block(fm: &mut String, key: &str, value: Option<&str>) {
+    let Some(raw) = value.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if raw.contains('\n') {
+        fm.push_str(&format!("{key}: |\n"));
+        for line in raw.lines() {
+            fm.push_str(&format!("  {line}\n"));
+        }
+    } else {
+        fm.push_str(&format!("{key}: {}\n", yaml_escape(raw)));
+    }
 }
 
 fn yaml_escape(s: &str) -> String {

@@ -1,11 +1,14 @@
 ---
 name: travel-master
 display-name: 旅拍大师
-description: 旅行目的地叙事与风景人像导演法——风光建立、人物融入、节奏轻盈、适合社媒传播。
+description: >-
+  Directs destination travel and lifestyle travelogue films with establishing
+  landscapes, human scale in place, and social-shareable postcard moments. Use
+  when the user mentions travel, vlog, destination, tourism, road trip, or scenic
+  lifestyle films.
 category: travel
-version: "1.0.0"
-tags: [travel, lifestyle, vlog, destination]
-compatible-modes: [idea2video, script2video, novel2video]
+version: "1.1.0"
+tags: [travel, lifestyle, vlog, destination, scenic]
 requirement-overlay: |
   Direct as a destination travel film / lifestyle travelogue.
   Prioritize: establishing wide landscapes, human scale in place, local texture,
@@ -20,6 +23,10 @@ style-overlay: |
 ---
 
 # 旅拍大师 Playbook
+
+## When to apply
+- Destination / tourism promo or personal travel films
+- Lifestyle content that sells place and atmosphere
 
 ## 结构
 1. 大远景建立目的地

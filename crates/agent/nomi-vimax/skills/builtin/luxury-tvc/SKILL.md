@@ -1,11 +1,13 @@
 ---
 name: luxury-tvc
 display-name: 高奢版TVC
-description: 高奢品牌广告片导演方法论——克制叙事、材质特写、情绪节奏与高级成片质感。
+description: >-
+  Directs high-end luxury brand commercials with restrained narrative, tactile
+  material close-ups, and premium pacing. Use when the user mentions TVC, luxury
+  ads, premium product films, fashion commercials, or high-end brand spots.
 category: advertising
-version: "1.0.0"
-tags: [tvc, luxury, commercial, advertising]
-compatible-modes: [idea2video, script2video]
+version: "1.1.0"
+tags: [tvc, luxury, commercial, advertising, premium]
 requirement-overlay: |
   Direct this as a high-end luxury TVC (15–45s feeling even if longer).
   Prioritize: brand mood over plot exposition; tactile material close-ups;
@@ -19,6 +21,10 @@ style-overlay: |
 ---
 
 # 高奢版 TVC Playbook
+
+## When to apply
+- Brand / product hero films with luxury positioning
+- Fashion, fragrance, jewelry, auto, or hospitality spots
 
 ## 结构
 1. Cold open 材质/氛围钩子（1–2 镜）

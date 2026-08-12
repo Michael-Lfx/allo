@@ -1,11 +1,14 @@
 ---
 name: fight-fx
 display-name: 影视打斗特效
-description: 动作戏与打斗场面导演法——清晰可读的动作轴线、冲击力剪辑、特效增强但不遮挡表演。
+description: >-
+  Directs fight and action set pieces with readable screen geography, impact
+  frames, and FX that enhance choreography without hiding performance. Use when
+  the user mentions fight scenes, martial arts, wuxia, stunts, action set pieces,
+  or combat VFX.
 category: action
-version: "1.0.0"
-tags: [action, fight, fx, wuxia, stunt]
-compatible-modes: [idea2video, script2video, novel2video]
+version: "1.1.0"
+tags: [action, fight, fx, wuxia, stunt, combat]
 requirement-overlay: |
   Direct fight / action set pieces with clear screen geography.
   Prioritize: readable attacker-defender axis, impact frames, weighty hits,
@@ -20,6 +23,10 @@ style-overlay: |
 ---
 
 # 影视打斗特效 Playbook
+
+## When to apply
+- Action / martial-arts / wuxia combat sequences
+- Any scene where hit readability and impact matter more than chaos
 
 ## 结构
 1. 对峙与距离建立
