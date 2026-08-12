@@ -15,10 +15,14 @@ describe('SkillsHubSettings agent skill migration entry', () => {
     expect(source.includes('setAgentImportVisible(true)')).toBe(true);
   });
 
-  test('keeps a visible gap between icons and labels for every import action', () => {
+  test('groups the three import paths under one stable, non-wrapping action menu', () => {
     const source = readSource(new URL('./SkillsHubSettings.tsx', import.meta.url));
 
     expect(source.includes("gap-6px';")).toBe(true);
-    expect(source.match(/className=\{IMPORT_ACTION_BUTTON_CLASS\}/g)).toHaveLength(3);
+    expect(source.includes('<Dropdown')).toBe(true);
+    expect(source.includes('<Menu.Item key=\'agent\'')).toBe(true);
+    expect(source.includes('<Menu.Item key=\'folder\'')).toBe(true);
+    expect(source.includes('<Menu.Item key=\'zip\'')).toBe(true);
+    expect(source.includes('!whitespace-nowrap')).toBe(true);
   });
 });

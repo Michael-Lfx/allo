@@ -9,6 +9,9 @@
   },
   "settings": {
     "enabled": "Enable interest tracking",
+    "sectionBasics": "Basics",
+    "sectionExtraction": "Extraction",
+    "sectionAutomatic": "Automatic processing",
     "extractMode": "Extract mode",
     "extractModeKeywords": "Keywords only",
     "extractModeLlm": "LLM",

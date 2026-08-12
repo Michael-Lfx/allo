@@ -1,3 +1,347 @@
+.settings-sider {
+  isolation: isolate;
+}
+
+.settings-sider__selection-indicator {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  left: 0;
+  border: 1px solid color-mix(in srgb, var(--flowy-selected-fg) 8%, transparent);
+  border-radius: var(--flowy-radius-md);
+  background: var(--flowy-selected-bg);
+  box-shadow: var(--flowy-shadow-structure);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform var(--flowy-motion-slow) var(--flowy-ease-move),
+    opacity var(--flowy-motion-fast) var(--flowy-ease-enter);
+}
+
+.settings-sider__selection-indicator[data-visible='true'] {
+  opacity: 1;
+}
+
+.settings-sider__item {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.settings-sider__item:active {
+  transform: scale(0.985);
+}
+
+.settings-sider__item:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: -2px;
+}
+
+.flowy-settings-list {
+  overflow: hidden;
+  border: 1px solid var(--flowy-border-subtle);
+  border-radius: var(--flowy-radius-md);
+  background: var(--flowy-panel);
+}
+
+.flowy-settings-panel {
+  border: 1px solid var(--flowy-border-subtle);
+  border-radius: var(--flowy-radius-md);
+  background: var(--flowy-panel);
+}
+
+.flowy-settings-section + .flowy-settings-section {
+  margin-top: 28px;
+}
+
+.flowy-settings-page-header {
+  margin-bottom: 28px;
+}
+
+.flowy-settings-row {
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 60px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 14px 16px;
+}
+
+.flowy-settings-row--interactive {
+  cursor: pointer;
+  transition: background-color var(--flowy-motion-fast) var(--flowy-ease-enter);
+}
+
+.flowy-settings-row--interactive:hover {
+  background: var(--flowy-interactive-hover);
+}
+
+.flowy-settings-row + .flowy-settings-row {
+  border-top: 1px solid var(--flowy-border-subtle);
+}
+
+.flowy-settings-row--disabled {
+  opacity: 0.62;
+}
+
+.flowy-settings-row__copy {
+  min-width: 0;
+  max-width: 70ch;
+}
+
+.flowy-settings-row__label {
+  color: var(--flowy-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.flowy-settings-row__description {
+  margin-top: 2px;
+  color: var(--flowy-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.flowy-settings-row__control {
+  min-width: 0;
+  justify-self: end;
+}
+
+.flowy-settings-row__control--compact {
+  width: max-content;
+}
+
+.flowy-settings-row__control--field {
+  width: clamp(220px, 30cqi, 360px);
+}
+
+.flowy-settings-row__control--actions {
+  width: max-content;
+  max-width: 100%;
+}
+
+.flowy-settings-row__control--compound {
+  width: clamp(280px, 40cqi, 440px);
+}
+
+.flowy-settings-row__control--compound .arco-radio-group {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.flowy-settings-row__control--compound :is(.arco-radio, .arco-radio-button) {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.flowy-settings-row__control--field :is(.arco-input, .arco-input-group, .arco-select, .arco-select-view, .arco-input-number, .nomi-dir-input),
+.flowy-settings-row__control--compound :is(.arco-input, .arco-input-group, .arco-select, .arco-select-view, .arco-input-number) {
+  max-width: 100%;
+}
+
+.flowy-settings-list :is(.arco-input, .arco-input-number, .arco-select-view, .arco-textarea) {
+  border-color: var(--flowy-border-subtle);
+  background: var(--flowy-raised);
+}
+
+.flowy-settings-control-group {
+  display: flex;
+  max-width: 100%;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.flowy-settings-row__control--actions :is(.arco-btn, [role='button']),
+.flowy-settings-control-group :is(.arco-btn, [role='button']) {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.flowy-settings-row__control--actions :is(svg, .arco-icon),
+.flowy-settings-control-group :is(svg, .arco-icon) {
+  flex: 0 0 auto;
+}
+
+.flowy-settings-row__status {
+  margin-top: 6px;
+}
+
+.flowy-settings-status {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  color: var(--flowy-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.flowy-settings-status--error {
+  color: var(--color-danger-6, #d9465f);
+}
+
+.flowy-settings-status--warning {
+  color: var(--color-warning-6, #d99a1f);
+}
+
+.flowy-settings-status--success {
+  color: var(--color-success-6, #238636);
+}
+
+.flowy-settings-status--restart-required {
+  color: var(--flowy-selected-fg);
+}
+
+@container (max-width: 760px) {
+  .flowy-settings-row__control--actions,
+  .flowy-settings-row__control--compound {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-self: stretch;
+  }
+}
+
+@container (max-width: 640px) {
+  .flowy-settings-row__control--field {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-self: stretch;
+  }
+}
+
+@container (max-width: 420px) {
+  .flowy-settings-row__control--compact {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}
+
+.flowy-settings-empty-state {
+  display: flex;
+  min-height: 176px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+
+.flowy-settings-action-bar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 2;
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+  border: 1px solid var(--flowy-border-subtle);
+  border-radius: var(--flowy-radius-md);
+  background: var(--flowy-raised);
+  box-shadow: var(--flowy-shadow-structure);
+  padding: 10px 12px;
+  animation: flowy-settings-action-bar-enter var(--flowy-motion-state) var(--flowy-ease-enter);
+}
+
+.flowy-settings-action-bar .arco-btn {
+  white-space: nowrap;
+}
+
+.flowy-settings-tabs > .arco-tabs-header {
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--flowy-border-subtle);
+}
+
+.flowy-settings-tabs .arco-tabs-header-nav {
+  gap: 4px;
+  min-height: 42px;
+}
+
+.flowy-settings-tabs .arco-tabs-header-title {
+  margin: 0 4px;
+  padding: 10px 8px;
+  color: var(--flowy-text-secondary);
+  font-weight: 500;
+  line-height: 20px;
+  transition: color var(--flowy-motion-fast) var(--flowy-ease-enter);
+}
+
+.flowy-settings-tabs .arco-tabs-header-title:hover {
+  color: var(--flowy-text-primary);
+}
+
+.flowy-settings-tabs .arco-tabs-header-title-active,
+.flowy-settings-tabs .arco-tabs-header-title-active:hover {
+  color: var(--flowy-selected-fg);
+}
+
+.flowy-settings-tabs .arco-tabs-header-ink {
+  height: 2px;
+  border-radius: 999px;
+  background: var(--flowy-selected-fg);
+  transition: transform var(--flowy-motion-state) var(--flowy-ease-move);
+}
+
+.flowy-settings-tabs .arco-tabs-header-title:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: -2px;
+  border-radius: var(--flowy-radius-sm);
+}
+
+.settings-page-content--form {
+  max-width: 960px;
+}
+
+.settings-page-content--hub {
+  max-width: 1180px;
+}
+
+[data-settings-page-content] {
+  animation: flowy-settings-content-enter var(--flowy-motion-fast) var(--flowy-ease-enter);
+}
+
+@keyframes flowy-settings-content-enter {
+  from { opacity: 0.72; }
+  to { opacity: 1; }
+}
+
+@keyframes flowy-settings-action-bar-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-sider__selection-indicator,
+  .settings-sider__item {
+    transition: none !important;
+  }
+
+  [data-settings-page-content],
+  .flowy-settings-action-bar {
+    animation: none;
+  }
+
+  .settings-sider__item:active {
+    transform: none;
+  }
+
+  .flowy-settings-tabs .arco-tabs-header-ink,
+  .flowy-settings-tabs .arco-tabs-header-title {
+    transition: none;
+  }
+}
+
 /* Settings mobile top nav */
 @media (max-width: 767px) {
   .settings-mobile-top-nav {
@@ -46,5 +390,22 @@
   .settings-mobile-top-nav__label {
     white-space: nowrap;
     font-weight: 500;
+  }
+
+  .flowy-settings-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .flowy-settings-row__control {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .flowy-settings-action-bar {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

@@ -46,15 +46,21 @@
 /* Layout sider base styles */
 .layout-sider {
   overflow-x: hidden;
-  box-shadow: none !important;
-  border-right: 1px solid var(--border-base);
+  background: var(--flowy-panel);
+  box-shadow: var(--flowy-shadow-structure) !important;
+  border-right: 1px solid var(--flowy-border-subtle);
 }
 
 /* Shared page frame for settings and standalone hubs. Keeping this at the
    layout layer prevents individual modules from drifting in background or spacing. */
 .app-page-shell {
   padding: var(--flowy-space-6) var(--flowy-space-7);
-  background-color: var(--bg-base);
+  background-color: var(--flowy-canvas);
+}
+
+.layout-content {
+  background: var(--flowy-canvas);
+  color: var(--flowy-text-primary);
 }
 
 @media (max-width: 767px) {

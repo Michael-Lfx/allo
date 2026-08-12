@@ -823,7 +823,6 @@ const CreateTaskDialog: React.FC<CreateTaskDialogProps> = ({
                 })}
                 triggerTestId='cron-workspace-trigger'
                 menuTestId='cron-workspace-menu'
-                menuZIndex={10020}
               />
             </FormItem>
           )}

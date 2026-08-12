@@ -6,11 +6,11 @@
 
 import { configService } from '@/common/config/configService';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
+import { SettingsRow } from '@/renderer/components/settings/SettingsPagePrimitives';
 import { Message, Switch } from '@arco-design/web-react';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import DeveloperModePasswordModal from './DeveloperModePasswordModal';
-import PreferenceRow from './PreferenceRow';
 
 const DeveloperModeSetting: React.FC = () => {
   const { t } = useTranslation();
@@ -47,12 +47,12 @@ const DeveloperModeSetting: React.FC = () => {
 
   return (
     <>
-      <PreferenceRow
+      <SettingsRow
         label={t('settings.developerMode.title')}
         description={t('settings.developerMode.description')}
-      >
-        <Switch checked={enabled} onChange={handleToggle} />
-      </PreferenceRow>
+        control={<Switch checked={enabled} onChange={handleToggle} />}
+        controlLayout='compact'
+      />
 
       <DeveloperModePasswordModal
         visible={passwordModalVisible}

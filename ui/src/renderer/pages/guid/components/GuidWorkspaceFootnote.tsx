@@ -3,11 +3,10 @@
 import { ipcBridge } from '@/common';
 import CopyIconButton from '@/renderer/components/base/CopyIconButton';
 import PathText from '@/renderer/components/base/PathText';
-import { addRecentWorkspace, getRecentWorkspaces } from '@/renderer/components/workspace';
+import { addRecentWorkspace, getRecentWorkspaces, WorkspacePickerPopover } from '@/renderer/components/workspace';
 import { Tooltip } from '@arco-design/web-react';
 import { Close, Down } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import styles from '../index.module.css';
 
@@ -54,9 +53,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
   const recentWorkspaces = getRecentWorkspaces();
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
-  const triggerRef = useRef<HTMLButtonElement | HTMLDivElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const handleBrowseWorkspace = useCallback(() => {
@@ -84,22 +81,6 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
     [onSelectWorkspace]
   );
 
-  const openDropdown = useCallback(() => {
-    const el = triggerRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    // position above the trigger, aligned to left edge
-    setDropdownStyle({
-      position: 'fixed',
-      left: rect.left,
-      bottom: window.innerHeight - rect.top + 6,
-      minWidth: 230,
-      zIndex: 9999,
-    });
-    setOpen(true);
-    setTimeout(() => searchRef.current?.focus(), 50);
-  }, []);
-
   const closeDropdown = useCallback(() => {
     setOpen(false);
     setSearchQuery('');
@@ -107,26 +88,14 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
 
   const toggleOpen = useCallback(() => {
     if (open) closeDropdown();
-    else openDropdown();
-  }, [open, openDropdown, closeDropdown]);
+    else setOpen(true);
+  }, [open, closeDropdown]);
 
-  // close on outside click
   useEffect(() => {
     if (!open) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        triggerRef.current &&
-        !triggerRef.current.contains(target) &&
-        dropdownRef.current &&
-        !dropdownRef.current.contains(target)
-      ) {
-        closeDropdown();
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open, closeDropdown]);
+    const frame = requestAnimationFrame(() => searchRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
 
   const filteredRecent = recentWorkspaces.filter((p) => {
     if (!searchQuery) return true;
@@ -136,9 +105,20 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
     );
   });
 
-  const dropdownEl = open
-    ? createPortal(
-        <div ref={dropdownRef} className={styles.wsDropdown} style={dropdownStyle}>
+  const dropdownEl = (
+    <WorkspacePickerPopover
+      open={open}
+      onOpenChange={(visible) => {
+        setOpen(visible);
+        if (!visible) setSearchQuery('');
+      }}
+      triggerRef={triggerRef}
+      preferredPlacement='above'
+      minWidth={230}
+      maxWidth={320}
+      className={styles.wsDropdown}
+      testId='guid-workspace-picker-popover'
+    >
           <div className={styles.wsDropdownSearch}>
             <svg
               width='12'
@@ -232,10 +212,8 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
               <span>{t('guid.workspace.defaultWorkspace')}</span>
             </button>
           </>
-        </div>,
-        document.body
-      )
-    : null;
+    </WorkspacePickerPopover>
+  );
 
   return (
     <div className={styles.workspaceFootnote}>
@@ -244,7 +222,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
           <Tooltip content={workspaceDir} position='top'>
             <div className={styles.workspacePill}>
               <button
-                ref={triggerRef as React.RefObject<HTMLButtonElement>}
+                ref={triggerRef}
                 className={`${styles.workspaceSelector} ${styles.workspacePillMain}`}
                 onClick={toggleOpen}
               >
@@ -280,7 +258,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
       ) : (
         <>
           <button
-            ref={triggerRef as React.RefObject<HTMLButtonElement>}
+            ref={triggerRef}
             className={styles.workspaceSelector}
             data-testid='workspace-selector-btn'
             onClick={recentWorkspaces.length > 0 ? toggleOpen : handleBrowseWorkspace}

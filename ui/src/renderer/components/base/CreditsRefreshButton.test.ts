@@ -41,6 +41,13 @@ describe('credits refresh button', () => {
     expect(componentSource.includes('<button')).toBe(false);
   });
 
+  test('does not reveal refresh details on hover while retaining its accessible name', () => {
+    expect(componentSource.includes("import { Tooltip }")).toBe(false);
+    expect(componentSource.includes('<Tooltip')).toBe(false);
+    expect(componentSource.includes('aria-label={label}')).toBe(true);
+    expect(componentSource.includes("event.key === 'Enter' || event.key === ' '")).toBe(true);
+  });
+
   test('uses the per-skin control focus ring for keyboard focus', () => {
     expect(componentSource.includes('var(--control-focus-ring)')).toBe(true);
   });

@@ -48,6 +48,7 @@ describe('mini-app composer entry wiring', () => {
 
   test('GuidPage owns the mode, swaps the placeholder, and routes the send', () => {
     expect(guidPage.includes('const [miniAppMode, setMiniAppMode] = useState(false)')).toBe(true);
+    expect(guidPage.includes('onCreateMiniApp=')).toBe(false);
     expect(guidPage.includes('miniAppActive={miniAppMode}')).toBe(true);
     expect(guidPage.includes('onDismissMiniApp={() => setMiniAppMode(false)}')).toBe(true);
     expect(guidPage.includes("t('miniApps.composer.placeholder')")).toBe(true);
@@ -98,7 +99,7 @@ describe('mini-app composer entry wiring', () => {
 
   test('mini-app mode and an armed AutoWork entry are mutually exclusive', () => {
     expect(guidPage.includes('if (isAutoWorkMode) setMiniAppMode(false);')).toBe(true);
-    expect(guidPage.includes('onCreateMiniApp={isAutoWorkMode ? undefined : () => setMiniAppMode(true)}')).toBe(true);
+    expect(guidPage.includes('onCreateMiniApp=')).toBe(false);
   });
 
   test('GuidPage activates from the ?miniapp=1 query and strips it', () => {

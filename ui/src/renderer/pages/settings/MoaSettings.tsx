@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, InputNumber, Message, Select, Switch, Typography } from '@arco-design/web-react';
+import { Button, InputNumber, Select, Switch } from '@arco-design/web-react';
 import { Delete, Plus } from '@icon-park/react';
 import { configService } from '@/common/config/configService';
 import type { IProvider } from '@/common/config/storage';
@@ -10,6 +10,15 @@ import type { ProviderId } from '@/common/types/ids';
 import { useModelProviderList, useProvidersQuery } from '@renderer/hooks/agent/useModelProviderList';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import { formatCloudModelLabel } from '@renderer/utils/model/cloudModelLabel';
+import {
+  SettingsActionBar,
+  SettingsControlGroup,
+  SettingsEmptyState,
+  SettingsGroup,
+  SettingsPageHeader,
+  SettingsList,
+  SettingsRow,
+} from '@/renderer/components/settings/SettingsPagePrimitives';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
 
 /** One reference-model row on the wire (snake_case MoaSettings DTO). */
@@ -141,6 +150,8 @@ export function serializeMoaSettings(form: MoaFormState): string {
 const MoaSettings: React.FC = () => {
   const { t } = useTranslation();
   const [form, setForm] = useState<MoaFormState>(() => ({ ...DEFAULT_FORM, references: [] }));
+  const [savedForm, setSavedForm] = useState<MoaFormState>(() => ({ ...DEFAULT_FORM, references: [] }));
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -154,7 +165,9 @@ const MoaSettings: React.FC = () => {
     let cancelled = false;
     void configService.whenReady().then(() => {
       if (cancelled) return;
-      setForm(parseMoaSettings(configService.get('moa_settings')));
+      const saved = parseMoaSettings(configService.get('moa_settings'));
+      setForm(saved);
+      setSavedForm(saved);
       setLoading(false);
     });
     return () => {
@@ -180,9 +193,10 @@ const MoaSettings: React.FC = () => {
     setSaving(true);
     try {
       await configService.set('moa_settings', serializeMoaSettings(form));
-      Message.success(t('settings.moa.saved'));
+      setSavedForm(form);
+      setSaveError(null);
     } catch (e) {
-      Message.error(String(e));
+      setSaveError(String(e));
     } finally {
       setSaving(false);
     }
@@ -190,223 +204,104 @@ const MoaSettings: React.FC = () => {
 
   const findProvider = (providerId: string): IProvider | undefined =>
     enabledProviders.find((p) => p.id === providerId);
+  const isDirty = serializeMoaSettings(form) !== serializeMoaSettings(savedForm);
 
   return (
     <SettingsPageWrapper>
-      <div className='flex flex-col gap-20px max-w-720px'>
-        <div>
-          <Typography.Title heading={5} className='!m-0'>
-            {t('settings.moa.title')}
-          </Typography.Title>
-          <Typography.Paragraph className='!mb-0 text-t-tertiary text-13px'>
-            {t('settings.moa.description')}
-          </Typography.Paragraph>
-        </div>
+      <div className='space-y-24px'>
+        <SettingsPageHeader
+          title={t('settings.moa.title')}
+          description={t('settings.moa.description')}
+        />
 
-        <div className='flex flex-col gap-14px'>
-          <div className='flex items-center justify-between'>
-            <span className='text-t-primary text-14px font-500'>{t('settings.moa.enabled')}</span>
-            <Switch checked={form.enabled} onChange={(enabled) => patch({ enabled })} />
-          </div>
-          <Typography.Paragraph className='!mb-0 text-t-tertiary text-12px'>
-            {t('settings.moa.enabledHint')}
-          </Typography.Paragraph>
+        <SettingsGroup title={t('settings.moa.title')} description={t('settings.moa.enabledHint')}>
+          <SettingsList>
+            <SettingsRow
+              label={t('settings.moa.enabled')}
+              control={<Switch checked={form.enabled} onChange={(enabled) => patch({ enabled })} />}
+              controlLayout='compact'
+            />
+          </SettingsList>
+        </SettingsGroup>
 
-          {/* Reference model slots */}
-          <Typography.Text className='text-t-primary text-14px font-500 mt-4px'>
-            {t('settings.moa.referencesTitle')}
-          </Typography.Text>
-          <Typography.Paragraph className='!mb-0 text-t-tertiary text-12px'>
-            {t('settings.moa.referencesHint')}
-          </Typography.Paragraph>
-
-          {form.references.length === 0 && (
-            <div className='rounded-8px border border-solid border-[var(--color-border-2)] bg-fill-1 px-12px py-10px text-12px text-t-tertiary'>
-              {t('settings.moa.referencesEmpty')}
-            </div>
+        <SettingsGroup title={t('settings.moa.referencesTitle')} description={t('settings.moa.referencesHint')}>
+          {form.references.length === 0 ? (
+            <SettingsList>
+              <SettingsEmptyState
+                title={t('settings.moa.referencesEmpty')}
+                action={<Button size='small' icon={<Plus theme='outline' size='14' />} onClick={addReference}>{t('settings.moa.addReference')}</Button>}
+              />
+            </SettingsList>
+          ) : (
+            <>
+              <SettingsList>
+                {form.references.map((row, index) => {
+                  const provider = findProvider(row.provider_id);
+                  const availableModels = provider ? getAvailableModels(provider) : [];
+                  const staleModel = Boolean(row.model) && Boolean(provider) && !availableModels.includes(row.model);
+                  return (
+                    <SettingsRow
+                      key={index}
+                      label={t('settings.moa.referenceNumber', { index: index + 1 })}
+                      controlLayout='compound'
+                      control={
+                        <div className='flex w-full flex-wrap items-center justify-end gap-8px'>
+                          <Select size='small' className='min-w-160px flex-1' placeholder={t('settings.moa.referenceProvider')} value={row.provider_id || undefined} onChange={(provider_id: ProviderId) => patchReference(index, { provider_id, model: '' })}>
+                            {enabledProviders.map((p) => <Select.Option key={p.id} value={p.id}>{providerLabel(p)}</Select.Option>)}
+                          </Select>
+                          <Select size='small' className='min-w-200px flex-[1.2]' placeholder={t('settings.moa.referenceModel')} value={row.model || undefined} disabled={!provider} onChange={(model: string) => patchReference(index, { model })}>
+                            {staleModel && <Select.Option key={row.model} value={row.model} disabled>{formatCloudModelLabel(row.model)}</Select.Option>}
+                            {availableModels.map((model) => <Select.Option key={model} value={model}>{formatCloudModelLabel(model, provider?.model_descriptions)}</Select.Option>)}
+                          </Select>
+                          <Button size='small' status='danger' icon={<Delete theme='outline' size='14' />} onClick={() => removeReference(index)} aria-label={t('settings.moa.removeReference')} />
+                          <div className='flex w-full flex-wrap justify-end gap-8px text-12px text-t-secondary'>
+                            <label className='inline-flex items-center gap-6px'>{t('settings.moa.referenceRowMaxTokens')}<InputNumber size='small' className='w-110px' min={1} step={1} placeholder={t('settings.moa.optional')} value={row.max_tokens} onChange={(value) => patchReference(index, { max_tokens: typeof value === 'number' ? value : undefined })} /></label>
+                            <label className='inline-flex items-center gap-6px'>{t('settings.moa.referenceRowTemperature')}<InputNumber size='small' className='w-110px' min={0} max={2} step={0.1} placeholder={t('settings.moa.optional')} value={row.temperature} onChange={(value) => patchReference(index, { temperature: typeof value === 'number' ? value : undefined })} /></label>
+                          </div>
+                        </div>
+                      }
+                    />
+                  );
+                })}
+              </SettingsList>
+              <SettingsControlGroup className='mt-10px justify-start'>
+                <Button size='small' icon={<Plus theme='outline' size='14' />} onClick={addReference}>{t('settings.moa.addReference')}</Button>
+              </SettingsControlGroup>
+            </>
           )}
+        </SettingsGroup>
 
-          {form.references.map((row, index) => {
-            const provider = findProvider(row.provider_id);
-            const availableModels = provider ? getAvailableModels(provider) : [];
-            const staleModel = Boolean(row.model) && Boolean(provider) && !availableModels.includes(row.model);
-            return (
-              <div
-                key={index}
-                className='rounded-8px border border-solid border-[var(--color-border-2)] bg-fill-1 p-10px flex flex-col gap-8px'
-              >
-                <div className='flex items-center gap-8px flex-wrap'>
-                  <Select
-                    size='small'
-                    style={{ width: 180 }}
-                    placeholder={t('settings.moa.referenceProvider')}
-                    value={row.provider_id || undefined}
-                    onChange={(provider_id: ProviderId) => patchReference(index, { provider_id, model: '' })}
-                  >
-                    {enabledProviders.map((p) => (
-                      <Select.Option key={p.id} value={p.id}>
-                        {providerLabel(p)}
-                      </Select.Option>
-                    ))}
-                  </Select>
-                  <Select
-                    size='small'
-                    style={{ width: 220 }}
-                    placeholder={t('settings.moa.referenceModel')}
-                    value={row.model || undefined}
-                    disabled={!provider}
-                    onChange={(model: string) => patchReference(index, { model })}
-                  >
-                    {staleModel && (
-                      <Select.Option key={row.model} value={row.model} disabled>
-                        {formatCloudModelLabel(row.model)}
-                      </Select.Option>
-                    )}
-                    {availableModels.map((m) => (
-                      <Select.Option key={m} value={m}>
-                        {formatCloudModelLabel(m, provider?.model_descriptions)}
-                      </Select.Option>
-                    ))}
-                  </Select>
-                  <Button
-                    size='small'
-                    status='danger'
-                    icon={<Delete theme='outline' size='14' />}
-                    onClick={() => removeReference(index)}
-                    aria-label={t('settings.moa.removeReference')}
-                  />
-                </div>
-                <div className='flex items-center gap-12px flex-wrap'>
-                  <div className='flex items-center gap-6px'>
-                    <span className='text-12px text-t-secondary'>{t('settings.moa.referenceRowMaxTokens')}</span>
-                    <InputNumber
-                      size='small'
-                      style={{ width: 120 }}
-                      min={1}
-                      step={1}
-                      placeholder={t('settings.moa.optional')}
-                      value={row.max_tokens}
-                      onChange={(v) => patchReference(index, { max_tokens: typeof v === 'number' ? v : undefined })}
-                    />
-                  </div>
-                  <div className='flex items-center gap-6px'>
-                    <span className='text-12px text-t-secondary'>{t('settings.moa.referenceRowTemperature')}</span>
-                    <InputNumber
-                      size='small'
-                      style={{ width: 120 }}
-                      min={0}
-                      max={2}
-                      step={0.1}
-                      placeholder={t('settings.moa.optional')}
-                      value={row.temperature}
-                      onChange={(v) => patchReference(index, { temperature: typeof v === 'number' ? v : undefined })}
-                    />
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+        <SettingsGroup title={t('settings.moa.fanoutSection')}>
+          <SettingsList>
+            <SettingsRow
+              label={t('settings.moa.fanoutSection')}
+              description={t('settings.moa.fanoutHint')}
+              controlLayout='compound'
+              control={<div className='flex w-full flex-wrap items-center justify-end gap-8px'><Select size='small' className='min-w-220px flex-1' value={form.fanoutMode} onChange={(fanoutMode: FanoutMode) => patch({ fanoutMode })}><Select.Option value='user_turn'>{t('settings.moa.fanoutUserTurn')}</Select.Option><Select.Option value='per_iteration'>{t('settings.moa.fanoutPerIteration')}</Select.Option><Select.Option value='every_n'>{t('settings.moa.fanoutEveryN')}</Select.Option></Select>{form.fanoutMode === 'every_n' && <label className='inline-flex items-center gap-6px text-12px text-t-secondary'>{t('settings.moa.fanoutEveryNCount')}<InputNumber size='small' className='w-100px' min={1} step={1} value={form.everyN} onChange={(value) => patch({ everyN: typeof value === 'number' ? Math.max(1, Math.round(value)) : 1 })} /></label>}</div>}
+            />
+            <SettingsRow label={t('settings.moa.referenceTimeoutSecs')} controlLayout='field' control={<InputNumber className='w-160px' min={1} step={1} placeholder='120' value={form.referenceTimeoutSecs} onChange={(value) => patch({ referenceTimeoutSecs: typeof value === 'number' ? value : undefined })} />} />
+            <SettingsRow label={t('settings.moa.referenceMaxTokens')} controlLayout='field' control={<InputNumber className='w-160px' min={1} step={1} placeholder='4096' value={form.referenceMaxTokens} onChange={(value) => patch({ referenceMaxTokens: typeof value === 'number' ? value : undefined })} />} />
+          </SettingsList>
+        </SettingsGroup>
 
-          <div>
-            <Button size='small' icon={<Plus theme='outline' size='14' />} onClick={addReference}>
-              {t('settings.moa.addReference')}
-            </Button>
-          </div>
-
-          {/* Fan-out cadence */}
-          <Typography.Text className='text-t-primary text-14px font-500 mt-4px'>
-            {t('settings.moa.fanoutSection')}
-          </Typography.Text>
-          <div className='flex items-center gap-8px flex-wrap'>
-            <Select
-              size='small'
-              style={{ width: 220 }}
-              value={form.fanoutMode}
-              onChange={(fanoutMode: FanoutMode) => patch({ fanoutMode })}
-            >
-              <Select.Option value='user_turn'>{t('settings.moa.fanoutUserTurn')}</Select.Option>
-              <Select.Option value='per_iteration'>{t('settings.moa.fanoutPerIteration')}</Select.Option>
-              <Select.Option value='every_n'>{t('settings.moa.fanoutEveryN')}</Select.Option>
-            </Select>
-            {form.fanoutMode === 'every_n' && (
-              <div className='flex items-center gap-6px'>
-                <span className='text-12px text-t-secondary'>{t('settings.moa.fanoutEveryNCount')}</span>
-                <InputNumber
-                  size='small'
-                  style={{ width: 100 }}
-                  min={1}
-                  step={1}
-                  value={form.everyN}
-                  onChange={(v) => patch({ everyN: typeof v === 'number' ? Math.max(1, Math.round(v)) : 1 })}
-                />
-              </div>
-            )}
-          </div>
-          <Typography.Paragraph className='!mb-0 text-t-tertiary text-12px'>
-            {t('settings.moa.fanoutHint')}
-          </Typography.Paragraph>
-
-          {/* Limits */}
-          <div className='flex items-center gap-12px flex-wrap'>
-            <div className='flex flex-col gap-6px'>
-              <span className='text-t-secondary text-13px'>{t('settings.moa.referenceTimeoutSecs')}</span>
-              <InputNumber
-                size='small'
-                style={{ width: 160 }}
-                min={1}
-                step={1}
-                placeholder='120'
-                value={form.referenceTimeoutSecs}
-                onChange={(v) => patch({ referenceTimeoutSecs: typeof v === 'number' ? v : undefined })}
-              />
-            </div>
-            <div className='flex flex-col gap-6px'>
-              <span className='text-t-secondary text-13px'>{t('settings.moa.referenceMaxTokens')}</span>
-              <InputNumber
-                size='small'
-                style={{ width: 160 }}
-                min={1}
-                step={1}
-                placeholder='4096'
-                value={form.referenceMaxTokens}
-                onChange={(v) => patch({ referenceMaxTokens: typeof v === 'number' ? v : undefined })}
-              />
-            </div>
-          </div>
-
-          {/* Privacy filter */}
-          <div className='flex items-center justify-between gap-12px'>
-            <span className='text-t-primary text-14px'>{t('settings.moa.privacyFilter')}</span>
-            <Select
-              size='small'
-              style={{ width: 220 }}
-              value={form.privacyFilter}
-              onChange={(privacyFilter: PrivacyFilter) => patch({ privacyFilter })}
-            >
-              <Select.Option value=''>{t('settings.moa.privacyOff')}</Select.Option>
-              <Select.Option value='display'>{t('settings.moa.privacyDisplay')}</Select.Option>
-              <Select.Option value='full'>{t('settings.moa.privacyFull')}</Select.Option>
-            </Select>
-          </div>
-          <Typography.Paragraph className='!mb-0 text-t-tertiary text-12px'>
-            {t('settings.moa.privacyHint')}
-          </Typography.Paragraph>
-
-          {/* Trace */}
-          <div className='flex items-center justify-between'>
-            <span className='text-t-primary text-14px'>{t('settings.moa.traceEnabled')}</span>
-            <Switch checked={form.traceEnabled} onChange={(traceEnabled) => patch({ traceEnabled })} />
-          </div>
-          <Typography.Paragraph className='!mb-0 text-t-tertiary text-12px'>
-            {t('settings.moa.traceHint')}
-          </Typography.Paragraph>
-
-          <div className='flex flex-wrap gap-8px'>
-            <Button type='primary' loading={saving || loading} onClick={save}>
-              {t('common.save', { defaultValue: 'Save' })}
-            </Button>
-          </div>
-        </div>
+        <SettingsGroup title={t('settings.moa.privacyFilter')}>
+          <SettingsList>
+            <SettingsRow label={t('settings.moa.privacyFilter')} description={t('settings.moa.privacyHint')} controlLayout='field' control={<Select className='w-full' value={form.privacyFilter} onChange={(privacyFilter: PrivacyFilter) => patch({ privacyFilter })}><Select.Option value=''>{t('settings.moa.privacyOff')}</Select.Option><Select.Option value='display'>{t('settings.moa.privacyDisplay')}</Select.Option><Select.Option value='full'>{t('settings.moa.privacyFull')}</Select.Option></Select>} />
+            <SettingsRow label={t('settings.moa.traceEnabled')} description={t('settings.moa.traceHint')} control={<Switch checked={form.traceEnabled} onChange={(traceEnabled) => patch({ traceEnabled })} />} controlLayout='compact' />
+          </SettingsList>
+        </SettingsGroup>
+        <SettingsActionBar
+          visible={isDirty || Boolean(saveError)}
+          saveLabel={t('common.save', { defaultValue: 'Save' })}
+          onSave={() => void save()}
+          resetLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+          onReset={() => {
+            setForm(savedForm);
+            setSaveError(null);
+          }}
+          loading={saving || loading}
+          error={saveError}
+        />
       </div>
     </SettingsPageWrapper>
   );

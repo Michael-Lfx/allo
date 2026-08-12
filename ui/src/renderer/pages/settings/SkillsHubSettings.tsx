@@ -28,7 +28,7 @@ import SkillDetailDrawer from './skill/SkillDetailDrawer';
 import SkillTagModal from './skill/SkillTagModal';
 import { resolveSkillDisplay } from './skill/skillDisplay';
 import { filterSkillsByTags, type SkillTagFilterState } from './skill/skillFilter';
-import { Button, Input, Modal } from '@arco-design/web-react';
+import { Button, Dropdown, Input, Menu, Modal } from '@arco-design/web-react';
 import { CloseSmall, FileZip, FolderOpen, Info, Refresh, Search } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -41,7 +41,7 @@ import { useSearchParams } from 'react-router-dom';
  * breakpoints); copied from PresetListPanel so both surfaces sit on the same
  * 232px lower bound.
  */
-const CARD_GRID_COLS = 'repeat(auto-fill, minmax(min(232px, 100%), 1fr))';
+const CARD_GRID_COLS = 'repeat(auto-fit, minmax(min(270px, 100%), 1fr))';
 const IMPORT_ACTION_BUTTON_CLASS =
   '!rounded-[100px] !h-34px !px-14px !text-t-primary flex items-center gap-6px';
 
@@ -253,7 +253,7 @@ const SkillsHubSettings: React.FC = () => {
       {messageContext}
       <div className='space-y-16px'>
         <div className='py-2'>
-          <div className={`bg-fill-2 rounded-24px ${isMobile ? 'p-16px' : 'p-20px'}`}>
+          <div>
           {/* Header: title + actions */}
           <div className='flex flex-col gap-16px mb-20px'>
             <div className={`flex gap-12px ${isMobile ? 'flex-col' : 'items-start justify-between'}`}>
@@ -268,7 +268,7 @@ const SkillsHubSettings: React.FC = () => {
                   })}
                 </p>
               </div>
-              <div className={`flex items-center gap-10px ${isMobile ? 'w-full flex-wrap' : 'flex-shrink-0'}`}>
+              <div className={`flex flex-wrap items-center justify-end gap-10px ${isMobile ? 'w-full' : 'flex-shrink-0'}`}>
                 <Button
                   type='text'
                   size='small'
@@ -298,33 +298,26 @@ const SkillsHubSettings: React.FC = () => {
                     setSearchExpanded(true);
                   }}
                 />
-                <Button
-                  size='small'
-                  data-testid='btn-import-agent-skills'
-                  className={IMPORT_ACTION_BUTTON_CLASS}
-                  icon={<FolderOpen size={14} fill='currentColor' />}
-                  onClick={() => setAgentImportVisible(true)}
+                <Dropdown
+                  trigger='click'
+                  droplist={
+                    <Menu>
+                      <Menu.Item key='agent' data-testid='btn-import-agent-skills' onClick={() => setAgentImportVisible(true)}>
+                        <FolderOpen size={14} fill='currentColor' /> {t('settings.agentSkillImport.shortAction', { defaultValue: 'Import from Agent' })}
+                      </Menu.Item>
+                      <Menu.Item key='folder' data-testid='btn-manual-import' onClick={handleImportFolder}>
+                        <FolderOpen size={14} fill='currentColor' /> {t('settings.skillsHub.manualImport', { defaultValue: 'Import Skills' })}
+                      </Menu.Item>
+                      <Menu.Item key='zip' data-testid='btn-import-zip' onClick={handleImportZip}>
+                        <FileZip size={14} fill='currentColor' /> {t('settings.skillsHub.importZip', { defaultValue: 'Import .zip' })}
+                      </Menu.Item>
+                    </Menu>
+                  }
                 >
-                  {t('settings.agentSkillImport.shortAction', { defaultValue: 'Import from Agent' })}
-                </Button>
-                <Button
-                  size='small'
-                  data-testid='btn-manual-import'
-                  className={IMPORT_ACTION_BUTTON_CLASS}
-                  icon={<FolderOpen size={14} fill='currentColor' />}
-                  onClick={handleImportFolder}
-                >
-                  {t('settings.skillsHub.manualImport', { defaultValue: 'Import Skills' })}
-                </Button>
-                <Button
-                  size='small'
-                  data-testid='btn-import-zip'
-                  className={IMPORT_ACTION_BUTTON_CLASS}
-                  icon={<FileZip size={14} fill='currentColor' />}
-                  onClick={handleImportZip}
-                >
-                  {t('settings.skillsHub.importZip', { defaultValue: 'Import .zip' })}
-                </Button>
+                  <Button size='small' className={`${IMPORT_ACTION_BUTTON_CLASS} !whitespace-nowrap`} icon={<FolderOpen size={14} fill='currentColor' />}>
+                    {t('settings.skillsHub.manualImport', { defaultValue: 'Import Skills' })}
+                  </Button>
+                </Dropdown>
               </div>
             </div>
 

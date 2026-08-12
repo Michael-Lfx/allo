@@ -57,7 +57,7 @@
   --flowy-danger: #b91c1c;
   --flowy-info: #0369a1;
 
-  /* Surfaces — light */
+  /* Legacy Ink Studio surfaces — retained as fallbacks for external themes. */
   --flowy-surface-0: #f8fafc;
   --flowy-surface-1: #ffffff;
   --flowy-surface-2: #f1f5f9;
@@ -77,6 +77,35 @@
 
   /* Ban decorative pink flood fills in commercial slice */
   --flowy-ban-wash: transparent;
+
+  /* Quiet Kinetic semantic interface. These aliases intentionally resolve at
+     use time so built-in and user themes can continue to override the existing
+     theme contract without knowing about the new layer. */
+  --flowy-canvas: var(--bg-base, var(--flowy-surface-0));
+  --flowy-panel: var(--bg-1, var(--flowy-surface-1));
+  --flowy-raised: var(--color-bg-popup, var(--bg-2, var(--flowy-surface-2)));
+  --flowy-interactive: var(--bg-2, var(--flowy-surface-2));
+  --flowy-interactive-hover: var(--bg-hover, var(--bg-3, var(--flowy-surface-3)));
+  --flowy-interactive-pressed: var(--bg-active, var(--bg-3, var(--flowy-surface-3)));
+  --flowy-selected-bg: color-mix(
+    in srgb,
+    rgb(var(--primary-6, 15, 118, 110)) 14%,
+    var(--flowy-interactive)
+  );
+  --flowy-selected-fg: var(--text-primary, var(--flowy-text-1));
+  --flowy-text-primary: var(--text-primary, var(--color-text-1, var(--flowy-text-1)));
+  --flowy-text-secondary: var(--text-secondary, var(--color-text-2, var(--flowy-text-2)));
+  --flowy-text-muted: var(--color-text-3, var(--flowy-text-3));
+  --flowy-border-subtle: var(--border-light, var(--color-border-2, var(--flowy-border)));
+  --flowy-border-structural: var(--border-base, var(--color-border-3, var(--flowy-border-strong-color)));
+  --flowy-focus: var(--control-focus-ring, var(--flowy-focus-ring));
+  --flowy-shadow-structure: 0 1px 2px color-mix(in srgb, var(--flowy-text-primary) 6%, transparent);
+  --flowy-shadow-raised:
+    0 12px 36px color-mix(in srgb, var(--flowy-text-primary) 9%, transparent),
+    0 2px 8px color-mix(in srgb, var(--flowy-text-primary) 6%, transparent);
+  --flowy-shadow-focus:
+    0 18px 52px color-mix(in srgb, var(--flowy-text-primary) 11%, transparent),
+    0 0 0 3px var(--flowy-focus);
 }
 
 [data-theme='dark'],
@@ -135,6 +164,47 @@ body[arco-theme='dark'] {
   background: var(--flowy-surface-1);
   border: var(--flowy-border-hairline) solid var(--flowy-border);
   border-radius: var(--flowy-radius-lg);
+}
+
+.flowy-surface-canvas {
+  background: var(--flowy-canvas);
+  color: var(--flowy-text-primary);
+}
+
+.flowy-surface-panel {
+  background: var(--flowy-panel);
+  border-color: var(--flowy-border-subtle);
+}
+
+.flowy-surface-raised {
+  background: var(--flowy-raised);
+  border: var(--flowy-border-hairline) solid var(--flowy-border-subtle);
+  box-shadow: var(--flowy-shadow-raised);
+}
+
+.flowy-interactive {
+  transition:
+    transform var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out),
+    opacity var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out);
+}
+
+.flowy-interactive:active {
+  transform: scale(0.985);
+}
+
+.flowy-interactive:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flowy-interactive {
+    transition: none;
+  }
+
+  .flowy-interactive:active {
+    transform: none;
+  }
 }
 
 .flowy-density-shell {

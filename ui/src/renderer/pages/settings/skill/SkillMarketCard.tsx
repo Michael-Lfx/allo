@@ -1,170 +1,156 @@
-import type { PresetTag } from '@/common/types/agent/presetTypes';
-import type { ISkillMarketItem } from '@/common/adapter/ipcBridge';
-import { getAvatarColorClass, normalizeTestId } from './skillPresentation';
-import { marketSourceLabel, translateMarketDescription } from './skillMarket';
-import { Button, Tag } from '@arco-design/web-react';
-import { Plus } from '@icon-park/react';
-import React from 'react';
+import { Button, Dropdown, Menu, Tag } from '@arco-design/web-react';
+import { Check, LinkOne, More, Plus } from '@icon-park/react';
+import React, { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { normalizeTestId } from './skillPresentation';
+import MarketCardShell from './MarketCardShell';
+import type { MarketActionState } from './marketContracts';
+import type { MarketItemViewModel } from './marketViewModel';
 
 type SkillMarketCardProps = {
-  item: ISkillMarketItem;
-  tagByKey: Map<string, PresetTag>;
-  localeKey: string;
-  adding?: boolean;
-  added?: boolean;
-  addedStateLoading?: boolean;
-  onAdd: (item: ISkillMarketItem) => void;
+  item: MarketItemViewModel;
+  actionLabel: string;
+  pendingLabel: string;
+  completedLabel?: string;
+  actionState?: MarketActionState;
+  busy?: boolean;
+  disabled?: boolean;
+  onAdd: (item: MarketItemViewModel) => void;
+  onOpenSource: (item: MarketItemViewModel) => void;
+  onCopyInstallCommand: (item: MarketItemViewModel) => void;
+  onViewDetails: (item: MarketItemViewModel, trigger?: HTMLElement) => void;
 };
 
-const MAX_VISIBLE_TAGS = 4;
+const MAX_VISIBLE_TAGS = 2;
 
-const resolveTagLabel = (tag: PresetTag, localeKey: string): string => tag.label_i18n?.[localeKey] || tag.label;
-
-const MarketSourceBadge: React.FC<{ source: ISkillMarketItem['source'] }> = ({ source }) => {
-  const label = marketSourceLabel(source);
-  const className = {
-    clawhub: '!bg-primary-1 !text-primary-6',
-    loophub: '!bg-[rgba(var(--warning-6),0.12)] !text-[rgb(var(--warning-7))]',
-    skillhub: '!bg-[rgba(var(--success-6),0.1)] !text-[rgb(var(--success-6))]',
-    skillhub_mcp: '!bg-[rgba(var(--arcoblue-6),0.1)] !text-[rgb(var(--arcoblue-6))]',
-    mcpworld: '!bg-[rgba(var(--purple-6),0.1)] !text-[rgb(var(--purple-6))]',
-    clawhub_plugins: '!bg-[rgba(var(--orange-6),0.12)] !text-[rgb(var(--orange-7))]',
-    skillhub_packages: '!bg-[rgba(var(--cyan-6),0.1)] !text-[rgb(var(--cyan-7))]',
-  }[source];
-
-  return (
-    <Tag
-      size='small'
-      bordered={false}
-      className={`!flex-shrink-0 !text-10px !leading-14px !px-6px !py-0 !rounded-6px ${className}`}
-    >
-      {label}
-    </Tag>
-  );
-};
-
+/**
+ * A market item is an article, not a giant button. Details and operations are
+ * explicit actions so keyboard users can understand and reach every affordance.
+ */
 const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
   item,
-  tagByKey,
-  localeKey,
-  adding = false,
-  added = false,
-  addedStateLoading = false,
+  actionLabel,
+  pendingLabel,
+  completedLabel,
+  actionState = 'ready',
+  busy = false,
+  disabled = false,
   onAdd,
+  onOpenSource,
+  onCopyInstallCommand,
+  onViewDetails,
 }) => {
   const { t } = useTranslation();
   const testId = normalizeTestId(item.id);
-  const requiresApiKey = item.tags?.includes('requires_api_key') ?? false;
-  const noApiKey = item.tags?.includes('no_api_key') ?? false;
-  const resolvedTags = [...(item.audience_tags ?? []), ...(item.scenario_tags ?? [])]
-    .map((key) => tagByKey.get(key))
-    .filter((tag): tag is PresetTag => Boolean(tag));
-  const rawTags = (item.tags ?? []).filter((tag) => !tagByKey.has(tag) && tag !== 'requires_api_key' && tag !== 'no_api_key');
-  const visibleResolvedTags = resolvedTags.slice(0, MAX_VISIBLE_TAGS);
-  const visibleRawTags = resolvedTags.length === 0 ? rawTags.slice(0, MAX_VISIBLE_TAGS) : [];
-  const totalTagCount = resolvedTags.length > 0 ? resolvedTags.length : rawTags.length;
-  const overflowCount = Math.max(0, totalTagCount - MAX_VISIBLE_TAGS);
-  const description = translateMarketDescription(item.description, item, localeKey);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
 
   return (
-    <div
-      data-testid={`skill-market-card-${testId}`}
-      className={[
-        'group relative flex flex-col rounded-16px border border-solid p-14px outline-none',
-        'transition-all duration-180',
-        'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:border-[var(--color-primary-light-4)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)]',
-      ].join(' ')}
-    >
-      <Button
-        size='mini'
-        type='primary'
-        data-testid={`btn-add-market-skill-${testId}`}
-        className='!absolute !right-12px !top-12px !rounded-[100px] !h-26px !px-10px !text-12px'
-        icon={added ? undefined : <Plus theme='outline' size={12} strokeWidth={3} />}
-        loading={adding}
-        disabled={adding || added || addedStateLoading}
-        onClick={() => onAdd(item)}
-      >
-        {added ? t('common.added', { defaultValue: 'Added' }) : t('common.add', { defaultValue: 'Add' })}
-      </Button>
-
-      <div className='flex items-start gap-10px pr-68px'>
-        <div
-          className={`flex-shrink-0 w-36px h-36px rounded-10px flex items-center justify-center font-bold text-13px shadow-sm ${getAvatarColorClass(item.name)}`}
-          title={`#${item.rank || '-'}`}
+    <MarketCardShell testId={`skill-market-card-${testId}`}>
+      <header className='grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-10px'>
+        <span
+          className='flex h-32px min-w-32px items-center justify-center rounded-8px bg-[var(--color-fill-2)] px-7px text-12px font-semibold text-t-secondary'
+          aria-label={item.rank ? `${t('settings.market.rank', { defaultValue: '排名' })} ${item.rank}` : undefined}
         >
-          {item.rank ? `#${item.rank}` : item.name.charAt(0).toUpperCase()}
-        </div>
-        <div className='min-w-0 flex-1 pt-2px'>
-          <div className='flex items-center gap-6px min-w-0 flex-wrap'>
-            <span
-              className='truncate max-w-full text-14px font-medium leading-20px text-[var(--color-text-1)]'
-              title={item.name}
-            >
-              {item.name}
-            </span>
-            <MarketSourceBadge source={item.source} />
-            {requiresApiKey && (
-              <Tag size='small' bordered={false} className='!bg-[rgba(var(--warning-6),0.12)] !text-[rgb(var(--warning-7))] !rounded-6px !text-10px'>
-                {t('settings.market.requiresApi', { defaultValue: 'Needs API' })}
+          {item.rank ? `#${item.rank}` : '–'}
+        </span>
+        <div className='min-w-0 pt-2px'>
+          <h3
+            className='m-0 overflow-hidden text-14px font-semibold leading-20px text-t-primary'
+            title={item.title}
+            style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
+          >
+            {item.title}
+          </h3>
+          {(item.requiresApi || item.noApi) && (
+            <div className='mt-4px flex flex-wrap items-center gap-4px'>
+              <Tag size='small' bordered={false} className='!rounded-6px !bg-fill-2 !text-t-secondary !text-10px'>
+                {item.requiresApi
+                  ? t('settings.market.requiresApi', { defaultValue: '需 API' })
+                  : t('settings.market.noApi', { defaultValue: '免 API' })}
               </Tag>
-            )}
-            {!requiresApiKey && noApiKey && (
-              <Tag size='small' bordered={false} className='!bg-[rgba(var(--success-6),0.1)] !text-[rgb(var(--success-6))] !rounded-6px !text-10px'>
-                {t('settings.market.noApi', { defaultValue: 'No API' })}
-              </Tag>
-            )}
-          </div>
-          {item.stats && <div className='mt-2px text-11px text-[var(--color-text-3)] truncate'>{item.stats}</div>}
+            </div>
+          )}
         </div>
-      </div>
+        <div className='flex shrink-0 items-center gap-4px'>
+          <Button
+            size='mini'
+            type='primary'
+            data-testid={`btn-add-market-skill-${testId}`}
+            loading={busy || actionState === 'checking'}
+            disabled={disabled}
+            className='!h-32px !min-w-88px !rounded-8px !px-10px !text-12px !whitespace-nowrap active:!scale-96 motion-reduce:active:!transform-none'
+            icon={
+              actionState === 'completed' ? (
+                <Check theme='outline' size={12} strokeWidth={3} fill='currentColor' />
+              ) : !busy && actionState !== 'checking' ? (
+                <Plus theme='outline' size={12} strokeWidth={3} fill='currentColor' />
+              ) : undefined
+            }
+            onClick={() => onAdd(item)}
+          >
+            {actionState === 'checking' ? t('common.loading', { defaultValue: '加载中' }) : actionState === 'completed' ? (completedLabel ?? actionLabel) : busy ? pendingLabel : actionLabel}
+          </Button>
+          <Dropdown
+            trigger='click'
+            droplist={
+              <Menu>
+                <Menu.Item key='open-source' onClick={() => onOpenSource(item)}>
+                  <LinkOne size={14} fill='currentColor' /> {t('settings.market.openSource', { defaultValue: '打开来源' })}
+                </Menu.Item>
+                <Menu.Item key='copy-command' onClick={() => onCopyInstallCommand(item)}>
+                  {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
+                </Menu.Item>
+              </Menu>
+            }
+          >
+            <Button
+              ref={moreButtonRef}
+              size='mini'
+              type='text'
+              aria-label={t('common.more', { defaultValue: '更多操作' })}
+              className='!h-32px !w-32px !rounded-8px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary active:!scale-96 motion-reduce:active:!transform-none'
+              icon={<More theme='outline' size={16} fill='currentColor' />}
+            />
+          </Dropdown>
+        </div>
+      </header>
 
-      <div
-        className='mt-10px text-12px leading-18px text-[var(--color-text-3)] min-h-[36px]'
-        title={item.description || undefined}
-        style={{
-          display: '-webkit-box',
-          WebkitLineClamp: 2,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden',
-        }}
+      {item.compactStats && <div className='mt-7px truncate text-11px text-t-tertiary'>{item.compactStats}</div>}
+
+      <p
+        className='mb-0 mt-10px overflow-hidden text-12px leading-18px text-t-secondary'
+        title={item.summary || undefined}
+        style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
       >
-        {description || t('settings.skillsMarket.noDescription', { defaultValue: '暂无描述。' })}
-      </div>
+        {item.summary || t('settings.skillsMarket.noDescription', { defaultValue: '暂无描述。' })}
+      </p>
 
-      {(visibleResolvedTags.length > 0 || visibleRawTags.length > 0) && (
+      {item.visibleTags.length > 0 && (
         <div className='mt-12px flex flex-wrap items-center gap-6px'>
-          {visibleResolvedTags.map((tag) => (
-            <span
-              key={tag.key}
-              className='inline-flex items-center rounded-[12px] px-8px py-1px text-11px leading-16px bg-[var(--color-fill-2)] text-[var(--color-text-2)] border border-solid border-[var(--color-border-2)]'
-            >
-              {resolveTagLabel(tag, localeKey)}
-            </span>
-          ))}
-          {visibleRawTags.map((tag) => (
+          {item.visibleTags.slice(0, MAX_VISIBLE_TAGS).map((tag) => (
             <span
               key={tag}
-              className='inline-flex items-center rounded-[12px] px-8px py-1px text-11px leading-16px bg-[var(--color-fill-2)] text-[var(--color-text-2)] border border-solid border-[var(--color-border-2)]'
+              className='inline-flex max-w-[156px] items-center truncate rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-2)] px-8px py-1px text-11px leading-16px text-t-secondary'
+              title={tag}
             >
               {tag}
             </span>
           ))}
-          {overflowCount > 0 && (
-            <span className='inline-flex items-center rounded-[12px] px-7px py-1px text-11px leading-16px text-[var(--color-text-3)]'>
-              +{overflowCount}
-            </span>
-          )}
+          {item.overflowTagCount > 0 && <span className='text-11px text-t-tertiary'>+{item.overflowTagCount}</span>}
         </div>
       )}
 
-      <div className='mt-auto pt-10px flex min-w-0 items-center justify-between gap-10px'>
-        <span className='truncate text-11px text-[var(--color-text-3)] font-mono' title={item.install_command}>
-          {item.install_command}
-        </span>
-      </div>
-    </div>
+      <footer className='mt-auto pt-10px'>
+        <Button
+          type='text'
+          size='mini'
+          className='!h-28px !self-start !rounded-6px !px-0 !text-12px !text-t-secondary hover:!text-t-primary'
+          onClick={(event) => onViewDetails(item, event.currentTarget as HTMLElement)}
+        >
+          {t('settings.market.viewDetails', { defaultValue: '查看详情' })}
+        </Button>
+      </footer>
+    </MarketCardShell>
   );
 };
 

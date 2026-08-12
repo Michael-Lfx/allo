@@ -62,14 +62,21 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
 
   const settingsControl = (
     <Tooltip {...siderTooltipProps} content={settingsTooltip} position='right'>
-      <div onClick={onSettingsClick} className={iconButtonClass(collapsed, isMobile, isSettings)}>
+      <div
+        onClick={onSettingsClick}
+        className={iconButtonClass(collapsed, isMobile, isSettings)}
+        aria-current={isSettings ? 'page' : undefined}
+        data-sider-nav-entry
+        data-sider-selection-static
+        data-active={isSettings ? 'true' : 'false'}
+      >
         {settingsIcon}
       </div>
     </Tooltip>
   );
 
   return (
-    <div className='shrink-0 sider-footer pb-8px'>
+    <div className='shrink-0 sider-footer pb-8px' data-sider-footer>
       {collapsed ? (
         <div className='flex flex-col gap-2px'>
           <SiderUserMenu
@@ -84,7 +91,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
           {settingsControl}
         </div>
       ) : (
-        <div className='flex items-center gap-2px min-w-0'>
+        <div className='h-40px flex items-center gap-2px min-w-0' data-sider-footer-expanded>
           <SiderUserMenu
             isMobile={isMobile}
             collapsed={collapsed}

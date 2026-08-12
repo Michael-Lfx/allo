@@ -11,14 +11,20 @@ describe('Preset editor agent skill migration integration', () => {
     const editorHook = readSource(new URL('../../../hooks/preset/usePresetEditor.ts', import.meta.url));
     const host = readSource(new URL('./index.tsx', import.meta.url));
 
-    expect(drawer.includes('AgentSkillImportDrawer')).toBe(true);
+    expect(drawer.includes('AgentSkillImportEmbedded')).toBe(true);
     expect(drawer.includes("data-testid='btn-import-agent-skills-to-preset'")).toBe(true);
     expect(drawer.includes('onImportAgentSkills')).toBe(true);
+    expect(drawer.includes('footer={agentImportVisible ? null : (')).toBe(true);
+    expect(drawer.includes("closeLabel={t('settings.agentSkillImport.backToPreset'")).toBe(true);
+    expect(drawer.includes('focusValidationField')).toBe(true);
+    expect(drawer.includes('restoreFocusRef')).toBe(true);
 
     expect(editorHook.includes('handleImportAgentSkills')).toBe(true);
     expect(editorHook.includes('importSkillWithSymlink.invoke')).toBe(true);
     expect(editorHook.includes('result.skill_ids')).toBe(true);
     expect(editorHook.includes('mergePresetSkillIds')).toBe(true);
+    expect(editorHook.includes("return 'identity.name';")).toBe(true);
+    expect(editorHook.includes("return 'targets';")).toBe(true);
 
     expect(host.includes('onImportAgentSkills={editor.handleImportAgentSkills}')).toBe(true);
   });

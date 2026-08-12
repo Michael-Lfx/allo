@@ -131,6 +131,13 @@ const MESSAGE_ITEM_FORBIDDEN_PROPS = new Set([
 ]);
 const CONTENT_POPOVER_SELECTORS = ['.arco-popover-content', '.arco-dropdown-menu', '.arco-select-popup'];
 const MIN_CONTENT_SURFACE_ALPHA = 0.86;
+const MIN_BODY_CONTRAST = 4.5;
+const BODY_CONTRAST_SURFACES = [
+  { name: 'bg-base', backdrop: 'bg-base' },
+  { name: 'bg-1', backdrop: 'bg-base' },
+  { name: 'bg-2', backdrop: 'bg-1' },
+  { name: 'color-bg-popup', backdrop: 'bg-1' },
+];
 
 const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
 
@@ -185,6 +192,61 @@ const rgbaAlphaValues = (value) => {
   return alphas.filter((n) => Number.isFinite(n));
 };
 
+const parseColor = (value) => {
+  const normalized = value.trim().replace(/\s*!important\s*$/i, '');
+  const hex = normalized.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    const raw = hex[1].length === 3 ? [...hex[1]].map((c) => c + c).join('') : hex[1];
+    return { r: parseInt(raw.slice(0, 2), 16), g: parseInt(raw.slice(2, 4), 16), b: parseInt(raw.slice(4, 6), 16), a: 1 };
+  }
+  const rgb = normalized.match(/^rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)(?:\s*,\s*([0-9.]+))?\s*\)$/i);
+  if (!rgb) return null;
+  return { r: Number(rgb[1]), g: Number(rgb[2]), b: Number(rgb[3]), a: rgb[4] == null ? 1 : Number(rgb[4]) };
+};
+
+const composite = (foreground, background) => ({
+  r: foreground.r * foreground.a + background.r * (1 - foreground.a),
+  g: foreground.g * foreground.a + background.g * (1 - foreground.a),
+  b: foreground.b * foreground.a + background.b * (1 - foreground.a),
+  a: 1,
+});
+
+const relativeLuminance = ({ r, g, b }) => {
+  const channel = (value) => {
+    const unit = value / 255;
+    return unit <= 0.04045 ? unit / 12.92 : ((unit + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+};
+
+const contrastRatio = (a, b) => {
+  const [lighter, darker] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+  return (lighter + 0.05) / (darker + 0.05);
+};
+
+const checkBodyContrast = (mode, vars, problems) => {
+  const foreground = parseColor(vars.get('text-primary') || '');
+  const canvas = parseColor(vars.get('bg-base') || '');
+  if (!foreground || !canvas) {
+    problems.push(`${mode}色块正文或 Canvas 颜色无法解析`);
+    return;
+  }
+  for (const { name: surfaceName, backdrop: backdropName } of BODY_CONTRAST_SURFACES) {
+    const surface = parseColor(vars.get(surfaceName) || '');
+    if (!surface) {
+      problems.push(`${mode}色块 --${surfaceName} 无法解析为颜色`);
+      continue;
+    }
+    const backdrop = parseColor(vars.get(backdropName) || '') || canvas;
+    const resolvedBackdrop = backdrop.a < 1 ? composite(backdrop, canvas) : backdrop;
+    const resolvedSurface = surface.a < 1 ? composite(surface, resolvedBackdrop) : surface;
+    const ratio = contrastRatio(foreground, resolvedSurface);
+    if (ratio < MIN_BODY_CONTRAST) {
+      problems.push(`${mode}色块 --text-primary 对 --${surfaceName} 对比度 ${ratio.toFixed(2)}:1（需 >= ${MIN_BODY_CONTRAST}:1）`);
+    }
+  }
+};
+
 const checkTheme = (file, css) => {
   const problems = [];
   const cleaned = stripComments(css);
@@ -237,6 +299,9 @@ const checkTheme = (file, css) => {
       if (value && !isTriplet(value)) problems.push(`${mode}色块 --${v} 不是 RGB 三元组: "${value}"`);
     }
   }
+
+  checkBodyContrast('亮', lightVars, problems);
+  checkBodyContrast('暗', darkVars, problems);
 
   for (const key of PREVIEW_KEYS) {
     if (!lightVars.has(key)) problems.push(`预览取色键 --${key} 在亮色块缺失`);

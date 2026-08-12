@@ -20,9 +20,10 @@ describe('PresetEditDrawer unfinished tag drafts', () => {
     expect(drawer.includes('createPresetTagDraftLifecycle')).toBe(true);
     expect(drawer.includes('const { resetPendingTagDrafts, closeDrawer, handleDrawerSave } = useMemo(')).toBe(true);
     expect(drawer.includes('if (!editVisible) {')).toBe(true);
-    expect(drawer.includes('onCancel={closeDrawer}')).toBe(true);
-    expect(drawer.includes('onClick={handleDrawerSave}')).toBe(true);
-    expect(drawer.includes('onClick={closeDrawer}')).toBe(true);
+    expect(drawer.includes('const requestClose = () =>')).toBe(true);
+    expect(drawer.includes('onCancel={requestClose}')).toBe(true);
+    expect(drawer.includes('onClick={() => void handleDrawerSaveClick()}')).toBe(true);
+    expect(drawer.includes('onClick={requestClose}')).toBe(true);
     expect(drawer.includes('flushPendingTag')).toBe(false);
 
     expect(picker.includes('showAddHint?: boolean;')).toBe(true);

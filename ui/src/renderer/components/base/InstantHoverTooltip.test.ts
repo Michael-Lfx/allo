@@ -14,10 +14,17 @@ describe('InstantHoverTooltip', () => {
     expect(source.includes('document.body')).toBe(true);
     expect(source.includes('fixed z-[10001]')).toBe(true);
     expect(source.includes('instant-hover-tooltip')).toBe(true);
-    expect(source.includes('onMouseEnter={show}')).toBe(true);
+    expect(source.includes('onMouseEnter={showAfterHoverDelay}')).toBe(true);
     expect(source.includes('onMouseLeave={hide}')).toBe(true);
-    expect(source.includes('onFocus={show}')).toBe(true);
+    expect(source.includes('onFocus={showNow}')).toBe(true);
     expect(source.includes('onBlur={hide}')).toBe(true);
+  });
+
+  test('keeps existing callers immediate while delayed hover remains cancellable', () => {
+    expect(source.includes('hoverDelayMs = 0')).toBe(true);
+    expect(source.includes('hoverTimerRef.current = setTimeout')).toBe(true);
+    expect(source.includes('clearTimeout(hoverTimerRef.current)')).toBe(true);
+    expect(source.includes('useEffect(() => clearPendingShow')).toBe(true);
   });
 
   test('computeTooltipCoords places bottom tooltips below the anchor', () => {

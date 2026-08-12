@@ -16,17 +16,28 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 8px;
-  height: var(--titlebar-height);
-  min-height: var(--titlebar-height);
-  line-height: var(--titlebar-height);
+  height: 42px;
+  min-height: 42px;
+  line-height: 42px;
   user-select: none;
   position: relative;
   z-index: 10;
   overflow: visible;
+  background: var(--flowy-panel);
+  border-bottom: 1px solid var(--flowy-border-subtle);
+  box-shadow: var(--flowy-shadow-structure);
 }
 
 .app-titlebar--desktop {
   -webkit-app-region: drag;
+}
+
+.app-titlebar--wide {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 360px) minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: center;
+  padding: 0;
 }
 
 .app-titlebar--mobile {
@@ -41,18 +52,14 @@
 }
 
 .app-titlebar--mac {
-  height: 45px;
-  min-height: 36px;
-  /* Reserve space for macOS traffic light buttons (left side) */
-  padding-right: 12px;
-}
-
-/* Windows/Linux desktop: taller titlebar so 36px buttons have breathing room,
-   and a bit of left padding so the first button isn't glued to the window edge. */
-.app-titlebar--desktop:not(.app-titlebar--mac) {
   height: 42px;
   min-height: 42px;
-  padding-left: 16px;
+  padding: 0;
+}
+
+/* Windows/Linux desktop: keep the right toolbar flush with the window edge so
+   the native window controls retain their platform geometry. */
+.app-titlebar--desktop:not(.app-titlebar--mac) {
   /* Let the right-side toolbar stretch edge-to-edge so system window controls
      (minimize/maximize/close) go full height AND hug the right window edge like
      native Windows chrome (the base `padding: 0 8px` would otherwise leave an
@@ -61,23 +68,46 @@
   align-items: stretch;
 }
 
-/* Only the menu group stays vertically centered in the taller titlebar. */
-.app-titlebar--desktop:not(.app-titlebar--mac) .app-titlebar__menu,
-.app-titlebar--desktop:not(.app-titlebar--mac) .app-titlebar__brand {
-  align-self: center;
-}
-
 .app-titlebar__brand {
   font-weight: 600;
   font-size: 13px;
   letter-spacing: 0.2px;
   color: var(--text-primary);
-  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   text-align: center;
   pointer-events: none;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.app-titlebar--wide .app-titlebar__brand {
+  grid-column: 2;
+  justify-self: stretch;
+}
+
+.app-titlebar__context-title {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--flowy-text-muted);
+  font-size: 13px;
+  font-weight: var(--flowy-weight-medium);
+  line-height: 20px;
+  animation: titlebar-context-enter var(--flowy-motion-fast) var(--flowy-ease-enter) both;
+}
+
+@keyframes titlebar-context-enter {
+  from {
+    opacity: 0.65;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .app-titlebar--mobile .app-titlebar__brand {
@@ -137,6 +167,40 @@
   -webkit-app-region: no-drag;
   display: flex;
   align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.app-titlebar--wide .app-titlebar__menu {
+  grid-column: 1;
+  justify-self: stretch;
+  padding-left: 16px;
+}
+
+.app-titlebar--mac .app-titlebar__menu {
+  padding-left: 0;
+}
+
+.app-titlebar__button-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+
+.app-titlebar__button-group--context {
+  gap: 4px;
+}
+
+.app-titlebar__divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  flex: 0 0 auto;
+  background: var(--flowy-border-structural);
+  opacity: 0.72;
+  -webkit-app-region: no-drag;
 }
 
 .app-titlebar__toolbar {
@@ -145,7 +209,21 @@
   gap: 4px;
   -webkit-app-region: no-drag;
   margin-left: auto;
-  min-height: var(--titlebar-height);
+  min-height: 0;
+  height: 100%;
+}
+
+.app-titlebar--wide .app-titlebar__toolbar {
+  grid-column: 3;
+  justify-self: stretch;
+  justify-content: flex-end;
+  margin-left: 0;
+  min-width: 0;
+}
+
+.app-titlebar--wide:not(.app-titlebar--desktop) .app-titlebar__toolbar,
+.app-titlebar--mac .app-titlebar__toolbar {
+  padding-right: 12px;
 }
 
 /* Mobile slot for chat-header actions (model picker, cron, etc.). */
@@ -161,8 +239,8 @@
 
 .app-titlebar__button {
   -webkit-app-region: no-drag;
-  width: var(--titlebar-height);
-  height: var(--titlebar-height);
+  width: 32px;
+  height: 32px;
   border: none;
   border-radius: 6px;
   background-color: transparent;
@@ -171,23 +249,34 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background-color 0.2s ease;
+  transition:
+    background-color var(--flowy-motion-fast) var(--flowy-ease-enter),
+    color var(--flowy-motion-fast) var(--flowy-ease-enter),
+    transform var(--flowy-motion-fast) var(--flowy-ease-move),
+    opacity var(--flowy-motion-fast) var(--flowy-ease-enter);
 }
 
 .app-titlebar__button:hover {
-  background-color: rgba(0, 0, 0, 0.08);
+  background-color: var(--flowy-interactive-hover);
 }
 
 .app-titlebar__button:active {
-  background-color: rgba(0, 0, 0, 0.14);
+  background-color: var(--flowy-interactive-pressed);
+  transform: scale(0.96);
 }
 
 [data-theme='dark'] .app-titlebar__button:hover {
-  background-color: rgba(255, 255, 255, 0.1);
+  background-color: var(--flowy-interactive-hover);
 }
 
 [data-theme='dark'] .app-titlebar__button:active {
-  background-color: rgba(255, 255, 255, 0.16);
+  background-color: var(--flowy-interactive-pressed);
+}
+
+.app-titlebar__button:focus-visible,
+.app-window-controls__button:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: -2px;
 }
 
 .app-titlebar__button:disabled,
@@ -240,7 +329,9 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background-color 0.18s ease;
+  transition:
+    transform var(--flowy-motion-fast) var(--flowy-ease-move),
+    opacity var(--flowy-motion-fast) var(--flowy-ease-enter);
 }
 
 .app-window-controls__button:hover {
@@ -249,6 +340,7 @@
 
 .app-window-controls__button:active {
   background-color: rgba(128, 128, 128, 0.3);
+  transform: scale(0.94);
 }
 
 .app-window-controls__button--close:hover {
@@ -259,4 +351,30 @@
 .app-window-controls__button--close:active {
   background-color: var(--window-close-danger-active);
   color: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-titlebar__button,
+  .app-window-controls__button {
+    transition: none;
+  }
+
+  .app-titlebar__button:active,
+  .app-window-controls__button:active {
+    transform: none;
+  }
+
+  .app-titlebar__context-title {
+    animation: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-titlebar--wide {
+    grid-template-columns: minmax(0, 1fr) 0 minmax(0, 1fr);
+  }
+
+  .app-titlebar--wide .app-titlebar__brand {
+    display: none;
+  }
 }

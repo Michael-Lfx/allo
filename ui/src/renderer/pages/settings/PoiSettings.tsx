@@ -18,11 +18,11 @@ import { FLOWY_BUILTIN_PROVIDER_ID } from '@/common/config/constants';
 import type { IPoiSettings, IPoiStatusResponse, IPoiTopic } from '@/common/adapter/ipcBridge';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import {
+  SettingsActionBar,
   SettingsGroup,
-  SettingsNestedRows,
   SettingsPageHeader,
   SettingsPanel,
-  SettingsPanelFooter,
+  SettingsList,
 } from '@/renderer/components/settings/SettingsPagePrimitives';
 import PreferenceRow from '@/renderer/components/settings/SettingsModal/contents/SystemModalContent/PreferenceRow';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
@@ -36,6 +36,8 @@ const PoiSettings: React.FC = () => {
   const { t } = useTranslation();
   const { providers, getAvailableModels, formatModelLabel } = useModelProviderList();
   const [settings, setSettings] = useState<IPoiSettings | null>(null);
+  const [savedSettings, setSavedSettings] = useState<IPoiSettings | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [status, setStatus] = useState<IPoiStatusResponse | null>(null);
   const [topics, setTopics] = useState<IPoiTopic[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,7 +51,7 @@ const PoiSettings: React.FC = () => {
         ipcBridge.poi.status.invoke(),
         ipcBridge.poi.listTopics.invoke(),
       ]);
-      setSettings({
+      const normalizedSettings = {
         ...s,
         extractMode: s.extractMode || 'llm',
         autoExtractEnabled: s.autoExtractEnabled ?? true,
@@ -57,7 +59,9 @@ const PoiSettings: React.FC = () => {
         autoExtractMinUserChars: s.autoExtractMinUserChars ?? 50,
         autoExtractIdleSecs: s.autoExtractIdleSecs ?? 500,
         starterEnabled: s.starterEnabled ?? true,
-      });
+      };
+      setSettings(normalizedSettings);
+      setSavedSettings(normalizedSettings);
       setStatus(st);
       setTopics(list.topics);
     } catch (e) {
@@ -125,14 +129,20 @@ const PoiSettings: React.FC = () => {
         llmModel,
       });
       setSettings(saved);
-      Message.success(t('poi.settings.saved'));
+      setSavedSettings(saved);
+      setSaveError(null);
       void refresh();
     } catch (e) {
-      Message.error(String(e));
+      setSaveError(String(e));
     } finally {
       setSaving(false);
     }
   };
+
+  const isDirty = useMemo(
+    () => Boolean(settings && savedSettings && JSON.stringify(settings) !== JSON.stringify(savedSettings)),
+    [savedSettings, settings]
+  );
 
   const handlePin = async (topic: IPoiTopic) => {
     try {
@@ -203,14 +213,35 @@ const PoiSettings: React.FC = () => {
           }
         />
 
-        <SettingsPanel>
-          {settings ? (
-            <>
-              <div className='w-full flex flex-col divide-y divide-border-2'>
-                <PreferenceRow label={t('poi.settings.enabled')}>
+        {settings ? (
+          <>
+            <SettingsGroup title={t('poi.settings.sectionBasics')}>
+              <SettingsList>
+                <PreferenceRow label={t('poi.settings.enabled')} controlLayout='compact'>
                   <Switch checked={settings.enabled} onChange={(v) => setSettings({ ...settings, enabled: v })} />
                 </PreferenceRow>
-                <PreferenceRow label={t('poi.settings.extractMode')}>
+                <PreferenceRow label={t('poi.settings.maxTopics')} controlLayout='field'>
+                  <InputNumber
+                    className='w-140px'
+                    min={1}
+                    value={settings.maxTopics}
+                    onChange={(v) => setSettings({ ...settings, maxTopics: Number(v) })}
+                  />
+                </PreferenceRow>
+                <PreferenceRow label={t('poi.settings.minTurnChars')} controlLayout='field'>
+                  <InputNumber
+                    className='w-140px'
+                    min={0}
+                    value={settings.minTurnChars}
+                    onChange={(v) => setSettings({ ...settings, minTurnChars: Number(v) })}
+                  />
+                </PreferenceRow>
+              </SettingsList>
+            </SettingsGroup>
+
+            <SettingsGroup title={t('poi.settings.sectionExtraction')}>
+              <SettingsList>
+                <PreferenceRow label={t('poi.settings.extractMode')} controlLayout='field'>
                   <Select
                     className='w-full sm:w-280px'
                     value={settings.extractMode}
@@ -222,75 +253,58 @@ const PoiSettings: React.FC = () => {
                     ]}
                   />
                 </PreferenceRow>
-                <PreferenceRow label={t('poi.settings.maxTopics')}>
-                  <InputNumber
-                    className='w-full sm:w-180px'
-                    min={1}
-                    value={settings.maxTopics}
-                    onChange={(v) => setSettings({ ...settings, maxTopics: Number(v) })}
-                  />
-                </PreferenceRow>
-                <PreferenceRow label={t('poi.settings.minTurnChars')}>
-                  <InputNumber
-                    className='w-full sm:w-180px'
-                    min={0}
-                    value={settings.minTurnChars}
-                    onChange={(v) => setSettings({ ...settings, minTurnChars: Number(v) })}
-                  />
-                </PreferenceRow>
-                <PreferenceRow label={t('poi.settings.llmOnSessionEnd')}>
+                <PreferenceRow label={t('poi.settings.llmOnSessionEnd')} controlLayout='compact'>
                   <Switch
                     checked={settings.llmOnSessionEnd}
                     onChange={(v) => setSettings({ ...settings, llmOnSessionEnd: v })}
                   />
                 </PreferenceRow>
-                {usesLlmExtract && (
-                  <PreferenceRow label={t('poi.settings.llmModel')} description={t('poi.settings.llmModelHint')}>
+                <PreferenceRow label={t('poi.settings.llmModel')} description={t('poi.settings.llmModelHint')} controlLayout='field'>
                     <Select
                       className='w-full sm:w-280px'
                       value={llmSelectValue}
+                      disabled={!usesLlmExtract}
                       onChange={(v) => setSettings({ ...settings, llmModel: v })}
                       options={llmModelOptions}
                     />
-                  </PreferenceRow>
-                )}
-                <PreferenceRow label={t('poi.settings.perTurnBuffer')}>
+                </PreferenceRow>
+                <PreferenceRow label={t('poi.settings.perTurnBuffer')} controlLayout='compact'>
                   <Switch
                     checked={settings.perTurnBuffer}
                     onChange={(v) => setSettings({ ...settings, perTurnBuffer: v })}
                   />
                 </PreferenceRow>
-                <PreferenceRow label={t('poi.settings.perTurnPersist')}>
+                <PreferenceRow label={t('poi.settings.perTurnPersist')} controlLayout='compact'>
                   <Switch
                     checked={settings.perTurnPersist}
                     onChange={(v) => setSettings({ ...settings, perTurnPersist: v })}
                   />
                 </PreferenceRow>
-                <div>
-                  <PreferenceRow
-                    label={t('poi.settings.autoExtractSection')}
-                    description={t('poi.settings.autoExtractHint')}
-                  >
+              </SettingsList>
+            </SettingsGroup>
+
+            <SettingsGroup title={t('poi.settings.sectionAutomatic')} description={t('poi.settings.autoExtractHint')}>
+              <SettingsList>
+                  <PreferenceRow label={t('poi.settings.autoExtractSection')} controlLayout='compact'>
                     <Switch
                       checked={settings.autoExtractEnabled}
                       onChange={(v) => setSettings({ ...settings, autoExtractEnabled: v })}
                     />
                   </PreferenceRow>
-                  {settings.autoExtractEnabled && (
-                    <SettingsNestedRows>
-                      <div className='flex flex-col divide-y divide-border-2'>
-                        <PreferenceRow label={t('poi.settings.autoExtractMinTurns')}>
+                        <PreferenceRow label={t('poi.settings.autoExtractMinTurns')} controlLayout='field'>
                           <InputNumber
-                            className='w-full sm:w-180px'
+                            className='w-140px'
                             min={1}
+                            disabled={!settings.autoExtractEnabled}
                             value={settings.autoExtractMinTurns}
                             onChange={(v) => setSettings({ ...settings, autoExtractMinTurns: Number(v) })}
                           />
                         </PreferenceRow>
-                        <PreferenceRow label={t('poi.settings.autoExtractMinUserChars')}>
+                        <PreferenceRow label={t('poi.settings.autoExtractMinUserChars')} controlLayout='field'>
                           <InputNumber
-                            className='w-full sm:w-180px'
+                            className='w-140px'
                             min={1}
+                            disabled={!settings.autoExtractEnabled}
                             value={settings.autoExtractMinUserChars}
                             onChange={(v) => setSettings({ ...settings, autoExtractMinUserChars: Number(v) })}
                           />
@@ -298,31 +312,36 @@ const PoiSettings: React.FC = () => {
                         <PreferenceRow
                           label={t('poi.settings.autoExtractIdleSecs')}
                           description={t('poi.settings.autoExtractIdleSecsHint')}
+                          controlLayout='field'
                         >
                           <InputNumber
-                            className='w-full sm:w-180px'
+                            className='w-140px'
                             min={30}
+                            disabled={!settings.autoExtractEnabled}
                             value={settings.autoExtractIdleSecs}
                             onChange={(v) => setSettings({ ...settings, autoExtractIdleSecs: Number(v) })}
                           />
                         </PreferenceRow>
-                      </div>
-                    </SettingsNestedRows>
-                  )}
-                </div>
-              </div>
-              <SettingsPanelFooter className='justify-end'>
-                <Button type='primary' loading={saving} onClick={saveSettings}>
-                  {t('common.save', { defaultValue: 'Save' })}
-                </Button>
-              </SettingsPanelFooter>
-            </>
-          ) : (
-            <div className='flex justify-center py-32px'>
-              <Spin />
-            </div>
-          )}
-        </SettingsPanel>
+              </SettingsList>
+            </SettingsGroup>
+            <SettingsActionBar
+              visible={isDirty || Boolean(saveError)}
+              saveLabel={t('common.save', { defaultValue: 'Save' })}
+              onSave={() => void saveSettings()}
+              resetLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+              onReset={() => {
+                setSettings(savedSettings);
+                setSaveError(null);
+              }}
+              loading={saving}
+              error={saveError}
+            />
+          </>
+        ) : (
+          <div className='flex justify-center py-32px'>
+            <Spin />
+          </div>
+        )}
 
         <SettingsGroup
           title={t('poi.topics.title')}

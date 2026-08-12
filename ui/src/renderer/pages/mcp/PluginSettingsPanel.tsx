@@ -138,7 +138,11 @@ const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ section = 'bo
           defaultSource='clawhub_plugins'
           searchPlaceholder={t('settings.plugins.searchPlaceholder', { defaultValue: 'Search plugins...' })}
           emptyText={t('settings.plugins.emptyMarket', { defaultValue: 'Refresh to load plugin market entries.' })}
-          onAdd={handleAdd}
+          primaryAction={{
+            label: t('settings.market.prepareInstall', { defaultValue: '准备安装' }),
+            pendingLabel: t('settings.market.preparingInstall', { defaultValue: '正在准备' }),
+            run: handleAdd,
+          }}
           testIdPrefix='plugin-market'
         />
       )}

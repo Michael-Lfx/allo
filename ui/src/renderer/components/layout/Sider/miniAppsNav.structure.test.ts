@@ -10,33 +10,14 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 const siderSource = readSource(new URL('./index.tsx', import.meta.url));
-const navBarrelSource = readSource(new URL('./SiderNav/index.ts', import.meta.url));
 const entrySource = readSource(new URL('./SiderNav/SiderMiniAppsEntry.tsx', import.meta.url));
 const routerSource = readSource(new URL('../Router.tsx', import.meta.url));
 
 describe('mini-apps rail navigation', () => {
-  test('the rail carries a mini-apps entry that routes through navTo', () => {
-    expect(navBarrelSource.includes("export { default as SiderMiniAppsEntry } from './SiderMiniAppsEntry';")).toBe(true);
-    expect(siderSource.includes('SiderMiniAppsEntry')).toBe(true);
-    // navTo (not a bare navigate) is what closes the mobile drawer and clears
-    // the rail tooltips.
-    expect(siderSource.includes("navTo('/mini-apps')")).toBe(true);
-    expect(siderSource.includes("pathname.startsWith('/mini-apps')")).toBe(true);
-  });
-
-  test('the entry stays active for the runner route, not just the library', () => {
-    // `pathname === '/mini-apps'` would blank the rail highlight the moment a
-    // mini-app is opened at /mini-apps/:id.
-    expect(siderSource.includes("isActive={pathname === '/mini-apps'}")).toBe(false);
-  });
-
-  test('the entry sits in the primary nav group, above the data destinations', () => {
-    const videoGenerationAt = siderSource.indexOf('<SiderVideoGenerationGroup');
-    const miniAppsAt = siderSource.indexOf('<SiderMiniAppsEntry');
-    const knowledgeAt = siderSource.indexOf('<SiderKnowledgeEntry');
-    expect(videoGenerationAt).toBeGreaterThan(-1);
-    expect(miniAppsAt).toBeGreaterThan(videoGenerationAt);
-    expect(miniAppsAt).toBeLessThan(knowledgeAt);
+  test('the home rail hides the mini-app module', () => {
+    expect(siderSource.includes('SiderMiniAppsEntry')).toBe(false);
+    expect(siderSource.includes("navTo('/mini-apps')")).toBe(false);
+    expect(siderSource.includes("pathname.startsWith('/mini-apps')")).toBe(false);
   });
 
   test('the entry labels itself from the miniApps namespace with a plain icon import', () => {

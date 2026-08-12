@@ -8,8 +8,8 @@ const readSource = (url: URL) => readFileSync(url, 'utf8');
 describe('capability hub navigation', () => {
   test('keeps presets, skills, and MCP out of the primary rail', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
-    const settingsSiderSource = readSource(
-      new URL('../../../pages/settings/components/SettingsSider.tsx', import.meta.url)
+    const settingsNavigationSource = readSource(
+      new URL('../../../pages/settings/components/settingsNavigation.ts', import.meta.url)
     );
 
     expect(siderSource.includes('<SiderPresetEntry')).toBe(false);
@@ -19,7 +19,7 @@ describe('capability hub navigation', () => {
     expect(siderSource.includes('SiderExtensionsEntry')).toBe(false);
 
     for (const id of ["'presets'", "'skills'", "'mcp'"]) {
-      expect(settingsSiderSource.includes(id)).toBe(true);
+      expect(settingsNavigationSource.includes(id)).toBe(true);
     }
   });
 

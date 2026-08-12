@@ -15,10 +15,12 @@ const DirInputItem: React.FC<{
   label: string;
   field: string;
   disabled?: boolean;
-}> = ({ label, field, disabled = false }) => {
+  /** Render only the field control when a SettingsRow already owns the label. */
+  compact?: boolean;
+}> = ({ label, field, disabled = false, compact = false }) => {
   const { t } = useTranslation();
   return (
-    <Form.Item label={label} field={field}>
+    <Form.Item label={compact ? undefined : label} field={field} noStyle={compact}>
       {(value, form) => {
         const current_value = form.getFieldValue(field) || '';
 

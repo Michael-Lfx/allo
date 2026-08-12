@@ -9,7 +9,7 @@ const AgentSettings: React.FC = () => {
   const { t } = useTranslation();
 
   return (
-    <SettingsPageWrapper contentClassName='max-w-1200px'>
+    <SettingsPageWrapper layout='hub'>
       <header className='mb-18px'>
         <h1 className='m-0 text-20px font-600 leading-28px text-t-primary'>
           {t('settings.executionEngineHub.title')}

@@ -94,7 +94,7 @@ const TitlebarUpdateButton: React.FC<TitlebarUpdateButtonProps> = ({ iconSize, s
   const tooltip = t('update.titlebarUpdateAvailable', { version: latestVersion ?? '' });
 
   return (
-    <InstantHoverTooltip content={tooltip} position='bottom'>
+    <InstantHoverTooltip content={tooltip} position='bottom' hoverDelayMs={400}>
       <button
         type='button'
         className={classNames('app-titlebar__button relative', className)}

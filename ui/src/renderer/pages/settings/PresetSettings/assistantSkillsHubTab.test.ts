@@ -18,11 +18,14 @@ describe('PresetSettings page shell', () => {
     expect(source.includes('assistant-skills-hub-tabs')).toBe(false);
   });
 
-  test('renders through HubPageShell without nested flex height chains', () => {
+  test('renders through HubPageShell with the shared settings-tabs layout', () => {
     const source = readSource(new URL('./index.tsx', import.meta.url));
 
     expect(source.includes('<HubPageShell')).toBe(true);
-    expect(source.includes('lazyload')).toBe(false);
+    // The preset hub shares the `flowy-settings-tabs` class (header height /
+    // title weight come from CSS) and bounds the pane height with
+    // flex-1-min-h-0; lazyload defers inactive panes for performance.
+    expect(source.includes('flowy-settings-tabs')).toBe(true);
     expect(source.includes('flex-1 min-h-0')).toBe(true);
   });
 

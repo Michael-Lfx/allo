@@ -18,10 +18,11 @@ import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import {
+  SettingsActionBar,
   SettingsGroup,
   SettingsPageHeader,
   SettingsPanel,
-  SettingsPanelFooter,
+  SettingsList,
 } from '@/renderer/components/settings/SettingsPagePrimitives';
 import PreferenceRow from '@/renderer/components/settings/SettingsModal/contents/SystemModalContent/PreferenceRow';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
@@ -29,6 +30,8 @@ import SettingsPageWrapper from './components/SettingsPageWrapper';
 const MediaSettings: React.FC = () => {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<IMediaSettings | null>(null);
+  const [savedSettings, setSavedSettings] = useState<IMediaSettings | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const { balance, authenticated } = useCredits();
   const [history, setHistory] = useState<IMediaWorkflowHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,6 +47,7 @@ const MediaSettings: React.FC = () => {
         revalidateMediaModels(),
       ]);
       setSettings(s);
+      setSavedSettings(s);
       setHistory(h.runs);
     } catch (e) {
       Message.error(String(e));
@@ -88,13 +92,19 @@ const MediaSettings: React.FC = () => {
         workflows_max_retries: settings.workflows_max_retries,
       });
       setSettings(saved);
-      Message.success(t('media.settings.saved'));
+      setSavedSettings(saved);
+      setSaveError(null);
     } catch (e) {
-      Message.error(String(e));
+      setSaveError(String(e));
     } finally {
       setSaving(false);
     }
   };
+
+  const isDirty = useMemo(
+    () => Boolean(settings && savedSettings && JSON.stringify(settings) !== JSON.stringify(savedSettings)),
+    [savedSettings, settings]
+  );
 
   return (
     <SettingsPageWrapper>
@@ -142,10 +152,9 @@ const MediaSettings: React.FC = () => {
           }
         />
 
-        <SettingsPanel>
-          {settings ? (
-            <>
-              <div className='w-full flex flex-col divide-y divide-border-2'>
+        {settings ? (
+          <>
+            <SettingsList>
                 <PreferenceRow label={t('media.settings.imageModel')}>
                   <Select
                     allowCreate
@@ -212,19 +221,25 @@ const MediaSettings: React.FC = () => {
                     onChange={(v) => setSettings({ ...settings, workflows_enabled: v })}
                   />
                 </PreferenceRow>
-              </div>
-              <SettingsPanelFooter className='justify-end'>
-                <Button type='primary' loading={saving || loading} onClick={save}>
-                  {t('common.save', { defaultValue: 'Save' })}
-                </Button>
-              </SettingsPanelFooter>
-            </>
-          ) : (
-            <div className='flex justify-center py-32px'>
-              <Spin />
-            </div>
-          )}
-        </SettingsPanel>
+            </SettingsList>
+            <SettingsActionBar
+              visible={isDirty || Boolean(saveError)}
+              saveLabel={t('common.save', { defaultValue: 'Save' })}
+              onSave={() => void save()}
+              resetLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+              onReset={() => {
+                setSettings(savedSettings);
+                setSaveError(null);
+              }}
+              loading={saving || loading}
+              error={saveError}
+            />
+          </>
+        ) : (
+          <div className='flex justify-center py-32px'>
+            <Spin />
+          </div>
+        )}
 
         <SettingsGroup title={t('media.history.title')}>
           <SettingsPanel>

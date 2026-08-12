@@ -9,6 +9,9 @@
   },
   "settings": {
     "enabled": "启用兴趣追踪",
+    "sectionBasics": "基础",
+    "sectionExtraction": "提取",
+    "sectionAutomatic": "自动处理",
     "extractMode": "提取模式",
     "extractModeKeywords": "仅关键词",
     "extractModeLlm": "LLM",

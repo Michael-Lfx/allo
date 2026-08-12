@@ -51,7 +51,7 @@ const FilterChip: React.FC<{
             'inline-flex items-center select-none cursor-pointer rounded-6px px-12px py-3px text-13px leading-20px',
             'border border-solid transition-[background-color,border-color,color] duration-150 whitespace-nowrap',
             active
-              ? 'bg-primary-6 text-white border-primary-6 font-medium'
+              ? 'bg-[var(--control-selected-bg)] text-[var(--control-selected-fg)] border-[var(--control-selected-bg)] font-medium'
               : 'bg-[var(--color-fill-2)] text-[var(--color-text-2)] border-[var(--color-border-2)] hover:bg-[var(--color-fill-3)] hover:text-[var(--color-text-1)]',
           ].join(' ')
     }
@@ -92,12 +92,7 @@ const PresetTagFilterBar: React.FC<PresetTagFilterBarProps> = ({
 
     return (
       <div className={isDrawer ? filterBarStyles.drawerFilterRow : 'flex flex-col gap-6px sm:flex-row sm:items-start sm:gap-12px'}>
-        {/* Left dimension label with accent rail */}
-        <div className={isDrawer ? filterBarStyles.drawerFilterLabel : 'flex min-h-26px items-center gap-7px flex-shrink-0 sm:h-26px sm:mt-1px'}>
-          <span
-            className={isDrawer ? filterBarStyles.drawerFilterRail : 'inline-block w-3px h-12px rounded-[2px] bg-[var(--color-primary-light-3)]'}
-            aria-hidden='true'
-          />
+        <div className={isDrawer ? filterBarStyles.drawerFilterLabel : 'flex min-h-26px items-center flex-shrink-0 sm:h-26px sm:mt-1px'}>
           <span className={isDrawer ? '' : 'text-12px font-medium text-[var(--color-text-3)] whitespace-nowrap'}>{rowLabel}</span>
         </div>
         <div className={isDrawer ? filterBarStyles.drawerFilterChips : 'flex w-full flex-wrap items-center gap-8px min-w-0 sm:w-auto sm:flex-1'}>

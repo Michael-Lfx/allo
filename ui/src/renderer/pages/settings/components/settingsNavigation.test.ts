@@ -1,106 +1,116 @@
-
-
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
+import type { IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
+import {
+  buildSettingsNavigation,
+  LEGACY_ANCHOR_REMAP,
+  type SettingsNavGroupId,
+  type SettingsNavItem,
+} from './settingsNavigation';
 
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
-describe('settings navigation', () => {
-  test('hides retired companion, learning, and requirements entries from settings navigation', () => {
-    const siderSource = readSource(new URL('./SettingsSider.tsx', import.meta.url));
-    const pageWrapperSource = readSource(new URL('./SettingsPageWrapper.tsx', import.meta.url));
+const groupLabels: Record<SettingsNavGroupId, string> = {
+  application: 'Application',
+  intelligence: 'Intelligence & Content',
+  capabilities: 'Capabilities & Extensions',
+  account: 'Account & Other',
+};
 
-    for (const id of ['nomi', 'public-companions', 'learn', 'requirements']) {
-      expect(siderSource.includes(`id: '${id}'`)).toBe(false);
-      expect(pageWrapperSource.includes(`id: '${id}'`)).toBe(false);
-    }
+const builtinItems: SettingsNavItem[] = [
+  { id: 'system', path: 'system', label: 'System', icon: 'system', groupId: 'application' },
+  { id: 'browser-use', path: 'browser-use', label: 'Browser Use', icon: 'browser-use', groupId: 'application' },
+  { id: 'poi', path: 'poi', label: 'Topics', icon: 'poi', groupId: 'intelligence' },
+  { id: 'presets', path: 'presets', label: 'Presets', icon: 'presets', groupId: 'capabilities' },
+  { id: 'skills', path: 'skills', label: 'Skills', icon: 'skills', groupId: 'capabilities' },
+  { id: 'mcp', path: 'mcp', label: 'MCP', icon: 'mcp', groupId: 'capabilities' },
+  { id: 'about', path: 'about', label: 'About', icon: 'about', groupId: 'account' },
+];
+
+const extension = (id: string, position?: { relative_to: string; placement: 'before' | 'after' }): IExtensionSettingsTab =>
+  ({ id, extension_name: 'sample', url: 'index.html', position } as unknown as IExtensionSettingsTab);
+
+describe('settings navigation', () => {
+  test('uses the fixed four-group order and suppresses empty group headers', () => {
+    const groups = buildSettingsNavigation(builtinItems, [], groupLabels, () => {
+      throw new Error('no extension expected');
+    });
+
+    expect(groups.map((group) => group.id)).toEqual(['application', 'intelligence', 'capabilities', 'account']);
+    expect(groups[0].items.map((item) => item.id)).toEqual(['system', 'browser-use']);
   });
 
-  test('hides execution engines and open capabilities from settings navigation', () => {
-    const siderSource = readSource(new URL('./SettingsSider.tsx', import.meta.url));
-    const pageWrapperSource = readSource(new URL('./SettingsPageWrapper.tsx', import.meta.url));
+  test('keeps anchored extensions adjacent to their host and falls back to capabilities', () => {
+    const groups = buildSettingsNavigation(
+      builtinItems,
+      [extension('before-skills', { relative_to: 'skills', placement: 'before' }), extension('retired-anchor', { relative_to: 'agent', placement: 'after' }), extension('no-anchor')],
+      groupLabels,
+      (tab, groupId) => ({
+        id: tab.id,
+        path: `ext/${tab.id}`,
+        label: tab.id,
+        icon: 'extension',
+        groupId,
+        isExtension: true,
+      })
+    );
+    const capabilityItems = groups.find((group) => group.id === 'capabilities')?.items ?? [];
 
-    for (const id of [
-      'system',
-      'browser-use',
-      'computer-use',
-      'poi',
-      'insights',
-      'media',
+    expect(capabilityItems.map((item) => item.id)).toEqual([
       'presets',
+      'before-skills',
       'skills',
       'mcp',
-      'cloud-login',
-      'about',
-    ]) {
-      expect(siderSource.includes(`'${id}'`)).toBe(true);
-      expect(pageWrapperSource.includes(`id: '${id}'`)).toBe(true);
-    }
-
-    expect(siderSource.includes("'open-capabilities'")).toBe(false);
-    expect(pageWrapperSource.includes("id: 'open-capabilities'")).toBe(false);
-
-    expect(siderSource.includes("  'execution-engines',")).toBe(false);
-    expect(siderSource.includes("id: 'execution-engines'")).toBe(false);
-    expect(pageWrapperSource.includes("id: 'execution-engines'")).toBe(false);
-    expect(siderSource.indexOf("'system'")).toBeLessThan(siderSource.indexOf("'browser-use'"));
-    expect(siderSource.indexOf("'browser-use'")).toBeLessThan(siderSource.indexOf("'computer-use'"));
-    expect(siderSource.indexOf("'computer-use'")).toBeLessThan(siderSource.indexOf("'cloud-login'"));
-    expect(siderSource.indexOf("'cloud-login'")).toBeLessThan(siderSource.indexOf("'about'"));
-    expect(siderSource.indexOf("'presets'")).toBeLessThan(siderSource.indexOf("'skills'"));
-    expect(siderSource.indexOf("'skills'")).toBeLessThan(siderSource.indexOf("'mcp'"));
-    expect(siderSource.indexOf("'mcp'")).toBeLessThan(siderSource.indexOf("'cloud-login'"));
+      'retired-anchor',
+      'no-anchor',
+    ]);
+    expect(LEGACY_ANCHOR_REMAP.agent).toBe('execution-engines');
   });
 
-  test('routes execution engines directly and keeps legacy links compatible', () => {
-    const routerSource = readSource(new URL('../../../components/layout/Router.tsx', import.meta.url));
+  test('desktop and narrow-window shells consume one shared navigation model', () => {
     const siderSource = readSource(new URL('./SettingsSider.tsx', import.meta.url));
-    const engineTabsSource = readSource(
-      new URL('../../../components/settings/SettingsModal/contents/AgentModalContent.tsx', import.meta.url)
-    );
+    const wrapperSource = readSource(new URL('./SettingsPageWrapper.tsx', import.meta.url));
+    const navigationSource = readSource(new URL('./settingsNavigation.ts', import.meta.url));
 
-    for (const path of [
-      '/settings/execution-engines',
-      '/settings/browser-use',
-      '/settings/computer-use',
-      '/settings/poi',
-      '/settings/insights',
-      '/settings/media',
-      '/settings/open-capabilities',
-      '/settings/cloud-login',
-    ]) {
-      expect(routerSource.includes(`path='${path}'`)).toBe(true);
-    }
-
-    expect(routerSource.includes("import('@renderer/pages/settings/AgentSettings')")).toBe(true);
-    expect(routerSource.includes("to='/settings/execution-engines?tab=runtime'")).toBe(true);
-    expect(routerSource.includes("to='/models?section=agents'")).toBe(false);
-    expect(engineTabsSource.includes("key='runtime'")).toBe(true);
-    expect(engineTabsSource.includes('<AgentRuntimeSettingsContent />')).toBe(true);
-    expect(routerSource.includes("path='/settings/browser-use' element={<Navigate to='/settings/system'")).toBe(false);
-    expect(routerSource.includes("path='/settings/computer-use' element={<Navigate to='/settings/system'")).toBe(false);
-    expect(siderSource.includes("path: 'presets'")).toBe(true);
-    expect(siderSource.includes("path: 'skills'")).toBe(true);
-    expect(siderSource.includes("path: 'mcp'")).toBe(true);
-    expect(routerSource.includes("path='/settings/presets'")).toBe(true);
-    expect(routerSource.includes("path='/settings/skills'")).toBe(true);
-    expect(routerSource.includes("path='/settings/mcp'")).toBe(true);
+    expect(siderSource).toContain('useSettingsNavigation');
+    expect(wrapperSource).toContain('useSettingsNavigation');
+    expect(navigationSource).toContain('filterDeveloperGatedTabs');
+    expect(navigationSource).toContain("'capabilities'");
   });
 
-  test('gates cloud account settings behind developer mode helpers', () => {
+  test('desktop navigation uses accessible buttons and a local indicator', () => {
     const siderSource = readSource(new URL('./SettingsSider.tsx', import.meta.url));
-    const pageWrapperSource = readSource(new URL('./SettingsPageWrapper.tsx', import.meta.url));
-    const cloudLoginSource = readSource(new URL('../CloudLoginSettings.tsx', import.meta.url));
-    const systemSource = readSource(
-      new URL('../../../components/settings/SettingsModal/contents/SystemModalContent/index.tsx', import.meta.url)
-    );
 
-    expect(siderSource.includes('filterDeveloperGatedTabs')).toBe(true);
-    expect(siderSource.includes("useConfig('system.developerMode')")).toBe(true);
-    expect(pageWrapperSource.includes('filterDeveloperGatedTabs')).toBe(true);
-    expect(cloudLoginSource.includes("useConfig('system.developerMode')")).toBe(true);
-    expect(cloudLoginSource.includes("Navigate to='/settings/system'")).toBe(true);
-    expect(systemSource.includes('DeveloperModeSetting')).toBe(true);
-    expect(systemSource.includes('<ImageAnalysisModelContent compact />')).toBe(true);
+    expect(siderSource).toContain("type='button'");
+    expect(siderSource).toContain("aria-current={selected ? 'page' : undefined}");
+    expect(siderSource).toContain('useSlidingSelectionIndicator');
+    expect(siderSource).toContain('scrollIntoView({ block: \'nearest\' })');
+  });
+
+  test('uses typed, resolvable built-in group labels rather than exposing raw i18n keys', () => {
+    const navigationSource = readSource(new URL('./settingsNavigation.ts', import.meta.url));
+    const zh = JSON.parse(readSource(new URL('../../../services/i18n/locales/zh-CN/settings.json', import.meta.url))) as {
+      groupApp: string;
+      groupIntelligenceContent: string;
+      groupCapabilityExtensions: string;
+      groupAccountOther: string;
+    };
+    const en = JSON.parse(readSource(new URL('../../../services/i18n/locales/en-US/settings.json', import.meta.url))) as typeof zh;
+
+    expect(navigationSource).toContain("application: 'settings.groupApp'");
+    expect(navigationSource).toContain('I18nKey');
+    expect(navigationSource).not.toContain('settings.groupApplication');
+    for (const label of [
+      zh.groupApp,
+      zh.groupIntelligenceContent,
+      zh.groupCapabilityExtensions,
+      zh.groupAccountOther,
+      en.groupApp,
+      en.groupIntelligenceContent,
+      en.groupCapabilityExtensions,
+      en.groupAccountOther,
+    ]) {
+      expect(label).not.toMatch(/^settings\./);
+    }
   });
 });

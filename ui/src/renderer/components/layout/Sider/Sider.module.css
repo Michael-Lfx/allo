@@ -5,6 +5,58 @@
   --text-primary: #454b55;
   --text-secondary: #6f7680;
   --bg-6: #9298a1;
+  position: relative;
+  isolation: isolate;
+}
+
+.primaryNav {
+  position: relative;
+}
+
+.selectionIndicator {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  border: 1px solid color-mix(in srgb, var(--flowy-selected-fg) 8%, transparent);
+  border-radius: var(--flowy-radius-md);
+  background: var(--flowy-selected-bg);
+  box-shadow: var(--flowy-shadow-structure);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform var(--flowy-motion-slow) var(--flowy-ease-move),
+    opacity var(--flowy-motion-fast) var(--flowy-ease-enter);
+}
+
+.selectionIndicator[data-visible='true'] {
+  opacity: 1;
+}
+
+:global([data-sider-nav-entry]) {
+  position: relative;
+  z-index: 1;
+  transition:
+    transform var(--flowy-motion-fast) var(--flowy-ease-move),
+    opacity var(--flowy-motion-fast) var(--flowy-ease-move) !important;
+}
+
+:global([data-sider-nav-entry][data-active='true']) {
+  background: transparent !important;
+  color: var(--flowy-selected-fg) !important;
+}
+
+:global([data-sider-selection-static][data-active='true']) {
+  background: var(--flowy-selected-bg) !important;
+  box-shadow: var(--flowy-shadow-structure);
+}
+
+:global([data-sider-nav-entry]:active) {
+  transform: scale(0.985);
+}
+
+:global([data-sider-nav-entry]:focus-visible) {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: -2px;
 }
 
 :global([data-theme='dark']) .sider {
@@ -33,6 +85,15 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .selectionIndicator,
+  :global([data-sider-nav-entry]) {
+    transition: none !important;
+  }
+
+  :global([data-sider-nav-entry]:active) {
+    transform: none;
+  }
+
   .newChatIcon {
     transition: none;
   }

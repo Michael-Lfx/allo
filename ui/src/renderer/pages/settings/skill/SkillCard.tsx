@@ -37,7 +37,7 @@ type SkillCardProps = {
   cardRef?: (el: HTMLDivElement | null) => void;
 };
 
-const MAX_VISIBLE_TAGS = 4;
+const MAX_VISIBLE_TAGS = 3;
 
 /** Source badge — one quiet pill per source, color-coded by semantic. */
 const SourceBadge: React.FC<{ skill: SkillInfo; isAutoInjected: boolean }> = ({ skill, isAutoInjected }) => {
@@ -133,7 +133,7 @@ const SkillCard: React.FC<SkillCardProps> = ({
       ].join(' ')}
     >
       {/* Header: avatar + name/badge */}
-      <div className='flex items-start gap-10px'>
+      <div className='grid grid-cols-[36px_minmax(0,1fr)] items-start gap-10px'>
         {isAutoInjected ? (
           <div className='flex-shrink-0 w-36px h-36px rounded-10px flex items-center justify-center bg-[rgba(var(--success-6),0.1)] shadow-sm'>
             <Lightning theme='filled' size={18} fill='rgb(var(--success-6))' />
@@ -146,21 +146,22 @@ const SkillCard: React.FC<SkillCardProps> = ({
           </div>
         )}
         <div className='min-w-0 flex-1 pt-2px'>
-          <div className='flex items-center gap-6px min-w-0 flex-wrap'>
+          <div className='min-w-0'>
             <span
-              className='truncate max-w-full text-14px font-medium leading-20px text-[var(--color-text-1)]'
+              className='block overflow-hidden text-14px font-medium leading-20px text-[var(--color-text-1)]'
               title={display.name}
+              style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
             >
               {display.name}
             </span>
-            <SourceBadge skill={skill} isAutoInjected={isAutoInjected} />
+            <div className='mt-4px'><SourceBadge skill={skill} isAutoInjected={isAutoInjected} /></div>
           </div>
         </div>
       </div>
 
       {/* Description — fixed 2-line clamp so cards stay even-height */}
       <div
-        className='mt-10px text-12px leading-18px text-[var(--color-text-3)] min-h-[36px]'
+        className='mt-10px text-12px leading-18px text-[var(--color-text-3)]'
         title={display.description || undefined}
         style={{
           display: '-webkit-box',
@@ -179,9 +180,10 @@ const SkillCard: React.FC<SkillCardProps> = ({
             <span
               key={tag.key}
               className={[
-                'inline-flex items-center rounded-[12px] px-8px py-1px text-11px leading-16px',
+                'inline-flex max-w-[156px] items-center truncate rounded-[12px] px-8px py-1px text-11px leading-16px',
                 'bg-[var(--color-fill-2)] text-[var(--color-text-2)] border border-solid border-[var(--color-border-2)]',
-              ].join(' ')}
+            ].join(' ')}
+              title={tag.label_i18n?.[localeKey] || tag.label}
             >
               {tag.label_i18n?.[localeKey] || tag.label}
             </span>

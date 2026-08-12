@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import classNames from 'classnames';
-import { ArrowCircleLeft, ArrowLeft, ArrowRight, ExpandLeft, ExpandRight, Plus } from '@icon-park/react';
+import { ArrowCircleLeft, ArrowLeft, ArrowRight, ExpandLeft, ExpandRight } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -11,8 +11,8 @@ import {
 } from '@/common/types/ids';
 import InstantHoverTooltip, { type InstantHoverTooltipProps } from '@renderer/components/base/InstantHoverTooltip';
 import MobileConversationBrand from './MobileConversationBrand';
-import TitlebarLanguageMenu from './TitlebarLanguageMenu';
 import TitlebarUpdateButton from './TitlebarUpdateButton';
+import { useTitlebarContextTitle } from './useTitlebarContextTitle';
 import WindowControls from '../WindowControls';
 import { WORKSPACE_STATE_EVENT, dispatchWorkspaceToggleEvent } from '@renderer/utils/workspace/workspaceEvents';
 import type { WorkspaceStateDetail } from '@renderer/utils/workspace/workspaceEvents';
@@ -64,12 +64,49 @@ const SidebarIcon: React.FC<{ size?: number; strokeWidth?: number }> = ({ size =
   </svg>
 );
 
+const NewConversationIcon: React.FC<{ size?: number; strokeWidth?: number }> = ({
+  size = 18,
+  strokeWidth = 4,
+}) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox='0 0 48 48'
+    fill='none'
+    stroke='currentColor'
+    strokeWidth={strokeWidth}
+    strokeLinecap='round'
+    strokeLinejoin='round'
+    aria-hidden='true'
+    focusable='false'
+  >
+    <path d='M9 7h30a4 4 0 0 1 4 4v22a4 4 0 0 1-4 4H23l-10 7v-7H9a4 4 0 0 1-4-4V11a4 4 0 0 1 4-4Z' />
+    <path d='M24 15v14M17 22h14' />
+  </svg>
+);
+
+const HomeIcon: React.FC<{ size?: number; strokeWidth?: number }> = ({ size = 18, strokeWidth = 4 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox='0 0 48 48'
+    fill='none'
+    stroke='currentColor'
+    strokeWidth={strokeWidth}
+    strokeLinecap='round'
+    strokeLinejoin='round'
+    aria-hidden='true'
+    focusable='false'
+  >
+    <path d='m6 22 18-15 18 15v18a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3V22Z' />
+    <path d='M19 43V29h10v14' />
+  </svg>
+);
+
 const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   const { t } = useTranslation();
-  const appTitle = useMemo(() => 'Flowy', []);
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(true);
 
-  const [mobileCenterTitle, setMobileCenterTitle] = useState(appTitle);
   const [mobileCenterOffset, setMobileCenterOffset] = useState(0);
   const layout = useLayoutContext();
   const navigationHistory = useNavigationHistory();
@@ -82,8 +119,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   const activeWorkspaceTarget = useMemo<SessionTarget | null>(() => {
     return parseSessionRoute(location.pathname);
   }, [location.pathname]);
-  const activeConversationId =
-    activeWorkspaceTarget?.kind === 'conversation' ? activeWorkspaceTarget.id : null;
+  const { title: contextTitle, activeConversationId, conversation } = useTitlebarContextTitle(location.pathname);
 
   // 监听工作空间折叠状态，保持按钮图标一致 / Sync workspace collapsed state for toggle button
   useEffect(() => {
@@ -136,16 +172,14 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   const showHistoryNav = Boolean(navigationHistory) && !layout?.isMobile;
   const historyBackTooltip = t('common.historyBack', { defaultValue: 'Back' });
   const historyForwardTooltip = t('common.forward', { defaultValue: 'Forward' });
-  // 会话二级侧栏开关：仅在会话区路由显示，桌面与移动端都给一个稳定的开/合入口
-  // Session secondary-sidebar toggle: shown on session routes only; a stable
-  // open/close entry on both desktop and mobile (mirrors the workspace toggle).
-  const isSessionRoute =
-    location.pathname === '/guid' ||
-    location.pathname.startsWith('/conversation/') ||
-    location.pathname === '/terminal-new' ||
-    location.pathname.startsWith('/terminal/');
-
-
+  // The homepage already is the new-conversation surface. Keep this action for
+  // a concrete chat, where it creates a useful escape hatch, and Settings,
+  // where the Home icon returns to that surface.
+  const showNewConversationAction =
+    !layout?.isMobile && (isSettingsRoute || activeWorkspaceTarget?.kind === 'conversation');
+  const newConversationTooltip = isSettingsRoute
+    ? t('common.titlebar.home', { defaultValue: 'Home' })
+    : t('terminal.newConversation');
   const handleSiderToggle = () => {
     if (!showSiderToggle || !layout?.setSiderCollapsed) return;
     layout.setSiderCollapsed(!layout.siderCollapsed);
@@ -204,35 +238,6 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
 
   useEffect(() => {
     if (!layout?.isMobile) {
-      setMobileCenterTitle(appTitle);
-      return;
-    }
-
-    // Single agent mode: show conversation name
-    if (!activeConversationId) {
-      setMobileCenterTitle(appTitle);
-      return;
-    }
-
-    let cancelled = false;
-    void ipcBridge.conversation.get
-      .invoke({ conversation_id: activeConversationId })
-      .then((conversation) => {
-        if (cancelled) return;
-        setMobileCenterTitle(conversation?.name || appTitle);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setMobileCenterTitle(appTitle);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeConversationId, appTitle, layout?.isMobile]);
-
-  useEffect(() => {
-    if (!layout?.isMobile) {
       setMobileCenterOffset(0);
       return;
     }
@@ -256,7 +261,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
     if (toolbarRef.current) observer.observe(toolbarRef.current);
 
     return () => observer.disconnect();
-  }, [layout?.isMobile, showBackToChatButton, showWorkspaceButton, mobileCenterTitle]);
+  }, [layout?.isMobile, showBackToChatButton, showWorkspaceButton, contextTitle]);
 
   const mobileCenterStyle = layout?.isMobile
     ? ({
@@ -274,8 +279,15 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
     };
   }, [isMacRuntime, showSiderToggle, layout?.isMobile]);
 
-  const renderIconButton = ({ tooltip, className, children, disabled, onClick, position }: TitlebarIconButtonOptions & { position?: InstantHoverTooltipProps['position'] }) => (
-    <InstantHoverTooltip content={tooltip} position={position ?? 'bottom'}>
+  const renderIconButton = ({
+    tooltip,
+    className,
+    children,
+    disabled,
+    onClick,
+    position,
+  }: TitlebarIconButtonOptions & { position?: InstantHoverTooltipProps['position'] }) => (
+    <InstantHoverTooltip content={tooltip} position={position ?? 'bottom'} hoverDelayMs={400}>
       <button type='button' className={className} onClick={onClick} disabled={disabled} aria-label={tooltip}>
         {children}
       </button>
@@ -288,85 +300,95 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
       data-tauri-drag-region
       onDoubleClick={handleTitlebarDoubleClick}
       style={mobileCenterStyle}
-      // 标题栏底部分隔线：原来只有 border-b（宽度）+ 边框色，没有 border-style，
-      // 而本仓库没有全局 border reset，所以这条线从来没画出来过。
-      // The titlebar's bottom rule never painted: width + colour but no border-style.
-      className={classNames(
-        'flex items-center gap-8px app-titlebar bg-2 border-b border-b-solid border-[var(--border-base)]',
-        {
-          'app-titlebar--mobile': layout?.isMobile,
-          'app-titlebar--mobile-conversation': layout?.isMobile && workspaceAvailable,
-          'app-titlebar--desktop': isDesktopRuntime,
-          'app-titlebar--mac': isMacRuntime,
-        },
-      )}
+      className={classNames('app-titlebar', {
+        'app-titlebar--mobile': layout?.isMobile,
+        'app-titlebar--mobile-conversation': layout?.isMobile && workspaceAvailable,
+        'app-titlebar--wide': !layout?.isMobile,
+        'app-titlebar--desktop': isDesktopRuntime,
+        'app-titlebar--mac': isMacRuntime,
+      })}
     >
       <div ref={menuRef} className='app-titlebar__menu' style={menuStyle}>
-        {showBackToChatButton && (
-          renderIconButton({
-            tooltip: backToChatTooltip,
-            className: classNames('app-titlebar__button', layout?.isMobile && 'app-titlebar__button--mobile'),
-            onClick: handleBackToChat,
-            children: <ArrowCircleLeft theme='outline' size={iconSize} fill='currentColor' />,
-          })
-        )}
-        {showSiderToggle && (
-          renderIconButton({
-            tooltip: siderTooltip,
-            className: classNames('app-titlebar__button', layout?.isMobile && 'app-titlebar__button--mobile'),
-            onClick: handleSiderToggle,
-            children: <SidebarIcon size={iconSize} strokeWidth={desktopIconStroke} />,
-          })
-        )}
-        {showHistoryNav && (
-          <>
-            {renderIconButton({
-              tooltip: historyBackTooltip,
-              className: 'app-titlebar__button app-titlebar__button--nav',
-              onClick: () => navigationHistory?.back(),
-              disabled: !navigationHistory?.canBack,
-              children: <ArrowLeft theme='outline' size={iconSize} fill='currentColor' strokeWidth={desktopIconStroke} />,
+        <div className='app-titlebar__button-group' data-titlebar-group='navigation'>
+          {showBackToChatButton &&
+            renderIconButton({
+              tooltip: backToChatTooltip,
+              className: classNames('app-titlebar__button', layout?.isMobile && 'app-titlebar__button--mobile'),
+              onClick: handleBackToChat,
+              children: <ArrowCircleLeft theme='outline' size={iconSize} fill='currentColor' />,
             })}
-            {renderIconButton({
-              tooltip: historyForwardTooltip,
-              className: 'app-titlebar__button app-titlebar__button--nav',
-              onClick: () => navigationHistory?.forward(),
-              disabled: !navigationHistory?.canForward,
-              children: <ArrowRight theme='outline' size={iconSize} fill='currentColor' strokeWidth={desktopIconStroke} />,
+          {showSiderToggle &&
+            renderIconButton({
+              tooltip: siderTooltip,
+              className: classNames('app-titlebar__button', layout?.isMobile && 'app-titlebar__button--mobile'),
+              onClick: handleSiderToggle,
+              children: <SidebarIcon size={iconSize} strokeWidth={desktopIconStroke} />,
             })}
-          </>
-        )}
-        {!layout?.isMobile && (
-          <>
-            <TitlebarLanguageMenu iconSize={iconSize} strokeWidth={desktopIconStroke} />
+          {showHistoryNav && (
+            <>
+              {renderIconButton({
+                tooltip: historyBackTooltip,
+                className: 'app-titlebar__button app-titlebar__button--nav',
+                onClick: () => navigationHistory?.back(),
+                disabled: !navigationHistory?.canBack,
+                children: (
+                  <ArrowLeft theme='outline' size={iconSize} fill='currentColor' strokeWidth={desktopIconStroke} />
+                ),
+              })}
+              {renderIconButton({
+                tooltip: historyForwardTooltip,
+                className: 'app-titlebar__button app-titlebar__button--nav',
+                onClick: () => navigationHistory?.forward(),
+                disabled: !navigationHistory?.canForward,
+                children: (
+                  <ArrowRight theme='outline' size={iconSize} fill='currentColor' strokeWidth={desktopIconStroke} />
+                ),
+              })}
+            </>
+          )}
+        </div>
+        {showNewConversationAction && (
+          <div
+            className='app-titlebar__button-group app-titlebar__button-group--context'
+            data-titlebar-group='new-conversation'
+          >
+            <span className='app-titlebar__divider' aria-hidden='true' />
             {renderIconButton({
-              tooltip: t('terminal.newConversation'),
+              tooltip: newConversationTooltip,
               className: 'app-titlebar__button app-titlebar__button--nav',
               onClick: () => navigate('/guid', { state: { resetPreset: true } }),
-              children: <Plus theme='outline' size={iconSize} fill='currentColor' strokeWidth={desktopIconStroke} />,
+              children: isSettingsRoute ? (
+                <HomeIcon size={iconSize} strokeWidth={desktopIconStroke} />
+              ) : (
+                <NewConversationIcon size={iconSize} strokeWidth={desktopIconStroke} />
+              ),
             })}
-          </>
+          </div>
         )}
-
       </div>
       <div
         className={classNames('app-titlebar__brand', {
-          'app-titlebar__brand--centered': layout?.isMobile || !location.pathname.match(/^\/conversation\//),
+          'app-titlebar__brand--centered': layout?.isMobile,
         })}
-        aria-label={layout?.isMobile ? mobileCenterTitle : appTitle}
-        title={layout?.isMobile ? mobileCenterTitle : appTitle}
+        aria-label={contextTitle}
+        data-tauri-drag-region
       >
-        {layout?.isMobile &&
+        {layout?.isMobile ? (
           (() => {
             if (activeConversationId) {
-              return <MobileConversationBrand conversation_id={activeConversationId} fallbackTitle={mobileCenterTitle} />;
+              return <MobileConversationBrand conversation={conversation} fallbackTitle={contextTitle} />;
             }
             return (
               <span className='app-titlebar__brand-mobile'>
-                <span className='app-titlebar__brand-text'>{mobileCenterTitle}</span>
+                <span className='app-titlebar__brand-text'>{contextTitle}</span>
               </span>
             );
-          })()}
+          })()
+        ) : (
+          <span key={`${location.pathname}:${contextTitle}`} className='app-titlebar__context-title'>
+            {contextTitle}
+          </span>
+        )}
       </div>
       <div ref={toolbarRef} className='app-titlebar__toolbar'>
         {layout?.isMobile && <div id='app-titlebar-actions-slot' className='app-titlebar__actions-slot' />}

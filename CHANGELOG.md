@@ -5,6 +5,12 @@ notes at a high level rather than a complete historical log.
 
 ## Unreleased
 
+- Refined the Home and Settings experience with stable semantic surfaces,
+  theme-aware controls, clearer navigation and titlebar context, responsive
+  settings rows, compact capability markets with in-app details, and guarded
+  Preset editing. Home entry points remain spatially stable, Mini App shortcuts
+  stay hidden, and workspace pickers remain clickable above page content.
+
 - Web search now gives the first cold request enough time to reach its final
   keyless fallback after earlier providers time out. Successful web results now
   distinguish usable factual evidence from untrusted embedded instructions,

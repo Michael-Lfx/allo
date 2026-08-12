@@ -29,7 +29,7 @@ type PresetCardProps = {
   cardRef?: (el: HTMLDivElement | null) => void;
 };
 
-const MAX_VISIBLE_TAGS = 4;
+const MAX_VISIBLE_TAGS = 3;
 
 const PresetCard: React.FC<PresetCardProps> = ({
   preset,
@@ -80,11 +80,12 @@ const PresetCard: React.FC<PresetCardProps> = ({
       ].join(' ')}
     >
       {/* Header: avatar + name/badge, enable Switch pinned top-right */}
-      <div className='flex items-start gap-10px'>
+      <div className='grid grid-cols-[36px_minmax(0,1fr)_auto] items-start gap-10px'>
         <PresetAvatar preset={preset} size={36} avatarImageMap={avatarImageMap} />
         <div className='min-w-0 flex-1 pt-1px'>
-          <div className='flex items-center gap-6px min-w-0'>
-            <span className='truncate text-14px font-medium leading-20px text-[var(--color-text-1)]'>{name}</span>
+          <div className='min-w-0'>
+            <span className='block overflow-hidden text-14px font-medium leading-20px text-[var(--color-text-1)]' style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{name}</span>
+            <div className='mt-4px flex flex-wrap items-center gap-4px'>
             {isCustom && (
               <Tag
                 size='small'
@@ -103,6 +104,7 @@ const PresetCard: React.FC<PresetCardProps> = ({
                 {t('settings.presetSourceExtension', { defaultValue: 'Extension' })}
               </Tag>
             )}
+            </div>
           </div>
         </div>
         <div className='flex-shrink-0 -mt-1px' onClick={(e) => e.stopPropagation()}>
@@ -124,7 +126,7 @@ const PresetCard: React.FC<PresetCardProps> = ({
           {preset.agent_preferences.length} {t('settings.presetAgentsShort', { defaultValue: 'Agents' })}
         </span>
         <span className='rounded-8px bg-[var(--color-fill-2)] px-7px py-2px'>
-          {preset.included_skills.length} Skills
+          {preset.included_skills.length} {t('common.skills')}
         </span>
         {preset.knowledge_policy.enabled && (
           <span className='rounded-8px bg-[rgba(var(--primary-6),0.08)] text-primary-6 px-7px py-2px'>
@@ -133,7 +135,7 @@ const PresetCard: React.FC<PresetCardProps> = ({
         )}
         {(preset.mcp_server_ids?.length ?? 0) > 0 && (
           <span className='rounded-8px bg-[var(--color-fill-2)] px-7px py-2px'>
-            {preset.mcp_server_ids.length} MCP
+            {preset.mcp_server_ids.length} {t('settings.mcpHub.railTitle')}
           </span>
         )}
       </div>
@@ -158,9 +160,10 @@ const PresetCard: React.FC<PresetCardProps> = ({
             <span
               key={tag.preset_tag_id}
               className={[
-                'inline-flex items-center rounded-[12px] px-8px py-1px text-11px leading-16px',
+                'inline-flex max-w-[156px] items-center truncate rounded-[12px] px-8px py-1px text-11px leading-16px',
                 'bg-[var(--color-fill-3)] text-[var(--color-text-2)]',
-              ].join(' ')}
+            ].join(' ')}
+              title={tag.label_i18n?.[localeKey] || tag.label}
             >
               {tag.label_i18n?.[localeKey] || tag.label}
             </span>
@@ -182,7 +185,7 @@ const PresetCard: React.FC<PresetCardProps> = ({
           type='button'
           data-testid={`btn-duplicate-${preset.preset_id}`}
           onClick={() => onDuplicate(preset)}
-          className='inline-flex items-center gap-4px border-0 bg-transparent p-0 leading-none text-12px text-[var(--color-text-3)] cursor-pointer hover:text-[var(--color-text-1)] transition-colors'
+          className='inline-flex items-center gap-4px whitespace-nowrap border-0 bg-transparent p-0 leading-none text-12px text-[var(--color-text-3)] cursor-pointer hover:text-[var(--color-text-1)] transition-colors'
         >
           <Copy theme='outline' size={13} strokeWidth={3} />
           {t('settings.duplicatePreset', { defaultValue: 'Duplicate' })}
@@ -191,7 +194,7 @@ const PresetCard: React.FC<PresetCardProps> = ({
           type='button'
           data-testid={`btn-edit-${preset.preset_id}`}
           onClick={() => onEdit(preset)}
-          className='inline-flex items-center gap-4px border-0 bg-transparent p-0 leading-none text-12px text-[var(--color-text-2)] cursor-pointer hover:text-[var(--color-text-1)] transition-colors'
+          className='inline-flex items-center gap-4px whitespace-nowrap border-0 bg-transparent p-0 leading-none text-12px text-[var(--color-text-2)] cursor-pointer hover:text-[var(--color-text-1)] transition-colors'
         >
           <SettingOne theme='outline' size={13} strokeWidth={3} />
           {t('settings.editPreset', { defaultValue: 'Preset Details' })}

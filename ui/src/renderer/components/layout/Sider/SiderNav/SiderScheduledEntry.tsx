@@ -33,6 +33,9 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
             isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
           )}
           onClick={onClick}
+          aria-current={isActive ? 'page' : undefined}
+          data-sider-nav-entry
+          data-active={isActive ? 'true' : 'false'}
         >
           <AlarmClock
             theme='outline'
@@ -55,6 +58,9 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
           isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
         )}
         onClick={onClick}
+        aria-current={isActive ? 'page' : undefined}
+        data-sider-nav-entry
+        data-active={isActive ? 'true' : 'false'}
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
           <AlarmClock

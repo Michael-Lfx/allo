@@ -39,7 +39,7 @@ const GuidPresetEditorHost: React.FC<GuidPresetEditorHostProps> = ({
   const [agentMessage, agentMessageContext] = useArcoMessage({ maxCount: 10 });
 
   // Internal usePresetList owns the drawer editor's working state.
-  const { activePresetId, setActivePresetId, activePreset, isExtensionPreset, loadPresets } =
+  const { setActivePresetId, activePreset, isExtensionPreset, loadPresets } =
     usePresetList();
   const { availableBackends, refreshAgentDetection } = useDetectedAgents();
   const tags = usePresetTags();
@@ -85,47 +85,8 @@ const GuidPresetEditorHost: React.FC<GuidPresetEditorHostProps> = ({
     <>
       {agentMessageContext}
       <PresetEditDrawer
-        editVisible={editor.editVisible}
-        setEditVisible={editor.setEditVisible}
-        isCreating={editor.isCreating}
-        editName={editor.editName}
-        setEditName={editor.setEditName}
-        editDescription={editor.editDescription}
-        setEditDescription={editor.setEditDescription}
-        editRoutingDescription={editor.editRoutingDescription}
-        setEditRoutingDescription={editor.setEditRoutingDescription}
-        editAvatar={editor.editAvatar}
-        setEditAvatar={editor.setEditAvatar}
+        editor={editor}
         editAvatarImage={editAvatarImage}
-        editAgents={editor.editAgents}
-        setEditAgents={editor.setEditAgents}
-        editModels={editor.editModels}
-        setEditModels={editor.setEditModels}
-        editTargets={editor.editTargets}
-        setEditTargets={editor.setEditTargets}
-        fallbackAllowed={editor.fallbackAllowed}
-        setFallbackAllowed={editor.setFallbackAllowed}
-        autoSelectable={editor.autoSelectable}
-        setAutoSelectable={editor.setAutoSelectable}
-        knowledgePolicy={editor.knowledgePolicy}
-        setKnowledgePolicy={editor.setKnowledgePolicy}
-        knowledgeBaseIds={editor.knowledgeBaseIds}
-        setKnowledgeBaseIds={editor.setKnowledgeBaseIds}
-        mcpServerIds={editor.mcpServerIds}
-        setMcpServerIds={editor.setMcpServerIds}
-        editContext={editor.editContext}
-        setEditContext={editor.setEditContext}
-        promptViewMode={editor.promptViewMode}
-        setPromptViewMode={editor.setPromptViewMode}
-        availableSkills={editor.availableSkills}
-        selectedSkills={editor.selectedSkills}
-        setSelectedSkills={editor.setSelectedSkills}
-        pendingSkills={editor.pendingSkills}
-        setDeletePendingSkillName={editor.setDeletePendingSkillName}
-        setDeleteCustomSkill={editor.setDeleteCustomSkill}
-        builtinAutoSkills={editor.builtinAutoSkills}
-        disabledBuiltinSkills={editor.disabledBuiltinSkills}
-        setDisabledBuiltinSkills={editor.setDisabledBuiltinSkills}
         editAudienceTags={editor.editAudienceTags}
         setEditAudienceTags={editor.setEditAudienceTags}
         editScenarioTags={editor.editScenarioTags}
@@ -138,10 +99,8 @@ const GuidPresetEditorHost: React.FC<GuidPresetEditorHostProps> = ({
         }
         localeKey={localeKey}
         activePreset={activePreset}
-        activePresetId={activePresetId}
         isExtensionPreset={isExtensionPreset}
         availableBackends={availableBackends}
-        handleSave={editor.handleSave}
         onImportAgentSkills={editor.handleImportAgentSkills}
         handleDeleteClick={editor.handleDeleteClick}
         handleDuplicate={(preset) => void editor.handleDuplicate(preset)}

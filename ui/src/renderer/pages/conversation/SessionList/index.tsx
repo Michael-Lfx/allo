@@ -6,6 +6,7 @@ import type { ConversationId } from '@/common/types/ids';
 import BatchActionBar from '@/renderer/components/base/BatchActionBar';
 import DirectorySelectionModal from '@/renderer/components/settings/DirectorySelectionModal';
 import { getRecentWorkspaces } from '@/renderer/components/workspace/recentWorkspaces';
+import { WorkspacePickerPopover } from '@/renderer/components/workspace';
 import { useConversationHistoryContext } from '@/renderer/hooks/context/ConversationHistoryContext';
 import { useCronJobsMap } from '@/renderer/pages/cron';
 import { emitter } from '@/renderer/utils/emitter';
@@ -70,11 +71,8 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   const { pathname } = useLocation();
   // 控制工作路径列表的展开/收起
   const [expanded, setExpanded] = useState(true);
-  // 悬浮菜单位置和状态
-  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const dropdownRef = useRef<HTMLDivElement | null>(null);
   // 每次打开悬浮菜单时重新读取 localStorage（addRecentWorkspace 写入后需要刷新快照）
   const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>(() => getRecentWorkspaces());
   const {
@@ -345,20 +343,17 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
 
   /* ------------------------- workspace dropdown UI ------------------------- */
 
+  const handleDropdownVisibilityChange = useCallback((visible: boolean) => {
+    if (visible) {
+      // Re-read local storage whenever the menu opens so a directory selected
+      // from another workspace entry is immediately available here as well.
+      setRecentWorkspaces(getRecentWorkspaces());
+    }
+    setDropdownOpen(visible);
+  }, []);
+
   const handleOpenDropdown = useCallback(() => {
-    const el = dropdownTriggerRef.current;
-    if (!el) return;
     setRecentWorkspaces(getRecentWorkspaces());
-    const rect = el.getBoundingClientRect();
-    // position below the trigger, aligned to left edge
-    setDropdownStyle({
-      position: 'fixed' as const,
-      left: rect.left,
-      top: rect.bottom + 6,
-      minWidth: 280,
-      maxWidth: 360,
-      zIndex: 99999,
-    });
     setDropdownOpen(true);
   }, []);
 
@@ -373,31 +368,6 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
       handleOpenDropdown();
     }
   }, [dropdownOpen, handleOpenDropdown, handleCloseDropdown]);
-
-  // 点击外部关闭悬浮菜单 + Escape 键关闭
-  useEffect(() => {
-    if (!dropdownOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        dropdownTriggerRef.current &&
-        !dropdownTriggerRef.current.contains(target) &&
-        dropdownRef.current &&
-        !dropdownRef.current.contains(target)
-      ) {
-        handleCloseDropdown();
-      }
-    };
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') handleCloseDropdown();
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [dropdownOpen, handleCloseDropdown]);
 
   /* ---------------------------------- row render ---------------------------------- */
 
@@ -605,19 +575,16 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
         onCancel={() => setShowExportDirectorySelector(false)}
       />
 
-      {/* Workspace dropdown */}
-      {dropdownOpen && (
-        <div
-          ref={dropdownRef}
-          style={{
-            ...dropdownStyle,
-            background: 'var(--color-bg-1, #fff)',
-            border: '1px solid var(--color-border-2)',
-            borderRadius: '12px',
-            padding: '6px',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.08), 0 12px 32px rgba(0,0,0,0.06)',
-            userSelect: 'none',
-          }}>
+      <WorkspacePickerPopover
+        open={dropdownOpen}
+        onOpenChange={handleDropdownVisibilityChange}
+        triggerRef={dropdownTriggerRef}
+        preferredPlacement='below'
+        minWidth={280}
+        maxWidth={360}
+        testId='sidebar-workspace-picker-popover'
+      >
+        <div style={{ padding: '6px', userSelect: 'none' }}>
           {/* Open Folder button */}
           <button
             type='button'
@@ -639,6 +606,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
             onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-fill-2)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
             onClick={() => {
+              handleCloseDropdown();
               ipcBridge.dialog.showOpen
                 .invoke({ properties: ['openDirectory', 'createDirectory'] })
                 .then((paths) => {
@@ -695,6 +663,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
                       onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-fill-2)'; }}
                       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                       onClick={() => {
+                        handleCloseDropdown();
                         import('@/renderer/pages/conversation/SessionList/utils/projectWorkpaths').then(({ addProjectWorkpath }) => {
                           import('@/renderer/components/workspace').then(({ addRecentWorkspace }) => {
                             addProjectWorkpath(path);
@@ -718,7 +687,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
             </>
           )}
         </div>
-      )}
+      </WorkspacePickerPopover>
     </>
   );
 

@@ -7,13 +7,19 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, Tooltip } from '@arco-design/web-react';
-import { Logout, Message, Right, Theme, User } from '@icon-park/react';
+import { Check, Logout, Message, Right, Theme, Translate, User } from '@icon-park/react';
 import classNames from 'classnames';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import CreditsRefreshButton from '@/renderer/components/base/CreditsRefreshButton';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useSupportChat } from '@/renderer/features/supportChat/SupportChatProvider';
+import { changeLanguage, normalizeLanguageCode, supportedLanguages } from '@/renderer/services/i18n';
 import SiderThemePanel from './SiderThemePanel';
+
+const LANGUAGE_LABELS: Record<string, string> = {
+  'zh-CN': '简体中文',
+  'en-US': 'English',
+};
 
 interface SiderUserMenuProps {
   isMobile: boolean;
@@ -37,31 +43,56 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   showLogout = false,
   onLogout,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { openSupportChat, hasUnread, unreadCount } = useSupportChat();
   const displayName = userLabel?.trim() || '—';
   const planText = planLabel?.trim() || '';
   const [menuVisible, setMenuVisible] = useState(false);
   const [skinVisible, setSkinVisible] = useState(false);
+  const [languageVisible, setLanguageVisible] = useState(false);
   const { balance, authenticated, isFetchingBalance, lastRefreshAt } = useCredits();
 
   const handleMenuVisibleChange = (visible: boolean) => {
     setMenuVisible(visible);
     if (!visible) {
       setSkinVisible(false);
+      setLanguageVisible(false);
     }
   };
 
   const handleLogout = () => {
     setMenuVisible(false);
     setSkinVisible(false);
+    setLanguageVisible(false);
     onLogout?.();
   };
 
   const handleOpenSupportChat = () => {
     setMenuVisible(false);
     setSkinVisible(false);
+    setLanguageVisible(false);
     openSupportChat();
+  };
+
+  const currentLanguage = normalizeLanguageCode(i18n.language);
+
+  const handleLanguageSelect = (language: string) => {
+    const normalizedLanguage = normalizeLanguageCode(language);
+    setLanguageVisible(false);
+    setMenuVisible(false);
+    if (normalizedLanguage === currentLanguage) return;
+
+    const apply = () => {
+      changeLanguage(normalizedLanguage).catch((error: Error) => {
+        console.error('Failed to change language:', error);
+      });
+    };
+
+    if (typeof window !== 'undefined' && 'requestAnimationFrame' in window) {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(apply));
+    } else {
+      apply();
+    }
   };
 
   const creditsText = !authenticated
@@ -91,11 +122,60 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
       </div>
 
       <Popover
+        className='sider-soft-popover sider-user-language-popover'
+        trigger='click'
+        position='rt'
+        popupVisible={languageVisible}
+        onVisibleChange={(visible) => {
+          setLanguageVisible(visible);
+          if (visible) setSkinVisible(false);
+        }}
+        getPopupContainer={() => document.body}
+        content={
+          <div className='w-152px flex flex-col gap-1px p-4px'>
+            {supportedLanguages.map((language) => {
+              const normalizedLanguage = normalizeLanguageCode(language);
+              const active = normalizedLanguage === currentLanguage;
+              return (
+                <button
+                  type='button'
+                  key={language}
+                  className={menuRowClass}
+                  aria-current={active ? 'true' : undefined}
+                  onClick={() => handleLanguageSelect(language)}
+                >
+                  <span className='flex-1 text-12px text-t-primary'>
+                    {LANGUAGE_LABELS[language] ?? language}
+                  </span>
+                  {active ? (
+                    <Check theme='outline' size='14' fill='currentColor' className='shrink-0 text-primary-6' />
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        }
+        unmountOnExit={false}
+      >
+        <button type='button' className={classNames(menuRowClass, languageVisible && '!bg-fill-2')}>
+          <Translate theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+          <span className='flex-1 text-12px text-t-primary'>
+            {t('common.userMenu.language', { defaultValue: '语言' })}
+          </span>
+          <span className='text-11px text-t-tertiary'>{LANGUAGE_LABELS[currentLanguage] ?? currentLanguage}</span>
+          <Right theme='outline' size='12' fill='currentColor' className='shrink-0 text-t-tertiary' />
+        </button>
+      </Popover>
+
+      <Popover
         className='sider-soft-popover sider-user-skin-popover'
         trigger='click'
         position='rt'
         popupVisible={skinVisible}
-        onVisibleChange={setSkinVisible}
+        onVisibleChange={(visible) => {
+          setSkinVisible(visible);
+          if (visible) setLanguageVisible(false);
+        }}
         getPopupContainer={() => document.body}
         content={
           <SiderThemePanel
@@ -184,11 +264,18 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         ) : null}
       </span>
       {!collapsed && (
-        <span className='min-w-0 flex-1 flex flex-col justify-center gap-1px'>
-          <span className='truncate text-12px font-500 leading-16px text-t-primary'>{displayName}</span>
-          {planText ? (
-            <span className='truncate text-11px leading-14px text-t-tertiary'>{planText}</span>
-          ) : null}
+        <span className='min-w-0 h-31px flex-1 flex flex-col justify-center gap-1px' data-sider-account-copy>
+          <span className='block h-16px truncate text-12px font-500 leading-16px text-t-primary'>{displayName}</span>
+          <span
+            className={classNames(
+              'block h-14px truncate text-11px leading-14px text-t-tertiary',
+              !planText && 'invisible'
+            )}
+            aria-hidden={!planText}
+            data-sider-plan-slot
+          >
+            {planText || '\u00a0'}
+          </span>
         </span>
       )}
     </div>

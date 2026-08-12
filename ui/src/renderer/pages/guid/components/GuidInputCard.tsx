@@ -122,7 +122,7 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
       outerRef={containerRef}
       dragHandlers={dragHandlers}
       isOverlayOpen={mentionOpen || slashMenuOpen}
-      className={`${styles.guidInputCardWrap} guid-input-card-shell ${isFileDragging ? 'b b-solid border-dashed guid-input-card-shell--dragging' : ''}`}
+      className={`${styles.guidInputCardWrap} ${isInputActive ? styles.guidInputCardWrapActive : ''} guid-input-card-shell ${isFileDragging ? 'b b-solid border-dashed guid-input-card-shell--dragging' : ''}`}
       style={{
         zIndex: 1,
         width: isMobile ? 'calc(100% + 28px)' : undefined,
@@ -134,9 +134,7 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
               borderColor: 'rgb(var(--primary-3))',
               borderWidth: '1px',
             }
-          : {
-              boxShadow: 'none',
-          }),
+          : undefined),
       }}
       panelClassName={`${styles.guidInputInner} p-12px bg-dialog-fill-0`}
       panelStyle={{

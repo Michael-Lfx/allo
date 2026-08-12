@@ -4,23 +4,17 @@
  */
 import type {
   PresetListItem,
-  BuiltinAutoSkill,
-  PendingSkill,
-  PresetSkillCatalogItem,
 } from './types';
 import type { AvailableBackend } from '@/renderer/hooks/preset';
 import type {
   CreatePresetTagRequest,
-  ModelPreference,
-  PresetKnowledgePolicy,
-  PresetReference,
   PresetTag,
   PresetTarget,
 } from '@/common/types/agent/presetTypes';
 import type { PresetTagId } from '@/common/types/ids';
 import type { ImportedAgentSkill } from '@/renderer/pages/settings/skill/AgentSkillImportDrawer';
 import type { AgentSkillImportRow } from '@/renderer/pages/settings/skill/agentSkillImportUtils';
-import AgentSkillImportDrawer from '@/renderer/pages/settings/skill/AgentSkillImportDrawer';
+import { AgentSkillImportEmbedded } from '@/renderer/pages/settings/skill/AgentSkillImportDrawer';
 import { stripSkillFrontmatter } from '@/renderer/pages/settings/skill/skillDetail';
 import {
   resolveSkillDisplay,
@@ -39,7 +33,7 @@ import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useKnowledgeBases } from '@/renderer/pages/knowledge/useKnowledge';
-import { Avatar, Button, Checkbox, Collapse, Drawer, Input, Select, Tag, Typography } from '@arco-design/web-react';
+import { Avatar, Button, Checkbox, Collapse, Drawer, Input, Modal, Select, Tag, Typography } from '@arco-design/web-react';
 import { Close, Delete, Info, Plus, Robot } from '@icon-park/react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -49,11 +43,9 @@ import {
   parseKnowledgeBaseId,
   parseMcpServerId,
   parseProviderId,
-  type AgentId,
-  type KnowledgeBaseId,
-  type McpServerId,
 } from '@/common/types/ids';
 import { useMcpServers } from '@/renderer/hooks/mcp';
+import type { PresetEditorController } from '@/renderer/hooks/preset/usePresetEditor';
 
 const ANY_PROVIDER_TOKEN = '*';
 
@@ -86,58 +78,8 @@ const LocalizedSkillContent: React.FC<{
 };
 
 type PresetEditDrawerProps = {
-  // Drawer visibility
-  editVisible: boolean;
-  setEditVisible: (v: boolean) => void;
-  isCreating: boolean;
-
-  // Identity fields
-  editName: string;
-  setEditName: (v: string) => void;
-  editDescription: string;
-  setEditDescription: (v: string) => void;
-  editRoutingDescription: string;
-  setEditRoutingDescription: (v: string) => void;
-  editAvatar: string;
-  setEditAvatar: (v: string) => void;
+  editor: PresetEditorController;
   editAvatarImage: string | undefined;
-  editAgents: AgentId[];
-  setEditAgents: (v: AgentId[]) => void;
-  editModels: ModelPreference[];
-  setEditModels: (v: ModelPreference[]) => void;
-  editTargets: PresetTarget[];
-  setEditTargets: (v: PresetTarget[]) => void;
-  fallbackAllowed: boolean;
-  setFallbackAllowed: (v: boolean) => void;
-  autoSelectable: boolean;
-  setAutoSelectable: (v: boolean) => void;
-  knowledgePolicy: PresetKnowledgePolicy;
-  setKnowledgePolicy: (v: PresetKnowledgePolicy) => void;
-  knowledgeBaseIds: KnowledgeBaseId[];
-  setKnowledgeBaseIds: (v: KnowledgeBaseId[]) => void;
-  mcpServerIds: McpServerId[];
-  setMcpServerIds: (v: McpServerId[]) => void;
-
-  // Rules / prompt
-  editContext: string;
-  setEditContext: (v: string) => void;
-  promptViewMode: 'edit' | 'preview';
-  setPromptViewMode: (v: 'edit' | 'preview') => void;
-
-  // Skills state
-  availableSkills: PresetSkillCatalogItem[];
-  selectedSkills: string[];
-  setSelectedSkills: (v: string[]) => void;
-  pendingSkills: PendingSkill[];
-  setDeletePendingSkillName: (v: string | null) => void;
-  setDeleteCustomSkill: (v: SelectedPresetSkill | null) => void;
-
-  // Builtin auto-injected skills
-  builtinAutoSkills: BuiltinAutoSkill[];
-  disabledBuiltinSkills: string[];
-  setDisabledBuiltinSkills: (v: string[]) => void;
-
-  // Tag pickers (audience / scenario)
   editAudienceTags: PresetTagId[];
   setEditAudienceTags: (v: PresetTagId[]) => void;
   editScenarioTags: PresetTagId[];
@@ -151,14 +93,10 @@ type PresetEditDrawerProps = {
 
   // Active preset info
   activePreset: PresetListItem | null;
-  activePresetId: PresetReference | null;
   isExtensionPreset: (preset: PresetListItem | null | undefined) => boolean;
 
   // Agent backend options
   availableBackends: AvailableBackend[];
-
-  // Handlers
-  handleSave: () => void;
   onImportAgentSkills: (rows: AgentSkillImportRow[]) => Promise<ImportedAgentSkill[]>;
   handleDeleteClick: () => void;
   /** Duplicate the active preset. Used by the builtin readonly banner so
@@ -167,47 +105,8 @@ type PresetEditDrawerProps = {
 };
 
 const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
-  editVisible,
-  setEditVisible,
-  isCreating,
-  editName,
-  setEditName,
-  editDescription,
-  setEditDescription,
-  editRoutingDescription,
-  setEditRoutingDescription,
-  editAvatar,
-  setEditAvatar,
+  editor,
   editAvatarImage,
-  editAgents,
-  setEditAgents,
-  editModels,
-  setEditModels,
-  editTargets,
-  setEditTargets,
-  fallbackAllowed,
-  setFallbackAllowed,
-  autoSelectable,
-  setAutoSelectable,
-  knowledgePolicy,
-  setKnowledgePolicy,
-  knowledgeBaseIds,
-  setKnowledgeBaseIds,
-  mcpServerIds,
-  setMcpServerIds,
-  editContext,
-  setEditContext,
-  promptViewMode,
-  setPromptViewMode,
-  availableSkills,
-  selectedSkills,
-  setSelectedSkills,
-  pendingSkills,
-  setDeletePendingSkillName,
-  setDeleteCustomSkill,
-  builtinAutoSkills,
-  disabledBuiltinSkills,
-  setDisabledBuiltinSkills,
   editAudienceTags,
   setEditAudienceTags,
   editScenarioTags,
@@ -218,20 +117,66 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   readOnly,
   localeKey,
   activePreset,
-  activePresetId: _activePresetId,
   isExtensionPreset,
   availableBackends,
-  handleSave,
   onImportAgentSkills,
   handleDeleteClick,
   handleDuplicate,
 }) => {
+  const {
+    editVisible,
+    setEditVisible,
+    isCreating,
+    editName,
+    setEditName,
+    editDescription,
+    setEditDescription,
+    editRoutingDescription,
+    setEditRoutingDescription,
+    editAvatar,
+    setEditAvatar,
+    editAgents,
+    setEditAgents,
+    editModels,
+    setEditModels,
+    editTargets,
+    setEditTargets,
+    fallbackAllowed,
+    setFallbackAllowed,
+    autoSelectable,
+    setAutoSelectable,
+    knowledgePolicy,
+    setKnowledgePolicy,
+    knowledgeBaseIds,
+    setKnowledgeBaseIds,
+    mcpServerIds,
+    setMcpServerIds,
+    editContext,
+    setEditContext,
+    promptViewMode,
+    setPromptViewMode,
+    availableSkills,
+    selectedSkills,
+    setSelectedSkills,
+    pendingSkills,
+    setDeletePendingSkillName,
+    setDeleteCustomSkill,
+    builtinAutoSkills,
+    disabledBuiltinSkills,
+    setDisabledBuiltinSkills,
+    handleSave,
+    fieldErrors,
+  } = editor;
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const textareaWrapperRef = useRef<HTMLDivElement>(null);
+  const nameFieldRef = useRef<HTMLDivElement>(null);
+  const targetsFieldRef = useRef<HTMLElement>(null);
+  const drawerHeadingRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const wasDrawerVisibleRef = useRef(false);
   const audiencePickerRef = useRef<PresetTagPickerHandle>(null);
   const scenarioPickerRef = useRef<PresetTagPickerHandle>(null);
-  const [drawerWidth, setDrawerWidth] = useState(500);
+  const [drawerWidth, setDrawerWidth] = useState(760);
   const [rulesExpanded, setRulesExpanded] = useState(false);
   const [agentImportVisible, setAgentImportVisible] = useState(false);
   const promptPreviewContent = useMemo(() => stripSkillFrontmatter(editContext).trim(), [editContext]);
@@ -244,25 +189,15 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   useEffect(() => {
     if (!editVisible) {
       resetPendingTagDrafts();
+      setAgentImportVisible(false);
     }
   }, [editVisible, resetPendingTagDrafts]);
-
-  // Auto focus textarea when drawer opens in edit mode
-  useEffect(() => {
-    if (editVisible && promptViewMode === 'edit') {
-      const timer = setTimeout(() => {
-        const textarea = textareaWrapperRef.current?.querySelector('textarea');
-        textarea?.focus();
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [editVisible, promptViewMode]);
 
   // Responsive drawer width
   useEffect(() => {
     const updateDrawerWidth = () => {
       if (typeof window === 'undefined') return;
-      const nextWidth = Math.min(1024, Math.max(480, Math.floor(window.innerWidth * 0.5)));
+      const nextWidth = window.innerWidth >= 840 ? Math.min(760, window.innerWidth - 64) : window.innerWidth;
       setDrawerWidth(nextWidth);
     };
 
@@ -270,6 +205,39 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
     window.addEventListener('resize', updateDrawerWidth);
     return () => window.removeEventListener('resize', updateDrawerWidth);
   }, []);
+
+  useEffect(() => {
+    if (editVisible && !wasDrawerVisibleRef.current && document.activeElement instanceof HTMLElement) {
+      restoreFocusRef.current = document.activeElement;
+    }
+    if (!editVisible && wasDrawerVisibleRef.current) {
+      const trigger = restoreFocusRef.current;
+      requestAnimationFrame(() => {
+        if (trigger?.isConnected) trigger.focus();
+      });
+      restoreFocusRef.current = null;
+    }
+    wasDrawerVisibleRef.current = editVisible;
+  }, [editVisible]);
+
+  useEffect(() => {
+    if (!editVisible) return;
+    const frame = requestAnimationFrame(() => {
+      if (isCreating) {
+        nameFieldRef.current?.querySelector('input')?.focus();
+      } else {
+        drawerHeadingRef.current?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editVisible, isCreating]);
+
+  const focusValidationField = (field: string | null) => {
+    const container = field === 'identity.name' ? nameFieldRef.current : field === 'targets' ? targetsFieldRef.current : null;
+    if (!container) return;
+    container.scrollIntoView({ block: 'center' });
+    requestAnimationFrame(() => container.querySelector<HTMLElement>('input, button, [role="combobox"]')?.focus());
+  };
 
   // Whether skills section should be visible.
   // All non-extension presets expose a skills panel: user/custom can edit,
@@ -326,10 +294,6 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   const autoInjectedActiveCount = builtinAutoSkills.filter(
     (skill) => !disabledBuiltinSkills.includes(skill.name)
   ).length;
-  const customStatusDotColor = customActiveCount > 0 ? 'rgb(var(--success-6))' : 'var(--color-text-4)';
-  const builtinStatusDotColor = builtinActiveCount > 0 ? 'rgb(var(--success-6))' : 'var(--color-text-4)';
-  const extensionStatusDotColor = extensionActiveCount > 0 ? 'rgb(var(--success-6))' : 'var(--color-text-4)';
-  const autoInjectedStatusDotColor = autoInjectedActiveCount > 0 ? 'rgb(var(--success-6))' : 'var(--color-text-4)';
   const totalSkillsCount =
     pendingSkills.length +
     customSkillItems.length +
@@ -345,32 +309,67 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   const isBuiltin = activePreset?.source === 'builtin';
   const isRuleEditable = !readOnly;
   const isSkillsEditable = !readOnly;
+  const defaultSkillCollapseKeys = [
+    ...(customActiveCount > 0 ? ['custom-skills'] : []),
+    ...(builtinActiveCount > 0 ? ['builtin-skills'] : []),
+    ...(extensionActiveCount > 0 ? ['extension-skills'] : []),
+    ...(autoInjectedActiveCount > 0 ? ['auto-injected-skills'] : []),
+  ];
   const rulesContainerHeight = rulesExpanded
     ? '420px'
     : isRuleEditable && promptViewMode === 'edit'
       ? '260px'
       : '220px';
+  const isDirty = editor.dirty;
+  const saveDisabled = readOnly || editor.saving || (!isCreating && !isDirty) || (isCreating && !editor.valid);
+
+  const requestClose = () => {
+    if (agentImportVisible) {
+      setAgentImportVisible(false);
+      return;
+    }
+    if (!isDirty) {
+      closeDrawer();
+      return;
+    }
+    Modal.confirm({
+      title: t('settings.presetDiscardChangesTitle', { defaultValue: '放弃未保存的更改？' }),
+      content: t('settings.presetDiscardChangesDescription', {
+        defaultValue: '关闭后，这次编辑的内容将不会保存。',
+      }),
+      okText: t('settings.presetDiscardChangesConfirm', { defaultValue: '放弃更改' }),
+      cancelText: t('common.cancel', { defaultValue: '取消' }),
+      okButtonProps: { status: 'danger' },
+      onOk: closeDrawer,
+    });
+  };
+
+  const handleDrawerSaveClick = async () => {
+    const firstInvalidField = await handleDrawerSave();
+    focusValidationField(firstInvalidField);
+  };
 
   return (
     <Drawer
       title={
-        <>
+        <div ref={drawerHeadingRef} tabIndex={-1} className='outline-none'>
           <span>
             {isCreating
               ? t('settings.createPreset', { defaultValue: 'Create Preset' })
               : t('settings.editPreset', { defaultValue: 'Preset Details' })}
           </span>
-          <div
-            onClick={(e) => {
-              e.stopPropagation();
-              closeDrawer();
-            }}
-            className='absolute right-4 top-2 cursor-pointer text-t-secondary hover:text-t-primary transition-colors p-1'
-            style={{ zIndex: 10, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          >
-            <Close size={18} />
-          </div>
-        </>
+          {!agentImportVisible && (
+            <Button
+              type='text'
+              size='mini'
+              aria-label={t('common.close', { defaultValue: '关闭' })}
+              onClick={requestClose}
+              className='!absolute !right-0 !top-0 !h-32px !w-32px !rounded-8px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
+              style={{ zIndex: 10, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              icon={<Close size={18} />}
+            />
+          )}
+        </div>
       }
       closable={false}
       visible={editVisible}
@@ -379,43 +378,43 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
       zIndex={1200}
       getPopupContainer={() => document.body}
       autoFocus={false}
-      onCancel={closeDrawer}
+      onCancel={requestClose}
       headerStyle={{ background: 'var(--color-bg-1)' }}
       bodyStyle={{ background: 'var(--color-bg-1)' }}
-      footer={
+      footer={agentImportVisible ? null : (
         <div className='flex items-center justify-between w-full'>
-          <div className='flex items-center gap-8px'>
-            {!readOnly && <Button
-              type='primary'
-              onClick={handleDrawerSave}
-              data-testid='btn-save-preset'
-              className='w-[100px] rounded-[100px]'
-            >
-              {isCreating ? t('common.create', { defaultValue: 'Create' }) : t('common.save', { defaultValue: 'Save' })}
-            </Button>}
-            <Button
-              onClick={closeDrawer}
-              className='w-[100px] rounded-[100px] bg-fill-2'
-            >
-              {t('common.cancel', { defaultValue: 'Cancel' })}
-            </Button>
-          </div>
           {!isCreating && activePreset?.source !== 'builtin' && !isExtensionPreset(activePreset) && (
             <Button
               status='danger'
               onClick={handleDeleteClick}
               data-testid='btn-delete-preset'
-              className='rounded-[100px]'
-              style={{ backgroundColor: 'rgb(var(--danger-1))' }}
+              className='!h-36px !rounded-8px'
             >
               {t('common.delete', { defaultValue: 'Delete' })}
             </Button>
           )}
+          <div className='ml-auto flex items-center gap-8px'>
+            <Button onClick={requestClose} className='!h-36px !min-w-88px !rounded-8px !bg-fill-2'>
+              {t('common.cancel', { defaultValue: 'Cancel' })}
+            </Button>
+            {!readOnly && (
+              <Button
+                type='primary'
+                disabled={saveDisabled}
+                loading={editor.saving}
+                onClick={() => void handleDrawerSaveClick()}
+                data-testid='btn-save-preset'
+                className='!h-36px !min-w-88px !rounded-8px'
+              >
+                {isCreating ? t('common.create', { defaultValue: 'Create' }) : t('common.save', { defaultValue: 'Save' })}
+              </Button>
+            )}
+          </div>
         </div>
-      }
+      )}
     >
-      <div className='flex flex-col h-full overflow-hidden' data-testid='preset-edit-drawer'>
-        <div className='flex flex-col flex-1 gap-16px bg-fill-2 rounded-16px p-20px overflow-y-auto'>
+      <div className='flex flex-col gap-24px pb-12px' data-testid='preset-edit-drawer'>
+        <div className={agentImportVisible ? 'hidden' : 'flex flex-col gap-24px'}>
           {/* Catalog-owned presets stay immutable; duplicate to customize. */}
           {isBuiltin && activePreset && (
             <div
@@ -446,7 +445,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
           )}
 
           {/* Name & Avatar */}
-          <div className='flex-shrink-0'>
+          <div ref={nameFieldRef} className='flex-shrink-0'>
             <Typography.Text bold>
               <span className='text-red-500'>*</span>{' '}
               {t('settings.presetNameAvatar', { defaultValue: 'Name & Avatar' })}
@@ -484,8 +483,15 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 placeholder={t('settings.presetNamePlaceholder', { defaultValue: 'Enter a name for this preset' })}
                 data-testid='input-preset-name'
                 className='flex-1 rounded-4px bg-bg-1'
+                status={fieldErrors['identity.name'] ? 'error' : undefined}
+                aria-invalid={fieldErrors['identity.name'] ? 'true' : undefined}
               />
             </div>
+            {fieldErrors['identity.name'] && (
+              <div className='mt-6px text-12px text-danger-6' role='alert'>
+                {fieldErrors['identity.name']}
+              </div>
+            )}
           </div>
 
           {/* Description */}
@@ -521,8 +527,11 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
             />
           </div>
 
-          {/* Ordered Agent preferences */}
-          <div className='flex-shrink-0'>
+          {/* Running preferences */}
+          <section className='flex-shrink-0 border-t border-solid border-border-2 pt-20px'>
+            <Typography.Title heading={6} className='!mb-14px !text-t-primary'>
+              {t('settings.presetSectionPreferences', { defaultValue: '运行偏好' })}
+            </Typography.Title>
             <Typography.Text bold>{t('settings.presetPreferredAgents', { defaultValue: 'Preferred Agents' })}</Typography.Text>
             <NomiSelect
               mode='multiple'
@@ -552,7 +561,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 defaultValue: 'The first available option is used. Drag-and-drop ordering will follow the selected order.',
               })}
             </div>
-          </div>
+          </section>
 
           {/* Provider-qualified model preferences. */}
           <div className='flex-shrink-0'>
@@ -597,22 +606,22 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
           </div>
 
           {/* Summary */}
-          <div className='flex flex-wrap items-center gap-8px p-10px rd-10px bg-fill-1'>
-            <span className='text-12px text-t-secondary'>
-              {t('settings.presetPreferredAgents', { defaultValue: 'Preferred Agents' })}:
-            </span>
-            <Tag size='small' bordered={false} className='!bg-primary-1 !text-primary-6'>
-              {editAgents.length || t('common.none', { defaultValue: 'None' })}
-            </Tag>
-            <span className='text-12px text-t-secondary ml-6px'>
-              {t('settings.presetSkills', { defaultValue: 'Skills' })}:
-            </span>
-            <Tag size='small' color={totalActiveSkillsCount > 0 ? 'green' : 'gray'}>
-              {totalActiveSkillsCount > 0 ? `${totalActiveSkillsCount}/${totalSkillsCount}` : totalSkillsCount}
-            </Tag>
+          <div className='text-12px text-t-secondary'>
+            {editAgents.length > 0
+              ? t('settings.presetSelectionSummary', {
+                  agents: editAgents.length,
+                  selectedSkills: totalActiveSkillsCount,
+                  totalSkills: totalSkillsCount,
+                  defaultValue: `已选择 ${editAgents.length} 个 Agent，已选择 ${totalActiveSkillsCount}/${totalSkillsCount} 个技能。`,
+                })
+              : t('settings.presetAutomaticAgentSummary', {
+                  selectedSkills: totalActiveSkillsCount,
+                  totalSkills: totalSkillsCount,
+                  defaultValue: `自动选择 Agent，已选择 ${totalActiveSkillsCount}/${totalSkillsCount} 个技能。`,
+                })}
           </div>
 
-          <div className='flex-shrink-0 p-12px rd-10px border border-solid border-arco-2 bg-bg-1'>
+          <section ref={targetsFieldRef} className='flex-shrink-0 border-t border-solid border-border-2 pt-20px'>
             <Typography.Text bold>{t('settings.presetApplication', { defaultValue: 'Application' })}</Typography.Text>
             <Checkbox.Group
               className='preset-scope-selection-checkbox mt-10px flex flex-wrap gap-x-16px gap-y-8px'
@@ -620,7 +629,13 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
               onChange={(value) => setEditTargets(value as PresetTarget[])}
               disabled={readOnly}
               options={targetOptions}
+              aria-invalid={fieldErrors.targets ? 'true' : undefined}
             />
+            {fieldErrors.targets && (
+              <div className='mt-6px text-12px text-danger-6' role='alert'>
+                {fieldErrors.targets}
+              </div>
+            )}
             <div className='mt-12px flex flex-wrap gap-x-20px gap-y-8px'>
               <Checkbox
                 checked={fallbackAllowed}
@@ -639,9 +654,9 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 {t('settings.presetAutoSelectable', { defaultValue: '允许协作任务自动选择' })}
               </Checkbox>
             </div>
-          </div>
+          </section>
 
-          <div className='flex-shrink-0 p-12px rd-10px border border-solid border-arco-2 bg-bg-1'>
+          <section className='flex-shrink-0 border-t border-solid border-border-2 pt-20px'>
             <div className='flex items-center justify-between gap-12px'>
               <div>
                 <Typography.Text bold>{t('settings.presetKnowledge', { defaultValue: 'Knowledge scope' })}</Typography.Text>
@@ -707,9 +722,9 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 )}
               </div>
             )}
-          </div>
+          </section>
 
-          <div className='flex-shrink-0 p-12px rd-10px border border-solid border-border-2 bg-bg-1'>
+          <div className='flex-shrink-0'>
             <div>
               <Typography.Text bold>{t('settings.presetMcp', { defaultValue: 'MCP servers' })}</Typography.Text>
               <div className='text-12px text-t-secondary mt-2px'>
@@ -791,19 +806,31 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
               style={{ height: rulesContainerHeight }}
             >
               {isRuleEditable && (
-                <div className='flex items-center h-36px bg-fill-2 border-b border-arco-2 flex-shrink-0'>
-                  <div
-                    className={`flex items-center h-full px-16px cursor-pointer transition-all text-13px font-medium ${promptViewMode === 'edit' ? 'text-primary border-b-2 border-primary bg-bg-1' : 'text-t-secondary hover:text-t-primary'}`}
+                <div className='flex items-center h-36px bg-fill-2 border-b border-border-2 flex-shrink-0'>
+                  <button
+                    type='button'
+                    role='tab'
+                    aria-selected={promptViewMode === 'edit'}
+                    className={`flex items-center h-full px-16px cursor-pointer transition-colors duration-120 text-13px font-medium ${promptViewMode === 'edit' ? 'text-primary border-b-2 border-primary bg-bg-1' : 'text-t-secondary hover:text-t-primary'}`}
                     onClick={() => setPromptViewMode('edit')}
+                    onKeyDown={(event) => {
+                      if (event.key === 'ArrowRight') setPromptViewMode('preview');
+                    }}
                   >
                     {t('settings.promptEdit', { defaultValue: 'Edit' })}
-                  </div>
-                  <div
-                    className={`flex items-center h-full px-16px cursor-pointer transition-all text-13px font-medium ${promptViewMode === 'preview' ? 'text-primary border-b-2 border-primary bg-bg-1' : 'text-t-secondary hover:text-t-primary'}`}
+                  </button>
+                  <button
+                    type='button'
+                    role='tab'
+                    aria-selected={promptViewMode === 'preview'}
+                    className={`flex items-center h-full px-16px cursor-pointer transition-colors duration-120 text-13px font-medium ${promptViewMode === 'preview' ? 'text-primary border-b-2 border-primary bg-bg-1' : 'text-t-secondary hover:text-t-primary'}`}
                     onClick={() => setPromptViewMode('preview')}
+                    onKeyDown={(event) => {
+                      if (event.key === 'ArrowLeft') setPromptViewMode('edit');
+                    }}
                   >
                     {t('settings.promptPreview', { defaultValue: 'Preview' })}
-                  </div>
+                  </button>
                 </div>
               )}
               <div
@@ -814,7 +841,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 }}
               >
                 {promptViewMode === 'edit' && isRuleEditable ? (
-                  <div ref={textareaWrapperRef} className='h-full'>
+                  <div className='h-full'>
                     <Input.TextArea
                       value={editContext}
                       onChange={(value) => setEditContext(value)}
@@ -857,7 +884,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                       type='outline'
                       icon={<Plus size={14} />}
                       onClick={() => navigate('/skills')}
-                      className='rounded-[100px]'
+                      className='!h-32px !rounded-8px !whitespace-nowrap'
                       data-testid='btn-add-skills'
                     >
                       {t('settings.addSkills', { defaultValue: 'Add Skills' })}
@@ -867,7 +894,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                       type='outline'
                       icon={<Plus size={14} />}
                       onClick={() => setAgentImportVisible(true)}
-                      className='rounded-[100px]'
+                      className='!h-32px !rounded-8px !whitespace-nowrap'
                       data-testid='btn-import-agent-skills-to-preset'
                     >
                       {t('settings.agentSkillImport.shortAction', { defaultValue: 'Import from Agent' })}
@@ -876,7 +903,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 )}
               </div>
 
-              <Collapse defaultActiveKey={['custom-skills']} data-testid='skills-collapse'>
+              <Collapse defaultActiveKey={defaultSkillCollapseKeys} data-testid='skills-collapse'>
                 {/* Custom Skills (Pending + Imported) */}
                 <Collapse.Item
                   header={
@@ -887,18 +914,13 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                   name='custom-skills'
                   className='mb-8px'
                   extra={
-                    <div className='flex items-center gap-8px'>
-                      <span
-                        className='inline-block w-8px h-8px rd-50%'
-                        style={{ background: customStatusDotColor }}
-                        aria-hidden='true'
-                      />
-                      <span className='text-12px text-t-secondary'>
-                        {customActiveCount > 0
-                          ? `${customActiveCount}/${pendingSkills.length + customSkillItems.length}`
-                          : pendingSkills.length + customSkillItems.length}
-                      </span>
-                    </div>
+                    <span className='text-12px text-t-secondary'>
+                      {t('settings.presetSkillSelectionCount', {
+                        selected: customActiveCount,
+                        total: pendingSkills.length + customSkillItems.length,
+                        defaultValue: `已选 ${customActiveCount}/${pendingSkills.length + customSkillItems.length}`,
+                      })}
+                    </span>
                   }
                 >
                   <div className='space-y-4px'>
@@ -966,7 +988,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                           skill={skill}
                           localeKey={localeKey}
                           badge={
-                            <span className='bg-[rgba(242,156,27,0.08)] text-[rgb(242,156,27)] border border-[rgba(242,156,27,0.2)] text-10px px-4px py-1px rd-4px font-medium uppercase'>
+                            <span className='bg-[rgba(var(--warning-6),0.08)] text-[rgb(var(--warning-6))] border border-[rgba(var(--warning-6),0.2)] text-10px px-4px py-1px rd-4px font-medium uppercase'>
                               {t(catalogSourceLabelKey.user, { defaultValue: 'User' })}
                             </span>
                           }
@@ -1000,18 +1022,13 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                   }
                   name='builtin-skills'
                   extra={
-                    <div className='flex items-center gap-8px'>
-                      <span
-                        className='inline-block w-8px h-8px rd-50%'
-                        style={{ background: builtinStatusDotColor }}
-                        aria-hidden='true'
-                      />
-                      <span className='text-12px text-t-secondary'>
-                        {builtinActiveCount > 0
-                          ? `${builtinActiveCount}/${builtinSkillItems.length}`
-                          : builtinSkillItems.length}
-                      </span>
-                    </div>
+                    <span className='text-12px text-t-secondary'>
+                      {t('settings.presetSkillSelectionCount', {
+                        selected: builtinActiveCount,
+                        total: builtinSkillItems.length,
+                        defaultValue: `已选 ${builtinActiveCount}/${builtinSkillItems.length}`,
+                      })}
+                    </span>
                   }
                 >
                   {builtinSkillItems.length > 0 ? (
@@ -1050,18 +1067,13 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                     }
                     name='extension-skills'
                     extra={
-                      <div className='flex items-center gap-8px'>
-                        <span
-                          className='inline-block w-8px h-8px rd-50%'
-                          style={{ background: extensionStatusDotColor }}
-                          aria-hidden='true'
-                        />
-                        <span className='text-12px text-t-secondary'>
-                          {extensionActiveCount > 0
-                            ? `${extensionActiveCount}/${extensionSkillItems.length}`
-                            : extensionSkillItems.length}
-                        </span>
-                      </div>
+                    <span className='text-12px text-t-secondary'>
+                      {t('settings.presetSkillSelectionCount', {
+                        selected: extensionActiveCount,
+                        total: extensionSkillItems.length,
+                        defaultValue: `已选 ${extensionActiveCount}/${extensionSkillItems.length}`,
+                      })}
+                    </span>
                     }
                   >
                     <div className='space-y-4px'>
@@ -1103,16 +1115,13 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                     }
                     name='auto-injected-skills'
                     extra={
-                      <div className='flex items-center gap-8px'>
-                        <span
-                          className='inline-block w-8px h-8px rd-50%'
-                          style={{ background: autoInjectedStatusDotColor }}
-                          aria-hidden='true'
-                        />
-                        <span className='text-12px text-t-secondary'>
-                          {`${autoInjectedActiveCount}/${builtinAutoSkills.length}`}
-                        </span>
-                      </div>
+                    <span className='text-12px text-t-secondary'>
+                      {t('settings.presetSkillSelectionCount', {
+                        selected: autoInjectedActiveCount,
+                        total: builtinAutoSkills.length,
+                        defaultValue: `已选 ${autoInjectedActiveCount}/${builtinAutoSkills.length}`,
+                      })}
+                    </span>
                     }
                   >
                     <div className='space-y-4px'>
@@ -1148,9 +1157,10 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
             </div>
           )}
         </div>
-        <AgentSkillImportDrawer
+        <AgentSkillImportEmbedded
           visible={agentImportVisible}
           onClose={() => setAgentImportVisible(false)}
+          closeLabel={t('settings.agentSkillImport.backToPreset', { defaultValue: 'Back to preset' })}
           existingSkillNames={availableSkills.map((skill) => skill.name)}
           importSkills={onImportAgentSkills}
           mode='preset'

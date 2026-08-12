@@ -100,9 +100,18 @@ const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({ active = true
           defaultSource='clawhub'
           searchPlaceholder={t('settings.skillsMarket.searchPlaceholder', { defaultValue: '搜索当前市场技能...' })}
           emptyText={t('settings.skillsMarket.empty', { defaultValue: '正在准备榜单，点击刷新可重新采集。' })}
-          onAdd={handleAdd}
-          isAdded={isAdded}
-          addedStateLoading={installedStateLoading || !installedStateAvailable}
+          primaryAction={{
+            label: t('settings.market.prepareInstall', { defaultValue: '准备安装' }),
+            pendingLabel: t('settings.market.preparingInstall', { defaultValue: '正在准备' }),
+            completedLabel: t('settings.market.installed', { defaultValue: '已安装' }),
+            resolveState: (item) =>
+              installedStateLoading
+                ? 'checking'
+                : installedStateAvailable && isAdded(item)
+                  ? 'completed'
+                  : 'ready',
+            run: handleAdd,
+          }}
           enableTagFilter
           testIdPrefix='skill-market'
           text={{
