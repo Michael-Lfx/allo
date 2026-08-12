@@ -33,6 +33,47 @@ pub struct KnowledgeDocumentImportResult {
     pub detail: Option<String>,
 }
 
+/// Current availability and materialization state of a local-folder knowledge
+/// base. The original folder is always read-only; supported documents are
+/// converted into an app-managed Markdown projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeLocalSyncState {
+    Idle,
+    Syncing,
+    Ready,
+    Partial,
+    Stale,
+    Unavailable,
+}
+
+/// One non-fatal local-folder synchronization problem. A bad document must
+/// not prevent the remaining files in the folder from becoming searchable.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeLocalSyncError {
+    pub source_path: String,
+    pub status: KnowledgeDocumentImportStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Summary for a local-folder Markdown projection.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeLocalSyncSummary {
+    pub state: KnowledgeLocalSyncState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_synced_at: Option<i64>,
+    pub scanned: u64,
+    pub written: u64,
+    pub conflicts: u64,
+    pub failed: u64,
+    #[serde(default)]
+    pub errors: Vec<KnowledgeLocalSyncError>,
+    pub source_available: bool,
+}
+
 /// A live (URL-backed) source attached to a knowledge base. Snapshots of
 /// such sources can go stale between syncs, so the knowledge context builder
 /// surfaces the URLs in a dedicated "Realtime sources" section.

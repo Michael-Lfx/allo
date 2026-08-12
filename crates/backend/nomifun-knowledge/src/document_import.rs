@@ -7,6 +7,10 @@ use nomifun_api_types::KnowledgeDocumentImportStatus;
 /// bounded by the app's 10 MiB body limit, so conversion keeps the same
 /// downstream operating envelope.
 pub const MAX_IMPORTED_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
+/// Maximum source document size accepted by either HTTP import or a local
+/// folder projection. The multipart route enforces this at transport level;
+/// local-folder scans enforce it before loading a file into memory.
+pub const MAX_IMPORTED_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Extensions accepted by the knowledge import picker. `md` is handled as
 /// UTF-8 text; every other extension is parsed by AnyDoc.

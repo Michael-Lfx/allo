@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock, RwLock, Weak};
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
-use nomifun_api_types::{KnowledgeDocumentImportResult, KnowledgeDocumentImportStatus, KnowledgeMountInfo, KnowledgeSource, KnowledgeSourceEntry, KnowledgeSourceMode, KnowledgeTag, UpdateKnowledgeTagRequest};
+use nomifun_api_types::{KnowledgeDocumentImportResult, KnowledgeDocumentImportStatus, KnowledgeLocalSyncSummary, KnowledgeMountInfo, KnowledgeSource, KnowledgeSourceEntry, KnowledgeSourceMode, KnowledgeTag, UpdateKnowledgeTagRequest};
 use nomifun_common::{
     AppError, CompanionId, ConversationId, KnowledgeBaseId,
     ProviderWithModel, TerminalId, TimestampMs, UuidV7Error, generate_id,
@@ -33,6 +33,7 @@ use url::Url;
 use crate::autogen::{self, KnowledgeCompleter};
 use crate::document_import;
 use crate::events::KnowledgeEventEmitter;
+use crate::local_folder_projection;
 use crate::mount::{self, MountSpec};
 use crate::source_url::{self, HttpFetcher, PageFetcher};
 use crate::workpath::{WORKPATH_BINDING_KIND, workpath_key};
@@ -654,6 +655,139 @@ impl KnowledgeService {
         }
     }
 
+    /// The Markdown root consumed by all knowledge features. For a local
+    /// folder, the persisted `root_path` remains the external source selected
+    /// by the user, while content lives in the backend-owned projection.
+    pub async fn content_root_for_base(&self, id: &str) -> Result<PathBuf, AppError> {
+        let row = self.require_base(id).await?;
+        self.validate_local_source_root(&row).await?;
+        self.ensure_content_root_for_row(&row).await?;
+        Ok(self.content_root_for_row(&row))
+    }
+
+    fn is_local_folder_row(row: &KnowledgeBaseRow) -> bool {
+        !row.managed
+            && matches!(source_from_extra(&row.extra), Ok(None))
+    }
+
+    fn content_root_for_row(&self, row: &KnowledgeBaseRow) -> PathBuf {
+        if Self::is_local_folder_row(row) {
+            local_folder_projection::paths(&self.data_dir, &row.knowledge_base_id).view
+        } else {
+            PathBuf::from(&row.root_path)
+        }
+    }
+
+    fn override_root_for_row(&self, row: &KnowledgeBaseRow) -> Option<PathBuf> {
+        Self::is_local_folder_row(row).then(|| {
+            local_folder_projection::paths(&self.data_dir, &row.knowledge_base_id).overrides
+        })
+    }
+
+    async fn ensure_content_root_for_row(&self, row: &KnowledgeBaseRow) -> Result<(), AppError> {
+        if !Self::is_local_folder_row(row) {
+            return Ok(());
+        }
+        self.validate_local_source_root(row).await?;
+        self.ensure_local_projection_root_for_row(row).await
+    }
+
+    async fn ensure_local_projection_root_for_row(
+        &self,
+        row: &KnowledgeBaseRow,
+    ) -> Result<(), AppError> {
+        if !Self::is_local_folder_row(row) {
+            return Ok(());
+        }
+        let projection = local_folder_projection::paths(&self.data_dir, &row.knowledge_base_id);
+        tokio::fs::create_dir_all(&projection.view)
+            .await
+            .map_err(|error| AppError::Internal(format!("failed to create local knowledge projection view: {error}")))?;
+        tokio::fs::create_dir_all(&projection.overrides)
+            .await
+            .map_err(|error| AppError::Internal(format!("failed to create local knowledge projection overrides: {error}")))?;
+        validate_knowledge_root_bounded(projection.view).await
+    }
+
+    /// The source is still a trust boundary even though knowledge operations
+    /// use the backend-owned Markdown view. Do not trust a stale projection
+    /// after an external root has been retargeted through a link or junction.
+    async fn validate_local_source_root(&self, row: &KnowledgeBaseRow) -> Result<(), AppError> {
+        if Self::is_local_folder_row(row) {
+            validate_knowledge_root_bounded(PathBuf::from(&row.root_path)).await?;
+        }
+        Ok(())
+    }
+
+    async fn local_source_root_is_available(&self, row: &KnowledgeBaseRow) -> bool {
+        !Self::is_local_folder_row(row)
+            || validate_knowledge_root_bounded(PathBuf::from(&row.root_path))
+                .await
+                .is_ok()
+    }
+
+    /// Return the cached state of a local-folder projection. Managed bases do
+    /// not have an external source and therefore reject this endpoint.
+    pub async fn get_local_sync_summary(
+        &self,
+        id: &str,
+    ) -> Result<KnowledgeLocalSyncSummary, AppError> {
+        let row = self.require_base(id).await?;
+        if !Self::is_local_folder_row(&row) {
+            return Err(AppError::BadRequest(
+                "local-folder sync is only available for external knowledge bases".into(),
+            ));
+        }
+        Ok(local_folder_projection::summary(
+            &self.data_dir,
+            &row.knowledge_base_id,
+            self.local_source_root_is_available(&row).await,
+        ))
+    }
+
+    /// Rebuild a local folder's app-managed Markdown projection. The source
+    /// directory stays read-only; conversion is CPU-bound and shares the
+    /// document-import semaphore with multipart imports.
+    pub async fn sync_local_folder(
+        &self,
+        id: &str,
+    ) -> Result<KnowledgeLocalSyncSummary, AppError> {
+        let row = self.require_base(id).await?;
+        if !Self::is_local_folder_row(&row) {
+            return Err(AppError::BadRequest(
+                "local-folder sync is only available for external knowledge bases".into(),
+            ));
+        }
+        self.ensure_content_root_for_row(&row).await?;
+        let _tree_guard = self.acquire_document_tree_write_lock(&row).await?;
+        let _base_guard = self.acquire_base_lifecycle_lock(&row).await?;
+        let current = self.require_base(id).await?;
+        if current.root_path != row.root_path || current.managed != row.managed {
+            return Err(AppError::Conflict(
+                "knowledge base changed while local-folder sync was starting; retry".into(),
+            ));
+        }
+        let permit = self
+            .document_import_limit
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| AppError::Internal("knowledge document import limiter closed".into()))?;
+        let data_dir = self.data_dir.clone();
+        let kb_id = row.knowledge_base_id.clone();
+        let source_root = PathBuf::from(&row.root_path);
+        let summary = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            local_folder_projection::sync(&data_dir, &kb_id, &source_root)
+        })
+        .await
+        .map_err(|error| AppError::Internal(format!("local knowledge sync task failed: {error}")))??;
+        self.invalidate_search_cache_root(&self.content_root_for_row(&row));
+        let info = self.row_to_info(row).await?;
+        self.emitter.emit_base_updated(&info);
+        Ok(summary)
+    }
+
     /// Late-wire the in-process binding-change observer (app layer only).
     pub fn set_binding_changed_hook(&self, hook: Arc<dyn Fn(&str, &str) + Send + Sync>) {
         if let Ok(mut guard) = self.binding_changed_hook.write() {
@@ -833,7 +967,11 @@ impl KnowledgeService {
         root_path: Option<&str>,
         source: Option<KnowledgeSource>,
     ) -> Result<KnowledgeBaseInfo, AppError> {
-        let (row, info, snapshot_source) = self.register_base(name, description, root_path, source).await?;
+        let (row, mut info, snapshot_source) = self.register_base(name, description, root_path, source).await?;
+        if Self::is_local_folder_row(&row) {
+            self.sync_local_folder(&row.knowledge_base_id).await?;
+            info = self.get_base_info(&row.knowledge_base_id).await?;
+        }
         match snapshot_source {
             Some(src) => self.fetch_source_and_autogen(row, src).await,
             None => Ok(info),
@@ -858,7 +996,11 @@ impl KnowledgeService {
         root_path: Option<&str>,
         source: Option<KnowledgeSource>,
     ) -> Result<KnowledgeBaseInfo, AppError> {
-        let (row, info, snapshot_source) = self.register_base(name, description, root_path, source).await?;
+        let (row, mut info, snapshot_source) = self.register_base(name, description, root_path, source).await?;
+        if Self::is_local_folder_row(&row) {
+            self.sync_local_folder(&row.knowledge_base_id).await?;
+            info = self.get_base_info(&row.knowledge_base_id).await?;
+        }
         if let Some(src) = snapshot_source {
             // Same pattern as the import handler's spawned autogen
             // (`routes.rs::import_base`): the task holds its own Arc so it
@@ -1263,6 +1405,14 @@ impl KnowledgeService {
                 );
             }
         }
+        if Self::is_local_folder_row(&row) {
+            let data_dir = self.data_dir.clone();
+            let kb_id = row.knowledge_base_id.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                local_folder_projection::clear_projection(&data_dir, &kb_id);
+            })
+            .await;
+        }
         let id = KnowledgeBaseId::parse(&row.knowledge_base_id)
             .map_err(|error| AppError::Internal(format!(
                 "stored knowledge base id '{}' is invalid: {error}",
@@ -1276,7 +1426,17 @@ impl KnowledgeService {
 
     pub async fn list_files(&self, id: &str) -> Result<Vec<KbFileEntry>, AppError> {
         let row = self.require_base(id).await?;
-        let root = PathBuf::from(&row.root_path);
+        if !self.local_source_root_is_available(&row).await {
+            return Ok(Vec::new());
+        }
+        if Self::is_local_folder_row(&row) {
+            if self.ensure_content_root_for_row(&row).await.is_err() {
+                return Ok(Vec::new());
+            }
+        } else {
+            self.ensure_content_root_for_row(&row).await?;
+        }
+        let root = self.content_root_for_row(&row);
         let lock_root = root.clone();
         // Bounded so a slow/stale NAS root degrades to an empty listing instead
         // of hanging the detail view (and the agent write-path collision check).
@@ -1293,7 +1453,17 @@ impl KnowledgeService {
 
     pub async fn list_tree(&self, id: &str, rel_path: &str) -> Result<Vec<KbTreeEntry>, AppError> {
         let row = self.require_base(id).await?;
-        let root = PathBuf::from(&row.root_path);
+        if !self.local_source_root_is_available(&row).await {
+            return Ok(Vec::new());
+        }
+        if Self::is_local_folder_row(&row) {
+            if self.ensure_content_root_for_row(&row).await.is_err() {
+                return Ok(Vec::new());
+            }
+        } else {
+            self.ensure_content_root_for_row(&row).await?;
+        }
+        let root = self.content_root_for_row(&row);
         let lock_root = root.clone();
         let rel_path = normalize_tree_rel_path(rel_path)?;
         Ok(
@@ -1309,57 +1479,84 @@ impl KnowledgeService {
 
     pub async fn create_folder(&self, id: &str, rel_path: &str) -> Result<KbTreeEntry, AppError> {
         let row = self.require_base(id).await?;
+        self.ensure_content_root_for_row(&row).await?;
         let _tree_guard =
             self.acquire_document_tree_write_lock(&row).await?;
         let _base_guard = self.acquire_base_lifecycle_lock(&row).await?;
         self.require_base(id).await?;
-        let root = PathBuf::from(&row.root_path);
+        let root = self.content_root_for_row(&row);
         let rel_path = normalize_tree_rel_path(rel_path)?;
         if rel_path.is_empty() {
             return Err(AppError::BadRequest("folder path must not be empty".into()));
         }
-        tokio::task::spawn_blocking(move || create_tree_folder(&root, &rel_path))
+        let entry = tokio::task::spawn_blocking(move || create_tree_folder(&root, &rel_path))
             .await
-            .map_err(|e| AppError::Internal(format!("folder create task join error: {e}")))?
+            .map_err(|e| AppError::Internal(format!("folder create task join error: {e}")))??;
+        if Self::is_local_folder_row(&row) {
+            self.ensure_local_override_directory(&row, &entry.rel_path).await?;
+            self.set_local_tombstone(&row, &entry.rel_path, false).await?;
+        }
+        Ok(entry)
     }
 
     pub async fn delete_folder(&self, id: &str, rel_path: &str) -> Result<(), AppError> {
         let row = self.require_base(id).await?;
+        self.ensure_content_root_for_row(&row).await?;
         let _tree_guard =
             self.acquire_document_tree_write_lock(&row).await?;
         let _base_guard = self.acquire_base_lifecycle_lock(&row).await?;
         self.require_base(id).await?;
-        let root = PathBuf::from(&row.root_path);
+        let root = self.content_root_for_row(&row);
         let rel_path = normalize_tree_rel_path(rel_path)?;
         if rel_path.is_empty() {
             return Err(AppError::BadRequest("folder path must not be empty".into()));
         }
+        let deleted_path = rel_path.clone();
         tokio::task::spawn_blocking(move || delete_tree_folder(&root, &rel_path))
             .await
-            .map_err(|e| AppError::Internal(format!("folder delete task join error: {e}")))?
+            .map_err(|e| AppError::Internal(format!("folder delete task join error: {e}")))??;
+        if Self::is_local_folder_row(&row) {
+            self.remove_local_override(&row, &deleted_path).await?;
+            self.set_local_tombstone(&row, &deleted_path, true).await?;
+        }
+        Ok(())
     }
 
     pub async fn rename_tree_entry(&self, id: &str, rel_path: &str, new_name: &str) -> Result<KbTreeEntry, AppError> {
         let row = self.require_base(id).await?;
+        self.ensure_content_root_for_row(&row).await?;
         let _tree_guard =
             self.acquire_document_tree_write_lock(&row).await?;
         let _base_guard = self.acquire_base_lifecycle_lock(&row).await?;
         self.require_base(id).await?;
-        let root = PathBuf::from(&row.root_path);
+        let root = self.content_root_for_row(&row);
         let rel_path = normalize_tree_rel_path(rel_path)?;
         if rel_path.is_empty() {
             return Err(AppError::BadRequest("path must not be empty".into()));
         }
         let new_name = validate_tree_entry_name(new_name)?;
-        tokio::task::spawn_blocking(move || rename_tree_entry(&root, &rel_path, &new_name))
+        let old_path = rel_path.clone();
+        let entry = tokio::task::spawn_blocking(move || rename_tree_entry(&root, &rel_path, &new_name))
             .await
-            .map_err(|e| AppError::Internal(format!("tree rename task join error: {e}")))?
+            .map_err(|e| AppError::Internal(format!("tree rename task join error: {e}")))??;
+        if Self::is_local_folder_row(&row) {
+            self.persist_local_override_entry(&row, &entry.rel_path).await?;
+            if portable_writeback_path_identity(&old_path)
+                != portable_writeback_path_identity(&entry.rel_path)
+            {
+                self.remove_local_override(&row, &old_path).await?;
+            }
+            self.set_local_tombstone(&row, &old_path, true).await?;
+            self.set_local_tombstone(&row, &entry.rel_path, false).await?;
+        }
+        Ok(entry)
     }
 
     pub async fn read_file(&self, id: &str, rel_path: &str) -> Result<KbFileContent, AppError> {
         let row = self.require_base(id).await?;
+        self.ensure_content_root_for_row(&row).await?;
         let path = safe_md_path_bounded(
-            PathBuf::from(&row.root_path),
+            self.content_root_for_row(&row),
             rel_path.to_owned(),
         )
         .await?;
@@ -1403,8 +1600,9 @@ impl KnowledgeService {
         let kb_id = KnowledgeBaseId::parse(id)
             .map_err(|error| AppError::BadRequest(format!("invalid knowledge base id: {error}")))?;
         let row = self.require_base(id).await?;
+        self.ensure_content_root_for_row(&row).await?;
         let _tree_guard = self.acquire_document_tree_read_lock(&row).await?;
-        let root = PathBuf::from(&row.root_path);
+        let root = self.content_root_for_row(&row);
         let resolved = resolve_portable_md_path(root.clone(), rel_path.to_owned()).await?;
         let lock_path = portable_turn_writeback_lock_path(
             &deconfuse_rel_path(&resolved.rel_path),
@@ -1446,7 +1644,8 @@ impl KnowledgeService {
 
         // Fail invalid or unsafe targets before consuming parser capacity.
         let row = self.require_base(id).await?;
-        safe_md_path_bounded(PathBuf::from(&row.root_path), target_path.clone()).await?;
+        self.ensure_content_root_for_row(&row).await?;
+        safe_md_path_bounded(self.content_root_for_row(&row), target_path.clone()).await?;
 
         let permit = self
             .document_import_limit
@@ -1500,8 +1699,9 @@ impl KnowledgeService {
         let kb_id = KnowledgeBaseId::parse(id)
             .map_err(|error| AppError::BadRequest(format!("invalid knowledge base id: {error}")))?;
         let row = self.require_base(id).await?;
+        self.ensure_content_root_for_row(&row).await?;
         let _tree_guard = self.acquire_document_tree_read_lock(&row).await?;
-        let root = PathBuf::from(&row.root_path);
+        let root = self.content_root_for_row(&row);
         let resolved = resolve_portable_md_path(root.clone(), rel_path.to_owned()).await?;
         let lock_path = portable_turn_writeback_lock_path(
             &deconfuse_rel_path(&resolved.rel_path),
@@ -1549,6 +1749,7 @@ impl KnowledgeService {
         content: &str,
     ) -> Result<(), AppError> {
         let row = self.require_base(id).await?;
+        self.ensure_content_root_for_row(&row).await?;
         let _base_guard = self.acquire_base_lifecycle_lock(&row).await?;
         let current = self.require_base(id).await?;
         if current.root_path != row.root_path {
@@ -1560,7 +1761,7 @@ impl KnowledgeService {
             validate_source_owned_write_target(&current, logical_rel_path)?;
         }
         let path = safe_md_path_bounded(
-            PathBuf::from(&row.root_path),
+            self.content_root_for_row(&row),
             storage_rel_path.to_owned(),
         )
         .await?;
@@ -1570,6 +1771,8 @@ impl KnowledgeService {
         // released. The target/message guards remain owned until publication
         // has definitively completed or failed.
         write_text_atomic(&path, content).await?;
+        self.persist_local_override_entry(&row, storage_rel_path).await?;
+        self.set_local_tombstone(&row, storage_rel_path, false).await?;
         self.invalidate_search_cache_path(&path);
         Ok(())
     }
@@ -1583,6 +1786,7 @@ impl KnowledgeService {
         content: &str,
     ) -> Result<(), AppError> {
         let row = self.require_base(id).await?;
+        self.ensure_content_root_for_row(&row).await?;
         let _base_guard = self.acquire_base_lifecycle_lock(&row).await?;
         let current = self.require_base(id).await?;
         if current.root_path != row.root_path {
@@ -1592,11 +1796,13 @@ impl KnowledgeService {
         }
         validate_source_owned_write_target(&current, logical_rel_path)?;
         let path = safe_md_path_bounded(
-            PathBuf::from(&row.root_path),
+            self.content_root_for_row(&row),
             storage_rel_path.to_owned(),
         )
         .await?;
         write_text_atomic_if_unchanged(&path, expected, content).await?;
+        self.persist_local_override_entry(&row, storage_rel_path).await?;
+        self.set_local_tombstone(&row, storage_rel_path, false).await?;
         self.invalidate_search_cache_path(&path);
         Ok(())
     }
@@ -1609,6 +1815,7 @@ impl KnowledgeService {
         content: &str,
     ) -> Result<(), AppError> {
         let row = self.require_base(id).await?;
+        self.ensure_content_root_for_row(&row).await?;
         let _base_guard = self.acquire_base_lifecycle_lock(&row).await?;
         let current = self.require_base(id).await?;
         if current.root_path != row.root_path {
@@ -1618,11 +1825,13 @@ impl KnowledgeService {
         }
         validate_source_owned_write_target(&current, logical_rel_path)?;
         let path = safe_md_path_bounded(
-            PathBuf::from(&row.root_path),
+            self.content_root_for_row(&row),
             storage_rel_path.to_owned(),
         )
         .await?;
         write_text_atomic_if_absent(&path, content).await?;
+        self.persist_local_override_entry(&row, storage_rel_path).await?;
+        self.set_local_tombstone(&row, storage_rel_path, false).await?;
         self.invalidate_search_cache_path(&path);
         Ok(())
     }
@@ -1640,6 +1849,102 @@ impl KnowledgeService {
             }
         });
         guard.total_bytes = guard.total_bytes.saturating_sub(freed);
+    }
+
+    fn invalidate_search_cache_root(&self, root: &Path) {
+        let mut guard = self.search_cache.write().unwrap_or_else(|error| error.into_inner());
+        let root_identity = portable_absolute_path_identity(root);
+        let mut freed = 0usize;
+        guard.entries.retain(|cached_path, cached| {
+            let cached_identity = portable_absolute_path_identity(cached_path);
+            let under_root = cached_identity == root_identity
+                || cached_identity
+                    .strip_prefix(&root_identity)
+                    .is_some_and(|suffix| suffix.starts_with('/'));
+            if under_root {
+                freed = freed.saturating_add(cached.bytes);
+            }
+            !under_root
+        });
+        guard.total_bytes = guard.total_bytes.saturating_sub(freed);
+    }
+
+    async fn persist_local_override_entry(
+        &self,
+        row: &KnowledgeBaseRow,
+        rel_path: &str,
+    ) -> Result<(), AppError> {
+        let Some(overrides) = self.override_root_for_row(row) else {
+            return Ok(());
+        };
+        let view_path = safe_tree_path_bounded(self.content_root_for_row(row), rel_path.to_owned()).await?;
+        let metadata = tokio::fs::symlink_metadata(&view_path)
+            .await
+            .map_err(|error| AppError::Internal(format!("failed to inspect local knowledge override source: {error}")))?;
+        if metadata.is_dir() {
+            let override_path = safe_tree_path_bounded(overrides, rel_path.to_owned()).await?;
+            return tokio::task::spawn_blocking(move || {
+                copy_local_override_tree(&view_path, &override_path)
+            })
+            .await
+            .map_err(|error| AppError::Internal(format!("local knowledge override copy task failed: {error}")))?;
+        }
+        let override_path = safe_md_path_bounded(overrides, rel_path.to_owned()).await?;
+        let content = tokio::fs::read_to_string(&view_path)
+            .await
+            .map_err(|error| AppError::Internal(format!("failed to read local knowledge override source: {error}")))?;
+        write_text_atomic(&override_path, &content).await
+    }
+
+    async fn ensure_local_override_directory(
+        &self,
+        row: &KnowledgeBaseRow,
+        rel_path: &str,
+    ) -> Result<(), AppError> {
+        let Some(overrides) = self.override_root_for_row(row) else {
+            return Ok(());
+        };
+        let path = safe_tree_path_bounded(overrides, rel_path.to_owned()).await?;
+        tokio::fs::create_dir_all(path)
+            .await
+            .map_err(|error| AppError::Internal(format!("failed to create local knowledge override directory: {error}")))
+    }
+
+    async fn remove_local_override(
+        &self,
+        row: &KnowledgeBaseRow,
+        rel_path: &str,
+    ) -> Result<(), AppError> {
+        let Some(overrides) = self.override_root_for_row(row) else {
+            return Ok(());
+        };
+        let path = safe_tree_path_bounded(overrides, rel_path.to_owned()).await?;
+        match tokio::fs::symlink_metadata(&path).await {
+            Ok(metadata) if metadata.is_dir() => tokio::fs::remove_dir_all(&path).await,
+            Ok(_) => tokio::fs::remove_file(&path).await,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+        .map_err(|error| AppError::Internal(format!("failed to remove local knowledge override: {error}")))
+    }
+
+    async fn set_local_tombstone(
+        &self,
+        row: &KnowledgeBaseRow,
+        rel_path: &str,
+        deleted: bool,
+    ) -> Result<(), AppError> {
+        if !Self::is_local_folder_row(row) {
+            return Ok(());
+        }
+        let data_dir = self.data_dir.clone();
+        let kb_id = row.knowledge_base_id.clone();
+        let rel_path = normalize_tree_rel_path(rel_path)?;
+        tokio::task::spawn_blocking(move || {
+            local_folder_projection::set_tombstone(&data_dir, &kb_id, &rel_path, deleted)
+        })
+        .await
+        .map_err(|error| AppError::Internal(format!("local knowledge tombstone task failed: {error}")))?
     }
 
     /// Bindings currently mounting this base (enabled AND disabled — the UI
@@ -1673,7 +1978,7 @@ impl KnowledgeService {
                 validate_canonical_write_target(&rel_path)?;
                 let row = self.require_base(kb_id.as_str()).await?;
                 validate_source_owned_write_target(&row, &rel_path)?;
-                let abs = safe_md_path_bounded(PathBuf::from(&row.root_path), rel_path.clone())
+                let abs = safe_md_path_bounded(self.content_root_for_row(&row), rel_path.clone())
                     .await?;
                 let exists = tokio::time::timeout(
                     KNOWLEDGE_PATH_INSPECTION_TIMEOUT,
@@ -1704,7 +2009,7 @@ impl KnowledgeService {
                 validate_canonical_write_target(&canonical)?;
                 let row = self.require_base(kb_id.as_str()).await?;
                 validate_source_owned_write_target(&row, &canonical)?;
-                let root = PathBuf::from(&row.root_path);
+                let root = self.content_root_for_row(&row);
                 // Validate traversal/portable components up front, including
                 // missing parents that the eventual create may need.
                 safe_md_path_bounded(
@@ -1713,7 +2018,7 @@ impl KnowledgeService {
                 )
                 .await?;
                 let resolved_path = resolve_portable_md_path(
-                    PathBuf::from(&row.root_path),
+                    self.content_root_for_row(&row),
                     canonical,
                 )
                 .await?;
@@ -2217,6 +2522,7 @@ impl KnowledgeService {
         &self,
         row: &KnowledgeBaseRow,
     ) -> Result<String, AppError> {
+        self.validate_local_source_root(row).await?;
         let cache_key = format!(
             "{}\0{}",
             row.knowledge_base_id, row.root_path
@@ -2230,17 +2536,12 @@ impl KnowledgeService {
         {
             return Ok(identity);
         }
-        // Validate the first lock-key resolution. Later mutations still
-        // perform a no-follow root/path validation at their publication
-        // boundary; re-walking every root ancestor for each tree, target and
-        // lifecycle lock acquisition made one NAS candidate pay the same
-        // latency many times.
-        validate_knowledge_root_bounded(PathBuf::from(&row.root_path)).await?;
-        // Registration persists a canonical physical path, so after the
-        // no-link chain validation above the lexical path is the lock
-        // identity. Avoid a second potentially slow NAS canonicalization.
-        let identity =
-            portable_absolute_path_identity(Path::new(&row.root_path));
+        let content_root = self.content_root_for_row(row);
+        // Local folders use an app-owned projection root. Managed bases keep
+        // their registered root. Both still receive the same no-follow check
+        // before entering a shared lifecycle/tree lock group.
+        validate_knowledge_root_bounded(content_root.clone()).await?;
+        let identity = portable_absolute_path_identity(&content_root);
         self.root_lock_identity_cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2250,18 +2551,21 @@ impl KnowledgeService {
 
     pub async fn delete_file(&self, id: &str, rel_path: &str) -> Result<(), AppError> {
         let row = self.require_base(id).await?;
+        self.ensure_content_root_for_row(&row).await?;
         let _tree_guard =
             self.acquire_document_tree_write_lock(&row).await?;
         let _base_guard = self.acquire_base_lifecycle_lock(&row).await?;
         self.require_base(id).await?;
         let path = safe_md_path_bounded(
-            PathBuf::from(&row.root_path),
+            self.content_root_for_row(&row),
             rel_path.to_owned(),
         )
         .await?;
         tokio::fs::remove_file(&path)
             .await
             .map_err(|_| AppError::NotFound(format!("file not found: {rel_path}")))?;
+        self.remove_local_override(&row, rel_path).await?;
+        self.set_local_tombstone(&row, rel_path, true).await?;
         self.invalidate_search_cache_path(&path);
         Ok(())
     }
@@ -2298,7 +2602,7 @@ impl KnowledgeService {
     ) -> Result<AutogenOutcome, AppError> {
         let completer = self.require_completer()?;
         let row = self.require_base(kb_id).await?;
-        let root = PathBuf::from(&row.root_path);
+        let root = self.content_root_for_row(&row);
         let samples = autogen::sample_base_files(&root).await;
         if samples.is_empty() {
             return Err(AppError::BadRequest(
@@ -2726,7 +3030,11 @@ impl KnowledgeService {
                 return outcome;
             }
         };
-        let root = PathBuf::from(&current.root_path);
+        if let Err(error) = self.ensure_content_root_for_row(&current).await {
+            outcome.fatal_error = Some(error);
+            return outcome;
+        }
+        let root = self.content_root_for_row(&current);
         if let Err(error) = validate_knowledge_root_bounded(root.clone()).await {
             outcome.fatal_error = Some(error);
             return outcome;
@@ -2749,6 +3057,15 @@ impl KnowledgeService {
             };
             match write_text_atomic(&path, &file.content).await {
                 Ok(()) => {
+                    if let Err(error) = self
+                        .persist_local_override_entry(&current, &file.rel_path)
+                        .await
+                    {
+                        outcome
+                            .errors
+                            .push(format!("{}: {error}", file.source_label));
+                        continue;
+                    }
                     outcome.fetched += 1;
                     self.invalidate_search_cache_path(&path);
                 }
@@ -2980,8 +3297,10 @@ impl KnowledgeService {
                     ));
                     continue;
                 };
+                self.validate_local_source_root(&row).await?;
+                self.ensure_local_projection_root_for_row(&row).await?;
                 let link_name = unique_link_name(&row, &mut used_names);
-                let target = PathBuf::from(&row.root_path);
+                let target = self.content_root_for_row(&row);
                 let canonical_target = std::fs::canonicalize(&target).map_err(|error| {
                     AppError::Conflict(format!(
                         "bound knowledge base {} root {} cannot be canonicalized: {error}",
@@ -3028,13 +3347,13 @@ impl KnowledgeService {
         // same physical binding conflict.
         let mut tocs = Vec::with_capacity(metas.len());
         for (_, row) in &metas {
-            tocs.push(build_toc(Path::new(&row.root_path)).await);
+            tocs.push(build_toc(&self.content_root_for_row(row)).await);
         }
         crate::context::apply_toc_budgets(&mut tocs);
 
         let mut mounts = Vec::with_capacity(metas.len());
         for ((link_name, row), toc) in metas.into_iter().zip(tocs) {
-            let summary = read_base_summary(Path::new(&row.root_path)).await;
+            let summary = read_base_summary(&self.content_root_for_row(&row)).await;
             let kb_id = KnowledgeBaseId::parse(&row.knowledge_base_id).map_err(|error| {
                 AppError::Internal(format!(
                     "stored knowledge base id '{}' is invalid: {error}",
@@ -3132,13 +3451,30 @@ impl KnowledgeService {
                         continue;
                     }
                 };
+                if let Err(error) = self.validate_local_source_root(&row).await {
+                    tracing::warn!(
+                        kb_id = %kb_id,
+                        %error,
+                        "bound local knowledge source is unavailable or unsafe; skipping mount"
+                    );
+                    continue;
+                }
+                if let Err(error) = self.ensure_local_projection_root_for_row(&row).await {
+                    tracing::warn!(
+                        kb_id = %kb_id,
+                        %error,
+                        "bound local knowledge projection is unavailable or unsafe; skipping mount"
+                    );
+                    continue;
+                }
+                let content_root = self.content_root_for_row(&row);
                 if let Err(error) =
-                    validate_knowledge_root_bounded(PathBuf::from(&row.root_path))
+                    validate_knowledge_root_bounded(content_root.clone())
                         .await
                 {
                     tracing::warn!(
                         kb_id = %kb_id,
-                        root = %row.root_path,
+                        root = %content_root.display(),
                         %error,
                         "bound knowledge base root is unavailable or unsafe; skipping mount"
                     );
@@ -3147,7 +3483,7 @@ impl KnowledgeService {
                 let link_name = unique_link_name(&row, &mut used_names);
                 specs.push(MountSpec {
                     link_name: link_name.clone(),
-                    target: PathBuf::from(&row.root_path),
+                    target: content_root,
                 });
                 metas.push((link_name, row));
             }
@@ -3166,13 +3502,13 @@ impl KnowledgeService {
         // matter how many bases are mounted.
         let mut tocs: Vec<Vec<String>> = Vec::with_capacity(kept.len());
         for (_, row) in &kept {
-            tocs.push(build_toc(Path::new(&row.root_path)).await);
+            tocs.push(build_toc(&self.content_root_for_row(row)).await);
         }
         crate::context::apply_toc_budgets(&mut tocs);
 
         let mut mounts = Vec::with_capacity(kept.len());
         for ((link_name, row), toc) in kept.into_iter().zip(tocs) {
-            let summary = read_base_summary(Path::new(&row.root_path)).await;
+            let summary = read_base_summary(&self.content_root_for_row(&row)).await;
             let kb_id = match KnowledgeBaseId::parse(&row.knowledge_base_id) {
                 Ok(id) => id,
                 Err(error) => {
@@ -3222,8 +3558,8 @@ impl KnowledgeService {
     // ── Internals ───────────────────────────────────────────────────
 
     /// Search the given bases for `query`, returning up to `limit` ranked hits.
-    /// Walks each base's REAL `root_path` directly (managed or external),
-    /// applying the same `.md`-only + `_inbox`-excluded rules as `build_toc`.
+    /// Walks each base's effective Markdown root, applying the same
+    /// `.md`-only + `_inbox`-excluded rules as `build_toc`.
     /// This bypasses the workspace mount's hidden-dir + self-`.gitignore`
     /// blindness entirely. Unknown ids are skipped (not an error).
     pub async fn search_bases(
@@ -3239,6 +3575,12 @@ impl KnowledgeService {
         let mut roots: Vec<(KnowledgeBaseId, String, PathBuf)> = Vec::new();
         for id in kb_ids {
             if let Ok(Some(row)) = self.repo.get_base(id.as_str()).await {
+                if !self.local_source_root_is_available(&row).await {
+                    continue;
+                }
+                if self.ensure_content_root_for_row(&row).await.is_err() {
+                    continue;
+                }
                 let Ok(kb_id) = KnowledgeBaseId::parse(&row.knowledge_base_id) else {
                     tracing::warn!(
                         knowledge_base_id = %row.knowledge_base_id,
@@ -3249,7 +3591,7 @@ impl KnowledgeService {
                 roots.push((
                     kb_id,
                     row.name.clone(),
-                    PathBuf::from(&row.root_path),
+                    self.content_root_for_row(&row),
                 ));
             }
         }
@@ -3585,12 +3927,18 @@ impl KnowledgeService {
     async fn row_to_info(&self, row: KnowledgeBaseRow) -> Result<KnowledgeBaseInfo, AppError> {
         let source = source_from_extra(&row.extra)
             .map_err(|error| knowledge_row_json_error(&row.knowledge_base_id, error))?;
-        let root = PathBuf::from(&row.root_path);
+        if Self::is_local_folder_row(&row) {
+            self.ensure_local_projection_root_for_row(&row).await?;
+        } else {
+            self.ensure_content_root_for_row(&row).await?;
+        }
+        let root = self.content_root_for_row(&row);
+        let local_source_available = self.local_source_root_is_available(&row).await;
         let root_for_stats_lock = root.clone();
         // Bounded so a slow/stale NAS mount degrades (assume present, counts
         // unknown) instead of hanging the list/detail response past the
         // client's request timeout — the reported "加载失败" failure mode.
-        let (file_count, total_size, root_exists) =
+        let (file_count, total_size, projection_exists) =
             bounded_root_blocking(
                 &root_for_stats_lock,
                 BASE_WALK_BUDGET,
@@ -3616,6 +3964,7 @@ impl KnowledgeService {
 
         let kind = derive_kind(row.managed, source.as_ref()).to_string();
 
+        let root_exists = local_source_available && projection_exists;
         Ok(KnowledgeBaseInfo {
             knowledge_base_id: KnowledgeBaseId::parse(&row.knowledge_base_id).map_err(|error| {
                 AppError::Internal(format!(
@@ -5554,6 +5903,21 @@ async fn safe_md_path_bounded(
     .await
 }
 
+async fn safe_tree_path_bounded(root: PathBuf, rel_path: String) -> Result<PathBuf, AppError> {
+    let rel_path = normalize_tree_rel_path(&rel_path)?;
+    if rel_path.is_empty() {
+        return Err(AppError::BadRequest("path must not be empty".into()));
+    }
+    let lock_root = root.clone();
+    bounded_root_blocking(
+        &lock_root,
+        KNOWLEDGE_PATH_INSPECTION_TIMEOUT,
+        Err(AppError::Timeout(format!("knowledge path inspection timed out for {rel_path}"))),
+        move || safe_tree_path(&root, &rel_path),
+    )
+    .await
+}
+
 #[derive(Debug)]
 struct PortablePathResolution {
     rel_path: String,
@@ -5706,6 +6070,86 @@ fn safe_md_path(root: &Path, rel_path: &str) -> Result<PathBuf, AppError> {
         return Err(AppError::BadRequest("only .md files are supported".into()));
     }
     Ok(resolved)
+}
+
+fn safe_tree_path(root: &Path, rel_path: &str) -> Result<PathBuf, AppError> {
+    validate_knowledge_root(root)?;
+    let rel_path = normalize_tree_rel_path(rel_path)?;
+    if rel_path.is_empty() {
+        return Err(AppError::BadRequest("path must not be empty".into()));
+    }
+    let mut cursor = root.to_path_buf();
+    for component in rel_path.split('/') {
+        let next = cursor.join(component);
+        if let Ok(metadata) = std::fs::symlink_metadata(&next) {
+            if metadata_is_link_or_reparse(&next, &metadata) {
+                return Err(AppError::BadRequest(
+                    "knowledge paths must not traverse symlinks, junctions, or other name-surrogate reparse points".into(),
+                ));
+            }
+        }
+        cursor = next;
+    }
+    Ok(cursor)
+}
+
+/// Copy a locally edited directory into the persistent override layer. The
+/// caller has already resolved both roots through no-follow checks; this
+/// repeats the check for every entry so a link introduced during the copy
+/// cannot escape the backend-owned projection.
+fn copy_local_override_tree(source: &Path, destination: &Path) -> Result<(), AppError> {
+    if !source.is_dir() {
+        return Err(AppError::Conflict(format!(
+            "local knowledge override source is not a directory: {}",
+            source.display()
+        )));
+    }
+    if destination.exists() {
+        std::fs::remove_dir_all(destination).map_err(|error| {
+            AppError::Internal(format!("failed to replace local knowledge override directory: {error}"))
+        })?;
+    }
+    std::fs::create_dir_all(destination).map_err(|error| {
+        AppError::Internal(format!("failed to create local knowledge override directory: {error}"))
+    })?;
+
+    for entry in walkdir::WalkDir::new(source)
+        .min_depth(1)
+        .follow_links(false)
+    {
+        let entry = entry.map_err(|error| {
+            AppError::Internal(format!("failed to inspect local knowledge override tree: {error}"))
+        })?;
+        let metadata = std::fs::symlink_metadata(entry.path()).map_err(|error| {
+            AppError::Internal(format!("failed to inspect local knowledge override entry: {error}"))
+        })?;
+        if metadata_is_link_or_reparse(entry.path(), &metadata) {
+            return Err(AppError::Conflict(format!(
+                "local knowledge overrides must not contain symlinks, junctions, or name-surrogate reparse points: {}",
+                entry.path().display()
+            )));
+        }
+        let relative = entry.path().strip_prefix(source).map_err(|error| {
+            AppError::Internal(format!("failed to resolve local knowledge override entry: {error}"))
+        })?;
+        let target = destination.join(relative);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target).map_err(|error| {
+                AppError::Internal(format!("failed to create local knowledge override child directory: {error}"))
+            })?;
+        } else if entry.file_type().is_file() {
+            let parent = target.parent().ok_or_else(|| {
+                AppError::Internal("local knowledge override target has no parent".into())
+            })?;
+            std::fs::create_dir_all(parent).map_err(|error| {
+                AppError::Internal(format!("failed to create local knowledge override parent: {error}"))
+            })?;
+            std::fs::copy(entry.path(), &target).map_err(|error| {
+                AppError::Internal(format!("failed to copy local knowledge override file: {error}"))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Verify every physical root component without following a name-surrogate
@@ -7657,7 +8101,9 @@ mod tests {
             .unwrap();
 
         service.create_folder(&info.knowledge_base_id, "raw/tutorials").await.unwrap();
-        assert!(vault.join("raw/tutorials").is_dir());
+        assert!(!vault.join("raw/tutorials").exists());
+
+        service.sync_local_folder(&info.knowledge_base_id).await.unwrap();
 
         let raw = service.list_tree(&info.knowledge_base_id, "raw").await.unwrap();
         assert_eq!(raw.len(), 1);
@@ -7687,8 +8133,14 @@ mod tests {
             .unwrap();
 
         service.delete_folder(&info.knowledge_base_id, "docs").await.unwrap();
-        assert!(!vault.join("docs").exists());
+        assert!(vault.join("docs").is_dir());
         assert!(vault.join("root.md").exists());
+        service.sync_local_folder(&info.knowledge_base_id).await.unwrap();
+        assert!(service
+            .list_tree(&info.knowledge_base_id, "docs")
+            .await
+            .unwrap()
+            .is_empty());
 
         assert!(service.delete_folder(&info.knowledge_base_id, "").await.is_err());
         assert!(service.delete_folder(&info.knowledge_base_id, "../escape").await.is_err());
@@ -7719,8 +8171,12 @@ mod tests {
             .unwrap();
         assert_eq!(file.rel_path, "docs/new.md");
         assert!(file.is_file);
-        assert!(vault.join("docs/new.md").is_file());
-        assert!(!vault.join("docs/old.md").exists());
+        assert!(vault.join("docs/old.md").is_file());
+        assert!(!vault.join("docs/new.md").exists());
+        assert!(service
+            .read_file(&info.knowledge_base_id, "docs/new.md")
+            .await
+            .is_ok());
 
         let folder = service
             .rename_tree_entry(&info.knowledge_base_id, "docs/nested", "renamed")
@@ -7728,13 +8184,87 @@ mod tests {
             .unwrap();
         assert_eq!(folder.rel_path, "docs/renamed");
         assert!(folder.is_dir);
-        assert!(vault.join("docs/renamed/topic.md").is_file());
+        assert!(vault.join("docs/nested/topic.md").is_file());
+        assert!(service
+            .read_file(&info.knowledge_base_id, "docs/renamed/topic.md")
+            .await
+            .is_ok());
+
+        service.sync_local_folder(&info.knowledge_base_id).await.unwrap();
+        assert!(service
+            .read_file(&info.knowledge_base_id, "docs/new.md")
+            .await
+            .is_ok());
+        assert!(service
+            .read_file(&info.knowledge_base_id, "docs/renamed/topic.md")
+            .await
+            .is_ok());
 
         assert!(service.rename_tree_entry(&info.knowledge_base_id, "", "root").await.is_err());
         assert!(service.rename_tree_entry(&info.knowledge_base_id, "docs/new.md", "bad.txt").await.is_err());
         assert!(service.rename_tree_entry(&info.knowledge_base_id, "docs/new.md", "../escape.md").await.is_err());
         assert!(service.rename_tree_entry(&info.knowledge_base_id, "docs/new.md", "renamed").await.is_err());
         assert!(service.rename_tree_entry(&info.knowledge_base_id, "taken.md", "existing.md").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn local_folder_case_rename_preserves_the_override_after_sync() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(vault.join("Guide.md"), "# Guide").unwrap();
+
+        let info = service
+            .create_base("vault", "", Some(vault.to_str().unwrap()), None)
+            .await
+            .unwrap();
+        let entry = service
+            .rename_tree_entry(&info.knowledge_base_id, "Guide.md", "guide.md")
+            .await
+            .unwrap();
+        assert_eq!(entry.rel_path, "guide.md");
+        service.sync_local_folder(&info.knowledge_base_id).await.unwrap();
+
+        assert!(service
+            .read_file(&info.knowledge_base_id, "guide.md")
+            .await
+            .is_ok());
+        assert!(vault.join("Guide.md").is_file());
+    }
+
+    #[tokio::test]
+    async fn local_folder_write_inside_deleted_directory_survives_sync() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(vault.join("docs")).unwrap();
+        std::fs::write(vault.join("docs/source.md"), "# Source").unwrap();
+
+        let info = service
+            .create_base("vault", "", Some(vault.to_str().unwrap()), None)
+            .await
+            .unwrap();
+        service
+            .delete_folder(&info.knowledge_base_id, "docs")
+            .await
+            .unwrap();
+        service
+            .write_file(&info.knowledge_base_id, "docs/new.md", "# New")
+            .await
+            .unwrap();
+        service.sync_local_folder(&info.knowledge_base_id).await.unwrap();
+
+        assert!(service
+            .read_file(&info.knowledge_base_id, "docs/new.md")
+            .await
+            .is_ok());
+        assert!(service
+            .read_file(&info.knowledge_base_id, "docs/source.md")
+            .await
+            .is_err());
+        assert!(vault.join("docs/source.md").is_file());
+        assert!(!vault.join("docs/new.md").exists());
     }
 
     /// The per-base walk must be bounded: a walk that finishes within budget
