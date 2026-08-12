@@ -24,7 +24,7 @@ Endpoint:
 https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/alpha/latest.json
 ```
 
-Pubkey keyID: `E0F1394F8E92CE41`.
+Pubkey keyID: `6FD07533C4187B64`.
 
 ## Naming (enforced)
 

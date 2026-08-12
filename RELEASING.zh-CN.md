@@ -47,7 +47,7 @@ tag 统一使用 `vX.Y.Z`，例如 `v0.1.11`。
 一次性配置好后即可反复一键：
 
 1. 从密钥库拷入 updater 私钥 `apps/desktop/signing/nomifun-updater.key`（keyID
-   `E0F1394F8E92CE41`，已被 gitignore，必须与 `tauri.conf.json` 内嵌 `pubkey` 匹配）。
+   `6FD07533C4187B64`，已被 gitignore，必须与 `tauri.conf.json` 内嵌 `pubkey` 匹配）。
 2. 配置 `apps/desktop/signing/.env.signing`，填好 Developer ID 签名与 Apple notarization 信息。
 3. 运行 `gh auth login`，或复制 `apps/desktop/signing/.env.release.example` 为 `.env.release`
    并填入 `GH_TOKEN=...`。
@@ -127,7 +127,7 @@ bun run make:latest
 一次性配置好后即可反复一键：
 
 1. 从密钥库拷入 updater 私钥 `apps/desktop/signing/nomifun-updater.key`（keyID
-   `E0F1394F8E92CE41`，已被 gitignore，必须与 `tauri.conf.json` 内嵌 `pubkey` 匹配）。
+   `6FD07533C4187B64`，已被 gitignore，必须与 `tauri.conf.json` 内嵌 `pubkey` 匹配）。
 2. 复制 `apps/desktop/signing/.env.release.example` 为 `.env.release`（已被 gitignore），
    填入 `GH_TOKEN=...`（`repo` 权限的经典 PAT，或对本仓库 Contents:read/write 的细粒度 PAT）。
 
@@ -182,7 +182,7 @@ git checkout main
 
 > updater 私钥 `apps/desktop/signing/nomifun-updater.key` 已被 gitignore、只存在于密钥库。
 > 这台 Windows 构建前需先从密钥库把它拷过来，且必须与 `tauri.conf.json` 内嵌的 `pubkey`
-> 匹配（keyID `E0F1394F8E92CE41`），否则已安装的客户端会拒绝更新。叠加 `createUpdaterArtifacts`
+> 匹配（keyID `6FD07533C4187B64`），否则已安装的客户端会拒绝更新。叠加 `createUpdaterArtifacts`
 > 用的是仓库内的 `apps/desktop/tauri.updater.conf.json`，以 `--config <文件路径>` 传入——
 > **不要内联 JSON**，PowerShell 5.1 会把内联 `--config '{...}'` 的双引号剥掉变成非法 JSON。
 

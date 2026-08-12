@@ -23,7 +23,7 @@
 https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/alpha/latest.json
 ```
 
-公钥 keyID：`E0F1394F8E92CE41`（内嵌于 `tauri.conf.json`）。
+公钥 keyID：`6FD07533C4187B64`（内嵌于 `tauri.conf.json`）。
 
 ## 密钥区别
 

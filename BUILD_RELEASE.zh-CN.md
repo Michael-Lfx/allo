@@ -10,7 +10,7 @@
 | OTA 渠道 | `alpha` |
 | ModelScope 仓库 | [flowy2025/flowyaipc](https://www.modelscope.cn/models/flowy2025/flowyaipc/tree/master/allo) |
 | 客户端拉取端点 | `allo/channels/alpha/latest.json` |
-| Updater 公钥 keyID | `E0F1394F8E92CE41`（内嵌于 `apps/desktop/tauri.conf.json`） |
+| Updater 公钥 keyID | `6FD07533C4187B64`（内嵌于 `apps/desktop/tauri.conf.json`） |
 
 ### ModelScope 目录结构
 
@@ -46,7 +46,7 @@ allo/
 
 私钥路径：`apps/desktop/signing/nomifun-updater.key`（已被 gitignore，需从团队密钥库拷贝）。
 
-必须与 `apps/desktop/tauri.conf.json` 内嵌的 `pubkey` 匹配（keyID `E0F1394F8E92CE41`）。**更换公钥后，已安装旧公钥的客户端需手动重装一次。**
+必须与 `apps/desktop/tauri.conf.json` 内嵌的 `pubkey` 匹配（keyID `6FD07533C4187B64`）。**更换公钥后，已安装旧公钥的客户端需手动重装一次。**
 
 ### 3. ModelScope Token
 
