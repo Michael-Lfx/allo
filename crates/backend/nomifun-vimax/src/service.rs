@@ -6,7 +6,8 @@ use std::sync::Arc;
 use nomi_config::{GatewayConfig, config_yaml_path, load_user_config_file};
 use nomi_vimax::{
     ArtifactNode, CameoPhotoEntry, CameoUpdate, FlowyVimaxServices, RenderStatus, RunStatus,
-    SessionRecord, VimaxService, WorkflowKind,
+    SessionRecord, SkillSource, VerticalSkill, VerticalSkillDraft, VerticalSkillSummary,
+    VimaxService, WorkflowKind,
 };
 use nomifun_api_types::{
     TvShowLikeResponse, TvShowListResponse, TvShowPublishRequest, TvShowPublishResponse,
@@ -59,6 +60,86 @@ impl VimaxApiService {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
+    pub fn list_vertical_skills(
+        &self,
+        mode: Option<&str>,
+        source: Option<&str>,
+    ) -> Result<Vec<VerticalSkillSummary>, AppError> {
+        let mode = mode
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                WorkflowKind::parse(s)
+                    .ok_or_else(|| AppError::BadRequest(format!("unknown workflow: {s}")))
+            })
+            .transpose()?;
+        let source = source
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                SkillSource::parse(s)
+                    .ok_or_else(|| AppError::BadRequest(format!("unknown skill source: {s}")))
+            })
+            .transpose()?;
+        self.inner
+            .list_vertical_skills(mode, source)
+            .map_err(map_vimax_err)
+    }
+
+    pub fn get_vertical_skill(&self, id: &str) -> Result<(VerticalSkill, String), AppError> {
+        self.inner.get_vertical_skill(id).map_err(map_vimax_err)
+    }
+
+    pub fn create_vertical_skill(
+        &self,
+        draft: VerticalSkillDraft,
+    ) -> Result<VerticalSkill, AppError> {
+        self.inner
+            .create_vertical_skill(draft)
+            .map_err(map_vimax_err)
+    }
+
+    pub fn update_vertical_skill(
+        &self,
+        name: &str,
+        draft: VerticalSkillDraft,
+    ) -> Result<VerticalSkill, AppError> {
+        self.inner
+            .update_vertical_skill(name, draft)
+            .map_err(map_vimax_err)
+    }
+
+    pub fn delete_vertical_skill(&self, name: &str) -> Result<(), AppError> {
+        self.inner
+            .delete_vertical_skill(name)
+            .map_err(map_vimax_err)
+    }
+
+    pub fn publish_vertical_skill(&self, name: &str) -> Result<VerticalSkill, AppError> {
+        self.inner
+            .publish_vertical_skill(name)
+            .map_err(map_vimax_err)
+    }
+
+    pub fn unpublish_vertical_skill(&self, name: &str) -> Result<(), AppError> {
+        self.inner
+            .unpublish_vertical_skill(name)
+            .map_err(map_vimax_err)
+    }
+
+    pub fn import_vertical_skill(&self, path: &str) -> Result<VerticalSkill, AppError> {
+        let path = Path::new(path);
+        if !path.exists() {
+            return Err(AppError::BadRequest(format!(
+                "skill path not found: {}",
+                path.display()
+            )));
+        }
+        self.inner
+            .import_vertical_skill(path)
+            .map_err(map_vimax_err)
+    }
+
     pub fn get_session(&self, id: &str) -> Result<SessionRecord, AppError> {
         self.inner.get_session(id).map_err(map_vimax_err)
     }
@@ -85,6 +166,7 @@ impl VimaxApiService {
         novel_text: Option<String>,
         user_requirement: Option<String>,
         style: Option<String>,
+        vertical_skill_ids: Option<Vec<String>>,
         llm_model: Option<String>,
         image_model: Option<String>,
         video_model: Option<String>,
@@ -102,6 +184,7 @@ impl VimaxApiService {
                 novel_text,
                 user_requirement,
                 style,
+                vertical_skill_ids,
                 llm_model,
                 image_model,
                 video_model,

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, patch, post};
@@ -83,6 +83,20 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
         .route(
             "/api/vimax/sessions/{id}/sync-from-canvas",
             post(sync_from_canvas),
+        )
+        .route("/api/vimax/skills", get(list_skills).post(create_skill))
+        .route("/api/vimax/skills/import", post(import_skill))
+        .route(
+            "/api/vimax/skills/{id}",
+            get(get_skill).put(update_skill).delete(delete_skill),
+        )
+        .route(
+            "/api/vimax/skills/{id}/publish",
+            post(publish_skill),
+        )
+        .route(
+            "/api/vimax/skills/{id}/unpublish",
+            post(unpublish_skill),
         )
         .route("/api/vimax/tv-show/list", get(tv_show_list))
         .route("/api/vimax/tv-show/mine", get(tv_show_mine))
@@ -172,6 +186,9 @@ struct PlanBody {
     /// Output fps (Seedance fixed at 24).
     #[serde(default)]
     fps: Option<u32>,
+    /// Source-qualified vertical skill ids (`builtin:luxury-tvc`, `user:…`).
+    #[serde(default)]
+    vertical_skill_ids: Option<Vec<String>>,
 }
 
 async fn plan_session(
@@ -190,6 +207,7 @@ async fn plan_session(
             body.novel_text,
             body.user_requirement,
             body.style,
+            body.vertical_skill_ids,
             body.llm_model,
             body.image_model,
             body.video_model,
@@ -752,4 +770,113 @@ async fn import_tv_show(
     Path(id): Path<i64>,
 ) -> Result<Json<ApiResponse<nomi_vimax::SessionRecord>>, AppError> {
     Ok(Json(ApiResponse::ok(state.service.import_tv_show(id).await?)))
+}
+
+#[derive(Deserialize, Default)]
+struct ListSkillsQuery {
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+async fn list_skills(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<ListSkillsQuery>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let skills = state
+        .service
+        .list_vertical_skills(query.mode.as_deref(), query.source.as_deref())?;
+    Ok(Json(ApiResponse::ok(json!({ "skills": skills }))))
+}
+
+async fn get_skill(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let (skill, manifest) = state.service.get_vertical_skill(&id)?;
+    Ok(Json(ApiResponse::ok(json!({
+        "skill": skill,
+        "manifest": manifest,
+    }))))
+}
+
+async fn create_skill(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    body: Result<Json<nomi_vimax::VerticalSkillDraft>, JsonRejection>,
+) -> Result<Json<ApiResponse<nomi_vimax::VerticalSkill>>, AppError> {
+    let Json(draft) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    Ok(Json(ApiResponse::ok(
+        state.service.create_vertical_skill(draft)?,
+    )))
+}
+
+async fn update_skill(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<nomi_vimax::VerticalSkillDraft>, JsonRejection>,
+) -> Result<Json<ApiResponse<nomi_vimax::VerticalSkill>>, AppError> {
+    let Json(draft) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let name = skill_name_from_path(&id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.update_vertical_skill(&name, draft)?,
+    )))
+}
+
+async fn delete_skill(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let name = skill_name_from_path(&id)?;
+    state.service.delete_vertical_skill(&name)?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn publish_skill(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<nomi_vimax::VerticalSkill>>, AppError> {
+    let name = skill_name_from_path(&id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.publish_vertical_skill(&name)?,
+    )))
+}
+
+async fn unpublish_skill(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let name = skill_name_from_path(&id)?;
+    state.service.unpublish_vertical_skill(&name)?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+struct ImportSkillBody {
+    path: String,
+}
+
+async fn import_skill(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    body: Result<Json<ImportSkillBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<nomi_vimax::VerticalSkill>>, AppError> {
+    let Json(body) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    Ok(Json(ApiResponse::ok(
+        state.service.import_vertical_skill(&body.path)?,
+    )))
+}
+
+fn skill_name_from_path(id: &str) -> Result<String, AppError> {
+    if let Some(parsed) = nomi_vimax::SkillId::parse(id) {
+        return Ok(parsed.name);
+    }
+    Err(AppError::BadRequest(format!("invalid skill id: {id}")))
 }

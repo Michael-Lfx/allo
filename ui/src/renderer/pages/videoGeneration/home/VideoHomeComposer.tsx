@@ -9,6 +9,7 @@ import {
   Pic,
   Platte,
   RobotOne,
+  Star,
   VideoOne,
 } from '@icon-park/react';
 import { useNavigate } from 'react-router-dom';
@@ -38,7 +39,7 @@ import {
   VIDEO_HOME_UPLOAD_ACCEPT,
 } from './documentUpload';
 import type {
-  AgentSkillDefinition,
+  AgentModeDefinition,
   CanvasReferenceDraft,
   CreationSkillDefinition,
   CreationSkillId,
@@ -46,11 +47,14 @@ import type {
   VideoCreateDraft,
   VideoHomeMode,
 } from './types';
+import VerticalSkillMenu from './VerticalSkillMenu';
+import VerticalSkillCreateModal from './VerticalSkillCreateModal';
 import styles from './home.module.css';
 
 const TextArea = Input.TextArea;
-const DRAFT_KEY = 'flowy.videoGeneration.homeDraft.v2';
-const LEGACY_DRAFT_KEY = 'flowy.videoGeneration.draft.v1';
+const DRAFT_KEY = 'flowy.videoGeneration.homeDraft.v3';
+const LEGACY_DRAFT_KEY = 'flowy.videoGeneration.homeDraft.v2';
+const LEGACY_DRAFT_KEY_V1 = 'flowy.videoGeneration.draft.v1';
 const MAX_REFERENCES = 8;
 
 const EMPTY_MODELS = {
@@ -104,6 +108,7 @@ function defaultDraft(): VideoCreateDraft {
     creationSkillId: 'cinematic',
     requirement: '',
     style: DEFAULT_VISUAL_STYLE_PROMPT,
+    verticalSkillIds: [],
     preferences: DEFAULT_PREFERENCES,
     cameos: [],
     canvasReferences: [],
@@ -115,7 +120,8 @@ function loadDraft(): VideoCreateDraft {
   try {
     const raw =
       window.sessionStorage.getItem(DRAFT_KEY) ??
-      window.sessionStorage.getItem(LEGACY_DRAFT_KEY);
+      window.sessionStorage.getItem(LEGACY_DRAFT_KEY) ??
+      window.sessionStorage.getItem(LEGACY_DRAFT_KEY_V1);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const legacyModels = (parsed.models ?? {}) as Partial<GenerationPreferences['models']>;
@@ -134,6 +140,9 @@ function loadDraft(): VideoCreateDraft {
     )
       ? (parsed.creationSkillId as CreationSkillId)
       : 'cinematic';
+    const verticalSkillIds = Array.isArray(parsed.verticalSkillIds)
+      ? parsed.verticalSkillIds.filter((id): id is string => typeof id === 'string')
+      : [];
     return {
       ...fallback,
       workflow,
@@ -146,6 +155,7 @@ function loadDraft(): VideoCreateDraft {
         typeof parsed.style === 'string' && parsed.style.trim()
           ? parsed.style
           : DEFAULT_VISUAL_STYLE_PROMPT,
+      verticalSkillIds,
       preferences: {
         automatic: parsedPreferences.automatic === true,
         smartAspect: parsedPreferences.smartAspect !== false,
@@ -186,6 +196,7 @@ export function clearVideoHomeDraft(): void {
   try {
     window.sessionStorage.removeItem(DRAFT_KEY);
     window.sessionStorage.removeItem(LEGACY_DRAFT_KEY);
+    window.sessionStorage.removeItem(LEGACY_DRAFT_KEY_V1);
   } catch {
     // Storage may be unavailable in hardened webviews.
   }
@@ -214,31 +225,34 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  const [skillHubOpen, setSkillHubOpen] = useState(false);
+  const [skillCreateOpen, setSkillCreateOpen] = useState(false);
+  const [skillListReloadToken, setSkillListReloadToken] = useState(0);
   const [modelMissing, setModelMissing] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [documentName, setDocumentName] = useState<string | null>(null);
   const draftRef = useRef(draft);
 
-  const agentSkills = useMemo<AgentSkillDefinition[]>(
+  const agentModes = useMemo<AgentModeDefinition[]>(
     () => [
       {
         id: 'idea2video',
         label: t('videoGeneration.create.modes.idea', { defaultValue: '一个想法' }),
-        description: t('videoGeneration.create.skills.ideaDesc', {
+        description: t('videoGeneration.create.modes.ideaDesc', {
           defaultValue: '从一句灵感扩写成完整影片',
         }),
       },
       {
         id: 'script2video',
         label: t('videoGeneration.create.modes.script', { defaultValue: '完整剧本' }),
-        description: t('videoGeneration.create.skills.scriptDesc', {
+        description: t('videoGeneration.create.modes.scriptDesc', {
           defaultValue: '按剧情结构自动拆解镜头',
         }),
       },
       {
         id: 'novel2video',
         label: t('videoGeneration.create.modes.novel', { defaultValue: '小说文本' }),
-        description: t('videoGeneration.create.skills.novelDesc', {
+        description: t('videoGeneration.create.modes.novelDesc', {
           defaultValue: '提炼长文情节并设计分镜',
         }),
       },
@@ -313,6 +327,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             description,
           })),
           canvasReferences: [],
+          verticalSkillIds: draft.verticalSkillIds,
         })
       );
     } catch {
@@ -351,10 +366,17 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const activeCreationSkill =
     creationSkills.find((skill) => skill.id === draft.creationSkillId) ??
     creationSkills[0];
-  const selectedSkillLabel =
+  const selectedModeLabel =
     mode === 'agent'
-      ? agentSkills.find((skill) => skill.id === draft.workflow)?.label
+      ? agentModes.find((item) => item.id === draft.workflow)?.label
       : activeCreationSkill.label;
+  const verticalSkillLabel =
+    draft.verticalSkillIds.length === 0
+      ? t('videoGeneration.skills.mountButton', { defaultValue: '挂载 Skill' })
+      : t('videoGeneration.skills.mountedCount', {
+          count: draft.verticalSkillIds.length,
+          defaultValue: 'Skill · {{count}}',
+        });
   const placeholder =
     mode === 'creation'
       ? t('videoGeneration.create.composer.creationPlaceholder', {
@@ -369,7 +391,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
               defaultValue: '粘贴小说片段，Flowy 会提炼剧情并设计分镜…',
             })
           : t('videoGeneration.create.composer.ideaPlaceholderSlash', {
-              defaultValue: '输入一个想法、故事或产品画面，支持 / 唤起技能…',
+              defaultValue: '输入一个想法、故事或产品画面，支持 / 切换 Mode…',
             });
 
   const setActiveText = (value: string) => {
@@ -381,10 +403,12 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setSlashMenuOpen(/(?:^|\s)\/$/.test(value));
   };
 
-  const selectAgentSkill = (workflow: VimaxWorkflow) => {
+  const selectAgentMode = (workflow: VimaxWorkflow) => {
     setDraft((current) => ({
       ...current,
       workflow,
+      // Drop skills incompatible with the new mode once hub reloads; keep ids for now.
+      verticalSkillIds: current.verticalSkillIds,
     }));
     setSlashMenuOpen(false);
   };
@@ -558,16 +582,26 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     <div
       className={styles.slashMenu}
       role='listbox'
-      aria-label={t('videoGeneration.create.skillsMenuAria', {
-        defaultValue: '选择技能',
-      })}
+      aria-label={
+        mode === 'agent'
+          ? t('videoGeneration.create.modesMenuAria', {
+              defaultValue: '选择 Mode',
+            })
+          : t('videoGeneration.create.skillsMenuAria', {
+              defaultValue: '选择技能',
+            })
+      }
     >
       <div className={styles.slashMenuTitle}>
-        {t('videoGeneration.create.skillsMenuTitle', {
-          defaultValue: '选择技能',
-        })}
+        {mode === 'agent'
+          ? t('videoGeneration.create.modesMenuTitle', {
+              defaultValue: '选择 Mode',
+            })
+          : t('videoGeneration.create.skillsMenuTitle', {
+              defaultValue: '选择风格技能',
+            })}
       </div>
-      {(mode === 'agent' ? agentSkills : creationSkills).map((skill) => {
+      {(mode === 'agent' ? agentModes : creationSkills).map((skill) => {
         const icons =
           mode === 'agent'
             ? [
@@ -578,7 +612,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             : null;
         const agentIndex =
           mode === 'agent'
-            ? agentSkills.findIndex((item) => item.id === skill.id)
+            ? agentModes.findIndex((item) => item.id === skill.id)
             : -1;
         const active =
           mode === 'agent'
@@ -595,7 +629,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             }`}
             onClick={() => {
               removeTrailingSlash();
-              if (mode === 'agent') selectAgentSkill(skill.id as VimaxWorkflow);
+              if (mode === 'agent') selectAgentMode(skill.id as VimaxWorkflow);
               else selectCreationSkill(skill.id as CreationSkillId);
             }}
           >
@@ -821,16 +855,66 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 }`}
                 aria-expanded={slashMenuOpen}
                 aria-label={
-                  selectedSkillLabel ??
-                  t('videoGeneration.create.skillsMenuAria', {
-                    defaultValue: '选择技能',
-                  })
+                  selectedModeLabel ??
+                  (mode === 'agent'
+                    ? t('videoGeneration.create.modesMenuAria', {
+                        defaultValue: '选择 Mode',
+                      })
+                    : t('videoGeneration.create.skillsMenuAria', {
+                        defaultValue: '选择技能',
+                      }))
                 }
               >
                 <MagicWand size={15} />
-                <span className={styles.toolbarLabel}>{selectedSkillLabel}</span>
+                <span className={styles.toolbarLabel}>{selectedModeLabel}</span>
               </button>
             </Popover>
+            {mode === 'agent' ? (
+              <Popover
+                trigger='click'
+                position='bl'
+                triggerProps={{ autoFitPosition: false }}
+                className={styles.skillPopover}
+                style={{ maxWidth: 380, padding: 0 }}
+                popupVisible={skillHubOpen}
+                onVisibleChange={(open) => {
+                  if (open) {
+                    setPreferencesOpen(false);
+                    setModeMenuOpen(false);
+                    setSlashMenuOpen(false);
+                  }
+                  setSkillHubOpen(open);
+                }}
+                content={
+                  <VerticalSkillMenu
+                    mode={draft.workflow}
+                    selectedIds={draft.verticalSkillIds}
+                    reloadToken={skillListReloadToken}
+                    onChangeSelected={(verticalSkillIds) =>
+                      setDraft((current) => ({ ...current, verticalSkillIds }))
+                    }
+                    onRequestCreate={() => {
+                      setSkillHubOpen(false);
+                      setSkillCreateOpen(true);
+                    }}
+                  />
+                }
+              >
+                <button
+                  type='button'
+                  className={`${styles.toolbarButton} ${styles.skillToolbarButton} ${
+                    skillHubOpen || draft.verticalSkillIds.length > 0
+                      ? styles.toolbarButtonActive
+                      : ''
+                  }`}
+                  aria-expanded={skillHubOpen}
+                  aria-label={verticalSkillLabel}
+                >
+                  <Star size={15} />
+                  <span className={styles.toolbarLabel}>{verticalSkillLabel}</span>
+                </button>
+              </Popover>
+            ) : null}
           </div>
           <button
             type='button'
@@ -866,6 +950,20 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           />
         </div>
       ) : null}
+
+      <VerticalSkillCreateModal
+        visible={skillCreateOpen}
+        onClose={() => setSkillCreateOpen(false)}
+        onCreated={(skillId) => {
+          setDraft((current) => ({
+            ...current,
+            verticalSkillIds: current.verticalSkillIds.includes(skillId)
+              ? current.verticalSkillIds
+              : [...current.verticalSkillIds, skillId],
+          }));
+          setSkillListReloadToken((n) => n + 1);
+        }}
+      />
     </section>
   );
 };

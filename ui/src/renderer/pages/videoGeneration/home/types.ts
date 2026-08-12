@@ -32,6 +32,8 @@ export interface VideoCreateDraft {
   creationSkillId: CreationSkillId;
   requirement: string;
   style: string;
+  /** Source-qualified vertical skill ids mounted under the selected Mode. */
+  verticalSkillIds: string[];
   preferences: GenerationPreferences;
   /** Agent-only local Cameo drafts. Files and object URLs are never persisted. */
   cameos: CameoDraftItem[];
@@ -39,11 +41,15 @@ export interface VideoCreateDraft {
   canvasReferences: CanvasReferenceDraft[];
 }
 
-export interface AgentSkillDefinition {
+/** Agent Mode definition (idea / script / novel) — formerly labeled "skill". */
+export interface AgentModeDefinition {
   id: VimaxWorkflow;
   label: string;
   description: string;
 }
+
+/** @deprecated Use AgentModeDefinition — kept for transitional imports. */
+export type AgentSkillDefinition = AgentModeDefinition;
 
 export interface CreationSkillDefinition {
   id: CreationSkillId;

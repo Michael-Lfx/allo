@@ -50,6 +50,9 @@ pub struct SessionRecord {
     pub user_requirement: String,
     #[serde(default)]
     pub style: String,
+    /// Source-qualified vertical skill ids attached to this session (`builtin:…`, `user:…`).
+    #[serde(default)]
+    pub vertical_skill_ids: Vec<String>,
     /// Flowy chat / LLM model id (e.g. `AIPC-glm-4.7`). Empty → server default.
     #[serde(default)]
     pub llm_model: String,
@@ -199,6 +202,7 @@ impl SessionIndex {
             novel_text: String::new(),
             user_requirement: String::new(),
             style: String::new(),
+            vertical_skill_ids: Vec::new(),
             llm_model: String::new(),
             image_model: String::new(),
             video_model: String::new(),
