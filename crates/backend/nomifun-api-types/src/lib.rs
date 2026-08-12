@@ -10,6 +10,7 @@ mod channel;
 mod cloud;
 mod cloud_im;
 mod tv_show;
+mod vimax_skill_hub;
 mod confirmation;
 mod connection_test;
 mod conversation;
@@ -122,6 +123,11 @@ pub use cloud_im::{
 pub use tv_show::{
     TvShowAuthor, TvShowLikeResponse, TvShowListResponse, TvShowPublishRequest,
     TvShowPublishResponse, TvShowPublishSessionRequest, TvShowVideo,
+};
+pub use vimax_skill_hub::{
+    VimaxCloudSkill, VimaxCloudSkillInstallResponse, VimaxCloudSkillLikeResponse,
+    VimaxCloudSkillListResponse, VimaxCloudSkillPublishLocalRequest,
+    VimaxCloudSkillPublishRequest, VimaxCloudSkillPublishResponse, VimaxSkillAuthor,
 };
 pub use confirmation::{
     ApprovalCheckQuery, ApprovalCheckResponse, ConfirmRequest, ConfirmationListResponse,

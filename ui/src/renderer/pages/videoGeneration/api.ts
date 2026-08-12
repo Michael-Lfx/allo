@@ -25,6 +25,10 @@ import type {
   VerticalSkillDetail,
   VerticalSkillDraft,
   VerticalSkillSummary,
+  VimaxCloudSkill,
+  VimaxCloudSkillLikeResult,
+  VimaxCloudSkillListResult,
+  VimaxCloudSkillPublishResult,
   VimaxSession,
   VimaxWorkflow,
   ArtifactEditResult,
@@ -662,5 +666,118 @@ export async function importVerticalSkill(path: string): Promise<VerticalSkillSu
       skill.requirement_overlay?.trim() || skill.playbook?.trim()
     ),
   };
+}
+
+function skillHubQuery(params: Record<string, string | number | undefined | null>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue;
+    query.set(key, String(value));
+  }
+  const qs = query.toString();
+  return qs ? `?${qs}` : '';
+}
+
+export async function publishVerticalSkillToCloud(
+  id: string,
+  body?: { coverUrl?: string; caseUrl?: string }
+): Promise<VimaxCloudSkillPublishResult> {
+  return httpRequest<VimaxCloudSkillPublishResult>(
+    'POST',
+    `${BASE}/skills/${encodeSkillId(id)}/cloud-publish`,
+    body ?? {}
+  );
+}
+
+export async function listCloudSkills(params?: {
+  page?: number;
+  pageSize?: number;
+  keyword?: string;
+  category?: string;
+  mode?: string;
+  sort?: string;
+  authorId?: number;
+}): Promise<VimaxCloudSkillListResult> {
+  return httpRequest<VimaxCloudSkillListResult>(
+    'GET',
+    `${BASE}/skill-hub/list${skillHubQuery({
+      page: params?.page,
+      pageSize: params?.pageSize,
+      keyword: params?.keyword,
+      category: params?.category,
+      mode: params?.mode,
+      sort: params?.sort,
+      authorId: params?.authorId,
+    })}`
+  );
+}
+
+export async function listMyCloudSkills(params?: {
+  page?: number;
+  pageSize?: number;
+  status?: string;
+}): Promise<VimaxCloudSkillListResult> {
+  return httpRequest<VimaxCloudSkillListResult>(
+    'GET',
+    `${BASE}/skill-hub/mine${skillHubQuery({
+      page: params?.page,
+      pageSize: params?.pageSize,
+      status: params?.status,
+    })}`
+  );
+}
+
+export async function getCloudSkillDetail(id: number): Promise<VimaxCloudSkill> {
+  return httpRequest<VimaxCloudSkill>('GET', `${BASE}/skill-hub/${id}`);
+}
+
+export async function installCloudSkill(id: number): Promise<VerticalSkillSummary> {
+  const skill = await httpRequest<{
+    id: string;
+    name: string;
+    display_name: string;
+    description: string;
+    category?: string;
+    version?: string;
+    tags?: string[];
+    compatible_modes?: string[];
+    visibility?: string;
+    style_overlay?: string;
+    requirement_overlay?: string;
+    playbook?: string;
+  }>('POST', `${BASE}/skill-hub/${id}/install`, {});
+  const source = skill.id.includes(':') ? skill.id.split(':')[0] : 'user';
+  return {
+    id: skill.id,
+    name: skill.name,
+    display_name: skill.display_name,
+    description: skill.description,
+    category: skill.category ?? '',
+    version: skill.version ?? '1.0.0',
+    tags: skill.tags ?? [],
+    compatible_modes: (skill.compatible_modes ?? []).map(String),
+    source,
+    visibility: skill.visibility ?? 'private',
+    has_style_overlay: Boolean(skill.style_overlay?.trim()),
+    has_requirement_overlay: Boolean(
+      skill.requirement_overlay?.trim() || skill.playbook?.trim()
+    ),
+  };
+}
+
+export async function likeCloudSkill(id: number): Promise<VimaxCloudSkillLikeResult> {
+  return httpRequest<VimaxCloudSkillLikeResult>('POST', `${BASE}/skill-hub/${id}/like`, {});
+}
+
+export async function unlikeCloudSkill(id: number): Promise<VimaxCloudSkillLikeResult> {
+  return httpRequest<VimaxCloudSkillLikeResult>('DELETE', `${BASE}/skill-hub/${id}/like`);
+}
+
+export async function unpublishCloudSkill(id: number): Promise<void> {
+  await httpRequest<unknown>('POST', `${BASE}/skill-hub/${id}/unpublish`, {});
+}
+
+export async function deleteCloudSkill(id: number): Promise<void> {
+  await httpRequest<unknown>('DELETE', `${BASE}/skill-hub/${id}`);
 }
 

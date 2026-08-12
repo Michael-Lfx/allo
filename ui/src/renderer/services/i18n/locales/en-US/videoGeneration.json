@@ -583,6 +583,17 @@
     "closeDetail": "Close",
     "publish": "Publish",
     "publishOk": "Published to the local Skill Hub",
+    "publishCloud": "Publish to community",
+    "publishLocal": "Local only",
+    "cloudPublishOk": "Submitted for community review ({{status}})",
+    "createAndPublish": "Create & publish",
+    "createAndPublishOk": "Created and submitted for review ({{status}})",
+    "createPublishing": "Publishing…",
+    "install": "Install",
+    "installOk": "Installed {{name}}",
+    "useInstalled": "Use",
+    "alreadyInstalled": "Already installed — added to selection",
+    "cloudEmpty": "No published community Skills yet",
     "unpublish": "Unpublish",
     "unpublishOk": "Removed from Hub",
     "deleteOk": "Deleted",
@@ -593,7 +604,27 @@
     "createSaving": "Creating…",
     "selectedCount": "{{count}} selected",
     "clearSelected": "Clear",
-    "cloudPublishHint": "Community publishing uses the cloud Skill Hub (sign-in required). “Publish” syncs to the local Hub first.",
+    "cloudPublishHint": "Your creations live under Mine, with review status: pending / published / offline.",
+    "emptyMine": "No skills of your own yet — create one below",
+    "ownSkillInMine": "This is your published Skill — open Mine to use it",
+    "useOwnFromHub": "Selected your local copy of this Skill",
+    "syncMine": "Sync local",
+    "republishCloud": "Update publish",
+    "relistCloud": "Relist",
+    "updatePending": "Update review",
+    "rejected": "Rejected",
+    "cloudStatus": {
+      "local": "Local only",
+      "pending": "In review",
+      "published": "Published",
+      "offline": "Offline",
+      "deleted": "Deleted"
+    },
+    "authRequired": {
+      "publish": "Sign in to publish to the community Skill Hub",
+      "desc": "Browse and install community Skills after signing in.",
+      "login": "Sign in"
+    },
     "insertTemplate": "Insert template",
     "uploadMd": "Upload MD file",
     "uploadCover": "Upload cover image",
@@ -618,7 +649,16 @@
     "source": {
       "user": "Mine",
       "hub": "Hub",
-      "builtin": "Official"
+      "builtin": "Official",
+      "cloud": "Community",
+      "minePublished": "Published by me"
+    },
+    "categories": {
+      "shortDrama": "Short drama",
+      "film": "Film",
+      "advertising": "Advertising",
+      "creativeSocial": "Creative / social",
+      "musicMv": "Music MV"
     },
     "tabs": {
       "all": "Featured",

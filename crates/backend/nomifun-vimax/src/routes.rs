@@ -14,7 +14,9 @@ use serde_json::json;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use nomi_vimax::CameoUpdate;
-use nomifun_api_types::{ApiResponse, TvShowPublishSessionRequest};
+use nomifun_api_types::{
+    ApiResponse, TvShowPublishSessionRequest, VimaxCloudSkillPublishLocalRequest,
+};
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
 
@@ -97,6 +99,28 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
         .route(
             "/api/vimax/skills/{id}/unpublish",
             post(unpublish_skill),
+        )
+        .route(
+            "/api/vimax/skills/{id}/cloud-publish",
+            post(cloud_publish_skill),
+        )
+        .route("/api/vimax/skill-hub/list", get(skill_hub_list))
+        .route("/api/vimax/skill-hub/mine", get(skill_hub_mine))
+        .route(
+            "/api/vimax/skill-hub/{id}",
+            get(skill_hub_detail).delete(skill_hub_delete),
+        )
+        .route(
+            "/api/vimax/skill-hub/{id}/install",
+            post(skill_hub_install),
+        )
+        .route(
+            "/api/vimax/skill-hub/{id}/like",
+            post(skill_hub_like).delete(skill_hub_unlike),
+        )
+        .route(
+            "/api/vimax/skill-hub/{id}/unpublish",
+            post(skill_hub_unpublish),
         )
         .route("/api/vimax/tv-show/list", get(tv_show_list))
         .route("/api/vimax/tv-show/mine", get(tv_show_mine))
@@ -872,6 +896,123 @@ async fn import_skill(
     Ok(Json(ApiResponse::ok(
         state.service.import_vertical_skill(&body.path)?,
     )))
+}
+
+async fn cloud_publish_skill(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Option<Json<VimaxCloudSkillPublishLocalRequest>>,
+) -> Result<Json<ApiResponse<nomifun_api_types::VimaxCloudSkillPublishResponse>>, AppError> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    Ok(Json(ApiResponse::ok(
+        state.service.publish_skill_to_cloud(&id, req).await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillHubListQuery {
+    page: Option<i32>,
+    page_size: Option<i32>,
+    keyword: Option<String>,
+    category: Option<String>,
+    mode: Option<String>,
+    sort: Option<String>,
+    author_id: Option<i64>,
+    status: Option<String>,
+}
+
+async fn skill_hub_list(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    axum::extract::Query(query): axum::extract::Query<SkillHubListQuery>,
+) -> Result<Json<ApiResponse<nomifun_api_types::VimaxCloudSkillListResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .skill_hub_list(
+                query.page,
+                query.page_size,
+                query.keyword,
+                query.category,
+                query.mode,
+                query.sort,
+                query.author_id,
+            )
+            .await?,
+    )))
+}
+
+async fn skill_hub_mine(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    axum::extract::Query(query): axum::extract::Query<SkillHubListQuery>,
+) -> Result<Json<ApiResponse<nomifun_api_types::VimaxCloudSkillListResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .skill_hub_mine(query.page, query.page_size, query.status)
+            .await?,
+    )))
+}
+
+async fn skill_hub_detail(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<nomifun_api_types::VimaxCloudSkill>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.skill_hub_detail(id).await?,
+    )))
+}
+
+async fn skill_hub_install(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<nomi_vimax::VerticalSkill>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.skill_hub_install(id).await?,
+    )))
+}
+
+async fn skill_hub_like(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<nomifun_api_types::VimaxCloudSkillLikeResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.skill_hub_like(id).await?,
+    )))
+}
+
+async fn skill_hub_unlike(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<nomifun_api_types::VimaxCloudSkillLikeResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.skill_hub_unlike(id).await?,
+    )))
+}
+
+async fn skill_hub_unpublish(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state.service.skill_hub_unpublish(id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn skill_hub_delete(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state.service.skill_hub_delete(id).await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 fn skill_name_from_path(id: &str) -> Result<String, AppError> {

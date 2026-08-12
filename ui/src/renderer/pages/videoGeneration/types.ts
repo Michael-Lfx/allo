@@ -120,6 +120,67 @@ export interface TvShowLikeResult {
   likeCount: number;
 }
 
+/** Flowy cloud Skill Hub status. */
+export type VimaxCloudSkillStatus = 'pending' | 'published' | 'offline' | 'deleted';
+
+export interface VimaxSkillAuthor {
+  id: number;
+  name: string;
+  avatarUrl?: string | null;
+}
+
+export interface VimaxCloudSkill {
+  id: number;
+  name: string;
+  displayName: string;
+  description?: string;
+  category?: string;
+  version?: string;
+  tags?: string[];
+  compatibleModes?: string[];
+  useScenario?: string | null;
+  howToUse?: string | null;
+  output?: string | null;
+  coverUrl?: string | null;
+  caseUrl?: string | null;
+  installCount?: number;
+  likeCount?: number;
+  liked?: boolean;
+  status: VimaxCloudSkillStatus | string;
+  publishedAt?: string | null;
+  submittedAt?: string | null;
+  isMine?: boolean;
+  author: VimaxSkillAuthor;
+  packageUrl?: string | null;
+  packageSizeBytes?: number | null;
+  packageSha256?: string | null;
+  manifestText?: string | null;
+  rejectReason?: string | null;
+  clientSkillId?: string | null;
+}
+
+export interface VimaxCloudSkillListResult {
+  total: number;
+  page: number;
+  pageSize: number;
+  list: VimaxCloudSkill[];
+}
+
+export interface VimaxCloudSkillPublishResult {
+  id: number;
+  name: string;
+  displayName: string;
+  status: VimaxCloudSkillStatus | string;
+  version: string;
+  submittedAt?: string | null;
+}
+
+export interface VimaxCloudSkillLikeResult {
+  id: number;
+  liked: boolean;
+  likeCount: number;
+}
+
 export interface CreateSessionBody {
   workflow: VimaxWorkflow;
   title?: string;

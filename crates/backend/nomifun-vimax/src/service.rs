@@ -5,20 +5,25 @@ use std::sync::Arc;
 
 use nomi_config::{GatewayConfig, config_yaml_path, load_user_config_file};
 use nomi_vimax::{
-    ArtifactNode, CameoPhotoEntry, CameoUpdate, FlowyVimaxServices, RenderStatus, RunStatus,
-    SessionRecord, SkillSource, VerticalSkill, VerticalSkillDraft, VerticalSkillSummary,
+    pack_skill_dir, ArtifactNode, CameoPhotoEntry, CameoUpdate, FlowyVimaxServices, RenderStatus,
+    RunStatus, SessionRecord, SkillSource, VerticalSkill, VerticalSkillDraft, VerticalSkillSummary,
     VimaxService, WorkflowKind,
 };
 use nomifun_api_types::{
     TvShowLikeResponse, TvShowListResponse, TvShowPublishRequest, TvShowPublishResponse,
-    TvShowPublishSessionRequest, TvShowVideo,
+    TvShowPublishSessionRequest, TvShowVideo, VimaxCloudSkill, VimaxCloudSkillInstallResponse,
+    VimaxCloudSkillLikeResponse, VimaxCloudSkillListResponse, VimaxCloudSkillPublishLocalRequest,
+    VimaxCloudSkillPublishRequest, VimaxCloudSkillPublishResponse,
 };
 use nomifun_cloud::{FlowyApiClient, ServerSession};
 use nomifun_common::AppError;
+use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 /// Soft cap when buffering a `.nomivimax` archive for OSS upload.
 const MAX_TV_SHOW_PACKAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Soft cap for Skill Hub packages (matches cloud + packer).
+const MAX_SKILL_PACKAGE_BYTES: u64 = 5 * 1024 * 1024;
 
 pub struct VimaxApiService {
     data_dir: PathBuf,
@@ -378,7 +383,7 @@ impl VimaxApiService {
             .filter(|t| !t.trim().is_empty());
         if token.is_none() {
             return Err(AppError::Unauthorized(
-                "cloud login required to use TV Show".into(),
+                "cloud login required".into(),
             ));
         }
         let client =
@@ -644,6 +649,314 @@ impl VimaxApiService {
         }
         imported
     }
+
+    // ── Skill Hub (Flowy cloud) ────────────────────────────────────────────
+
+    /// Pack a local user/hub skill, upload via OSS, then publish to cloud Skill Hub.
+    pub async fn publish_skill_to_cloud(
+        &self,
+        id: &str,
+        req: VimaxCloudSkillPublishLocalRequest,
+    ) -> Result<VimaxCloudSkillPublishResponse, AppError> {
+        let (skill, manifest) = self.get_vertical_skill(id)?;
+        let skill_dir = self
+            .inner
+            .vertical_skill_dir(id)
+            .map_err(map_vimax_err)?;
+
+        let (client, cloud_session) = self.flowy_client_and_session().await?;
+
+        let package_name = format!("{}.vimaxskill", skill.name);
+        let tmp_path = std::env::temp_dir().join(format!(
+            "vimax-skill-{}-{}.vimaxskill",
+            skill.name,
+            uuid_simple()
+        ));
+        let package_size = tokio::task::spawn_blocking({
+            let skill_dir = skill_dir.clone();
+            let tmp_path = tmp_path.clone();
+            move || pack_skill_dir(&skill_dir, &tmp_path)
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("pack skill join: {e}")))?
+        .map_err(map_vimax_err)?;
+
+        if package_size > MAX_SKILL_PACKAGE_BYTES {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(AppError::BadRequest(format!(
+                "skill package too large ({package_size} bytes); max is {MAX_SKILL_PACKAGE_BYTES}"
+            )));
+        }
+
+        let package_bytes = tokio::fs::read(&tmp_path)
+            .await
+            .map_err(|e| AppError::Internal(format!("read skill package: {e}")))?;
+        if let Err(e) = tokio::fs::remove_file(&tmp_path).await {
+            warn!(
+                path = %tmp_path.display(),
+                error = %e,
+                "failed to remove temp skill package"
+            );
+        }
+
+        let package_sha256 = {
+            let mut hasher = Sha256::new();
+            hasher.update(&package_bytes);
+            Some(hex::encode(hasher.finalize()))
+        };
+
+        info!(
+            skill_id = %id,
+            bytes = package_bytes.len(),
+            "Skill Hub: uploading package"
+        );
+        let package_upload = client
+            .upload_package_via_oss(&cloud_session, &package_bytes, &package_name)
+            .await
+            .map_err(map_cloud_err)?;
+
+        let package_object_key = package_upload.object_key.clone().ok_or_else(|| {
+            AppError::Internal("OSS upload missing objectKey for skill package".into())
+        })?;
+
+        let mut cover_url = req
+            .cover_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let mut cover_object_key = None;
+
+        // Fallback: cover-url from local SKILL.md frontmatter.
+        if cover_url.is_none() {
+            cover_url = extract_frontmatter_value(&manifest, "cover-url")
+                .or_else(|| extract_frontmatter_value(&manifest, "cover_url"));
+        }
+
+        if let Some(ref cover) = cover_url.clone() {
+            if let Some((mime, bytes)) = decode_data_url_image(cover) {
+                let ext = mime_to_ext(&mime);
+                let cover_name = format!("cover.{ext}");
+                let cover_upload = client
+                    .upload_bytes_via_oss_detailed(
+                        &cloud_session,
+                        &bytes,
+                        &cover_name,
+                        &mime,
+                        None,
+                    )
+                    .await
+                    .map_err(map_cloud_err)?;
+                cover_url = Some(cover_upload.public_url);
+                cover_object_key = cover_upload.object_key;
+            } else {
+                // Local path under the skill dir, or absolute file path.
+                let local = if Path::new(cover).is_file() {
+                    Some(PathBuf::from(cover))
+                } else {
+                    let rel = skill_dir.join(cover);
+                    rel.is_file().then_some(rel)
+                };
+                if let Some(cover_path) = local {
+                    let cover_bytes = tokio::fs::read(&cover_path)
+                        .await
+                        .map_err(|e| AppError::Internal(format!("read cover: {e}")))?;
+                    let cover_name = cover_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("cover.png");
+                    let cover_mime = mime_guess::from_path(&cover_path)
+                        .first_or_octet_stream()
+                        .essence_str()
+                        .to_string();
+                    let cover_mime = if cover_mime.starts_with("image/") {
+                        cover_mime
+                    } else {
+                        "image/png".into()
+                    };
+                    let cover_upload = client
+                        .upload_bytes_via_oss_detailed(
+                            &cloud_session,
+                            &cover_bytes,
+                            cover_name,
+                            &cover_mime,
+                            None,
+                        )
+                        .await
+                        .map_err(map_cloud_err)?;
+                    cover_url = Some(cover_upload.public_url);
+                    cover_object_key = cover_upload.object_key;
+                } else if !(cover.starts_with("http://") || cover.starts_with("https://")) {
+                    // Not a usable URL / path — drop rather than send garbage to cloud.
+                    cover_url = None;
+                }
+            }
+        }
+
+        let case_url = req
+            .case_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        let body = VimaxCloudSkillPublishRequest {
+            name: skill.name.clone(),
+            display_name: Some(skill.display_name.clone()),
+            description: Some(skill.description.clone()),
+            category: Some(normalize_skill_hub_category(skill.category.as_str())),
+            version: Some(skill.version.clone()).filter(|s| !s.trim().is_empty()),
+            tags: skill.tags.clone(),
+            use_scenario: extract_frontmatter_value(&manifest, "use-scenario")
+                .or_else(|| extract_frontmatter_value(&manifest, "use_scenario")),
+            how_to_use: extract_frontmatter_value(&manifest, "how-to-use")
+                .or_else(|| extract_frontmatter_value(&manifest, "how_to_use")),
+            output: extract_frontmatter_value(&manifest, "output"),
+            compatible_modes: skill
+                .compatible_modes
+                .iter()
+                .map(|m| m.as_str().to_string())
+                .collect(),
+            requirement_overlay: Some(skill.requirement_overlay.clone())
+                .filter(|s| !s.trim().is_empty()),
+            style_overlay: Some(skill.style_overlay.clone()).filter(|s| !s.trim().is_empty()),
+            playbook: Some(skill.playbook.clone()).filter(|s| !s.trim().is_empty()),
+            package_url: package_upload.public_url,
+            package_object_key,
+            package_size_bytes: Some(package_upload.byte_size as i64),
+            package_sha256,
+            cover_url,
+            cover_object_key,
+            case_url,
+            client_skill_id: Some(skill.id.qualified()),
+        };
+
+        client
+            .vimax_skill_publish(&cloud_session, &body)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn skill_hub_list(
+        &self,
+        page: Option<i32>,
+        page_size: Option<i32>,
+        keyword: Option<String>,
+        category: Option<String>,
+        mode: Option<String>,
+        sort: Option<String>,
+        author_id: Option<i64>,
+    ) -> Result<VimaxCloudSkillListResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .vimax_skill_list(
+                &session,
+                page,
+                page_size,
+                keyword.as_deref(),
+                category.as_deref(),
+                mode.as_deref(),
+                sort.as_deref(),
+                author_id,
+            )
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn skill_hub_mine(
+        &self,
+        page: Option<i32>,
+        page_size: Option<i32>,
+        status: Option<String>,
+    ) -> Result<VimaxCloudSkillListResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .vimax_skill_mine(&session, page, page_size, status.as_deref())
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn skill_hub_detail(&self, id: i64) -> Result<VimaxCloudSkill, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .vimax_skill_detail(&session, id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn skill_hub_like(&self, id: i64) -> Result<VimaxCloudSkillLikeResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .vimax_skill_like(&session, id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn skill_hub_unlike(
+        &self,
+        id: i64,
+    ) -> Result<VimaxCloudSkillLikeResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .vimax_skill_unlike(&session, id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn skill_hub_unpublish(&self, id: i64) -> Result<(), AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .vimax_skill_unpublish(&session, id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn skill_hub_delete(&self, id: i64) -> Result<(), AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .vimax_skill_delete(&session, id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    /// Call cloud install, download package, import into local user catalog.
+    pub async fn skill_hub_install(&self, id: i64) -> Result<VerticalSkill, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        let install: VimaxCloudSkillInstallResponse = client
+            .vimax_skill_install(&session, id)
+            .await
+            .map_err(map_cloud_err)?;
+
+        let package_url = install.package_url.trim();
+        if package_url.is_empty() {
+            return Err(AppError::BadRequest(
+                "Skill Hub package URL unavailable".into(),
+            ));
+        }
+
+        let tmp_path = std::env::temp_dir().join(format!(
+            "vimax-skill-install-{}-{}.vimaxskill",
+            id,
+            uuid_simple()
+        ));
+        download_url_to_file_capped(package_url, &tmp_path, MAX_SKILL_PACKAGE_BYTES).await?;
+        let imported = self
+            .inner
+            .import_vertical_skill_package(
+                &tmp_path,
+                Some(install.id),
+                Some(install.version.as_str()),
+            )
+            .map_err(map_vimax_err);
+        if let Err(e) = tokio::fs::remove_file(&tmp_path).await {
+            warn!(
+                path = %tmp_path.display(),
+                error = %e,
+                "failed to remove imported skill temp package"
+            );
+        }
+        imported
+    }
 }
 
 fn sanitize_archive_stem(raw: &str) -> String {
@@ -665,6 +978,93 @@ fn sanitize_archive_stem(raw: &str) -> String {
 
 fn uuid_simple() -> String {
     uuid::Uuid::new_v4().simple().to_string()
+}
+
+fn extract_frontmatter_value(md: &str, key: &str) -> Option<String> {
+    let key_lc = key.to_ascii_lowercase();
+    for line in md.lines() {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            continue;
+        }
+        let Some((k, v)) = trimmed.split_once(':') else {
+            continue;
+        };
+        if k.trim().to_ascii_lowercase().replace('_', "-") != key_lc.replace('_', "-") {
+            continue;
+        }
+        let mut val = v.trim().to_string();
+        if (val.starts_with('"') && val.ends_with('"'))
+            || (val.starts_with('\'') && val.ends_with('\''))
+        {
+            val = val[1..val.len() - 1].to_string();
+        }
+        if val.is_empty() || val == "|" || val == ">" || val.starts_with('|') || val.starts_with('>')
+        {
+            return None;
+        }
+        return Some(val);
+    }
+    None
+}
+
+fn decode_data_url_image(raw: &str) -> Option<(String, Vec<u8>)> {
+    let raw = raw.trim();
+    let rest = raw.strip_prefix("data:")?;
+    let (meta, b64) = rest.split_once(',')?;
+    if !meta.contains(";base64") {
+        return None;
+    }
+    let mime = meta
+        .split(';')
+        .next()
+        .unwrap_or("image/png")
+        .trim()
+        .to_string();
+    if !mime.starts_with("image/") {
+        return None;
+    }
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    Some((mime, bytes))
+}
+
+fn mime_to_ext(mime: &str) -> &'static str {
+    match mime {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        _ => "png",
+    }
+}
+
+/// Cloud Skill Hub category enum (client API §3.1). Empty / unknown → `creative-social`.
+fn normalize_skill_hub_category(raw: &str) -> String {
+    const ALLOWED: &[&str] = &[
+        "short-drama",
+        "film",
+        "advertising",
+        "creative-social",
+        "music-mv",
+        // legacy
+        "travel",
+        "action",
+        "drama",
+        "aesthetic",
+        "product",
+        "documentary",
+    ];
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if ALLOWED.contains(&trimmed.as_str()) {
+        trimmed
+    } else {
+        "creative-social".into()
+    }
 }
 
 async fn download_url_to_file(url: &str, dest: &Path) -> Result<(), AppError> {
@@ -696,6 +1096,42 @@ async fn download_url_to_file(url: &str, dest: &Path) -> Result<(), AppError> {
     tokio::fs::write(dest, &bytes)
         .await
         .map_err(|e| AppError::Internal(format!("write package: {e}")))?;
+    Ok(())
+}
+
+async fn download_url_to_file_capped(
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+) -> Result<(), AppError> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| AppError::Internal(format!("http client: {e}")))?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("download skill package: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(AppError::Internal(format!(
+            "download skill package failed: HTTP {}",
+            resp.status()
+        )));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| AppError::Internal(format!("download body: {e}")))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(AppError::BadRequest(format!(
+            "downloaded skill package too large ({} bytes); max is {max_bytes}",
+            bytes.len()
+        )));
+    }
+    tokio::fs::write(dest, &bytes)
+        .await
+        .map_err(|e| AppError::Internal(format!("write skill package: {e}")))?;
     Ok(())
 }
 
