@@ -228,7 +228,7 @@
     "scopePickCompanion": "Pick a companion",
     "scopeFilterSelf": "This companion",
     "scopeFilterAll": "All companions",
-    "addPlaceholder": "Tell nomi something it should remember…",
+    "addPlaceholder": "Tell flowy something it should remember…",
     "empty": "No memories yet. Enable collection and run learning, or add one manually.",
     "strength": "Strength",
     "pin": "Pin (never decays)",
@@ -266,7 +266,7 @@
     "source_merge": "From merge"
   },
   "collect": {
-    "intro": "Choose what your companions may learn from. Nothing is collected by default; enabled sources are written to the local companion/nomi/ directory and can be wiped anytime.",
+    "intro": "Choose what your companions may learn from. Nothing is collected by default; enabled sources are written to the local companion/flowy/ directory and can be wiped anytime.",
     "sensitivity": {
       "low": "Low",
       "medium": "Medium",
@@ -275,7 +275,7 @@
     "today": "Today",
     "total": "Total",
     "clear": "Clear all collected data",
-    "clearConfirm": "This deletes everything under companion/nomi/events. Learned memories are unaffected. Continue?",
+    "clearConfirm": "This deletes everything under companion/flowy/events. Learned memories are unaffected. Continue?",
     "cleared": "Collected data cleared",
     "clearHint": "Deletes raw event files only; learned memories stay.",
     "disableAll": "Turn everything off",
@@ -467,7 +467,7 @@
     "clearConfirm": "Clear all chat history and the rolling summary?",
     "copied": "Copied",
     "copy": "Copy",
-    "memorySaved": "nomi remembered {{count}} thing(s)",
+    "memorySaved": "flowy remembered {{count}} thing(s)",
     "sendFailed": "Send failed",
     "retry": "Retry"
   },

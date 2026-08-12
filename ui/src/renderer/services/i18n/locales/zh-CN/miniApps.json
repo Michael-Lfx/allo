@@ -121,14 +121,14 @@
     "success": "已导入「{{name}}」",
     "appliedFixes": "导入时已自动处理：{{items}}",
     "convert": "用会话改造",
-    "convertHint": "改造会新开一个会话：把上面这些问题交给 NomiFun，让它把你的应用改写成一个自包含的单文件小程序，写完在预览里点「发布为小程序」收进来即可。",
+    "convertHint": "改造会新开一个会话：把上面这些问题交给 Flowy，让它把你的应用改写成一个自包含的单文件小程序，写完在预览里点「发布为小程序」收进来即可。",
     "conversationName": "改造小程序 · {{name}}",
     "detailUnknown": "（未给出位置）",
     "severity": {
       "fatal": "必须先解决（{{total}}）",
       "fatalHint": "存在这些问题时无法导入。",
       "autofix": "导入时自动处理（{{total}}）",
-      "autofixHint": "NomiFun 会在导入时替你补好，不用改。",
+      "autofixHint": "Flowy 会在导入时替你补好，不用改。",
       "warning": "注意（{{total}}）",
       "warningHint": "不影响导入，但最好知道。",
       "other": "其他（{{total}}）",
@@ -144,7 +144,7 @@
     "rules": {
       "unknown": {
         "title": "未知的校验项（{{ruleId}}）",
-        "fix": "这个版本的客户端还不认识这条规则。升级 NomiFun 后再看，或者用「用会话改造」让它帮你处理。"
+        "fix": "这个版本的客户端还不认识这条规则。升级 Flowy 后再看，或者用「用会话改造」让它帮你处理。"
       },
       "empty_payload": {
         "title": "内容是空的",
@@ -164,11 +164,11 @@
       },
       "fragment_not_document": {
         "title": "只是一段 HTML 片段",
-        "fix": "缺少 html / body 外壳。导入时 NomiFun 会自动补成完整文档，你不需要改。"
+        "fix": "缺少 html / body 外壳。导入时 Flowy 会自动补成完整文档，你不需要改。"
       },
       "local_ref_unsupported": {
         "title": "引用了本地文件",
-        "fix": "引用 {{detail}} 加载不到：小程序只对外提供一个文档，即使这个文件和它一起导入也不会被提供。请把它并进这一个文件（CSS/JS 直接写进去，小图片转成 data URI），或者用「用会话改造」让 NomiFun 帮你合并。"
+        "fix": "引用 {{detail}} 加载不到：小程序只对外提供一个文档，即使这个文件和它一起导入也不会被提供。请把它并进这一个文件（CSS/JS 直接写进去，小图片转成 data URI），或者用「用会话改造」让 Flowy 帮你合并。"
       },
       "dev_server_ref": {
         "title": "指向了本机开发服务器",

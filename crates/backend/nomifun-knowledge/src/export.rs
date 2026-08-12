@@ -81,17 +81,21 @@ pub async fn export_base(
     dest_path: &Path,
 ) -> Result<ExportSummary, AppError> {
     let info = service.get_base_info(kb_id).await?;
-    if !info.root_exists {
+    // `root_path` stays the user-selected source folder for local bases, but
+    // their exportable content lives in the app-managed Markdown projection.
+    let root = service
+        .content_root_for_base(info.knowledge_base_id.as_str())
+        .await?;
+    if !root.is_dir() {
         return Err(AppError::BadRequest(format!(
-            "knowledge base directory missing: {}",
-            info.root_path
+            "knowledge base content directory missing: {}",
+            root.display()
         )));
     }
     if !dest_path.is_absolute() {
         return Err(AppError::BadRequest("dest_path must be absolute".into()));
     }
 
-    let root = PathBuf::from(&info.root_path);
     let meta = ExportMeta {
         name: info.name,
         description: info.description,
@@ -490,6 +494,33 @@ mod tests {
         let info = target.get_base_info(&imported.kb_id).await.unwrap();
         assert_eq!(info.description, "换机测试");
         assert!(info.managed);
+    }
+
+    #[tokio::test]
+    async fn export_uses_local_folder_markdown_projection() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let data_dir = dir.path().join("data");
+        let external_root = dir.path().join("external");
+        std::fs::create_dir_all(&external_root).unwrap();
+        std::fs::write(external_root.join("guide.md"), "# Projected guide\n\nStored in the view.").unwrap();
+
+        let service = make_service(&data_dir);
+        let base = service
+            .create_base("external", "", Some(external_root.to_str().unwrap()), None)
+            .await
+            .unwrap();
+        service.sync_local_folder(&base.knowledge_base_id).await.unwrap();
+
+        let zip_path = dir.path().join("local-projection.zip");
+        let summary = export_base(&service, &base.knowledge_base_id, &zip_path).await.unwrap();
+        assert_eq!(summary.file_count, 1);
+
+        let file = std::fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut guide = String::new();
+        let mut entry = archive.by_name("files/guide.md").unwrap();
+        std::io::Read::read_to_string(&mut entry, &mut guide).unwrap();
+        assert_eq!(guide, "# Projected guide\n\nStored in the view.");
     }
 
     #[tokio::test]

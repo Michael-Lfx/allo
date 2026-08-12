@@ -6,7 +6,10 @@ use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, Query, S
 use axum::routing::{get, post};
 use tower_http::limit::RequestBodyLimitLayer;
 
-use nomifun_api_types::{ApiResponse, CreateKnowledgeTagRequest, KnowledgeDocumentImportResult, KnowledgeSource, KnowledgeTag, UpdateKnowledgeTagRequest};
+use nomifun_api_types::{
+    ApiResponse, CreateKnowledgeTagRequest, KnowledgeDocumentImportResult, KnowledgeLocalSyncSummary,
+    KnowledgeSource, KnowledgeTag, UpdateKnowledgeTagRequest,
+};
 use nomifun_auth::CurrentUser;
 use nomifun_common::{AppError, KnowledgeBaseId};
 use serde::{Deserialize, Serialize};
@@ -65,6 +68,10 @@ pub fn knowledge_routes(state: KnowledgeRouterState) -> Router {
         .route(
             "/api/knowledge/bases/{knowledge_base_id}/refresh-source",
             post(refresh_source),
+        )
+        .route(
+            "/api/knowledge/bases/{knowledge_base_id}/local-sync",
+            get(get_local_sync).post(sync_local_folder),
         )
         .route(
             "/api/knowledge/bases/{knowledge_base_id}/source",
@@ -323,6 +330,35 @@ async fn import_document(
         )
         .await?;
     Ok(Json(ApiResponse::ok(result)))
+}
+
+/// Return the last materialization state of a read-only external local folder.
+/// This endpoint never scans or converts documents; callers use POST to do so.
+async fn get_local_sync(
+    State(state): State<KnowledgeRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(knowledge_base_id): Path<KnowledgeBaseId>,
+) -> Result<Json<ApiResponse<KnowledgeLocalSyncSummary>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .get_local_sync_summary(knowledge_base_id.as_str())
+            .await?,
+    )))
+}
+
+/// Scan and convert supported documents from a read-only external local folder.
+async fn sync_local_folder(
+    State(state): State<KnowledgeRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(knowledge_base_id): Path<KnowledgeBaseId>,
+) -> Result<Json<ApiResponse<KnowledgeLocalSyncSummary>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .sync_local_folder(knowledge_base_id.as_str())
+            .await?,
+    )))
 }
 
 async fn suggest_prompt(
@@ -980,6 +1016,58 @@ mod tests {
         assert_eq!(written["data"]["targetPath"], "imports/folder/guide.md");
         let conflict = json_body(app.oneshot(request()).await.unwrap()).await;
         assert_eq!(conflict["data"]["status"], "conflict", "{conflict}");
+    }
+
+    #[tokio::test]
+    async fn local_sync_routes_return_summary_and_materialize_local_markdown() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source = dir.path().join("external-docs");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("guide.md"), "# Guide\n\nlocal projection route").unwrap();
+        let app = test_app(dir.path());
+
+        let create = Request::post("/api/knowledge/bases")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "name": "local imports",
+                    "description": "",
+                    "root_path": source,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let created = json_body(app.clone().oneshot(create).await.unwrap()).await;
+        let kb_id = created["data"]["knowledge_base_id"].as_str().unwrap();
+
+        let before = json_body(
+            app.clone()
+                .oneshot(
+                    Request::get(format!("/api/knowledge/bases/{kb_id}/local-sync"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(before["data"]["state"], "ready", "{before}");
+        assert_eq!(before["data"]["sourceAvailable"], true, "{before}");
+
+        let synced = json_body(
+            app.oneshot(
+                Request::post(format!("/api/knowledge/bases/{kb_id}/local-sync"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(synced["data"]["state"], "ready", "{synced}");
+        assert_eq!(synced["data"]["scanned"], 1, "{synced}");
+        assert_eq!(synced["data"]["written"], 1, "{synced}");
+        assert_eq!(synced["data"]["sourceAvailable"], true, "{synced}");
     }
 
     /// An unknown binding kind stays a 400 — `workpath` is now accepted,

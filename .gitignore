@@ -99,11 +99,5 @@ Thumbs.db
 # Isolated Codex development worktrees
 .worktrees/
 
-# Repository policy: GitHub Actions workflows are forbidden. Keep these
-# ignored as an additional guard against accidental `git add` operations.
-/.github/workflows/*.yml
-/.github/workflows/*.yaml
-
 # Local absorb scratch (never commit)
 .absorb_tmp/
-

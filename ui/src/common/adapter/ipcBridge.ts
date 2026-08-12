@@ -6766,6 +6766,34 @@ export interface IKnowledgeDocumentImportResult {
   detail?: string;
 }
 
+/** Materialization state for a local-folder knowledge base. */
+export type KnowledgeLocalSyncState =
+  | 'idle'
+  | 'syncing'
+  | 'ready'
+  | 'partial'
+  | 'stale'
+  | 'unavailable';
+
+/** One source document that could not be included in a local-folder sync. */
+export interface IKnowledgeLocalSyncError {
+  sourcePath: string;
+  status: KnowledgeDocumentImportStatus;
+  detail?: string;
+}
+
+/** Last or current synchronization result for a local-folder Markdown projection. */
+export interface IKnowledgeLocalSyncSummary {
+  state: KnowledgeLocalSyncState;
+  lastSyncedAt?: number;
+  scanned: number;
+  written: number;
+  conflicts: number;
+  failed: number;
+  errors: IKnowledgeLocalSyncError[];
+  sourceAvailable: boolean;
+}
+
 /** Per-target mount binding: which bases a session mounts + the write-back switch. */
 export interface IKnowledgeBinding {
   enabled: boolean;
@@ -7158,6 +7186,15 @@ export const knowledge = {
   /** Re-fetch every URL-source entry into snapshots/ (works for live-mode sources too); 400 when the base has no source. */
   refreshSource: httpPost<IKnowledgeSourceFetchSummary, { knowledge_base_id: KnowledgeBaseId }>(
     (p) => `/api/knowledge/bases/${p.knowledge_base_id}/refresh-source`,
+    () => undefined
+  ),
+  /** Last conversion state for a read-only local folder; does not start a scan. */
+  getLocalSync: httpGet<IKnowledgeLocalSyncSummary, { knowledge_base_id: KnowledgeBaseId }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/local-sync`
+  ),
+  /** Convert supported source documents into the app-managed Markdown projection. */
+  syncLocalFolder: httpPost<IKnowledgeLocalSyncSummary, { knowledge_base_id: KnowledgeBaseId }>(
+    (p) => `/api/knowledge/bases/${p.knowledge_base_id}/local-sync`,
     () => undefined
   ),
   /** Attach / replace / clear a base's source config. */

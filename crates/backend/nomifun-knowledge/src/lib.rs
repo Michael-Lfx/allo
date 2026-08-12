@@ -22,6 +22,7 @@ pub mod context;
 pub mod document_import;
 pub mod events;
 pub mod export;
+pub mod local_folder_projection;
 pub mod mcp_server;
 mod broker;
 pub mod mount;
@@ -71,3 +72,8 @@ pub const KB_LEGACY_MOUNT_REL_DIRS: &[&str] = &[".nomifun/knowledge", ".nomi/kno
 /// Subdirectory of the backend data dir that hosts managed base directories:
 /// `{data_dir}/knowledge/{kb_id}/`.
 pub const KB_MANAGED_REL_DIR: &str = "knowledge";
+
+/// Backend-owned projection cache for read-only external local folders.
+/// `{data_dir}/knowledge-local/{kb_id}/view` is the Markdown root consumed by
+/// the knowledge tree, search and mount code.
+pub const KB_LOCAL_PROJECTION_REL_DIR: &str = "knowledge-local";

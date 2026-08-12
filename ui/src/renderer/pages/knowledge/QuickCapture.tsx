@@ -121,7 +121,7 @@ const QuickCapture: React.FC<QuickCaptureProps> = ({
     {
       key: 'local',
       title: t('knowledge.quick.localTitle', { defaultValue: '本地目录' }),
-      desc: t('knowledge.quick.localDesc', { defaultValue: '引用电脑上已有的 Markdown 文件夹' }),
+      desc: t('knowledge.quick.localDesc', { defaultValue: '引用并转换电脑上的文档文件夹' }),
       icon: <FolderOpen theme='outline' size='20' />,
       onClick: () => void pickLocal(),
     },

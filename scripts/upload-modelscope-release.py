@@ -21,7 +21,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 DEFAULT_REPO = "flowy2025/flowyaipc"
 DEFAULT_PREFIX = "allo"
@@ -64,7 +64,13 @@ def modelscope_file_url(repo: str, path_in_repo: str) -> str:
 
 
 def artifact_basename_from_url(url: str) -> str:
-    return url.rsplit("/", 1)[-1].split("?")[0] if url else ""
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    file_path = parse_qs(parsed.query).get("FilePath", [""])[0]
+    if file_path:
+        return Path(unquote(file_path)).name
+    return Path(unquote(parsed.path)).name
 
 
 def filter_manifest_to_local_platforms(manifest: dict, dist_dir: Path) -> tuple[dict, list[str]]:
@@ -111,7 +117,7 @@ def fetch_remote_latest(repo: str, prefix: str, channel: str) -> dict | None:
 
 
 def collect_updater_artifacts(dist_dir: Path) -> list[Path]:
-    """Collect signed updater packages from dist (exclude standalone .sig-only paths)."""
+    """Collect updater packages and their required detached signatures."""
     found: list[Path] = []
     for path in sorted(dist_dir.iterdir()):
         if not path.is_file():
@@ -122,8 +128,8 @@ def collect_updater_artifacts(dist_dir: Path) -> list[Path]:
         if any(name.endswith(suffix) for suffix in UPDATER_SUFFIXES):
             sig = dist_dir / f"{name}.sig"
             if not sig.is_file():
-                print(f"  [WARN] missing .sig for updater artifact: {name}", file=sys.stderr)
-            found.append(path)
+                raise SystemExit(f"ERROR: missing .sig for updater artifact: {name}")
+            found.extend((path, sig))
     return found
 
 
@@ -307,9 +313,16 @@ def main() -> None:
             print(f"  [FAIL] {artifact.name}: {exc}", file=sys.stderr)
             fail_count += 1
 
+    if fail_count:
+        raise SystemExit(
+            f"ERROR: {fail_count} artifact(s) failed; channel manifests were not published"
+        )
+
+    # The client reads latest.json directly, so publish it only after every
+    # versioned artifact and the informational channel pointer are available.
     for label, local, remote in (
-        ("latest.json", latest_path, remote_latest),
         ("alpha.yml", alpha_local, remote_alpha),
+        ("latest.json", latest_path, remote_latest),
     ):
         try:
             upload_file(api, local, remote, repo, f"Release {version_tag}: update {label}")

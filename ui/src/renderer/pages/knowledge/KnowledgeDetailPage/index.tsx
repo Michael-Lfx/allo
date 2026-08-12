@@ -58,6 +58,7 @@ import {
 import type {
   IKnowledgeBase,
   IKnowledgeDocumentImportResult,
+  IKnowledgeLocalSyncSummary,
   IKnowledgeTag,
   IKnowledgeTreeEntry,
   KnowledgeDocumentImportStatus,
@@ -195,6 +196,36 @@ const SettingsTab: React.FC<SettingsTabProps> = ({ base, allTags, createTag, onR
 
   // ─── Source actions (per kind) ────────────────────────────────────────────
   const [sourceLoading, setSourceLoading] = useState(false);
+  const [localSync, setLocalSync] = useState<IKnowledgeLocalSyncSummary | null>(null);
+  const [localSyncLoading, setLocalSyncLoading] = useState(false);
+  const [localSyncUnavailable, setLocalSyncUnavailable] = useState(false);
+
+  useEffect(() => {
+    if (base.kind !== 'local') {
+      setLocalSync(null);
+      setLocalSyncUnavailable(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLocalSyncLoading(true);
+    setLocalSyncUnavailable(false);
+    ipcBridge.knowledge.getLocalSync
+      .invoke({ knowledge_base_id: base.knowledge_base_id })
+      .then((summary) => {
+        if (!cancelled) setLocalSync(summary);
+      })
+      .catch(() => {
+        if (!cancelled) setLocalSyncUnavailable(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLocalSyncLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [base.kind, base.knowledge_base_id]);
 
   const handleRefreshSource = async () => {
     if (sourceLoading) return;
@@ -207,6 +238,30 @@ const SettingsTab: React.FC<SettingsTabProps> = ({ base, allTags, createTag, onR
       Message.error(knowledgeErrorText(e));
     } finally {
       setSourceLoading(false);
+    }
+  };
+
+  const handleSyncLocalFolder = async () => {
+    if (localSyncLoading) return;
+    setLocalSyncLoading(true);
+    setLocalSyncUnavailable(false);
+    try {
+      const summary = await ipcBridge.knowledge.syncLocalFolder.invoke({
+        knowledge_base_id: base.knowledge_base_id,
+      });
+      setLocalSync(summary);
+      await onRefresh();
+      Message.success(
+        t('knowledge.localSync.complete', {
+          defaultValue: '同步完成：已写入 {{written}} 篇，{{failed}} 篇需要处理',
+          written: summary.written,
+          failed: summary.failed + summary.conflicts,
+        })
+      );
+    } catch (e) {
+      Message.error(knowledgeErrorText(e));
+    } finally {
+      setLocalSyncLoading(false);
     }
   };
 
@@ -309,16 +364,107 @@ const SettingsTab: React.FC<SettingsTabProps> = ({ base, allTags, createTag, onR
         </label>
 
         {base.kind === 'local' && (
-          <div className='flex items-center gap-9px'>
-            <Input value={base.root_path} readOnly className={`${knowledgeDetailSettingsInputClass} flex-1`} />
-            <Button
-              icon={<FolderOpen theme='outline' size='14' />}
-              onClick={() => {
-                void ipcBridge.shell.openFolderWith.invoke({ folder_path: base.root_path, tool: 'explorer' }).catch((e: unknown) => Message.error(String(e)));
-              }}
-            >
-              {t('knowledge.detail.settings.openFolder', { defaultValue: '打开' })}
-            </Button>
+          <div className='flex flex-col gap-11px'>
+            <div className='flex items-center gap-9px'>
+              <Input value={base.root_path} readOnly className={`${knowledgeDetailSettingsInputClass} flex-1`} />
+              <Button
+                icon={<FolderOpen theme='outline' size='14' />}
+                onClick={() => {
+                  void ipcBridge.shell.openFolderWith.invoke({ folder_path: base.root_path, tool: 'explorer' }).catch((e: unknown) => Message.error(String(e)));
+                }}
+              >
+                {t('knowledge.detail.settings.openFolder', { defaultValue: '打开' })}
+              </Button>
+            </div>
+
+            <div className='flex flex-col gap-8px border-0 border-t border-solid border-[var(--color-border-2)] pt-11px'>
+              <div className='flex flex-wrap items-center justify-between gap-8px'>
+                <div className='flex min-w-0 flex-col gap-2px'>
+                  <span className='text-13px font-600 text-[var(--color-text-1)]'>
+                    {t('knowledge.localSync.title', { defaultValue: '本地文件夹同步' })}
+                  </span>
+                  <span className='text-12px leading-relaxed text-[var(--color-text-3)]'>
+                    {t('knowledge.localSync.hint', {
+                      defaultValue: '支持的文档会在应用管理的缓存中转换为 Markdown，原目录不会被修改。',
+                    })}
+                  </span>
+                </div>
+                <Button
+                  size='small'
+                  icon={<Refresh theme='outline' size='14' />}
+                  loading={localSyncLoading}
+                  onClick={() => void handleSyncLocalFolder()}
+                >
+                  {t('knowledge.localSync.action', { defaultValue: '同步文件夹' })}
+                </Button>
+              </div>
+
+              {localSyncUnavailable ? (
+                <span className='text-12px text-[rgb(var(--warning-6))]'>
+                  {t('knowledge.localSync.statusUnavailable', {
+                    defaultValue: '暂时无法读取同步状态。可点击“同步文件夹”重试。',
+                  })}
+                </span>
+              ) : localSync ? (
+                <>
+                  <div className='flex flex-wrap items-center gap-x-12px gap-y-4px text-12px text-[var(--color-text-2)]'>
+                    <span className={classNames(
+                      'font-600',
+                      localSync.state === 'ready' ? 'text-[rgb(var(--success-6))]' :
+                      localSync.state === 'partial' || localSync.state === 'stale' || localSync.state === 'unavailable'
+                        ? 'text-[rgb(var(--warning-6))]'
+                        : 'text-[var(--color-text-2)]'
+                    )}>
+                      {t(`knowledge.localSync.state.${localSync.state}`, { defaultValue: localSync.state })}
+                    </span>
+                    <span>{t('knowledge.localSync.scanned', { defaultValue: '扫描 {{count}} 个', count: localSync.scanned })}</span>
+                    <span>{t('knowledge.localSync.written', { defaultValue: '生成 {{count}} 篇', count: localSync.written })}</span>
+                    {localSync.conflicts > 0 && (
+                      <span className='text-[rgb(var(--warning-6))]'>
+                        {t('knowledge.localSync.conflicts', { defaultValue: '冲突 {{count}} 个', count: localSync.conflicts })}
+                      </span>
+                    )}
+                    {localSync.failed > 0 && (
+                      <span className='text-[rgb(var(--danger-6))]'>
+                        {t('knowledge.localSync.failed', { defaultValue: '失败 {{count}} 个', count: localSync.failed })}
+                      </span>
+                    )}
+                    {!localSync.sourceAvailable && (
+                      <span className='text-[rgb(var(--warning-6))]'>
+                        {t('knowledge.localSync.sourceUnavailable', { defaultValue: '源目录不可用' })}
+                      </span>
+                    )}
+                    {localSync.lastSyncedAt != null && (
+                      <span>{t('knowledge.localSync.lastSynced', {
+                        defaultValue: '上次同步 {{time}}',
+                        time: new Date(localSync.lastSyncedAt).toLocaleString(),
+                      })}</span>
+                    )}
+                  </div>
+
+                  {localSync.errors.length > 0 && (
+                    <details className='text-12px text-[var(--color-text-2)]'>
+                      <summary className='cursor-pointer select-none text-[var(--color-text-2)] hover:text-[var(--color-text-1)]'>
+                        {t('knowledge.localSync.errors', {
+                          defaultValue: '查看 {{count}} 个未转换文件',
+                          count: localSync.errors.length,
+                        })}
+                      </summary>
+                      <div className='mt-7px flex max-h-160px flex-col gap-4px overflow-y-auto rounded-8px bg-[var(--color-fill-2)] p-8px'>
+                        {localSync.errors.map((error) => (
+                          <div key={`${error.sourcePath}:${error.status}`} className='flex min-w-0 items-start justify-between gap-8px'>
+                            <span className='min-w-0 truncate' title={error.sourcePath}>{error.sourcePath}</span>
+                            <span className='shrink-0 text-[rgb(var(--danger-6))]' title={error.detail}>
+                              {t(`knowledge.detail.docs.importStatus.${error.status}`, { defaultValue: error.status })}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </>
+              ) : null}
+            </div>
           </div>
         )}
 

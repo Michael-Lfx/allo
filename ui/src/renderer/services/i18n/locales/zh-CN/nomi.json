@@ -228,7 +228,7 @@
     "scopePickCompanion": "选择伙伴",
     "scopeFilterSelf": "此伙伴可见",
     "scopeFilterAll": "全部伙伴",
-    "addPlaceholder": "告诉 nomi 一件它应该记住的事…",
+    "addPlaceholder": "告诉 flowy 一件它应该记住的事…",
     "empty": "还没有记忆。开启数据采集并运行学习，或手动添加一条。",
     "strength": "强度",
     "pin": "置顶（不衰减）",
@@ -266,7 +266,7 @@
     "source_merge": "合并产生"
   },
   "collect": {
-    "intro": "勾选伙伴们可以学习的数据范围。所有数据默认不采集，开启后写入本地 companion/nomi/ 目录，随时可以一键清空。",
+    "intro": "勾选伙伴们可以学习的数据范围。所有数据默认不采集，开启后写入本地 companion/flowy/ 目录，随时可以一键清空。",
     "sensitivity": {
       "low": "低敏感",
       "medium": "中敏感",
@@ -275,7 +275,7 @@
     "today": "今日",
     "total": "累计",
     "clear": "清空全部采集数据",
-    "clearConfirm": "将删除 companion/nomi/events 下的全部采集数据，已提炼的记忆不受影响。继续？",
+    "clearConfirm": "将删除 companion/flowy/events 下的全部采集数据，已提炼的记忆不受影响。继续？",
     "cleared": "采集数据已清空",
     "clearHint": "只删除原始事件文件，不影响已学到的记忆。",
     "disableAll": "一键全关",
@@ -464,10 +464,10 @@
     "thinking": "思考中…",
     "empty": "这是你与该伙伴的专属会话，开始聊天吧",
     "clear": "清空聊天记录",
-    "clearConfirm": "确定清空与 nomi 的全部聊天记录和摘要？",
+    "clearConfirm": "确定清空与 flowy 的全部聊天记录和摘要？",
     "copied": "已复制",
     "copy": "复制",
-    "memorySaved": "nomi 记住了 {{count}} 件事",
+    "memorySaved": "flowy 记住了 {{count}} 件事",
     "sendFailed": "发送失败了",
     "retry": "重试"
   },

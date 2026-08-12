@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::Path;
 
 use nomifun_common::AppError;
 use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService, autogen};
@@ -169,16 +168,22 @@ pub async fn generate_course_pack(
     let base = knowledge
         .get_base_info(request.knowledge_base_id.as_str())
         .await?;
-    if !base.root_exists {
+    // A local folder's public `root_path` is its read-only source location.
+    // Course generation samples the app-managed Markdown projection so it
+    // sees converted documents while the source remains available.
+    let content_root = knowledge
+        .content_root_for_base(request.knowledge_base_id.as_str())
+        .await?;
+    if !content_root.is_dir() {
         return Err(AppError::BadRequest(
-            "selected knowledge base directory does not exist".into(),
+            "selected knowledge base content directory does not exist".into(),
         ));
     }
     // Wider sampling than the knowledge-overview default: more files, larger
     // excerpts, higher total — the multi-stage pipeline has the budget to
     // read them and the lessons need richer grounding.
     let samples = autogen::sample_base_files_with_budget(
-        Path::new(&base.root_path),
+        &content_root,
         autogen::LEARNING_SAMPLE_MAX_FILES,
         autogen::LEARNING_SAMPLE_MAX_PER_FILE,
         autogen::LEARNING_SAMPLE_MAX_TOTAL,

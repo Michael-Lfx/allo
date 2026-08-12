@@ -45,7 +45,7 @@
       "endpoints": [
         "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/alpha/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUwRjEzOTRGOEU5MkNFNDEKUldSQnpwS09Uem54NElSSlZQckFtMmk3bjJwWkR3ZklzUXlEc3RjVE83VVhvQTl3cmJ4YXlPbngK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZGRDA3NTMzQzQxODdCNjQKUldSa2V4akVNM1hRYjlrRmZLalZRdGpaM0FzeGxVd0s3VkdoY0VMY01lY2UrQ2dMdkVMTWF6SFUK"
     }
   }
 }

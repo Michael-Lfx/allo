@@ -158,7 +158,7 @@ const SourceConfig: React.FC<SourceConfigProps> = ({ sourceType, value, onChange
           <div>
             {t('knowledge.studio.localReadonlyNote', {
               defaultValue:
-                '应用以只读引用方式接入，绝不改动你的目录结构。目录里 .md 的增删会自动反映到库里。',
+                '应用以只读方式引用原目录，并将支持的文档转换到应用管理的 Markdown 缓存中；原文件和目录结构不会被修改。',
             })}
           </div>
         </div>

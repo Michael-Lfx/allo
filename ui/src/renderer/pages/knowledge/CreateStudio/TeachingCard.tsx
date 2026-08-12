@@ -56,19 +56,19 @@ const getTeachRows = (sourceType: StudioSourceType): TeachRow[] => {
           labelKey: 'knowledge.studio.teachWhat',
           labelDefault: '是什么',
           textKey: 'knowledge.studio.localTeachWhat',
-          textDefault: '把你电脑上已有目录"引用"为知识库（不复制、不搬动）。',
+          textDefault: '把电脑上的现有目录作为只读来源，并在应用内生成 Markdown 视图。',
         },
         {
           labelKey: 'knowledge.studio.teachHow',
           labelDefault: '怎么填',
           textKey: 'knowledge.studio.localTeachHow',
-          textDefault: '点"选择文件夹"挑一个含 .md 的目录即可。',
+          textDefault: '点“选择文件夹”，选择含 Markdown、Office、PDF 等支持文档的目录。',
         },
         {
           labelKey: 'knowledge.studio.teachUse',
           labelDefault: '怎么用',
           textKey: 'knowledge.studio.localTeachUse',
-          textDefault: '挂载即用；你在原目录里改文档，库内容随之更新。',
+          textDefault: '创建时会首次同步；之后可在详情页手动同步，原目录始终不会被修改。',
         },
       ];
     case 'web':

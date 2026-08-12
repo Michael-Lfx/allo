@@ -144,7 +144,7 @@ const KnowledgeEmptyState: React.FC<KnowledgeEmptyStateProps> = ({ onCreate, onI
           </div>
           <div className='text-13px text-[var(--color-text-3)]'>
             {t('knowledge.onboarding.dropHint', {
-              defaultValue: '试问还没资料可答——先放入 Markdown，再去对话验证。',
+              defaultValue: '选择文件夹后，支持的文档会转换为 Markdown，再去对话验证。',
             })}
           </div>
 
