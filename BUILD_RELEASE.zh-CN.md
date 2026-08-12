@@ -260,9 +260,40 @@ Linux 构建机:
 
 工作流：`.github/workflows/release-modelscope.yml`
 
-- 触发：`workflow_dispatch`（手动输入版本）或推送 `v*` tag
-- 需要 GitHub Secret：`MODELSCOPE_TOKEN`
-- 各平台构建 job 需产出 `dist/desktop/latest.json` 及对应 updater 包，作为 artifact `allo-updater-*` 上传后由 `modelscope-upload` job 合并并调用上传脚本
+- 触发：推送 `v*` tag，或通过 `workflow_dispatch` 手动重跑一个已存在的 tag。
+- tag 必须与根 `Cargo.toml` 的 `[workspace.package].version` 一致，例如版本
+  `0.5.2` 对应 tag `v0.5.2`，否则工作流会在构建前终止。
+- Windows、macOS、Linux 在各自的 GitHub Hosted Runner 上并行构建，将
+  `dist/desktop/` 保存为保留 3 天的 `allo-updater-*` artifact。
+- `modelscope-upload` job 下载三份 artifact，在本地校验并合并三份
+  `latest.json` 与各平台产物，最后只调用一次 `upload:modelscope`，避免多个平台
+  覆盖共享的 `allo/channels/alpha/latest.json`。
+
+在 GitHub 仓库的 `Settings -> Secrets and variables -> Actions` 中配置：
+
+| Secret | 用途 |
+|------|------|
+| `TAURI_SIGNING_PRIVATE_KEY` | `nomifun-updater.key` 的完整内容，供三个构建 job 生成 updater `.sig` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | updater 私钥密码；私钥无密码时可以不创建 |
+| `MODELSCOPE_TOKEN` | 供最终发布 job 写入 `flowy2025/flowyaipc` |
+
+推荐在 `Settings -> Environments` 创建 `modelscope-alpha` 环境，为最终上传
+设置 required reviewer，并把 `MODELSCOPE_TOKEN` 配置为该环境的 Secret。Updater
+私钥必须配置为 Repository Secret，因为三个并行构建 job 都需要读取它。
+
+首次启用时，应先提交 workflow，再基于包含该 workflow 的提交创建 tag：
+
+```bash
+bun run bump 0.5.2
+git add Cargo.toml Cargo.lock package.json ui/package.json apps/desktop/tauri.conf.json
+git commit -m "chore(release): v0.5.2"
+git tag v0.5.2
+git push origin HEAD
+git push origin v0.5.2
+```
+
+不要把 updater 私钥、密码或 ModelScope Token 写进 workflow、仓库文件或
+artifact。GitHub Actions artifact 只包含构建产物与 updater 清单。
 
 ---
 
