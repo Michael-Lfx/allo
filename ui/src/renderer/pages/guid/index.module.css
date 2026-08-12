@@ -1,7 +1,7 @@
 .guidLayout {
   --preset-surface-bg: color-mix(in srgb, var(--bg-2) 65%, transparent);
   --preset-surface-bg-hover: color-mix(in srgb, var(--bg-2) 85%, transparent);
-  width: clamp(var(--app-min-width, 360px), calc(100% - 32px), 800px);
+  width: clamp(var(--app-min-width, 360px), calc(100% - 32px), 840px);
   max-width: 100%;
   padding: 0 16px;
   box-sizing: border-box;
@@ -13,15 +13,25 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.heroTitlePrimary {
+  margin: 0;
+  color: var(--flowy-text-primary);
+  font-size: clamp(26px, 2.2vw, 32px);
+  font-weight: var(--flowy-weight-semibold);
+  line-height: 1.18;
+  letter-spacing: -0.035em;
+  text-align: center;
 }
 
 .heroDescription {
   margin: 0;
   max-width: 560px;
   text-align: center;
-  color: var(--color-text-3);
+  color: var(--flowy-text-muted);
   font-size: 14px;
   line-height: 1.5;
   display: -webkit-box;
@@ -398,58 +408,65 @@
 .guidInputCardWrap {
   width: 100%;
   box-sizing: border-box;
-  background: var(--bg-2);
+  background: var(--flowy-panel);
+  border: 1px solid var(--flowy-border-subtle);
+  border-radius: 22px;
+  box-shadow: var(--flowy-shadow-raised);
+  transition:
+    border-color var(--flowy-motion-fast) var(--flowy-ease-enter),
+    box-shadow var(--flowy-motion-base) var(--flowy-ease-enter),
+    opacity var(--flowy-motion-fast) var(--flowy-ease-enter);
+}
+
+.guidInputCardWrap:focus-within,
+.guidInputCardWrapActive {
+  border-color: var(--flowy-focus);
+  box-shadow: var(--flowy-shadow-focus);
 }
 
 .guidInputInner {
-  background: var(--bg-base, #fff);
-  border: 1px solid var(--color-border-3);
-  border-radius: 24px;
+  background: var(--flowy-raised) !important;
+  border: 1px solid var(--flowy-border-subtle);
+  border-radius: 21px;
   box-sizing: border-box;
-}
-
-:global([data-theme='dark']) .guidInputInner {
-  background: #262626;
-  border-color: #3a3a3a;
 }
 
 .guidResourceCards {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin: 0 0 16px;
+  gap: 8px;
+  margin: 0 0 12px;
 }
 
 .guidResourceHint {
   margin: 0;
   text-align: center;
   font-size: 13px;
-  color: var(--color-text-3);
+  color: var(--flowy-text-muted);
 }
 
 .guidResourceIntentRow {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
 .guidResourceIntentChip {
   max-width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--color-border-2);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-2) 76%, transparent);
-  color: var(--color-text-2);
+  min-height: 48px;
+  padding: 9px 12px;
+  border: 1px solid var(--flowy-border-subtle);
+  border-radius: var(--flowy-radius-lg);
+  background: color-mix(in srgb, var(--flowy-interactive) 72%, transparent);
+  color: var(--flowy-text-secondary);
   font-size: 13px;
   line-height: 1.35;
   text-align: left;
   cursor: pointer;
   font-family: inherit;
   transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease;
+    transform var(--flowy-motion-fast) var(--flowy-ease-move),
+    opacity var(--flowy-motion-fast) var(--flowy-ease-enter);
 }
 
 .guidResourceIntentChip:hover,
@@ -457,7 +474,16 @@
   color: var(--color-text-1);
   border-color: color-mix(in srgb, rgb(var(--primary-6)) 35%, transparent);
   background: color-mix(in srgb, rgb(var(--primary-6)) 8%, transparent);
-  outline: none;
+  outline: 2px solid transparent;
+}
+
+.guidResourceIntentChip:focus-visible {
+  outline-color: var(--flowy-focus);
+  outline-offset: 2px;
+}
+
+.guidResourceIntentChip:active {
+  transform: scale(0.985);
 }
 
 .guidResourceIntentChipActive {
@@ -680,166 +706,6 @@ button.guidResourceCard:focus-visible {
   line-height: 18px;
 }
 
-.guidCompanionPoster {
-  position: relative;
-  min-width: 0;
-  min-height: 292px;
-  display: grid;
-  grid-template-columns: minmax(190px, 0.84fr) minmax(0, 1.16fr);
-  gap: 18px;
-  padding: 22px 24px 18px;
-  border: 1px solid color-mix(in srgb, rgba(var(--primary-6), 0.2) 38%, var(--color-border-2));
-  border-radius: 18px;
-  color: var(--color-text-1);
-  background:
-    linear-gradient(135deg, rgba(255, 239, 244, 0.92), rgba(244, 249, 255, 0.88) 52%, rgba(255, 250, 239, 0.76)),
-    var(--bg-2);
-  box-shadow: 0 18px 44px rgba(219, 72, 119, 0.09);
-  box-sizing: border-box;
-  overflow: hidden;
-}
-
-:global([data-theme='dark']) .guidCompanionPoster {
-  background:
-    linear-gradient(135deg, rgba(92, 35, 54, 0.42), rgba(39, 49, 66, 0.78) 52%, rgba(74, 58, 30, 0.42)),
-    #262626;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
-}
-
-.guidCompanionPoster::before {
-  content: '';
-  position: absolute;
-  inset: auto 26px 26px 26px;
-  height: 108px;
-  border-radius: 999px 999px 30px 30px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0));
-  opacity: 0.84;
-  pointer-events: none;
-}
-
-:global([data-theme='dark']) .guidCompanionPoster::before {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0));
-}
-
-.guidCompanionPosterCopy {
-  position: relative;
-  z-index: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-self: center;
-  gap: 8px;
-}
-
-.guidCompanionPosterEyebrow {
-  color: rgb(var(--primary-6));
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 18px;
-}
-
-.guidCompanionPosterTitle {
-  margin: 0;
-  color: var(--color-text-1);
-  font-size: 22px;
-  font-weight: 800;
-  line-height: 30px;
-  letter-spacing: 0;
-}
-
-.guidCompanionPosterDescription {
-  max-width: 260px;
-  margin: 0;
-  color: var(--color-text-3);
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 20px;
-}
-
-.guidCompanionPosterStage {
-  position: relative;
-  z-index: 1;
-  min-width: 0;
-  min-height: 226px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  gap: clamp(2px, 1.6vw, 12px);
-  padding: 8px 0 2px;
-  box-sizing: border-box;
-}
-
-.guidCompanionPosterHorizon {
-  position: absolute;
-  left: 8%;
-  right: 8%;
-  bottom: 16px;
-  height: 28px;
-  border-radius: 999px;
-  background: radial-gradient(ellipse at center, rgba(255, 150, 183, 0.2), rgba(255, 150, 183, 0));
-  pointer-events: none;
-}
-
-.guidCompanionPosterFigure {
-  --poster-index: 0;
-  --poster-y: 0px;
-  position: relative;
-  z-index: calc(2 + var(--poster-index));
-  min-width: 0;
-  display: flex;
-  flex: 0 1 122px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  margin: 0;
-  transform: translateY(var(--poster-y));
-}
-
-.guidCompanionPosterFigurePrimary {
-  flex-basis: 150px;
-  transform: translateY(-4px);
-}
-
-.guidCompanionPosterAvatar {
-  height: 166px;
-  max-width: 100%;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  filter: drop-shadow(0 16px 18px rgba(64, 39, 50, 0.16));
-}
-
-.guidCompanionPosterFigure:not(.guidCompanionPosterFigurePrimary) .guidCompanionPosterAvatar {
-  height: 144px;
-}
-
-:global([data-theme='dark']) .guidCompanionPosterAvatar {
-  filter: drop-shadow(0 16px 20px rgba(0, 0, 0, 0.34));
-}
-
-.guidCompanionPosterName {
-  max-width: 118px;
-  overflow: hidden;
-  padding: 4px 9px;
-  border: 1px solid rgba(255, 255, 255, 0.64);
-  border-radius: 999px;
-  color: var(--color-text-1);
-  background: rgba(255, 255, 255, 0.68);
-  box-shadow: 0 8px 18px rgba(64, 39, 50, 0.08);
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 16px;
-  text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-:global([data-theme='dark']) .guidCompanionPosterName {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.08);
-}
-
 @media (max-width: 768px) {
   .guidResourceCards {
     grid-template-columns: 1fr;
@@ -852,43 +718,6 @@ button.guidResourceCard:focus-visible {
     min-height: 112px;
   }
 
-  .guidCompanionPoster {
-    min-height: 356px;
-    grid-template-columns: 1fr;
-    gap: 14px;
-    padding: 18px 16px 16px;
-  }
-
-  .guidCompanionPosterCopy {
-    align-self: stretch;
-    text-align: left;
-  }
-
-  .guidCompanionPosterDescription {
-    max-width: none;
-  }
-
-  .guidCompanionPosterStage {
-    min-height: 220px;
-    justify-content: center;
-    gap: 0;
-  }
-
-  .guidCompanionPosterFigure {
-    flex-basis: 108px;
-  }
-
-  .guidCompanionPosterFigurePrimary {
-    flex-basis: 130px;
-  }
-
-  .guidCompanionPosterAvatar {
-    height: 154px;
-  }
-
-  .guidCompanionPosterFigure:not(.guidCompanionPosterFigurePrimary) .guidCompanionPosterAvatar {
-    height: 132px;
-  }
 }
 
 .entryStrip {
@@ -907,6 +736,13 @@ button.guidResourceCard:focus-visible {
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
   -ms-overflow-style: none;
+  opacity: 0.72;
+  transition: opacity var(--flowy-motion-fast) var(--flowy-ease-enter);
+}
+
+.guidInputCardWrap:focus-within .entryStrip,
+.guidInputCardWrap:hover .entryStrip {
+  opacity: 1;
 }
 
 .entryStrip::-webkit-scrollbar {
@@ -2569,9 +2405,30 @@ button.guidResourceCard:focus-visible {
     display: none;
   }
 
+  .guidResourceIntentRow {
+    grid-template-columns: 1fr;
+  }
+
   .guidDiscoveryArea {
     width: clamp(var(--app-min-width, 360px), calc(100% - 20px), 100%);
     padding: 16px 20px calc(108px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .guidInputCardWrap,
+  .guidResourceIntentChip,
+  .entryStrip {
+    transition: none;
+  }
+
+  .guidInputCardWrap:hover,
+  .guidInputCardWrap:focus-within,
+  .guidInputCardWrapActive,
+  .guidResourceIntentChip:hover,
+  .guidResourceIntentChip:focus-visible,
+  .guidResourceIntentChip:active {
+    transform: none;
   }
 }
 

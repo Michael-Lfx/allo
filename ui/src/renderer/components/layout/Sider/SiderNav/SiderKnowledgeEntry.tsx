@@ -44,6 +44,9 @@ const SiderKnowledgeEntry: React.FC<SiderKnowledgeEntryProps> = ({
             isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
           )}
           onClick={onClick}
+          aria-current={isActive ? 'page' : undefined}
+          data-sider-nav-entry
+          data-active={isActive ? 'true' : 'false'}
         >
           <span className='relative block leading-none shrink-0' style={{ lineHeight: 0 }}>
             <BookOne theme='outline' size='20' fill='currentColor' className='block leading-none' />
@@ -63,6 +66,9 @@ const SiderKnowledgeEntry: React.FC<SiderKnowledgeEntryProps> = ({
           isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
         )}
         onClick={onClick}
+        aria-current={isActive ? 'page' : undefined}
+        data-sider-nav-entry
+        data-active={isActive ? 'true' : 'false'}
       >
         <span className='relative size-22px flex items-center justify-center shrink-0'>
           <BookOne

@@ -10,12 +10,12 @@ import { isDesktopShell } from '@renderer/utils/platform';
 import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
 import WorkpathSessionList from '@renderer/pages/conversation/SessionList';
 import { useSidebarDisplayPreferences } from '@renderer/pages/conversation/SessionList/hooks/useSidebarDisplayPreferences';
+import { useSlidingSelectionIndicator } from '@renderer/hooks/ui/useSlidingSelectionIndicator';
 import {
   ConversationSiderActions,
   SiderConversationEntry,
   SiderKnowledgeEntry,
   SiderLearningEntry,
-  SiderMiniAppsEntry,
   SiderModelHubEntry,
   SiderNomiEntry,
   SiderRequirementsEntry,
@@ -58,6 +58,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
   const { logout: cloudLogout, status: cloudStatus, whoami } = useCloudAuth();
   const [batchMode, setBatchMode] = useState(false);
+  const siderRef = useRef<HTMLDivElement>(null);
   const { preferences: displayPreferences } = useSidebarDisplayPreferences();
   const isSettings = pathname.startsWith('/settings');
   const lastNonSettingsPathRef = useRef('/guid');
@@ -79,6 +80,11 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     pathname.startsWith('/conversation/') ||
     pathname === '/terminal-new' ||
     pathname.startsWith('/terminal/');
+  const selectionIndicator = useSlidingSelectionIndicator({
+    containerRef: siderRef,
+    activeSelector: '[data-sider-nav-entry][data-active="true"]:not([data-sider-selection-static])',
+    revision: `${pathname}:${collapsed}`,
+  });
 
   useEffect(() => {
     if (!pathname.startsWith('/settings')) {
@@ -121,7 +127,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleNomiClick = () => navTo('/nomi');
   const handleLearningClick = () => navTo('/learn');
   const handleRequirementsClick = () => navTo('/requirements');
-  const handleMiniAppsClick = () => navTo('/mini-apps');
   const handlePresetClick = () => navTo('/presets');
   const handleSkillsClick = () => navTo('/skills');
   const handleMcpClick = () => navTo('/mcp');
@@ -182,7 +187,17 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
 
   return (
-    <div className={`${styles.sider} size-full flex flex-col`}>
+    <div ref={siderRef} className={`${styles.sider} size-full flex flex-col`}>
+      <span
+        aria-hidden='true'
+        className={styles.selectionIndicator}
+        data-visible={selectionIndicator.visible ? 'true' : 'false'}
+        style={{
+          width: selectionIndicator.width,
+          height: selectionIndicator.height,
+          transform: `translate(${selectionIndicator.left}px, ${selectionIndicator.top}px)`,
+        }}
+      />
       {/* Main content area */}
       {isSettings ? (
         <div className='flex-1 min-h-0 overflow-y-auto overflow-x-hidden'>
@@ -194,7 +209,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
         </div>
       ) : (
         <div className='flex-1 min-h-0 flex flex-col'>
-          <div data-testid='sider-primary-nav' className='shrink-0 flex flex-col gap-2px'>
+          <div
+            data-testid='sider-primary-nav'
+            className={`${styles.primaryNav} shrink-0 flex flex-col gap-2px`}
+          >
             {/* 会话 — 一级菜单入口 */}
             <SiderConversationEntry
               isMobile={isMobile}
@@ -212,14 +230,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onEnterHome={handleVideoGenerationHome}
               onOpenProject={handleOpenRecentVideoGeneration}
-            />
-            {/* 小程序 (Mini-apps) — solidified single-file web tools, opened instantly */}
-            <SiderMiniAppsEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/mini-apps')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleMiniAppsClick}
             />
             <SiderKnowledgeEntry
               isMobile={isMobile}

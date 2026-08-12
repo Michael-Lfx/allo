@@ -1,22 +1,15 @@
 
-import type { ConversationId } from '@/common/types/ids';
-
-import { ipcBridge } from '@/common';
+import type { TChatConversation } from '@/common/config/storage';
 import { AgentLogoIcon } from '@/renderer/components/agent/AgentBadge';
 import { usePresetInfo } from '@/renderer/hooks/agent/usePresetInfo';
 import React from 'react';
-import useSWR from 'swr';
 
 type MobileConversationBrandProps = {
-  conversation_id: ConversationId;
+  conversation: TChatConversation | undefined;
   fallbackTitle: string;
 };
 
-const MobileConversationBrand: React.FC<MobileConversationBrandProps> = ({ conversation_id, fallbackTitle }) => {
-  const { data: conversation } = useSWR(
-    conversation_id ? `mobile-titlebar.conversation.${conversation_id}` : null,
-    () => ipcBridge.conversation.get.invoke({ conversation_id: conversation_id })
-  );
+const MobileConversationBrand: React.FC<MobileConversationBrandProps> = ({ conversation, fallbackTitle }) => {
   const { info: preset } = usePresetInfo(conversation || undefined);
 
   const backend =

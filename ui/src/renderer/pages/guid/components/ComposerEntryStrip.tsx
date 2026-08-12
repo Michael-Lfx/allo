@@ -50,7 +50,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   // Shown for every engine selection: mini-app mode pins the launch to the Nomi
   // engine itself (spec D4), so it overrides the pill rather than depending on it.
   // Active state copies the preset persona token: an accented, dismissible chip.
-  const miniAppEntry = !onCreateMiniApp ? null : miniAppActive ? (
+  const miniAppEntry = miniAppActive ? (
     <span
       className={`${styles.entryButton} ${styles.entryButtonActive} ${styles.entryPersonaButton}`}
       data-testid='guid-miniapp-token'
@@ -68,7 +68,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         <CloseSmall theme='outline' size={14} />
       </button>
     </span>
-  ) : (
+  ) : onCreateMiniApp ? (
     <button
       type='button'
       data-button-shape='pill'
@@ -80,7 +80,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
       <ApplicationOne theme='outline' size={15} fill='currentColor' />
       <span className={styles.entryButtonText}>{t('miniApps.composer.entry')}</span>
     </button>
-  );
+  ) : null;
 
   if (isPresetAgent) {
     return (

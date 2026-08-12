@@ -180,6 +180,9 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
             moduleActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
           )}
           onClick={onEnterHome}
+          aria-current={moduleActive ? 'page' : undefined}
+          data-sider-nav-entry
+          data-active={moduleActive ? 'true' : 'false'}
           data-testid='sider-video-generation-collapsed'
         >
           <VideoOne
@@ -206,6 +209,9 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
         )}
         onClick={handleParentClick}
         aria-expanded={expanded}
+        aria-current={moduleActive ? 'page' : undefined}
+        data-sider-nav-entry
+        data-active={moduleActive ? 'true' : 'false'}
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
           {expanded ? (

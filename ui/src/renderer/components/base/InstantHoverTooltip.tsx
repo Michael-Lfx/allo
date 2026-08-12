@@ -1,7 +1,7 @@
 
 
 import classNames from 'classnames';
-import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 export type InstantHoverTooltipProps = {
@@ -9,6 +9,7 @@ export type InstantHoverTooltipProps = {
   children: React.ReactNode;
   position?: 'top' | 'right' | 'bottom' | 'left';
   className?: string;
+  hoverDelayMs?: number;
 };
 
 type TooltipCoords = {
@@ -45,8 +46,10 @@ const InstantHoverTooltip: React.FC<InstantHoverTooltipProps> = ({
   children,
   position = 'top',
   className,
+  hoverDelayMs = 0,
 }) => {
   const anchorRef = useRef<HTMLDivElement>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [visible, setVisible] = useState(false);
   const [coords, setCoords] = useState<TooltipCoords | null>(null);
 
@@ -69,14 +72,36 @@ const InstantHoverTooltip: React.FC<InstantHoverTooltipProps> = ({
     };
   }, [visible, syncCoords, content]);
 
-  const show = () => {
+  const clearPendingShow = useCallback(() => {
+    if (hoverTimerRef.current === null) return;
+    clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = null;
+  }, []);
+
+  const showNow = useCallback(() => {
+    clearPendingShow();
     syncCoords();
     setVisible(true);
-  };
+  }, [clearPendingShow, syncCoords]);
 
-  const hide = () => {
+  const showAfterHoverDelay = useCallback(() => {
+    clearPendingShow();
+    if (hoverDelayMs <= 0) {
+      showNow();
+      return;
+    }
+    hoverTimerRef.current = setTimeout(() => {
+      hoverTimerRef.current = null;
+      showNow();
+    }, hoverDelayMs);
+  }, [clearPendingShow, hoverDelayMs, showNow]);
+
+  const hide = useCallback(() => {
+    clearPendingShow();
     setVisible(false);
-  };
+  }, [clearPendingShow]);
+
+  useEffect(() => clearPendingShow, [clearPendingShow]);
 
   const tooltip =
     visible && coords && typeof document !== 'undefined'
@@ -103,9 +128,9 @@ const InstantHoverTooltip: React.FC<InstantHoverTooltipProps> = ({
       <div
         ref={anchorRef}
         className={classNames('relative inline-flex shrink-0', className)}
-        onMouseEnter={show}
+        onMouseEnter={showAfterHoverDelay}
         onMouseLeave={hide}
-        onFocus={show}
+        onFocus={showNow}
         onBlur={hide}
       >
         {children}

@@ -10,4 +10,8 @@ describe('TitlebarUpdateButton', () => {
     expect(source.includes('if (!isDesktopShell() || !hasUpdate) return null;')).toBe(true);
     expect(source.includes("t('settings.checkForUpdates')")).toBe(false);
   });
+
+  test('uses the shared delayed titlebar tooltip', () => {
+    expect(source.includes('hoverDelayMs={400}')).toBe(true);
+  });
 });

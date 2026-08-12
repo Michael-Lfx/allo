@@ -51,4 +51,14 @@ describe('Guid homepage single-screen layout', () => {
     expect(source.includes('openExternalUrl')).toBe(false);
     expect(source.includes('RECENT_PROMPT_LIMIT')).toBe(false);
   });
+
+  test('does not retain the retired companion-poster experiment', () => {
+    const css = readSource(new URL('../index.module.css', import.meta.url));
+    const zh = readSource(new URL('../../../services/i18n/locales/zh-CN/conversation.json', import.meta.url));
+    const en = readSource(new URL('../../../services/i18n/locales/en-US/conversation.json', import.meta.url));
+
+    expect(css.includes('guidCompanionPoster')).toBe(false);
+    expect(zh.includes('"companionPoster"')).toBe(false);
+    expect(en.includes('"companionPoster"')).toBe(false);
+  });
 });

@@ -1,4 +1,3 @@
-import { Tooltip } from '@arco-design/web-react';
 import { Refresh } from '@icon-park/react';
 import classNames from 'classnames';
 import React from 'react';
@@ -45,46 +44,44 @@ const CreditsRefreshButton: React.FC<CreditsRefreshButtonProps> = ({ size = 'sm'
   };
 
   return (
-    <Tooltip content={label} position={size === 'xs' ? 'lt' : 'top'}>
-      <span
-        role='button'
-        tabIndex={canRefresh ? 0 : -1}
-        aria-label={label}
-        aria-disabled={!canRefresh}
-        onClick={canRefresh ? manualRefresh : undefined}
-        onKeyDown={handleKeyDown}
-        className={classNames(
-          // 固定宽度：图标态与「(n)s 括号注解」态同宽，点刷新切换不触发宽度重绘。
-          'inline-flex items-center justify-center bg-transparent rd-4px transition-colors',
-          canRefresh ? 'cursor-pointer' : 'cursor-not-allowed',
-          // 主题焦点环：与 control contract 对齐（--control-focus-ring 每套皮肤都定义）。
-          'focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]',
-          // 主题态不着中性色；仅空闲可点时挂 hover，未登录（不可点）时半透明。
-          !themedState && canRefresh && 'text-t-tertiary hover:bg-fill-2 hover:text-t-secondary',
-          !themedState && !canRefresh && 'text-t-tertiary opacity-50',
-          // 槽位按 (n)s 倒计时定宽：xs/sm 倒计时同为 12px，(n)s ≈21px，w-28px 容纳有余、图标态同宽。
-          'w-28px',
-          className
-        )}
-      >
-        {inCooldown ? (
-          // 倒计时用括号注解 (n)s：括号是结构分隔，不会像竖线那样紧贴数字被误读成「1」。
-          // tabular-nums 让 n=1..5 字符等宽，(n)s 整体宽度恒定，配合外层固定槽位无重绘。
-          <span className='tabular-nums text-12px leading-none' style={{ color: ACCENT }}>
-            ({cooldownSeconds}s)
-          </span>
-        ) : (
-          <Refresh
-            theme='outline'
-            size={size === 'xs' ? '12' : '14'}
-            fill='currentColor'
-            // block + leading-none：压掉 @icon-park 图标默认行高，避免图标盒高于余额数字、视觉上浮。
-            className={classNames('block leading-none', isFetchingBalance && 'motion-safe:animate-spin')}
-            style={isFetchingBalance ? { color: ACCENT } : undefined}
-          />
-        )}
-      </span>
-    </Tooltip>
+    <span
+      role='button'
+      tabIndex={canRefresh ? 0 : -1}
+      aria-label={label}
+      aria-disabled={!canRefresh}
+      onClick={canRefresh ? manualRefresh : undefined}
+      onKeyDown={handleKeyDown}
+      className={classNames(
+        // 固定宽度：图标态与「(n)s 括号注解」态同宽，点刷新切换不触发宽度重绘。
+        'inline-flex items-center justify-center bg-transparent rd-4px transition-colors',
+        canRefresh ? 'cursor-pointer' : 'cursor-not-allowed',
+        // 主题焦点环：与 control contract 对齐（--control-focus-ring 每套皮肤都定义）。
+        'focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]',
+        // 主题态不着中性色；仅空闲可点时挂 hover，未登录（不可点）时半透明。
+        !themedState && canRefresh && 'text-t-tertiary hover:bg-fill-2 hover:text-t-secondary',
+        !themedState && !canRefresh && 'text-t-tertiary opacity-50',
+        // 槽位按 (n)s 倒计时定宽：xs/sm 倒计时同为 12px，(n)s ≈21px，w-28px 容纳有余、图标态同宽。
+        'w-28px',
+        className
+      )}
+    >
+      {inCooldown ? (
+        // 倒计时用括号注解 (n)s：括号是结构分隔，不会像竖线那样紧贴数字被误读成「1」。
+        // tabular-nums 让 n=1..5 字符等宽，(n)s 整体宽度恒定，配合外层固定槽位无重绘。
+        <span className='tabular-nums text-12px leading-none' style={{ color: ACCENT }}>
+          ({cooldownSeconds}s)
+        </span>
+      ) : (
+        <Refresh
+          theme='outline'
+          size={size === 'xs' ? '12' : '14'}
+          fill='currentColor'
+          // block + leading-none：压掉 @icon-park 图标默认行高，避免图标盒高于余额数字、视觉上浮。
+          className={classNames('block leading-none', isFetchingBalance && 'motion-safe:animate-spin')}
+          style={isFetchingBalance ? { color: ACCENT } : undefined}
+        />
+      )}
+    </span>
   );
 };
 

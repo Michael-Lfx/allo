@@ -37,6 +37,8 @@ const SiderConversationEntry: React.FC<SiderConversationEntryProps> = ({
           onClick={onClick}
           aria-current={isActive ? 'page' : undefined}
           aria-label={label}
+          data-sider-nav-entry
+          data-active={isActive ? 'true' : 'false'}
           data-testid='sider-conversation-entry'
         >
           <MessageOne
@@ -62,6 +64,8 @@ const SiderConversationEntry: React.FC<SiderConversationEntryProps> = ({
         )}
         onClick={onClick}
         aria-current={isActive ? 'page' : undefined}
+        data-sider-nav-entry
+        data-active={isActive ? 'true' : 'false'}
         data-testid='sider-conversation-entry'
       >
         <span className='size-22px flex items-center justify-center shrink-0'>

@@ -35,6 +35,7 @@ import type {
 import GuidModelSelector from './components/GuidModelSelector';
 import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import GuidResourceCards from './components/GuidResourceCards';
+import { createWorkspaceDialogGate } from './workspaceDialogGate';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import QuickActionButtons from './components/QuickActionButtons';
 import PresetPickerDrawer from './components/PresetPickerDrawer';
@@ -132,6 +133,7 @@ const GuidPage: React.FC = () => {
   const pendingAutoSendRef = useRef(false);
   const sendRef = useRef<(() => void) | null>(null);
   const inputSnapshotRef = useRef('');
+  const workspaceDialogGateRef = useRef(createWorkspaceDialogGate());
 
   // Explicit Skill selections are scoped to this draft. Preset bindings are
   // resolved separately by the backend when the conversation is created.
@@ -481,9 +483,9 @@ const GuidPage: React.FC = () => {
   );
 
   const handleLinkWorkspace = useCallback(() => {
-    ipcBridge.dialog.showOpen
-      .invoke({ properties: ['openDirectory', 'createDirectory'] })
-      .then((dirs) => {
+    return workspaceDialogGateRef.current(async () => {
+      try {
+        const dirs = await ipcBridge.dialog.showOpen.invoke({ properties: ['openDirectory', 'createDirectory'] });
         const next = dirs?.[0];
         if (!next) return;
         addRecentWorkspace(next);
@@ -495,10 +497,10 @@ const GuidPage: React.FC = () => {
             sendRef.current?.();
           }, 0);
         }
-      })
-      .catch((error) => {
+      } catch (error) {
         console.error('[GuidPage] Failed to open workspace dialog:', error);
-      });
+      }
+    });
   }, [guidInput.setDir]);
 
   const send = useGuidSend({
@@ -1062,7 +1064,7 @@ const GuidPage: React.FC = () => {
         <div className={styles.guidPrimaryStage}>
           <div className={styles.guidLayout}>
             <div className={styles.heroHeader}>
-              <p className='text-2xl font-semibold mb-0 text-0 text-center'>
+              <p className={styles.heroTitlePrimary}>
                 {t('conversation.welcome.title', { defaultValue: '告诉 Flowy 你要的结果' })}
               </p>
               <p className={styles.heroDescription}>
@@ -1180,7 +1182,6 @@ const GuidPage: React.FC = () => {
                   onFree={() => {
                     agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
                   }}
-                  onCreateMiniApp={isAutoWorkMode ? undefined : () => setMiniAppMode(true)}
                   miniAppActive={miniAppMode}
                   onDismissMiniApp={() => setMiniAppMode(false)}
                 />

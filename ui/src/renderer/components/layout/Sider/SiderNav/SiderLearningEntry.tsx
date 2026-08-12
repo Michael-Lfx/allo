@@ -46,6 +46,9 @@ const SiderLearningEntry: React.FC<SiderLearningEntryProps> = ({
           isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
         )}
         onClick={onClick}
+        aria-current={isActive ? 'page' : undefined}
+        data-sider-nav-entry
+        data-active={isActive ? 'true' : 'false'}
       >
         {collapsed ? icon : (
           <>
