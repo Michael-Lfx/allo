@@ -7,7 +7,6 @@ import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { Down, Plus } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import NomiScrollArea from '@/renderer/components/base/NomiScrollArea';
 import AddMcpServerModal from '@/renderer/pages/settings/components/AddMcpServerModal';
 import ExtensionMcpServerItem from '@/renderer/pages/settings/ToolsSettings/ExtensionMcpServerItem';
 import McpServerItem from '@/renderer/pages/settings/ToolsSettings/McpServerItem';
@@ -212,8 +211,7 @@ const ModalMcpManagementSection: React.FC<{
             {t('settings.mcpNoServersFound')}
           </div>
         ) : (
-          <NomiScrollArea className='max-h-360px max-h-none' disableOverflow>
-            <div className='space-y-12px'>
+          <div className='space-y-12px'>
               {visibleMcpServers.map((server) => {
                 const uiKey = mcpServerUiKey(server.mcp_server_id);
                 return (
@@ -243,8 +241,7 @@ const ModalMcpManagementSection: React.FC<{
                   />
                 );
               })}
-            </div>
-          </NomiScrollArea>
+          </div>
         )}
       </div>
 
@@ -309,19 +306,15 @@ export const ToolsModalContentWithState: React.FC<{
     <div className='flex flex-col h-full w-full'>
       {mcpMessageContext}
 
-      <NomiScrollArea className='flex-1 min-h-0 pb-16px' disableOverflow>
-        <div className='px-[12px] md:px-[32px] py-[24px] bg-2 rd-12px md:rd-16px flex flex-col min-h-0 border border-solid border-arco-2'>
-          <NomiScrollArea className='h-full overflow-visible' disableOverflow>
-            <ModalMcpManagementSection
-              message={mcpMessage}
-              mcpServers={mcpServers}
-              extensionMcpServers={extensionMcpServers}
-              setMcpServers={setMcpServers}
-              saveMcpServers={saveMcpServers}
-            />
-          </NomiScrollArea>
-        </div>
-      </NomiScrollArea>
+      <div className='flowy-settings-panel px-16px py-20px md:px-24px'>
+        <ModalMcpManagementSection
+          message={mcpMessage}
+          mcpServers={mcpServers}
+          extensionMcpServers={extensionMcpServers}
+          setMcpServers={setMcpServers}
+          saveMcpServers={saveMcpServers}
+        />
+      </div>
     </div>
   );
 };

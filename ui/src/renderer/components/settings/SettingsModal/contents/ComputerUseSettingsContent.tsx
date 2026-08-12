@@ -3,11 +3,16 @@
 import { ipcBridge } from '@/common';
 import type { ComputerPermissionKind, ComputerPermissionStatus } from '@/common/adapter/ipcBridge';
 import { configService } from '@/common/config/configService';
-import NomiScrollArea from '@/renderer/components/base/NomiScrollArea';
+import {
+  SettingsGroup,
+  SettingsList,
+  SettingsPageHeader,
+  SettingsPermissionRow,
+  SettingsRow,
+} from '@/renderer/components/settings/SettingsPagePrimitives';
 import { Button, Switch } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import PreferenceRow from './SystemModalContent/PreferenceRow';
 
 const ComputerUseSettingsContent: React.FC = () => {
   const { t } = useTranslation();
@@ -56,51 +61,51 @@ const ComputerUseSettingsContent: React.FC = () => {
   const appLabel = perm?.app_label || 'Flowy';
 
   const permRow = (kind: ComputerPermissionKind, granted: boolean | null, label: string, description: string) => (
-    <PreferenceRow label={label} description={description}>
-      <div className='flex items-center gap-8px'>
-        <span className={granted ? 'text-#16a34a font-600' : 'text-#ef4444 font-600'}>{granted ? t('settings.computerUsePermGranted') : t('settings.computerUsePermNotInEffect')}</span>
-        <Button size='small' onClick={() => grant(kind)}>
+    <SettingsPermissionRow
+      label={label}
+      description={description}
+      state={granted ? 'ready' : 'attention'}
+      stateLabel={granted ? t('settings.computerUsePermGranted') : t('settings.computerUsePermNotInEffect')}
+      controlLayout='actions'
+      control={
+        <Button size='small' type={granted ? 'secondary' : 'primary'} onClick={() => grant(kind)}>
           {t('settings.computerUseOpenSettings')}
         </Button>
-      </div>
-    </PreferenceRow>
+      }
+    />
   );
 
   return (
-    <div className='flex flex-col h-full w-full'>
-      <NomiScrollArea className='flex-1 min-h-0 pb-16px' disableOverflow>
-        <div className='px-[12px] md:px-[32px] py-16px bg-2 rd-16px space-y-12px'>
-          <div className='text-13px font-600 text-t-secondary'>{t('settings.computerUseSection')}</div>
-          {/*
-            Row separators need all three parts. `divide-y` only emits a top/bottom WIDTH, and this
-            project ships no border reset, so without `divide-solid` the style stays `none` and
-            nothing paints. `divide-solid` then styles all four sides, so `divide-x-0` is required
-            to stop the unset left/right widths falling back to the CSS initial `medium` (~3px).
-            `divide-border-2` was also dead: there is no theme colour named `border`.
-          */}
-          <div className='w-full flex flex-col divide-y divide-x-0 divide-solid divide-[var(--color-border-2)]'>
-            <PreferenceRow label={t('settings.computerUse')} description={t('settings.computerUseDesc')}>
-              <Switch checked={computerUse} onChange={handleComputerUseChange} />
-            </PreferenceRow>
-          </div>
-        </div>
+    <div className='w-full space-y-24px pb-16px'>
+      <SettingsPageHeader
+        title={t('settings.computerUseNav')}
+        description={t('settings.computerUseDesc')}
+      />
+      <SettingsGroup title={t('settings.computerUseSection')}>
+        <SettingsList>
+          <SettingsRow
+            label={t('settings.computerUse')}
+            description={t('settings.computerUseDesc')}
+            control={<Switch checked={computerUse} onChange={handleComputerUseChange} />}
+            controlLayout='compact'
+          />
+        </SettingsList>
+      </SettingsGroup>
 
-        {isMac && (
-          <div className='px-[12px] md:px-[32px] py-16px bg-2 rd-16px space-y-12px mt-16px'>
-            <div className='flex items-center justify-between'>
-              <div className='text-13px font-600 text-t-secondary'>{t('settings.computerUsePermSection')}</div>
-              <Button size='mini' onClick={refreshPerm}>
-                {t('settings.computerUsePermRefresh')}
-              </Button>
-            </div>
-            <div className='w-full flex flex-col divide-y divide-x-0 divide-solid divide-[var(--color-border-2)]'>
-              {permRow('accessibility', perm?.accessibility ?? null, t('settings.computerUseAccessibility'), t('settings.computerUseAccessibilityDesc'))}
-              {permRow('screen_recording', perm?.screen_recording ?? null, t('settings.computerUseScreenRecording'), t('settings.computerUseScreenRecordingDesc'))}
-            </div>
-            <div className='text-12px text-t-tertiary leading-relaxed'>{t('settings.computerUseRestartHint', { app: appLabel })}</div>
+      {isMac && (
+        <SettingsGroup
+          title={t('settings.computerUsePermSection')}
+          action={<Button size='small' type='secondary' onClick={refreshPerm}>{t('settings.computerUsePermRefresh')}</Button>}
+        >
+          <SettingsList>
+            {permRow('accessibility', perm?.accessibility ?? null, t('settings.computerUseAccessibility'), t('settings.computerUseAccessibilityDesc'))}
+            {permRow('screen_recording', perm?.screen_recording ?? null, t('settings.computerUseScreenRecording'), t('settings.computerUseScreenRecordingDesc'))}
+          </SettingsList>
+          <div className='mt-8px px-4px text-12px leading-relaxed text-t-tertiary'>
+            {t('settings.computerUseRestartHint', { app: appLabel })}
           </div>
-        )}
-      </NomiScrollArea>
+        </SettingsGroup>
+      )}
     </div>
   );
 };

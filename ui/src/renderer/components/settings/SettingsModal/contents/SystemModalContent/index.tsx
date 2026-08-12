@@ -1,16 +1,20 @@
-
-
 import { ipcBridge } from '@/common';
 import type { IStartOnBootStatus } from '@/common/adapter/ipcBridge';
 import { configService } from '@/common/config/configService';
-import NomiScrollArea from '@/renderer/components/base/NomiScrollArea';
 import NomiSelect from '@/renderer/components/base/NomiSelect';
 import FeedbackButton from '@/renderer/components/base/FeedbackButton';
 import LanguageSwitcher from '@/renderer/components/settings/LanguageSwitcher';
+import {
+  SettingsGroup,
+  SettingsList,
+  SettingsPageHeader,
+  SettingsRow,
+  SettingsStatus,
+} from '@/renderer/components/settings/SettingsPagePrimitives';
 import { iconColors } from '@/renderer/styles/colors';
 import { isDesktopShell } from '@/renderer/utils/platform';
 import { useKeepAwake } from '@renderer/hooks/ui/useKeepAwake';
-import { Alert, Button, Collapse, Form, Message, Modal, Switch, Tooltip } from '@arco-design/web-react';
+import { Button, Form, Message, Modal, Switch, Tooltip } from '@arco-design/web-react';
 import { FolderSearch } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -19,23 +23,18 @@ import useSWR from 'swr';
 import DeveloperModeSetting from './DeveloperModeSetting';
 import DirInputItem from './DirInputItem';
 import FactoryResetModal from './FactoryResetModal';
-import PreferenceRow from './PreferenceRow';
 
 /**
- * System settings content component
- *
- * Provides system-level configuration options including language, directory config,
- * and developer tools (dev mode only).
+ * System settings remains the owner of all persistence and migration flows;
+ * this component only gives those flows a stable page/section/row hierarchy.
  */
 const SystemModalContent: React.FC = () => {
   const { t } = useTranslation();
   const [form] = Form.useForm();
-  // arco types Modal.useModal() methods (confirm/info/...) as optional even
-  // though the hook always supplies them; assert the non-optional shape so
-  // `modal.confirm(...)` doesn't trip TS2722.
   const [modalRaw, modalContextHolder] = Modal.useModal();
   const modal = modalRaw as Required<typeof modalRaw>;
   const [error, setError] = useState<string | null>(null);
+  const [preferenceError, setPreferenceError] = useState<string | null>(null);
   const initializingRef = useRef(true);
 
   const [startOnBoot, setStartOnBoot] = useState<IStartOnBootStatus>({
@@ -52,19 +51,17 @@ const SystemModalContent: React.FC = () => {
   const [factoryResetVisible, setFactoryResetVisible] = useState(false);
   const [isRelocating, setIsRelocating] = useState(false);
 
-  useEffect(() => {
-    // Start-on-boot is only meaningful in the Tauri desktop shell (backed by
-    // tauri-plugin-autostart); the WebUI browser has no autostart concept.
-    if (!isDesktopShell()) {
-      return;
-    }
+  const reportPreferenceError = useCallback((message = t('settings.preferenceSaveFailed')) => {
+    setPreferenceError(message);
+    Message.error(message);
+  }, [t]);
 
+  useEffect(() => {
+    if (!isDesktopShell()) return;
     ipcBridge.application.getStartOnBootStatus
       .invoke()
       .then((result) => {
-        if (result.success && result.data) {
-          setStartOnBoot(result.data);
-        }
+        if (result.success && result.data) setStartOnBoot(result.data);
       })
       .catch(() => {});
   }, []);
@@ -80,8 +77,7 @@ const SystemModalContent: React.FC = () => {
   const handleStartOnBootChange = useCallback(
     (checked: boolean) => {
       const previousStatus = startOnBoot;
-      setStartOnBoot((prev) => ({ ...prev, enabled: checked }));
-
+      setStartOnBoot((previous) => ({ ...previous, enabled: checked }));
       ipcBridge.application.setStartOnBoot
         .invoke({ enabled: checked })
         .then((result) => {
@@ -89,66 +85,87 @@ const SystemModalContent: React.FC = () => {
             setStartOnBoot(result.data);
             return;
           }
-
           setStartOnBoot(previousStatus);
-          Message.error(result.msg || t('settings.startOnBootUpdateFailed'));
+          reportPreferenceError(result.msg || t('settings.startOnBootUpdateFailed'));
         })
         .catch(() => {
           setStartOnBoot(previousStatus);
-          Message.error(t('settings.startOnBootUpdateFailed'));
+          reportPreferenceError(t('settings.startOnBootUpdateFailed'));
         });
     },
-    [startOnBoot, t]
+    [reportPreferenceError, startOnBoot]
   );
 
-  const handleNotificationEnabledChange = useCallback((checked: boolean) => {
-    setNotificationEnabled(checked);
-    configService.set('system.notificationEnabled', checked).catch(() => {
-      setNotificationEnabled(!checked);
-      configService.setLocal('system.notificationEnabled', !checked);
-    });
-  }, []);
+  const persistBooleanPreference = useCallback(
+    (
+      key:
+        | 'system.notificationEnabled'
+        | 'system.cronNotificationEnabled'
+        | 'upload.saveToWorkspace'
+        | 'system.autoPreviewOfficeFiles',
+      next: boolean,
+      previous: boolean,
+      update: (value: boolean) => void
+    ) => {
+      update(next);
+      void configService.set(key, next).catch(() => {
+        update(previous);
+        configService.setLocal(key, previous);
+        reportPreferenceError();
+      });
+    },
+    [reportPreferenceError]
+  );
+  const persistSendKey = useCallback(
+    (next: 'enter' | 'mod-enter', previous: 'enter' | 'mod-enter') => {
+      setSendKey(next);
+      void configService.set('chat.sendKey', next).catch(() => {
+        setSendKey(previous);
+        configService.setLocal('chat.sendKey', previous);
+        reportPreferenceError();
+      });
+    },
+    [reportPreferenceError]
+  );
 
-  const handleCronNotificationEnabledChange = useCallback((checked: boolean) => {
-    setCronNotificationEnabled(checked);
-    configService.set('system.cronNotificationEnabled', checked).catch(() => {
-      setCronNotificationEnabled(!checked);
-      configService.setLocal('system.cronNotificationEnabled', !checked);
-    });
-  }, []);
-
-  const handleSaveUploadToWorkspaceChange = useCallback((checked: boolean) => {
-    setSaveUploadToWorkspace(checked);
-    configService.set('upload.saveToWorkspace', checked).catch(() => {
-      setSaveUploadToWorkspace(!checked);
-      configService.setLocal('upload.saveToWorkspace', !checked);
-    });
-  }, []);
-
-  const handleAutoPreviewOfficeFilesChange = useCallback((checked: boolean) => {
-    setAutoPreviewOfficeFiles(checked);
-    configService.set('system.autoPreviewOfficeFiles', checked).catch(() => {
-      setAutoPreviewOfficeFiles(!checked);
-      configService.setLocal('system.autoPreviewOfficeFiles', !checked);
-    });
-  }, []);
-
-  const handleSendKeyChange = useCallback((value: 'enter' | 'mod-enter') => {
-    setSendKey(value);
-    configService.set('chat.sendKey', value).catch(() => {
-      const fallback = value === 'enter' ? 'mod-enter' : 'enter';
-      setSendKey(fallback);
-      configService.setLocal('chat.sendKey', fallback);
-    });
-  }, []);
+  const handleNotificationEnabledChange = useCallback(
+    (checked: boolean) =>
+      persistBooleanPreference('system.notificationEnabled', checked, notificationEnabled, setNotificationEnabled),
+    [notificationEnabled, persistBooleanPreference]
+  );
+  const handleCronNotificationEnabledChange = useCallback(
+    (checked: boolean) =>
+      persistBooleanPreference('system.cronNotificationEnabled', checked, cronNotificationEnabled, setCronNotificationEnabled),
+    [cronNotificationEnabled, persistBooleanPreference]
+  );
+  const handleSaveUploadToWorkspaceChange = useCallback(
+    (checked: boolean) =>
+      persistBooleanPreference('upload.saveToWorkspace', checked, saveUploadToWorkspace, setSaveUploadToWorkspace),
+    [persistBooleanPreference, saveUploadToWorkspace]
+  );
+  const handleAutoPreviewOfficeFilesChange = useCallback(
+    (checked: boolean) =>
+      persistBooleanPreference('system.autoPreviewOfficeFiles', checked, autoPreviewOfficeFiles, setAutoPreviewOfficeFiles),
+    [autoPreviewOfficeFiles, persistBooleanPreference]
+  );
+  const handleSendKeyChange = useCallback(
+    (value: 'enter' | 'mod-enter') => persistSendKey(value, sendKey),
+    [persistSendKey, sendKey]
+  );
 
   const { keepAwake, setKeepAwake: applyKeepAwake } = useKeepAwake();
+  const handleKeepAwakeChange = useCallback(
+    async (checked: boolean) => {
+      try {
+        await applyKeepAwake(checked);
+      } catch (error: unknown) {
+        Message.error(String(error));
+        reportPreferenceError();
+      }
+    },
+    [applyKeepAwake, reportPreferenceError]
+  );
 
-  const handleKeepAwakeChange = useCallback(async (checked: boolean) => {
-    try { await applyKeepAwake(checked); } catch (err) { Message.error(String(err)); }
-  }, [applyKeepAwake]);
-
-  // Get system directory info
   const { data: systemInfo } = useSWR('system.dir.info', () => ipcBridge.application.systemInfo.invoke());
   const { data: relocation, mutate: refreshRelocation } = useSWR(
     'system.work-dir.relocation',
@@ -192,79 +209,28 @@ const SystemModalContent: React.FC = () => {
       .invoke({ folder_path: systemInfo.logDir, tool: 'explorer' })
       .catch((caughtError) => {
         console.error('[SystemModalContent] Failed to open log directory:', caughtError);
+        setError(caughtError instanceof Error ? caughtError.message : String(caughtError));
       });
   }, [systemInfo?.logDir]);
 
-  // Initialize form data
   useEffect(() => {
-    if (systemInfo) {
-      initializingRef.current = true;
-      form.setFieldsValue({ workDir: systemInfo.workDir });
-      try {
-        if (window.sessionStorage.getItem('nomifun.relocationTarget') === systemInfo.workDir) {
-          window.sessionStorage.setItem('nomifun.relocationCompleted', '1');
-        }
-      } catch {
-        // Diagnostics are best effort and must not affect settings bootstrap.
+    if (!systemInfo) return;
+    initializingRef.current = true;
+    form.setFieldsValue({ workDir: systemInfo.workDir });
+    try {
+      if (window.sessionStorage.getItem('nomifun.relocationTarget') === systemInfo.workDir) {
+        window.sessionStorage.setItem('nomifun.relocationCompleted', '1');
       }
-      requestAnimationFrame(() => {
-        initializingRef.current = false;
-      });
+    } catch {
+      // Diagnostics are best effort and must not affect settings bootstrap.
     }
+    requestAnimationFrame(() => {
+      initializingRef.current = false;
+    });
   }, [systemInfo, form]);
 
-  const preferenceItems = [
-    { key: 'language', label: t('settings.language'), component: <LanguageSwitcher /> },
-    {
-      key: 'sendKey',
-      label: t('settings.sendKey'),
-      description: t('settings.sendKeyDesc'),
-      component: (
-        <NomiSelect
-          className='w-200px'
-          value={sendKey}
-          onChange={(v) => handleSendKeyChange(v as 'enter' | 'mod-enter')}
-        >
-          <NomiSelect.Option value='enter'>{t('settings.sendKeyEnter')}</NomiSelect.Option>
-          <NomiSelect.Option value='mod-enter'>{t('settings.sendKeyModEnter')}</NomiSelect.Option>
-        </NomiSelect>
-      ),
-    },
-    {
-      key: 'imageAnalysisModel',
-      label: t('settings.modelHub.imageAnalysis.title'),
-      description: t('settings.modelHub.imageAnalysis.subtitle'),
-      component: <ImageAnalysisModelContent compact />,
-    },
-    {
-      key: 'startOnBoot',
-      label: t('settings.startOnBoot'),
-      description: startOnBoot.supported ? t('settings.startOnBootDesc') : t('settings.startOnBootUnsupported'),
-      component: (
-        <Switch checked={startOnBoot.enabled} onChange={handleStartOnBootChange} disabled={!startOnBoot.supported} />
-      ),
-    },
-    {
-      key: 'keepAwake',
-      label: t('settings.keepAwake'),
-      description: t('settings.keepAwakeDesc'),
-      component: <Switch checked={keepAwake} onChange={handleKeepAwakeChange} />,
-    },
-    {
-      key: 'saveUploadToWorkspace',
-      label: t('settings.saveUploadToWorkspace'),
-      component: <Switch checked={saveUploadToWorkspace} onChange={handleSaveUploadToWorkspaceChange} />,
-    },
-    {
-      key: 'autoPreviewOfficeFiles',
-      label: t('settings.autoPreviewOfficeFiles'),
-      description: t('settings.autoPreviewOfficeFilesDesc'),
-      component: <Switch checked={autoPreviewOfficeFiles} onChange={handleAutoPreviewOfficeFilesChange} />,
-    },
-  ];
-
-  const saveDirConfigValidate = (_values: { workDir: string }): Promise<unknown> => {
-    return new Promise((resolve, reject) => {
+  const saveDirConfigValidate = (_values: { workDir: string }): Promise<unknown> =>
+    new Promise((resolve, reject) => {
       modal.confirm({
         className: 'work-dir-relocation-confirm',
         title: t('settings.workDirChangeConfirmTitle'),
@@ -273,31 +239,20 @@ const SystemModalContent: React.FC = () => {
         onCancel: reject,
       });
     });
-  };
 
   const savingRef = useRef(false);
-
   const handleValuesChange = useCallback(
     async (_changedValue: unknown, allValues: Record<string, string>) => {
       if (initializingRef.current || savingRef.current || !systemInfo) return;
       const { workDir } = allValues;
-      if (!systemInfo.runtimeCapabilities.canChangeWorkDirectory) return;
-      const needsRestart = workDir !== systemInfo.workDir;
-      if (!needsRestart) return;
+      if (!systemInfo.runtimeCapabilities.canChangeWorkDirectory || workDir === systemInfo.workDir) return;
 
       savingRef.current = true;
       setError(null);
       try {
-        // Confirmation is the last interactive step. Once it succeeds, put
-        // the settings surface behind the migration veil immediately so the
-        // old WebView cannot start another route transition or lazy import
-        // while the backend is publishing the relocation plan.
         try {
           await saveDirConfigValidate({ workDir });
           setIsRelocating(true);
-          // Pass systemInfo.cacheDir as-is: cacheDir is no longer user-editable
-          // (removed from UI), but the backend IPC interface still expects it.
-          // Passing the current value ensures existing custom paths are preserved.
           const response = await ipcBridge.application.updateSystemInfo.invoke({
             cacheDir: systemInfo.cacheDir,
             workDir,
@@ -313,201 +268,148 @@ const SystemModalContent: React.FC = () => {
           }
         } catch (persistError: unknown) {
           setIsRelocating(false);
-          // A failure (or cancel) here means nothing was written, so reverting
-          // the field to the current value is correct.
           form.setFieldValue('workDir', systemInfo.workDir);
-          if (persistError) {
-            setError(persistError instanceof Error ? persistError.message : String(persistError));
-          }
+          if (persistError) setError(persistError instanceof Error ? persistError.message : String(persistError));
           return;
         }
-        // Persisted: the new dir is now authoritative and applies on the next
-        // boot. Relaunch applies it immediately (and never returns). If relaunch
-        // instead throws, do NOT revert the field — the on-disk config already
-        // holds the new dir, so reverting would make the UI contradict reality;
-        // surface the error and let the user restart manually.
         try {
           await ipcBridge.application.restart.invoke();
         } catch (restartError: unknown) {
           setIsRelocating(false);
-          if (restartError) {
-            setError(restartError instanceof Error ? restartError.message : String(restartError));
-          }
+          if (restartError) setError(restartError instanceof Error ? restartError.message : String(restartError));
         }
       } finally {
         savingRef.current = false;
       }
     },
-    [systemInfo, form, saveDirConfigValidate]
+    [form, saveDirConfigValidate, systemInfo]
   );
 
+  const relocationStatus = relocation?.operation && ['failed', 'paused'].includes(relocation.operation.state) ? (
+    <div className='space-y-6px'>
+      <SettingsStatus tone='error'>{relocation.operation.error || t('settings.workDirRelocationFailed')}</SettingsStatus>
+      <div className='flex gap-8px'>
+        <Button size='small' type='primary' onClick={() => void handleRelocationRetry()}>{t('common.retry')}</Button>
+        <Button size='small' onClick={() => void handleRelocationCancel()}>{t('common.cancel')}</Button>
+      </div>
+    </div>
+  ) : null;
+
   return (
-    <div className='flex flex-col h-full w-full'>
+    <div className='w-full space-y-24px pb-16px'>
       {modalContextHolder}
       {isRelocating && (
         <div className='fixed inset-0 z-[10000] flex items-center justify-center bg-black/45 backdrop-blur-2px'>
-          <div className='min-w-280px max-w-[calc(100vw-48px)] rounded-12px bg-2 px-24px py-20px shadow-xl text-center'>
+          <div className='min-w-280px max-w-[calc(100vw-48px)] rounded-12px bg-2 px-24px py-20px text-center shadow-xl'>
             <div className='text-16px font-600 text-t-primary'>{t('settings.workDirRelocating')}</div>
             <div className='mt-8px text-13px text-t-secondary'>{t('settings.workDirRelocatingDesc')}</div>
           </div>
         </div>
       )}
 
-      <NomiScrollArea className='flex-1 min-h-0 pb-16px' disableOverflow>
-        <div className='space-y-16px'>
-          <div className='px-[12px] md:px-[32px] py-16px bg-2 rd-16px space-y-12px'>
-            {/*
-              `divide-y` emits only a width; with no border reset in this project the style stays
-              `none`, so `divide-solid` is mandatory or the separators never paint. `divide-solid`
-              styles all four sides, hence `divide-x-0` to keep the unset left/right widths from
-              falling back to the CSS initial `medium` (~3px). `divide-border-2` was dead — there is
-              no theme colour named `border`.
-            */}
-            <div className='w-full flex flex-col divide-y divide-x-0 divide-solid divide-[var(--color-border-2)]'>
-              {preferenceItems.map((item) => (
-                <PreferenceRow key={item.key} label={item.label} description={item.description}>
-                  {item.component}
-                </PreferenceRow>
-              ))}
-            </div>
-            {/* Notification settings with collapsible sub-options */}
-            <Collapse
-              bordered={false}
-              activeKey={notificationEnabled ? ['notification'] : []}
-              onChange={(_, keys) => {
-                const shouldExpand = (keys as string[]).includes('notification');
-                if (shouldExpand && !notificationEnabled) {
-                  handleNotificationEnabledChange(true);
-                } else if (!shouldExpand && notificationEnabled) {
-                  handleNotificationEnabledChange(false);
-                }
-              }}
-              className='[&_.arco-collapse-item]:!border-none [&_.arco-collapse-item-header]:!px-0 [&_.arco-collapse-item-header-title]:!flex-1 [&_.arco-collapse-item-content-box]:!px-0 [&_.arco-collapse-item-content-box]:!pb-0'
-            >
-              <Collapse.Item
-                name='notification'
-                showExpandIcon={false}
-                header={
-                  <div className='flex flex-1 items-center justify-between w-full'>
-                    <span className='text-14px text-2 ml-12px'>{t('settings.notification')}</span>
-                    <Switch
-                      checked={notificationEnabled}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={handleNotificationEnabledChange}
-                    />
-                  </div>
-                }
-              >
-                <div className='pl-12px'>
-                  <PreferenceRow label={t('settings.cronNotificationEnabled')}>
-                    <Switch
-                      checked={cronNotificationEnabled}
-                      disabled={!notificationEnabled}
-                      onChange={handleCronNotificationEnabledChange}
-                    />
-                  </PreferenceRow>
-                </div>
-              </Collapse.Item>
-            </Collapse>
-            <Form form={form} layout='vertical' className='!mt-32px space-y-16px' onValuesChange={handleValuesChange}>
-              <DirInputItem
-                label={t('settings.workDir')}
-                field='workDir'
-                disabled={!canChangeWorkDirectory}
-              />
-              {systemInfo && !canChangeWorkDirectory && (
-                <div className='mt-6px text-12px text-t-secondary'>
-                  {t('settings.workDirDesktopOnly')}
-                </div>
-              )}
-              {relocation?.operation && ['failed', 'paused'].includes(relocation.operation.state) && (
-                <Alert
-                  type='error'
-                  content={
-                    <div className='space-y-6px'>
-                      <div>{relocation.operation.error || t('settings.workDirRelocationFailed')}</div>
-                      <div className='flex gap-8px'>
-                        <Button size='small' type='primary' onClick={() => void handleRelocationRetry()}>
-                          {t('common.retry')}
-                        </Button>
-                        <Button size='small' onClick={() => void handleRelocationCancel()}>
-                          {t('common.cancel')}
-                        </Button>
-                      </div>
-                    </div>
-                  }
-                />
-              )}
-              {systemInfo?.workDirChange?.state === 'failed' && (
-                <Alert
-                  type='error'
-                  content={
-                    <div className='space-y-4px'>
-                      <div>{systemInfo.workDirChange.error || t('settings.workDirRelocationFailed')}</div>
-                      {systemInfo.workDirChange.rollbackCopy && (
-                        <div className='break-all text-12px'>
-                          {t('settings.workDirRelocationBackup')}: {systemInfo.workDirChange.rollbackCopy}
-                        </div>
-                      )}
-                    </div>
-                  }
-                />
-              )}
-              {/* Log directory (read-only, click to open in file manager) */}
-              <div>
-                <Form.Item label={t('settings.logDir')}>
-                  <div className='nomi-dir-input h-[32px] flex items-center rounded-8px border border-solid border-transparent pl-14px bg-[var(--fill-0)] '>
-                    <Tooltip content={systemInfo?.logDir || ''} position='top'>
-                      <div className='flex-1 min-w-0 text-13px text-t-primary truncate'>{systemInfo?.logDir || ''}</div>
-                    </Tooltip>
-                    <Button
-                      type='text'
-                      style={{ borderLeft: '1px solid var(--color-border-2)', borderRadius: '0 8px 8px 0' }}
-                      icon={<FolderSearch theme='outline' size='18' fill={iconColors.primary} />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleOpenLogDir();
-                      }}
-                    />
-                  </div>
-                </Form.Item>
-              </div>
-              {error && (
-                <Alert
-                  className='mt-16px'
-                  type='error'
-                  content={
-                    <span>
-                      {typeof error === 'string' ? error : JSON.stringify(error)}
-                      <FeedbackButton className='ml-6px' />
-                    </span>
-                  }
-                />
-              )}
-            </Form>
-          </div>
+      <SettingsPageHeader title={t('settings.system')} />
 
-          {/* Advanced settings gate — unlocks developer-only nav items such as Cloud Account */}
-          <div className='px-[12px] md:px-[32px] py-16px bg-2 rd-16px space-y-12px'>
-            <div className='text-13px font-600 text-t-primary'>{t('settings.developerMode.sectionTitle')}</div>
-            <DeveloperModeSetting />
-          </div>
+      <SettingsGroup title={t('settings.sectionGeneral')}>
+        <SettingsList>
+          <SettingsRow label={t('settings.language')} control={<LanguageSwitcher />} controlLayout='field' />
+          <SettingsRow
+            label={t('settings.sendKey')}
+            description={t('settings.sendKeyDesc')}
+            control={
+              <NomiSelect className='w-full' value={sendKey} onChange={(value) => handleSendKeyChange(value as 'enter' | 'mod-enter')}>
+                <NomiSelect.Option value='enter'>{t('settings.sendKeyEnter')}</NomiSelect.Option>
+                <NomiSelect.Option value='mod-enter'>{t('settings.sendKeyModEnter')}</NomiSelect.Option>
+              </NomiSelect>
+            }
+            controlLayout='field'
+          />
+          <SettingsRow
+            label={t('settings.modelHub.imageAnalysis.title')}
+            description={t('settings.modelHub.imageAnalysis.subtitle')}
+            control={<ImageAnalysisModelContent compact />}
+            controlLayout='field'
+          />
+          <SettingsRow
+            label={t('settings.startOnBoot')}
+            description={startOnBoot.supported ? t('settings.startOnBootDesc') : t('settings.startOnBootUnsupported')}
+            disabled={!startOnBoot.supported}
+            control={<Switch checked={startOnBoot.enabled} onChange={handleStartOnBootChange} disabled={!startOnBoot.supported} />}
+            controlLayout='compact'
+          />
+          <SettingsRow label={t('settings.keepAwake')} description={t('settings.keepAwakeDesc')} control={<Switch checked={keepAwake} onChange={handleKeepAwakeChange} />} controlLayout='compact' />
+          <SettingsRow label={t('settings.saveUploadToWorkspace')} control={<Switch checked={saveUploadToWorkspace} onChange={handleSaveUploadToWorkspaceChange} />} controlLayout='compact' />
+          <SettingsRow label={t('settings.autoPreviewOfficeFiles')} description={t('settings.autoPreviewOfficeFilesDesc')} control={<Switch checked={autoPreviewOfficeFiles} onChange={handleAutoPreviewOfficeFilesChange} />} controlLayout='compact' />
+        </SettingsList>
+        {preferenceError && <SettingsStatus tone='error' className='mt-8px'>{preferenceError}</SettingsStatus>}
+      </SettingsGroup>
 
-          {/* Danger zone: factory reset (clears the database + derived data) */}
-          <div className='px-[12px] md:px-[32px] py-16px bg-2 rd-16px space-y-12px'>
-            <div className='text-13px font-600 text-[rgb(var(--danger-6))]'>{t('settings.factoryReset.dangerZone')}</div>
-            <div className='flex items-center justify-between gap-12px flex-wrap'>
-              <div className='flex-1 min-w-200px'>
-                <div className='text-14px text-t-primary'>{t('settings.factoryReset.title')}</div>
-                <div className='text-12px text-t-secondary mt-2px leading-20px'>{t('settings.factoryReset.rowDesc')}</div>
-              </div>
-              <Button status='danger' onClick={() => setFactoryResetVisible(true)}>
-                {t('settings.factoryReset.button')}
-              </Button>
-            </div>
-          </div>
-        </div>
-      </NomiScrollArea>
+      <SettingsGroup title={t('settings.sectionNotifications')}>
+        <SettingsList>
+          <SettingsRow label={t('settings.notification')} control={<Switch checked={notificationEnabled} onChange={handleNotificationEnabledChange} />} controlLayout='compact' />
+          <SettingsRow
+            label={t('settings.cronNotificationEnabled')}
+            disabled={!notificationEnabled}
+            status={!notificationEnabled ? <SettingsStatus>{t('settings.disabledByNotifications')}</SettingsStatus> : undefined}
+            control={<Switch checked={cronNotificationEnabled} disabled={!notificationEnabled} onChange={handleCronNotificationEnabledChange} />}
+            controlLayout='compact'
+          />
+        </SettingsList>
+      </SettingsGroup>
+
+      <SettingsGroup title={t('settings.sectionStorage')}>
+        <Form form={form} layout='vertical' onValuesChange={handleValuesChange}>
+          <SettingsList>
+            <SettingsRow
+              label={t('settings.workDir')}
+              description={!canChangeWorkDirectory ? t('settings.workDirDesktopOnly') : undefined}
+              disabled={!canChangeWorkDirectory}
+              status={relocationStatus}
+              control={<DirInputItem compact label={t('settings.workDir')} field='workDir' disabled={!canChangeWorkDirectory} />}
+              controlLayout='field'
+            />
+            <SettingsRow
+              label={t('settings.logDir')}
+              control={
+                <div className='nomi-dir-input flex h-[32px] items-center rounded-8px border border-solid border-transparent bg-[var(--fill-0)] pl-14px'>
+                  <Tooltip content={systemInfo?.logDir || ''} position='top'>
+                    <span className='min-w-0 flex-1 truncate text-13px text-t-primary'>{systemInfo?.logDir || ''}</span>
+                  </Tooltip>
+                  <Button
+                    type='text'
+                    aria-label={t('settings.logDir')}
+                    style={{ borderLeft: '1px solid var(--color-border-2)', borderRadius: '0 8px 8px 0' }}
+                    icon={<FolderSearch theme='outline' size='18' fill={iconColors.primary} />}
+                    onClick={handleOpenLogDir}
+                  />
+                </div>
+              }
+              controlLayout='field'
+            />
+          </SettingsList>
+        </Form>
+        {systemInfo?.workDirChange?.state === 'failed' && (
+          <SettingsStatus tone='error' className='mt-8px'>
+            {systemInfo.workDirChange.error || t('settings.workDirRelocationFailed')}
+            {systemInfo.workDirChange.rollbackCopy && ` · ${t('settings.workDirRelocationBackup')}: ${systemInfo.workDirChange.rollbackCopy}`}
+          </SettingsStatus>
+        )}
+        {error && <SettingsStatus tone='error' className='mt-8px'>{error} <FeedbackButton className='ml-6px' /></SettingsStatus>}
+      </SettingsGroup>
+
+      <SettingsGroup title={t('settings.sectionDeveloper')}>
+        <SettingsList><DeveloperModeSetting /></SettingsList>
+      </SettingsGroup>
+
+      <SettingsGroup title={t('settings.sectionDanger')}>
+        <SettingsList>
+          <SettingsRow
+            label={t('settings.factoryReset.title')}
+            description={t('settings.factoryReset.rowDesc')}
+            control={<Button status='danger' onClick={() => setFactoryResetVisible(true)}>{t('settings.factoryReset.button')}</Button>}
+            controlLayout='actions'
+          />
+        </SettingsList>
+      </SettingsGroup>
 
       <FactoryResetModal visible={factoryResetVisible} onClose={() => setFactoryResetVisible(false)} />
     </div>

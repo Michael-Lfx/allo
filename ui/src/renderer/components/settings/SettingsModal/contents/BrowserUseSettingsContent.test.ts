@@ -170,7 +170,7 @@ describe('Browser Use settings contract', () => {
     expect(advancedSection.includes("<Right className='shrink-0 text-t-secondary' size='13' />")).toBe(true);
     expect(advancedSection.includes("<Down className='shrink-0 text-t-secondary' size='13' />")).toBe(true);
     expect(source.includes('[&_.arco-collapse-item-content]:!bg-transparent')).toBe(true);
-    expect(advancedSection.includes("className='mt-4px ml-12px pl-12px md:ml-20px md:pl-20px'")).toBe(true);
+    expect(advancedSection.includes("<SettingsNestedRows className='mt-4px'>")).toBe(true);
     expect(advancedSection.match(/className='w-full sm:w-180px'/g)?.length).toBe(6);
     expect(advancedSection.includes('divide-y')).toBe(false);
     expect(advancedSection.includes('style={{ width: 180 }}')).toBe(false);

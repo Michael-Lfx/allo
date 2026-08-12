@@ -10,7 +10,7 @@ const OpenCapabilitiesSettings: React.FC = () => {
   const { t } = useTranslation();
 
   return (
-    <SettingsPageWrapper contentClassName='md:max-w-1180px'>
+    <SettingsPageWrapper layout='hub'>
       <div className='flex flex-col gap-20px'>
         <div>
           <Typography.Title heading={5} className='!m-0'>

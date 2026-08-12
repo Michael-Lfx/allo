@@ -3,8 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { Button, Input, InputNumber, Message, Slider } from '@arco-design/web-react';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import {
+  SettingsControlGroup,
+  SettingsList,
   SettingsPageHeader,
-  SettingsPanel,
 } from '@/renderer/components/settings/SettingsPagePrimitives';
 import PreferenceRow from '@/renderer/components/settings/SettingsModal/contents/SystemModalContent/PreferenceRow';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
@@ -52,11 +53,11 @@ const LearningSettings: React.FC = () => {
           title={t('learning.settings.title')}
           description={t('learning.settings.description')}
         />
-        <SettingsPanel>
-          <div className='w-full flex flex-col divide-y divide-border-2'>
+        <SettingsList>
             <PreferenceRow
               label={t('learning.settings.desiredRetention')}
               description={t('learning.settings.desiredRetentionHint')}
+              controlLayout='compound'
             >
               <div className='flex items-center gap-12px w-full sm:w-280px'>
                 <Slider
@@ -80,22 +81,26 @@ const LearningSettings: React.FC = () => {
             <PreferenceRow
               label={t('learning.settings.fsrsParameters')}
               description={t('learning.settings.fsrsParametersHint')}
+              controlLayout='compound'
             >
-              <div className='flex flex-col gap-8px w-full sm:w-280px'>
+              <div className='flex flex-col gap-8px w-full'>
                 <Input.TextArea
                   autoSize={{ minRows: 2, maxRows: 4 }}
                   placeholder={(fsrsParameters ?? []).join(', ')}
                   value={parametersDraft}
                   onChange={setParametersDraft}
                 />
-                <Button size='small' className='self-end' onClick={saveParameters}>
-                  {t('learning.settings.fsrsParametersApply')}
-                </Button>
+                <SettingsControlGroup>
+                  <Button size='small' onClick={saveParameters}>
+                    {t('learning.settings.fsrsParametersApply')}
+                  </Button>
+                </SettingsControlGroup>
               </div>
             </PreferenceRow>
             <PreferenceRow
               label={t('learning.settings.reviewSessionLimit')}
               description={t('learning.settings.reviewSessionLimitHint')}
+              controlLayout='field'
             >
               <InputNumber
                 className='w-full sm:w-180px'
@@ -108,6 +113,7 @@ const LearningSettings: React.FC = () => {
             <PreferenceRow
               label={t('learning.settings.diagnosticLimit')}
               description={t('learning.settings.diagnosticLimitHint')}
+              controlLayout='field'
             >
               <InputNumber
                 className='w-full sm:w-180px'
@@ -117,8 +123,7 @@ const LearningSettings: React.FC = () => {
                 onChange={(value) => value != null && void setDiagnosticLimit(Number(value))}
               />
             </PreferenceRow>
-          </div>
-        </SettingsPanel>
+        </SettingsList>
       </div>
     </SettingsPageWrapper>
   );

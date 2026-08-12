@@ -1,37 +1,33 @@
 /**
  * MarketSettingsPanel — shared ranking-market surface for the skill, MCP,
  * plugin, and preset-package markets. Renders the source switcher, sync /
- * search controls, the card grid, and (optionally) the shared audience /
- * scenario tag filter bar. Consumers own what "Add" means via `onAdd`.
+ * search controls, the card grid, local item details, and (optionally) the
+ * shared audience / scenario tag filter bar. Consumers own the primary action
+ * meaning and security boundary via `primaryAction`.
  */
-import { ipcBridge } from '@/common';
 import type { ISkillMarketItem, SkillMarketSource } from '@/common/adapter/ipcBridge';
 import { resolveLocaleKey } from '@/common/utils';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { usePresetTags } from '@/renderer/hooks/preset';
 import { openExternalUrl } from '@/renderer/utils/platform';
+import { copyText } from '@/renderer/utils/ui/clipboard';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
-import PresetTagFilterBar from './PresetSettings/PresetTagFilterBar';
-import type { TagFilterState } from './PresetSettings/presetUtils';
-import type { SkillTagFilterState } from './skill/skillFilter';
 import SkillMarketCard from './skill/SkillMarketCard';
+import MarketDetailDrawer from './skill/MarketDetailDrawer';
+import MarketToolbar from './skill/MarketToolbar';
+import MarketCardGrid from './skill/MarketCardGrid';
+import { createMarketItemViewModel, type MarketItemViewModel } from './skill/marketViewModel';
+import type { MarketPrimaryActionConfig } from './skill/marketContracts';
+import { useMarketActionState } from './skill/useMarketActionState';
 import {
-  cleanMarketText,
-  filterSkillMarketItems,
   marketSourceLabel,
   marketSourceUrl,
-  normalizeSkillMarketErrors,
-  normalizeSkillMarketItems,
-  resolveMarketSyncItems,
-  selectMarketSourceWithItems,
 } from './skill/skillMarket';
-import { Button, Input } from '@arco-design/web-react';
-import { CloseSmall, LinkOne, Refresh, Search } from '@icon-park/react';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMarketCatalog } from './skill/useMarketCatalog';
+import { Button } from '@arco-design/web-react';
+import { LinkOne } from '@icon-park/react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-
-const CARD_GRID_COLS = 'repeat(auto-fill, minmax(min(232px, 100%), 1fr))';
-const EMPTY_TAG_FILTER: SkillTagFilterState = { audience: [], scenario: [] };
 
 /** Per-market wording overrides; every field falls back to the generic `settings.market.*` copy. */
 type MarketPanelTextOverrides = {
@@ -57,11 +53,7 @@ type MarketSettingsPanelProps = {
   defaultSource: SkillMarketSource;
   searchPlaceholder: string;
   emptyText: string;
-  onAdd: (item: ISkillMarketItem) => void | Promise<void>;
-  /** True when this market entry already has a live installed resource. */
-  isAdded?: (item: ISkillMarketItem) => boolean;
-  /** Prevent a false enabled flash while the installed catalog is loading. */
-  addedStateLoading?: boolean;
+  primaryAction: MarketPrimaryActionConfig;
   /** Render the shared audience/scenario tag filter bar (used by the skill market). */
   enableTagFilter?: boolean;
   /**
@@ -72,6 +64,12 @@ type MarketSettingsPanelProps = {
   text?: MarketPanelTextOverrides;
 };
 
+/**
+ * The market only owns transient interaction state.  Each consumer retains
+ * its own security boundary and business flow through this small contract.
+ */
+export type { MarketPrimaryActionConfig } from './skill/marketContracts';
+
 const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
   title,
   description,
@@ -81,9 +79,7 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
   defaultSource,
   searchPlaceholder,
   emptyText,
-  onAdd,
-  isAdded,
-  addedStateLoading = false,
+  primaryAction,
   enableTagFilter = false,
   testIdPrefix,
   text,
@@ -94,144 +90,51 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
   const isMobile = layout?.isMobile ?? false;
   const tags = usePresetTags();
   const [message, messageContext] = useArcoMessage({ maxCount: 10 });
-  const autoSyncStartedRef = useRef(false);
-  const itemsRef = useRef<ISkillMarketItem[]>([]);
-  const pendingAddIdsRef = useRef<Set<string>>(new Set());
-  const [pendingAddIds, setPendingAddIds] = useState<Set<string>>(new Set());
+  const [detailItem, setDetailItem] = useState<MarketItemViewModel | null>(null);
+  const detailTriggerRef = useRef<HTMLElement | null>(null);
 
-  const [activeSource, setActiveSource] = useState<SkillMarketSource>(defaultSource);
-  const [items, setItems] = useState<ISkillMarketItem[]>([]);
-  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
-  const [errors, setErrors] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchExpanded, setSearchExpanded] = useState(false);
-  const [tagFilter, setTagFilter] = useState<TagFilterState>({ audience: [], scenario: [] });
+  const notify = useMemo(
+    () => ({
+      success: (value: string) => message.success(value),
+      warning: (value: string) => message.warning(value),
+      error: (value: string) => message.error(value),
+    }),
+    [message],
+  );
+  const catalog = useMarketCatalog({
+    sources,
+    cacheKey,
+    autoSyncKey,
+    defaultSource,
+    enableTagFilter,
+    tags,
+    t,
+    notify,
+    text,
+  });
+  const {
+    activeSource,
+    setActiveSource,
+    items,
+    fetchedAt,
+    errors,
+    loading,
+    searchQuery,
+    setSearchQuery,
+    searchExpanded,
+    setSearchExpanded,
+    tagFilter,
+    setTagFilter,
+    filteredItems,
+    status,
+    sourceCounts,
+    syncMarket,
+  } = catalog;
 
   const testId = useCallback(
     (id: string): string | undefined => (testIdPrefix ? id.replace('{market}', testIdPrefix) : undefined),
     [testIdPrefix]
   );
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(cacheKey);
-      if (!raw) return;
-      const cache = JSON.parse(raw) as { fetched_at?: number; items?: unknown; errors?: unknown };
-      const cachedItems = normalizeSkillMarketItems(cache.items).filter((item) => sources.includes(item.source));
-      itemsRef.current = cachedItems;
-      setItems(cachedItems);
-      setActiveSource((source) => selectMarketSourceWithItems(source, sources, cachedItems));
-      setFetchedAt(typeof cache.fetched_at === 'number' ? cache.fetched_at : null);
-      setErrors(normalizeSkillMarketErrors(cache.errors));
-    } catch {
-      localStorage.removeItem(cacheKey);
-    }
-  }, [cacheKey, sources]);
-
-  // Drop filter selections whose tags were deleted from the shared vocabulary.
-  useEffect(() => {
-    if (!enableTagFilter) return;
-    const audienceIds = new Set(tags.audienceTags.map((tag) => tag.preset_tag_id));
-    const scenarioIds = new Set(tags.scenarioTags.map((tag) => tag.preset_tag_id));
-    setTagFilter((prev) => {
-      const audience = prev.audience.filter((presetTagId) => audienceIds.has(presetTagId));
-      const scenario = prev.scenario.filter((presetTagId) => scenarioIds.has(presetTagId));
-      if (audience.length === prev.audience.length && scenario.length === prev.scenario.length) return prev;
-      return { audience, scenario };
-    });
-  }, [enableTagFilter, tags.audienceTags, tags.scenarioTags]);
-
-  const syncMarket = useCallback(
-    async (options?: { showToast?: boolean }) => {
-      const showToast = options?.showToast ?? true;
-      setLoading(true);
-      try {
-        const result = await ipcBridge.fs.syncSkillMarketRankings.invoke({ sources });
-        const normalized = normalizeSkillMarketItems(result.items).filter((item) => sources.includes(item.source));
-        const normalizedErrors = normalizeSkillMarketErrors(result.errors);
-        const nextItems = resolveMarketSyncItems(itemsRef.current, normalized);
-        itemsRef.current = nextItems;
-        setItems(nextItems);
-        setActiveSource((source) => selectMarketSourceWithItems(source, sources, nextItems));
-        setFetchedAt(result.fetched_at);
-        setErrors(normalizedErrors);
-        localStorage.setItem(
-          cacheKey,
-          JSON.stringify({
-            fetched_at: result.fetched_at,
-            items: nextItems,
-            errors: normalizedErrors,
-          })
-        );
-        if (showToast) {
-          if (normalized.length > 0) {
-            message.success(text?.syncSuccess ?? t('settings.market.syncSuccess', { defaultValue: '市场已更新' }));
-          } else if (nextItems.length > 0) {
-            message.warning(
-              text?.syncKeptCache ??
-                t('settings.market.syncKeptCache', { defaultValue: '未获取到新数据，已保留本地缓存。' })
-            );
-          } else {
-            message.warning(text?.syncEmpty ?? t('settings.market.syncEmpty', { defaultValue: '未获取到市场数据。' }));
-          }
-        }
-      } catch (error) {
-        console.error('Failed to sync market:', error);
-        const errorText = text?.syncError ?? t('settings.market.syncError', { defaultValue: '更新市场失败' });
-        setErrors([errorText]);
-        if (showToast) message.error(errorText);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [cacheKey, message, sources, t, text]
-  );
-
-  useEffect(() => {
-    if (autoSyncStartedRef.current) return;
-    autoSyncStartedRef.current = true;
-    try {
-      if (sessionStorage.getItem(autoSyncKey) === '1') return;
-      sessionStorage.setItem(autoSyncKey, '1');
-    } catch {
-      // Storage is an optimization only; the fetch itself is useful.
-    }
-    void syncMarket({ showToast: false });
-  }, [autoSyncKey, syncMarket]);
-
-  const skillTagFilter = useMemo<SkillTagFilterState>(() => {
-    if (!enableTagFilter) return EMPTY_TAG_FILTER;
-    const keyById = new Map(
-      [...tags.audienceTags, ...tags.scenarioTags].map((tag) => [tag.preset_tag_id, tag.key] as const)
-    );
-    return {
-      audience: tagFilter.audience.flatMap((presetTagId) => {
-        const key = keyById.get(presetTagId);
-        return key ? [key] : [];
-      }),
-      scenario: tagFilter.scenario.flatMap((presetTagId) => {
-        const key = keyById.get(presetTagId);
-        return key ? [key] : [];
-      }),
-    };
-  }, [enableTagFilter, tagFilter, tags.audienceTags, tags.scenarioTags]);
-
-  const filteredItems = useMemo(
-    () => filterSkillMarketItems(items, activeSource, searchQuery, skillTagFilter),
-    [items, activeSource, searchQuery, skillTagFilter]
-  );
-
-  const sourceCounts = useMemo(() => {
-    const counts: Partial<Record<SkillMarketSource, number>> = {};
-    for (const source of sources) counts[source] = 0;
-    for (const item of items) {
-      if (sources.includes(item.source)) {
-        counts[item.source] = (counts[item.source] ?? 0) + 1;
-      }
-    }
-    return counts;
-  }, [items, sources]);
 
   const handleOpenMarket = useCallback(async () => {
     try {
@@ -242,30 +145,47 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
     }
   }, [activeSource, message, t, text]);
 
-  const handleMarketAdd = useCallback(
-    async (item: ISkillMarketItem) => {
-      if (addedStateLoading || isAdded?.(item) || pendingAddIdsRef.current.has(item.id)) return;
-      const started = new Set(pendingAddIdsRef.current);
-      started.add(item.id);
-      pendingAddIdsRef.current = started;
-      setPendingAddIds(started);
+  const handleCopyInstallCommand = useCallback(
+    async (item: ISkillMarketItem | MarketItemViewModel) => {
       try {
-        await onAdd(item);
+        await copyText('raw' in item ? item.installCommand : item.install_command);
+        message.success(t('common.copySuccess', { defaultValue: '已复制' }));
       } catch (error) {
-        // Consumers normally own their user-facing error message. Keep the
-        // shared callback boundary rejection-safe for future consumers.
-        console.error('Market add callback failed:', error);
-      } finally {
-        const finished = new Set(pendingAddIdsRef.current);
-        finished.delete(item.id);
-        pendingAddIdsRef.current = finished;
-        setPendingAddIds(finished);
+        console.error('Failed to copy market install command:', error);
+        message.error(t('common.copyFailed', { defaultValue: '复制失败' }));
       }
     },
-    [addedStateLoading, isAdded, onAdd]
+    [message, t]
   );
 
-  const isSearchVisible = searchExpanded || searchQuery.length > 0;
+  const handleOpenItemSource = useCallback(
+    async (item: ISkillMarketItem | MarketItemViewModel) => {
+      try {
+        await openExternalUrl('raw' in item ? item.sourceUrl : item.url);
+      } catch (error) {
+        console.error('Failed to open market item source:', error);
+        message.error(text?.openFailed ?? t('settings.market.openFailed', { defaultValue: '无法打开市场' }));
+      }
+    },
+    [message, t, text]
+  );
+
+  const actionState = useMarketActionState(primaryAction);
+
+  const viewModels = useMemo(
+    () =>
+      filteredItems.map((item) =>
+        createMarketItemViewModel(item, {
+          localeKey,
+          tagByKey: tags.tagByKey,
+          t,
+        })
+      ),
+    [filteredItems, localeKey, t, tags.tagByKey]
+  );
+
+  // The single activeActionItemId lives in useMarketActionState so cards and
+  // the detail drawer cannot diverge during an install/import flow.
   const activeSearch = searchQuery.trim().length > 0;
   const resolvedEmptyText = loading
     ? t('common.loading', { defaultValue: '加载中...' })
@@ -281,82 +201,34 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
         : (text?.noFilterMatch ?? emptyText);
 
   return (
-    <div className={`bg-fill-2 rounded-24px ${isMobile ? 'p-16px' : 'p-20px'}`}>
+    <div data-market-status={status}>
       {messageContext}
-      <div className='flex flex-col gap-16px mb-20px'>
-        <div className={`flex gap-12px ${isMobile ? 'flex-col' : 'items-start justify-between'}`}>
-          <div className='min-w-0'>
-            <h2 className='m-0 text-28px font-700 leading-[1.1] text-t-primary'>{title}</h2>
-            <p className='mt-8px mb-0 max-w-[680px] text-14px text-t-secondary leading-relaxed'>{description}</p>
-          </div>
-          <div className={`flex items-center gap-10px ${isMobile ? 'w-full flex-wrap' : 'flex-shrink-0'}`}>
-            <div className='inline-flex items-center gap-4px rounded-12px bg-[var(--color-bg-2)] p-3px border border-solid border-[var(--color-border-2)]'>
-              {sources.map((source) => (
-                <Button
-                  key={source}
-                  size='small'
-                  type={activeSource === source ? 'primary' : 'text'}
-                  data-testid={testId(`btn-{market}-source-${source}`)}
-                  className='!rounded-9px !h-28px !px-12px !text-12px'
-                  onClick={() => setActiveSource(source)}
-                >
-                  {marketSourceLabel(source)}
-                  {(sourceCounts[source] ?? 0) > 0 ? ` ${sourceCounts[source]}` : ''}
-                </Button>
-              ))}
-            </div>
-            <Button
-              type='text'
-              size='small'
-              data-testid={testId('btn-sync-{market}')}
-              className='!rounded-10px !h-34px !w-34px !p-0 flex items-center justify-center !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
-              icon={<Refresh size={16} fill='currentColor' className={loading ? 'animate-spin' : ''} />}
-              onClick={() => void syncMarket()}
-              title={t('common.refresh', { defaultValue: '刷新' })}
-            />
-            <Button
-              type={isSearchVisible ? 'secondary' : 'text'}
-              size='small'
-              data-testid={testId('btn-search-{market}')}
-              className='!rounded-10px !h-34px !w-34px !p-0 flex items-center justify-center !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
-              icon={isSearchVisible ? <CloseSmall size={16} fill='currentColor' /> : <Search size={16} fill='currentColor' />}
-              onClick={() => {
-                if (isSearchVisible) {
-                  setSearchExpanded(false);
-                  setSearchQuery('');
-                  return;
-                }
-                setSearchExpanded(true);
-              }}
-            />
-          </div>
-        </div>
-
-        {isSearchVisible && (
-          <Input
-            allowClear
-            autoFocus
-            value={searchQuery}
-            data-testid={testId('input-search-{market}')}
-            className='!bg-[var(--color-bg-2)]'
-            placeholder={searchPlaceholder}
-            prefix={<Search size={14} fill='currentColor' />}
-            onChange={(value) => setSearchQuery(cleanMarketText(value, 80))}
-          />
-        )}
-
-        {enableTagFilter && (
-          <PresetTagFilterBar
-            audienceTags={tags.audienceTags}
-            scenarioTags={tags.scenarioTags}
-            value={tagFilter}
-            onChange={setTagFilter}
-            localeKey={localeKey}
-            onManageTags={() => undefined}
-            hideManageTags
-          />
-        )}
-      </div>
+      <MarketToolbar
+        title={title}
+        description={description}
+        sources={sources}
+        activeSource={activeSource}
+        sourceCounts={sourceCounts}
+        onSourceChange={setActiveSource}
+        loading={loading}
+        onRefresh={() => void syncMarket()}
+        searchPlaceholder={searchPlaceholder}
+        searchQuery={searchQuery}
+        searchExpanded={searchExpanded}
+        onSearchQueryChange={setSearchQuery}
+        onSearchExpandedChange={(expanded) => {
+          setSearchExpanded(expanded);
+          if (!expanded) setSearchQuery('');
+        }}
+        isMobile={isMobile}
+        testId={testId}
+        enableTagFilter={enableTagFilter}
+        audienceTags={tags.audienceTags}
+        scenarioTags={tags.scenarioTags}
+        tagFilter={tagFilter}
+        onTagFilterChange={setTagFilter}
+        localeKey={localeKey}
+      />
 
       {errors.length > 0 && (
         <div className='mb-14px rounded-12px border border-solid border-[rgba(var(--orange-6),0.24)] bg-[rgba(var(--orange-6),0.08)] px-14px py-10px text-12px leading-18px text-[rgb(var(--orange-7))]'>
@@ -365,22 +237,43 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
       )}
 
       {filteredItems.length > 0 ? (
-        <div className='grid gap-12px' style={{ gridTemplateColumns: CARD_GRID_COLS }}>
-          {filteredItems.map((item) => {
-            const added = isAdded?.(item) ?? false;
-            return (
-              <SkillMarketCard
-                key={item.id}
-                item={item}
-                tagByKey={tags.tagByKey}
-                localeKey={localeKey}
-                adding={pendingAddIds.has(item.id)}
-                added={added}
-                addedStateLoading={addedStateLoading}
-                onAdd={(marketItem) => void handleMarketAdd(marketItem)}
-              />
-            );
-          })}
+        <MarketCardGrid busy={loading}>
+          {viewModels.map((item) => (
+            <SkillMarketCard
+              key={item.id}
+              item={item}
+              actionLabel={primaryAction.label}
+              pendingLabel={primaryAction.pendingLabel}
+              completedLabel={primaryAction.completedLabel}
+              actionState={actionState.getState(item)}
+              busy={actionState.isBusy(item.id)}
+              disabled={actionState.isDisabled(item)}
+              onAdd={(marketItem) => void actionState.runPrimaryAction(marketItem)}
+              onOpenSource={(marketItem) => void handleOpenItemSource(marketItem)}
+              onCopyInstallCommand={(marketItem) => void handleCopyInstallCommand(marketItem)}
+              onViewDetails={(marketItem, trigger) => {
+                detailTriggerRef.current = trigger ?? null;
+                setDetailItem(marketItem);
+              }}
+            />
+          ))}
+        </MarketCardGrid>
+      ) : loading && items.length === 0 ? (
+        <div
+          aria-busy='true'
+          className='grid items-start gap-12px'
+          style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(270px, 100%), 1fr))' }}
+        >
+          {Array.from({ length: 6 }, (_, index) => (
+            <div
+              key={index}
+              className='h-184px rounded-16px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-14px'
+            >
+              <div className='h-34px w-full animate-pulse rounded-8px bg-[var(--color-fill-2)]' />
+              <div className='mt-16px h-14px w-5/6 animate-pulse rounded bg-[var(--color-fill-2)]' />
+              <div className='mt-8px h-14px w-3/5 animate-pulse rounded bg-[var(--color-fill-2)]' />
+            </div>
+          ))}
         </div>
       ) : (
         <div className='text-center text-t-secondary py-40px'>{resolvedEmptyText}</div>
@@ -409,6 +302,20 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
           </Button>
         </div>
       )}
+
+      <MarketDetailDrawer
+        item={detailItem}
+        visible={detailItem !== null}
+        action={primaryAction}
+        actionState={detailItem ? actionState.getState(detailItem) : 'ready'}
+        busy={detailItem ? actionState.isBusy(detailItem.id) : false}
+        disabled={detailItem ? actionState.isDisabled(detailItem) : false}
+        onPrimaryAction={(item) => void actionState.runPrimaryAction(item)}
+        onCopyInstallCommand={(item) => void handleCopyInstallCommand(item)}
+        onOpenSource={(item) => void handleOpenItemSource(item)}
+        onClose={() => setDetailItem(null)}
+        restoreFocusRef={detailTriggerRef}
+      />
     </div>
   );
 };

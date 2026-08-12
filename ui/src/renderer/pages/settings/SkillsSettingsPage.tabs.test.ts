@@ -16,10 +16,14 @@ describe('SkillsSettingsPage tabs', () => {
     const pageSource = readSource(new URL('./SkillsSettingsPage.tsx', import.meta.url));
     const marketSource = readSource(new URL('./SkillMarketSettings.tsx', import.meta.url));
 
+    // Header height (min-height 42px) and title weight (font-weight 500) are
+    // owned by the shared `flowy-settings-tabs` CSS class (see settings.css),
+    // replacing the inline arbitrary-variant tokens used previously.
+    expect(pageSource).toContain('flowy-settings-tabs');
+    // The hub page must not reintroduce lazyload or a competing flex
+    // viewport-height chain on top of the shared tabs class.
     expect(pageSource).not.toContain('lazyload');
     expect(pageSource).not.toContain('flex flex-col flex-1 min-h-0');
-    expect(pageSource).toContain('[&_.arco-tabs-header-nav]:!min-h-40px');
-    expect(pageSource).toContain('[&_.arco-tabs-header-title]:!font-500');
     expect(marketSource).toContain("<div className='w-full pb-16px'>");
     expect(marketSource).not.toContain("<div className='flex flex-col h-full w-full'>");
   });

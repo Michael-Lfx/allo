@@ -8,6 +8,12 @@ import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
 import WebviewHost from '@/renderer/components/media/WebviewHost';
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
+import { Button } from '@arco-design/web-react';
+import {
+  SettingsEmptyState,
+  SettingsPageHeader,
+  SettingsStatus,
+} from '@/renderer/components/settings/SettingsPagePrimitives';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
 
 const isExternalSettingsUrl = (url?: string): boolean => /^https?:\/\//i.test(url || '');
@@ -18,27 +24,30 @@ const isExternalSettingsUrl = (url?: string): boolean => /^https?:\/\//i.test(ur
  */
 const ExtensionSettingsPage: React.FC = () => {
   const { tabId } = useParams<{ tabId: string }>();
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   const { resolveExtTabName } = useExtI18n();
-  const extensionTabs = useExtensionSettingsTabs();
+  const { tabs: extensionTabs, status, refresh } = useExtensionSettingsTabs();
   const [loading, setLoading] = useState(true);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  const { tab, error } = useMemo<{ tab: IExtensionSettingsTab | null; error: string | null }>(() => {
+  const pageState = useMemo<'loading' | 'empty' | 'not-found' | 'failed' | 'ready'>(() => {
     if (!tabId) {
-      return { tab: null, error: 'No tab ID provided' };
+      return 'not-found';
     }
-    // While shared cache is still warming up (empty on first mount), defer
-    // the "not found" error so a freshly-loaded tab list can resolve it.
-    if (extensionTabs.length === 0) {
-      return { tab: null, error: null };
+    if (status === 'loading') {
+      return 'loading';
     }
-    const found = extensionTabs.find((t) => t.id === tabId);
-    if (found) {
-      return { tab: found, error: null };
+    if (status === 'error') {
+      return 'failed';
     }
-    return { tab: null, error: `Settings tab "${tabId}" not found` };
-  }, [tabId, extensionTabs]);
+    if (extensionTabs.length === 0) return 'empty';
+    return extensionTabs.some((item) => item.id === tabId) ? 'ready' : 'not-found';
+  }, [extensionTabs, status, tabId]);
+
+  const tab = useMemo(
+    () => extensionTabs.find((item) => item.id === tabId) ?? null,
+    [extensionTabs, tabId]
+  );
 
   const resolvedUrl = resolveExtensionAssetUrl(tab?.url) ?? tab?.url;
   const isExternalTab = isExternalSettingsUrl(resolvedUrl);
@@ -114,14 +123,33 @@ const ExtensionSettingsPage: React.FC = () => {
   }, [loading, postLocaleInit]);
 
   return (
-    <SettingsPageWrapper>
-      <div className='relative w-full h-full min-h-400px'>
-        {!tab && !error && (
+    <SettingsPageWrapper layout='hub'>
+      <div className='space-y-24px'>
+        <SettingsPageHeader
+          title={tab ? resolveExtTabName(tab) : t('settings.extensionSettingsTitle')}
+        />
+        <div className='relative w-full min-h-400px'>
+        {pageState === 'loading' && (
           <div className='absolute inset-0 flex items-center justify-center text-t-secondary text-14px'>
-            <span className='animate-pulse'>Loading…</span>
+            <SettingsStatus>{t('settings.extensionSettingsLoading')}</SettingsStatus>
           </div>
         )}
-        {error && <div className='flex items-center justify-center h-full text-t-secondary text-14px'>{error}</div>}
+        {pageState !== 'loading' && pageState !== 'ready' && (
+          <SettingsEmptyState
+            title={
+              pageState === 'empty'
+                ? t('settings.extensionSettingsEmpty')
+                : pageState === 'failed'
+                  ? t('settings.extensionSettingsFailed')
+                  : t('settings.extensionSettingsNotFound')
+            }
+            action={pageState === 'failed' ? (
+              <Button type='secondary' size='small' onClick={() => void refresh()}>
+                {t('settings.extensionSettingsRetry')}
+              </Button>
+            ) : undefined}
+          />
+        )}
         {tab &&
           (isExternalTab ? (
             <WebviewHost
@@ -138,7 +166,7 @@ const ExtensionSettingsPage: React.FC = () => {
             <>
               {loading && (
                 <div className='absolute inset-0 flex items-center justify-center text-t-secondary text-14px'>
-                  <span className='animate-pulse'>Loading…</span>
+                  <SettingsStatus>{t('settings.extensionSettingsLoading')}</SettingsStatus>
                 </div>
               )}
               <iframe
@@ -158,6 +186,7 @@ const ExtensionSettingsPage: React.FC = () => {
               />
             </>
           ))}
+        </div>
       </div>
     </SettingsPageWrapper>
   );

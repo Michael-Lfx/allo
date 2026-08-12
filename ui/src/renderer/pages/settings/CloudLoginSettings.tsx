@@ -3,9 +3,16 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Navigate } from 'react-router-dom';
-import { Button, Divider, Input, Message, Steps, Switch, Typography } from '@arco-design/web-react';
+import { Button, Input, Message, Steps, Switch } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
 import type { ICloudDeviceActivationStatus, ICloudServerSettings, ICloudWhoami } from '@/common/adapter/ipcBridge';
+import {
+  SettingsActionBar,
+  SettingsList,
+  SettingsPageHeader,
+  SettingsSection,
+  SettingsRow,
+} from '@/renderer/components/settings/SettingsPagePrimitives';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
 
@@ -15,6 +22,8 @@ const CloudLoginSettings: React.FC = () => {
   const { t } = useTranslation();
   const [developerMode] = useConfig('system.developerMode');
   const [serverSettings, setServerSettings] = useState<ICloudServerSettings | null>(null);
+  const [savedServerSettings, setSavedServerSettings] = useState<ICloudServerSettings | null>(null);
+  const [serverSettingsError, setServerSettingsError] = useState<string | null>(null);
   const [whoami, setWhoami] = useState<ICloudWhoami | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<ICloudDeviceActivationStatus | null>(null);
   const [loginStep, setLoginStep] = useState<LoginStep>('email');
@@ -35,6 +44,7 @@ const CloudLoginSettings: React.FC = () => {
         ipcBridge.cloud.whoami.invoke(),
       ]);
       setServerSettings(settings);
+      setSavedServerSettings(settings);
       setWhoami(user);
       if (user.authenticated) {
         setLoginStep('done');
@@ -65,10 +75,11 @@ const CloudLoginSettings: React.FC = () => {
         app: serverSettings.app,
       });
       setServerSettings(saved);
-      Message.success(t('cloudLogin.settings.saved'));
+      setSavedServerSettings(saved);
+      setServerSettingsError(null);
       void refresh();
     } catch (e) {
-      Message.error(String(e));
+      setServerSettingsError(String(e));
     } finally {
       setSavingSettings(false);
     }
@@ -185,6 +196,11 @@ const CloudLoginSettings: React.FC = () => {
   };
 
   const stepIndex = loginStep === 'email' ? 1 : loginStep === 'otp' ? 2 : 3;
+  const hasServerSettingsChanges = Boolean(
+    serverSettings &&
+      savedServerSettings &&
+      JSON.stringify(serverSettings) !== JSON.stringify(savedServerSettings)
+  );
 
   if (!developerMode) {
     return <Navigate to='/settings/system' replace />;
@@ -192,18 +208,14 @@ const CloudLoginSettings: React.FC = () => {
 
   return (
     <SettingsPageWrapper>
-      <div className='flex flex-col gap-20px max-w-640px'>
-        <div>
-          <Typography.Title heading={5} className='!m-0'>
-            {t('cloudLogin.title')}
-          </Typography.Title>
-          <Typography.Paragraph className='!mb-0 text-t-tertiary text-13px'>
-            {t('cloudLogin.description')}
-          </Typography.Paragraph>
-        </div>
+      <div className='space-y-24px'>
+        <SettingsPageHeader
+          title={t('cloudLogin.title')}
+          description={t('cloudLogin.description')}
+        />
 
         {whoami?.authenticated ? (
-          <div className='rd-8px border border-[var(--color-border-2)] p-16px flex flex-col gap-8px'>
+          <div className='flowy-settings-panel p-16px flex flex-col gap-8px'>
             <div className='text-t-primary font-500'>{t('cloudLogin.account.signedIn')}</div>
             {whoami.email && <div className='text-13px text-t-secondary'>{whoami.email}</div>}
             {whoami.username && <div className='text-13px text-t-secondary'>{whoami.username}</div>}
@@ -298,48 +310,39 @@ const CloudLoginSettings: React.FC = () => {
           </div>
         )}
 
-        <Divider />
-
         {serverSettings && (
-          <div className='flex flex-col gap-14px'>
-            <Typography.Title heading={6} className='!m-0'>
-              {t('cloudLogin.settings.title')}
-            </Typography.Title>
-
-            <div className='flex items-center justify-between'>
-              <span className='text-t-primary text-14px font-500'>{t('cloudLogin.settings.enabled')}</span>
-              <Switch
-                checked={serverSettings.enabled}
-                onChange={(v) => setServerSettings({ ...serverSettings, enabled: v })}
+          <SettingsSection title={t('cloudLogin.settings.title')}>
+            <SettingsList>
+              <SettingsRow
+                label={t('cloudLogin.settings.enabled')}
+                control={<Switch checked={serverSettings.enabled} onChange={(v) => setServerSettings({ ...serverSettings, enabled: v })} />}
               />
-            </div>
-
-            <div className='flex flex-col gap-6px'>
-              <span className='text-t-secondary text-13px'>{t('cloudLogin.settings.baseUrl')}</span>
-              <Input
-                value={serverSettings.baseUrl}
-                onChange={(v) => setServerSettings({ ...serverSettings, baseUrl: v })}
+              <SettingsRow
+                label={t('cloudLogin.settings.baseUrl')}
+                control={<Input value={serverSettings.baseUrl} onChange={(v) => setServerSettings({ ...serverSettings, baseUrl: v })} />}
               />
-            </div>
-
-            <div className='grid grid-cols-1 md:grid-cols-2 gap-12px'>
-              <div className='flex flex-col gap-6px'>
-                <span className='text-t-secondary text-13px'>{t('cloudLogin.settings.channel')}</span>
-                <Input
-                  value={serverSettings.channel}
-                  onChange={(v) => setServerSettings({ ...serverSettings, channel: v })}
-                />
-              </div>
-              <div className='flex flex-col gap-6px'>
-                <span className='text-t-secondary text-13px'>{t('cloudLogin.settings.app')}</span>
-                <Input value={serverSettings.app} onChange={(v) => setServerSettings({ ...serverSettings, app: v })} />
-              </div>
-            </div>
-
-            <Button type='primary' loading={savingSettings || loading} onClick={saveServerSettings}>
-              {t('common.save', { defaultValue: 'Save' })}
-            </Button>
-          </div>
+              <SettingsRow
+                label={t('cloudLogin.settings.channel')}
+                control={<Input value={serverSettings.channel} onChange={(v) => setServerSettings({ ...serverSettings, channel: v })} />}
+              />
+              <SettingsRow
+                label={t('cloudLogin.settings.app')}
+                control={<Input value={serverSettings.app} onChange={(v) => setServerSettings({ ...serverSettings, app: v })} />}
+              />
+            </SettingsList>
+            <SettingsActionBar
+              visible={hasServerSettingsChanges || Boolean(serverSettingsError)}
+              saveLabel={t('common.save', { defaultValue: 'Save' })}
+              onSave={() => void saveServerSettings()}
+              resetLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+              onReset={() => {
+                setServerSettings(savedServerSettings);
+                setServerSettingsError(null);
+              }}
+              loading={savingSettings || loading}
+              error={serverSettingsError}
+            />
+          </SettingsSection>
         )}
       </div>
     </SettingsPageWrapper>

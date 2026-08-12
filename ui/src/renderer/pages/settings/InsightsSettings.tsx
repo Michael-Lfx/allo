@@ -6,7 +6,10 @@ import { Button, InputNumber, Message, Modal, Spin, Switch } from '@arco-design/
 import { ipcBridge } from '@/common';
 import type { IInsightsContributionStatus } from '@/common/adapter/ipcBridge';
 import {
+  SettingsActionBar,
+  SettingsControlGroup,
   SettingsGroup,
+  SettingsList,
   SettingsNestedRows,
   SettingsPageHeader,
   SettingsPanel,
@@ -14,6 +17,15 @@ import {
 } from '@/renderer/components/settings/SettingsPagePrimitives';
 import PreferenceRow from '@/renderer/components/settings/SettingsModal/contents/SystemModalContent/PreferenceRow';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
+
+type InsightsDraft = {
+  enabled: boolean;
+  onSessionEnd: boolean;
+  autoExtractEnabled: boolean;
+  autoExtractIdleSecs: number;
+  skillMiningEnabled: boolean;
+  redactedBody: boolean;
+};
 
 const InsightsSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -24,6 +36,8 @@ const InsightsSettings: React.FC = () => {
   const [autoExtractIdleSecs, setAutoExtractIdleSecs] = useState(300);
   const [skillMiningEnabled, setSkillMiningEnabled] = useState(false);
   const [redactedBody, setRedactedBody] = useState(true);
+  const [savedDraft, setSavedDraft] = useState<InsightsDraft | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [flushing, setFlushing] = useState(false);
@@ -39,6 +53,14 @@ const InsightsSettings: React.FC = () => {
       setAutoExtractIdleSecs(s.auto_extract_idle_secs ?? 300);
       setSkillMiningEnabled(s.skill_mining_enabled ?? false);
       setRedactedBody(s.redacted_body);
+      setSavedDraft({
+        enabled: s.enabled,
+        onSessionEnd: s.on_session_end,
+        autoExtractEnabled: s.auto_extract_enabled ?? true,
+        autoExtractIdleSecs: s.auto_extract_idle_secs ?? 300,
+        skillMiningEnabled: s.skill_mining_enabled ?? false,
+        redactedBody: s.redacted_body,
+      });
     } catch (e) {
       Message.error(String(e));
     } finally {
@@ -51,24 +73,46 @@ const InsightsSettings: React.FC = () => {
   }, [refresh]);
 
   const save = async () => {
+    const draft: InsightsDraft = {
+      enabled,
+      onSessionEnd,
+      autoExtractEnabled,
+      autoExtractIdleSecs,
+      skillMiningEnabled,
+      redactedBody,
+    };
     setSaving(true);
     try {
       const saved = await ipcBridge.insights.updateContribution.invoke({
-        enabled,
-        on_session_end: onSessionEnd,
-        auto_extract_enabled: autoExtractEnabled,
-        auto_extract_idle_secs: autoExtractIdleSecs,
-        skill_mining_enabled: skillMiningEnabled,
-        redacted_body: redactedBody,
+        enabled: draft.enabled,
+        on_session_end: draft.onSessionEnd,
+        auto_extract_enabled: draft.autoExtractEnabled,
+        auto_extract_idle_secs: draft.autoExtractIdleSecs,
+        skill_mining_enabled: draft.skillMiningEnabled,
+        redacted_body: draft.redactedBody,
       });
       setStatus(saved);
-      Message.success(t('insights.settings.saved'));
+      setSavedDraft(draft);
+      setSaveError(null);
     } catch (e) {
-      Message.error(String(e));
+      setSaveError(String(e));
     } finally {
       setSaving(false);
     }
   };
+
+  const hasUnsavedChanges = Boolean(
+    savedDraft &&
+      JSON.stringify(savedDraft) !==
+        JSON.stringify({
+          enabled,
+          onSessionEnd,
+          autoExtractEnabled,
+          autoExtractIdleSecs,
+          skillMiningEnabled,
+          redactedBody,
+        })
+  );
 
   const flush = async () => {
     setFlushing(true);
@@ -110,34 +154,35 @@ const InsightsSettings: React.FC = () => {
           meta={<span className='text-12px text-t-tertiary'>{t('insights.settings.serverManagedHint')}</span>}
         />
 
-        <SettingsPanel>
-          {status ? (
-            <>
-              <div className='w-full flex flex-col divide-y divide-border-2'>
-                <PreferenceRow label={t('insights.settings.enabled')}>
+        {status ? (
+          <>
+            <SettingsList>
+                <PreferenceRow label={t('insights.settings.enabled')} controlLayout='compact'>
                   <Switch checked={enabled} onChange={setEnabled} />
                 </PreferenceRow>
-                <PreferenceRow label={t('insights.settings.onSessionEnd')}>
+                <PreferenceRow label={t('insights.settings.onSessionEnd')} controlLayout='compact'>
                   <Switch checked={onSessionEnd} onChange={setOnSessionEnd} />
                 </PreferenceRow>
-                <PreferenceRow label={t('insights.settings.redactedBody')}>
+                <PreferenceRow label={t('insights.settings.redactedBody')} controlLayout='compact'>
                   <Switch checked={redactedBody} onChange={setRedactedBody} />
                 </PreferenceRow>
                 <div>
                   <PreferenceRow
                     label={t('insights.settings.autoExtractSection')}
                     description={t('insights.settings.autoExtractHint')}
+                    controlLayout='compact'
                   >
                     <Switch checked={autoExtractEnabled} onChange={setAutoExtractEnabled} />
                   </PreferenceRow>
                   {autoExtractEnabled && (
                     <SettingsNestedRows>
                       <PreferenceRow
-                        label={t('insights.settings.autoExtractIdleSecs')}
+                      label={t('insights.settings.autoExtractIdleSecs')}
                         description={`${t('insights.settings.autoExtractIdleSecsHint')} ${t(
                           'insights.settings.minWorkTurnsHint',
                           { count: status.min_work_turns }
-                        )}`}
+                      )}`}
+                      controlLayout='field'
                       >
                         <InputNumber
                           className='w-full sm:w-180px'
@@ -152,22 +197,36 @@ const InsightsSettings: React.FC = () => {
                 <PreferenceRow
                   label={t('insights.settings.skillMiningEnabled')}
                   description={t('insights.settings.skillMiningHint')}
+                  controlLayout='compact'
                 >
                   <Switch checked={skillMiningEnabled} onChange={setSkillMiningEnabled} />
                 </PreferenceRow>
-              </div>
-              <SettingsPanelFooter className='justify-end'>
-                <Button type='primary' loading={saving || loading} onClick={save}>
-                  {t('common.save', { defaultValue: 'Save' })}
-                </Button>
-              </SettingsPanelFooter>
-            </>
-          ) : (
-            <div className='flex justify-center py-32px'>
-              <Spin />
-            </div>
-          )}
-        </SettingsPanel>
+            </SettingsList>
+            <SettingsActionBar
+              visible={hasUnsavedChanges || Boolean(saveError)}
+              saveLabel={t('common.save', { defaultValue: 'Save' })}
+              onSave={() => void save()}
+              resetLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+              onReset={() => {
+                if (savedDraft) {
+                  setEnabled(savedDraft.enabled);
+                  setOnSessionEnd(savedDraft.onSessionEnd);
+                  setAutoExtractEnabled(savedDraft.autoExtractEnabled);
+                  setAutoExtractIdleSecs(savedDraft.autoExtractIdleSecs);
+                  setSkillMiningEnabled(savedDraft.skillMiningEnabled);
+                  setRedactedBody(savedDraft.redactedBody);
+                }
+                setSaveError(null);
+              }}
+              loading={saving || loading}
+              error={saveError}
+            />
+          </>
+        ) : (
+          <div className='flex justify-center py-32px'>
+            <Spin />
+          </div>
+        )}
 
         <SettingsGroup
           title={t('insights.actions.outboxTitle')}
@@ -178,12 +237,12 @@ const InsightsSettings: React.FC = () => {
               <div className='w-full flex flex-col divide-y divide-border-2'>
                 <PreferenceRow label={t('insights.status.uploadReady')}>
                   <span className={status.upload_ready ? 'text-success-6' : 'text-t-tertiary'}>
-                    {status.upload_ready ? t('common.yes', { defaultValue: 'Yes' }) : t('common.no', { defaultValue: 'No' })}
+                    {status.upload_ready ? t('common.yes') : t('common.no')}
                   </span>
                 </PreferenceRow>
                 <PreferenceRow label={t('insights.status.authConfigured')}>
                   <span className={status.auth_configured ? 'text-success-6' : 'text-t-tertiary'}>
-                    {status.auth_configured ? t('common.yes', { defaultValue: 'Yes' }) : t('common.no', { defaultValue: 'No' })}
+                    {status.auth_configured ? t('common.yes') : t('common.no')}
                   </span>
                 </PreferenceRow>
                 <PreferenceRow label={t('insights.status.outboxPending')}>
@@ -213,7 +272,8 @@ const InsightsSettings: React.FC = () => {
                 <Spin />
               </div>
             )}
-            <SettingsPanelFooter className='flex-wrap gap-8px'>
+            <SettingsPanelFooter className='pt-12px'>
+              <SettingsControlGroup className='justify-start'>
               <Button loading={flushing} onClick={flush}>
                 {t('insights.actions.flush')}
               </Button>
@@ -221,6 +281,7 @@ const InsightsSettings: React.FC = () => {
               <Button status='danger' onClick={() => resetOutbox(true)}>
                 {t('insights.actions.resetAll')}
               </Button>
+              </SettingsControlGroup>
             </SettingsPanelFooter>
           </SettingsPanel>
         </SettingsGroup>

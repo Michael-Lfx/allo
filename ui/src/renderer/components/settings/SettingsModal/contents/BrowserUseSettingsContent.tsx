@@ -20,12 +20,17 @@ import {
   type IBrowserOverviewCapabilities,
 } from '@/common/browser/browserTypes';
 import { ipcBridge } from '@/common';
-import NomiScrollArea from '@/renderer/components/base/NomiScrollArea';
 import { Alert, Button, Collapse, InputNumber, Message, Modal, Radio, Switch } from '@arco-design/web-react';
 import { Down, Right } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
+import {
+  SettingsGroup,
+  SettingsList,
+  SettingsNestedRows,
+  SettingsPageHeader,
+} from '@/renderer/components/settings/SettingsPagePrimitives';
 import PreferenceRow from './SystemModalContent/PreferenceRow';
 
 const RadioGroup = Radio.Group;
@@ -1057,23 +1062,17 @@ const BrowserUseSettingsContent: React.FC = () => {
     : null;
 
   return (
-    <div className='flex flex-col h-full w-full'>
-      <NomiScrollArea className='flex-1 min-h-0 pb-16px' disableOverflow>
-        <div className='space-y-16px'>
-          <div className='px-[12px] md:px-[32px] py-16px bg-2 rd-16px space-y-12px'>
-            <div className='text-13px font-600 text-t-secondary'>{t('settings.browserUseSection')}</div>
-            {/*
-              Separator recipe used by every panel in this file. `divide-y` emits only a width and
-              this project ships no border reset, so the style stays `none` unless `divide-solid` is
-              present. `divide-solid` styles all four sides, so `divide-x-0` is needed to stop the
-              unset left/right widths falling back to the CSS initial `medium` (~3px). The old
-              `divide-border-2` emitted nothing at all: there is no theme colour named `border`.
-            */}
-            <div className='w-full flex flex-col divide-y divide-x-0 divide-solid divide-[var(--color-border-2)]'>
+    <div className='w-full space-y-24px pb-16px'>
+      <SettingsPageHeader
+        title={t('settings.browserUseNav')}
+        description={t('settings.browserUseDesc')}
+      />
+      <SettingsGroup title={t('settings.browserUseSection')}>
+        <SettingsList>
               <PreferenceRow label={t('settings.browserUse')} description={t('settings.browserUseDesc')}>
                 <Switch checked={browserUse} onChange={handleBrowserUseChange} />
               </PreferenceRow>
-              <PreferenceRow label={t('settings.browserSource')} description={t('settings.browserSourceDesc')}>
+              <PreferenceRow label={t('settings.browserSource')} description={t('settings.browserSourceDesc')} controlLayout='compound'>
                 <RadioGroup type='button' value={source} disabled={!browserUse} onChange={handleSourceChange}>
                   <Radio value='managed'>{t('settings.browserSourceManaged')}</Radio>
                   <Radio value='system'>{t('settings.browserSourceSystem')}</Radio>
@@ -1084,6 +1083,7 @@ const BrowserUseSettingsContent: React.FC = () => {
                   <PreferenceRow
                     label={t('settings.browserDisplayMode')}
                     description={t('settings.browserDisplayModeDesc')}
+                    controlLayout='compound'
                   >
                     <RadioGroup
                       type='button'
@@ -1113,10 +1113,16 @@ const BrowserUseSettingsContent: React.FC = () => {
                   )}
                 </>
               )}
+        </SettingsList>
+      </SettingsGroup>
+
+      <SettingsGroup title={t('settings.browserLoginIdentitySection')}>
+        <SettingsList>
               {canManagePrimaryIdentity && (
                 <PreferenceRow
                   label={t('settings.browserLogin')}
                   description={t('settings.browserLoginDesc')}
+                  controlLayout='actions'
                 >
                   <Button
                     size='small'
@@ -1139,6 +1145,11 @@ const BrowserUseSettingsContent: React.FC = () => {
                   onChange={handlePersistentLoginChange}
                 />
               </PreferenceRow>
+        </SettingsList>
+      </SettingsGroup>
+
+      <SettingsGroup title={t('settings.browserControlSafetySection')}>
+        <SettingsList>
               <PreferenceRow
                 label={t('settings.browserFullPower')}
                 description={
@@ -1171,18 +1182,16 @@ const BrowserUseSettingsContent: React.FC = () => {
               >
                 <Switch checked={visualFallback} disabled={!browserUse} onChange={handleVisualFallbackChange} />
               </PreferenceRow>
-            </div>
-          </div>
+        </SettingsList>
+      </SettingsGroup>
 
-          {canManageBrowserSettings && (
-            <div className='px-[12px] md:px-[32px] py-16px bg-2 rd-16px space-y-12px'>
-              <div className='text-13px font-600 text-t-secondary'>
-                {t('settings.browserResourcePolicySection')}
-              </div>
-              <div className='w-full flex flex-col divide-y divide-x-0 divide-solid divide-[var(--color-border-2)]'>
+      {canManageBrowserSettings && (
+        <SettingsGroup title={t('settings.browserResourcePolicySection')}>
+          <SettingsList>
                 <PreferenceRow
                   label={t('settings.browserResourcePolicy')}
                   description={t('settings.browserResourcePolicyDesc')}
+                  controlLayout='compound'
                 >
                   <RadioGroup
                     type='button'
@@ -1195,35 +1204,35 @@ const BrowserUseSettingsContent: React.FC = () => {
                     <Radio value='high_concurrency'>{t('settings.browserResourcePolicyHighConcurrency')}</Radio>
                   </RadioGroup>
                 </PreferenceRow>
-              </div>
+          </SettingsList>
 
-              {resourcePolicyStatus === 'loading' && (
-                <Alert type='info' showIcon content={t('settings.browserResourcePolicyLoading')} />
-              )}
-              {resourcePolicyStatus === 'unavailable' && (
-                <Alert type='info' showIcon content={t('settings.browserResourcePolicyUnavailable')} />
-              )}
-              {resourcePolicyStatus === 'error' && (
-                <div className='space-y-8px'>
-                  <Alert
-                    type='warning'
-                    showIcon
-                    content={resourcePolicyErrorMessage || t('settings.browserResourcePolicyLoadFailed')}
-                  />
-                  <Button size='small' onClick={() => void loadResourcePolicy()}>
-                    {t('settings.browserResourcePolicyRetry')}
-                  </Button>
-                </div>
-              )}
-              {resourcePolicyStatus === 'ready' && (resourcePolicyErrorMessage || resourcePolicyValidationError) && (
-                <Alert
-                  type='warning'
-                  showIcon
-                  content={resourcePolicyErrorMessage || resourcePolicyValidationError?.message}
-                />
-              )}
+          {resourcePolicyStatus === 'loading' && (
+            <Alert type='info' showIcon content={t('settings.browserResourcePolicyLoading')} />
+          )}
+          {resourcePolicyStatus === 'unavailable' && (
+            <Alert type='info' showIcon content={t('settings.browserResourcePolicyUnavailable')} />
+          )}
+          {resourcePolicyStatus === 'error' && (
+            <div className='space-y-8px'>
+              <Alert
+                type='warning'
+                showIcon
+                content={resourcePolicyErrorMessage || t('settings.browserResourcePolicyLoadFailed')}
+              />
+              <Button size='small' onClick={() => void loadResourcePolicy()}>
+                {t('settings.browserResourcePolicyRetry')}
+              </Button>
+            </div>
+          )}
+          {resourcePolicyStatus === 'ready' && (resourcePolicyErrorMessage || resourcePolicyValidationError) && (
+            <Alert
+              type='warning'
+              showIcon
+              content={resourcePolicyErrorMessage || resourcePolicyValidationError?.message}
+            />
+          )}
 
-              <Collapse
+          <Collapse
                 activeKey={advancedLimitsExpanded ? ['advanced'] : []}
                 onChange={(_, activeKeys) => setAdvancedLimitsExpanded(activeKeys.includes('advanced'))}
                 bordered={false}
@@ -1248,10 +1257,12 @@ const BrowserUseSettingsContent: React.FC = () => {
                     </div>
                   }
                 >
-                  <div className='mt-4px ml-12px pl-12px md:ml-20px md:pl-20px'>
-                    <PreferenceRow
+                  <SettingsNestedRows className='mt-4px'>
+                    <SettingsList>
+                      <PreferenceRow
                       label={t('settings.browserResourceMaxMemoryRatio')}
                       description={t('settings.browserResourceMaxMemoryRatioDesc')}
+                      controlLayout='field'
                     >
                       <InputNumber
                         className='w-full sm:w-180px'
@@ -1265,9 +1276,10 @@ const BrowserUseSettingsContent: React.FC = () => {
                         onChange={(value) => handleResourcePolicyAdvancedChange('max_memory_ratio', value)}
                       />
                     </PreferenceRow>
-                    <PreferenceRow
+                      <PreferenceRow
                       label={t('settings.browserResourceReservedMemoryBytes')}
                       description={t('settings.browserResourceReservedMemoryBytesDesc')}
+                      controlLayout='field'
                     >
                       <InputNumber
                         className='w-full sm:w-180px'
@@ -1281,9 +1293,10 @@ const BrowserUseSettingsContent: React.FC = () => {
                         onChange={(value) => handleResourcePolicyAdvancedChange('reserved_memory_bytes', value)}
                       />
                     </PreferenceRow>
-                    <PreferenceRow
+                      <PreferenceRow
                       label={t('settings.browserResourceMaxActiveOperations')}
                       description={t('settings.browserResourceMaxActiveOperationsDesc')}
+                      controlLayout='field'
                     >
                       <InputNumber
                         className='w-full sm:w-180px'
@@ -1296,9 +1309,10 @@ const BrowserUseSettingsContent: React.FC = () => {
                         onChange={(value) => handleResourcePolicyAdvancedChange('max_active_operations', value)}
                       />
                     </PreferenceRow>
-                    <PreferenceRow
+                      <PreferenceRow
                       label={t('settings.browserResourceMaxOpenLanes')}
                       description={t('settings.browserResourceMaxOpenLanesDesc')}
+                      controlLayout='field'
                     >
                       <InputNumber
                         className='w-full sm:w-180px'
@@ -1311,9 +1325,10 @@ const BrowserUseSettingsContent: React.FC = () => {
                         onChange={(value) => handleResourcePolicyAdvancedChange('max_open_lanes', value)}
                       />
                     </PreferenceRow>
-                    <PreferenceRow
+                      <PreferenceRow
                       label={t('settings.browserResourceMaxQueuedRequests')}
                       description={t('settings.browserResourceMaxQueuedRequestsDesc')}
+                      controlLayout='field'
                     >
                       <InputNumber
                         className='w-full sm:w-180px'
@@ -1326,9 +1341,10 @@ const BrowserUseSettingsContent: React.FC = () => {
                         onChange={(value) => handleResourcePolicyAdvancedChange('max_queued_requests', value)}
                       />
                     </PreferenceRow>
-                    <PreferenceRow
+                      <PreferenceRow
                       label={t('settings.browserResourceMaxOwnerQueuedRequests')}
                       description={t('settings.browserResourceMaxOwnerQueuedRequestsDesc')}
+                      controlLayout='field'
                     >
                       <InputNumber
                         className='w-full sm:w-180px'
@@ -1340,8 +1356,9 @@ const BrowserUseSettingsContent: React.FC = () => {
                         placeholder={resourcePolicyPlaceholder}
                         onChange={(value) => handleResourcePolicyAdvancedChange('max_owner_queued_requests', value)}
                       />
-                    </PreferenceRow>
-                  </div>
+                      </PreferenceRow>
+                    </SettingsList>
+                  </SettingsNestedRows>
                   <div className='flex justify-end pt-8px'>
                     <Button
                       type='primary'
@@ -1354,13 +1371,13 @@ const BrowserUseSettingsContent: React.FC = () => {
                     </Button>
                   </div>
                 </Collapse.Item>
-              </Collapse>
-            </div>
-          )}
+          </Collapse>
+        </SettingsGroup>
+      )}
 
-          <Alert type='warning' showIcon content={t('settings.browserUseRiskHint')} />
-        </div>
-      </NomiScrollArea>
+      <SettingsGroup title={t('settings.browserDiagnosticsSection')}>
+        <Alert type='warning' showIcon content={t('settings.browserUseRiskHint')} />
+      </SettingsGroup>
     </div>
   );
 };

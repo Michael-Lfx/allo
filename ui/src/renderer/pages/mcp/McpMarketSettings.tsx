@@ -219,9 +219,13 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
         defaultSource='mcpworld'
         searchPlaceholder={t('settings.mcpMarket.searchPlaceholder', { defaultValue: 'Search MCP servers...' })}
         emptyText={t('settings.mcpMarket.empty', { defaultValue: 'Refresh to load MCP market entries.' })}
-        onAdd={handleAdd}
-        isAdded={isAdded}
-        addedStateLoading={addedStateLoading}
+        primaryAction={{
+          label: t('settings.market.import', { defaultValue: '导入' }),
+          pendingLabel: t('settings.market.importing', { defaultValue: '正在导入' }),
+          completedLabel: t('settings.market.imported', { defaultValue: '已导入' }),
+          resolveState: (item) => (addedStateLoading ? 'checking' : isAdded(item) ? 'completed' : 'ready'),
+          run: handleAdd,
+        }}
         testIdPrefix='mcp-market'
       />
 

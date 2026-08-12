@@ -52,7 +52,7 @@ const McpPage: React.FC = () => {
         onChange={handleTabChange}
         type='line'
         lazyload
-        className='flex flex-col flex-1 min-h-0 [&>.arco-tabs-content]:pt-0'
+        className='flowy-settings-tabs flex flex-col flex-1 min-h-0 [&>.arco-tabs-content]:pt-0'
       >
         <Tabs.TabPane key='servers' title={t('settings.mcpPage.installedMcpTab', { defaultValue: 'Installed MCP' })}>
           <ToolsModalContentWithState

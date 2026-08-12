@@ -22,7 +22,7 @@ import { useTranslation } from 'react-i18next';
  * breakpoints): the settings pane is narrower than the viewport, so viewport
  * breakpoints over-column and clip cards on a narrow pane.
  */
-const CARD_GRID_COLS = 'repeat(auto-fill, minmax(min(232px, 100%), 1fr))';
+const CARD_GRID_COLS = 'repeat(auto-fit, minmax(min(270px, 100%), 1fr))';
 
 type PresetListPanelProps = {
   presets: PresetListItem[];

@@ -1,38 +1,49 @@
-
-
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { extensions as extensionsIpc, type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 
-// Module-scope cache: settings tabs rarely change during a session, and multiple
-// components (SettingsSider, SettingsPageWrapper, ExtensionSettingsPage, SettingsModal)
-// used to each issue their own /api/extensions/settings-tabs request on mount,
-// flooding the backend. We share a single in-flight request and a single cached
-// result, refreshed only when extensions.state-changed fires.
-let cachedTabs: IExtensionSettingsTab[] | null = null;
-let inflight: Promise<IExtensionSettingsTab[]> | null = null;
-const subscribers = new Set<(tabs: IExtensionSettingsTab[]) => void>();
+export type ExtensionSettingsTabsStatus = 'loading' | 'ready' | 'error';
+
+export type ExtensionSettingsTabsState = {
+  tabs: IExtensionSettingsTab[];
+  status: ExtensionSettingsTabsStatus;
+  error: unknown | null;
+};
+
+type ExtensionSettingsTabsSnapshot = ExtensionSettingsTabsState & {
+  refresh: () => Promise<void>;
+};
+
+let cachedState: ExtensionSettingsTabsState = {
+  tabs: [],
+  status: 'loading',
+  error: null,
+};
+let initialized = false;
+let inflight: Promise<void> | null = null;
+const subscribers = new Set<(state: ExtensionSettingsTabsState) => void>();
 let stateChangedUnsubscribe: (() => void) | null = null;
 
-function notifySubscribers(tabs: IExtensionSettingsTab[]): void {
-  cachedTabs = tabs;
-  for (const listener of subscribers) {
-    listener(tabs);
-  }
+function publish(state: ExtensionSettingsTabsState): void {
+  cachedState = state;
+  for (const listener of subscribers) listener(state);
 }
 
-function fetchTabs(): Promise<IExtensionSettingsTab[]> {
+async function refreshTabs(): Promise<void> {
   if (inflight) return inflight;
+
+  publish({ ...cachedState, status: 'loading', error: null });
   inflight = extensionsIpc.getSettingsTabs
     .invoke()
     .then((tabs) => {
-      const result = tabs ?? [];
-      notifySubscribers(result);
-      return result;
+      initialized = true;
+      publish({ tabs: tabs ?? [], status: 'ready', error: null });
     })
-    .catch((err) => {
-      console.error('[useExtensionSettingsTabs] Failed to load tabs:', err);
-      const result: IExtensionSettingsTab[] = cachedTabs ?? [];
-      return result;
+    .catch((error: unknown) => {
+      initialized = true;
+      console.error('[useExtensionSettingsTabs] Failed to load tabs:', error);
+      // Preserve an already rendered navigation list, but make the failure
+      // visible to consumers instead of treating an empty list as loading.
+      publish({ ...cachedState, status: 'error', error });
     })
     .finally(() => {
       inflight = null;
@@ -43,33 +54,32 @@ function fetchTabs(): Promise<IExtensionSettingsTab[]> {
 function ensureStateListener(): void {
   if (stateChangedUnsubscribe) return;
   stateChangedUnsubscribe = extensionsIpc.stateChanged.on(() => {
-    void fetchTabs();
+    void refreshTabs();
   });
 }
 
 /**
- * Shared hook for extension-contributed settings tabs.
- * One request per session, cached across all consumers, refreshed on
- * extensions.state-changed events.
+ * Shared, observable extension settings state. A ready empty array now means
+ * "there are no extension settings", while a failed request remains retryable.
  */
-export function useExtensionSettingsTabs(): IExtensionSettingsTab[] {
-  const [tabs, setTabs] = useState<IExtensionSettingsTab[]>(() => cachedTabs ?? []);
+export function useExtensionSettingsTabs(): ExtensionSettingsTabsSnapshot {
+  const [state, setState] = useState<ExtensionSettingsTabsState>(() => cachedState);
 
   useEffect(() => {
-    subscribers.add(setTabs);
+    subscribers.add(setState);
     ensureStateListener();
 
-    if (cachedTabs === null) {
-      void fetchTabs();
+    if (!initialized) {
+      void refreshTabs();
     } else {
-      // Sync late subscribers with current cache if it updated before mount
-      setTabs(cachedTabs);
+      setState(cachedState);
     }
 
     return () => {
-      subscribers.delete(setTabs);
+      subscribers.delete(setState);
     };
   }, []);
 
-  return tabs;
+  const refresh = useCallback(() => refreshTabs(), []);
+  return { ...state, refresh };
 }

@@ -23,7 +23,6 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import { Tabs } from '@arco-design/web-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import coworkSvg from '@/renderer/assets/icons/cowork.svg';
-import NomiScrollArea from '@/renderer/components/base/NomiScrollArea';
 import HubPageShell from '@/renderer/components/layout/HubPageShell';
 import { useDetectedAgents, usePresetEditor, usePresetList, usePresetTags } from '@/renderer/hooks/preset';
 import { resolveAvatarImageSrc } from './presetUtils';
@@ -80,7 +79,6 @@ const PresetSettings: React.FC = () => {
   // Compose hooks
   const {
     presets,
-    activePresetId,
     setActivePresetId,
     activePreset,
     isExtensionPreset,
@@ -155,12 +153,13 @@ const PresetSettings: React.FC = () => {
         activeTab={activeTab}
         onChange={handleTabChange}
         type='line'
-        className='[&>.arco-tabs-content]:pt-0'
+        lazyload
+        className='flowy-settings-tabs flex flex-col flex-1 min-h-0 [&>.arco-tabs-content]:pt-0'
       >
         <Tabs.TabPane key='library' title={t('settings.presetsPage.libraryTab', { defaultValue: 'Installed Presets' })}>
-          <div className='w-full'>
-            <NomiScrollArea className='flex-1 min-h-0 pb-16px scrollbar-hide' disableOverflow>
-        <PresetListPanel
+          <div className='flex flex-col h-full w-full'>
+            <div className='pb-16px'>
+              <PresetListPanel
           presets={presets}
           localeKey={localeKey}
           avatarImageMap={avatarImageMap}
@@ -178,48 +177,9 @@ const PresetSettings: React.FC = () => {
           onManageTags={() => setTagModalVisible(true)}
         />
 
-        <PresetEditDrawer
-          editVisible={editor.editVisible}
-          setEditVisible={editor.setEditVisible}
-          isCreating={editor.isCreating}
-          editName={editor.editName}
-          setEditName={editor.setEditName}
-          editDescription={editor.editDescription}
-          setEditDescription={editor.setEditDescription}
-          editRoutingDescription={editor.editRoutingDescription}
-          setEditRoutingDescription={editor.setEditRoutingDescription}
-          editAvatar={editor.editAvatar}
-          setEditAvatar={editor.setEditAvatar}
+              <PresetEditDrawer
+          editor={editor}
           editAvatarImage={editAvatarImage}
-          editAgents={editor.editAgents}
-          setEditAgents={editor.setEditAgents}
-          editModels={editor.editModels}
-          setEditModels={editor.setEditModels}
-          editTargets={editor.editTargets}
-          setEditTargets={editor.setEditTargets}
-          fallbackAllowed={editor.fallbackAllowed}
-          setFallbackAllowed={editor.setFallbackAllowed}
-          autoSelectable={editor.autoSelectable}
-          setAutoSelectable={editor.setAutoSelectable}
-          knowledgePolicy={editor.knowledgePolicy}
-          setKnowledgePolicy={editor.setKnowledgePolicy}
-          knowledgeBaseIds={editor.knowledgeBaseIds}
-          setKnowledgeBaseIds={editor.setKnowledgeBaseIds}
-          mcpServerIds={editor.mcpServerIds}
-          setMcpServerIds={editor.setMcpServerIds}
-          editContext={editor.editContext}
-          setEditContext={editor.setEditContext}
-          promptViewMode={editor.promptViewMode}
-          setPromptViewMode={editor.setPromptViewMode}
-          availableSkills={editor.availableSkills}
-          selectedSkills={editor.selectedSkills}
-          setSelectedSkills={editor.setSelectedSkills}
-          pendingSkills={editor.pendingSkills}
-          setDeletePendingSkillName={editor.setDeletePendingSkillName}
-          setDeleteCustomSkill={editor.setDeleteCustomSkill}
-          builtinAutoSkills={editor.builtinAutoSkills}
-          disabledBuiltinSkills={editor.disabledBuiltinSkills}
-          setDisabledBuiltinSkills={editor.setDisabledBuiltinSkills}
           editAudienceTags={editor.editAudienceTags}
           setEditAudienceTags={editor.setEditAudienceTags}
           editScenarioTags={editor.editScenarioTags}
@@ -234,16 +194,14 @@ const PresetSettings: React.FC = () => {
           }
           localeKey={localeKey}
           activePreset={activePreset}
-          activePresetId={activePresetId}
           isExtensionPreset={isExtensionPreset}
           availableBackends={availableBackends}
-          handleSave={editor.handleSave}
           onImportAgentSkills={editor.handleImportAgentSkills}
           handleDeleteClick={editor.handleDeleteClick}
           handleDuplicate={(preset) => void editor.handleDuplicate(preset)}
         />
 
-        <DeletePresetModal
+              <DeletePresetModal
           visible={editor.deleteConfirmVisible}
           onCancel={() => editor.setDeleteConfirmVisible(false)}
           onConfirm={editor.handleDeleteConfirm}
@@ -251,7 +209,7 @@ const PresetSettings: React.FC = () => {
           avatarImageMap={avatarImageMap}
         />
 
-        <SkillConfirmModals
+              <SkillConfirmModals
           deletePendingSkillName={editor.deletePendingSkillName}
           setDeletePendingSkillName={editor.setDeletePendingSkillName}
           pendingSkills={editor.pendingSkills}
@@ -262,7 +220,7 @@ const PresetSettings: React.FC = () => {
           setSelectedSkills={editor.setSelectedSkills}
           message={message}
         />
-            </NomiScrollArea>
+            </div>
 
             <TagManagementModal
               visible={tagModalVisible}

@@ -39,12 +39,12 @@ const SkillsSettingsPage: React.FC = () => {
   };
 
   return (
-    <SettingsPageWrapper contentClassName='max-w-1200px'>
+    <SettingsPageWrapper layout='hub'>
       <Tabs
         activeTab={activeTab}
         onChange={handleTabChange}
         type='line'
-        className='skills-settings-hub-tabs [&>.arco-tabs-content]:pt-0 [&_.arco-tabs-header-nav]:!min-h-40px [&_.arco-tabs-header-title]:!py-8px [&_.arco-tabs-header-title]:!font-500 [&_.arco-tabs-header-title]:!leading-22px'
+        className='flowy-settings-tabs skills-settings-hub-tabs [&>.arco-tabs-content]:pt-0'
       >
         <Tabs.TabPane
           key='library'

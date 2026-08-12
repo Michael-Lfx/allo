@@ -253,9 +253,13 @@ const PresetPackageMarketSettings: React.FC<PresetPackageMarketSettingsProps> = 
       defaultSource='skillhub_packages'
       searchPlaceholder={t('settings.presetMarket.searchPlaceholder', { defaultValue: 'Search expert packages...' })}
       emptyText={t('settings.presetMarket.empty', { defaultValue: 'Refresh to load expert packages.' })}
-      onAdd={handleAdd}
-      isAdded={isAdded}
-      addedStateLoading={addedStateLoading}
+      primaryAction={{
+        label: t('settings.market.add', { defaultValue: '添加' }),
+        pendingLabel: t('settings.market.adding', { defaultValue: '正在添加' }),
+        completedLabel: t('settings.market.added', { defaultValue: '已添加' }),
+        resolveState: (item) => (addedStateLoading ? 'checking' : isAdded(item) ? 'completed' : 'ready'),
+        run: handleAdd,
+      }}
     />
   );
 };
