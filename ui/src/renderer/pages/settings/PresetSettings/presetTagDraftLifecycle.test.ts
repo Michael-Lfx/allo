@@ -14,7 +14,10 @@ describe('preset tag draft lifecycle', () => {
       { current: { resetPendingTag: () => calls.push('audience') } },
       { current: { resetPendingTag: () => calls.push('scenario') } },
       (visible) => calls.push(`visible:${visible}`),
-      () => calls.push('save')
+      async () => {
+        calls.push('save');
+        return null;
+      }
     );
 
     lifecycle.handleDrawerSave();
@@ -28,7 +31,10 @@ describe('preset tag draft lifecycle', () => {
       { current: { resetPendingTag: () => calls.push('audience') } },
       { current: { resetPendingTag: () => calls.push('scenario') } },
       (visible) => calls.push(`visible:${visible}`),
-      () => calls.push('save')
+      async () => {
+        calls.push('save');
+        return null;
+      }
     );
 
     lifecycle.closeDrawer();
@@ -41,7 +47,7 @@ describe('preset tag draft lifecycle', () => {
       { current: null },
       { current: null },
       () => {},
-      () => {}
+      async () => null
     );
 
     lifecycle.resetPendingTagDrafts();

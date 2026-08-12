@@ -9,7 +9,7 @@ export const createPresetTagDraftLifecycle = (
   audiencePickerRef: PendingTagPickerRef,
   scenarioPickerRef: PendingTagPickerRef,
   setEditVisible: (visible: boolean) => void,
-  handleSave: () => void
+  handleSave: () => Promise<string | null>
 ) => {
   const resetPendingTagDrafts = () => {
     audiencePickerRef.current?.resetPendingTag();
@@ -22,9 +22,9 @@ export const createPresetTagDraftLifecycle = (
       resetPendingTagDrafts();
       setEditVisible(false);
     },
-    handleDrawerSave: () => {
+    handleDrawerSave: async () => {
       resetPendingTagDrafts();
-      handleSave();
+      return handleSave();
     },
   };
 };

@@ -17,13 +17,14 @@ import type {
 } from '@/renderer/pages/settings/PresetSettings/types';
 import type { ImportedAgentSkill } from '@/renderer/pages/settings/skill/AgentSkillImportDrawer';
 import type { AgentSkillImportRow } from '@/renderer/pages/settings/skill/agentSkillImportUtils';
+import { presetDraftSignature, type PresetDraft } from '@/renderer/pages/settings/PresetSettings/presetDraft';
 import {
   mergePresetSkillIds,
   resolvePresetSkillIdsForSave,
   uniqueCatalogUserSkillIdForName,
   type SelectedPresetSkill,
 } from '@/renderer/pages/settings/PresetSettings/presetSkillBindings';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   parseKnowledgeBaseId,
@@ -104,8 +105,106 @@ export const usePresetEditor = ({
   // Tag editing state (audience / scenario UUIDv7 business IDs).
   const [editAudienceTags, setEditAudienceTags] = useState<PresetTagId[]>([]);
   const [editScenarioTags, setEditScenarioTags] = useState<PresetTagId[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<string, string>>>({});
+  const [savedDraftSignature, setSavedDraftSignature] = useState<string | null>(null);
+  const [isHydratingSkills, setIsHydratingSkills] = useState(false);
+  const draftBaselineInitializedRef = useRef(false);
+
+  const draft = useMemo<PresetDraft>(
+    () => ({
+      identity: { name: editName, description: editDescription, avatar: editAvatar },
+      preferences: { agents: editAgents, models: editModels },
+      targets: editTargets,
+      knowledgeMcp: { policy: knowledgePolicy, knowledgeBaseIds, mcpServerIds },
+      tags: { audience: editAudienceTags, scenario: editScenarioTags },
+      instructions: { context: editContext, routingDescription: editRoutingDescription },
+      skills: { selected: selectedSkills, pending: pendingSkills, disabledBuiltin: disabledBuiltinSkills },
+      advancedRouting: { fallbackAllowed, autoSelectable },
+    }),
+    [autoSelectable, disabledBuiltinSkills, editAgents, editAudienceTags, editAvatar, editContext, editDescription, editModels, editName, editRoutingDescription, editScenarioTags, editTargets, fallbackAllowed, knowledgeBaseIds, knowledgePolicy, mcpServerIds, pendingSkills, selectedSkills],
+  );
+  const draftSignature = useMemo(() => presetDraftSignature(draft), [draft]);
+  const dirty = savedDraftSignature !== null && savedDraftSignature !== draftSignature;
+  const valid = Boolean(editName.trim()) && editTargets.length > 0;
+
+  useEffect(() => {
+    if (!editVisible) {
+      draftBaselineInitializedRef.current = false;
+      setSavedDraftSignature(null);
+      return;
+    }
+    if (!isHydratingSkills && !draftBaselineInitializedRef.current) {
+      draftBaselineInitializedRef.current = true;
+      setSavedDraftSignature(draftSignature);
+    }
+  }, [draftSignature, editVisible, isHydratingSkills]);
+
+  useEffect(() => {
+    setFieldErrors((current) => {
+      const next = { ...current };
+      if (editName.trim()) delete next['identity.name'];
+      if (editTargets.length > 0) delete next.targets;
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [editName, editTargets]);
+
+  const updateField = useCallback(<K extends keyof PresetDraft>(field: K, value: PresetDraft[K]) => {
+    switch (field) {
+      case 'identity': {
+        const next = value as PresetDraft['identity'];
+        setEditName(next.name);
+        setEditDescription(next.description);
+        setEditAvatar(next.avatar);
+        break;
+      }
+      case 'preferences': {
+        const next = value as PresetDraft['preferences'];
+        setEditAgents(next.agents);
+        setEditModels(next.models);
+        break;
+      }
+      case 'targets': setEditTargets(value as PresetTarget[]); break;
+      case 'knowledgeMcp': {
+        const next = value as PresetDraft['knowledgeMcp'];
+        setKnowledgePolicy(next.policy);
+        setKnowledgeBaseIds(next.knowledgeBaseIds);
+        setMcpServerIds(next.mcpServerIds);
+        break;
+      }
+      case 'tags': {
+        const next = value as PresetDraft['tags'];
+        setEditAudienceTags(next.audience);
+        setEditScenarioTags(next.scenario);
+        break;
+      }
+      case 'instructions': {
+        const next = value as PresetDraft['instructions'];
+        setEditContext(next.context);
+        setEditRoutingDescription(next.routingDescription);
+        break;
+      }
+      case 'skills': {
+        const next = value as PresetDraft['skills'];
+        setSelectedSkills(next.selected);
+        setPendingSkills(next.pending);
+        setDisabledBuiltinSkills(next.disabledBuiltin);
+        break;
+      }
+      case 'advancedRouting': {
+        const next = value as PresetDraft['advancedRouting'];
+        setFallbackAllowed(next.fallbackAllowed);
+        setAutoSelectable(next.autoSelectable);
+        break;
+      }
+    }
+  }, []);
 
   const handleEdit = async (preset: PresetListItem) => {
+    draftBaselineInitializedRef.current = false;
+    setSavedDraftSignature(null);
+    setFieldErrors({});
+    setIsHydratingSkills(true);
     setIsCreating(false);
     setActivePresetId(preset.preset_id);
     setEditName(preset.name || '');
@@ -143,11 +242,17 @@ export const usePresetEditor = ({
       setBuiltinAutoSkills([]);
       setSelectedSkills([]);
       setDisabledBuiltinSkills([]);
+    } finally {
+      setIsHydratingSkills(false);
     }
   };
 
   // Create preset function
   const handleCreate = async () => {
+    draftBaselineInitializedRef.current = false;
+    setSavedDraftSignature(null);
+    setFieldErrors({});
+    setIsHydratingSkills(true);
     setIsCreating(true);
     setActivePresetId(null);
     setEditName('');
@@ -185,11 +290,17 @@ export const usePresetEditor = ({
       console.error('Failed to load skills:', error);
       setAvailableSkills([]);
       setBuiltinAutoSkills([]);
+    } finally {
+      setIsHydratingSkills(false);
     }
   };
 
   // Duplicate preset function
   const handleDuplicate = async (preset: PresetListItem) => {
+    draftBaselineInitializedRef.current = false;
+    setSavedDraftSignature(null);
+    setFieldErrors({});
+    setIsHydratingSkills(true);
     setIsCreating(true);
     setActivePresetId(null);
     setEditName(`${preset.name_i18n?.[localeKey] || preset.name} (Copy)`);
@@ -226,19 +337,26 @@ export const usePresetEditor = ({
       setBuiltinAutoSkills([]);
       setSelectedSkills([]);
       setDisabledBuiltinSkills([]);
+    } finally {
+      setIsHydratingSkills(false);
     }
   };
 
-  const handleSave = async () => {
+  const handleSave = async (): Promise<string | null> => {
+    if (saving) return null;
+    setFieldErrors({});
+    setSaving(true);
     try {
       // Validate required fields
       if (!editName.trim()) {
+        setFieldErrors({ 'identity.name': t('settings.presetNameRequired', { defaultValue: 'Preset name is required' }) });
         message.error(t('settings.presetNameRequired', { defaultValue: 'Preset name is required' }));
-        return;
+        return 'identity.name';
       }
       if (editTargets.length === 0) {
+        setFieldErrors({ targets: t('settings.presetTargetRequired', { defaultValue: 'Select at least one application target' }) });
         message.error(t('settings.presetTargetRequired', { defaultValue: 'Select at least one application target' }));
-        return;
+        return 'targets';
       }
 
       let catalogSkills = availableSkills;
@@ -272,7 +390,7 @@ export const usePresetEditor = ({
             } catch (error) {
               console.error(`Failed to import skill "${pendingSkill.name}":`, error);
               message.error(t('settings.presetSkillImportFailed', { name: pendingSkill.name }));
-              return;
+              return null;
             }
           }
           catalogSkills = await loadPresetSkillCatalog();
@@ -287,7 +405,7 @@ export const usePresetEditor = ({
             names: selection.unresolvedPendingSkillNames.join(', '),
           }),
         );
-        return;
+        return null;
       }
 
       const content: CreatePresetRequest = {
@@ -328,7 +446,7 @@ export const usePresetEditor = ({
         message.success(t('common.createSuccess', { defaultValue: 'Created successfully' }));
       } else {
         // Update existing preset via backend
-        if (!activePreset) return;
+        if (!activePreset) return null;
 
         const updateRequest: UpdatePresetRequest = content;
         await ipcBridge.presets.update.invoke({
@@ -346,10 +464,16 @@ export const usePresetEditor = ({
 
       setEditVisible(false);
       setPendingSkills([]);
+      setSavedDraftSignature(presetDraftSignature({ ...draft, skills: { ...draft.skills, pending: [] } }));
+      setFieldErrors({});
       await refreshAgentDetection();
+      return null;
     } catch (error) {
       console.error('Failed to save preset:', error);
       message.error(t('common.failed', { defaultValue: 'Failed' }));
+      return null;
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -460,6 +584,17 @@ export const usePresetEditor = ({
   }, []);
 
   return {
+    // Shared preset editor contract. Legacy field setters below remain the
+    // thin wiring layer used by the current field components during migration.
+    draft,
+    updateField,
+    dirty,
+    valid,
+    save: handleSave,
+    discard: () => setEditVisible(false),
+    saving,
+    fieldErrors,
+
     // Edit drawer state
     editVisible,
     setEditVisible,
@@ -529,3 +664,5 @@ export const usePresetEditor = ({
     handleToggleEnabled,
   };
 };
+
+export type PresetEditorController = ReturnType<typeof usePresetEditor>;
