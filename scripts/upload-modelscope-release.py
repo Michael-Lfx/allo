@@ -4,12 +4,18 @@
 Model repo layout (root = ``allo/`` under flowy2025/flowyaipc):
 
     allo/
-    ├── alpha.yml                      # channel pointer (version metadata)
-    ├── channels/alpha/latest.json     # Tauri updater manifest (client endpoint)
-    └── v{version}/                    # signed updater packages + .sig
+    ├── channels/windows/latest.json   # Windows-only updater manifest
+    ├── channels/macos/latest.json     # macOS-only updater manifest
+    ├── channels/linux/latest.json     # Linux-only updater manifest
+    ├── channels/{platform}/channel.yml
+    ├── windows/v{version}/...
+    ├── macos/v{version}/...
+    └── linux/v{version}/...
 
-Run ``bun run make:latest --host modelscope --collect`` first to build
-``latest.json`` with ModelScope download URLs and copy artifacts to dist/desktop/.
+Shared ``channels/alpha/latest.json`` is deprecated. Each platform channel has an
+independent ``version`` so release cadence can diverge.
+
+Run ``bun run make:latest --host modelscope --channel <platform> --collect`` first.
 
 Requires ``MODELSCOPE_TOKEN`` and ``pip install modelscope``.
 """
@@ -19,16 +25,19 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 DEFAULT_REPO = "flowy2025/flowyaipc"
 DEFAULT_PREFIX = "allo"
-DEFAULT_CHANNEL = "alpha"
 DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / "apps/desktop/signing/.env.modelscope"
+PLATFORM_CHANNELS = ("windows", "macos", "linux")
+CHANNEL_KEYS = {
+    "windows": frozenset({"windows-x86_64", "windows-aarch64"}),
+    "macos": frozenset({"darwin-x86_64", "darwin-aarch64"}),
+    "linux": frozenset({"linux-x86_64", "linux-aarch64"}),
+}
 
-# Updater artifacts Tauri can install (manual-only bundles like .dmg/.deb are skipped).
 UPDATER_SUFFIXES = (
     "-setup.exe",
     ".app.tar.gz",
@@ -56,7 +65,7 @@ def load_env_file(path: Path) -> None:
 
 
 def modelscope_file_url(repo: str, path_in_repo: str) -> str:
-    """Public ModelScope repo file URL (same shape as hermes-agent-ultra)."""
+    """Public ModelScope repo file URL."""
     return (
         f"https://modelscope.cn/api/v1/models/{repo}/repo"
         f"?Revision=master&FilePath={quote(path_in_repo, safe='/')}"
@@ -71,6 +80,41 @@ def artifact_basename_from_url(url: str) -> str:
     if file_path:
         return Path(unquote(file_path)).name
     return Path(unquote(parsed.path)).name
+
+
+def platform_folder_for_key(key: str) -> str:
+    """Map Tauri platform key to ModelScope directory under allo/."""
+    if key.startswith("windows-"):
+        return "windows"
+    if key.startswith("darwin-"):
+        return "macos"
+    if key.startswith("linux-"):
+        return "linux"
+    raise ValueError(f"unsupported platform key: {key}")
+
+
+def infer_channel_from_manifest(manifest: dict) -> str | None:
+    keys = set((manifest.get("platforms") or {}).keys())
+    if not keys:
+        return None
+    for channel, allowed in CHANNEL_KEYS.items():
+        if keys <= allowed:
+            return channel
+    return None
+
+
+def remote_dir_for_artifact(
+    manifest: dict, artifact_name: str, prefix: str, version_tag: str
+) -> str:
+    """Resolve allo/{platform}/v{version} for a package or its .sig file."""
+    base = artifact_name[:-4] if artifact_name.endswith(".sig") else artifact_name
+    for key, entry in (manifest.get("platforms") or {}).items():
+        if artifact_basename_from_url(str(entry.get("url", ""))) == base:
+            return f"{prefix}/{platform_folder_for_key(key)}/{version_tag}"
+    raise SystemExit(
+        f"ERROR: cannot map artifact {artifact_name} to allo/{{platform}}/{version_tag} "
+        "via latest.json platform URLs"
+    )
 
 
 def filter_manifest_to_local_platforms(manifest: dict, dist_dir: Path) -> tuple[dict, list[str]]:
@@ -89,14 +133,33 @@ def filter_manifest_to_local_platforms(manifest: dict, dist_dir: Path) -> tuple[
     return filtered, dropped
 
 
-def merge_remote_platforms(manifest: dict, remote: dict) -> dict:
-    """Fill missing platforms from an existing remote latest.json (multi-machine release)."""
+def filter_manifest_to_channel(manifest: dict, channel: str) -> tuple[dict, list[str]]:
+    """Drop platform keys that do not belong to this OTA channel."""
+    allowed = CHANNEL_KEYS[channel]
+    platforms = dict(manifest.get("platforms") or {})
+    kept: dict[str, dict] = {}
+    dropped: list[str] = []
+    for key, entry in platforms.items():
+        if key in allowed:
+            kept[key] = entry
+        else:
+            dropped.append(key)
+    filtered = dict(manifest)
+    filtered["platforms"] = kept
+    return filtered, dropped
+
+
+def merge_remote_same_channel(manifest: dict, remote: dict, channel: str) -> dict:
+    """Fill missing same-channel keys from remote (same version only)."""
     merged = dict(manifest)
     local_platforms = dict(manifest.get("platforms") or {})
     remote_platforms = dict(remote.get("platforms") or {})
     if str(remote.get("version", "")).strip() != str(manifest.get("version", "")).strip():
         return merged
+    allowed = CHANNEL_KEYS[channel]
     for key, entry in remote_platforms.items():
+        if key not in allowed:
+            continue
         if key not in local_platforms and entry.get("url") and entry.get("signature"):
             local_platforms[key] = entry
     merged["platforms"] = local_platforms
@@ -123,7 +186,7 @@ def collect_updater_artifacts(dist_dir: Path) -> list[Path]:
         if not path.is_file():
             continue
         name = path.name
-        if name.endswith(".sig") or name == "latest.json" or name == "alpha.yml":
+        if name.endswith(".sig") or name in {"latest.json", "channel.yml", "alpha.yml"}:
             continue
         if any(name.endswith(suffix) for suffix in UPDATER_SUFFIXES):
             sig = dist_dir / f"{name}.sig"
@@ -133,17 +196,16 @@ def collect_updater_artifacts(dist_dir: Path) -> list[Path]:
     return found
 
 
-def build_alpha_yml(manifest: dict, channel: str) -> str:
-    """Minimal channel pointer — clients read channels/{channel}/latest.json, not this file."""
+def build_channel_yml(manifest: dict, channel: str) -> str:
+    """Minimal channel pointer — clients read channels/{channel}/latest.json."""
     lines = [
-        f"version: \"{manifest.get('version', '')}\"",
+        f'version: "{manifest.get("version", "")}"',
         f"channel: {channel}",
-        f"pub_date: \"{manifest.get('pub_date', '')}\"",
+        f'pub_date: "{manifest.get("pub_date", "")}"',
         f"manifest: channels/{channel}/latest.json",
     ]
     notes = manifest.get("notes")
     if isinstance(notes, str) and notes.strip():
-        # YAML block scalar for multi-line release notes
         lines.append("notes: |")
         for note_line in notes.strip().splitlines():
             lines.append(f"  {note_line}")
@@ -153,8 +215,6 @@ def build_alpha_yml(manifest: dict, channel: str) -> str:
 
 
 def upload_file(api, local_path: Path, remote_path: str, repo: str, message: str) -> None:
-    from modelscope.hub.api import HubApi  # noqa: F401 — imported in main()
-
     api.upload_file(
         path_or_fileobj=str(local_path),
         path_in_repo=remote_path,
@@ -175,8 +235,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--channel",
-        default=DEFAULT_CHANNEL,
-        help=f"Release channel subdirectory (default: {DEFAULT_CHANNEL})",
+        default=None,
+        choices=PLATFORM_CHANNELS,
+        help="OTA channel: windows | macos | linux (inferred from latest.json when omitted)",
     )
     parser.add_argument(
         "--dist-dir",
@@ -191,7 +252,7 @@ def main() -> None:
     parser.add_argument(
         "--merge-remote",
         action="store_true",
-        help="Merge platform entries from the existing ModelScope latest.json (multi-platform release)",
+        help="Merge missing same-channel keys from the existing ModelScope latest.json (same version only)",
     )
     parser.add_argument(
         "--dry-run",
@@ -209,16 +270,17 @@ def main() -> None:
             "Upload runs after a signed updater build. On Windows:\n"
             "  1) Copy apps/desktop/signing/nomifun-updater.key from your key store\n"
             "  2) $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content apps/desktop/signing/nomifun-updater.key -Raw\n"
-            "  3) bun run build:win --config apps/desktop/tauri.updater.conf.json\n"
-            "  4) bun run make:latest --host modelscope --channel alpha --collect\n"
-            "  5) bun run upload:modelscope\n"
+            "  3) bun run build:win --config apps/desktop/tauri.updater.conf.json "
+            "--config apps/desktop/tauri.channel.windows.conf.json\n"
+            "  4) bun run make:latest --host modelscope --channel windows --collect\n"
+            "  5) bun run upload:modelscope -- --channel windows\n"
         )
 
     latest_path = dist_dir / "latest.json"
     if not latest_path.is_file():
         raise SystemExit(
             f"ERROR: {latest_path} not found. Run:\n"
-            "  bun run make:latest --host modelscope --channel alpha --collect"
+            "  bun run make:latest --host modelscope --channel windows --collect"
         )
 
     manifest = json.loads(latest_path.read_text(encoding="utf-8"))
@@ -226,14 +288,27 @@ def main() -> None:
     if not version:
         raise SystemExit("ERROR: latest.json missing 'version'")
 
+    channel = args.channel or infer_channel_from_manifest(manifest)
+    if channel not in PLATFORM_CHANNELS:
+        raise SystemExit(
+            "ERROR: could not determine OTA channel. Pass --channel windows|macos|linux "
+            "(shared alpha channel is deprecated)."
+        )
+
     version_tag = version if version.startswith("v") else f"v{version}"
     prefix: str = args.prefix.strip("/")
-    channel: str = args.channel
     repo: str = args.repo
 
     artifacts = collect_updater_artifacts(dist_dir)
     if not artifacts:
         raise SystemExit(f"ERROR: no updater artifacts found in {dist_dir}")
+
+    manifest, dropped_channel = filter_manifest_to_channel(manifest, channel)
+    if dropped_channel:
+        print(
+            f"  Note: dropping cross-channel platform(s): {', '.join(dropped_channel)}",
+            file=sys.stderr,
+        )
 
     manifest, dropped = filter_manifest_to_local_platforms(manifest, dist_dir)
     if dropped:
@@ -246,10 +321,13 @@ def main() -> None:
         remote = fetch_remote_latest(repo, prefix, channel)
         if remote:
             before = set((manifest.get("platforms") or {}).keys())
-            manifest = merge_remote_platforms(manifest, remote)
+            manifest = merge_remote_same_channel(manifest, remote, channel)
             added = set((manifest.get("platforms") or {}).keys()) - before
             if added:
-                print(f"  Merged {len(added)} platform(s) from remote manifest: {', '.join(sorted(added))}")
+                print(
+                    f"  Merged {len(added)} same-channel platform(s) from remote: "
+                    f"{', '.join(sorted(added))}"
+                )
 
     platforms = manifest.get("platforms") or {}
     if not platforms:
@@ -258,24 +336,29 @@ def main() -> None:
             "Ensure dist/desktop/ contains the updater package(s) referenced in latest.json."
         )
 
-    # Rewrite local latest.json to the filtered/merged manifest used for upload.
     latest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-    remote_version_prefix = f"{prefix}/{version_tag}"
     remote_latest = f"{prefix}/channels/{channel}/latest.json"
-    remote_alpha = f"{prefix}/alpha.yml"
+    remote_channel_yml = f"{prefix}/channels/{channel}/channel.yml"
+    artifact_remotes = [
+        (
+            artifact,
+            f"{remote_dir_for_artifact(manifest, artifact.name, prefix, version_tag)}/{artifact.name}",
+        )
+        for artifact in artifacts
+    ]
 
-    alpha_yml = build_alpha_yml(manifest, channel)
-    alpha_local = dist_dir / "alpha.yml"
-    alpha_local.write_text(alpha_yml, encoding="utf-8")
+    channel_yml = build_channel_yml(manifest, channel)
+    channel_local = dist_dir / "channel.yml"
+    channel_local.write_text(channel_yml, encoding="utf-8")
 
-    print(f"Release {version_tag} → ModelScope {repo}/{prefix}/")
+    print(f"Release {version_tag} → ModelScope {repo}/{prefix}/channels/{channel}/")
     print(f"  Endpoint: {modelscope_file_url(repo, remote_latest)}")
-    print(f"  Artifacts ({len(artifacts)}):")
-    for a in artifacts:
-        print(f"    - {a.name} ({a.stat().st_size:,} bytes)")
+    print(f"  Artifacts ({len(artifact_remotes)}):")
+    for artifact, remote_path in artifact_remotes:
+        print(f"    - {artifact.name} ({artifact.stat().st_size:,} bytes) -> {remote_path}")
     print(f"  Manifest: {remote_latest}")
-    print(f"  Pointer:  {remote_alpha}")
+    print(f"  Pointer:  {remote_channel_yml}")
 
     if args.dry_run:
         print("\nDry run — no uploads performed.")
@@ -299,17 +382,16 @@ def main() -> None:
 
     fail_count = 0
 
-    for artifact in artifacts:
-        remote_path = f"{remote_version_prefix}/{artifact.name}"
+    for artifact, remote_path in artifact_remotes:
         try:
             upload_file(
                 api,
                 artifact,
                 remote_path,
                 repo,
-                f"Release {version_tag}: {artifact.name}",
+                f"Release {channel} {version_tag}: {artifact.name}",
             )
-        except Exception as exc:  # noqa: BLE001 — surface per-file errors, continue
+        except Exception as exc:  # noqa: BLE001
             print(f"  [FAIL] {artifact.name}: {exc}", file=sys.stderr)
             fail_count += 1
 
@@ -318,14 +400,12 @@ def main() -> None:
             f"ERROR: {fail_count} artifact(s) failed; channel manifests were not published"
         )
 
-    # The client reads latest.json directly, so publish it only after every
-    # versioned artifact and the informational channel pointer are available.
     for label, local, remote in (
-        ("alpha.yml", alpha_local, remote_alpha),
+        ("channel.yml", channel_local, remote_channel_yml),
         ("latest.json", latest_path, remote_latest),
     ):
         try:
-            upload_file(api, local, remote, repo, f"Release {version_tag}: update {label}")
+            upload_file(api, local, remote, repo, f"Release {channel} {version_tag}: update {label}")
         except Exception as exc:  # noqa: BLE001
             print(f"  [FAIL] {label}: {exc}", file=sys.stderr)
             fail_count += 1

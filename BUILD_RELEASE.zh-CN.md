@@ -1,36 +1,40 @@
 ﻿# Flowy 桌面端构建与发版手册（ModelScope OTA）
 
-本文记录 **allo** 桌面端当前的构建与自动更新发版流程。应用内 OTA 已切换至 ModelScope；GitHub Releases 相关的一键脚本（`release:mac` / `release:win`）仍可用于手动安装包分发，详见 `RELEASING.zh-CN.md`。
+本文记录 **allo** 桌面端当前的构建与自动更新发版流程。应用内 OTA 使用 ModelScope
+**分平台独立渠道**；GitHub Releases 相关的一键脚本（`release:mac` / `release:win`）
+仍可用于手动安装包分发，详见 `RELEASING.zh-CN.md`。
 
 ## 概览
 
 | 项目 | 说明 |
 |------|------|
-| 版本号真源 | 根目录 `Cargo.toml` → `[workspace.package].version` |
-| OTA 渠道 | `alpha` |
+| 版本号真源 | 根目录 `Cargo.toml` → `[workspace.package].version`（打在本 commit 上） |
+| OTA 渠道 | `windows` / `macos` / `linux`（各自一份 `latest.json`，版本可长期不同步） |
 | ModelScope 仓库 | [flowy2025/flowyaipc](https://www.modelscope.cn/models/flowy2025/flowyaipc/tree/master/allo) |
-| 客户端拉取端点 | `allo/channels/alpha/latest.json` |
+| 客户端拉取端点 | `allo/channels/{windows\|macos\|linux}/latest.json`（构建时用 channel overlay 写入） |
 | Updater 公钥 keyID | `6FD07533C4187B64`（内嵌于 `apps/desktop/tauri.conf.json`） |
+
+旧的共享渠道 `allo/channels/alpha/latest.json` **已废弃**，新安装包不再读取。
 
 ### ModelScope 目录结构
 
 ```text
 allo/
-├── alpha.yml                          # 渠道指针（版本元数据）
-├── channels/alpha/latest.json         # Tauri updater 清单（客户端实际请求）
-└── v{version}/                        # 各平台签名更新包 + 对应 .sig
-    ├── Flowy_{version}_x64-setup.exe
-    ├── Flowy_{version}_aarch64-setup.exe
-    ├── Flowy_{version}_universal.app.tar.gz
-    └── Flowy_{version}_x86_64.AppImage
+├── channels/windows/latest.json       # Windows 专属清单（独立 version）
+├── channels/macos/latest.json         # macOS 专属清单
+├── channels/linux/latest.json         # Linux 专属清单
+├── channels/{platform}/channel.yml    # 渠道指针（信息用）
+├── windows/v{version}/                # Windows 签名更新包 + .sig
+├── macos/v{version}/                  # macOS 签名更新包 + .sig
+└── linux/v{version}/                  # Linux 签名更新包 + .sig
 ```
 
 ### 两类产物
 
-- **手动安装包**：`.dmg`、`.exe`、`.msi`、`.AppImage`、`.deb`、`.rpm` 等，供用户自行下载安装。
-- **自动更新产物**：Tauri updater 可安装的包（Windows NSIS `.exe`、macOS `.app.tar.gz`、Linux `.AppImage`）及其 `.sig`，加上合并后的 `latest.json`。
+- **手动安装包**：`.dmg`、`.exe`、`.msi`、`.AppImage`、`.deb`、`.rpm` 等。
+- **自动更新产物**：Tauri updater 可安装的包及其 `.sig`，加上该平台渠道的 `latest.json`。
 
-> Tauri updater 签名（minisign）与系统代码签名（macOS Developer ID / Windows Authenticode）是两套机制。前者保证 OTA 包未被篡改；后者影响 Gatekeeper、SmartScreen 等系统信任提示。
+> Tauri updater 签名（minisign）与系统代码签名（macOS Developer ID / Windows Authenticode）是两套机制。
 
 ---
 
@@ -38,37 +42,30 @@ allo/
 
 ### 1. 构建工具
 
-- **Rust** + **Bun**（仓库使用 `bun` 驱动脚本）
+- **Rust** + **Bun**
 - **Tauri CLI**：`bun install` 后会带上 `@tauri-apps/cli`
 - **Python 3** + `pip install modelscope`（仅上传步骤需要）
 
 ### 2. Updater 签名私钥
 
-私钥路径：`apps/desktop/signing/nomifun-updater.key`（已被 gitignore，需从团队密钥库拷贝）。
+私钥路径：`apps/desktop/signing/nomifun-updater.key`（已被 gitignore）。
 
-必须与 `apps/desktop/tauri.conf.json` 内嵌的 `pubkey` 匹配（keyID `6FD07533C4187B64`）。**更换公钥后，已安装旧公钥的客户端需手动重装一次。**
+必须与 `apps/desktop/tauri.conf.json` 内嵌的 `pubkey` 匹配（keyID `6FD07533C4187B64`）。
 
 ### 3. ModelScope Token
 
 ```bash
 cp apps/desktop/signing/.env.modelscope.example apps/desktop/signing/.env.modelscope
-# 编辑 .env.modelscope，填入 MODELSCOPE_TOKEN（https://www.modelscope.cn/my/myaccesstoken）
-```
-
-也可直接导出环境变量：
-
-```bash
-export MODELSCOPE_TOKEN="ms-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+# 编辑 .env.modelscope，填入 MODELSCOPE_TOKEN
 ```
 
 ### 4. Windows 构建注意
 
-若 Cargo 拉依赖时报 `CRYPT_E_REVOCATION_OFFLINE`，仓库已在 `.cargo/config.toml` 与 `scripts/desktop-build-win.ps1` 中设置 `check-revoke = false` / `CARGO_HTTP_CHECK_REVOKE=false`。
-
-叠加 updater 配置时**务必传文件路径**，不要内联 JSON（PowerShell 5.1 会剥掉内联 `--config '{...}'` 的双引号）：
+叠加配置时**务必传文件路径**，不要内联 JSON：
 
 ```text
-apps/desktop/tauri.updater.conf.json   # {"bundle":{"createUpdaterArtifacts":true}}
+apps/desktop/tauri.updater.conf.json
+apps/desktop/tauri.channel.windows.conf.json   # 写入 Windows endpoint
 ```
 
 ---
@@ -76,17 +73,18 @@ apps/desktop/tauri.updater.conf.json   # {"bundle":{"createUpdaterArtifacts":tru
 ## 发版前： bump 版本号
 
 ```bash
-bun run bump 0.2.15          # 同步 Cargo.toml、Cargo.lock、package.json、ui/package.json
-bun run bump 0.2.15 --tag    # 额外提交并打 tag v0.2.15（工作区须干净）
+bun run bump 0.4.2
 ```
+
+三端版本可不同：在 **不同 commit** 上 bump 到不同版本，再打对应平台 tag。
 
 ---
 
-## 标准发版流程（分平台构建 + ModelScope 上传）
+## 标准发版流程（单平台）
 
-各平台**不能交叉编译**，需在对应系统上分别构建。典型顺序：macOS → Windows → Linux（或任意顺序，最终合并 `latest.json`）。
+各平台**不能交叉编译**。每次只发一个平台渠道。
 
-### 步骤 1：构建带签名的 updater 产物
+### 步骤 1：构建（必须叠加 channel config）
 
 **macOS**
 
@@ -94,10 +92,10 @@ bun run bump 0.2.15 --tag    # 额外提交并打 tag v0.2.15（工作区须干�
 export TAURI_SIGNING_PRIVATE_KEY="$(cat apps/desktop/signing/nomifun-updater.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 
-bun run build:mac --config apps/desktop/tauri.updater.conf.json
+bun run build:mac \
+  --config apps/desktop/tauri.updater.conf.json \
+  --config apps/desktop/tauri.channel.macos.conf.json
 ```
-
-公开分发时建议加 `--signed`（Developer ID 签名 + 公证），见 `RELEASING.zh-CN.md`。
 
 **Windows**
 
@@ -105,123 +103,69 @@ bun run build:mac --config apps/desktop/tauri.updater.conf.json
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content apps/desktop/signing/nomifun-updater.key -Raw
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
-bun run build:win --config apps/desktop/tauri.updater.conf.json
-# 有 Authenticode 证书时：
-# bun run build:win --signed --config apps/desktop/tauri.updater.conf.json
-# 或：bun run release:win（指纹在环境变量 / .env.release 时自动 --signed）
+bun run build:win `
+  --config apps/desktop/tauri.updater.conf.json `
+  --config apps/desktop/tauri.channel.windows.conf.json
 ```
 
 **Linux**
 
 ```bash
-# 依赖（Debian/Ubuntu）
-sudo apt-get install -y pkg-config libgbm-dev libayatana-appindicator3-dev librsvg2-dev
-
 export TAURI_SIGNING_PRIVATE_KEY="$(cat apps/desktop/signing/nomifun-updater.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 
-bun run build:linux --config apps/desktop/tauri.updater.conf.json
+bun run build:linux \
+  --config apps/desktop/tauri.updater.conf.json \
+  --config apps/desktop/tauri.channel.linux.conf.json
 ```
 
-### 步骤 2：生成 ModelScope 版 latest.json 并收集产物
-
-在**当前构建机**上执行（`--collect` 会把 updater 包、`.sig`、`latest.json` 复制到 `dist/desktop/`）：
+### 步骤 2：生成该平台清单并收集
 
 ```bash
-bun run make:latest --host modelscope --channel alpha --collect
+bun run make:latest --host modelscope --channel windows --collect   # 或 macos / linux
 ```
 
-可选参数：
+会写入 `apps/desktop/updater/latest.{channel}.json`，并把产物拷到 `dist/desktop/`。
+
+### 步骤 3：上传
 
 ```bash
-bun run make:latest --host modelscope --channel alpha --collect \
-  --version 0.2.15 \
-  --notes "修复若干问题"
-
-bun run make:latest --host modelscope --channel alpha --collect \
-  --notes-file release-notes.md
+bun run upload:modelscope -- --channel windows
 ```
 
-`make:latest` 会扫描 `target/**/release/bundle/` 下的 updater 产物，将本机平台条目写入 `apps/desktop/updater/latest.json`，并保留已有其他平台条目。
-
-### 步骤 3：上传到 ModelScope
-
-**首台机器（仅本机构建了部分平台）**
-
-```bash
-bun run upload:modelscope
-```
-
-等价于：
-
-```bash
-python scripts/upload-modelscope-release.py \
-  --repo flowy2025/flowyaipc \
-  --prefix allo \
-  --channel alpha \
-  --dist-dir dist/desktop/
-```
-
-**后续机器（合并远端已有平台条目）**
-
-在另一台平台构建并执行 `make:latest --collect` 后：
-
-```bash
-bun run upload:modelscope -- --merge-remote
-```
-
-`--merge-remote` 会从 ModelScope 拉取当前 `latest.json`，把远端已有、本机未构建的平台条目合并进来，再上传完整清单。
+同渠道、同版本补架构条目时可用 `--merge-remote`（**不会**合并其他 OS 渠道）。
 
 ### 步骤 4：验证
 
-1. 浏览器打开 ModelScope 文件页，确认 `allo/v{version}/` 下有对应安装包与 `.sig`。
-2. 确认 `allo/channels/alpha/latest.json` 已更新，`version` 与各 `platforms` 条目 URL 指向 ModelScope。
-3. 在**已安装的旧版本**客户端中点击标题栏右上角更新按钮，或打开设置 → 检查更新，确认能检测到新版本并完成安装。
+1. 确认 `allo/{platform}/v{version}/` 下有包与 `.sig`。
+2. 确认 `allo/channels/{platform}/latest.json` 的 `version` 正确。
+3. 用**带 channel overlay 的新安装包**测检查更新。
 
 ---
 
-## Windows 一键示例（v0.2.14）
-
-已在 Windows 上验证通过的完整命令：
+## Windows 一键示例
 
 ```powershell
-# 1. bump（若尚未改版本）
-bun run bump 0.2.14
-
-# 2. 构建
+bun run bump 0.4.2
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content apps/desktop/signing/nomifun-updater.key -Raw
-bun run build:win --config apps/desktop/tauri.updater.conf.json
-
-# 3. 生成清单并收集到 dist/desktop/
-bun run make:latest --host modelscope --channel alpha --collect
-
-# 4. 上传
-bun run upload:modelscope
+bun run build:win --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.windows.conf.json
+bun run make:latest --host modelscope --channel windows --collect
+bun run upload:modelscope -- --channel windows
 ```
 
 ---
 
-## 多平台合并发版
+## 三端独立发版（版本可分叉）
 
 ```text
-Mac 构建机:
-  build:mac --config tauri.updater.conf.json
-  make:latest --host modelscope --channel alpha --collect
-  upload:modelscope
+Windows 0.4.2:
+  bump 0.4.2 → commit → tag v0.4.2-windows → push tag
+  → 只更新 channels/windows/latest.json
 
-Windows 构建机:
-  git pull   # 拿到最新 latest.json（若已提交回仓库）
-  build:win --config tauri.updater.conf.json
-  make:latest --host modelscope --channel alpha --collect
-  upload:modelscope -- --merge-remote
-
-Linux 构建机:
-  build:linux --config tauri.updater.conf.json
-  make:latest --host modelscope --channel alpha --collect
-  upload:modelscope -- --merge-remote
+一周后 macOS 0.1.8:
+  bump 0.1.8 → commit → tag v0.1.8-macos → push tag
+  → 只更新 channels/macos/latest.json（windows 清单不受影响）
 ```
-
-上传脚本会自动过滤本机 `dist/desktop/` 中不存在的平台条目，避免覆盖未构建的平台。
 
 ---
 
@@ -229,14 +173,12 @@ Linux 构建机:
 
 | 命令 | 用途 |
 |------|------|
-| `bun run build:win` / `build:mac` / `build:linux` | 打当前平台安装包 → `dist/desktop/` |
-| `bun run build:updater` | 快捷：带 `createUpdaterArtifacts` 的 tauri build |
-| `bun run make:latest --host modelscope --channel alpha --collect` | 生成 ModelScope URL 的 `latest.json` 并收集产物 |
-| `bun run upload:modelscope` | 上传 `dist/desktop/` 到 ModelScope |
-| `bun run upload:modelscope -- --merge-remote` | 合并远端平台后上传 |
-| `bun run upload:modelscope -- --dry-run` | 只打印上传计划，不实际上传 |
+| `bun run build:win` / `build:mac` / `build:linux` | 打当前平台安装包 |
+| `... --config tauri.updater.conf.json --config tauri.channel.<p>.conf.json` | 正式 OTA 构建 |
+| `bun run make:latest --host modelscope --channel <p> --collect` | 生成该渠道清单并收集产物 |
+| `bun run upload:modelscope -- --channel <p>` | 上传到对应渠道 |
+| `bun run upload:modelscope -- --channel <p> --merge-remote` | 同渠道同版本合并远端缺失键 |
 | `bun run bump <version>` | 统一改版本号 |
-| `bun run dev` | 本地开发（可测检查更新，**不能**完整测安装/重启） |
 
 ---
 
@@ -248,52 +190,40 @@ Linux 构建机:
 |------|--------|------|
 | `--repo` | `flowy2025/flowyaipc` | ModelScope 模型仓库 |
 | `--prefix` | `allo` | 仓库内路径前缀 |
-| `--channel` | `alpha` | 渠道子目录 |
-| `--dist-dir` | （必填） | 含 `latest.json` 与签名产物的目录，通常为 `dist/desktop/` |
-| `--env-file` | `apps/desktop/signing/.env.modelscope` | Token 配置文件 |
-| `--merge-remote` | — | 合并远端 `latest.json` 中缺失的平台 |
+| `--channel` | 从清单推断 | `windows` \| `macos` \| `linux` |
+| `--dist-dir` | （必填） | 含 `latest.json` 与签名产物的目录 |
+| `--merge-remote` | — | 仅合并同渠道、同版本的缺失平台键 |
 | `--dry-run` | — | 预检，不上传 |
 
 ---
 
-## CI 发版（可选）
+## CI 发版
 
-工作流：`.github/workflows/release-modelscope.yml`
+工作流：`.github/workflows/release-modelscope.yml`。
 
-- 触发：推送 `v*` tag，或通过 `workflow_dispatch` 手动重跑一个已存在的 tag。
-- tag 必须与根 `Cargo.toml` 的 `[workspace.package].version` 一致，例如版本
-  `0.5.2` 对应 tag `v0.5.2`，否则工作流会在构建前终止。
-- Windows、macOS、Linux 在各自的 GitHub Hosted Runner 上并行构建，将
-  `dist/desktop/` 保存为保留 3 天的 `allo-updater-*` artifact。
-- `modelscope-upload` job 下载三份 artifact，在本地校验并合并三份
-  `latest.json` 与各平台产物，最后只调用一次 `upload:modelscope`，避免多个平台
-  覆盖共享的 `allo/channels/alpha/latest.json`。
+| tag | 渠道 | 发布平台键 |
+|------|------|-----------|
+| `v0.4.2-windows` | `windows` | `windows-x86_64` |
+| `v0.1.8-macos` | `macos` | `darwin-x86_64`、`darwin-aarch64` |
+| `v0.3.1-linux` | `linux` | `linux-x86_64` |
 
-在 GitHub 仓库的 `Settings -> Secrets and variables -> Actions` 中配置：
+tag 中的版本必须与**该 tag 指向 commit** 的 `Cargo.toml` version 一致。
 
-| Secret | 用途 |
-|------|------|
-| `TAURI_SIGNING_PRIVATE_KEY` | `nomifun-updater.key` 的完整内容，供三个构建 job 生成 updater `.sig` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | updater 私钥密码；私钥无密码时可以不创建 |
-| `MODELSCOPE_TOKEN` | 供最终发布 job 写入 `flowy2025/flowyaipc` |
-
-推荐在 `Settings -> Environments` 创建 `modelscope-alpha` 环境，为最终上传
-设置 required reviewer，并把 `MODELSCOPE_TOKEN` 配置为该环境的 Secret。Updater
-私钥必须配置为 Repository Secret，因为三个并行构建 job 都需要读取它。
-
-首次启用时，应先提交 workflow，再基于包含该 workflow 的提交创建 tag：
+三端可并行（concurrency 按 tag ref 分组）。构建命令叠加对应
+`tauri.channel.*.conf.json`，上传到独立渠道清单。
 
 ```bash
-bun run bump 0.5.2
-git add Cargo.toml Cargo.lock package.json ui/package.json apps/desktop/tauri.conf.json
-git commit -m "chore(release): v0.5.2"
-git tag v0.5.2
+bun run bump 0.4.2
+git add Cargo.toml Cargo.lock package.json ui/package.json
+git commit -m "chore(release): v0.4.2"
 git push origin HEAD
-git push origin v0.5.2
+git tag v0.4.2-windows
+git push origin v0.4.2-windows
+# macOS / Linux 可在其他版本 commit 上另行打 tag，无需等待
 ```
 
-不要把 updater 私钥、密码或 ModelScope Token 写进 workflow、仓库文件或
-artifact。GitHub Actions artifact 只包含构建产物与 updater 清单。
+Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（可选）、
+`MODELSCOPE_TOKEN`（推荐放在 `modelscope-alpha` environment）。
 
 ---
 
@@ -301,14 +231,14 @@ artifact。GitHub Actions artifact 只包含构建产物与 updater 清单。
 
 | 场景 | 做法 |
 |------|------|
-| 开发模式测检查更新 | `bun run dev`，可验证能否拉到 ModelScope 清单 |
-| 测完整安装流程 | 安装**旧版 release 包**（如 0.2.13），再触发更新到当前已发布版本 |
-| 模拟旧版本 | `bun run bump 0.2.13` 后重启 dev（仅版本号回退，非真实旧包） |
+| 开发模式测检查更新 | `bun run dev`（默认读 windows endpoint；完整测需正式包） |
+| 测完整安装流程 | 安装带 channel overlay 的旧版包，再发更高版本到该渠道 |
+| 旧 alpha 客户端 | 不会收到新渠道更新，需重装 |
 
-客户端 updater 端点配置于 `apps/desktop/tauri.conf.json`：
+客户端正式 endpoint 由 channel overlay 写入，例如 Windows：
 
 ```text
-https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/alpha/latest.json
+.../FilePath=allo/channels/windows/latest.json
 ```
 
 ---
@@ -318,12 +248,10 @@ https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&Fil
 | 现象 | 处理 |
 |------|------|
 | `MODELSCOPE_TOKEN not set` | 配置 `.env.modelscope` 或导出环境变量 |
-| `modelscope package not installed` | `pip install modelscope` |
-| `no updater artifacts found` | 确认用了 `tauri.updater.conf.json` 构建，且执行了 `make:latest --collect` |
-| `no uploadable platform entries remain` | `dist/desktop/` 中缺少 `latest.json` 引用的安装包文件名 |
-| 客户端检查更新失败 | 确认 ModelScope 上 `latest.json` 可访问；公钥与构建私钥匹配 |
-| Windows Cargo 证书吊销离线 | 确认 `CARGO_HTTP_CHECK_REVOKE=false` 已生效 |
-| PowerShell 内联 JSON 报错 | 改用 `--config apps/desktop/tauri.updater.conf.json` 文件路径 |
+| `--channel 必须是 windows\|macos\|linux` | 不要再传 `alpha` |
+| `no updater artifacts found` | 确认用了 updater + channel 两份 `--config`，并 `make:latest --collect` |
+| 客户端检查更新失败 | 确认安装包 endpoint 指向正确渠道；公钥匹配 |
+| PowerShell 内联 JSON 报错 | 改用配置文件路径 |
 
 ---
 
@@ -331,13 +259,12 @@ https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&Fil
 
 | 路径 | 说明 |
 |------|------|
-| `apps/desktop/tauri.conf.json` | 生产配置（updater endpoint + pubkey） |
-| `apps/desktop/tauri.dev.conf.json` | 开发配置（继承 ModelScope endpoint） |
-| `apps/desktop/tauri.updater.conf.json` | 叠加配置，启用 `createUpdaterArtifacts` |
-| `apps/desktop/updater/latest.json` | 本地维护的清单模板（上传前由 `make:latest` 更新） |
-| `scripts/make-latest-json.mjs` | 生成 / 合并 `latest.json` |
+| `apps/desktop/tauri.conf.json` | 生产配置（默认 windows endpoint + pubkey） |
+| `apps/desktop/tauri.channel.*.conf.json` | 平台专属 updater endpoint |
+| `apps/desktop/tauri.updater.conf.json` | 启用 `createUpdaterArtifacts` |
+| `apps/desktop/updater/latest.{platform}.json` | 本机维护的分渠道清单 |
+| `scripts/make-latest-json.mjs` | 生成分渠道 `latest.json` |
 | `scripts/upload-modelscope-release.py` | ModelScope 上传 |
-| `scripts/run-upload-modelscope.mjs` | 跨平台 Python 启动器 |
-| `apps/desktop/signing/.env.modelscope.example` | Token 配置模板 |
+| `scripts/verify-modelscope-release.py` | 发布后校验 |
 
 更详细的 updater 机制说明见 `apps/desktop/updater/README.zh-CN.md`（以本文为准）。

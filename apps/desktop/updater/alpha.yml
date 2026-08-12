@@ -1,17 +1,11 @@
-# Alpha channel pointer — updated by make:latest --collect / upload-modelscope-release.py.
-# Clients read allo/channels/alpha/latest.json, not this file directly.
-version: "0.3.3"
-channel: alpha
-pub_date: "2026-07-29T17:36:54.718Z"
-manifest: channels/alpha/latest.json
-notes: |
-  ## Flowy v0.3.3
-  
-  - 重构 v3 ID 与数据库启动路径，精简早期 v3 数据集升级与恢复逻辑。
-  - 修复微信 inbound 配对流程，并完善微信通道配置状态处理。
-  - 调整技能市场命令页脚显示细节。
-  
-  ## Windows 包
-  
-  - 首发 Windows x64 安装包及 Tauri 自动更新签名资产。
-  - 安装包未包含 Authenticode 签名，手动下载时可能出现 SmartScreen 或未知发布者提示；自动更新仍使用 Tauri 签名校验。
+# Deprecated: shared alpha channel pointer
+
+The shared ModelScope channel `allo/channels/alpha/latest.json` is deprecated.
+OTA now uses independent platform channels:
+
+- `allo/channels/windows/latest.json`
+- `allo/channels/macos/latest.json`
+- `allo/channels/linux/latest.json`
+
+See `channel.windows.yml` / `channel.macos.yml` / `channel.linux.yml` generated
+by `bun run make:latest --host modelscope --channel <platform>`.

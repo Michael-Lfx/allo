@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/linux/latest.json"
+      ]
+    }
+  }
+}

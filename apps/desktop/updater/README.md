@@ -2,7 +2,7 @@
 
 Operational source of truth for in-app OTA is root
 [`BUILD_RELEASE.zh-CN.md`](../../../BUILD_RELEASE.zh-CN.md) (ModelScope
-channel). If this file disagrees with `BUILD_RELEASE`, follow
+channels). If this file disagrees with `BUILD_RELEASE`, follow
 `BUILD_RELEASE`. GitHub Releases remain for **manual installer** distribution;
 see [`RELEASING.md`](../../../RELEASING.md).
 
@@ -10,19 +10,32 @@ see [`RELEASING.md`](../../../RELEASING.md).
 
 ```text
 Running app
-  -> fetch updater endpoint from apps/desktop/tauri.conf.json
-  -> download ModelScope allo/channels/alpha/latest.json
+  -> fetch platform-specific updater endpoint (baked in at build time)
+  -> download ModelScope allo/channels/{windows|macos|linux}/latest.json
   -> compare versions
-  -> download platform package
+  -> download package under allo/{windows|macos|linux}/v{version}/
   -> verify .sig with embedded pubkey
   -> install and restart
 ```
 
-Endpoint:
+Release builds must overlay both updater + channel configs, for example:
 
 ```text
-https://modelscope.cn/api/v1/models/flowy2025/flowyaipc/repo?Revision=master&FilePath=allo/channels/alpha/latest.json
+--config apps/desktop/tauri.updater.conf.json
+--config apps/desktop/tauri.channel.windows.conf.json
 ```
+
+Endpoints:
+
+```text
+.../FilePath=allo/channels/windows/latest.json
+.../FilePath=allo/channels/macos/latest.json
+.../FilePath=allo/channels/linux/latest.json
+```
+
+The legacy shared `allo/channels/alpha/latest.json` channel is deprecated.
+Existing installs that still point at alpha will not receive new-channel
+updates; users need a fresh installer built with a channel overlay.
 
 Pubkey keyID: `6FD07533C4187B64`.
 
@@ -41,32 +54,31 @@ names. Expected updater packages:
 
 ## Build updater artifacts
 
-Use file-path `--config apps/desktop/tauri.updater.conf.json` (never inline JSON
-on Windows PowerShell 5.1). Private key:
-
-```text
-apps/desktop/signing/nomifun-updater.key
-```
-
 ```bash
-# macOS / Linux
+# macOS
 export TAURI_SIGNING_PRIVATE_KEY="$(cat apps/desktop/signing/nomifun-updater.key)"
-bun run build:mac --config apps/desktop/tauri.updater.conf.json   # or build:linux
-bun run make:latest --host modelscope --channel alpha --collect
-bun run upload:modelscope
+bun run build:mac --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json
+bun run make:latest --host modelscope --channel macos --collect
+bun run upload:modelscope -- --channel macos
 ```
 
 ```powershell
-# Windows — Authenticode when WINDOWS_CERTIFICATE_THUMBPRINT is set
+# Windows
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content apps/desktop/signing/nomifun-updater.key -Raw
-$env:WINDOWS_CERTIFICATE_THUMBPRINT = "A1B2C3..."
-bun run build:win --signed --config apps/desktop/tauri.updater.conf.json
-bun run make:latest --host modelscope --channel alpha --collect
-bun run upload:modelscope
+bun run build:win --signed --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.windows.conf.json
+bun run make:latest --host modelscope --channel windows --collect
+bun run upload:modelscope -- --channel windows
 ```
 
-`release:win` enables `--signed` automatically when the thumbprint is available
-(env or `.env.release`).
+```bash
+# Linux
+export TAURI_SIGNING_PRIVATE_KEY="$(cat apps/desktop/signing/nomifun-updater.key)"
+bun run build:linux --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.linux.conf.json
+bun run make:latest --host modelscope --channel linux --collect
+bun run upload:modelscope -- --channel linux
+```
+
+Each channel keeps its own `version`. Windows/macOS/Linux may diverge.
 
 ## OS trust vs updater trust
 

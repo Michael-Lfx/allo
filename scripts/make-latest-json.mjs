@@ -1,46 +1,52 @@
 #!/usr/bin/env bun
 /**
- * make-latest-json — 生成 / 合并 Tauri 自动更新清单 latest.json。
+ * make-latest-json — 生成 Tauri 自动更新清单（按平台独立渠道）。
  *
- *   bun run make:latest                        # 扫本机 target/ 里的更新产物，合并进清单
- *   bun run make:latest --version 0.1.11        # 显式指定版本（默认读单一真源）
- *   bun run make:latest --notes "修复若干问题"    # 指定发布说明（默认读 CHANGELOG / 兜底）
- *   bun run make:latest --repo owner/name       # 指定 GitHub 仓库（默认 nomifun/nomifun-tauri）
- *   bun run make:latest --host modelscope       # URL 指向 ModelScope（flowy2025/flowyaipc/allo/）
- *   bun run make:latest --host modelscope --channel alpha --collect
- *   bun run make:latest --collect               # 额外把产物 + .sig 拷到 dist/desktop/ 便于上传
+ *   bun run make:latest --host modelscope --collect
+ *   bun run make:latest --host modelscope --channel windows --collect
+ *   bun run make:latest --version 0.4.2 --host modelscope --channel macos --collect
  *
- * 背景：Tauri 自动更新靠一个 latest.json 清单，按 `<系统>-<芯片>` 列出每个平台的下载
- * 地址(url) + minisign 签名(signature)。各平台**不能交叉编译**，所以本脚本设计成「在
- * 哪台机器跑就补哪个平台的条目」，**合并**进同一个 latest.json：Mac 上补 darwin-*，
- * Windows 上补 windows-*，最终汇总成完整清单（见 apps/desktop/updater/README.md）。
+ * ModelScope 三端独立渠道（版本可长期不同步）：
+ *   allo/channels/windows|macos|linux/latest.json
+ *   allo/{windows|macos|linux}/v{version}/...
  *
- * 流程：
- *   1) 扫 target/**\/release/bundle/ 下的更新产物（每个产物旁有一个 .sig）。
- *   2) 由所在 target triple（或默认 host 构建）推断平台键，读 .sig 内容。
- *   3) url 指向 GitHub Releases 或 ModelScope（--host modelscope）的版本化资产地址。
- *   4) 强制产物名为 Flowy_* / Flowy.app.*（拒绝遗留 NomiFun_*）；平台键必须在 ALL_KEYS 内。
- *   5) 读入既有 latest.json（保留其它平台条目），更新 version/notes/pub_date + 本机条目，写回。
- *      --host modelscope 时同步刷新 apps/desktop/updater/alpha.yml；--collect 时一并拷到 dist。
+ * 旧的共享 alpha 清单已废弃；正式发版构建必须叠加
+ * apps/desktop/tauri.channel.{windows|macos|linux}.conf.json。
  *
- * 单一真源 = 根 Cargo.toml [workspace.package].version。纯 node:fs，无第三方依赖。
+ * 单一真源 = 根 Cargo.toml [workspace.package].version（打在本 commit 上的版本）。
+ * 纯 node:fs，无第三方依赖。
  */
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, copyFileSync } from 'node:fs';
 import { dirname, join, basename, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const DEFAULT_OUT = join(ROOT, 'apps/desktop/updater/latest.json');
 const DEFAULT_REPO = 'nomifun/nomifun-tauri';
 const DEFAULT_MS_REPO = 'flowy2025/flowyaipc';
 const DEFAULT_MS_PREFIX = 'allo';
-const DEFAULT_MS_CHANNEL = 'alpha';
 const PRODUCT = 'Flowy';
 const ALL_KEYS = ['windows-x86_64', 'windows-aarch64', 'darwin-x86_64', 'darwin-aarch64', 'linux-x86_64', 'linux-aarch64'];
 const ALL_KEYS_SET = new Set(ALL_KEYS);
-const DEFAULT_ALPHA = join(ROOT, 'apps/desktop/updater/alpha.yml');
+const PLATFORM_CHANNELS = ['windows', 'macos', 'linux'];
+const CHANNEL_KEYS = {
+  windows: ['windows-x86_64', 'windows-aarch64'],
+  macos: ['darwin-x86_64', 'darwin-aarch64'],
+  linux: ['linux-x86_64', 'linux-aarch64'],
+};
 
 const rel = (p) => (p.startsWith(ROOT) ? p.slice(ROOT.length + 1) : p);
+
+function inferHostChannel() {
+  if (process.platform === 'win32') return 'windows';
+  if (process.platform === 'darwin') return 'macos';
+  return 'linux';
+}
+
+function assertPlatformChannel(channel) {
+  if (!PLATFORM_CHANNELS.includes(channel)) {
+    throw new Error(`--channel 必须是 ${PLATFORM_CHANNELS.join('|')}（已废弃 alpha 共享渠道），收到: ${channel}`);
+  }
+}
 
 /** Reject legacy NomiFun_* names; require Flowy product prefix per platform key. */
 function assertFlowyArtifactName(key, name) {
@@ -83,9 +89,9 @@ function assertFlowyArtifactName(key, name) {
   throw new Error(`未处理的平台键: ${key}`);
 }
 
-function buildAlphaYml(manifest, channel) {
+function buildChannelYml(manifest, channel) {
   const lines = [
-    `# Alpha channel pointer — updated by make:latest --collect / upload-modelscope-release.py.`,
+    `# ${channel} channel pointer — updated by make:latest / upload-modelscope-release.py.`,
     `# Clients read allo/channels/${channel}/latest.json, not this file directly.`,
     `version: "${manifest.version || ''}"`,
     `channel: ${channel}`,
@@ -114,9 +120,24 @@ function flag(name, fallback = undefined) {
 const host = flag('host', 'github');
 const msRepo = flag('ms-repo', DEFAULT_MS_REPO);
 const msPrefix = flag('ms-prefix', DEFAULT_MS_PREFIX);
-const msChannel = flag('channel', DEFAULT_MS_CHANNEL);
+const channelArg = flag('channel', inferHostChannel());
+const msChannel = typeof channelArg === 'string' ? channelArg : inferHostChannel();
+try {
+  assertPlatformChannel(msChannel);
+} catch (err) {
+  console.error(`✗ ${err.message}`);
+  process.exit(1);
+}
+const channelKeySet = new Set(CHANNEL_KEYS[msChannel]);
 const repo = flag('repo', DEFAULT_REPO);
-const out = flag('out', DEFAULT_OUT);
+// ModelScope: one manifest per OS channel. GitHub Releases: one shared latest.json
+// that can accumulate platforms across native builders.
+const defaultOut =
+  host === 'modelscope'
+    ? join(ROOT, 'apps/desktop/updater', `latest.${msChannel}.json`)
+    : join(ROOT, 'apps/desktop/updater', 'latest.json');
+const out = flag('out', defaultOut);
+const channelYmlPath = join(ROOT, 'apps/desktop/updater', `channel.${msChannel}.yml`);
 const collect = flag('collect', false) === true;
 const targetDirArg = flag('target-dir', join(ROOT, 'target'));
 if (typeof targetDirArg !== 'string') {
@@ -150,10 +171,6 @@ function readWorkspaceVersion() {
   process.exit(1);
 }
 
-// 发布说明：从 CHANGELOG.md 取当前版本小节的正文。优先匹配标题里含本次 version 的
-// 小节（如 `## v0.1.13 - ...`）；匹配不到则退回第一个**非 Unreleased** 小节。跳过
-// `## Unreleased`（占位内容如 "No unreleased changes yet."）——补发平台包时若误取它，
-// 会把 latest.json 里已写好的发布说明覆盖成占位。读不到返回 null。
 function readChangelogNotes(version) {
   const p = join(ROOT, 'CHANGELOG.md');
   if (!existsSync(p)) return null;
@@ -177,7 +194,6 @@ function readChangelogNotes(version) {
   return text || null;
 }
 
-// triple → 平台键。一个 universal mac 包同时服务两个 darwin 芯片。
 function platformKeysFor(triple) {
   if (triple.includes('apple-darwin')) {
     if (triple.includes('universal')) return ['darwin-x86_64', 'darwin-aarch64'];
@@ -188,11 +204,21 @@ function platformKeysFor(triple) {
   return [];
 }
 
-// 默认（无 --target）构建落在 target/release/bundle，其 triple = 本机 host triple。
-function artifactDownloadUrl(name) {
+function platformFolderForKey(key) {
+  if (key.startsWith('windows-')) return 'windows';
+  if (key.startsWith('darwin-')) return 'macos';
+  if (key.startsWith('linux-')) return 'linux';
+  return null;
+}
+
+function artifactDownloadUrl(name, platformKey) {
   if (host === 'modelscope') {
     const versionTag = version.startsWith('v') ? version : `v${version}`;
-    const filePath = `${msPrefix}/${versionTag}/${name}`;
+    const folder = platformFolderForKey(platformKey);
+    if (!folder) {
+      throw new Error(`unsupported platform key for ModelScope URL: ${platformKey}`);
+    }
+    const filePath = `${msPrefix}/${folder}/${versionTag}/${name}`;
     return `https://modelscope.cn/api/v1/models/${msRepo}/repo?Revision=master&FilePath=${filePath}`;
   }
   return `https://github.com/${repo}/releases/download/v${version}/${name}`;
@@ -210,7 +236,6 @@ function listDirs(p) {
   return readdirSync(p).filter((e) => statSync(join(p, e)).isDirectory());
 }
 
-// 在一个 bundle 目录下递归找 *.sig，配对出更新产物（Tauri 只为更新产物写 .sig）。
 function findSigs(bundleDir) {
   const found = [];
   const walk = (dir) => {
@@ -227,9 +252,6 @@ function findSigs(bundleDir) {
   return found;
 }
 
-// Tauri may emit signatures for more than one bundle type on a platform. The
-// updater manifest must pick the package type the runtime updater can install,
-// while release uploads can still include every manual installer.
 function artifactPriority(key, artifact) {
   const name = basename(artifact).toLowerCase();
   const order = key.startsWith('linux-')
@@ -249,6 +271,8 @@ function compareCandidates(key, a, b) {
   if (byPriority !== 0) return byPriority;
   return basename(a.artifact).localeCompare(basename(b.artifact), 'en');
 }
+
+const collected = {}; // platformKey -> { url, signature, artifact, sig }
 
 function collectCandidate(key, candidate) {
   const current = collected[key];
@@ -272,7 +296,6 @@ if (!existsSync(TARGET)) {
   process.exit(1);
 }
 
-// 候选 bundle 目录：target/release/bundle（默认 host 构建）+ target/<triple>/release/bundle（指定 target）。
 const bundleDirs = [];
 const directDefault = join(TARGET, 'release', 'bundle');
 if (existsSync(directDefault)) bundleDirs.push({ dir: directDefault, triple: hostTriple() });
@@ -282,19 +305,21 @@ for (const entry of listDirs(TARGET)) {
   if (existsSync(nested)) bundleDirs.push({ dir: nested, triple: entry });
 }
 
-const collected = {}; // platformKey -> { url, signature, artifact, sig }
 const uploads = new Set();
 for (const { dir, triple } of bundleDirs) {
-  const keys = platformKeysFor(triple);
+  let keys = platformKeysFor(triple);
+  if (host === 'modelscope') {
+    keys = keys.filter((key) => channelKeySet.has(key));
+  }
   if (keys.length === 0) {
-    console.warn(`  ! 跳过无法识别的 triple: ${triple}`);
+    console.warn(`  ! 跳过与当前托管/渠道无关的 triple: ${triple}`);
     continue;
   }
   for (const { artifact, sig } of findSigs(dir)) {
     const name = basename(artifact);
     const signature = readFileSync(sig, 'utf8').trim();
-    const url = artifactDownloadUrl(name);
     for (const key of keys) {
+      const url = artifactDownloadUrl(name, key);
       collectCandidate(key, { url, signature, artifact, sig });
     }
     uploads.add(artifact);
@@ -304,10 +329,16 @@ for (const { dir, triple } of bundleDirs) {
 
 const foundKeys = Object.keys(collected);
 if (foundKeys.length === 0) {
-  console.error('✗ 在 target/ 下没找到任何更新产物（*.sig）。先构建带更新签名的产物：');
-  console.error('    macOS:   bun run build:mac --config apps/desktop/tauri.updater.conf.json');
-  console.error('    Windows: bun run build:win --config apps/desktop/tauri.updater.conf.json   （需先设 TAURI_SIGNING_PRIVATE_KEY）');
-  console.error('    Linux:   bun run build:linux --config apps/desktop/tauri.updater.conf.json   （需先设 TAURI_SIGNING_PRIVATE_KEY）');
+  console.error(`✗ 在 target/ 下没找到渠道 ${msChannel} 的更新产物（*.sig）。先构建带更新签名的产物：`);
+  console.error(
+    '    macOS:   bun run build:mac --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json',
+  );
+  console.error(
+    '    Windows: bun run build:win --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.windows.conf.json',
+  );
+  console.error(
+    '    Linux:   bun run build:linux --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.linux.conf.json',
+  );
   process.exit(1);
 }
 
@@ -321,14 +352,11 @@ for (const key of foundKeys) {
   }
 }
 
-// ── 合并进既有 latest.json（同版本时保留其它平台的真实条目，丢弃占位模板条目）。 ──
+// ── 合并既有清单。ModelScope 禁止跨渠道；GitHub 可跨平台累积同版本条目。 ──
 const manifest = { version, notes: '', pub_date: new Date().toISOString(), platforms: {} };
 if (existsSync(out)) {
   try {
     const prev = JSON.parse(readFileSync(out, 'utf8'));
-    // 只在版本一致时保留既有平台条目：每个条目的 url 里都带版本号，跨版本保留会让旧平台
-    // 指向上一版的下载链（首发某个新版本时尤其危险——如 0.1.14 里残留 0.1.13 的 darwin
-    // 条目）。版本不同则视为新版本，从空清单开始，只写本机本次构建出的平台。
     if (prev.version === version) {
       if (!notes && typeof prev.notes === 'string' && prev.notes.trim()) notes = prev.notes.trim();
       for (const [k, v] of Object.entries(prev.platforms || {})) {
@@ -336,22 +364,23 @@ if (existsSync(out)) {
           console.warn(`  ! 丢弃未知平台键: ${k}`);
           continue;
         }
+        if (host === 'modelscope' && !channelKeySet.has(k)) {
+          console.warn(`  ! 丢弃非本渠道平台键: ${k}`);
+          continue;
+        }
         const placeholder = !v?.signature || v.signature.includes('<<') || String(v.url).includes('REPLACE-WITH');
         if (placeholder) continue;
         const urlName = basename(String(v.url || '').split('?')[0]);
-        // Carry-over entries may still be legacy NomiFun_* until that platform is rebuilt.
         if (urlName && /^NomiFun/i.test(urlName)) {
           console.warn(`  ! 丢弃遗留产物名条目 ${k}: ${urlName}（需用 Flowy_* 重建）`);
           continue;
         }
-        // When targeting ModelScope, do not carry over GitHub-only entries from an old template.
         if (host === 'modelscope' && !String(v.url).includes('modelscope.cn')) continue;
-        // When targeting GitHub, do not carry over ModelScope-only entries.
         if (host === 'github' && String(v.url).includes('modelscope.cn')) continue;
         manifest.platforms[k] = v;
       }
     } else if (prev.version) {
-      console.warn(`  ! 既有 latest.json 版本 ${prev.version} ≠ 本次 ${version}，丢弃旧平台条目，重建清单。`);
+      console.warn(`  ! 既有清单版本 ${prev.version} ≠ 本次 ${version}，丢弃旧平台条目，重建清单。`);
     }
   } catch {
     console.warn(`  ! 既有 ${rel(out)} 解析失败，将重新生成。`);
@@ -365,31 +394,31 @@ for (const key of foundKeys) {
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, JSON.stringify(manifest, null, 2) + '\n');
 
-const alphaYml = buildAlphaYml(manifest, msChannel);
+const channelYml = buildChannelYml(manifest, msChannel);
 if (host === 'modelscope') {
-  writeFileSync(DEFAULT_ALPHA, alphaYml);
+  writeFileSync(channelYmlPath, channelYml);
 }
 
 if (collect) {
   mkdirSync(distDir, { recursive: true });
   for (const f of uploads) copyFileSync(f, join(distDir, basename(f)));
   writeFileSync(join(distDir, 'latest.json'), JSON.stringify(manifest, null, 2) + '\n');
-  writeFileSync(join(distDir, 'alpha.yml'), alphaYml);
+  writeFileSync(join(distDir, 'channel.yml'), channelYml);
 }
 
-// ── 汇报 ────────────────────────────────────────────────────────────────────
 const line = '━'.repeat(66);
 console.log(line);
 console.log(`✓ latest.json 已写入: ${rel(out)}`);
 const hostLabel =
   host === 'modelscope'
-    ? `ModelScope ${msRepo}/${msPrefix} (channel ${msChannel})`
+    ? `ModelScope ${msRepo}/${msPrefix}/channels/${msChannel}`
     : `GitHub ${repo}`;
-console.log(`  版本: ${version}    托管: ${hostLabel}`);
+console.log(`  版本: ${version}    渠道: ${msChannel}    托管: ${hostLabel}`);
 console.log('  平台条目:');
-for (const key of ALL_KEYS) {
+const reportKeys = host === 'modelscope' ? CHANNEL_KEYS[msChannel] : ALL_KEYS;
+for (const key of reportKeys) {
   const here = foundKeys.includes(key);
-  const mark = here ? '✓ 本次填入' : manifest.platforms[key] ? '· 沿用既有' : '✗ 缺失（需在对应平台构建机补齐）';
+  const mark = here ? '✓ 本次填入' : manifest.platforms[key] ? '· 沿用既有' : '✗ 缺失';
   console.log(`    ${key.padEnd(16)} ${mark}`);
 }
 console.log('');
@@ -401,5 +430,5 @@ console.log(`  ${uploadHint}`);
 for (const f of uploads) console.log(`    ${rel(f)}`);
 console.log(`    ${rel(out)}`);
 if (collect) console.log(`  已拷贝到: ${rel(distDir)}/`);
-if (host === 'modelscope') console.log(`  alpha.yml: ${rel(DEFAULT_ALPHA)}`);
+if (host === 'modelscope') console.log(`  channel.yml: ${rel(channelYmlPath)}`);
 console.log(line);
