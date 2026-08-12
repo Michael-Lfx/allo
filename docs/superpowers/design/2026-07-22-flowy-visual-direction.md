@@ -1,5 +1,8 @@
 # Flowy 视觉方向（P2）
 
+> 本文保留 P2 的历史选型。当前规范见根目录 `PRODUCT.md` 与 `DESIGN.md`：
+> Ink Studio 继续作为静态视觉基础，Quiet Kinetic Workspace 作为增量交互行为层。
+
 两板择一落地。**已选：Ink Studio**。Warm Atelier 仅作对照，不实现。
 
 ## A · Ink Studio（落地）
