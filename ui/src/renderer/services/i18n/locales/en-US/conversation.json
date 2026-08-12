@@ -750,7 +750,7 @@
     "stepCompanion": "1. Pick a companion",
     "stepSkills": "2. Skills (all active loaded by default; uncheck to exclude)",
     "stepMemories": "3. Pick memories (injected live each turn, read-only)",
-    "noCompanions": "No companions yet — create one on the Nomi page first",
+    "noCompanions": "No companions yet — create one on the Flowy page first",
     "noSkills": "This companion has no loadable skills",
     "noMemories": "No matching memories",
     "searchMemories": "Search memories (full-text)...",

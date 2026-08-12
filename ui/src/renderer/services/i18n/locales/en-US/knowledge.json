@@ -180,7 +180,7 @@
       "mountedTitle": "Mounted",
       "step1Desc": "Mount a base onto a session / terminal / companion and it becomes extended knowledge there. One base can serve many.",
       "step1Title": "Mount to a session",
-      "step2Desc": "The model searches .nomi/knowledge/ on demand; matched content informs answers without stuffing the full text into context.",
+      "step2Desc": "The model searches .flowy/knowledge/ on demand; matched content informs answers without stuffing the full text into context.",
       "step2Title": "Model searches automatically",
       "step3Desc": "With write-back on, new knowledge from a session can be staged in \"Inbox\" for your review — the base grows over time.",
       "step3Title": "(Optional) Write-back",

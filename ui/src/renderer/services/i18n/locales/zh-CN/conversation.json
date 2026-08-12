@@ -750,7 +750,7 @@
     "stepCompanion": "1. 选择伙伴",
     "stepSkills": "2. 技能（默认全选 active，去勾即排除）",
     "stepMemories": "3. 挑选记忆（每回合实时注入，只读）",
-    "noCompanions": "还没有伙伴——先去 Nomi 页创建一个",
+    "noCompanions": "还没有伙伴——先去 Flowy 页创建一个",
     "noSkills": "该伙伴暂无可装载技能",
     "noMemories": "没有匹配的记忆",
     "searchMemories": "搜索记忆（全文检索）…",

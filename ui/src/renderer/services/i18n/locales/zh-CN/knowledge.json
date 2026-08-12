@@ -180,7 +180,7 @@
       "mountedTitle": "已挂载",
       "step1Desc": "把知识库挂到会话 / 终端 / 数字伙伴上，它就成为该处模型的扩展知识。一个库可被多处复用。",
       "step1Title": "挂载到一个会话",
-      "step2Desc": "模型会在 .nomi/knowledge/ 下按需检索，命中的内容用于回答——原文不塞进上下文，省 token。",
+      "step2Desc": "模型会在 .flowy/knowledge/ 下按需检索，命中的内容用于回答——原文不塞进上下文，省 token。",
       "step2Title": "模型自动检索",
       "step3Desc": "开启回血后，会话里新学到的知识可暂存到「待审」由你确认，知识库越用越厚。",
       "step3Title": "（可选）回血沉淀",
