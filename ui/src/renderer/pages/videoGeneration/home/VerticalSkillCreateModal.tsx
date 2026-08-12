@@ -1,26 +1,108 @@
 /**
- * Centered modal card for creating a vertical Skill.
+ * Create Skill modal — field layout aligned with LibTV
+ * https://www.liblib.tv/skill/create
  */
-import React, { useState } from 'react';
-import { Input, Modal, Select } from '@arco-design/web-react';
+import React, { useMemo, useRef, useState } from 'react';
+import { Input, Modal } from '@arco-design/web-react';
+import { CloseSmall, Upload } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import { createVerticalSkill } from '../api';
 import type { VerticalSkillDraft } from '../types';
 import styles from './verticalSkillHub.module.css';
 
-const EMPTY_DRAFT: VerticalSkillDraft = {
-  name: '',
+const PLAYBOOK_TEMPLATE = `## 做什么
+（一句话说明用途）例：把一句话故事想法做成一条短漫剧成片
+
+## 需要什么输入
+（最少提供什么）例：一句话想法，可选画风、时长、主角设定
+
+## 怎么做
+（写你在意的环节和要求，不用写全）例：脚本要反转多，画风固定成韩漫
+
+## 产出什么
+（最终交付什么）例：成片，附脚本和分镜
+
+## 什么时候问你
+（什么情况下停下来问你）例：拿不准题材或风格时问一次，其余自己定
+`;
+
+const COVER_ACCEPT = 'image/png,image/jpeg,image/jpg,image/webp,image/gif';
+const COVER_MAX_BYTES = 5 * 1024 * 1024;
+
+type CreateFormState = {
+  display_name: string;
+  description: string;
+  use_scenario: string;
+  how_to_use: string;
+  output: string;
+  playbook: string;
+  /** Persisted cover (data URL or remote URL). */
+  cover_url: string;
+};
+
+const EMPTY_FORM: CreateFormState = {
   display_name: '',
   description: '',
-  category: '',
-  version: '1.0.0',
-  tags: [],
-  compatible_modes: ['idea2video', 'script2video', 'novel2video'],
-  requirement_overlay: '',
-  style_overlay: '',
+  use_scenario: '',
+  how_to_use: '',
+  output: '',
   playbook: '',
+  cover_url: '',
 };
+
+function toKebabName(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 64);
+}
+
+function resolveSkillName(displayName: string): string {
+  const fromDisplay = toKebabName(displayName);
+  if (fromDisplay && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(fromDisplay)) {
+    return fromDisplay;
+  }
+  return `skill-${Date.now().toString(36)}`;
+}
+
+function composePlaybook(form: CreateFormState): string {
+  const body = form.playbook.trim() || PLAYBOOK_TEMPLATE.trim();
+  const extras: string[] = [];
+  if (form.use_scenario.trim()) {
+    extras.push(`## 使用场景\n${form.use_scenario.trim()}`);
+  }
+  if (form.how_to_use.trim()) {
+    extras.push(`## 如何使用\n${form.how_to_use.trim()}`);
+  }
+  if (form.output.trim()) {
+    extras.push(`## 输出内容\n${form.output.trim()}`);
+  }
+  if (extras.length === 0) return body;
+  const lower = body.toLowerCase();
+  const filtered = extras.filter((block) => {
+    const heading = block.split('\n')[0].replace(/^##\s*/, '').toLowerCase();
+    return !lower.includes(heading);
+  });
+  if (filtered.length === 0) return body;
+  return `${body}\n\n${filtered.join('\n\n')}`;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('failed to read image'));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('failed to read image'));
+    reader.readAsDataURL(file);
+  });
+}
 
 export interface VerticalSkillCreateModalProps {
   visible: boolean;
@@ -35,40 +117,154 @@ const VerticalSkillCreateModal: React.FC<VerticalSkillCreateModalProps> = ({
 }) => {
   const { t } = useTranslation();
   const [message, messageHolder] = useArcoMessage();
-  const [draft, setDraft] = useState<VerticalSkillDraft>(EMPTY_DRAFT);
+  const [form, setForm] = useState<CreateFormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+  const mdInputRef = useRef<HTMLInputElement>(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
+
+  const inferredName = useMemo(
+    () => resolveSkillName(form.display_name),
+    [form.display_name]
+  );
+
+  const reset = () => {
+    setForm(EMPTY_FORM);
+  };
 
   const handleClose = () => {
     if (saving) return;
-    setDraft(EMPTY_DRAFT);
+    reset();
     onClose();
   };
 
-  const handleCreate = async () => {
-    if (!draft.name.trim() || !draft.description.trim()) {
+  const applyMdFile = async (file: File) => {
+    const text = await file.text();
+    const trimmed = text.trim();
+    if (!trimmed) {
       message.warning(
-        t('videoGeneration.skills.createRequired', {
-          defaultValue: '请填写名称与描述。',
+        t('videoGeneration.skills.mdEmpty', { defaultValue: 'MD 文件内容为空。' })
+      );
+      return;
+    }
+    const body = trimmed.startsWith('---')
+      ? trimmed.replace(/^---[\s\S]*?---\s*/, '').trim()
+      : trimmed;
+    if (form.playbook.trim()) {
+      Modal.confirm({
+        title: t('videoGeneration.skills.mdOverwriteTitle', {
+          defaultValue: '覆盖现有内容',
+        }),
+        content: t('videoGeneration.skills.mdOverwriteDesc', {
+          defaultValue: '当前 Skill 内容已有文本，确认用上传的 .md 文件覆盖吗？',
+        }),
+        okText: t('videoGeneration.skills.mdOverwrite', { defaultValue: '覆盖' }),
+        onOk: () => setForm((current) => ({ ...current, playbook: body })),
+      });
+    } else {
+      setForm((current) => ({ ...current, playbook: body }));
+    }
+  };
+
+  const applyCoverFile = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      message.warning(
+        t('videoGeneration.skills.coverTypeInvalid', {
+          defaultValue: '请上传图片文件（PNG / JPEG / WEBP / GIF）。',
         })
       );
       return;
     }
+    if (file.size > COVER_MAX_BYTES) {
+      message.warning(
+        t('videoGeneration.skills.coverTooLarge', {
+          defaultValue: '封面图不能超过 5MB。',
+        })
+      );
+      return;
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      setForm((current) => ({ ...current, cover_url: dataUrl }));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const handleCreate = async () => {
+    const displayName = form.display_name.trim();
+    if (!displayName) {
+      message.warning(
+        t('videoGeneration.skills.createSkillErrName', {
+          defaultValue: '请输入 Skill 名称',
+        })
+      );
+      return;
+    }
+    if (!form.description.trim()) {
+      message.warning(
+        t('videoGeneration.skills.createSkillErrDescription', {
+          defaultValue: '请输入一句话介绍',
+        })
+      );
+      return;
+    }
+    if (!form.playbook.trim()) {
+      message.warning(
+        t('videoGeneration.skills.createSkillErrContent', {
+          defaultValue: '请填写 Skill 内容',
+        })
+      );
+      return;
+    }
+    if (!form.use_scenario.trim()) {
+      message.warning(
+        t('videoGeneration.skills.createSkillErrUseScenario', {
+          defaultValue: '请输入使用场景',
+        })
+      );
+      return;
+    }
+    if (!form.how_to_use.trim()) {
+      message.warning(
+        t('videoGeneration.skills.createSkillErrHowToUse', {
+          defaultValue: '请输入如何使用',
+        })
+      );
+      return;
+    }
+    if (!form.output.trim()) {
+      message.warning(
+        t('videoGeneration.skills.createSkillErrOutput', {
+          defaultValue: '请输入输出内容',
+        })
+      );
+      return;
+    }
+
+    const draft: VerticalSkillDraft = {
+      name: inferredName,
+      display_name: displayName,
+      description: form.description.trim(),
+      version: '1.0.0',
+      tags: [],
+      compatible_modes: [],
+      use_scenario: form.use_scenario.trim(),
+      how_to_use: form.how_to_use.trim(),
+      output: form.output.trim(),
+      cover_url: form.cover_url.trim() || undefined,
+      playbook: composePlaybook(form),
+    };
+
     setSaving(true);
     try {
-      const created = await createVerticalSkill({
-        ...draft,
-        name: draft.name.trim(),
-        display_name: draft.display_name?.trim() || undefined,
-        description: draft.description.trim(),
-        tags: (draft.tags ?? []).map(String).filter(Boolean),
-      });
+      const created = await createVerticalSkill(draft);
       message.success(
         t('videoGeneration.skills.createOk', {
           name: created.display_name || created.name,
           defaultValue: '已创建 {{name}}',
         })
       );
-      setDraft(EMPTY_DRAFT);
+      reset();
       onCreated(created.id);
       onClose();
     } catch (error) {
@@ -83,126 +279,290 @@ const VerticalSkillCreateModal: React.FC<VerticalSkillCreateModalProps> = ({
       {messageHolder}
       <Modal
         title={t('videoGeneration.skills.createTitle', {
-          defaultValue: '创建垂直 Skill',
+          defaultValue: '创建 Skill',
         })}
         visible={visible}
         onCancel={handleClose}
-        onOk={() => void handleCreate()}
         confirmLoading={saving}
-        okText={t('videoGeneration.skills.createSubmit', {
-          defaultValue: '创建并挂载',
-        })}
-        cancelText={t('videoGeneration.skills.backToList', {
-          defaultValue: '取消',
-        })}
-        style={{ width: 520 }}
+        style={{ width: 640 }}
         unmountOnExit
         maskClosable={!saving}
+        wrapClassName={styles.createModalWrap}
         className={styles.createModal}
         alignCenter
+        footer={
+          <div className={styles.createFooter}>
+            <button
+              type='button'
+              className={styles.createFooterCancel}
+              disabled={saving}
+              onClick={handleClose}
+            >
+              {t('videoGeneration.skills.backToList', { defaultValue: '取消' })}
+            </button>
+            <button
+              type='button'
+              className={styles.createFooterSubmit}
+              disabled={saving}
+              onClick={() => void handleCreate()}
+            >
+              {saving
+                ? t('videoGeneration.skills.createSaving', { defaultValue: '创建中…' })
+                : t('videoGeneration.skills.createSubmit', {
+                    defaultValue: '创建并选用',
+                  })}
+            </button>
+          </div>
+        }
       >
         <div className={styles.createForm}>
-          <label className={styles.field}>
-            <span>
-              {t('videoGeneration.skills.fields.name', { defaultValue: '标识名' })}
-            </span>
-            <Input
-              value={draft.name}
-              placeholder='my-luxury-tvc'
-              onChange={(value) => setDraft((current) => ({ ...current, name: value }))}
-            />
-          </label>
-          <label className={styles.field}>
-            <span>
-              {t('videoGeneration.skills.fields.displayName', {
-                defaultValue: '显示名',
+          <p className={styles.createLead}>
+            {t('videoGeneration.skills.createLead', {
+              defaultValue:
+                '一个 Skill，一部作品。写清名称、一句话介绍与 Skill 内容，并补充使用场景 / 如何使用 / 输出。',
+            })}
+          </p>
+
+          <section className={styles.createSection}>
+            <header className={styles.createSectionTitle}>
+              {t('videoGeneration.skills.sections.basics', { defaultValue: '基本信息' })}
+            </header>
+
+            <label className={styles.field}>
+              <span>
+                {t('videoGeneration.skills.fields.skillName', {
+                  defaultValue: 'Skill 名称',
+                })}
+                <em className={styles.fieldRequired}>*</em>
+              </span>
+              <Input
+                value={form.display_name}
+                maxLength={64}
+                placeholder={t('videoGeneration.skills.placeholders.skillName', {
+                  defaultValue: '给你的 Skill 起个名字',
+                })}
+                onChange={(value) =>
+                  setForm((current) => ({ ...current, display_name: value }))
+                }
+              />
+            </label>
+
+            <label className={styles.field}>
+              <span>
+                {t('videoGeneration.skills.fields.oneLiner', {
+                  defaultValue: '一句话介绍',
+                })}
+                <em className={styles.fieldRequired}>*</em>
+              </span>
+              <Input.TextArea
+                value={form.description}
+                maxLength={500}
+                showWordLimit
+                autoSize={{ minRows: 2, maxRows: 3 }}
+                placeholder={t('videoGeneration.skills.placeholders.oneLiner', {
+                  defaultValue: '简短描述该 Skill 的能力',
+                })}
+                onChange={(value) =>
+                  setForm((current) => ({ ...current, description: value }))
+                }
+              />
+            </label>
+
+            <div className={styles.field}>
+              <span>
+                {t('videoGeneration.skills.fields.coverOptional', {
+                  defaultValue: '上传封面（选填）',
+                })}
+              </span>
+              <p className={styles.createSectionHint}>
+                {t('videoGeneration.skills.placeholders.coverHint', {
+                  defaultValue: '建议横版图片，支持 PNG / JPEG / WEBP / GIF，最大 5MB。',
+                })}
+              </p>
+              {form.cover_url ? (
+                <div className={styles.coverPreview}>
+                  <img src={form.cover_url} alt='' />
+                  <button
+                    type='button'
+                    className={styles.coverRemove}
+                    aria-label={t('videoGeneration.skills.removeCover', {
+                      defaultValue: '移除封面',
+                    })}
+                    onClick={() =>
+                      setForm((current) => ({ ...current, cover_url: '' }))
+                    }
+                  >
+                    <CloseSmall size={12} />
+                  </button>
+                  <button
+                    type='button'
+                    className={styles.coverReplace}
+                    onClick={() => coverInputRef.current?.click()}
+                  >
+                    {t('videoGeneration.skills.replaceCover', {
+                      defaultValue: '更换',
+                    })}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type='button'
+                  className={styles.coverUpload}
+                  onClick={() => coverInputRef.current?.click()}
+                >
+                  <Upload size={18} />
+                  <span>
+                    {t('videoGeneration.skills.uploadCover', {
+                      defaultValue: '上传封面图片',
+                    })}
+                  </span>
+                </button>
+              )}
+              <input
+                ref={coverInputRef}
+                type='file'
+                accept={COVER_ACCEPT}
+                hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  if (file) void applyCoverFile(file);
+                }}
+              />
+            </div>
+          </section>
+
+          <section className={styles.createSection}>
+            <header className={styles.createSectionTitle}>
+              {t('videoGeneration.skills.fields.content', {
+                defaultValue: 'Skill 内容',
               })}
-            </span>
-            <Input
-              value={draft.display_name ?? ''}
-              onChange={(value) =>
-                setDraft((current) => ({ ...current, display_name: value }))
-              }
-            />
-          </label>
-          <label className={styles.field}>
-            <span>
-              {t('videoGeneration.skills.fields.description', {
-                defaultValue: '描述',
+              <em className={styles.fieldRequired}>*</em>
+            </header>
+            <p className={styles.createSectionHint}>
+              {t('videoGeneration.skills.sections.contentHint', {
+                defaultValue:
+                  '按「做什么 / 需要什么输入 / 怎么做 / 产出什么 / 什么时候问你」书写；也可直接上传 SKILL.md。',
               })}
-            </span>
+            </p>
+            <div className={styles.contentToolbar}>
+              <button
+                type='button'
+                className={styles.footerGhost}
+                onClick={() =>
+                  setForm((current) => ({
+                    ...current,
+                    playbook: current.playbook.trim()
+                      ? current.playbook
+                      : PLAYBOOK_TEMPLATE,
+                  }))
+                }
+              >
+                {t('videoGeneration.skills.insertTemplate', {
+                  defaultValue: '插入模板',
+                })}
+              </button>
+              <button
+                type='button'
+                className={styles.footerGhost}
+                onClick={() => mdInputRef.current?.click()}
+              >
+                <Upload size={12} />
+                {t('videoGeneration.skills.uploadMd', {
+                  defaultValue: '上传 MD 文件',
+                })}
+              </button>
+              <input
+                ref={mdInputRef}
+                type='file'
+                accept='.md,text/markdown,text/plain'
+                hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  if (file) void applyMdFile(file);
+                }}
+              />
+            </div>
             <Input.TextArea
-              value={draft.description}
-              autoSize={{ minRows: 2, maxRows: 4 }}
-              onChange={(value) =>
-                setDraft((current) => ({ ...current, description: value }))
-              }
-            />
-          </label>
-          <label className={styles.field}>
-            <span>
-              {t('videoGeneration.skills.fields.modes', {
-                defaultValue: '兼容 Mode',
+              value={form.playbook}
+              autoSize={{ minRows: 8, maxRows: 14 }}
+              className={styles.playbookInput}
+              placeholder={t('videoGeneration.skills.placeholders.content', {
+                defaultValue: `输入 Skill 内容，或上传 SKILL.md 文件直接替换\n\n${PLAYBOOK_TEMPLATE}`,
               })}
-            </span>
-            <Select
-              mode='multiple'
-              value={draft.compatible_modes ?? []}
               onChange={(value) =>
-                setDraft((current) => ({
-                  ...current,
-                  compatible_modes: value as string[],
-                }))
+                setForm((current) => ({ ...current, playbook: value }))
               }
-              options={[
-                { label: '一个想法', value: 'idea2video' },
-                { label: '完整剧本', value: 'script2video' },
-                { label: '小说文本', value: 'novel2video' },
-              ]}
             />
-          </label>
-          <label className={styles.field}>
-            <span>
-              {t('videoGeneration.skills.fields.requirement', {
-                defaultValue: '叙事 Overlay',
+          </section>
+
+          <section className={styles.createSection}>
+            <header className={styles.createSectionTitle}>
+              {t('videoGeneration.skills.sections.usage', {
+                defaultValue: '使用说明',
               })}
-            </span>
-            <Input.TextArea
-              value={draft.requirement_overlay ?? ''}
-              autoSize={{ minRows: 3, maxRows: 6 }}
-              onChange={(value) =>
-                setDraft((current) => ({ ...current, requirement_overlay: value }))
-              }
-            />
-          </label>
-          <label className={styles.field}>
-            <span>
-              {t('videoGeneration.skills.fields.style', {
-                defaultValue: '视觉 Overlay',
-              })}
-            </span>
-            <Input.TextArea
-              value={draft.style_overlay ?? ''}
-              autoSize={{ minRows: 2, maxRows: 4 }}
-              onChange={(value) =>
-                setDraft((current) => ({ ...current, style_overlay: value }))
-              }
-            />
-          </label>
-          <label className={styles.field}>
-            <span>
-              {t('videoGeneration.skills.fields.playbook', {
-                defaultValue: '导演 Playbook',
-              })}
-            </span>
-            <Input.TextArea
-              value={draft.playbook ?? ''}
-              autoSize={{ minRows: 4, maxRows: 8 }}
-              onChange={(value) =>
-                setDraft((current) => ({ ...current, playbook: value }))
-              }
-            />
-          </label>
+            </header>
+
+            <label className={styles.field}>
+              <span>
+                {t('videoGeneration.skills.fields.useScenario', {
+                  defaultValue: '使用场景',
+                })}
+                <em className={styles.fieldRequired}>*</em>
+              </span>
+              <Input.TextArea
+                value={form.use_scenario}
+                autoSize={{ minRows: 2, maxRows: 4 }}
+                placeholder={t('videoGeneration.skills.placeholders.useScenario', {
+                  defaultValue: '详细描述该 Skill 的使用场景信息',
+                })}
+                onChange={(value) =>
+                  setForm((current) => ({ ...current, use_scenario: value }))
+                }
+              />
+            </label>
+
+            <label className={styles.field}>
+              <span>
+                {t('videoGeneration.skills.fields.howToUse', {
+                  defaultValue: '如何使用',
+                })}
+                <em className={styles.fieldRequired}>*</em>
+              </span>
+              <Input.TextArea
+                value={form.how_to_use}
+                autoSize={{ minRows: 2, maxRows: 4 }}
+                placeholder={t('videoGeneration.skills.placeholders.howToUse', {
+                  defaultValue:
+                    '描述用户如何使用该 Skill，需要输入什么信息（例如：剧本内容、故事梗概或任何叙事素材）',
+                })}
+                onChange={(value) =>
+                  setForm((current) => ({ ...current, how_to_use: value }))
+                }
+              />
+            </label>
+
+            <label className={styles.field}>
+              <span>
+                {t('videoGeneration.skills.fields.output', {
+                  defaultValue: '输出内容',
+                })}
+                <em className={styles.fieldRequired}>*</em>
+              </span>
+              <Input.TextArea
+                value={form.output}
+                autoSize={{ minRows: 2, maxRows: 4 }}
+                placeholder={t('videoGeneration.skills.placeholders.output', {
+                  defaultValue:
+                    '描述用户使用该 Skill 后，预期输出的结果产物是什么（例如：90秒超现实主义数字片头视频）',
+                })}
+                onChange={(value) =>
+                  setForm((current) => ({ ...current, output: value }))
+                }
+              />
+            </label>
+          </section>
         </div>
       </Modal>
     </>

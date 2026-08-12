@@ -28,6 +28,7 @@ import {
   videoModelCapabilities,
 } from '../videoModelCapabilities';
 import type { GenerationPreferences, VideoHomeMode } from './types';
+import { getScrollParents } from './scrollParents';
 import styles from './home.module.css';
 
 const PREFS_RATIO_ORDER: readonly SeedanceAspectRatio[] = [
@@ -350,11 +351,17 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     if (!open) return;
     const onReposition = () => updatePanelPosition();
     // Do NOT use capture scroll — panel internal scrolling would re-render and break Select.
+    // Page scroll lives on an overflow container (not window); listen to those parents too.
     window.addEventListener('resize', onReposition);
     window.addEventListener('scroll', onReposition);
+    const scrollParents = getScrollParents(anchorRef.current);
+    scrollParents.forEach((el) =>
+      el.addEventListener('scroll', onReposition, { passive: true })
+    );
     return () => {
       window.removeEventListener('resize', onReposition);
       window.removeEventListener('scroll', onReposition);
+      scrollParents.forEach((el) => el.removeEventListener('scroll', onReposition));
     };
   }, [open]);
 

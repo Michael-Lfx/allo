@@ -45,14 +45,24 @@ function iconParkPlugin() {
       if (!id.endsWith('.tsx') || id.includes('node_modules')) return null;
       if (!source.includes('@icon-park/react')) return null;
       const transformed = source.replace(
-        /import\s+\{\s+([a-zA-Z, ]*)\s+\}\s+from\s+['"]@icon-park\/react['"](;?)/g,
-        (str, match) => {
-          if (!match) return str;
-          const components = match.split(',');
-          const importComponent = str.replace(match, components.map((k: string) => `${k} as _${k.trim()}`).join(', '));
+        /import\s+\{\s*([^}]+)\s*\}\s+from\s+['"]@icon-park\/react['"](;?)/g,
+        (str, match: string, semi: string) => {
+          if (!match?.trim()) return str;
+          const specs = match.split(',').map((part) => part.trim()).filter(Boolean);
+          const parsed = specs.map((spec) => {
+            const aliasMatch = /^([A-Za-z_][\w]*)\s+as\s+([A-Za-z_][\w]*)$/.exec(spec);
+            if (aliasMatch) {
+              return { exportName: aliasMatch[1], localName: aliasMatch[2] };
+            }
+            return { exportName: spec, localName: spec };
+          });
+          const importList = parsed
+            .map(({ exportName, localName }) => `${exportName} as _${localName}`)
+            .join(', ');
+          const importLine = `import { ${importList} } from '@icon-park/react'${semi || ';'}`;
           const hoc = `import IconParkHOC from '@renderer/components/IconParkHOC';
-${components.map((k: string) => `const ${k.trim()} = IconParkHOC(_${k.trim()})`).join(';\n')}`;
-          return importComponent + ';' + hoc;
+${parsed.map(({ localName }) => `const ${localName} = IconParkHOC(_${localName})`).join(';\n')}`;
+          return `${importLine}${hoc}`;
         }
       );
       return transformed !== source ? { code: transformed, map: null } : null;

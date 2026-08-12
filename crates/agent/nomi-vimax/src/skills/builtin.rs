@@ -26,6 +26,22 @@ const BUILTIN_SKILLS: &[(&str, &str)] = &[
         "wes-anderson",
         include_str!("../../skills/builtin/wes-anderson/SKILL.md"),
     ),
+    (
+        "product-demo",
+        include_str!("../../skills/builtin/product-demo/SKILL.md"),
+    ),
+    (
+        "documentary-observational",
+        include_str!("../../skills/builtin/documentary-observational/SKILL.md"),
+    ),
+    (
+        "horror-suspense",
+        include_str!("../../skills/builtin/horror-suspense/SKILL.md"),
+    ),
+    (
+        "music-visual",
+        include_str!("../../skills/builtin/music-visual/SKILL.md"),
+    ),
 ];
 
 pub fn load_builtin_skills() -> VimaxResult<Vec<VerticalSkill>> {
@@ -47,7 +63,9 @@ mod tests {
     #[test]
     fn all_builtins_parse() {
         let skills = load_builtin_skills().unwrap();
-        assert_eq!(skills.len(), 5);
+        assert_eq!(skills.len(), 9);
         assert!(skills.iter().any(|s| s.name == "luxury-tvc"));
+        assert!(skills.iter().any(|s| s.name == "product-demo"));
+        assert!(skills.iter().all(|s| s.compatible_modes.is_empty()));
     }
 }

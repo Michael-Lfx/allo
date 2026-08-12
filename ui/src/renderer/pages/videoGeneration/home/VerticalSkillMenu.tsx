@@ -14,26 +14,27 @@ import {
   listVerticalSkills,
   publishVerticalSkill,
 } from '../api';
-import type { VerticalSkillSummary, VimaxWorkflow } from '../types';
+import type { VerticalSkillSummary } from '../types';
 import homeStyles from './home.module.css';
 import styles from './verticalSkillHub.module.css';
 
 type MenuTab = 'all' | 'user' | 'hub';
 
 export interface VerticalSkillMenuProps {
-  mode: VimaxWorkflow;
   selectedIds: string[];
   onChangeSelected: (ids: string[]) => void;
   onRequestCreate?: () => void;
+  /** Sync catalog into parent for input-area skill chips. */
+  onCatalogChange?: (skills: VerticalSkillSummary[]) => void;
   /** Bump from parent after create so the list refreshes when reopened. */
   reloadToken?: number;
 }
 
 const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
-  mode,
   selectedIds,
   onChangeSelected,
   onRequestCreate,
+  onCatalogChange,
   reloadToken = 0,
 }) => {
   const { t } = useTranslation();
@@ -48,9 +49,11 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
     let cancelled = false;
     setLoading(true);
     const source = tab === 'all' ? undefined : tab;
-    void listVerticalSkills({ mode, source })
+    void listVerticalSkills({ source })
       .then((list) => {
-        if (!cancelled) setSkills(list);
+        if (cancelled) return;
+        setSkills(list);
+        onCatalogChange?.(list);
       })
       .catch((error) => {
         if (!cancelled) {
@@ -63,7 +66,9 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [message, mode, reloadNonce, reloadToken, tab]);
+    // Intentionally omit onCatalogChange — parent may pass an inline merger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message, reloadNonce, reloadToken, tab]);
 
   const refresh = () => setReloadNonce((n) => n + 1);
 
@@ -140,7 +145,7 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
         className={`${homeStyles.slashMenu} ${styles.menuShell}`}
         role='listbox'
         aria-label={t('videoGeneration.skills.menuAria', {
-          defaultValue: '选择垂直 Skill',
+          defaultValue: '选择 Skill',
         })}
       >
         <div className={homeStyles.slashMenuTitle}>
@@ -210,10 +215,27 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
                   <span className={styles.skillText}>
                     <strong>{skill.display_name}</strong>
                     <small>
-                      {skill.description}
-                      {skill.source === 'user' ? ' · 我的' : ''}
-                      {skill.source === 'hub' ? ' · Hub' : ''}
-                      {skill.source === 'builtin' ? ' · 官方' : ''}
+                      <span className={styles.skillDesc}>{skill.description}</span>
+                      {skill.source === 'user' ||
+                      skill.source === 'hub' ||
+                      skill.source === 'builtin' ? (
+                        <>
+                          <span className={styles.metaDiamond} aria-hidden='true' />
+                          <span className={styles.sourceBadge}>
+                            {skill.source === 'user'
+                              ? t('videoGeneration.skills.source.user', {
+                                  defaultValue: '我的',
+                                })
+                              : skill.source === 'hub'
+                                ? t('videoGeneration.skills.source.hub', {
+                                    defaultValue: 'Hub',
+                                  })
+                                : t('videoGeneration.skills.source.builtin', {
+                                    defaultValue: '官方',
+                                  })}
+                          </span>
+                        </>
+                      ) : null}
                     </small>
                   </span>
                   {skill.source === 'user' ? (
@@ -242,7 +264,7 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
             <span>
               {t('videoGeneration.skills.selectedCount', {
                 count: selectedIds.length,
-                defaultValue: '已挂载 {{count}} 个',
+                defaultValue: '已选 {{count}} 个',
               })}
             </span>
             <button type='button' onClick={() => onChangeSelected([])}>

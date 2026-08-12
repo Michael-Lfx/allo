@@ -213,6 +213,21 @@ pub struct VerticalSkillDraft {
     pub tags: Vec<String>,
     #[serde(default)]
     pub compatible_modes: Vec<String>,
+    /// LibTV-aligned: when / where to use this skill.
+    #[serde(default)]
+    pub use_scenario: Option<String>,
+    /// LibTV-aligned: how the user should invoke it / required inputs.
+    #[serde(default)]
+    pub how_to_use: Option<String>,
+    /// LibTV-aligned: expected output artifact description.
+    #[serde(default)]
+    pub output: Option<String>,
+    /// Optional cover image URL for Skill Hub listing.
+    #[serde(default)]
+    pub cover_url: Option<String>,
+    /// Optional featured case / demo URL.
+    #[serde(default)]
+    pub case_url: Option<String>,
     #[serde(default)]
     pub requirement_overlay: Option<String>,
     #[serde(default)]

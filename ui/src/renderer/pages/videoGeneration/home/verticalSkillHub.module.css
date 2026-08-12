@@ -4,7 +4,7 @@
   max-width: calc(100vw - 32px);
   max-height: 320px;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -14,28 +14,50 @@
   flex: none;
   flex-wrap: wrap;
   gap: 4px;
-  padding: 0 4px 2px;
+  padding: 0 2px;
 }
 
 .tab {
   border: 0;
   border-radius: 999px;
-  padding: 3px 10px;
+  padding: 4px 11px;
   background: transparent;
   color: var(--color-text-3);
   font: inherit;
   font-size: 11px;
+  letter-spacing: -0.01em;
   cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+
+.tab:hover {
+  color: var(--color-text-1);
+  background: var(--color-fill-2);
 }
 
 .tabActive {
   background: rgba(var(--primary-6), 0.1);
   color: rgb(var(--primary-6));
+  font-weight: 600;
 }
 
 .search {
   flex: none;
-  margin: 0 4px 2px;
+  margin: 0 2px;
+}
+
+.search :global(.arco-input-inner-wrapper) {
+  border-radius: 10px;
+  border-color: transparent !important;
+  background: var(--color-fill-1);
+  box-shadow: none !important;
+}
+
+.search :global(.arco-input-inner-wrapper.arco-input-focus) {
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 
 .listScroll {
@@ -53,6 +75,7 @@
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
+  border-radius: 10px;
 }
 
 .skillText {
@@ -60,7 +83,7 @@
   min-width: 0;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   overflow: hidden;
 }
 
@@ -71,14 +94,45 @@
 }
 
 .skillText small {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--color-text-3);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.skillDesc {
   display: -webkit-box;
+  min-width: 0;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-clamp: 2;
   text-overflow: ellipsis;
-  white-space: normal;
   word-break: break-word;
+}
+
+.metaDiamond {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  flex: none;
+  border-radius: 0.5px;
+  background: linear-gradient(
+    135deg,
+    rgba(var(--primary-6), 0.5),
+    rgba(var(--primary-6), 0.18)
+  );
+  transform: rotate(45deg);
+}
+
+.sourceBadge {
+  flex: none;
+  color: var(--color-text-4);
+  font-size: 10px;
+  letter-spacing: 0.02em;
 }
 
 .checkSlot {
@@ -94,12 +148,15 @@
 .inlineAction {
   flex: none;
   margin-left: auto;
-  padding: 2px 6px;
-  border-radius: 6px;
+  padding: 3px 7px;
+  border-radius: 7px;
   color: var(--color-text-3);
   font-size: 10px;
   font-style: normal;
   cursor: pointer;
+  transition:
+    color 140ms ease,
+    background 140ms ease;
 }
 
 .inlineAction:hover {
@@ -123,7 +180,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 4px 8px 0;
+  padding: 2px 8px 0;
   color: var(--color-text-3);
   font-size: 11px;
 }
@@ -144,67 +201,358 @@
   justify-content: space-between;
   gap: 8px;
   margin-top: 2px;
-  padding: 6px 4px 2px;
-  border-top: 1px solid var(--color-border-2);
+  padding: 8px 2px 2px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .footerGhost,
 .footerPrimary {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   border: 0;
   border-radius: 8px;
-  padding: 5px 8px;
+  padding: 6px 8px;
+  background: transparent;
   font: inherit;
   font-size: 11px;
+  letter-spacing: -0.01em;
   cursor: pointer;
+  transition: color 140ms ease;
 }
 
-.footerGhost {
-  color: var(--color-text-2);
-  background: transparent;
-}
-
-.footerGhost:hover {
-  background: var(--color-fill-2);
-}
-
+.footerGhost,
 .footerPrimary {
-  color: rgb(var(--primary-6));
-  background: rgba(var(--primary-6), 0.08);
+  color: var(--color-text-2);
+  font-weight: 500;
 }
 
+.footerGhost:hover,
 .footerPrimary:hover {
-  background: rgba(var(--primary-6), 0.14);
+  color: var(--color-text-1);
+  background: transparent;
+  box-shadow: none;
 }
 
 .cloudHint {
   flex: none;
   margin: 0;
-  padding: 0 6px 2px;
+  padding: 0 4px 2px;
   color: var(--color-text-4);
   font-size: 10px;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .createForm {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  max-height: min(60vh, 520px);
+  gap: 18px;
+  max-height: min(72vh, 640px);
   overflow-y: auto;
-  padding-right: 4px;
+  padding: 2px 2px 6px 0;
+}
+
+.createLead {
+  margin: 0;
+  padding: 0 0 2px;
+  border: 0;
+  border-radius: 0;
+  color: var(--color-text-3);
+  background: transparent;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.createSection {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.createSection + .createSection {
+  padding-top: 16px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.createSectionTitle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.createSectionHint {
+  margin: -6px 0 0;
+  color: var(--color-text-3);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 7px;
   color: var(--color-text-2);
   font-size: 12px;
 }
 
+.field > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--color-text-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.field :global(.arco-input),
+.field :global(.arco-input-inner-wrapper),
+.field :global(.arco-textarea-wrapper) {
+  border-radius: 10px !important;
+  border-color: transparent !important;
+  background: var(--color-fill-1) !important;
+  box-shadow: none !important;
+  transition:
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.field :global(.arco-input-inner-wrapper):hover,
+.field :global(.arco-textarea-wrapper):hover,
+.field :global(.arco-input):hover {
+  border-color: transparent !important;
+  background: var(--color-fill-2) !important;
+}
+
+.field :global(.arco-input-inner-wrapper.arco-input-focus),
+.field :global(.arco-textarea-wrapper.arco-textarea-focus),
+.field :global(.arco-input-focus) {
+  border-color: transparent !important;
+  background: var(--color-fill-2) !important;
+  box-shadow: none !important;
+}
+
+.fieldHint {
+  color: var(--color-text-4);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.fieldRequired {
+  color: rgb(var(--danger-6));
+  font-style: normal;
+  font-weight: 600;
+}
+
+.contentToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+
+.playbookInput:global(textarea),
+.playbookInput:global(.arco-textarea) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.coverUpload {
+  display: flex;
+  min-height: 120px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 12px;
+  padding: 18px;
+  background: var(--color-fill-1);
+  color: var(--color-text-3);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+
+.coverUpload:hover {
+  border: 0;
+  background: var(--color-fill-2);
+  color: var(--color-text-1);
+  box-shadow: none;
+}
+
+.coverPreview {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  max-width: 340px;
+  aspect-ratio: 16 / 9;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  background: var(--color-fill-2);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.coverPreview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.coverRemove {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.58);
+  color: #fff;
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.coverRemove:hover {
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.coverReplace {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  border: 0;
+  border-radius: 999px;
+  padding: 5px 11px;
+  background: rgba(15, 23, 42, 0.58);
+  color: #fff;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: -0.01em;
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.coverReplace:hover {
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.tagList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: -4px;
+}
+
+.createModalWrap :global(.arco-modal-footer) {
+  padding: 12px 22px 18px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.createFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.createFooterCancel,
+.createFooterSubmit {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 12px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: color 140ms ease, opacity 140ms ease;
+}
+
+.createFooterCancel {
+  color: var(--color-text-2);
+  font-weight: 500;
+}
+
+.createFooterCancel:hover:not(:disabled) {
+  color: var(--color-text-1);
+}
+
+.createFooterSubmit {
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+
+.createFooterSubmit:hover:not(:disabled) {
+  color: var(--color-text-1);
+  opacity: 0.78;
+}
+
+.createFooterCancel:disabled,
+.createFooterSubmit:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.createModal :global(.arco-modal) {
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.createModal :global(.arco-modal-header) {
+  margin-bottom: 0;
+  padding: 18px 22px 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.createModal :global(.arco-modal-title) {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
 .createModal :global(.arco-modal-content) {
-  border-radius: 16px;
+  border-radius: 18px;
+  box-shadow:
+    0 18px 48px rgba(15, 23, 42, 0.12),
+    0 2px 8px rgba(15, 23, 42, 0.05);
+}
+
+.createModal :global(.arco-modal-body) {
+  padding: 16px 22px 8px;
+}
+
+@media (max-width: 640px) {
+  .fieldRow {
+    grid-template-columns: 1fr;
+  }
 }

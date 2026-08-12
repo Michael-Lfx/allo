@@ -1,11 +1,14 @@
 ---
 name: female-drama
 display-name: 女频短剧
-description: 女频情感短剧导演法——强关系钩子、情绪反转、角色魅力与可连载的节拍。
+description: >-
+  Directs female-audience short drama beats with relationship hooks, emotional
+  reversals, and cliffhanger-friendly pacing. Use when the user mentions 女频,
+  romance short drama, relationship tension, sweet/resentful romance, or
+  bingeable emotional episodes.
 category: drama
-version: "1.0.0"
-tags: [drama, romance, short-drama, female]
-compatible-modes: [idea2video, script2video, novel2video]
+version: "1.1.0"
+tags: [drama, romance, short-drama, female, relationship]
 requirement-overlay: |
   Direct as a female-audience short drama beat.
   Prioritize: relationship tension, character charm, emotional reversals,
@@ -20,6 +23,10 @@ style-overlay: |
 ---
 
 # 女频短剧 Playbook
+
+## When to apply
+- Romance / relationship-driven short episodes
+- Character-charm showcases with emotional turns
 
 ## 结构
 1. 关系钩子（误会/重逢/契约）
