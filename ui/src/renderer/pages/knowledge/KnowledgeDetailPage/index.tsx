@@ -31,6 +31,7 @@ import {
   Menu,
   Message,
   Modal,
+  Popover,
   Result,
   Select,
   Spin,
@@ -39,8 +40,9 @@ import {
   Tree,
 } from '@arco-design/web-react';
 import {
-  Delete,
+  Attention,
   Close,
+  Delete,
   EditTwo,
   FileText,
   FolderOpen,
@@ -66,6 +68,7 @@ import type {
 import Markdown from '@renderer/components/Markdown';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { ipcBridge } from '@/common';
+import { iconColors } from '@/renderer/styles/colors';
 import {
   formatSize,
   getBaseSource,
@@ -1184,13 +1187,64 @@ const KnowledgeDetailPage: React.FC = () => {
 
         {/* ─── Meta info row ─────────────────────────────────────────────────── */}
         {base && (
-          <div className='flex flex-wrap gap-14px text-12px text-[var(--color-text-3)]'>
-            <span>{t('knowledge.detail.fileCount', { defaultValue: '{{n}} 篇文档', n: base.file_count })}</span>
-            <span>{formatSize(base.total_size)}</span>
-            {/* mount count placeholder — D3 consumers section will provide real data */}
-            <span>{t('knowledge.detail.rootPath', { defaultValue: '{{path}}', path: base.root_path })}</span>
-            {relativeTime && (
-              <span>{t('knowledge.detail.updatedAt', { defaultValue: '更新于 {{time}}', time: relativeTime })}</span>
+          <div className='flex flex-wrap items-center justify-between gap-x-16px gap-y-8px text-12px text-[var(--color-text-3)]'>
+            <div className='flex min-w-0 flex-wrap gap-14px'>
+              <span>{t('knowledge.detail.fileCount', { defaultValue: '{{n}} 篇文档', n: base.file_count })}</span>
+              <span>{formatSize(base.total_size)}</span>
+              {/* mount count placeholder — D3 consumers section will provide real data */}
+              <span>{t('knowledge.detail.rootPath', { defaultValue: '{{path}}', path: base.root_path })}</span>
+              {relativeTime && (
+                <span>{t('knowledge.detail.updatedAt', { defaultValue: '更新于 {{time}}', time: relativeTime })}</span>
+              )}
+            </div>
+            {base.kind === 'local' &&
+              localSync &&
+              (localSync.state === 'syncing' || localSync.failed > 0 || localSync.conflicts > 0) && (
+              <div className='shrink-0' aria-live='polite'>
+                {localSync.state === 'syncing' ? (
+                  <span className='font-600 text-[rgb(var(--primary-6))]'>
+                    {localSync.scanned === 0
+                      ? t('knowledge.localSync.scanning', { defaultValue: '正在扫描文件...' })
+                      : t('knowledge.localSync.progress', {
+                        defaultValue: '已处理 {{processed}} / {{total}}',
+                        processed: localSync.processed,
+                        total: localSync.scanned,
+                      })}
+                  </span>
+                ) : (
+                  <Popover
+                    trigger='hover'
+                    position='br'
+                    style={{ maxWidth: 480 }}
+                    content={
+                      <div className='box-border max-h-240px w-440px max-w-[min(440px,calc(100vw-32px))] overflow-y-auto'>
+                        <div className='flex flex-col gap-8px'>
+                          {localSync.errors.map((error) => (
+                            <div key={`${error.sourcePath}:${error.status}`} className='grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-start gap-12px text-12px leading-5'>
+                              <span className='min-w-0 break-all text-[var(--color-text-1)]' title={error.sourcePath}>{error.sourcePath}</span>
+                              <span className='min-w-0 break-words text-[rgb(var(--danger-6))]' title={error.detail}>
+                                {t(`knowledge.detail.docs.importStatus.${error.status}`, { defaultValue: error.status })}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    }
+                  >
+                    <div className='inline-flex h-16px max-w-full cursor-default items-center gap-4px leading-none text-warning'>
+                      <span className='inline-flex h-14px w-14px items-center justify-center'>
+                        <Attention theme='filled' size='14' fill={iconColors.warning} />
+                      </span>
+                      <span className='leading-none text-warning'>
+                        {t('knowledge.localSync.errors', {
+                          defaultValue: '查看 {{count}} 个未转换文件',
+                          count: localSync.errors.length,
+                        })}
+                      </span>
+                    </div>
+                  </Popover>
+                )}
+              </div>
             )}
           </div>
         )}
@@ -1257,56 +1311,6 @@ const KnowledgeDetailPage: React.FC = () => {
                   hidden
                   onChange={handleUploadInputChange}
                 />
-
-                {base?.kind === 'local' && localSync && (
-                  <div className='mb-8px border-b border-solid border-[var(--color-border-2)] pb-8px' aria-live='polite'>
-                    {localSync.state === 'syncing' ? (
-                      <div className='flex flex-col gap-5px'>
-                        <div className='flex items-center justify-between gap-8px text-11px text-[var(--color-text-2)]'>
-                          <span className='font-600 text-[rgb(var(--primary-6))]'>
-                            {localSync.scanned === 0
-                              ? t('knowledge.localSync.scanning', { defaultValue: '正在扫描文件...' })
-                              : t('knowledge.localSync.progress', {
-                                defaultValue: '已处理 {{processed}} / {{total}}',
-                                processed: localSync.processed,
-                                total: localSync.scanned,
-                              })}
-                          </span>
-                          {localSync.scanned > 0 && (
-                            <span className='shrink-0 tabular-nums text-[var(--color-text-3)]'>
-                              {Math.round((localSync.processed / localSync.scanned) * 100)}%
-                            </span>
-                          )}
-                        </div>
-                        <div className='h-3px overflow-hidden rounded-full bg-[var(--color-fill-3)]'>
-                          <div
-                            className={`h-full rounded-full bg-[rgb(var(--primary-6))] transition-[width] duration-300 ease-out${localSync.scanned === 0 ? ' animate-pulse' : ''}`}
-                            style={{ width: `${localSync.scanned > 0 ? Math.max(4, Math.min(100, (localSync.processed / localSync.scanned) * 100)) : 18}%` }}
-                          />
-                        </div>
-                      </div>
-                    ) : localSync.failed > 0 || localSync.conflicts > 0 ? (
-                      <details className='text-11px text-[var(--color-text-2)]'>
-                        <summary className='cursor-pointer select-none text-[rgb(var(--warning-6))] hover:text-[var(--color-text-1)]'>
-                          {t('knowledge.localSync.errors', {
-                            defaultValue: '查看 {{count}} 个未转换文件',
-                            count: localSync.errors.length,
-                          })}
-                        </summary>
-                        <div className='mt-6px flex max-h-112px flex-col gap-4px overflow-y-auto rounded-6px bg-[var(--color-fill-2)] p-7px'>
-                          {localSync.errors.map((error) => (
-                            <div key={`${error.sourcePath}:${error.status}`} className='flex min-w-0 items-start justify-between gap-6px'>
-                              <span className='min-w-0 truncate' title={error.sourcePath}>{error.sourcePath}</span>
-                              <span className='shrink-0 text-[rgb(var(--danger-6))]' title={error.detail}>
-                                {t(`knowledge.detail.docs.importStatus.${error.status}`, { defaultValue: error.status })}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </details>
-                    ) : null}
-                  </div>
-                )}
 
                 {/* Search box */}
                 <div className='knowledge-doc-search flex items-center gap-7px rounded-8px bg-[var(--color-fill-2)] border border-solid border-[var(--color-border-3)] px-10px py-7px mb-8px'>

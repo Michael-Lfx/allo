@@ -5,7 +5,7 @@
 //! backend data directory, and leaves all downstream knowledge consumers with
 //! one ordinary Markdown root to read.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use nomifun_api_types::{
@@ -187,15 +187,9 @@ where
 
     let tombstones = read_tombstones(&projection.tombstones).unwrap_or_default();
     let source_directories = scan_source_directories(source_root)?;
-    let docs = scan_source_documents(source_root)?;
+    let mut docs = scan_source_documents(source_root)?;
+    disambiguate_target_paths(&mut docs);
     let scanned = docs.len() as u64;
-    let mut by_target: HashMap<String, Vec<usize>> = HashMap::new();
-    for (index, document) in docs.iter().enumerate() {
-        by_target
-            .entry(portable_key(&document.target_path))
-            .or_default()
-            .push(index);
-    }
 
     let mut manifest = ProjectionManifest {
         version: 1,
@@ -224,30 +218,11 @@ where
     });
 
     for document in &docs {
-        let target = document.target_path.clone();
-        let conflict = by_target
-            .get(&portable_key(&target))
-            .is_some_and(|same_target| same_target.len() > 1);
-        let target = target_for_portable_path(&projection.overrides, &target)?;
+        let target = target_for_portable_path(&projection.overrides, &document.target_path)?;
         let override_path = projection.overrides.join(&target);
         let view_path = projection.view.join(&target);
         let tombstoned = is_tombstoned(&tombstones, &target);
 
-        if conflict {
-            let entry = manifest_entry(document, ManifestStatus::Conflict, Some("more than one source file maps to this Markdown path".into()));
-            record_error(&mut manifest, &entry);
-            manifest.entries.insert(document.source_path.clone(), entry);
-            conflicts += 1;
-            processed += 1;
-            on_progress(LocalFolderSyncProgress {
-                scanned,
-                processed,
-                written,
-                conflicts,
-                failed,
-            });
-            continue;
-        }
         if tombstoned {
             if override_path.is_file() {
                 expected_view_paths.insert(target.clone());
@@ -431,6 +406,73 @@ fn scan_source_documents(root: &Path) -> Result<Vec<SourceDocument>, AppError> {
     }
     documents.sort_by(|left, right| left.source_path.cmp(&right.source_path));
     Ok(documents)
+}
+
+/// When several source files would collapse onto the same Markdown path,
+/// keep converting all of them. Markdown sources keep the default name;
+/// other formats insert their original extension, then a numeric suffix
+/// if that is still taken.
+fn disambiguate_target_paths(documents: &mut [SourceDocument]) {
+    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, document) in documents.iter().enumerate() {
+        groups
+            .entry(portable_key(&document.target_path))
+            .or_default()
+            .push(index);
+    }
+
+    let mut claimed = HashSet::new();
+    let mut colliding = Vec::new();
+    for indices in groups.values() {
+        if indices.len() == 1 {
+            claimed.insert(portable_key(&documents[indices[0]].target_path));
+        } else {
+            colliding.extend(indices.iter().copied());
+        }
+    }
+    colliding.sort_unstable();
+
+    for index in colliding {
+        let preferred = preferred_disambiguated_target(&documents[index]);
+        documents[index].target_path = claim_unique_target(&mut claimed, preferred);
+    }
+}
+
+fn preferred_disambiguated_target(document: &SourceDocument) -> String {
+    let Some(extension) = source_file_extension(&document.source_path) else {
+        return document.target_path.clone();
+    };
+    if extension.eq_ignore_ascii_case("md") {
+        return document.target_path.clone();
+    }
+    match document.target_path.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() => format!("{stem}.{extension}.md"),
+        _ => format!("{}.{extension}.md", document.target_path),
+    }
+}
+
+fn claim_unique_target(claimed: &mut HashSet<String>, preferred: String) -> String {
+    let mut candidate = preferred.clone();
+    let mut n = 2u32;
+    loop {
+        if claimed.insert(portable_key(&candidate)) {
+            return candidate;
+        }
+        candidate = match preferred.rsplit_once('.') {
+            Some((stem, ext)) => format!("{stem}-{n}.{ext}"),
+            None => format!("{preferred}-{n}"),
+        };
+        n += 1;
+    }
+}
+
+fn source_file_extension(source_path: &str) -> Option<&str> {
+    source_path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(_, ext)| ext)
+        .filter(|ext| !ext.is_empty())
 }
 
 fn scan_source_directories(root: &Path) -> Result<BTreeSet<String>, AppError> {
@@ -906,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_reports_each_source_that_maps_to_the_same_markdown_target_as_a_conflict() {
+    fn sync_keeps_colliding_sources_by_disambiguating_markdown_targets() {
         let (_temp, data_dir, source_root) = fixture();
         write_source(&source_root, "report.md", "# Markdown source");
         write_source(&source_root, "report.csv", "name,score\nAlice,10\n");
@@ -915,18 +957,19 @@ mod tests {
         let result = sync(&data_dir, "kb", &source_root).unwrap();
         let projection = paths(&data_dir, "kb");
 
-        assert_eq!(result.state, KnowledgeLocalSyncState::Partial);
+        assert_eq!(result.state, KnowledgeLocalSyncState::Ready);
         assert_eq!(result.scanned, 2);
-        assert_eq!(result.written, 0);
-        assert_eq!(result.conflicts, 2);
+        assert_eq!(result.written, 2);
+        assert_eq!(result.conflicts, 0);
         assert_eq!(result.failed, 0);
-        assert_eq!(result.errors.len(), 2);
-        assert!(result
-            .errors
-            .iter()
-            .all(|error| error.status == KnowledgeDocumentImportStatus::Conflict));
-        assert!(!projection.view.join("report.md").exists());
-        assert_eq!(file_snapshot(&source_root), before, "conflict detection must be read-only");
+        assert!(result.errors.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(projection.view.join("report.md")).unwrap(),
+            "# Markdown source"
+        );
+        let csv_projection = std::fs::read_to_string(projection.view.join("report.csv.md")).unwrap();
+        assert!(csv_projection.contains("Alice"));
+        assert_eq!(file_snapshot(&source_root), before, "sync must not alter the external source folder");
     }
 
     #[test]

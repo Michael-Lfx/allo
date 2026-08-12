@@ -24,13 +24,19 @@ describe('local-folder document sync wiring', () => {
     expect(emptyStateSource.includes('syncLocalFolder.invoke')).toBe(false);
   });
 
-  test('shows local-folder progress above the document tree and retains a manual sync control', () => {
+  test('shows local-folder status in the meta row and retains a manual sync control', () => {
     expect(detailSource.includes('getLocalSync')).toBe(true);
     expect(detailSource.includes('handleSyncLocalFolder')).toBe(true);
     expect(detailSource.includes("localSync.state === 'syncing'")).toBe(true);
     expect(detailSource.includes('localSync.processed')).toBe(true);
     expect(detailSource.includes('localSync.errors.map')).toBe(true);
-    expect(detailSource.includes("{/* File tree */}")).toBe(true);
+    expect(detailSource.includes("trigger='hover'")).toBe(true);
+    const metaAt = detailSource.indexOf('{/* ─── Meta info row');
+    const statusAt = detailSource.indexOf("localSync.state === 'syncing' || localSync.failed > 0 || localSync.conflicts > 0");
+    const tabsAt = detailSource.indexOf("className='knowledge-detail-tabs'");
+    expect(metaAt).toBeGreaterThan(-1);
+    expect(statusAt).toBeGreaterThan(metaAt);
+    expect(tabsAt).toBeGreaterThan(statusAt);
   });
 
   test('keeps local-folder wording and sync status available in both locales', () => {
