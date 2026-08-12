@@ -1007,6 +1007,22 @@ const BROWSER_SOURCE_DEFAULT: &str = "system";
 const PREF_MOA_SETTINGS: &str = "moa_settings";
 const PREF_IMAGE_ANALYSIS_MODEL: &str = "tools.imageAnalysisModel";
 
+fn catalog_model_base(model: &str) -> &str {
+    model
+        .get(..5)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("AIPC-"))
+        .and_then(|_| model.get(5..))
+        .unwrap_or(model)
+}
+
+fn is_preferred_image_analysis_model(model: &str) -> bool {
+    catalog_model_base(model).eq_ignore_ascii_case("MiniMax-M3")
+}
+
+fn is_image_analysis_eligible_provider(platform: &str) -> bool {
+    !platform.eq_ignore_ascii_case("nomifun-free-model")
+}
+
 fn is_usable_image_analysis_model(
     provider_enabled: bool,
     model: &nomifun_db::models::ProviderModelRow,
@@ -1119,6 +1135,9 @@ async fn resolve_image_analysis_model(
     } else {
         let mut fallback = None;
         for provider in &providers {
+            if !is_image_analysis_eligible_provider(&provider.platform) {
+                continue;
+            }
             let models = deps
                 .provider_model_repo
                 .list_for_provider(&provider.provider_id)
@@ -1129,13 +1148,16 @@ async fn resolve_image_analysis_model(
                     continue;
                 }
                 let candidate = (provider.provider_id.clone(), model.model.clone());
-                if model.model.eq_ignore_ascii_case("MiniMax-M3") {
+                if is_preferred_image_analysis_model(&model.model) {
                     fallback = Some(candidate);
                     break;
                 }
                 fallback.get_or_insert(candidate);
             }
-            if fallback.as_ref().is_some_and(|(_, model)| model.eq_ignore_ascii_case("MiniMax-M3")) {
+            if fallback
+                .as_ref()
+                .is_some_and(|(_, model)| is_preferred_image_analysis_model(model))
+            {
                 break;
             }
         }
@@ -1883,6 +1905,22 @@ fn gateway_mcp_to_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preferred_image_analysis_model_matches_flowy_catalog_id() {
+        assert!(is_preferred_image_analysis_model("MiniMax-M3"));
+        assert!(is_preferred_image_analysis_model("AIPC-Minimax-M3"));
+        assert!(is_preferred_image_analysis_model("aipc-minimax-m3"));
+        assert!(!is_preferred_image_analysis_model("AIPC-GPT5.5"));
+        assert!(!is_preferred_image_analysis_model("MiniMax-M2.7"));
+    }
+
+    #[test]
+    fn image_analysis_auto_fallback_skips_managed_free_models() {
+        assert!(!is_image_analysis_eligible_provider("nomifun-free-model"));
+        assert!(is_image_analysis_eligible_provider("openai"));
+        assert!(is_image_analysis_eligible_provider("minimax"));
+    }
 
     #[test]
     fn resolve_nomi_max_tokens_prefers_catalog_limit() {

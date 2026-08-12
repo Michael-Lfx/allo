@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Button, Dropdown, Menu } from '@arco-design/web-react';
@@ -29,6 +29,8 @@ export interface TaskModelSelectProps {
   task: ModelTask;
   /** Additional trait refinement within the task (e.g. `['vision_input']`). */
   requiredTraits?: ModelTrait[];
+  /** Drop these provider platforms from the menu (e.g. managed free models). */
+  excludePlatforms?: string[];
   /** Current selection; `null`/`undefined` renders the placeholder. */
   value?: TaskModelSelection | null;
   onSelect: (selection: TaskModelSelection) => void;
@@ -47,6 +49,7 @@ export interface TaskModelSelectProps {
 const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
   task,
   requiredTraits,
+  excludePlatforms,
   value,
   onSelect,
   placeholder,
@@ -55,7 +58,14 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { groups, isLoading } = useModelsForTask(task, requiredTraits);
+  const { groups: catalogGroups, isLoading } = useModelsForTask(task, requiredTraits);
+  const groups = useMemo(
+    () =>
+      excludePlatforms && excludePlatforms.length > 0
+        ? catalogGroups.filter((group) => !excludePlatforms.includes(group.provider.platform))
+        : catalogGroups,
+    [catalogGroups, excludePlatforms]
+  );
   const providerLabel = useModelSelectorProviderLabel();
 
   const valueAvailable =

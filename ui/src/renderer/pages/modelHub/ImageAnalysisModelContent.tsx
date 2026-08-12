@@ -3,25 +3,33 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@arco-design/web-react';
 import { Close } from '@icon-park/react';
 import { configService } from '@/common/config/configService';
+import { NOMIFUN_FREE_MODEL_PLATFORM } from '@/common/types/provider/managedModelService';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import TaskModelSelect, { type TaskModelSelection } from '@/renderer/components/agent/TaskModelSelect';
 import { useModelsForTask, type TaskModelGroup } from '@/renderer/hooks/agent/useModelsForTask';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 
 const STORAGE_KEY = 'tools.imageAnalysisModel';
+const IMAGE_ANALYSIS_EXCLUDED_PLATFORMS = [NOMIFUN_FREE_MODEL_PLATFORM];
+
+/** Flowy Cloud catalog ids are `AIPC-<name>`; match the displayed MiniMax-M3 name. */
+export const isPreferredImageAnalysisModel = (model: string): boolean =>
+  model.replace(/^AIPC-/i, '').toLowerCase() === 'minimax-m3';
+
+export const isImageAnalysisEligibleGroup = (group: TaskModelGroup): boolean =>
+  group.provider.platform !== NOMIFUN_FREE_MODEL_PLATFORM;
 
 export const resolveAutomaticImageAnalysisModel = (
   groups: TaskModelGroup[]
 ): TaskModelSelection | null => {
-  const preferredGroup = groups.find((group) =>
-    group.models.some((model) => model.toLowerCase() === 'minimax-m3')
-  );
+  const eligible = groups.filter(isImageAnalysisEligibleGroup);
+  const preferredGroup = eligible.find((group) => group.models.some(isPreferredImageAnalysisModel));
   if (preferredGroup) {
-    const preferredModel = preferredGroup.models.find((model) => model.toLowerCase() === 'minimax-m3');
+    const preferredModel = preferredGroup.models.find(isPreferredImageAnalysisModel);
     if (preferredModel) return { providerId: preferredGroup.provider.id, model: preferredModel };
   }
 
-  const firstGroup = groups[0];
+  const firstGroup = eligible[0];
   const firstModel = firstGroup?.models[0];
   return firstGroup && firstModel ? { providerId: firstGroup.provider.id, model: firstModel } : null;
 };
@@ -73,6 +81,7 @@ const ImageAnalysisModelContent: React.FC<{ compact?: boolean }> = ({ compact = 
         <TaskModelSelect
           task='chat'
           requiredTraits={['vision_input']}
+          excludePlatforms={IMAGE_ANALYSIS_EXCLUDED_PLATFORMS}
           value={selection}
           onSelect={(next) => void select(next)}
           placeholder={t('settings.modelHub.imageAnalysis.autoDefault')}
