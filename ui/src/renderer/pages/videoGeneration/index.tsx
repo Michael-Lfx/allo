@@ -4,12 +4,20 @@
  * Agent and infinite-canvas creation share one composer while keeping their
  * skills, drafts, submissions, and project galleries independent.
  */
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Result, Spin } from '@arco-design/web-react';
 import { Search, Upload, VideoOne } from '@icon-park/react';
-import { ipcBridge } from '@/common';
 import SegmentedTabs, { type SegmentedTabItem } from '@renderer/components/base/SegmentedTabs';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
@@ -24,11 +32,8 @@ import {
   uploadCameo,
 } from './api';
 import type { PlanBody, SessionSummary } from './types';
-import SessionCard from './components/SessionCard';
-import TvShowPanel from './components/TvShowPanel';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
 import type { VideoCreateDraft, VideoHomeMode } from './home/types';
-import CanvasProjectGallery from './home/CanvasProjectGallery';
 import {
   CLIP_DURATION_DEFAULT_SECS,
   CLIP_DURATION_MAX_SECS,
@@ -38,12 +43,7 @@ import {
   DURATION_MAX_SECS,
   DURATION_MIN_SECS,
   DURATION_STEP_SECS,
-} from './components/DurationTimelineBar';
-import {
-  deleteCanvasMedia,
-  uploadCanvasMedia,
-  type CanvasMediaMeta,
-} from '../videoCanvas/api';
+} from './durationBounds';
 import {
   clearVideoGenerationSessionMemory,
   rememberVideoGenerationSession,
@@ -64,6 +64,10 @@ async function createServerBackedCanvasProject(
 }
 
 type ListTab = 'recent' | 'tvShow';
+
+const CanvasProjectGallery = lazy(() => import('./home/CanvasProjectGallery'));
+const TvShowPanel = lazy(() => import('./components/TvShowPanel'));
+const SessionCard = lazy(() => import('./components/SessionCard'));
 
 function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
   const common: PlanBody = {
@@ -165,8 +169,24 @@ const VideoGenerationListPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (workMode === 'agent') void refresh();
-  }, [refresh, workMode]);
+    if (workMode === 'agent' && listTab === 'recent') void refresh();
+  }, [listTab, refresh, workMode]);
+
+  useEffect(() => {
+    const prefetchGallery = () => {
+      void import('./home/CanvasProjectGallery');
+    };
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      const idleId = idleWindow.requestIdleCallback(prefetchGallery, { timeout: 1500 });
+      return () => idleWindow.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(prefetchGallery, 250);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const displayed = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -254,9 +274,10 @@ const VideoGenerationListPage: React.FC = () => {
     async (draft: VideoCreateDraft) => {
       if (creating) return;
       setCreating(true);
-      const references: CanvasMediaMeta[] = [];
+      const references: Array<{ media_id: string }> = [];
       let canvasCreated = false;
       try {
+        const { uploadCanvasMedia } = await import('../videoCanvas/api');
         for (const reference of draft.canvasReferences) {
           references.push(
             await uploadCanvasMedia(reference.file, reference.file.name)
@@ -320,6 +341,7 @@ const VideoGenerationListPage: React.FC = () => {
         navigate(`/video-generation/canvas/${encodeURIComponent(id)}`);
       } catch (cause) {
         if (!canvasCreated && references.length > 0) {
+          const { deleteCanvasMedia } = await import('../videoCanvas/api');
           await Promise.allSettled(
             references.map((reference) => deleteCanvasMedia(reference.media_id))
           );
@@ -376,7 +398,8 @@ const VideoGenerationListPage: React.FC = () => {
       );
       return;
     }
-    const paths = await ipcBridge.dialog.showOpen.invoke({
+    const { dialog } = await import('@/common/adapter/ipcBridge');
+    const paths = await dialog.showOpen.invoke({
       properties: ['openFile'],
       filters: [
         {
@@ -429,7 +452,15 @@ const VideoGenerationListPage: React.FC = () => {
         />
 
         {workMode === 'creation' ? (
-          <CanvasProjectGallery />
+          <Suspense
+            fallback={
+              <div className='flex justify-center py-38px'>
+                <Spin />
+              </div>
+            }
+          >
+            <CanvasProjectGallery />
+          </Suspense>
         ) : (
           <section className='flex flex-col gap-12px'>
             <div className='flex flex-wrap items-center justify-between gap-12px'>
@@ -496,89 +527,92 @@ const VideoGenerationListPage: React.FC = () => {
               ) : null}
             </div>
 
-            <div className='grid'>
-              <div
-                className={
-                  listTab === 'tvShow'
-                    ? 'col-start-1 row-start-1'
-                    : 'col-start-1 row-start-1 invisible pointer-events-none'
-                }
-                aria-hidden={listTab !== 'tvShow'}
-              >
-                <TvShowPanel enabled={listTab === 'tvShow'} />
-              </div>
-              <div
-                className={
-                  listTab === 'recent'
-                    ? 'col-start-1 row-start-1'
-                    : 'col-start-1 row-start-1 invisible pointer-events-none'
-                }
-                aria-hidden={listTab !== 'recent'}
-              >
-                {error ? (
-                  <Result
-                    status='error'
-                    title={t('videoGeneration.list.loadError', {
-                      defaultValue: '加载失败',
-                    })}
-                    subTitle={error}
-                    extra={
-                      <Button onClick={() => void refresh()}>
-                        {t('videoGeneration.list.retry', { defaultValue: '重试' })}
-                      </Button>
-                    }
-                  />
-                ) : loading ? (
-                  <div className='flex justify-center py-38px'>
-                    <Spin />
-                  </div>
-                ) : sessions.length === 0 ? (
-                  <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
-                    <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
-                      <VideoOne theme='outline' size={19} fill='currentColor' />
-                    </span>
-                    <div>
-                      <div className='text-13px font-600 text-[var(--color-text-1)]'>
-                        {t('videoGeneration.list.empty.title', {
-                          defaultValue: '你的第一支影片从上方开始',
-                        })}
-                      </div>
-                      <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-                        {t('videoGeneration.list.empty.desc', {
-                          defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
-                        })}
+            <div>
+              {listTab === 'tvShow' ? (
+                <Suspense
+                  fallback={
+                    <div className='flex justify-center py-38px'>
+                      <Spin />
+                    </div>
+                  }
+                >
+                  <TvShowPanel enabled />
+                </Suspense>
+              ) : (
+                <div>
+                  {error ? (
+                    <Result
+                      status='error'
+                      title={t('videoGeneration.list.loadError', {
+                        defaultValue: '加载失败',
+                      })}
+                      subTitle={error}
+                      extra={
+                        <Button onClick={() => void refresh()}>
+                          {t('videoGeneration.list.retry', { defaultValue: '重试' })}
+                        </Button>
+                      }
+                    />
+                  ) : loading ? (
+                    <div className='flex justify-center py-38px'>
+                      <Spin />
+                    </div>
+                  ) : sessions.length === 0 ? (
+                    <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
+                      <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
+                        <VideoOne theme='outline' size={19} fill='currentColor' />
+                      </span>
+                      <div>
+                        <div className='text-13px font-600 text-[var(--color-text-1)]'>
+                          {t('videoGeneration.list.empty.title', {
+                            defaultValue: '你的第一支影片从上方开始',
+                          })}
+                        </div>
+                        <div className='mt-2px text-12px text-[var(--color-text-3)]'>
+                          {t('videoGeneration.list.empty.desc', {
+                            defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
+                          })}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ) : (
-                  <>
-                    <div
-                      className='grid gap-12px'
-                      style={{
-                        gridTemplateColumns:
-                          'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
-                      }}
-                    >
-                      {displayed.map((session) => (
-                        <SessionCard
-                          key={session.id}
-                          session={session}
-                          onOpen={openSession}
-                          onDelete={(s) => void handleDelete(s)}
-                          deleting={deletingId === session.id}
-                        />
-                      ))}
-                    </div>
-                    {displayed.length === 0 && (
-                      <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
-                        {t('videoGeneration.list.filterEmpty', {
-                          defaultValue: '没有匹配的任务',
-                        })}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
+                  ) : (
+                    <>
+                      <Suspense
+                        fallback={
+                          <div className='flex justify-center py-38px'>
+                            <Spin />
+                          </div>
+                        }
+                      >
+                        <div
+                          className='grid gap-12px'
+                          style={{
+                            gridTemplateColumns:
+                              'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
+                          }}
+                        >
+                          {displayed.map((session) => (
+                            <SessionCard
+                              key={session.id}
+                              session={session}
+                              onOpen={openSession}
+                              onDelete={(s) => void handleDelete(s)}
+                              deleting={deletingId === session.id}
+                            />
+                          ))}
+                        </div>
+                      </Suspense>
+                      {displayed.length === 0 && (
+                        <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
+                          {t('videoGeneration.list.filterEmpty', {
+                            defaultValue: '没有匹配的任务',
+                          })}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </section>
         )}

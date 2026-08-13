@@ -11,6 +11,7 @@ mod cloud;
 mod cloud_im;
 mod tv_show;
 mod vimax_skill_hub;
+mod vimax;
 mod confirmation;
 mod connection_test;
 mod conversation;
@@ -129,6 +130,7 @@ pub use vimax_skill_hub::{
     VimaxCloudSkillListResponse, VimaxCloudSkillPublishLocalRequest,
     VimaxCloudSkillPublishRequest, VimaxCloudSkillPublishResponse, VimaxSkillAuthor,
 };
+pub use vimax::{VimaxSessionListResponse, VimaxSessionSummary};
 pub use confirmation::{
     ApprovalCheckQuery, ApprovalCheckResponse, ConfirmRequest, ConfirmationListResponse,
 };

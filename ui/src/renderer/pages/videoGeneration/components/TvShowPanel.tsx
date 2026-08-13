@@ -22,6 +22,8 @@ import TvShowCard from './TvShowCard';
 
 type TvShowScope = 'plaza' | 'mine';
 
+const TV_SHOW_INITIAL_PAGE_SIZE = 16;
+
 interface TvShowPanelProps {
   enabled: boolean;
 }
@@ -73,10 +75,10 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     try {
       const data =
         scope === 'mine'
-          ? await listMyTvShow({ page: 1, pageSize: 50 })
+          ? await listMyTvShow({ page: 1, pageSize: TV_SHOW_INITIAL_PAGE_SIZE })
           : await listTvShow({
               page: 1,
-              pageSize: 50,
+              pageSize: TV_SHOW_INITIAL_PAGE_SIZE,
               keyword: keyword.trim() || undefined,
               sort: 'publishedAtDesc',
             });

@@ -90,6 +90,9 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [hovering, setHovering] = useState(false);
+  const [loadVideo, setLoadVideo] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const cardRef = useRef<HTMLDivElement | null>(null);
 
   const updatedMs = toEpochMs(session.updated_at ?? session.created_at);
   const meta: string[] = [
@@ -105,10 +108,28 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
   ];
 
   useEffect(() => {
+    const element = cardRef.current;
+    if (!element || typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        setVisible(true);
+        observer.disconnect();
+      },
+      { rootMargin: '200px' }
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     let loaded: string | null = null;
     const coverRel = session.cover?.trim();
-    if (!coverRel) {
+    if (!visible || !coverRel) {
       setCoverUrl((prev) => {
         if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
         return null;
@@ -134,13 +155,13 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
       cancelled = true;
       if (loaded?.startsWith('blob:')) URL.revokeObjectURL(loaded);
     };
-  }, [session.id, session.cover]);
+  }, [session.id, session.cover, visible]);
 
   useEffect(() => {
     let cancelled = false;
     let loaded: string | null = null;
     const videoRel = session.final_video?.trim();
-    if (!videoRel) {
+    if (!loadVideo || !videoRel) {
       setVideoUrl((prev) => {
         if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
         return null;
@@ -166,10 +187,11 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
       cancelled = true;
       if (loaded?.startsWith('blob:')) URL.revokeObjectURL(loaded);
     };
-  }, [session.id, session.final_video]);
+  }, [loadVideo, session.id, session.final_video]);
 
   const handleEnter = () => {
     setHovering(true);
+    setLoadVideo(true);
     const el = videoRef.current;
     if (!el || !videoUrl) return;
     void el.play().catch(() => {
@@ -185,8 +207,17 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
     el.currentTime = 0;
   };
 
+  useEffect(() => {
+    const element = videoRef.current;
+    if (!hovering || !element || !videoUrl) return;
+    void element.play().catch(() => {
+      /* autoplay may be blocked; ignore */
+    });
+  }, [hovering, videoUrl]);
+
   return (
     <div
+      ref={cardRef}
       role='button'
       tabIndex={0}
       className={[
@@ -202,6 +233,7 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
       }}
       onMouseEnter={handleEnter}
       onMouseLeave={handleLeave}
+      onFocus={() => setLoadVideo(true)}
     >
       <div className={`${styles.projectCover} relative overflow-hidden`}>
         {coverUrl ? (

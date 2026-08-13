@@ -7,7 +7,8 @@ import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
 import { SEEDANCE_ASPECT_RATIOS, type SeedanceAspectRatio } from '../aspectRatios';
-import DurationTimelineBar, {
+import DurationTimelineBar from '../components/DurationTimelineBar';
+import {
   AGENT_TICKS,
   CLIP_DURATION_MAX_SECS,
   CLIP_DURATION_MIN_SECS,
@@ -17,7 +18,7 @@ import DurationTimelineBar, {
   DURATION_MAX_SECS,
   DURATION_MIN_SECS,
   DURATION_STEP_SECS,
-} from '../components/DurationTimelineBar';
+} from '../durationBounds';
 import {
   filterAllowedImageModels,
   pickDefaultVideoModel,

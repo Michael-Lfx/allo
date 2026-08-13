@@ -5,6 +5,9 @@
 import { buildBackendAuthHeaders, getBaseUrl, httpRequest } from '@/common/adapter/httpBridge';
 import type { CanvasDocument } from './types';
 
+/** A stalled local backend must not leave the canvas save queue blocked forever. */
+export const CANVAS_DOC_SAVE_TIMEOUT_MS = 15_000;
+
 export type CanvasProjectMeta = {
   project_id: string;
   title: string;
@@ -101,7 +104,8 @@ export async function putCanvasDoc(
   return httpRequest<CanvasProjectMeta>(
     'PUT',
     `/api/video-canvas/projects/${encodeURIComponent(projectId)}/doc`,
-    doc
+    doc,
+    { timeoutMs: CANVAS_DOC_SAVE_TIMEOUT_MS }
   );
 }
 

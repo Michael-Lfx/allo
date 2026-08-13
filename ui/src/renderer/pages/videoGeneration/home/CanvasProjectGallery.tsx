@@ -10,7 +10,6 @@ import {
   listCanvasProjects,
   type CanvasProjectMeta,
 } from '../../videoCanvas/api';
-import { createServerBackedCanvasProject } from '../../videoCanvas/lib/ocBridge';
 import styles from './home.module.css';
 
 function formatUpdatedAt(ms: number, t: TFunction): string {
@@ -83,6 +82,9 @@ const CanvasProjectGallery: React.FC = () => {
     if (creating) return;
     setCreating(true);
     try {
+      const { createServerBackedCanvasProject } = await import(
+        '../../videoCanvas/lib/ocBridge'
+      );
       const id = await createServerBackedCanvasProject(untitledCanvas);
       navigate(`/video-generation/canvas/${encodeURIComponent(id)}`);
     } catch (cause) {

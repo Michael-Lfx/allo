@@ -18,8 +18,8 @@ use crate::pipelines::{
 };
 use crate::progress::{RenderStatus, RunStatus};
 use crate::session::{
-    ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, apply_status_to_record,
-    cameo,
+    ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, SessionSummary,
+    apply_status_to_record, cameo,
 };
 use crate::skills::{SkillCatalog, VerticalSkillDraft, VerticalSkillSummary};
 
@@ -70,6 +70,10 @@ impl VimaxService {
 
     pub fn list_sessions(&self) -> VimaxResult<Vec<SessionRecord>> {
         self.index.list()
+    }
+
+    pub fn list_session_summaries(&self) -> VimaxResult<Vec<SessionSummary>> {
+        self.index.list_summaries()
     }
 
     pub fn create_session(

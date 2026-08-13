@@ -16,6 +16,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use nomi_vimax::CameoUpdate;
 use nomifun_api_types::{
     ApiResponse, TvShowPublishSessionRequest, VimaxCloudSkillPublishLocalRequest,
+    VimaxSessionListResponse,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
@@ -141,9 +142,12 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
 async fn list_sessions(
     State(state): State<VimaxRouterState>,
     Extension(_user): Extension<CurrentUser>,
-) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let sessions = state.service.list_sessions()?;
-    Ok(Json(ApiResponse::ok(json!({ "sessions": sessions }))))
+) -> Result<Json<ApiResponse<VimaxSessionListResponse>>, AppError> {
+    let service = state.service.clone();
+    let sessions = tokio::task::spawn_blocking(move || service.list_session_summaries())
+        .await
+        .map_err(|e| AppError::Internal(format!("session list task join error: {e}")))??;
+    Ok(Json(ApiResponse::ok(VimaxSessionListResponse { sessions })))
 }
 
 #[derive(Deserialize)]

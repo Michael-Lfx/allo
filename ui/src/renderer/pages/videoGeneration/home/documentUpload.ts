@@ -1,5 +1,4 @@
 import i18n from 'i18next';
-import { strFromU8, unzipSync } from 'fflate';
 
 const TEXT_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'json', 'csv', 'srt', 'vtt']);
 const MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024;
@@ -62,7 +61,7 @@ export async function readUploadedTextFile(file: File): Promise<string> {
     extension === 'docx' ||
     file.type ===
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-      ? readDocxText(new Uint8Array(await file.arrayBuffer()))
+      ? await readDocxText(new Uint8Array(await file.arrayBuffer()))
       : (await file.text()).replace(/^\uFEFF/, '').trim();
   if (!text) {
     throw new Error(
@@ -81,7 +80,8 @@ function decodeXmlText(value: string): string {
     .replace(/&amp;/g, '&');
 }
 
-function readDocxText(bytes: Uint8Array): string {
+async function readDocxText(bytes: Uint8Array): Promise<string> {
+  const { strFromU8, unzipSync } = await import('fflate');
   let documentXml: Uint8Array | undefined;
   try {
     documentXml = unzipSync(bytes)['word/document.xml'];

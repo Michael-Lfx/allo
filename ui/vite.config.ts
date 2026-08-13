@@ -142,6 +142,10 @@ export default defineConfig(({ mode }) => {
       reportCompressedSize: false,
       rollupOptions: {
         output: {
+          // A manual chunk otherwise absorbs transitive imports in Rollup 4.
+          // Keep shared runtime modules with their natural importers so a
+          // canvas-only vendor does not become an app-entry dependency.
+          onlyExplicitManualChunks: true,
           manualChunks(id) {
             // Keep video canvas heavy deps out of the first-enter shared graph
             // so /video-generation list can load without leafer/vidstack.

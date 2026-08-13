@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Input, Popover } from '@arco-design/web-react';
 import {
   BookOpen,
@@ -9,6 +9,7 @@ import {
   Pic,
   Platte,
   RobotOne,
+  SettingTwo,
   Star,
   VideoOne,
 } from '@icon-park/react';
@@ -26,10 +27,8 @@ import {
   normalizeVideoFps,
   normalizeVideoResolution,
 } from '../videoModelCapabilities';
-import CameoCastEditor from '../components/CameoCastEditor';
 import { suggestCameoCharacterName } from '../cameoUtils';
 import type { CameoDraftItem, VerticalSkillSummary, VimaxWorkflow } from '../types';
-import GenerationPreferencesPopover from './GenerationPreferencesPopover';
 import { BoldSendArrowIcon, SlantedDocIcon } from './ComposerIcons';
 import {
   displayFileStem,
@@ -48,9 +47,13 @@ import type {
   VideoHomeMode,
 } from './types';
 import { listVerticalSkills } from '../api';
-import VerticalSkillMenu from './VerticalSkillMenu';
-import VerticalSkillCreateModal from './VerticalSkillCreateModal';
+import { generationPreferencesSummary } from '../preferenceSummary';
 import styles from './home.module.css';
+
+const CameoCastEditor = lazy(() => import('../components/CameoCastEditor'));
+const GenerationPreferencesPopover = lazy(() => import('./GenerationPreferencesPopover'));
+const VerticalSkillMenu = lazy(() => import('./VerticalSkillMenu'));
+const VerticalSkillCreateModal = lazy(() => import('./VerticalSkillCreateModal'));
 
 const TextArea = Input.TextArea;
 const DRAFT_KEY = 'flowy.videoGeneration.homeDraft.v3';
@@ -224,6 +227,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const draftedTracked = useRef(false);
   const [draft, setDraft] = useState<VideoCreateDraft>(loadDraft);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [prefsModuleReady, setPrefsModuleReady] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [skillHubOpen, setSkillHubOpen] = useState(false);
@@ -389,18 +393,32 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
 
   useEffect(() => {
     if (mode !== 'agent') return;
+    if (skillCatalog.length > 0 && skillListReloadToken === 0) return;
     let cancelled = false;
-    void listVerticalSkills()
+    const loadCatalog = () => listVerticalSkills()
       .then((list) => {
         if (!cancelled) setSkillCatalog(list);
       })
       .catch(() => {
         /* catalog is best-effort for chip labels */
       });
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      const idleId = idleWindow.requestIdleCallback(loadCatalog, { timeout: 1200 });
+      return () => {
+        cancelled = true;
+        idleWindow.cancelIdleCallback?.(idleId);
+      };
+    }
+    const timer = window.setTimeout(loadCatalog, 250);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [mode, skillListReloadToken]);
+  }, [mode, skillCatalog.length, skillListReloadToken]);
 
   const removeVerticalSkill = (skillId: string) => {
     setDraft((current) => ({
@@ -732,6 +750,42 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       ? draft.canvasReferences[0]?.previewUrl
       : draft.cameos[0]?.previewUrl;
 
+  const prefsSummary = generationPreferencesSummary(draft.preferences, mode, {
+    automatic: t('videoGeneration.create.preferences.automatic', { defaultValue: '自动' }),
+    smart: t('videoGeneration.create.preferences.smart', { defaultValue: '智能' }),
+    noModel: t('videoGeneration.create.preferences.noModelSelected', { defaultValue: '未选模型' }),
+  });
+  const openPreferences = (open: boolean) => {
+    if (open) {
+      setModeMenuOpen(false);
+      setSlashMenuOpen(false);
+      setPrefsModuleReady(true);
+    }
+    setPreferencesOpen(open);
+  };
+  const prefsTrigger = (
+    <button
+      type='button'
+      className={`${styles.toolbarButton} ${styles.prefsButton} ${
+        preferencesOpen ? styles.toolbarButtonActive : ''
+      }`}
+      disabled={loading}
+      aria-expanded={preferencesOpen}
+      aria-haspopup='dialog'
+      onClick={() => openPreferences(!preferencesOpen)}
+      aria-label={t('videoGeneration.create.customize', { defaultValue: '自定义生成偏好' })}
+    >
+      <SettingTwo theme='outline' size={15} />
+      <span className={styles.toolbarLabel}>
+        {t('videoGeneration.create.preferences.customize', { defaultValue: '自定义' })}
+      </span>
+      <span className={styles.toolbarSummary} title={prefsSummary.title}>
+        {prefsSummary.summary}
+      </span>
+      <Down theme='outline' size={12} />
+    </button>
+  );
+
   return (
     <section className={styles.hero}>
       <div className={styles.heroHeading}>
@@ -932,24 +986,24 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 <Down size={12} />
               </button>
             </Popover>
-            <GenerationPreferencesPopover
-              mode={mode}
-              value={draft.preferences}
-              disabled={loading}
-              modelMissing={modelMissing}
-              open={preferencesOpen}
-              onOpenChange={(open) => {
-                if (open) {
-                  setModeMenuOpen(false);
-                  setSlashMenuOpen(false);
-                }
-                setPreferencesOpen(open);
-              }}
-              onChange={(preferences) =>
-                setDraft((current) => ({ ...current, preferences }))
-              }
-              onOpenModelHub={() => navigate('/models')}
-            />
+            {prefsModuleReady ? (
+              <Suspense fallback={prefsTrigger}>
+                <GenerationPreferencesPopover
+                  mode={mode}
+                  value={draft.preferences}
+                  disabled={loading}
+                  modelMissing={modelMissing}
+                  open={preferencesOpen}
+                  onOpenChange={openPreferences}
+                  onChange={(preferences) =>
+                    setDraft((current) => ({ ...current, preferences }))
+                  }
+                  onOpenModelHub={() => navigate('/models')}
+                />
+              </Suspense>
+            ) : (
+              prefsTrigger
+            )}
             <Popover
               trigger='click'
               position='bl'
@@ -1006,24 +1060,28 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   setSkillHubOpen(open);
                 }}
                 content={
-                  <VerticalSkillMenu
-                    selectedIds={draft.verticalSkillIds}
-                    reloadToken={skillListReloadToken}
-                    onChangeSelected={(verticalSkillIds) =>
-                      setDraft((current) => ({ ...current, verticalSkillIds }))
-                    }
-                    onCatalogChange={(list) => {
-                      setSkillCatalog((prev) => {
-                        const map = new Map(prev.map((skill) => [skill.id, skill]));
-                        list.forEach((skill) => map.set(skill.id, skill));
-                        return Array.from(map.values());
-                      });
-                    }}
-                    onRequestCreate={() => {
-                      setSkillHubOpen(false);
-                      setSkillCreateOpen(true);
-                    }}
-                  />
+                  skillHubOpen ? (
+                    <Suspense fallback={<div className={styles.slashMenu} />}>
+                      <VerticalSkillMenu
+                        selectedIds={draft.verticalSkillIds}
+                        reloadToken={skillListReloadToken}
+                        onChangeSelected={(verticalSkillIds) =>
+                          setDraft((current) => ({ ...current, verticalSkillIds }))
+                        }
+                        onCatalogChange={(list) => {
+                          setSkillCatalog((prev) => {
+                            const map = new Map(prev.map((skill) => [skill.id, skill]));
+                            list.forEach((skill) => map.set(skill.id, skill));
+                            return Array.from(map.values());
+                          });
+                        }}
+                        onRequestCreate={() => {
+                          setSkillHubOpen(false);
+                          setSkillCreateOpen(true);
+                        }}
+                      />
+                    </Suspense>
+                  ) : null
                 }
               >
                 <button
@@ -1069,27 +1127,33 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
 
       {mode === 'agent' && draft.cameos.length > 0 ? (
         <div className={styles.cameoPanel}>
-          <CameoCastEditor
-            value={draft.cameos}
-            disabled={loading}
-            onChange={(cameos) => setDraft((current) => ({ ...current, cameos }))}
-          />
+          <Suspense fallback={null}>
+            <CameoCastEditor
+              value={draft.cameos}
+              disabled={loading}
+              onChange={(cameos) => setDraft((current) => ({ ...current, cameos }))}
+            />
+          </Suspense>
         </div>
       ) : null}
 
-      <VerticalSkillCreateModal
-        visible={skillCreateOpen}
-        onClose={() => setSkillCreateOpen(false)}
-        onCreated={(skillId) => {
-          setDraft((current) => ({
-            ...current,
-            verticalSkillIds: current.verticalSkillIds.includes(skillId)
-              ? current.verticalSkillIds
-              : [...current.verticalSkillIds, skillId],
-          }));
-          setSkillListReloadToken((n) => n + 1);
-        }}
-      />
+      {skillCreateOpen ? (
+        <Suspense fallback={null}>
+          <VerticalSkillCreateModal
+            visible={skillCreateOpen}
+            onClose={() => setSkillCreateOpen(false)}
+            onCreated={(skillId) => {
+              setDraft((current) => ({
+                ...current,
+                verticalSkillIds: current.verticalSkillIds.includes(skillId)
+                  ? current.verticalSkillIds
+                  : [...current.verticalSkillIds, skillId],
+              }));
+              setSkillListReloadToken((n) => n + 1);
+            }}
+          />
+        </Suspense>
+      ) : null}
     </section>
   );
 };

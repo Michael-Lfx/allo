@@ -1,0 +1,24 @@
+//! ViMax session list DTOs.
+
+use serde::{Deserialize, Serialize};
+
+/// Compact session data used by the Video Generation home and sidebar.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VimaxSessionSummary {
+    pub id: String,
+    pub title: String,
+    pub workflow: String,
+    pub stage: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_video: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VimaxSessionListResponse {
+    pub sessions: Vec<VimaxSessionSummary>,
+}

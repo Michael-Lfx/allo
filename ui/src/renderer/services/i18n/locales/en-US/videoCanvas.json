@@ -21,7 +21,9 @@
     "deleteFailed": "Delete failed"
   },
   "project": {
-    "back": "Back"
+    "back": "Back",
+    "catalogFailed": "Model catalog failed to load. Generation is paused so waiting items are not submitted with an empty config.",
+    "catalogRetry": "Retry"
   },
   "upload": {
     "button": "Upload media",

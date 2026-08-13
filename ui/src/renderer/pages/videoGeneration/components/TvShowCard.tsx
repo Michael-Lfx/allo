@@ -114,6 +114,8 @@ const TvShowCard: React.FC<TvShowCardProps> = ({
             alt=''
             className={styles.projectCoverMedia}
             draggable={false}
+            loading='lazy'
+            decoding='async'
           />
         ) : (
           <div className={styles.projectCoverFallback}>

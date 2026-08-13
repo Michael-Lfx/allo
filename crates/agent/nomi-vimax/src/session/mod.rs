@@ -93,6 +93,42 @@ pub struct SessionRecord {
     pub updated_at: String,
 }
 
+/// Compact list-row projection of a [`SessionRecord`].
+///
+/// The home page and sidebar need lifecycle and preview metadata, not the
+/// script and planning payload kept in the full session endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionSummary {
+    #[serde(rename = "id")]
+    pub session_id: String,
+    pub title: String,
+    pub workflow: WorkflowKind,
+    pub stage: String,
+    pub status: RunStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_video: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<SessionRecord> for SessionSummary {
+    fn from(record: SessionRecord) -> Self {
+        Self {
+            session_id: record.session_id,
+            title: record.title,
+            workflow: record.workflow,
+            stage: record.stage,
+            status: record.status,
+            final_video: record.final_video,
+            cover: record.cover,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        }
+    }
+}
+
 fn default_stage() -> String {
     "created".into()
 }
@@ -110,6 +146,7 @@ struct SessionsFile {
 pub struct SessionIndex {
     workspace_root: PathBuf,
     lock: Arc<Mutex<()>>,
+    summaries: Arc<Mutex<Option<Vec<SessionSummary>>>>,
 }
 
 impl SessionIndex {
@@ -131,6 +168,7 @@ impl SessionIndex {
         Ok(Self {
             workspace_root,
             lock: Arc::new(Mutex::new(())),
+            summaries: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -159,7 +197,9 @@ impl SessionIndex {
     }
 
     fn save(&self, data: &SessionsFile) -> VimaxResult<()> {
-        atomic_write_json(&self.sessions_path(), data)
+        atomic_write_json(&self.sessions_path(), data)?;
+        *self.summaries.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(())
     }
 
     pub fn list(&self) -> VimaxResult<Vec<SessionRecord>> {
@@ -167,6 +207,27 @@ impl SessionIndex {
         let data = self.load()?;
         let mut sessions: Vec<_> = data.sessions.into_values().collect();
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(sessions)
+    }
+
+    pub fn list_summaries(&self) -> VimaxResult<Vec<SessionSummary>> {
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(summaries) = self
+            .summaries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            return Ok(summaries);
+        }
+        let data = self.load()?;
+        let mut sessions: Vec<_> = data
+            .sessions
+            .into_values()
+            .map(SessionSummary::from)
+            .collect();
+        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        *self.summaries.lock().unwrap_or_else(|e| e.into_inner()) = Some(sessions.clone());
         Ok(sessions)
     }
 
@@ -656,6 +717,39 @@ mod import_export_tests {
     use crate::domain::WorkflowKind;
     use crate::progress::RunStatus;
     use tempfile::tempdir;
+
+    #[test]
+    fn list_summaries_omits_editing_payload_and_preserves_recent_order() {
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let older = index
+            .create(WorkflowKind::Idea2Video, Some("Older".into()))
+            .unwrap();
+        let newer = index
+            .create(WorkflowKind::Script2Video, Some("Newer".into()))
+            .unwrap();
+        let mut sessions = index.load().unwrap();
+        let older_record = sessions.sessions.get_mut(&older.session_id).unwrap();
+        older_record.idea = "private planning payload".into();
+        older_record.updated_at = "2026-01-01T00:00:00Z".into();
+        let newer_record = sessions.sessions.get_mut(&newer.session_id).unwrap();
+        newer_record.script = "private script payload".into();
+        newer_record.stage = "rendering".into();
+        newer_record.status = RunStatus::Rendering;
+        newer_record.updated_at = "2026-01-02T00:00:00Z".into();
+        index.save(&sessions).unwrap();
+
+        let summaries = index.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].session_id, newer.session_id);
+        assert_eq!(summaries[0].title, "Newer");
+        assert_eq!(summaries[0].status, RunStatus::Rendering);
+
+        let encoded = serde_json::to_value(&summaries).unwrap();
+        assert!(encoded[0].get("script").is_none());
+        assert!(encoded[1].get("idea").is_none());
+        assert!(encoded[0].get("working_dir").is_none());
+    }
 
     #[test]
     fn index_export_import_creates_new_id_and_keeps_assets() {

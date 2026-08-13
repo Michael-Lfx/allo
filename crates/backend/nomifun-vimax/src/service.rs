@@ -6,14 +6,14 @@ use std::sync::Arc;
 use nomi_config::{GatewayConfig, config_yaml_path, load_user_config_file};
 use nomi_vimax::{
     pack_skill_dir, ArtifactNode, CameoPhotoEntry, CameoUpdate, FlowyVimaxServices, RenderStatus,
-    RunStatus, SessionRecord, SkillSource, VerticalSkill, VerticalSkillDraft, VerticalSkillSummary,
-    VimaxService, WorkflowKind,
+    RunStatus, SessionRecord, SessionSummary, SkillSource, VerticalSkill, VerticalSkillDraft,
+    VerticalSkillSummary, VimaxService, WorkflowKind,
 };
 use nomifun_api_types::{
     TvShowLikeResponse, TvShowListResponse, TvShowPublishRequest, TvShowPublishResponse,
     TvShowPublishSessionRequest, TvShowVideo, VimaxCloudSkill, VimaxCloudSkillInstallResponse,
     VimaxCloudSkillLikeResponse, VimaxCloudSkillListResponse, VimaxCloudSkillPublishLocalRequest,
-    VimaxCloudSkillPublishRequest, VimaxCloudSkillPublishResponse,
+    VimaxCloudSkillPublishRequest, VimaxCloudSkillPublishResponse, VimaxSessionSummary,
 };
 use nomifun_cloud::{FlowyApiClient, ServerSession};
 use nomifun_common::AppError;
@@ -50,6 +50,13 @@ impl VimaxApiService {
     pub fn list_sessions(&self) -> Result<Vec<SessionRecord>, AppError> {
         self.inner
             .list_sessions()
+            .map_err(|e| AppError::Internal(e.to_string()))
+    }
+
+    pub fn list_session_summaries(&self) -> Result<Vec<VimaxSessionSummary>, AppError> {
+        self.inner
+            .list_session_summaries()
+            .map(|summaries| summaries.into_iter().map(session_summary_from).collect())
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
@@ -956,6 +963,20 @@ impl VimaxApiService {
             );
         }
         imported
+    }
+}
+
+fn session_summary_from(summary: SessionSummary) -> VimaxSessionSummary {
+    VimaxSessionSummary {
+        id: summary.session_id,
+        title: summary.title,
+        workflow: summary.workflow.as_str().to_string(),
+        stage: summary.stage,
+        status: summary.status.as_str().to_string(),
+        final_video: summary.final_video,
+        cover: summary.cover,
+        created_at: summary.created_at,
+        updated_at: summary.updated_at,
     }
 }
 

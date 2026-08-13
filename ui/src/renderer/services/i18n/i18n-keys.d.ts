@@ -6168,6 +6168,8 @@ export type I18nKey =
   | 'videoCanvas.list.title'
   | 'videoCanvas.list.untitled'
   | 'videoCanvas.project.back'
+  | 'videoCanvas.project.catalogFailed'
+  | 'videoCanvas.project.catalogRetry'
   | 'videoCanvas.upload.button'
   | 'videoCanvas.upload.failed'
   | 'videoCanvas.upload.ok'

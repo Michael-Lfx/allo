@@ -9,6 +9,7 @@ import { cancelGenerationTask, listGenerationTasks } from "@oc/services/api/task
 import { useConfigStore, useEffectiveConfig } from "@oc/stores/use-config-store";
 import { useUserStore } from "@oc/stores/use-user-store";
 import type { CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGenerationBatchMode, CanvasNodeData } from "@oc/types/canvas";
+import { canScheduleCanvasGenerationBatches } from "@renderer/pages/videoCanvas/lib/modelCatalogReadiness";
 
 import type { CanvasNodeGenerationOptions } from "./use-canvas-generation-executor";
 import type { CanvasNodeGenerationMode } from "@oc/components/canvas/canvas-node-prompt-panel";
@@ -21,13 +22,14 @@ type BatchTarget = Pick<CanvasGenerationBatchItem, "rowId" | "nodeId">;
 type UseCanvasGenerationBatchesOptions = {
     projectId: string;
     projectLoaded: boolean;
+    modelCatalogReady: boolean;
     nodes: CanvasNodeData[];
     nodesRef: { current: CanvasNodeData[] };
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
     handleGenerateNode: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options?: CanvasNodeGenerationOptions) => Promise<void>;
 };
 
-export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, nodesRef, setNodes, handleGenerateNode }: UseCanvasGenerationBatchesOptions) {
+export function useCanvasGenerationBatches({ projectId, projectLoaded, modelCatalogReady, nodes, nodesRef, setNodes, handleGenerateNode }: UseCanvasGenerationBatchesOptions) {
     const { message, modal } = App.useApp();
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
@@ -85,6 +87,7 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
     }, [message, nodesRef, projectId, setNodes]);
 
     const reconcileBatches = useCallback(() => {
+        if (!modelCatalogReady) return;
         setNodes((current) => {
             const nodeById = new Map(current.map((node) => [node.id, node]));
             let changed = false;
@@ -138,11 +141,15 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
             });
             return changed ? nextNodes : current;
         });
-    }, [projectId, setNodes]);
+    }, [modelCatalogReady, projectId, setNodes]);
 
     // 仅查询当前画布的活跃任务来安排批次，跨画布并发仍由后端创建任务时原子校验。
     const scheduleWaitingItems = useCallback(async () => {
-        if (!projectLoaded || schedulingRef.current) return;
+        // The persisted document can contain waiting items. Do not evaluate
+        // them against the default/stale model config while the host catalog
+        // is still being synchronized; a temporary empty catalog would turn
+        // recoverable work into permanent failures.
+        if (!canScheduleCanvasGenerationBatches(projectLoaded, modelCatalogReady) || schedulingRef.current) return;
         schedulingRef.current = true;
         try {
             const currentNodes = nodesRef.current;
@@ -210,7 +217,7 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
         } finally {
             schedulingRef.current = false;
         }
-    }, [activeTaskLimit, effectiveConfig, handleGenerateNode, isAiConfigReady, nodesRef, projectId, projectLoaded, reconcileBatches, updateBatch]);
+    }, [activeTaskLimit, effectiveConfig, handleGenerateNode, isAiConfigReady, modelCatalogReady, nodesRef, projectId, projectLoaded, reconcileBatches, updateBatch]);
 
     const retryFailedBatchItems = useCallback((sourceNodeId: string, batchId: string, itemId?: string) => {
         const batch = findBatch(nodesRef.current, sourceNodeId, batchId);

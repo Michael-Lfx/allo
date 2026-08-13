@@ -121,7 +121,11 @@ function visibleGenerationBatch(node: CanvasNodeData) {
     return batches.at(-1);
 }
 
-export default function CanvasPage() {
+type CanvasPageProps = {
+    modelCatalogReady: boolean;
+};
+
+export default function CanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const [mounted, setMounted] = useState(false);
 
     useEffect(() => {
@@ -130,10 +134,10 @@ export default function CanvasPage() {
 
     if (!mounted) return <CanvasRefreshShell />;
 
-    return <InfiniteCanvasPage />;
+    return <InfiniteCanvasPage modelCatalogReady={modelCatalogReady} />;
 }
 
-function InfiniteCanvasPage() {
+function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const { message } = App.useApp();
     const params = useParams<{ id: string }>();
     const [searchParams] = useSearchParams();
@@ -1064,6 +1068,7 @@ function InfiniteCanvasPage() {
     const { cancelSubmittedBatchItem, enqueueGenerationBatch, retryFailedBatchItems, stopRemainingBatchItems } = useCanvasGenerationBatches({
         projectId,
         projectLoaded,
+        modelCatalogReady,
         nodes,
         nodesRef,
         setNodes,

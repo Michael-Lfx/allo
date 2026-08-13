@@ -21,7 +21,9 @@
     "deleteFailed": "删除失败"
   },
   "project": {
-    "back": "返回"
+    "back": "返回",
+    "catalogFailed": "模型目录加载失败，生成任务暂缓，避免用空配置提交。",
+    "catalogRetry": "重试"
   },
   "upload": {
     "button": "上传素材",

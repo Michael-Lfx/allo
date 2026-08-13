@@ -19,6 +19,7 @@ import {
   rememberVideoGenerationSession,
   updateRecentVideoGenerationTitle,
 } from '@renderer/pages/videoGeneration/routeMemory';
+import { prefetchVideoGenerationHome } from '@renderer/pages/videoGeneration/prefetch';
 
 const NAV_EXPANDED_KEY = 'flowy.videoGeneration.navExpanded';
 /** Refresh frequency while any recent project is actively planning/rendering. */
@@ -133,6 +134,21 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
   }, [refresh, activeSessionId]);
 
   useEffect(() => {
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      const idleId = idleWindow.requestIdleCallback(() => prefetchVideoGenerationHome(), {
+        timeout: 1800,
+      });
+      return () => idleWindow.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(() => prefetchVideoGenerationHome(), 250);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
     const onFocus = () => {
       void refresh();
     };
@@ -180,6 +196,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
             moduleActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
           )}
           onClick={onEnterHome}
+          onPointerEnter={() => prefetchVideoGenerationHome()}
           aria-current={moduleActive ? 'page' : undefined}
           data-sider-nav-entry
           data-active={moduleActive ? 'true' : 'false'}
@@ -208,6 +225,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
           moduleActive && !activeSessionId ? '!bg-primary-1 !text-primary-6' : ''
         )}
         onClick={handleParentClick}
+        onPointerEnter={() => prefetchVideoGenerationHome()}
         aria-expanded={expanded}
         aria-current={moduleActive ? 'page' : undefined}
         data-sider-nav-entry

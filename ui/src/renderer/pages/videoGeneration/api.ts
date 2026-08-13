@@ -36,6 +36,11 @@ import type {
 } from './types';
 
 const BASE = '/api/vimax';
+const SESSION_LIST_CACHE_TTL_MS = 4_000;
+
+let sessionListCache: { at: number; data: SessionSummary[] } | null = null;
+let sessionListInflight: Promise<SessionSummary[]> | null = null;
+let sessionListGeneration = 0;
 
 /**
  * Resolve a backend-relative serve path to an absolute URL usable in
@@ -58,13 +63,43 @@ export function artifactFileUrl(sessionId: string, artifactPath: string): string
 }
 
 export async function listSessions(): Promise<SessionSummary[]> {
-  const data = await httpRequest<SessionSummary[] | { sessions: SessionSummary[] }>('GET', `${BASE}/sessions`);
-  if (Array.isArray(data)) return data;
-  return data?.sessions ?? [];
+  const now = Date.now();
+  if (sessionListCache && now - sessionListCache.at < SESSION_LIST_CACHE_TTL_MS) {
+    return sessionListCache.data;
+  }
+  if (sessionListInflight) return sessionListInflight;
+
+  const generation = sessionListGeneration;
+  let request: Promise<SessionSummary[]>;
+  request = httpRequest<SessionSummary[] | { sessions: SessionSummary[] }>(
+    'GET',
+    `${BASE}/sessions`
+  )
+    .then((data) => {
+      const sessions = Array.isArray(data) ? data : data?.sessions ?? [];
+      if (generation === sessionListGeneration) {
+        sessionListCache = { at: Date.now(), data: sessions };
+      }
+      return sessions;
+    })
+    .finally(() => {
+      if (sessionListInflight === request) sessionListInflight = null;
+    });
+  sessionListInflight = request;
+  return request;
+}
+
+/** Clear the shared list after a session mutation so nav and page stay in sync. */
+export function invalidateSessionList(): void {
+  sessionListGeneration += 1;
+  sessionListCache = null;
+  sessionListInflight = null;
 }
 
 export async function createSession(body: CreateSessionBody): Promise<SessionSummary> {
-  return httpRequest<SessionSummary>('POST', `${BASE}/sessions`, body);
+  const session = await httpRequest<SessionSummary>('POST', `${BASE}/sessions`, body);
+  invalidateSessionList();
+  return session;
 }
 
 export async function getSession(id: string): Promise<VimaxSession> {
@@ -73,10 +108,12 @@ export async function getSession(id: string): Promise<VimaxSession> {
 
 export async function planSession(id: string, body: PlanBody): Promise<void> {
   await httpRequest<unknown>('POST', `${BASE}/sessions/${encodeURIComponent(id)}/plan`, body);
+  invalidateSessionList();
 }
 
 export async function reviseSession(id: string, body: ReviseBody): Promise<void> {
   await httpRequest<unknown>('POST', `${BASE}/sessions/${encodeURIComponent(id)}/revise`, body);
+  invalidateSessionList();
 }
 
 /** Overwrite a text/JSON artifact in place. */
@@ -177,6 +214,7 @@ export async function renderSession(id: string, body?: RenderBody): Promise<void
     `${BASE}/sessions/${encodeURIComponent(id)}/render`,
     body ?? {}
   );
+  invalidateSessionList();
 }
 
 export async function getSessionStatus(id: string): Promise<SessionStatus> {
@@ -185,10 +223,12 @@ export async function getSessionStatus(id: string): Promise<SessionStatus> {
 
 export async function cancelSession(id: string): Promise<void> {
   await httpRequest<unknown>('POST', `${BASE}/sessions/${encodeURIComponent(id)}/cancel`);
+  invalidateSessionList();
 }
 
 export async function deleteSession(id: string): Promise<void> {
   await httpRequest<unknown>('DELETE', `${BASE}/sessions/${encodeURIComponent(id)}`);
+  invalidateSessionList();
 }
 
 /** Export a session project archive to a local `.nomivimax` path. */
@@ -254,9 +294,11 @@ export async function syncSessionFromCanvas(
 
 /** Import a local `.nomivimax` archive as a new session (new id). */
 export async function importSession(sourcePath: string): Promise<SessionSummary> {
-  return httpRequest<SessionSummary>('POST', `${BASE}/sessions/import`, {
+  const session = await httpRequest<SessionSummary>('POST', `${BASE}/sessions/import`, {
     source_path: sourcePath,
   });
+  invalidateSessionList();
+  return session;
 }
 
 export async function listArtifacts(id: string): Promise<ArtifactNode[]> {
@@ -538,7 +580,9 @@ export async function deleteTvShow(id: number): Promise<void> {
 
 /** Download TV Show package and import as a new local session. */
 export async function importTvShow(id: number): Promise<SessionSummary> {
-  return httpRequest<SessionSummary>('POST', `${BASE}/tv-show/${id}/import`, {});
+  const session = await httpRequest<SessionSummary>('POST', `${BASE}/tv-show/${id}/import`, {});
+  invalidateSessionList();
+  return session;
 }
 
 function encodeSkillId(id: string): string {
@@ -780,4 +824,3 @@ export async function unpublishCloudSkill(id: number): Promise<void> {
 export async function deleteCloudSkill(id: number): Promise<void> {
   await httpRequest<unknown>('DELETE', `${BASE}/skill-hub/${id}`);
 }
-

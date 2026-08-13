@@ -44,7 +44,7 @@ pub use revise::ReviseResult;
 pub use service::VimaxService;
 pub use session::{
     ARCHIVE_EXTENSION, ArtifactNode, CameoManifest, CameoPhotoEntry, CameoUpdate, SessionIndex,
-    SessionRecord,
+    SessionRecord, SessionSummary,
 };
 pub use skills::{
     pack_skill_dir, SkillCatalog, SkillId, SkillOverlay, SkillSource, SkillVisibility,
