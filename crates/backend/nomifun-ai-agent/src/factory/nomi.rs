@@ -728,6 +728,10 @@ pub(super) async fn build(
     );
 
     let config = NomiResolvedConfig {
+        // provider_id was validated as a canonical UUID just above.
+        provider_id: ProviderId::parse(&model_selection.provider_id).expect(
+            "session provider id already validated as a canonical ProviderId",
+        ),
         provider: fields.provider,
         api_key: fields.api_key,
         model: fields.model.clone(),

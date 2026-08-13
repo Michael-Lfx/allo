@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use nomifun_common::{AgentType, ConversationId, DelegationPolicy, ProviderWithModel, UserId};
+use nomifun_common::{
+    AgentType, ConversationId, DelegationPolicy, ProviderId, ProviderWithModel, UserId,
+};
 use nomifun_knowledge::WorkspaceBindingLease;
 
 fn deserialize_user_id<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -189,6 +191,11 @@ pub struct ImageAnalysisModelConfig {
 /// Fully resolved Nomi configuration passed to the agent manager.
 #[derive(Debug, Clone)]
 pub struct NomiResolvedConfig {
+    /// Canonical provider row id (UUID) backing this session's model. Kept
+    /// alongside the nomi provider name so UUID-keyed downstream services
+    /// (e.g. learning course generation) can honor the conversation model
+    /// instead of re-resolving a default.
+    pub provider_id: ProviderId,
     /// LLM provider name (anthropic, openai, bedrock, vertex).
     pub provider: String,
     /// Decrypted API key.

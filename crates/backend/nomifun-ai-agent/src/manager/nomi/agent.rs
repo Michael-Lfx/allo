@@ -1029,8 +1029,13 @@ impl NomiAgentManager {
                     // Generation honors the session's active model: the job
                     // runs on the provider/model the user picked in this
                     // conversation instead of the backend's first-enabled
-                    // default.
-                    Some((config_extra.provider.clone(), config_extra.model.clone())),
+                    // default. The canonical provider row id (UUID) is
+                    // forwarded, not the nomi provider name, because the
+                    // learning service keys providers by UUID.
+                    Some((
+                        config_extra.provider_id.as_str().to_owned(),
+                        config_extra.model.clone(),
+                    )),
                 )));
                 engine
                     .registry_mut()
@@ -3510,6 +3515,10 @@ mod tests {
 
     fn make_test_config() -> NomiResolvedConfig {
         NomiResolvedConfig {
+            provider_id: nomifun_common::ProviderId::parse(
+                "0190f5fe-7c00-7a00-8000-000000000001",
+            )
+            .unwrap(),
             provider: "anthropic".into(),
             api_key: "sk-test-key".into(),
             model: "claude-sonnet-4-20250514".into(),
