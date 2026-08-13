@@ -1660,6 +1660,7 @@
     "clearsRequirements": "所有需求、任务与附件",
     "clearsCompanions": "所有伙伴及其记忆",
     "clearsKnowledge": "所有知识库与托管文件",
+    "clearsVideoGeneration": "所有视频生成项目、产物与技能",
     "clearsSettings": "所有设置、模型供应商、渠道与偏好",
     "restartNotice": "应用将立即重启并重建一个全新的空数据库。",
     "typePrompt": "请输入「{{phrase}}」以确认：",

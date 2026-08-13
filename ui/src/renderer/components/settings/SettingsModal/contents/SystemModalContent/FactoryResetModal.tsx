@@ -95,6 +95,7 @@ const FactoryResetModal: React.FC<FactoryResetModalProps> = ({ visible, onClose 
           <li>{t('settings.factoryReset.clearsRequirements')}</li>
           <li>{t('settings.factoryReset.clearsCompanions')}</li>
           <li>{t('settings.factoryReset.clearsKnowledge')}</li>
+          <li>{t('settings.factoryReset.clearsVideoGeneration')}</li>
           <li>{t('settings.factoryReset.clearsSettings')}</li>
         </ul>
         <div className='text-13px text-t-secondary leading-22px'>{t('settings.factoryReset.restartNotice')}</div>

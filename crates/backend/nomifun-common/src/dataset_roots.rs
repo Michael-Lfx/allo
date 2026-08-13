@@ -144,6 +144,23 @@ pub const MANAGED_DATASET_ROOTS: &[ManagedDatasetRoot] = &[
         backup: BackupPolicy::Include,
     },
     ManagedDatasetRoot {
+        // ViMax video-generation sessions, working dirs, and skill catalog
+        // under `{data_dir}/vimax/`. Product user data — must retire with
+        // factory reset like conversations.
+        path: "vimax",
+        kind: DatasetRootKind::Directory,
+        reset: ResetPolicy::Retire,
+        backup: BackupPolicy::Include,
+    },
+    ManagedDatasetRoot {
+        // Video Generation Canvas mode projects and local media under
+        // `{data_dir}/video-canvas/`.
+        path: "video-canvas",
+        kind: DatasetRootKind::Directory,
+        reset: ResetPolicy::Retire,
+        backup: BackupPolicy::Include,
+    },
+    ManagedDatasetRoot {
         path: AGENT_PROCESS_REGISTRY_FILE,
         kind: DatasetRootKind::File,
         reset: ResetPolicy::Retire,
@@ -393,6 +410,23 @@ mod tests {
                 })
                 .all(|root| retired.contains(root.path)),
             "every non-host-control root must remain reset-managed"
+        );
+    }
+
+    #[test]
+    fn video_generation_roots_are_retired_on_factory_reset() {
+        // Regression: factory reset used to leave `{data_dir}/vimax/` (and the
+        // related canvas store) intact because they were never registered.
+        let retired = reset_managed_dataset_roots()
+            .map(|root| root.path)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            retired.contains("vimax"),
+            "vimax sessions/skills must retire with factory reset"
+        );
+        assert!(
+            retired.contains("video-canvas"),
+            "video-canvas projects/media must retire with factory reset"
         );
     }
 }
