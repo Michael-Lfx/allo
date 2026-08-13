@@ -1,6 +1,6 @@
 use nomifun_db::sqlx::{self, Row, SqlitePool};
 
-const MIGRATION: &str = include_str!("../migrations/031_learning_course_jobs.sql");
+const MIGRATION: &str = include_str!("../migrations/037_learning_course_jobs.sql");
 
 const JOB_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678901";
 const USER_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678902";
