@@ -2168,7 +2168,7 @@ const LearningPage: React.FC = () => {
       )}
 
       <section key='learn-tabs'>
-        <Tabs activeTab={listTab} onChange={(key) => setListTab(key)} type='line'>
+        <Tabs activeTab={listTab} onChange={(key) => setListTab(key)} type='line' lazyload>
           <Tabs.TabPane key='courses' title={t('learning.courses')} destroyOnHide={false}>
             {courses.length === 0 ? (
               <Empty description={t('learning.noCourses')} />
