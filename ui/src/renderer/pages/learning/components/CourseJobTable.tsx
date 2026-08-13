@@ -245,14 +245,26 @@ export function CourseJobTable({
     },
   ];
   return (
-    <Table
-      rowKey='job_id'
-      columns={columns}
-      data={jobs}
-      loading={loading}
-      tableLayoutFixed
-      pagination={{ pageSize: 10, hideOnSinglePage: true }}
-      noDataElement={<Empty description={t('learning.jobsEmpty')} />}
-    />
+    <>
+      <Table
+        rowKey='job_id'
+        columns={columns}
+        data={jobs}
+        loading={loading}
+        tableLayoutFixed
+        pagination={{ pageSize: 10, hideOnSinglePage: true }}
+        noDataElement={<Empty description={t('learning.jobsEmpty')} />}
+      />
+      {retryingJob !== null && (
+        <RetryJobDialog
+          job={retryingJob}
+          onCancel={() => setRetryingJob(null)}
+          onConfirm={(choice) => {
+            onRetry(retryingJob.job_id, choice);
+            setRetryingJob(null);
+          }}
+        />
+      )}
+    </>
   );
 }
