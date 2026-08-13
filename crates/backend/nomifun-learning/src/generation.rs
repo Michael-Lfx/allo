@@ -2,9 +2,13 @@ use std::collections::HashSet;
 
 use nomifun_common::AppError;
 use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService, autogen};
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::models::{ActivityPack, ActivityKind, ConceptPack, CoursePack, GenerateCourseRequest, LessonPack, ModulePack, SourceSpan};
+use crate::models::{
+    ActivityKind, ActivityPack, ConceptPack, CoursePack, GenerateCourseRequest, LessonPack,
+    ModulePack, SourceSpan, de_string_or_empty,
+};
 
 /// Blueprint stage: the model first designs the course skeleton — title,
 /// description, concepts with prerequisites, modules, and a lesson list that
@@ -70,7 +74,7 @@ Required sections, in this order, each introduced by a `## ` heading:
 Optional sections — choose freely by topic, never pad for completeness:
 - 迁移 (Transfer) — how to apply the idea to new situations; what changes and what stays the same.
 - 其他 (Other) — caveats, common mistakes, edge cases, or extra facts.
-- 关键词 (Keywords) — comma-separated key terms matching the terms used in activities.
+- 关键词 (Keywords) — key terms matching the terms used in activities, each written as "term: one-line digest" so every keyword carries its own note (e.g. "向量: 具有大小和方向的量；矩阵: 矩形数表"). Never list a bare keyword without its digest.
 - 推广 (Promotion) — natural next steps and wider applications.
 - Custom sections that fit the topic, e.g. 常见错误, 扩展阅读.
 
@@ -93,14 +97,26 @@ Reply with ONLY one JSON object matching this shape:
       "answer": "A",
       "explanation": "why, grounded in the source",
       "concepts": ["concept-key"]
+    },
+    {
+      "kind": "fill_in_blank",
+      "prompt": "sentence with a ___ blank",
+      "answer": ["accepted answer"],
+      "explanation": "why, grounded in the source",
+      "concepts": ["concept-key"],
+      "distractors": ["near-synonym trap"]
     }
   ]
 }
 Rules:
-- Write 3-5 activities: at least 2 objective (single_choice or true_false) plus 1 reflection.
+- Write 3-5 activities: at least 2 objective (single_choice, true_false or fill_in_blank) plus 1 reflection question (prefer exactly 1; never more than 3).
 - single_choice needs 3-5 distinct options and answer must exactly equal one option.
 - true_false answer must be a JSON boolean.
+- fill_in_blank prompt contains exactly one "___" blank; answer is a JSON array of 1-3 equivalent accepted answers.
+- fill_in_blank design rules: blank the spot where the sentence breaks logically if left out, pin it with a "only this one" qualifier, and target where most people habitually err; test the relationship before the name; keep the answer uniquely convergent; the blank must come with near-synonym distractors (or physically adjacent quantities) in "distractors" to force fine discrimination.
 - reflection answer must be null and asks the learner to explain or apply an idea.
+- null is allowed ONLY for a reflection answer. Every other string field must be a non-empty string, and every list must be an actual JSON array (use [] when a field does not apply).
+- The reflection question(s) of a lesson must together test ALL of the lesson's concepts; if one question cannot cover them all, add more up to 3. Never bind concepts of other lessons.
 - Every activity binds a concept by its exact "key" as defined in the course blueprint.
 - Questions, answers, explanations, and the summary must be supported by the cited file excerpt.
 - Output JSON only, without Markdown fences or commentary."#;
@@ -113,6 +129,9 @@ const LESSON_SUMMARY_MIN_CHARS: usize = 800;
 /// the review queue stay well-fed.
 const LESSON_MIN_ACTIVITIES: usize = 3;
 const LESSON_MIN_OBJECTIVE_ACTIVITIES: usize = 2;
+/// Reflections are open questions: prefer one per lesson, allow up to three
+/// when a single question cannot cover all of the lesson's concepts.
+const LESSON_MAX_REFLECTION_ACTIVITIES: usize = 3;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Blueprint {
@@ -152,12 +171,21 @@ pub(crate) struct BlueprintLesson {
 /// One lesson's long-form output, produced by a dedicated model call.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LessonOutput {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_or_empty")]
     summary: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_estimated_minutes_or_default")]
     estimated_minutes: i64,
     #[serde(default)]
     activities: Vec<ActivityPack>,
+}
+
+/// Serde helper: tolerate `null` (or absence) for `estimated_minutes` by
+/// falling back to the default study time. See `de_string_or_empty`.
+fn de_estimated_minutes_or_default<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or(10))
 }
 
 pub async fn generate_course_pack(
@@ -376,20 +404,53 @@ pub(crate) async fn generate_lesson(
     Err(format!("{last_error}"))
 }
 
+/// Ceiling for a single model call during course generation. LLM endpoints
+/// can stall (busy free tier, hung proxy); without a bound the job would sit
+/// in `lessons` forever with no error, looking stuck to the user.
+const COMPLETE_CALL_TIMEOUT_SECS: u64 = 180;
+
 async fn complete(
     completer: &dyn KnowledgeCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     system: &str,
     user: &str,
 ) -> Result<String, AppError> {
-    match model_override {
-        Some((provider_id, model)) => {
-            completer
-                .complete_with(system, user, provider_id.as_str(), model)
-                .await
+    complete_with_timeout(
+        completer,
+        model_override,
+        system,
+        user,
+        std::time::Duration::from_secs(COMPLETE_CALL_TIMEOUT_SECS),
+    )
+    .await
+}
+
+/// [`complete`] with an explicit timeout so tests can bound a hung call.
+async fn complete_with_timeout(
+    completer: &dyn KnowledgeCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    system: &str,
+    user: &str,
+    timeout: std::time::Duration,
+) -> Result<String, AppError> {
+    let call = async {
+        match model_override {
+            Some((provider_id, model)) => {
+                completer
+                    .complete_with(system, user, provider_id.as_str(), model)
+                    .await
+            }
+            None => completer.complete(system, user).await,
         }
-        None => completer.complete(system, user).await,
-    }
+    };
+    tokio::time::timeout(timeout, call)
+        .await
+        .map_err(|_| {
+            AppError::Timeout(format!(
+                "model call exceeded {}s during course generation",
+                timeout.as_secs()
+            ))
+        })?
 }
 
 pub(crate) fn build_blueprint_prompt(
@@ -429,7 +490,8 @@ pub(crate) fn build_lesson_prompt(
 ) -> String {
     let mut prompt = format!(
         "Course: {}\nModule {}/{}: {}\nLesson {}/{}: {}\nLesson purpose: {}\n\
-         Lesson concepts (use these exact keys when binding activities):\n",
+         Lesson concepts (use these exact keys when binding activities; the
+         reflection question(s) must cover ALL of them):\n",
         blueprint.title,
         module_index + 1,
         blueprint.modules.len(),
@@ -618,6 +680,12 @@ fn validate_lesson(
             "lesson has {objective} objective activities, expected at least {LESSON_MIN_OBJECTIVE_ACTIVITIES}"
         ));
     }
+    let reflections = output.activities.len() - objective;
+    if reflections > LESSON_MAX_REFLECTION_ACTIVITIES {
+        return Err(format!(
+            "lesson has {reflections} reflection questions, expected at most {LESSON_MAX_REFLECTION_ACTIVITIES}"
+        ));
+    }
     let concept_keys: HashSet<&str> = blueprint
         .concepts
         .iter()
@@ -676,6 +744,44 @@ fn validate_lesson(
                 if !activity.answer.is_null() {
                     return Err(format!(
                         "reflection \"{}\" answer must be null",
+                        activity.prompt
+                    ));
+                }
+            }
+            ActivityKind::FillInBlank => {
+                if !activity.prompt.contains("___") {
+                    return Err(format!(
+                        "fill_in_blank \"{}\" prompt must contain a ___ blank",
+                        activity.prompt
+                    ));
+                }
+                let Some(answers) = activity.answer.as_array() else {
+                    return Err(format!(
+                        "fill_in_blank \"{}\" answer must be a JSON array of accepted answers",
+                        activity.prompt
+                    ));
+                };
+                if answers.is_empty() || answers.len() > 3 {
+                    return Err(format!(
+                        "fill_in_blank \"{}\" must have 1-3 accepted answers",
+                        activity.prompt
+                    ));
+                }
+                if answers.iter().any(|accepted| {
+                    !accepted.as_str().is_some_and(|text| !text.trim().is_empty())
+                }) {
+                    return Err(format!(
+                        "fill_in_blank \"{}\" accepted answers must be non-empty strings",
+                        activity.prompt
+                    ));
+                }
+                if activity
+                    .distractors
+                    .iter()
+                    .all(|distractor| distractor.trim().is_empty())
+                {
+                    return Err(format!(
+                        "fill_in_blank \"{}\" must provide at least one near-synonym distractor",
                         activity.prompt
                     ));
                 }
@@ -927,6 +1033,9 @@ mod tests {
         // Optional sections are offered, not mandated.
         assert!(LESSON_DOCUMENT_STANDARD.contains("Optional sections"));
         assert!(LESSON_DOCUMENT_STANDARD.contains("Custom sections"));
+        // Keywords pair every term with a one-line digest, never bare words.
+        assert!(LESSON_DOCUMENT_STANDARD.contains("term: one-line digest"));
+        assert!(LESSON_DOCUMENT_STANDARD.contains("Never list a bare keyword"));
         // A length floor is enforced.
         assert!(LESSON_DOCUMENT_STANDARD.contains("1000-1500 characters"));
         // The rigid seven-section rule is gone.
@@ -942,6 +1051,33 @@ mod tests {
         assert!(!LESSON_SYSTEM.contains("smaller"));
     }
 
+    #[tokio::test]
+    async fn complete_times_out_on_a_hung_model_call() {
+        // A stalled LLM endpoint must surface a `Timeout` instead of leaving
+        // the job stuck in `lessons` forever with no error.
+        struct HungCompleter;
+        #[async_trait::async_trait]
+        impl KnowledgeCompleter for HungCompleter {
+            async fn complete(&self, _system: &str, _user: &str) -> Result<String, AppError> {
+                std::future::pending().await
+            }
+        }
+        let completer = HungCompleter;
+        let error = complete_with_timeout(
+            &completer,
+            None,
+            "system",
+            "user",
+            std::time::Duration::from_millis(50),
+        )
+        .await
+        .expect_err("a hung call must time out");
+        assert!(
+            matches!(error, AppError::Timeout(_)),
+            "unexpected error: {error}"
+        );
+    }
+
     #[test]
     fn parser_accepts_fenced_json_and_rejects_non_json() {
         let raw = r#"```json
@@ -954,6 +1090,47 @@ mod tests {
         assert_eq!(blueprint.title, "Course");
         assert_eq!(blueprint.modules.len(), 1);
         assert!(parse_json_object::<Blueprint>("not json").is_err());
+    }
+
+    #[test]
+    fn lesson_parse_tolerates_null_strings_and_lists() {
+        // LLMs habitually emit explicit nulls (the reflection answer is null
+        // by design); when one lands on a string/list field the parse must
+        // degrade instead of failing the whole lesson, leaving validation to
+        // judge the degraded values like any other weak output.
+        let raw = r#"{
+          "summary": "s",
+          "estimated_minutes": null,
+          "activities": [
+            {
+              "kind": "reflection",
+              "prompt": "p",
+              "options": null,
+              "answer": null,
+              "explanation": null,
+              "concepts": ["key", null],
+              "distractors": null
+            }
+          ]
+        }"#;
+        let output: LessonOutput = parse_json_object(raw).expect("nulls must degrade, not fail");
+        assert_eq!(output.summary, "s");
+        assert_eq!(output.estimated_minutes, 10);
+        let activity = &output.activities[0];
+        assert_eq!(activity.prompt, "p");
+        assert!(activity.options.is_empty());
+        assert!(activity.answer.is_null());
+        assert_eq!(activity.explanation, "");
+        assert_eq!(activity.concepts, vec!["key".to_owned()]);
+        assert!(activity.distractors.is_empty());
+    }
+
+    #[test]
+    fn lesson_parse_still_rejects_wrong_primitive_types() {
+        // Tolerance covers null only — a number where a string belongs is a
+        // different mistake and must still fail loudly so the retry fires.
+        let raw = r#"{"summary": "s", "activities": [{"kind": "reflection", "prompt": 42}]}"#;
+        assert!(parse_json_object::<LessonOutput>(raw).is_err());
     }
 
     #[test]
@@ -1095,6 +1272,7 @@ mod tests {
                     answer: json!("A"),
                     explanation: "e".into(),
                     concepts: vec!["a".into()],
+                    distractors: Vec::new(),
                 },
                 ActivityPack {
                     kind: ActivityKind::TrueFalse,
@@ -1103,6 +1281,7 @@ mod tests {
                     answer: json!(true),
                     explanation: "e".into(),
                     concepts: vec!["a".into()],
+                    distractors: Vec::new(),
                 },
                 ActivityPack {
                     kind: ActivityKind::Reflection,
@@ -1111,6 +1290,7 @@ mod tests {
                     answer: json!(null),
                     explanation: String::new(),
                     concepts: vec!["a".into()],
+                    distractors: Vec::new(),
                 },
             ],
         };
@@ -1136,6 +1316,7 @@ mod tests {
                 answer: json!(null),
                 explanation: String::new(),
                 concepts: vec!["a".into()],
+                distractors: Vec::new(),
             },
             ActivityPack {
                 kind: ActivityKind::Reflection,
@@ -1144,6 +1325,7 @@ mod tests {
                 answer: json!(null),
                 explanation: String::new(),
                 concepts: vec!["a".into()],
+                distractors: Vec::new(),
             },
             ActivityPack {
                 kind: ActivityKind::Reflection,
@@ -1152,6 +1334,7 @@ mod tests {
                 answer: json!(null),
                 explanation: String::new(),
                 concepts: vec!["a".into()],
+                distractors: Vec::new(),
             },
         ];
         assert!(
@@ -1165,6 +1348,203 @@ mod tests {
             validate_lesson(&bad_answer, &blueprint, &module, &lesson).is_err(),
             "single_choice answer outside options must be rejected"
         );
+    }
+
+    #[test]
+    fn reflection_rules_cap_questions_and_never_cross_lessons() {
+        // The lesson-stage standard requires reflection questions to test ALL
+        // of the lesson's concepts, prefers exactly one, and caps the count
+        // at three.
+        assert!(LESSON_SYSTEM.contains("test ALL of the lesson's concepts"));
+        assert!(LESSON_SYSTEM.contains("Never bind concepts of other lessons"));
+        assert!(LESSON_SYSTEM.contains("prefer exactly 1"));
+
+        let blueprint = Blueprint {
+            title: "C".into(),
+            description: String::new(),
+            domain: String::new(),
+            version: 1,
+            concepts: vec![
+                ConceptPack {
+                    key: "a".into(),
+                    title: "A".into(),
+                    description: String::new(),
+                    prerequisites: Vec::new(),
+                },
+                ConceptPack {
+                    key: "b".into(),
+                    title: "B".into(),
+                    description: String::new(),
+                    prerequisites: Vec::new(),
+                },
+            ],
+            modules: Vec::new(),
+        };
+        let module = BlueprintModule {
+            title: "M".into(),
+            description: String::new(),
+            lessons: Vec::new(),
+        };
+        let lesson = BlueprintLesson {
+            title: "L".into(),
+            purpose: String::new(),
+            concepts: vec!["a".into()],
+            source: Some(SourceSpan {
+                path: "real.md".into(),
+                start: None,
+                end: None,
+            }),
+        };
+        let summary = "这是一段足够长的课时文档正文，包含具体的说明与步骤描述。".repeat(120);
+        let objective = vec![
+            ActivityPack {
+                kind: ActivityKind::SingleChoice,
+                prompt: "q1".into(),
+                options: vec!["A".into(), "B".into(), "C".into()],
+                answer: json!("A"),
+                explanation: "e".into(),
+                concepts: vec!["a".into()],
+                distractors: Vec::new(),
+            },
+            ActivityPack {
+                kind: ActivityKind::TrueFalse,
+                prompt: "q2".into(),
+                options: Vec::new(),
+                answer: json!(true),
+                explanation: "e".into(),
+                concepts: vec!["a".into()],
+                distractors: Vec::new(),
+            },
+        ];
+        let reflection = |prompt: &str| ActivityPack {
+            kind: ActivityKind::Reflection,
+            prompt: prompt.into(),
+            options: Vec::new(),
+            answer: json!(null),
+            explanation: String::new(),
+            concepts: vec!["a".into()],
+            distractors: Vec::new(),
+        };
+
+        // Up to three reflections pass when one question cannot cover all of
+        // the lesson's concepts.
+        let mut at_cap = LessonOutput {
+            summary: summary.clone(),
+            estimated_minutes: 10,
+            activities: objective.clone(),
+        };
+        at_cap.activities.push(reflection("r1"));
+        at_cap.activities.push(reflection("r2"));
+        at_cap.activities.push(reflection("r3"));
+        assert!(validate_lesson(&at_cap, &blueprint, &module, &lesson).is_ok());
+
+        // A fourth reflection exceeds the cap.
+        let mut over_cap = at_cap.clone();
+        over_cap.activities.push(reflection("r4"));
+        assert!(validate_lesson(&over_cap, &blueprint, &module, &lesson).is_err());
+
+        // Reflections never cross lessons: binding another lesson's concept
+        // is rejected, objective activities stay lesson-bound as before.
+        let mut cross_lesson = at_cap.clone();
+        cross_lesson.activities[2].concepts = vec!["b".into()];
+        assert!(validate_lesson(&cross_lesson, &blueprint, &module, &lesson).is_err());
+        let mut objective_cross = at_cap.clone();
+        objective_cross.activities[0].concepts = vec!["b".into()];
+        assert!(validate_lesson(&objective_cross, &blueprint, &module, &lesson).is_err());
+    }
+
+    #[test]
+    fn fill_in_blank_rules_pin_blank_answers_and_distractors() {
+        // The lesson-stage standard embeds the fill-in-the-blank design rules:
+        // a single ___ blank, 1-3 convergent answers, near-synonym distractors.
+        assert!(LESSON_SYSTEM.contains("\"___\" blank"));
+        assert!(LESSON_SYSTEM.contains("1-3 equivalent accepted answers"));
+        assert!(LESSON_SYSTEM.contains("test the relationship before the name"));
+        assert!(LESSON_SYSTEM.contains("near-synonym distractors"));
+
+        let blueprint = Blueprint {
+            title: "C".into(),
+            description: String::new(),
+            domain: String::new(),
+            version: 1,
+            concepts: vec![ConceptPack {
+                key: "a".into(),
+                title: "A".into(),
+                description: String::new(),
+                prerequisites: Vec::new(),
+            }],
+            modules: Vec::new(),
+        };
+        let module = BlueprintModule {
+            title: "M".into(),
+            description: String::new(),
+            lessons: Vec::new(),
+        };
+        let lesson = BlueprintLesson {
+            title: "L".into(),
+            purpose: String::new(),
+            concepts: vec!["a".into()],
+            source: Some(SourceSpan {
+                path: "real.md".into(),
+                start: None,
+                end: None,
+            }),
+        };
+        let summary = "这是一段足够长的课时文档正文，包含具体的说明与步骤描述。".repeat(120);
+        let base = LessonOutput {
+            summary: summary.clone(),
+            estimated_minutes: 10,
+            activities: vec![
+                ActivityPack {
+                    kind: ActivityKind::SingleChoice,
+                    prompt: "q1".into(),
+                    options: vec!["A".into(), "B".into(), "C".into()],
+                    answer: json!("A"),
+                    explanation: "e".into(),
+                    concepts: vec!["a".into()],
+                    distractors: Vec::new(),
+                },
+                ActivityPack {
+                    kind: ActivityKind::Reflection,
+                    prompt: "r1".into(),
+                    options: Vec::new(),
+                    answer: json!(null),
+                    explanation: String::new(),
+                    concepts: vec!["a".into()],
+                    distractors: Vec::new(),
+                },
+                ActivityPack {
+                    kind: ActivityKind::FillInBlank,
+                    prompt: "A vector has ___ and direction.".into(),
+                    options: Vec::new(),
+                    answer: json!(["magnitude"]),
+                    explanation: "e".into(),
+                    concepts: vec!["a".into()],
+                    distractors: vec!["length".into(), "norm".into()],
+                },
+            ],
+        };
+        assert!(validate_lesson(&base, &blueprint, &module, &lesson).is_ok());
+
+        let mut no_blank = base.clone();
+        no_blank.activities[2].prompt = "A vector is a quantity.".into();
+        assert!(validate_lesson(&no_blank, &blueprint, &module, &lesson).is_err());
+
+        let mut wrong_answer = base.clone();
+        wrong_answer.activities[2].answer = json!("magnitude");
+        assert!(validate_lesson(&wrong_answer, &blueprint, &module, &lesson).is_err());
+
+        let mut empty_answers = base.clone();
+        empty_answers.activities[2].answer = json!([]);
+        assert!(validate_lesson(&empty_answers, &blueprint, &module, &lesson).is_err());
+
+        let mut too_many_answers = base.clone();
+        too_many_answers.activities[2].answer = json!(["a", "b", "c", "d"]);
+        assert!(validate_lesson(&too_many_answers, &blueprint, &module, &lesson).is_err());
+
+        let mut no_distractors = base.clone();
+        no_distractors.activities[2].distractors = vec![" ".into()];
+        assert!(validate_lesson(&no_distractors, &blueprint, &module, &lesson).is_err());
     }
 
     #[test]
@@ -1287,6 +1667,7 @@ mod tests {
                     answer: json!(null),
                     explanation: String::new(),
                     concepts: Vec::new(),
+                    distractors: Vec::new(),
                 }],
             }],
             &request,

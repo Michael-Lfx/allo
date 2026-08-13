@@ -100,7 +100,8 @@ export function validateQuestionForm(
   prompt: string,
   options: string[],
   answer: unknown,
-  isSingleChoice: boolean
+  isSingleChoice: boolean,
+  isFillInBlank = false
 ): string | null {
   if (prompt.trim().length === 0) {
     return 'learning.questionPromptRequired';
@@ -111,6 +112,16 @@ export function validateQuestionForm(
       return 'learning.questionOptionsRequired';
     }
     if (typeof answer !== 'string' || !cleanedOptions.includes(answer)) {
+      return 'learning.questionAnswerInvalid';
+    }
+  } else if (isFillInBlank) {
+    if (!prompt.includes('___')) {
+      return 'learning.questionFillBlankHintRequired';
+    }
+    if (!Array.isArray(answer) || answer.length === 0 || answer.length > 3) {
+      return 'learning.questionAnswerInvalid';
+    }
+    if (answer.some((item) => typeof item !== 'string' || item.trim().length === 0)) {
       return 'learning.questionAnswerInvalid';
     }
   } else if (typeof answer !== 'boolean') {

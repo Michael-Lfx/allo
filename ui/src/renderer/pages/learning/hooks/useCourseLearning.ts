@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { Message } from '@arco-design/web-react';
+import { useKnowledgeAutogenModel } from '../../knowledge/KnowledgeModelSelector';
 import { learningApi } from '../api';
 import type {
   Activity,
@@ -8,6 +9,7 @@ import type {
   DiagnosticPlan,
   Lesson,
   LessonStatus,
+  SubmitAttemptRequest,
 } from '../types';
 import { errorMessage, type Translate } from '../utils';
 
@@ -33,6 +35,17 @@ export function useCourseLearning({
   const [diagnosticPlan, setDiagnosticPlan] = useState<DiagnosticPlan | null>(null);
   const [diagnosticIndex, setDiagnosticIndex] = useState(0);
   const [diagnosticResult, setDiagnosticResult] = useState<AttemptResult>();
+  // 与课程创建一致：携带用户选择过的 AI 模型偏好批改反思题；未选择时后端回落默认模型
+  const { choice: modelChoice } = useKnowledgeAutogenModel();
+
+  const attemptRequest = useCallback(
+    (response: unknown): SubmitAttemptRequest => ({
+      response,
+      provider_id: modelChoice?.provider_id,
+      model: modelChoice?.model,
+    }),
+    [modelChoice]
+  );
 
   const enroll = useCallback(async () => {
     if (!id) return;
@@ -70,7 +83,7 @@ export function useCourseLearning({
     async (activity: Activity, response: unknown) => {
       setBusyId(activity.id);
       try {
-        const result = await learningApi.submitAttempt(activity.id, response);
+        const result = await learningApi.submitAttempt(activity.id, attemptRequest(response));
         setAttemptResults((current) => ({ ...current, [activity.id]: result }));
         setDiagnosticResult(result);
       } catch (actionError) {
@@ -79,7 +92,7 @@ export function useCourseLearning({
         setBusyId(null);
       }
     },
-    [t, setBusyId]
+    [attemptRequest, t, setBusyId]
   );
 
   const advanceDiagnostic = useCallback(() => {
@@ -114,7 +127,7 @@ export function useCourseLearning({
     async (activity: Activity, response: unknown) => {
       setBusyId(activity.id);
       try {
-        const result = await learningApi.submitAttempt(activity.id, response);
+        const result = await learningApi.submitAttempt(activity.id, attemptRequest(response));
         setAttemptResults((current) => ({ ...current, [activity.id]: result }));
         await load();
       } catch (actionError) {
@@ -123,7 +136,7 @@ export function useCourseLearning({
         setBusyId(null);
       }
     },
-    [load, t, setBusyId]
+    [attemptRequest, load, t, setBusyId]
   );
 
   return {

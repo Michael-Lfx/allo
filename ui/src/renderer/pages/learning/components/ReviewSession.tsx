@@ -36,6 +36,12 @@ export function ReviewCard({
     if (typeof value === 'boolean') {
       return value ? t('learning.trueLabel') : t('learning.falseLabel');
     }
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => (typeof item === 'string' ? item : ''))
+        .filter((item) => item !== '')
+        .join(' / ');
+    }
     return typeof value === 'string' ? value : '';
   };
   return (

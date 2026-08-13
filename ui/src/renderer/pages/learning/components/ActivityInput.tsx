@@ -2,8 +2,8 @@ import { Input, Radio } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import type { ActivityKind } from '../types';
 
-/** 题型作答输入：单选题 / 判断题 / 反思题。
- * 复习卡片与课时活动共用，保证三种题型的交互一致。 */
+/** 题型作答输入：单选题 / 判断题 / 填空题 / 反思题。
+ * 复习卡片与课时活动共用，保证四种题型的交互一致。 */
 export function ActivityInput({
   kind,
   options,
@@ -48,6 +48,16 @@ export function ActivityInput({
         <Radio value='true'>{t('learning.trueLabel')}</Radio>
         <Radio value='false'>{t('learning.falseLabel')}</Radio>
       </Radio.Group>
+    );
+  }
+  if (kind === 'fill_in_blank') {
+    return (
+      <Input
+        value={typeof value === 'string' ? value : ''}
+        placeholder={placeholder ?? t('learning.fillBlankPlaceholder')}
+        disabled={disabled}
+        onChange={onChange}
+      />
     );
   }
   return (

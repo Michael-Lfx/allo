@@ -255,6 +255,25 @@ mod tests {
                                 lesson.title
                             );
                         }
+                        ActivityKind::FillInBlank => {
+                            assert!(
+                                activity.prompt.contains("___"),
+                                "lesson {} fill_in_blank prompt lacks a ___ blank",
+                                lesson.title
+                            );
+                            assert!(
+                                activity.answer.as_array().is_some_and(|answers| {
+                                    !answers.is_empty() && answers.len() <= 3
+                                }),
+                                "lesson {} fill_in_blank answer must be 1-3 accepted answers",
+                                lesson.title
+                            );
+                            assert!(
+                                !activity.distractors.is_empty(),
+                                "lesson {} fill_in_blank lacks distractor traps",
+                                lesson.title
+                            );
+                        }
                     }
                 }
             }

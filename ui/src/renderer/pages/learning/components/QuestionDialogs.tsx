@@ -96,6 +96,78 @@ function TrueFalseAnswer({
   );
 }
 
+/** 填空题答案与干扰项编辑：1-3 个可接受答案 + 可选近义干扰项（逗号分隔） */
+function FillBlankEditor({
+  answers,
+  distractors,
+  onAnswersChange,
+  onDistractorsChange,
+  t,
+}: {
+  answers: string[];
+  distractors: string[];
+  onAnswersChange: (next: string[]) => void;
+  onDistractorsChange: (next: string[]) => void;
+  t: Translate;
+}) {
+  return (
+    <div className='flex flex-col gap-12px'>
+      <div className='flex flex-col gap-6px'>
+        {answers.map((item, index) => (
+          <div key={index} className='flex items-center gap-6px'>
+            <Input
+              value={item}
+              onChange={(value) =>
+                onAnswersChange(
+                  answers.map((existing, itemIndex) => (itemIndex === index ? value : existing))
+                )
+              }
+            />
+            <Button
+              size='mini'
+              type='text'
+              status='danger'
+              disabled={answers.length <= 1}
+              onClick={() =>
+                onAnswersChange(answers.filter((_, itemIndex) => itemIndex !== index))
+              }
+            >
+              {t('learning.questionOptionRemove')}
+            </Button>
+          </div>
+        ))}
+        <div>
+          <Button
+            size='small'
+            disabled={answers.length >= 3}
+            onClick={() => onAnswersChange([...answers, ''])}
+          >
+            {t('learning.questionAnswerAdd')}
+          </Button>
+        </div>
+      </div>
+      <div>
+        <div className='mb-6px font-500'>{t('learning.questionDistractors')}</div>
+        <Input
+          value={distractors.join(', ')}
+          placeholder={t('learning.questionDistractorsPlaceholder')}
+          onChange={(value) =>
+            onDistractorsChange(
+              value
+                .split(/[,，]/)
+                .map((item) => item.trim())
+                .filter((item) => item !== '')
+            )
+          }
+        />
+        <Text type='secondary' className='text-12px'>
+          {t('learning.questionDistractorsHint')}
+        </Text>
+      </div>
+    </div>
+  );
+}
+
 function QuestionEditDialog({
   entry,
   onClose,
@@ -109,23 +181,30 @@ function QuestionEditDialog({
   const [prompt, setPrompt] = useState(entry.prompt ?? '');
   const [options, setOptions] = useState<string[]>(entry.options);
   const [answer, setAnswer] = useState<unknown>(entry.answer ?? undefined);
+  const [answers, setAnswers] = useState<string[]>(
+    Array.isArray(entry.answer) ? (entry.answer as string[]) : ['']
+  );
+  const [distractors, setDistractors] = useState<string[]>(entry.distractors);
   const [explanation, setExplanation] = useState(entry.explanation ?? '');
   const [busy, setBusy] = useState(false);
   const isSingleChoice = entry.question_kind === 'single_choice';
+  const isFillInBlank = entry.question_kind === 'fill_in_blank';
   const save = async () => {
-    const errorKey = validateQuestionForm(prompt, options, answer, isSingleChoice);
+    const errorKey = validateQuestionForm(prompt, options, answer, isSingleChoice, isFillInBlank);
     if (errorKey !== null) {
       Message.error(t(errorKey));
       return;
     }
     const cleanedOptions = options.map((option) => option.trim()).filter((option) => option !== '');
+    const cleanedAnswers = answers.map((item) => item.trim()).filter((item) => item !== '');
     setBusy(true);
     try {
       await learningApi.updateQuestion(entry, {
         prompt: prompt.trim(),
         options: isSingleChoice ? cleanedOptions : [],
-        answer,
+        answer: isFillInBlank ? cleanedAnswers : answer,
         explanation: explanation.trim(),
+        distractors: isFillInBlank ? distractors : undefined,
       });
       Message.success(t('learning.questionSaved'));
       onSaved();
@@ -169,6 +248,17 @@ function QuestionEditDialog({
               {t('learning.questionAnswerHint')}
             </Text>
           </div>
+        ) : isFillInBlank ? (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionAcceptedAnswers')}</div>
+            <FillBlankEditor
+              answers={answers}
+              distractors={distractors}
+              onAnswersChange={setAnswers}
+              onDistractorsChange={setDistractors}
+              t={t}
+            />
+          </div>
         ) : (
           <div>
             <div className='mb-6px font-500'>{t('learning.questionAnswer')}</div>
@@ -196,16 +286,19 @@ function QuestionCreateDialog({
   onSaved: () => void;
 }) {
   const { t } = useTranslation();
-  const [kind, setKind] = useState<'true_false' | 'single_choice'>('true_false');
+  const [kind, setKind] = useState<'true_false' | 'single_choice' | 'fill_in_blank'>('true_false');
   const [prompt, setPrompt] = useState('');
   const [options, setOptions] = useState<string[]>(['', '']);
   const [answer, setAnswer] = useState<unknown>(undefined);
+  const [answers, setAnswers] = useState<string[]>(['']);
+  const [distractors, setDistractors] = useState<string[]>([]);
   const [explanation, setExplanation] = useState('');
   const [conceptId, setConceptId] = useState<string | undefined>(undefined);
   const [conceptRefs, setConceptRefs] = useState<ConceptRef[]>([]);
   const [conceptsLoading, setConceptsLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const isSingleChoice = kind === 'single_choice';
+  const isFillInBlank = kind === 'fill_in_blank';
 
   useEffect(() => {
     let cancelled = false;
@@ -227,21 +320,23 @@ function QuestionCreateDialog({
   }, []);
 
   const save = async () => {
-    const errorKey = validateQuestionForm(prompt, options, answer, isSingleChoice);
+    const errorKey = validateQuestionForm(prompt, options, answer, isSingleChoice, isFillInBlank);
     if (errorKey !== null) {
       Message.error(t(errorKey));
       return;
     }
     const cleanedOptions = options.map((option) => option.trim()).filter((option) => option !== '');
+    const cleanedAnswers = answers.map((item) => item.trim()).filter((item) => item !== '');
     setBusy(true);
     try {
       await learningApi.createCustomQuestion({
         kind,
         prompt: prompt.trim(),
         options: isSingleChoice ? cleanedOptions : [],
-        answer,
+        answer: isFillInBlank ? cleanedAnswers : answer,
         explanation: explanation.trim(),
         concept_id: conceptId ?? null,
+        distractors: isFillInBlank ? distractors : undefined,
       });
       Message.success(t('learning.questionCreated'));
       onSaved();
@@ -252,10 +347,12 @@ function QuestionCreateDialog({
     }
   };
 
-  const switchKind = (next: 'true_false' | 'single_choice') => {
+  const switchKind = (next: 'true_false' | 'single_choice' | 'fill_in_blank') => {
     if (next === kind) return;
     setKind(next);
     setAnswer(undefined);
+    setAnswers(['']);
+    setDistractors([]);
   };
 
   return (
@@ -274,10 +371,13 @@ function QuestionCreateDialog({
           <div className='mb-6px font-500'>{t('learning.questionKind')}</div>
           <Radio.Group
             value={kind}
-            onChange={(value) => switchKind(value as 'true_false' | 'single_choice')}
+            onChange={(value) =>
+              switchKind(value as 'true_false' | 'single_choice' | 'fill_in_blank')
+            }
           >
             <Radio value='true_false'>{t('learning.kindTrueFalse')}</Radio>
             <Radio value='single_choice'>{t('learning.kindSingleChoice')}</Radio>
+            <Radio value='fill_in_blank'>{t('learning.kindFillInBlank')}</Radio>
           </Radio.Group>
         </div>
         <div>
@@ -287,6 +387,11 @@ function QuestionCreateDialog({
             onChange={setPrompt}
             autoSize={{ minRows: 2 }}
           />
+          {isFillInBlank && (
+            <Text type='secondary' className='text-12px'>
+              {t('learning.questionFillBlankHint')}
+            </Text>
+          )}
         </div>
         {isSingleChoice ? (
           <div>
@@ -301,6 +406,17 @@ function QuestionCreateDialog({
             <Text type='secondary' className='text-12px'>
               {t('learning.questionAnswerHint')}
             </Text>
+          </div>
+        ) : isFillInBlank ? (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionAcceptedAnswers')}</div>
+            <FillBlankEditor
+              answers={answers}
+              distractors={distractors}
+              onAnswersChange={setAnswers}
+              onDistractorsChange={setDistractors}
+              t={t}
+            />
           </div>
         ) : (
           <div>
@@ -356,6 +472,7 @@ function QuestionDetailDrawer({
   const { t } = useTranslation();
   const state = questionStateMeta(entry, t);
   const isSingleChoice = entry.question_kind === 'single_choice';
+  const isFillInBlank = entry.question_kind === 'fill_in_blank';
   const deletable = entry.source === 'custom' || entry.review_item_id !== null;
   const inQueue = entry.source === 'course' && entry.state !== 'unlearned';
   const metrics = [
@@ -393,7 +510,9 @@ function QuestionDetailDrawer({
               <Tag>
                 {entry.question_kind === 'single_choice'
                   ? t('learning.kindSingleChoice')
-                  : t('learning.kindTrueFalse')}
+                  : entry.question_kind === 'fill_in_blank'
+                    ? t('learning.kindFillInBlank')
+                    : t('learning.kindTrueFalse')}
               </Tag>
             )}
           </div>
@@ -459,12 +578,36 @@ function QuestionDetailDrawer({
             </div>
           </div>
         )}
-        {!isSingleChoice && typeof entry.answer === 'boolean' && (
+        {!isSingleChoice && !isFillInBlank && typeof entry.answer === 'boolean' && (
           <div>
             <div className='mb-6px font-500'>{t('learning.questionAnswer')}</div>
             <Tag color='green'>
               {entry.answer ? t('learning.trueLabel') : t('learning.falseLabel')}
             </Tag>
+          </div>
+        )}
+        {isFillInBlank && Array.isArray(entry.answer) && (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionAcceptedAnswers')}</div>
+            <div className='flex flex-wrap gap-6px'>
+              {(entry.answer as string[])
+                .filter((item) => typeof item === 'string' && item.trim() !== '')
+                .map((item, index) => (
+                  <Tag key={index} color='green'>
+                    {item}
+                  </Tag>
+                ))}
+            </div>
+          </div>
+        )}
+        {isFillInBlank && entry.distractors.length > 0 && (
+          <div>
+            <div className='mb-6px font-500'>{t('learning.questionDistractors')}</div>
+            <div className='flex flex-wrap gap-6px'>
+              {entry.distractors.map((item, index) => (
+                <Tag key={index}>{item}</Tag>
+              ))}
+            </div>
           </div>
         )}
         {entry.explanation !== null && entry.explanation.trim() !== '' && (

@@ -27,7 +27,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         )
         .route("/api/learning/courses/generate", post(generate_course))
         .route("/api/learning/course-jobs", get(list_course_jobs))
-        .route("/api/learning/course-jobs/{id}", get(get_course_job))
+        .route("/api/learning/course-jobs/{id}", get(get_course_job).delete(delete_course_job))
         .route(
             "/api/learning/course-jobs/{id}/cancel",
             post(cancel_course_job),
@@ -180,10 +180,20 @@ async fn retry_course_job(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
+    Json(request): Json<crate::models::RetryCourseJobRequest>,
 ) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
     Ok(Json(ApiResponse::ok(
-        state.service.retry_course_job(&user.id, &id).await?,
+        state.service.retry_course_job(&user.id, &id, &request).await?,
     )))
+}
+
+async fn delete_course_job(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state.service.delete_course_job(&user.id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 async fn get_course(
@@ -258,7 +268,13 @@ async fn submit_attempt(
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .submit_attempt(&id, &user.id, request.response)
+            .submit_attempt(
+                &id,
+                &user.id,
+                request.response,
+                request.provider_id,
+                request.model,
+            )
             .await?,
     )))
 }

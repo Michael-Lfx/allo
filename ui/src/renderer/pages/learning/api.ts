@@ -11,11 +11,13 @@ import type {
   GenerateCourseRequest,
   LessonStatus,
   QuestionEntry,
+  RetryCourseJobRequest,
   ReviewAnswerResult,
   ReviewRating,
   ReviewResult,
   ReviewSource,
   SetTagsRequest,
+  SubmitAttemptRequest,
   UpdateQuestionRequest,
 } from './types';
 
@@ -38,8 +40,10 @@ export const learningApi = {
     httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/cancel`),
   resumeCourseJob: (id: string) =>
     httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/resume`),
-  retryCourseJob: (id: string) =>
-    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/retry`),
+  retryCourseJob: (id: string, request: RetryCourseJobRequest) =>
+    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/retry`, request),
+  deleteCourseJob: (id: string) =>
+    httpRequest<void>('DELETE', `${BASE}/course-jobs/${encodeURIComponent(id)}`),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
   enroll: (id: string) =>
@@ -51,10 +55,8 @@ export const learningApi = {
     ),
   updateLessonProgress: (id: string, status: LessonStatus) =>
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
-  submitAttempt: (id: string, response: unknown) =>
-    httpRequest<AttemptResult>('POST', `${BASE}/activities/${encodeURIComponent(id)}/attempts`, {
-      response,
-    }),
+  submitAttempt: (id: string, request: SubmitAttemptRequest) =>
+    httpRequest<AttemptResult>('POST', `${BASE}/activities/${encodeURIComponent(id)}/attempts`, request),
   listDueReviews: (
     limit = 30,
     courseId?: string | string[],

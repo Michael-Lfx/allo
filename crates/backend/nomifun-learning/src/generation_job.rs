@@ -351,10 +351,15 @@ async fn mark_cancelled(pool: &SqlitePool, job_id: &str) -> Result<(), AppError>
 }
 
 /// Best-effort failure recording: the runner is already unwinding, so a
-/// failed write here must not turn into a second error path.
+/// failed write here must not turn into a second error path. A pending
+/// cancel request wins over the failure — the user already asked to stop,
+/// so the job lands in `cancelled` (resumable) instead of `failed`.
 async fn mark_failed(pool: &SqlitePool, job_id: &str, error: &str) {
     let _ = sqlx::query(
-        "UPDATE learning_course_jobs SET status = 'failed', error = ?, updated_at = ? WHERE job_id = ? AND status NOT IN ('completed', 'cancelled')",
+        "UPDATE learning_course_jobs \
+         SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'failed' END, \
+             error = CASE WHEN cancel_requested = 1 THEN NULL ELSE ? END, updated_at = ? \
+         WHERE job_id = ? AND status NOT IN ('completed', 'cancelled')",
     )
     .bind(error)
     .bind(now_ms())

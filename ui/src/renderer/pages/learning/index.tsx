@@ -5,7 +5,7 @@ import { Alert, Button, Empty, Input, Message, Modal, Spin, Tabs, Typography } f
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { learningApi } from './api';
 import { CourseCard, CourseDeleteDialog } from './components/CourseCard';
-import { CourseJobPanel } from './components/CourseJobPanel';
+import { CourseJobTable } from './components/CourseJobTable';
 import { CourseWorkspace, DiagnosticModal } from './components/CourseWorkspace';
 import { CreateCourseDialog } from './components/CreateCourseDialog';
 import { QuestionManager } from './components/QuestionManager';
@@ -282,16 +282,6 @@ const LearningPage: React.FC = () => {
           />
         )}
 
-        <CourseJobPanel
-          jobs={courseJobs.jobs}
-          loading={courseJobs.loading}
-          busyId={busyId}
-          onCancel={courseJobs.cancelJob}
-          onResume={courseJobs.resumeJob}
-          onRetry={courseJobs.retryJob}
-          onOpenCourse={(courseId) => navigate(`/learn/${courseId}`)}
-        />
-
         <section key='learn-tabs'>
           <Tabs activeTab={listTab} onChange={(key) => setListTab(key)} type='line' lazyload>
             <Tabs.TabPane key='courses' title={t('learning.courses')} destroyOnHide={false}>
@@ -311,6 +301,18 @@ const LearningPage: React.FC = () => {
               <QuestionManager
                 onMutated={() => void load()}
                 onEditTags={(entry) => void openTagEditor('question', entry)}
+              />
+            </Tabs.TabPane>
+            <Tabs.TabPane key='jobs' title={t('learning.jobManagement')} destroyOnHide={false}>
+              <CourseJobTable
+                jobs={courseJobs.jobs}
+                loading={courseJobs.loading}
+                busyId={busyId}
+                onCancel={courseJobs.cancelJob}
+                onResume={courseJobs.resumeJob}
+                onRetry={courseJobs.retryJob}
+                onDelete={courseJobs.deleteJob}
+                onOpenCourse={(courseId) => navigate(`/learn/${courseId}`)}
               />
             </Tabs.TabPane>
           </Tabs>

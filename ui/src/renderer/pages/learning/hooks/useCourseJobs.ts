@@ -3,6 +3,7 @@ import { Message } from '@arco-design/web-react';
 import { learningApi } from '../api';
 import type { CourseJobView } from '../types';
 import { errorMessage, type Translate } from '../utils';
+import type { KnowledgeModelChoice } from '../../knowledge/KnowledgeModelSelector';
 
 /** 非终态任务存在时的轮询间隔（毫秒） */
 export const COURSE_JOB_POLL_MS = 3000;
@@ -29,12 +30,24 @@ export function useCourseJobs({ t, setBusyId, onJobCompleted }: UseCourseJobsOpt
   const onJobCompletedRef = useRef(onJobCompleted);
   onJobCompletedRef.current = onJobCompleted;
   const completedIdsRef = useRef<Set<string>>(new Set());
+  // 存在非终态任务时为 true，驱动轮询的启停
+  const [hasActive, setHasActive] = useState(false);
 
   const loadJobs = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
       const next = await learningApi.listCourseJobs();
       setJobs(next);
+      const newlyCompleted = next.filter(
+        (job) => job.status === 'completed' && !completedIdsRef.current.has(job.job_id)
+      );
+      if (newlyCompleted.length > 0) {
+        newlyCompleted.forEach((job) => completedIdsRef.current.add(job.job_id));
+        onJobCompletedRef.current();
+      }
+      // 每次加载都重算活跃态：重试/继续会让任务回到非终态，轮询随之恢复；
+      // 全部终态后自动停止，而不是只在挂载时判断一次。
+      setHasActive(next.some((job) => !isCourseJobTerminal(job)));
       return next;
     } catch {
       // 任务面板拉取失败不阻塞页面主体
@@ -44,46 +57,20 @@ export function useCourseJobs({ t, setBusyId, onJobCompleted }: UseCourseJobsOpt
     }
   }, []);
 
-  // 首次加载任务列表；存在非终态任务时每 3 秒轮询，全部终态后停止
+  // 首次加载任务列表
   useEffect(() => {
-    let timer: ReturnType<typeof setInterval> | undefined;
-    let cancelled = false;
-    const checkCompleted = (next: CourseJobView[]) => {
-      const newlyCompleted = next.filter(
-        (job) => job.status === 'completed' && !completedIdsRef.current.has(job.job_id)
-      );
-      if (newlyCompleted.length > 0) {
-        newlyCompleted.forEach((job) => completedIdsRef.current.add(job.job_id));
-        onJobCompletedRef.current();
-      }
-      return next.some((job) => !isCourseJobTerminal(job));
-    };
-    const tick = async () => {
-      const next = await loadJobs(true);
-      if (cancelled || !next) return;
-      if (!checkCompleted(next) && timer !== undefined) {
-        clearInterval(timer);
-        timer = undefined;
-      }
-    };
-    void loadJobs(false).then((next) => {
-      if (cancelled || !next) return;
-      if (checkCompleted(next)) {
-        timer = setInterval(() => void tick(), COURSE_JOB_POLL_MS);
-      }
-    });
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) clearInterval(timer);
-    };
+    void loadJobs(false);
   }, [loadJobs]);
 
+  // 存在非终态任务时每 3 秒轮询；全部终态后停止
+  useEffect(() => {
+    if (!hasActive) return;
+    const timer = setInterval(() => void loadJobs(true), COURSE_JOB_POLL_MS);
+    return () => clearInterval(timer);
+  }, [hasActive, loadJobs]);
+
   const runAction = useCallback(
-    async (
-      jobId: string,
-      action: () => Promise<CourseJobView>,
-      successKey: string
-    ) => {
+    async (jobId: string, action: () => Promise<unknown>, successKey: string) => {
       setBusyId(`job-${jobId}`);
       try {
         await action();
@@ -109,10 +96,22 @@ export function useCourseJobs({ t, setBusyId, onJobCompleted }: UseCourseJobsOpt
     [runAction]
   );
   const retryJob = useCallback(
-    (jobId: string) =>
-      runAction(jobId, () => learningApi.retryCourseJob(jobId), 'learning.jobRetried'),
+    (jobId: string, choice: KnowledgeModelChoice) =>
+      runAction(
+        jobId,
+        () =>
+          learningApi.retryCourseJob(jobId, {
+            provider_id: choice?.provider_id,
+            model: choice?.model,
+          }),
+        'learning.jobRetried'
+      ),
+    [runAction]
+  );
+  const deleteJob = useCallback(
+    (jobId: string) => runAction(jobId, () => learningApi.deleteCourseJob(jobId), 'learning.jobDeleted'),
     [runAction]
   );
 
-  return { jobs, loading, cancelJob, resumeJob, retryJob };
+  return { jobs, loading, cancelJob, resumeJob, retryJob, deleteJob };
 }

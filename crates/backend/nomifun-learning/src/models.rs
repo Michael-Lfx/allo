@@ -37,6 +37,18 @@ pub struct GenerateCourseRequest {
     pub lessons_per_module: u8,
 }
 
+/// Optional model preference for retrying a failed course-generation job.
+/// Both fields are sent together (or neither); when provided the job's
+/// request snapshot is re-pointed at the chosen model before the retry
+/// re-runs, so a busy default model can be swapped for another one.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RetryCourseJobRequest {
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
 const fn default_module_count() -> u8 {
     3
 }
@@ -99,18 +111,50 @@ pub struct SourceSpan {
     pub end: Option<i64>,
 }
 
+/// Serde helper: tolerate an explicit `null` where a string is expected by
+/// degrading to an empty string. `#[serde(default)]` only covers a *missing*
+/// field, while LLM outputs often write `"field": null` — which would
+/// otherwise fail the whole parse ("invalid type: null, expected a string").
+/// Degraded values then flow through the same validation as any other weak
+/// output, so structural mistakes still trigger the targeted retry.
+pub fn de_string_or_empty<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// Serde helper: tolerate `null` in place of a string list (or `null`
+/// elements inside it) by degrading to an empty list. Same rationale as
+/// [`de_string_or_empty`]; non-string elements still fail loudly.
+pub fn de_vec_string_or_empty<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<Option<String>>>::deserialize(deserializer)?
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityPack {
     pub kind: ActivityKind,
+    #[serde(default, deserialize_with = "de_string_or_empty")]
     pub prompt: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_vec_string_or_empty")]
     pub options: Vec<String>,
     #[serde(default)]
     pub answer: Value,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_or_empty")]
     pub explanation: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_vec_string_or_empty")]
     pub concepts: Vec<String>,
+    /// Near-synonym traps for fill_in_blank blanks (or physically adjacent
+    /// quantities), forcing fine discrimination. Only fill_in_blank uses it.
+    #[serde(default, deserialize_with = "de_vec_string_or_empty")]
+    pub distractors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +163,7 @@ pub enum ActivityKind {
     SingleChoice,
     TrueFalse,
     Reflection,
+    FillInBlank,
 }
 
 impl ActivityKind {
@@ -127,6 +172,7 @@ impl ActivityKind {
             Self::SingleChoice => "single_choice",
             Self::TrueFalse => "true_false",
             Self::Reflection => "reflection",
+            Self::FillInBlank => "fill_in_blank",
         }
     }
 }
@@ -139,6 +185,7 @@ impl TryFrom<&str> for ActivityKind {
             "single_choice" => Ok(Self::SingleChoice),
             "true_false" => Ok(Self::TrueFalse),
             "reflection" => Ok(Self::Reflection),
+            "fill_in_blank" => Ok(Self::FillInBlank),
             other => Err(format!("unsupported activity kind: {other}")),
         }
     }
@@ -264,6 +311,13 @@ pub struct UpdateLessonProgressRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SubmitAttemptRequest {
     pub response: Value,
+    /// Explicit AI model preference for reflection grading. Both fields are
+    /// sent together (or neither); the backend falls back to its default
+    /// completer when absent and to rule-based grading on any AI failure.
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -379,6 +433,9 @@ pub struct QuestionEntry {
     pub prompt: Option<String>,
     pub options: Vec<String>,
     pub answer: Option<Value>,
+    /// Near-synonym traps for fill_in_blank blanks, surfaced for display.
+    #[serde(default)]
+    pub distractors: Vec<String>,
     pub explanation: Option<String>,
     pub due_at: Option<TimestampMs>,
     pub overdue: bool,
@@ -399,11 +456,14 @@ pub struct UpdateQuestionRequest {
     pub answer: Value,
     #[serde(default)]
     pub explanation: String,
+    #[serde(default)]
+    pub distractors: Vec<String>,
 }
 
-/// Learner-authored question. Only objective kinds are supported; the
-/// optional concept links the question back to an existing concept
-/// (including orphaned concepts from deleted courses).
+/// Learner-authored question. Objective kinds (single choice, true/false,
+/// fill in the blank) are supported; the optional concept links the question
+/// back to an existing concept (including orphaned concepts from deleted
+/// courses).
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateCustomQuestionRequest {
     pub kind: ActivityKind,
@@ -415,6 +475,10 @@ pub struct CreateCustomQuestionRequest {
     pub explanation: String,
     #[serde(default)]
     pub concept_id: Option<LearningConceptId>,
+    /// Near-synonym traps for fill_in_blank blanks (optional when the
+    /// learner authors the question by hand).
+    #[serde(default)]
+    pub distractors: Vec<String>,
 }
 
 /// Concept offered in the custom question form: any concept the learner
@@ -453,6 +517,10 @@ pub(crate) struct StoredActivityConfig {
     pub options: Vec<String>,
     pub answer: Value,
     pub explanation: String,
+    /// Near-synonym traps for fill_in_blank blanks; empty for other kinds.
+    /// Old rows lack the column, so it defaults on read.
+    #[serde(default)]
+    pub distractors: Vec<String>,
 }
 
 /// Who submitted a course-generation job: the HTTP generate endpoint or an
@@ -556,6 +624,11 @@ pub struct CourseJobView {
     pub total_lessons: i64,
     pub error: Option<String>,
     pub course_id: Option<String>,
+    /// Knowledge base name the course is generated from (`None` when the
+    /// base was deleted since the job ran).
+    pub knowledge_base_name: Option<String>,
+    /// User-provided course domain from the request snapshot, when given.
+    pub domain: Option<String>,
     pub created_at: TimestampMs,
     pub updated_at: TimestampMs,
 }

@@ -69,10 +69,17 @@ function ActivityBlock({
           {t('learning.submit')}
         </Button>
         {result && (
-          <Text type={result.passed ? 'success' : 'error'}>
-            {result.passed ? t('learning.correct') : t('learning.incorrect')}
-            {result.feedback ? ` · ${result.feedback}` : ''}
-          </Text>
+          <div>
+            <Text type={result.passed ? 'success' : 'error'}>
+              {result.passed ? t('learning.correct') : t('learning.incorrect')}
+            </Text>
+            {/* AI 批改的反馈是多段 Markdown（评价/覆盖情况/建议），独立渲染 */}
+            {result.feedback && (
+              <div className='mt-8px rounded-8px bg-[var(--color-fill-1)] p-10px'>
+                <Markdown className='text-13px'>{result.feedback}</Markdown>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
