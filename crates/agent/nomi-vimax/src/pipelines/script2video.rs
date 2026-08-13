@@ -426,6 +426,8 @@ impl Script2VideoPipeline {
             tracing::info!("filled missing storyboard audio_desc with ambient defaults");
             write_json_artifact(&path, &storyboard).await?;
         }
+        let bgm = ensure_scene_bgm_brief(&self.working_dir, &storyboard).await?;
+        tracing::info!(bgm = %bgm, "scene BGM brief locked for shot continuity");
         Ok(storyboard)
     }
 
@@ -793,10 +795,12 @@ impl Script2VideoPipeline {
             })
             .collect();
         let clip_durs = crate::planning::allocate_clip_durations_for_content(target, &needs);
+        let scene_bgm = load_scene_bgm_paren(&self.working_dir).await;
         tracing::info!(
             target = ?target,
             needs = ?needs,
             durations = ?clip_durs,
+            scene_bgm = %scene_bgm,
             "content-aware shot durations (audio+motion)"
         );
         let phase_started = std::time::Instant::now();
@@ -928,6 +932,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                     registry,
                     world_pairs,
                     style,
+                    &scene_bgm,
                     progress,
                 )
                 .await
@@ -1461,6 +1466,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
         registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
         world_pairs: &[(PathBuf, String)],
         style: &str,
+        scene_bgm: &str,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
         let shot_dir = self.working_dir.join("shots").join(shot.idx.to_string());
@@ -1510,6 +1516,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             &ref_pairs,
             duration_secs,
             using_video_continuity,
+            scene_bgm,
         );
         // P0-3: soften risky wording (motion / plot / audio captions) before the
         // first submission so Seedance content filters don't reject the prompt text.
@@ -1640,6 +1647,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                     &asset_pairs,
                     duration_secs,
                     false,
+                    scene_bgm,
                 );
                 let retry_prompt = crate::prompt_safety::sanitize_video_prompt(&retry_prompt);
                 match self
@@ -2241,12 +2249,39 @@ fn ensure_brief_audio_descs(shots: &mut [ShotBriefDescription]) -> bool {
             let snippet: String = shot.visual_desc.chars().take(200).collect();
             snippet
         } else {
-            "环境底噪与轻柔电影感背景音乐，配合画面动作的细微拟音".to_string()
+            "环境底噪与连贯电影感背景音乐，配合画面动作的细微拟音".to_string()
         };
         shot.audio_desc = Some(fill);
         changed = true;
     }
     changed
+}
+
+/// Lock one scene-level BGM caption for every shot (written to `bgm_brief.txt`).
+async fn ensure_scene_bgm_brief(
+    working_dir: &Path,
+    storyboard: &[ShotBriefDescription],
+) -> VimaxResult<String> {
+    let path = working_dir.join("bgm_brief.txt");
+    let existing = match tokio::fs::read_to_string(&path).await {
+        Ok(s) if !s.trim().is_empty() => Some(s),
+        _ => None,
+    };
+    let audio_descs: Vec<Option<&str>> = storyboard
+        .iter()
+        .map(|s| s.audio_desc.as_deref())
+        .collect();
+    let bgm = crate::planning::resolve_scene_bgm_paren(existing.as_deref(), &audio_descs);
+    write_text_artifact(&path, &bgm).await?;
+    Ok(bgm)
+}
+
+async fn load_scene_bgm_paren(working_dir: &Path) -> String {
+    let path = working_dir.join("bgm_brief.txt");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(s) if !s.trim().is_empty() => crate::planning::format_scene_bgm_paren(&s),
+        _ => crate::planning::DEFAULT_SCENE_BGM_PAREN.to_string(),
+    }
 }
 
 fn i2v_motion_prompt(
@@ -2256,6 +2291,7 @@ fn i2v_motion_prompt(
     ref_pairs: &[(PathBuf, String)],
     duration_secs: u32,
     from_prev_video_tail: bool,
+    scene_bgm: &str,
 ) -> String {
     let motion = shot.motion_desc.trim();
     let style_clause = crate::planning::style_prompt_clause(style);
@@ -2302,16 +2338,19 @@ seamless match-cut continuation into this beat (camera/angle may already differ;
         &shot.visual_desc,
         characters,
         &speaker_idxs,
+        scene_bgm,
     );
     format!(
         "{style_clause} {identity}{voice_lock}{ref_clause}{continuity_clause}\
-DURATION: target length is about {duration_secs}s. Speak slowly and clearly at a natural conversational pace — \
+DURATION: target length is about {duration_secs}s. Speak clearly at a natural conversational pace — \
 do NOT rush, speed-read, chipmunk, swallow syllables, or time-compress dialogue to cram lines in. \
-Leave a short breath before the first word and finish the last syllable cleanly before the clip ends. \
-Prefer clear finished lines over packing too many words; keep motion readable for the full clip.\n\
+Leave a short breath before the first word; finish the last syllable cleanly, then land on a visible \
+reaction/action beat (no empty static hold after speech). Keep motion purposeful for the full clip.\n\
 VOICE CONTINUITY: copy each speaker's FIXED SPEAKER VOICE from VOICE LOCK verbatim. \
 Emotion intensity may shift slightly; NEVER reinvent timbre, pitch band, age, or gender between shots. \
 Ignore any conflicting voice-color stage directions in the audio line — VOICE LOCK wins.\n\
+MUSIC CONTINUITY: keep the SAME underscore motif/tempo/instrumentation as adjacent shots \
+(use the scene BGM caption exactly; do not invent a new track per cut).\n\
 PLOT LOCK: stay on this scene — {plot}.{end_plot} \
 Do not invent new characters, locations, outfits, or story beats.\n\
 Motion: {motion}\n\
@@ -2441,15 +2480,17 @@ exactly on every shot; emotion may vary slightly, timbre/pitch/age/gender must n
 ///
 /// Resolves audio from `audio_desc`, falling back to dialogue mined from
 /// `motion_desc` / `visual_desc`. Injects per-character voice locks when the
-/// text mentions a cast member, and always includes a stable BGM underscore
-/// so adjacent shots share a similar music intent.
+/// text mentions a cast member, and always forces the scene-stable BGM caption
+/// so adjacent shots share the same music intent (avoids abrupt motif jumps).
 fn seedance_audio_caption_block(
     audio_desc: Option<&str>,
     motion_desc: &str,
     visual_desc: &str,
     characters: &[CharacterInScene],
     vis_idxs: &[i32],
+    scene_bgm: &str,
 ) -> String {
+    let bgm = crate::planning::format_scene_bgm_paren(scene_bgm);
     let audio = audio_desc.unwrap_or("").trim();
     let raw = if !audio.is_empty() {
         strip_conflicting_voice_color_cues(audio)
@@ -2460,8 +2501,6 @@ fn seedance_audio_caption_block(
     } else {
         String::new()
     };
-
-    let bgm = "(soft continuous cinematic atmospheric underscore, stable volume and motif across adjacent shots)";
 
     if raw.is_empty() {
         return format!(
@@ -2478,11 +2517,7 @@ fn seedance_audio_caption_block(
     let voiced = inject_voice_into_audio_text(&raw, characters, vis_idxs);
 
     if has_typed {
-        let has_music = voiced.contains('(') && voiced.contains(')');
-        if has_music {
-            return voiced;
-        }
-        return format!("{voiced} {bgm}");
+        return replace_or_append_bgm_paren(&voiced, &bgm);
     }
 
     let looks_dialogue = crate::planning::text_looks_like_dialogue(&voiced);
@@ -2491,6 +2526,23 @@ fn seedance_audio_caption_block(
     } else {
         format!("<{voiced}> {bgm}")
     }
+}
+
+/// Force the scene-stable `(music)` caption: replace any existing `(…)` span,
+/// otherwise append.
+fn replace_or_append_bgm_paren(voiced: &str, scene_bgm: &str) -> String {
+    let bgm = crate::planning::format_scene_bgm_paren(scene_bgm);
+    if let Some(start) = voiced.find('(') {
+        if let Some(rel_end) = voiced[start + 1..].find(')') {
+            let end = start + 1 + rel_end;
+            let mut out = String::with_capacity(voiced.len() + bgm.len());
+            out.push_str(&voiced[..start]);
+            out.push_str(&bgm);
+            out.push_str(&voiced[end + 1..]);
+            return out;
+        }
+    }
+    format!("{voiced} {bgm}")
 }
 
 /// Remove stage directions that redefine speaker timbre (they fight VOICE LOCK).
@@ -2721,31 +2773,41 @@ mod continuity_tests {
                 "Cast bible".into(),
             ),
         ];
-        let prompt = i2v_motion_prompt(&s, &[], "cinematic", &refs, 5, true);
+        let prompt = i2v_motion_prompt(&s, &[], "cinematic", &refs, 5, true, "");
         assert!(prompt.contains("Image 1 (video_last_frame.png)"));
         assert!(prompt.contains("Image 2 (alice_three_view.png)"));
         assert!(prompt.contains("CONTINUITY: Image 1"));
         // Empty audio_desc still gets ambient + BGM captions.
         assert!(prompt.contains("Throughout:"));
         assert!(prompt.contains("underscore"));
+        assert!(prompt.contains("MUSIC CONTINUITY"));
     }
 
     #[test]
     fn audio_caption_mines_motion_dialogue_and_always_has_bgm() {
+        let scene_bgm = "(gentle piano motif, steady tempo, same across shots)";
         let from_motion = seedance_audio_caption_block(
             None,
             "他看着对方说道：「我们走吧」",
             "wide shot of two people",
             &[],
             &[],
+            scene_bgm,
         );
         assert!(from_motion.contains('{'));
         assert!(from_motion.contains("我们走吧"));
-        assert!(from_motion.contains('('));
+        assert!(from_motion.contains("gentle piano motif"));
 
-        let ambient = seedance_audio_caption_block(None, "slow pan across room", "establishing", &[], &[]);
+        let ambient = seedance_audio_caption_block(
+            None,
+            "slow pan across room",
+            "establishing",
+            &[],
+            &[],
+            scene_bgm,
+        );
         assert!(ambient.contains('<') || ambient.contains("ambience") || ambient.contains("环境"));
-        assert!(ambient.contains('('));
+        assert!(ambient.contains("gentle piano motif"));
 
         let typed = seedance_audio_caption_block(
             Some("{快跑} <脚步声>"),
@@ -2753,9 +2815,26 @@ mod continuity_tests {
             "chase",
             &[],
             &[],
+            scene_bgm,
         );
         assert!(typed.contains("{快跑}"));
-        assert!(typed.contains('('), "typed captions without music get a BGM underscore");
+        assert!(
+            typed.contains("gentle piano motif"),
+            "typed captions without music get the scene BGM"
+        );
+
+        let replaced = seedance_audio_caption_block(
+            Some("{快跑} <脚步声> (loud EDM drop)"),
+            "runs",
+            "chase",
+            &[],
+            &[],
+            scene_bgm,
+        );
+        assert!(
+            replaced.contains("gentle piano motif") && !replaced.contains("EDM"),
+            "per-shot music must be replaced by scene-stable BGM: {replaced}"
+        );
     }
 
     #[test]
@@ -2783,6 +2862,7 @@ mod continuity_tests {
             "close-up",
             &chars,
             &[0],
+            "",
         );
         assert!(caption.contains("李薇"));
         assert!(caption.contains("FIXED SPEAKER VOICE"));
@@ -2806,6 +2886,7 @@ mod continuity_tests {
             &[],
             10,
             false,
+            "",
         );
         assert!(prompt.contains("VOICE LOCK"));
         assert!(prompt.contains("FIXED SPEAKER VOICE"));

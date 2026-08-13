@@ -548,8 +548,9 @@ async fn try_remux_concat(ffmpeg: &Path, clips: &[PathBuf], out_path: &Path) -> 
 }
 
 /// Soft fade at clip edges so hard cuts do not click / jump in BGM loudness.
-/// Kept short to avoid chewing the last spoken syllable.
-pub const CONCAT_AUDIO_EDGE_FADE_SECS: f64 = 0.15;
+/// Long enough to soften Seedance per-shot underscore discontinuities, short
+/// enough to avoid chewing the last spoken syllable.
+pub const CONCAT_AUDIO_EDGE_FADE_SECS: f64 = 0.5;
 
 /// Build the per-clip audio filter used before concat.
 ///
@@ -1445,8 +1446,8 @@ mod tests {
     fn normalize_audio_filter_adds_edge_afade_for_long_clips() {
         let af = normalize_audio_filter(10.0);
         assert!(af.contains("apad=whole_dur=10.000"));
-        assert!(af.contains("afade=t=in:st=0:d=0.150"));
-        assert!(af.contains("afade=t=out:st=9.850:d=0.150"));
+        assert!(af.contains("afade=t=in:st=0:d=0.500"));
+        assert!(af.contains("afade=t=out:st=9.500:d=0.500"));
 
         let short = normalize_audio_filter(0.2);
         assert!(!short.contains("afade"), "too-short clips skip edge fade");

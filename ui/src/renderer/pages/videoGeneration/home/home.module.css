@@ -196,6 +196,7 @@
   display: flex;
   min-width: 0;
   min-height: 120px;
+  height: 100%;
   align-self: stretch;
   flex-direction: column;
 }
@@ -214,9 +215,16 @@
   min-width: 0;
   min-height: 96px;
   flex: 1 1 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.skillChips {
+  display: flex;
+  flex: none;
   flex-wrap: wrap;
-  align-content: flex-start;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px 5px;
 }
 
@@ -226,7 +234,7 @@
   height: 5px;
   flex: none;
   align-self: center;
-  margin: 9px 1px 0;
+  margin: 0 1px;
   border-radius: 1px;
   background: linear-gradient(
     135deg,
@@ -303,10 +311,11 @@
 .promptInput,
 .promptInput:global(.arco-textarea-wrapper) {
   position: relative !important;
-  display: block !important;
-  flex: 1 1 180px;
-  width: auto !important;
-  min-width: 140px !important;
+  display: flex !important;
+  flex: 1 1 auto !important;
+  align-self: stretch !important;
+  width: 100% !important;
+  min-width: 0 !important;
   min-height: 72px !important;
   height: auto !important;
   border: none !important;
@@ -314,16 +323,12 @@
   box-shadow: none !important;
 }
 
-.promptInputWithSkills,
-.promptInputWithSkills:global(.arco-textarea-wrapper) {
-  min-height: 48px !important;
-}
-
 .promptInput:global(.arco-textarea-wrapper) textarea,
 .promptInput textarea {
   position: absolute !important;
   inset: 0 !important;
   box-sizing: border-box !important;
+  display: block !important;
   width: 100% !important;
   height: 100% !important;
   min-height: 0 !important;
