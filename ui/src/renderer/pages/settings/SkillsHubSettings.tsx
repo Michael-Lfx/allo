@@ -347,7 +347,10 @@ const SkillsHubSettings: React.FC = () => {
 
           {/* Single card grid for all skills */}
           {filteredSkills.length > 0 ? (
-            <div className='grid gap-12px' style={{ gridTemplateColumns: CARD_GRID_COLS }}>
+            <div
+              className='grid gap-12px [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_185px]'
+              style={{ gridTemplateColumns: CARD_GRID_COLS }}
+            >
               {filteredSkills.map((skill) => (
                 <SkillCard
                   key={skill.name}

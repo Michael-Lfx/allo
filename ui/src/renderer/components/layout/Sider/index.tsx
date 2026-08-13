@@ -85,6 +85,22 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     activeSelector: '[data-sider-nav-entry][data-active="true"]:not([data-sider-selection-static])',
     revision: `${pathname}:${collapsed}`,
   });
+  const { measureElement } = selectionIndicator;
+
+  // Move the sliding indicator to the clicked entry on the urgent lane — before
+  // the route subtree mounts — so the 240ms CSS transition starts on the
+  // compositor thread and is immune to the heavy main-thread commit that follows.
+  const handleSiderClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const entry = (event.target as HTMLElement).closest<HTMLElement>('[data-sider-nav-entry]');
+      if (!entry) return;
+      // The settings footer toggle is selection-static: it swaps the whole
+      // content region rather than sliding, so it must not move the indicator.
+      if (entry.hasAttribute('data-sider-selection-static')) return;
+      measureElement(entry);
+    },
+    [measureElement]
+  );
 
   useEffect(() => {
     if (!pathname.startsWith('/settings')) {
@@ -187,7 +203,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
 
   return (
-    <div ref={siderRef} className={`${styles.sider} size-full flex flex-col`}>
+    <div ref={siderRef} className={`${styles.sider} size-full flex flex-col`} onClick={handleSiderClick}>
       <span
         aria-hidden='true'
         className={styles.selectionIndicator}

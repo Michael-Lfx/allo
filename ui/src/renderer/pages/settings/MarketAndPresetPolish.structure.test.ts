@@ -31,6 +31,8 @@ describe('market and preset-editor polish contracts', () => {
     expect(card).not.toContain('hover:shadow');
     expect(card).not.toContain("key='view-details'");
     expect(read('./skill/MarketCardGrid.tsx')).toContain('items-stretch');
+    // content-visibility keeps offscreen market cards out of layout/paint; guard against silent removal.
+    expect(read('./skill/MarketCardGrid.tsx')).toContain('[content-visibility:auto]');
     expect(read('./skill/MarketCardShell.tsx')).toContain('box-border');
   });
 

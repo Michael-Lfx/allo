@@ -17,7 +17,7 @@ import {
   TreeDiagram,
 } from '@icon-park/react';
 import classNames from 'classnames';
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Tooltip } from '@arco-design/web-react';
 import { getSiderTooltipProps } from '@/renderer/utils/ui/siderTooltip';
@@ -78,6 +78,19 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
     activeSelector: '[data-settings-nav-entry][data-active="true"]',
     revision: `${pathname}:${collapsed}:${menuSignature}`,
   });
+  const { measureElement } = selectionIndicator;
+
+  // Move the settings indicator to the clicked entry on the urgent lane — before
+  // the settings content mounts — so the slide animation starts immediately and
+  // is not blocked by the heavy main-thread commit of the target panel.
+  const handleSettingsNavClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const entry = (event.target as HTMLElement).closest<HTMLElement>('[data-settings-nav-entry]');
+      if (!entry) return;
+      measureElement(entry);
+    },
+    [measureElement]
+  );
 
   useEffect(() => {
     navigationRef.current
@@ -92,6 +105,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
       className={classNames('settings-sider relative h-full flex flex-col gap-2px overflow-y-auto overflow-x-hidden', {
         'settings-sider--collapsed': collapsed,
       })}
+      onClick={handleSettingsNavClick}
     >
       <span
         aria-hidden='true'
