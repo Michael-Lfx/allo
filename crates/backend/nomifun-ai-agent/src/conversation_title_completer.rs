@@ -3,14 +3,15 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use nomifun_common::{AppError, ProviderWithModel};
 use nomifun_db::{IProviderModelRepository, IProviderRepository};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::factory::provider_config::{
-    one_shot_completion_no_thinking, resolve_provider_config, user_message,
+    one_shot_completion_title, resolve_provider_config, user_message, TitleResponseChannel,
 };
 use nomi_config::config::Config;
 
@@ -19,27 +20,47 @@ const TITLE_MAX_CHARS: usize = 24;
 const TITLE_IDEAL_MAX_CHARS: usize = 16;
 
 const TITLE_SYSTEM_EN: &str = "\
-Write one short conversation title (3-7 words) for the exchange below. \
-Same language as the exchange. \
-Output format exactly (no other text):\nTITLE: <title>";
+Write one short title (3-7 words) for the user's message below. \
+Use the same language as the user's message. \
+Return exactly one line beginning with `TITLE:` followed by a concrete, \
+specific title for that message. Even for a very short or simple message, \
+summarize its actual subject or action instead of copying the prompt or using \
+a generic label. Never output placeholders or template text such as `<title>`, \
+`[title]`, `title`, `Untitled`, `New conversation`, or `Conversation`; never \
+output an explanation or these instructions.";
 
 const TITLE_SYSTEM_ZH: &str = "\
-根据对话内容生成一个简短标题（3-7个词或12字以内）。语言与对话一致。\
-严格按此格式输出，不要任何解释：\nTITLE: 标题内容";
+根据用户消息生成一个简短、具体的标题（中文12字以内，英文3-7个词），语言与用户消息一致。\
+即使用户消息很短或只是一个简单输入，也要概括其中真实的主题或动作，不要直接照抄用户输入。\
+只输出一行，以 `TITLE:` 开头，冒号后必须填写真实标题。严禁输出 `<title>`、`[title]`、`title`、\
+`标题`、`标题内容`、`未命名会话` 等占位词或泛化名称，也不要输出解释、提示词或其他内容。";
 
-const TITLE_RETRY_ZH: &str = "只输出一行标题，格式：TITLE: 标题内容。不要解释。";
+struct NormalizedTitle {
+    title: String,
+    channel: TitleResponseChannel,
+    response_chars: usize,
+}
+
+/// Outcome metadata for the single title task. The result carries no raw
+/// provider output so callers can log the evidence without exposing content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationTitleResult {
+    pub title: String,
+    pub llm_call_count: u8,
+    pub response_channel: Option<TitleResponseChannel>,
+    pub response_chars: usize,
+}
 
 /// Auto-generate a short conversation title from the first user message.
 #[async_trait]
 pub trait ConversationTitleCompleter: Send + Sync {
-    /// Try each candidate provider/model in order and return the first usable
-    /// title. Returns an empty string when every candidate fails or yields no
-    /// usable title — callers then keep the preview name.
+    /// Resolve candidates locally and make at most one provider request. Once
+    /// a provider request starts, no other provider or prompt is attempted.
     async fn summarize(
         &self,
         content: &str,
         candidates: &[ProviderWithModel],
-    ) -> Result<String, AppError>;
+    ) -> Result<ConversationTitleResult, AppError>;
 }
 
 /// Provider-backed conversation title generator.
@@ -64,12 +85,30 @@ impl LiveConversationTitleCompleter {
         cfg: &Config,
         system: &str,
         user_content: &str,
-    ) -> Result<String, AppError> {
-        let raw =
-            one_shot_completion_no_thinking(cfg, system, vec![user_message(user_content)], TITLE_MAX_TOKENS)
-                .await?;
-        Ok(normalize_title_output(&raw))
+    ) -> Result<NormalizedTitle, AppError> {
+        let completion = one_shot_completion_title(
+            cfg,
+            system,
+            vec![user_message(user_content)],
+            TITLE_MAX_TOKENS,
+        )
+        .await?;
+        let response_chars = completion.output.chars().count();
+        let title = if completion.channel == TitleResponseChannel::ReasoningFallback {
+            normalize_reasoning_output(&completion.output)
+        } else {
+            normalize_title_output(&completion.output)
+        };
+        Ok(NormalizedTitle {
+            title,
+            channel: completion.channel,
+            response_chars,
+        })
     }
+}
+
+fn response_channel_name(channel: TitleResponseChannel) -> &'static str {
+    channel.as_str()
 }
 
 fn is_meta_title_line(line: &str) -> bool {
@@ -129,19 +168,52 @@ fn is_meta_title_line(line: &str) -> bool {
     MARKERS.iter().any(|m| line.contains(m) || lower.contains(m))
 }
 
+fn is_placeholder_title(line: &str) -> bool {
+    let normalized = line
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let normalized = normalized
+        .trim_matches(|c| {
+            matches!(
+                c,
+                '<' | '>' | '[' | ']' | '{' | '}' | '"' | '\'' | '`' | '「' | '」'
+            )
+        })
+        .trim();
+
+    matches!(
+        normalized,
+        "title"
+            | "标题"
+            | "标题内容"
+            | "your title"
+            | "conversation title"
+            | "chat title"
+            | "untitled"
+            | "new conversation"
+            | "conversation"
+            | "chat"
+            | "answer"
+            | "request"
+            | "未命名会话"
+    )
+}
+
 fn extract_tagged_title(raw: &str) -> Option<String> {
     for line in raw.lines().chain(std::iter::once(raw)) {
         let trimmed = line.trim();
         for marker in ["TITLE:", "TITLE：", "title:", "标题:", "标题："] {
             if let Some(rest) = trimmed.strip_prefix(marker) {
                 let t = rest.trim().trim_end_matches(['。', '.', '！', '!', '？', '?']);
-                if !t.is_empty() && !is_meta_title_line(t) {
+                if !t.is_empty() && !is_meta_title_line(t) && !is_placeholder_title(t) {
                     return Some(t.to_owned());
                 }
             }
             if let Some((_, rest)) = trimmed.split_once(marker) {
                 let t = rest.trim().trim_end_matches(['。', '.', '！', '!', '？', '?']);
-                if !t.is_empty() && !is_meta_title_line(t) {
+                if !t.is_empty() && !is_meta_title_line(t) && !is_placeholder_title(t) {
                     return Some(t.to_owned());
                 }
             }
@@ -169,8 +241,11 @@ fn extract_after_title_marker(line: &str) -> Option<String> {
         "应该是:",
     ];
     for marker in MARKERS {
-        let lower = line.to_lowercase();
-        let marker_lower = marker.to_lowercase();
+        // ASCII case folding preserves byte offsets for the original UTF-8
+        // line. Full Unicode lowercasing can expand a preceding scalar and
+        // make the slice below land in the middle of a character.
+        let lower = line.to_ascii_lowercase();
+        let marker_lower = marker.to_ascii_lowercase();
         if let Some(idx) = lower.find(&marker_lower) {
             let rest = line[idx + marker.len()..].trim();
             let rest = rest
@@ -268,13 +343,23 @@ fn split_segments(raw: &str) -> Vec<String> {
     segments
 }
 
+fn last_chars(raw: &str, max_chars: usize) -> &str {
+    if max_chars == 0 {
+        return "";
+    }
+    raw.char_indices()
+        .rev()
+        .nth(max_chars.saturating_sub(1))
+        .map(|(index, _)| &raw[index..])
+        .unwrap_or(raw)
+}
+
 fn pick_title_candidate(raw: &str) -> Option<String> {
     if let Some(t) = extract_tagged_title(raw) {
         return Some(t);
     }
 
-    let tail_start = raw.len().saturating_sub(250);
-    let tail = &raw[tail_start..];
+    let tail = last_chars(raw, 250);
     if let Some(t) = extract_tagged_title(tail) {
         return Some(t);
     }
@@ -320,12 +405,44 @@ fn pick_title_candidate(raw: &str) -> Option<String> {
     None
 }
 
+/// Clamp a display title by Unicode scalar values. CJK titles may be cut at
+/// the character limit; Latin titles prefer the last complete word when the
+/// limit cuts through a word.
+pub fn clamp_title(title: &str) -> String {
+    let trimmed = title.trim();
+    if trimmed.chars().count() <= TITLE_MAX_CHARS {
+        return trimmed.to_owned();
+    }
+
+    let prefix: String = trimmed.chars().take(TITLE_MAX_CHARS).collect();
+    if prefix.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+        return prefix.trim().to_owned();
+    }
+
+    prefix
+        .rfind(char::is_whitespace)
+        .map(|index| prefix[..index].trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(prefix)
+}
+
 fn normalize_title_output(raw: &str) -> String {
+    normalize_title_output_with_mode(raw, true)
+}
+
+fn normalize_reasoning_output(raw: &str) -> String {
+    normalize_title_output_with_mode(raw, false)
+}
+
+fn normalize_title_output_with_mode(raw: &str, allow_long_unstructured: bool) -> String {
     let candidate = match pick_title_candidate(raw) {
         Some(t) => t,
         None => {
             let trimmed = raw.trim();
-            if trimmed.is_empty() || is_meta_title_line(trimmed) {
+            if trimmed.is_empty()
+                || is_meta_title_line(trimmed)
+                || (!allow_long_unstructured && trimmed.chars().count() > TITLE_MAX_CHARS)
+            {
                 return String::new();
             }
             trimmed.to_owned()
@@ -356,9 +473,8 @@ fn normalize_title_output(raw: &str) -> String {
         .unwrap_or(trimmed)
         .trim()
         .trim_end_matches(['。', '.', '！', '!', '？', '?']);
-    let out: String = stripped.chars().take(TITLE_MAX_CHARS).collect();
-    let out = out.trim().to_owned();
-    if is_meta_title_line(&out) {
+    let out = clamp_title(stripped);
+    if is_meta_title_line(&out) || is_placeholder_title(&out) {
         String::new()
     } else {
         out
@@ -371,9 +487,9 @@ impl ConversationTitleCompleter for LiveConversationTitleCompleter {
         &self,
         content: &str,
         candidates: &[ProviderWithModel],
-    ) -> Result<String, AppError> {
+    ) -> Result<ConversationTitleResult, AppError> {
         let system = Self::title_system_for(content);
-        for candidate in candidates {
+        for (candidate_index, candidate) in candidates.iter().enumerate() {
             let cfg = match resolve_provider_config(
                 &self.provider_repo,
                 &self.provider_model_repo,
@@ -387,57 +503,127 @@ impl ConversationTitleCompleter for LiveConversationTitleCompleter {
                 Ok(cfg) => cfg,
                 Err(error) => {
                     warn!(
+                        stage = "candidate_config",
+                        candidate_rank = candidate_index + 1,
                         provider_id = %candidate.provider_id,
                         model = %candidate.model,
-                        error = %error,
-                        "conversation auto-title: candidate config resolve failed, trying next"
+                        error_code = error.error_code(),
+                        outcome = "candidate_config_failed",
+                        "conversation auto-title: candidate config resolve failed"
                     );
                     continue;
                 }
             };
 
+            let started = Instant::now();
+            let candidate_rank = candidate_index + 1;
+            info!(
+                stage = "candidate_selected",
+                outcome = "candidate_selected",
+                candidate_rank,
+                provider_id = %candidate.provider_id,
+                model = %candidate.model,
+                llm_call_count = 0,
+                "conversation auto-title candidate selected for the single request"
+            );
+            info!(
+                stage = "llm",
+                candidate_rank,
+                provider_id = %candidate.provider_id,
+                model = %candidate.model,
+                llm_call_count = 1,
+                outcome = "llm_started",
+                "conversation auto-title: single LLM request started"
+            );
             match self.call_and_normalize(&cfg, system, content).await {
-                Ok(title) if !title.is_empty() => return Ok(title),
-                Ok(_) => {}
-                Err(error) => {
-                    warn!(
-                        provider_id = %candidate.provider_id,
-                        model = %candidate.model,
-                        error = %error,
-                        "conversation auto-title: candidate call failed, trying next"
-                    );
-                    continue;
-                }
-            }
-
-            // The first call produced no usable title (not a transport
-            // failure): retry once with the stricter Chinese prompt before
-            // moving to the next candidate.
-            if content.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
-                let retry_user = format!(
-                    "请为以下对话起一个简短标题（不超过12字），严格按格式输出：\nTITLE: 标题\n\n{content}"
-                );
-                match self.call_and_normalize(&cfg, TITLE_RETRY_ZH, &retry_user).await {
-                    Ok(title) if !title.is_empty() => return Ok(title),
-                    Ok(_) => {}
-                    Err(error) => {
-                        warn!(
+                Ok(result) if !result.title.is_empty() => {
+                    if result.channel == TitleResponseChannel::ReasoningFallback {
+                        info!(
+                            stage = "llm_completed",
+                            candidate_rank,
                             provider_id = %candidate.provider_id,
                             model = %candidate.model,
-                            error = %error,
-                            "conversation auto-title: candidate retry failed, trying next"
+                            response_channel = response_channel_name(result.channel),
+                            response_chars = result.response_chars,
+                            normalized_title_chars = result.title.chars().count(),
+                            elapsed_ms = started.elapsed().as_millis(),
+                            llm_call_count = 1,
+                            outcome = "reasoning_fallback",
+                            "conversation auto-title used reasoning from the same response"
                         );
                     }
+                    info!(
+                        stage = "llm_completed",
+                        candidate_rank,
+                        provider_id = %candidate.provider_id,
+                        model = %candidate.model,
+                        response_channel = response_channel_name(result.channel),
+                        response_chars = result.response_chars,
+                        normalized_title_chars = result.title.chars().count(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        llm_call_count = 1,
+                        outcome = "llm_completed",
+                        "conversation auto-title: single LLM request completed"
+                    );
+                    return Ok(ConversationTitleResult {
+                        title: result.title,
+                        llm_call_count: 1,
+                        response_channel: Some(result.channel),
+                        response_chars: result.response_chars,
+                    });
+                }
+                Ok(result) => {
+                    warn!(
+                        stage = "llm_completed",
+                        candidate_rank,
+                        provider_id = %candidate.provider_id,
+                        model = %candidate.model,
+                        response_channel = response_channel_name(result.channel),
+                        response_chars = result.response_chars,
+                        normalized_title_chars = 0,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        llm_call_count = 1,
+                        outcome = "normalized_empty",
+                        "conversation auto-title: single LLM request returned no usable title"
+                    );
+                    return Ok(ConversationTitleResult {
+                        title: String::new(),
+                        llm_call_count: 1,
+                        response_channel: Some(result.channel),
+                        response_chars: result.response_chars,
+                    });
+                }
+                Err(error) => {
+                    warn!(
+                        stage = "llm",
+                        candidate_rank,
+                        provider_id = %candidate.provider_id,
+                        model = %candidate.model,
+                        error_code = error.error_code(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        llm_call_count = 1,
+                        outcome = "llm_failed",
+                        "conversation auto-title: single LLM request failed"
+                    );
+                    return Err(error);
                 }
             }
         }
 
         warn!(
-            content_len = content.len(),
+            stage = "candidate_selected",
+            input_chars = content.chars().count(),
             candidates = candidates.len(),
-            "conversation auto-title: all candidates failed to produce a title"
+            llm_call_count = 0,
+            outcome = "no_candidate",
+            "conversation auto-title: no candidate could be configured"
         );
-        Ok(String::new())
+        Ok(ConversationTitleResult {
+            title: String::new(),
+            llm_call_count: 0,
+            response_channel: None,
+            response_chars: 0,
+        })
     }
 }
 
@@ -448,7 +634,7 @@ mod tests {
     #[test]
     fn rejects_instruction_echo_reasoning() {
         let raw = "我们被要求生成一个短标题，3-7个词，描述对话的主题。";
-        assert_eq!(normalize_title_output(raw), "");
+        assert_eq!(normalize_reasoning_output(raw), "");
     }
 
     #[test]
@@ -483,8 +669,61 @@ mod tests {
     }
 
     #[test]
+    fn handles_long_unicode_reasoning_without_splitting_a_character() {
+        let raw = format!("{}\nTITLE: 修复登录问题", "思考".repeat(200));
+        assert_eq!(normalize_reasoning_output(&raw), "修复登录问题");
+    }
+
+    #[test]
+    fn rejects_unstructured_long_reasoning_instead_of_clipping_it() {
+        let raw = "这是模型内部的一大段思考内容，没有明确给出短标题，只是在解释它准备如何分析用户请求并选择结果";
+        assert_eq!(normalize_reasoning_output(raw), "");
+    }
+
+    #[test]
     fn picks_title_after_marker() {
         let raw = "分析一下对话内容。最终标题：部署生产环境";
         assert_eq!(normalize_title_output(raw), "部署生产环境");
+    }
+
+    #[test]
+    fn prompt_describes_a_user_message() {
+        assert!(TITLE_SYSTEM_EN.contains("user's message"));
+        assert!(TITLE_SYSTEM_ZH.contains("用户消息"));
+        assert!(!TITLE_SYSTEM_EN.contains("exchange"));
+        assert!(TITLE_SYSTEM_EN.contains("concrete"));
+        assert!(TITLE_SYSTEM_ZH.contains("真实标题"));
+        assert!(TITLE_SYSTEM_EN.contains("<title>"));
+        assert!(TITLE_SYSTEM_ZH.contains("<title>"));
+    }
+
+    #[test]
+    fn rejects_placeholder_titles() {
+        for raw in [
+            "TITLE: <title>",
+            "TITLE: [title]",
+            "标题：标题内容",
+            "Untitled",
+            "New conversation",
+        ] {
+            assert_eq!(normalize_title_output(raw), "", "raw={raw}");
+        }
+    }
+
+    #[test]
+    fn truncates_english_at_the_last_complete_word() {
+        assert_eq!(
+            normalize_title_output("TITLE: Fix the authentication timeout in production"),
+            "Fix the authentication"
+        );
+    }
+
+    #[test]
+    fn truncates_cjk_by_unicode_character_count() {
+        let title = normalize_title_output(
+            "TITLE: 这是一个用于验证标题长度限制的超长中文标题内容示例",
+        );
+        assert_eq!(title.chars().count(), TITLE_MAX_CHARS);
+        assert!(title.starts_with("这是一个用于验证标题长度限制"));
     }
 }

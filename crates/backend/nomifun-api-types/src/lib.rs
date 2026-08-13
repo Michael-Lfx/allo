@@ -139,7 +139,7 @@ pub use conversation::{
     ActiveCountResponse, CloneConversationRequest, ConversationArtifactKind,
     ConversationArtifactListResponse, ConversationArtifactResponse, ConversationArtifactStatus,
     ConversationListResponse, ConversationMcpStatus, ConversationMcpStatusKind,
-    ConversationNameSource, ConversationResponse, ConversationRuntimeStateKind,
+    ConversationResponse, ConversationRuntimeStateKind,
     ConversationRuntimeSummary, CreateConversationRequest, ListConversationsQuery,
     EditResubmitReceiptState, EditResubmitStateResponse, ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchItem,
     MessageSearchResponse, SearchMessagesQuery, SendMessageRequest, SendMessageResponse,

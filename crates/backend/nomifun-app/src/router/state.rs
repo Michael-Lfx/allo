@@ -533,6 +533,15 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
     // persisted resume, channel/plugin receive loops, and router publication.
     let conversation = build_conversation_state(services, Some(cron.cron_service.clone()));
     conversation.service.with_preset_service(preset.service.clone());
+    if let Err(error) = conversation.service.recover_pending_auto_titles().await {
+        tracing::warn!(
+            stage = "startup_recovered",
+            outcome = "recovery_failed",
+            error_code = error.error_code(),
+            llm_call_count = 0,
+            "startup conversation auto-title recovery failed"
+        );
+    }
     reconcile_unsettled_conversation_turns_before_background_work(
         services,
         &conversation.service,
@@ -793,10 +802,9 @@ pub fn build_conversation_state(
         services.database.pool().clone(),
     )));
     // Wire the LLM auto-title completer: a new conversation's first user
-    // message is summarized into a short work-content title via the default
-    // provider/model (same resolution as `LiveTerminalTitleCompleter`).
-    // Best-effort — no provider configured means no LLM title, fallback via
-    // the frontend's first-message heuristic still applies.
+    // message is summarized into a short work-content title. The backend CAS
+    // writes the cleaned first-message fallback before this completer runs, so
+    // an unavailable provider never leaves the conversation without a title.
     {
         conversation_service.with_title_completer(Arc::new(nomifun_ai_agent::LiveConversationTitleCompleter {
             provider_repo: Arc::new(SqliteProviderRepository::new(services.database.pool().clone())),

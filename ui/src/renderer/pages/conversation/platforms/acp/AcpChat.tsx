@@ -13,7 +13,6 @@ import {
   useMessageLstCache,
 } from '@renderer/pages/conversation/Messages/hooks';
 import { usePendingConfirmationsRecovery } from '@renderer/pages/conversation/Messages/usePendingConfirmationsRecovery';
-import { useAutoTitle } from '@/renderer/hooks/chat/useAutoTitle';
 import HOC from '@renderer/utils/ui/HOC';
 import LocalImageView from '@renderer/components/media/LocalImageView';
 import React, { Suspense, useEffect } from 'react';
@@ -56,7 +55,6 @@ const AcpChat: React.FC<{
 }) => {
   const historyPaging = useMessageLstCache(conversation_id, { windowed: true });
   usePendingConfirmationsRecovery(conversation_id, { enabled: !readOnly });
-  const { checkAndUpdateTitle } = useAutoTitle();
   const addOrUpdateMessage = useAddOrUpdateMessage();
   const messageState = useAcpMessage(conversation_id, { skipWarmup: readOnly === true });
   const updateLocalImage = LocalImageView.useUpdateLocalImage();
@@ -71,7 +69,6 @@ const AcpChat: React.FC<{
     setAiProcessing: messageState.setAiProcessing,
     markTurnAccepted: messageState.markTurnAccepted,
     reconcilePublicDeliveryReplay: messageState.reconcilePublicDeliveryReplay,
-    checkAndUpdateTitle,
     addOrUpdateMessage,
   });
 

@@ -817,14 +817,12 @@ impl IConversationRepository for MockRepo {
         Ok(())
     }
 
-    // In-memory mirror of the SQLite conditional title updates: same WHERE
-    // semantics (`titleSource` gate + `autoTitleState` allow-list, `""` = absent).
-    async fn update_auto_title_if_auto(
+    // In-memory mirror of the SQLite conditional title updates.
+    async fn claim_auto_title(
         &self,
         conversation_id: &str,
-        name: &str,
-        extra: &str,
-        allowed_prior_states: &[&str],
+        expected_name: &str,
+        temporary_name: &str,
         updated_at: TimestampMs,
     ) -> Result<bool, nomifun_db::DbError> {
         let mut rows = self.rows.lock().unwrap();
@@ -834,26 +832,33 @@ impl IConversationRepository for MockRepo {
         let extra_value: serde_json::Value =
             serde_json::from_str(&row.extra).unwrap_or_else(|_| json!({}));
         let title_source = extra_value.get("titleSource").and_then(|value| value.as_str());
-        if !matches!(title_source, None | Some("auto")) {
-            return Ok(false);
-        }
         let state = extra_value
             .get("autoTitleState")
             .and_then(|value| value.as_str())
             .unwrap_or("");
-        if !allowed_prior_states.contains(&state) {
+        if row.name != expected_name
+            || !matches!(title_source, None | Some("auto"))
+            || !state.is_empty()
+        {
             return Ok(false);
         }
-        row.name = name.to_owned();
-        row.extra = extra.to_owned();
+        let Some(extra_object) = row.extra.parse::<serde_json::Value>().ok().and_then(|value| value.as_object().cloned()) else {
+            return Ok(false);
+        };
+        let mut next_extra = extra_object;
+        next_extra.insert("titleSource".to_owned(), json!("auto"));
+        next_extra.insert("autoTitleState".to_owned(), json!("pending"));
+        row.name = temporary_name.to_owned();
+        row.extra = serde_json::Value::Object(next_extra).to_string();
         row.updated_at = updated_at;
         Ok(true)
     }
 
-    async fn update_preview_name_if_untitled(
+    async fn finish_auto_title(
         &self,
         conversation_id: &str,
-        name: &str,
+        new_name: Option<&str>,
+        state: &str,
         updated_at: TimestampMs,
     ) -> Result<bool, nomifun_db::DbError> {
         let mut rows = self.rows.lock().unwrap();
@@ -863,14 +868,25 @@ impl IConversationRepository for MockRepo {
         let extra_value: serde_json::Value =
             serde_json::from_str(&row.extra).unwrap_or_else(|_| json!({}));
         let title_source = extra_value.get("titleSource").and_then(|value| value.as_str());
-        let state = extra_value
+        let current_state = extra_value
             .get("autoTitleState")
             .and_then(|value| value.as_str())
             .unwrap_or("");
-        if !matches!(title_source, None | Some("auto")) || !matches!(state, "" | "failed") {
+        if !matches!(state, "done" | "failed")
+            || title_source != Some("auto")
+            || current_state != "pending"
+        {
             return Ok(false);
         }
-        row.name = name.to_owned();
+        let Some(extra_object) = row.extra.parse::<serde_json::Value>().ok().and_then(|value| value.as_object().cloned()) else {
+            return Ok(false);
+        };
+        let mut next_extra = extra_object;
+        next_extra.insert("autoTitleState".to_owned(), json!(state));
+        if let Some(name) = new_name {
+            row.name = name.to_owned();
+        }
+        row.extra = serde_json::Value::Object(next_extra).to_string();
         row.updated_at = updated_at;
         Ok(true)
     }

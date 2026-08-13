@@ -20,7 +20,6 @@ import { useAcpModelInfo } from '@/renderer/hooks/agent/useAcpModelInfo';
 import { useAgentModesForBackend } from '@/renderer/hooks/agent/useAgentModesForBackend';
 import { savePreferredMode } from '@/renderer/pages/guid/hooks/agentSelectionUtils';
 import { normalizeCodexMode } from '@/common/types/codex/codexModes';
-import { useAutoTitle } from '@/renderer/hooks/chat/useAutoTitle';
 import { useComposerSkillChips } from '@/renderer/hooks/chat/useComposerSkillChips';
 import { getSendBoxDraftHook, type FileOrFolderItem } from '@/renderer/hooks/chat/useSendBoxDraft';
 import { createSetUploadFile, useSendBoxFiles } from '@/renderer/hooks/chat/useSendBoxFiles';
@@ -135,7 +134,6 @@ const AcpSendBox: React.FC<{
     context_limit > 0 && typeof tokenUsage?.total_tokens === 'number';
   const { t } = useTranslation();
   const showModeSelector = true;
-  const { checkAndUpdateTitle } = useAutoTitle();
   const { atPath, uploadFile, setAtPath, setUploadFile, content, setContent } = useSendBoxDraft(conversation_id);
   const { skills: skillChips, setSkills: setSkillChips } = useComposerSkillChips();
   const layout = useLayoutContext();
@@ -284,9 +282,6 @@ const AcpSendBox: React.FC<{
       if (!deferLocalTurnUntilFresh) setAiProcessing(true);
 
       try {
-        if (!deferLocalTurnUntilFresh) {
-          void checkAndUpdateTitle(conversation_id, input);
-        }
         // Wait for the server-assigned msg_id before rendering the optimistic
         // user bubble so the local row uses the same id as the DB row and
         // subsequent WebSocket stream events — avoids duplicate bubbles when
@@ -304,7 +299,6 @@ const AcpSendBox: React.FC<{
         if (disposition === 'fresh') {
           if (deferLocalTurnUntilFresh) {
             setAiProcessing(true);
-            void checkAndUpdateTitle(conversation_id, input);
           }
           markTurnAccepted(msg_id);
           // A Skill-only send persists visible skill_load history but has no
@@ -374,7 +368,6 @@ Please check your local CLI tool authentication status`,
     },
     [
       backend,
-      checkAndUpdateTitle,
       conversation_id,
       markTurnAccepted,
       reconcilePublicDeliveryReplay,

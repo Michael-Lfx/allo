@@ -471,7 +471,6 @@ impl AppRobotBackend {
         );
         let request = UpdateConversationRequest {
             name: None,
-            name_source: None,
             pinned: None,
             model: Some(fallback),
             delegation_policy: None,
@@ -545,7 +544,6 @@ impl AppRobotBackend {
                 conversation_id,
                 UpdateConversationRequest {
                     name: None,
-                    name_source: None,
                     pinned: None,
                     model: Some(model),
                     delegation_policy: None,

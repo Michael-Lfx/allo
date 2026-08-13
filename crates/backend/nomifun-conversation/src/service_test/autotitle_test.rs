@@ -1,11 +1,12 @@
 use super::*;
-use nomifun_ai_agent::conversation_title_completer::ConversationTitleCompleter;
+use nomifun_ai_agent::conversation_title_completer::{ConversationTitleCompleter, ConversationTitleResult};
 
 /// Records every `summarize` call and returns `"{prefix}{call_index}"` titles.
-/// `empty` mode simulates every candidate failing to produce a usable title.
+/// `empty` mode simulates a title provider that produces no usable result.
 struct FakeTitleCompleter {
     prefix: String,
     empty: bool,
+    echo_input: bool,
     calls: Mutex<Vec<String>>,
 }
 
@@ -14,6 +15,7 @@ impl FakeTitleCompleter {
         Self {
             prefix: prefix.to_owned(),
             empty: false,
+            echo_input: false,
             calls: Mutex::new(vec![]),
         }
     }
@@ -22,6 +24,16 @@ impl FakeTitleCompleter {
         Self {
             prefix: String::new(),
             empty: true,
+            echo_input: false,
+            calls: Mutex::new(vec![]),
+        }
+    }
+
+    fn echo_input() -> Self {
+        Self {
+            prefix: String::new(),
+            empty: false,
+            echo_input: true,
             calls: Mutex::new(vec![]),
         }
     }
@@ -37,14 +49,30 @@ impl ConversationTitleCompleter for FakeTitleCompleter {
         &self,
         content: &str,
         _candidates: &[ProviderWithModel],
-    ) -> Result<String, AppError> {
+    ) -> Result<ConversationTitleResult, AppError> {
         let mut calls = self.calls.lock().unwrap();
         let index = calls.len();
         calls.push(content.to_owned());
         if self.empty {
-            Ok(String::new())
+            Ok(ConversationTitleResult {
+                title: String::new(),
+                llm_call_count: 1,
+                response_channel: None,
+                response_chars: 0,
+            })
         } else {
-            Ok(format!("{}{index}", self.prefix))
+            let title = if self.echo_input {
+                content.to_owned()
+            } else {
+                format!("{}{index}", self.prefix)
+            };
+            let response_chars = title.chars().count();
+            Ok(ConversationTitleResult {
+                title,
+                llm_call_count: 1,
+                response_channel: None,
+                response_chars,
+            })
         }
     }
 }
@@ -94,7 +122,7 @@ fn title_message_row(conversation_id: &str, message_id: &str, position: &str, te
     }
 }
 
-/// (name, autoTitleState, titleSource) read back from the seeded row.
+/// `(name, autoTitleState, titleSource)` read back from the seeded row.
 async fn title_state(repo: &Arc<MockRepo>, conversation_id: &str) -> (String, Option<String>, Option<String>) {
     let row = repo.get(conversation_id).await.unwrap().unwrap();
     let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
@@ -116,11 +144,11 @@ fn title_session_model() -> Option<ProviderWithModel> {
 }
 
 #[tokio::test]
-async fn first_turn_titles_and_broadcasts() {
+async fn first_turn_titles_from_user_message_and_broadcasts() {
     let (svc, broadcaster, repo, _runtime_registry) = make_service();
     let completer = Arc::new(FakeTitleCompleter::new("title-"));
     svc.with_title_completer(completer.clone());
-    let conversation_id = seed_title_conversation(&repo, "New conversation", json!({})).await;
+    let conversation_id = seed_title_conversation(&repo, "hello title", json!({})).await;
     repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", "hello title", 10))
         .await
         .unwrap();
@@ -135,8 +163,8 @@ async fn first_turn_titles_and_broadcasts() {
     let (name, state, source) = title_state(&repo, &conversation_id).await;
     assert_eq!(name, "title-0");
     assert_eq!(state.as_deref(), Some("done"));
-    assert_eq!(source, None);
-    assert_eq!(completer.calls().len(), 1);
+    assert_eq!(source.as_deref(), Some("auto"));
+    assert_eq!(completer.calls(), vec!["hello title"]);
     let events = broadcaster.take_events();
     assert!(
         events
@@ -147,16 +175,15 @@ async fn first_turn_titles_and_broadcasts() {
 }
 
 #[tokio::test]
-async fn user_rename_blocks_title_and_preview() {
+async fn user_rename_blocks_title() {
     let (svc, _broadcaster, repo, runtime_registry) = make_service();
     let completer = Arc::new(FakeTitleCompleter::new("title-"));
     svc.with_title_completer(completer.clone());
-    let conversation_id = seed_title_conversation(&repo, "preview", json!({})).await;
+    let conversation_id = seed_title_conversation(&repo, "hello title", json!({})).await;
     repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", "hello title", 10))
         .await
         .unwrap();
 
-    // A rename without an explicit name_source is a user rename (conservative).
     let req: UpdateConversationRequest = serde_json::from_value(json!({ "name": "My title" })).unwrap();
     svc.update(TEST_USER_1, &conversation_id, req, &runtime_registry)
         .await
@@ -172,59 +199,34 @@ async fn user_rename_blocks_title_and_preview() {
     assert_eq!(name, "My title", "a user rename is never overwritten by a title pass");
     assert_eq!(state, None, "no auto-title state may be written after a user rename");
     assert_eq!(completer.calls().len(), 0, "the title pass must exit before any model call");
-
-    // A late auto preview must not overwrite the user's name either.
-    let preview: UpdateConversationRequest =
-        serde_json::from_value(json!({ "name": "late preview", "name_source": "auto" })).unwrap();
-    svc.update(TEST_USER_1, &conversation_id, preview, &runtime_registry)
-        .await
-        .unwrap();
-    let (name, _, _) = title_state(&repo, &conversation_id).await;
-    assert_eq!(name, "My title");
 }
 
 #[tokio::test]
-async fn preview_applies_before_model_title_and_blocked_after() {
-    let (svc, _broadcaster, repo, runtime_registry) = make_service();
+async fn explicitly_named_conversation_is_not_auto_titled() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
     let completer = Arc::new(FakeTitleCompleter::new("title-"));
     svc.with_title_completer(completer.clone());
-    let conversation_id = seed_title_conversation(&repo, "New conversation", json!({})).await;
+    let conversation_id = seed_title_conversation(&repo, "SSH session", json!({})).await;
     repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", "hello title", 10))
         .await
         .unwrap();
 
-    // Preview lands first: no title state yet, so it is applied.
-    let preview: UpdateConversationRequest =
-        serde_json::from_value(json!({ "name": "hello title…", "name_source": "auto" })).unwrap();
-    let updated = svc
-        .update(TEST_USER_1, &conversation_id, preview, &runtime_registry)
-        .await
-        .unwrap();
-    assert_eq!(updated.name, "hello title…");
-
     svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, "hello title".to_owned(), title_session_model())
         .await;
-    let (name, state, _) = title_state(&repo, &conversation_id).await;
-    assert_eq!(name, "title-0");
-    assert_eq!(state.as_deref(), Some("done"));
 
-    // A late (would-be second) preview must not overwrite the model title.
-    let late_preview: UpdateConversationRequest =
-        serde_json::from_value(json!({ "name": "late preview", "name_source": "auto" })).unwrap();
-    svc.update(TEST_USER_1, &conversation_id, late_preview, &runtime_registry)
-        .await
-        .unwrap();
-    let (name, state, _) = title_state(&repo, &conversation_id).await;
-    assert_eq!(name, "title-0");
-    assert_eq!(state.as_deref(), Some("done"));
+    let (name, state, source) = title_state(&repo, &conversation_id).await;
+    assert_eq!(name, "SSH session");
+    assert_eq!(state, None);
+    assert_eq!(source, None);
+    assert!(completer.calls().is_empty());
 }
 
 #[tokio::test]
-async fn first_turn_title_includes_assistant_reply() {
+async fn title_input_contains_only_first_user_message() {
     let (svc, _broadcaster, repo, _runtime_registry) = make_service();
     let completer = Arc::new(FakeTitleCompleter::new("title-"));
     svc.with_title_completer(completer.clone());
-    let conversation_id = seed_title_conversation(&repo, "preview", json!({})).await;
+    let conversation_id = seed_title_conversation(&repo, "hello title", json!({})).await;
     repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", "hello title", 10))
         .await
         .unwrap();
@@ -235,60 +237,209 @@ async fn first_turn_title_includes_assistant_reply() {
     svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, "hello title".to_owned(), title_session_model())
         .await;
 
-    let (name, state, _) = title_state(&repo, &conversation_id).await;
-    assert_eq!(name, "title-0", "the single pass produces the model title");
-    assert_eq!(state.as_deref(), Some("done"));
     let calls = completer.calls();
-    assert_eq!(calls.len(), 1);
-    assert!(
-        calls[0].contains("Assistant: assistant reply"),
-        "the title input must include the first assistant reply, got: {}",
-        calls[0]
-    );
+    assert_eq!(calls, vec!["hello title"]);
 }
 
 #[tokio::test]
-async fn no_assistant_text_still_titles_from_user_input() {
-    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
-    let completer = Arc::new(FakeTitleCompleter::new("title-"));
-    svc.with_title_completer(completer.clone());
-    let conversation_id = seed_title_conversation(&repo, "preview", json!({})).await;
-    repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", "hello title", 10))
-        .await
-        .unwrap();
-
-    // No assistant reply stored: the pass still titles from the user message alone.
-    svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, "hello title".to_owned(), title_session_model())
-        .await;
-
-    let (name, state, _) = title_state(&repo, &conversation_id).await;
-    assert_eq!(name, "title-0");
-    assert_eq!(state.as_deref(), Some("done"));
-    let calls = completer.calls();
-    assert_eq!(calls.len(), 1, "with no assistant text the pass still calls the model once");
-    assert!(
-        !calls[0].contains("Assistant:"),
-        "the input must be user-only when there is no assistant reply, got: {}",
-        calls[0]
-    );
-}
-
-#[tokio::test]
-async fn all_candidates_fail_marks_failed_and_keeps_preview() {
+async fn provisional_title_is_cleaned_and_kept_on_failure() {
     let (svc, _broadcaster, repo, _runtime_registry) = make_service();
     let completer = Arc::new(FakeTitleCompleter::empty());
     svc.with_title_completer(completer.clone());
-    let conversation_id = seed_title_conversation(&repo, "preview", json!({})).await;
+    let input = "<think>internal reasoning</think>\n## 修复会话标题生成中的重复调用以及并发覆盖问题";
+    let conversation_id = seed_title_conversation(&repo, input, json!({})).await;
+    repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", input, 10))
+        .await
+        .unwrap();
+
+    svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, input.to_owned(), title_session_model())
+        .await;
+
+    let (name, state, source) = title_state(&repo, &conversation_id).await;
+    assert!(!name.contains("think"));
+    assert!(!name.contains("#"));
+    assert!(name.starts_with("修复会话标题生成"));
+    assert!(name.chars().count() <= 24);
+    assert_eq!(state.as_deref(), Some("failed"));
+    assert_eq!(source.as_deref(), Some("auto"));
+    assert_eq!(completer.calls(), vec![input]);
+}
+
+#[tokio::test]
+async fn provisional_title_keeps_emoji_and_collapses_whitespace() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let completer = Arc::new(FakeTitleCompleter::empty());
+    svc.with_title_completer(completer);
+    let input = "\n\n* 😀   修复登录问题\n后续内容";
+    let conversation_id = seed_title_conversation(&repo, input, json!({})).await;
+    repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", input, 10))
+        .await
+        .unwrap();
+
+    svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, input.to_owned(), title_session_model())
+        .await;
+
+    let (name, state, _) = title_state(&repo, &conversation_id).await;
+    assert_eq!(name, "😀 修复登录问题");
+    assert_eq!(state.as_deref(), Some("failed"));
+}
+
+#[tokio::test]
+async fn echoed_user_input_keeps_temporary_title_and_fails() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let completer = Arc::new(FakeTitleCompleter::echo_input());
+    svc.with_title_completer(completer.clone());
+    let input = "请修复标题生成问题";
+    let conversation_id = seed_title_conversation(&repo, "", json!({})).await;
+    repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", input, 10))
+        .await
+        .unwrap();
+
+    svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, input.to_owned(), title_session_model())
+        .await;
+
+    let (name, state, source) = title_state(&repo, &conversation_id).await;
+    assert_eq!(name, input);
+    assert_eq!(state.as_deref(), Some("failed"));
+    assert_eq!(source.as_deref(), Some("auto"));
+    assert_eq!(completer.calls(), vec![input]);
+}
+
+#[tokio::test]
+async fn concurrent_title_tasks_have_one_cas_winner() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let completer = Arc::new(FakeTitleCompleter::new("title-"));
+    svc.with_title_completer(completer.clone());
+    let input = "并发标题任务";
+    let conversation_id = seed_title_conversation(&repo, "", json!({})).await;
+    repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", input, 10))
+        .await
+        .unwrap();
+
+    tokio::join!(
+        svc.maybe_autotitle(
+            &conversation_id,
+            MESSAGE_ID_1,
+            input.to_owned(),
+            title_session_model(),
+        ),
+        svc.maybe_autotitle(
+            &conversation_id,
+            MESSAGE_ID_1,
+            input.to_owned(),
+            title_session_model(),
+        )
+    );
+
+    let (name, state, source) = title_state(&repo, &conversation_id).await;
+    assert_eq!(name, "title-0");
+    assert_eq!(state.as_deref(), Some("done"));
+    assert_eq!(source.as_deref(), Some("auto"));
+    assert_eq!(completer.calls().len(), 1);
+}
+
+#[tokio::test]
+async fn blank_first_message_does_not_start_title() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let completer = Arc::new(FakeTitleCompleter::new("title-"));
+    svc.with_title_completer(completer.clone());
+    let conversation_id = seed_title_conversation(&repo, "", json!({})).await;
+    repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", " \n\t", 10))
+        .await
+        .unwrap();
+
+    svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, " \n\t".to_owned(), title_session_model())
+        .await;
+
+    let (name, state, source) = title_state(&repo, &conversation_id).await;
+    assert_eq!(name, "");
+    assert_eq!(state, None);
+    assert_eq!(source, None);
+    assert!(completer.calls().is_empty());
+}
+
+#[tokio::test]
+async fn repeated_and_later_messages_do_not_start_another_title() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let completer = Arc::new(FakeTitleCompleter::new("title-"));
+    svc.with_title_completer(completer.clone());
+    let conversation_id = seed_title_conversation(&repo, "hello title", json!({})).await;
     repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", "hello title", 10))
         .await
         .unwrap();
 
     svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, "hello title".to_owned(), title_session_model())
         .await;
+    svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, "hello title".to_owned(), title_session_model())
+        .await;
 
-    let (name, state, _) = title_state(&repo, &conversation_id).await;
-    assert_eq!(name, "preview", "terminal failure keeps the preview name");
+    repo.insert_message(&title_message_row(&conversation_id, "user-2", "right", "later request", 30))
+        .await
+        .unwrap();
+    svc.maybe_autotitle(&conversation_id, "user-2", "later request".to_owned(), title_session_model())
+        .await;
+
+    assert_eq!(completer.calls(), vec!["hello title"]);
+}
+
+#[tokio::test]
+async fn missing_title_model_marks_failed_without_calling_completer() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let completer = Arc::new(FakeTitleCompleter::new("title-"));
+    svc.with_title_completer(completer.clone());
+    let input = "hello title";
+    let conversation_id = seed_title_conversation(&repo, input, json!({})).await;
+    repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", input, 10))
+        .await
+        .unwrap();
+
+    svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, input.to_owned(), None)
+        .await;
+
+    let (name, state, source) = title_state(&repo, &conversation_id).await;
+    assert_eq!(name, input);
     assert_eq!(state.as_deref(), Some("failed"));
+    assert_eq!(source.as_deref(), Some("auto"));
+    assert!(completer.calls().is_empty());
+}
+
+#[tokio::test]
+async fn title_input_is_limited_to_500_unicode_characters() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let completer = Arc::new(FakeTitleCompleter::new("title-"));
+    svc.with_title_completer(completer.clone());
+    let input = "用户".repeat(300);
+    let conversation_id = seed_title_conversation(&repo, &input, json!({})).await;
+    repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", &input, 10))
+        .await
+        .unwrap();
+
+    svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, input, title_session_model())
+        .await;
+
+    let calls = completer.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].chars().count(), 500);
+}
+
+#[tokio::test]
+async fn all_candidates_fail_marks_failed_and_keeps_temporary_name() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let completer = Arc::new(FakeTitleCompleter::empty());
+    svc.with_title_completer(completer.clone());
+    let input = "## 修复会话标题生成中的重复调用以及并发覆盖问题";
+    let conversation_id = seed_title_conversation(&repo, input, json!({})).await;
+    repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", input, 10))
+        .await
+        .unwrap();
+
+    svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, input.to_owned(), title_session_model())
+        .await;
+
+    let (name, state, source) = title_state(&repo, &conversation_id).await;
+    assert_eq!(name, "修复会话标题生成中的重复调用以及并发覆盖问题");
+    assert_eq!(state.as_deref(), Some("failed"));
+    assert_eq!(source.as_deref(), Some("auto"));
     assert_eq!(completer.calls().len(), 1);
 }
 
@@ -313,8 +464,9 @@ async fn legacy_conversation_is_not_renamed() {
     svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, "new request".to_owned(), title_session_model())
         .await;
 
-    let (name, state, _) = title_state(&repo, &conversation_id).await;
+    let (name, state, source) = title_state(&repo, &conversation_id).await;
     assert_eq!(name, "Existing");
     assert_eq!(state, None);
+    assert_eq!(source, None);
     assert_eq!(completer.calls().len(), 0);
 }

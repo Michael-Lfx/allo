@@ -23,8 +23,8 @@ import styles from './PendingConversationOverlay.module.css';
  * conversation page, shown the instant the user sends from the Guid composer
  * and uncovered (crossfaded) once the destination mounts.
  *
- * It is a static replica of {@link ChatLayout}: the header (logo + the
- * conversation's create-time title), the content column with the just-sent user
+ * It is a static replica of {@link ChatLayout}: the header (logo + any
+ * explicitly provided conversation context), the content column with the just-sent user
  * bubble (same skin/position as MessageText) plus a borderless left-aligned
  * assistant loading line (matching real assistant text — no card), a static
  * composer shell at the same height, and the 32px right tool-rail. Every metric
@@ -45,7 +45,9 @@ const PendingConversationOverlay: React.FC = () => {
 
   const fileCount = pending.files?.length ?? 0;
   const trimmedInput = pending.input.trim();
-  const displayTitle = pending.title?.trim() || trimmedInput;
+  // The first user message is a preview only. The backend owns the formal
+  // fallback title and writes it after the message is durable.
+  const displayTitle = pending.title?.trim() || '';
   // Mirrors NomiSendBox's placeholder contract. backend stays 'Flowy' (the
   // overlay renders before the destination, so the real agent_name isn't known
   // yet) — the common case matches exactly; a custom-named agent differs by one
@@ -83,8 +85,8 @@ const PendingConversationOverlay: React.FC = () => {
           content + composer). Matching its metrics makes the reveal a
           crossfade, not a reflow. */}
       <div className='flex-1 min-w-0 flex flex-col'>
-        {/* Header replica (CHAT_HEADER_CLASSES): logo + the conversation's
-            create-time title, so the title bar is already populated at reveal. */}
+        {/* Header replica (CHAT_HEADER_CLASSES): only explicit context is shown
+            here; a normal message must never be mistaken for a formal title. */}
         <div className={CHAT_HEADER_CLASSES}>
           <div className='flex items-center min-w-0'>
             <div className='shrink-0 flex items-center pl-8px'>

@@ -17,11 +17,11 @@ describe('hasGuidInitialPayload', () => {
 });
 
 describe('planGuidEntry', () => {
-  test('normal send (AutoWork off): sends the typed input as the first message', () => {
+  test('normal send (AutoWork off): starts unnamed and lets the backend title the first message', () => {
     const plan = planGuidEntry('do the thing', { enabled: false });
     expect(plan.autoWorkEntry).toBe(false);
     expect(plan.sendInitialMessage).toBe(true);
-    expect(plan.conversationName).toBe('do the thing');
+    expect(plan.conversationName).toBe('');
   });
 
   test('AutoWork entry (enabled + tag) does NOT send an initial message — avoids the running-turn race', () => {
@@ -39,11 +39,11 @@ describe('planGuidEntry', () => {
     expect(plan.conversationName).toBe('ship v2');
   });
 
-  test('enabled without a tag is not a valid AutoWork entry — falls back to normal send', () => {
+  test('enabled without a tag is not a valid AutoWork entry — normal send remains unnamed', () => {
     const plan = planGuidEntry('hello', { enabled: true });
     expect(plan.autoWorkEntry).toBe(false);
     expect(plan.sendInitialMessage).toBe(true);
-    expect(plan.conversationName).toBe('hello');
+    expect(plan.conversationName).toBe('');
   });
 });
 

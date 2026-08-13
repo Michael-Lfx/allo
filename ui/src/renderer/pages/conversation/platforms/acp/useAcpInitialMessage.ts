@@ -29,7 +29,6 @@ type UseAcpInitialMessageParams = {
   setAiProcessing: (value: boolean) => void;
   markTurnAccepted: (requestMessageId?: MessageId) => void;
   reconcilePublicDeliveryReplay: (completed: boolean) => void;
-  checkAndUpdateTitle: (conversation_id: ConversationId, input: string) => void;
   addOrUpdateMessage: (message: TMessage, prepend?: boolean) => void;
 };
 
@@ -45,7 +44,6 @@ export const useAcpInitialMessage = ({
   setAiProcessing,
   markTurnAccepted,
   reconcilePublicDeliveryReplay,
-  checkAndUpdateTitle,
   addOrUpdateMessage,
 }: UseAcpInitialMessageParams): void => {
   const { t } = useTranslation();
@@ -105,7 +103,6 @@ export const useAcpInitialMessage = ({
         const disposition = classifyPublicMessageDelivery(delivery);
         if (disposition === 'fresh') {
           setAiProcessing(true);
-          void checkAndUpdateTitle(conversation_id, input);
           markTurnAccepted(msg_id);
 
           // Explicit Skill-only loads have visible immutable skill_load
@@ -168,7 +165,6 @@ export const useAcpInitialMessage = ({
   }, [
     addOrUpdateMessage,
     backend,
-    checkAndUpdateTitle,
     conversation_id,
     enabled,
     markTurnAccepted,
