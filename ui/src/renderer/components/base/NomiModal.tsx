@@ -92,7 +92,7 @@ export interface NomiModalProps extends Omit<ModalProps, 'title' | 'footer'> {
 
 // ==================== 样式常量 / Style Constants ====================
 
-const HEADER_BASE_CLASS = 'nomifun-modal-structured-header flex items-center justify-between pb-16px';
+const HEADER_BASE_CLASS = 'nomifun-modal-structured-header flex shrink-0 items-center justify-between pb-16px';
 const TITLE_BASE_CLASS = 'text-16px leading-24px font-600 text-t-primary m-0';
 const CLOSE_BUTTON_CLASS =
   'w-32px h-32px flex items-center justify-center rd-8px transition-colors duration-200 cursor-pointer border-0 bg-transparent p-0 hover:bg-2 focus:outline-none';

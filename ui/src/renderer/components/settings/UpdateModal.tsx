@@ -33,6 +33,29 @@ type UpdateInfo = UpdateReleaseInfo;
 
 const BAIDU_RELEASE_MIRROR_URL = 'https://pan.baidu.com/s/5GPonoJNrwJ7GciBSDgXLaA';
 
+const COMPACT_PANEL_CLASS = 'flex flex-col items-center px-24px pt-24px pb-28px';
+const COMPACT_ICON_WRAP_CLASS =
+  'mb-12px flex h-48px w-48px shrink-0 items-center justify-center rounded-full';
+
+const CompactUpdatePanel: React.FC<{
+  icon: React.ReactNode;
+  iconWrapClassName?: string;
+  title: string;
+  description?: React.ReactNode;
+  extra?: React.ReactNode;
+  actions?: React.ReactNode;
+}> = ({ icon, iconWrapClassName, title, description, extra, actions }) => (
+  <div className={COMPACT_PANEL_CLASS}>
+    <div className={`${COMPACT_ICON_WRAP_CLASS} ${iconWrapClassName ?? ''}`.trim()}>{icon}</div>
+    <div className='text-15px font-600 text-t-primary'>{title}</div>
+    {description ? (
+      <div className='mt-8px max-w-240px text-center text-12px leading-18px text-t-secondary'>{description}</div>
+    ) : null}
+    {extra}
+    {actions ? <div className='mt-20px flex flex-wrap justify-center gap-8px'>{actions}</div> : null}
+  </div>
+);
+
 const UpdateModal: React.FC = () => {
   const { t } = useTranslation();
   /** Bundled Tauri shell — in-app OTA via ModelScope + tauri-plugin-updater only. */
@@ -489,18 +512,11 @@ const UpdateModal: React.FC = () => {
   };
 
   const renderManualDownloadHints = () => {
-    if (isNativeUpdater) {
-      return (
-        <div className='mx-24px mt-12px px-12px py-10px rounded-8px border border-solid border-[rgba(var(--primary-6),0.16)] bg-[rgba(var(--primary-6),0.06)] text-12px leading-18px text-t-secondary'>
-          {t('update.downloadSourceHint')}
-        </div>
-      );
-    }
+    if (isNativeUpdater) return null;
 
     return (
       <div className='mx-24px mt-12px px-12px py-10px rounded-8px border border-solid border-[rgba(var(--primary-6),0.16)] bg-[rgba(var(--primary-6),0.06)] text-12px leading-18px text-t-secondary'>
-        <div>{t('update.downloadSourceHint')}</div>
-        <div className='mt-4px'>
+        <div>
           {t('update.baiduMirrorHint')}{' '}
           <button
             type='button'
@@ -519,32 +535,31 @@ const UpdateModal: React.FC = () => {
     switch (status) {
       case 'checking':
         return (
-          <div className='flex flex-col items-center justify-center py-48px'>
-            {/* 环形 spinner：border-3 是颜色类（--bg-3）而不是 3px 宽度，配上本仓库没有
-                border-style 全局重置，两层圆环一条边都画不出来。宽度/样式/颜色分开写。
-                `border-3` is a colour (--bg-3), not a width — with no border-style
-                reset in this repo both rings painted nothing. */}
-            <div className='w-48px h-48px mb-20px relative'>
-              <div className='absolute inset-0 border-3px border-solid border-[var(--color-fill-3)] rounded-full' />
-              <div className='absolute inset-0 border-3px border-solid border-primary border-t-transparent rounded-full animate-spin' />
-            </div>
-            <div className='text-15px text-t-primary font-500'>{t('update.checking')}</div>
-            <div className='mt-16px'>{renderBaiduManualDownloadButton()}</div>
-          </div>
+          <CompactUpdatePanel
+            icon={
+              <div className='relative h-48px w-48px'>
+                {/* 环形 spinner：border-3 是颜色类（--bg-3）而不是 3px 宽度，配上本仓库没有
+                    border-style 全局重置，两层圆环一条边都画不出来。宽度/样式/颜色分开写。
+                    `border-3` is a colour (--bg-3), not a width — with no border-style
+                    reset in this repo both rings painted nothing. */}
+                <div className='absolute inset-0 rounded-full border-3px border-solid border-[var(--color-fill-3)]' />
+                <div className='absolute inset-0 animate-spin rounded-full border-3px border-solid border-primary border-t-transparent' />
+              </div>
+            }
+            title={t('update.checking')}
+            actions={renderBaiduManualDownloadButton()}
+          />
         );
 
       case 'upToDate':
         return (
-          <div className='flex flex-col items-center justify-center py-48px'>
-            <div className='w-56px h-56px bg-[rgb(var(--success-6))]/12 rounded-full flex items-center justify-center mb-20px'>
-              <CheckOne theme='filled' size='28' fill='rgb(var(--success-6))' />
-            </div>
-            <div className='text-16px text-t-primary font-600 mb-8px'>{t('update.upToDateTitle')}</div>
-            <div className='text-13px text-t-tertiary'>
-              {t('update.currentVersion', { version: currentVersion || '-' })}
-            </div>
-            <div className='mt-16px'>{renderBaiduManualDownloadButton()}</div>
-          </div>
+          <CompactUpdatePanel
+            icon={<CheckOne theme='filled' size='24' fill='rgb(var(--success-6))' />}
+            iconWrapClassName='bg-[rgb(var(--success-6))]/12'
+            title={t('update.upToDateTitle')}
+            description={t('update.currentVersion', { version: currentVersion || '-' })}
+            actions={renderBaiduManualDownloadButton()}
+          />
         );
 
       case 'available':
@@ -583,7 +598,7 @@ const UpdateModal: React.FC = () => {
             {renderManualDownloadHints()}
 
             {/* Release notes content */}
-            <div className='flex-1 min-h-0 overflow-y-auto px-24px py-16px custom-scrollbar'>
+            <div className='min-h-0 flex-1 overflow-y-auto px-24px py-16px custom-scrollbar'>
               {updateInfo?.name && <div className='text-14px font-500 text-t-primary mb-12px'>{updateInfo.name}</div>}
               {updateInfo?.body || autoUpdateInfo?.releaseNotes ? (
                 <div className='text-13px text-t-secondary leading-relaxed'>
@@ -598,142 +613,144 @@ const UpdateModal: React.FC = () => {
 
       case 'downloading':
         return (
-          <div className='flex flex-col items-center justify-center py-48px px-32px'>
-            <div className='w-56px h-56px bg-[rgb(var(--primary-6))]/12 rounded-full flex items-center justify-center mb-20px'>
-              <Download size='24' fill='rgb(var(--primary-6))' className='animate-bounce' />
-            </div>
-            <div className='text-16px text-t-primary font-600 mb-20px'>{t('update.downloadingTitle')}</div>
-            <div className='w-full max-w-320px'>
-              <Progress
-                percent={progress.percent}
-                status='normal'
-                showText={false}
-                strokeWidth={6}
-                className='!mb-12px'
-              />
-              <div className='flex justify-between text-12px text-t-tertiary'>
-                <span>
-                  {/* A missing Content-Length leaves the total unknown; showing
-                      "12.4 MB / 0.0 KB" read as a broken download. */}
-                  {progress.total > 0
-                    ? `${formatSize(progress.transferred)} / ${formatSize(progress.total)}`
-                    : formatSize(progress.transferred)}
-                </span>
-                <span className='text-[rgb(var(--primary-6))] font-500'>{progress.speed}</span>
+          <CompactUpdatePanel
+            icon={<Download size='22' fill='rgb(var(--primary-6))' className='animate-bounce' />}
+            iconWrapClassName='bg-[rgb(var(--primary-6))]/12'
+            title={t('update.downloadingTitle')}
+            extra={
+              <div className='mt-16px w-full max-w-280px'>
+                <Progress
+                  percent={progress.percent}
+                  status='normal'
+                  showText={false}
+                  strokeWidth={6}
+                  className='!mb-8px'
+                />
+                <div className='flex justify-between text-12px text-t-tertiary'>
+                  <span>
+                    {progress.total > 0
+                      ? `${formatSize(progress.transferred)} / ${formatSize(progress.total)}`
+                      : formatSize(progress.transferred)}
+                  </span>
+                  <span className='font-500 text-[rgb(var(--primary-6))]'>{progress.speed}</span>
+                </div>
               </div>
-            </div>
-            <div className='mt-16px'>{renderBaiduManualDownloadButton()}</div>
-          </div>
+            }
+            actions={renderBaiduManualDownloadButton()}
+          />
         );
 
       case 'downloaded':
         return (
-          <div className='flex flex-col items-center justify-center py-48px px-32px'>
-            <div className='w-56px h-56px bg-[rgb(var(--success-6))]/12 rounded-full flex items-center justify-center mb-20px'>
-              <CheckOne theme='filled' size='28' fill='rgb(var(--success-6))' />
-            </div>
-            <div className='text-16px text-t-primary font-600 mb-8px'>{t('update.readyToInstall')}</div>
-            <div className='mb-24px text-13px text-[rgb(var(--warning-6))] max-w-360px text-center'>
-              {t('update.installWarning')}
-            </div>
-            <div className='flex flex-wrap justify-center gap-12px'>
-              <Button
-                type='primary'
-                size='small'
-                onClick={quitAndInstall}
-                icon={<Install size='14' />}
-                className='!px-16px'
-              >
-                {t('update.installNow')}
-              </Button>
-              {renderBaiduManualDownloadButton()}
-            </div>
-          </div>
+          <CompactUpdatePanel
+            icon={<Install size='22' fill='rgb(var(--primary-6))' />}
+            iconWrapClassName='bg-[rgb(var(--primary-6))]/12'
+            title={t('update.readyToInstall')}
+            description={t('update.installWarning')}
+            actions={
+              <>
+                <Button type='primary' onClick={quitAndInstall} className='!px-20px min-w-128px'>
+                  <span className='inline-flex items-center' style={{ gap: 10 }}>
+                    <Install theme='outline' size='16' fill='currentColor' strokeWidth={3} />
+                    {t('update.installNow')}
+                  </span>
+                </Button>
+                {renderBaiduManualDownloadButton()}
+              </>
+            }
+          />
         );
 
       case 'installing': {
         const isHandingOff = installPhase === 'installing';
         return (
-          <div className='flex flex-col items-center justify-center py-48px px-32px'>
-            <div className='w-56px h-56px mb-20px relative'>
-              <div className='absolute inset-0 border-3px border-solid border-[var(--color-fill-3)] rounded-full' />
-              <div className='absolute inset-0 border-3px border-solid border-primary border-t-transparent rounded-full animate-spin' />
-              <div className='absolute inset-0 flex items-center justify-center'>
-                <Install size='20' fill='rgb(var(--primary-6))' />
+          <CompactUpdatePanel
+            icon={
+              <div className='relative h-48px w-48px'>
+                <div className='absolute inset-0 rounded-full border-3px border-solid border-[var(--color-fill-3)]' />
+                <div className='absolute inset-0 animate-spin rounded-full border-3px border-solid border-primary border-t-transparent' />
+                <div className='absolute inset-0 flex items-center justify-center'>
+                  <Install size='18' fill='rgb(var(--primary-6))' />
+                </div>
               </div>
-            </div>
-            <div aria-live='polite' className='text-center'>
-              <div className='text-16px text-t-primary font-600 mb-8px'>
-                {isHandingOff ? t('update.installingTitle') : t('update.preparingInstallTitle')}
-              </div>
-              <div className='text-13px text-t-tertiary max-w-360px'>
+            }
+            title={isHandingOff ? t('update.installingTitle') : t('update.preparingInstallTitle')}
+            description={
+              <span aria-live='polite'>
                 {isHandingOff ? t('update.installingDesc') : t('update.preparingInstallDesc')}
-              </div>
-            </div>
-          </div>
+              </span>
+            }
+          />
         );
       }
 
       case 'success':
         return (
-          <div className='flex flex-col items-center justify-center py-48px px-32px'>
-            <div className='w-56px h-56px bg-[rgb(var(--success-6))]/12 rounded-full flex items-center justify-center mb-20px'>
-              <CheckOne theme='filled' size='28' fill='rgb(var(--success-6))' />
-            </div>
-            <div className='text-16px text-t-primary font-600 mb-8px'>{t('update.downloadCompleteTitle')}</div>
-            <div className='text-12px text-t-tertiary mb-24px text-center max-w-360px break-all line-clamp-2'>
-              {downloadPath}
-            </div>
-            <div className='flex flex-wrap justify-center gap-12px'>
-              <Button size='small' onClick={showInFolder} icon={<FolderOpen size='14' />} className='!px-16px'>
-                {t('update.showInFolder')}
-              </Button>
-              <Button type='primary' size='small' onClick={openFile} className='!px-16px'>
-                {t('update.openFile')}
-              </Button>
-              {renderBaiduManualDownloadButton()}
-            </div>
-          </div>
+          <CompactUpdatePanel
+            icon={<CheckOne theme='filled' size='24' fill='rgb(var(--success-6))' />}
+            iconWrapClassName='bg-[rgb(var(--success-6))]/12'
+            title={t('update.downloadCompleteTitle')}
+            description={<span className='break-all line-clamp-2'>{downloadPath}</span>}
+            actions={
+              <>
+                <Button size='small' onClick={showInFolder} icon={<FolderOpen size='14' />} className='!px-16px'>
+                  {t('update.showInFolder')}
+                </Button>
+                <Button type='primary' size='small' onClick={openFile} className='!px-16px'>
+                  {t('update.openFile')}
+                </Button>
+                {renderBaiduManualDownloadButton()}
+              </>
+            }
+          />
         );
 
       case 'error':
         return (
-          <div className='flex flex-col items-center justify-center py-48px px-32px'>
-            <div className='w-56px h-56px bg-[rgb(var(--danger-6))]/12 rounded-full flex items-center justify-center mb-20px'>
-              <CloseOne theme='filled' size='28' fill='rgb(var(--danger-6))' />
-            </div>
-            <div className='text-16px text-t-primary font-600 mb-8px'>{t('update.errorTitle')}</div>
-            <div className='text-13px text-t-tertiary mb-24px text-center max-w-360px'>{errorMsg}</div>
-            <div className='flex flex-wrap justify-center gap-12px'>
-              <Button size='small' onClick={checkForUpdates} icon={<Refresh size='14' />} className='!px-16px'>
-                {t('common.retry')}
-              </Button>
-              {!isNativeUpdater && renderBaiduManualDownloadButton()}
-            </div>
-          </div>
+          <CompactUpdatePanel
+            icon={<CloseOne theme='filled' size='24' fill='rgb(var(--danger-6))' />}
+            iconWrapClassName='bg-[rgb(var(--danger-6))]/12'
+            title={t('update.errorTitle')}
+            description={errorMsg}
+            actions={
+              <>
+                <Button onClick={checkForUpdates} icon={<Refresh size='16' />} className='!px-20px'>
+                  {t('common.retry')}
+                </Button>
+                {!isNativeUpdater && renderBaiduManualDownloadButton()}
+              </>
+            }
+          />
         );
     }
   };
+
+  const showReleaseNotes = status === 'available';
 
   return (
     <NomiModal
       visible={visible}
       onCancel={handleClose}
-      size={status === 'available' ? 'medium' : 'small'}
+      size={showReleaseNotes ? 'medium' : 'small'}
+      style={showReleaseNotes ? { height: '520px' } : { height: 'auto', width: '360px' }}
       header={{
         title: t('update.modalTitle'),
         showClose: status !== 'installing',
       }}
-      footer={{ render: () => null }}
+      footer={null}
       contentStyle={{
-        height: status === 'available' ? '420px' : 'auto',
+        height: showReleaseNotes ? '420px' : 'auto',
         padding: 0,
-        overflow: 'hidden',
+        overflow: showReleaseNotes ? 'hidden' : 'auto',
       }}
     >
-      <div className='flex flex-col h-full w-full'>
-        <div className='min-h-0 flex-1'>{renderContent()}</div>
-      </div>
+      {showReleaseNotes ? (
+        <div className='flex h-full w-full flex-col'>
+          <div className='min-h-0 flex-1'>{renderContent()}</div>
+        </div>
+      ) : (
+        renderContent()
+      )}
     </NomiModal>
   );
 };

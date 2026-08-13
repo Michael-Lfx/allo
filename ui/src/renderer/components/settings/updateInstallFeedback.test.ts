@@ -118,6 +118,22 @@ describe('update install interaction feedback', () => {
     expect(guard.includes("evt.status === 'error'")).toBe(true);
   });
 
+  test('compact statuses grow to fit the install action instead of clipping it', () => {
+    // `size="small"` locks the dialog at 300px. Combined with overflow:hidden and
+    // an empty structured footer, Ready-to-install clipped the Install button
+    // with no way to scroll to it.
+    expect(modalSource.includes("footer={null}")).toBe(true);
+    expect(modalSource.includes('footer={{ render: () => null }}')).toBe(false);
+    expect(modalSource.includes("style={showReleaseNotes ? { height: '520px' } : { height: 'auto', width: '360px' }}")).toBe(
+      true,
+    );
+    expect(modalSource.includes("height: showReleaseNotes ? '420px' : 'auto'")).toBe(true);
+    expect(modalSource.includes("overflow: showReleaseNotes ? 'hidden' : 'auto'")).toBe(true);
+    expect(modalSource.includes('CompactUpdatePanel')).toBe(true);
+    expect(modalSource.includes('max-w-240px')).toBe(true);
+    expect(modalSource.includes('py-48px')).toBe(false);
+  });
+
   test('an install refused for a missing package lands on a screen that can act', () => {
     // 'downloaded' offers only Install — the button that just failed. The new
     // recoverable path must send the user somewhere the prescribed re-download

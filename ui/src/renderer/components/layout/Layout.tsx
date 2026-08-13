@@ -7,13 +7,10 @@ import type { ICssTheme } from '@/common/config/storage';
 import appLogo from '@renderer/assets/logo.svg';
 import PwaPullToRefresh from '@/renderer/components/layout/PwaPullToRefresh';
 import Titlebar from '@/renderer/components/layout/Titlebar';
-import InstantHoverTooltip from '@/renderer/components/base/InstantHoverTooltip';
 import { UPDATE_AVAILABLE_EVENT } from '@/renderer/components/layout/Titlebar/TitlebarUpdateButton';
 import { Layout as ArcoLayout } from '@arco-design/web-react';
-import { Download } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { useTranslation } from 'react-i18next';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { LayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { NavigationHistoryProvider } from '@renderer/hooks/context/NavigationHistoryContext';
@@ -24,7 +21,6 @@ import { useAutoWorkDesktopNotify } from '@renderer/hooks/system/useAutoWorkDesk
 import {
   reportNoUpdateAvailable,
   reportUpdateAvailable,
-  useUpdateAvailability,
 } from '@renderer/hooks/system/useUpdateAvailability';
 import { useDirectorySelection } from '@renderer/hooks/file/useDirectorySelection';
 import { processCustomCss } from '@renderer/utils/theme/customCssProcessor';
@@ -147,7 +143,6 @@ const Layout: React.FC<{
   /** When set, replaces `<Outlet />` (auth gate keeps chrome without mounting child routes). */
   children?: React.ReactNode;
 }> = ({ sider, onSessionClick: _onSessionClick, children }) => {
-  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
   const [railWidth, setRailWidth] = useState<number>(() => readStoredRailWidth());
   const [isMobile, setIsMobile] = useState(false);
@@ -157,7 +152,6 @@ const Layout: React.FC<{
   const [customCss, setCustomCss] = useState<string>('');
   const [shouldMountUpdateModal, setShouldMountUpdateModal] = useState(false);
   const [appVersion, setAppVersion] = useState('');
-  const updateAvailability = useUpdateAvailability();
   const { onClick } = useDebug();
   const { contextHolder: directorySelectionContextHolder } = useDirectorySelection();
   useDeepLink();
@@ -166,9 +160,6 @@ const Layout: React.FC<{
   const navigate = useNavigate();
   useConversationShortcuts({ navigate });
   const location = useLocation();
-  const updateButtonLabel = updateAvailability.version
-    ? `${t('update.availableTitle')}: ${updateAvailability.version}`
-    : t('update.availableTitle');
 
   useEffect(() => {
     let alive = true;
@@ -621,22 +612,6 @@ const Layout: React.FC<{
                   <span className='truncate text-16px text-t-primary font-semibold'>Flowy</span>
                   {appVersion && <span className='sidebar-app-version'>v{appVersion}</span>}
                 </div>
-                {updateAvailability.available && !collapsed && (
-                  <InstantHoverTooltip content={updateButtonLabel} position='right' className='ml-auto'>
-                    <button
-                      type='button'
-                      className='sidebar-update-button'
-                      aria-label={updateButtonLabel}
-                      onClick={() => {
-                        window.dispatchEvent(
-                          new CustomEvent('nomifun-open-update-modal', { detail: { source: 'sidebar' } })
-                        );
-                      }}
-                    >
-                      <Download theme='outline' size={11} fill='currentColor' strokeWidth={4} />
-                    </button>
-                  </InstantHoverTooltip>
-                )}
                 {isMobile && !collapsed && (
                   <button
                     type='button'
