@@ -74,7 +74,8 @@ struct ExportMeta {
 // ── Export ──────────────────────────────────────────────────────────
 
 /// Package the base `kb_id` into a zip at `dest_path` (written atomically
-/// via `{dest}.tmp` + rename).
+/// via `{dest}.tmp` + rename). If `dest_path` is an existing directory, the
+/// zip is written inside it as `{sanitized_base_name}.zip`.
 pub async fn export_base(
     service: &KnowledgeService,
     kb_id: &str,
@@ -96,20 +97,51 @@ pub async fn export_base(
         return Err(AppError::BadRequest("dest_path must be absolute".into()));
     }
 
+    // The desktop picker currently hands us a folder. Treat an existing
+    // directory as "write `{name}.zip` inside it" so we never `rename` a
+    // tempfile onto a directory (Windows: Access Denied / os error 5).
+    let dest = resolve_export_dest(dest_path, &info.name);
     let meta = ExportMeta {
         name: info.name,
         description: info.description,
     };
-    let dest = dest_path.to_path_buf();
-    let (file_count, total_bytes) = tokio::task::spawn_blocking(move || build_zip(&root, &meta, &dest))
+    let dest_for_task = dest.clone();
+    let (file_count, total_bytes) = tokio::task::spawn_blocking(move || build_zip(&root, &meta, &dest_for_task))
         .await
         .map_err(|e| AppError::Internal(format!("export task join error: {e}")))??;
 
     Ok(ExportSummary {
         file_count,
         total_bytes,
-        dest_path: dest_path.to_string_lossy().to_string(),
+        dest_path: dest.to_string_lossy().to_string(),
     })
+}
+
+/// If `dest_path` is an existing directory, write `{sanitized_name}.zip` inside
+/// it; otherwise treat it as the zip file path.
+fn resolve_export_dest(dest_path: &Path, kb_name: &str) -> PathBuf {
+    if dest_path.is_dir() {
+        dest_path.join(export_zip_filename(kb_name))
+    } else {
+        dest_path.to_path_buf()
+    }
+}
+
+fn export_zip_filename(name: &str) -> String {
+    let mut safe = String::with_capacity(name.len());
+    for c in name.chars() {
+        if matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+            safe.push('-');
+        } else {
+            safe.push(c);
+        }
+    }
+    let safe = safe.trim().trim_matches('.').trim();
+    if safe.is_empty() {
+        "knowledge-base.zip".to_owned()
+    } else {
+        format!("{safe}.zip")
+    }
 }
 
 /// Blocking core of the export: walk `root` for `.md` files and write the
@@ -130,9 +162,23 @@ fn build_zip(root: &Path, meta: &ExportMeta, dest: &Path) -> Result<(u64, u64), 
             return Err(e);
         }
     };
-    if let Err(e) = std::fs::rename(&tmp, dest) {
+    if dest.is_dir() {
         let _ = std::fs::remove_file(&tmp);
-        return Err(AppError::Internal(format!("failed to finalize export file: {e}")));
+        return Err(AppError::BadRequest(format!(
+            "export dest_path is a directory: {}",
+            dest.display()
+        )));
+    }
+    if let Err(e) = std::fs::rename(&tmp, dest) {
+        match std::fs::copy(&tmp, dest) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(AppError::Internal(format!("failed to finalize export file: {e}")));
+            }
+        }
     }
     Ok(counts)
 }
@@ -186,7 +232,9 @@ fn write_zip_to(root: &Path, meta: &ExportMeta, tmp: &Path) -> Result<(u64, u64)
         total_bytes += bytes.len() as u64;
     }
 
-    zip.finish().map_err(zip_err)?;
+    let file = zip.finish().map_err(zip_err)?;
+    file.sync_all().map_err(io_err("failed to fsync export file"))?;
+    drop(file);
     Ok((file_count, total_bytes))
 }
 
@@ -446,6 +494,47 @@ mod tests {
         format!(
             r#"{{"format":"nomifun-export","version":{version},"kind":"{kind}","exported_at":0,"app_version":"0.0.0"}}"#
         )
+    }
+
+    #[tokio::test]
+    async fn export_to_existing_directory_writes_named_zip_inside() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source = make_service(&dir.path().join("data"));
+        let kb = source.create_base("空白", "", None, None).await.unwrap();
+        source.write_file(&kb.knowledge_base_id, "guide.md", "# 指南").await.unwrap();
+
+        let dest_dir = dir.path().join("exports");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        let summary = export_base(&source, &kb.knowledge_base_id, &dest_dir).await.unwrap();
+
+        let expected = dest_dir.join("空白.zip");
+        assert_eq!(Path::new(&summary.dest_path), expected.as_path());
+        assert!(expected.is_file(), "zip must land inside the picked folder");
+        assert!(!PathBuf::from(format!("{}.tmp", dest_dir.display())).exists());
+    }
+
+    #[tokio::test]
+    async fn export_replaces_existing_zip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source = make_service(&dir.path().join("data"));
+        let kb = source.create_base("库", "", None, None).await.unwrap();
+        source.write_file(&kb.knowledge_base_id, "a.md", "hello").await.unwrap();
+
+        let zip_path = dir.path().join("kb.zip");
+        std::fs::write(&zip_path, b"stale-not-a-zip").unwrap();
+        export_base(&source, &kb.knowledge_base_id, &zip_path).await.unwrap();
+
+        let file = std::fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("files/a.md").is_ok());
+    }
+
+    #[test]
+    fn export_zip_filename_sanitizes_reserved_chars() {
+        assert_eq!(export_zip_filename("空白"), "空白.zip");
+        assert_eq!(export_zip_filename("a/b:c*d"), "a-b-c-d.zip");
+        assert_eq!(export_zip_filename("   "), "knowledge-base.zip");
+        assert_eq!(export_zip_filename(""), "knowledge-base.zip");
     }
 
     #[tokio::test]
