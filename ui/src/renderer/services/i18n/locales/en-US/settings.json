@@ -1659,6 +1659,7 @@
     "clearsRequirements": "All requirements, tasks, and attachments",
     "clearsCompanions": "All companions and their memories",
     "clearsKnowledge": "All knowledge bases and managed files",
+    "clearsVideoGeneration": "All video generation projects, artifacts, and skills",
     "clearsSettings": "All settings, model providers, channels, and preferences",
     "restartNotice": "The app will restart immediately and rebuild a fresh, empty database.",
     "typePrompt": "Type \"{{phrase}}\" to confirm:",

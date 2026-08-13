@@ -4648,6 +4648,7 @@ export type I18nKey =
   | 'settings.factoryReset.clearsKnowledge'
   | 'settings.factoryReset.clearsRequirements'
   | 'settings.factoryReset.clearsSettings'
+  | 'settings.factoryReset.clearsVideoGeneration'
   | 'settings.factoryReset.confirmButton'
   | 'settings.factoryReset.confirmPhrase'
   | 'settings.factoryReset.dangerZone'
