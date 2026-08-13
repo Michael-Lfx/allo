@@ -131,6 +131,29 @@ impl LearningService {
                 request.knowledge_base_id
             )));
         }
+        // One active generation job per knowledge base at a time. The agent
+        // path can fire the generate tool twice in a single provider turn
+        // (parallel tool calls) or right after a lost response; every job
+        // imports its own course, so two jobs would silently produce two
+        // near-identical courses. Reject the duplicate up front and point at
+        // the already-running job so the caller can wait or cancel it.
+        let active_job: Option<String> = sqlx::query_scalar(
+            "SELECT job_id FROM learning_course_jobs \
+             WHERE user_id = ? AND kb_id = ? AND status NOT IN ('completed', 'failed', 'cancelled') \
+             ORDER BY created_at ASC LIMIT 1",
+        )
+        .bind(user_id.as_str())
+        .bind(request.knowledge_base_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        if let Some(active_job) = active_job {
+            return Err(AppError::Conflict(format!(
+                "knowledge base {} already has an active course-generation job ({active_job}); \
+                 wait for it to complete or cancel it before starting another",
+                request.knowledge_base_id
+            )));
+        }
         let job_id = generate_id();
         let now = now_ms();
         let request_json = serde_json::to_string(&request).map_err(internal)?;
@@ -3601,9 +3624,136 @@ const SKIP_DELAY_MS: i64 = 86_400_000;
 mod tests {
     use super::*;
     use crate::models::{ActivityPack, ConceptPack, LessonPack, ModulePack};
+    use nomifun_api_types::WebSocketMessage;
     use serde_json::json;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    #[derive(Default)]
+    struct NoopBroadcaster;
+
+    impl nomifun_realtime::UserEventSink for NoopBroadcaster {
+        fn send_to_user(&self, _user_id: &str, _event: WebSocketMessage<serde_json::Value>) {}
+    }
+
+    /// Placeholder completer: job-start tests never reach the LLM, but
+    /// `set_generation_dependencies` requires a completer value.
+    struct UnusedCompleter;
+
+    #[async_trait::async_trait]
+    impl nomifun_knowledge::KnowledgeCompleter for UnusedCompleter {
+        async fn complete(
+            &self,
+            _system: &str,
+            _user: &str,
+        ) -> Result<String, nomifun_common::AppError> {
+            Err(nomifun_common::AppError::Internal(
+                "job tests do not invoke the completer".into(),
+            ))
+        }
+    }
+
+    async fn job_test_service() -> (LearningService, Arc<KnowledgeService>, nomifun_common::UserId) {
+        let data_dir = tempfile::tempdir().unwrap();
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let owner = nomifun_common::UserId::parse(&owner_id).unwrap();
+        let knowledge_service = Arc::new(KnowledgeService::new(
+            Arc::new(nomifun_db::SqliteKnowledgeRepository::new(
+                database.pool().clone(),
+            )),
+            data_dir.path(),
+            nomifun_knowledge::KnowledgeEventEmitter::new(
+                Arc::new(NoopBroadcaster),
+                Arc::from(owner_id),
+            ),
+        ));
+        let learning_service = LearningService::new(database.pool().clone());
+        learning_service.set_generation_dependencies(
+            knowledge_service.clone(),
+            Arc::new(UnusedCompleter),
+        );
+        (learning_service, knowledge_service, owner)
+    }
+
+    async fn generation_request(
+        knowledge_service: &KnowledgeService,
+    ) -> GenerateCourseRequest {
+        let base = knowledge_service
+            .quick_create_base(Some("Math"), None, "blank", None, None, None, None)
+            .await
+            .unwrap();
+        GenerateCourseRequest {
+            knowledge_base_id: base.base.knowledge_base_id.parse().unwrap(),
+            domain: None,
+            provider_id: None,
+            model: None,
+            module_count: 3,
+            lessons_per_module: 3,
+        }
+    }
+
+    #[tokio::test]
+    async fn start_course_job_rejects_active_duplicate_for_same_base() {
+        let (service, knowledge_service, owner_id) = job_test_service().await;
+        let request = generation_request(&knowledge_service).await;
+        // Simulate an already-running job (the background runner may not have
+        // claimed it yet): the second submission must be refused with a
+        // conflict pointing at the active job.
+        let active_job_id = "0190f5fe-7c00-7a00-8000-0000000000ff";
+        let request_json = serde_json::to_string(&request).unwrap();
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO learning_course_jobs \
+             (job_id, user_id, session_id, source, kb_id, request_json, status, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+        )
+        .bind(active_job_id)
+        .bind(owner_id.as_str())
+        .bind(Option::<&str>::None)
+        .bind(CourseJobSource::Agent.as_str())
+        .bind(request.knowledge_base_id.as_str())
+        .bind(&request_json)
+        .bind(now)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        let error = service
+            .start_course_job(request.clone(), &owner_id, CourseJobSource::Http, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, AppError::Conflict(message) if message.contains(active_job_id)),
+            "expected a conflict naming the active job, got {error}"
+        );
+        // The slot is per-user: another user's submission on the same base
+        // is not blocked by the active job.
+        let other_user = nomifun_common::UserId::new();
+        service
+            .start_course_job(request.clone(), &other_user, CourseJobSource::Http, None)
+            .await
+            .unwrap();
+        // A terminal job releases the slot: the same base can be generated
+        // again. Status is not asserted here because the background runner
+        // may have already advanced (or failed) the fresh job by the time the
+        // response view is built.
+        sqlx::query(
+            "UPDATE learning_course_jobs SET status = 'completed', updated_at = ? \
+             WHERE job_id = ?",
+        )
+        .bind(now_ms())
+        .bind(active_job_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        service
+            .start_course_job(request, &owner_id, CourseJobSource::Http, None)
+            .await
+            .unwrap();
+    }
 
     fn valid_pack() -> CoursePack {
         CoursePack {
