@@ -486,7 +486,8 @@ fn is_seedance_caption_empty_err(err: &nomifun_cloud::ServerClientError) -> bool
 /// Append a strong ambient/BGM caption block so a second attempt can keep `generate_audio=true`.
 fn reinforce_seedance_audio_captions(prompt: &str) -> String {
     const REINFORCE: &str = "Throughout: <clear environmental ambience and scene-matched foley> \
-(continuous cinematic atmospheric underscore, gentle and present for the full clip)";
+(soft continuous cinematic atmospheric underscore, same motif tempo and instrumentation \
+across adjacent shots, stable moderate volume)";
     let trimmed = prompt.trim_end();
     if trimmed.to_ascii_lowercase().contains("throughout:") {
         format!(

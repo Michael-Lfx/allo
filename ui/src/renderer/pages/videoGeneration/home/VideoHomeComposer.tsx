@@ -857,8 +857,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 </div>
               )}
               <div className={styles.promptEditor}>
-                {mode === 'agent'
-                  ? selectedVerticalSkills.map((skill, index) => (
+                {mode === 'agent' && selectedVerticalSkills.length > 0 ? (
+                  <div className={styles.skillChips}>
+                    {selectedVerticalSkills.map((skill, index) => (
                       <React.Fragment key={skill.id}>
                         {index > 0 ? (
                           <span className={styles.skillDiamond} aria-hidden='true' />
@@ -885,8 +886,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                           <CloseSmall size={11} />
                         </button>
                       </React.Fragment>
-                    ))
-                  : null}
+                    ))}
+                  </div>
+                ) : null}
                 <TextArea
                   value={activeText}
                   onChange={setActiveText}
@@ -896,9 +898,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                       : placeholder
                   }
                   disabled={loading}
-                  className={`${styles.promptInput} ${
-                    selectedVerticalSkills.length > 0 ? styles.promptInputWithSkills : ''
-                  }`}
+                  className={styles.promptInput}
                   onKeyDown={handlePromptKeyDown}
                 />
               </div>

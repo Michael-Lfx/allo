@@ -12,21 +12,28 @@ pub const DEFAULT_TARGET_DURATION_SECS: u32 = 45;
 /// Max user-facing film target (UI timeline + plan/render clamp).
 pub const MAX_TARGET_DURATION_SECS: u32 = 300;
 
-/// Clear spoken Chinese chars/sec for Seedance (deliberately slower than
-/// conversational chat — rushed clips swallow syllables / 吞字).
-const SPEECH_CJK_CHARS_PER_SEC: f32 = 1.7;
-/// Clear spoken English words/sec (same conservative bias as CJK).
-const SPEECH_EN_WORDS_PER_SEC: f32 = 1.35;
+/// Clear spoken Chinese chars/sec for Seedance.
+/// Slightly under conversational chat to avoid 吞字, but not so slow that clips feel padded.
+const SPEECH_CJK_CHARS_PER_SEC: f32 = 1.9;
+/// Clear spoken English words/sec (aligned with the CJK bias above).
+const SPEECH_EN_WORDS_PER_SEC: f32 = 1.5;
 /// Breath / reaction beat before the first spoken syllable.
 const SPEECH_LEAD_SECS: u32 = 1;
 /// Tail seconds after the last spoken syllable so audio is not cut mid-breath.
-const SPEECH_TAIL_SECS: u32 = 5;
+/// Keep short: reaction/action should fill the landing, not empty hold.
+const SPEECH_TAIL_SECS: u32 = 2;
 /// Dialogue shots should not be shorter than this even when the line is brief.
-const MIN_DIALOGUE_CLIP_SECS: u32 = 9;
+const MIN_DIALOGUE_CLIP_SECS: u32 = 6;
 /// Soft-landing seconds preferred at the end of each shot before a splice.
 /// Reserved **from** the user target before budget fitting, then re-applied, so
 /// the rendered sum stays near the advertised length (never `target + 2×shots`).
-pub const SHOT_SPLICE_TAIL_PADDING_SECS: u32 = 2;
+pub const SHOT_SPLICE_TAIL_PADDING_SECS: u32 = 1;
+
+/// Seedance music caption `(…)` shared by every shot in a scene.
+/// Identical wording keeps motif/tempo intent stable across adjacent I2V clips.
+pub const DEFAULT_SCENE_BGM_PAREN: &str = "\
+(soft continuous cinematic atmospheric underscore, same motif tempo key and instrumentation \
+across adjacent shots, stable moderate volume, no sudden genre drop or silence gap)";
 
 /// Default look when the user leaves style empty.
 pub const DEFAULT_VISUAL_STYLE: &str = "cinematic film look, believable designed characters, natural wardrobe and lighting, clean healthy facial skin with clear readable features";
@@ -474,7 +481,8 @@ pub fn normalize_target_duration_secs(raw: Option<u32>) -> u32 {
 
 /// Suggested shot count for a **single scene budget** (not the whole film).
 ///
-/// Seedance clips are 5–15s. Prefer ~12–13s clips so `ideal × ~13s ≈ budget`.
+/// Seedance clips are 5–15s. Prefer ~9–10s clips so `ideal × ~10s ≈ budget`
+/// (denser visual beats than legacy ~13s averages that felt padded).
 /// `max_shots` is high enough to fill the budget at MAX length, but `ideal` is
 /// not forced up to that floor (forcing it caused 4×15s≈60s when target was 40s
 /// once dialogue floors refused to shrink).
@@ -482,8 +490,8 @@ pub fn suggested_shot_count(budget_secs: u32) -> (u32, u32) {
     let budget = budget_secs.max(MIN_CLIP_DURATION_SECS);
     let min_to_fill =
         (budget + MAX_CLIP_DURATION_SECS - 1) / MAX_CLIP_DURATION_SECS;
-    // Aim ~13s/clip: 40→3, 60→5, 30→3. (`+6` rounds toward nearest).
-    let ideal = ((budget + 6) / 13).clamp(1, 6);
+    // Aim ~10s/clip: 40→4, 60→6, 30→3. (`+5` rounds toward nearest).
+    let ideal = ((budget + 5) / 10).clamp(1, 6);
     let max_shots = (budget / MIN_CLIP_DURATION_SECS)
         .max(min_to_fill)
         .clamp(1, 8);
@@ -495,6 +503,64 @@ pub fn suggested_shot_count(budget_secs: u32) -> (u32, u32) {
         ideal.min(max_shots)
     };
     (ideal.max(1), max_shots)
+}
+
+/// Normalize a scene-level BGM brief into a Seedance `(music)` caption.
+///
+/// Empty → [`DEFAULT_SCENE_BGM_PAREN`]. Already-parenthesized text is kept
+/// (length-clamped). Plain prose is wrapped in parentheses.
+pub fn format_scene_bgm_paren(brief: &str) -> String {
+    let t = brief.trim();
+    if t.is_empty() {
+        return DEFAULT_SCENE_BGM_PAREN.to_string();
+    }
+    let inner = if t.starts_with('(') && t.ends_with(')') && t.len() >= 2 {
+        t[1..t.len() - 1].trim()
+    } else {
+        t
+    };
+    let clipped: String = inner.chars().take(220).collect();
+    format!("({clipped})")
+}
+
+/// Pull the first `(…)` music caption from storyboard `audio_desc` values, if any.
+pub fn extract_bgm_paren_from_audio_descs<'a, I>(audio_descs: I) -> Option<String>
+where
+    I: IntoIterator<Item = Option<&'a str>>,
+{
+    for audio in audio_descs {
+        let Some(raw) = audio.map(str::trim).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if let Some(paren) = first_paren_span(raw) {
+            // Skip tiny non-music parentheses (e.g. emotion cues).
+            if paren.chars().count() >= 12 {
+                return Some(format_scene_bgm_paren(&paren));
+            }
+        }
+    }
+    None
+}
+
+fn first_paren_span(s: &str) -> Option<String> {
+    let start = s.find('(')?;
+    let end = s[start + 1..].find(')')? + start + 1;
+    if end <= start + 1 {
+        return None;
+    }
+    Some(s[start..=end].to_string())
+}
+
+/// Resolve the canonical scene BGM caption used by every shot in the scene.
+pub fn resolve_scene_bgm_paren(
+    existing_brief: Option<&str>,
+    audio_descs: &[Option<&str>],
+) -> String {
+    if let Some(brief) = existing_brief.map(str::trim).filter(|s| !s.is_empty()) {
+        return format_scene_bgm_paren(brief);
+    }
+    extract_bgm_paren_from_audio_descs(audio_descs.iter().copied())
+        .unwrap_or_else(|| DEFAULT_SCENE_BGM_PAREN.to_string())
 }
 
 /// Split a film-level target across N scenes (each ≥5s).
@@ -620,7 +686,16 @@ pub fn enrich_requirement_for_film(user_requirement: &str, target_secs: Option<u
          - Do NOT write more plot/dialogue than can be spoken and shown inside that total runtime.\n\
          - Speech pacing guide (clear delivery, avoid rush/吞字): ~{SPEECH_CJK_CHARS_PER_SEC} Chinese chars/sec \
 or ~{SPEECH_EN_WORDS_PER_SEC} English words/sec; leave ~{SPEECH_LEAD_SECS}s before speech starts and \
-~{SPEECH_TAIL_SECS}s after the last word so audio is not cut off."
+~{SPEECH_TAIL_SECS}s after the last word — then land on a visible reaction/action beat (no empty hold).\n\
+         [DIRECTOR_DENSITY — MUST FOLLOW]\n\
+         - Short-film information density: every ~8–12s of runtime must advance plot, relationship, OR a \
+distinct visual surprise. Forbid repeated establishing shots and filler pauses.\n\
+         - Write a mental beat sheet before prose: hook → escalation → turn → payoff. Each scene needs \
+at least one concrete conflict beat and one filmable visual motif that can recur.\n\
+         - Prefer show-don't-tell actions over long explanatory dialogue; keep spoken lines short and punchy.\n\
+         [MUSIC_ARC — MUST FOLLOW]\n\
+         - Plan one continuous underscore mood for the film (motif / tempo / intensity arc). \
+Adjacent shots must feel like one soundtrack, not a new track per cut."
     );
     format!("{base}\n\n{block}")
 }
@@ -668,14 +743,25 @@ same shot's duration — no unfinished lines, mid-sentence cuts, swallowed sylla
 after reserving ~{SPEECH_LEAD_SECS}s lead-in + ~{SPEECH_TAIL_SECS}s tail). \
 If a speech beat is longer, you MUST SPLIT into another shot (or shorten the line) — never cram past \
 the {MAX_CLIP_DURATION_SECS}s Seedance limit.\n\
-         - Prefer fewer longer shots for silent/action beats; for dialogue, prioritize clear pacing over \
-merging — pack reaction into the same framing only when the spoken payload still fits the speech budget.\n\
-         - Reuse cam_idx whenever possible. Prefer in-shot motion over cutting.\n\
+         - After the last spoken word, land on a clear reaction/action beat within ~{SPEECH_TAIL_SECS}s — \
+do NOT pad with empty static holds or \"磨叽\" waiting.\n\
+         - Prefer purposeful cuts that raise information density; silent/action beats may be 5–10s with \
+rich in-shot motion. For dialogue, prioritize clear pacing — pack reaction into the same framing only \
+when the spoken payload still fits the speech budget.\n\
+         - Reuse cam_idx whenever possible. Prefer in-shot motion when a cut adds no new information.\n\
          - SHOT CONTINUITY (this scene only): for every adjacent pair of shots, shot N+1 must open from \
 shot N's ending state so Seedance can match-cut (first frame of next = last frame of previous). \
 Camera/angle may change; cast identity, wardrobe, lighting mood, and set must carry over. \
 Do NOT require continuity from the previous scene's final shot into this scene's first shot.\n\
-         - If you would create more than {max_shots} shots, merge beats instead.",
+         - If you would create more than {max_shots} shots, merge beats instead.\n\
+         [DIRECTOR_DENSITY — MUST FOLLOW]\n\
+         - Each shot must change something the audience can see or hear (new info, new emotion, new action). \
+Ban back-to-back redundant wide establishes and repeated \"looks around slowly\" beats.\n\
+         - Aim for one strong visual event per shot (prop reveal, gesture, light shift, spatial change).\n\
+         [BGM_CONTINUITY — MUST FOLLOW]\n\
+         - All shots in THIS SCENE share ONE continuous underscore: same motif, tempo feel, instrumentation, \
+and volume intention. Write the same BGM phrase into every audio_desc (or a clear \"same underscore as prior shot\"). \
+Do NOT invent a new music style per shot — abrupt BGM changes between cuts are forbidden.",
         scene_num = scene_idx + 1,
     );
     format!("{base}\n\n{block}")
@@ -694,6 +780,9 @@ fn strip_duration_constraint_blocks(s: &str) -> String {
         let t = line.trim();
         if t.starts_with("[VIDEO_DURATION_CONSTRAINTS")
             || t.starts_with("[OUTPUT_LANGUAGE")
+            || t.starts_with("[DIRECTOR_DENSITY")
+            || t.starts_with("[MUSIC_ARC")
+            || t.starts_with("[BGM_CONTINUITY")
         {
             skipping = true;
             continue;
@@ -1289,6 +1378,8 @@ mod tests {
         assert!(s.contains("THIS SCENE budget"));
         assert!(s.contains("SHOT CONTINUITY"));
         assert!(s.contains("Do NOT require continuity from the previous scene"));
+        assert!(s.contains("DIRECTOR_DENSITY"));
+        assert!(s.contains("BGM_CONTINUITY"));
     }
 
     #[test]
@@ -1301,7 +1392,7 @@ mod tests {
     #[test]
     fn sixty_second_budget_allows_enough_shots_to_fill() {
         let (ideal, max) = suggested_shot_count(60);
-        // 60s / 15s max per clip → need ≥4 shots; ~13s aim → ideal≈5.
+        // 60s / 15s max per clip → need ≥4 shots; ~10s aim → ideal≈6.
         assert!(ideal >= 4, "ideal={ideal}");
         assert!(max >= 4, "max={max}");
         assert!(ideal as u32 * MAX_CLIP_DURATION_SECS >= 60);
@@ -1309,10 +1400,10 @@ mod tests {
     }
 
     #[test]
-    fn forty_second_budget_prefers_three_shots_not_four() {
+    fn forty_second_budget_prefers_four_shots_for_density() {
         let (ideal, max) = suggested_shot_count(40);
-        assert_eq!(ideal, 3, "ideal={ideal}");
-        assert!(max >= 3);
+        assert_eq!(ideal, 4, "ideal={ideal}");
+        assert!(max >= 4);
         assert!(ideal as u32 * MAX_CLIP_DURATION_SECS >= 40);
     }
 
@@ -1348,33 +1439,33 @@ mod tests {
 
     #[test]
     fn estimate_speech_secs_cjk_and_english() {
-        // ~17 CJK chars @ 1.7/s → 10s
+        // ~17 CJK chars @ 1.9/s → ceil(17/1.9)=9s
         let cjk: String = "他看着窗外轻声说道今天的风很温柔对吗".chars().cycle().take(17).collect();
-        assert_eq!(estimate_speech_secs(&cjk), 10);
+        assert_eq!(estimate_speech_secs(&cjk), 9);
         // Quoted payload only (ignore stage directions outside 「」)
         assert_eq!(
             estimate_speech_secs("环境底噪。李薇：「今晚别等我」"),
             estimate_speech_secs("今晚别等我")
         );
-        // ~14 English words @ 1.35/wps → ceil(14/1.35)=11s
+        // ~14 English words @ 1.5/wps → ceil(14/1.5)=10s
         let en = "one two three four five six seven eight nine ten \
 eleven twelve thirteen fourteen";
-        assert_eq!(estimate_speech_secs(en), 11);
+        assert_eq!(estimate_speech_secs(en), 10);
         assert_eq!(estimate_speech_secs(""), 0);
         assert_eq!(estimate_speech_secs("   "), 0);
     }
 
     #[test]
     fn estimate_shot_need_includes_speech_tail() {
-        // 17 CJK → ceil(17/1.7)=10s speech + 1s lead + 5s tail = 16 → clamp 15
+        // 17 CJK → ceil(17/1.9)=9s speech + 1s lead + 2s tail = 12
         let line: String = "中".chars().cycle().take(17).collect();
         assert_eq!(line.chars().count(), 17);
         let need = estimate_shot_need_secs(Some(&line), "slow pan", "small");
-        assert_eq!(need, MAX_CLIP_DURATION_SECS);
-        // Shorter line: 9 CJK → ceil(9/1.7)=6 + 1 + 5 = 12s
+        assert_eq!(need, 12);
+        // Shorter line: 9 CJK → ceil(9/1.9)=5 + 1 + 2 = 8
         let mid: String = "中".chars().cycle().take(9).collect();
         let mid_need = estimate_shot_need_secs(Some(&mid), "slow pan", "small");
-        assert_eq!(mid_need, 12);
+        assert_eq!(mid_need, 8);
         // No dialogue → visual floor (min + small boost)
         let silent = estimate_shot_need_secs(None, "hold", "small");
         assert_eq!(silent, MIN_CLIP_DURATION_SECS);
@@ -1424,17 +1515,17 @@ eleven twelve thirteen fourteen";
 
     #[test]
     fn allocate_for_content_never_cuts_dialogue_below_floor() {
-        // Extreme under-budget: prefer exceeding target over 5s dialogue clips.
+        // Extreme under-budget: prefer exceeding target over bare-min dialogue clips.
         let needs = vec![12, 12];
         let durs = allocate_clip_durations_for_content(Some(12), &needs);
         assert!(durs.iter().all(|&d| d >= MIN_DIALOGUE_CLIP_SECS));
-        // Too tight to reserve soft-landing; dialogue floors alone sum to 18.
+        // Too tight to reserve soft-landing; dialogue floors alone sum to 12.
         assert_eq!(durs.iter().sum::<u32>(), MIN_DIALOGUE_CLIP_SECS * 2);
     }
 
     #[test]
     fn fifty_five_second_target_does_not_gain_two_secs_per_shot() {
-        // Regression: max-shot packing at 55s used to become 55 + 2*11 = 77.
+        // Regression: max-shot packing must stay at the user target after soft-landing.
         let needs = vec![5; 11];
         let durs = allocate_clip_durations_for_content(Some(55), &needs);
         assert_eq!(durs.len(), 11);
@@ -1445,6 +1536,35 @@ eleven twelve thirteen fourteen";
     fn splice_tail_padding_respects_seedance_max() {
         let mut durs = vec![5, 13, 14, 15];
         apply_shot_splice_tail_padding(&mut durs);
-        assert_eq!(durs, vec![7, 15, 15, 15]);
+        assert_eq!(durs, vec![6, 14, 15, 15]);
+    }
+
+    #[test]
+    fn scene_bgm_paren_is_stable_and_extractable() {
+        assert!(format_scene_bgm_paren("").starts_with('('));
+        assert_eq!(
+            format_scene_bgm_paren("(soft piano underscore, same motif)"),
+            "(soft piano underscore, same motif)"
+        );
+        let descs = [
+            Some("李薇：「走」 <脚步声> (gentle piano motif, steady tempo)"),
+            Some("环境底噪"),
+        ];
+        let extracted = extract_bgm_paren_from_audio_descs(descs);
+        assert!(extracted.as_ref().is_some_and(|s| s.contains("piano")));
+        let resolved = resolve_scene_bgm_paren(None, &descs);
+        assert_eq!(resolved, extracted.unwrap());
+        assert_eq!(
+            resolve_scene_bgm_paren(Some("warm strings underscore"), &[]),
+            "(warm strings underscore)"
+        );
+    }
+
+    #[test]
+    fn enrich_film_asks_for_density_and_music_arc() {
+        let s = enrich_requirement_for_film("雨夜重逢", Some(45));
+        assert!(s.contains("DIRECTOR_DENSITY"));
+        assert!(s.contains("MUSIC_ARC"));
+        assert!(s.contains("45"));
     }
 }
