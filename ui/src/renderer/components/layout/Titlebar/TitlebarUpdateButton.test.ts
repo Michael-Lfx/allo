@@ -13,5 +13,7 @@ describe('TitlebarUpdateButton', () => {
 
   test('uses the shared delayed titlebar tooltip', () => {
     expect(source.includes('hoverDelayMs={400}')).toBe(true);
+    expect(source.includes("className='app-titlebar__tooltip-anchor'")).toBe(true);
+    expect(source.includes('data-tauri-no-drag')).toBe(true);
   });
 });

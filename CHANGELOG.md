@@ -5,6 +5,11 @@ notes at a high level rather than a complete historical log.
 
 ## Unreleased
 
+- Fixed frameless Windows/Linux titlebar hit areas so blank menu and toolbar
+  space can drag or double-click to maximize without swallowing controls.
+  Shared titlebar and sidebar Tooltips now stay inside the viewport, flip when
+  needed, and preserve macOS Overlay and browser behavior.
+
 - Refined the Home and Settings experience with stable semantic surfaces,
   theme-aware controls, clearer navigation and titlebar context, responsive
   settings rows, compact capability markets with in-app details, and guarded

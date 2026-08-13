@@ -75,7 +75,7 @@ const WindowControls: React.FC = () => {
   };
 
   return (
-    <div className='app-window-controls'>
+    <div className='app-window-controls' data-tauri-no-drag>
       <button type='button' className='app-window-controls__button' onClick={handleMinimize} aria-label='Minimize'>
         <Minus theme='outline' size='14' fill='currentColor' strokeWidth={4} />
       </button>

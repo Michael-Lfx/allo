@@ -9,6 +9,7 @@ describe('Titlebar instant icon tooltips', () => {
     expect(titlebarSource.includes('InstantHoverTooltip')).toBe(true);
     expect(titlebarSource.includes('hoverDelayMs={400}')).toBe(true);
     expect(titlebarSource.includes("position={position ?? 'bottom'}")).toBe(true);
+    expect(titlebarSource.includes("className='app-titlebar__tooltip-anchor'")).toBe(true);
   });
 
   test('does not use native title fallbacks for titlebar icon buttons', () => {
@@ -45,5 +46,27 @@ describe('Titlebar instant icon tooltips', () => {
     expect(titlebarSource.includes('useTitlebarContextTitle(location.pathname)')).toBe(true);
     expect(titlebarStyles.includes('grid-template-columns: minmax(0, 1fr) minmax(0, 360px) minmax(0, 1fr)')).toBe(true);
     expect(titlebarStyles.includes('@media (max-width: 720px)')).toBe(true);
+  });
+
+  test('keeps the titlebar drag plane broad while marking interactive islands as no-drag', () => {
+    expect(titlebarSource.includes('data-tauri-drag-region')).toBe(true);
+    expect(titlebarSource.includes('data-tauri-no-drag')).toBe(true);
+    expect(titlebarStyles).not.toMatch(/^\.app-titlebar__menu\s*\{\s*-webkit-app-region:\s*no-drag;/m);
+    expect(titlebarStyles).not.toMatch(/^\.app-titlebar__toolbar\s*\{\s*[^}]*-webkit-app-region:\s*no-drag;/m);
+    expect(titlebarStyles).toMatch(
+      /\.app-titlebar__tooltip-anchor\s*\{[\s\S]*?-webkit-app-region:\s*no-drag;/,
+    );
+    expect(titlebarStyles).toMatch(
+      /\.app-titlebar__actions-slot\s*\{[\s\S]*?-webkit-app-region:\s*no-drag;/,
+    );
+    expect(titlebarStyles).toMatch(
+      /\.app-titlebar--mac\s+\.app-titlebar__menu,[\s\S]*?\.app-titlebar--mac\s+\.app-titlebar__toolbar\s*\{[\s\S]*?-webkit-app-region:\s*no-drag;/,
+    );
+  });
+
+  test('only toggles maximize for a real drag-region target outside no-drag controls', () => {
+    expect(titlebarSource.includes("target?.closest('[data-tauri-drag-region]')")).toBe(true);
+    expect(titlebarSource.includes("target.closest('[data-tauri-no-drag]')")).toBe(true);
+    expect(titlebarSource.includes('target.hasAttribute(\'data-tauri-drag-region\')')).toBe(false);
   });
 });

@@ -205,13 +205,14 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   // matching native window behavior. Tauri's `data-tauri-drag-region` does NOT
   // implement this itself; we wire it on the frontend. Skipped on macOS (the OS
   // handles double-click on the native traffic-light chrome) and in the WebUI
-  // browser (no window controls — `isDesktopRuntime` gates it). Only fires when
-  // the double-click lands on the drag region itself, not on a `no-drag` button
-  // (those carry `data-tauri-drag-region` absence + their own handlers).
+  // browser (no window controls — `isDesktopRuntime` gates it). The event may
+  // bubble from any descendant of the drag region, but never from an interactive
+  // island explicitly marked as no-drag.
   const handleTitlebarDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!isDesktopRuntime || isMacRuntime) return;
     const target = event.target as HTMLElement | null;
-    if (!target || !target.hasAttribute('data-tauri-drag-region')) return;
+    if (!target?.closest('[data-tauri-drag-region]')) return;
+    if (target.closest('[data-tauri-no-drag]')) return;
     void ipcBridge.windowControls.toggleMaximize.invoke();
   };
 
@@ -287,8 +288,21 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
     onClick,
     position,
   }: TitlebarIconButtonOptions & { position?: InstantHoverTooltipProps['position'] }) => (
-    <InstantHoverTooltip content={tooltip} position={position ?? 'bottom'} hoverDelayMs={400}>
-      <button type='button' className={className} onClick={onClick} disabled={disabled} aria-label={tooltip}>
+    <InstantHoverTooltip
+      content={tooltip}
+      position={position ?? 'bottom'}
+      hoverDelayMs={400}
+      className='app-titlebar__tooltip-anchor'
+      dataTauriNoDrag
+    >
+      <button
+        type='button'
+        className={className}
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={tooltip}
+        data-tauri-no-drag
+      >
         {children}
       </button>
     </InstantHoverTooltip>
@@ -309,7 +323,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
       })}
     >
       <div ref={menuRef} className='app-titlebar__menu' style={menuStyle}>
-        <div className='app-titlebar__button-group' data-titlebar-group='navigation'>
+        <div className='app-titlebar__button-group' data-titlebar-group='navigation' data-tauri-no-drag>
           {showBackToChatButton &&
             renderIconButton({
               tooltip: backToChatTooltip,
@@ -351,6 +365,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
           <div
             className='app-titlebar__button-group app-titlebar__button-group--context'
             data-titlebar-group='new-conversation'
+            data-tauri-no-drag
           >
             <span className='app-titlebar__divider' aria-hidden='true' />
             {renderIconButton({
@@ -391,7 +406,9 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
         )}
       </div>
       <div ref={toolbarRef} className='app-titlebar__toolbar'>
-        {layout?.isMobile && <div id='app-titlebar-actions-slot' className='app-titlebar__actions-slot' />}
+        {layout?.isMobile && (
+          <div id='app-titlebar-actions-slot' className='app-titlebar__actions-slot' data-tauri-no-drag />
+        )}
         <TitlebarUpdateButton
           iconSize={iconSize}
           strokeWidth={desktopIconStroke}

@@ -147,3 +147,18 @@ Desktop shell behavior is implemented by Tauri commands and plugins:
 - tray close behavior.
 
 Browser builds no-op or degrade desktop-only affordances in the adapter layer.
+
+### Desktop titlebar and Tooltip boundary
+
+On Windows and Linux, the frameless titlebar root is the native drag plane:
+blank menu and toolbar space remains draggable, while buttons, window controls,
+mobile actions, and Tooltip anchors are explicit no-drag islands. Double-click
+maximize only accepts a target inside the drag plane and outside those islands.
+macOS Overlay titlebars keep the menu and toolbar outside the drag plane, and
+browser builds do not enable desktop dragging.
+
+Titlebar and sidebar icon hints that use `InstantHoverTooltip` are rendered
+through a body Portal and positioned with fixed Floating UI `flip`/`shift`
+middleware inside an 8px viewport boundary. Long localized content wraps within
+`calc(100vw - 16px)`. The implementation and verification boundary are recorded
+in [`Topbar drag and Tooltip fix audit`](../superpowers/audits/2026-08-13-topbar-drag-tooltip-fix.md).
