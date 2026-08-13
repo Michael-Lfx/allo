@@ -133,7 +133,7 @@ export function CourseJobTable({
     {
       title: t('learning.jobColStatus'),
       dataIndex: 'status',
-      width: 220,
+      width: 160,
       render: (_value: unknown, job: CourseJobView) => {
         const meta = jobStatusMeta(job.status, job, t);
         return <Tag color={meta.color}>{meta.label}</Tag>;
@@ -145,13 +145,13 @@ export function CourseJobTable({
       width: 200,
       render: (_value: unknown, job: CourseJobView) => {
         const subject = [job.knowledge_base_name, job.domain].filter((part) => part !== null).join(' · ');
-        return subject === '' ? '—' : <span className='truncate'>{subject}</span>;
+        return subject === '' ? '—' : <span className='block truncate'>{subject}</span>;
       },
     },
     {
       title: t('learning.jobColProgress'),
       dataIndex: 'progress',
-      width: 180,
+      width: 150,
       render: (_value: unknown, job: CourseJobView) => {
         if (job.status !== 'lessons' || job.total_lessons <= 0) return '—';
         const percent = Math.round((job.current_lesson / job.total_lessons) * 100);
@@ -175,7 +175,7 @@ export function CourseJobTable({
     {
       title: t('learning.jobColError'),
       dataIndex: 'error',
-      width: 260,
+      width: 160,
       render: (_value: unknown, job: CourseJobView) =>
         job.status === 'failed' && job.error !== null ? (
           <Tooltip content={job.error} position='tl'>
@@ -190,14 +190,18 @@ export function CourseJobTable({
     {
       title: t('learning.jobColCreated'),
       dataIndex: 'created_at',
-      width: 170,
+      width: 160,
       render: (value: unknown) =>
-        typeof value === 'number' ? new Date(value).toLocaleString() : '—',
+        typeof value === 'number' ? (
+          <span className='block truncate'>{new Date(value).toLocaleString()}</span>
+        ) : (
+          '—'
+        ),
     },
     {
       title: t('learning.jobColActions'),
       dataIndex: 'actions',
-      width: 260,
+      width: 160,
       render: (_value: unknown, job: CourseJobView) => {
         const busy = busyId === `job-${job.job_id}`;
         const courseId = job.course_id;
@@ -246,6 +250,7 @@ export function CourseJobTable({
       columns={columns}
       data={jobs}
       loading={loading}
+      tableLayoutFixed
       pagination={{ pageSize: 10, hideOnSinglePage: true }}
       noDataElement={<Empty description={t('learning.jobsEmpty')} />}
     />
