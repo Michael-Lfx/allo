@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState, type RefObject } from 'react';
+import { useCallback, useLayoutEffect, useState, type RefObject } from 'react';
 
 export type SlidingSelectionIndicatorState = {
   top: number;
@@ -6,6 +6,16 @@ export type SlidingSelectionIndicatorState = {
   width: number;
   height: number;
   visible: boolean;
+};
+
+export type SlidingSelectionIndicatorApi = SlidingSelectionIndicatorState & {
+  /**
+   * Imperatively move the indicator to a specific entry at click time
+   * (urgent priority), decoupled from the route-driven `data-active` commit.
+   * Lets the CSS transform transition start on the compositor thread before
+   * the heavy route subtree mounts and blocks the main thread.
+   */
+  measureElement: (el: HTMLElement | null) => void;
 };
 
 type UseSlidingSelectionIndicatorOptions = {
@@ -37,6 +47,27 @@ const isSameIndicator = (
   previous.visible === next.visible;
 
 /**
+ * Shared measurement core: an entry's rect relative to its local container.
+ * Returns null when there is no entry to measure; returns a zero-size state
+ * (visible: false) for an element that exists but is hidden.
+ */
+const measureRect = (
+  container: HTMLElement,
+  el: HTMLElement | null
+): SlidingSelectionIndicatorState | null => {
+  if (!el) return null;
+  const containerRect = container.getBoundingClientRect();
+  const entryRect = el.getBoundingClientRect();
+  return {
+    top: entryRect.top - containerRect.top + container.scrollTop,
+    left: entryRect.left - containerRect.left + container.scrollLeft,
+    width: entryRect.width,
+    height: entryRect.height,
+    visible: entryRect.width > 0 && entryRect.height > 0,
+  };
+};
+
+/**
  * Measures an active navigation entry relative to its local container.
  *
  * The indicator intentionally never crosses container boundaries: a primary
@@ -47,7 +78,7 @@ export function useSlidingSelectionIndicator({
   containerRef,
   activeSelector,
   revision,
-}: UseSlidingSelectionIndicatorOptions): SlidingSelectionIndicatorState {
+}: UseSlidingSelectionIndicatorOptions): SlidingSelectionIndicatorApi {
   const [indicator, setIndicator] = useState<SlidingSelectionIndicatorState>(hiddenIndicator);
 
   useLayoutEffect(() => {
@@ -55,21 +86,11 @@ export function useSlidingSelectionIndicator({
     if (!container) return;
 
     const update = () => {
-      const activeEntry = container.querySelector<HTMLElement>(activeSelector);
-      if (!activeEntry) {
+      const next = measureRect(container, container.querySelector<HTMLElement>(activeSelector));
+      if (!next) {
         setIndicator((previous) => (isSameIndicator(previous, hiddenIndicator) ? previous : hiddenIndicator));
         return;
       }
-
-      const containerRect = container.getBoundingClientRect();
-      const entryRect = activeEntry.getBoundingClientRect();
-      const next: SlidingSelectionIndicatorState = {
-        top: entryRect.top - containerRect.top + container.scrollTop,
-        left: entryRect.left - containerRect.left + container.scrollLeft,
-        width: entryRect.width,
-        height: entryRect.height,
-        visible: entryRect.width > 0 && entryRect.height > 0,
-      };
 
       setIndicator((previous) => (isSameIndicator(previous, next) ? previous : next));
     };
@@ -100,5 +121,16 @@ export function useSlidingSelectionIndicator({
     };
   }, [activeSelector, containerRef, revision]);
 
-  return indicator;
+  const measureElement = useCallback(
+    (el: HTMLElement | null) => {
+      const container = containerRef.current;
+      if (!container || !el) return;
+      const next = measureRect(container, el);
+      if (!next || !next.visible) return;
+      setIndicator((previous) => (isSameIndicator(previous, next) ? previous : next));
+    },
+    [containerRef]
+  );
+
+  return { ...indicator, measureElement };
 }
