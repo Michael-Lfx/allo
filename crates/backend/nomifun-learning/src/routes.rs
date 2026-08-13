@@ -13,9 +13,9 @@ use serde::Deserialize;
 use url::form_urlencoded;
 
 use crate::models::{
-    AnswerReviewRequest, CoursePack, CreateCustomQuestionRequest, DeleteCourseRequest,
-    GenerateCourseRequest, RateReviewRequest, SetTagsRequest, SubmitAttemptRequest,
-    UpdateLessonProgressRequest, UpdateQuestionRequest,
+    AnswerReviewRequest, CourseJobSource, CoursePack, CreateCustomQuestionRequest,
+    DeleteCourseRequest, GenerateCourseRequest, RateReviewRequest, SetTagsRequest,
+    SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -26,6 +26,20 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
+        .route("/api/learning/course-jobs", get(list_course_jobs))
+        .route("/api/learning/course-jobs/{id}", get(get_course_job))
+        .route(
+            "/api/learning/course-jobs/{id}/cancel",
+            post(cancel_course_job),
+        )
+        .route(
+            "/api/learning/course-jobs/{id}/resume",
+            post(resume_course_job),
+        )
+        .route(
+            "/api/learning/course-jobs/{id}/retry",
+            post(retry_course_job),
+        )
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
         .route("/api/learning/courses/{id}/tags", put(set_course_tags))
@@ -106,11 +120,69 @@ async fn import_course(
 
 async fn generate_course(
     State(state): State<LearningRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Json(request): Json<GenerateCourseRequest>,
-) -> Result<Json<ApiResponse<crate::models::CourseDetail>>, AppError> {
+) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
+    // Submit a background job and return immediately; progress is polled via
+    // the course-jobs endpoints and the Learning page job panel.
     Ok(Json(ApiResponse::ok(
-        state.service.generate_course(request).await?,
+        state
+            .service
+            .start_course_job(request, &user.id, CourseJobSource::Http, None)
+            .await?,
+    )))
+}
+
+async fn list_course_jobs(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<crate::models::CourseJobView>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_course_jobs(&user.id).await?,
+    )))
+}
+
+async fn get_course_job(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .course_job(&user.id, &id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("course generation job {id}")))?,
+    )))
+}
+
+async fn cancel_course_job(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.cancel_course_job(&user.id, &id).await?,
+    )))
+}
+
+async fn resume_course_job(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.resume_course_job(&user.id, &id).await?,
+    )))
+}
+
+async fn retry_course_job(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::CourseJobView>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.retry_course_job(&user.id, &id).await?,
     )))
 }
 

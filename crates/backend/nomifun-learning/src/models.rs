@@ -22,7 +22,7 @@ pub struct CoursePack {
     pub modules: Vec<ModulePack>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateCourseRequest {
     pub knowledge_base_id: KnowledgeBaseId,
     #[serde(default)]
@@ -53,7 +53,7 @@ const fn default_version() -> i64 {
     1
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConceptPack {
     pub key: String,
     pub title: String,
@@ -99,7 +99,7 @@ pub struct SourceSpan {
     pub end: Option<i64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityPack {
     pub kind: ActivityKind,
     pub prompt: String,
@@ -453,4 +453,109 @@ pub(crate) struct StoredActivityConfig {
     pub options: Vec<String>,
     pub answer: Value,
     pub explanation: String,
+}
+
+/// Who submitted a course-generation job: the HTTP generate endpoint or an
+/// agent tool call. Kept for the task list display only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CourseJobSource {
+    Http,
+    Agent,
+}
+
+impl CourseJobSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Agent => "agent",
+        }
+    }
+}
+
+impl TryFrom<&str> for CourseJobSource {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "http" => Ok(Self::Http),
+            "agent" => Ok(Self::Agent),
+            other => Err(format!("unsupported course job source: {other}")),
+        }
+    }
+}
+
+/// Pipeline stage of a persistent course-generation job. Non-terminal stages
+/// double as the runner's next step, so the claimed row always tells the
+/// runner what to do after a resume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CourseJobStatus {
+    Queued,
+    Sampling,
+    Blueprint,
+    Lessons,
+    Importing,
+    Completed,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+impl CourseJobStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Sampling => "sampling",
+            Self::Blueprint => "blueprint",
+            Self::Lessons => "lessons",
+            Self::Importing => "importing",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+impl TryFrom<&str> for CourseJobStatus {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "queued" => Ok(Self::Queued),
+            "sampling" => Ok(Self::Sampling),
+            "blueprint" => Ok(Self::Blueprint),
+            "lessons" => Ok(Self::Lessons),
+            "importing" => Ok(Self::Importing),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            "interrupted" => Ok(Self::Interrupted),
+            other => Err(format!("unsupported course job status: {other}")),
+        }
+    }
+}
+
+/// Public projection of one `learning_course_jobs` row: everything the
+/// Learning page needs to render progress and offer cancel/resume/retry.
+#[derive(Debug, Clone, Serialize)]
+pub struct CourseJobView {
+    pub job_id: String,
+    pub source: CourseJobSource,
+    pub status: CourseJobStatus,
+    /// 1-based module index of the lesson currently being generated (0 until
+    /// the blueprint resolves).
+    pub current_module: i64,
+    /// Number of completed lessons (0..=total_lessons).
+    pub current_lesson: i64,
+    pub total_lessons: i64,
+    pub error: Option<String>,
+    pub course_id: Option<String>,
+    pub created_at: TimestampMs,
+    pub updated_at: TimestampMs,
 }

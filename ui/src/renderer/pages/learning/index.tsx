@@ -5,6 +5,7 @@ import { Alert, Button, Empty, Input, Message, Modal, Spin, Tabs, Typography } f
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { learningApi } from './api';
 import { CourseCard, CourseDeleteDialog } from './components/CourseCard';
+import { CourseJobPanel } from './components/CourseJobPanel';
 import { CourseWorkspace, DiagnosticModal } from './components/CourseWorkspace';
 import { CreateCourseDialog } from './components/CreateCourseDialog';
 import { QuestionManager } from './components/QuestionManager';
@@ -13,6 +14,7 @@ import { ReviewSessionModal } from './components/ReviewSession';
 import { TagEditorModal } from './components/TagEditorModal';
 import { EMPTY_PACK, ORPHAN_COURSE_FILTER, REVIEW_FILTERS_STORAGE_KEY } from './constants';
 import { useCourseCreation } from './hooks/useCourseCreation';
+import { useCourseJobs } from './hooks/useCourseJobs';
 import { useCourseLearning } from './hooks/useCourseLearning';
 import { useReviewSession } from './hooks/useReviewSession';
 import type { CourseDetail, CourseSummary, DueReview, Lesson, LessonStatus, QuestionEntry } from './types';
@@ -121,6 +123,13 @@ const LearningPage: React.FC = () => {
     setReviews,
   });
   const creation = useCourseCreation({ navigate, t, setBusyId });
+  // 课程生成任务面板：任务列表 + 非终态轮询 + 取消/继续/重试；有新任务完成
+  // 时刷新课程列表，让新课程直接出现在下方
+  const courseJobs = useCourseJobs({
+    t,
+    setBusyId,
+    onJobCompleted: () => void load(),
+  });
 
   const importCourse = useCallback(async () => {
     let pack: unknown;
@@ -272,6 +281,17 @@ const LearningPage: React.FC = () => {
             onStart={() => void reviewSession.startReviewSession()}
           />
         )}
+
+        <CourseJobPanel
+          jobs={courseJobs.jobs}
+          loading={courseJobs.loading}
+          busyId={busyId}
+          onCancel={courseJobs.cancelJob}
+          onResume={courseJobs.resumeJob}
+          onRetry={courseJobs.retryJob}
+          onOpenCourse={(courseId) => navigate(`/learn/${courseId}`)}
+        />
+
         <section key='learn-tabs'>
           <Tabs activeTab={listTab} onChange={(key) => setListTab(key)} type='line' lazyload>
             <Tabs.TabPane key='courses' title={t('learning.courses')} destroyOnHide={false}>

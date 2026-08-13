@@ -3,6 +3,7 @@ import type {
   AttemptResult,
   ConceptRef,
   CourseDetail,
+  CourseJobView,
   CourseSummary,
   CreateCustomQuestionRequest,
   DiagnosticPlan,
@@ -29,7 +30,16 @@ export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
   generateCourse: (request: GenerateCourseRequest) =>
-    httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
+    httpRequest<CourseJobView>('POST', `${BASE}/courses/generate`, request),
+  listCourseJobs: () => httpRequest<CourseJobView[]>('GET', `${BASE}/course-jobs`),
+  getCourseJob: (id: string) =>
+    httpRequest<CourseJobView>('GET', `${BASE}/course-jobs/${encodeURIComponent(id)}`),
+  cancelCourseJob: (id: string) =>
+    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/cancel`),
+  resumeCourseJob: (id: string) =>
+    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/resume`),
+  retryCourseJob: (id: string) =>
+    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/retry`),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
   enroll: (id: string) =>

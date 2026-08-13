@@ -926,6 +926,10 @@ pub(super) async fn build(
         knowledge_writeback_sink,
         knowledge_write_bases,
         learning_course_sink,
+        // Owner user id for the native course-generation tools: jobs are
+        // created under this principal, so the tools can start/query jobs on
+        // behalf of the installation owner (same identity the cron sink uses).
+        owner_id_for_cron.clone(),
         if is_instance_owner && overrides.companion {
             deps.companion_skill_sink.clone()
         } else {

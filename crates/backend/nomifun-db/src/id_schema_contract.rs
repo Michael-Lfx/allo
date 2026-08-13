@@ -65,6 +65,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_concepts",
     "learning_course_tags",
     "learning_courses",
+    "learning_course_jobs",
     "learning_custom_questions",
     "learning_enrollments",
     "learning_question_tags",
@@ -149,6 +150,7 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_attempts", "attempt_id"),
     ("learning_concepts", "concept_id"),
     ("learning_courses", "course_id"),
+    ("learning_course_jobs", "job_id"),
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
     ("learning_lessons", "lesson_id"),
@@ -236,6 +238,8 @@ const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_attempts", "attempt_id"),
     ("learning_concepts", "concept_id"),
     ("learning_courses", "course_id"),
+    ("learning_course_jobs", "job_id"),
+    ("learning_course_jobs", "session_id"),
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
     ("learning_lessons", "lesson_id"),
@@ -785,6 +789,12 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("learning_review_items", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_review_items_enrollment_id", Cascade),
     text_ref!("learning_review_items", "concept_id" => "learning_concepts", "concept_id", false, "idx_learning_review_items_concept_id", Cascade),
     text_ref!("learning_custom_questions", "user_id" => "users", "user_id", false, "idx_learning_custom_questions_user_id", Cascade),
+    // Course-generation jobs: user-scoped tasks; kb/course links are history —
+    // jobs keep working from persisted snapshots even if the base or the
+    // produced course is later deleted.
+    text_ref!("learning_course_jobs", "user_id" => "users", "user_id", false, "idx_learning_course_jobs_user_id", Cascade),
+    text_ref!("learning_course_jobs", "kb_id" => "knowledge_bases", "knowledge_base_id", false, "idx_learning_course_jobs_kb_id", KeepHistory),
+    text_ref!("learning_course_jobs", "course_id" => "learning_courses", "course_id", true, "idx_learning_course_jobs_course_id", KeepHistory),
     text_ref!("learning_custom_questions", "concept_id" => "learning_concepts", "concept_id", true, "idx_learning_custom_questions_concept_id", SetNull),
     text_ref!("learning_course_tags", "course_id" => "learning_courses", "course_id", false, "idx_learning_course_tags_course_id", Cascade),
     text_ref!("learning_course_tags", "tag_id" => "learning_tags", "tag_id", false, "idx_learning_course_tags_tag_id", Cascade),

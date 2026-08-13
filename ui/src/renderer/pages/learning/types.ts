@@ -185,3 +185,32 @@ export interface SetTagsRequest {
   tags: string[];
   apply_to_children?: boolean;
 }
+
+export type CourseJobSource = 'http' | 'agent';
+
+export type CourseJobStatus =
+  | 'queued'
+  | 'sampling'
+  | 'blueprint'
+  | 'lessons'
+  | 'importing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
+
+/** 持久化课程生成任务的公开投影（对应后端 CourseJobView） */
+export interface CourseJobView {
+  job_id: string;
+  source: CourseJobSource;
+  status: CourseJobStatus;
+  /** 1 起始的模块索引；蓝图完成前为 0 */
+  current_module: number;
+  /** 已完成课时数（0..=total_lessons） */
+  current_lesson: number;
+  total_lessons: number;
+  error: string | null;
+  course_id: string | null;
+  created_at: number;
+  updated_at: number;
+}

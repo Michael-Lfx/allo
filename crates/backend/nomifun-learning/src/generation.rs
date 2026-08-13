@@ -114,44 +114,44 @@ const LESSON_SUMMARY_MIN_CHARS: usize = 800;
 const LESSON_MIN_ACTIVITIES: usize = 3;
 const LESSON_MIN_OBJECTIVE_ACTIVITIES: usize = 2;
 
-#[derive(Debug, Clone, serde::Deserialize)]
-struct Blueprint {
-    title: String,
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Blueprint {
+    pub(crate) title: String,
     #[serde(default)]
-    description: String,
+    pub(crate) description: String,
     #[serde(default)]
-    domain: String,
+    pub(crate) domain: String,
     #[serde(default)]
-    version: i64,
+    pub(crate) version: i64,
     #[serde(default)]
-    concepts: Vec<ConceptPack>,
+    pub(crate) concepts: Vec<ConceptPack>,
     #[serde(default)]
-    modules: Vec<BlueprintModule>,
+    pub(crate) modules: Vec<BlueprintModule>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-struct BlueprintModule {
-    title: String,
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct BlueprintModule {
+    pub(crate) title: String,
     #[serde(default)]
-    description: String,
+    pub(crate) description: String,
     #[serde(default)]
-    lessons: Vec<BlueprintLesson>,
+    pub(crate) lessons: Vec<BlueprintLesson>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-struct BlueprintLesson {
-    title: String,
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct BlueprintLesson {
+    pub(crate) title: String,
     #[serde(default)]
-    purpose: String,
+    pub(crate) purpose: String,
     #[serde(default)]
-    concepts: Vec<String>,
+    pub(crate) concepts: Vec<String>,
     #[serde(default)]
-    source: Option<SourceSpan>,
+    pub(crate) source: Option<SourceSpan>,
 }
 
 /// One lesson's long-form output, produced by a dedicated model call.
-#[derive(Debug, Clone, serde::Deserialize)]
-struct LessonOutput {
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct LessonOutput {
     #[serde(default)]
     summary: String,
     #[serde(default)]
@@ -272,9 +272,45 @@ pub async fn generate_course_pack(
     Ok(pack)
 }
 
+/// Sample the knowledge base's markdown documents for course generation.
+/// Shared by the synchronous pipeline and the background job runner so the
+/// snapshot stored in `learning_course_jobs` has the same shape everywhere.
+pub(crate) async fn sample_base_files(
+    knowledge: &KnowledgeService,
+    knowledge_base_id: &str,
+) -> Result<Vec<(String, String)>, AppError> {
+    // A local folder's public `root_path` is its read-only source location.
+    // Course generation samples the app-managed Markdown projection so it
+    // sees converted documents while the source remains available.
+    let content_root = knowledge
+        .content_root_for_base(knowledge_base_id)
+        .await?;
+    if !content_root.is_dir() {
+        return Err(AppError::BadRequest(
+            "selected knowledge base content directory does not exist".into(),
+        ));
+    }
+    // Wider sampling than the knowledge-overview default: more files, larger
+    // excerpts, higher total — the multi-stage pipeline has the budget to
+    // read them and the lessons need richer grounding.
+    let samples = autogen::sample_base_files_with_budget(
+        &content_root,
+        autogen::LEARNING_SAMPLE_MAX_FILES,
+        autogen::LEARNING_SAMPLE_MAX_PER_FILE,
+        autogen::LEARNING_SAMPLE_MAX_TOTAL,
+    )
+    .await;
+    if samples.is_empty() {
+        return Err(AppError::BadRequest(
+            "knowledge base has no markdown documents to generate a course from".into(),
+        ));
+    }
+    Ok(samples)
+}
+
 /// One blueprint call with at most one targeted retry: the concrete validation
 /// error is fed back so the model fixes structure instead of shrinking output.
-async fn generate_blueprint(
+pub(crate) async fn generate_blueprint(
     completer: &dyn KnowledgeCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     prompt: &str,
@@ -308,7 +344,7 @@ async fn generate_blueprint(
 
 /// One lesson call with at most one targeted retry, same retry semantics as
 /// the blueprint stage.
-async fn generate_lesson(
+pub(crate) async fn generate_lesson(
     completer: &dyn KnowledgeCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     prompt: &str,
@@ -356,7 +392,7 @@ async fn complete(
     }
 }
 
-fn build_blueprint_prompt(
+pub(crate) fn build_blueprint_prompt(
     name: &str,
     description: &str,
     domain: Option<&str>,
@@ -381,7 +417,7 @@ fn build_blueprint_prompt(
     prompt
 }
 
-fn build_lesson_prompt(
+pub(crate) fn build_lesson_prompt(
     blueprint: &Blueprint,
     module: &BlueprintModule,
     lesson: &BlueprintLesson,
@@ -651,7 +687,7 @@ fn validate_lesson(
 
 /// Merge the blueprint and the per-lesson outputs into a `CoursePack`. The
 /// requested domain label wins over the blueprint's own when provided.
-fn assemble_pack(
+pub(crate) fn assemble_pack(
     blueprint: Blueprint,
     lesson_outputs: Vec<LessonOutput>,
     request: &GenerateCourseRequest,
@@ -704,7 +740,7 @@ fn assemble_pack(
     }
 }
 
-fn validate_generated_pack(
+pub(crate) fn validate_generated_pack(
     pack: &CoursePack,
     samples: &[(String, String)],
 ) -> Result<(), String> {
@@ -734,16 +770,127 @@ fn validate_generated_pack(
 }
 
 /// Parse the first JSON object in the raw model output (fences and prose
-/// around it are tolerated).
+/// around it are tolerated). Extraction is string-aware so braces inside
+/// string values — LaTeX formulas like `\frac{a}{b}`, code samples — never
+/// terminate the object early. Candidate objects are tried in order, and a
+/// failed parse is retried once after repairing the common escaping mistakes
+/// models make with special characters (raw newlines, LaTeX backslashes).
 fn parse_json_object<T: DeserializeOwned>(raw: &str) -> Result<T, String> {
-    let start = raw
-        .find('{')
-        .ok_or_else(|| "no JSON object found".to_owned())?;
-    let end = raw
-        .rfind('}')
-        .filter(|end| *end > start)
-        .ok_or_else(|| "no complete JSON object found".to_owned())?;
-    serde_json::from_str(&raw[start..=end]).map_err(|error| format!("invalid JSON: {error}"))
+    let mut last_error = "no complete JSON object found".to_owned();
+    let mut scan_from = 0usize;
+    while let Some((start, end)) = find_json_object_bounds(raw, scan_from) {
+        let slice = &raw[start..=end];
+        let parsed = serde_json::from_str(slice)
+            .or_else(|_| serde_json::from_str(&repair_json_escapes(slice)));
+        match parsed {
+            Ok(value) => return Ok(value),
+            Err(error) => last_error = format!("invalid JSON: {error}"),
+        }
+        scan_from = end + 1;
+    }
+    Err(last_error)
+}
+
+/// Locate the next top-level `{...}` object starting at or after `from`.
+/// Braces inside string values (and their escapes) are skipped, so a string
+/// ending in `}` or a stray `{`/`}` in surrounding prose never truncates or
+/// poisons the candidate object.
+fn find_json_object_bounds(raw: &str, from: usize) -> Option<(usize, usize)> {
+    let bytes = raw.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut start: Option<usize> = None;
+    for (index, &byte) in bytes.iter().enumerate().skip(from) {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => {
+                if depth == 0 {
+                    start = Some(index);
+                }
+                depth += 1;
+            }
+            b'}' => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        return start.map(|start| (start, index));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Repair escaping mistakes models make with special characters inside JSON
+/// string values. Only invoked when the standard parse of a candidate object
+/// fails, so valid JSON is never touched:
+/// - raw control characters (real newlines/tabs) become JSON escapes;
+/// - `\` before an invalid escape character (LaTeX commands like `\alpha`,
+///   `\{`) is doubled so the text stays literal;
+/// - `\b`/`\f` are valid JSON escapes but course text virtually never means
+///   backspace/form-feed; followed by letters they are LaTeX commands
+///   (`\begin`, `\frac`) and the backslash is kept literal.
+fn repair_json_escapes(slice: &str) -> String {
+    let mut out = String::with_capacity(slice.len() + 16);
+    let mut chars = slice.chars().peekable();
+    let mut in_string = false;
+    while let Some(ch) = chars.next() {
+        if !in_string {
+            out.push(ch);
+            if ch == '"' {
+                in_string = true;
+            }
+            continue;
+        }
+        match ch {
+            '"' => {
+                out.push('"');
+                in_string = false;
+            }
+            '\\' => match chars.next() {
+                // Valid JSON escapes pass through untouched.
+                Some(next @ ('"' | '\\' | '/' | 'n' | 'r' | 't' | 'u')) => {
+                    out.push('\\');
+                    out.push(next);
+                }
+                // `\b`/`\f` followed by letters are LaTeX commands, not
+                // control-character escapes.
+                Some(next @ ('b' | 'f')) => {
+                    let latex = matches!(chars.peek(), Some(c) if c.is_ascii_alphabetic());
+                    if latex {
+                        out.push('\\');
+                    }
+                    out.push('\\');
+                    out.push(next);
+                }
+                // Unknown escape: double the backslash to keep it literal.
+                Some(next) => {
+                    out.push('\\');
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => out.push('\\'),
+            },
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -807,6 +954,41 @@ mod tests {
         assert_eq!(blueprint.title, "Course");
         assert_eq!(blueprint.modules.len(), 1);
         assert!(parse_json_object::<Blueprint>("not json").is_err());
+    }
+
+    #[test]
+    fn parser_tolerates_latex_commands_and_raw_control_chars() {
+        // LaTeX backslashes are not valid JSON escapes (`\a`, `\{`, `\m`)
+        // and raw newlines are invalid inside JSON strings; both must be
+        // repaired while the literal text is preserved.
+        let raw = "{\"title\": \"集合论\",\n  \"description\": \"公式 $\\alpha + \\beta$，分数 \\frac{a}{b}，集合 \\{x \\mid x > 0\\}，\n换行说明\",\n  \"modules\": []}";
+        let blueprint: Blueprint = parse_json_object(raw).unwrap();
+        assert_eq!(blueprint.title, "集合论");
+        assert!(blueprint.description.contains(r"\alpha"));
+        assert!(blueprint.description.contains(r"\frac{a}{b}"));
+        assert!(blueprint.description.contains(r"\{x \mid x > 0\}"));
+        assert!(blueprint.description.contains("\n换行说明"));
+    }
+
+    #[test]
+    fn parser_skips_braces_inside_strings_and_prose() {
+        // A string value ending in `}` and prose with stray braces must not
+        // truncate or poison the candidate object.
+        let raw = r#"请按 {要求} 输出：{"title": "集合 {1,2,3}", "modules": []} 完成（见 } 处）"#;
+        let blueprint: Blueprint = parse_json_object(raw).unwrap();
+        assert_eq!(blueprint.title, "集合 {1,2,3}");
+        assert!(blueprint.modules.is_empty());
+    }
+
+    #[test]
+    fn parser_keeps_escaped_math_in_lesson_summary() {
+        // `\frac` would otherwise parse as a form-feed escape; the repaired
+        // summary must keep the literal LaTeX command.
+        let raw = r#"{"summary": "能量 \frac{1}{2}mv^2，\begin{matrix}...\end{matrix}", "estimated_minutes": 10, "activities": []}"#;
+        let output: LessonOutput = parse_json_object(raw).unwrap();
+        assert!(output.summary.contains(r"\frac{1}{2}mv^2"));
+        assert!(output.summary.contains(r"\begin{matrix}"));
+        assert_eq!(output.estimated_minutes, 10);
     }
 
     #[test]

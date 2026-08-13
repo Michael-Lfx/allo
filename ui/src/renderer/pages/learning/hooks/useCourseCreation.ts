@@ -76,6 +76,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     }
   }, [t]);
 
+  // 方式一：提交后台生成任务并立即返回（不再同步等待/自动报名/跳转），
+  // 进度在学习页任务面板轮询展示，课程入库后自动出现在课程列表。
   const generateCourse = useCallback(async () => {
     if (!selectedKnowledgeBaseId) {
       Message.warning(t('learning.selectKnowledgeBase'));
@@ -83,30 +85,20 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     }
     setBusyId('generate');
     try {
-      const generated = await learningApi.generateCourse({
+      await learningApi.generateCourse({
         knowledge_base_id: selectedKnowledgeBaseId,
         domain: generationDomain.trim() || undefined,
         provider_id: modelChoice?.provider_id,
         model: modelChoice?.model,
       });
-      let enrolled = false;
-      try {
-        await learningApi.enroll(generated.course.id);
-        enrolled = true;
-      } catch {
-        // Course is still usable; user can enroll manually on the detail page.
-      }
       setGenerateVisible(false);
-      Message.success(
-        enrolled ? t('learning.generateAndEnrollSuccess') : t('learning.generateSuccess')
-      );
-      navigate(`/learn/${generated.course.id}`);
+      Message.success(t('learning.generateStarted'));
     } catch (actionError) {
       Message.error(errorMessage(t, actionError));
     } finally {
       setBusyId(null);
     }
-  }, [generationDomain, modelChoice, navigate, selectedKnowledgeBaseId, t, setBusyId]);
+  }, [generationDomain, modelChoice, selectedKnowledgeBaseId, t, setBusyId]);
 
   // 方式二：描述生成 → 选择/自动创建知识库 → 跳转 AI 对话页自动发起课程创建会话
   const createCourseViaAgent = useCallback(async () => {
