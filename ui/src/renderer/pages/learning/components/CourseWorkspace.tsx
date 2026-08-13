@@ -56,7 +56,6 @@ function ActivityBlock({
         value={response}
         disabled={disabled}
         onChange={setResponse}
-        placeholder={t('learning.reflectionPlaceholder')}
       />
       <div className='mt-12px flex items-center gap-10px'>
         <Button

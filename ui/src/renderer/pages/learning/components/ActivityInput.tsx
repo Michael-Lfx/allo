@@ -63,7 +63,7 @@ export function ActivityInput({
   return (
     <Input.TextArea
       value={typeof value === 'string' ? value : ''}
-      placeholder={placeholder}
+      placeholder={placeholder ?? t('learning.reflectionPlaceholder')}
       autoSize={{ minRows: 3, maxRows: 8 }}
       onChange={onChange}
     />
