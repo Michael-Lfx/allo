@@ -361,7 +361,10 @@ const KnowledgeListPage: React.FC = () => {
             />
 
             {/* Card grid */}
-            <div className='grid gap-16px' style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(330px, 1fr))' }}>
+            <div
+              className='grid gap-16px [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_200px]'
+              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(330px, 1fr))' }}
+            >
               {displayBases.map((base) => (
                 <KnowledgeCard
                   key={base.knowledge_base_id}
