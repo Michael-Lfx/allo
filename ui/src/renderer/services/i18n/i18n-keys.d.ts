@@ -2831,6 +2831,7 @@ export type I18nKey =
   | 'messages.toolSummary.waiting'
   | 'messages.turnCanceled'
   | 'messages.turnCredits.consumed'
+  | 'messages.turnCredits.consumedBy'
   | 'messages.turnDeliverables.open'
   | 'messages.turnDeliverables.reveal'
   | 'messages.turnDeliverables.showLess'

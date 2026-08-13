@@ -110,7 +110,8 @@
   "copySuccess": "Copied successfully",
   "copyFailed": "Failed to copy",
   "turnCredits": {
-    "consumed": "Consumed"
+    "consumed": "Consumed credits {{credits}}",
+    "consumedBy": "Consumed credits {{credits}} by {{model}}"
   },
   "copyLastOutput.empty": "No response to copy yet",
   "copiedToClipboard": "Copied to clipboard",

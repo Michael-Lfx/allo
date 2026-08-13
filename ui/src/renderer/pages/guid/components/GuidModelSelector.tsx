@@ -64,8 +64,10 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
 
   const geminiSelectedLabel = React.useMemo(() => {
     if (!current_model?.use_model) return '';
-    return formatModelLabelForProvider(current_model, current_model.use_model);
-  }, [current_model]);
+    const liveProvider =
+      enabledGroups.find((group) => group.provider.id === current_model.id)?.provider ?? current_model;
+    return formatModelLabelForProvider(liveProvider, current_model.use_model);
+  }, [current_model, enabledGroups]);
 
   const geminiButtonLabel = React.useMemo(() => {
     if (defaultModelUnavailable) return t('conversation.chat.defaultModelUnavailable');

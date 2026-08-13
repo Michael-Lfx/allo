@@ -9,7 +9,7 @@ import { useConversationContextSafe } from '@/renderer/hooks/context/Conversatio
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { iconColors } from '@/renderer/styles/colors';
 import { Alert, Button, Message, Tooltip } from '@arco-design/web-react';
-import { CheckOne, CloseOne, Copy, Edit, Info, Loading, Star } from '@icon-park/react';
+import { CheckOne, CloseOne, Copy, Edit, Info, Loading } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -30,10 +30,13 @@ import { confirmFirstValue } from '@/renderer/utils/analytics/productFunnel';
 import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { peekTurnCredits } from '@/renderer/pages/conversation/platforms/nomi/fetchTurnCredits';
+import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
 import MessageCronBadge from './MessageCronBadge';
 import { getAgentLogo } from '@/renderer/utils/model/agentLogo';
+import { findProviderById } from '@/renderer/utils/model/cloudModelLabel';
 import AgentMessageAvatar from './AgentMessageAvatar';
 import { splitStreamingMarkdown } from './streamingMarkdown';
+import { formatTurnCreditDetails, formatTurnCreditModels } from './turnCreditsLabel';
 
 const BUBBLE_ENTER_FRESH_MS = 1500;
 
@@ -62,18 +65,6 @@ export const formatMessageTime = (timestamp: number, locale?: string): string =>
 };
 
 export const formatMessageTimeIso = (timestamp: number): string => new Date(timestamp).toISOString();
-
-const formatTurnCreditDetails = (calls: TurnCreditUsageData['calls']): string | undefined => {
-  if (!calls?.length) return undefined;
-
-  const creditsByModel = new Map<string, number>();
-  for (const call of calls) {
-    const modelName = call.modelName.trim() || 'model';
-    creditsByModel.set(modelName, (creditsByModel.get(modelName) ?? 0) + call.creditConsumed);
-  }
-
-  return [...creditsByModel].map(([modelName, credits]) => `${modelName}: ${credits}`).join('\n');
-};
 
 const CODE_STYLE = { marginTop: 4, marginBlock: 4 };
 
@@ -413,9 +404,21 @@ const MessageText: React.FC<{
     };
   }, [conversationId, turnCreditKey]);
   const turnCredits = liveTurnCredits ?? persistedTurnCredits;
+  const { data: providerList } = useProvidersQuery({
+    enabled: conversation?.type === 'nomi',
+  });
+  const creditProvider = useMemo(() => {
+    if (conversation?.type !== 'nomi') return undefined;
+    return findProviderById(providerList ?? [], conversation.model?.id) ?? conversation.model;
+  }, [conversation, providerList]);
+  const creditFallbackModel = conversation?.type === 'nomi' ? conversation.model?.use_model : undefined;
   const turnCreditDetails = useMemo(
-    () => formatTurnCreditDetails(turnCredits?.calls),
-    [turnCredits?.calls]
+    () => formatTurnCreditDetails(turnCredits?.calls, creditProvider),
+    [creditProvider, turnCredits?.calls]
+  );
+  const turnCreditModels = useMemo(
+    () => formatTurnCreditModels(turnCredits?.calls, creditFallbackModel, creditProvider),
+    [creditFallbackModel, creditProvider, turnCredits?.calls]
   );
   // Show whenever the server recorded at least one billed call, or a positive
   // aggregate (covers laggy callCount while creditsConsumed already landed).
@@ -538,7 +541,7 @@ const MessageText: React.FC<{
   const actionsRow = shouldShowActions ? (
     <div
       data-testid='message-actions'
-      className={classNames('message-text-actions h-28px flex items-center mt-4px gap-6px text-t-secondary', {
+      className={classNames('message-text-actions h-28px flex items-center mt-10px gap-6px text-t-secondary', {
         'flex-row-reverse': isUserMessage,
       })}
     >
@@ -561,14 +564,16 @@ const MessageText: React.FC<{
             data-testid='turn-credits'
             className='message-text-actions__credits inline-flex items-center gap-3px text-12px leading-20px text-inherit select-none tabular-nums'
           >
-            {t('messages.turnCredits.consumed', { defaultValue: '消耗' })}
-            <Star
-              theme='outline'
-              size='12'
-              strokeWidth={4}
-              aria-hidden='true'
-            />
-            <span>{turnCredits.creditsConsumed}</span>
+            {turnCreditModels
+              ? t('messages.turnCredits.consumedBy', {
+                  credits: turnCredits.creditsConsumed,
+                  model: turnCreditModels,
+                  defaultValue: '消耗{{credits}}积分 {{model}}',
+                })
+              : t('messages.turnCredits.consumed', {
+                  credits: turnCredits.creditsConsumed,
+                  defaultValue: '消耗{{credits}}积分',
+                })}
           </span>
         </Tooltip>
       ) : null}

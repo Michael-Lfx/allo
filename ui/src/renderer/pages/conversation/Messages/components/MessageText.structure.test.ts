@@ -26,13 +26,12 @@ describe('MessageText process action chrome', () => {
     ).toBe(true);
   });
 
-  test('coalesces repeated model charges in the turn-credit tooltip', () => {
-    expect(source.includes('const formatTurnCreditDetails =')).toBe(true);
-    expect(source.includes('const creditsByModel = new Map<string, number>();')).toBe(true);
-    expect(source.includes('creditsByModel.set(modelName, (creditsByModel.get(modelName) ?? 0) + call.creditConsumed);')).toBe(
-      true
-    );
+  test('shows billed model names inline on the turn-credit chip', () => {
+    expect(source.includes("from './turnCreditsLabel'")).toBe(true);
     expect(source.includes('content={turnCreditDetails}')).toBe(true);
+    expect(source.includes("t('messages.turnCredits.consumedBy'")).toBe(true);
+    const iconImport = source.match(/import \{([^}]+)\} from '@icon-park\/react'/)?.[1] ?? '';
+    expect(iconImport.includes('Star')).toBe(false);
   });
 
   test('can render the unchanged message actions at the visual end of a turn', () => {

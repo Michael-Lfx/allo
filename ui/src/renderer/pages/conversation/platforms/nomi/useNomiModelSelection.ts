@@ -84,14 +84,19 @@ export const useNomiModelSelection = ({
     [onSelectModel]
   );
 
+  const liveCurrentProvider = useMemo(() => {
+    if (!current_model?.id) return current_model;
+    return providers.find((provider) => provider.id === current_model.id) ?? current_model;
+  }, [current_model, providers]);
+
   const getDisplayModelName = useCallback(
     (modelName?: string) => {
       if (!modelName) return '';
-      const label = formatModelLabel(current_model, modelName);
+      const label = formatModelLabel(liveCurrentProvider, modelName);
       const maxLength = 20;
       return label.length > maxLength ? `${label.slice(0, maxLength)}...` : label;
     },
-    [current_model, formatModelLabel]
+    [formatModelLabel, liveCurrentProvider]
   );
 
   return {
