@@ -6979,7 +6979,6 @@ version = "0.0.3"
 dependencies = [
  "async-trait",
  "axum",
- "dashmap",
  "futures-util",
  "fuzzy-matcher",
  "nomi-redact",

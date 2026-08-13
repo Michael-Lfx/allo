@@ -49,7 +49,6 @@ function useStarOfficeInstallFlow(controller: BasicRuntimeSendBoxController): Ba
     markLocalTurnAccepted,
     reconcilePublicDeliveryReplay,
     cancelLocalTurn,
-    checkAndUpdateTitle,
     addOrUpdateMessage,
   } = controller;
 
@@ -82,7 +81,6 @@ function useStarOfficeInstallFlow(controller: BasicRuntimeSendBoxController): Ba
         if (disposition === 'fresh') {
           beginLocalTurn();
           setAiProcessing(true);
-          void checkAndUpdateTitle(conversation_id, text);
           markLocalTurnAccepted();
           addOrUpdateMessage({
             id: uuid(),
@@ -122,7 +120,6 @@ function useStarOfficeInstallFlow(controller: BasicRuntimeSendBoxController): Ba
       addOrUpdateMessage,
       beginLocalTurn,
       cancelLocalTurn,
-      checkAndUpdateTitle,
       conversation_id,
       markLocalTurnAccepted,
       reconcilePublicDeliveryReplay,

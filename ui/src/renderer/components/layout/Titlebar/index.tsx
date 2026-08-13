@@ -370,7 +370,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
         className={classNames('app-titlebar__brand', {
           'app-titlebar__brand--centered': layout?.isMobile,
         })}
-        aria-label={contextTitle}
+        aria-label={layout?.isMobile ? contextTitle : undefined}
         data-tauri-drag-region
       >
         {layout?.isMobile ? (
@@ -384,11 +384,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
               </span>
             );
           })()
-        ) : (
-          <span key={`${location.pathname}:${contextTitle}`} className='app-titlebar__context-title'>
-            {contextTitle}
-          </span>
-        )}
+        ) : null}
       </div>
       <div ref={toolbarRef} className='app-titlebar__toolbar'>
         {layout?.isMobile && <div id='app-titlebar-actions-slot' className='app-titlebar__actions-slot' />}

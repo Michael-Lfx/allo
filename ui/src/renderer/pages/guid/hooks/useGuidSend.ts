@@ -680,9 +680,9 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     guidTransitionStart();
     beginPending?.({
       input,
-      // The conversation is created with the raw input as its name (verbatim
-      // for normal sends, the requirement tag for AutoWork). The overlay's
-      // header replica mirrors it so the title doesn't pop at reveal.
+      // Normal chats receive their fallback title from the backend after the
+      // first user message is durable. Only explicit AutoWork entries have a
+      // create-time name.
       title: planGuidEntry(input, autoWork).conversationName,
       files: files.length > 0 ? files : undefined,
       sendsInitialMessage: !isAutoWorkEntry(autoWork),

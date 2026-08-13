@@ -15,7 +15,6 @@ import SendBox from '@/renderer/components/chat/SendBox';
 import FileAttachButton from '@/renderer/components/media/FileAttachButton';
 import FilePreview from '@/renderer/components/media/FilePreview';
 import HorizontalFileList from '@/renderer/components/media/HorizontalFileList';
-import { useAutoTitle } from '@/renderer/hooks/chat/useAutoTitle';
 import type { FileOrFolderItem } from '@/renderer/hooks/chat/useSendBoxDraft';
 import { createSetUploadFile } from '@/renderer/hooks/chat/useSendBoxFiles';
 import { useOpenFileSelector } from '@/renderer/hooks/file/useOpenFileSelector';
@@ -86,7 +85,6 @@ export interface BasicRuntimeSendBoxController {
   markLocalTurnAccepted: () => void;
   reconcilePublicDeliveryReplay: (completed: boolean) => void;
   cancelLocalTurn: () => void;
-  checkAndUpdateTitle: ReturnType<typeof useAutoTitle>['checkAndUpdateTitle'];
   addOrUpdateMessage: ReturnType<typeof useAddOrUpdateMessage>;
 }
 
@@ -199,7 +197,6 @@ const BasicRuntimeSendBox: React.FC<{
 }> = ({ conversation_id, config }) => {
   const [workspacePath, setWorkspacePath] = useState('');
   const { t } = useTranslation();
-  const { checkAndUpdateTitle } = useAutoTitle();
   const useSlashCommandList = config.useSlashCommandList ?? useNoSlashCommands;
   const slash_commands = useSlashCommandList(conversation_id);
   const addOrUpdateMessage = useAddOrUpdateMessage();
@@ -294,14 +291,12 @@ const BasicRuntimeSendBox: React.FC<{
       markLocalTurnAccepted,
       reconcilePublicDeliveryReplay,
       cancelLocalTurn,
-      checkAndUpdateTitle,
       addOrUpdateMessage,
     }),
     [
       addOrUpdateMessage,
       beginLocalTurn,
       cancelLocalTurn,
-      checkAndUpdateTitle,
       conversation_id,
       markLocalTurnAccepted,
       reconcilePublicDeliveryReplay,
@@ -471,9 +466,6 @@ const BasicRuntimeSendBox: React.FC<{
       }
       let msg_id: MessageId | null = null;
       try {
-        if (!deferLocalTurnUntilFresh) {
-          void checkAndUpdateTitle(conversation_id, input);
-        }
         // Wait for the server-assigned msg_id before rendering the optimistic
         // user bubble so the local row uses the same id as the DB row and
         // subsequent WebSocket stream events — avoids duplicate bubbles when
@@ -491,7 +483,6 @@ const BasicRuntimeSendBox: React.FC<{
           if (deferLocalTurnUntilFresh) {
             beginLocalTurn();
             setAiProcessing(true);
-            void checkAndUpdateTitle(conversation_id, input);
           }
           markLocalTurnAccepted();
           const userMessage: TMessage = {
@@ -524,7 +515,6 @@ const BasicRuntimeSendBox: React.FC<{
       addOrUpdateMessage,
       beginLocalTurn,
       cancelLocalTurn,
-      checkAndUpdateTitle,
       config.sendMessage,
       conversation_id,
       markLocalTurnAccepted,
@@ -662,7 +652,6 @@ const BasicRuntimeSendBox: React.FC<{
         if (disposition === 'fresh') {
           beginLocalTurn();
           setAiProcessing(true);
-          void checkAndUpdateTitle(conversation_id, input);
           markLocalTurnAccepted();
 
           const userMessage: TMessage = {
@@ -719,7 +708,6 @@ const BasicRuntimeSendBox: React.FC<{
     addOrUpdateMessage,
     beginLocalTurn,
     cancelLocalTurn,
-    checkAndUpdateTitle,
     config,
     conversation_id,
     hasHydratedRunningState,

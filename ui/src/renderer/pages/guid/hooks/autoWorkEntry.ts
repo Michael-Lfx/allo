@@ -13,7 +13,7 @@ export interface GuidEntryPlan {
    * "conversation N is already running".
    */
   sendInitialMessage: boolean;
-  /** Conversation name to create with. */
+  /** Explicit conversation name for AutoWork entries; normal chats start unnamed. */
   conversationName: string;
 }
 
@@ -37,7 +37,7 @@ export function planGuidEntry(input: string, autoWork: AutoWorkDraftValue): Guid
   return {
     autoWorkEntry,
     sendInitialMessage: !autoWorkEntry,
-    conversationName: autoWorkEntry ? input.trim() || (autoWork.tag ?? '') : input,
+    conversationName: autoWorkEntry ? input.trim() || (autoWork.tag ?? '') : '',
   };
 }
 

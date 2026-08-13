@@ -87,29 +87,6 @@
   justify-self: stretch;
 }
 
-.app-titlebar__context-title {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--flowy-text-muted);
-  font-size: 13px;
-  font-weight: var(--flowy-weight-medium);
-  line-height: 20px;
-  animation: titlebar-context-enter var(--flowy-motion-fast) var(--flowy-ease-enter) both;
-}
-
-@keyframes titlebar-context-enter {
-  from {
-    opacity: 0.65;
-  }
-
-  to {
-    opacity: 1;
-  }
-}
-
 .app-titlebar--mobile .app-titlebar__brand {
   position: static;
   flex: 1 1 auto;
@@ -364,9 +341,6 @@
     transform: none;
   }
 
-  .app-titlebar__context-title {
-    animation: none;
-  }
 }
 
 @media (max-width: 720px) {

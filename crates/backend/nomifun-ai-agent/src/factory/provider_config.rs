@@ -357,6 +357,35 @@ pub enum DeltaKind {
     Reasoning,
 }
 
+/// Which channel supplied a title completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleResponseChannel {
+    /// The provider returned visible content.
+    Text,
+    /// The provider returned no visible content, so the reasoning channel was
+    /// used from the same stream response.
+    ReasoningFallback,
+    /// The provider completed without returning either channel.
+    Empty,
+}
+
+impl TitleResponseChannel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::ReasoningFallback => "reasoning_fallback",
+            Self::Empty => "empty",
+        }
+    }
+}
+
+/// Result of the single title-generation stream request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleCompletionResult {
+    pub output: String,
+    pub channel: TitleResponseChannel,
+}
+
 /// Perform a single-turn LLM completion and return the assembled text response.
 ///
 /// Builds an `LlmRequest` from the given config, streams events from the
@@ -391,6 +420,33 @@ pub async fn one_shot_completion_text_or_reasoning(
     max_tokens: u32,
 ) -> Result<String, AppError> {
     streaming_completion_text_or_reasoning(cfg, system, messages, max_tokens, |_, _| {}).await
+}
+
+/// Perform exactly one title-generation stream request. Providers that ignore
+/// `thinking=Disabled` may still place their answer in the reasoning channel;
+/// that channel is recovered from the same response without issuing another
+/// request.
+pub async fn one_shot_completion_title(
+    cfg: &Config,
+    system: &str,
+    messages: Vec<Message>,
+    max_tokens: u32,
+) -> Result<TitleCompletionResult, AppError> {
+    let provider: Arc<dyn LlmProvider> = create_provider(cfg);
+
+    let request = LlmRequest {
+        model: cfg.model.clone(),
+        system: system.to_owned(),
+        messages,
+        tools: vec![],
+        max_tokens,
+        thinking: Some(ThinkingConfig::Disabled),
+        reasoning_effort: None,
+        temperature: None,
+    };
+
+    let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
+    drain_title_completion(rx).await
 }
 
 /// Like [`one_shot_completion`] but invokes `on_delta` for every text chunk
@@ -651,6 +707,57 @@ async fn drain_text_or_reasoning(
     }
 }
 
+/// Drain one title stream while retaining both possible answer channels.
+/// Content always wins; reasoning is only used when content is empty.
+async fn drain_title_completion(
+    mut rx: tokio::sync::mpsc::Receiver<LlmEvent>,
+) -> Result<TitleCompletionResult, AppError> {
+    let mut text = String::new();
+    let mut reasoning = String::new();
+
+    while let Some(event) = rx.recv().await {
+        match event {
+            LlmEvent::TextDelta(delta) => text.push_str(&delta),
+            LlmEvent::ThinkingDelta(delta) => reasoning.push_str(&delta),
+            LlmEvent::Done { .. } => {
+                return Ok(title_completion_result(text, reasoning));
+            }
+            LlmEvent::Error(msg) => {
+                return Err(AppError::BadGateway(format!("LLM stream error: {msg}")));
+            }
+            _ => {}
+        }
+    }
+
+    let result = title_completion_result(text, reasoning);
+    if result.output.is_empty() {
+        Err(AppError::BadGateway(
+            "LLM stream ended without producing a response".into(),
+        ))
+    } else {
+        Ok(result)
+    }
+}
+
+fn title_completion_result(text: String, reasoning: String) -> TitleCompletionResult {
+    if !text.trim().is_empty() {
+        return TitleCompletionResult {
+            output: text,
+            channel: TitleResponseChannel::Text,
+        };
+    }
+    if !reasoning.trim().is_empty() {
+        return TitleCompletionResult {
+            output: reasoning,
+            channel: TitleResponseChannel::ReasoningFallback,
+        };
+    }
+    TitleCompletionResult {
+        output: String::new(),
+        channel: TitleResponseChannel::Empty,
+    }
+}
+
 fn provider_error_to_app_error(e: ProviderError) -> AppError {
     AppError::BadGateway(format!("LLM provider error: {e}"))
 }
@@ -861,6 +968,80 @@ mod tests {
 
         let result = drain_text_or_reasoning(rx, |_, _| {}).await.unwrap();
         assert_eq!(result, "real answer");
+    }
+
+    #[tokio::test]
+    async fn drain_title_completion_falls_back_to_reasoning_without_another_request() {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        tx.send(LlmEvent::ThinkingDelta("TITLE: 修复登录问题".into()))
+            .await
+            .unwrap();
+        tx.send(LlmEvent::Done {
+            stop_reason: nomi_types::message::StopReason::EndTurn,
+            usage: nomi_types::message::TokenUsage::default(),
+        })
+        .await
+        .unwrap();
+
+        let result = drain_title_completion(rx).await.unwrap();
+        assert_eq!(result.output, "TITLE: 修复登录问题");
+        assert_eq!(result.channel, TitleResponseChannel::ReasoningFallback);
+    }
+
+    #[tokio::test]
+    async fn drain_title_completion_prefers_content_when_both_channels_exist() {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        tx.send(LlmEvent::ThinkingDelta("internal reasoning".into()))
+            .await
+            .unwrap();
+        tx.send(LlmEvent::TextDelta("TITLE: Fix login".into()))
+            .await
+            .unwrap();
+        tx.send(LlmEvent::Done {
+            stop_reason: nomi_types::message::StopReason::EndTurn,
+            usage: nomi_types::message::TokenUsage::default(),
+        })
+        .await
+        .unwrap();
+
+        let result = drain_title_completion(rx).await.unwrap();
+        assert_eq!(result.output, "TITLE: Fix login");
+        assert_eq!(result.channel, TitleResponseChannel::Text);
+    }
+
+    #[tokio::test]
+    async fn drain_title_completion_marks_empty_done_without_a_second_request() {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        tx.send(LlmEvent::Done {
+            stop_reason: nomi_types::message::StopReason::EndTurn,
+            usage: nomi_types::message::TokenUsage::default(),
+        })
+        .await
+        .unwrap();
+
+        let result = drain_title_completion(rx).await.unwrap();
+        assert!(result.output.is_empty());
+        assert_eq!(result.channel, TitleResponseChannel::Empty);
+    }
+
+    #[tokio::test]
+    async fn drain_title_completion_returns_stream_error_once() {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        tx.send(LlmEvent::Error("provider unavailable".into()))
+            .await
+            .unwrap();
+
+        let error = drain_title_completion(rx).await.unwrap_err();
+        assert_eq!(error.error_code(), "BAD_GATEWAY");
+    }
+
+    #[tokio::test]
+    async fn drain_title_completion_rejects_empty_stream_without_done() {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(tx);
+
+        let error = drain_title_completion(rx).await.unwrap_err();
+        assert_eq!(error.error_code(), "BAD_GATEWAY");
     }
 }
 

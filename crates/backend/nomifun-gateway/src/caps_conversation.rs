@@ -569,8 +569,6 @@ async fn update(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: UpdateConversationPar
     let model_changed = model.is_some();
     let req = UpdateConversationRequest {
         name: p.name,
-        // An explicit caps rename claims the name like a user rename.
-        name_source: None,
         pinned: p.pinned,
         model,
         delegation_policy: None,

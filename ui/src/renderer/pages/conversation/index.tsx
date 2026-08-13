@@ -6,7 +6,6 @@ import { useNavigate, useParams } from 'react-router-dom';
 import useSWR from 'swr';
 import ChatConversation from './components/ChatConversation';
 import MessageListSkeleton from './Messages/components/MessageListSkeleton';
-import { useAutoTitle } from '@/renderer/hooks/chat/useAutoTitle';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { parseConversationId } from '@/common/types/ids';
 import { emitter } from '@/renderer/utils/emitter';
@@ -18,10 +17,8 @@ const ChatConversationIndex: React.FC = () => {
   const conversationId = id != null ? parseConversationId(id) : undefined;
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { syncTitleFromHistory } = useAutoTitle();
   const notFoundHandledIdRef = useRef<string | undefined>(undefined);
   const deletedHandledIdRef = useRef<string | undefined>(undefined);
-  const defaultConversationTitle = t('conversation.welcome.newConversation');
 
   const { data, isLoading, mutate } = useSWR(id ? `conversation/${id}` : null, () => {
     return getConversationOrNull(conversationId!);
@@ -59,18 +56,6 @@ const ChatConversationIndex: React.FC = () => {
       void mutate();
     });
   }, [id, conversationId, mutate, navigate]);
-
-  useEffect(() => {
-    if (!data) {
-      return;
-    }
-    const name = data.name?.trim() ?? '';
-    if (name !== '' && name !== defaultConversationTitle) {
-      return;
-    }
-
-    void syncTitleFromHistory(data.id);
-  }, [data, defaultConversationTitle, syncTitleFromHistory]);
 
   // 会话不存在（例如从历史栈回到已删除会话）时，提示并替换路由到首页，
   // 避免渲染空骨架。每个 id 只触发一次。

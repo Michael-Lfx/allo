@@ -21,7 +21,6 @@ import FilePreview from '@/renderer/components/media/FilePreview';
 import HorizontalFileList from '@/renderer/components/media/HorizontalFileList';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
-import { useAutoTitle } from '@/renderer/hooks/chat/useAutoTitle';
 import { getSendBoxDraftHook, type FileOrFolderItem } from '@/renderer/hooks/chat/useSendBoxDraft';
 import { useComposerSkillChips } from '@/renderer/hooks/chat/useComposerSkillChips';
 import { createSetUploadFile, useSendBoxFiles } from '@/renderer/hooks/chat/useSendBoxFiles';
@@ -250,7 +249,6 @@ const NomiSendBox: React.FC<{
   const loadedMcpStatuses = conversationContext?.loadedMcpStatuses ?? [];
   const { t } = useTranslation();
   const providerLabel = useModelSelectorProviderLabel();
-  const { checkAndUpdateTitle } = useAutoTitle();
   const { current_model } = modelSelection;
 
   const reasoningEffortLevels = useMemo(() => {
@@ -492,9 +490,6 @@ const NomiSendBox: React.FC<{
 
       let msg_id: MessageId | null = null;
       try {
-        if (!deferLocalTurnUntilFresh && input.trim()) {
-          void checkAndUpdateTitle(conversation_id, input);
-        }
         const res = await ipcBridge.conversation.sendMessage.invoke({
           input: displayMessage,
           conversation_id,
@@ -509,9 +504,6 @@ const NomiSendBox: React.FC<{
         if (disposition === 'fresh') {
           if (deferLocalTurnUntilFresh) {
             setWaitingResponse(true);
-            if (input.trim()) {
-              void checkAndUpdateTitle(conversation_id, input);
-            }
           }
           markTurnAccepted();
           // Prefer wire/billing turn_id over user msg_id so lifecycle fence +
@@ -559,7 +551,6 @@ const NomiSendBox: React.FC<{
     },
     [
       addOrUpdateMessage,
-      checkAndUpdateTitle,
       conversation_id,
       current_model?.use_model,
       markTurnAccepted,

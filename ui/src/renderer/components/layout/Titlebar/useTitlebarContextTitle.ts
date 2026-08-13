@@ -41,17 +41,30 @@ export const useTitlebarContextTitle = (pathname: string): TitlebarContextTitle 
     if (!activeConversationId) return undefined;
 
     let cancelled = false;
-    void ipcBridge.conversation.get
-      .invoke({ conversation_id: activeConversationId })
-      .then((nextConversation) => {
-        if (!cancelled) setConversation(nextConversation ?? undefined);
-      })
-      .catch(() => {
-        if (!cancelled) setConversation(undefined);
-      });
+    const refreshConversation = () => {
+      void ipcBridge.conversation.get
+        .invoke({ conversation_id: activeConversationId })
+        .then((nextConversation) => {
+          if (!cancelled) setConversation(nextConversation ?? undefined);
+        })
+        .catch(() => {
+          if (!cancelled) setConversation(undefined);
+        });
+    };
+    refreshConversation();
+
+    const offListChanged = ipcBridge.conversation.listChanged.on((event) => {
+      if (event.conversation_id !== activeConversationId) return;
+      if (event.action === 'deleted') {
+        setConversation(undefined);
+        return;
+      }
+      refreshConversation();
+    });
 
     return () => {
       cancelled = true;
+      offListChanged();
     };
   }, [activeConversationId]);
 
@@ -60,7 +73,7 @@ export const useTitlebarContextTitle = (pathname: string): TitlebarContextTitle 
     ? conversation?.name?.trim() || t('common.titlebar.conversation')
     : staticTitleKey
       ? t(staticTitleKey)
-      : 'Flowy';
+      : '';
 
   return { title, activeConversationId, conversation };
 };

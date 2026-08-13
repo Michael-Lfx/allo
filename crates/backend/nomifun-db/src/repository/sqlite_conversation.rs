@@ -4053,56 +4053,83 @@ impl IConversationRepository for SqliteConversationRepository {
         Ok(())
     }
 
-    async fn update_auto_title_if_auto(
+    async fn claim_auto_title(
         &self,
         conversation_id: &str,
-        name: &str,
-        extra: &str,
-        allowed_prior_states: &[&str],
-        updated_at: TimestampMs,
-    ) -> Result<bool, DbError> {
-        if allowed_prior_states.is_empty() {
-            return Ok(false);
-        }
-        // `""` in `allowed_prior_states` matches an absent `autoTitleState`
-        // via COALESCE. The state gate additionally prevents a stale retry
-        // from overwriting a conversation that has already reached a terminal
-        // title state.
-        let placeholders = vec!["?"; allowed_prior_states.len()].join(",");
-        let sql = format!(
-            "UPDATE conversations SET name = ?, extra = ?, updated_at = ? \
-             WHERE conversation_id = ? \
-               AND (json_extract(extra, '$.titleSource') IS NULL \
-                    OR json_extract(extra, '$.titleSource') = 'auto') \
-               AND COALESCE(json_extract(extra, '$.autoTitleState'), '') IN ({placeholders})"
-        );
-        let mut query = sqlx::query(&sql).bind(name).bind(extra).bind(updated_at).bind(conversation_id);
-        for state in allowed_prior_states {
-            query = query.bind(*state);
-        }
-        let result = query.execute(&self.pool).await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    async fn update_preview_name_if_untitled(
-        &self,
-        conversation_id: &str,
-        name: &str,
+        expected_name: &str,
+        temporary_name: &str,
         updated_at: TimestampMs,
     ) -> Result<bool, DbError> {
         let result = sqlx::query(
-            "UPDATE conversations SET name = ?, updated_at = ? \
+            "UPDATE conversations \
+             SET name = ?, \
+                 extra = json_set(extra, '$.titleSource', 'auto', '$.autoTitleState', 'pending'), \
+                 updated_at = ? \
              WHERE conversation_id = ? \
-               AND COALESCE(json_extract(extra, '$.autoTitleState'), '') IN ('', 'failed') \
+               AND name = ? \
+               AND json_valid(extra) = 1 \
+               AND json_type(extra) = 'object' \
                AND (json_extract(extra, '$.titleSource') IS NULL \
-                    OR json_extract(extra, '$.titleSource') = 'auto')",
+                    OR json_extract(extra, '$.titleSource') = 'auto') \
+               AND COALESCE(json_extract(extra, '$.autoTitleState'), '') = ''",
         )
-        .bind(name)
+        .bind(temporary_name)
+        .bind(updated_at)
+        .bind(conversation_id)
+        .bind(expected_name)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn finish_auto_title(
+        &self,
+        conversation_id: &str,
+        new_name: Option<&str>,
+        state: &str,
+        updated_at: TimestampMs,
+    ) -> Result<bool, DbError> {
+        if !matches!(state, "done" | "failed") {
+            return Ok(false);
+        }
+        let result = sqlx::query(
+            "UPDATE conversations \
+             SET name = CASE WHEN ? IS NULL THEN name ELSE ? END, \
+                 extra = json_set(extra, '$.autoTitleState', ?), \
+                 updated_at = ? \
+             WHERE conversation_id = ? \
+               AND json_valid(extra) = 1 \
+               AND json_type(extra) = 'object' \
+               AND json_extract(extra, '$.titleSource') = 'auto' \
+               AND json_extract(extra, '$.autoTitleState') = 'pending'",
+        )
+        .bind(new_name)
+        .bind(new_name)
+        .bind(state)
         .bind(updated_at)
         .bind(conversation_id)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn recover_pending_auto_titles(
+        &self,
+        updated_at: TimestampMs,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE conversations \
+             SET extra = json_set(extra, '$.autoTitleState', 'failed'), \
+                 updated_at = ? \
+             WHERE json_valid(extra) = 1 \
+               AND json_type(extra) = 'object' \
+               AND json_extract(extra, '$.titleSource') = 'auto' \
+               AND json_extract(extra, '$.autoTitleState') = 'pending'",
+        )
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     async fn update_idmm(
@@ -8540,124 +8567,167 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_auto_title_if_auto_rejects_user_owned_name() {
-        let (repo, _db) = setup().await;
-        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
-        conv.extra = r#"{"titleSource":"user"}"#.to_string();
-        conv.conversation_id = repo.create(&conv).await.unwrap();
+    async fn auto_title_cas_preserves_extra_and_ownership() {
+        let (repo, db) = setup().await;
 
+        // The claim replaces only the provisional name and title fields.
+        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
+        conv.name = "hello title".to_string();
+        conv.extra = r#"{"workspace":"/tmp/project","custom":true}"#.to_string();
+        conv.conversation_id = repo.create(&conv).await.unwrap();
         let applied = repo
-            .update_auto_title_if_auto(
+            .claim_auto_title(
                 &conv.conversation_id,
-                "Model Title",
-                r#"{"titleSource":"user","autoTitleState":"done"}"#,
-                &[""],
+                "hello title",
+                "Hello Title",
                 nomifun_common::now_ms(),
             )
             .await
             .unwrap();
-        assert!(!applied, "a user rename permanently owns the name");
+        assert!(applied);
+        let claimed = repo.get(&conv.conversation_id).await.unwrap().unwrap();
+        assert_eq!(claimed.name, "Hello Title");
+        assert_eq!(claimed.extra, r#"{"workspace":"/tmp/project","custom":true,"titleSource":"auto","autoTitleState":"pending"}"#);
 
-        let found = repo.get(&conv.conversation_id).await.unwrap().unwrap();
-        assert_eq!(found.name, "Test Conversation");
-        assert_eq!(found.extra, r#"{"titleSource":"user"}"#);
-    }
-
-    #[tokio::test]
-    async fn update_auto_title_if_auto_gates_on_prior_state() {
-        let (repo, _db) = setup().await;
-        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
-        conv.extra = r#"{"autoTitleState":"done"}"#.to_string();
-        conv.conversation_id = repo.create(&conv).await.unwrap();
-
-        // A conversation already titled (state "done") rejects a re-attempt
-        // gated on the absent-only prior state: the CAS must not regress a
-        // completed title.
+        // A second claimant loses after pending has been recorded.
         let applied = repo
-            .update_auto_title_if_auto(
+            .claim_auto_title(
                 &conv.conversation_id,
-                "Re-attempt Title",
-                r#"{"autoTitleState":"done"}"#,
-                &[""],
+                "Hello Title",
+                "Another Title",
                 nomifun_common::now_ms(),
             )
             .await
             .unwrap();
         assert!(!applied);
-        let found = repo.get(&conv.conversation_id).await.unwrap().unwrap();
-        assert_eq!(found.name, "Test Conversation");
-        assert_eq!(found.extra, r#"{"autoTitleState":"done"}"#);
 
-        // An untitled conversation (state absent) accepts the single title
-        // write gated on the absent-only prior state, applying name + extra.
-        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
-        conv.extra = r#"{}"#.to_string();
-        conv.conversation_id = repo.create(&conv).await.unwrap();
+        // A separate writer may add unrelated metadata while the title model
+        // is running. The completion CAS must update only its own fields.
+        sqlx::query(
+            "UPDATE conversations \
+             SET extra = json_set(extra, '$.duringTitle', 'kept') \
+             WHERE conversation_id = ?",
+        )
+        .bind(&conv.conversation_id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
         let applied = repo
-            .update_auto_title_if_auto(
+            .finish_auto_title(
                 &conv.conversation_id,
-                "Auto Title",
-                r#"{"autoTitleState":"done"}"#,
-                &[""],
+                Some("Final Title"),
+                "done",
                 nomifun_common::now_ms(),
             )
             .await
             .unwrap();
         assert!(applied);
-        let found = repo.get(&conv.conversation_id).await.unwrap().unwrap();
-        assert_eq!(found.name, "Auto Title");
-        assert_eq!(found.extra, r#"{"autoTitleState":"done"}"#);
-    }
+        let finished = repo.get(&conv.conversation_id).await.unwrap().unwrap();
+        assert_eq!(finished.name, "Final Title");
+        let finished_extra: serde_json::Value = serde_json::from_str(&finished.extra).unwrap();
+        assert_eq!(finished_extra["workspace"], "/tmp/project");
+        assert_eq!(finished_extra["custom"], true);
+        assert_eq!(finished_extra["duringTitle"], "kept");
+        assert_eq!(finished_extra["titleSource"], "auto");
+        assert_eq!(finished_extra["autoTitleState"], "done");
 
-    #[tokio::test]
-    async fn update_preview_name_if_untitled_respects_title_state() {
-        let (repo, _db) = setup().await;
-
-        // No title state: the preview applies.
-        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
-        conv.conversation_id = repo.create(&conv).await.unwrap();
+        // A completed title cannot be finished again.
         let applied = repo
-            .update_preview_name_if_untitled(&conv.conversation_id, "Preview Name", nomifun_common::now_ms())
-            .await
-            .unwrap();
-        assert!(applied);
-        assert_eq!(
-            repo.get(&conv.conversation_id).await.unwrap().unwrap().name,
-            "Preview Name"
-        );
-
-        // A completed (done) title blocks late previews.
-        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
-        conv.extra = r#"{"autoTitleState":"done"}"#.to_string();
-        conv.conversation_id = repo.create(&conv).await.unwrap();
-        let applied = repo
-            .update_preview_name_if_untitled(&conv.conversation_id, "Late Preview", nomifun_common::now_ms())
+            .finish_auto_title(
+                &conv.conversation_id,
+                Some("Stale Title"),
+                "done",
+                nomifun_common::now_ms(),
+            )
             .await
             .unwrap();
         assert!(!applied);
-        assert_eq!(
-            repo.get(&conv.conversation_id).await.unwrap().unwrap().name,
-            "Test Conversation"
-        );
 
-        // Terminal failure lets the preview recover (the model never titled).
+        // A user-owned name blocks a claim.
         let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
-        conv.extra = r#"{"autoTitleState":"failed"}"#.to_string();
-        conv.conversation_id = repo.create(&conv).await.unwrap();
-        let applied = repo
-            .update_preview_name_if_untitled(&conv.conversation_id, "Recovered Preview", nomifun_common::now_ms())
-            .await
-            .unwrap();
-        assert!(applied);
-
-        // A user-owned name blocks previews.
-        let mut conv = sample_conversation(TEST_INSTALLATION_OWNER);
+        conv.name = "user title".to_string();
         conv.extra = r#"{"titleSource":"user"}"#.to_string();
         conv.conversation_id = repo.create(&conv).await.unwrap();
         let applied = repo
-            .update_preview_name_if_untitled(&conv.conversation_id, "Preview", nomifun_common::now_ms())
+            .claim_auto_title(
+                &conv.conversation_id,
+                "user title",
+                "Preview",
+                nomifun_common::now_ms(),
+            )
             .await
             .unwrap();
         assert!(!applied);
+
+        // A user rename that wins while the model is pending also blocks a
+        // stale completion from replacing the user's title.
+        let mut renamed = sample_conversation(TEST_INSTALLATION_OWNER);
+        renamed.name = "pending title".to_string();
+        renamed.extra = r#"{"titleSource":"auto","autoTitleState":"pending"}"#.to_string();
+        renamed.conversation_id = repo.create(&renamed).await.unwrap();
+        sqlx::query(
+            "UPDATE conversations \
+             SET name = 'User Title', extra = json_set(extra, '$.titleSource', 'user') \
+             WHERE conversation_id = ?",
+        )
+        .bind(&renamed.conversation_id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let applied = repo
+            .finish_auto_title(
+                &renamed.conversation_id,
+                Some("Stale Model Title"),
+                "done",
+                nomifun_common::now_ms(),
+            )
+            .await
+            .unwrap();
+        assert!(!applied);
+
+        // Startup recovery only converges orphaned auto-owned attempts. It
+        // keeps the fallback name and unrelated metadata, and is idempotent.
+        let mut orphaned = sample_conversation(TEST_INSTALLATION_OWNER);
+        orphaned.name = "Fallback title".to_string();
+        orphaned.extra =
+            r#"{"titleSource":"auto","autoTitleState":"pending","workspace":"/tmp/project","custom":true}"#
+                .to_string();
+        orphaned.conversation_id = repo.create(&orphaned).await.unwrap();
+        let mut user_owned_pending = sample_conversation(TEST_INSTALLATION_OWNER);
+        user_owned_pending.name = "User title".to_string();
+        user_owned_pending.extra =
+            r#"{"titleSource":"user","autoTitleState":"pending","custom":true}"#
+                .to_string();
+        user_owned_pending.conversation_id = repo.create(&user_owned_pending).await.unwrap();
+
+        assert_eq!(
+            repo.recover_pending_auto_titles(nomifun_common::now_ms())
+                .await
+                .unwrap(),
+            1
+        );
+        let recovered = repo.get(&orphaned.conversation_id).await.unwrap().unwrap();
+        let recovered_extra: serde_json::Value = serde_json::from_str(&recovered.extra).unwrap();
+        assert_eq!(recovered.name, "Fallback title");
+        assert_eq!(recovered_extra["autoTitleState"], "failed");
+        assert_eq!(recovered_extra["titleSource"], "auto");
+        assert_eq!(recovered_extra["workspace"], "/tmp/project");
+        assert_eq!(recovered_extra["custom"], true);
+
+        let untouched = repo
+            .get(&user_owned_pending.conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let untouched_extra: serde_json::Value = serde_json::from_str(&untouched.extra).unwrap();
+        assert_eq!(untouched_extra["titleSource"], "user");
+        assert_eq!(untouched_extra["autoTitleState"], "pending");
+        assert_eq!(
+            repo.recover_pending_auto_titles(nomifun_common::now_ms())
+                .await
+                .unwrap(),
+            0
+        );
     }
 }

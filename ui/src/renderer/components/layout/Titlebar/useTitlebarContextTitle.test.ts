@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { resolveTitlebarStaticTitleKey } from './useTitlebarContextTitle';
 
 const source = readFileSync(new URL('./useTitlebarContextTitle.ts', import.meta.url), 'utf8');
+const titlebarSource = readFileSync(new URL('./index.tsx', import.meta.url), 'utf8');
 
 describe('titlebar context title', () => {
   test('maps the application routes to stable context labels', () => {
@@ -29,5 +30,15 @@ describe('titlebar context title', () => {
     expect(source.includes('let cancelled = false')).toBe(true);
     expect(source.includes('if (!cancelled) setConversation')).toBe(true);
     expect(source.includes('cancelled = true')).toBe(true);
+  });
+
+  test('leaves the desktop titlebar center without an application or workspace label', () => {
+    expect(titlebarSource).toContain('aria-label={layout?.isMobile ? contextTitle : undefined}');
+    expect(titlebarSource).toContain(') : null}');
+    expect(titlebarSource).not.toContain('app-titlebar__context-title');
+    expect(source).not.toContain('desktopConversationTitle');
+    expect(source).not.toContain('workspaceContextName');
+    expect(source.includes('conversation.listChanged.on')).toBe(true);
+    expect(source.includes('event.action === \'deleted\'')).toBe(true);
   });
 });
