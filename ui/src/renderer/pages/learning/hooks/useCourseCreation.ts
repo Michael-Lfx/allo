@@ -136,9 +136,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
       stashKnowledgeActivation({
         knowledge_base_id: id,
         suggest_prompt: buildCourseCreationPrompt(description, kbName, kbHasDocs),
-        // direct 写回：AI 用 knowledge_write 补充的文档直接落入 base 正文，课程生成采样读得到；
-        // staged 会写入 _inbox 而被采样排除
-        binding: { ...bindingForNewBase(id), writeback_mode: 'direct' },
+        // 写回直接落入 base 正文（main 已移除 staged/_inbox 机制），课程生成采样读得到
+        binding: { ...bindingForNewBase(id), writeback: true },
         auto_send: true,
       });
       setGenerateVisible(false);
