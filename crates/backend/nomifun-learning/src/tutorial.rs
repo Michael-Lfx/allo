@@ -31,16 +31,21 @@ impl LearningService {
     /// treats them as non-fatal at startup.
     ///
     /// Idempotency does NOT rely on the version file alone: the seed also
-    /// reuses an existing knowledge base by name and skips the course import
-    /// when the title already exists. That way a lost version gate (crash
-    /// mid-seed before the gate was written, version bump, fresh data dir,
-    /// concurrent duplicate boot) can never create a second tutorial base or
-    /// course — it only refreshes the guide files and re-stamps the gate.
+    /// reuses an existing knowledge base by name and compares the preset
+    /// course version against the asset — absent course is imported, a
+    /// same-version course is skipped, a stale course is replaced. A lost
+    /// version gate (crash mid-seed, version bump, fresh data dir, concurrent
+    /// duplicate boot) can therefore never create a duplicate tutorial course.
     pub async fn seed_tutorial_content(&self, data_dir: &Path) -> Result<bool, AppError> {
         let version = env!("CARGO_PKG_VERSION");
+        // The gate covers both the app version and the preset course version:
+        // bumping either re-runs the seed (and the course version comparison
+        // below then upgrades or keeps the existing course).
+        let asset_version = tutorial_course_version();
+        let gate_content = format!("{version}\n{asset_version}");
         let gate_dir = data_dir.join(VERSION_DIR_NAME);
         let version_file = gate_dir.join(VERSION_FILE_NAME);
-        if std::fs::read_to_string(&version_file).ok().as_deref() == Some(version) {
+        if std::fs::read_to_string(&version_file).ok().as_deref() == Some(gate_content.as_str()) {
             return Ok(false);
         }
 
@@ -75,10 +80,17 @@ impl LearningService {
             )
             .await?;
 
-        // The course is imported only when no course with the preset title
-        // exists yet; a previous seed (or a partial one) must not duplicate it.
-        if !self.course_title_exists(TUTORIAL_COURSE_TITLE).await? {
-            self.import_course(tutorial_course_pack(base_id)).await?;
+        // Course version ladder: absent → import, same version → skip,
+        // stale version → replace (delete + import) so content updates land.
+        match self.course_version_by_title(TUTORIAL_COURSE_TITLE).await? {
+            None => {
+                self.import_course(tutorial_course_pack(base_id)).await?;
+            }
+            Some(existing) if existing >= asset_version => {}
+            Some(_) => {
+                self.delete_courses_by_title(TUTORIAL_COURSE_TITLE).await?;
+                self.import_course(tutorial_course_pack(base_id)).await?;
+            }
         }
 
         std::fs::create_dir_all(&gate_dir).map_err(|error| {
@@ -91,7 +103,7 @@ impl LearningService {
         // crash mid-write never leaves a truncated version file that would
         // trigger a duplicate seed on the next boot.
         let staging = version_file.with_file_name(format!("{VERSION_FILE_NAME}.tmp"));
-        std::fs::write(&staging, version).map_err(|error| {
+        std::fs::write(&staging, gate_content).map_err(|error| {
             AppError::Internal(format!(
                 "write tutorial seed version file {}: {error}",
                 staging.display()
@@ -105,6 +117,15 @@ impl LearningService {
         })?;
         Ok(true)
     }
+}
+
+/// The version stamp of the frozen tutorial course asset. The seed gate
+/// embeds it so bumping the asset re-runs the seed and upgrades the course.
+fn tutorial_course_version() -> i64 {
+    let pack: CoursePack =
+        serde_json::from_str(include_str!("../assets/tutorial/course.json"))
+            .expect("tutorial course asset must parse as CoursePack");
+    pack.version
 }
 
 /// The example course is a frozen asset produced by one real run of the
@@ -380,5 +401,46 @@ mod tests {
             courses[0].source_kb_id.as_ref(),
             Some(&bases[0].knowledge_base_id)
         );
+    }
+
+    /// A stale preset course version (content upgraded in the asset) is
+    /// replaced by the fresh import instead of piling up duplicates.
+    #[tokio::test]
+    async fn seed_replaces_stale_course_version() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let (learning_service, knowledge_service) = seeded_service(data_dir.path()).await;
+
+        assert!(learning_service
+            .seed_tutorial_content(data_dir.path())
+            .await
+            .unwrap());
+        // Downgrade the seeded course and drop the gate: simulates a user
+        // data dir seeded from an older asset version.
+        let pool = learning_service.pool_for_tests();
+        sqlx::query(
+            "UPDATE learning_courses SET version = 1 WHERE title = ?",
+        )
+        .bind(TUTORIAL_COURSE_TITLE)
+        .execute(pool)
+        .await
+        .unwrap();
+        std::fs::remove_file(data_dir.path().join(VERSION_DIR_NAME).join(VERSION_FILE_NAME))
+            .unwrap();
+
+        assert!(learning_service
+            .seed_tutorial_content(data_dir.path())
+            .await
+            .unwrap());
+
+        // Exactly one course, upgraded to the asset version.
+        let courses = learning_service
+            .list_courses(&UserId::new())
+            .await
+            .unwrap();
+        assert_eq!(courses.len(), 1);
+        assert_eq!(courses[0].version, tutorial_course_version());
+        // The knowledge base is still the reused single one.
+        let bases = knowledge_service.list_bases().await.unwrap();
+        assert_eq!(bases.len(), 1);
     }
 }
