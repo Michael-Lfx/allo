@@ -36,6 +36,7 @@ use crate::events::KnowledgeEventEmitter;
 use crate::local_folder_projection;
 use crate::mount::{self, MountSpec};
 use crate::source_url::{self, HttpFetcher, PageFetcher};
+use crate::stats_cache::{StatsCache, VaultStats};
 use crate::workpath::{WORKPATH_BINDING_KIND, workpath_key};
 use crate::{KB_MANAGED_REL_DIR, KB_MOUNT_REL_DIR};
 
@@ -550,6 +551,9 @@ pub struct KnowledgeService {
     /// mtime-keyed content cache for `search_bases` (perf only; see
     /// [`SearchCacheInner`]). Cloned into the search `spawn_blocking` closure.
     search_cache: Arc<RwLock<SearchCacheInner>>,
+    /// Process-local `file_count` / `total_size` so list/get do not walk every
+    /// vault on the request path. Directory contents stay authoritative.
+    stats_cache: Arc<StatsCache>,
     /// Per-logical-target write-back lock. Direct mode holds it across
     /// read+merge+replace. Staged mode holds it across duplicate detection,
     /// collision-suffix allocation, and no-replace publication. The staged key
@@ -635,6 +639,7 @@ impl KnowledgeService {
             fetcher: Arc::new(HttpFetcher::default()),
             render_fetcher: RwLock::new(None),
             search_cache: Arc::new(RwLock::new(SearchCacheInner::default())),
+            stats_cache: Arc::new(StatsCache::new()),
             turn_writeback_locks: Arc::new(StdMutex::new(HashMap::new())),
             base_lifecycle_locks: Arc::new(StdMutex::new(HashMap::new())),
             document_tree_locks: Arc::new(StdMutex::new(HashMap::new())),
@@ -804,6 +809,7 @@ impl KnowledgeService {
         .await
         .map_err(|error| AppError::Internal(format!("local knowledge sync task failed: {error}")))??;
         self.invalidate_search_cache_root(&self.content_root_for_row(&row));
+        self.invalidate_vault_stats(&row.knowledge_base_id);
         let info = self.row_to_info(row).await?;
         self.emitter.emit_base_updated(&info);
         Ok(summary)
@@ -945,6 +951,7 @@ impl KnowledgeService {
             .await
             .map_err(|error| AppError::Internal(format!("local knowledge sync task failed: {error}")))??;
             self.invalidate_search_cache_root(&self.content_root_for_row(&row));
+            self.invalidate_vault_stats(&row.knowledge_base_id);
             let info = self.row_to_info(row.clone()).await?;
             self.emitter.emit_base_updated(&info);
             Ok::<KnowledgeLocalSyncSummary, AppError>(summary)
@@ -1096,16 +1103,14 @@ impl KnowledgeService {
 
     pub async fn list_bases(&self) -> Result<Vec<KnowledgeBaseInfo>, AppError> {
         let rows = self.repo.list_bases().await?;
-        // Materialize each base concurrently (bounded), preserving registry
-        // order. Sequentially, one slow/NAS-bound base's walk would block
-        // materialization of every other (fast, local) base and could push the
-        // whole list past the client timeout; `.buffered` caps that to roughly
-        // one base's [`BASE_WALK_BUDGET`] regardless of how many bases exist.
-        let infos = stream::iter(rows.into_iter().map(|row| self.row_to_info(row)))
-            .buffered(LIST_BASES_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await;
-        infos.into_iter().collect()
+        // Registry metadata only on the request path. Per-base vault walks are
+        // served from [`StatsCache`] or scheduled in the background so a slow
+        // NAS root cannot stall the whole list.
+        let mut infos = Vec::with_capacity(rows.len());
+        for row in rows {
+            infos.push(self.materialize_base_info(row)?);
+        }
+        Ok(infos)
     }
 
     /// Registered base ids only, straight from the registry (DB) — performs NO
@@ -1124,7 +1129,7 @@ impl KnowledgeService {
 
     pub async fn get_base_info(&self, id: &str) -> Result<KnowledgeBaseInfo, AppError> {
         let row = self.require_base(id).await?;
-        self.row_to_info(row).await
+        self.materialize_base_info(row)
     }
 
     /// Create a base. With `root_path = None` the directory is provisioned
@@ -1525,7 +1530,7 @@ impl KnowledgeService {
         row.updated_at = now_ms();
         self.repo.update_base(&row).await?;
         drop(_base_guard);
-        let info = self.row_to_info(row).await?;
+        let info = self.materialize_base_info(row)?;
         self.emitter.emit_base_updated(&info);
         Ok(info)
     }
@@ -1697,6 +1702,7 @@ impl KnowledgeService {
             self.ensure_local_override_directory(&row, &entry.rel_path).await?;
             self.set_local_tombstone(&row, &entry.rel_path, false).await?;
         }
+        self.invalidate_vault_stats(&row.knowledge_base_id);
         Ok(entry)
     }
 
@@ -1720,6 +1726,7 @@ impl KnowledgeService {
             self.remove_local_override(&row, &deleted_path).await?;
             self.set_local_tombstone(&row, &deleted_path, true).await?;
         }
+        self.invalidate_vault_stats(&row.knowledge_base_id);
         Ok(())
     }
 
@@ -1750,6 +1757,7 @@ impl KnowledgeService {
             self.set_local_tombstone(&row, &old_path, true).await?;
             self.set_local_tombstone(&row, &entry.rel_path, false).await?;
         }
+        self.invalidate_vault_stats(&row.knowledge_base_id);
         Ok(entry)
     }
 
@@ -1975,6 +1983,7 @@ impl KnowledgeService {
         self.persist_local_override_entry(&row, storage_rel_path).await?;
         self.set_local_tombstone(&row, storage_rel_path, false).await?;
         self.invalidate_search_cache_path(&path);
+        self.invalidate_vault_stats(&row.knowledge_base_id);
         Ok(())
     }
 
@@ -2005,6 +2014,7 @@ impl KnowledgeService {
         self.persist_local_override_entry(&row, storage_rel_path).await?;
         self.set_local_tombstone(&row, storage_rel_path, false).await?;
         self.invalidate_search_cache_path(&path);
+        self.invalidate_vault_stats(&row.knowledge_base_id);
         Ok(())
     }
 
@@ -2034,6 +2044,7 @@ impl KnowledgeService {
         self.persist_local_override_entry(&row, storage_rel_path).await?;
         self.set_local_tombstone(&row, storage_rel_path, false).await?;
         self.invalidate_search_cache_path(&path);
+        self.invalidate_vault_stats(&row.knowledge_base_id);
         Ok(())
     }
 
@@ -2768,6 +2779,7 @@ impl KnowledgeService {
         self.remove_local_override(&row, rel_path).await?;
         self.set_local_tombstone(&row, rel_path, true).await?;
         self.invalidate_search_cache_path(&path);
+        self.invalidate_vault_stats(&row.knowledge_base_id);
         Ok(())
     }
 
@@ -3269,6 +3281,7 @@ impl KnowledgeService {
                     }
                     outcome.fetched += 1;
                     self.invalidate_search_cache_path(&path);
+                    self.invalidate_vault_stats(&current.knowledge_base_id);
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -3345,7 +3358,7 @@ impl KnowledgeService {
                 self.repo.update_base(&row).await?;
             }
         }
-        let info = self.row_to_info(row).await?;
+        let info = self.materialize_base_info(row)?;
         self.emitter.emit_base_updated(&info);
         Ok(info)
     }
@@ -4124,71 +4137,155 @@ impl nomifun_common::OnConversationDelete for KnowledgeService {
 }
 
 impl KnowledgeService {
+    /// Request-path materialization: registry metadata plus cached stats.
+    /// A cache miss returns pending zeros and schedules a single-flight walk.
+    fn materialize_base_info(&self, row: KnowledgeBaseRow) -> Result<KnowledgeBaseInfo, AppError> {
+        let id = row.knowledge_base_id.clone();
+        if let Some(stats) = self.stats_cache.get(&id) {
+            return row_to_info_light(row, stats);
+        }
+        let info = row_to_info_light(row.clone(), VaultStats::pending())?;
+        self.schedule_stats_refresh(row);
+        Ok(info)
+    }
 
+    fn schedule_stats_refresh(&self, row: KnowledgeBaseRow) {
+        let id = row.knowledge_base_id.clone();
+        if !self.stats_cache.begin_refresh(&id) {
+            return;
+        }
+        let cache = Arc::clone(&self.stats_cache);
+        let emitter = self.emitter.clone();
+        let root = self.content_root_for_row(&row);
+        let is_local = Self::is_local_folder_row(&row);
+        let source_root = PathBuf::from(&row.root_path);
+        tokio::spawn(async move {
+            let source_available = if is_local {
+                validate_knowledge_root_bounded(source_root).await.is_ok()
+            } else {
+                true
+            };
+            let mut stats = compute_vault_stats(root).await;
+            stats.root_exists = source_available && stats.root_exists;
+            cache.insert(id.clone(), stats);
+            cache.finish_refresh(&id);
+            match row_to_info_light(row, stats) {
+                Ok(info) => emitter.emit_base_updated(&info),
+                Err(error) => tracing::warn!(
+                    knowledge_base_id = %id,
+                    %error,
+                    "failed to emit knowledge stats refresh"
+                ),
+            }
+        });
+    }
+
+    /// Walk one vault, store stats, and emit `knowledge.base-updated`.
+    pub async fn refresh_stats(&self, id: &str) -> Result<KnowledgeBaseInfo, AppError> {
+        let row = self.require_base(id).await?;
+        self.refresh_stats_row(row).await
+    }
+
+    async fn refresh_stats_row(&self, row: KnowledgeBaseRow) -> Result<KnowledgeBaseInfo, AppError> {
+        let stats = self.store_vault_stats(&row).await?;
+        let info = row_to_info_light(row, stats)?;
+        self.emitter.emit_base_updated(&info);
+        Ok(info)
+    }
+
+    async fn store_vault_stats(&self, row: &KnowledgeBaseRow) -> Result<VaultStats, AppError> {
+        let local_source_available = self.local_source_root_is_available(row).await;
+        let root = self.content_root_for_row(row);
+        let mut stats = compute_vault_stats(root).await;
+        stats.root_exists = local_source_available && stats.root_exists;
+        self.stats_cache.insert(row.knowledge_base_id.clone(), stats);
+        self.stats_cache.finish_refresh(&row.knowledge_base_id);
+        Ok(stats)
+    }
+
+    pub fn clear_stats_cache(&self) {
+        self.stats_cache.clear();
+    }
+
+    fn invalidate_vault_stats(&self, kb_id: &str) {
+        self.stats_cache.invalidate(kb_id);
+    }
+
+    /// Create/import/sync path: may mkdir, then walk and populate the cache.
     async fn row_to_info(&self, row: KnowledgeBaseRow) -> Result<KnowledgeBaseInfo, AppError> {
-        let source = source_from_extra(&row.extra)
-            .map_err(|error| knowledge_row_json_error(&row.knowledge_base_id, error))?;
         if Self::is_local_folder_row(&row) {
             self.ensure_local_projection_root_for_row(&row).await?;
         } else {
             self.ensure_content_root_for_row(&row).await?;
         }
-        let root = self.content_root_for_row(&row);
-        let local_source_available = self.local_source_root_is_available(&row).await;
-        let root_for_stats_lock = root.clone();
-        // Bounded so a slow/stale NAS mount degrades (assume present, counts
-        // unknown) instead of hanging the list/detail response past the
-        // client's request timeout — the reported "加载失败" failure mode.
-        let (file_count, total_size, projection_exists) =
-            bounded_root_blocking(
-                &root_for_stats_lock,
-                BASE_WALK_BUDGET,
-                (0u64, 0u64, true),
-                move || {
-                if validate_knowledge_root(&root).is_err() {
-                    return (0u64, 0u64, false);
-                }
-                let mut count = 0u64;
-                let mut size = 0u64;
-                for entry in vault_walker(&root) {
-                    if entry.file_type().is_file() && is_md(entry.path()) {
-                        count += 1;
-                        size += entry.metadata().map(|m| m.len()).unwrap_or(0);
-                    }
-                }
-                (count, size, true)
-            },
-            )
-            .await;
-
-        let tags = tags_from_row(&row)?;
-
-        let kind = derive_kind(row.managed, source.as_ref()).to_string();
-
-        let root_exists = local_source_available && projection_exists;
-        Ok(KnowledgeBaseInfo {
-            knowledge_base_id: KnowledgeBaseId::parse(&row.knowledge_base_id).map_err(|error| {
-                AppError::Internal(format!(
-                    "stored knowledge base id '{}' is invalid: {error}",
-                    row.knowledge_base_id
-                ))
-            })?,
-            name: row.name,
-            description: row.description,
-            root_path: row.root_path,
-            managed: row.managed,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-            file_count,
-            total_size,
-            root_exists,
-            source,
-            source_fetch: None,
-            tags,
-            kind,
-        })
+        let stats = self.store_vault_stats(&row).await?;
+        row_to_info_light(row, stats)
     }
 }
+
+fn row_to_info_light(
+    row: KnowledgeBaseRow,
+    stats: VaultStats,
+) -> Result<KnowledgeBaseInfo, AppError> {
+    let source = source_from_extra(&row.extra)
+        .map_err(|error| knowledge_row_json_error(&row.knowledge_base_id, error))?;
+    let tags = tags_from_row(&row)?;
+    let kind = derive_kind(row.managed, source.as_ref()).to_string();
+    Ok(KnowledgeBaseInfo {
+        knowledge_base_id: KnowledgeBaseId::parse(&row.knowledge_base_id).map_err(|error| {
+            AppError::Internal(format!(
+                "stored knowledge base id '{}' is invalid: {error}",
+                row.knowledge_base_id
+            ))
+        })?,
+        name: row.name,
+        description: row.description,
+        root_path: row.root_path,
+        managed: row.managed,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        file_count: stats.file_count,
+        total_size: stats.total_size,
+        root_exists: stats.root_exists,
+        source,
+        source_fetch: None,
+        tags,
+        kind,
+    })
+}
+
+async fn compute_vault_stats(root: PathBuf) -> VaultStats {
+    let root_for_lock = root.clone();
+    bounded_root_blocking(
+        &root_for_lock,
+        BASE_WALK_BUDGET,
+        VaultStats::pending(),
+        move || {
+            if validate_knowledge_root(&root).is_err() {
+                return VaultStats {
+                    file_count: 0,
+                    total_size: 0,
+                    root_exists: false,
+                };
+            }
+            let mut file_count = 0u64;
+            let mut total_size = 0u64;
+            for entry in vault_walker(&root) {
+                if entry.file_type().is_file() && is_md(entry.path()) {
+                    file_count += 1;
+                    total_size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                }
+            }
+            VaultStats {
+                file_count,
+                total_size,
+                root_exists: true,
+            }
+        },
+    )
+    .await
+}
+
 
 fn validate_kind(kind: &str) -> Result<(), AppError> {
     if BINDING_KINDS.contains(&kind) {
@@ -7200,7 +7297,7 @@ impl KnowledgeService {
                 self.repo.update_base(&base).await?;
                 // The base's tag chips changed — refresh any base list/detail
                 // view (the tag-changed signal below only refreshes tag maps).
-                let info = self.row_to_info(base).await?;
+                let info = self.materialize_base_info(base)?;
                 self.emitter.emit_base_updated(&info);
             }
         }
@@ -8591,6 +8688,73 @@ mod tests {
         let infos = service.list_bases().await.unwrap();
         let ids: Vec<&str> = infos.iter().map(|i| i.knowledge_base_id.as_str()).collect();
         assert_eq!(ids, vec![a.knowledge_base_id.as_str(), b.knowledge_base_id.as_str(), c.knowledge_base_id.as_str()]);
+    }
+
+    #[tokio::test]
+    async fn list_bases_cold_cache_returns_pending_counts_until_refresh() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+        let kb = service.create_base("notes", "", None, None).await.unwrap();
+        std::fs::write(PathBuf::from(&kb.root_path).join("a.md"), "# A").unwrap();
+        std::fs::write(PathBuf::from(&kb.root_path).join("b.md"), "# B").unwrap();
+        service.clear_stats_cache();
+
+        let listed = service.list_bases().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].file_count, 0,
+            "cold list must not wait for a vault walk"
+        );
+
+        service
+            .refresh_stats(kb.knowledge_base_id.as_str())
+            .await
+            .unwrap();
+        let listed = service.list_bases().await.unwrap();
+        assert_eq!(listed[0].file_count, 2);
+        assert!(listed[0].total_size > 0);
+    }
+
+    #[tokio::test]
+    async fn list_bases_hot_cache_does_not_rewalk_out_of_band_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+        let kb = service.create_base("notes", "", None, None).await.unwrap();
+        let create_count = kb.file_count;
+        std::fs::write(PathBuf::from(&kb.root_path).join("sneaky.md"), "# Sneaky").unwrap();
+
+        let listed = service.list_bases().await.unwrap();
+        assert_eq!(
+            listed[0].file_count, create_count,
+            "hot cache must serve list without walking newly dropped files"
+        );
+
+        service
+            .refresh_stats(kb.knowledge_base_id.as_str())
+            .await
+            .unwrap();
+        let listed = service.list_bases().await.unwrap();
+        assert_eq!(listed[0].file_count, create_count + 1);
+    }
+
+    #[tokio::test]
+    async fn stats_refresh_is_single_flight_across_list_and_get() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = make_service(&dir.path().join("data"));
+        let kb = service.create_base("notes", "", None, None).await.unwrap();
+        service.clear_stats_cache();
+
+        let listed = service.list_bases().await.unwrap();
+        let fetched = service.get_base_info(kb.knowledge_base_id.as_str()).await.unwrap();
+        assert_eq!(listed[0].file_count, 0);
+        assert_eq!(fetched.file_count, 0);
+
+        service
+            .refresh_stats(kb.knowledge_base_id.as_str())
+            .await
+            .unwrap();
+        let listed = service.list_bases().await.unwrap();
+        assert_eq!(listed[0].knowledge_base_id, kb.knowledge_base_id);
     }
 
     #[tokio::test]

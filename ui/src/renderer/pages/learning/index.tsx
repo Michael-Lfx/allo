@@ -1845,7 +1845,7 @@ const LearningPage: React.FC = () => {
     setKnowledgeLoading(true);
     try {
       const bases = (await ipcBridge.knowledge.listBases.invoke()).filter(
-        (base) => base.root_exists && base.file_count > 0
+        (base) => base.root_exists
       );
       setKnowledgeBases(bases);
       setSelectedKnowledgeBaseId((current) =>

@@ -84,6 +84,7 @@ import TagPicker from '../CreateStudio/TagPicker';
 import { getKindConfig, KindIcon, type KindConfig } from '../knowledgeKind';
 import {
   buildKnowledgeSearchTree,
+  firstRootKnowledgeFilePath,
   isKnowledgePathWithin,
   knowledgeFolderPathChain,
   mergeKnowledgeTreeChildren,
@@ -470,7 +471,7 @@ const KnowledgeDetailPage: React.FC = () => {
   const isMobile = layout?.isMobile ?? false;
 
   // ─── Data hooks ─────────────────────────────────────────────────────────────
-  const { base, files, tree, loading, error, refresh } = useKnowledgeBase(id);
+  const { base, files, tree, loading, error, refresh, loadFiles } = useKnowledgeBase(id);
   const { choice: modelChoice, setChoice: setModelChoice } = useKnowledgeAutogenModel();
   const { tags: allTags, createTag } = useKnowledgeTags();
 
@@ -595,18 +596,22 @@ const KnowledgeDetailPage: React.FC = () => {
   }, []);
 
 
-  // Auto-select first file
+  // Auto-select the first root-level markdown file. Nested documents wait for
+  // an explicit click so the detail view does not need a full vault listing.
   useEffect(() => {
-    if (!selectedPath && files.length > 0) {
-      setSelectedPath(files[0].rel_path);
-      setSelectedTreeKey(files[0].rel_path);
-    }
-    if (selectedPath && !files.some((f) => f.rel_path === selectedPath)) {
-      const nextPath = files.length > 0 ? files[0].rel_path : null;
-      setSelectedPath(nextPath);
-      setSelectedTreeKey(nextPath);
-    }
-  }, [files, selectedPath]);
+    if (selectedPath) return;
+    const firstFile = firstRootKnowledgeFilePath(tree);
+    if (!firstFile) return;
+    setSelectedPath(firstFile);
+    setSelectedTreeKey(firstFile);
+  }, [tree, selectedPath]);
+
+  useEffect(() => {
+    if (!isTreeSearch) return;
+    void loadFiles().catch((e) => {
+      Message.error(String(e));
+    });
+  }, [isTreeSearch, loadFiles]);
 
   // Reset per-base view state when switching knowledge bases — the route param
   // changes but React reuses this component instance, so the previous base's
@@ -618,6 +623,7 @@ const KnowledgeDetailPage: React.FC = () => {
     setExpandedTreeKeys([]);
     setSelectedFolderPath('');
     setSelectedTreeKey(null);
+    setSelectedPath(null);
   }, [id]);
 
   // Load file content

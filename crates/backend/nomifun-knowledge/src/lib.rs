@@ -31,6 +31,7 @@ pub mod routes;
 pub mod service;
 pub mod source_url;
 pub mod state;
+mod stats_cache;
 pub mod turn_writeback;
 pub mod workpath;
 mod workspace_binding;

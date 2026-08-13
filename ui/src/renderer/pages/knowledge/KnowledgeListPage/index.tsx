@@ -23,6 +23,7 @@ import {
   Message,
   Modal,
   Result,
+  Spin,
   Typography,
 } from '@arco-design/web-react';
 import { Search } from '@icon-park/react';
@@ -40,8 +41,9 @@ import KnowledgeEmptyState from '../KnowledgeEmptyState';
 import KnowledgeCard from '../KnowledgeCard';
 import KnowledgeTagFilterBar, { type KnowledgeKind, type KnowledgeSort } from '../KnowledgeTagFilterBar';
 import KnowledgeTagManagementModal from '../KnowledgeTagManagementModal';
-import CreateStudio from '../CreateStudio';
 import type { StudioInitialKind } from '../CreateStudio/sourceTypes';
+
+const CreateStudio = React.lazy(() => import('../CreateStudio'));
 
 // ─── Filter pure function ────────────────────────────────────────────────────
 
@@ -342,7 +344,11 @@ const KnowledgeListPage: React.FC = () => {
             subTitle={error}
             extra={<Button onClick={() => void refresh()}>{t('knowledge.retry', { defaultValue: '重试' })}</Button>}
           />
-        ) : bases.length === 0 && !loading ? (
+        ) : loading && bases.length === 0 ? (
+          <div className='flex justify-center py-80px'>
+            <Spin />
+          </div>
+        ) : bases.length === 0 ? (
           <KnowledgeEmptyState onCreate={openStudio} onImport={() => void handleImport()} />
         ) : (
           <>
@@ -417,12 +423,16 @@ const KnowledgeListPage: React.FC = () => {
       </div>
 
       {/* ─── CreateStudio (replaces old create Modal) ────────────────────────── */}
-      <CreateStudio
-        visible={studioVisible}
-        initialKind={studioInitialKind}
-        onClose={() => setStudioVisible(false)}
-        onCreated={handleStudioCreated}
-      />
+      {studioVisible ? (
+        <React.Suspense fallback={null}>
+          <CreateStudio
+            visible={studioVisible}
+            initialKind={studioInitialKind}
+            onClose={() => setStudioVisible(false)}
+            onCreated={handleStudioCreated}
+          />
+        </React.Suspense>
+      ) : null}
 
       {/* ─── Edit Modal (lightweight, for existing bases only) ────────────────── */}
       <Modal

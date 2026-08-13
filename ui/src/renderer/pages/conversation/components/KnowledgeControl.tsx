@@ -44,6 +44,10 @@ import {
   workpathKeyForConversation,
   workpathKeyForTerminal,
 } from '@/renderer/pages/conversation/SessionList/utils/sessionWorkpath';
+import {
+  patchKnowledgeBase,
+  removeKnowledgeBase,
+} from '@/renderer/pages/knowledge/useKnowledge';
 import { useKnowledgeTags } from '@/renderer/pages/knowledge/useKnowledgeTags';
 import { CAPABILITY_COLORS } from '@/renderer/components/capability/CapabilityIcon';
 import {
@@ -268,18 +272,18 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
     };
   }, [kind, id, isDraftMode]);
 
-  // Keep base list fresh
+  // Keep base list fresh without re-walking every vault on stats updates.
   useEffect(() => {
-    const reload = () => {
-      void ipcBridge.knowledge.listBases
-        .invoke()
-        .then(setBases)
-        .catch(() => {});
-    };
     const unsubs = [
-      ipcBridge.knowledge.onBaseCreated.on(reload),
-      ipcBridge.knowledge.onBaseUpdated.on(reload),
-      ipcBridge.knowledge.onBaseDeleted.on(reload),
+      ipcBridge.knowledge.onBaseCreated.on((base) => {
+        setBases((current) => patchKnowledgeBase(current, base));
+      }),
+      ipcBridge.knowledge.onBaseUpdated.on((base) => {
+        setBases((current) => patchKnowledgeBase(current, base));
+      }),
+      ipcBridge.knowledge.onBaseDeleted.on((event) => {
+        setBases((current) => removeKnowledgeBase(current, event.knowledge_base_id));
+      }),
     ];
     return () => unsubs.forEach((u) => u());
   }, []);

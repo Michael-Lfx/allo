@@ -7,6 +7,7 @@ import {
   mergeKnowledgeTreeChildren,
   preserveKnowledgeTreeChildren,
   replaceKnowledgePathPrefix,
+  firstRootKnowledgeFilePath,
 } from './KnowledgeDetailPage/treeModel';
 
 const file = (rel_path: string): IKnowledgeFileEntry => ({
@@ -95,5 +96,15 @@ describe('knowledge detail tree model', () => {
     expect(replaceKnowledgePathPrefix('raw/tutorials/topic.md', 'raw/tutorials', 'wiki/tutorials')).toBe('wiki/tutorials/topic.md');
     expect(replaceKnowledgePathPrefix('raw/tutorials', 'raw/tutorials', 'wiki/tutorials')).toBe('wiki/tutorials');
     expect(replaceKnowledgePathPrefix(null, 'raw/tutorials', 'wiki/tutorials')).toBeNull();
+  });
+
+  test('picks the first root-level file and ignores nested folders', () => {
+    expect(firstRootKnowledgeFilePath([
+      node('raw', 'raw', true),
+      node('README.md', 'README.md', false),
+      node('notes.md', 'notes.md', false),
+    ])).toBe('README.md');
+    expect(firstRootKnowledgeFilePath([node('raw', 'raw', true)])).toBeNull();
+    expect(firstRootKnowledgeFilePath([])).toBeNull();
   });
 });

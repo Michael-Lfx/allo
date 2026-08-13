@@ -19,9 +19,21 @@ import type {
 import type { I18nKey } from '@/renderer/services/i18n';
 import type { KnowledgeBaseId } from '@/common/types/ids';
 
+export function patchKnowledgeBase(bases: IKnowledgeBase[], next: IKnowledgeBase): IKnowledgeBase[] {
+  const index = bases.findIndex((base) => base.knowledge_base_id === next.knowledge_base_id);
+  if (index < 0) return [...bases, next];
+  const nextBases = bases.slice();
+  nextBases[index] = next;
+  return nextBases;
+}
+
+export function removeKnowledgeBase(bases: IKnowledgeBase[], id: KnowledgeBaseId): IKnowledgeBase[] {
+  return bases.filter((base) => base.knowledge_base_id !== id);
+}
+
 export function useKnowledgeBases() {
   const [bases, setBases] = useState<IKnowledgeBase[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -44,12 +56,18 @@ export function useKnowledgeBases() {
 
   useEffect(() => {
     const unsubs = [
-      ipcBridge.knowledge.onBaseCreated.on(() => void refresh()),
-      ipcBridge.knowledge.onBaseUpdated.on(() => void refresh()),
-      ipcBridge.knowledge.onBaseDeleted.on(() => void refresh()),
+      ipcBridge.knowledge.onBaseCreated.on((base) => {
+        setBases((current) => patchKnowledgeBase(current, base));
+      }),
+      ipcBridge.knowledge.onBaseUpdated.on((base) => {
+        setBases((current) => patchKnowledgeBase(current, base));
+      }),
+      ipcBridge.knowledge.onBaseDeleted.on((event) => {
+        setBases((current) => removeKnowledgeBase(current, event.knowledge_base_id));
+      }),
     ];
     return () => unsubs.forEach((u) => u());
-  }, [refresh]);
+  }, []);
 
   return { bases, loading, error, refresh };
 }
@@ -65,13 +83,11 @@ export function useKnowledgeBase(id: KnowledgeBaseId | undefined) {
     if (!id) return;
     setLoading(true);
     try {
-      const [info, list, treeRoot] = await Promise.all([
+      const [info, treeRoot] = await Promise.all([
         ipcBridge.knowledge.getBase.invoke({ knowledge_base_id: id }),
-        ipcBridge.knowledge.listFiles.invoke({ knowledge_base_id: id }),
         ipcBridge.knowledge.listTree.invoke({ knowledge_base_id: id }),
       ]);
       setBase(info);
-      setFiles(list);
       setTree(treeRoot);
       setError(null);
     } catch (e) {
@@ -82,21 +98,31 @@ export function useKnowledgeBase(id: KnowledgeBaseId | undefined) {
     }
   }, [id]);
 
+  const loadFiles = useCallback(async () => {
+    if (!id) return [];
+    const list = await ipcBridge.knowledge.listFiles.invoke({ knowledge_base_id: id });
+    setFiles(list);
+    return list;
+  }, [id]);
+
   useEffect(() => {
+    setFiles([]);
+    setTree([]);
+    setBase(null);
     void refresh();
   }, [refresh]);
 
-  // Keep the detail view in sync with backend-side updates (autogen /
-  // snapshot refresh / gateway edits all broadcast knowledge.base-updated).
+  // Stats refresh broadcasts knowledge.base-updated — patch the header only.
+  // Reloading tree/files here would re-walk the vault on every background count.
   useEffect(() => {
     if (!id) return;
-    const unsub = ipcBridge.knowledge.onBaseUpdated.on((b) => {
-      if (b.knowledge_base_id === id) void refresh();
+    const unsub = ipcBridge.knowledge.onBaseUpdated.on((updated) => {
+      if (updated.knowledge_base_id === id) setBase(updated);
     });
     return () => unsub();
-  }, [id, refresh]);
+  }, [id]);
 
-  return { base, files, tree, loading, error, refresh };
+  return { base, files, tree, loading, error, refresh, loadFiles };
 }
 
 /** Bindings (workspaces/conversations/…) currently mounting a base. */

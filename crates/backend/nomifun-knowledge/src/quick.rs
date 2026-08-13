@@ -171,7 +171,7 @@ impl KnowledgeService {
                 .await?;
             self.write_file(info.knowledge_base_id.as_str(), "STYLE_GUIDE.md", SAMPLE_STYLE)
                 .await?;
-            info = self.get_base_info(info.knowledge_base_id.as_str()).await?;
+            info = self.refresh_stats(info.knowledge_base_id.as_str()).await?;
         }
 
         let binding = if let (Some(kind), Some(target)) = (bind_kind, bind_target_id) {

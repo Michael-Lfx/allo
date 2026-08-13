@@ -147,3 +147,11 @@ export function replaceKnowledgePathPrefix(path: string | null, oldPrefix: strin
   if (path.startsWith(`${oldPrefix}/`)) return `${newPrefix}${path.slice(oldPrefix.length)}`;
   return path;
 }
+
+/** First markdown file in the root listing — does not descend into folders. */
+export function firstRootKnowledgeFilePath(nodes: IKnowledgeTreeEntry[]): string | null {
+  for (const node of nodes) {
+    if (node.is_file) return node.rel_path;
+  }
+  return null;
+}
