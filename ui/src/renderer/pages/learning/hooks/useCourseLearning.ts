@@ -5,7 +5,6 @@ import { learningApi } from '../api';
 import type {
   Activity,
   AttemptResult,
-  CourseDetail,
   DiagnosticPlan,
   Lesson,
   LessonStatus,
@@ -19,17 +18,15 @@ export interface UseCourseLearningOptions {
   t: Translate;
   diagnosticLimit: number | undefined;
   setBusyId: (id: string | null) => void;
-  setDetail: (detail: CourseDetail | null) => void;
 }
 
-/** 课程学习域：报名、诊断测试、课时进度、活动作答 */
+/** 课程学习域：诊断测试、课时进度、活动作答（打开课程即自动加入） */
 export function useCourseLearning({
   id,
   load,
   t,
   diagnosticLimit,
   setBusyId,
-  setDetail,
 }: UseCourseLearningOptions) {
   const [attemptResults, setAttemptResults] = useState<Record<string, AttemptResult>>({});
   const [diagnosticPlan, setDiagnosticPlan] = useState<DiagnosticPlan | null>(null);
@@ -46,19 +43,6 @@ export function useCourseLearning({
     }),
     [modelChoice]
   );
-
-  const enroll = useCallback(async () => {
-    if (!id) return;
-    setBusyId(id);
-    try {
-      setDetail(await learningApi.enroll(id));
-      await load();
-    } catch (actionError) {
-      Message.error(errorMessage(t, actionError));
-    } finally {
-      setBusyId(null);
-    }
-  }, [id, load, t, setBusyId]);
 
   const startDiagnostic = useCallback(async () => {
     if (!id) return;
@@ -146,7 +130,6 @@ export function useCourseLearning({
     diagnosticResult,
     setDiagnosticPlan,
     setDiagnosticResult,
-    enroll,
     startDiagnostic,
     submitDiagnostic,
     advanceDiagnostic,

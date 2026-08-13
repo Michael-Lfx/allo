@@ -2430,8 +2430,6 @@ export type I18nKey =
   | 'learning.diagnosticTitle'
   | 'learning.domain'
   | 'learning.domainPlaceholder'
-  | 'learning.enroll'
-  | 'learning.enrollToPractice'
   | 'learning.falseLabel'
   | 'learning.files'
   | 'learning.fillBlankPlaceholder'

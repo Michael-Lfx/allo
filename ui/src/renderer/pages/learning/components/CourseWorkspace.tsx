@@ -241,7 +241,6 @@ function LessonSourcePanel({
 function LessonBlock({
   lesson,
   sourceKbId,
-  enrolled,
   busyId,
   attemptResults,
   onProgress,
@@ -249,7 +248,6 @@ function LessonBlock({
 }: {
   lesson: Lesson;
   sourceKbId: string | null;
-  enrolled: boolean;
   busyId: string | null;
   attemptResults: Record<string, AttemptResult>;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
@@ -264,7 +262,7 @@ function LessonBlock({
         <Text type='secondary'>
           {lesson.estimated_minutes} {t('learning.minutes')}
         </Text>
-        {enrolled && lesson.status !== 'completed' && (
+        {lesson.status !== 'completed' && (
           <Button
             size='small'
             type='primary'
@@ -281,12 +279,11 @@ function LessonBlock({
       {lesson.activities.length > 0 && (
         <div className='flex flex-col gap-10px'>
           <div className='text-13px font-600 text-t-secondary'>{t('learning.activities')}</div>
-          {!enrolled && <Alert type='warning' content={t('learning.enrollToPractice')} />}
           {lesson.activities.map((activity) => (
             <ActivityBlock
               key={activity.id}
               activity={activity}
-              disabled={busyId === activity.id || !enrolled}
+              disabled={busyId === activity.id}
               loading={busyId === activity.id}
               result={attemptResults[activity.id]}
               onSubmit={onAttempt}
@@ -303,7 +300,6 @@ export function CourseWorkspace({
   busyId,
   attemptResults,
   onBack,
-  onEnroll,
   onDiagnostic,
   onProgress,
   onAttempt,
@@ -312,7 +308,6 @@ export function CourseWorkspace({
   busyId: string | null;
   attemptResults: Record<string, AttemptResult>;
   onBack: () => void;
-  onEnroll: () => void;
   onDiagnostic: () => void;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
@@ -349,15 +344,10 @@ export function CourseWorkspace({
               </Title>
               <Paragraph className='!mb-0 !mt-6px text-t-secondary'>{course.description}</Paragraph>
             </div>
-            {!detail.enrollment_id ? (
-              <Button type='primary' loading={busyId === course.id} onClick={onEnroll}>
-                {t('learning.enroll')}
-              </Button>
-            ) : (
-              <Button type='primary' loading={busyId === 'diagnostic'} onClick={onDiagnostic}>
-                {t('learning.startDiagnostic')}
-              </Button>
-            )}
+            {/* 打开课程详情即自动加入，无显式「加入课程」步骤 */}
+            <Button type='primary' loading={busyId === 'diagnostic'} onClick={onDiagnostic}>
+              {t('learning.startDiagnostic')}
+            </Button>
           </div>
         </div>
 
@@ -383,7 +373,7 @@ export function CourseWorkspace({
           </div>
         </Card>
 
-        {detail.enrollment_id && recommendedLesson && (
+        {recommendedLesson && (
           <Card>
             <div className='flex flex-wrap items-center justify-between gap-12px'>
               <div>
@@ -406,7 +396,7 @@ export function CourseWorkspace({
             </div>
           </Card>
         )}
-        {detail.enrollment_id && !recommendedLesson && allConceptsMastered && (
+        {!recommendedLesson && allConceptsMastered && (
           <Alert type='success' content={t('learning.allConceptsMastered')} />
         )}
 
@@ -447,7 +437,6 @@ export function CourseWorkspace({
                     <LessonBlock
                       lesson={lesson}
                       sourceKbId={course.source_kb_id}
-                      enrolled={detail.enrollment_id !== null}
                       busyId={busyId}
                       attemptResults={attemptResults}
                       onProgress={onProgress}

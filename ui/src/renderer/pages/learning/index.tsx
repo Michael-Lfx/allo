@@ -111,7 +111,6 @@ const LearningPage: React.FC = () => {
     t,
     diagnosticLimit,
     setBusyId,
-    setDetail,
   });
   const reviewSession = useReviewSession({
     load,
@@ -225,7 +224,6 @@ const LearningPage: React.FC = () => {
           busyId={busyId}
           attemptResults={courseLearning.attemptResults}
           onBack={() => navigate('/learn')}
-          onEnroll={courseLearning.enroll}
           onDiagnostic={() => void courseLearning.startDiagnostic()}
           onProgress={courseLearning.updateProgress}
           onAttempt={courseLearning.submitAttempt}

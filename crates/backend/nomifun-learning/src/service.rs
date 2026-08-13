@@ -635,18 +635,10 @@ impl LearningService {
             ..course
         };
 
+        // Opening a course detail is an implicit join: enrollment is created
+        // on first view so every downstream practice flow has a grouping key.
         let enrollment_id = if let Some(user_id) = user_id {
-            sqlx::query_scalar::<_, String>(
-                "SELECT enrollment_id FROM learning_enrollments \
-                 WHERE user_id = ? AND course_id = ?",
-            )
-            .bind(user_id.as_str())
-            .bind(course_id.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(internal)?
-            .map(parse_id)
-            .transpose()?
+            Some(self.ensure_enrollment(course_id, user_id).await?)
         } else {
             None
         };
@@ -772,11 +764,8 @@ impl LearningService {
         limit: i64,
     ) -> Result<DiagnosticPlan, AppError> {
         let detail = self.course_detail(course_id, Some(user_id)).await?;
-        if detail.enrollment_id.is_none() {
-            return Err(AppError::Conflict(
-                "enroll in the course before starting a diagnostic".into(),
-            ));
-        }
+        // course_detail already creates the enrollment on first view, so no
+        // explicit join is required before starting a diagnostic.
         let mut covered_concepts = HashSet::new();
         let mut items = Vec::new();
         let limit = limit.clamp(1, 20) as usize;
@@ -813,7 +802,12 @@ impl LearningService {
         })
     }
 
-    pub async fn enroll(
+    /// Returns the user's enrollment for a course, creating it on first use.
+    /// Practice flows (diagnostics, attempts, lesson progress) call this
+    /// instead of requiring an explicit join step, so enrollment is a data
+    /// grouping key rather than a permission gate. Idempotent: re-calling
+    /// after an enrollment exists only bumps `updated_at`.
+    async fn ensure_enrollment(
         &self,
         course_id: &LearningCourseId,
         user_id: &UserId,
@@ -853,6 +847,16 @@ impl LearningService {
         parse_id(stored)
     }
 
+    /// Explicit join endpoint, kept for compatibility; the same idempotent
+    /// upsert is now triggered implicitly by any practice flow.
+    pub async fn enroll(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+    ) -> Result<LearningEnrollmentId, AppError> {
+        self.ensure_enrollment(course_id, user_id).await
+    }
+
     pub async fn update_lesson_progress(
         &self,
         lesson_id: &LearningLessonId,
@@ -870,9 +874,25 @@ impl LearningService {
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;
-        let enrollment_id = enrollment_id.ok_or_else(|| {
-            AppError::Conflict("enroll in the course before updating lesson progress".into())
-        })?;
+        let enrollment_id = match enrollment_id {
+            Some(enrollment_id) => enrollment_id,
+            // First progress write joins implicitly: progress rows are
+            // grouped under the enrollment, so create it on demand.
+            None => {
+                let course_id: String = sqlx::query_scalar(
+                    "SELECT m.course_id FROM learning_modules m \
+                     JOIN learning_lessons l ON l.module_id = m.module_id \
+                     WHERE l.lesson_id = ?",
+                )
+                .bind(lesson_id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+                let enrollment =
+                    self.ensure_enrollment(&parse_id(course_id)?, user_id).await?;
+                enrollment.as_str().to_owned()
+            }
+        };
         let existing_started: Option<i64> = sqlx::query_scalar(
             "SELECT started_at FROM learning_lesson_progress \
              WHERE enrollment_id = ? AND lesson_id = ?",
@@ -926,23 +946,17 @@ impl LearningService {
         model: Option<String>,
     ) -> Result<AttemptResult, AppError> {
         let row = sqlx::query(
-            "SELECT a.kind, a.prompt, a.config_json, e.enrollment_id \
+            "SELECT a.kind, a.prompt, a.config_json, m.course_id \
              FROM learning_activities a \
              JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \
-             JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ? \
              WHERE a.activity_id = ?",
         )
-        .bind(user_id.as_str())
         .bind(activity_id.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?
-        .ok_or_else(|| {
-            AppError::NotFound(format!(
-                "activity {activity_id} for an enrolled course"
-            ))
-        })?;
+        .ok_or_else(|| AppError::NotFound(format!("learning activity {activity_id}")))?;
         let kind_text: String = row.try_get("kind").map_err(internal)?;
         let kind = ActivityKind::try_from(kind_text.as_str()).map_err(AppError::Internal)?;
         let activity_prompt: String = row.try_get("prompt").map_err(internal)?;
@@ -950,8 +964,10 @@ impl LearningService {
             &row.try_get::<String, _>("config_json").map_err(internal)?,
         )
         .map_err(internal)?;
-        let enrollment_id: LearningEnrollmentId =
-            parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
+        // First attempt joins implicitly: attempts are grouped under the
+        // enrollment, so create it on demand instead of requiring a join step.
+        let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
+        let enrollment_id = self.ensure_enrollment(&course_id, user_id).await?;
         // Reflection answers are LLM-graded when a completer is configured;
         // the activity's linked concepts ground the grading prompt. AI
         // grading is an enhancement: any failure (unconfigured completer,
@@ -3656,6 +3672,38 @@ mod tests {
         .unwrap();
         assert_eq!(count, 1);
         assert_eq!(reviews, 0);
+    }
+
+    #[tokio::test]
+    async fn practice_flows_join_implicitly_without_explicit_enroll() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let course = service.import_course(valid_pack()).await.unwrap();
+        let course_id = &course.course.id;
+        // No explicit enroll anywhere: opening the detail must create the
+        // enrollment so diagnostics, attempts and progress writes all work.
+        let detail = service.course_detail(course_id, Some(&user_id)).await.unwrap();
+        assert!(detail.enrollment_id.is_some());
+        let diagnostic = service.diagnostic_plan(course_id, &user_id, 10).await.unwrap();
+        assert_eq!(diagnostic.items.len(), 1);
+        let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+        let lesson_id = detail.modules[0].lessons[0].id.clone();
+        let result = service
+            .submit_attempt(&activity_id, &user_id, Value::Bool(true), None, None)
+            .await
+            .unwrap();
+        assert!(result.passed);
+        service
+            .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        // A second detail read must reuse the same enrollment (idempotent).
+        let again = service.course_detail(course_id, Some(&user_id)).await.unwrap();
+        assert_eq!(again.enrollment_id, detail.enrollment_id);
     }
 
     #[tokio::test]
