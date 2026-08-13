@@ -46,6 +46,23 @@ impl ClientPrefService {
         }
     }
 
+    /// Persist the host OS UI language when this installation has never stored
+    /// a `language` preference. Existing values are left untouched. Without an
+    /// installation store this only returns the normalized locale.
+    pub async fn ensure_os_language_default(&self, os_locale: Option<&str>) -> Result<String, AppError> {
+        let Some(store) = &self.installation_store else {
+            return Ok(nomifun_common::normalize_ui_language(os_locale));
+        };
+        store.ensure_migrated(self.repo.as_ref()).await?;
+        store.ensure_language_default(os_locale).await
+    }
+
+    /// Same as [`Self::ensure_os_language_default`], using the current host OS locale.
+    pub async fn ensure_os_language_default_from_host(&self) -> Result<String, AppError> {
+        self.ensure_os_language_default(sys_locale::get_locale().as_deref())
+            .await
+    }
+
     /// Get all client preferences, or only the specified keys.
     pub async fn get_preferences(&self, keys: Option<&[&str]>) -> Result<ClientPreferencesResponse, AppError> {
         if let Some(store) = &self.installation_store {
@@ -455,5 +472,25 @@ mod tests {
             svc.get_preferences(None).await.unwrap().is_empty(),
             "the generic endpoint must not partially persist a mixed batch"
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_os_language_default_persists_when_installation_store_has_no_language() {
+        let (svc, data_dir) = setup_with_installation_store().await;
+        assert_eq!(
+            svc.ensure_os_language_default(Some("zh-Hans-CN")).await.unwrap(),
+            "zh-CN"
+        );
+        let prefs = svc.get_preferences(None).await.unwrap();
+        assert_eq!(prefs["language"], json!("zh-CN"));
+        let stored = std::fs::read_to_string(data_dir.path().join("installation-preferences.json")).unwrap();
+        assert!(stored.contains("zh-CN"));
+    }
+
+    #[tokio::test]
+    async fn ensure_os_language_default_without_store_does_not_require_persistence() {
+        let svc = setup().await;
+        assert_eq!(svc.ensure_os_language_default(Some("ja-JP")).await.unwrap(), "en-US");
+        assert!(svc.get_preferences(None).await.unwrap().is_empty());
     }
 }

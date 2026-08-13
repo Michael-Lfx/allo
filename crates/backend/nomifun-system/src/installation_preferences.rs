@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 
-use nomifun_common::{AppError, dir_config};
+use nomifun_common::{AppError, dir_config, normalize_ui_language};
 use nomifun_db::IClientPreferenceRepository;
 use serde_json::{Map, Value};
 use tokio::sync::Mutex;
@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 /// Stable installation-local preference file. It lives below `data_dir`,
 /// which remains fixed when the user changes the workspace root.
-pub const INSTALLATION_PREFERENCES_FILE: &str = "installation-preferences.json";
+pub use nomifun_common::INSTALLATION_PREFERENCES_FILE;
 
 /// Preferences that describe the current installation's UI rather than the
 /// selected workspace. Keep this list deliberately closed: routing an
@@ -157,6 +157,22 @@ impl InstallationPreferenceStore {
             }
         }
         self.write_map_async(values).await
+    }
+
+    /// Persist the normalized OS locale when `language` has never been stored.
+    /// An existing non-empty value is left untouched.
+    pub async fn ensure_language_default(&self, os_locale: Option<&str>) -> Result<String, AppError> {
+        let values = self.get(Some(&["language"])).await?;
+        if let Some(Value::String(existing)) = values.get("language") {
+            let trimmed = existing.trim();
+            if !trimmed.is_empty() {
+                return Ok(normalize_ui_language(Some(trimmed)));
+            }
+        }
+        let language = normalize_ui_language(os_locale);
+        self.update(&[("language".into(), Value::String(language.clone()))])
+            .await?;
+        Ok(language)
     }
 
     async fn read_map_async(&self) -> Result<Option<BTreeMap<String, Value>>, AppError> {
@@ -441,5 +457,38 @@ mod tests {
         assert!(!is_installation_preference_key("nomi.defaultModel"));
         assert!(validate_preference_value("ui.zoomFactor", &json!(1.1)).is_ok());
         assert!(validate_preference_value("ui.zoomFactor", &json!("1.1")).is_err());
+    }
+
+    #[tokio::test]
+    async fn ensure_language_default_writes_os_locale_when_missing() {
+        let data = tempdir().unwrap();
+        let store = InstallationPreferenceStore::new(data.path());
+        assert_eq!(
+            store.ensure_language_default(Some("zh_CN")).await.unwrap(),
+            "zh-CN"
+        );
+        assert_eq!(store.get(None).await.unwrap().get("language"), Some(&json!("zh-CN")));
+    }
+
+    #[tokio::test]
+    async fn ensure_language_default_does_not_overwrite_existing() {
+        let data = tempdir().unwrap();
+        let store = InstallationPreferenceStore::new(data.path());
+        store.update(&[("language".into(), json!("en-US"))]).await.unwrap();
+        assert_eq!(
+            store.ensure_language_default(Some("zh-CN")).await.unwrap(),
+            "en-US"
+        );
+        assert_eq!(store.get(None).await.unwrap().get("language"), Some(&json!("en-US")));
+    }
+
+    #[tokio::test]
+    async fn ensure_language_default_maps_unsupported_os_locale_to_english() {
+        let data = tempdir().unwrap();
+        let store = InstallationPreferenceStore::new(data.path());
+        assert_eq!(
+            store.ensure_language_default(Some("ja-JP")).await.unwrap(),
+            "en-US"
+        );
     }
 }

@@ -45,7 +45,8 @@ mod companion_pointer;
 mod updater_install_context;
 
 /// Build the webview initialization script. Injects the loopback backend port
-/// (`window.__backendPort`), the OS tag, and the per-boot local-trust secret
+/// (`window.__backendPort`), the OS tag, the host OS UI locale
+/// (`window.__osLocale`), and the per-boot local-trust secret
 /// (`window.__nomiLocalTrust`). Also installs `fetch` AND `XMLHttpRequest`
 /// interceptors that attach the trust header to EVERY request bound for the
 /// backend — so any code path (httpBridge, configService, raw `fetch`/XHR,
@@ -53,9 +54,10 @@ mod updater_install_context;
 /// instrumentation, while requests to external origins are untouched (the
 /// secret never leaks off-box). Runs before any page script.
 pub(crate) fn webui_init_script(port: u16, trust_secret: &str) -> String {
+    let os_locale = nomifun_common::normalize_ui_language(sys_locale::get_locale().as_deref());
     // `{:?}` emits properly quoted/escaped JS string literals.
     format!(
-        r#"window.__backendPort = {port}; window.__os = {os:?}; window.__nomiLocalTrust = {secret:?};
+        r#"window.__backendPort = {port}; window.__os = {os:?}; window.__osLocale = {os_locale:?}; window.__nomiLocalTrust = {secret:?};
 (function () {{
   var secret = {secret:?};
   var origin = "http://127.0.0.1:" + {port};
@@ -107,6 +109,7 @@ pub(crate) fn webui_init_script(port: u16, trust_secret: &str) -> String {
   }}
 }})();"#,
         os = std::env::consts::OS,
+        os_locale = os_locale,
         secret = trust_secret,
         port = port,
     )
@@ -3063,6 +3066,18 @@ mod tests {
         assert_eq!(marker["token"], token);
         assert_eq!(marker["app_pid"], 1234);
         assert!(fs::metadata(&marker_path).unwrap().len() <= DEV_RESTART_MARKER_MAX_BYTES as u64);
+    }
+
+    #[test]
+    fn webui_init_script_injects_normalized_os_locale() {
+        let script = webui_init_script(13400, "trust-secret");
+        assert!(script.contains("window.__osLocale = "));
+        let locale = nomifun_common::normalize_ui_language(sys_locale::get_locale().as_deref());
+        assert!(
+            script.contains(&format!("window.__osLocale = {locale:?}")),
+            "init script must inject the same normalized OS locale as the backend, got: {script}"
+        );
+        assert!(locale == "zh-CN" || locale == "en-US");
     }
 
     #[test]

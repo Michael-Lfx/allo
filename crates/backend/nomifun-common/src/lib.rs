@@ -8,6 +8,7 @@ mod case_convert;
 mod crypto;
 pub mod dir_config;
 pub mod dataset_roots;
+pub mod ui_language;
 mod enums;
 mod error;
 mod execution_authority;
@@ -89,5 +90,9 @@ pub use pagination::PaginatedResult;
 pub use provider_lifecycle::{ProviderLifecycleBarrier, SharedProviderLifecycleBarrier};
 pub use provider_usage::{ProviderInUseDetails, ProviderUsage, ProviderUsageFeature};
 pub use timestamp::{TimestampMs, now_ms};
+pub use ui_language::{
+    DEFAULT_UI_LANGUAGE, INSTALLATION_PREFERENCES_FILE, ZH_CN_LANGUAGE, normalize_ui_language,
+    read_installation_language,
+};
 pub use types::{CommandSpec, Confirmation, ConfirmationOption, EnvVar, ProviderWithModel};
 pub use vision_registry::VisionUnsupportedRegistry;

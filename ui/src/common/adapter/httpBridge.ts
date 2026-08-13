@@ -20,6 +20,11 @@ declare global {
      * browsers must authenticate. Absent in WebUI browser mode.
      */
     __nomiLocalTrust?: string;
+    /**
+     * Normalized host OS UI language (`zh-CN` | `en-US`) injected by the Tauri
+     * desktop shell from `sys_locale`. Absent in WebUI browser mode.
+     */
+    __osLocale?: string;
   }
 }
 

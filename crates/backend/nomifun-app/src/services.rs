@@ -3101,6 +3101,19 @@ impl AppServices {
             _browser_platform_tasks: None,
         };
 
+        if let Err(error) = nomifun_system::ClientPrefService::with_installation_store(
+            Arc::new(SqliteClientPreferenceRepository::new(services.database.pool().clone())),
+            &services.data_dir,
+        )
+        .ensure_os_language_default_from_host()
+        .await
+        {
+            tracing::warn!(
+                error = %error,
+                "failed to seed UI language from the host OS locale"
+            );
+        }
+
         tracing::info!(
             elapsed_ms = boot.elapsed().as_millis(),
             "startup: AppServices constructed"

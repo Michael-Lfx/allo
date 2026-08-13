@@ -30,6 +30,29 @@ export function normalizeLanguageCode(language: string): SupportedLanguage {
   }
 }
 
+/**
+ * Host OS UI language injected by the desktop shell (`window.__osLocale`).
+ * This is the system locale, not `navigator.language`.
+ */
+export function injectedOsLocale(): string | undefined {
+  const value = (globalThis as { window?: { __osLocale?: unknown } }).window?.__osLocale;
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+/**
+ * Synchronous first-paint language: returning-user localStorage hint, then
+ * the desktop-injected OS locale, then English. Never reads the browser locale.
+ */
+export function firstPaintLanguage(): SupportedLanguage {
+  if (typeof localStorage !== 'undefined') {
+    const hint = localStorage.getItem('i18nextLng');
+    if (hint) return normalizeLanguageCode(hint);
+  }
+  const osLocale = injectedOsLocale();
+  if (osLocale) return normalizeLanguageCode(osLocale);
+  return DEFAULT_LANGUAGE;
+}
+
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

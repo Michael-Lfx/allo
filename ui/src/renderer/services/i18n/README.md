@@ -40,20 +40,26 @@ file discovery.
 
 ## Runtime Flow
 
-1. `i18n` initializes synchronously with the fallback locale to avoid a flash of
-   untranslated content.
-2. `localStorage.i18nextLng` is used only as a fast first-render hint.
-3. `configService.whenReady()` loads the authoritative language from the
-   backend config.
+1. `i18n` initializes synchronously. First paint uses `localStorage.i18nextLng`
+   (returning users) or the desktop-injected host OS locale
+   (`window.__osLocale` from `sys_locale`), then English. It never reads
+   `navigator.language`.
+2. On first backend start, if the installation has never stored `language`,
+   the host OS locale is normalized (`zh*` → `zh-CN`, everything else →
+   `en-US`) and written to `installation-preferences.json`.
+3. `configService.whenReady()` loads that authoritative language from the
+   backend. A successful snapshot after login/reload re-applies it.
 4. `ensureAndSwitch()` loads/merges the locale and calls i18next.
 5. `changeLanguage()` writes the normalized language through `configService`,
    syncs `localStorage`, and notifies the host through
-   `ipcBridge.systemSettings.changeLanguage`.
+   `ipcBridge.systemSettings.changeLanguage`. After that, the saved preference
+   wins over the OS locale.
 6. Other renderer surfaces receive language changes through
    `ipcBridge.systemSettings.languageChanged`.
 
 Do not use `i18next-browser-languagedetector`: desktop WebView and WebUI run on
-different origins, so browser-origin storage is not the source of truth.
+different origins, so browser-origin storage is not the source of truth. Default
+UI language is the **host OS locale**, not the browser language.
 
 ## Usage
 

@@ -9,6 +9,8 @@ import {
   normalizeLanguageCode,
   mergeWithFallback,
   ensureAndSwitch,
+  firstPaintLanguage,
+  injectedOsLocale,
   type LocaleData,
 } from '@/common/config/i18n';
 
@@ -34,7 +36,7 @@ const fallbackLocale = localeData[DEFAULT_LANGUAGE] ?? {};
 // Cache for loaded translations
 const loadedTranslations = new Map<string, Record<string, unknown>>();
 
-// Pre-populate cache with the synchronously loaded fallback locale
+// Pre-populate cache with the synchronously loaded locales
 loadedTranslations.set(DEFAULT_LANGUAGE, fallbackLocale as Record<string, unknown>);
 
 function getLocaleModules(locale: string): Record<string, unknown> {
@@ -43,6 +45,8 @@ function getLocaleModules(locale: string): Record<string, unknown> {
   if (normalized === DEFAULT_LANGUAGE) return modules;
   return mergeWithFallback(fallbackLocale, modules);
 }
+
+loadedTranslations.set('zh-CN', getLocaleModules('zh-CN'));
 
 async function loadLocaleModules(locale: string): Promise<Record<string, unknown>> {
   const normalized = normalizeLanguageCode(locale);
@@ -57,10 +61,10 @@ async function loadLocaleModules(locale: string): Promise<Record<string, unknown
 // Initialize i18n with fallback locale loaded synchronously to avoid FOUC.
 // NOTE: We intentionally do NOT use i18next-browser-languagedetector here.
 // In WebUI mode the browser's localStorage is on a different origin than the
-// Electron renderer, so the detector would read the wrong (or missing) value
+// desktop renderer, so the detector would read the wrong (or missing) value
 // and fall back to navigator.language, causing a language mismatch (Issue #1176).
-// Instead, we use localStorage only as a hint for the initial render and let
-// configService (which bridges to the backend) be the single source of truth.
+// First paint uses localStorage (returning users) or the desktop-injected OS
+// locale (`window.__osLocale`). configService remains the source of truth.
 i18n
   .use(initReactI18next)
   .init({
@@ -68,8 +72,11 @@ i18n
       [DEFAULT_LANGUAGE]: {
         translation: fallbackLocale,
       },
+      'zh-CN': {
+        translation: getLocaleModules('zh-CN'),
+      },
     },
-    lng: (typeof localStorage !== 'undefined' ? localStorage.getItem('i18nextLng') : null) || DEFAULT_LANGUAGE,
+    lng: firstPaintLanguage(),
     fallbackLng: DEFAULT_LANGUAGE,
     debug: false,
     interpolation: { escapeValue: false },
@@ -81,12 +88,21 @@ i18n
 // Load initial language from configService (single source of truth).
 // Wait until configService.whenReady() so we observe the authoritative value
 // fetched from the backend rather than the empty cache that exists during
-// module load.
+// module load. Missing config (pre-login) falls back to the injected OS locale.
 async function initLanguage(): Promise<void> {
   try {
     await configService.whenReady();
     const savedLanguage = configService.get('language');
-    const language = savedLanguage || DEFAULT_LANGUAGE;
+    const language = normalizeLanguageCode(
+      (typeof savedLanguage === 'string' && savedLanguage.trim() ? savedLanguage : injectedOsLocale()) ||
+        DEFAULT_LANGUAGE
+    );
+    if (normalizeLanguageCode(i18n.language) === language && i18n.hasResourceBundle(language, 'translation')) {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('i18nextLng', language);
+      }
+      return;
+    }
     await ensureAndSwitch(i18n, language, loadLocaleModules);
     // Sync to localStorage so next page load can use it as a fast hint
     if (typeof localStorage !== 'undefined') {
@@ -114,7 +130,8 @@ i18n.on('languageChanged', async (lang: string) => {
 // Keep the renderer language subscribed to that authoritative snapshot so a
 // successful reload applies immediately instead of waiting for a restart.
 configService.subscribe('language', (value) => {
-  const next = typeof value === 'string' ? value : DEFAULT_LANGUAGE;
+  const next =
+    typeof value === 'string' && value.trim() ? value : injectedOsLocale() || DEFAULT_LANGUAGE;
   const normalized = normalizeLanguageCode(next);
   if (normalizeLanguageCode(i18n.language) === normalized) return;
   void ensureAndSwitch(i18n, normalized, loadLocaleModules).then(() => {
@@ -122,6 +139,12 @@ configService.subscribe('language', (value) => {
       localStorage.setItem('i18nextLng', normalized);
     }
   });
+});
+
+// Re-apply after login/reload so a previously empty (401) snapshot can pick up
+// the backend-persisted OS language without waiting for a restart.
+configService.onSnapshot(() => {
+  void initLanguage();
 });
 
 // Initialize on module load

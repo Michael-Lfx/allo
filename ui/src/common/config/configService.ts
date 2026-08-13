@@ -6,6 +6,7 @@ declare global {
   interface Window {
     __backendPort?: number;
     __nomiLocalTrust?: string;
+    __osLocale?: string;
   }
 }
 
@@ -76,6 +77,7 @@ async function fetchJson<T>(method: string, path: string, body?: unknown): Promi
 class ConfigServiceImpl {
   private cache = new Map<string, unknown>();
   private subscribers = new Map<string, Set<Subscriber>>();
+  private snapshotListeners = new Set<() => void>();
   private initialized = false;
   private initPromise: Promise<void> | null = null;
 
@@ -105,6 +107,7 @@ class ConfigServiceImpl {
         this.cache = next;
         this.initialized = true;
         this.notifyChanged(previous, next);
+        this.notifySnapshot();
       } catch (error) {
         console.warn('[configService] settings unavailable (pre-login or offline); using empty config:', error);
         // Keep the last authoritative snapshot available during a transient
@@ -168,6 +171,14 @@ class ConfigServiceImpl {
     };
   }
 
+  /** Fires after a successful settings snapshot (`initialize` / `reload`). */
+  onSnapshot(callback: () => void): () => void {
+    this.snapshotListeners.add(callback);
+    return () => {
+      this.snapshotListeners.delete(callback);
+    };
+  }
+
   isInitialized(): boolean {
     return this.initialized;
   }
@@ -191,6 +202,12 @@ class ConfigServiceImpl {
   private notifyChanged(previous: Map<string, unknown>, next: Map<string, unknown>): void {
     for (const key of getChangedConfigKeys(previous, next)) {
       this.notify(key as ConfigKey, next.get(key));
+    }
+  }
+
+  private notifySnapshot(): void {
+    for (const callback of this.snapshotListeners) {
+      callback();
     }
   }
 }

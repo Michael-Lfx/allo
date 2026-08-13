@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use nomi_agent::session::{Session, SessionManager};
@@ -9,10 +10,10 @@ use nomifun_api_types::{
 };
 use nomifun_common::{
     AppError, DelegationPolicy, ExecutionAuthority, LoopbackCapabilityLease,
-    LoopbackCapabilityLeaseSet, ProviderId, ProviderWithModel,
+    LoopbackCapabilityLeaseSet, ProviderId, ProviderWithModel, normalize_ui_language,
+    read_installation_language,
 };
 use nomifun_db::IMcpServerRepository;
-use nomifun_db::ISettingsRepository;
 use nomifun_db::models::McpServerRow;
 use nomifun_runtime::resolve_command_path;
 use tracing::{debug, info, warn};
@@ -383,7 +384,7 @@ pub(super) async fn build(
     // External ACP/openclaw agents own their own prompts (built elsewhere) and
     // are intentionally unaffected.
     {
-        let lang = read_app_language(deps.settings_repo.as_ref()).await;
+        let lang = read_app_language(&deps.data_dir).await;
         let directive = output_language_directive(&lang);
         overrides.system_prompt = Some(match overrides.system_prompt.take() {
             Some(existing) => format!("{existing}\n\n{directive}"),
@@ -1283,53 +1284,27 @@ fn apply_global_moa_fallback(overrides: &mut NomiBuildExtra, global_raw: Option<
     }
 }
 
-/// App UI language default — the final fallback when no language is persisted
-/// AND the host OS locale is unavailable. Matches
-/// `SystemSettingsResponse::default().language` in `nomifun-api-types`.
-const DEFAULT_APP_LANGUAGE: &str = "en-US";
-
-/// Normalize an arbitrary locale tag to the output-language directive's supported
-/// axis. [`output_language_directive`] only distinguishes `zh-CN` from everything
-/// else, so any Chinese locale (`zh`, `zh_CN`, `zh-Hans`, `zh-Hans-CN`, …) folds
-/// to `zh-CN`; any other tag is returned normalized (→ English directive).
-fn normalize_lang(code: &str) -> String {
-    let c = code.trim().replace('_', "-");
-    if c.to_ascii_lowercase().starts_with("zh") {
-        "zh-CN".to_owned()
-    } else {
-        c
+/// Resolve the effective app language: an explicitly **persisted installation**
+/// `language` preference wins; otherwise fall back to the host OS locale (so a
+/// fresh install on a Chinese system replies in Chinese without the owner
+/// touching settings); finally English. `os_locale` is injected so the
+/// resolution is deterministically unit-testable. The SQLite `system_settings`
+/// seed `en-US` is intentionally ignored — it is not a user choice.
+fn resolve_language(installation: Option<&str>, os_locale: Option<&str>) -> String {
+    if let Some(language) = installation.map(str::trim).filter(|value| !value.is_empty()) {
+        return normalize_ui_language(Some(language));
     }
+    normalize_ui_language(os_locale)
 }
 
-/// Resolve the effective app language: an explicitly **persisted** System-Settings
-/// value wins; otherwise fall back to the host **OS locale** (so a fresh install
-/// on a Chinese system replies in Chinese without the owner touching settings —
-/// 首轮跟随系统语言); finally [`DEFAULT_APP_LANGUAGE`]. `os_locale` is injected so
-/// the resolution is deterministically unit-testable.
-fn resolve_language(persisted: Option<&str>, os_locale: Option<&str>) -> String {
-    if let Some(l) = persisted.map(str::trim).filter(|s| !s.is_empty()) {
-        return normalize_lang(l);
-    }
-    if let Some(l) = os_locale.map(str::trim).filter(|s| !s.is_empty()) {
-        return normalize_lang(l);
-    }
-    DEFAULT_APP_LANGUAGE.to_owned()
-}
-
-/// Read the effective app UI language live (mirrors `read_bool_pref`): the
-/// persisted System-Settings value if set, else the host OS locale, else
-/// [`DEFAULT_APP_LANGUAGE`]. Read per build so a language switch — or first-run OS
-/// detection — takes effect on the next agent (re)build. Takes the bare repo
-/// option (not the whole deps) so the persisted branch is trivially testable.
-async fn read_app_language(settings_repo: Option<&Arc<dyn ISettingsRepository>>) -> String {
-    let persisted = match settings_repo {
-        Some(repo) => match repo.get_settings().await {
-            Ok(Some(settings)) if !settings.language.trim().is_empty() => Some(settings.language),
-            _ => None,
-        },
-        None => None,
-    };
-    resolve_language(persisted.as_deref(), sys_locale::get_locale().as_deref())
+/// Read the effective app UI language live: installation preference if set,
+/// else the host OS locale, else English. Read per build so a language switch
+/// — or first-run OS detection — takes effect on the next agent (re)build.
+async fn read_app_language(data_dir: &Path) -> String {
+    resolve_language(
+        read_installation_language(data_dir).as_deref(),
+        sys_locale::get_locale().as_deref(),
+    )
 }
 
 /// Map a stored app-language code to the output-language directive appended LAST
@@ -2161,51 +2136,6 @@ mod tests {
 
     // ----- output-language directive (thinking + reply follow system language) -----
 
-    /// Minimal mock settings repo for `read_app_language`: yields a fixed result
-    /// (`Err(())` simulates a DB read failure). Mirrors the McpServerRepo mock in
-    /// factory/acp.rs.
-    struct MockSettingsRepo(Result<Option<nomifun_db::models::SystemSettings>, ()>);
-
-    #[async_trait::async_trait]
-    impl ISettingsRepository for MockSettingsRepo {
-        async fn get_settings(
-            &self,
-        ) -> Result<Option<nomifun_db::models::SystemSettings>, nomifun_db::DbError> {
-            self.0
-                .clone()
-                .map_err(|_| nomifun_db::DbError::Init("simulated".into()))
-        }
-        async fn upsert_settings(
-            &self,
-            _language: &str,
-            _notification_enabled: bool,
-            _cron_notification_enabled: bool,
-            _command_queue_enabled: bool,
-            _save_upload_to_workspace: bool,
-        ) -> Result<nomifun_db::models::SystemSettings, nomifun_db::DbError> {
-            unimplemented!("not exercised by the language tests")
-        }
-    }
-
-    fn settings_row(language: &str) -> nomifun_db::models::SystemSettings {
-        nomifun_db::models::SystemSettings {
-            id: 1,
-            singleton_key: "system".to_owned(),
-            language: language.to_owned(),
-            notification_enabled: true,
-            cron_notification_enabled: false,
-            command_queue_enabled: false,
-            save_upload_to_workspace: false,
-            updated_at: 0,
-        }
-    }
-
-    fn settings_repo(
-        result: Result<Option<nomifun_db::models::SystemSettings>, ()>,
-    ) -> Arc<dyn ISettingsRepository> {
-        Arc::new(MockSettingsRepo(result))
-    }
-
     #[test]
     fn output_language_directive_maps_supported_and_defaults_to_english() {
         // zh-CN steers BOTH reply and thinking to Simplified Chinese.
@@ -2228,39 +2158,38 @@ mod tests {
     }
 
     #[test]
-    fn resolve_language_prefers_persisted_then_os_then_default() {
-        // Persisted setting always wins (ignores OS locale).
+    fn resolve_language_prefers_installation_then_os_then_default() {
+        // Installation preference always wins (ignores OS locale).
         assert_eq!(resolve_language(Some("en-US"), Some("zh-CN")), "en-US");
         assert_eq!(resolve_language(Some("zh-CN"), Some("en-US")), "zh-CN");
-        // No persisted value → follow the OS locale (首轮跟随系统语言).
+        // No installation preference → follow the OS locale (首轮跟随系统语言).
         assert_eq!(resolve_language(None, Some("zh-CN")), "zh-CN");
         assert_eq!(resolve_language(Some("  "), Some("zh_CN")), "zh-CN");
         assert_eq!(resolve_language(None, Some("en-US")), "en-US");
-        // Neither → hard default.
+        assert_eq!(resolve_language(None, Some("ja-JP")), "en-US");
+        // Neither → hard default. The SQLite seed en-US is not consulted here.
         assert_eq!(resolve_language(None, None), "en-US");
         assert_eq!(resolve_language(Some(""), Some("   ")), "en-US");
     }
 
-    #[test]
-    fn normalize_lang_folds_every_chinese_locale_to_zh_cn() {
-        for zh in ["zh", "zh-CN", "zh_CN", "zh-Hans", "zh-Hans-CN", "ZH-cn"] {
-            assert_eq!(normalize_lang(zh), "zh-CN", "{zh} must fold to zh-CN");
-        }
-        // Non-Chinese tags are returned normalized (→ English directive).
-        assert_eq!(normalize_lang("en_US"), "en-US");
-        assert_eq!(normalize_lang("fr-FR"), "fr-FR");
+    #[tokio::test]
+    async fn read_app_language_returns_installation_preference() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(nomifun_common::INSTALLATION_PREFERENCES_FILE),
+            br#"{"language":"zh-CN"}"#,
+        )
+        .unwrap();
+        assert_eq!(read_app_language(dir.path()).await, "zh-CN");
     }
 
     #[tokio::test]
-    async fn read_app_language_returns_persisted_language() {
-        // A persisted value wins over whatever OS locale the test host reports.
-        assert_eq!(
-            read_app_language(Some(&settings_repo(Ok(Some(settings_row("zh-CN")))))).await,
-            "zh-CN"
-        );
-        assert_eq!(
-            read_app_language(Some(&settings_repo(Ok(Some(settings_row("en-US")))))).await,
-            "en-US"
+    async fn read_app_language_ignores_missing_installation_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let language = read_app_language(dir.path()).await;
+        assert!(
+            language == "zh-CN" || language == "en-US",
+            "host OS locale must normalize to a supported UI language, got {language}"
         );
     }
 

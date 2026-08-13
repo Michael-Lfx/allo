@@ -27,6 +27,7 @@ zip.workspace = true
 nomi-redact.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 chrono.workspace = true
+sys-locale.workspace = true
 
 [dev-dependencies]
 tower = { workspace = true }
