@@ -97,6 +97,15 @@ $ bun run build
 > 窗口边框因系统而异：Windows / Linux 上是带应用内控件的无边框标题栏，macOS
 > 上保留原生红绿灯按钮（内容延伸至 `Overlay` 栏下）。
 
+在 Windows 和 Linux 上，标题栏根节点是原生拖拽平面。左侧菜单和右侧工具栏的空白区域可以拖动；导航、会话/主页操作、更新操作、移动端操作插槽、窗口控制和 Tooltip 锚点都是显式的 `no-drag` 交互岛。只有拖拽平面内、且不来自这些交互岛的双击才会触发最大化/还原。
+
+macOS 的 Overlay 标题栏会继续让菜单和工具栏处于拖拽平面之外，保持原生红绿灯交互不变；浏览器版本不会启用桌面拖拽区域。
+
+标题栏和侧栏中使用公共 `InstantHoverTooltip` 的图标提示通过 body Portal 渲染，并使用带 8px 视口内边距的 fixed Floating UI 定位、`flip` 和 `shift`。Tooltip 最大宽度为 `calc(100vw - 16px)`，长本地化文本允许换行，边缘控件不会把浮层推出窗口。延迟、主题 token 和视觉样式保持不变。
+
+实现与当前验证边界记录在
+[`顶部栏拖拽与 Tooltip 修复记录`](../superpowers/audits/2026-08-13-topbar-drag-tooltip-fix.md)。
+
 ## 单实例
 
 `tauri-plugin-single-instance` 在 Windows 和 Linux 上强制应用只运行一个副本。试图启动第二个 `nomifun-desktop` 不会在另一个端口上启动新的后端，而是会静默地聚焦到已有的窗口。

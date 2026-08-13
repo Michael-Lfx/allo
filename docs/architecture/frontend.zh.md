@@ -156,3 +156,5 @@ Markdown 在 Shadow DOM 中渲染，因此消息排版和代码控件具有明�
 ## 一点平台特定的 UX
 
 桌面外壳在 Windows / Linux 上是**无边框**的（[`ui/src/renderer/components/layout/Titlebar/`](../../ui/src/renderer/components/layout/Titlebar/) 中的 React 标题栏通过 `@tauri-apps/api/window` 绘制最小化 / 最大化 / 关闭按钮）；macOS 通过 `TitleBarStyle::Overlay` 保留原生交通灯按钮。同一份 SPA 在浏览器中会隐藏标题栏，让浏览器外框处理它。区别在运行时通过 `isTauri()`（定义于 `tauriShell.ts`）来检测。
+
+Windows/Linux 标题栏的空白菜单列与工具栏列属于原生拖拽平面，按钮、窗口控制和 Tooltip 锚点属于显式 `no-drag` 交互岛；公共 `InstantHoverTooltip` 通过 Portal 与 Floating UI 的 `flip`/`shift` 保证视口边界内显示。实现与验证边界见 [`顶部栏拖拽与 Tooltip 修复记录`](../superpowers/audits/2026-08-13-topbar-drag-tooltip-fix.md)。

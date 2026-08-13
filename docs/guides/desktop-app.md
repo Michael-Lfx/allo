@@ -100,6 +100,26 @@ The main window is **frameless** on Windows and Linux: the React titlebar compon
 > Windows and Linux, and the native traffic-light buttons (content under an
 > `Overlay` bar) on macOS.
 
+On Windows and Linux, the titlebar root is the native drag plane. Blank portions
+of the left menu and right toolbar remain draggable, while navigation, session
+and home actions, update actions, mobile actions, window controls, and Tooltip
+anchors are explicit no-drag islands. Double-click maximize is handled only for
+events inside the drag plane that do not originate from one of those islands.
+
+macOS keeps its Overlay titlebar menu and toolbar outside the drag plane so the
+native traffic-light interaction remains unchanged. Browser builds do not enable
+the desktop drag region.
+
+Titlebar and sidebar icon hover hints that use the shared
+`InstantHoverTooltip` component render through a body Portal and use fixed
+Floating UI positioning with `flip` and `shift` at 8px viewport padding. The
+Tooltip is constrained to `calc(100vw - 16px)` and wraps long localized text so
+edge controls do not leave the viewport. The delay, theme tokens, and visual
+treatment remain unchanged.
+
+The implementation and current verification boundary are recorded in
+[`Topbar drag and Tooltip fix audit`](../superpowers/audits/2026-08-13-topbar-drag-tooltip-fix.md).
+
 ## Single instance
 
 `tauri-plugin-single-instance` enforces a single running copy of the app on Windows and Linux. Trying to launch a second `nomifun-desktop` will silently focus the existing window instead of starting another backend on a different port.

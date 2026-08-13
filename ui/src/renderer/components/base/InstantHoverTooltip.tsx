@@ -1,7 +1,8 @@
 
 
 import classNames from 'classnames';
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { autoUpdate, flip, offset, shift, useFloating } from '@floating-ui/react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 export type InstantHoverTooltipProps = {
@@ -10,36 +11,11 @@ export type InstantHoverTooltipProps = {
   position?: 'top' | 'right' | 'bottom' | 'left';
   className?: string;
   hoverDelayMs?: number;
-};
-
-type TooltipCoords = {
-  top: number;
-  left: number;
+  dataTauriNoDrag?: boolean;
 };
 
 const GAP_PX = 6;
-
-const transformClassName: Record<NonNullable<InstantHoverTooltipProps['position']>, string> = {
-  top: '-translate-x-1/2 -translate-y-full',
-  right: '-translate-y-1/2',
-  bottom: '-translate-x-1/2 translate-y-1px',
-  left: '',
-};
-
-export function computeTooltipCoords(rect: DOMRect, position: NonNullable<InstantHoverTooltipProps['position']>): TooltipCoords {
-  switch (position) {
-    case 'top':
-      return { top: rect.top - GAP_PX, left: rect.left + rect.width / 2 };
-    case 'right':
-      return { top: rect.top + rect.height / 2, left: rect.right + GAP_PX };
-    case 'bottom':
-      // 底部居中显示
-      const centeredLeft = rect.left + rect.width / 2;
-      return { top: rect.bottom + GAP_PX, left: centeredLeft };
-    default:
-      return { top: rect.top, left: rect.left };
-  }
-}
+const VIEWPORT_PADDING_PX = 8;
 
 const InstantHoverTooltip: React.FC<InstantHoverTooltipProps> = ({
   content,
@@ -47,30 +23,22 @@ const InstantHoverTooltip: React.FC<InstantHoverTooltipProps> = ({
   position = 'top',
   className,
   hoverDelayMs = 0,
+  dataTauriNoDrag = false,
 }) => {
-  const anchorRef = useRef<HTMLDivElement>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [visible, setVisible] = useState(false);
-  const [coords, setCoords] = useState<TooltipCoords | null>(null);
 
-  const syncCoords = useCallback(() => {
-    const anchor = anchorRef.current;
-    if (!anchor) return;
-    setCoords(computeTooltipCoords(anchor.getBoundingClientRect(), position));
-  }, [position]);
-
-  useLayoutEffect(() => {
-    if (!visible) return undefined;
-    syncCoords();
-
-    const handleReposition = () => syncCoords();
-    window.addEventListener('resize', handleReposition);
-    window.addEventListener('scroll', handleReposition, true);
-    return () => {
-      window.removeEventListener('resize', handleReposition);
-      window.removeEventListener('scroll', handleReposition, true);
-    };
-  }, [visible, syncCoords, content]);
+  const { refs, floatingStyles, isPositioned } = useFloating({
+    open: visible,
+    placement: position,
+    strategy: 'fixed',
+    middleware: [
+      offset(GAP_PX),
+      flip({ padding: VIEWPORT_PADDING_PX }),
+      shift({ padding: VIEWPORT_PADDING_PX }),
+    ],
+    whileElementsMounted: autoUpdate,
+  });
 
   const clearPendingShow = useCallback(() => {
     if (hoverTimerRef.current === null) return;
@@ -80,9 +48,8 @@ const InstantHoverTooltip: React.FC<InstantHoverTooltipProps> = ({
 
   const showNow = useCallback(() => {
     clearPendingShow();
-    syncCoords();
     setVisible(true);
-  }, [clearPendingShow, syncCoords]);
+  }, [clearPendingShow]);
 
   const showAfterHoverDelay = useCallback(() => {
     clearPendingShow();
@@ -104,17 +71,16 @@ const InstantHoverTooltip: React.FC<InstantHoverTooltipProps> = ({
   useEffect(() => clearPendingShow, [clearPendingShow]);
 
   const tooltip =
-    visible && coords && typeof document !== 'undefined'
+    visible && typeof document !== 'undefined'
       ? createPortal(
           <span
+            ref={refs.setFloating}
             role='tooltip'
-            className={classNames(
-              'instant-hover-tooltip pointer-events-none fixed z-[10001] whitespace-nowrap rd-6px px-8px py-5px text-12px font-500 leading-none text-white shadow-[0_6px_18px_rgba(0,0,0,0.18)]',
-              transformClassName[position]
-            )}
+            className='instant-hover-tooltip pointer-events-none fixed z-[10001] box-border whitespace-normal break-words rd-6px px-8px py-5px text-12px font-500 leading-none text-white shadow-[0_6px_18px_rgba(0,0,0,0.18)]'
             style={{
-              top: coords.top,
-              left: coords.left,
+              ...floatingStyles,
+              maxWidth: 'calc(100vw - 16px)',
+              visibility: isPositioned ? 'visible' : 'hidden',
             }}
           >
             {content}
@@ -126,8 +92,9 @@ const InstantHoverTooltip: React.FC<InstantHoverTooltipProps> = ({
   return (
     <>
       <div
-        ref={anchorRef}
+        ref={refs.setReference}
         className={classNames('relative inline-flex shrink-0', className)}
+        data-tauri-no-drag={dataTauriNoDrag || undefined}
         onMouseEnter={showAfterHoverDelay}
         onMouseLeave={hide}
         onFocus={showNow}
