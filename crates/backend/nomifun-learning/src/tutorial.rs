@@ -29,6 +29,13 @@ impl LearningService {
     /// version. Returns `true` when content was written, `false` when the
     /// version gate said "skip". Failures propagate to the caller, which
     /// treats them as non-fatal at startup.
+    ///
+    /// Idempotency does NOT rely on the version file alone: the seed also
+    /// reuses an existing knowledge base by name and skips the course import
+    /// when the title already exists. That way a lost version gate (crash
+    /// mid-seed before the gate was written, version bump, fresh data dir,
+    /// concurrent duplicate boot) can never create a second tutorial base or
+    /// course — it only refreshes the guide files and re-stamps the gate.
     pub async fn seed_tutorial_content(&self, data_dir: &Path) -> Result<bool, AppError> {
         let version = env!("CARGO_PKG_VERSION");
         let gate_dir = data_dir.join(VERSION_DIR_NAME);
@@ -39,25 +46,40 @@ impl LearningService {
 
         let knowledge_service = self.injected_knowledge_service()?;
 
-        let base = knowledge_service
-            .create_base(TUTORIAL_KB_NAME, TUTORIAL_KB_DESCRIPTION, None, None)
-            .await?;
+        // Reuse an existing tutorial base instead of registering a duplicate.
+        let base_id = match knowledge_service
+            .find_base_id_by_name(TUTORIAL_KB_NAME)
+            .await?
+        {
+            Some(base_id) => base_id,
+            None => knowledge_service
+                .create_base(TUTORIAL_KB_NAME, TUTORIAL_KB_DESCRIPTION, None, None)
+                .await?
+                .knowledge_base_id,
+        };
+        // The guide files are cheap to refresh (atomic overwrite) and may have
+        // been deleted by the user since the last seed, so they are written on
+        // every re-seed regardless of whether the base was just created.
         knowledge_service
             .write_file(
-                base.knowledge_base_id.as_str(),
+                base_id.as_str(),
                 "README.md",
                 include_str!("../assets/tutorial/README.md"),
             )
             .await?;
         knowledge_service
             .write_file(
-                base.knowledge_base_id.as_str(),
+                base_id.as_str(),
                 "LEARNING_GUIDE.md",
                 include_str!("../assets/tutorial/LEARNING_GUIDE.md"),
             )
             .await?;
-        self.import_course(tutorial_course_pack(base.knowledge_base_id.clone()))
-            .await?;
+
+        // The course is imported only when no course with the preset title
+        // exists yet; a previous seed (or a partial one) must not duplicate it.
+        if !self.course_title_exists(TUTORIAL_COURSE_TITLE).await? {
+            self.import_course(tutorial_course_pack(base_id)).await?;
+        }
 
         std::fs::create_dir_all(&gate_dir).map_err(|error| {
             AppError::Internal(format!(
@@ -307,6 +329,47 @@ mod tests {
         assert!(files.iter().any(|f| f.rel_path == "LEARNING_GUIDE.md"));
 
         // The course exists and points at the tutorial knowledge base.
+        let courses = learning_service
+            .list_courses(&UserId::new())
+            .await
+            .unwrap();
+        assert_eq!(courses.len(), 1);
+        assert_eq!(courses[0].title, TUTORIAL_COURSE_TITLE);
+        assert_eq!(
+            courses[0].source_kb_id.as_ref(),
+            Some(&bases[0].knowledge_base_id)
+        );
+    }
+
+    /// A lost version gate (crash before the gate was written, version bump,
+    /// fresh data dir) must re-seed idempotently: reuse the existing base and
+    /// skip the course import instead of duplicating either.
+    #[tokio::test]
+    async fn seed_with_lost_version_gate_does_not_duplicate_content() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let (learning_service, knowledge_service) = seeded_service(data_dir.path()).await;
+
+        assert!(learning_service
+            .seed_tutorial_content(data_dir.path())
+            .await
+            .unwrap());
+        // Simulate a gate that never made it to disk (crash mid-seed).
+        std::fs::remove_file(data_dir.path().join(VERSION_DIR_NAME).join(VERSION_FILE_NAME))
+            .unwrap();
+        assert!(learning_service
+            .seed_tutorial_content(data_dir.path())
+            .await
+            .unwrap());
+
+        // Still exactly one base and one course; the guide files survive.
+        let bases = knowledge_service.list_bases().await.unwrap();
+        assert_eq!(bases.len(), 1);
+        assert_eq!(bases[0].name, TUTORIAL_KB_NAME);
+        let files = knowledge_service
+            .list_files(bases[0].knowledge_base_id.as_str())
+            .await
+            .unwrap();
+        assert_eq!(files.len(), 2);
         let courses = learning_service
             .list_courses(&UserId::new())
             .await

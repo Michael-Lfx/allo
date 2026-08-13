@@ -399,6 +399,20 @@ impl LearningService {
             .ok_or_else(|| AppError::NotFound(format!("course generation job {job_id}")))
     }
 
+    /// Whether a course with the given title already exists. The tutorial
+    /// seed uses this as a data-level idempotency guard: the preset course
+    /// must not be imported a second time when the seed's version-file gate
+    /// was lost (crash mid-seed, version bump, fresh data dir).
+    pub(crate) async fn course_title_exists(&self, title: &str) -> Result<bool, AppError> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_courses WHERE title = ?")
+                .bind(title)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+        Ok(count > 0)
+    }
+
     pub async fn import_course(&self, pack: CoursePack) -> Result<CourseDetail, AppError> {
         validate_pack(&pack)?;
         if let Some(kb_id) = &pack.source_kb_id {
