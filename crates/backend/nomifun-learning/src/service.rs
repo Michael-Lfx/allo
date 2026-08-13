@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use nomifun_common::{
     AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptId,
     LearningCourseId, LearningEnrollmentId, LearningLessonId, LearningModuleId,
-    LearningReviewItemId, UserId, UuidV7Error, now_ms,
+    LearningReviewItemId, LearningTagId, UserId, UuidV7Error, now_ms,
 };
 use nomifun_db::SqlitePool;
 use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService};
@@ -17,8 +17,8 @@ use crate::models::{
     ActivityKind, ActivityView, AttemptResult, ConceptRef, ConceptView, CourseDetail, CoursePack,
     CourseSummary, CreateCustomQuestionRequest, DiagnosticItem, DiagnosticPlan, DueReview,
     GenerateCourseRequest, LessonStatus, LessonView, ModuleView, QuestionEntry,
-    ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult, ReviewSource, SourceSpan,
-    StoredActivityConfig, UpdateQuestionRequest,
+    ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult, ReviewSource, SetTagsRequest,
+    SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
 };
 use crate::scheduler::{SchedulerSettings, schedule_review};
 
@@ -289,7 +289,13 @@ impl LearningService {
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        rows.iter().map(course_summary_from_row).collect()
+        let mut courses = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let mut course = course_summary_from_row(row)?;
+            course.tags = self.course_tags(&course.id).await?;
+            courses.push(course);
+        }
+        Ok(courses)
     }
 
     pub async fn course_detail(
@@ -320,6 +326,10 @@ impl LearningService {
         .map_err(internal)?
         .ok_or_else(|| AppError::NotFound(format!("learning course {course_id}")))?;
         let course = course_summary_from_row(&row)?;
+        let course = CourseSummary {
+            tags: self.course_tags(&course.id).await?,
+            ..course
+        };
 
         let enrollment_id = if let Some(user_id) = user_id {
             sqlx::query_scalar::<_, String>(
@@ -681,29 +691,45 @@ impl LearningService {
         })
     }
 
+    /// Due reviews for the user's review queue. When `course_id` is given,
+    /// the queue is scoped to that course and admits every queued review
+    /// item (not only due ones) so a dedicated course-review session can
+    /// serve cards the learner still has pending. Custom questions never
+    /// belong to a course and are excluded from course-scoped queues.
     pub async fn due_reviews(
         &self,
         user_id: &UserId,
         limit: i64,
+        course_id: Option<&LearningCourseId>,
     ) -> Result<Vec<DueReview>, AppError> {
         let limit = limit.clamp(1, 100);
         let now = now_ms();
-        let rows = sqlx::query(
-            "SELECT r.review_item_id, r.enrollment_id, e.course_id, c.title AS course_title, \
+        let base = "SELECT r.review_item_id, r.enrollment_id, e.course_id, c.title AS course_title, \
                     r.concept_id, lc.title AS concept_title, r.due_at, \
                     r.stability_days, r.difficulty, r.review_count, r.lapse_count \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
              LEFT JOIN learning_courses c ON c.course_id = e.course_id \
              JOIN learning_concepts lc ON lc.concept_id = r.concept_id \
-             WHERE e.user_id = ? AND r.due_at <= ? \
-             ORDER BY r.due_at, r.review_item_id LIMIT ?",
-        )
-        .bind(user_id.as_str())
-        .bind(now)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
+             WHERE e.user_id = ?";
+        let rows = match course_id {
+            Some(course_id) => sqlx::query(
+                &format!("{base} AND e.course_id = ? ORDER BY r.due_at, r.review_item_id LIMIT ?"),
+            )
+            .bind(user_id.as_str())
+            .bind(course_id.as_str())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await,
+            None => sqlx::query(
+                &format!("{base} AND r.due_at <= ? ORDER BY r.due_at, r.review_item_id LIMIT ?"),
+            )
+            .bind(user_id.as_str())
+            .bind(now)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await,
+        }
         .map_err(internal)?;
         let mut reviews = Vec::new();
         for row in rows {
@@ -752,49 +778,52 @@ impl LearningService {
             });
         }
         // Learner-authored custom questions carry their own schedule and join
-        // the same queue without any course context.
-        let custom_rows = sqlx::query(
-            "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.due_at, \
-                    q.stability_days, q.difficulty, q.review_count, q.lapse_count \
-             FROM learning_custom_questions q \
-             WHERE q.user_id = ? AND q.due_at <= ? \
-             ORDER BY q.due_at, q.custom_question_id LIMIT ?",
-        )
-        .bind(user_id.as_str())
-        .bind(now)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        for row in custom_rows {
-            let config: StoredActivityConfig = serde_json::from_str(
-                &row.try_get::<String, _>("config_json").map_err(internal)?,
+        // the same queue without any course context. They are never part of a
+        // course-scoped review queue.
+        if course_id.is_none() {
+            let custom_rows = sqlx::query(
+                "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.due_at, \
+                        q.stability_days, q.difficulty, q.review_count, q.lapse_count \
+                 FROM learning_custom_questions q \
+                 WHERE q.user_id = ? AND q.due_at <= ? \
+                 ORDER BY q.due_at, q.custom_question_id LIMIT ?",
             )
+            .bind(user_id.as_str())
+            .bind(now)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
             .map_err(internal)?;
-            let kind_text: String = row.try_get("kind").map_err(internal)?;
-            reviews.push(DueReview {
-                id: parse_id(row.try_get::<String, _>("custom_question_id").map_err(internal)?)?,
-                source: ReviewSource::Custom,
-                enrollment_id: None,
-                course_id: None,
-                course_title: None,
-                module_title: None,
-                lesson_title: None,
-                concept_id: None,
-                concept_title: None,
-                question: ReviewQuestion {
-                    activity_id: None,
-                    kind: ActivityKind::try_from(kind_text.as_str())
-                        .map_err(|message| AppError::BadRequest(message))?,
-                    prompt: row.try_get("prompt").map_err(internal)?,
-                    options: config.options,
-                },
-                due_at: row.try_get("due_at").map_err(internal)?,
-                stability_days: row.try_get("stability_days").map_err(internal)?,
-                difficulty: row.try_get("difficulty").map_err(internal)?,
-                review_count: row.try_get("review_count").map_err(internal)?,
-                lapse_count: row.try_get("lapse_count").map_err(internal)?,
-            });
+            for row in custom_rows {
+                let config: StoredActivityConfig = serde_json::from_str(
+                    &row.try_get::<String, _>("config_json").map_err(internal)?,
+                )
+                .map_err(internal)?;
+                let kind_text: String = row.try_get("kind").map_err(internal)?;
+                reviews.push(DueReview {
+                    id: parse_id(row.try_get::<String, _>("custom_question_id").map_err(internal)?)?,
+                    source: ReviewSource::Custom,
+                    enrollment_id: None,
+                    course_id: None,
+                    course_title: None,
+                    module_title: None,
+                    lesson_title: None,
+                    concept_id: None,
+                    concept_title: None,
+                    question: ReviewQuestion {
+                        activity_id: None,
+                        kind: ActivityKind::try_from(kind_text.as_str())
+                            .map_err(|message| AppError::BadRequest(message))?,
+                        prompt: row.try_get("prompt").map_err(internal)?,
+                        options: config.options,
+                    },
+                    due_at: row.try_get("due_at").map_err(internal)?,
+                    stability_days: row.try_get("stability_days").map_err(internal)?,
+                    difficulty: row.try_get("difficulty").map_err(internal)?,
+                    review_count: row.try_get("review_count").map_err(internal)?,
+                    lapse_count: row.try_get("lapse_count").map_err(internal)?,
+                });
+            }
         }
         reviews.sort_by_key(|review| (review.due_at, review.id.clone()));
         reviews.truncate(limit as usize);
@@ -854,6 +883,7 @@ impl LearningService {
                 .await,
         }
         .map_err(internal)?;
+        let mut course_ids_for_tags = Vec::with_capacity(rows.len());
         for row in rows {
             let review_item_id: Option<String> =
                 row.try_get("review_item_id").map_err(internal)?;
@@ -897,9 +927,11 @@ impl LearningService {
             )
             .map_err(internal)?;
             let course_id_raw: Option<String> = row.try_get("course_id").map_err(internal)?;
+            let activity_id: String = row.try_get("activity_id").map_err(internal)?;
+            course_ids_for_tags.push(activity_id.clone());
             entries.push(QuestionEntry {
                 source: ReviewSource::Course,
-                question_id: row.try_get::<String, _>("activity_id").map_err(internal)?,
+                question_id: activity_id,
                 review_item_id: match review_item_id {
                     Some(value) => Some(parse_id(value)?),
                     None => None,
@@ -942,7 +974,19 @@ impl LearningService {
                     .try_get::<Option<i64>, _>("updated_at")
                     .map_err(internal)?
                     .unwrap_or(0),
+                tags: Vec::new(),
             });
+        }
+        if !course_ids_for_tags.is_empty() {
+            let tag_ids: Vec<&str> =
+                course_ids_for_tags.iter().map(String::as_str).collect();
+            let tags_by_question =
+                self.question_tags_for("course", &tag_ids).await?;
+            for entry in &mut entries {
+                if let Some(tags) = tags_by_question.get(&entry.question_id) {
+                    entry.tags = tags.clone();
+                }
+            }
         }
 
         // Learner-authored custom questions; they are never course-scoped.
@@ -959,6 +1003,7 @@ impl LearningService {
             .fetch_all(&self.pool)
             .await
             .map_err(internal)?;
+            let mut custom_ids_for_tags = Vec::new();
             for row in custom_rows {
                 let review_count: i64 = row.try_get("review_count").map_err(internal)?;
                 let due_at: i64 = row.try_get("due_at").map_err(internal)?;
@@ -989,11 +1034,13 @@ impl LearningService {
                 )
                 .map_err(internal)?;
                 let concept_id_raw: Option<String> = row.try_get("concept_id").map_err(internal)?;
+                let custom_id: String = row
+                    .try_get::<String, _>("custom_question_id")
+                    .map_err(internal)?;
+                custom_ids_for_tags.push(custom_id.clone());
                 entries.push(QuestionEntry {
                     source: ReviewSource::Custom,
-                    question_id: row
-                        .try_get::<String, _>("custom_question_id")
-                        .map_err(internal)?,
+                    question_id: custom_id,
                     review_item_id: None,
                     state: entry_state.to_string(),
                     course_id: None,
@@ -1019,7 +1066,19 @@ impl LearningService {
                     lapse_count: row.try_get("lapse_count").map_err(internal)?,
                     last_reviewed_at: row.try_get("last_reviewed_at").map_err(internal)?,
                     updated_at: row.try_get("updated_at").map_err(internal)?,
+                    tags: Vec::new(),
                 });
+            }
+            if !custom_ids_for_tags.is_empty() {
+                let tag_ids: Vec<&str> =
+                    custom_ids_for_tags.iter().map(String::as_str).collect();
+                let tags_by_question =
+                    self.question_tags_for("custom", &tag_ids).await?;
+                for entry in &mut entries {
+                    if let Some(tags) = tags_by_question.get(&entry.question_id) {
+                        entry.tags = tags.clone();
+                    }
+                }
             }
         }
 
@@ -1204,24 +1263,35 @@ impl LearningService {
         Ok(())
     }
 
-    /// Deletes a learner-authored question together with its schedule.
+    /// Deletes a learner-authored question together with its schedule and
+    /// tag links.
     pub async fn delete_custom_question(
         &self,
         question_id: &str,
         user_id: &UserId,
     ) -> Result<(), AppError> {
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        sqlx::query(
+            "DELETE FROM learning_question_tags \
+             WHERE question_id = ? AND source = 'custom'",
+        )
+        .bind(question_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
         let result = sqlx::query(
             "DELETE FROM learning_custom_questions \
              WHERE custom_question_id = ? AND user_id = ?",
         )
         .bind(question_id)
         .bind(user_id.as_str())
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(internal)?;
         if result.rows_affected() == 0 {
             return Err(AppError::NotFound(format!("custom question {question_id}")));
         }
+        transaction.commit().await.map_err(internal)?;
         Ok(())
     }
 
@@ -1471,6 +1541,11 @@ impl LearningService {
                     SELECT l.lesson_id FROM learning_lessons l \
                     JOIN learning_modules m ON m.module_id = l.module_id \
                     WHERE m.course_id = ?)",
+                "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
+                    SELECT a.activity_id FROM learning_activities a \
+                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
                 "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
                     SELECT l.lesson_id FROM learning_lessons l \
                     JOIN learning_modules m ON m.module_id = l.module_id \
@@ -1490,6 +1565,11 @@ impl LearningService {
                     .map_err(internal)?;
             }
         }
+        sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
+            .bind(course_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
         sqlx::query("DELETE FROM learning_courses WHERE course_id = ?")
             .bind(course_id.as_str())
             .execute(&mut *transaction)
@@ -1497,6 +1577,180 @@ impl LearningService {
             .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
         Ok(())
+    }
+
+    /// Every tag of the global pool, ordered by name. The pool is shared by
+    /// courses and questions so reusing an existing name links to the same
+    /// tag.
+    pub async fn list_tags(&self) -> Result<Vec<String>, AppError> {
+        let rows = sqlx::query_scalar::<_, String>("SELECT name FROM learning_tags ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(rows)
+    }
+
+    /// Replaces the tag set of a course. With `apply_to_children` every
+    /// question of the course additionally receives the same tags as a union
+    /// with its existing tags.
+    pub async fn set_course_tags(
+        &self,
+        course_id: &LearningCourseId,
+        request: SetTagsRequest,
+    ) -> Result<Vec<String>, AppError> {
+        let tags = normalize_tags(&request.tags)?;
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        let exists: Option<String> =
+            sqlx::query_scalar("SELECT course_id FROM learning_courses WHERE course_id = ?")
+                .bind(course_id.as_str())
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(internal)?;
+        if exists.is_none() {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        ensure_tags_exist(&mut transaction, &tags).await?;
+        sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
+            .bind(course_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        for tag in &tags {
+            sqlx::query(
+                "INSERT INTO learning_course_tags (course_id, tag_id) \
+                 VALUES (?, (SELECT tag_id FROM learning_tags WHERE name = ?))",
+            )
+            .bind(course_id.as_str())
+            .bind(tag)
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        }
+        if request.apply_to_children && !tags.is_empty() {
+            let placeholders: Vec<String> = (0..tags.len()).map(|_| "?".to_string()).collect();
+            let sql = format!(
+                "INSERT OR IGNORE INTO learning_question_tags (question_id, source, tag_id) \
+                 SELECT a.activity_id, 'course', t.tag_id \
+                 FROM learning_activities a \
+                 JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id \
+                 JOIN learning_tags t \
+                 WHERE m.course_id = ? AND t.name IN ({})",
+                placeholders.join(", ")
+            );
+            let mut query = sqlx::query(&sql).bind(course_id.as_str());
+            for tag in &tags {
+                query = query.bind(tag);
+            }
+            query.execute(&mut *transaction).await.map_err(internal)?;
+        }
+        transaction.commit().await.map_err(internal)?;
+        Ok(tags)
+    }
+
+    /// Replaces the tag set of a managed course question. The activity must
+    /// belong to one of the user's enrollments.
+    pub async fn set_question_tags(
+        &self,
+        activity_id: &LearningActivityId,
+        user_id: &UserId,
+        tags: Vec<String>,
+    ) -> Result<Vec<String>, AppError> {
+        let tags = normalize_tags(&tags)?;
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT a.activity_id FROM learning_activities a \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ? \
+             WHERE a.activity_id = ?",
+        )
+        .bind(user_id.as_str())
+        .bind(activity_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        if exists.is_none() {
+            return Err(AppError::NotFound(format!("activity {activity_id}")));
+        }
+        ensure_tags_exist(&mut transaction, &tags).await?;
+        replace_question_tags(&mut transaction, "course", activity_id.as_str(), &tags).await?;
+        transaction.commit().await.map_err(internal)?;
+        Ok(tags)
+    }
+
+    /// Replaces the tag set of a learner-authored question.
+    pub async fn set_custom_question_tags(
+        &self,
+        question_id: &str,
+        user_id: &UserId,
+        tags: Vec<String>,
+    ) -> Result<Vec<String>, AppError> {
+        let tags = normalize_tags(&tags)?;
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT custom_question_id FROM learning_custom_questions \
+             WHERE custom_question_id = ? AND user_id = ?",
+        )
+        .bind(question_id)
+        .bind(user_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        if exists.is_none() {
+            return Err(AppError::NotFound(format!("custom question {question_id}")));
+        }
+        ensure_tags_exist(&mut transaction, &tags).await?;
+        replace_question_tags(&mut transaction, "custom", question_id, &tags).await?;
+        transaction.commit().await.map_err(internal)?;
+        Ok(tags)
+    }
+
+    /// Tags attached to a course, ordered by name.
+    async fn course_tags(&self, course_id: &LearningCourseId) -> Result<Vec<String>, AppError> {
+        let rows = sqlx::query(
+            "SELECT t.name FROM learning_tags t \
+             JOIN learning_course_tags ct ON ct.tag_id = t.tag_id \
+             WHERE ct.course_id = ? ORDER BY t.name",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        rows.into_iter()
+            .map(|row| row.try_get("name").map_err(internal))
+            .collect()
+    }
+
+    /// Tags attached to questions by id, keyed on `question_id`. `source`
+    /// distinguishes course activities from learner-authored questions.
+    async fn question_tags_for(
+        &self,
+        source: &str,
+        question_ids: &[&str],
+    ) -> Result<HashMap<String, Vec<String>>, AppError> {
+        if question_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders: Vec<String> = (0..question_ids.len()).map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "SELECT qt.question_id, t.name FROM learning_tags t \
+             JOIN learning_question_tags qt ON qt.tag_id = t.tag_id \
+             WHERE qt.source = ? AND qt.question_id IN ({}) ORDER BY t.name",
+            placeholders.join(", ")
+        );
+        let mut query = sqlx::query(&sql).bind(source);
+        for id in question_ids {
+            query = query.bind(id);
+        }
+        let rows = query.fetch_all(&self.pool).await.map_err(internal)?;
+        let mut tags_by_question: HashMap<String, Vec<String>> = HashMap::new();
+        for row in rows {
+            let question_id: String = row.try_get("question_id").map_err(internal)?;
+            let name: String = row.try_get("name").map_err(internal)?;
+            tags_by_question.entry(question_id).or_default().push(name);
+        }
+        Ok(tags_by_question)
     }
 
     /// Objective activities bound to a concept that the learner has actually
@@ -1939,6 +2193,75 @@ impl LearningService {
 }
 
 const MASTERY_RECOMMENDATION_THRESHOLD: f64 = 0.8;
+
+/// Trims, drops empties and deduplicates tag names, rejecting names longer
+/// than the schema limit (50 chars).
+fn normalize_tags(tags: &[String]) -> Result<Vec<String>, AppError> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for raw in tags {
+        let name = raw.trim();
+        if name.is_empty() || !seen.insert(name.to_owned()) {
+            continue;
+        }
+        if name.chars().count() > 50 {
+            return Err(AppError::BadRequest(format!(
+                "tag `{name}` exceeds 50 characters"
+            )));
+        }
+        normalized.push(name.to_owned());
+    }
+    Ok(normalized)
+}
+
+/// Inserts missing tag names into the global pool; existing names are
+/// ignored so the pool stays unique.
+async fn ensure_tags_exist(
+    transaction: &mut Transaction<'_, Sqlite>,
+    tags: &[String],
+) -> Result<(), AppError> {
+    for tag in tags {
+        sqlx::query(
+            "INSERT OR IGNORE INTO learning_tags (tag_id, name, created_at) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(LearningTagId::new().as_str())
+        .bind(tag)
+        .bind(now_ms())
+        .execute(&mut **transaction)
+        .await
+        .map_err(internal)?;
+    }
+    Ok(())
+}
+
+/// Replaces the full tag set of one question.
+async fn replace_question_tags(
+    transaction: &mut Transaction<'_, Sqlite>,
+    source: &str,
+    question_id: &str,
+    tags: &[String],
+) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM learning_question_tags WHERE question_id = ? AND source = ?")
+        .bind(question_id)
+        .bind(source)
+        .execute(&mut **transaction)
+        .await
+        .map_err(internal)?;
+    for tag in tags {
+        sqlx::query(
+            "INSERT OR IGNORE INTO learning_question_tags (question_id, source, tag_id) \
+             VALUES (?, ?, (SELECT tag_id FROM learning_tags WHERE name = ?))",
+        )
+        .bind(question_id)
+        .bind(source)
+        .bind(tag)
+        .execute(&mut **transaction)
+        .await
+        .map_err(internal)?;
+    }
+    Ok(())
+}
 
 fn recommend_next_lesson(
     modules: &[ModuleView],
@@ -2460,6 +2783,7 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         total_lessons: row.try_get("total_lessons").map_err(internal)?,
         completed_lessons: row.try_get("completed_lessons").map_err(internal)?,
         updated_at: row.try_get("updated_at").map_err(internal)?,
+        tags: Vec::new(),
     })
 }
 
@@ -2824,7 +3148,7 @@ mod tests {
         assert_eq!(state_of(&entries, "A2"), Some("unlearned"));
 
         // The queue itself serves exactly the completed lesson's question.
-        let due = service.due_reviews(&user_id, 30).await.unwrap();
+        let due = service.due_reviews(&user_id, 30, None).await.unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].question.prompt, "A1");
     }

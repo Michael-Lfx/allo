@@ -187,6 +187,7 @@ pub struct CourseSummary {
     pub total_lessons: i64,
     pub completed_lessons: i64,
     pub updated_at: TimestampMs,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -387,6 +388,7 @@ pub struct QuestionEntry {
     pub lapse_count: i64,
     pub last_reviewed_at: Option<TimestampMs>,
     pub updated_at: TimestampMs,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -423,6 +425,18 @@ pub struct ConceptRef {
     pub concept_id: LearningConceptId,
     pub title: String,
     pub course_title: Option<String>,
+}
+
+/// Replaces the tag set of a course or question. Unknown tag names are
+/// created automatically; names are trimmed, empty values dropped and
+/// duplicates collapsed before storing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetTagsRequest {
+    pub tags: Vec<String>,
+    /// For courses only: also append every tag of the final set to each
+    /// question under the course, keeping the questions' existing tags.
+    #[serde(default)]
+    pub apply_to_children: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

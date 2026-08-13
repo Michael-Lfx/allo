@@ -24,6 +24,7 @@ export interface CourseSummary {
   total_lessons: number;
   completed_lessons: number;
   updated_at: number;
+  tags: string[];
 }
 
 export interface Activity {
@@ -155,6 +156,7 @@ export interface QuestionEntry {
   lapse_count: number;
   last_reviewed_at: number | null;
   updated_at: number;
+  tags: string[];
 }
 
 export interface UpdateQuestionRequest {
@@ -177,4 +179,9 @@ export interface ConceptRef {
   concept_id: string;
   title: string;
   course_title: string | null;
+}
+
+export interface SetTagsRequest {
+  tags: string[];
+  apply_to_children?: boolean;
 }

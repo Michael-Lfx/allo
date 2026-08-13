@@ -101,10 +101,14 @@ function statusLabel(status: LessonStatus, t: Translate): string {
 function CourseCard({
   course,
   onOpen,
+  onReview,
+  onEditTags,
   onDelete,
 }: {
   course: CourseSummary;
   onOpen: (id: string) => void;
+  onReview: (id: string) => void;
+  onEditTags: () => void;
   onDelete: () => void;
 }) {
   const { t } = useTranslation();
@@ -128,6 +132,22 @@ function CourseCard({
       }
     >
       <div className='flex h-full flex-col gap-14px'>
+        <div className='flex flex-wrap items-center gap-4px'>
+          {course.tags.length > 0 ? (
+            course.tags.map((tag) => (
+              <Tag key={tag} size='small' color='arcoblue'>
+                {tag}
+              </Tag>
+            ))
+          ) : (
+            <Text type='secondary' className='text-12px'>
+              {t('learning.tagsEmpty')}
+            </Text>
+          )}
+          <Button size='mini' type='text' className='ml-auto' onClick={onEditTags}>
+            {t('learning.tagsEditCourse')}
+          </Button>
+        </div>
         <Paragraph className='m-0 text-t-secondary' ellipsis={{ rows: 3 }}>
           {course.description}
         </Paragraph>
@@ -139,12 +159,98 @@ function CourseCard({
             </span>
           </div>
           <Progress percent={percent} showText={false} size='small' />
-          <Button className='mt-14px w-full' type='primary' onClick={() => onOpen(course.id)}>
-            {course.enrolled ? t('learning.continue') : t('learning.open')}
-          </Button>
+          <div className='mt-14px flex gap-8px'>
+            <Button className='flex-1' type='primary' onClick={() => onOpen(course.id)}>
+              {course.enrolled ? t('learning.continue') : t('learning.open')}
+            </Button>
+            {course.enrolled && (
+              <Button onClick={() => onReview(course.id)}>{t('learning.reviewCourse')}</Button>
+            )}
+          </div>
         </div>
       </div>
     </Card>
+  );
+}
+
+function TagEditorModal({
+  title,
+  initialTags,
+  allTags,
+  busy,
+  showApplyToChildren,
+  onConfirm,
+  onClose,
+}: {
+  title: string;
+  initialTags: string[];
+  allTags: string[];
+  busy: boolean;
+  showApplyToChildren?: boolean;
+  onConfirm: (tags: string[], applyToChildren: boolean) => void;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const [tags, setTags] = useState<string[]>(initialTags);
+  const [newTag, setNewTag] = useState('');
+  const [applyToChildren, setApplyToChildren] = useState(false);
+  useEffect(() => {
+    setTags(initialTags);
+    setNewTag('');
+    setApplyToChildren(false);
+  }, [initialTags]);
+  const addNewTag = () => {
+    const name = newTag.trim();
+    if (name === '') return;
+    setTags((current) => (current.includes(name) ? current : [...current, name]));
+    setNewTag('');
+  };
+  const known = allTags.filter((tag) => !tags.includes(tag));
+  return (
+    <Modal
+      title={title}
+      visible
+      style={{ width: 480 }}
+      confirmLoading={busy}
+      okText={t('learning.tagsSave')}
+      onCancel={() => {
+        if (!busy) onClose();
+      }}
+      onOk={() => onConfirm(tags, applyToChildren)}
+    >
+      <div className='flex flex-col gap-14px'>
+        <div>
+          <div className='mb-6px text-13px'>{t('learning.tagsLabel')}</div>
+          <Select
+            mode='multiple'
+            className='w-full'
+            value={tags}
+            placeholder={t('learning.tagsPlaceholder')}
+            onChange={(value: string[]) => setTags(value)}
+          >
+            {known.map((tag) => (
+              <Select.Option key={tag} value={tag}>
+                {tag}
+              </Select.Option>
+            ))}
+          </Select>
+        </div>
+        <div>
+          <div className='mb-6px text-13px'>{t('learning.tagsNewLabel')}</div>
+          <Input.Search
+            value={newTag}
+            placeholder={t('learning.tagsNewPlaceholder')}
+            onChange={setNewTag}
+            onSearch={addNewTag}
+          />
+        </div>
+        {showApplyToChildren && (
+          <Checkbox checked={applyToChildren} onChange={setApplyToChildren}>
+            {t('learning.tagsApplyToChildren')}
+          </Checkbox>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -639,7 +745,7 @@ function questionStateMeta(
   return { label: t('learning.questionStateScheduled'), color: 'green' };
 }
 
-const QUESTION_SELECTABLE_COLUMNS = ['source', 'state', 'due_at'];
+const QUESTION_SELECTABLE_COLUMNS = ['source', 'state', 'due_at', 'tags'];
 const QUESTION_COLUMNS_STORAGE_KEY = 'learning.questionTableColumns';
 
 function loadVisibleQuestionColumns(): string[] {
@@ -856,7 +962,13 @@ function QuestionCreateDialog({
   );
 }
 
-function QuestionManager({ onMutated }: { onMutated: () => void }) {
+function QuestionManager({
+  onMutated,
+  onEditTags,
+}: {
+  onMutated: () => void;
+  onEditTags: (entry: QuestionEntry) => void;
+}) {
   const { t } = useTranslation();
   const [entries, setEntries] = useState<QuestionEntry[]>([]);
   const [courses, setCourses] = useState<CourseSummary[]>([]);
@@ -984,6 +1096,32 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
     sorter: (a: QuestionEntry, b: QuestionEntry) => (a.due_at ?? 0) - (b.due_at ?? 0),
     render: (value: number | null) => formatReviewTime(value),
   };
+  const tagsColumn = {
+    title: t('learning.questionTags'),
+    dataIndex: 'tags',
+    width: 200,
+    render: (_value: unknown, entry: QuestionEntry) => (
+      <div
+        className='flex flex-wrap items-center gap-4px'
+        onClick={(event) => event.stopPropagation()}
+      >
+        {entry.tags.length === 0 ? (
+          <Text type='secondary' className='text-12px'>
+            {t('learning.tagsEmpty')}
+          </Text>
+        ) : (
+          entry.tags.map((tag) => (
+            <Tag key={tag} size='small'>
+              {tag}
+            </Tag>
+          ))
+        )}
+        <Button size='mini' type='text' onClick={() => onEditTags(entry)}>
+          {t('learning.questionTagsEdit')}
+        </Button>
+      </div>
+    ),
+  };
   const actionsColumn = {
     title: t('learning.questionActions'),
     width: 130,
@@ -1019,6 +1157,7 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
     ...(visibleColumns.includes('source') ? [sourceColumn] : []),
     ...(visibleColumns.includes('state') ? [stateColumn] : []),
     ...(visibleColumns.includes('due_at') ? [dueColumn] : []),
+    ...(visibleColumns.includes('tags') ? [tagsColumn] : []),
     actionsColumn,
   ];
   return (
@@ -1072,7 +1211,9 @@ function QuestionManager({ onMutated }: { onMutated: () => void }) {
                           ? t('learning.questionSource')
                           : key === 'state'
                             ? t('learning.questionState')
-                            : t('learning.questionDueAt')}
+                            : key === 'due_at'
+                              ? t('learning.questionDueAt')
+                              : t('learning.questionTags')}
                       </Checkbox>
                     ))}
                   </div>
@@ -1790,6 +1931,11 @@ const LearningPage: React.FC = () => {
   const [diagnosticPlan, setDiagnosticPlan] = useState<DiagnosticPlan | null>(null);
   const [diagnosticIndex, setDiagnosticIndex] = useState(0);
   const [diagnosticResult, setDiagnosticResult] = useState<AttemptResult>();
+  const [tagEditor, setTagEditor] = useState<{
+    kind: 'course' | 'question';
+    target: CourseSummary | QuestionEntry;
+  } | null>(null);
+  const [allTags, setAllTags] = useState<string[]>([]);
   const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   const [diagnosticLimit] = useConfig('learning.diagnosticLimit');
 
@@ -2041,6 +2187,69 @@ const LearningPage: React.FC = () => {
     }
   }, [reviewSessionLimit, t]);
 
+  const startCourseReviewSession = useCallback(async (courseId: string) => {
+    setBusyId('review-session');
+    try {
+      // 课程复习专注本课程全部已入队卡片，不限于到期项，因此使用更大的队列上限
+      const fresh = await learningApi.listDueReviews(100, courseId);
+      if (fresh.length === 0) {
+        Message.info(t('learning.noCourseReviews'));
+        return;
+      }
+      setSessionQueue(fresh);
+      setSessionOpen(true);
+    } catch (sessionError) {
+      Message.error(
+        sessionError instanceof Error ? sessionError.message : t('learning.actionFailed')
+      );
+    } finally {
+      setBusyId(null);
+    }
+  }, [t]);
+
+  const openTagEditor = useCallback(
+    async (kind: 'course' | 'question', target: CourseSummary | QuestionEntry) => {
+      setTagEditor({ kind, target });
+      try {
+        setAllTags(await learningApi.listTags());
+      } catch {
+        setAllTags([]);
+      }
+    },
+    []
+  );
+
+  const saveTags = useCallback(
+    async (tags: string[], applyToChildren: boolean) => {
+      if (!tagEditor) return;
+      setBusyId('tag-editor');
+      try {
+        if (tagEditor.kind === 'course') {
+          await learningApi.setCourseTags((tagEditor.target as CourseSummary).id, {
+            tags,
+            apply_to_children: applyToChildren,
+          });
+        } else {
+          const entry = tagEditor.target as QuestionEntry;
+          await learningApi.setQuestionTags(
+            { source: entry.source, question_id: entry.question_id },
+            tags
+          );
+        }
+        Message.success(t('learning.tagsSaved'));
+        setTagEditor(null);
+        await load();
+      } catch (actionError) {
+        Message.error(
+          actionError instanceof Error ? actionError.message : t('learning.actionFailed')
+        );
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load, t, tagEditor]
+  );
+
   const answerReview = useCallback(
     async (review: DueReview, response: unknown): Promise<ReviewAnswerResult | undefined> => {
       setBusyId(review.id);
@@ -2078,10 +2287,12 @@ const LearningPage: React.FC = () => {
           key={course.id}
           course={course}
           onOpen={(courseId) => navigate(`/learn/${courseId}`)}
+          onReview={(courseId) => void startCourseReviewSession(courseId)}
+          onEditTags={() => void openTagEditor('course', course)}
           onDelete={() => setDeletingCourse(course)}
         />
       )),
-    [courses, navigate]
+    [courses, navigate, openTagEditor, startCourseReviewSession]
   );
   const diagnosticActivityId = diagnosticPlan?.items[diagnosticIndex]?.activity.id;
 
@@ -2183,7 +2394,10 @@ const LearningPage: React.FC = () => {
             title={t('learning.questionManagement')}
             destroyOnHide={false}
           >
-            <QuestionManager onMutated={() => void load()} />
+            <QuestionManager
+              onMutated={() => void load()}
+              onEditTags={(entry) => void openTagEditor('question', entry)}
+            />
           </Tabs.TabPane>
         </Tabs>
       </section>
@@ -2211,6 +2425,25 @@ const LearningPage: React.FC = () => {
             setDeletingCourse(null);
             void load();
           }}
+        />
+      )}
+
+      {tagEditor !== null && (
+        <TagEditorModal
+          key={`${tagEditor.kind}:${tagEditor.kind === 'course' ? (tagEditor.target as CourseSummary).id : (tagEditor.target as QuestionEntry).question_id}`}
+          title={
+            tagEditor.kind === 'course'
+              ? t('learning.tagsEditCourseTitle', {
+                  title: (tagEditor.target as CourseSummary).title,
+                })
+              : t('learning.tagsEditQuestionTitle')
+          }
+          initialTags={tagEditor.target.tags}
+          allTags={allTags}
+          busy={busyId === 'tag-editor'}
+          showApplyToChildren={tagEditor.kind === 'course'}
+          onConfirm={(tags, applyToChildren) => void saveTags(tags, applyToChildren)}
+          onClose={() => setTagEditor(null)}
         />
       )}
 

@@ -13,8 +13,8 @@ use serde::Deserialize;
 
 use crate::models::{
     AnswerReviewRequest, CoursePack, CreateCustomQuestionRequest, DeleteCourseRequest,
-    GenerateCourseRequest, RateReviewRequest, SubmitAttemptRequest, UpdateLessonProgressRequest,
-    UpdateQuestionRequest,
+    GenerateCourseRequest, RateReviewRequest, SetTagsRequest, SubmitAttemptRequest,
+    UpdateLessonProgressRequest, UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -27,6 +27,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route("/api/learning/courses/generate", post(generate_course))
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
+        .route("/api/learning/courses/{id}/tags", put(set_course_tags))
         .route("/api/learning/courses/{id}/enroll", post(enroll))
         .route(
             "/api/learning/courses/{id}/diagnostic",
@@ -41,6 +42,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             post(submit_attempt),
         )
         .route("/api/learning/reviews/due", get(due_reviews))
+        .route("/api/learning/tags", get(list_tags))
         .route("/api/learning/reviews/{id}/answer", post(answer_review))
         .route("/api/learning/reviews/{id}/rate", post(rate_review))
         .route("/api/learning/reviews/{id}/skip", post(skip_review))
@@ -51,12 +53,20 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             put(update_question),
         )
         .route(
+            "/api/learning/questions/{activity_id}/tags",
+            put(set_question_tags),
+        )
+        .route(
             "/api/learning/custom-questions",
             post(create_custom_question),
         )
         .route(
             "/api/learning/custom-questions/{id}",
             put(update_custom_question).delete(delete_custom_question),
+        )
+        .route(
+            "/api/learning/custom-questions/{id}/tags",
+            put(set_custom_question_tags),
         )
         .route(
             "/api/learning/custom-questions/{id}/answer",
@@ -184,6 +194,7 @@ async fn submit_attempt(
 struct DueReviewQuery {
     #[serde(default = "default_review_limit")]
     limit: i64,
+    course_id: Option<String>,
 }
 
 const fn default_review_limit() -> i64 {
@@ -195,8 +206,15 @@ async fn due_reviews(
     Extension(user): Extension<CurrentUser>,
     Query(query): Query<DueReviewQuery>,
 ) -> Result<Json<ApiResponse<Vec<crate::models::DueReview>>>, AppError> {
+    let course_id = match query.course_id {
+        Some(value) => Some(parse_id::<LearningCourseId>(value)?),
+        None => None,
+    };
     Ok(Json(ApiResponse::ok(
-        state.service.due_reviews(&user.id, query.limit).await?,
+        state
+            .service
+            .due_reviews(&user.id, query.limit, course_id.as_ref())
+            .await?,
     )))
 }
 
@@ -306,6 +324,53 @@ async fn delete_review_item(
     let id = parse_id::<LearningReviewItemId>(id)?;
     state.service.delete_review_item(&id, &user.id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+async fn list_tags(
+    State(state): State<LearningRouterState>,
+) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.list_tags().await?)))
+}
+
+async fn set_course_tags(
+    State(state): State<LearningRouterState>,
+    Path(id): Path<String>,
+    Json(request): Json<SetTagsRequest>,
+) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.set_course_tags(&id, request).await?,
+    )))
+}
+
+async fn set_question_tags(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<SetTagsRequest>,
+) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
+    let id = parse_id::<LearningActivityId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .set_question_tags(&id, &user.id, request.tags)
+            .await?,
+    )))
+}
+
+async fn set_custom_question_tags(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<SetTagsRequest>,
+) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .set_custom_question_tags(id.as_str(), &user.id, request.tags)
+            .await?,
+    )))
 }
 
 async fn create_custom_question(

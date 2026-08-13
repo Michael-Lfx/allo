@@ -14,6 +14,7 @@ import type {
   ReviewRating,
   ReviewResult,
   ReviewSource,
+  SetTagsRequest,
   UpdateQuestionRequest,
 } from './types';
 
@@ -44,8 +45,29 @@ export const learningApi = {
     httpRequest<AttemptResult>('POST', `${BASE}/activities/${encodeURIComponent(id)}/attempts`, {
       response,
     }),
-  listDueReviews: (limit = 30) =>
-    httpRequest<DueReview[]>('GET', `${BASE}/reviews/due?limit=${limit}`),
+  listDueReviews: (limit = 30, courseId?: string) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (courseId) query.set('course_id', courseId);
+    return httpRequest<DueReview[]>('GET', `${BASE}/reviews/due?${query.toString()}`);
+  },
+  listTags: () => httpRequest<string[]>('GET', `${BASE}/tags`),
+  setCourseTags: (id: string, request: SetTagsRequest) =>
+    httpRequest<string[]>('PUT', `${BASE}/courses/${encodeURIComponent(id)}/tags`, request),
+  setQuestionTags: (
+    entry: Pick<QuestionEntry, 'source' | 'question_id'>,
+    tags: string[]
+  ) =>
+    entry.source === 'custom'
+      ? httpRequest<string[]>(
+          'PUT',
+          `${BASE}/custom-questions/${encodeURIComponent(entry.question_id)}/tags`,
+          { tags }
+        )
+      : httpRequest<string[]>(
+          'PUT',
+          `${BASE}/questions/${encodeURIComponent(entry.question_id)}/tags`,
+          { tags }
+        ),
   answerReview: (source: ReviewSource, id: string, response: unknown, forgot = false) =>
     httpRequest<ReviewAnswerResult>('POST', `${reviewBase(source, id)}/answer`, {
       response,
