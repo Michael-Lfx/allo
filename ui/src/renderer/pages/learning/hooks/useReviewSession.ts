@@ -32,7 +32,13 @@ export function useReviewSession({
     async (review: DueReview, response: unknown): Promise<ReviewAnswerResult | undefined> => {
       setBusyId(review.id);
       try {
-        return await learningApi.answerReview(review.source, review.id, response);
+        return await learningApi.answerReview(
+          review.source,
+          review.id,
+          response,
+          false,
+          review.question.activity_id
+        );
       } catch (actionError) {
         Message.error(errorMessage(t, actionError));
         return undefined;
@@ -47,7 +53,13 @@ export function useReviewSession({
     async (review: DueReview): Promise<ReviewAnswerResult | undefined> => {
       setBusyId(review.id);
       try {
-        return await learningApi.answerReview(review.source, review.id, null, true);
+        return await learningApi.answerReview(
+          review.source,
+          review.id,
+          null,
+          true,
+          review.question.activity_id
+        );
       } catch (actionError) {
         Message.error(errorMessage(t, actionError));
         return undefined;

@@ -1284,41 +1284,51 @@ impl LearningService {
             let review_count: i64 = row.try_get("review_count").map_err(internal)?;
             // Reviews are question-based: items whose concept has no studied
             // objective activity are skipped instead of shown without a prompt.
+            // Every studied objective question of the concept becomes its own
+            // card (same review item id), so fill-in-the-blank questions show
+            // up in the queue alongside choice questions instead of hiding
+            // behind the position-based rotation.
             let questions = self
                 .concept_objective_questions(&concept_id, &enrollment_id)
                 .await?;
-            let Some(question) = pick_review_question(&questions, review_count) else {
+            if questions.is_empty() {
                 continue;
-            };
-            let hierarchy = self.activity_hierarchy(&question.lesson_id).await?;
+            }
             let course_id: Option<String> = row.try_get("course_id").map_err(internal)?;
             let course_title: Option<String> = row.try_get("course_title").map_err(internal)?;
             let concept_title: String = row.try_get("concept_title").map_err(internal)?;
-            reviews.push(DueReview {
-                id: review_id,
-                source: ReviewSource::Course,
-                enrollment_id: Some(enrollment_id),
-                course_id: match course_id {
-                    Some(value) => Some(parse_id(value)?),
-                    None => None,
-                },
-                course_title,
-                module_title: Some(hierarchy.module_title),
-                lesson_title: Some(hierarchy.lesson_title),
-                concept_id: Some(parse_id(concept_id.clone())?),
-                concept_title: Some(concept_title),
-                question: ReviewQuestion {
-                    activity_id: Some(question.activity_id.clone()),
-                    kind: question.kind,
-                    prompt: question.prompt.clone(),
-                    options: question.config.options.clone(),
-                },
-                due_at: row.try_get("due_at").map_err(internal)?,
-                stability_days: row.try_get("stability_days").map_err(internal)?,
-                difficulty: row.try_get("difficulty").map_err(internal)?,
-                review_count,
-                lapse_count: row.try_get("lapse_count").map_err(internal)?,
-            });
+            let due_at: i64 = row.try_get("due_at").map_err(internal)?;
+            let stability_days: f64 = row.try_get("stability_days").map_err(internal)?;
+            let difficulty: f64 = row.try_get("difficulty").map_err(internal)?;
+            let lapse_count: i64 = row.try_get("lapse_count").map_err(internal)?;
+            for question in questions {
+                let hierarchy = self.activity_hierarchy(&question.lesson_id).await?;
+                reviews.push(DueReview {
+                    id: review_id.clone(),
+                    source: ReviewSource::Course,
+                    enrollment_id: Some(enrollment_id.clone()),
+                    course_id: match &course_id {
+                        Some(value) => Some(parse_id(value.clone())?),
+                        None => None,
+                    },
+                    course_title: course_title.clone(),
+                    module_title: Some(hierarchy.module_title),
+                    lesson_title: Some(hierarchy.lesson_title),
+                    concept_id: Some(parse_id(concept_id.clone())?),
+                    concept_title: Some(concept_title.clone()),
+                    question: ReviewQuestion {
+                        activity_id: Some(question.activity_id.clone()),
+                        kind: question.kind,
+                        prompt: question.prompt.clone(),
+                        options: question.config.options.clone(),
+                    },
+                    due_at,
+                    stability_days,
+                    difficulty,
+                    review_count,
+                    lapse_count,
+                });
+            }
         }
         // Learner-authored custom questions carry their own schedule and join
         // the same queue without any course context. They are excluded when
@@ -2543,13 +2553,16 @@ impl LearningService {
     /// Answers the question attached to a due review. A wrong answer (or an
     /// admitted lapse via `forgot`) is immediately rated `again` (scheduling +
     /// mastery updated); a correct answer only records the attempt and waits
-    /// for a self-rating via `rate_review`.
+    /// for a self-rating via `rate_review`. The `activity_id` identifies the
+    /// exact card of the expanded queue; without one the rotation order is
+    /// used so legacy clients keep working.
     pub async fn answer_review(
         &self,
         review_id: &LearningReviewItemId,
         user_id: &UserId,
         response: Value,
         forgot: bool,
+        activity_id: Option<&LearningActivityId>,
     ) -> Result<ReviewAnswerResult, AppError> {
         let row = sqlx::query(
             "SELECT r.enrollment_id, r.concept_id, r.review_count \
@@ -2567,13 +2580,14 @@ impl LearningService {
             parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
         let concept_id: String = row.try_get("concept_id").map_err(internal)?;
         let review_count: i64 = row.try_get("review_count").map_err(internal)?;
-        // Same rotation as `due_reviews` so the answered question matches the
-        // one the client displayed.
         let questions = self
             .concept_objective_questions(&concept_id, &enrollment_id)
             .await?;
-        let question = pick_review_question(&questions, review_count)
-            .ok_or_else(|| AppError::NotFound(format!("objective question for concept {concept_id}")))?;
+        let question = match activity_id {
+            Some(activity_id) => questions.iter().find(|q| &q.activity_id == activity_id),
+            None => pick_review_question(&questions, review_count),
+        }
+        .ok_or_else(|| AppError::NotFound(format!("objective question for concept {concept_id}")))?;
         // `forgot` skips grading entirely: learners must never be forced to
         // guess, so the lapse is recorded with the revealed answer instead.
         let (score, feedback, correct) = if forgot {
@@ -4546,6 +4560,103 @@ mod tests {
                 .any(|entry| entry.question_kind == Some(ActivityKind::FillInBlank)),
             "fill-in-the-blank activity must appear in the question manager"
         );
+    }
+
+    #[tokio::test]
+    async fn review_queue_expands_all_objective_questions_of_a_concept() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let pack = CoursePack {
+            title: "Mixed".into(),
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            concepts: vec![ConceptPack {
+                key: "vector".into(),
+                title: "Vector".into(),
+                description: String::new(),
+                prerequisites: Vec::new(),
+            }],
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "Vectors".into(),
+                    summary: String::new(),
+                    estimated_minutes: 10,
+                    source: None,
+                    concepts: vec!["vector".into()],
+                    activities: vec![
+                        ActivityPack {
+                            kind: ActivityKind::SingleChoice,
+                            prompt: "Which term names the size of a vector?".into(),
+                            options: vec![
+                                "magnitude".into(),
+                                "speed".into(),
+                                "velocity".into(),
+                            ],
+                            answer: json!("magnitude"),
+                            explanation: String::new(),
+                            concepts: vec!["vector".into()],
+                            distractors: Vec::new(),
+                        },
+                        ActivityPack {
+                            kind: ActivityKind::FillInBlank,
+                            prompt: "A vector has ___ and direction.".into(),
+                            options: Vec::new(),
+                            answer: json!(["magnitude"]),
+                            explanation: String::new(),
+                            concepts: vec!["vector".into()],
+                            distractors: vec!["length".into()],
+                        },
+                    ],
+                }],
+            }],
+        };
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let lesson_id = detail.modules[0].lessons[0].id.clone();
+        service
+            .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        // Both objective questions share one review item and both appear as
+        // cards in the queue right away: the blank no longer hides behind the
+        // position-based rotation.
+        let due = service
+            .due_reviews(&user_id, 30, &[], true, false, &[])
+            .await
+            .unwrap();
+        assert_eq!(due.len(), 2);
+        assert_eq!(due[0].id, due[1].id);
+        assert!(due.iter().any(|card| card.question.kind == ActivityKind::SingleChoice));
+        assert!(due.iter().any(|card| card.question.kind == ActivityKind::FillInBlank));
+        // The answer is graded against the exact card that was displayed,
+        // identified by its activity id.
+        let blank = due
+            .iter()
+            .find(|card| card.question.kind == ActivityKind::FillInBlank)
+            .unwrap();
+        let result = service
+            .answer_review(
+                &blank.id,
+                &user_id,
+                Value::String("Magnitude".into()),
+                false,
+                blank.question.activity_id.as_ref(),
+            )
+            .await
+            .unwrap();
+        assert!(result.correct);
     }
 
     #[tokio::test]

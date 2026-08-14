@@ -389,6 +389,12 @@ pub struct AnswerReviewRequest {
     /// the item is rated `again` and the correct answer is returned.
     #[serde(default)]
     pub forgot: bool,
+    /// The activity of the displayed card. The review queue serves every
+    /// studied objective question of a concept as its own card, so the
+    /// answer must identify which question was answered; when absent the
+    /// server falls back to the rotation order (legacy clients).
+    #[serde(default)]
+    pub activity_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

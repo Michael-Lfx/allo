@@ -88,10 +88,18 @@ export const learningApi = {
           `${BASE}/questions/${encodeURIComponent(entry.question_id)}/tags`,
           { tags }
         ),
-  answerReview: (source: ReviewSource, id: string, response: unknown, forgot = false) =>
+  answerReview: (
+    source: ReviewSource,
+    id: string,
+    response: unknown,
+    forgot = false,
+    activityId?: string | null
+  ) =>
     httpRequest<ReviewAnswerResult>('POST', `${reviewBase(source, id)}/answer`, {
       response,
       forgot,
+      // Course cards identify the exact question of the expanded queue.
+      ...(activityId ? { activity_id: activityId } : {}),
     }),
   rateReview: (source: ReviewSource, id: string, rating: ReviewRating) =>
     httpRequest<ReviewResult>('POST', `${reviewBase(source, id)}/rate`, { rating }),
