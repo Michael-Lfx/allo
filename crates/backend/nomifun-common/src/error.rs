@@ -34,6 +34,14 @@ pub enum AppError {
     #[error("Rate limited")]
     RateLimited,
 
+    /// The email OTP was well-formed but did not match the active session.
+    ///
+    /// This is intentionally stable so clients can clear the local code and
+    /// keep the pending session instead of treating the response as a
+    /// transport or server failure.
+    #[error("Verification code is invalid")]
+    CloudOtpInvalidCode,
+
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -79,6 +87,7 @@ impl AppError {
             Self::ProviderInUse(_) => StatusCode::CONFLICT,
             Self::ProviderUnavailable(_) => StatusCode::BAD_REQUEST,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::CloudOtpInvalidCode => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::BadGateway(_) => StatusCode::BAD_GATEWAY,
             Self::Timeout(_) => StatusCode::BAD_GATEWAY,
@@ -105,6 +114,7 @@ impl AppError {
             Self::ProviderInUse(_) => "PROVIDER_IN_USE",
             Self::ProviderUnavailable(_) => "PROVIDER_UNAVAILABLE",
             Self::RateLimited => "RATE_LIMITED",
+            Self::CloudOtpInvalidCode => "CLOUD_OTP_INVALID_CODE",
             Self::Internal(_) => "INTERNAL_ERROR",
             Self::BadGateway(_) => "BAD_GATEWAY",
             Self::Timeout(_) => "TIMEOUT",
@@ -234,6 +244,7 @@ mod tests {
         assert_eq!(AppError::Forbidden("x".into()).status_code(), StatusCode::FORBIDDEN);
         assert_eq!(AppError::Conflict("x".into()).status_code(), StatusCode::CONFLICT);
         assert_eq!(AppError::RateLimited.status_code(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(AppError::CloudOtpInvalidCode.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(
             AppError::Internal("x".into()).status_code(),
             StatusCode::INTERNAL_SERVER_ERROR
@@ -266,6 +277,7 @@ mod tests {
         );
         assert_eq!(AppError::Conflict("x".into()).error_code(), "CONFLICT");
         assert_eq!(AppError::RateLimited.error_code(), "RATE_LIMITED");
+        assert_eq!(AppError::CloudOtpInvalidCode.error_code(), "CLOUD_OTP_INVALID_CODE");
         assert_eq!(AppError::Internal("x".into()).error_code(), "INTERNAL_ERROR");
         assert_eq!(AppError::BadGateway("x".into()).error_code(), "BAD_GATEWAY");
         assert_eq!(AppError::Timeout("x".into()).error_code(), "TIMEOUT");
@@ -287,6 +299,7 @@ mod tests {
     fn test_error_display() {
         assert_eq!(AppError::NotFound("user 123".into()).to_string(), "Not found: user 123");
         assert_eq!(AppError::RateLimited.to_string(), "Rate limited");
+        assert_eq!(AppError::CloudOtpInvalidCode.to_string(), "Verification code is invalid");
     }
 
     #[test]
@@ -320,6 +333,19 @@ mod tests {
         assert_eq!(json["error"], "Rate limited");
         assert_eq!(json["code"], "RATE_LIMITED");
         assert!(json.get("details").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_cloud_otp_response_body_is_stable() {
+        let resp = AppError::CloudOtpInvalidCode.into_response();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["success"], false);
+        assert_eq!(json["code"], "CLOUD_OTP_INVALID_CODE");
+        assert_eq!(json["error"], "Verification code is invalid");
     }
 
     #[tokio::test]

@@ -11,6 +11,10 @@ describe('cloud authentication model-environment contract', () => {
     expect(text.includes('restoreModelEnvironment')).toBe(true);
     expect(text.includes('modelProfile.resolve.invoke')).toBe(true);
     expect(text.includes("setModelStatus('failed')")).toBe(true);
+    expect(text.includes("Promise<CloudAuthRefreshResult>")).toBe(true);
+    expect(text.includes("'authenticated' : 'stale'")).toBe(true);
+    expect(text.includes("return 'offline'")).toBe(true);
+    expect(text.includes("return 'stale'")).toBe(true);
   });
 
   test('clears catalog caches across unauthenticated transitions and exposes retry', () => {

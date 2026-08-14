@@ -1,6 +1,8 @@
 {
   "pageTitle": "Flowy - 登录",
   "brand": "Flowy",
+  "brandTagline": "让受信设备成为工作的起点。",
+  "brandFlow": "设备 → 工作区 → 结果",
   "welcomeTitle": "登录 WebUI",
   "subtitle": "使用本机账号进入局域网控制台",
   "setupTitle": "创建管理员",

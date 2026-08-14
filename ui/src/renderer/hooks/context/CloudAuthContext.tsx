@@ -33,6 +33,7 @@ export type CloudAuthState =
  * to login or clear local model state.
  */
 export type CloudAuthStatus = 'checking' | 'authenticated' | 'unauthenticated';
+export type CloudAuthRefreshResult = 'authenticated' | 'unauthenticated' | 'offline' | 'stale';
 export type CloudModelStatus = 'idle' | 'restoring' | 'ready' | 'degraded' | 'failed';
 
 export type ModelEnvironmentState = {
@@ -53,7 +54,7 @@ interface CloudAuthContextValue {
   /** @deprecated Use modelEnvironment. Kept for existing selectors during migration. */
   modelStatus: CloudModelStatus;
   modelError: Error | null;
-  refresh: (options?: { forceModelSync?: boolean }) => Promise<void>;
+  refresh: (options?: { forceModelSync?: boolean }) => Promise<CloudAuthRefreshResult>;
   retryModelEnvironment: () => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -226,12 +227,12 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
   );
 
   const refresh = useCallback(
-    async (options: { forceModelSync?: boolean } = {}): Promise<void> => {
+    async (options: { forceModelSync?: boolean } = {}): Promise<CloudAuthRefreshResult> => {
       const { runId, controller } = beginRun();
       const forceModelSync = options.forceModelSync === true;
       if (!localReady || localStatus !== 'authenticated') {
         await clearAvailableModelsCache();
-        if (!isCurrentRun(runId, controller)) return;
+        if (!isCurrentRun(runId, controller)) return 'stale';
         setAuthState({ phase: 'unauthenticated' });
         setWhoami(null);
         accountIdRef.current = undefined;
@@ -239,25 +240,25 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
         setModelEnvironment({ phase: 'degraded', reason: 'empty_catalog', usableModelCount: 0, canRetry: false });
         setModelError(null);
         setReady(localReady);
-        return;
+        return 'unauthenticated';
       }
 
-      if (!isCurrentRun(runId, controller)) return;
+      if (!isCurrentRun(runId, controller)) return 'stale';
       setAuthState({ phase: 'unknown' });
 
       try {
         const profile = await ipcBridge.cloud.whoami.invoke();
-        if (!isCurrentRun(runId, controller)) return;
+        if (!isCurrentRun(runId, controller)) return 'stale';
         if (!profile.authenticated) {
           await clearAvailableModelsCache();
-          if (!isCurrentRun(runId, controller)) return;
+          if (!isCurrentRun(runId, controller)) return 'stale';
           setAuthState({ phase: 'unauthenticated' });
           setWhoami(null);
           accountIdRef.current = undefined;
           setModelStatus('idle');
           setModelEnvironment({ phase: 'degraded', reason: 'empty_catalog', usableModelCount: 0, canRetry: false });
           setModelError(null);
-          return;
+          return 'unauthenticated';
         }
 
         const accountId = accountIdForProfile(profile);
@@ -268,32 +269,35 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
         setProviderCatalogContext(accountId, storageGeneration);
         if (accountChanged || generationChanged) {
           await clearAvailableModelsCache();
-          if (!isCurrentRun(runId, controller)) return;
+          if (!isCurrentRun(runId, controller)) return 'stale';
         }
         accountIdRef.current = accountId;
         storageGenerationRef.current = storageGeneration;
         setWhoami(profile);
         setAuthState({ phase: 'authenticated', accountId });
         await restoreModelEnvironmentForRun(runId, controller, accountId, forceModelSync);
+        return isCurrentRun(runId, controller) ? 'authenticated' : 'stale';
       } catch (error) {
-        if (!isCurrentRun(runId, controller)) return;
+        if (!isCurrentRun(runId, controller)) return 'stale';
         console.error('Failed to fetch cloud auth status:', error);
         const previousAccountId = accountIdRef.current;
         if (isInvalidCloudSessionError(error)) {
           await clearAvailableModelsCache();
-          if (!isCurrentRun(runId, controller)) return;
+          if (!isCurrentRun(runId, controller)) return 'stale';
           setAuthState({ phase: 'unauthenticated' });
           setWhoami(null);
           accountIdRef.current = undefined;
           setModelStatus('idle');
           setModelEnvironment({ phase: 'degraded', reason: 'empty_catalog', usableModelCount: 0, canRetry: false });
           setModelError(null);
+          return 'unauthenticated';
         } else {
           const reason = offlineReasonForError(error);
           setAuthState({ phase: 'offline', previousAccountId, reason });
           // Keep the last confirmed profile and model environment. A network
           // outage must not turn a usable local catalog into a login reset.
           setModelError(normalizeError(error));
+          return 'offline';
         }
       } finally {
         if (isCurrentRun(runId, controller)) setReady(true);
