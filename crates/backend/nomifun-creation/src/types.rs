@@ -157,7 +157,7 @@ impl From<nomifun_model_invoke::InvokeError> for CreationError {
             K::UnsupportedTask => "unsupported_capability",
             K::InvalidParams => "invalid_params",
             K::Timeout => "timeout",
-            K::Config | K::MissingConnection => "config",
+            K::Config | K::MissingConnection | K::ManagedFreeModelsDisabled => "config",
             K::NoAdapter => "adapter_unavailable",
             K::Auth
             | K::ProviderError

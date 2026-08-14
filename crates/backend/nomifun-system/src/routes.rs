@@ -3,6 +3,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, patch, post};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use nomifun_api_types::{
@@ -366,7 +367,13 @@ fn managed_service(
     state: &SystemRouterState,
 ) -> Result<std::sync::Arc<ManagedModelService>, AppError> {
     state.managed_model_service.clone().ok_or_else(|| {
-        AppError::ProviderUnavailable("managed model service is not available in this process".into())
+        if nomifun_common::free_models_enabled() {
+            AppError::ProviderUnavailable("managed model service is not available in this process".into())
+        } else {
+            AppError::ManagedFreeModelsDisabled(
+                "managed free models are disabled for this process".into(),
+            )
+        }
     })
 }
 
@@ -478,7 +485,24 @@ async fn set_free_model_enabled(
 async fn list_model_profiles(
     State(state): State<SystemRouterState>,
 ) -> Result<Json<ApiResponse<Vec<ModelProfile>>>, AppError> {
-    let profiles = state.model_profile_service.list().await?;
+    // Model profiles are persisted independently from the provider projection.
+    // Filter them against the active provider view so a hidden managed free
+    // provider cannot leak through the profile endpoint while its rows remain
+    // readable for history and future re-enablement.
+    let visible_provider_ids = state
+        .provider_service
+        .list()
+        .await?
+        .into_iter()
+        .map(|provider| provider.provider_id)
+        .collect::<HashSet<_>>();
+    let profiles = state
+        .model_profile_service
+        .list()
+        .await?
+        .into_iter()
+        .filter(|profile| visible_provider_ids.contains(&profile.provider_id))
+        .collect();
     Ok(Json(ApiResponse::ok(profiles)))
 }
 
@@ -582,6 +606,7 @@ async fn get_system_info(
 ) -> Result<Json<ApiResponse<SystemInfoResponse>>, AppError> {
     let mut info = crate::sysinfo::get_system_info();
     info.runtime_capabilities = state.runtime_capabilities;
+    info.managed_free_models_enabled = nomifun_common::free_models_enabled();
     info.work_dir_change = nomifun_common::work_dir_relocation::read_last_status_best_effort(
         &state.data_dir,
     )

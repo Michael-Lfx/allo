@@ -12,6 +12,7 @@ import type {
 } from '@/common/types/provider/managedModelService';
 import { MODEL_PROFILES_SWR_KEY } from '@/renderer/hooks/agent/useModelProfiles';
 import { PROVIDERS_SWR_KEY } from '@/renderer/hooks/agent/useModelProviderList';
+import { useManagedFreeModelsEnabled } from '@/renderer/hooks/agent/useManagedFreeModelsEnabled';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import useSWR, { mutate as mutateGlobal, type KeyedMutator, type SWRConfiguration } from 'swr';
 
@@ -55,9 +56,14 @@ const fetchFreeHealthSnapshot = () => ipcBridge.managedModelService.free.healthS
  * all existing model selectors immediately see enable/catalog changes.
  */
 export const useFreeModels = () => {
-  const query = useSWR<ManagedModelServiceStatus>(FREE_MODEL_SERVICE_SWR_KEY, fetchFreeStatus, STATUS_SWR_OPTIONS);
+  const { enabled } = useManagedFreeModelsEnabled();
+  const query = useSWR<ManagedModelServiceStatus>(
+    enabled ? FREE_MODEL_SERVICE_SWR_KEY : null,
+    fetchFreeStatus,
+    STATUS_SWR_OPTIONS
+  );
   const healthQuery = useSWR<ManagedModelHealthResult[]>(
-    FREE_MODEL_HEALTH_SWR_KEY,
+    enabled ? FREE_MODEL_HEALTH_SWR_KEY : null,
     fetchFreeHealthSnapshot,
     {
       revalidateOnFocus: false,
@@ -100,22 +106,29 @@ export const useFreeModels = () => {
   );
 
   const setServiceEnabled = useCallback(
-    (enabled: boolean) =>
-      runAction('service', () => ipcBridge.managedModelService.free.setEnabled.invoke({ enabled })),
-    [runAction]
+    (nextEnabled: boolean) => {
+      if (!enabled) throw new Error('Managed free models are disabled');
+      return runAction('service', () => ipcBridge.managedModelService.free.setEnabled.invoke({ enabled: nextEnabled }));
+    },
+    [enabled, runAction]
   );
 
   const refresh = useCallback(
-    () => runAction('refresh', () => ipcBridge.managedModelService.free.refresh.invoke()),
-    [runAction]
+    () => {
+      if (!enabled) throw new Error('Managed free models are disabled');
+      return runAction('refresh', () => ipcBridge.managedModelService.free.refresh.invoke());
+    },
+    [enabled, runAction]
   );
 
   const setModelEnabled = useCallback(
-    (id: string, enabled: boolean) =>
-      runAction(`model:${id}`, () =>
-        ipcBridge.managedModelService.free.setModelEnabled.invoke({ model_id: id, enabled })
-      ),
-    [runAction]
+    (id: string, nextEnabled: boolean) => {
+      if (!enabled) throw new Error('Managed free models are disabled');
+      return runAction(`model:${id}`, () =>
+        ipcBridge.managedModelService.free.setModelEnabled.invoke({ model_id: id, enabled: nextEnabled })
+      );
+    },
+    [enabled, runAction]
   );
 
   const installHealthResults = useCallback((results: ManagedModelHealthResult[]) => {
@@ -131,6 +144,7 @@ export const useFreeModels = () => {
   }, [healthQuery.data, installHealthResults]);
 
   const checkAllHealth = useCallback(async (): Promise<ManagedModelHealthBatchResult> => {
+    if (!enabled) throw new Error('Managed free models are disabled');
     if (healthCheckPendingRef.current) {
       throw new Error(`Managed model health check already in progress: ${healthCheckPendingRef.current}`);
     }
@@ -144,10 +158,11 @@ export const useFreeModels = () => {
       healthCheckPendingRef.current = null;
       setHealthCheckPending(null);
     }
-  }, [installHealthResults]);
+  }, [enabled, installHealthResults]);
 
   const checkModelHealth = useCallback(
     async (id: string): Promise<ManagedModelHealthResult> => {
+      if (!enabled) throw new Error('Managed free models are disabled');
       if (healthCheckPendingRef.current) {
         throw new Error(`Managed model health check already in progress: ${healthCheckPendingRef.current}`);
       }
@@ -162,7 +177,7 @@ export const useFreeModels = () => {
         setHealthCheckPending(null);
       }
     },
-    [installHealthResults]
+    [enabled, installHealthResults]
   );
 
   return {

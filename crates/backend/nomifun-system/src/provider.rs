@@ -30,6 +30,7 @@ pub struct ProviderService {
     provider_model_repo: Arc<dyn IProviderModelRepository>,
     encryption_key: [u8; 32],
     coordinator: Option<SharedProviderDeletionCoordinator>,
+    include_managed_free_models: bool,
 }
 
 impl ProviderService {
@@ -43,7 +44,15 @@ impl ProviderService {
             provider_model_repo,
             encryption_key,
             coordinator: None,
+            include_managed_free_models: nomifun_common::free_models_enabled(),
         }
+    }
+
+    /// Control whether the reserved managed free-model provider participates
+    /// in active provider catalog projections. Stored rows remain untouched.
+    pub fn with_managed_free_models_enabled(mut self, enabled: bool) -> Self {
+        self.include_managed_free_models = enabled;
+        self
     }
 
     /// Inject a deletion coordinator so `delete` returns friendly labeled
@@ -66,6 +75,10 @@ impl ProviderService {
                 .push(model_row);
         }
         rows.into_iter()
+            .filter(|row| {
+                self.include_managed_free_models
+                    || !is_managed_provider_platform(&row.platform)
+            })
             .map(|row| {
                 let models = grouped.remove(&row.provider_id).unwrap_or_default();
                 self.row_to_response(row, models)
@@ -881,6 +894,54 @@ mod tests {
         let svc = setup().await;
         let result = svc.list().await.unwrap();
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn disabled_managed_provider_is_hidden_without_deleting_rows() {
+        let (_svc, pool) = setup_with_pool().await;
+        let provider_repo = Arc::new(SqliteProviderRepository::new(pool.clone()));
+        let model_repo = Arc::new(SqliteProviderModelRepository::new(pool.clone()));
+        let provider_id = nomifun_common::ProviderId::new().into_string();
+        let encrypted = encrypt_string("managed-token", &TEST_KEY).unwrap();
+        provider_repo
+            .create(CreateProviderParams {
+                provider_id: Some(&provider_id),
+                platform: crate::managed_model::FREE_MODEL_PLATFORM,
+                name: "Managed free provider",
+                base_url: "http://127.0.0.1:12345/v1",
+                api_key_encrypted: &encrypted,
+                models: "[\"free-model\"]",
+                enabled: true,
+                model_context_limits: None,
+                model_protocols: None,
+                model_descriptions: None,
+                model_enabled: None,
+                bedrock_config: None,
+                is_full_url: false,
+                sort_order: None,
+            })
+            .await
+            .unwrap();
+        let hidden = ProviderService::new(
+            provider_repo.clone(),
+            model_repo.clone(),
+            TEST_KEY,
+        )
+        .with_managed_free_models_enabled(false)
+        .list()
+        .await
+        .unwrap();
+        assert!(hidden.is_empty());
+        assert!(provider_repo.find_by_id(&provider_id).await.unwrap().is_some());
+        assert!(model_repo.get(&provider_id, "free-model").await.unwrap().is_some());
+
+        let visible = ProviderService::new(provider_repo, model_repo, TEST_KEY)
+            .with_managed_free_models_enabled(true)
+            .list()
+            .await
+            .unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].platform, crate::managed_model::FREE_MODEL_PLATFORM);
     }
 
     #[tokio::test]

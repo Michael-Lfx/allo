@@ -1,0 +1,457 @@
+.root {
+  --effort-accent: rgb(var(--primary-6));
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  position: relative;
+}
+
+.staticValue {
+  align-items: center;
+  color: var(--color-text-2);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  height: 30px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.staticValue > svg {
+  display: block;
+  flex: 0 0 auto;
+  transform: translateY(2px);
+}
+
+.staticValue > span:last-child {
+  font-size: 11px;
+  line-height: 18px;
+  max-width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sliderSurface {
+  align-items: center;
+  display: flex;
+  flex: 0 0 208px;
+  height: 28px;
+  min-width: 208px;
+  max-width: 208px;
+  position: relative;
+}
+
+.track {
+  border-radius: 999px;
+  height: 20px;
+  inset: 50% 12px auto;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  transform: translateY(-50%);
+  z-index: 0;
+}
+
+.trackGradient {
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, rgb(var(--primary-4)) 72%, var(--color-bg-2)),
+    color-mix(in srgb, rgb(var(--primary-6)) 78%, var(--color-bg-2)) 55%,
+    color-mix(in srgb, rgb(var(--primary-7)) 88%, var(--color-bg-2))
+  );
+  inset: 0;
+  opacity: 0.76;
+  position: absolute;
+}
+
+.trackDimmer {
+  background: color-mix(in srgb, var(--color-bg-popup) 62%, transparent);
+  inset: 0;
+  position: absolute;
+  transform: scaleX(calc(1 - var(--effort-progress)));
+  transform-origin: right center;
+  transition: transform 180ms ease-out;
+}
+
+.trackFill {
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, rgb(var(--primary-5)) 42%, transparent),
+    color-mix(in srgb, var(--effort-accent) 72%, transparent)
+  );
+  border-radius: inherit;
+  inset: 0;
+  opacity: 0.9;
+  position: absolute;
+  transform: scaleX(var(--effort-progress));
+  transform-origin: left center;
+  transition:
+    transform 180ms ease-out,
+    filter 180ms ease-out;
+}
+
+.levelMarkers {
+  inset: 0 12px;
+  pointer-events: none;
+  position: absolute;
+  z-index: 2;
+}
+
+.levelMarker {
+  background: var(--color-bg-2);
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-bg-2) 44%, transparent);
+  height: 5px;
+  opacity: 0.9;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  transition:
+    background-color 180ms ease-out,
+    opacity 180ms ease-out;
+  width: 5px;
+}
+
+.levelMarker[data-active='true'] {
+  opacity: 1;
+}
+
+.arcoSlider {
+  height: 28px;
+  left: 12px;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+  position: absolute;
+  right: 12px;
+  touch-action: none;
+  top: 0;
+  width: auto;
+  z-index: 2;
+}
+
+.arcoSlider :global(.arco-slider-wrapper),
+.arcoSlider :global(.arco-slider-road) {
+  height: 28px;
+}
+
+.arcoSlider :global(.arco-slider-road) {
+  background: transparent;
+}
+
+.arcoSlider :global(.arco-slider-road)::before,
+.arcoSlider :global(.arco-slider-bar) {
+  background: transparent;
+}
+
+.arcoSlider :global(.arco-slider-button) {
+  height: 24px;
+  top: 2px;
+  width: 24px;
+}
+
+.arcoSlider :global(.arco-slider-button)::after {
+  background: var(--color-bg-2);
+  border: 2px solid color-mix(in srgb, var(--effort-accent) 66%, var(--color-border-2));
+  box-shadow:
+    0 3px 8px color-mix(in srgb, var(--color-text-1) 18%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-bg-2) 84%, transparent) inset;
+  height: 24px;
+  transition:
+    transform 180ms ease-out,
+    border-color 180ms ease-out,
+    box-shadow 180ms ease-out;
+  width: 24px;
+}
+
+.arcoSlider :global(.arco-slider-button:hover)::after,
+.arcoSlider :global(.arco-slider-button-active)::after {
+  border-color: var(--effort-accent);
+  box-shadow:
+    0 4px 10px color-mix(in srgb, var(--color-text-1) 20%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--effort-accent) 16%, transparent);
+  transform: scale(1.06);
+}
+
+.arcoSlider :global(.arco-slider-button:focus-visible)::after {
+  border-color: var(--effort-accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--effort-accent) 24%, transparent),
+    0 3px 8px color-mix(in srgb, var(--color-text-1) 18%, transparent);
+}
+
+.arcoSlider :global(.arco-slider-road-disabled) {
+  cursor: not-allowed;
+}
+
+.arcoSlider :global(.arco-slider-road-disabled) :global(.arco-slider-button)::after {
+  border-color: var(--color-fill-3);
+  box-shadow: none;
+}
+
+.compactTrigger {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--color-text-2);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  height: 30px;
+  justify-content: center;
+  min-width: 0;
+  outline: none;
+  padding: 0 7px;
+  transition:
+    background-color 180ms ease-out,
+    border-color 180ms ease-out,
+    color 180ms ease-out;
+}
+
+.compactTrigger > svg:first-child {
+  color: var(--effort-accent);
+  display: block;
+  flex: 0 0 auto;
+  margin-right: -2px;
+  transform: translateY(2px);
+}
+
+.compactTrigger:hover,
+.compactTrigger[aria-expanded='true'] {
+  background: color-mix(in srgb, var(--color-fill-3) 72%, transparent);
+  color: var(--color-text-1);
+}
+
+.compactTrigger:focus-visible {
+  background: color-mix(in srgb, var(--color-fill-3) 72%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--effort-accent) 20%, transparent);
+}
+
+.compactTrigger:active {
+  background: color-mix(in srgb, var(--effort-accent) 12%, var(--color-fill-3));
+  transform: scale(0.96);
+  transition-duration: 90ms;
+}
+
+.compactTrigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.triggerLabelSlot {
+  display: grid;
+  flex: 0 1 auto;
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 64px;
+  min-width: 0;
+  overflow: hidden;
+  width: max-content;
+}
+
+.triggerLabelReserve,
+.triggerLabelCurrent {
+  grid-area: 1 / 1;
+  max-width: 64px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.triggerLabelReserve {
+  visibility: hidden;
+}
+
+.triggerLabelCurrent {
+  color: var(--effort-accent);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.triggerChevron {
+  color: var(--color-text-3);
+  flex: 0 0 auto;
+}
+
+.popoverPanel {
+  --effort-accent: rgb(var(--primary-6));
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  height: auto;
+  min-height: 0;
+  padding: 10px 8px;
+  width: min(224px, calc(100vw - 20px));
+}
+
+:global(.reasoning-effort-popover) {
+  --effort-accent: rgb(var(--primary-6));
+}
+
+:global(.reasoning-effort-popover .arco-popover-content) {
+  background: var(--color-bg-popup) !important;
+  border: 1px solid var(--color-border-2) !important;
+  border-radius: 12px !important;
+  box-shadow:
+    0 8px 20px color-mix(in srgb, var(--color-text-1) 12%, transparent),
+    0 2px 6px color-mix(in srgb, var(--color-text-1) 6%, transparent) !important;
+  box-sizing: border-box;
+  display: block !important;
+  height: auto !important;
+  min-height: 0 !important;
+  overflow: hidden;
+  padding: 0 !important;
+}
+
+:global(.reasoning-effort-popover .arco-popover-inner),
+:global(.reasoning-effort-popover .arco-popover-inner-content) {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  display: block !important;
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+}
+
+:global(.reasoning-effort-popover .arco-popover-arrow) {
+  display: none !important;
+}
+
+.maximumChargePulse {
+  --charge-travel: 196px;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  z-index: 3;
+}
+
+.chargeParticle {
+  background: color-mix(in srgb, var(--color-bg-2) 72%, transparent);
+  border-radius: 999px;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-bg-2) 38%, transparent),
+    0 0 6px 1px color-mix(in srgb, var(--effort-accent) 12%, transparent);
+  height: var(--particle-size);
+  left: 100%;
+  opacity: 0;
+  position: absolute;
+  top: calc(50% + var(--particle-offset));
+  transform: translate3d(0, -50%, 0) scale(0.58);
+  width: var(--particle-size);
+  animation: maximumChargeParticle 1800ms linear var(--particle-delay) infinite;
+}
+
+.chargeParticle::after {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--effort-accent) 12%, transparent),
+    transparent
+  );
+  border-radius: 999px;
+  content: '';
+  height: 2px;
+  left: calc(100% + 2px);
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+}
+
+.sliderSurface[data-max-active='true'] .arcoSlider :global(.arco-slider-button)::after {
+  border-color: color-mix(in srgb, var(--effort-accent) 54%, var(--color-border-2));
+  animation: maximumChargeThumb 1800ms ease-in-out infinite;
+}
+
+.srOnly {
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.sliderSurface[data-dragging='true'] .trackDimmer,
+.sliderSurface[data-dragging='true'] .trackFill,
+.sliderSurface[data-dragging='true'] .arcoSlider :global(.arco-slider-button)::after {
+  transition: none;
+}
+
+@keyframes maximumChargeParticle {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -50%, 0) scale(0.58);
+  }
+
+  10% {
+    opacity: var(--particle-opacity);
+    transform: translate3d(-7px, -50%, 0) scale(1);
+  }
+
+  48% {
+    opacity: var(--particle-opacity);
+  }
+
+  72% {
+    opacity: calc(var(--particle-opacity) * 0.52);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(calc(-1 * var(--charge-travel)), -50%, 0) scale(0.76);
+  }
+}
+
+@keyframes maximumChargeThumb {
+  0% {
+    box-shadow:
+      0 3px 8px color-mix(in srgb, var(--color-text-1) 16%, transparent),
+      0 0 0 1px color-mix(in srgb, var(--color-bg-2) 82%, transparent) inset,
+      0 0 0 0 color-mix(in srgb, var(--effort-accent) 0%, transparent);
+    transform: scale(1);
+  }
+
+  38% {
+    box-shadow:
+      0 3px 9px color-mix(in srgb, var(--color-text-1) 16%, transparent),
+      0 0 0 1px color-mix(in srgb, var(--color-bg-2) 82%, transparent) inset,
+      0 0 0 3px color-mix(in srgb, var(--effort-accent) 12%, transparent),
+      0 0 9px 2px color-mix(in srgb, var(--effort-accent) 10%, transparent);
+    transform: scale(1.02);
+  }
+
+  100% {
+    box-shadow:
+      0 3px 8px color-mix(in srgb, var(--color-text-1) 16%, transparent),
+      0 0 0 1px color-mix(in srgb, var(--color-bg-2) 82%, transparent) inset,
+      0 0 0 0 color-mix(in srgb, var(--effort-accent) 0%, transparent);
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trackDimmer,
+  .trackFill,
+  .levelMarker,
+  .arcoSlider :global(.arco-slider-button)::after {
+    transition: none;
+  }
+
+  .maximumChargePulse {
+    display: none;
+  }
+
+  .sliderSurface[data-max-active='true'] .arcoSlider :global(.arco-slider-button)::after {
+    animation: none;
+  }
+}

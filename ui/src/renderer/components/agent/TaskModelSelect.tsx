@@ -6,9 +6,8 @@
 
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import { Button, Dropdown, Menu } from '@arco-design/web-react';
-import { Brain, Down, Plus } from '@icon-park/react';
+import { Brain, Down } from '@icon-park/react';
 import type { ModelTask, ModelTrait } from '@/common/config/storage';
 import type { ProviderId } from '@/common/types/ids';
 import { compositeKey } from '@/common/utils/compositeKey';
@@ -42,7 +41,7 @@ export interface TaskModelSelectProps {
 /**
  * Unified task-scoped provider+model dropdown (Menu.ItemGroup per provider,
  * per-model health dot, "(不可用)" disabled row for a stale current value, and
- * an empty-catalog state linking to the model management page). Behavior is
+ * an empty-catalog state). Behavior is
  * aligned with the Knowledge/Companion selectors; the model list comes from
  * `useModelsForTask` — the authoritative catalog resolution.
  */
@@ -57,7 +56,6 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
   size = 'default',
 }) => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { groups: catalogGroups, isLoading } = useModelsForTask(task, requiredTraits);
   const groups = useMemo(
     () =>
@@ -103,14 +101,6 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
               disabled
             >
               {t('settings.noAvailableModels')}
-            </Menu.Item>,
-            <Menu.Item
-              key='add-model'
-              className='text-12px text-t-secondary'
-              onClick={() => navigate('/models?section=models')}
-            >
-              <Plus theme='outline' size='12' />
-              {t('settings.addModel')}
             </Menu.Item>,
           ]
         : groups.map(({ provider, models }) => (

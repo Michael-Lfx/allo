@@ -10,7 +10,7 @@ use nomi_providers::{LlmProvider, ProviderError, create_provider};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role};
 use nomifun_api_types::ModelTrait;
-use nomifun_common::{AppError, ProviderId};
+use nomifun_common::{AppError, FLOWY_BUILTIN_PROVIDER_ID, ProviderId};
 use nomifun_db::{
     FLOWY_CATALOG_MAX_TOKENS_PARAM, FLOWY_CATALOG_REASONING_EFFORT_PARAM,
     IProviderModelRepository, IProviderRepository,
@@ -76,6 +76,11 @@ pub(crate) async fn resolve_provider_fields(
         .await
         .map_err(|e| AppError::Internal(format!("Failed to load provider config: {e}")))?
         .ok_or_else(|| AppError::BadRequest(format!("Provider '{provider_id}' not found")))?;
+    if nomifun_common::managed_free_models_disabled(&row.platform) {
+        return Err(AppError::ManagedFreeModelsDisabled(
+            "the selected provider uses the disabled managed free-model supply".into(),
+        ));
+    }
     let model_row = provider_model_repo
         .get(provider_id, model)
         .await
@@ -238,6 +243,26 @@ pub(crate) async fn resolve_provider_fields_with_fallback(
             "model must be trimmed and non-empty".to_owned(),
         ));
     }
+    if let Some((fallback_provider_id, fallback_model)) =
+        replace_disabled_free_reference(provider_repo, provider_model_repo, provider_id).await?
+    {
+        tracing::warn!(
+            requested_provider = %provider_id,
+            requested_model = %model,
+            fallback_provider = %fallback_provider_id,
+            fallback_model = %fallback_model,
+            "conversation provider uses disabled managed free models; using Flowy Cloud"
+        );
+        return resolve_provider_fields(
+            provider_repo,
+            provider_model_repo,
+            encryption_key,
+            &fallback_provider_id,
+            &fallback_model,
+        )
+        .await;
+    }
+
     let stored_ok = provider_repo
         .find_by_id(provider_id)
         .await
@@ -288,12 +313,19 @@ pub async fn resolve_provider_config(
     model: &str,
     workspace: &Path,
 ) -> Result<Config, AppError> {
+    let (provider_id, model) = replace_disabled_free_reference(
+        provider_repo,
+        provider_model_repo,
+        provider_id,
+    )
+    .await?
+    .unwrap_or_else(|| (provider_id.to_owned(), model.to_owned()));
     let fields = resolve_provider_fields(
         provider_repo,
         provider_model_repo,
         encryption_key,
-        provider_id,
-        model,
+        &provider_id,
+        &model,
     )
     .await?;
 
@@ -340,6 +372,41 @@ pub async fn resolve_provider_config(
     // for "consistency"; it would be dead config on this path.
 
     Ok(config)
+}
+
+/// Resolve a stale managed-free reference to the current Flowy Cloud default.
+/// `None` means the requested provider is absent or is not the managed free
+/// provider; `Some` is always a Cloud pair. Other user-configured providers
+/// are intentionally not substituted for this reserved platform.
+async fn replace_disabled_free_reference(
+    provider_repo: &Arc<dyn IProviderRepository>,
+    provider_model_repo: &Arc<dyn IProviderModelRepository>,
+    provider_id: &str,
+) -> Result<Option<(String, String)>, AppError> {
+    let Some(provider) = provider_repo
+        .find_by_id(provider_id)
+        .await
+        .map_err(|error| AppError::Internal(format!("Failed to load provider config: {error}")))?
+    else {
+        return Ok(None);
+    };
+    if !nomifun_common::managed_free_models_disabled(&provider.platform) {
+        return Ok(None);
+    }
+
+    let Some((fallback_provider_id, fallback_model)) =
+        crate::resolve_flowy_cloud_model(provider_repo, provider_model_repo).await
+    else {
+        return Err(AppError::ManagedFreeModelsDisabled(
+            "no compatible Flowy Cloud model is available".into(),
+        ));
+    };
+    if fallback_provider_id != FLOWY_BUILTIN_PROVIDER_ID {
+        return Err(AppError::ManagedFreeModelsDisabled(
+            "no compatible Flowy Cloud model is available".into(),
+        ));
+    }
+    Ok(Some((fallback_provider_id, fallback_model)))
 }
 
 /// Which stream channel a delta came from, so callers can route reasoning

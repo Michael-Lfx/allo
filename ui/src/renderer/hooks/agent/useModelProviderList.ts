@@ -1,8 +1,10 @@
 import { ipcBridge } from '@/common';
 import type { IProvider } from '@/common/config/storage';
+import { NOMIFUN_FREE_MODEL_PLATFORM } from '@/common/types/provider/managedModelService';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 import { useCallback, useEffect, useMemo } from 'react';
 import useSWR, { mutate, type SWRConfiguration } from 'swr';
+import { useManagedFreeModelsEnabled } from './useManagedFreeModelsEnabled';
 import { orderModelSelectorProviders } from './modelSelectorProviderOrdering';
 
 export interface ModelProviderListResult {
@@ -168,11 +170,25 @@ export function refreshProvidersCatalogIfStale(
 
 export const useProvidersQuery = (options?: { enabled?: boolean }) => {
   const enabled = options?.enabled ?? true;
-  return useSWR<IProvider[]>(
+  const query = useSWR<IProvider[]>(
     enabled ? PROVIDERS_SWR_KEY : null,
     fetchProviders,
     PROVIDERS_SWR_OPTIONS
   );
+  const { enabled: freeModelsEnabled } = useManagedFreeModelsEnabled();
+  const data = useMemo(
+    () =>
+      Array.isArray(query.data)
+        ? query.data.filter(
+            (provider) =>
+              freeModelsEnabled ||
+              provider.platform?.trim().toLowerCase() !== NOMIFUN_FREE_MODEL_PLATFORM,
+          )
+        : query.data,
+    [freeModelsEnabled, query.data],
+  );
+
+  return { ...query, data };
 };
 
 /**

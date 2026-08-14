@@ -5,7 +5,10 @@ use nomifun_api_types::{
     ModelProfile, ModelProfileUpsertRequest, ModelTask, ModelTrait, ProfileSource,
 };
 use nomifun_common::{AppError, ProviderId};
-use nomifun_db::{IProviderModelRepository, NewProviderModel, ProviderModelRow, ProviderModelUpdate};
+use nomifun_db::{
+    IProviderModelRepository, IProviderRepository, NewProviderModel, ProviderModelRow,
+    ProviderModelUpdate,
+};
 
 /// Business logic for authoritative per-model capability profiles (the
 /// multimodal model hub). Since migration 015 retired `model_profiles`, the
@@ -16,11 +19,52 @@ use nomifun_db::{IProviderModelRepository, NewProviderModel, ProviderModelRow, P
 #[derive(Clone)]
 pub struct ModelProfileService {
     repo: Arc<dyn IProviderModelRepository>,
+    provider_repo: Option<Arc<dyn IProviderRepository>>,
+    include_managed_free_models: bool,
 }
 
 impl ModelProfileService {
     pub fn new(repo: Arc<dyn IProviderModelRepository>) -> Self {
-        Self { repo }
+        Self {
+            repo,
+            provider_repo: None,
+            include_managed_free_models: nomifun_common::free_models_enabled(),
+        }
+    }
+
+    /// Attach the provider repository used by the HTTP write boundary. The
+    /// repository is optional only for legacy in-process callers that use this
+    /// service for profile projection/seeding; the application router always
+    /// supplies it.
+    pub fn with_provider_repository(mut self, provider_repo: Arc<dyn IProviderRepository>) -> Self {
+        self.provider_repo = Some(provider_repo);
+        self
+    }
+
+    pub fn with_managed_free_models_enabled(mut self, enabled: bool) -> Self {
+        self.include_managed_free_models = enabled;
+        self
+    }
+
+    async fn ensure_provider_writable(&self, provider_id: &str) -> Result<(), AppError> {
+        if self.include_managed_free_models {
+            return Ok(());
+        }
+        let Some(provider_repo) = self.provider_repo.as_ref() else {
+            return Ok(());
+        };
+        let provider = provider_repo
+            .find_by_id(provider_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Provider '{provider_id}' not found")))?;
+        // The service-local flag is the policy boundary for this write path;
+        // do not re-read the process-global OnceLock here.
+        if nomifun_common::is_free_model_platform(&provider.platform) {
+            return Err(AppError::ManagedFreeModelsDisabled(
+                "model profile writes for the managed free-model supply are disabled".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// All stored profiles across all providers.
@@ -41,6 +85,7 @@ impl ModelProfileService {
         let provider_id = ProviderId::parse(req.provider_id)
             .map_err(|error| AppError::BadRequest(format!("invalid provider_id: {error}")))?
             .into_string();
+        self.ensure_provider_writable(&provider_id).await?;
         if req.model.trim().is_empty() {
             return Err(AppError::BadRequest("model is required".into()));
         }
@@ -103,9 +148,10 @@ impl ModelProfileService {
     /// Delete one profile; returns whether a row was removed. On the
     /// converged store this removes the catalog row itself.
     pub async fn delete(&self, provider_id: &str, model: &str) -> Result<bool, AppError> {
-        ProviderId::parse(provider_id)
+        let provider_id = ProviderId::parse(provider_id)
             .map_err(|error| AppError::BadRequest(format!("invalid provider_id: {error}")))?;
-        Ok(self.repo.delete(provider_id, model).await?)
+        self.ensure_provider_writable(provider_id.as_str()).await?;
+        Ok(self.repo.delete(provider_id.as_str(), model).await?)
     }
 
     /// Atomically seed inferred profiles for newly discovered catalog models.
@@ -509,6 +555,46 @@ mod tests {
         // Delete removes the row.
         assert!(service.delete(&provider_id, "tts-new").await.unwrap());
         assert!(!service.delete(&provider_id, "tts-new").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn disabled_managed_provider_rejects_profile_writes() {
+        let db = init_database_memory().await.unwrap();
+        let provider_id = seed_provider(&db, "[]").await;
+        let model_repo = std::sync::Arc::new(SqliteProviderModelRepository::new(db.pool().clone()));
+        let provider_repo = std::sync::Arc::new(SqliteProviderRepository::new(db.pool().clone()));
+        model_repo
+            .create(
+                &provider_id,
+                &NewProviderModel {
+                    model: "free-model",
+                    enabled: true,
+                    sort_order: 0,
+                    tasks: r#"["chat"]"#,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let service = ModelProfileService::new(model_repo)
+            .with_provider_repository(provider_repo)
+            .with_managed_free_models_enabled(false);
+
+        let err = service
+            .upsert(ModelProfileUpsertRequest {
+                provider_id: provider_id.clone(),
+                model: "free-model".into(),
+                tasks: vec![ModelTask::Chat],
+                traits: vec![],
+                params: None,
+                source: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.error_code(), "MANAGED_FREE_MODELS_DISABLED");
+
+        let err = service.delete(&provider_id, "free-model").await.unwrap_err();
+        assert_eq!(err.error_code(), "MANAGED_FREE_MODELS_DISABLED");
     }
 
     #[test]

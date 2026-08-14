@@ -1809,6 +1809,7 @@ button.guidResourceCard:focus-visible {
   }
 
   .actionConfigGroup :global(.guid-config-btn),
+  .actionConfigGroup :global(.sendbox-responsive-reasoning-btn),
   .actionConfigGroup :global(.agent-mode-compact-pill) {
     width: auto !important;
     min-width: 28px !important;
@@ -1839,6 +1840,8 @@ button.guidResourceCard:focus-visible {
   @container guid-action-config (max-width: 440px) {
     .actionConfigGroup :global(.guid-config-btn:hover),
     .actionConfigGroup :global(.guid-config-btn:focus-visible),
+    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover),
+    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible),
     .actionConfigGroup :global(.agent-mode-compact-pill:hover),
     .actionConfigGroup :global(.agent-mode-compact-pill:focus-visible) {
       width: auto !important;
@@ -1854,6 +1857,10 @@ button.guidResourceCard:focus-visible {
     .actionConfigGroup :global(.guid-config-btn:hover .sendbox-responsive-chevron),
     .actionConfigGroup :global(.guid-config-btn:focus-visible .sendbox-responsive-label),
     .actionConfigGroup :global(.guid-config-btn:focus-visible .sendbox-responsive-chevron),
+    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label),
+    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label),
+    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover .sendbox-responsive-chevron),
+    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-chevron),
     .actionConfigGroup :global(.agent-mode-compact-pill:hover .sendbox-responsive-label),
     .actionConfigGroup :global(.agent-mode-compact-pill:hover .sendbox-responsive-chevron),
     .actionConfigGroup :global(.agent-mode-compact-pill:focus-visible .sendbox-responsive-label),

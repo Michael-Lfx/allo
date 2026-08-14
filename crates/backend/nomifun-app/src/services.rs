@@ -1104,12 +1104,13 @@ pub struct AppServices {
     pub companion_token_validator: Arc<CompanionTokenValidator>,
     /// Provider repository (exposed for the mint-time model-availability guard).
     pub provider_repo: Arc<dyn IProviderRepository>,
-    /// Unified loopback supply for NomiFun's managed free models.
-    pub managed_model_service: Arc<nomifun_system::ManagedModelService>,
+    /// Unified loopback supply for NomiFun's managed free models. It is
+    /// absent when the default-off free-model feature gate is disabled.
+    pub managed_model_service: Option<Arc<nomifun_system::ManagedModelService>>,
     /// Keeps the authenticated loopback OpenAI-compatible listener alive.
-    pub(crate) _managed_model_server: nomifun_system::ManagedModelServer,
+    pub(crate) _managed_model_server: Option<nomifun_system::ManagedModelServer>,
     /// Keeps the immediate + periodic managed catalog refresh loop alive.
-    pub(crate) _managed_model_refresh_task: nomifun_system::ManagedModelRefreshTask,
+    pub(crate) _managed_model_refresh_task: Option<nomifun_system::ManagedModelRefreshTask>,
     /// Authoritative per-model catalog rows (capability profiles + health;
     /// the multimodal model hub reads/writes these).
     pub provider_model_repo: Arc<dyn IProviderModelRepository>,
@@ -2072,63 +2073,81 @@ impl AppServices {
         let provider_repo = Arc::new(SqliteProviderRepository::new(database.pool().clone()));
         let provider_model_repo: Arc<dyn IProviderModelRepository> =
             Arc::new(SqliteProviderModelRepository::new(database.pool().clone()));
-        // Start the stable managed-model loopback supply and provision its
-        // provider projection before any model-profile reconciliation or agent
-        // factory construction. A seed catalog makes a fresh install usable
-        // without blocking boot on third-party discovery.
-        let (managed_model_service, managed_model_server) =
-            nomifun_system::start_and_provision_free_model_with_preferences(
-                provider_repo.clone(),
-                provider_model_repo.clone(),
-                Some(Arc::new(nomifun_db::SqliteClientPreferenceRepository::new(
-                    database.pool().clone(),
-                ))),
-                encryption_key,
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to provision NomiFun free model service: {e}"))?;
-        // Refresh immediately, then about every six hours with jitter. Failed
-        // attempts retain the current catalog and use capped exponential
-        // backoff. Successful refreshes atomically seed profiles for any newly
-        // discovered models without overwriting concurrent user edits.
-        let managed_model_refresh_task = {
-            let profile_repo = provider_model_repo.clone();
-            nomifun_system::ManagedModelRefreshTask::start_with_success_hook(
-                managed_model_service.clone(),
-                move |status| {
-                    let profile_repo = profile_repo.clone();
-                    async move {
-                        let Some(provider_id) = status.provider_id.as_deref() else {
-                            tracing::warn!("Managed free-model refresh returned no provider id");
-                            return;
-                        };
-                        let models = status
-                            .models
-                            .iter()
-                            .map(|model| model.id.as_str())
-                            .collect::<Vec<_>>();
-                        match nomifun_system::seed_missing_inferred_profiles(
-                            profile_repo.as_ref(),
-                            provider_id,
-                            nomifun_system::FREE_MODEL_PLATFORM,
-                            &models,
-                        )
-                        .await
-                        {
-                            Ok(seeded) if seeded > 0 => tracing::info!(
-                                seeded,
-                                "Managed free-model refresh seeded inferred model profiles"
-                            ),
-                            Ok(_) => {}
-                            Err(error) => tracing::warn!(
-                                error = %error,
-                                "Managed free-model profile reconciliation failed"
-                            ),
-                        }
-                    }
-                },
-            )
-        };
+        // The free-model supply is an optional operator feature. When it is
+        // disabled, do not even construct the loopback server or start the
+        // refresh task: constructing the service would still allow its
+        // OpenCode health/catalog paths to make upstream requests.
+        let (managed_model_service, managed_model_server, managed_model_refresh_task) =
+            if nomifun_common::free_models_enabled() {
+                // Start the stable managed-model loopback supply and provision
+                // its provider projection before model-profile reconciliation
+                // or agent factory construction. A seed catalog makes a fresh
+                // install usable without blocking boot on discovery.
+                let (managed_model_service, managed_model_server) =
+                    nomifun_system::start_and_provision_free_model_with_preferences(
+                        provider_repo.clone(),
+                        provider_model_repo.clone(),
+                        Some(Arc::new(nomifun_db::SqliteClientPreferenceRepository::new(
+                            database.pool().clone(),
+                        ))),
+                        encryption_key,
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to provision NomiFun free model service: {e}"))?;
+                // Refresh immediately, then about every six hours with jitter.
+                // Failed attempts retain the current catalog and use capped
+                // exponential backoff. Successful refreshes atomically seed
+                // profiles for newly discovered models.
+                let managed_model_refresh_task = {
+                    let profile_repo = provider_model_repo.clone();
+                    nomifun_system::ManagedModelRefreshTask::start_with_success_hook(
+                        managed_model_service.clone(),
+                        move |status| {
+                            let profile_repo = profile_repo.clone();
+                            async move {
+                                let Some(provider_id) = status.provider_id.as_deref() else {
+                                    tracing::warn!("Managed free-model refresh returned no provider id");
+                                    return;
+                                };
+                                let models = status
+                                    .models
+                                    .iter()
+                                    .map(|model| model.id.as_str())
+                                    .collect::<Vec<_>>();
+                                match nomifun_system::seed_missing_inferred_profiles(
+                                    profile_repo.as_ref(),
+                                    provider_id,
+                                    nomifun_system::FREE_MODEL_PLATFORM,
+                                    &models,
+                                )
+                                .await
+                                {
+                                    Ok(seeded) if seeded > 0 => tracing::info!(
+                                        seeded,
+                                        "Managed free-model refresh seeded inferred model profiles"
+                                    ),
+                                    Ok(_) => {}
+                                    Err(error) => tracing::warn!(
+                                        error = %error,
+                                        "Managed free-model profile reconciliation failed"
+                                    ),
+                                }
+                            }
+                        },
+                    )
+                };
+                (
+                    Some(managed_model_service),
+                    Some(managed_model_server),
+                    Some(managed_model_refresh_task),
+                )
+            } else {
+                tracing::info!(
+                    "Managed free models disabled by {0}; skipping loopback provisioning and refresh",
+                    nomifun_common::FREE_MODELS_ENV
+                );
+                (None, None, None)
+            };
         // User-configured MCP servers — injected into ACP `session/new`
         // so the agent gets the operator's tools (ELECTRON-1JG fix).
         let mcp_server_repo: Arc<dyn IMcpServerRepository> =
@@ -2999,6 +3018,8 @@ impl AppServices {
             let gateway = cloud_service.gateway_config_snapshot();
             let provider_repo = provider_repo_for_services.clone();
             let provider_model_repo = provider_model_repo.clone();
+            let client_preference_repo: Arc<dyn IClientPreferenceRepository> =
+                Arc::new(SqliteClientPreferenceRepository::new(database.pool().clone()));
             let data_dir = cloud_service.data_dir().to_path_buf();
             let server = gateway.server.clone();
             tokio::spawn(async move {
@@ -3012,11 +3033,27 @@ impl AppServices {
                 )
                 .await
                 {
-                    Ok(synced) => tracing::info!(
-                        elapsed_ms = started.elapsed().as_millis(),
-                        synced,
-                        "startup: background Flowy catalog sync finished"
-                    ),
+                    Ok(synced) => {
+                        if synced {
+                            if let Err(error) = nomifun_cloud::migrate_free_model_preferences(
+                                &provider_repo,
+                                &provider_model_repo,
+                                &client_preference_repo,
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    %error,
+                                    "startup: failed to migrate active free-model preferences to Flowy Cloud"
+                                );
+                            }
+                        }
+                        tracing::info!(
+                            elapsed_ms = started.elapsed().as_millis(),
+                            synced,
+                            "startup: background Flowy catalog sync finished"
+                        );
+                    }
                     Err(e) => tracing::warn!(
                         elapsed_ms = started.elapsed().as_millis(),
                         "Failed to sync Flowy built-in provider on startup: {e}"
@@ -3272,6 +3309,9 @@ async fn reconcile_model_profiles(
     };
     let mut seeded = 0usize;
     for provider in &providers {
+        if nomifun_common::managed_free_models_disabled(&provider.platform) {
+            continue;
+        }
         match nomifun_system::seed_inferred_provider_models(
             provider_model_repo.as_ref(),
             &provider.provider_id,

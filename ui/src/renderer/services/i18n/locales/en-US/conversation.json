@@ -836,6 +836,10 @@
   },
   "reasoningEffort": {
     "switchFailed": "Failed to update reasoning effort",
+    "ariaLabel": "Reasoning depth",
+    "hint": "Click to open and drag to adjust reasoning depth",
+    "nextTurn": "Applies next turn",
+    "updated": "Reasoning depth applied",
     "level": {
       "low": "Low",
       "medium": "Medium",

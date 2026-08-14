@@ -1,6 +1,6 @@
 
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useSearchParams } from 'react-router-dom';
 import classNames from 'classnames';
@@ -34,6 +34,7 @@ import VisionModelsContent from './VisionModelsContent';
 import ImageModelsContent from './ImageModelsContent';
 import VideoModelsContent from './VideoModelsContent';
 import EmbeddingModelsContent from './EmbeddingModelsContent';
+import { useManagedFreeModelsEnabled } from '@/renderer/hooks/agent/useManagedFreeModelsEnabled';
 
 type Section =
   | 'models'
@@ -175,8 +176,6 @@ const SECTION_GROUPS: SectionGroup[] = [
   },
 ];
 
-const FLAT_SECTIONS: SectionDef[] = SECTION_GROUPS.flatMap((group) => group.sections);
-
 /**
  * ModelHubPage (/models) — "Model Management", a CAPABILITY-first view. The
  * primary level is a content-area secondary sidebar (mirroring the conversation
@@ -203,6 +202,7 @@ const ModelHubPage: React.FC = () => {
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const [searchParams, setSearchParams] = useSearchParams();
+  const { enabled: freeModelsEnabled, isLoading: isFreeModelsCapabilityLoading } = useManagedFreeModelsEnabled();
 
   const [section, setSection] = useState<Section>(
     () => resolveSection(searchParams.get('section')) ?? 'chat'
@@ -210,20 +210,41 @@ const ModelHubPage: React.FC = () => {
 
   useEffect(() => {
     const resolved = resolveSection(searchParams.get('section'));
-    if (resolved && resolved !== section) {
+    if (resolved === 'free' && !isFreeModelsCapabilityLoading && !freeModelsEnabled) {
+      setSection('chat');
+      const next = new URLSearchParams(searchParams);
+      next.set('section', 'chat');
+      setSearchParams(next, { replace: true });
+      return;
+    }
+    if (resolved && resolved !== 'free' && resolved !== section) {
       setSection(resolved);
     }
-  }, [searchParams, section]);
+  }, [freeModelsEnabled, isFreeModelsCapabilityLoading, searchParams, section, setSearchParams]);
 
   const handleSectionChange = useCallback(
     (key: string) => {
       if (!isSection(key)) return;
+      if (key === 'free' && !freeModelsEnabled) return;
       setSection(key);
       const next = new URLSearchParams(searchParams);
       next.set('section', key);
       setSearchParams(next, { replace: true });
     },
-    [searchParams, setSearchParams]
+    [freeModelsEnabled, searchParams, setSearchParams]
+  );
+
+  const visibleSectionGroups = useMemo(
+    () =>
+      SECTION_GROUPS.map((group) => ({
+        ...group,
+        sections: group.sections.filter((item) => item.key !== 'free' || freeModelsEnabled),
+      })).filter((group) => group.sections.length > 0),
+    [freeModelsEnabled]
+  );
+  const visibleFlatSections = useMemo(
+    () => visibleSectionGroups.flatMap((group) => group.sections),
+    [visibleSectionGroups]
   );
 
   const focusSectionTab = useCallback((key: Section) => {
@@ -255,7 +276,7 @@ const ModelHubPage: React.FC = () => {
       {section === 'image' && <ImageModelsContent />}
       {section === 'video' && <VideoModelsContent />}
       {section === 'embedding' && <EmbeddingModelsContent />}
-      {section === 'free' && <FreeModelsContent />}
+      {section === 'free' && freeModelsEnabled && <FreeModelsContent />}
       {section === 'creation' && <CreationModelsContent />}
       {section === 'global' && <GlobalModelConfig />}
     </>
@@ -271,7 +292,7 @@ const ModelHubPage: React.FC = () => {
 
   // Mobile: horizontal segmented nav above the content (no left sidebar).
   if (isMobile) {
-    const segmentedItems: SegmentedTabItem[] = FLAT_SECTIONS.map((s) => ({
+    const segmentedItems: SegmentedTabItem[] = visibleFlatSections.map((s) => ({
       key: s.key,
       label: t(s.labelKey),
       icon: s.icon,
@@ -297,7 +318,7 @@ const ModelHubPage: React.FC = () => {
 
   const renderTab = (s: SectionDef) => {
     const selected = section === s.key;
-    const index = FLAT_SECTIONS.findIndex((item) => item.key === s.key);
+    const index = visibleFlatSections.findIndex((item) => item.key === s.key);
     return (
       <div
         key={s.key}
@@ -319,9 +340,9 @@ const ModelHubPage: React.FC = () => {
               e.key === 'Home'
                 ? 0
                 : e.key === 'End'
-                  ? FLAT_SECTIONS.length - 1
-                  : (index + (e.key === 'ArrowDown' ? 1 : -1) + FLAT_SECTIONS.length) % FLAT_SECTIONS.length;
-            const next = FLAT_SECTIONS[nextIndex].key;
+                  ? visibleFlatSections.length - 1
+                  : (index + (e.key === 'ArrowDown' ? 1 : -1) + visibleFlatSections.length) % visibleFlatSections.length;
+            const next = visibleFlatSections[nextIndex].key;
             handleSectionChange(next);
             focusSectionTab(next);
           }
@@ -356,7 +377,7 @@ const ModelHubPage: React.FC = () => {
             only `tab` children, so exposing them would break that contract while
             the tabs themselves already carry their labels and position. */}
         <div className='flex flex-col px-8px pb-8px' role='tablist' aria-orientation='vertical'>
-          {SECTION_GROUPS.map((group, groupIndex) => (
+          {visibleSectionGroups.map((group, groupIndex) => (
             <React.Fragment key={group.key}>
               <div
                 aria-hidden='true'

@@ -273,7 +273,16 @@ impl AgentRuntimeHandle {
             Self::Nanobot(m) => m.requires_turn_boundary_recycle(),
             #[cfg(any(test, feature = "test-support"))]
             Self::Mock(m) => m.requires_turn_boundary_recycle(),
-            Self::Acp(_) | Self::Nomi(_) | Self::OpenClaw(_) | Self::Remote(_) => false,
+            Self::Nomi(m) => m.requires_turn_boundary_recycle(),
+            Self::Acp(_) | Self::OpenClaw(_) | Self::Remote(_) => false,
+        }
+    }
+
+    /// Mark a Nomi runtime for a healthy recycle before the next turn. Other
+    /// runtime types deliberately ignore this Nomi-only lifecycle hint.
+    pub fn request_turn_boundary_recycle(&self) {
+        if let Self::Nomi(manager) = self {
+            manager.request_turn_boundary_recycle();
         }
     }
 

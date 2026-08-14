@@ -91,6 +91,7 @@ pub fn get_system_info() -> SystemInfoResponse {
         arch: map_arch().to_owned(),
         work_dir_change: None,
         runtime_capabilities: nomifun_api_types::RuntimeCapabilities::web(),
+        managed_free_models_enabled: false,
     }
 }
 

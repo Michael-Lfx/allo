@@ -9,7 +9,12 @@ import {
   FLOWY_CATALOG_REASONING_EFFORT_PARAM,
   catalogReasoningEffortForModel,
   defaultReasoningEffort,
+  reasoningEffortAtIndex,
+  reasoningEffortIndex,
+  reasoningEffortProgress,
+  reasoningEffortSliderViewModel,
   parseCatalogReasoningEffortLevels,
+  pendingReasoningEffortCommitIndex,
   resolveReasoningEffortForSelection,
 } from './reasoningEffort';
 
@@ -81,5 +86,60 @@ describe('reasoningEffort helpers', () => {
     expect(resolveReasoningEffortForSelection(selection, 'xhigh').effort).toBe('xhigh');
     expect(resolveReasoningEffortForSelection(selection, 'high').effort).toBe('medium');
     expect(resolveReasoningEffortForSelection(selection, undefined).effort).toBe('medium');
+  });
+
+  it('keeps Cloud order as the discrete shallow-to-deep slider order', () => {
+    const view = reasoningEffortSliderViewModel(['low', 'medium', 'high', 'xhigh'], 'high');
+
+    expect(view.levels).toEqual(['low', 'medium', 'high', 'xhigh']);
+    expect(view.index).toBe(2);
+    expect(view.effort).toBe('high');
+    expect(view.progress).toBe(2 / 3);
+    expect(view.isStatic).toBe(false);
+  });
+
+  it('uses the returned levels and count without inserting or alphabetizing values', () => {
+    const levels = ['ultra', 'low', 'xhigh', 'low', ''];
+    const view = reasoningEffortSliderViewModel(levels, 'missing');
+
+    expect(view.levels).toEqual(['ultra', 'low', 'xhigh']);
+    expect(view.index).toBe(0);
+    expect(view.progress).toBe(0);
+    expect(reasoningEffortAtIndex(view.levels, 2)).toBe('xhigh');
+    expect(reasoningEffortProgress(1, view.levels.length)).toBe(0.5);
+  });
+
+  it('maps each actual level count to its own discrete positions', () => {
+    expect(reasoningEffortSliderViewModel(['low', 'high'], 'high').progress).toBe(1);
+    expect(reasoningEffortSliderViewModel(['low', 'medium', 'high'], 'medium').progress).toBe(0.5);
+    expect(reasoningEffortSliderViewModel(['low', 'medium', 'high', 'xhigh'], 'high').progress).toBe(2 / 3);
+    expect(
+      reasoningEffortSliderViewModel(['minimal', 'low', 'medium', 'high', 'xhigh'], 'high').progress
+    ).toBe(0.75);
+  });
+
+  it('heals an invalid effort to medium, then to the first catalog level', () => {
+    expect(reasoningEffortIndex(['low', 'medium', 'high'], 'retired')).toBe(1);
+    expect(reasoningEffortIndex(['low', 'high'], 'retired')).toBe(0);
+    expect(reasoningEffortAtIndex(['low', 'medium', 'high'], 99)).toBe('high');
+    expect(reasoningEffortAtIndex(['low', 'medium', 'high'], -2)).toBe('low');
+  });
+
+  it('renders a single-level catalog as a full static state', () => {
+    expect(reasoningEffortSliderViewModel(['medium'], 'high')).toEqual({
+      levels: ['medium'],
+      effort: 'medium',
+      index: 0,
+      progress: 1,
+      isStatic: true,
+    });
+    expect(reasoningEffortProgress(-1, 0)).toBe(0);
+  });
+
+  it('keeps a compensating choice queued while an earlier save is in flight', () => {
+    expect(pendingReasoningEffortCommitIndex(1, 1, true)).toBe(1);
+    expect(pendingReasoningEffortCommitIndex(2, 1, true)).toBe(2);
+    expect(pendingReasoningEffortCommitIndex(1, 1, false)).toBeNull();
+    expect(pendingReasoningEffortCommitIndex(2, 1, false)).toBe(2);
   });
 });

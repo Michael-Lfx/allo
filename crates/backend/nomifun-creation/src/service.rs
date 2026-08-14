@@ -1119,6 +1119,7 @@ impl CreationService {
                             e.kind,
                             InvokeErrorKind::JobFailed
                                 | InvokeErrorKind::Config
+                                | InvokeErrorKind::ManagedFreeModelsDisabled
                                 | InvokeErrorKind::NoAdapter
                                 | InvokeErrorKind::UnsupportedTask
                                 | InvokeErrorKind::MissingConnection
@@ -3165,6 +3166,7 @@ mod tests {
             (K::InvalidParams, "invalid_params"),
             (K::Timeout, "timeout"),
             (K::Config, "config"),
+            (K::ManagedFreeModelsDisabled, "config"),
             (K::MissingConnection, "config"),
             (K::NoAdapter, "adapter_unavailable"),
             (K::Auth, "provider_error"),

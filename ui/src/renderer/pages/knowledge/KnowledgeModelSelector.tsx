@@ -6,9 +6,8 @@
 
 import React, { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import { Button, Dropdown, Menu } from '@arco-design/web-react';
-import { Brain, Down, Plus } from '@icon-park/react';
+import { Brain, Down } from '@icon-park/react';
 import { configService } from '@/common/config/configService';
 import { modelHealthOf } from '@/common/utils/providerModels';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
@@ -79,7 +78,6 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
   disabled,
 }) => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   // Chat-capable catalog (backend resolve; heuristics gone).
   const { groups, isLoading } = useModelsForTask('chat');
   const providerLabel = useModelSelectorProviderLabel();
@@ -111,16 +109,7 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
         {defaultLabel}
       </Menu.Item>
       {groups.length === 0
-        ? [
-            <Menu.Item
-              key='add-model'
-              className='text-12px text-t-secondary'
-              onClick={() => navigate('/models?section=models')}
-            >
-              <Plus theme='outline' size='12' />
-              {t('settings.addModel')}
-            </Menu.Item>,
-          ]
+        ? null
         : groups.map(({ provider, models }) => {
             return (
               <Menu.ItemGroup title={providerLabel(provider)} key={provider.id}>

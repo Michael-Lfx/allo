@@ -17,7 +17,7 @@ use nomifun_api_types::{
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
-use nomifun_db::{IProviderModelRepository, IProviderRepository};
+use nomifun_db::{IClientPreferenceRepository, IProviderModelRepository, IProviderRepository};
 use tracing::warn;
 
 use crate::http_service::CloudService;
@@ -42,6 +42,7 @@ pub struct CloudRouterState {
     pub service: Arc<CloudService>,
     pub provider_repo: Arc<dyn IProviderRepository>,
     pub provider_model_repo: Arc<dyn IProviderModelRepository>,
+    pub client_preference_repo: Arc<dyn IClientPreferenceRepository>,
     pub encryption_key: [u8; 32],
 }
 
@@ -50,12 +51,14 @@ impl CloudRouterState {
         service: Arc<CloudService>,
         provider_repo: Arc<dyn IProviderRepository>,
         provider_model_repo: Arc<dyn IProviderModelRepository>,
+        client_preference_repo: Arc<dyn IClientPreferenceRepository>,
         encryption_key: [u8; 32],
     ) -> Self {
         Self {
             service,
             provider_repo,
             provider_model_repo,
+            client_preference_repo,
             encryption_key,
         }
     }
@@ -222,7 +225,20 @@ async fn sync_models(
     )
     .await
     {
-        Ok(synced) => Ok(Json(ApiResponse::ok(CloudSyncModelsResponse { synced }))),
+        Ok(synced) => {
+            if synced {
+                if let Err(error) = crate::migrate_free_model_preferences(
+                    &state.provider_repo,
+                    &state.provider_model_repo,
+                    &state.client_preference_repo,
+                )
+                .await
+                {
+                    warn!(error = %error, "Failed to migrate active free-model preferences to Flowy Cloud");
+                }
+            }
+            Ok(Json(ApiResponse::ok(CloudSyncModelsResponse { synced })))
+        }
         Err(e) if e.contains("not logged in") => Ok(Json(ApiResponse::ok(CloudSyncModelsResponse {
             synced: false,
         }))),

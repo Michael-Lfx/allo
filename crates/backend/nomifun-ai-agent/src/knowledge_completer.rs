@@ -13,8 +13,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use nomifun_api_types::ModelTask;
 use nomifun_common::AppError;
-use nomifun_db::{IProviderModelRepository, IProviderRepository, ProviderModelRow};
+use nomifun_db::{IProviderModelRepository, IProviderRepository, ProviderModelRow, models::Provider};
 use nomifun_knowledge::KnowledgeCompleter;
 
 use crate::factory::provider_config::{one_shot_completion, resolve_provider_config, user_message};
@@ -123,10 +124,65 @@ pub async fn resolve_default_model(
     for row in &rows {
         grouped.entry(row.provider_id.as_str()).or_default().push(row);
     }
-    providers.iter().filter(|p| p.enabled).find_map(|p| {
-        let provider_rows = grouped.get(p.provider_id.as_str())?;
+    let eligible = |provider: &&Provider| {
+        provider.enabled && !nomifun_common::managed_free_models_disabled(&provider.platform)
+    };
+    let select = |provider: &Provider| {
+        let provider_rows = grouped.get(provider.provider_id.as_str())?;
         first_enabled_model(provider_rows.iter().copied())
-            .map(|model| (p.provider_id.clone(), model))
+            .map(|model| (provider.provider_id.clone(), model))
+    };
+
+    // Flowy Cloud is the product default when it is configured; retain the
+    // historical first-enabled-provider fallback for local/test deployments
+    // that do not have a Cloud catalog yet.
+    providers
+        .iter()
+        .filter(eligible)
+        .find(|provider| provider.provider_id == nomifun_common::FLOWY_BUILTIN_PROVIDER_ID)
+        .and_then(select)
+        .or_else(|| providers.iter().filter(eligible).find_map(select))
+}
+
+/// Resolve the first enabled Flowy Cloud chat-capable catalog row.
+///
+/// This is intentionally narrower than [`resolve_default_model`]: it is used
+/// when a stale reference points at the reserved managed free supply, so the
+/// fallback must never select an arbitrary local provider or an image/audio
+/// model merely because it happens to be first.
+pub async fn resolve_flowy_cloud_model(
+    provider_repo: &std::sync::Arc<dyn IProviderRepository>,
+    provider_model_repo: &std::sync::Arc<dyn IProviderModelRepository>,
+) -> Option<(String, String)> {
+    let provider = provider_repo
+        .find_by_id(nomifun_common::FLOWY_BUILTIN_PROVIDER_ID)
+        .await
+        .ok()??;
+    if !provider.enabled {
+        return None;
+    }
+    let rows = provider_model_repo
+        .list_for_provider(nomifun_common::FLOWY_BUILTIN_PROVIDER_ID)
+        .await
+        .ok()?;
+    rows.into_iter().find_map(|row| {
+        if !row.enabled || row.model.trim().is_empty() {
+            return None;
+        }
+        let tasks = serde_json::from_str::<Vec<ModelTask>>(&row.tasks).unwrap_or_default();
+        let tasks = if tasks.is_empty() {
+            // Catalog rows from older syncs may not have materialized task
+            // metadata yet. Derive it from the Cloud provider/model pair
+            // before admitting a fallback; an arbitrary first row could be
+            // vision, image, audio, or embedding-only.
+            nomifun_api_types::derive_tasks_and_traits(&provider.platform, &row.model).0
+        } else {
+            tasks
+        };
+        if !tasks.contains(&ModelTask::Chat) {
+            return None;
+        }
+        Some((provider.provider_id.clone(), row.model.trim().to_owned()))
     })
 }
 
@@ -327,6 +383,24 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn default_model_skips_disabled_managed_free_provider() {
+        if nomifun_common::free_models_enabled() {
+            return;
+        }
+
+        let mut free = provider("free", true);
+        free.platform = nomifun_common::FREE_MODEL_PLATFORM.into();
+        let cloud = provider("cloud", true);
+        let c = completer(
+            vec![free, cloud],
+            vec![model_row("free", "free-model", true, 0), model_row("cloud", "cloud-model", true, 0)],
+        );
+
+        let selected = c.resolve_default_model().await.unwrap();
+        assert_eq!(selected, ("cloud".to_owned(), "cloud-model".to_owned()));
+    }
+
+    #[tokio::test]
     async fn resolve_default_model_free_fn_picks_first_enabled_else_none() {
         let repo: Arc<dyn IProviderRepository> =
             Arc::new(ListOnlyRepo(vec![provider("p1", false), provider("p2", true)]));
@@ -346,6 +420,64 @@ pub(crate) mod tests {
         let none_rows: Arc<dyn IProviderModelRepository> =
             Arc::new(ListOnlyModelRepo(vec![model_row("p", "m", true, 0)]));
         assert_eq!(resolve_default_model(&none, &none_rows).await, None);
+    }
+
+    #[tokio::test]
+    async fn flowy_cloud_fallback_requires_a_chat_capable_row() {
+        let cloud = provider(nomifun_common::FLOWY_BUILTIN_PROVIDER_ID, true);
+        let mut image = model_row(
+            nomifun_common::FLOWY_BUILTIN_PROVIDER_ID,
+            "dall-e-3",
+            true,
+            0,
+        );
+        image.tasks = "[\"image_generation\"]".into();
+        let mut chat = model_row(
+            nomifun_common::FLOWY_BUILTIN_PROVIDER_ID,
+            "gpt-4o-mini",
+            true,
+            1,
+        );
+        chat.tasks = "[\"chat\"]".into();
+        let provider_repo: Arc<dyn IProviderRepository> = Arc::new(ListOnlyRepo(vec![cloud]));
+        let model_repo: Arc<dyn IProviderModelRepository> =
+            Arc::new(ListOnlyModelRepo(vec![image, chat]));
+
+        assert_eq!(
+            resolve_flowy_cloud_model(&provider_repo, &model_repo).await,
+            Some((
+                nomifun_common::FLOWY_BUILTIN_PROVIDER_ID.to_owned(),
+                "gpt-4o-mini".to_owned()
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn flowy_cloud_fallback_derives_missing_task_metadata() {
+        let cloud = provider(nomifun_common::FLOWY_BUILTIN_PROVIDER_ID, true);
+        let image = model_row(
+            nomifun_common::FLOWY_BUILTIN_PROVIDER_ID,
+            "dall-e-3",
+            true,
+            0,
+        );
+        let chat = model_row(
+            nomifun_common::FLOWY_BUILTIN_PROVIDER_ID,
+            "gpt-4o-mini",
+            true,
+            1,
+        );
+        let provider_repo: Arc<dyn IProviderRepository> = Arc::new(ListOnlyRepo(vec![cloud]));
+        let model_repo: Arc<dyn IProviderModelRepository> =
+            Arc::new(ListOnlyModelRepo(vec![image, chat]));
+
+        assert_eq!(
+            resolve_flowy_cloud_model(&provider_repo, &model_repo).await,
+            Some((
+                nomifun_common::FLOWY_BUILTIN_PROVIDER_ID.to_owned(),
+                "gpt-4o-mini".to_owned()
+            ))
+        );
     }
 
     #[tokio::test]

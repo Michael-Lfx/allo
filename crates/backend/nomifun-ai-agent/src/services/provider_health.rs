@@ -74,6 +74,11 @@ impl ProviderHealthCheckService {
             .await
             .map_err(|e| AppError::Internal(format!("Failed to load provider config: {e}")))?
             .ok_or_else(|| AppError::BadRequest(format!("Provider '{provider_id}' not found")))?;
+        if nomifun_common::managed_free_models_disabled(&row.platform) {
+            return Err(AppError::ManagedFreeModelsDisabled(
+                "the selected provider uses the disabled managed free-model supply".into(),
+            ));
+        }
         ProviderId::parse(&row.provider_id).map_err(|error| {
             AppError::Internal(format!(
                 "stored providers.provider_id '{}' is not canonical: {error}",

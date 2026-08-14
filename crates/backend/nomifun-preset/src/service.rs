@@ -424,6 +424,16 @@ impl PresetService {
                 AppError::BadRequest(format!("invalid model preference provider_id: {error}"))
             })?;
         }
+        if let Some(fallback) = self
+            .resolve_disabled_free_model_preference(preference)
+            .await?
+        {
+            warnings.push(format!(
+                "Managed free model '{}' was resolved to Flowy Cloud model '{}'",
+                preference.model, fallback.model
+            ));
+            return Ok(fallback);
+        }
         let providers = self.provider_repo.list().await?;
         // Membership lives on provider_models rows since migration 016.
         let model_rows = self.provider_model_repo.list().await?;
@@ -431,6 +441,7 @@ impl PresetService {
             .into_iter()
             .filter(|provider| {
                 provider.enabled
+                    && !nomifun_common::managed_free_models_disabled(&provider.platform)
                     && preference
                         .provider_id
                         .as_ref()
@@ -456,6 +467,67 @@ impl PresetService {
             }
         }
         Err(AppError::BadRequest(format!("model '{}' is unavailable", preference.model)))
+    }
+
+    /// Presets are durable model references rather than client preferences,
+    /// so they are not part of the Cloud sync batch. Resolve an old managed
+    /// free reference to the current first enabled Cloud catalog row at the
+    /// same boundary that returns a preset snapshot. This keeps the stored
+    /// preset/history intact while preventing `/api/presets/:id/resolve` from
+    /// reintroducing a disabled provider into a new conversation.
+    async fn resolve_disabled_free_model_preference(
+        &self,
+        preference: &ModelPreference,
+    ) -> Result<Option<ModelPreference>, AppError> {
+        let Some(provider_id) = preference.provider_id.as_deref() else {
+            return Ok(None);
+        };
+        let Some(provider) = self.provider_repo.find_by_id(provider_id).await? else {
+            return Ok(None);
+        };
+        if !nomifun_common::managed_free_models_disabled(&provider.platform) {
+            return Ok(None);
+        }
+
+        let Some(cloud_provider) = self
+            .provider_repo
+            .find_by_id(nomifun_common::FLOWY_BUILTIN_PROVIDER_ID)
+            .await?
+        else {
+            return Err(AppError::ManagedFreeModelsDisabled(
+                "no compatible Flowy Cloud model is available".into(),
+            ));
+        };
+        if !cloud_provider.enabled {
+            return Err(AppError::ManagedFreeModelsDisabled(
+                "no compatible Flowy Cloud model is available".into(),
+            ));
+        }
+        let model = self
+            .provider_model_repo
+            .list_for_provider(&cloud_provider.provider_id)
+            .await?
+            .into_iter()
+            .filter(|row| row.enabled && !row.model.trim().is_empty())
+            .find_map(|row| {
+                let tasks = serde_json::from_str::<Vec<ModelTask>>(&row.tasks).unwrap_or_default();
+                let tasks = if tasks.is_empty() {
+                    nomifun_api_types::derive_tasks_and_traits(&cloud_provider.platform, &row.model).0
+                } else {
+                    tasks
+                };
+                tasks.contains(&ModelTask::Chat).then_some(row.model.trim().to_owned())
+            })
+            .ok_or_else(|| {
+                AppError::ManagedFreeModelsDisabled(
+                    "no compatible Flowy Cloud model is available".into(),
+                )
+            })?;
+        Ok(Some(ModelPreference {
+            provider_id: Some(cloud_provider.provider_id),
+            model,
+            required: preference.required,
+        }))
     }
 
     pub async fn import(&self, request: ImportPresetsRequest) -> Result<ImportPresetsResult, AppError> {

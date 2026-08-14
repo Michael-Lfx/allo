@@ -29,9 +29,7 @@ async fn provider_full_crud_with_auth() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     let providers = json["data"].as_array().unwrap();
-    assert_eq!(providers.len(), 1);
-    ProviderId::parse(providers[0]["provider_id"].as_str().unwrap()).unwrap();
-    assert_eq!(providers[0]["platform"], "nomifun-free-model");
+    assert!(providers.is_empty());
 
     // 2. Create
     let req = json_with_token(
@@ -66,12 +64,7 @@ async fn provider_full_crud_with_auth() {
         .unwrap();
     let json = body_json(resp).await;
     let providers = json["data"].as_array().unwrap();
-    assert_eq!(providers.len(), 2);
-    assert!(
-        providers
-            .iter()
-            .any(|provider| provider["platform"] == "nomifun-free-model")
-    );
+    assert_eq!(providers.len(), 1);
     assert!(
         providers
             .iter()
@@ -104,9 +97,7 @@ async fn provider_full_crud_with_auth() {
     let resp = app.oneshot(get_with_token("/api/providers", &token)).await.unwrap();
     let json = body_json(resp).await;
     let providers = json["data"].as_array().unwrap();
-    assert_eq!(providers.len(), 1);
-    ProviderId::parse(providers[0]["provider_id"].as_str().unwrap()).unwrap();
-    assert_eq!(providers[0]["platform"], "nomifun-free-model");
+    assert!(providers.is_empty());
 }
 
 #[tokio::test]

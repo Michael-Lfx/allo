@@ -5,7 +5,7 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use nomifun_common::ProviderId;
 use nomifun_db::{
-    SqliteClientPreferenceRepository, SqliteProviderModelRepository,
+    IProviderRepository, SqliteClientPreferenceRepository, SqliteProviderModelRepository,
     SqliteProviderRepository, SqliteSettingsRepository, init_database_memory,
 };
 use nomifun_system::{
@@ -23,6 +23,12 @@ async fn setup() -> (
     nomifun_db::Database,
     ManagedModelServer,
 ) {
+    setup_with_managed_service(true).await
+}
+
+async fn setup_with_managed_service(
+    include_managed_service: bool,
+) -> (axum::Router, nomifun_db::Database, ManagedModelServer) {
     let db = init_database_memory().await.unwrap();
     let provider_repo = Arc::new(SqliteProviderRepository::new(db.pool().clone()));
     let (managed, server) = start_and_provision_free_model(
@@ -57,12 +63,15 @@ async fn setup() -> (
         ),
         model_profile_service: ModelProfileService::new(Arc::new(
             SqliteProviderModelRepository::new(db.pool().clone()),
-        )),
+        ))
+        .with_provider_repository(provider_repo.clone())
+        .with_managed_free_models_enabled(nomifun_common::free_models_enabled()),
         provider_model_service: nomifun_system::ProviderModelService::new(
             Arc::new(SqliteProviderModelRepository::new(db.pool().clone())),
             provider_repo.clone(),
-        ),
-        managed_model_service: Some(managed),
+        )
+        .with_managed_free_models_enabled(nomifun_common::free_models_enabled()),
+        managed_model_service: include_managed_service.then_some(managed),
         protocol_detection_service: ProtocolDetectionService::new(http.clone()),
         version_check_service: VersionCheckService::new(http, "0.1.0".into()),
         data_dir: std::env::temp_dir(),
@@ -87,6 +96,64 @@ fn request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {
 async fn json_body(response: axum::response::Response) -> Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn disabled_free_management_routes_return_stable_error() {
+    if nomifun_common::free_models_enabled() {
+        return;
+    }
+
+    let (app, _db, _server) = setup_with_managed_service(false).await;
+    let response = app
+        .oneshot(request("GET", "/api/model-services/free/status", None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(response).await["code"], "MANAGED_FREE_MODELS_DISABLED");
+}
+
+#[tokio::test]
+async fn disabled_catalog_write_routes_reject_managed_provider() {
+    if nomifun_common::free_models_enabled() {
+        return;
+    }
+
+    let (app, db, _server) = setup_with_managed_service(false).await;
+    let provider = nomifun_db::SqliteProviderRepository::new(db.pool().clone())
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|provider| provider.platform == nomifun_common::FREE_MODEL_PLATFORM)
+        .expect("managed provider is provisioned for this route test");
+
+    let model_write = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/api/provider-models",
+            Some(json!({ "provider_id": provider.provider_id.clone(), "model": "free-model" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(model_write.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(model_write).await["code"], "MANAGED_FREE_MODELS_DISABLED");
+
+    let profile_write = app
+        .oneshot(request(
+            "POST",
+            "/api/model-profiles",
+            Some(json!({
+                "provider_id": provider.provider_id,
+                "model": "free-model",
+                "tasks": ["chat"]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(profile_write.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(profile_write).await["code"], "MANAGED_FREE_MODELS_DISABLED");
 }
 
 #[tokio::test]

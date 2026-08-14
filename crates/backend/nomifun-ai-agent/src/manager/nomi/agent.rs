@@ -149,6 +149,10 @@ pub struct NomiAgentManager {
     /// Permanent once `kill` is requested; prevents a raced clone from
     /// admitting another turn after runtime-registry eviction.
     closing: AtomicBool,
+    /// Set by a conversation configuration update and consumed by the runtime
+    /// registry at the next explicit turn boundary. This lets reasoning depth
+    /// changes take effect without cancelling the turn already in flight.
+    recycle_after_turn: AtomicBool,
     /// Mid-turn steering interjections pushed by `steer()` and drained by the
     /// engine at its loop boundaries. Shared (clone of this Arc handed to the
     /// engine via `set_steering_inbox` each turn). Entries belong exclusively
@@ -456,6 +460,17 @@ pub struct NomiSummonWiring {
 }
 
 impl NomiAgentManager {
+    /// Request a healthy runtime recycle before the next explicit turn.
+    /// Repeated requests are intentionally idempotent; the latest persisted
+    /// conversation extra is read by the successor runtime.
+    pub fn request_turn_boundary_recycle(&self) {
+        self.recycle_after_turn.store(true, Ordering::Release);
+    }
+
+    pub fn requires_turn_boundary_recycle(&self) -> bool {
+        self.recycle_after_turn.load(Ordering::Acquire)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         conversation_id: String,
@@ -1111,6 +1126,7 @@ impl NomiAgentManager {
             lifecycle_gate: Arc::new(std::sync::Mutex::new(())),
             turn_gate: Mutex::new(()),
             closing: AtomicBool::new(false),
+            recycle_after_turn: AtomicBool::new(false),
             steering_inbox: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             system_resource_inbox: Arc::new(std::sync::Mutex::new(
                 std::collections::VecDeque::new(),
@@ -3819,6 +3835,7 @@ mod tests {
             lifecycle_gate: Arc::new(std::sync::Mutex::new(())),
             turn_gate: Mutex::new(()),
             closing: AtomicBool::new(false),
+            recycle_after_turn: AtomicBool::new(false),
             steering_inbox: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             system_resource_inbox: Arc::new(std::sync::Mutex::new(
                 std::collections::VecDeque::new(),
@@ -3836,6 +3853,21 @@ mod tests {
             goal_registry_data_dir: std::env::temp_dir(),
             ssh_lease: None,
         }
+    }
+
+    #[test]
+    fn reasoning_effort_change_is_recycled_only_at_the_next_turn_boundary() {
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let agent = make_agent_with_provider(provider);
+
+        assert!(!agent.requires_turn_boundary_recycle());
+        agent.request_turn_boundary_recycle();
+        assert!(agent.requires_turn_boundary_recycle());
+
+        // The marker is deliberately idempotent and remains set until the
+        // registry evicts this runtime after the current turn has completed.
+        agent.request_turn_boundary_recycle();
+        assert!(agent.requires_turn_boundary_recycle());
     }
 
     #[tokio::test]
@@ -4023,6 +4055,7 @@ mod tests {
             lifecycle_gate: Arc::new(std::sync::Mutex::new(())),
             turn_gate: Mutex::new(()),
             closing: AtomicBool::new(false),
+            recycle_after_turn: AtomicBool::new(false),
             steering_inbox: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             system_resource_inbox: Arc::new(std::sync::Mutex::new(
                 std::collections::VecDeque::new(),
