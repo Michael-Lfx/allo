@@ -12,13 +12,18 @@ pub const FLOWY_CATALOG_MAX_TOKENS_PARAM: &str = "_flowy_catalog_max_tokens";
 /// Maintained during catalog sync; not a user-authored model parameter.
 pub const FLOWY_CATALOG_REASONING_EFFORT_PARAM: &str = "_flowy_catalog_reasoning_effort";
 
+/// Reserved `provider_models.params` key for server-advertised credit
+/// consumption multiplier (Flowy catalog `extra.credit_rate`).
+/// Maintained during catalog sync; not a user-authored model parameter.
+pub const FLOWY_CATALOG_CREDIT_RATE_PARAM: &str = "_flowy_catalog_credit_rate";
+
 /// Inferred capability data for a catalog model.
 ///
 /// Cloud catalog reconciliation uses this small owned value so the provider
 /// row and the model-profile rows can be committed by one repository
 /// operation. User-authored profile fields remain authoritative; catalog-owned
 /// metadata is merged through its reserved parameter keys.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProviderModelProfileSeed {
     pub model: String,
     pub tasks: String,
@@ -29,6 +34,9 @@ pub struct ProviderModelProfileSeed {
     /// Cloud-advertised reasoning effort levels when the model supports
     /// deep thinking. `None` removes the managed key.
     pub catalog_reasoning_effort: Option<Vec<String>>,
+    /// Cloud-advertised credit consumption multiplier. `None` removes the
+    /// managed key.
+    pub catalog_credit_rate: Option<f64>,
     /// Whether the authoritative catalog declares image input. `None` means
     /// this seed has no catalog-owned vision capability.
     pub catalog_vision: Option<bool>,
@@ -37,6 +45,7 @@ pub struct ProviderModelProfileSeed {
 pub(crate) fn initial_catalog_params(
     max_tokens: Option<u32>,
     reasoning_effort: Option<&[String]>,
+    credit_rate: Option<f64>,
 ) -> String {
     let mut object = serde_json::Map::new();
     if let Some(max_tokens) = max_tokens {
@@ -51,7 +60,19 @@ pub(crate) fn initial_catalog_params(
             serde_json::json!(levels),
         );
     }
+    if let Some(rate) = credit_rate {
+        object.insert(
+            FLOWY_CATALOG_CREDIT_RATE_PARAM.to_string(),
+            serde_json::json!(rate),
+        );
+    }
     serde_json::Value::Object(object).to_string()
+}
+
+fn catalog_credit_rate_matches(existing: Option<&serde_json::Value>, rate: f64) -> bool {
+    existing
+        .and_then(serde_json::Value::as_f64)
+        .is_some_and(|current| (current - rate).abs() <= f64::EPSILON)
 }
 
 /// Merge catalog-owned metadata into an existing user-extensible parameter
@@ -63,6 +84,7 @@ pub(crate) fn merge_catalog_params(
     params: &str,
     max_tokens: Option<u32>,
     reasoning_effort: Option<&[String]>,
+    credit_rate: Option<f64>,
 ) -> Option<String> {
     let mut value: serde_json::Value = serde_json::from_str(params).ok()?;
     let object = value.as_object_mut()?;
@@ -102,6 +124,23 @@ pub(crate) fn merge_catalog_params(
                 .remove(FLOWY_CATALOG_REASONING_EFFORT_PARAM)
                 .is_some()
             {
+                changed = true;
+            }
+        }
+    }
+
+    match credit_rate {
+        Some(rate) => {
+            if !catalog_credit_rate_matches(object.get(FLOWY_CATALOG_CREDIT_RATE_PARAM), rate) {
+                object.insert(
+                    FLOWY_CATALOG_CREDIT_RATE_PARAM.to_string(),
+                    serde_json::json!(rate),
+                );
+                changed = true;
+            }
+        }
+        None => {
+            if object.remove(FLOWY_CATALOG_CREDIT_RATE_PARAM).is_some() {
                 changed = true;
             }
         }
@@ -156,6 +195,7 @@ async fn reconcile_inferred_model_profiles(
         let params = initial_catalog_params(
             seed.catalog_max_tokens,
             seed.catalog_reasoning_effort.as_deref(),
+            seed.catalog_credit_rate,
         );
         let inserted = model_repo
             .insert_if_absent(
@@ -195,6 +235,7 @@ async fn reconcile_inferred_model_profiles(
             &row.params,
             seed.catalog_max_tokens,
             seed.catalog_reasoning_effort.as_deref(),
+            seed.catalog_credit_rate,
         );
         let promote_catalog_source = seed.catalog_vision.is_some() && row.source == "inferred";
         let traits = seed

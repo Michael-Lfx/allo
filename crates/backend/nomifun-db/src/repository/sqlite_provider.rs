@@ -566,6 +566,7 @@ async fn sync_inferred_profiles_tx(
             &existing_params,
             seed.catalog_max_tokens,
             seed.catalog_reasoning_effort.as_deref(),
+            seed.catalog_credit_rate,
         );
         let promote_catalog_source = seed.catalog_vision.is_some() && source == "inferred";
         let traits = seed
@@ -1116,6 +1117,7 @@ mod tests {
             traits: "[]".into(),
             catalog_max_tokens: None,
             catalog_reasoning_effort: None,
+            catalog_credit_rate: None,
             catalog_vision: None,
         }];
         let result = repo
@@ -1173,6 +1175,7 @@ mod tests {
                 traits: "[]".into(),
                 catalog_max_tokens: None,
                 catalog_reasoning_effort: None,
+                catalog_credit_rate: None,
                 catalog_vision: None,
             },
             ProviderModelProfileSeed {
@@ -1181,6 +1184,7 @@ mod tests {
                 traits: "[]".into(),
                 catalog_max_tokens: None,
                 catalog_reasoning_effort: None,
+                catalog_credit_rate: None,
                 catalog_vision: None,
             },
         ];

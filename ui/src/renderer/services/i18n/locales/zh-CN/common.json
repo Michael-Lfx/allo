@@ -21,6 +21,7 @@
   },
   "upload": "上传",
   "model": "模型",
+  "modelCreditRate": "积分消耗倍率 {{rate}}",
   "skills": "技能",
   "workspace": "项目",
   "settings": "设置",

@@ -21,6 +21,7 @@
   },
   "upload": "Upload",
   "model": "Model",
+  "modelCreditRate": "Credit rate {{rate}}",
   "skills": "Skills",
   "workspace": "Project",
   "settings": "Settings",
