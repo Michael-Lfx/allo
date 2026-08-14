@@ -873,6 +873,38 @@ async fn windows_powershell_preserves_final_native_and_pipeline_status() {
 }
 
 #[cfg(windows)]
+#[tokio::test]
+async fn windows_powershell_parser_errors_are_returned_on_pty() {
+    let script = r#"Write-Output "$_ exists=$(-not [string]::IsNullOrEmpty((Test-Path $_))""#;
+    let mut process = request(helper_binary(), Vec::<OsString>::new());
+    process.command = CommandSpec::Shell {
+        shell: ShellKind::PowerShell,
+        script: script.into(),
+    };
+    process.transport = Transport::Pty { cols: 120, rows: 30 };
+
+    let supervisor = ProcessSupervisor::new(SupervisorConfig::default());
+    let handle = supervisor
+        .start(process)
+        .await
+        .expect("parser-error script should still spawn powershell");
+    let outcome = wait_for_terminal(&supervisor, &handle).await;
+    let ProcessOutcome::Exited { code, output, .. } = outcome else {
+        panic!("parser-error script should exit: {outcome:?}");
+    };
+    assert_eq!(code, Some(1), "parser errors must exit 1");
+    let text = output.text();
+    assert!(
+        text.contains("PowerShell error:"),
+        "parser errors must surface a stable prefix on PTY, got: {text:?}"
+    );
+    assert!(
+        text.chars().filter(|ch| !ch.is_control() && !ch.is_whitespace()).count() > 20,
+        "parser errors must not collapse to empty/control-only PTY output: {text:?}"
+    );
+}
+
+#[cfg(windows)]
 async fn wait_for_windows_pid_marker(path: &Path) -> u32 {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
