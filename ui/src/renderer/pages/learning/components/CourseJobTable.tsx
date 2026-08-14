@@ -13,10 +13,10 @@ import {
 } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import type { CourseJobStatus, CourseJobView } from '../types';
-import KnowledgeModelSelector, {
-  useKnowledgeAutogenModel,
-  type KnowledgeModelChoice,
-} from '../../knowledge/KnowledgeModelSelector';
+import LearningModelSelector, {
+  useLearningAutogenModel,
+  type LearningModelChoice,
+} from './LearningModelSelector';
 
 const { Text } = Typography;
 
@@ -71,12 +71,12 @@ function RetryJobDialog({
 }: {
   job: CourseJobView;
   onCancel: () => void;
-  onConfirm: (choice: KnowledgeModelChoice) => void;
+  onConfirm: (choice: LearningModelChoice) => void;
 }) {
   const { t } = useTranslation();
-  // 以全局持久化的生成模型偏好为默认值，与创建课程对话框保持一致
-  const { choice: defaultChoice } = useKnowledgeAutogenModel();
-  const [choice, setChoice] = useState<KnowledgeModelChoice>(defaultChoice);
+  // 以学习页持久化的模型偏好为默认值，与创建课程对话框保持一致
+  const { choice: defaultChoice } = useLearningAutogenModel();
+  const [choice, setChoice] = useState<LearningModelChoice>(defaultChoice);
   return (
     <Modal
       title={t('learning.jobRetryTitle')}
@@ -97,7 +97,7 @@ function RetryJobDialog({
       )}
       <div className='flex items-center justify-between gap-12px'>
         <Text>{t('learning.model')}</Text>
-        <KnowledgeModelSelector choice={choice} onChange={setChoice} size='small' />
+        <LearningModelSelector choice={choice} onChange={setChoice} size='small' />
       </div>
       <Text type='secondary' className='mt-8px block text-12px'>
         {t('learning.jobRetryHint')}
@@ -123,7 +123,7 @@ export function CourseJobTable({
   busyId: string | null;
   onCancel: (jobId: string) => void;
   onResume: (jobId: string) => void;
-  onRetry: (jobId: string, choice: KnowledgeModelChoice) => void;
+  onRetry: (jobId: string, choice: LearningModelChoice) => void;
   onDelete: (jobId: string) => void;
   onOpenCourse: (courseId: string) => void;
 }) {

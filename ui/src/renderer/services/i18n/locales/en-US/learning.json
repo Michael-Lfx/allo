@@ -77,7 +77,12 @@
   "files": "files",
   "domain": "Course domain (optional)",
   "domainPlaceholder": "For example: futures trading, linear algebra",
-  "model": "Generation model",
+  "model": "AI model",
+  "form": {
+    "modelSelectTooltip": "AI model used by learning (reflection grading, course generation, job retry; defaults to the system default)",
+    "modelUnavailable": "Unavailable",
+    "modelUnavailableHint": "This explicitly configured model is no longer available. Choose another model or Default Model."
+  },
   "import": "Import course pack",
   "importTitle": "Import a generic course pack",
   "importHint": "Paste CoursePack JSON. A pack may reference a knowledge base and source paths.",

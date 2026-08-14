@@ -1,9 +1,9 @@
 import { Input, Modal, Radio, Select, Tabs, Typography } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
-import KnowledgeModelSelector, {
-  type KnowledgeModelChoice,
-} from '../../knowledge/KnowledgeModelSelector';
+import LearningModelSelector, {
+  type LearningModelChoice,
+} from './LearningModelSelector';
 
 const { Text, Paragraph } = Typography;
 
@@ -38,7 +38,7 @@ export function CreateCourseDialog({
   allKnowledgeBases: IKnowledgeBase[];
   selectedKnowledgeBaseId?: string;
   generationDomain: string;
-  modelChoice: KnowledgeModelChoice;
+  modelChoice: LearningModelChoice;
   creationTab: 'base' | 'description';
   creationDescription: string;
   creationBaseMode: 'existing' | 'auto';
@@ -47,7 +47,7 @@ export function CreateCourseDialog({
   onOk: () => void;
   onSelectedBaseChange: (value: string) => void;
   onDomainChange: (value: string) => void;
-  onModelChange: (choice: KnowledgeModelChoice) => void;
+  onModelChange: (choice: LearningModelChoice) => void;
   onTabChange: (tab: 'base' | 'description') => void;
   onDescriptionChange: (value: string) => void;
   onBaseModeChange: (mode: 'existing' | 'auto') => void;
@@ -96,7 +96,7 @@ export function CreateCourseDialog({
             </div>
             <div className='flex items-center justify-between'>
               <Text>{t('learning.model')}</Text>
-              <KnowledgeModelSelector
+              <LearningModelSelector
                 choice={modelChoice}
                 disabled={busy}
                 onChange={onModelChange}

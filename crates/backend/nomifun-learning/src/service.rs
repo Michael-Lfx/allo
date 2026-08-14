@@ -1101,43 +1101,29 @@ impl LearningService {
         // enrollment, so create it on demand instead of requiring a join step.
         let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
         let enrollment_id = self.ensure_enrollment(&course_id, user_id).await?;
-        // Reflection answers are LLM-graded when a completer is configured;
-        // the activity's linked concepts ground the grading prompt. AI
-        // grading is an enhancement: any failure (unconfigured completer,
-        // call error, unparseable reply) degrades to the rule-based
-        // evaluator, and the empty-answer rejection is always enforced by
-        // the rule-based evaluator first.
+        // Reflection answers are LLM-graded: the activity's linked concepts
+        // ground the grading prompt. AI grading is authoritative — the
+        // empty-answer rejection is enforced here by the rule-based
+        // evaluator, and any grading failure (unconfigured completer, call
+        // error, unparseable reply) surfaces as an error to the learner.
+        // The old silent fallback passed every non-empty answer with a
+        // score of 1.0, hiding grading failures behind a fake success.
         let (score, feedback) = if kind == ActivityKind::Reflection {
-            let (fallback_score, fallback_feedback) = evaluate(kind, &config, &response)?;
             let answer = response.as_str().map(str::trim).unwrap_or_default();
             if answer.is_empty() {
-                (fallback_score, fallback_feedback)
+                // Always rejected: the evaluator errors on empty responses.
+                evaluate(kind, &config, &response)?
             } else {
                 let linked_concepts =
                     activity_concept_titles(&self.pool, activity_id).await?;
-                match self
-                    .grade_reflection(
-                        &activity_prompt,
-                        answer,
-                        &linked_concepts,
-                        provider_id.as_ref(),
-                        model.as_deref(),
-                    )
-                    .await
-                {
-                    Ok(grade) => grade,
-                    Err(error) => {
-                        // Silent degradation made "every non-empty answer
-                        // passes" look like a grading feature instead of a
-                        // failure; surface the reason so it can be fixed.
-                        tracing::warn!(
-                            %error,
-                            activity = %activity_id,
-                            "AI reflection grading failed; degrading to rule-based grading"
-                        );
-                        (fallback_score, fallback_feedback)
-                    }
-                }
+                self.grade_reflection(
+                    &activity_prompt,
+                    answer,
+                    &linked_concepts,
+                    provider_id.as_ref(),
+                    model.as_deref(),
+                )
+                .await?
             }
         } else {
             evaluate(kind, &config, &response)?
@@ -1191,8 +1177,9 @@ impl LearningService {
     /// model sees the exercise prompt, the learner's answer and the linked
     /// concepts; it must reply with strict JSON
     /// `{ "score": f64, "feedback": string }`. Every failure (no completer,
-    /// call error, unparseable reply) returns `Err` so the caller degrades to
-    /// rule-based evaluation — AI grading never blocks the practice flow.
+    /// call error, unparseable reply) returns `Err` and is surfaced to the
+    /// learner — AI grading is authoritative, so a broken grader must never
+    /// masquerade as a passing answer.
     async fn grade_reflection(
         &self,
         prompt: &str,
@@ -4303,13 +4290,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reflection_ai_grading_falls_back_to_rule_based() {
-        // Model call error: rule-based grading kicks in (non-empty passes
-        // with the stored explanation).
+    async fn reflection_ai_grading_failures_surface_errors() {
+        // AI grading is authoritative: a model call error, an unparseable
+        // reply, or a missing completer must surface as an error instead of
+        // silently degrading to "every non-empty answer passes".
         let failing = ScriptedCompleter::new(String::new(), true);
         let (service, _, user_id, activity_id) =
             reflection_service_with_completer(failing.clone()).await;
-        let result = service
+        let error = service
             .submit_attempt(
                 &activity_id,
                 &user_id,
@@ -4318,15 +4306,14 @@ mod tests {
                 None,
             )
             .await
-            .unwrap();
-        assert_eq!(result.score, 1.0);
-        assert_eq!(result.feedback, "A vector has magnitude and direction.");
+            .unwrap_err();
+        assert!(error.to_string().contains("model unavailable"));
         assert_eq!(failing.calls.load(AtomicOrdering::SeqCst), 1);
 
-        // Unparseable reply: same degradation, still no error.
+        // Unparseable reply: same surfaced error.
         let bad_reply = ScriptedCompleter::new("not json at all", false);
         *service.course_completer.write().unwrap() = Some(bad_reply.clone());
-        let result = service
+        let error = service
             .submit_attempt(
                 &activity_id,
                 &user_id,
@@ -4335,13 +4322,13 @@ mod tests {
                 None,
             )
             .await
-            .unwrap();
-        assert_eq!(result.score, 1.0);
+            .unwrap_err();
+        assert!(error.to_string().contains("unparseable reflection grading reply"));
         assert_eq!(bad_reply.calls.load(AtomicOrdering::SeqCst), 1);
 
-        // No completer configured at all: rule-based, no error.
+        // No completer configured at all: surfaced error, not a pass.
         *service.course_completer.write().unwrap() = None;
-        let result = service
+        let error = service
             .submit_attempt(
                 &activity_id,
                 &user_id,
@@ -4350,8 +4337,8 @@ mod tests {
                 None,
             )
             .await
-            .unwrap();
-        assert_eq!(result.score, 1.0);
+            .unwrap_err();
+        assert!(error.to_string().contains("not configured"));
     }
 
     #[tokio::test]

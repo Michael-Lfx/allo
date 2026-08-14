@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { Message } from '@arco-design/web-react';
-import { useKnowledgeAutogenModel } from '../../knowledge/KnowledgeModelSelector';
+import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
 import type {
   Activity,
@@ -32,8 +32,8 @@ export function useCourseLearning({
   const [diagnosticPlan, setDiagnosticPlan] = useState<DiagnosticPlan | null>(null);
   const [diagnosticIndex, setDiagnosticIndex] = useState(0);
   const [diagnosticResult, setDiagnosticResult] = useState<AttemptResult>();
-  // 与课程创建一致：携带用户选择过的 AI 模型偏好批改反思题；未选择时后端回落默认模型
-  const { choice: modelChoice } = useKnowledgeAutogenModel();
+  // 学习页统一模型偏好：携带用户选择的 AI 模型批改反思题；未选择时后端回落默认模型
+  const { choice: modelChoice } = useLearningAutogenModel();
 
   const attemptRequest = useCallback(
     (response: unknown): SubmitAttemptRequest => ({

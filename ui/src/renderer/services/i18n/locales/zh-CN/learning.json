@@ -77,7 +77,12 @@
   "files": "个文件",
   "domain": "课程领域（可选）",
   "domainPlaceholder": "例如：期货交易、线性代数",
-  "model": "生成模型",
+  "model": "AI 模型",
+  "form": {
+    "modelSelectTooltip": "学习所用 AI 模型（反思题批改、课程生成、任务重试；不选则用系统默认）",
+    "modelUnavailable": "配置不可用",
+    "modelUnavailableHint": "此前选择的模型已不可用，请重新选择模型或“默认模型”。"
+  },
   "import": "导入课程包",
   "importTitle": "导入通用课程包",
   "importHint": "粘贴课程包 JSON。课程包可引用知识库和来源路径。",

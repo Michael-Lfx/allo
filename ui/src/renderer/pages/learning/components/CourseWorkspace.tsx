@@ -27,6 +27,7 @@ import type {
 } from '../types';
 import { sliceSourceContent, statusLabel } from '../utils';
 import { ActivityInput } from './ActivityInput';
+import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -313,6 +314,8 @@ export function CourseWorkspace({
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  // 反思题评分使用学习页统一的模型偏好，详情页内可直接切换
+  const { choice: modelChoice, setChoice: setModelChoice } = useLearningAutogenModel();
   const recommendedLessonRef = useRef<HTMLDivElement>(null);
   const { course } = detail;
   const percent =
@@ -344,9 +347,16 @@ export function CourseWorkspace({
               <Paragraph className='!mb-0 !mt-6px text-t-secondary'>{course.description}</Paragraph>
             </div>
             {/* 打开课程详情即自动加入，无显式「加入课程」步骤 */}
-            <Button type='primary' loading={busyId === 'diagnostic'} onClick={onDiagnostic}>
-              {t('learning.startDiagnostic')}
-            </Button>
+            <div className='flex shrink-0 items-center gap-8px'>
+              <LearningModelSelector
+                choice={modelChoice}
+                onChange={(choice) => void setModelChoice(choice)}
+                size='small'
+              />
+              <Button type='primary' loading={busyId === 'diagnostic'} onClick={onDiagnostic}>
+                {t('learning.startDiagnostic')}
+              </Button>
+            </div>
           </div>
         </div>
 

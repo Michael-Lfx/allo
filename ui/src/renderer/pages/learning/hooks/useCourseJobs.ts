@@ -3,7 +3,7 @@ import { Message } from '@arco-design/web-react';
 import { learningApi } from '../api';
 import type { CourseJobView } from '../types';
 import { errorMessage, type Translate } from '../utils';
-import type { KnowledgeModelChoice } from '../../knowledge/KnowledgeModelSelector';
+import type { LearningModelChoice } from '../components/LearningModelSelector';
 
 /** 非终态任务存在时的轮询间隔（毫秒） */
 export const COURSE_JOB_POLL_MS = 3000;
@@ -96,7 +96,7 @@ export function useCourseJobs({ t, setBusyId, onJobCompleted }: UseCourseJobsOpt
     [runAction]
   );
   const retryJob = useCallback(
-    (jobId: string, choice: KnowledgeModelChoice) =>
+    (jobId: string, choice: LearningModelChoice) =>
       runAction(
         jobId,
         () =>

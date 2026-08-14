@@ -8,6 +8,7 @@ import { CourseCard, CourseDeleteDialog } from './components/CourseCard';
 import { CourseJobTable } from './components/CourseJobTable';
 import { CourseWorkspace, DiagnosticModal } from './components/CourseWorkspace';
 import { CreateCourseDialog } from './components/CreateCourseDialog';
+import LearningModelSelector, { useLearningAutogenModel } from './components/LearningModelSelector';
 import { QuestionManager } from './components/QuestionManager';
 import { ReviewBanner } from './components/ReviewBanner';
 import { ReviewSessionModal } from './components/ReviewSession';
@@ -47,6 +48,8 @@ const LearningPage: React.FC = () => {
   const [reviewTagFilter, setReviewTagFilter] = useState<string[]>(() => loadStoredReviewFilters().tags);
   const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   const [diagnosticLimit] = useConfig('learning.diagnosticLimit');
+  // 学习页统一的 AI 模型偏好：反思题评分、课程生成、任务重试均使用该选择
+  const learningModel = useLearningAutogenModel();
 
   const initialLoaded = useRef(false);
   const load = useCallback(async () => {
@@ -256,7 +259,15 @@ const LearningPage: React.FC = () => {
             </Title>
             <Text type='secondary'>{t('learning.subtitle')}</Text>
           </div>
-          <div className='flex flex-wrap gap-8px'>
+          <div className='flex flex-wrap items-center gap-8px'>
+            <div className='flex items-center gap-8px'>
+              <Text>{t('learning.model')}</Text>
+              <LearningModelSelector
+                choice={learningModel.choice}
+                onChange={(choice) => void learningModel.setChoice(choice)}
+                size='small'
+              />
+            </div>
             <Button onClick={() => setImportVisible(true)}>{t('learning.import')}</Button>
             <Button type='primary' onClick={() => void creation.openGenerator()}>
               {t('learning.generate')}

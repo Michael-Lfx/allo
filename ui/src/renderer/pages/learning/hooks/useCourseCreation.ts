@@ -4,7 +4,7 @@ import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { parseKnowledgeBaseId } from '@/common/types/ids';
 import { bindingForNewBase, stashKnowledgeActivation } from '../../knowledge/knowledgeActivation';
-import { useKnowledgeAutogenModel } from '../../knowledge/KnowledgeModelSelector';
+import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
 import { errorMessage, type Translate } from '../utils';
 
@@ -36,7 +36,7 @@ export interface UseCourseCreationOptions {
 
 /** 创建课程域：双方式对话框的状态与动作（知识库生成 / 描述生成 → AI 会话） */
 export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationOptions) {
-  const { choice: modelChoice, setChoice: setModelChoice } = useKnowledgeAutogenModel();
+  const { choice: modelChoice, setChoice: setModelChoice } = useLearningAutogenModel();
   const [generateVisible, setGenerateVisible] = useState(false);
   // 创建课程对话框：方式一（从知识库生成）/ 方式二（描述生成 → 跳转 AI 对话自动创建）
   const [creationTab, setCreationTab] = useState<'base' | 'description'>('base');
