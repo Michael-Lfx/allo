@@ -268,3 +268,154 @@ shared action hook adds `pending` and keeps the card and drawer synchronized.
 Completed items remain disabled until the consumer's reliable installed or
 imported query confirms otherwise. Geometry acceptance requires no row overlap,
 same-row height alignment within 0.5px, and a minimum 12px gap between rows.
+
+## Auth Surface contract
+
+The cloud login, local login, and developer cloud-login entry point share one
+product surface contract. Authentication business behavior remains owned by
+the existing auth contexts and IPC bridge. The shared layer owns layout,
+focus, field states, status communication, and the visual relationship between
+intent, work, and result.
+
+### Composition
+
+- Desktop AuthShell uses a 56/44 split, a 1040px maximum width, and a 560px
+  minimum height. The narrow layout becomes a compact brand band above the
+  form and removes the desktop window-control slot below 900px.
+- IntentField is a semantic-theme SVG scene with a stable Flowy brand lockup
+  above a decorative kinetic blueprint. Fifteen hand-placed work fragments,
+  split into ten primary documents and five quiet companion workstations,
+  open registration marks, seven short route segments, and three static support
+  lines arranged from the document edges describe Intent → Work → Result without drawing a literal
+  workflow, map, country boundary, or network topology. The SVG is
+  `aria-hidden` and owns no semantic interaction; pointer feedback is limited
+  to a nearby crosshair and at most two fragment nudges. The logo, wordmark,
+  and copy never move with the pointer and remain non-selectable. Each
+  fragment has a route step. Once its segment arrives, its opaque backplate
+  sits above the route and hides the line beneath it. Document interiors use
+  only horizontal rules, dots, or check marks; folded page corners
+  remain part of the outer document silhouette. The small result document has
+  explicit summary lines and a success check; fragments sit on alternating rails
+  around a deliberately irregular route, with varied rotations, sizes, and
+  negative space. This restores an editorial stagger without creating a massed
+  card stack or an empty outer result frame near the panel split.
+- Companion workstations are a separate quiet lane, not a second active route.
+  Their documents remain quiet and static. Three short support lines follow the
+  approved editorial anchors, with all three terminating at document edges;
+  the lower connection uses a short open right-angle bend instead of a long
+  diagonal or a closed frame;
+  they never receive the teal active treatment.
+  At desktop all five are visible; from 640–899px the companion documents, their
+  support lines, and ambient marks are hidden as one semantic group; below 640px
+  the scene keeps only the static primary path signature. A hidden document can
+  never leave an orphaned support line behind.
+- Document interiors are static detail data with a `revealAt` route step.
+  Lines, edge dots, and occasional review checks appear
+  in a finite order at the email preview, OTP page, digits 1/3/5/6, and
+  verification states. Review checks use reserved blank rails or cells and
+  never cover a document rule. Four small ambient marks add drafting context without
+  entering business-state calculation, random generation, or a looping effect.
+- Cloud and local login share the same geometry. Cloud progress uses discrete
+  visual steps 0–7: email submit, OTP screen, four checkpoints at digits
+  1/3/5/6, and verification. Local username and password input uses the same
+  route language through coarse `inputEnergy` thresholds rather than per-key
+  movement. While the cloud email is being typed, `inputEnergy` draws only a
+  short first-segment preview and gently raises its first document; characters
+  do not recompose or shake the whole scene. The scene uses solid fills and
+  tinted hairlines only, with no gradient, glow, particle field, 3D library,
+  WebGL, or canvas renderer.
+- Light themes read as a slightly inked paper field with raised paper
+  documents, graphite construction lines, and a restrained teal drafting
+  accent; documents must not disappear into a white canvas. Dark themes read
+  as deep blue-gray paper with cool gray construction lines and the same teal
+  semantic accent. Theme changes alter material and contrast, not geometry or
+  state meaning. Blueprint-specific colors are scoped to
+  `--auth-blueprint-*` tokens and derive from the existing Flowy semantic
+  theme variables. The local token set includes a dedicated canvas, quiet and
+  document line roles, a quiet surface, an opaque backplate, and a soft accent
+  role so dark mode is a material treatment rather than a simple inversion.
+- Local login uses the same shell with Device → Workspace → Result language.
+  Cloud login uses Intent → Work → Result language. Settings keeps the normal
+  Settings Page Header → Section → List → Row layout and does not embed the
+  brand field.
+
+### Motion and performance
+
+Motion is event-driven. A still page does not retain an IntentField animation
+frame or a decorative timer. Form feedback remains 120ms; Auth Surface route
+strokes, document opacity, and document backplates use a 360ms reveal window;
+the verifying cursor and completion pulse use 480ms. OTP checkpoints enter a
+bounded queue and advance every 400ms, so paste and autofill feel continuous
+without replaying a long line. Email typing only previews the first segment
+  and its intent document through `inputEnergy`; it never translates or remounts
+  the whole scene. When OTP input is deleted or an invalid verification clears
+  the code, the displayed route walks back toward the matching checkpoint one
+  segment at a time, preserving the same 360ms transition rhythm as forward
+  progress.
+  Verification uses one solid
+execution cursor that travels the final segment once without a trail or loop.
+Error feedback is local to one fragment and never shakes the layout.
+
+Fine-pointer hover is optional and disabled for coarse pointers and Reduced
+Motion. One scheduled RAF may coalesce pointer updates; it is canceled on
+leave, hidden state, capability changes, and unmount. The pointer can nudge
+only the nearest two fragments by at most 3px and reveal one crosshair. No
+pointer trail, glow, pulse, random twinkle, or ambient loop is allowed.
+
+The scene is a single responsive SVG with a stable `viewBox` and roughly 70
+visible nodes. It has no Canvas, WebGL, Three.js, runtime particle data, or
+geometry generation pipeline. The upper-left brand safe zone and lower-left
+copy safe zone remain clear. At 899px the brand band keeps four primary
+fragments and no companion system; at 639px it keeps a static path-result
+signature with no support lines and prioritizes the form.
+Reduced Motion and hidden pages render the same semantic end state with all
+transitions, cursor travel, and pointer feedback disabled. After cloud success,
+the form is replaced by one stable Auth Surface completion state with a loading
+indicator while the cloud session refreshes and the `/guid` route chunk is
+prefetched. The refresh reports authenticated, unauthenticated, offline, or
+stale explicitly; an offline or server refresh failure keeps the user on a
+recoverable preparation state with a retry action instead of an indefinite
+spinner. Navigation then uses one replace transition, so the signed-in
+account form and route-content fallback do not flash between authentication and
+the home page. Authentication callbacks are never delayed for the visual
+transition.
+
+### Email OTP contract
+
+Email OTP is fixed at six numeric characters. `OtpCodeInput` keeps one real
+text input with numeric input mode, one-time-code autocomplete, and a six-cell
+visual projection. Cells are decorative and grouped 3 + 3. Paste, autofill,
+Backspace, arrow keys, and Enter operate on the real input. A unique complete
+code auto-verifies once; editing it clears that guard.
+
+The shared controller owns the email, code, pending session, 60-second
+cooldown, request generation, failure classification, and safe localized
+status. The backend exposes `CLOUD_OTP_INVALID_CODE` with HTTP 422 for an
+explicitly invalid code. The frontend gives that code priority, while keeping
+compatibility with legacy 400/422 and structured Chinese/English messages;
+raw backend text is never shown. Resend and changing the email create a fresh session window; changing
+the email invalidates the old session generation and resets the client
+cooldown. Late results from a previous generation
+cannot overwrite the current email or code. An invalid or unknown verification
+failure keeps the pending session: the code clears, the input stays enabled,
+the first cell regains focus without scrolling, and retyping a complete code
+verifies again. A terminal JSON `status: "failed"` response means the server
+has consumed the pending session; it clears the session and exposes a fresh
+resend path without presenting it as an invalid code. Only an explicit expiry signal
+(HTTP 410, 429, or expired/attempt-limit text) consumes the session, disables
+the input, and exposes resend recovery only. A transport failure retains the
+code and pending session so retry verification is possible; a pending response
+is warning state, not an invalid-code state. Backend and upstream error text
+is classified only for control flow and is never rendered directly.
+
+### Acceptance
+
+Every Auth Surface must be checked at 1440×900, 1280×800, 900px, 768px, and
+360px across built-in light and dark themes. Acceptance includes keyboard
+focus, 200% zoom, touch target size, reduced motion, fine-pointer hover,
+partial and complete OTP input, resend cooldown, session expiry, transport
+retry, desktop window controls, line-to-document occlusion, and the absence
+of whole-scene input jitter. Active paths, checks, and arrived document edges
+must remain visibly distinct in both themes. Automated type, i18n, theme, and
+build checks do not replace manual visual, power, browser, or desktop-host
+acceptance.

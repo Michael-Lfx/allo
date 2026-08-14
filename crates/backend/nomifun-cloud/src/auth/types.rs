@@ -84,5 +84,7 @@ pub enum AuthUserInput {
 pub enum AuthPollResult {
     Pending(PendingLogin),
     Success(ServerTokens),
+    /// The current OTP session remains valid, but the submitted code did not.
+    InvalidCode,
     Failed(String),
 }

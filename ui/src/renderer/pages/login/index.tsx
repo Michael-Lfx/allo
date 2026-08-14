@@ -1,17 +1,19 @@
-
-
 import FlowyLogo from '@renderer/components/brand/FlowyLogo';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { changeLanguage } from '@/renderer/services/i18n';
 import { useNavigate } from 'react-router-dom';
-import { motion, useReducedMotion } from 'framer-motion';
 import { PreviewClose, PreviewOpen, Lock, User } from '@icon-park/react';
+import AuthField from '@renderer/components/auth/AuthField';
+import AuthPrimaryButton from '@renderer/components/auth/AuthPrimaryButton';
+import AuthShell from '@renderer/components/auth/AuthShell';
+import AuthStatusBar from '@renderer/components/auth/AuthStatusBar';
+import type { IntentFieldPhase } from '@renderer/components/auth/authTypes';
 import { useAuth } from '../../hooks/context/AuthContext';
 import { useCloudAuth } from '../../hooks/context/CloudAuthContext';
 import { resolvePostLocalAuthPath } from '@renderer/utils/auth/authGate';
-import LanMesh from './LanMesh';
 import './LoginPage.css';
+import '@renderer/components/auth/auth.css';
 
 type MessageState = {
   type: 'error' | 'success';
@@ -20,12 +22,8 @@ type MessageState = {
 
 const REMEMBER_ME_KEY = 'rememberMe';
 const REMEMBERED_USERNAME_KEY = 'rememberedUsername';
-// Legacy key from older versions that persisted the password; kept only so
-// any value stored by those versions is wiped on load. Passwords are never
-// written to localStorage anymore.
 const LEGACY_REMEMBERED_PASSWORD_KEY = 'rememberedPassword';
 
-// Simple obfuscation for the stored username (not cryptographically secure, but prevents plain text storage)
 const obfuscate = (text: string): string => {
   const encoded = btoa(encodeURIComponent(text));
   return encoded.split('').reverse().join('');
@@ -43,7 +41,6 @@ const deobfuscate = (text: string): string => {
 const LoginPage: React.FC = () => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const reduceMotion = useReducedMotion();
   const { status, login, setup, needsSetup } = useAuth();
   const { status: cloudStatus } = useCloudAuth();
 
@@ -53,32 +50,22 @@ const LoginPage: React.FC = () => {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [message, setMessage] = useState<MessageState | null>(null);
   const [loading, setLoading] = useState(false);
+  const [intentPhase, setIntentPhase] = useState<IntentFieldPhase>('idle');
   const navigatingRef = useRef(false);
-
   const usernameRef = useRef<HTMLInputElement | null>(null);
-  const passwordRef = useRef<HTMLInputElement | null>(null);
   const messageTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     document.body.classList.add('login-page-active');
+    document.title = t('login.pageTitle');
+    document.documentElement.lang = i18n.language;
     return () => {
       document.body.classList.remove('login-page-active');
-      if (messageTimer.current) {
-        window.clearTimeout(messageTimer.current);
-      }
+      if (messageTimer.current) window.clearTimeout(messageTimer.current);
     };
-  }, []);
+  }, [i18n.language, t]);
 
   useEffect(() => {
-    document.title = t('login.pageTitle');
-  }, [t]);
-
-  useEffect(() => {
-    document.documentElement.lang = i18n.language;
-  }, [i18n.language]);
-
-  useEffect(() => {
-    // Never keep passwords in localStorage. Clear any legacy obfuscated copy.
     localStorage.removeItem(LEGACY_REMEMBERED_PASSWORD_KEY);
     const isRememberMe = localStorage.getItem(REMEMBER_ME_KEY) === 'true';
     if (isRememberMe) {
@@ -86,17 +73,7 @@ const LoginPage: React.FC = () => {
       if (storedUsername) setUsername(deobfuscate(storedUsername));
       setRememberMe(true);
     }
-    // One-time cleanup of passwords persisted by older versions.
-    localStorage.removeItem(LEGACY_REMEMBERED_PASSWORD_KEY);
-    window.setTimeout(() => {
-      usernameRef.current?.focus();
-    }, 0);
-
-    return () => {
-      if (messageTimer.current) {
-        window.clearTimeout(messageTimer.current);
-      }
-    };
+    window.setTimeout(() => usernameRef.current?.focus(), 0);
   }, []);
 
   const goAfterLocalAuth = useCallback(() => {
@@ -106,31 +83,22 @@ const LoginPage: React.FC = () => {
   }, [cloudStatus, navigate]);
 
   useEffect(() => {
-    if (status === 'authenticated') {
-      goAfterLocalAuth();
-    }
+    if (status === 'authenticated') goAfterLocalAuth();
   }, [goAfterLocalAuth, status]);
 
   const clearMessageLater = useCallback(() => {
-    if (messageTimer.current) {
-      window.clearTimeout(messageTimer.current);
-    }
+    if (messageTimer.current) window.clearTimeout(messageTimer.current);
     messageTimer.current = window.setTimeout(() => {
-      setMessage((prev) => (prev?.type === 'success' ? prev : null));
+      setMessage((previous) => (previous?.type === 'success' ? previous : null));
     }, 5000);
   }, []);
 
-  const showMessage = useCallback(
-    (next: MessageState) => {
-      setMessage(next);
-      if (next.type === 'error') {
-        clearMessageLater();
-      }
-    },
-    [clearMessageLater]
-  );
+  const showMessage = useCallback((next: MessageState) => {
+    setMessage(next);
+    if (next.type === 'error') clearMessageLater();
+  }, [clearMessageLater]);
 
-  const supportedLanguages = useMemo<{ code: string; label: string }[]>(
+  const supportedLanguages = useMemo(
     () => [
       { code: 'zh-CN', label: '简体中文' },
       { code: 'en-US', label: 'English' },
@@ -139,254 +107,163 @@ const LoginPage: React.FC = () => {
   );
 
   const handleLanguageChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
-    const nextLanguage = event.target.value;
-    changeLanguage(nextLanguage).catch((error: Error) => {
+    void changeLanguage(event.target.value).catch((error: Error) => {
       console.error('Failed to change language:', error);
     });
   }, []);
 
-  const handleSubmit = useCallback(
-    async (event: React.FormEvent) => {
-      event.preventDefault();
-      const trimmedUsername = username.trim();
+  const handleSubmit = useCallback(async (event: React.FormEvent) => {
+    event.preventDefault();
+    const trimmedUsername = username.trim();
+    if (!trimmedUsername || !password) {
+      setIntentPhase('error');
+      showMessage({ type: 'error', text: t('login.errors.empty') });
+      return;
+    }
 
-      if (!trimmedUsername || !password) {
-        showMessage({ type: 'error', text: t('login.errors.empty') });
-        return;
+    setLoading(true);
+    setIntentPhase('verifying');
+    setMessage(null);
+    const result = needsSetup
+      ? await setup({ username: trimmedUsername, password })
+      : await login({ username: trimmedUsername, password });
+
+    if (result.success) {
+      if (!needsSetup && rememberMe) {
+        localStorage.setItem(REMEMBER_ME_KEY, 'true');
+        localStorage.setItem(REMEMBERED_USERNAME_KEY, obfuscate(trimmedUsername));
+      } else if (!needsSetup) {
+        localStorage.removeItem(REMEMBER_ME_KEY);
+        localStorage.removeItem(REMEMBERED_USERNAME_KEY);
       }
-
-      setLoading(true);
-      setMessage(null);
-
-      const result = needsSetup
-        ? await setup({ username: trimmedUsername, password })
-        : await login({ username: trimmedUsername, password });
-
-      if (result.success) {
-        if (!needsSetup && rememberMe) {
-          localStorage.setItem(REMEMBER_ME_KEY, 'true');
-          localStorage.setItem(REMEMBERED_USERNAME_KEY, obfuscate(trimmedUsername));
-        } else if (!needsSetup) {
-          localStorage.removeItem(REMEMBER_ME_KEY);
-          localStorage.removeItem(REMEMBERED_USERNAME_KEY);
+      localStorage.removeItem(LEGACY_REMEMBERED_PASSWORD_KEY);
+      setIntentPhase('success');
+      showMessage({ type: 'success', text: needsSetup ? t('login.setupSuccess') : t('login.success') });
+      goAfterLocalAuth();
+    } else {
+      const errorText = (() => {
+        switch (result.code) {
+          case 'invalidCredentials': return t('login.errors.invalidCredentials');
+          case 'tooManyAttempts': return t('login.errors.tooManyAttempts');
+          case 'networkError': return t('login.errors.networkError');
+          case 'serverError': return t('login.errors.serverError');
+          case 'csrfError':
+          case 'unknown':
+          default: return result.message ?? t('login.errors.unknown');
         }
-        localStorage.removeItem(LEGACY_REMEMBERED_PASSWORD_KEY);
+      })();
+      setIntentPhase('error');
+      showMessage({ type: 'error', text: errorText });
+    }
+    setLoading(false);
+  }, [goAfterLocalAuth, login, needsSetup, password, rememberMe, setup, showMessage, t, username]);
 
-        showMessage({
-          type: 'success',
-          text: needsSetup ? t('login.setupSuccess') : t('login.success'),
-        });
-        goAfterLocalAuth();
-      } else {
-        const errorText = (() => {
-          switch (result.code) {
-            case 'invalidCredentials':
-              return t('login.errors.invalidCredentials');
-            case 'tooManyAttempts':
-              return t('login.errors.tooManyAttempts');
-            case 'networkError':
-              return t('login.errors.networkError');
-            case 'serverError':
-              return t('login.errors.serverError');
-            case 'csrfError':
-            case 'unknown':
-            default:
-              return result.message ?? t('login.errors.unknown');
-          }
-        })();
-
-        showMessage({ type: 'error', text: errorText });
-      }
-
-      setLoading(false);
-    },
-    [goAfterLocalAuth, login, setup, needsSetup, password, rememberMe, showMessage, t, username]
-  );
-
-  if (status === 'checking') {
-    return null;
-  }
+  if (status === 'checking') return null;
 
   const panelTitle = needsSetup ? t('login.setupTitle') : t('login.welcomeTitle');
   const panelDesc = needsSetup ? t('login.setupSubtitle') : t('login.subtitle');
 
   return (
-    <div className='login-page'>
-      <motion.div
-        className='login-page__shell'
-        initial={reduceMotion ? false : { scale: 0.985 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-      >
-        <aside className='login-page__brand'>
-          <LanMesh />
-          <div className='login-page__brand-content'>
-            <motion.div
-              className='login-page__brand-logo'
-              initial={reduceMotion ? false : { opacity: 0.85, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.08, duration: 0.3 }}
+    <AuthShell
+      mode='local'
+      phase={intentPhase}
+      inputEnergy={(username.trim() ? 0.5 : 0) + (password ? 0.5 : 0)}
+      brandTitle={t('login.brand')}
+      brandTagline={t('login.brandTagline')}
+      brandFlow={t('login.brandFlow')}
+      brandLogo={<FlowyLogo size={36} title={t('login.brand')} />}
+      brandMeta={t('login.footerSecondary')}
+      footer={
+        <>
+          <span className='flowy-auth-footer__group'>{t('login.footerPrimary')}</span>
+          <span className='flowy-auth-footer__group'>{t('login.footerSecondary')}</span>
+        </>
+      }
+      className='login-page'
+    >
+      <div className='login-page__language'>
+        <label className='flowy-auth-visually-hidden' htmlFor='lang-select'>
+          {t('login.languageToggle')}
+        </label>
+        <select
+          id='lang-select'
+          className='login-page__lang-select'
+          value={i18n.language}
+          onChange={handleLanguageChange}
+        >
+          {supportedLanguages.map((language) => (
+            <option key={language.code} value={language.code}>{language.label}</option>
+          ))}
+        </select>
+      </div>
+
+      <h1 className='flowy-auth-heading'>{panelTitle}</h1>
+      <p className='flowy-auth-description'>{panelDesc}</p>
+
+      <form className='flowy-auth-form login-page__form' onSubmit={handleSubmit}>
+        <AuthField
+          ref={usernameRef}
+          id='username'
+          name='username'
+          type='text'
+          label={t('login.username')}
+          placeholder={t('login.usernamePlaceholder')}
+          autoComplete='username'
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
+          onFocus={() => !loading && setIntentPhase('input')}
+          aria-required='true'
+          leading={<User theme='outline' size={16} strokeWidth={3} />}
+        />
+
+        <AuthField
+          id='password'
+          name='password'
+          type={passwordVisible ? 'text' : 'password'}
+          label={t('login.password')}
+          placeholder={t('login.passwordPlaceholder')}
+          autoComplete={needsSetup ? 'new-password' : 'current-password'}
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          onFocus={() => !loading && setIntentPhase('input')}
+          aria-required='true'
+          trailing={
+            <button
+              type='button'
+              className='login-page__toggle-password'
+              onClick={() => setPasswordVisible((previous) => !previous)}
+              aria-label={passwordVisible ? t('login.hidePassword') : t('login.showPassword')}
             >
-              <FlowyLogo size={36} title={t('login.brand')} />
-            </motion.div>
-            <motion.h2
-              className='login-page__brand-title'
-              initial={reduceMotion ? false : { opacity: 0.85, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.12, duration: 0.3 }}
-            >
-              {t('login.brand')}
-            </motion.h2>
+              {passwordVisible ? <PreviewClose theme='outline' size={16} strokeWidth={3} /> : <PreviewOpen theme='outline' size={16} strokeWidth={3} />}
+            </button>
+          }
+          leading={<Lock theme='outline' size={16} strokeWidth={3} />}
+        />
+
+        {!needsSetup && (
+          <div className='login-page__checkbox'>
+            <input
+              type='checkbox'
+              id='remember-me'
+              checked={rememberMe}
+              onChange={(event) => setRememberMe(event.target.checked)}
+            />
+            <label htmlFor='remember-me'>{t('login.rememberMe')}</label>
           </div>
-        </aside>
+        )}
 
-        <section className='login-page__panel'>
-          <motion.div
-            className='login-page__panel-inner'
-            initial={reduceMotion ? false : { opacity: 0.9, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.05, duration: 0.3 }}
-          >
-            <label className='login-page__lang' htmlFor='lang-select'>
-              <span className='login-page__visually-hidden'>{t('login.languageToggle')}</span>
-              <select
-                id='lang-select'
-                className='login-page__lang-select'
-                value={i18n.language}
-                onChange={handleLanguageChange}
-              >
-                {supportedLanguages.map((lang) => (
-                  <option key={lang.code} value={lang.code}>
-                    {lang.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+        <AuthPrimaryButton
+          type='submit'
+          loading={loading}
+          loadingLabel={t('login.submitting')}
+          icon={<span>→</span>}
+        >
+          {needsSetup ? t('login.setupSubmit') : t('login.submit')}
+        </AuthPrimaryButton>
 
-            <h1 className='login-page__panel-title'>{panelTitle}</h1>
-            <p className='login-page__panel-desc'>{panelDesc}</p>
-
-            <form className='login-page__form' onSubmit={handleSubmit}>
-              <div className='login-page__field'>
-                <label className='login-page__label' htmlFor='username'>
-                  {t('login.username')}
-                </label>
-                <div className='login-page__input-wrap'>
-                  <span className='login-page__input-icon' aria-hidden='true'>
-                    <User theme='outline' size={16} strokeWidth={3} />
-                  </span>
-                  <input
-                    ref={usernameRef}
-                    id='username'
-                    name='username'
-                    className='login-page__input'
-                    placeholder={t('login.usernamePlaceholder')}
-                    autoComplete='username'
-                    value={username}
-                    onChange={(event) => setUsername(event.target.value)}
-                    aria-required='true'
-                  />
-                </div>
-              </div>
-
-              <div className='login-page__field'>
-                <label className='login-page__label' htmlFor='password'>
-                  {t('login.password')}
-                </label>
-                <div className='login-page__input-wrap'>
-                  <span className='login-page__input-icon' aria-hidden='true'>
-                    <Lock theme='outline' size={16} strokeWidth={3} />
-                  </span>
-                  <input
-                    ref={passwordRef}
-                    id='password'
-                    name='password'
-                    type={passwordVisible ? 'text' : 'password'}
-                    className='login-page__input'
-                    placeholder={t('login.passwordPlaceholder')}
-                    autoComplete={needsSetup ? 'new-password' : 'current-password'}
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    aria-required='true'
-                  />
-                  <button
-                    type='button'
-                    className='login-page__toggle-password'
-                    onClick={() => setPasswordVisible((prev) => !prev)}
-                    aria-label={passwordVisible ? t('login.hidePassword') : t('login.showPassword')}
-                  >
-                    {passwordVisible ? (
-                      <PreviewClose theme='outline' size={16} strokeWidth={3} />
-                    ) : (
-                      <PreviewOpen theme='outline' size={16} strokeWidth={3} />
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {!needsSetup && (
-                <div className='login-page__checkbox'>
-                  <input
-                    type='checkbox'
-                    id='remember-me'
-                    checked={rememberMe}
-                    onChange={(event) => setRememberMe(event.target.checked)}
-                  />
-                  <label htmlFor='remember-me'>{t('login.rememberMe')}</label>
-                </div>
-              )}
-
-              <motion.button
-                type='submit'
-                className='login-page__submit'
-                disabled={loading}
-                whileHover={loading || reduceMotion ? undefined : { y: -1 }}
-                whileTap={loading || reduceMotion ? undefined : { scale: 0.985 }}
-              >
-                {loading && (
-                  <svg className='login-page__spinner' viewBox='0 0 24 24' width='18' height='18'>
-                    <circle
-                      cx='12'
-                      cy='12'
-                      r='10'
-                      stroke='currentColor'
-                      strokeWidth='3'
-                      fill='none'
-                      strokeDasharray='50'
-                      strokeDashoffset='25'
-                      strokeLinecap='round'
-                    />
-                  </svg>
-                )}
-                <span>
-                  {loading
-                    ? t('login.submitting')
-                    : needsSetup
-                      ? t('login.setupSubmit')
-                      : t('login.submit')}
-                </span>
-              </motion.button>
-
-              <div
-                role='alert'
-                aria-live='polite'
-                className={`login-page__message ${message ? `login-page__message--${message.type}` : 'login-page__message--empty'}`}
-              >
-                {message?.text ?? '\u00A0'}
-              </div>
-            </form>
-
-            <div className='login-page__footer'>
-              <span>{t('login.footerPrimary')}</span>
-              <span className='login-page__footer-divider' aria-hidden='true'>
-                ·
-              </span>
-              <span>{t('login.footerSecondary')}</span>
-            </div>
-          </motion.div>
-        </section>
-      </motion.div>
-    </div>
+        {message && <AuthStatusBar tone={message.type}>{message.text}</AuthStatusBar>}
+      </form>
+    </AuthShell>
   );
 };
 

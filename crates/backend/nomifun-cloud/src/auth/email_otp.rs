@@ -81,15 +81,83 @@ impl AuthProvider for EmailOtpAuthProvider {
                     })?;
                 let code = code.trim().to_string();
                 if code.len() < 4 {
-                    return Ok(AuthPollResult::Failed("verification code too short".into()));
+                    return Ok(AuthPollResult::InvalidCode);
                 }
-                let jwt = ctx
+                let jwt = match ctx
                     .api
                     .login_by_email(&state.email, &code, &state.valid_code_req_no)
-                    .await?;
+                    .await
+                {
+                    Ok(jwt) => jwt,
+                    Err(error) if is_invalid_email_otp_error(&error) => {
+                        return Ok(AuthPollResult::InvalidCode);
+                    }
+                    Err(error) => return Err(error),
+                };
                 Ok(AuthPollResult::Success(ServerTokens::from_jwt(jwt)))
             }
             AuthUserInput::Poll => Ok(AuthPollResult::Pending(pending.clone())),
         }
+    }
+}
+
+/// Email OTP providers use a few different response shapes in the wild.
+/// Keep this classifier deliberately narrow: an explicit invalid-code status
+/// or message is retryable, while expiry and attempt limits invalidate the
+/// session and every other error remains a transport/server failure.
+fn is_invalid_email_otp_error(error: &ServerClientError) -> bool {
+    let (status_like_code, message) = match error {
+        ServerClientError::Api { code, msg } => (Some(*code), msg.as_str()),
+        ServerClientError::Server { status, body, .. } => (Some(*status as i32), body.as_str()),
+        _ => return false,
+    };
+
+    let normalized = message.to_ascii_lowercase();
+    let is_expired_or_limited = normalized.contains("expired")
+        || normalized.contains("too many")
+        || normalized.contains("attempt")
+        || normalized.contains("session expired")
+        || message.contains("过期")
+        || message.contains("次数")
+        || message.contains("会话失效");
+    if is_expired_or_limited {
+        return false;
+    }
+
+    let explicit_invalid_message = message.contains("验证码错误")
+        || message.contains("验证码无效")
+        || message.contains("验证码不正确")
+        || ((normalized.contains("invalid")
+            || normalized.contains("incorrect")
+            || normalized.contains("wrong"))
+            && (normalized.contains("code")
+                || normalized.contains("otp")
+                || normalized.contains("verification")));
+
+    matches!(status_like_code, Some(400 | 422)) || explicit_invalid_message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_invalid_otp_responses_without_classifying_expiry() {
+        assert!(is_invalid_email_otp_error(&ServerClientError::Api {
+            code: 422,
+            msg: "验证码无效".into(),
+        }));
+        assert!(is_invalid_email_otp_error(&ServerClientError::Api {
+            code: 500,
+            msg: "wrong verification code".into(),
+        }));
+        assert!(!is_invalid_email_otp_error(&ServerClientError::Api {
+            code: 422,
+            msg: "verification code expired".into(),
+        }));
+        assert!(!is_invalid_email_otp_error(&ServerClientError::Api {
+            code: 429,
+            msg: "too many attempts".into(),
+        }));
     }
 }

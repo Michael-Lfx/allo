@@ -1,539 +1,534 @@
-
-
 import appLogo from '@renderer/assets/logo.svg';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { Refresh } from '@icon-park/react';
 import WindowControls from '@renderer/components/layout/WindowControls';
-import { ipcBridge } from '@/common';
+import AuthCooldownHint from '@renderer/components/auth/AuthCooldownHint';
+import AuthField from '@renderer/components/auth/AuthField';
+import AuthPrimaryButton from '@renderer/components/auth/AuthPrimaryButton';
+import AuthShell from '@renderer/components/auth/AuthShell';
+import AuthStatusBar from '@renderer/components/auth/AuthStatusBar';
+import OtpCodeInput from '@renderer/components/auth/OtpCodeInput';
+import { getOtpBlueprintCheckpoint } from '@renderer/components/auth/blueprintScene';
+import type {
+  BlueprintRouteStep,
+  CloudActivationLevel,
+  IntentFieldPhase,
+} from '@renderer/components/auth/authTypes';
+import useEmailOtpLogin, { EMAIL_OTP_LENGTH } from '@renderer/hooks/auth/useEmailOtpLogin';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { isDesktopShell, isMacOS } from '@renderer/utils/platform';
-import { flowyTransition, prefersReducedMotion, preloadCommercialPathChunks } from '@renderer/utils/motion/flowyMotion';
+import { preloadCommercialPathChunks, preloadGuidPathChunk } from '@renderer/utils/motion/flowyMotion';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
-import DotMap from './DotMap';
+import type { CloudAuthStatus } from '@renderer/hooks/context/CloudAuthContext';
 import './CloudLoginPage.css';
+import '@renderer/components/auth/auth.css';
 import '@renderer/components/layout/Titlebar/titlebar.css';
 
-type MessageState = { type: 'error' | 'success' | 'info'; text: string };
+const resolveIntentPhase = (
+  step: 'email' | 'otp',
+  phase: ReturnType<typeof useEmailOtpLogin>['phase'],
+  failureKind: ReturnType<typeof useEmailOtpLogin>['failureKind'],
+  hasInput: boolean
+): IntentFieldPhase => {
+  if (phase === 'success') return 'success';
+  if (phase === 'session-expired' || failureKind === 'invalid-code' || failureKind === 'unknown') return 'error';
+  if (phase === 'transport-error' || failureKind === 'transport' || failureKind === 'verification-pending') return 'warning';
+  if (phase === 'verifying') return 'verifying';
+  if (step === 'otp') return 'code-sent';
+  return hasInput || phase === 'sending' ? 'input' : 'idle';
+};
+
+interface CloudLoginFlowProps {
+  status: Exclude<CloudAuthStatus, 'checking'>;
+  whoami: ReturnType<typeof useCloudAuth>['whoami'];
+  logout: ReturnType<typeof useCloudAuth>['logout'];
+  onSuccess: () => Promise<void>;
+}
+
+const preventPlaceholderNavigation = (event: React.MouseEvent<HTMLAnchorElement>) => {
+  event.preventDefault();
+};
+
+const CloudLoginLegalLinks: React.FC = () => {
+  const { t } = useTranslation();
+
+  return (
+    <>
+      <a
+        className='flowy-auth-brand__legal-link'
+        href='#'
+        aria-disabled='true'
+        onClick={preventPlaceholderNavigation}
+      >
+        {t('cloudLogin.legal.privacy')}
+      </a>
+      <span className='flowy-auth-brand__legal-separator' aria-hidden='true'>{t('cloudLogin.legal.and')}</span>
+      <a
+        className='flowy-auth-brand__legal-link'
+        href='#'
+        aria-disabled='true'
+        onClick={preventPlaceholderNavigation}
+      >
+        {t('cloudLogin.legal.terms')}
+      </a>
+    </>
+  );
+};
+
+interface CloudLoginTransitionProps {
+  message: string;
+  blueprintStep: BlueprintRouteStep;
+  onRetry?: () => void;
+  retryLabel?: string;
+}
+
+const CloudLoginTransition: React.FC<CloudLoginTransitionProps> = ({
+  message,
+  blueprintStep,
+  onRetry,
+  retryLabel,
+}) => {
+  const { t } = useTranslation();
+  const showWindowControls = isDesktopShell() && !isMacOS();
+
+  return (
+    <AuthShell
+      mode='cloud'
+      phase={blueprintStep === 7 ? 'verifying' : 'idle'}
+      activationLevel={blueprintStep === 7 ? EMAIL_OTP_LENGTH : 0}
+      blueprintStep={blueprintStep}
+      brandTitle={t('cloudLogin.brand')}
+      brandTagline={t('cloudLogin.brandTagline')}
+      brandFlow={t('cloudLogin.brandFlow')}
+      brandLogo={<img src={appLogo} alt='' />}
+      brandMeta={t('cloudLogin.brandMeta')}
+      brandLegal={<CloudLoginLegalLinks />}
+      windowControls={
+        showWindowControls ? (
+          <>
+            <div className='flowy-auth-chrome__spacer' data-tauri-drag-region />
+            <WindowControls />
+          </>
+        ) : undefined
+      }
+      className='cloud-login-page cloud-login-page--transition'
+    >
+      <div
+        className={`cloud-login-transition${onRetry ? ' cloud-login-transition--error' : ''}`}
+        role='status'
+        aria-live='polite'
+        aria-busy={onRetry ? 'false' : 'true'}
+      >
+        {!onRetry && <span className='flowy-auth-spinner cloud-login-transition__spinner' aria-hidden='true' />}
+        <span className='cloud-login-transition__message'>{message}</span>
+        {onRetry && retryLabel && (
+          <AuthPrimaryButton type='button' onClick={onRetry}>
+            {retryLabel}
+          </AuthPrimaryButton>
+        )}
+      </div>
+    </AuthShell>
+  );
+};
+
+/**
+ * The auth form owns its hooks in a stable child. CloudLoginPage can therefore
+ * switch checking -> authenticated without changing this component's hook list.
+ */
+const CloudLoginFlow: React.FC<CloudLoginFlowProps> = ({ status, whoami, logout, onSuccess }) => {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [emailTouched, setEmailTouched] = useState(false);
+  const [blueprintStep, setBlueprintStep] = useState<BlueprintRouteStep>(0);
+  const flow = useEmailOtpLogin({
+    autoStart: status === 'unauthenticated',
+    onSuccess,
+  });
+
+  const showOtp = flow.state.step === 'otp';
+  const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(flow.email.trim());
+  const emailInputEnergy = showOtp || !flow.email.trim()
+    ? 0
+    : Math.min(1, flow.email.trim().length / 18 + (validEmail ? 0.2 : 0));
+  const showWindowControls = isDesktopShell() && !isMacOS();
+
+  useEffect(() => {
+    setBlueprintStep(showOtp ? 2 : 0);
+  }, [showOtp]);
+
+  useEffect(() => {
+    if (!showOtp) return;
+    const checkpoint = getOtpBlueprintCheckpoint(flow.code.length);
+    setBlueprintStep((2 + checkpoint) as BlueprintRouteStep);
+  }, [flow.code.length, showOtp]);
+
+  useEffect(() => {
+    if (flow.phase === 'verifying' || flow.phase === 'success') {
+      setBlueprintStep(7);
+    }
+  }, [flow.phase]);
+
+  const handleSendCode = useCallback(() => {
+    if (validEmail && !flow.busy && flow.cooldown <= 0) {
+      setBlueprintStep((previous) => Math.max(previous, 1) as BlueprintRouteStep);
+    }
+    void flow.sendCode();
+  }, [flow.busy, flow.cooldown, flow.sendCode, validEmail]);
+
+  const handleEmailChange = useCallback((value: string) => {
+    flow.setEmail(value);
+    if (!value.trim()) setBlueprintStep(0);
+  }, [flow.setEmail]);
+
+  const handleChangeEmail = useCallback(() => {
+    flow.changeEmail();
+    setBlueprintStep(0);
+    setEmailTouched(false);
+  }, [flow.changeEmail]);
+
+  const handleResendCode = useCallback(() => {
+    setBlueprintStep(2);
+    void flow.resendCode();
+  }, [flow.resendCode]);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await logout();
+      flow.reset();
+      await flow.startLogin();
+    } catch {
+      // CloudAuth owns the logout error presentation. Auth UI stays stable.
+    }
+  }, [flow.reset, flow.startLogin, logout]);
+
+  const intentPhase = resolveIntentPhase(
+    flow.state.step,
+    flow.phase,
+    flow.failureKind,
+    Boolean(flow.email.trim() || flow.code)
+  );
+  const activationLevel = (
+    flow.phase === 'success'
+      ? EMAIL_OTP_LENGTH
+      : Math.min(EMAIL_OTP_LENGTH, flow.code.length)
+  ) as CloudActivationLevel;
+  const statusTone = flow.phase === 'success'
+    ? 'success'
+    : flow.failureKind === 'invalid-code' || flow.failureKind === 'unknown' || flow.phase === 'session-expired'
+      ? 'error'
+      : flow.phase === 'transport-error' || flow.failureKind === 'transport' || flow.failureKind === 'verification-pending'
+        ? 'warning'
+        : 'info';
+  const isVerifying = flow.phase === 'verifying';
+
+  const emailError = !showOtp && emailTouched && flow.email.trim() && !validEmail
+    ? t('cloudLogin.login.emailInvalid')
+    : !showOtp && flow.phase === 'email'
+      ? flow.message
+      : undefined;
+  const statusMessage = flow.message
+    ?? (flow.code.length === EMAIL_OTP_LENGTH
+      ? t('cloudLogin.login.verifyingWorkspace')
+      : t('cloudLogin.login.otpHint'));
+
+  const isSignedIn = Boolean(whoami?.authenticated);
+  const blueprintStepOverride = blueprintStep > 0 ? blueprintStep : undefined;
+
+  return (
+    <AuthShell
+      mode='cloud'
+      phase={intentPhase}
+      activationLevel={activationLevel}
+      inputEnergy={emailInputEnergy}
+      blueprintStep={blueprintStepOverride}
+      brandTitle={t('cloudLogin.brand')}
+      brandTagline={t('cloudLogin.brandTagline')}
+      brandFlow={t('cloudLogin.brandFlow')}
+      brandLogo={<img src={appLogo} alt='' />}
+      brandMeta={t('cloudLogin.brandMeta')}
+      brandLegal={<CloudLoginLegalLinks />}
+      windowControls={
+        showWindowControls ? (
+          <>
+            <div className='flowy-auth-chrome__spacer' data-tauri-drag-region />
+            <WindowControls />
+          </>
+        ) : undefined
+      }
+      className='cloud-login-page'
+    >
+      {isSignedIn ? (
+        <section className='cloud-login-account'>
+          <h1 className='flowy-auth-heading'>{t('cloudLogin.account.signedIn')}</h1>
+          <p className='flowy-auth-description'>{t('cloudLogin.accountSubtitle')}</p>
+          {(whoami?.email || whoami?.username) && (
+            <p className='cloud-login-account__identity'>{whoami.email ?? whoami.username}</p>
+          )}
+          <div className='cloud-login-account__actions'>
+            <AuthPrimaryButton type='button' onClick={() => navigate('/guid')}>
+              {t('cloudLogin.login.continue')}
+            </AuthPrimaryButton>
+            <button
+              type='button'
+              className='flowy-auth-secondary'
+              disabled={flow.busy}
+              onClick={() => void handleLogout()}
+            >
+              {t('cloudLogin.login.logout')}
+            </button>
+          </div>
+        </section>
+      ) : (
+        <div className='cloud-login-stage'>
+          <div className='flowy-auth-progress' role='list' aria-label={t('cloudLogin.login.progressLabel')}>
+            <div className={`flowy-auth-progress__step ${showOtp ? 'is-complete' : 'is-active'}`} role='listitem'>
+              <span className='flowy-auth-progress__number'>{showOtp ? '✓' : '01'}</span>
+              <span>{t('cloudLogin.login.stepEmail')}</span>
+            </div>
+            <span className='flowy-auth-progress__line' aria-hidden='true' />
+            <div className={`flowy-auth-progress__step ${showOtp ? 'is-active' : ''}`} role='listitem'>
+              <span className='flowy-auth-progress__number'>02</span>
+              <span>{t('cloudLogin.login.stepOtp')}</span>
+            </div>
+          </div>
+
+          <div className='cloud-login-copy'>
+            <h1 className='flowy-auth-heading'>
+              {showOtp ? t('cloudLogin.login.stepOtp') : t('cloudLogin.welcomeTitle')}
+            </h1>
+            <p className='flowy-auth-description'>
+              {showOtp
+                ? t('cloudLogin.login.otpSentTo', { email: flow.email.trim() })
+                : t('cloudLogin.welcomeDesc')}
+            </p>
+          </div>
+
+          <form
+            className='flowy-auth-form cloud-login-form'
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (showOtp) void flow.verifyCode();
+              else handleSendCode();
+            }}
+          >
+            <div className={`cloud-login-input-slot${showOtp ? ' is-otp' : ''}`}>
+              {!showOtp ? (
+                <AuthField
+                  id='cloud-email'
+                  type='email'
+                  label={t('cloudLogin.login.emailLabel')}
+                  placeholder={t('cloudLogin.login.emailPlaceholder')}
+                  autoComplete='email'
+                  autoFocus
+                  value={flow.email}
+                  onChange={(event) => handleEmailChange(event.target.value)}
+                  onBlur={() => setEmailTouched(true)}
+                  disabled={flow.busy}
+                  required
+                  error={emailError}
+                />
+              ) : (
+                <div className='cloud-login-otp-section'>
+                  <div className='cloud-login-otp-heading'>
+                    <label className='flowy-auth-label' htmlFor='cloud-otp'>
+                      {t('cloudLogin.login.otpLabel')}
+                    </label>
+                    <button type='button' className='flowy-auth-ghost' disabled={flow.busy} onClick={handleChangeEmail}>
+                      {t('cloudLogin.login.changeEmail')}
+                    </button>
+                  </div>
+                  <OtpCodeInput
+                    id='cloud-otp'
+                    label={t('cloudLogin.login.otpLabel')}
+                    value={flow.code}
+                    onChange={flow.setCode}
+                    onComplete={(code) => void flow.verifyCode(code)}
+                    onSubmit={(code) => void flow.verifyCode(code)}
+                    autoFocus
+                    focusOnErrorReset={flow.failureKind === 'invalid-code' || flow.failureKind === 'unknown'}
+                    disabled={flow.busy || flow.phase === 'session-expired' || !flow.pendingId}
+                    aria-describedby='cloud-otp-status'
+                    aria-required='true'
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className='cloud-login-status-slot'>
+              {!showOtp ? (
+                <AuthCooldownHint seconds={flow.cooldown}>
+                  {t('cloudLogin.login.cooldownHint', { seconds: flow.cooldown })}
+                </AuthCooldownHint>
+              ) : (
+                <>
+                  <AuthStatusBar
+                    id='cloud-otp-status'
+                    tone={statusTone}
+                    className={isVerifying ? 'cloud-login-status--verifying' : undefined}
+                    reserveActionSpace
+                    action={
+                      flow.recoveryAction === 'retry-verification' && flow.pendingId && flow.code.length === EMAIL_OTP_LENGTH ? (
+                        <button type='button' className='flowy-auth-ghost' onClick={() => void flow.verifyCode()}>
+                          {flow.failureKind === 'verification-pending'
+                            ? t('cloudLogin.login.retryPending')
+                            : t('cloudLogin.login.retryVerification')}
+                        </button>
+                      ) : undefined
+                    }
+                  >
+                    {isVerifying && (
+                      <span className='flowy-auth-spinner flowy-auth-status__spinner' aria-hidden='true' />
+                    )}
+                    <span>{statusMessage}</span>
+                  </AuthStatusBar>
+                  <AuthCooldownHint seconds={flow.cooldown} showVisual={false} className='flowy-auth-cooldown'>
+                    {t('cloudLogin.login.cooldownHint', { seconds: flow.cooldown })}
+                  </AuthCooldownHint>
+                </>
+              )}
+            </div>
+
+            <div className='cloud-login-action-slot'>
+              {showOtp ? (
+                <button
+                  type='button'
+                  className='flowy-auth-secondary cloud-login-resend'
+                  disabled={flow.cooldown > 0 || flow.busy}
+                  onClick={handleResendCode}
+                >
+                  <span>{t('cloudLogin.login.resendCode')}</span>
+                  <span className='cloud-login-resend__value'>
+                    {flow.cooldown > 0
+                      ? t('cloudLogin.login.cooldownButton', { seconds: flow.cooldown })
+                      : <Refresh theme='outline' size={16} aria-hidden='true' />}
+                  </span>
+                </button>
+              ) : (
+                <AuthPrimaryButton
+                  type='submit'
+                  loading={flow.busy}
+                  loadingLabel={t('cloudLogin.login.sendingCode')}
+                  disabled={!validEmail || flow.cooldown > 0}
+                  icon={<span>→</span>}
+                >
+                  {validEmail ? t('cloudLogin.login.sendCodeArrow') : t('cloudLogin.login.emailBeforeSend')}
+                </AuthPrimaryButton>
+              )}
+            </div>
+          </form>
+        </div>
+      )}
+    </AuthShell>
+  );
+};
 
 const CloudLoginPage: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { status, whoami, refresh, logout } = useCloudAuth();
-
-  const [pendingId, setPendingId] = useState<string | null>(null);
-  const [codeSent, setCodeSent] = useState(false);
-  const [email, setEmail] = useState('');
-  const [otp, setOtp] = useState('');
-  const [sendingCode, setSendingCode] = useState(false);
-  const [loggingIn, setLoggingIn] = useState(false);
-  const [message, setMessage] = useState<MessageState | null>(null);
-  const [resendCooldown, setResendCooldown] = useState(0);
   const justLoggedInRef = useRef(false);
-  const initStartedRef = useRef(false);
-  const autoVerifyRef = useRef<string | null>(null);
-  const emailRef = useRef<HTMLInputElement | null>(null);
-  const otpRef = useRef<HTMLInputElement | null>(null);
+  const navigationRunRef = useRef(0);
+  const [isCompleting, setIsCompleting] = useState(false);
+  const [isSessionReady, setIsSessionReady] = useState(false);
+  const [completionError, setCompletionError] = useState(false);
+
+  const completeSession = useCallback(async () => {
+    setIsSessionReady(false);
+    try {
+      const refreshResult = await refresh({ forceModelSync: true });
+      if (refreshResult !== 'authenticated') {
+        justLoggedInRef.current = false;
+        setCompletionError(true);
+      } else {
+        setCompletionError(false);
+      }
+    } catch (error) {
+      console.error('Failed to refresh the cloud session after login:', error);
+      justLoggedInRef.current = false;
+      setCompletionError(true);
+    } finally {
+      setIsSessionReady(true);
+    }
+  }, [refresh]);
+
+  const onSuccess = useCallback(async () => {
+    if (justLoggedInRef.current) return;
+    justLoggedInRef.current = true;
+    setIsCompleting(true);
+    setCompletionError(false);
+    setIsSessionReady(false);
+    trackFunnelEvent('auth_completed', { method: 'email_otp' });
+    await completeSession();
+  }, [completeSession]);
+
+  const retryCompletion = useCallback(() => {
+    if (!completionError) return;
+    justLoggedInRef.current = true;
+    setCompletionError(false);
+    void completeSession();
+  }, [completeSession, completionError]);
 
   useEffect(() => {
     document.body.classList.add('login-page-active');
     document.title = t('cloudLogin.pageTitle');
-    return () => {
-      document.body.classList.remove('login-page-active');
-    };
+    return () => document.body.classList.remove('login-page-active');
   }, [t]);
 
-  const showMessage = useCallback((next: MessageState | null) => {
-    setMessage(next);
-  }, []);
-
-  const ensureSession = useCallback(async (): Promise<string | null> => {
-    if (pendingId) return pendingId;
-    try {
-      const res = await ipcBridge.cloud.loginStart.invoke({ method: 'email_otp' });
-      setPendingId(res.pendingId);
-      return res.pendingId;
-    } catch (e) {
-      showMessage({ type: 'error', text: String(e) });
-      return null;
+  useEffect(() => {
+    if (!isCompleting) return;
+    if (status === 'unauthenticated') {
+      justLoggedInRef.current = false;
+      setIsCompleting(false);
+      setCompletionError(false);
+      setIsSessionReady(false);
+      return;
     }
-  }, [pendingId, showMessage]);
+    if (!justLoggedInRef.current || !isSessionReady || status !== 'authenticated') return;
 
-  useEffect(() => {
-    if (whoami?.authenticated || initStartedRef.current) return;
-    initStartedRef.current = true;
-    void ensureSession();
-    window.setTimeout(() => emailRef.current?.focus(), 0);
-  }, [whoami?.authenticated, ensureSession]);
+    const navigationRun = ++navigationRunRef.current;
+    preloadCommercialPathChunks();
+    void preloadGuidPathChunk()
+      .catch(() => undefined)
+      .then(() => {
+        if (navigationRunRef.current !== navigationRun || !justLoggedInRef.current) return;
+        justLoggedInRef.current = false;
+        navigate('/guid', { replace: true });
+      });
 
-  useEffect(() => {
-    if (justLoggedInRef.current && status === 'authenticated') {
-      preloadCommercialPathChunks();
-      navigate('/guid', { replace: true });
-    }
-  }, [status, navigate]);
-
-  const reduceMotion = prefersReducedMotion();
-  const shellMotion = reduceMotion ? false : { opacity: 0.92, scale: 0.99 };
-  const panelMotion = reduceMotion ? false : { opacity: 0.94, y: 8 };
-  useEffect(() => {
-    if (resendCooldown <= 0) return;
-    const timer = window.setTimeout(() => {
-      setResendCooldown((prev) => Math.max(0, prev - 1));
-    }, 1000);
-    return () => window.clearTimeout(timer);
-  }, [resendCooldown]);
-
-  useEffect(() => {
-    if (!codeSent || typeof window === 'undefined') return undefined;
-    const OTPCredential = (window as Window & { OTPCredential?: unknown }).OTPCredential;
-    if (!OTPCredential || !('credentials' in navigator)) return undefined;
-
-    const ac = new AbortController();
-    const credentials = navigator.credentials as unknown as {
-      get: (options: unknown) => Promise<{ code?: string } | null>;
+    return () => {
+      navigationRunRef.current += 1;
     };
-    void credentials
-      .get({
-        otp: { transport: ['sms'] },
-        signal: ac.signal,
-      } as never)
-      .then((cred) => {
-        const code = cred?.code;
-        if (code) {
-          setOtp(String(code).replace(/\D/g, '').slice(0, 8));
-          window.setTimeout(() => otpRef.current?.focus(), 0);
-        }
-      })
-      .catch(() => undefined);
+  }, [isCompleting, isSessionReady, navigate, status]);
 
-    return () => ac.abort();
-  }, [codeSent]);
-
-  const startResendCooldown = useCallback(() => {
-    setResendCooldown(60);
-  }, []);
-
-  const handleSendCode = useCallback(async () => {
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail) {
-      showMessage({ type: 'error', text: t('cloudLogin.login.emailRequired') });
-      return;
-    }
-    if (resendCooldown > 0 || sendingCode) return;
-
-    setSendingCode(true);
-    showMessage(null);
-    try {
-      const sessionId = await ensureSession();
-      if (!sessionId) return;
-
-      const res = await ipcBridge.cloud.loginContinue.invoke({
-        pendingId: sessionId,
-        input: { type: 'email', address: trimmedEmail },
-      });
-
-      if (res.status === 'pending') {
-        setPendingId(res.pendingId);
-        setCodeSent(true);
-        startResendCooldown();
-        showMessage({ type: 'info', text: t('cloudLogin.login.codeSent') });
-        window.setTimeout(() => otpRef.current?.focus(), 0);
-      } else if (res.status === 'success') {
-        justLoggedInRef.current = true;
-        trackFunnelEvent('auth_completed', { method: 'email' });
-        showMessage({ type: 'success', text: t('cloudLogin.login.successRedirect') });
-        await refresh({ forceModelSync: true });
-      } else {
-        showMessage({ type: 'error', text: res.error ?? t('cloudLogin.errors.unknown') });
-      }
-    } catch (e) {
-      showMessage({ type: 'error', text: String(e) });
-    } finally {
-      setSendingCode(false);
-    }
-  }, [email, ensureSession, refresh, resendCooldown, sendingCode, showMessage, startResendCooldown, t]);
-
-  const handleLogin = useCallback(async (codeOverride?: string) => {
-    const trimmedEmail = email.trim();
-    const code = (codeOverride ?? otp).trim();
-    if (!trimmedEmail) {
-      showMessage({ type: 'error', text: t('cloudLogin.login.emailRequired') });
-      return;
-    }
-    if (!code) {
-      showMessage({ type: 'error', text: t('cloudLogin.login.otpRequired') });
-      return;
-    }
-    if (!pendingId) {
-      showMessage({ type: 'error', text: t('cloudLogin.login.sendCodeFirst') });
-      return;
-    }
-    if (loggingIn) return;
-
-    setLoggingIn(true);
-    showMessage({ type: 'info', text: t('cloudLogin.login.preparingFirstTask') });
-    try {
-      const res = await ipcBridge.cloud.loginContinue.invoke({
-        pendingId,
-        input: { type: 'otp_code', code },
-      });
-
-      if (res.status === 'success') {
-        justLoggedInRef.current = true;
-        setOtp('');
-        trackFunnelEvent('auth_completed', { method: 'email_otp' });
-        showMessage({ type: 'success', text: t('cloudLogin.login.successRedirect') });
-        await refresh({ forceModelSync: true });
-      } else if (res.status === 'pending') {
-        setPendingId(res.pendingId);
-        showMessage({ type: 'info', text: res.message });
-      } else {
-        showMessage({ type: 'error', text: res.error ?? t('cloudLogin.errors.invalidCode') });
-        setCodeSent(false);
-        setPendingId(null);
-        initStartedRef.current = false;
-        autoVerifyRef.current = null;
-        void ensureSession();
-      }
-    } catch (e) {
-      showMessage({ type: 'error', text: String(e) });
-      autoVerifyRef.current = null;
-    } finally {
-      setLoggingIn(false);
-    }
-  }, [email, otp, pendingId, refresh, ensureSession, showMessage, t, loggingIn]);
-
-  useEffect(() => {
-    if (!codeSent || loggingIn || sendingCode) return;
-    const digits = otp.replace(/\D/g, '');
-    if (digits.length < 6) {
-      autoVerifyRef.current = null;
-      return;
-    }
-    if (autoVerifyRef.current === digits) return;
-    autoVerifyRef.current = digits;
-    void handleLogin(digits);
-  }, [codeSent, otp, loggingIn, sendingCode, handleLogin]);
-
-  const handleLogout = useCallback(async () => {
-    setLoggingIn(true);
-    try {
-      await logout();
-      setEmail('');
-      setOtp('');
-      setPendingId(null);
-      setCodeSent(false);
-      setResendCooldown(0);
-      initStartedRef.current = false;
-      showMessage(null);
-      await ensureSession();
-    } finally {
-      setLoggingIn(false);
-    }
-  }, [logout, ensureSession, showMessage]);
-
-  // Route Suspense already shows fullscreen AppLoader; avoid a second viewport swap.
-  if (status === 'checking') {
-    return null;
+  if (isCompleting || status === 'checking') {
+    const isCompletionError = isCompleting && completionError;
+    return (
+      <CloudLoginTransition
+        message={t(
+          isCompletionError
+            ? 'cloudLogin.login.workspacePreparationFailed'
+            : isCompleting
+              ? 'cloudLogin.login.successRedirect'
+              : 'cloudLogin.login.starting'
+        )}
+        blueprintStep={isCompleting ? 7 : 0}
+        onRetry={isCompletionError ? retryCompletion : undefined}
+        retryLabel={isCompletionError ? t('cloudLogin.login.retryWorkspacePreparation') : undefined}
+      />
+    );
   }
 
-  const busy = sendingCode || loggingIn;
-  const isSignedIn = Boolean(whoami?.authenticated);
-  const showWindowControls = isDesktopShell() && !isMacOS();
-  const canSendCode = Boolean(email.trim()) && !busy && resendCooldown <= 0;
-  const sendCodeLabel = sendingCode
-    ? t('cloudLogin.login.sendingCode')
-    : resendCooldown > 0
-      ? t('cloudLogin.login.resendIn', { seconds: resendCooldown })
-      : t('cloudLogin.login.sendCode');
-
   return (
-    <div className='cloud-login-page'>
-      {showWindowControls && (
-        <div className='cloud-login-chrome' data-tauri-drag-region>
-          <div className='cloud-login-chrome__spacer' data-tauri-drag-region />
-          <WindowControls />
-        </div>
-      )}
-      <motion.div
-        className='cloud-login-shell'
-        initial={shellMotion}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={flowyTransition('enter', 'slow')}
-      >
-        <aside className='cloud-login-brand' aria-hidden={false}>
-          <div className='cloud-login-brand__map'>
-            <DotMap />
-          </div>
-          <div className='cloud-login-brand__content'>
-            <motion.div
-              className='cloud-login-brand__logo'
-              initial={reduceMotion ? false : { opacity: 0.9, y: -6 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={flowyTransition('enter')}
-            >
-              <img src={appLogo} alt='' />
-            </motion.div>
-            <motion.h2
-              className='cloud-login-brand__title'
-              initial={reduceMotion ? false : { opacity: 0.9, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={flowyTransition('enter')}
-            >
-              {t('cloudLogin.brand')}
-            </motion.h2>
-            <motion.p
-              className='cloud-login-brand__tagline'
-              initial={reduceMotion ? false : { opacity: 0.9, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={flowyTransition('enter')}
-            >
-              {t('cloudLogin.brandTagline')}
-            </motion.p>
-            <motion.ul
-              className='cloud-login-brand__points'
-              initial={reduceMotion ? false : { opacity: 0.9, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={flowyTransition('enter')}
-            >
-              <li>{t('cloudLogin.brandPoints.workspace')}</li>
-              <li>{t('cloudLogin.brandPoints.agents')}</li>
-              <li>{t('cloudLogin.brandPoints.ready')}</li>
-            </motion.ul>
-            <div className='cloud-login-preview' aria-label={t('cloudLogin.preview.label')}>
-              <div className='cloud-login-preview__chrome'>
-                <span />
-                <span />
-                <span />
-              </div>
-              <ol className='cloud-login-preview__steps'>
-                <li>{t('cloudLogin.preview.home')}</li>
-                <li>{t('cloudLogin.preview.run')}</li>
-                <li>{t('cloudLogin.preview.result')}</li>
-              </ol>
-            </div>
-          </div>
-        </aside>
-
-        <section className='cloud-login-panel'>
-          <motion.div
-            className='cloud-login-panel__inner'
-            initial={panelMotion}
-            animate={{ opacity: 1, y: 0 }}
-            transition={flowyTransition('enter')}
-          >
-            {isSignedIn ? (
-              <>
-                <h1 className='cloud-login-panel__title'>{t('cloudLogin.account.signedIn')}</h1>
-                <p className='cloud-login-panel__desc'>{t('cloudLogin.accountSubtitle')}</p>
-                <div className='cloud-login-signed-actions'>
-                  {(whoami?.email || whoami?.username) && (
-                    <p className='cloud-login-signed-email'>{whoami.email ?? whoami.username}</p>
-                  )}
-                  <motion.button
-                    type='button'
-                    className='cloud-login-submit'
-                    whileHover={{ y: -1 }}
-                    whileTap={{ scale: 0.985 }}
-                    onClick={() => navigate('/guid')}
-                  >
-                    {t('cloudLogin.login.continue')}
-                  </motion.button>
-                  <button
-                    type='button'
-                    className='cloud-login-submit cloud-login-submit--ghost'
-                    disabled={loggingIn}
-                    onClick={handleLogout}
-                  >
-                    {t('cloudLogin.login.logout')}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div
-                  className='cloud-login-progress'
-                  role='list'
-                  aria-label={t('cloudLogin.login.progressLabel')}
-                >
-                  <div
-                    className={`cloud-login-progress__step ${codeSent ? 'is-complete' : 'is-active'}`}
-                    role='listitem'
-                  >
-                    <span className='cloud-login-progress__number'>1</span>
-                    <span>{t('cloudLogin.login.stepEmail')}</span>
-                  </div>
-                  <span className='cloud-login-progress__line' aria-hidden='true' />
-                  <div
-                    className={`cloud-login-progress__step ${codeSent ? 'is-active' : ''}`}
-                    role='listitem'
-                  >
-                    <span className='cloud-login-progress__number'>2</span>
-                    <span>{t('cloudLogin.login.stepOtp')}</span>
-                  </div>
-                </div>
-
-                <div className='cloud-login-mobile-proof'>
-                  <strong>{t('cloudLogin.brandTagline')}</strong>
-                  <span>
-                    {t('cloudLogin.preview.home')} → {t('cloudLogin.preview.run')} →{' '}
-                    {t('cloudLogin.preview.result')}
-                  </span>
-                </div>
-
-                <h1 className='cloud-login-panel__title'>
-                  {codeSent ? t('cloudLogin.login.stepOtp') : t('cloudLogin.welcomeTitle')}
-                </h1>
-                <p className='cloud-login-panel__desc'>
-                  {codeSent
-                    ? t('cloudLogin.login.otpSentTo', { email: email.trim() })
-                    : t('cloudLogin.welcomeDesc')}
-                </p>
-
-                <form
-                  className='cloud-login-form'
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    if (!codeSent) {
-                      void handleSendCode();
-                      return;
-                    }
-                    void handleLogin();
-                  }}
-                >
-                  {!codeSent ? (
-                    <div className='cloud-login-field'>
-                      <label className='cloud-login-label' htmlFor='cloud-email'>
-                        {t('cloudLogin.login.emailLabel')}
-                      </label>
-                      <input
-                        ref={emailRef}
-                        id='cloud-email'
-                        type='email'
-                        className='cloud-login-input'
-                        placeholder={t('cloudLogin.login.emailPlaceholder')}
-                        autoComplete='email'
-                        value={email}
-                        onChange={(event) => setEmail(event.target.value)}
-                        disabled={busy}
-                        aria-required='true'
-                      />
-                    </div>
-                  ) : (
-                    <div className='cloud-login-field'>
-                      <label className='cloud-login-label' htmlFor='cloud-otp'>
-                        {t('cloudLogin.login.otpLabel')}
-                      </label>
-                      <input
-                        ref={otpRef}
-                        id='cloud-otp'
-                        type='text'
-                        inputMode='numeric'
-                        className='cloud-login-input'
-                        placeholder={t('cloudLogin.login.otpPlaceholder')}
-                        autoComplete='one-time-code'
-                        autoFocus={codeSent}
-                        name='one-time-code'
-                        maxLength={8}
-                        value={otp}
-                        onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))}
-                        disabled={busy}
-                        aria-required='true'
-                      />
-                      <div className='cloud-login-otp-actions'>
-                        <button
-                          type='button'
-                          className='cloud-login-text-btn'
-                          disabled={busy}
-                          onClick={() => {
-                            setCodeSent(false);
-                            setOtp('');
-                            setMessage(null);
-                            window.setTimeout(() => emailRef.current?.focus(), 0);
-                          }}
-                        >
-                          {t('cloudLogin.login.back')}
-                        </button>
-                        <button
-                          type='button'
-                          className='cloud-login-text-btn'
-                          disabled={!canSendCode}
-                          onClick={() => void handleSendCode()}
-                        >
-                          {sendCodeLabel}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  <motion.button
-                    type='submit'
-                    className='cloud-login-submit'
-                    disabled={busy || (!codeSent ? !email.trim() : !otp.trim())}
-                    whileHover={busy ? undefined : { y: -1 }}
-                    whileTap={busy ? undefined : { scale: 0.985 }}
-                  >
-                    {(loggingIn || sendingCode) && (
-                      <svg className='cloud-login-spinner' viewBox='0 0 24 24' width='18' height='18'>
-                        <circle
-                          cx='12'
-                          cy='12'
-                          r='10'
-                          stroke='currentColor'
-                          strokeWidth='3'
-                          fill='none'
-                          strokeDasharray='50'
-                          strokeDashoffset='25'
-                          strokeLinecap='round'
-                        />
-                      </svg>
-                    )}
-                    <span>
-                      {loggingIn
-                        ? t('cloudLogin.login.loggingIn')
-                        : sendingCode
-                          ? t('cloudLogin.login.sendingCode')
-                          : codeSent
-                            ? t('cloudLogin.login.verify')
-                            : t('cloudLogin.login.sendCode')}
-                    </span>
-                  </motion.button>
-
-                  <div
-                    role='alert'
-                    aria-live='polite'
-                    className={`cloud-login-message ${message ? `cloud-login-message--${message.type}` : 'cloud-login-message--empty'}`}
-                  >
-                    {message?.text ?? '\u00A0'}
-                  </div>
-                </form>
-
-                <div className='cloud-login-footer'>
-                  <span className='cloud-login-footer__primary'>{t('cloudLogin.footerPrimary')}</span>
-                  <span className='cloud-login-footer__legal-cluster'>
-                    <span className='cloud-login-footer__dot' aria-hidden='true'>
-                      ·
-                    </span>
-                    <span className='cloud-login-legal'>
-                      <a href='https://nomifun.com/privacy' target='_blank' rel='noreferrer'>
-                        {t('cloudLogin.legal.privacy')}
-                      </a>
-                      <span>{t('cloudLogin.legal.and')}</span>
-                      <a href='https://nomifun.com/terms' target='_blank' rel='noreferrer'>
-                        {t('cloudLogin.legal.terms')}
-                      </a>
-                    </span>
-                  </span>
-                </div>
-              </>
-            )}
-          </motion.div>
-        </section>
-      </motion.div>
-    </div>
+    <CloudLoginFlow
+      status={status}
+      whoami={whoami}
+      logout={logout}
+      onSuccess={onSuccess}
+    />
   );
 };
 
+export { CloudLoginFlow, resolveIntentPhase };
 export default CloudLoginPage;

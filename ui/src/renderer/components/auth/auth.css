@@ -1,0 +1,1317 @@
+/* Shared Auth Surface contract: calm at rest, directional during interaction. */
+
+.flowy-auth-page {
+  box-sizing: border-box;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--flowy-text-primary);
+  background: var(--flowy-canvas);
+  font-family: var(--flowy-font-sans);
+}
+
+body.login-page-active {
+  overflow: hidden;
+}
+
+.flowy-auth-chrome {
+  position: fixed;
+  z-index: 5;
+  inset: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  height: 36px;
+  pointer-events: none;
+}
+
+.flowy-auth-chrome > * {
+  pointer-events: auto;
+}
+
+.flowy-auth-shell {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 56% 44%;
+  width: min(1040px, calc(100vw - 48px));
+  min-height: 560px;
+  overflow: hidden;
+  border: 1px solid var(--flowy-border-structural);
+  border-radius: var(--flowy-radius-xl);
+  background: var(--flowy-panel);
+  box-shadow: var(--flowy-shadow-raised);
+}
+
+.flowy-auth-brand {
+  /* Light mode gets a separate paper field so white documents remain legible. */
+  --auth-blueprint-canvas: color-mix(in srgb, var(--flowy-canvas) 90%, var(--flowy-text-primary) 10%);
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--auth-blueprint-canvas);
+}
+
+.flowy-auth-intent,
+.flowy-intent-field {
+  --auth-blueprint-ink: var(--flowy-text-primary);
+  --auth-blueprint-muted: var(--flowy-text-muted);
+  --auth-blueprint-backplate: color-mix(in srgb, var(--flowy-panel) 88%, var(--flowy-canvas) 12%);
+  --auth-blueprint-surface-quiet: color-mix(in srgb, var(--flowy-panel) 72%, var(--flowy-canvas) 28%);
+  --auth-blueprint-line-quiet: color-mix(in srgb, var(--flowy-text-primary) 24%, transparent);
+  --auth-blueprint-line-document: color-mix(in srgb, var(--flowy-text-primary) 42%, transparent);
+  --auth-blueprint-accent: var(--flowy-accent);
+  --auth-blueprint-accent-soft: color-mix(in srgb, var(--flowy-accent) 18%, transparent);
+  --auth-blueprint-danger: var(--flowy-danger);
+  --auth-blueprint-hairline: var(--auth-blueprint-line-quiet);
+  --auth-blueprint-surface: var(--auth-blueprint-surface-quiet);
+  --auth-blueprint-motion-route: 360ms;
+  --auth-blueprint-motion-document: 360ms;
+  --auth-blueprint-motion-cursor: 480ms;
+  --auth-blueprint-motion-complete: 480ms;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 560px;
+  overflow: hidden;
+  isolation: isolate;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+[data-theme='dark'] .flowy-auth-intent,
+[data-theme='dark'] .flowy-intent-field,
+[data-theme='dark'] .flowy-auth-brand,
+body[arco-theme='dark'] .flowy-auth-intent,
+body[arco-theme='dark'] .flowy-intent-field,
+body[arco-theme='dark'] .flowy-auth-brand {
+  --auth-blueprint-canvas: var(--flowy-canvas);
+  --auth-blueprint-backplate: var(--flowy-raised);
+  --auth-blueprint-surface-quiet: color-mix(in srgb, var(--flowy-raised) 82%, transparent);
+  --auth-blueprint-line-quiet: color-mix(in srgb, var(--flowy-text-primary) 22%, transparent);
+  --auth-blueprint-line-document: color-mix(in srgb, var(--flowy-text-primary) 34%, transparent);
+  --auth-blueprint-accent-soft: color-mix(in srgb, var(--flowy-accent) 22%, transparent);
+}
+
+.flowy-blueprint {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.flowy-blueprint__support-line,
+.flowy-blueprint__route-segment,
+.flowy-blueprint__route-segment-active,
+.flowy-blueprint__ambient-mark path,
+.flowy-blueprint__ambient-mark circle,
+.flowy-blueprint__ambient-mark rect,
+.flowy-blueprint__marks path,
+.flowy-blueprint__marks circle,
+.flowy-blueprint__registration path,
+.flowy-blueprint__fragment-shell,
+.flowy-blueprint__fragment-line,
+.flowy-blueprint__fragment-accent,
+.flowy-blueprint__fragment-detail,
+.flowy-blueprint__execution-cursor circle,
+.flowy-blueprint__fragment-complete-mark {
+  vector-effect: non-scaling-stroke;
+}
+
+.flowy-blueprint__support-line {
+  fill: none;
+  stroke: var(--auth-blueprint-hairline);
+  stroke-width: 0.8;
+  stroke-linecap: square;
+  stroke-linejoin: bevel;
+  opacity: 0.58;
+}
+
+.flowy-blueprint__ambient-marks {
+  fill: none;
+  stroke: var(--auth-blueprint-hairline);
+  stroke-width: 0.8;
+  opacity: 0.78;
+}
+
+.flowy-blueprint__ambient-mark {
+  opacity: 0;
+  transition: opacity var(--auth-blueprint-motion-document) var(--flowy-ease-enter);
+}
+
+.flowy-blueprint__ambient-mark.is-mark-visible {
+  opacity: 0.7;
+}
+
+.flowy-blueprint__ambient-mark.is-completion circle {
+  fill: var(--auth-blueprint-accent-soft);
+  stroke: var(--auth-blueprint-line-document);
+}
+
+.flowy-blueprint__ambient-mark.is-completion {
+  stroke: var(--auth-blueprint-accent);
+}
+
+.flowy-blueprint__route-segment {
+  fill: none;
+  stroke: var(--auth-blueprint-line-quiet);
+  stroke-width: 1.1;
+  stroke-linecap: square;
+  stroke-linejoin: bevel;
+}
+
+.flowy-blueprint__route-segment-active {
+  fill: none;
+  stroke: var(--auth-blueprint-accent);
+  stroke-width: 1.55;
+  stroke-linecap: square;
+  stroke-linejoin: bevel;
+  opacity: 0;
+  transition:
+    opacity var(--auth-blueprint-motion-route) var(--flowy-ease-enter),
+    stroke-dashoffset var(--auth-blueprint-motion-route) var(--flowy-ease-enter),
+    stroke-width var(--auth-blueprint-motion-route) var(--flowy-ease-enter);
+}
+
+.flowy-blueprint__route-segment-active.is-reached {
+  opacity: 0.64;
+}
+
+.flowy-blueprint__route-segment-active.is-current {
+  opacity: 0.94;
+  stroke-width: 1.8;
+}
+
+.flowy-blueprint__marks {
+  fill: var(--auth-blueprint-accent);
+  stroke: var(--auth-blueprint-accent);
+  stroke-width: 0.8;
+  opacity: 0.52;
+}
+
+.flowy-blueprint__registration {
+  fill: none;
+  stroke: var(--auth-blueprint-hairline);
+  stroke-width: 0.8;
+  opacity: 0.62;
+}
+
+.flowy-blueprint__fragment {
+  opacity: 0.36;
+  transform: translate(var(--blueprint-shift-x), var(--blueprint-shift-y));
+  transform-origin: center;
+  transition:
+    opacity var(--auth-blueprint-motion-document) var(--flowy-ease-move),
+    transform var(--flowy-motion-base) var(--flowy-ease-move);
+}
+
+.flowy-blueprint__fragment.is-companion {
+  opacity: 1;
+}
+
+.flowy-blueprint__fragment.is-companion .flowy-blueprint__fragment-shell {
+  fill: var(--auth-blueprint-backplate);
+  fill-opacity: 1;
+  stroke: var(--auth-blueprint-line-quiet);
+}
+
+.flowy-blueprint__fragment.is-companion .flowy-blueprint__fragment-line,
+.flowy-blueprint__fragment.is-companion .flowy-blueprint__fragment-accent,
+.flowy-blueprint__fragment.is-companion .flowy-blueprint__fragment-dot,
+.flowy-blueprint__fragment.is-companion .flowy-blueprint__fragment-detail {
+  opacity: 0.58;
+}
+
+.flowy-blueprint__fragment.is-companion .flowy-blueprint__fragment-accent {
+  stroke: var(--auth-blueprint-line-document);
+}
+
+.flowy-blueprint__fragment.is-active {
+  opacity: 0.8;
+}
+
+.flowy-blueprint__fragment.is-arrived,
+.flowy-blueprint__fragment.is-faulted,
+.flowy-blueprint__fragment.is-settled {
+  opacity: 1;
+}
+
+.flowy-blueprint__fragment-shell {
+  fill: var(--auth-blueprint-surface);
+  fill-opacity: 0.92;
+  stroke: var(--auth-blueprint-line-document);
+  stroke-width: 1;
+  transition:
+    fill var(--auth-blueprint-motion-document) var(--flowy-ease-enter),
+    fill-opacity var(--auth-blueprint-motion-document) var(--flowy-ease-enter),
+    stroke var(--auth-blueprint-motion-document) var(--flowy-ease-enter),
+    stroke-opacity var(--auth-blueprint-motion-document) var(--flowy-ease-enter);
+}
+
+.flowy-blueprint__fragment.is-arrived .flowy-blueprint__fragment-shell,
+.flowy-blueprint__fragment.is-settled .flowy-blueprint__fragment-shell,
+.flowy-blueprint__fragment.is-faulted .flowy-blueprint__fragment-shell {
+  fill: var(--auth-blueprint-backplate);
+  fill-opacity: 1;
+}
+
+.flowy-blueprint__fragment-line {
+  fill: none;
+  stroke: var(--auth-blueprint-muted);
+  stroke-width: 1;
+  stroke-linecap: square;
+  transition: stroke var(--auth-blueprint-motion-document) var(--flowy-ease-enter), opacity var(--auth-blueprint-motion-document) var(--flowy-ease-enter);
+}
+
+.flowy-blueprint__fragment-accent {
+  fill: none;
+  stroke: var(--auth-blueprint-accent);
+  stroke-width: 1.5;
+  stroke-linecap: square;
+  stroke-linejoin: bevel;
+  transition: stroke var(--auth-blueprint-motion-document) var(--flowy-ease-enter), opacity var(--auth-blueprint-motion-document) var(--flowy-ease-enter);
+}
+
+.flowy-blueprint__fragment-dot {
+  fill: var(--auth-blueprint-muted);
+}
+
+.flowy-blueprint__fragment-detail {
+  fill: none;
+  stroke: var(--auth-blueprint-muted);
+  stroke-width: 0.9;
+  stroke-linecap: square;
+  opacity: 0;
+  transition:
+    opacity var(--auth-blueprint-motion-document) var(--flowy-ease-enter),
+    fill var(--auth-blueprint-motion-document) var(--flowy-ease-enter),
+    stroke var(--auth-blueprint-motion-document) var(--flowy-ease-enter);
+}
+
+.flowy-blueprint__fragment-detail.is-detail-visible {
+  opacity: 0.72;
+}
+
+.flowy-blueprint__fragment-detail.is-accent {
+  stroke: var(--auth-blueprint-accent);
+}
+
+.flowy-blueprint__fragment-detail.is-dot {
+  fill: var(--auth-blueprint-muted);
+  stroke: none;
+}
+
+.flowy-blueprint__fragment-detail.is-check {
+  stroke-width: 1.4;
+}
+
+.flowy-blueprint__fragment-complete-mark {
+  stroke-width: 1.6;
+}
+
+.flowy-blueprint__fragment.is-faulted .flowy-blueprint__fragment-accent {
+  stroke: var(--auth-blueprint-danger);
+}
+
+.flowy-blueprint__pointer-marker {
+  fill: none;
+  stroke: var(--auth-blueprint-accent);
+  stroke-width: 1;
+  opacity: 0;
+  transform-origin: center;
+  transition: opacity var(--flowy-motion-base) var(--flowy-ease-move);
+}
+
+.flowy-blueprint__pointer-marker circle {
+  fill: var(--auth-blueprint-surface);
+}
+
+.flowy-blueprint__pointer-marker.is-visible {
+  opacity: 0.76;
+}
+
+.flowy-blueprint__fragment.is-pointer-focused {
+  opacity: 0.96;
+}
+
+.flowy-blueprint__fragment.is-pointer-focused.is-arrived,
+.flowy-blueprint__fragment.is-pointer-focused.is-settled,
+.flowy-blueprint__fragment.is-pointer-focused.is-faulted {
+  opacity: 1;
+}
+
+.flowy-blueprint__execution-cursor {
+  fill: var(--auth-blueprint-accent);
+  opacity: 0.94;
+  pointer-events: none;
+}
+
+.flowy-intent-field--success .flowy-blueprint__fragment.is-settled {
+  animation: flowy-blueprint-complete-pulse var(--auth-blueprint-motion-complete) var(--flowy-ease-enter) both;
+}
+
+.flowy-intent-field--error .flowy-blueprint__fragment.is-faulted {
+  animation: flowy-blueprint-fault 360ms var(--flowy-ease-enter) both;
+}
+
+@keyframes flowy-blueprint-fault {
+  0% {
+    opacity: 0.72;
+  }
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.82;
+  }
+}
+
+@keyframes flowy-blueprint-complete-pulse {
+  0% {
+    opacity: 0.76;
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.flowy-intent-field__content {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.flowy-intent-field__content {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.flowy-auth-brand__logo {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+  border: 1px solid var(--flowy-border-structural);
+  border-radius: var(--flowy-radius-lg);
+  background: var(--flowy-raised);
+  color: var(--flowy-text-primary);
+  box-shadow: var(--flowy-shadow-structure);
+}
+
+.flowy-auth-brand__logo img,
+.flowy-auth-brand__logo svg {
+  width: 30px;
+  height: 30px;
+}
+
+.flowy-auth-brand__lockup,
+.flowy-auth-brand__copy {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.flowy-auth-brand__lockup {
+  top: 28px;
+  left: 32px;
+  right: 32px;
+}
+
+.flowy-auth-brand__lockup-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.flowy-auth-brand__copy {
+  bottom: 32px;
+  left: 32px;
+  width: min(360px, calc(100% - 64px));
+}
+
+.flowy-auth-brand__wordmark {
+  min-width: 0;
+  margin: 0;
+  color: var(--flowy-text-primary);
+  font-size: clamp(24px, 2.7vw, 32px);
+  font-weight: var(--flowy-weight-semibold);
+  letter-spacing: -0.035em;
+  line-height: 1.12;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flowy-auth-brand__tagline {
+  max-width: 28ch;
+  margin: 12px 0 0;
+  color: var(--flowy-text-secondary);
+  font-size: 14px;
+  line-height: var(--flowy-leading-body);
+  text-wrap: balance;
+}
+
+.flowy-auth-brand__flow {
+  margin: 18px 0 0;
+  color: var(--flowy-text-muted);
+  font-family: var(--flowy-font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.flowy-auth-brand__meta {
+  margin-top: 20px;
+  color: var(--flowy-text-muted);
+  font-size: 12px;
+}
+
+.flowy-auth-brand__legal {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 12px;
+  color: var(--flowy-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: auto;
+  white-space: nowrap;
+}
+
+.flowy-auth-brand__legal-link {
+  color: var(--flowy-text-secondary);
+  text-underline-offset: 3px;
+  text-decoration: underline;
+  text-decoration-color: var(--flowy-border-structural);
+  transition: color 120ms var(--flowy-ease-move, ease-out), text-decoration-color 120ms var(--flowy-ease-move, ease-out);
+}
+
+.flowy-auth-brand__legal-link:hover,
+.flowy-auth-brand__legal-link:focus-visible {
+  color: var(--flowy-accent);
+  text-decoration-color: currentColor;
+}
+
+.flowy-auth-brand__legal-link[aria-disabled='true'] {
+  cursor: default;
+}
+
+.flowy-auth-brand__legal-separator {
+  color: var(--flowy-text-muted);
+}
+
+.flowy-auth-panel {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  padding: 48px 56px;
+  background: var(--flowy-panel);
+}
+
+.flowy-auth-panel__inner {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  width: min(100%, 390px);
+  min-height: 100%;
+  margin-inline: auto;
+}
+
+.flowy-auth-panel__content {
+  flex: 1 1 auto;
+  min-height: 380px;
+}
+
+.flowy-auth-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  margin-top: 34px;
+  padding-top: 18px;
+  border-top: 1px solid var(--flowy-border-subtle);
+  color: var(--flowy-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.flowy-auth-footer__group {
+  display: block;
+  align-items: center;
+  min-width: 0;
+}
+
+.flowy-auth-footer__group:first-child {
+  max-width: 26ch;
+}
+
+.flowy-auth-footer__group:last-child {
+  justify-self: end;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.flowy-auth-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 44px;
+  color: var(--flowy-text-muted);
+  font-size: 12px;
+}
+
+.flowy-auth-progress__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.flowy-auth-progress__step.is-active,
+.flowy-auth-progress__step.is-complete {
+  color: var(--flowy-text-primary);
+  font-weight: var(--flowy-weight-semibold);
+}
+
+.flowy-auth-progress__number {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--flowy-border-structural);
+  border-radius: 50%;
+  color: var(--flowy-text-secondary);
+  font-family: var(--flowy-font-mono);
+  font-size: 11px;
+}
+
+.flowy-auth-progress__step.is-active .flowy-auth-progress__number,
+.flowy-auth-progress__step.is-complete .flowy-auth-progress__number {
+  border-color: var(--flowy-accent);
+  background: var(--flowy-accent);
+  color: var(--flowy-accent-fg);
+}
+
+.flowy-auth-progress__line {
+  flex: 1;
+  min-width: 20px;
+  height: 1px;
+  background: var(--flowy-border-subtle);
+}
+
+.flowy-auth-heading {
+  margin: 0;
+  color: var(--flowy-text-primary);
+  font-size: 28px;
+  font-weight: var(--flowy-weight-semibold);
+  letter-spacing: -0.035em;
+  line-height: 1.18;
+  text-wrap: balance;
+}
+
+.flowy-auth-description {
+  margin: 10px 0 30px;
+  color: var(--flowy-text-secondary);
+  font-size: 14px;
+  line-height: var(--flowy-leading-body);
+  text-wrap: balance;
+}
+
+.flowy-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.flowy-auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.flowy-auth-label {
+  color: var(--flowy-text-primary);
+  font-size: 13px;
+  font-weight: var(--flowy-weight-semibold);
+}
+
+.flowy-auth-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.flowy-auth-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--flowy-border-structural);
+  border-radius: var(--flowy-radius-md);
+  outline: none;
+  background: var(--flowy-interactive);
+  color: var(--flowy-text-primary);
+  font-family: var(--flowy-font-sans);
+  font-size: 14px;
+  transition:
+    border-color 120ms var(--flowy-ease-move, ease-out),
+    background-color 120ms var(--flowy-ease-move, ease-out),
+    box-shadow 120ms var(--flowy-ease-move, ease-out);
+}
+
+.flowy-auth-input::placeholder {
+  color: var(--flowy-text-muted);
+}
+
+.flowy-auth-input:hover:not(:disabled) {
+  border-color: var(--flowy-accent);
+  background: var(--flowy-panel);
+}
+
+.flowy-auth-input:focus-visible {
+  border-color: var(--flowy-accent);
+  background: var(--flowy-panel);
+  box-shadow: 0 0 0 3px var(--flowy-focus);
+}
+
+.flowy-auth-input:disabled {
+  cursor: not-allowed;
+  color: var(--flowy-text-muted);
+  background: var(--flowy-interactive);
+}
+
+.flowy-auth-input[aria-invalid='true'] {
+  border-color: var(--flowy-danger);
+}
+
+.flowy-auth-input-leading,
+.flowy-auth-input-trailing {
+  position: absolute;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+}
+
+.flowy-auth-input-leading {
+  left: 14px;
+  color: var(--flowy-text-muted);
+  pointer-events: none;
+}
+
+.flowy-auth-input-leading + .flowy-auth-input {
+  padding-left: 40px;
+}
+
+.flowy-auth-input-trailing {
+  right: 4px;
+}
+
+.flowy-auth-field__hint,
+.flowy-auth-field__error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.flowy-auth-field__hint {
+  color: var(--flowy-text-muted);
+}
+
+.flowy-auth-field__error {
+  color: var(--flowy-danger);
+}
+
+.flowy-auth-primary,
+.flowy-auth-secondary,
+.flowy-auth-ghost {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  border: 1px solid transparent;
+  border-radius: var(--flowy-radius-md);
+  padding: 0 16px;
+  font-family: var(--flowy-font-sans);
+  font-size: 14px;
+  font-weight: var(--flowy-weight-semibold);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 120ms var(--flowy-ease-move, ease-out),
+    border-color 120ms var(--flowy-ease-move, ease-out),
+    color 120ms var(--flowy-ease-move, ease-out),
+    transform 120ms var(--flowy-ease-move, ease-out);
+}
+
+.flowy-auth-primary {
+  width: 100%;
+  gap: 8px;
+  background: var(--flowy-accent);
+  color: var(--flowy-accent-fg);
+}
+
+.flowy-auth-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--flowy-accent) 86%, var(--flowy-text-primary));
+}
+
+.flowy-auth-primary:active:not(:disabled),
+.flowy-auth-secondary:active:not(:disabled),
+.flowy-auth-ghost:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.flowy-auth-primary:focus-visible,
+.flowy-auth-secondary:focus-visible,
+.flowy-auth-ghost:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: 2px;
+}
+
+.flowy-auth-primary:disabled,
+.flowy-auth-secondary:disabled,
+.flowy-auth-ghost:disabled {
+  cursor: not-allowed;
+}
+
+.flowy-auth-primary:disabled {
+  border-color: var(--flowy-border-subtle);
+  background: var(--flowy-interactive);
+  color: var(--flowy-text-muted);
+}
+
+.flowy-auth-secondary {
+  justify-content: space-between;
+  width: 100%;
+  border-color: var(--flowy-border-structural);
+  background: var(--flowy-interactive);
+  color: var(--flowy-text-primary);
+}
+
+.flowy-auth-secondary:hover:not(:disabled) {
+  border-color: var(--flowy-accent);
+  background: var(--flowy-panel);
+}
+
+.flowy-auth-secondary:disabled {
+  color: var(--flowy-text-muted);
+}
+
+.flowy-auth-ghost {
+  min-height: 32px;
+  padding: 0 10px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--flowy-accent);
+  font-size: 12px;
+}
+
+.flowy-auth-ghost:hover:not(:disabled) {
+  background: var(--flowy-accent-muted);
+}
+
+.flowy-auth-primary__icon {
+  display: inline-flex;
+  transition: transform 120ms var(--flowy-ease-move, ease-out);
+}
+
+.flowy-auth-primary:hover:not(:disabled) .flowy-auth-primary__icon {
+  transform: translateX(2px);
+}
+
+.flowy-auth-spinner {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: flowy-auth-spin 700ms linear infinite;
+}
+
+@keyframes flowy-auth-spin {
+  to { transform: rotate(360deg); }
+}
+
+.flowy-auth-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border: 1px solid var(--flowy-border-subtle);
+  border-radius: var(--flowy-radius-md);
+  color: var(--flowy-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.flowy-auth-status__mark {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--flowy-info);
+}
+
+.flowy-auth-status__message {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: normal;
+  text-wrap: pretty;
+}
+
+.flowy-auth-status__action {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.flowy-auth-status--reserve-action {
+  min-height: 56px;
+}
+
+.flowy-auth-status--reserve-action .flowy-auth-status__message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.flowy-auth-status__spinner {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+
+.flowy-auth-status--reserve-action .flowy-auth-status__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 116px;
+  min-height: 32px;
+}
+
+.flowy-auth-status__action[data-empty='true'] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.flowy-auth-status--success {
+  border-color: color-mix(in srgb, var(--flowy-success) 36%, var(--flowy-border-subtle));
+  background: color-mix(in srgb, var(--flowy-success) 8%, var(--flowy-panel));
+}
+
+.flowy-auth-status--success .flowy-auth-status__mark { background: var(--flowy-success); }
+.flowy-auth-status--warning .flowy-auth-status__mark { background: var(--flowy-warning); }
+
+.flowy-auth-status--error {
+  border-color: color-mix(in srgb, var(--flowy-danger) 42%, var(--flowy-border-subtle));
+  background: color-mix(in srgb, var(--flowy-danger) 8%, var(--flowy-panel));
+  color: var(--flowy-danger);
+}
+
+.flowy-auth-status--error .flowy-auth-status__mark { background: var(--flowy-danger); }
+
+@media (min-width: 640px) {
+  .flowy-auth-status--reserve-action .flowy-auth-status__message {
+    white-space: nowrap;
+  }
+}
+
+.flowy-otp {
+  position: relative;
+  width: 100%;
+  min-height: 64px;
+}
+
+.flowy-otp__cells {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+  min-height: 64px;
+  pointer-events: none;
+}
+
+.flowy-otp__cell {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 64px;
+  box-sizing: border-box;
+  border: 1px solid var(--flowy-border-structural);
+  border-radius: var(--flowy-radius-md);
+  background: var(--flowy-interactive);
+  color: var(--flowy-text-primary);
+  font-family: var(--flowy-font-mono);
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--flowy-weight-semibold);
+  transition:
+    border-color 120ms var(--flowy-ease-move, ease-out),
+    background-color 120ms var(--flowy-ease-move, ease-out),
+    box-shadow 120ms var(--flowy-ease-move, ease-out);
+}
+
+.flowy-otp__cell--group-start {
+  margin-left: 8px;
+}
+
+.flowy-otp__cell.is-filled {
+  border-color: var(--flowy-accent);
+  background: var(--flowy-panel);
+}
+
+.flowy-otp__cell.is-active {
+  border-color: var(--flowy-accent);
+  box-shadow: 0 0 0 3px var(--flowy-focus);
+}
+
+.flowy-otp > input {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  opacity: 0;
+  cursor: text;
+}
+
+.flowy-otp:focus-within .flowy-otp__cell.is-active,
+.flowy-otp:focus-within .flowy-otp__cell:not(.is-filled):first-child {
+  box-shadow: 0 0 0 3px var(--flowy-focus);
+}
+
+.flowy-otp:has(> input:disabled) {
+  opacity: 0.64;
+}
+
+.flowy-otp--compact,
+.flowy-otp--compact .flowy-otp__cells,
+.flowy-otp--compact .flowy-otp__cell {
+  min-height: 54px;
+}
+
+.flowy-otp--compact .flowy-otp__cell {
+  min-width: 42px;
+  font-size: 20px;
+}
+
+.flowy-auth-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 899px) {
+  .flowy-auth-page {
+    padding: 16px;
+  }
+
+  .flowy-auth-shell {
+    grid-template-columns: 1fr;
+    width: min(640px, calc(100vw - 32px));
+    min-height: 0;
+  }
+
+  .flowy-auth-intent,
+  .flowy-intent-field {
+    min-height: 220px;
+  }
+
+  .flowy-blueprint__fragment.is-primary:not([data-blueprint-fragment='browser-result']):not([data-blueprint-fragment='command']):not([data-blueprint-fragment='terminal']):not([data-blueprint-fragment='review-summary']),
+  .flowy-blueprint__fragment.is-companion,
+  .flowy-blueprint__support-lines,
+  .flowy-blueprint__ambient-marks,
+  .flowy-blueprint__registration {
+    display: none;
+  }
+
+  .flowy-auth-brand__lockup {
+    top: 24px;
+    left: 28px;
+    right: 28px;
+  }
+
+  .flowy-auth-brand__copy {
+    bottom: 24px;
+    left: 28px;
+    width: min(420px, calc(100% - 56px));
+  }
+
+  .flowy-auth-brand__logo img,
+  .flowy-auth-brand__logo svg {
+    width: 32px;
+    height: 32px;
+  }
+
+  .flowy-auth-brand__wordmark {
+    font-size: 28px;
+  }
+
+  .flowy-auth-brand__tagline {
+    margin-top: 8px;
+  }
+
+  .flowy-auth-brand__flow,
+  .flowy-auth-brand__meta {
+    display: none;
+  }
+
+  .flowy-auth-panel {
+    padding: 36px 32px 32px;
+  }
+}
+
+@media (max-width: 639px) {
+  .flowy-auth-page {
+    display: block;
+    min-height: 100dvh;
+    padding: 0;
+  }
+
+  .flowy-auth-shell {
+    width: 100%;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .flowy-auth-intent,
+  .flowy-intent-field {
+    min-height: 144px;
+  }
+
+  .flowy-blueprint__fragment.is-primary:not([data-blueprint-fragment='browser-result']):not([data-blueprint-fragment='terminal']):not([data-blueprint-fragment='review-summary']),
+  .flowy-blueprint__fragment.is-companion,
+  .flowy-blueprint__support-lines,
+  .flowy-blueprint__ambient-marks,
+  .flowy-blueprint__marks,
+  .flowy-blueprint__registration {
+    display: none;
+  }
+
+  .flowy-blueprint__route-segment-active,
+  .flowy-blueprint__fragment {
+    transition: none;
+  }
+
+  .flowy-blueprint__execution-cursor,
+  .flowy-blueprint__pointer-marker {
+    display: none;
+  }
+
+  .flowy-auth-brand__lockup {
+    top: 16px;
+    left: 20px;
+    right: 20px;
+  }
+
+  .flowy-auth-brand__copy {
+    bottom: 16px;
+    left: 20px;
+    width: calc(100% - 40px);
+  }
+
+  .flowy-auth-brand__wordmark {
+    font-size: 24px;
+  }
+
+  .flowy-auth-brand__tagline {
+    max-width: 34ch;
+    margin-top: 6px;
+    font-size: 13px;
+  }
+
+  .flowy-auth-panel {
+    min-height: calc(100dvh - 144px);
+    align-items: stretch;
+    padding: 32px 20px 24px;
+  }
+
+  body.login-page-active {
+    overflow: auto;
+  }
+
+  .flowy-auth-progress {
+    margin-bottom: 32px;
+  }
+
+  .flowy-auth-heading {
+    font-size: 25px;
+  }
+
+  .flowy-auth-description {
+    margin-bottom: 24px;
+  }
+
+  .flowy-otp__cells {
+    gap: 5px;
+  }
+
+  .flowy-otp__cell {
+    min-height: 56px;
+    font-size: 21px;
+  }
+
+  .flowy-otp__cell--group-start {
+    margin-left: 4px;
+  }
+
+  .flowy-otp--compact .flowy-otp__cells {
+    gap: 4px;
+  }
+
+  .flowy-auth-footer {
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 4px;
+    text-align: left;
+  }
+
+  .flowy-auth-footer__group:first-child {
+    max-width: none;
+  }
+
+  .flowy-auth-footer__group:last-child {
+    justify-self: start;
+    text-align: left;
+  }
+
+  .flowy-auth-status {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .flowy-auth-status--reserve-action {
+    grid-template-columns: auto minmax(0, 1fr) minmax(116px, max-content);
+    align-items: center;
+    min-height: 72px;
+  }
+
+  .flowy-auth-status--reserve-action .flowy-auth-status__message {
+    min-height: 50px;
+  }
+
+  .flowy-auth-status--reserve-action .flowy-auth-status__action {
+    grid-column: auto;
+    justify-self: end;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flowy-blueprint__route-segment-active,
+  .flowy-blueprint__fragment,
+  .flowy-blueprint__fragment-shell,
+  .flowy-blueprint__fragment-line,
+  .flowy-blueprint__fragment-accent,
+  .flowy-blueprint__fragment-detail,
+  .flowy-blueprint__ambient-mark,
+  .flowy-blueprint__pointer-marker,
+  .flowy-blueprint__execution-cursor {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .flowy-blueprint__support-line {
+    transition: none;
+  }
+
+  .flowy-blueprint__ambient-mark {
+    transition: none;
+  }
+
+  .flowy-blueprint__pointer-marker,
+  .flowy-blueprint__execution-cursor {
+    display: none;
+  }
+
+  .flowy-auth-input,
+  .flowy-auth-primary,
+  .flowy-auth-secondary,
+  .flowy-auth-ghost,
+  .flowy-otp__cell {
+    transition: none;
+  }
+
+  .flowy-auth-spinner {
+    animation: none;
+  }
+}
+
+.flowy-intent-field.is-reduced-motion .flowy-blueprint__route-segment-active,
+.flowy-intent-field.is-reduced-motion .flowy-blueprint__fragment,
+.flowy-intent-field.is-reduced-motion .flowy-blueprint__fragment-shell,
+  .flowy-intent-field.is-reduced-motion .flowy-blueprint__fragment-line,
+  .flowy-intent-field.is-reduced-motion .flowy-blueprint__fragment-accent,
+  .flowy-intent-field.is-reduced-motion .flowy-blueprint__fragment-detail,
+  .flowy-intent-field.is-reduced-motion .flowy-blueprint__ambient-mark,
+.flowy-intent-field.is-reduced-motion .flowy-blueprint__pointer-marker,
+.flowy-intent-field.is-reduced-motion .flowy-blueprint__execution-cursor {
+  animation: none;
+  transition: none;
+}
+
+.flowy-intent-field.is-reduced-motion .flowy-blueprint__support-line {
+  transition: none;
+}
+
+.flowy-intent-field.is-reduced-motion .flowy-blueprint__pointer-marker,
+.flowy-intent-field.is-reduced-motion .flowy-blueprint__execution-cursor {
+  display: none;
+}
+
+.flowy-intent-field.is-page-hidden .flowy-blueprint__route-segment-active,
+.flowy-intent-field.is-page-hidden .flowy-blueprint__fragment,
+.flowy-intent-field.is-page-hidden .flowy-blueprint__fragment-shell,
+  .flowy-intent-field.is-page-hidden .flowy-blueprint__fragment-line,
+  .flowy-intent-field.is-page-hidden .flowy-blueprint__fragment-accent,
+  .flowy-intent-field.is-page-hidden .flowy-blueprint__fragment-detail,
+  .flowy-intent-field.is-page-hidden .flowy-blueprint__ambient-mark,
+.flowy-intent-field.is-page-hidden .flowy-blueprint__pointer-marker,
+.flowy-intent-field.is-page-hidden .flowy-blueprint__execution-cursor {
+  animation: none !important;
+  transition: none !important;
+}
+
+.flowy-intent-field.is-page-hidden .flowy-blueprint__execution-cursor {
+  display: none;
+}
+
+.flowy-intent-field.is-compact-viewport .flowy-blueprint__route-segment-active,
+.flowy-intent-field.is-compact-viewport .flowy-blueprint__fragment,
+.flowy-intent-field.is-compact-viewport .flowy-blueprint__fragment-shell,
+.flowy-intent-field.is-compact-viewport .flowy-blueprint__fragment-line,
+.flowy-intent-field.is-compact-viewport .flowy-blueprint__fragment-accent,
+.flowy-intent-field.is-compact-viewport .flowy-blueprint__fragment-detail,
+.flowy-intent-field.is-compact-viewport .flowy-blueprint__ambient-mark {
+  transition: none;
+}
+
+.flowy-intent-field.is-compact-viewport .flowy-blueprint__execution-cursor,
+.flowy-intent-field.is-compact-viewport .flowy-blueprint__pointer-marker {
+  display: none;
+}

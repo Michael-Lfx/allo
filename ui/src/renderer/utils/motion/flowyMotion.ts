@@ -28,8 +28,12 @@ export function flowyTransition(
 }
 
 /** High-probability next chunks after auth / home. */
+export function preloadGuidPathChunk() {
+  return import('@renderer/pages/guid');
+}
+
 export function preloadCommercialPathChunks() {
-  void import('@renderer/pages/guid');
+  void preloadGuidPathChunk();
   void import('@renderer/pages/conversation');
   void import('@renderer/pages/cloudLogin');
 }

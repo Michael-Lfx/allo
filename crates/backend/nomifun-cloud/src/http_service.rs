@@ -173,6 +173,7 @@ impl CloudService {
                 })
                 .unwrap())
             }
+            AuthPollResult::InvalidCode => Err(AppError::CloudOtpInvalidCode),
             AuthPollResult::Failed(err) => {
                 self.pending.remove(pending_id);
                 Ok(serde_json::to_value(nomifun_api_types::CloudLoginFailedResponse {

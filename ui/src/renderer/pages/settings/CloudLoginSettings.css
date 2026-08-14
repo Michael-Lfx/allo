@@ -1,0 +1,132 @@
+.flowy-settings-auth {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 520px;
+  padding: 20px;
+  border: 1px solid var(--flowy-border-subtle);
+  border-radius: var(--flowy-radius-lg);
+  background: var(--flowy-panel);
+}
+
+.flowy-settings-auth__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.flowy-settings-auth__start {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.flowy-settings-auth__input-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 122px;
+}
+
+.flowy-settings-auth__input-slot > .flowy-auth-field {
+  min-height: 100px;
+}
+
+.flowy-settings-auth__status-slot {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  min-height: 56px;
+  margin-top: 14px;
+}
+
+.flowy-settings-auth__action-slot {
+  display: flex;
+  min-height: 44px;
+  margin-top: 14px;
+}
+
+.flowy-settings-auth__action-slot > * {
+  width: 100%;
+}
+
+.flowy-settings-auth__otp-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.flowy-settings-auth__label {
+  color: var(--flowy-text-primary);
+  font-size: 13px;
+  font-weight: var(--flowy-weight-semibold);
+}
+
+.flowy-settings-auth__hint {
+  margin-top: 5px;
+  color: var(--flowy-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.flowy-settings-auth__resend-value {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  color: var(--flowy-text-muted);
+  font-family: var(--flowy-font-mono);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.flowy-settings-auth .flowy-auth-secondary:disabled .flowy-settings-auth__resend-value {
+  min-width: 52px;
+  justify-content: flex-end;
+}
+
+.flowy-settings-auth .flowy-auth-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.flowy-settings-auth .flowy-auth-secondary > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flowy-settings-auth .flowy-auth-cooldown {
+  min-height: 32px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--flowy-warning);
+}
+
+.flowy-settings-auth .flowy-auth-cooldown .flowy-auth-status__mark {
+  width: 6px;
+  height: 6px;
+}
+
+@media (max-width: 639px) {
+  .flowy-settings-auth {
+    padding: 16px;
+  }
+
+  .flowy-settings-auth__status-slot {
+    min-height: 72px;
+  }
+
+}
