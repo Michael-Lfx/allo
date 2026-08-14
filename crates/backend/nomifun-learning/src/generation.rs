@@ -1115,7 +1115,9 @@ pub(crate) fn validate_generated_pack(
 /// terminate the object early. Candidate objects are tried in order, and a
 /// failed parse is retried after repairing the common mistakes models make:
 /// escaping errors (raw newlines, LaTeX backslashes) and trailing commas.
-fn parse_json_object<T: DeserializeOwned>(raw: &str) -> Result<T, String> {
+/// Shared with the reflection-grading parser in `service.rs`, which faces the
+/// same fence/prose habits from the same models.
+pub(crate) fn parse_json_object<T: DeserializeOwned>(raw: &str) -> Result<T, String> {
     let mut last_error = "no complete JSON object found".to_owned();
     let mut scan_from = 0usize;
     while let Some((start, end)) = find_json_object_bounds(raw, scan_from) {

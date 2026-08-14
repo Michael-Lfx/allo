@@ -1126,7 +1126,17 @@ impl LearningService {
                     .await
                 {
                     Ok(grade) => grade,
-                    Err(_) => (fallback_score, fallback_feedback),
+                    Err(error) => {
+                        // Silent degradation made "every non-empty answer
+                        // passes" look like a grading feature instead of a
+                        // failure; surface the reason so it can be fixed.
+                        tracing::warn!(
+                            %error,
+                            activity = %activity_id,
+                            "AI reflection grading failed; degrading to rule-based grading"
+                        );
+                        (fallback_score, fallback_feedback)
+                    }
                 }
             }
         } else {
@@ -3323,7 +3333,10 @@ fn build_reflection_grading_prompt(
     )
 }
 
-/// Parses the strict-JSON grading reply into `(score, feedback)`. Any shape
+/// Parses the strict-JSON grading reply into `(score, feedback)`. Extraction
+/// reuses the generation parser so the habitual model mistakes — Markdown
+/// fences, prose around the object, escaping errors, trailing commas — do
+/// not silently drop the learner onto rule-based grading. Any shape
 /// deviation returns `Err` so the caller degrades to rule-based grading.
 fn parse_reflection_grading(raw: &str) -> Result<(f64, String), AppError> {
     #[derive(serde::Deserialize)]
@@ -3331,7 +3344,7 @@ fn parse_reflection_grading(raw: &str) -> Result<(f64, String), AppError> {
         score: f64,
         feedback: String,
     }
-    let reply: GradingReply = serde_json::from_str(raw).map_err(|error| {
+    let reply: GradingReply = crate::generation::parse_json_object(raw).map_err(|error| {
         AppError::Internal(format!("unparseable reflection grading reply: {error}"))
     })?;
     Ok((reply.score.clamp(0.0, 1.0), reply.feedback))
@@ -4251,6 +4264,42 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("must not be empty"));
         assert_eq!(completer.calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn reflection_ai_grading_tolerates_fenced_reply() {
+        // Models habitually wrap the grading JSON in Markdown fences (or add
+        // prose around it). The bare parser used to reject the whole reply,
+        // so every answer silently degraded to "non-empty passes" — the
+        // fenced reply must now parse and drive the score.
+        let completer = ScriptedCompleter::new(
+            "```json\n{\"score\":0.4,\"feedback\":\"## 评价\\n方向正确，但缺少关键步骤。\"}\n```",
+            false,
+        );
+        let (service, pool, user_id, activity_id) =
+            reflection_service_with_completer(completer.clone()).await;
+        let result = service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("A vector has magnitude.".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.score, 0.4);
+        assert!(!result.passed);
+        assert!(result.feedback.contains("方向正确"));
+        assert_eq!(completer.calls.load(AtomicOrdering::SeqCst), 1);
+        // The AI score, not the non-empty fallback, is persisted.
+        let (score,): (f64,) =
+            sqlx::query_as("SELECT score FROM learning_attempts WHERE activity_id = ?")
+                .bind(activity_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(score, 0.4);
     }
 
     #[tokio::test]
