@@ -160,6 +160,10 @@ export type ConfigKeyMap = {
   'learning.reviewSessionLimit': number | undefined;
   // Max questions in a diagnostic plan (default 10).
   'learning.diagnosticLimit': number | undefined;
+  // Default provider+model for every learning AI call (reflection grading,
+  // course generation, job retry). Absent = the backend falls back to its
+  // own default completer model.
+  'learning.autogenModel': { provider_id: ProviderId; model: string } | undefined;
   // Global MoA (Mixture-of-Agents) defaults for new sessions, stored as a
   // MoaSettings JSON string (snake_case wire shape). Read by the backend agent
   // factory as the fallback when a conversation carries no explicit extra.moa.

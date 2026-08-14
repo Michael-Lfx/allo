@@ -728,6 +728,10 @@ pub(super) async fn build(
     );
 
     let config = NomiResolvedConfig {
+        // provider_id was validated as a canonical UUID just above.
+        provider_id: ProviderId::parse(&model_selection.provider_id).expect(
+            "session provider id already validated as a canonical ProviderId",
+        ),
         provider: fields.provider,
         api_key: fields.api_key,
         model: fields.model.clone(),
@@ -926,6 +930,10 @@ pub(super) async fn build(
         knowledge_writeback_sink,
         knowledge_write_bases,
         learning_course_sink,
+        // Owner user id for the native course-generation tools: jobs are
+        // created under this principal, so the tools can start/query jobs on
+        // behalf of the installation owner (same identity the cron sink uses).
+        owner_id_for_cron.clone(),
         if is_instance_owner && overrides.companion {
             deps.companion_skill_sink.clone()
         } else {

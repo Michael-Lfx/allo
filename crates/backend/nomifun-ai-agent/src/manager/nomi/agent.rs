@@ -12,7 +12,10 @@ use nomi_agent::summon_tools::{
 };
 use nomi_agent::engine::AgentEngine;
 use nomi_agent::knowledge_tools::{KnowledgeReadTool, KnowledgeSearchTool, KnowledgeWriteTool};
-use nomi_agent::learning_tools::{LEARNING_GENERATE_COURSE_TOOL_NAME, LearningGenerateCourseTool};
+use nomi_agent::learning_tools::{
+    LEARNING_COURSE_STATUS_TOOL_NAME, LEARNING_GENERATE_COURSE_TOOL_NAME,
+    LearningCourseStatusTool, LearningGenerateCourseTool,
+};
 use nomi_agent::output::OutputSink;
 use nomi_agent::requirement_tools::{RequirementCompleteTool, RequirementSink, RequirementUpdateStatusTool};
 use nomi_agent::cron_tools::{CronCreateTool, CronDeleteTool, CronListTool, CronSink};
@@ -527,6 +530,7 @@ impl NomiAgentManager {
             // path (new_with_search_provider); host-wiring/legacy constructors
             // leave it unregistered.
             None,
+            None,
             companion_skill_sink,
             nomi_agent::SearchProviderBinding::DefaultDdg,
             nomi_agent::ExtractCoordinatorBinding::LocalDefault,
@@ -550,6 +554,10 @@ impl NomiAgentManager {
         knowledge_writeback_sink: Option<Arc<dyn nomi_agent::knowledge_tools::KnowledgeWritebackSink>>,
         knowledge_write_bases: Vec<(nomifun_common::KnowledgeBaseId, String)>,
         learning_course_sink: Option<Arc<dyn nomi_agent::learning_tools::LearningCourseSink>>,
+        // Owner user id for the native course-generation tools (the factory
+        // passes the authenticated principal; legacy constructors pass None
+        // and the tools stay unregistered).
+        owner_user_id: Option<String>,
         companion_skill_sink: Option<Arc<dyn CompanionSkillSink>>,
         search_provider: nomi_agent::SearchProviderBinding,
         extract_coordinator: nomi_agent::ExtractCoordinatorBinding,
@@ -748,12 +756,14 @@ impl NomiAgentManager {
 
         // The native learning_generate_course tool turns a mounted knowledge
         // base into a learning course through the backend learning service
-        // (app DB rows + one model call — never user files). Allow-list it
+        // (app DB rows + one model call — never user files). The companion
+        // learning_course_status tool polls its progress. Both are allow-listed
         // past the approval gate like knowledge_write: under SessionMode::
-        // Default nothing is auto-approved, which would park generation on a
-        // confirmation many surfaces (channel / companion) cannot show. Must
-        // be set BEFORE bootstrap so it reaches the engine's allow_list;
-        // registration of the tool itself happens after build().
+        // Default nothing is auto-approved, which would park generation /
+        // progress reporting on a confirmation many surfaces (channel /
+        // companion) cannot show. Must be set BEFORE bootstrap so they reach
+        // the engine's allow_list; registration of the tools happens after
+        // build().
         let register_learning_generate_course = should_register_learning_generate_course(
             learning_course_sink.is_some(),
             &knowledge_write_bases,
@@ -763,6 +773,10 @@ impl NomiAgentManager {
                 .tools
                 .allow_list
                 .push(LEARNING_GENERATE_COURSE_TOOL_NAME.to_owned());
+            config
+                .tools
+                .allow_list
+                .push(LEARNING_COURSE_STATUS_TOOL_NAME.to_owned());
         }
 
         let is_resume = resume_session.is_some();
@@ -996,20 +1010,39 @@ impl NomiAgentManager {
                 debug!(conversation_id = %conversation_id, "Registered knowledge_search + knowledge_read tools");
             }
         }
-        // Native learning_generate_course: registered when a course-generation
-        // sink is wired (factory gates on owner authority) AND bases are
-        // mounted. Resolves the model-named base within the mounted set and
-        // generates through the learning service. Already allow-listed above
-        // so it bypasses the approval gate, same posture as knowledge_write.
+        // Native learning_generate_course + learning_course_status: registered
+        // when a course-generation sink is wired (factory gates on owner
+        // authority) AND bases are mounted AND the owner user id is known.
+        // The generate tool resolves the model-named base within the mounted
+        // set and starts a background job; the status tool polls it. Both are
+        // already allow-listed above so they bypass the approval gate, same
+        // posture as knowledge_write.
         if let Some(sink) = learning_course_sink {
-            if register_learning_generate_course {
+            if register_learning_generate_course
+                && let Some(user_id) = owner_user_id.as_deref()
+            {
                 engine.registry_mut().register(Box::new(LearningGenerateCourseTool::new(
-                    sink,
+                    sink.clone(),
                     knowledge_write_bases.clone(),
+                    user_id,
+                    Some(conversation_id.clone()),
+                    // Generation honors the session's active model: the job
+                    // runs on the provider/model the user picked in this
+                    // conversation instead of the backend's first-enabled
+                    // default. The canonical provider row id (UUID) is
+                    // forwarded, not the nomi provider name, because the
+                    // learning service keys providers by UUID.
+                    Some((
+                        config_extra.provider_id.as_str().to_owned(),
+                        config_extra.model.clone(),
+                    )),
                 )));
+                engine
+                    .registry_mut()
+                    .register(Box::new(LearningCourseStatusTool::new(sink, user_id)));
                 debug!(
                     conversation_id = %conversation_id,
-                    "Registered learning_generate_course tool"
+                    "Registered learning_generate_course + learning_course_status tools"
                 );
             }
         }
@@ -3482,6 +3515,10 @@ mod tests {
 
     fn make_test_config() -> NomiResolvedConfig {
         NomiResolvedConfig {
+            provider_id: nomifun_common::ProviderId::parse(
+                "0190f5fe-7c00-7a00-8000-000000000001",
+            )
+            .unwrap(),
             provider: "anthropic".into(),
             api_key: "sk-test-key".into(),
             model: "claude-sonnet-4-20250514".into(),

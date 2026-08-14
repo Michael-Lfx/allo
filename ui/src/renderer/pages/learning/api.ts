@@ -3,6 +3,7 @@ import type {
   AttemptResult,
   ConceptRef,
   CourseDetail,
+  CourseJobView,
   CourseSummary,
   CreateCustomQuestionRequest,
   DiagnosticPlan,
@@ -10,10 +11,13 @@ import type {
   GenerateCourseRequest,
   LessonStatus,
   QuestionEntry,
+  RetryCourseJobRequest,
   ReviewAnswerResult,
   ReviewRating,
   ReviewResult,
   ReviewSource,
+  SetTagsRequest,
+  SubmitAttemptRequest,
   UpdateQuestionRequest,
 } from './types';
 
@@ -28,7 +32,18 @@ export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
   generateCourse: (request: GenerateCourseRequest) =>
-    httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
+    httpRequest<CourseJobView>('POST', `${BASE}/courses/generate`, request),
+  listCourseJobs: () => httpRequest<CourseJobView[]>('GET', `${BASE}/course-jobs`),
+  getCourseJob: (id: string) =>
+    httpRequest<CourseJobView>('GET', `${BASE}/course-jobs/${encodeURIComponent(id)}`),
+  cancelCourseJob: (id: string) =>
+    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/cancel`),
+  resumeCourseJob: (id: string) =>
+    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/resume`),
+  retryCourseJob: (id: string, request: RetryCourseJobRequest) =>
+    httpRequest<CourseJobView>('POST', `${BASE}/course-jobs/${encodeURIComponent(id)}/retry`, request),
+  deleteCourseJob: (id: string) =>
+    httpRequest<void>('DELETE', `${BASE}/course-jobs/${encodeURIComponent(id)}`),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
   enroll: (id: string) =>
@@ -40,12 +55,39 @@ export const learningApi = {
     ),
   updateLessonProgress: (id: string, status: LessonStatus) =>
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
-  submitAttempt: (id: string, response: unknown) =>
-    httpRequest<AttemptResult>('POST', `${BASE}/activities/${encodeURIComponent(id)}/attempts`, {
-      response,
-    }),
-  listDueReviews: (limit = 30) =>
-    httpRequest<DueReview[]>('GET', `${BASE}/reviews/due?limit=${limit}`),
+  submitAttempt: (id: string, request: SubmitAttemptRequest) =>
+    httpRequest<AttemptResult>('POST', `${BASE}/activities/${encodeURIComponent(id)}/attempts`, request),
+  listDueReviews: (
+    limit = 30,
+    courseId?: string | string[],
+    options?: { dueOnly?: boolean; orphan?: boolean; tags?: string[] }
+  ) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    const courseIds = courseId === undefined ? [] : Array.isArray(courseId) ? courseId : [courseId];
+    for (const id of courseIds) query.append('course_id', id);
+    if (options?.dueOnly) query.set('due_only', 'true');
+    if (options?.orphan) query.set('orphan', 'true');
+    for (const tag of options?.tags ?? []) query.append('tag', tag);
+    return httpRequest<DueReview[]>('GET', `${BASE}/reviews/due?${query.toString()}`);
+  },
+  listTags: () => httpRequest<string[]>('GET', `${BASE}/tags`),
+  setCourseTags: (id: string, request: SetTagsRequest) =>
+    httpRequest<string[]>('PUT', `${BASE}/courses/${encodeURIComponent(id)}/tags`, request),
+  setQuestionTags: (
+    entry: Pick<QuestionEntry, 'source' | 'question_id'>,
+    tags: string[]
+  ) =>
+    entry.source === 'custom'
+      ? httpRequest<string[]>(
+          'PUT',
+          `${BASE}/custom-questions/${encodeURIComponent(entry.question_id)}/tags`,
+          { tags }
+        )
+      : httpRequest<string[]>(
+          'PUT',
+          `${BASE}/questions/${encodeURIComponent(entry.question_id)}/tags`,
+          { tags }
+        ),
   answerReview: (source: ReviewSource, id: string, response: unknown, forgot = false) =>
     httpRequest<ReviewAnswerResult>('POST', `${reviewBase(source, id)}/answer`, {
       response,

@@ -98,6 +98,8 @@ impl MockAgentRuntime for TypedMockAgent {}
 
 fn make_nomi_config() -> NomiResolvedConfig {
     NomiResolvedConfig {
+        provider_id: nomifun_common::ProviderId::parse("0190f5fe-7c00-7a00-8000-000000000001")
+            .unwrap(),
         provider: "anthropic".into(),
         api_key: "sk-test-key".into(),
         model: "claude-sonnet-4-20250514".into(),

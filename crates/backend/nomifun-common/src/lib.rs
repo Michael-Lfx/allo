@@ -69,6 +69,7 @@ pub use id::{
     IdmmInterventionId, KnowledgeBaseId, KnowledgeBindingId,
     LearningActivityId, LearningAttemptId, LearningConceptId, LearningCourseId,
     LearningEnrollmentId, LearningLessonId, LearningModuleId, LearningReviewItemId,
+    LearningTagId,
     McpServerId, MessageId,
     MiniAppId,
     PersistedArtifactId, PresetId, PresetTagId, PreviewSnapshotId, ProviderId,

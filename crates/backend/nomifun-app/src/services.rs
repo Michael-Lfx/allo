@@ -2454,6 +2454,12 @@ impl AppServices {
         if let Err(error) = learning_service.seed_tutorial_content(&data_dir).await {
             tracing::warn!(%error, "tutorial learning content seed failed; continuing");
         }
+        // Boot-resume: re-claim course-generation jobs left running by a
+        // previous process so interrupted generations continue from their
+        // last persisted snapshot. Failures are non-fatal.
+        if let Err(error) = learning_service.recover_interrupted_jobs().await {
+            tracing::warn!(%error, "course-generation job resume sweep failed; continuing");
+        }
 
         // Knowledge MCP server: gives ACP sessions with bound knowledge bases
         // search/read and policy-gated write tools over a stdio bridge. It owns

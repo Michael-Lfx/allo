@@ -22,7 +22,7 @@ pub struct CoursePack {
     pub modules: Vec<ModulePack>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateCourseRequest {
     pub knowledge_base_id: KnowledgeBaseId,
     #[serde(default)]
@@ -35,6 +35,18 @@ pub struct GenerateCourseRequest {
     pub module_count: u8,
     #[serde(default = "default_lessons_per_module")]
     pub lessons_per_module: u8,
+}
+
+/// Optional model preference for retrying a failed course-generation job.
+/// Both fields are sent together (or neither); when provided the job's
+/// request snapshot is re-pointed at the chosen model before the retry
+/// re-runs, so a busy default model can be swapped for another one.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RetryCourseJobRequest {
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 const fn default_module_count() -> u8 {
@@ -53,7 +65,7 @@ const fn default_version() -> i64 {
     1
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConceptPack {
     pub key: String,
     pub title: String,
@@ -99,18 +111,50 @@ pub struct SourceSpan {
     pub end: Option<i64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Serde helper: tolerate an explicit `null` where a string is expected by
+/// degrading to an empty string. `#[serde(default)]` only covers a *missing*
+/// field, while LLM outputs often write `"field": null` — which would
+/// otherwise fail the whole parse ("invalid type: null, expected a string").
+/// Degraded values then flow through the same validation as any other weak
+/// output, so structural mistakes still trigger the targeted retry.
+pub fn de_string_or_empty<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// Serde helper: tolerate `null` in place of a string list (or `null`
+/// elements inside it) by degrading to an empty list. Same rationale as
+/// [`de_string_or_empty`]; non-string elements still fail loudly.
+pub fn de_vec_string_or_empty<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<Option<String>>>::deserialize(deserializer)?
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityPack {
     pub kind: ActivityKind,
+    #[serde(default, deserialize_with = "de_string_or_empty")]
     pub prompt: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_vec_string_or_empty")]
     pub options: Vec<String>,
     #[serde(default)]
     pub answer: Value,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_or_empty")]
     pub explanation: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_vec_string_or_empty")]
     pub concepts: Vec<String>,
+    /// Near-synonym traps for fill_in_blank blanks (or physically adjacent
+    /// quantities), forcing fine discrimination. Only fill_in_blank uses it.
+    #[serde(default, deserialize_with = "de_vec_string_or_empty")]
+    pub distractors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +163,7 @@ pub enum ActivityKind {
     SingleChoice,
     TrueFalse,
     Reflection,
+    FillInBlank,
 }
 
 impl ActivityKind {
@@ -127,6 +172,7 @@ impl ActivityKind {
             Self::SingleChoice => "single_choice",
             Self::TrueFalse => "true_false",
             Self::Reflection => "reflection",
+            Self::FillInBlank => "fill_in_blank",
         }
     }
 }
@@ -139,6 +185,7 @@ impl TryFrom<&str> for ActivityKind {
             "single_choice" => Ok(Self::SingleChoice),
             "true_false" => Ok(Self::TrueFalse),
             "reflection" => Ok(Self::Reflection),
+            "fill_in_blank" => Ok(Self::FillInBlank),
             other => Err(format!("unsupported activity kind: {other}")),
         }
     }
@@ -187,6 +234,7 @@ pub struct CourseSummary {
     pub total_lessons: i64,
     pub completed_lessons: i64,
     pub updated_at: TimestampMs,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -263,6 +311,13 @@ pub struct UpdateLessonProgressRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SubmitAttemptRequest {
     pub response: Value,
+    /// Explicit AI model preference for reflection grading. Both fields are
+    /// sent together (or neither); the backend falls back to its default
+    /// completer when absent and to rule-based grading on any AI failure.
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -378,6 +433,9 @@ pub struct QuestionEntry {
     pub prompt: Option<String>,
     pub options: Vec<String>,
     pub answer: Option<Value>,
+    /// Near-synonym traps for fill_in_blank blanks, surfaced for display.
+    #[serde(default)]
+    pub distractors: Vec<String>,
     pub explanation: Option<String>,
     pub due_at: Option<TimestampMs>,
     pub overdue: bool,
@@ -387,6 +445,7 @@ pub struct QuestionEntry {
     pub lapse_count: i64,
     pub last_reviewed_at: Option<TimestampMs>,
     pub updated_at: TimestampMs,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -397,11 +456,14 @@ pub struct UpdateQuestionRequest {
     pub answer: Value,
     #[serde(default)]
     pub explanation: String,
+    #[serde(default)]
+    pub distractors: Vec<String>,
 }
 
-/// Learner-authored question. Only objective kinds are supported; the
-/// optional concept links the question back to an existing concept
-/// (including orphaned concepts from deleted courses).
+/// Learner-authored question. Objective kinds (single choice, true/false,
+/// fill in the blank) are supported; the optional concept links the question
+/// back to an existing concept (including orphaned concepts from deleted
+/// courses).
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateCustomQuestionRequest {
     pub kind: ActivityKind,
@@ -413,6 +475,10 @@ pub struct CreateCustomQuestionRequest {
     pub explanation: String,
     #[serde(default)]
     pub concept_id: Option<LearningConceptId>,
+    /// Near-synonym traps for fill_in_blank blanks (optional when the
+    /// learner authors the question by hand).
+    #[serde(default)]
+    pub distractors: Vec<String>,
 }
 
 /// Concept offered in the custom question form: any concept the learner
@@ -423,6 +489,18 @@ pub struct ConceptRef {
     pub concept_id: LearningConceptId,
     pub title: String,
     pub course_title: Option<String>,
+}
+
+/// Replaces the tag set of a course or question. Unknown tag names are
+/// created automatically; names are trimmed, empty values dropped and
+/// duplicates collapsed before storing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetTagsRequest {
+    pub tags: Vec<String>,
+    /// For courses only: also append every tag of the final set to each
+    /// question under the course, keeping the questions' existing tags.
+    #[serde(default)]
+    pub apply_to_children: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -439,4 +517,118 @@ pub(crate) struct StoredActivityConfig {
     pub options: Vec<String>,
     pub answer: Value,
     pub explanation: String,
+    /// Near-synonym traps for fill_in_blank blanks; empty for other kinds.
+    /// Old rows lack the column, so it defaults on read.
+    #[serde(default)]
+    pub distractors: Vec<String>,
+}
+
+/// Who submitted a course-generation job: the HTTP generate endpoint or an
+/// agent tool call. Kept for the task list display only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CourseJobSource {
+    Http,
+    Agent,
+}
+
+impl CourseJobSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Agent => "agent",
+        }
+    }
+}
+
+impl TryFrom<&str> for CourseJobSource {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "http" => Ok(Self::Http),
+            "agent" => Ok(Self::Agent),
+            other => Err(format!("unsupported course job source: {other}")),
+        }
+    }
+}
+
+/// Pipeline stage of a persistent course-generation job. Non-terminal stages
+/// double as the runner's next step, so the claimed row always tells the
+/// runner what to do after a resume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CourseJobStatus {
+    Queued,
+    Sampling,
+    Blueprint,
+    Lessons,
+    Importing,
+    Completed,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+impl CourseJobStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Sampling => "sampling",
+            Self::Blueprint => "blueprint",
+            Self::Lessons => "lessons",
+            Self::Importing => "importing",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+impl TryFrom<&str> for CourseJobStatus {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "queued" => Ok(Self::Queued),
+            "sampling" => Ok(Self::Sampling),
+            "blueprint" => Ok(Self::Blueprint),
+            "lessons" => Ok(Self::Lessons),
+            "importing" => Ok(Self::Importing),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            "interrupted" => Ok(Self::Interrupted),
+            other => Err(format!("unsupported course job status: {other}")),
+        }
+    }
+}
+
+/// Public projection of one `learning_course_jobs` row: everything the
+/// Learning page needs to render progress and offer cancel/resume/retry.
+#[derive(Debug, Clone, Serialize)]
+pub struct CourseJobView {
+    pub job_id: String,
+    pub source: CourseJobSource,
+    pub status: CourseJobStatus,
+    /// 1-based module index of the lesson currently being generated (0 until
+    /// the blueprint resolves).
+    pub current_module: i64,
+    /// Number of completed lessons (0..=total_lessons).
+    pub current_lesson: i64,
+    pub total_lessons: i64,
+    pub error: Option<String>,
+    pub course_id: Option<String>,
+    /// Knowledge base name the course is generated from (`None` when the
+    /// base was deleted since the job ran).
+    pub knowledge_base_name: Option<String>,
+    /// User-provided course domain from the request snapshot, when given.
+    pub domain: Option<String>,
+    pub created_at: TimestampMs,
+    pub updated_at: TimestampMs,
 }

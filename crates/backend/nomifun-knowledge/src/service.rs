@@ -1127,6 +1127,29 @@ impl KnowledgeService {
             .collect())
     }
 
+    /// Id of the first registered base whose name matches, or `None` when no
+    /// base has that name. DB-only (no directory walk), like
+    /// [`Self::list_base_ids`] — one-shot seeders use it to reuse an existing
+    /// base instead of registering a duplicate when their version gate was
+    /// lost (crash mid-seed, version bump, fresh data dir).
+    pub async fn find_base_id_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<KnowledgeBaseId>, AppError> {
+        Ok(self
+            .repo
+            .list_bases()
+            .await?
+            .into_iter()
+            .find(|row| row.name == name)
+            .map(|row| {
+                row.knowledge_base_id.parse().map_err(|error| {
+                    AppError::Internal(format!("invalid persisted knowledge base id: {error}"))
+                })
+            })
+            .transpose()?)
+    }
+
     pub async fn get_base_info(&self, id: &str) -> Result<KnowledgeBaseInfo, AppError> {
         let row = self.require_base(id).await?;
         self.materialize_base_info(row)

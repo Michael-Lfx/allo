@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use nomifun_common::{
     AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptId,
     LearningCourseId, LearningEnrollmentId, LearningLessonId, LearningModuleId,
-    LearningReviewItemId, UserId, UuidV7Error, now_ms,
+    LearningReviewItemId, LearningTagId, ProviderId, UserId, UuidV7Error, generate_id, now_ms,
 };
 use nomifun_db::SqlitePool;
 use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService};
@@ -14,12 +14,14 @@ use serde_json::Value;
 use sqlx::{Row, Sqlite, Transaction};
 
 use crate::models::{
-    ActivityKind, ActivityView, AttemptResult, ConceptRef, ConceptView, CourseDetail, CoursePack,
-    CourseSummary, CreateCustomQuestionRequest, DiagnosticItem, DiagnosticPlan, DueReview,
-    GenerateCourseRequest, LessonStatus, LessonView, ModuleView, QuestionEntry,
-    ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult, ReviewSource, SourceSpan,
-    StoredActivityConfig, UpdateQuestionRequest,
+    ActivityKind, ActivityView, AttemptResult, ConceptRef, ConceptView, CourseDetail, CourseJobSource,
+    CourseJobStatus, CourseJobView, CoursePack, CourseSummary, CreateCustomQuestionRequest,
+    DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest, LessonStatus, LessonView,
+    ModuleView, QuestionEntry, RetryCourseJobRequest, ReviewAnswerResult, ReviewQuestion,
+    ReviewRating, ReviewResult, ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig,
+    UpdateQuestionRequest,
 };
+use crate::generation_job::GenerationJobRunner;
 use crate::scheduler::{SchedulerSettings, schedule_review};
 
 #[derive(Clone)]
@@ -51,6 +53,13 @@ impl LearningService {
             .course_completer
             .write()
             .expect("learning course completer lock poisoned") = Some(completer);
+    }
+
+    /// Test-only access to the underlying pool (e.g. to simulate a stale
+    /// seeded course version).
+    #[cfg(test)]
+    pub(crate) fn pool_for_tests(&self) -> &SqlitePool {
+        &self.pool
     }
 
     /// The injected knowledge service, or a conflict when the learning
@@ -94,6 +103,433 @@ impl LearningService {
         )
         .await?;
         self.import_course(pack).await
+    }
+
+    /// Submit a course-generation job and return immediately. The pipeline
+    /// runs in the background (one spawned task per claimed job); progress is
+    /// visible through `list_course_jobs` / `course_job`. Used by both the
+    /// HTTP generate endpoint and the agent tool so the two flows share one
+    /// job registry, cancel/resume/retry semantics and crash recovery.
+    pub async fn start_course_job(
+        &self,
+        request: GenerateCourseRequest,
+        user_id: &UserId,
+        source: CourseJobSource,
+        session_id: Option<&str>,
+    ) -> Result<CourseJobView, AppError> {
+        validate_generation_request(&request)?;
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM knowledge_bases WHERE knowledge_base_id = ?",
+        )
+        .bind(request.knowledge_base_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        if exists == 0 {
+            return Err(AppError::BadRequest(format!(
+                "knowledge base {} does not exist",
+                request.knowledge_base_id
+            )));
+        }
+        // One active generation job per knowledge base at a time. The agent
+        // path can fire the generate tool twice in a single provider turn
+        // (parallel tool calls) or right after a lost response; every job
+        // imports its own course, so two jobs would silently produce two
+        // near-identical courses. Reject the duplicate up front and point at
+        // the already-running job so the caller can wait or cancel it.
+        let active_job: Option<String> = sqlx::query_scalar(
+            "SELECT job_id FROM learning_course_jobs \
+             WHERE user_id = ? AND kb_id = ? AND status NOT IN ('completed', 'failed', 'cancelled') \
+             ORDER BY created_at ASC LIMIT 1",
+        )
+        .bind(user_id.as_str())
+        .bind(request.knowledge_base_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        if let Some(active_job) = active_job {
+            return Err(AppError::Conflict(format!(
+                "knowledge base {} already has an active course-generation job ({active_job}); \
+                 wait for it to complete or cancel it before starting another",
+                request.knowledge_base_id
+            )));
+        }
+        let job_id = generate_id();
+        let now = now_ms();
+        let request_json = serde_json::to_string(&request).map_err(internal)?;
+        sqlx::query(
+            "INSERT INTO learning_course_jobs \
+             (job_id, user_id, session_id, source, kb_id, request_json, status, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+        )
+        .bind(&job_id)
+        .bind(user_id.as_str())
+        .bind(session_id)
+        .bind(source.as_str())
+        .bind(request.knowledge_base_id.as_str())
+        .bind(&request_json)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        self.generation_runner()?.claim_and_spawn(&job_id).await?;
+        self.require_course_job(user_id, &job_id).await
+    }
+
+    /// The user's course-generation jobs, most recently updated first.
+    pub async fn list_course_jobs(&self, user_id: &UserId) -> Result<Vec<CourseJobView>, AppError> {
+        let rows = sqlx::query(
+            "SELECT j.job_id, j.source, j.status, j.current_module, j.current_lesson, \
+                    j.total_lessons, j.error, j.course_id, j.created_at, j.updated_at, \
+                    j.request_json, b.name AS knowledge_base_name \
+             FROM learning_course_jobs j \
+             LEFT JOIN knowledge_bases b ON b.knowledge_base_id = j.kb_id \
+             WHERE j.user_id = ? ORDER BY j.updated_at DESC, j.job_id DESC",
+        )
+        .bind(user_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut jobs = Vec::with_capacity(rows.len());
+        for row in rows {
+            jobs.push(course_job_from_row(&row)?);
+        }
+        Ok(jobs)
+    }
+
+    /// One job for the user, `None` when it does not exist or belongs to
+    /// another user (jobs are isolated per user).
+    pub async fn course_job(
+        &self,
+        user_id: &UserId,
+        job_id: &str,
+    ) -> Result<Option<CourseJobView>, AppError> {
+        let row = sqlx::query(
+            "SELECT j.job_id, j.source, j.status, j.current_module, j.current_lesson, \
+                    j.total_lessons, j.error, j.course_id, j.created_at, j.updated_at, \
+                    j.request_json, b.name AS knowledge_base_name \
+             FROM learning_course_jobs j \
+             LEFT JOIN knowledge_bases b ON b.knowledge_base_id = j.kb_id \
+             WHERE j.user_id = ? AND j.job_id = ?",
+        )
+        .bind(user_id.as_str())
+        .bind(job_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        row.as_ref().map(course_job_from_row).transpose()
+    }
+
+    /// Request cancellation of a running job. The flag is honored at the
+    /// next stage boundary; every completed lesson is kept for a later
+    /// resume.
+    pub async fn cancel_course_job(
+        &self,
+        user_id: &UserId,
+        job_id: &str,
+    ) -> Result<CourseJobView, AppError> {
+        let job = self.require_course_job(user_id, job_id).await?;
+        if !job.status.is_terminal() {
+            sqlx::query(
+                "UPDATE learning_course_jobs SET cancel_requested = 1, updated_at = ? \
+                 WHERE user_id = ? AND job_id = ?",
+            )
+            .bind(now_ms())
+            .bind(user_id.as_str())
+            .bind(job_id)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        }
+        self.require_course_job(user_id, job_id).await
+    }
+
+    /// Delete a terminal job row (completed/failed/cancelled) so the task
+    /// panel stays tidy. Running or resumable jobs are rejected — their
+    /// progress would be thrown away silently.
+    pub async fn delete_course_job(&self, user_id: &UserId, job_id: &str) -> Result<(), AppError> {
+        let job = self.require_course_job(user_id, job_id).await?;
+        if !matches!(
+            job.status,
+            CourseJobStatus::Completed | CourseJobStatus::Failed | CourseJobStatus::Cancelled
+        ) {
+            return Err(AppError::Conflict(format!(
+                "course job {job_id} is {}, only terminal jobs can be deleted",
+                job.status.as_str()
+            )));
+        }
+        sqlx::query("DELETE FROM learning_course_jobs WHERE user_id = ? AND job_id = ?")
+            .bind(user_id.as_str())
+            .bind(job_id)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    /// Continue a cancelled or interrupted job from its last persisted
+    /// lesson cursor.
+    pub async fn resume_course_job(
+        &self,
+        user_id: &UserId,
+        job_id: &str,
+    ) -> Result<CourseJobView, AppError> {
+        let job = self.require_course_job(user_id, job_id).await?;
+        if !matches!(
+            job.status,
+            CourseJobStatus::Cancelled | CourseJobStatus::Interrupted
+        ) {
+            return Err(AppError::Conflict(format!(
+                "course job {job_id} is {}, only cancelled or interrupted jobs can be resumed",
+                job.status.as_str()
+            )));
+        }
+        sqlx::query(
+            "UPDATE learning_course_jobs SET cancel_requested = 0, updated_at = ? \
+             WHERE user_id = ? AND job_id = ?",
+        )
+        .bind(now_ms())
+        .bind(user_id.as_str())
+        .bind(job_id)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        self.generation_runner()?.claim_and_spawn(job_id).await?;
+        self.require_course_job(user_id, job_id).await
+    }
+
+    /// Retry a failed job: reruns the failing lesson when the blueprint
+    /// survived, otherwise restarts from the blueprint stage. Completed
+    /// lessons are never regenerated. An optional model preference re-points
+    /// the job's request snapshot at another model so a busy default can be
+    /// swapped before the retry re-runs.
+    pub async fn retry_course_job(
+        &self,
+        user_id: &UserId,
+        job_id: &str,
+        request: &RetryCourseJobRequest,
+    ) -> Result<CourseJobView, AppError> {
+        let job = self.require_course_job(user_id, job_id).await?;
+        if job.status != CourseJobStatus::Failed {
+            return Err(AppError::Conflict(format!(
+                "course job {job_id} is {}, only failed jobs can be retried",
+                job.status.as_str()
+            )));
+        }
+        if request.provider_id.is_some() != request.model.is_some() {
+            return Err(AppError::BadRequest(
+                "provider_id and model must be provided together".into(),
+            ));
+        }
+        if request
+            .model
+            .as_deref()
+            .is_some_and(|model| model.trim().is_empty())
+        {
+            return Err(AppError::BadRequest("model must not be empty".into()));
+        }
+        // A retry is an explicit re-run: discard any stale cancel request so
+        // the claim cannot fold the job straight back into `cancelled`.
+        sqlx::query(
+            "UPDATE learning_course_jobs SET cancel_requested = 0, updated_at = ? \
+             WHERE user_id = ? AND job_id = ?",
+        )
+        .bind(now_ms())
+        .bind(user_id.as_str())
+        .bind(job_id)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        if let (Some(provider_id), Some(model)) = (&request.provider_id, &request.model) {
+            let snapshot: String = sqlx::query_scalar(
+                "SELECT request_json FROM learning_course_jobs WHERE user_id = ? AND job_id = ?",
+            )
+            .bind(user_id.as_str())
+            .bind(job_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(internal)?;
+            let mut stored: GenerateCourseRequest =
+                serde_json::from_str(&snapshot).map_err(internal)?;
+            stored.provider_id = Some(provider_id.clone());
+            stored.model = Some(model.clone());
+            sqlx::query(
+                "UPDATE learning_course_jobs SET request_json = ?, updated_at = ? \
+                 WHERE user_id = ? AND job_id = ?",
+            )
+            .bind(serde_json::to_string(&stored).map_err(internal)?)
+            .bind(now_ms())
+            .bind(user_id.as_str())
+            .bind(job_id)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        }
+        self.generation_runner()?.claim_and_spawn(job_id).await?;
+        self.require_course_job(user_id, job_id).await
+    }
+
+    /// Boot sweep: jobs left in a running state by a previous process are
+    /// marked `interrupted` and re-claimed so generation continues from the
+    /// last persisted snapshot. Returns how many runner tasks were spawned.
+    pub async fn recover_interrupted_jobs(&self) -> Result<usize, AppError> {
+        sqlx::query(
+            "UPDATE learning_course_jobs SET status = 'interrupted', updated_at = ? \
+             WHERE status IN ('queued', 'sampling', 'blueprint', 'lessons', 'importing')",
+        )
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        let job_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT job_id FROM learning_course_jobs WHERE status = 'interrupted' \
+             ORDER BY updated_at",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let runner = self.generation_runner()?;
+        let mut spawned = 0;
+        for job_id in &job_ids {
+            if runner.claim_and_spawn(job_id).await? {
+                spawned += 1;
+            }
+        }
+        Ok(spawned)
+    }
+
+    /// A runner wired to the injected generation dependencies, or a conflict
+    /// when the service was built without them.
+    fn generation_runner(&self) -> Result<GenerationJobRunner, AppError> {
+        let knowledge_service = self.injected_knowledge_service()?;
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict("knowledge-backed course generation is not configured".into())
+            })?;
+        Ok(GenerationJobRunner::new(
+            self.pool.clone(),
+            self.clone(),
+            knowledge_service,
+            completer,
+        ))
+    }
+
+    async fn require_course_job(
+        &self,
+        user_id: &UserId,
+        job_id: &str,
+    ) -> Result<CourseJobView, AppError> {
+        self.course_job(user_id, job_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("course generation job {job_id}")))
+    }
+
+    /// Version of the course with the given title, if one exists. The
+    /// tutorial seed uses this to decide between importing (absent), skipping
+    /// (same version) and replacing (stale version) the preset course.
+    pub(crate) async fn course_version_by_title(&self, title: &str) -> Result<Option<i64>, AppError> {
+        let version: Option<i64> =
+            sqlx::query_scalar("SELECT version FROM learning_courses WHERE title = ?")
+                .bind(title)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+        Ok(version)
+    }
+
+    /// Deletes every course with the given title and all of its data —
+    /// enrollments, progress, attempts, reviews, concepts, lessons and
+    /// activities — regardless of which user created them. Used by the
+    /// tutorial seed to replace a stale preset course version.
+    pub(crate) async fn delete_courses_by_title(&self, title: &str) -> Result<(), AppError> {
+        let course_ids: Vec<String> =
+            sqlx::query_scalar("SELECT course_id FROM learning_courses WHERE title = ?")
+                .bind(title)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
+        if course_ids.is_empty() {
+            return Ok(());
+        }
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        for course_id in &course_ids {
+            let enrollment_ids: Vec<String> = sqlx::query_scalar(
+                "SELECT enrollment_id FROM learning_enrollments WHERE course_id = ?",
+            )
+            .bind(course_id)
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(internal)?;
+            for enrollment_id in &enrollment_ids {
+                for table in [
+                    "learning_review_items",
+                    "learning_mastery_states",
+                    "learning_lesson_progress",
+                    "learning_attempts",
+                ] {
+                    sqlx::query(&format!("DELETE FROM {table} WHERE enrollment_id = ?"))
+                        .bind(enrollment_id)
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(internal)?;
+                }
+            }
+            sqlx::query("DELETE FROM learning_enrollments WHERE course_id = ?")
+                .bind(course_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+            let content_sql = [
+                "DELETE FROM learning_activity_concepts WHERE activity_id IN (\
+                    SELECT a.activity_id FROM learning_activities a \
+                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_activities WHERE lesson_id IN (\
+                    SELECT l.lesson_id FROM learning_lessons l \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
+                    SELECT a.activity_id FROM learning_activities a \
+                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
+                    SELECT l.lesson_id FROM learning_lessons l \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_lessons WHERE module_id IN (\
+                    SELECT module_id FROM learning_modules WHERE course_id = ?)",
+                "DELETE FROM learning_concept_prerequisites WHERE concept_id IN (\
+                    SELECT concept_id FROM learning_concepts WHERE course_id = ?)",
+                "DELETE FROM learning_concepts WHERE course_id = ?",
+                "DELETE FROM learning_modules WHERE course_id = ?",
+            ];
+            for sql in content_sql {
+                sqlx::query(sql)
+                    .bind(course_id)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(internal)?;
+            }
+            sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
+                .bind(course_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+            sqlx::query("DELETE FROM learning_courses WHERE course_id = ?")
+                .bind(course_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+        }
+        transaction.commit().await.map_err(internal)?;
+        Ok(())
     }
 
     pub async fn import_course(&self, pack: CoursePack) -> Result<CourseDetail, AppError> {
@@ -229,6 +665,7 @@ impl LearningService {
                         options: activity.options.clone(),
                         answer: activity.answer.clone(),
                         explanation: activity.explanation.clone(),
+                        distractors: activity.distractors.clone(),
                     };
                     sqlx::query(
                         "INSERT INTO learning_activities \
@@ -289,7 +726,13 @@ impl LearningService {
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        rows.iter().map(course_summary_from_row).collect()
+        let mut courses = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let mut course = course_summary_from_row(row)?;
+            course.tags = self.course_tags(&course.id).await?;
+            courses.push(course);
+        }
+        Ok(courses)
     }
 
     pub async fn course_detail(
@@ -320,19 +763,15 @@ impl LearningService {
         .map_err(internal)?
         .ok_or_else(|| AppError::NotFound(format!("learning course {course_id}")))?;
         let course = course_summary_from_row(&row)?;
+        let course = CourseSummary {
+            tags: self.course_tags(&course.id).await?,
+            ..course
+        };
 
+        // Opening a course detail is an implicit join: enrollment is created
+        // on first view so every downstream practice flow has a grouping key.
         let enrollment_id = if let Some(user_id) = user_id {
-            sqlx::query_scalar::<_, String>(
-                "SELECT enrollment_id FROM learning_enrollments \
-                 WHERE user_id = ? AND course_id = ?",
-            )
-            .bind(user_id.as_str())
-            .bind(course_id.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(internal)?
-            .map(parse_id)
-            .transpose()?
+            Some(self.ensure_enrollment(course_id, user_id).await?)
         } else {
             None
         };
@@ -458,11 +897,8 @@ impl LearningService {
         limit: i64,
     ) -> Result<DiagnosticPlan, AppError> {
         let detail = self.course_detail(course_id, Some(user_id)).await?;
-        if detail.enrollment_id.is_none() {
-            return Err(AppError::Conflict(
-                "enroll in the course before starting a diagnostic".into(),
-            ));
-        }
+        // course_detail already creates the enrollment on first view, so no
+        // explicit join is required before starting a diagnostic.
         let mut covered_concepts = HashSet::new();
         let mut items = Vec::new();
         let limit = limit.clamp(1, 20) as usize;
@@ -499,7 +935,12 @@ impl LearningService {
         })
     }
 
-    pub async fn enroll(
+    /// Returns the user's enrollment for a course, creating it on first use.
+    /// Practice flows (diagnostics, attempts, lesson progress) call this
+    /// instead of requiring an explicit join step, so enrollment is a data
+    /// grouping key rather than a permission gate. Idempotent: re-calling
+    /// after an enrollment exists only bumps `updated_at`.
+    async fn ensure_enrollment(
         &self,
         course_id: &LearningCourseId,
         user_id: &UserId,
@@ -539,6 +980,16 @@ impl LearningService {
         parse_id(stored)
     }
 
+    /// Explicit join endpoint, kept for compatibility; the same idempotent
+    /// upsert is now triggered implicitly by any practice flow.
+    pub async fn enroll(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+    ) -> Result<LearningEnrollmentId, AppError> {
+        self.ensure_enrollment(course_id, user_id).await
+    }
+
     pub async fn update_lesson_progress(
         &self,
         lesson_id: &LearningLessonId,
@@ -556,9 +1007,25 @@ impl LearningService {
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;
-        let enrollment_id = enrollment_id.ok_or_else(|| {
-            AppError::Conflict("enroll in the course before updating lesson progress".into())
-        })?;
+        let enrollment_id = match enrollment_id {
+            Some(enrollment_id) => enrollment_id,
+            // First progress write joins implicitly: progress rows are
+            // grouped under the enrollment, so create it on demand.
+            None => {
+                let course_id: String = sqlx::query_scalar(
+                    "SELECT m.course_id FROM learning_modules m \
+                     JOIN learning_lessons l ON l.module_id = m.module_id \
+                     WHERE l.lesson_id = ?",
+                )
+                .bind(lesson_id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+                let enrollment =
+                    self.ensure_enrollment(&parse_id(course_id)?, user_id).await?;
+                enrollment.as_str().to_owned()
+            }
+        };
         let existing_started: Option<i64> = sqlx::query_scalar(
             "SELECT started_at FROM learning_lesson_progress \
              WHERE enrollment_id = ? AND lesson_id = ?",
@@ -608,34 +1075,59 @@ impl LearningService {
         activity_id: &LearningActivityId,
         user_id: &UserId,
         response: Value,
+        provider_id: Option<ProviderId>,
+        model: Option<String>,
     ) -> Result<AttemptResult, AppError> {
         let row = sqlx::query(
-            "SELECT a.kind, a.config_json, e.enrollment_id \
+            "SELECT a.kind, a.prompt, a.config_json, m.course_id \
              FROM learning_activities a \
              JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \
-             JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ? \
              WHERE a.activity_id = ?",
         )
-        .bind(user_id.as_str())
         .bind(activity_id.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?
-        .ok_or_else(|| {
-            AppError::NotFound(format!(
-                "activity {activity_id} for an enrolled course"
-            ))
-        })?;
+        .ok_or_else(|| AppError::NotFound(format!("learning activity {activity_id}")))?;
         let kind_text: String = row.try_get("kind").map_err(internal)?;
         let kind = ActivityKind::try_from(kind_text.as_str()).map_err(AppError::Internal)?;
+        let activity_prompt: String = row.try_get("prompt").map_err(internal)?;
         let config: StoredActivityConfig = serde_json::from_str(
             &row.try_get::<String, _>("config_json").map_err(internal)?,
         )
         .map_err(internal)?;
-        let enrollment_id: LearningEnrollmentId =
-            parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
-        let (score, feedback) = evaluate(kind, &config, &response)?;
+        // First attempt joins implicitly: attempts are grouped under the
+        // enrollment, so create it on demand instead of requiring a join step.
+        let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
+        let enrollment_id = self.ensure_enrollment(&course_id, user_id).await?;
+        // Reflection answers are LLM-graded: the activity's linked concepts
+        // ground the grading prompt. AI grading is authoritative — the
+        // empty-answer rejection is enforced here by the rule-based
+        // evaluator, and any grading failure (unconfigured completer, call
+        // error, unparseable reply) surfaces as an error to the learner.
+        // The old silent fallback passed every non-empty answer with a
+        // score of 1.0, hiding grading failures behind a fake success.
+        let (score, feedback) = if kind == ActivityKind::Reflection {
+            let answer = response.as_str().map(str::trim).unwrap_or_default();
+            if answer.is_empty() {
+                // Always rejected: the evaluator errors on empty responses.
+                evaluate(kind, &config, &response)?
+            } else {
+                let linked_concepts =
+                    activity_concept_titles(&self.pool, activity_id).await?;
+                self.grade_reflection(
+                    &activity_prompt,
+                    answer,
+                    &linked_concepts,
+                    provider_id.as_ref(),
+                    model.as_deref(),
+                )
+                .await?
+            }
+        } else {
+            evaluate(kind, &config, &response)?
+        };
         let passed = score >= 0.6;
         let attempt_id = LearningAttemptId::new();
         let now = now_ms();
@@ -681,30 +1173,107 @@ impl LearningService {
         })
     }
 
+    /// LLM-grades a reflection answer against the exercise's concepts. The
+    /// model sees the exercise prompt, the learner's answer and the linked
+    /// concepts; it must reply with strict JSON
+    /// `{ "score": f64, "feedback": string }`. Every failure (no completer,
+    /// call error, unparseable reply) returns `Err` and is surfaced to the
+    /// learner — AI grading is authoritative, so a broken grader must never
+    /// masquerade as a passing answer.
+    async fn grade_reflection(
+        &self,
+        prompt: &str,
+        answer: &str,
+        linked_concepts: &[(String, String, String)],
+        provider_id: Option<&ProviderId>,
+        model: Option<&str>,
+    ) -> Result<(f64, String), AppError> {
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict("AI reflection grading is not configured".into())
+            })?;
+        let user = build_reflection_grading_prompt(prompt, answer, linked_concepts);
+        let raw = match (provider_id, model) {
+            (Some(provider_id), Some(model)) => completer
+                .complete_with(REFLECTION_GRADING_SYSTEM, &user, provider_id.as_str(), model)
+                .await,
+            _ => completer.complete(REFLECTION_GRADING_SYSTEM, &user).await,
+        }?;
+        parse_reflection_grading(&raw)
+    }
+
+    /// Due reviews for the user's review queue. When `course_ids` are given,
+    /// the queue is scoped to those courses and admits every queued review
+    /// item (not only due ones) so a dedicated course-review session can
+    /// serve cards the learner still has pending. Custom questions never
+    /// belong to a course and are excluded from course-scoped queues.
+    ///
+    /// `due_only` narrows a course-scoped queue to items whose due time has
+    /// passed; the main review entry always uses it. `orphan` adds
+    /// learner-authored questions that belong to no course; with an empty
+    /// `course_ids` list it restricts the queue to those questions only.
+    /// `tags` keeps only items whose concept (course questions) or question
+    /// itself (custom questions) carries at least one of the given tag names.
     pub async fn due_reviews(
         &self,
         user_id: &UserId,
         limit: i64,
+        course_ids: &[LearningCourseId],
+        due_only: bool,
+        orphan: bool,
+        tags: &[String],
     ) -> Result<Vec<DueReview>, AppError> {
         let limit = limit.clamp(1, 100);
         let now = now_ms();
-        let rows = sqlx::query(
-            "SELECT r.review_item_id, r.enrollment_id, e.course_id, c.title AS course_title, \
+        let base = "SELECT r.review_item_id, r.enrollment_id, e.course_id, c.title AS course_title, \
                     r.concept_id, lc.title AS concept_title, r.due_at, \
                     r.stability_days, r.difficulty, r.review_count, r.lapse_count \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
              LEFT JOIN learning_courses c ON c.course_id = e.course_id \
              JOIN learning_concepts lc ON lc.concept_id = r.concept_id \
-             WHERE e.user_id = ? AND r.due_at <= ? \
-             ORDER BY r.due_at, r.review_item_id LIMIT ?",
-        )
-        .bind(user_id.as_str())
-        .bind(now)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
+             WHERE e.user_id = ?";
+        // Course reviews: scoped by one or more courses (all queued, or due
+        // only when requested) and/or by tag names attached to the concept's
+        // questions. A pure orphan queue skips course reviews entirely.
+        let rows = if orphan && course_ids.is_empty() {
+            Vec::new()
+        } else {
+            let mut sql = String::from(base);
+            if !course_ids.is_empty() {
+                let placeholders = vec!["?"; course_ids.len()].join(", ");
+                sql.push_str(&format!(" AND e.course_id IN ({placeholders})"));
+            }
+            if due_only {
+                sql.push_str(" AND r.due_at <= ?");
+            }
+            if !tags.is_empty() {
+                let placeholders = vec!["?"; tags.len()].join(", ");
+                sql.push_str(&format!(
+                    " AND EXISTS (SELECT 1 FROM learning_activity_concepts ac \
+                     JOIN learning_question_tags qt ON qt.question_id = ac.activity_id \
+                       AND qt.source = 'course' \
+                     JOIN learning_tags lt ON lt.tag_id = qt.tag_id \
+                     WHERE ac.concept_id = r.concept_id AND lt.name IN ({placeholders}))"
+                ));
+            }
+            sql.push_str(" ORDER BY r.due_at, r.review_item_id LIMIT ?");
+            let mut query = sqlx::query(&sql).bind(user_id.as_str());
+            for course_id in course_ids {
+                query = query.bind(course_id.as_str());
+            }
+            if due_only {
+                query = query.bind(now);
+            }
+            for tag in tags {
+                query = query.bind(tag);
+            }
+            query.bind(limit).fetch_all(&self.pool).await.map_err(internal)?
+        };
         let mut reviews = Vec::new();
         for row in rows {
             let review_id: LearningReviewItemId =
@@ -752,49 +1321,65 @@ impl LearningService {
             });
         }
         // Learner-authored custom questions carry their own schedule and join
-        // the same queue without any course context.
-        let custom_rows = sqlx::query(
-            "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.due_at, \
-                    q.stability_days, q.difficulty, q.review_count, q.lapse_count \
-             FROM learning_custom_questions q \
-             WHERE q.user_id = ? AND q.due_at <= ? \
-             ORDER BY q.due_at, q.custom_question_id LIMIT ?",
-        )
-        .bind(user_id.as_str())
-        .bind(now)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        for row in custom_rows {
-            let config: StoredActivityConfig = serde_json::from_str(
-                &row.try_get::<String, _>("config_json").map_err(internal)?,
-            )
-            .map_err(internal)?;
-            let kind_text: String = row.try_get("kind").map_err(internal)?;
-            reviews.push(DueReview {
-                id: parse_id(row.try_get::<String, _>("custom_question_id").map_err(internal)?)?,
-                source: ReviewSource::Custom,
-                enrollment_id: None,
-                course_id: None,
-                course_title: None,
-                module_title: None,
-                lesson_title: None,
-                concept_id: None,
-                concept_title: None,
-                question: ReviewQuestion {
-                    activity_id: None,
-                    kind: ActivityKind::try_from(kind_text.as_str())
-                        .map_err(|message| AppError::BadRequest(message))?,
-                    prompt: row.try_get("prompt").map_err(internal)?,
-                    options: config.options,
-                },
-                due_at: row.try_get("due_at").map_err(internal)?,
-                stability_days: row.try_get("stability_days").map_err(internal)?,
-                difficulty: row.try_get("difficulty").map_err(internal)?,
-                review_count: row.try_get("review_count").map_err(internal)?,
-                lapse_count: row.try_get("lapse_count").map_err(internal)?,
-            });
+        // the same queue without any course context. They are excluded when
+        // specific courses are selected without the orphan flag; the orphan
+        // filter alone or together with courses adds exactly those questions.
+        if orphan || course_ids.is_empty() {
+            let mut sql = String::from(
+                "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.due_at, \
+                        q.stability_days, q.difficulty, q.review_count, q.lapse_count \
+                 FROM learning_custom_questions q \
+                 WHERE q.user_id = ? AND q.due_at <= ?",
+            );
+            if !tags.is_empty() {
+                let placeholders = vec!["?"; tags.len()].join(", ");
+                sql.push_str(&format!(
+                    " AND EXISTS (SELECT 1 FROM learning_question_tags qt \
+                     JOIN learning_tags lt ON lt.tag_id = qt.tag_id \
+                     WHERE qt.question_id = q.custom_question_id AND qt.source = 'custom' \
+                       AND lt.name IN ({placeholders}))"
+                ));
+            }
+            sql.push_str(" ORDER BY q.due_at, q.custom_question_id LIMIT ?");
+            let mut query = sqlx::query(&sql).bind(user_id.as_str()).bind(now);
+            for tag in tags {
+                query = query.bind(tag);
+            }
+            let custom_rows = query
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
+            for row in custom_rows {
+                let config: StoredActivityConfig = serde_json::from_str(
+                    &row.try_get::<String, _>("config_json").map_err(internal)?,
+                )
+                .map_err(internal)?;
+                let kind_text: String = row.try_get("kind").map_err(internal)?;
+                reviews.push(DueReview {
+                    id: parse_id(row.try_get::<String, _>("custom_question_id").map_err(internal)?)?,
+                    source: ReviewSource::Custom,
+                    enrollment_id: None,
+                    course_id: None,
+                    course_title: None,
+                    module_title: None,
+                    lesson_title: None,
+                    concept_id: None,
+                    concept_title: None,
+                    question: ReviewQuestion {
+                        activity_id: None,
+                        kind: ActivityKind::try_from(kind_text.as_str())
+                            .map_err(|message| AppError::BadRequest(message))?,
+                        prompt: row.try_get("prompt").map_err(internal)?,
+                        options: config.options,
+                    },
+                    due_at: row.try_get("due_at").map_err(internal)?,
+                    stability_days: row.try_get("stability_days").map_err(internal)?,
+                    difficulty: row.try_get("difficulty").map_err(internal)?,
+                    review_count: row.try_get("review_count").map_err(internal)?,
+                    lapse_count: row.try_get("lapse_count").map_err(internal)?,
+                });
+            }
         }
         reviews.sort_by_key(|review| (review.due_at, review.id.clone()));
         reviews.truncate(limit as usize);
@@ -854,6 +1439,7 @@ impl LearningService {
                 .await,
         }
         .map_err(internal)?;
+        let mut course_ids_for_tags = Vec::with_capacity(rows.len());
         for row in rows {
             let review_item_id: Option<String> =
                 row.try_get("review_item_id").map_err(internal)?;
@@ -897,9 +1483,11 @@ impl LearningService {
             )
             .map_err(internal)?;
             let course_id_raw: Option<String> = row.try_get("course_id").map_err(internal)?;
+            let activity_id: String = row.try_get("activity_id").map_err(internal)?;
+            course_ids_for_tags.push(activity_id.clone());
             entries.push(QuestionEntry {
                 source: ReviewSource::Course,
-                question_id: row.try_get::<String, _>("activity_id").map_err(internal)?,
+                question_id: activity_id,
                 review_item_id: match review_item_id {
                     Some(value) => Some(parse_id(value)?),
                     None => None,
@@ -921,6 +1509,7 @@ impl LearningService {
                 prompt: Some(prompt),
                 options: config.options.clone(),
                 answer: Some(config.answer.clone()),
+                distractors: config.distractors.clone(),
                 explanation: Some(config.explanation.clone()),
                 due_at,
                 overdue: due_at.is_some_and(|value| value <= now),
@@ -942,7 +1531,19 @@ impl LearningService {
                     .try_get::<Option<i64>, _>("updated_at")
                     .map_err(internal)?
                     .unwrap_or(0),
+                tags: Vec::new(),
             });
+        }
+        if !course_ids_for_tags.is_empty() {
+            let tag_ids: Vec<&str> =
+                course_ids_for_tags.iter().map(String::as_str).collect();
+            let tags_by_question =
+                self.question_tags_for("course", &tag_ids).await?;
+            for entry in &mut entries {
+                if let Some(tags) = tags_by_question.get(&entry.question_id) {
+                    entry.tags = tags.clone();
+                }
+            }
         }
 
         // Learner-authored custom questions; they are never course-scoped.
@@ -959,6 +1560,7 @@ impl LearningService {
             .fetch_all(&self.pool)
             .await
             .map_err(internal)?;
+            let mut custom_ids_for_tags = Vec::new();
             for row in custom_rows {
                 let review_count: i64 = row.try_get("review_count").map_err(internal)?;
                 let due_at: i64 = row.try_get("due_at").map_err(internal)?;
@@ -989,11 +1591,13 @@ impl LearningService {
                 )
                 .map_err(internal)?;
                 let concept_id_raw: Option<String> = row.try_get("concept_id").map_err(internal)?;
+                let custom_id: String = row
+                    .try_get::<String, _>("custom_question_id")
+                    .map_err(internal)?;
+                custom_ids_for_tags.push(custom_id.clone());
                 entries.push(QuestionEntry {
                     source: ReviewSource::Custom,
-                    question_id: row
-                        .try_get::<String, _>("custom_question_id")
-                        .map_err(internal)?,
+                    question_id: custom_id,
                     review_item_id: None,
                     state: entry_state.to_string(),
                     course_id: None,
@@ -1010,6 +1614,7 @@ impl LearningService {
                     prompt: Some(prompt),
                     options: config.options.clone(),
                     answer: Some(config.answer.clone()),
+                    distractors: config.distractors.clone(),
                     explanation: Some(config.explanation.clone()),
                     due_at: Some(due_at),
                     overdue: due_at <= now,
@@ -1019,7 +1624,19 @@ impl LearningService {
                     lapse_count: row.try_get("lapse_count").map_err(internal)?,
                     last_reviewed_at: row.try_get("last_reviewed_at").map_err(internal)?,
                     updated_at: row.try_get("updated_at").map_err(internal)?,
+                    tags: Vec::new(),
                 });
+            }
+            if !custom_ids_for_tags.is_empty() {
+                let tag_ids: Vec<&str> =
+                    custom_ids_for_tags.iter().map(String::as_str).collect();
+                let tags_by_question =
+                    self.question_tags_for("custom", &tag_ids).await?;
+                for entry in &mut entries {
+                    if let Some(tags) = tags_by_question.get(&entry.question_id) {
+                        entry.tags = tags.clone();
+                    }
+                }
             }
         }
 
@@ -1071,6 +1688,7 @@ impl LearningService {
             &request.options,
             &request.answer,
             &request.explanation,
+            &request.distractors,
         )?;
         sqlx::query("UPDATE learning_activities SET prompt = ?, config_json = ? WHERE activity_id = ?")
             .bind(prompt)
@@ -1113,10 +1731,11 @@ impl LearningService {
     ) -> Result<String, AppError> {
         if !matches!(
             request.kind,
-            ActivityKind::SingleChoice | ActivityKind::TrueFalse
+            ActivityKind::SingleChoice | ActivityKind::TrueFalse | ActivityKind::FillInBlank
         ) {
             return Err(AppError::BadRequest(
-                "custom questions only support single choice and true/false".into(),
+                "custom questions only support single choice, true/false and fill in the blank"
+                    .into(),
             ));
         }
         let (prompt, config) = validate_question_payload(
@@ -1125,6 +1744,7 @@ impl LearningService {
             &request.options,
             &request.answer,
             &request.explanation,
+            &request.distractors,
         )?;
         if let Some(concept_id) = &request.concept_id {
             let exists: Option<String> = sqlx::query_scalar(
@@ -1188,6 +1808,7 @@ impl LearningService {
             &request.options,
             &request.answer,
             &request.explanation,
+            &request.distractors,
         )?;
         sqlx::query(
             "UPDATE learning_custom_questions SET prompt = ?, config_json = ?, updated_at = ? \
@@ -1204,24 +1825,35 @@ impl LearningService {
         Ok(())
     }
 
-    /// Deletes a learner-authored question together with its schedule.
+    /// Deletes a learner-authored question together with its schedule and
+    /// tag links.
     pub async fn delete_custom_question(
         &self,
         question_id: &str,
         user_id: &UserId,
     ) -> Result<(), AppError> {
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        sqlx::query(
+            "DELETE FROM learning_question_tags \
+             WHERE question_id = ? AND source = 'custom'",
+        )
+        .bind(question_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
         let result = sqlx::query(
             "DELETE FROM learning_custom_questions \
              WHERE custom_question_id = ? AND user_id = ?",
         )
         .bind(question_id)
         .bind(user_id.as_str())
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(internal)?;
         if result.rows_affected() == 0 {
             return Err(AppError::NotFound(format!("custom question {question_id}")));
         }
+        transaction.commit().await.map_err(internal)?;
         Ok(())
     }
 
@@ -1471,6 +2103,11 @@ impl LearningService {
                     SELECT l.lesson_id FROM learning_lessons l \
                     JOIN learning_modules m ON m.module_id = l.module_id \
                     WHERE m.course_id = ?)",
+                "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
+                    SELECT a.activity_id FROM learning_activities a \
+                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
                 "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
                     SELECT l.lesson_id FROM learning_lessons l \
                     JOIN learning_modules m ON m.module_id = l.module_id \
@@ -1490,6 +2127,11 @@ impl LearningService {
                     .map_err(internal)?;
             }
         }
+        sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
+            .bind(course_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
         sqlx::query("DELETE FROM learning_courses WHERE course_id = ?")
             .bind(course_id.as_str())
             .execute(&mut *transaction)
@@ -1497,6 +2139,180 @@ impl LearningService {
             .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
         Ok(())
+    }
+
+    /// Every tag of the global pool, ordered by name. The pool is shared by
+    /// courses and questions so reusing an existing name links to the same
+    /// tag.
+    pub async fn list_tags(&self) -> Result<Vec<String>, AppError> {
+        let rows = sqlx::query_scalar::<_, String>("SELECT name FROM learning_tags ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(rows)
+    }
+
+    /// Replaces the tag set of a course. With `apply_to_children` every
+    /// question of the course additionally receives the same tags as a union
+    /// with its existing tags.
+    pub async fn set_course_tags(
+        &self,
+        course_id: &LearningCourseId,
+        request: SetTagsRequest,
+    ) -> Result<Vec<String>, AppError> {
+        let tags = normalize_tags(&request.tags)?;
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        let exists: Option<String> =
+            sqlx::query_scalar("SELECT course_id FROM learning_courses WHERE course_id = ?")
+                .bind(course_id.as_str())
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(internal)?;
+        if exists.is_none() {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        ensure_tags_exist(&mut transaction, &tags).await?;
+        sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
+            .bind(course_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        for tag in &tags {
+            sqlx::query(
+                "INSERT INTO learning_course_tags (course_id, tag_id) \
+                 VALUES (?, (SELECT tag_id FROM learning_tags WHERE name = ?))",
+            )
+            .bind(course_id.as_str())
+            .bind(tag)
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        }
+        if request.apply_to_children && !tags.is_empty() {
+            let placeholders: Vec<String> = (0..tags.len()).map(|_| "?".to_string()).collect();
+            let sql = format!(
+                "INSERT OR IGNORE INTO learning_question_tags (question_id, source, tag_id) \
+                 SELECT a.activity_id, 'course', t.tag_id \
+                 FROM learning_activities a \
+                 JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id \
+                 JOIN learning_tags t \
+                 WHERE m.course_id = ? AND t.name IN ({})",
+                placeholders.join(", ")
+            );
+            let mut query = sqlx::query(&sql).bind(course_id.as_str());
+            for tag in &tags {
+                query = query.bind(tag);
+            }
+            query.execute(&mut *transaction).await.map_err(internal)?;
+        }
+        transaction.commit().await.map_err(internal)?;
+        Ok(tags)
+    }
+
+    /// Replaces the tag set of a managed course question. The activity must
+    /// belong to one of the user's enrollments.
+    pub async fn set_question_tags(
+        &self,
+        activity_id: &LearningActivityId,
+        user_id: &UserId,
+        tags: Vec<String>,
+    ) -> Result<Vec<String>, AppError> {
+        let tags = normalize_tags(&tags)?;
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT a.activity_id FROM learning_activities a \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ? \
+             WHERE a.activity_id = ?",
+        )
+        .bind(user_id.as_str())
+        .bind(activity_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        if exists.is_none() {
+            return Err(AppError::NotFound(format!("activity {activity_id}")));
+        }
+        ensure_tags_exist(&mut transaction, &tags).await?;
+        replace_question_tags(&mut transaction, "course", activity_id.as_str(), &tags).await?;
+        transaction.commit().await.map_err(internal)?;
+        Ok(tags)
+    }
+
+    /// Replaces the tag set of a learner-authored question.
+    pub async fn set_custom_question_tags(
+        &self,
+        question_id: &str,
+        user_id: &UserId,
+        tags: Vec<String>,
+    ) -> Result<Vec<String>, AppError> {
+        let tags = normalize_tags(&tags)?;
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT custom_question_id FROM learning_custom_questions \
+             WHERE custom_question_id = ? AND user_id = ?",
+        )
+        .bind(question_id)
+        .bind(user_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        if exists.is_none() {
+            return Err(AppError::NotFound(format!("custom question {question_id}")));
+        }
+        ensure_tags_exist(&mut transaction, &tags).await?;
+        replace_question_tags(&mut transaction, "custom", question_id, &tags).await?;
+        transaction.commit().await.map_err(internal)?;
+        Ok(tags)
+    }
+
+    /// Tags attached to a course, ordered by name.
+    async fn course_tags(&self, course_id: &LearningCourseId) -> Result<Vec<String>, AppError> {
+        let rows = sqlx::query(
+            "SELECT t.name FROM learning_tags t \
+             JOIN learning_course_tags ct ON ct.tag_id = t.tag_id \
+             WHERE ct.course_id = ? ORDER BY t.name",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        rows.into_iter()
+            .map(|row| row.try_get("name").map_err(internal))
+            .collect()
+    }
+
+    /// Tags attached to questions by id, keyed on `question_id`. `source`
+    /// distinguishes course activities from learner-authored questions.
+    async fn question_tags_for(
+        &self,
+        source: &str,
+        question_ids: &[&str],
+    ) -> Result<HashMap<String, Vec<String>>, AppError> {
+        if question_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders: Vec<String> = (0..question_ids.len()).map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "SELECT qt.question_id, t.name FROM learning_tags t \
+             JOIN learning_question_tags qt ON qt.tag_id = t.tag_id \
+             WHERE qt.source = ? AND qt.question_id IN ({}) ORDER BY t.name",
+            placeholders.join(", ")
+        );
+        let mut query = sqlx::query(&sql).bind(source);
+        for id in question_ids {
+            query = query.bind(id);
+        }
+        let rows = query.fetch_all(&self.pool).await.map_err(internal)?;
+        let mut tags_by_question: HashMap<String, Vec<String>> = HashMap::new();
+        for row in rows {
+            let question_id: String = row.try_get("question_id").map_err(internal)?;
+            let name: String = row.try_get("name").map_err(internal)?;
+            tags_by_question.entry(question_id).or_default().push(name);
+        }
+        Ok(tags_by_question)
     }
 
     /// Objective activities bound to a concept that the learner has actually
@@ -1512,7 +2328,7 @@ impl LearningService {
             "SELECT a.activity_id, a.lesson_id, a.kind, a.prompt, a.config_json \
              FROM learning_activity_concepts ac \
              JOIN learning_activities a ON a.activity_id = ac.activity_id \
-             WHERE ac.concept_id = ? AND a.kind IN ('single_choice', 'true_false') \
+             WHERE ac.concept_id = ? AND a.kind IN ('single_choice', 'true_false', 'fill_in_blank') \
              AND EXISTS ( \
                  SELECT 1 FROM learning_lesson_progress p \
                  WHERE p.lesson_id = a.lesson_id \
@@ -1940,6 +2756,75 @@ impl LearningService {
 
 const MASTERY_RECOMMENDATION_THRESHOLD: f64 = 0.8;
 
+/// Trims, drops empties and deduplicates tag names, rejecting names longer
+/// than the schema limit (50 chars).
+fn normalize_tags(tags: &[String]) -> Result<Vec<String>, AppError> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for raw in tags {
+        let name = raw.trim();
+        if name.is_empty() || !seen.insert(name.to_owned()) {
+            continue;
+        }
+        if name.chars().count() > 50 {
+            return Err(AppError::BadRequest(format!(
+                "tag `{name}` exceeds 50 characters"
+            )));
+        }
+        normalized.push(name.to_owned());
+    }
+    Ok(normalized)
+}
+
+/// Inserts missing tag names into the global pool; existing names are
+/// ignored so the pool stays unique.
+async fn ensure_tags_exist(
+    transaction: &mut Transaction<'_, Sqlite>,
+    tags: &[String],
+) -> Result<(), AppError> {
+    for tag in tags {
+        sqlx::query(
+            "INSERT OR IGNORE INTO learning_tags (tag_id, name, created_at) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(LearningTagId::new().as_str())
+        .bind(tag)
+        .bind(now_ms())
+        .execute(&mut **transaction)
+        .await
+        .map_err(internal)?;
+    }
+    Ok(())
+}
+
+/// Replaces the full tag set of one question.
+async fn replace_question_tags(
+    transaction: &mut Transaction<'_, Sqlite>,
+    source: &str,
+    question_id: &str,
+    tags: &[String],
+) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM learning_question_tags WHERE question_id = ? AND source = ?")
+        .bind(question_id)
+        .bind(source)
+        .execute(&mut **transaction)
+        .await
+        .map_err(internal)?;
+    for tag in tags {
+        sqlx::query(
+            "INSERT OR IGNORE INTO learning_question_tags (question_id, source, tag_id) \
+             VALUES (?, ?, (SELECT tag_id FROM learning_tags WHERE name = ?))",
+        )
+        .bind(question_id)
+        .bind(source)
+        .bind(tag)
+        .execute(&mut **transaction)
+        .await
+        .map_err(internal)?;
+    }
+    Ok(())
+}
+
 fn recommend_next_lesson(
     modules: &[ModuleView],
     concepts: &[ConceptView],
@@ -2008,6 +2893,36 @@ fn recommend_next_lesson(
         return Some(lesson.id.clone());
     }
     None
+}
+
+fn course_job_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseJobView, AppError> {
+    // The domain rides inside the request snapshot; a stale or unparseable
+    // snapshot degrades to `None` rather than failing the whole list.
+    let domain = row
+        .try_get::<Option<String>, _>("request_json")
+        .map_err(internal)?
+        .and_then(|json| serde_json::from_str::<GenerateCourseRequest>(&json).ok())
+        .and_then(|request| request.domain);
+    Ok(CourseJobView {
+        job_id: row.try_get("job_id").map_err(internal)?,
+        source: CourseJobSource::try_from(
+            row.try_get::<String, _>("source").map_err(internal)?.as_str(),
+        )
+        .map_err(AppError::Internal)?,
+        status: CourseJobStatus::try_from(
+            row.try_get::<String, _>("status").map_err(internal)?.as_str(),
+        )
+        .map_err(AppError::Internal)?,
+        current_module: row.try_get("current_module").map_err(internal)?,
+        current_lesson: row.try_get("current_lesson").map_err(internal)?,
+        total_lessons: row.try_get("total_lessons").map_err(internal)?,
+        error: row.try_get("error").map_err(internal)?,
+        course_id: row.try_get("course_id").map_err(internal)?,
+        knowledge_base_name: row.try_get("knowledge_base_name").map_err(internal)?,
+        domain,
+        created_at: row.try_get("created_at").map_err(internal)?,
+        updated_at: row.try_get("updated_at").map_err(internal)?,
+    })
 }
 
 fn validate_generation_request(request: &GenerateCourseRequest) -> Result<(), AppError> {
@@ -2135,6 +3050,38 @@ pub(crate) fn validate_pack(pack: &CoursePack) -> Result<(), AppError> {
                         }
                     }
                     ActivityKind::Reflection => {}
+                    ActivityKind::FillInBlank => {
+                        if !activity.prompt.contains("___") {
+                            return Err(AppError::BadRequest(
+                                "fill_in_blank prompt must contain a ___ blank".into(),
+                            ));
+                        }
+                        let Some(answers) = activity.answer.as_array() else {
+                            return Err(AppError::BadRequest(
+                                "fill_in_blank answer must be a JSON array of accepted answers"
+                                    .into(),
+                            ));
+                        };
+                        if answers.is_empty() || answers.len() > 3 {
+                            return Err(AppError::BadRequest(
+                                "fill_in_blank must have 1-3 accepted answers".into(),
+                            ));
+                        }
+                        if answers.iter().any(|accepted| {
+                            !accepted
+                                .as_str()
+                                .is_some_and(|text| !text.trim().is_empty())
+                        }) {
+                            return Err(AppError::BadRequest(
+                                "fill_in_blank accepted answers must be non-empty strings".into(),
+                            ));
+                        }
+                        if activity.distractors.is_empty() {
+                            return Err(AppError::BadRequest(
+                                "fill_in_blank needs at least one distractor".into(),
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -2239,6 +3186,7 @@ fn validate_question_payload(
     options: &[String],
     answer: &Value,
     explanation: &str,
+    distractors: &[String],
 ) -> Result<(String, StoredActivityConfig), AppError> {
     let prompt = prompt.trim();
     if prompt.is_empty() {
@@ -2273,6 +3221,7 @@ fn validate_question_payload(
                 options,
                 answer: answer.clone(),
                 explanation: explanation.to_string(),
+                distractors: Vec::new(),
             }
         }
         ActivityKind::TrueFalse => {
@@ -2285,15 +3234,127 @@ fn validate_question_payload(
                 options: Vec::new(),
                 answer: Value::Bool(answer_bool),
                 explanation: explanation.to_string(),
+                distractors: Vec::new(),
             }
         }
         ActivityKind::Reflection => StoredActivityConfig {
             options: Vec::new(),
             answer: Value::Null,
             explanation: explanation.to_string(),
+            distractors: Vec::new(),
         },
+        ActivityKind::FillInBlank => {
+            if !prompt.contains("___") {
+                return Err(AppError::BadRequest(
+                    "fill_in_blank prompt must contain a ___ blank".into(),
+                ));
+            }
+            let Some(answers) = answer.as_array() else {
+                return Err(AppError::BadRequest(
+                    "fill_in_blank answer must be a JSON array of accepted answers".into(),
+                ));
+            };
+            if answers.is_empty() || answers.len() > 3 {
+                return Err(AppError::BadRequest(
+                    "fill_in_blank must have 1-3 accepted answers".into(),
+                ));
+            }
+            if answers.iter().any(|accepted| {
+                !accepted.as_str().is_some_and(|text| !text.trim().is_empty())
+            }) {
+                return Err(AppError::BadRequest(
+                    "fill_in_blank accepted answers must be non-empty strings".into(),
+                ));
+            }
+            let distractors: Vec<String> = distractors
+                .iter()
+                .map(|distractor| distractor.trim().to_string())
+                .filter(|distractor| !distractor.is_empty())
+                .collect();
+            StoredActivityConfig {
+                options: Vec::new(),
+                answer: answer.clone(),
+                explanation: explanation.to_string(),
+                distractors,
+            }
+        }
     };
     Ok((prompt.to_string(), config))
+}
+
+/// System prompt for AI reflection grading: the model judges correctness and
+/// completeness against the exercise's concepts, reports coverage of the full
+/// course concept list, and replies with strict JSON.
+const REFLECTION_GRADING_SYSTEM: &str = r#"You are a strict but encouraging learning coach grading a learner's reflection answer for a course exercise.
+
+Score the answer from 0.0 to 1.0 (0.6 is passing):
+- Correctness: does the answer align with the concepts this exercise targets?
+- Completeness: does it cover the key points of those concepts?
+
+Reply with ONLY one JSON object matching this shape:
+{
+  "score": 0.75,
+  "feedback": "markdown text"
+}
+Rules:
+- score must be a number between 0.0 and 1.0.
+- feedback must be Markdown with two parts: (1) an evaluation of the answer, (2) concrete improvement suggestions.
+- Write the feedback in the same language as the learner's answer.
+- Output JSON only, without Markdown fences or commentary."#;
+
+/// Builds the user message for AI reflection grading: the exercise prompt,
+/// the learner's answer and the concepts the exercise targets (its own
+/// lesson's concepts — reflections never bind concepts of other lessons).
+fn build_reflection_grading_prompt(
+    prompt: &str,
+    answer: &str,
+    linked_concepts: &[(String, String, String)],
+) -> String {
+    let linked = linked_concepts
+        .iter()
+        .map(|(_, title, description)| format!("- {title}: {description}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Exercise prompt:\n{prompt}\n\nLearner's answer:\n{answer}\n\nConcepts this exercise targets:\n{linked}"
+    )
+}
+
+/// Parses the strict-JSON grading reply into `(score, feedback)`. Extraction
+/// reuses the generation parser so the habitual model mistakes — Markdown
+/// fences, prose around the object, escaping errors, trailing commas — do
+/// not silently drop the learner onto rule-based grading. Any shape
+/// deviation returns `Err` so the caller degrades to rule-based grading.
+fn parse_reflection_grading(raw: &str) -> Result<(f64, String), AppError> {
+    #[derive(serde::Deserialize)]
+    struct GradingReply {
+        score: f64,
+        feedback: String,
+    }
+    let reply: GradingReply = crate::generation::parse_json_object(raw).map_err(|error| {
+        AppError::Internal(format!("unparseable reflection grading reply: {error}"))
+    })?;
+    Ok((reply.score.clamp(0.0, 1.0), reply.feedback))
+}
+
+/// Concept rows (id, title, description) bound to an activity, used both for
+/// mastery evidence and to ground AI reflection grading. Reflections are
+/// generated within one lesson, so this is the concept scope the grading
+/// prompt carries.
+async fn activity_concept_titles(
+    pool: &SqlitePool,
+    activity_id: &LearningActivityId,
+) -> Result<Vec<(String, String, String)>, AppError> {
+    sqlx::query_as(
+        "SELECT c.concept_id, c.title, c.description \
+         FROM learning_activity_concepts ac \
+         JOIN learning_concepts c ON c.concept_id = ac.concept_id \
+         WHERE ac.activity_id = ?",
+    )
+    .bind(activity_id.as_str())
+    .fetch_all(pool)
+    .await
+    .map_err(internal)
 }
 
 fn evaluate(
@@ -2307,6 +3368,25 @@ fn evaluate(
         ActivityKind::Reflection => response
             .as_str()
             .is_some_and(|value| !value.trim().is_empty()),
+        ActivityKind::FillInBlank => {
+            let Some(answer) = response.as_str().map(str::trim) else {
+                return Err(AppError::BadRequest(
+                    "fill_in_blank response must be a string".into(),
+                ));
+            };
+            if answer.is_empty() {
+                return Err(AppError::BadRequest(
+                    "fill_in_blank response must not be empty".into(),
+                ));
+            }
+            config.answer.as_array().is_some_and(|accepted| {
+                accepted.iter().any(|candidate| {
+                    candidate
+                        .as_str()
+                        .is_some_and(|text| text.trim().eq_ignore_ascii_case(answer))
+                })
+            })
+        }
     };
     if kind == ActivityKind::Reflection && !correct {
         return Err(AppError::BadRequest(
@@ -2460,6 +3540,7 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         total_lessons: row.try_get("total_lessons").map_err(internal)?,
         completed_lessons: row.try_get("completed_lessons").map_err(internal)?,
         updated_at: row.try_get("updated_at").map_err(internal)?,
+        tags: Vec::new(),
     })
 }
 
@@ -2543,6 +3624,136 @@ const SKIP_DELAY_MS: i64 = 86_400_000;
 mod tests {
     use super::*;
     use crate::models::{ActivityPack, ConceptPack, LessonPack, ModulePack};
+    use nomifun_api_types::WebSocketMessage;
+    use serde_json::json;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    #[derive(Default)]
+    struct NoopBroadcaster;
+
+    impl nomifun_realtime::UserEventSink for NoopBroadcaster {
+        fn send_to_user(&self, _user_id: &str, _event: WebSocketMessage<serde_json::Value>) {}
+    }
+
+    /// Placeholder completer: job-start tests never reach the LLM, but
+    /// `set_generation_dependencies` requires a completer value.
+    struct UnusedCompleter;
+
+    #[async_trait::async_trait]
+    impl nomifun_knowledge::KnowledgeCompleter for UnusedCompleter {
+        async fn complete(
+            &self,
+            _system: &str,
+            _user: &str,
+        ) -> Result<String, nomifun_common::AppError> {
+            Err(nomifun_common::AppError::Internal(
+                "job tests do not invoke the completer".into(),
+            ))
+        }
+    }
+
+    async fn job_test_service() -> (LearningService, Arc<KnowledgeService>, nomifun_common::UserId) {
+        let data_dir = tempfile::tempdir().unwrap();
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let owner = nomifun_common::UserId::parse(&owner_id).unwrap();
+        let knowledge_service = Arc::new(KnowledgeService::new(
+            Arc::new(nomifun_db::SqliteKnowledgeRepository::new(
+                database.pool().clone(),
+            )),
+            data_dir.path(),
+            nomifun_knowledge::KnowledgeEventEmitter::new(
+                Arc::new(NoopBroadcaster),
+                Arc::from(owner_id),
+            ),
+        ));
+        let learning_service = LearningService::new(database.pool().clone());
+        learning_service.set_generation_dependencies(
+            knowledge_service.clone(),
+            Arc::new(UnusedCompleter),
+        );
+        (learning_service, knowledge_service, owner)
+    }
+
+    async fn generation_request(
+        knowledge_service: &KnowledgeService,
+    ) -> GenerateCourseRequest {
+        let base = knowledge_service
+            .quick_create_base(Some("Math"), None, "blank", None, None, None, None)
+            .await
+            .unwrap();
+        GenerateCourseRequest {
+            knowledge_base_id: base.base.knowledge_base_id.parse().unwrap(),
+            domain: None,
+            provider_id: None,
+            model: None,
+            module_count: 3,
+            lessons_per_module: 3,
+        }
+    }
+
+    #[tokio::test]
+    async fn start_course_job_rejects_active_duplicate_for_same_base() {
+        let (service, knowledge_service, owner_id) = job_test_service().await;
+        let request = generation_request(&knowledge_service).await;
+        // Simulate an already-running job (the background runner may not have
+        // claimed it yet): the second submission must be refused with a
+        // conflict pointing at the active job.
+        let active_job_id = "0190f5fe-7c00-7a00-8000-0000000000ff";
+        let request_json = serde_json::to_string(&request).unwrap();
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO learning_course_jobs \
+             (job_id, user_id, session_id, source, kb_id, request_json, status, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+        )
+        .bind(active_job_id)
+        .bind(owner_id.as_str())
+        .bind(Option::<&str>::None)
+        .bind(CourseJobSource::Agent.as_str())
+        .bind(request.knowledge_base_id.as_str())
+        .bind(&request_json)
+        .bind(now)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        let error = service
+            .start_course_job(request.clone(), &owner_id, CourseJobSource::Http, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, AppError::Conflict(message) if message.contains(active_job_id)),
+            "expected a conflict naming the active job, got {error}"
+        );
+        // The slot is per-user: another user's submission on the same base
+        // is not blocked by the active job.
+        let other_user = nomifun_common::UserId::new();
+        service
+            .start_course_job(request.clone(), &other_user, CourseJobSource::Http, None)
+            .await
+            .unwrap();
+        // A terminal job releases the slot: the same base can be generated
+        // again. Status is not asserted here because the background runner
+        // may have already advanced (or failed) the fresh job by the time the
+        // response view is built.
+        sqlx::query(
+            "UPDATE learning_course_jobs SET status = 'completed', updated_at = ? \
+             WHERE job_id = ?",
+        )
+        .bind(now_ms())
+        .bind(active_job_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        service
+            .start_course_job(request, &owner_id, CourseJobSource::Http, None)
+            .await
+            .unwrap();
+    }
 
     fn valid_pack() -> CoursePack {
         CoursePack {
@@ -2573,6 +3784,7 @@ mod tests {
                         answer: Value::Bool(true),
                         explanation: "That is the geometric definition.".into(),
                         concepts: vec!["vector".into()],
+                    distractors: Vec::new(),
                     }],
                 }],
             }],
@@ -2607,6 +3819,7 @@ mod tests {
             options: Vec::new(),
             answer: Value::Bool(true),
             explanation: "source-backed explanation".into(),
+            distractors: Vec::new(),
         };
         let (score, _) = evaluate(ActivityKind::TrueFalse, &config, &Value::Bool(false)).unwrap();
         assert_eq!(score, 0.0);
@@ -2694,7 +3907,7 @@ mod tests {
         let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
         let lesson_id = detail.modules[0].lessons[0].id.clone();
         let result = service
-            .submit_attempt(&activity_id, &user_id, Value::Bool(true))
+            .submit_attempt(&activity_id, &user_id, Value::Bool(true), None, None)
             .await
             .unwrap();
         assert!(result.passed);
@@ -2722,6 +3935,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn practice_flows_join_implicitly_without_explicit_enroll() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let course = service.import_course(valid_pack()).await.unwrap();
+        let course_id = &course.course.id;
+        // No explicit enroll anywhere: opening the detail must create the
+        // enrollment so diagnostics, attempts and progress writes all work.
+        let detail = service.course_detail(course_id, Some(&user_id)).await.unwrap();
+        assert!(detail.enrollment_id.is_some());
+        let diagnostic = service.diagnostic_plan(course_id, &user_id, 10).await.unwrap();
+        assert_eq!(diagnostic.items.len(), 1);
+        let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+        let lesson_id = detail.modules[0].lessons[0].id.clone();
+        let result = service
+            .submit_attempt(&activity_id, &user_id, Value::Bool(true), None, None)
+            .await
+            .unwrap();
+        assert!(result.passed);
+        service
+            .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        // A second detail read must reuse the same enrollment (idempotent).
+        let again = service.course_detail(course_id, Some(&user_id)).await.unwrap();
+        assert_eq!(again.enrollment_id, detail.enrollment_id);
+    }
+
+    #[tokio::test]
     async fn question_entries_aligns_states_with_review_queue() {
         let database = nomifun_db::init_database_memory().await.unwrap();
         let owner_id = nomifun_db::installation_owner_id(database.pool())
@@ -2739,6 +3984,7 @@ mod tests {
             answer: Value::Bool(true),
             explanation: String::new(),
             concepts: vec!["shared".into()],
+            distractors: Vec::new(),
         };
         let pack = CoursePack {
             title: "Shared Concepts".into(),
@@ -2824,8 +4070,551 @@ mod tests {
         assert_eq!(state_of(&entries, "A2"), Some("unlearned"));
 
         // The queue itself serves exactly the completed lesson's question.
-        let due = service.due_reviews(&user_id, 30).await.unwrap();
-        assert_eq!(due.len(), 1);
+        let due = service
+            .due_reviews(&user_id, 30, &[], true, false, &[])
+            .await
+            .unwrap();
+       assert_eq!(due.len(), 1);
         assert_eq!(due[0].question.prompt, "A1");
+    }
+
+    /// A reflection-only course with two concepts: the activity targets
+    /// "vector" while the full course list also carries "matrix" — the
+    /// coverage checklist AI grading must evaluate against.
+    fn reflection_pack() -> CoursePack {
+        CoursePack {
+            title: "Reflective Learning".into(),
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            concepts: vec![
+                ConceptPack {
+                    key: "vector".into(),
+                    title: "Vector".into(),
+                    description: "magnitude and direction".into(),
+                    prerequisites: Vec::new(),
+                },
+                ConceptPack {
+                    key: "matrix".into(),
+                    title: "Matrix".into(),
+                    description: "rectangular number grid".into(),
+                    prerequisites: Vec::new(),
+                },
+            ],
+            modules: vec![ModulePack {
+                title: "Foundations".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "Vectors".into(),
+                    summary: String::new(),
+                    estimated_minutes: 10,
+                    source: None,
+                    concepts: vec!["vector".into(), "matrix".into()],
+                    activities: vec![ActivityPack {
+                        kind: ActivityKind::Reflection,
+                        prompt: "Explain what a vector is.".into(),
+                        options: Vec::new(),
+                        answer: Value::Null,
+                        explanation: "A vector has magnitude and direction.".into(),
+                        concepts: vec!["vector".into()],
+                    distractors: Vec::new(),
+                    }],
+                }],
+            }],
+        }
+    }
+
+    /// Scripted `KnowledgeCompleter` recording calls, the last user message
+    /// and the last explicit `(provider_id, model)` override; `fail` makes
+    /// every call error out so fallback paths can be exercised.
+    struct ScriptedCompleter {
+        reply: String,
+        fail: bool,
+        calls: AtomicUsize,
+        last_user: Mutex<Option<String>>,
+        last_override: Mutex<Option<(String, String)>>,
+    }
+
+    impl ScriptedCompleter {
+        fn new(reply: impl Into<String>, fail: bool) -> Arc<Self> {
+            Arc::new(Self {
+                reply: reply.into(),
+                fail,
+                calls: AtomicUsize::new(0),
+                last_user: Mutex::new(None),
+                last_override: Mutex::new(None),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KnowledgeCompleter for ScriptedCompleter {
+        async fn complete(&self, _system: &str, user: &str) -> Result<String, AppError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            *self.last_user.lock().unwrap() = Some(user.to_owned());
+            *self.last_override.lock().unwrap() = None;
+            if self.fail {
+                return Err(AppError::Internal("model unavailable".into()));
+            }
+            Ok(self.reply.clone())
+        }
+
+        async fn complete_with(
+            &self,
+            _system: &str,
+            user: &str,
+            provider_id: &str,
+            model: &str,
+        ) -> Result<String, AppError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            *self.last_user.lock().unwrap() = Some(user.to_owned());
+            *self.last_override.lock().unwrap() = Some((provider_id.to_owned(), model.to_owned()));
+            if self.fail {
+                return Err(AppError::Internal("model unavailable".into()));
+            }
+            Ok(self.reply.clone())
+        }
+    }
+
+    async fn reflection_service_with_completer(
+        completer: Arc<ScriptedCompleter>,
+    ) -> (LearningService, nomifun_db::SqlitePool, UserId, LearningActivityId) {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        *service.course_completer.write().unwrap() = Some(completer);
+        let course = service.import_course(reflection_pack()).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+        (service, database.pool().clone(), user_id, activity_id)
+    }
+
+    #[tokio::test]
+    async fn reflection_ai_grading_uses_model_reply() {
+        let completer = ScriptedCompleter::new(
+            "{\"score\":0.75,\"feedback\":\"## 评价\\n方向正确，但推导不完整。\"}",
+            false,
+        );
+        let (service, pool, user_id, activity_id) =
+            reflection_service_with_completer(completer.clone()).await;
+        let result = service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("A vector is a quantity with magnitude and direction.".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.score, 0.75);
+        assert!(result.passed);
+        assert!(result.feedback.contains("方向正确"));
+        assert_eq!(completer.calls.load(AtomicOrdering::SeqCst), 1);
+        // The grading prompt carries the answer AND the exercise's linked
+        // concepts (its own lesson's concepts — never other lessons').
+        let user = completer.last_user.lock().unwrap().clone().unwrap();
+        assert!(user.contains("Explain what a vector is."));
+        assert!(user.contains("A vector is a quantity"));
+        assert!(user.contains("Vector"));
+        // The AI score feeds the mastery state and the persisted attempt.
+        let (mastery,): (f64,) = sqlx::query_as(
+            "SELECT mastery FROM learning_mastery_states \
+             WHERE enrollment_id = (SELECT enrollment_id FROM learning_enrollments WHERE user_id = ?)",
+        )
+        .bind(user_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(mastery, 0.75);
+        let (score, feedback): (f64, String) =
+            sqlx::query_as("SELECT score, feedback FROM learning_attempts WHERE activity_id = ?")
+                .bind(activity_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(score, 0.75);
+        assert_eq!(feedback, result.feedback);
+        // Empty answers are rejected before any model call, exactly like the
+        // rule-based evaluator.
+        let error = service
+            .submit_attempt(&activity_id, &user_id, Value::String("   ".into()), None, None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("must not be empty"));
+        assert_eq!(completer.calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn reflection_ai_grading_tolerates_fenced_reply() {
+        // Models habitually wrap the grading JSON in Markdown fences (or add
+        // prose around it). The bare parser used to reject the whole reply,
+        // so every answer silently degraded to "non-empty passes" — the
+        // fenced reply must now parse and drive the score.
+        let completer = ScriptedCompleter::new(
+            "```json\n{\"score\":0.4,\"feedback\":\"## 评价\\n方向正确，但缺少关键步骤。\"}\n```",
+            false,
+        );
+        let (service, pool, user_id, activity_id) =
+            reflection_service_with_completer(completer.clone()).await;
+        let result = service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("A vector has magnitude.".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.score, 0.4);
+        assert!(!result.passed);
+        assert!(result.feedback.contains("方向正确"));
+        assert_eq!(completer.calls.load(AtomicOrdering::SeqCst), 1);
+        // The AI score, not the non-empty fallback, is persisted.
+        let (score,): (f64,) =
+            sqlx::query_as("SELECT score FROM learning_attempts WHERE activity_id = ?")
+                .bind(activity_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(score, 0.4);
+    }
+
+    #[tokio::test]
+    async fn reflection_ai_grading_failures_surface_errors() {
+        // AI grading is authoritative: a model call error, an unparseable
+        // reply, or a missing completer must surface as an error instead of
+        // silently degrading to "every non-empty answer passes".
+        let failing = ScriptedCompleter::new(String::new(), true);
+        let (service, _, user_id, activity_id) =
+            reflection_service_with_completer(failing.clone()).await;
+        let error = service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("Vectors have magnitude and direction.".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("model unavailable"));
+        assert_eq!(failing.calls.load(AtomicOrdering::SeqCst), 1);
+
+        // Unparseable reply: same surfaced error.
+        let bad_reply = ScriptedCompleter::new("not json at all", false);
+        *service.course_completer.write().unwrap() = Some(bad_reply.clone());
+        let error = service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("still a non-empty answer".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("unparseable reflection grading reply"));
+        assert_eq!(bad_reply.calls.load(AtomicOrdering::SeqCst), 1);
+
+        // No completer configured at all: surfaced error, not a pass.
+        *service.course_completer.write().unwrap() = None;
+        let error = service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("plain answer".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn reflection_ai_grading_forwards_explicit_model() {
+        let completer = ScriptedCompleter::new(
+            r#"{"score":0.6,"feedback":"ok"}"#,
+            false,
+        );
+        let (service, _, user_id, activity_id) =
+            reflection_service_with_completer(completer.clone()).await;
+        let provider_id = ProviderId::new();
+        service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("an answer".into()),
+                Some(provider_id.clone()),
+                Some("gpt-test".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            *completer.last_override.lock().unwrap(),
+            Some((provider_id.into_string(), "gpt-test".into()))
+        );
+        // Without a pair the default complete() path is used.
+        service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("another answer".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(*completer.last_override.lock().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn objective_attempts_never_touch_the_completer() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let completer = ScriptedCompleter::new(String::new(), true);
+        *service.course_completer.write().unwrap() = Some(completer.clone());
+        let course = service.import_course(valid_pack()).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+        let result = service
+            .submit_attempt(&activity_id, &user_id, Value::Bool(true), None, None)
+            .await
+            .unwrap();
+        assert!(result.passed);
+        assert_eq!(result.feedback, "That is the geometric definition.");
+        assert_eq!(completer.calls.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    /// A fill-in-the-blank pack mirroring `valid_pack`: the blank sits at a
+    /// relationship-critical spot, the accepted answer list tolerates case
+    /// and whitespace variance, and the near-synonym distractor must never
+    /// pass grading.
+    fn fill_in_blank_pack() -> CoursePack {
+        CoursePack {
+            title: "Linear Algebra".into(),
+            description: "A small generic course".into(),
+            domain: "mathematics".into(),
+            source_kb_id: None,
+            version: 1,
+            concepts: vec![ConceptPack {
+                key: "vector".into(),
+                title: "Vector".into(),
+                description: String::new(),
+                prerequisites: Vec::new(),
+            }],
+            modules: vec![ModulePack {
+                title: "Foundations".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "Vectors".into(),
+                    summary: String::new(),
+                    estimated_minutes: 10,
+                    source: None,
+                    concepts: vec!["vector".into()],
+                    activities: vec![ActivityPack {
+                        kind: ActivityKind::FillInBlank,
+                        prompt: "A vector has ___ and direction.".into(),
+                        options: Vec::new(),
+                        answer: json!(["magnitude"]),
+                        explanation: "That is the geometric definition.".into(),
+                        concepts: vec!["vector".into()],
+                        distractors: vec!["length".into()],
+                    }],
+                }],
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn fill_in_blank_attempts_grade_against_accepted_answers() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let course = service.import_course(fill_in_blank_pack()).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+        // The imported config keeps the near-synonym distractor so the blank
+        // is graded against the accepted answers only, never the trap.
+        let (config_json,): (String,) = sqlx::query_as(
+            "SELECT config_json FROM learning_activities WHERE activity_id = ?",
+        )
+        .bind(activity_id.as_str())
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        let config: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
+        assert_eq!(config.distractors, vec!["length"]);
+        // Exact match passes; surrounding whitespace and case are ignored.
+        let result = service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("  Magnitude ".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(result.passed);
+        assert_eq!(result.score, 1.0);
+        // The near-synonym distractor is NOT an accepted answer: it fails,
+        // which is exactly the fine discrimination the blank demands.
+        let result = service
+            .submit_attempt(&activity_id, &user_id, Value::String("length".into()), None, None)
+            .await
+            .unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.score, 0.0);
+        // Empty and non-string responses are rejected outright.
+        let error = service
+            .submit_attempt(&activity_id, &user_id, Value::String("   ".into()), None, None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("must not be empty"));
+        let error = service
+            .submit_attempt(&activity_id, &user_id, Value::Bool(true), None, None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("must be a string"));
+        // Once the lesson is completed, the blank joins the review queue as
+        // an objective question like single choice and true/false.
+        service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("magnitude".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        service
+            .update_lesson_progress(
+                &detail.modules[0].lessons[0].id,
+                &user_id,
+                LessonStatus::Completed,
+            )
+            .await
+            .unwrap();
+        let due = service
+            .due_reviews(&user_id, 30, &[course.course.id], true, false, &[])
+            .await
+            .unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].question.prompt, "A vector has ___ and direction.");
+    }
+
+    #[tokio::test]
+    async fn custom_questions_accept_fill_in_blank() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let request = CreateCustomQuestionRequest {
+            kind: ActivityKind::FillInBlank,
+            prompt: "The derivative of position is ___, and it measures the rate of change.".into(),
+            options: Vec::new(),
+            answer: json!(["velocity", "velocity vector"]),
+            explanation: "Velocity is the rate of change of position.".into(),
+            concept_id: None,
+            distractors: vec!["speed".into()],
+        };
+        let question_id = service
+            .create_custom_question(&user_id, request)
+            .await
+            .unwrap();
+        let (kind, config_json): (String, String) = sqlx::query_as(
+            "SELECT kind, config_json FROM learning_custom_questions WHERE custom_question_id = ?",
+        )
+        .bind(&question_id)
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(kind, "fill_in_blank");
+        let config: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
+        assert_eq!(config.answer, json!(["velocity", "velocity vector"]));
+        assert_eq!(config.distractors, vec!["speed"]);
+        // The custom blank joins the orphan review queue immediately and is
+        // graded by the same rule-based evaluator.
+        let due = service
+            .due_reviews(&user_id, 30, &[], true, true, &[])
+            .await
+            .unwrap();
+        assert_eq!(due.len(), 1);
+        let result = service
+            .answer_custom_review(
+                &question_id,
+                &user_id,
+                Value::String("Velocity Vector".into()),
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(result.correct);
+        // Payload validation rejects missing blanks, non-array answers and
+        // the reflection kind, mirroring the generated side.
+        let invalid = |prompt: &str, answer: Value| CreateCustomQuestionRequest {
+            kind: ActivityKind::FillInBlank,
+            prompt: prompt.into(),
+            options: Vec::new(),
+            answer,
+            explanation: String::new(),
+            concept_id: None,
+            distractors: vec!["trap".into()],
+        };
+        let error = service
+            .create_custom_question(&user_id, invalid("no blank here", json!(["x"])))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("___"));
+        let error = service
+            .create_custom_question(&user_id, invalid("A ___ blank.", json!("x")))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("JSON array"));
+        let error = service
+            .create_custom_question(
+                &user_id,
+                CreateCustomQuestionRequest {
+                    kind: ActivityKind::Reflection,
+                    prompt: "Reflect.".into(),
+                    options: Vec::new(),
+                    answer: Value::Null,
+                    explanation: String::new(),
+                    concept_id: None,
+                    distractors: Vec::new(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("only support"));
     }
 }

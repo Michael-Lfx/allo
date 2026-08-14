@@ -1,4 +1,4 @@
-export type ActivityKind = 'single_choice' | 'true_false' | 'reflection';
+export type ActivityKind = 'single_choice' | 'true_false' | 'reflection' | 'fill_in_blank';
 export type LessonStatus = 'not_started' | 'in_progress' | 'completed';
 export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
 export type ReviewSource = 'course' | 'custom';
@@ -13,6 +13,12 @@ export interface GenerateCourseRequest {
   lessons_per_module?: number;
 }
 
+/** 重试课程生成任务时可选的模型偏好；两个字段同时传或不传 */
+export interface RetryCourseJobRequest {
+  provider_id?: string;
+  model?: string;
+}
+
 export interface CourseSummary {
   id: string;
   title: string;
@@ -24,6 +30,7 @@ export interface CourseSummary {
   total_lessons: number;
   completed_lessons: number;
   updated_at: number;
+  tags: string[];
 }
 
 export interface Activity {
@@ -92,6 +99,13 @@ export interface AttemptResult {
   feedback: string;
 }
 
+/** 活动作答提交。reflection 批改可携带显式模型偏好；未携带时后端回落默认模型 */
+export interface SubmitAttemptRequest {
+  response: unknown;
+  provider_id?: string;
+  model?: string;
+}
+
 export interface ReviewQuestion {
   activity_id: string | null;
   kind: ActivityKind;
@@ -146,6 +160,8 @@ export interface QuestionEntry {
   prompt: string | null;
   options: string[];
   answer: unknown | null;
+  /** 填空题的近义干扰项，仅用于展示 */
+  distractors: string[];
   explanation: string | null;
   due_at: number | null;
   overdue: boolean;
@@ -155,6 +171,7 @@ export interface QuestionEntry {
   lapse_count: number;
   last_reviewed_at: number | null;
   updated_at: number;
+  tags: string[];
 }
 
 export interface UpdateQuestionRequest {
@@ -162,6 +179,8 @@ export interface UpdateQuestionRequest {
   options?: string[];
   answer: unknown;
   explanation?: string;
+  /** 填空题的近义干扰项（可选，仅填空题型使用） */
+  distractors?: string[];
 }
 
 export interface CreateCustomQuestionRequest {
@@ -171,10 +190,50 @@ export interface CreateCustomQuestionRequest {
   answer: unknown;
   explanation?: string;
   concept_id?: string | null;
+  /** 填空题的近义干扰项（可选，仅填空题型使用） */
+  distractors?: string[];
 }
 
 export interface ConceptRef {
   concept_id: string;
   title: string;
   course_title: string | null;
+}
+
+export interface SetTagsRequest {
+  tags: string[];
+  apply_to_children?: boolean;
+}
+
+export type CourseJobSource = 'http' | 'agent';
+
+export type CourseJobStatus =
+  | 'queued'
+  | 'sampling'
+  | 'blueprint'
+  | 'lessons'
+  | 'importing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
+
+/** 持久化课程生成任务的公开投影（对应后端 CourseJobView） */
+export interface CourseJobView {
+  job_id: string;
+  source: CourseJobSource;
+  status: CourseJobStatus;
+  /** 1 起始的模块索引；蓝图完成前为 0 */
+  current_module: number;
+  /** 已完成课时数（0..=total_lessons） */
+  current_lesson: number;
+  total_lessons: number;
+  error: string | null;
+  course_id: string | null;
+  /** 任务对应的知识库名称（库已被删除时为 null） */
+  knowledge_base_name: string | null;
+  /** 用户填写的课程领域（请求快照中，未填时为 null） */
+  domain: string | null;
+  created_at: number;
+  updated_at: number;
 }

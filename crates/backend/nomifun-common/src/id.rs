@@ -336,6 +336,10 @@ define_entity_id!(
     LearningReviewItemId
 );
 define_entity_id!(
+    /// Globally unique learning tag identifier.
+    LearningTagId
+);
+define_entity_id!(
     /// Globally unique attachment identifier.
     AttachmentId
 );
