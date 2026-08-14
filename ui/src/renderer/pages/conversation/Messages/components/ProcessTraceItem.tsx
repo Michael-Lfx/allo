@@ -8,13 +8,18 @@ import type { IConversationArtifact } from '@/common/adapter/ipcBridge';
 import type { IMessageAcpToolCall, IMessageToolCall, IMessageToolGroup, TMessage } from '@/common/chat/chatLib';
 import { toDisplayText } from '@/common/chat/displayText';
 import { normalizeToolMessages } from '@/common/chat/normalizeToolCall';
+import { ToolChip } from '@renderer/components/beautifulUi/toolChips/ToolChips';
+import {
+  chipDetailOmittingCommand,
+  resolveToolChipStatusFromProcessState,
+} from '@renderer/components/beautifulUi/toolChips/toolChipModel';
+import TaskRows from '@renderer/components/beautifulUi/taskRows/TaskRows';
+import { resolveTaskRowStatusFromProcessState } from '@renderer/components/beautifulUi/taskRows/taskRowModel';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { usePreviewLauncher } from '@/renderer/hooks/file/usePreviewLauncher';
 import { extractContentFromDiff } from '@/renderer/utils/file/diffUtils';
 import { getFileTypeInfo } from '@/renderer/utils/file/fileType';
 import MessageAcpPermission from '@renderer/pages/conversation/Messages/acp/MessageAcpPermission';
-import { Code, Edit, Info, Right, Terminal } from '@icon-park/react';
-import classNames from 'classnames';
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { FileChangeInfo } from '../MessageFileChanges';
@@ -35,7 +40,6 @@ import MessageTips from './MessageTips';
 import MessagePermission from './MessagePermission';
 import {
   buildToolReceiptDetailRows,
-  type ToolReceiptAction,
   type ToolReceiptDetailRow,
 } from './toolGroupSummaryModel';
 
@@ -69,7 +73,6 @@ export type ProcessTraceRenderableItem =
 type TranslationFn = ReturnType<typeof useTranslation>['t'];
 
 type ProcessTraceVariant = 'list' | 'receipt';
-type ProcessTraceIconKind = 'system' | 'tool' | 'command' | 'file' | 'edit';
 
 export type ProcessTraceItemExpansionControls = {
   expanded?: boolean;
@@ -82,7 +85,6 @@ type ProcessTraceRow = {
   title?: string;
   state: TurnDisclosureProcessState;
   onClick?: () => void;
-  iconKind?: ProcessTraceIconKind;
 };
 
 const defaultToolSummaryByState: Record<TurnDisclosureProcessState, string> = {
@@ -100,37 +102,6 @@ const compactReceiptText = (value: unknown, fallback: string): string => {
 };
 
 const joinCompactText = (parts: Array<string | undefined>): string => parts.filter(Boolean).join(' ');
-
-const TraceRowIcon: React.FC<{ kind?: ProcessTraceIconKind }> = ({ kind = 'system' }) => {
-  const props = {
-    theme: 'outline' as const,
-    size: '13',
-    fill: 'currentColor',
-  };
-
-  return (
-    <span className='turn-process-trace__row-icon' aria-hidden='true'>
-      {kind === 'command' ? (
-        <Terminal {...props} />
-      ) : kind === 'file' ? (
-        <Code {...props} />
-      ) : kind === 'edit' ? (
-        <Edit {...props} />
-      ) : kind === 'tool' ? (
-        <Code {...props} />
-      ) : (
-        <Info {...props} />
-      )}
-    </span>
-  );
-};
-
-const getToolTraceIconKind = (action: ToolReceiptAction): ProcessTraceIconKind => {
-  if (action === 'run_commands') return 'command';
-  if (action === 'edit_files') return 'edit';
-  if (action === 'read_files' || action === 'search_code' || action === 'list_files') return 'file';
-  return 'tool';
-};
 
 const getToolReceiptDetailDisplayTarget = (row: ToolReceiptDetailRow, workspaceRoots: string[]): string | undefined => {
   if (!row.target) return undefined;
@@ -368,26 +339,16 @@ const ToolFileGroupTraceRow: React.FC<{ rows: ToolReceiptDetailRow[]; workspaceR
 
   return (
     <div className='turn-process-trace-tool'>
-      <button
-        type='button'
-        className={classNames(
-          'turn-process-trace__row',
-          'turn-process-trace-tool__toggle',
-          `turn-process-trace__row--${state}`
-        )}
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-      >
-        <TraceRowIcon kind={getToolTraceIconKind(rows[0]?.action ?? 'read_files')} />
-        <span className='turn-process-trace__text' title={targets.join('\n')}>
-          {label}
-        </span>
-        <Right
-          theme='outline'
-          size='12'
-          className={classNames('turn-process-trace-tool__arrow', expanded && 'turn-process-trace-tool__arrow--open')}
-        />
-      </button>
+      <ToolChip
+        id={rows[0]?.key ?? 'files'}
+        name={rows[0]?.title ?? label}
+        detail={label}
+        status={resolveToolChipStatusFromProcessState({ state })}
+        expandable
+        expanded={expanded}
+        onToggle={() => setExpanded((value) => !value)}
+        animated={false}
+      />
       {expanded && <ToolFileListDetail rows={rows} workspaceRoots={workspaceRoots} showLabel={false} />}
     </div>
   );
@@ -489,46 +450,41 @@ const ToolTraceRow: React.FC<{
   workspaceRoots,
   fileRowCount,
 }) => {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const hasDetail = shouldShowToolRowDetail(row, { fileRowCount });
-  const rowClassName = classNames(
-    'turn-process-trace__row',
-    'turn-process-trace-tool__toggle',
-    `turn-process-trace__row--${row.state}`
-  );
-
-  if (!hasDetail) {
-    return (
-      <div className='turn-process-trace-tool'>
-        <div className={classNames('turn-process-trace__row', `turn-process-trace__row--${row.state}`)}>
-          <TraceRowIcon kind={getToolTraceIconKind(row.action)} />
-          <span className='turn-process-trace__text' title={row.target ?? label}>
-            {label}
-          </span>
-        </div>
-      </div>
-    );
-  }
+  const target = getToolReceiptDetailDisplayTarget(row, workspaceRoots);
+  const retry = row.retryCount
+    ? t('messages.toolRetryCount', {
+        count: row.retryCount,
+        defaultValue: 'Retried {{count}} times',
+      })
+    : undefined;
+  const detail =
+    [
+      row.skipped || row.notExecutedReason ? label : chipDetailOmittingCommand(row.title, target, row.action),
+      retry,
+    ]
+      .filter(Boolean)
+      .join(' · ') || undefined;
 
   return (
     <div className='turn-process-trace-tool'>
-      <button
-        type='button'
-        className={rowClassName}
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-      >
-        <TraceRowIcon kind={getToolTraceIconKind(row.action)} />
-        <span className='turn-process-trace__text' title={row.target ?? label}>
-          {label}
-        </span>
-        <Right
-          theme='outline'
-          size='12'
-          className={classNames('turn-process-trace-tool__arrow', expanded && 'turn-process-trace-tool__arrow--open')}
-        />
-      </button>
-      {expanded && <ToolTraceDetail row={row} workspaceRoots={workspaceRoots} />}
+      <ToolChip
+        id={row.key}
+        name={row.title}
+        detail={detail}
+        status={resolveToolChipStatusFromProcessState({
+          state: row.state,
+          skipped: row.skipped,
+          notExecutedReason: row.notExecutedReason,
+        })}
+        expandable={hasDetail}
+        expanded={expanded}
+        onToggle={hasDetail ? () => setExpanded((value) => !value) : undefined}
+        animated={false}
+      />
+      {hasDetail && expanded ? <ToolTraceDetail row={row} workspaceRoots={workspaceRoots} /> : null}
     </div>
   );
 };
@@ -538,30 +494,16 @@ const ProcessTraceRows: React.FC<{ rows: ProcessTraceRow[] }> = ({ rows }) => {
 
   return (
     <div className='turn-process-trace'>
-      {rows.map((row) => {
-        const className = classNames('turn-process-trace__row', `turn-process-trace__row--${row.state}`);
-        const text = (
-          <span className='turn-process-trace__text' title={row.title ?? row.label}>
-            {row.label}
-          </span>
-        );
-
-        if (row.onClick) {
-          return (
-            <button key={row.key} type='button' className={className} onClick={row.onClick}>
-              <TraceRowIcon kind={row.iconKind ?? 'system'} />
-              {text}
-            </button>
-          );
-        }
-
-        return (
-          <div key={row.key} className={className}>
-            <TraceRowIcon kind={row.iconKind ?? 'system'} />
-            {text}
-          </div>
-        );
-      })}
+      <TaskRows
+        layout='list'
+        animated={false}
+        items={rows.map((row) => ({
+          id: row.key,
+          title: row.label,
+          status: resolveTaskRowStatusFromProcessState(row.state),
+          onClick: row.onClick,
+        }))}
+      />
     </div>
   );
 };
@@ -674,7 +616,6 @@ const FileProcessTraceRows: React.FC<{ diffs: FileChangeInfo[]; workspaceRoots: 
             }),
             target.label
           ),
-          iconKind: 'file',
           onClick: () => openFile(file),
         };
       }),
@@ -744,15 +685,15 @@ const ProcessTraceItem: React.FC<{
   }
 
   switch (item.type) {
-    case 'text':
+    case 'text': {
+      const paragraphText = toDisplayText(item.content.content).trim();
+      if (!paragraphText) return null;
       return (
         <div className='turn-process-trace'>
-          <div className='turn-process-trace__paragraph-row'>
-            <TraceRowIcon kind='system' />
-            <div className='turn-process-trace__paragraph'>{toDisplayText(item.content.content)}</div>
-          </div>
+          <div className='turn-process-trace__paragraph'>{paragraphText}</div>
         </div>
       );
+    }
     case 'thinking':
       return (
         <MessageThinking
@@ -760,6 +701,7 @@ const ProcessTraceItem: React.FC<{
           variant='process'
           completed={state === 'completed'}
           forceDone={state !== 'running' && state !== 'waiting'}
+          processState={state}
           expanded={thinkingExpansion?.expanded}
           onExpandedChange={thinkingExpansion?.onExpandedChange}
         />

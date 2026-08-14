@@ -1,12 +1,12 @@
-
-
 import type { TMessage } from '@/common/chat/chatLib';
 import type { MessageId } from '@/common/types/ids';
-import { emitter } from '@/renderer/utils/emitter';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
-import { Quote } from '@icon-park/react';
+import { emitter } from '@/renderer/utils/emitter';
+import SelectionActions from '@renderer/components/beautifulUi/selectionActions/SelectionActions';
+import { selectionActionLabelKey } from '@renderer/components/beautifulUi/selectionActions/selectionActionsModel';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import styles from './SelectionReplyButton.module.css';
 
 type ReplyPos = { top: number; left: number; text: string; messageId: MessageId; msgPos: string };
 
@@ -70,7 +70,7 @@ function findMessageElement(sel: Selection): Element | null {
   return null;
 }
 
-const BUTTON_HEIGHT = 32;
+const BUTTON_HEIGHT = 36;
 
 const SelectionReplyButton: React.FC<{ messages: TMessage[] }> = ({ messages }) => {
   const { t } = useTranslation();
@@ -153,32 +153,29 @@ const SelectionReplyButton: React.FC<{ messages: TMessage[] }> = ({ messages }) 
 
   if (!pos) return null;
 
+  const handleQuote = () => {
+    emitter.emit('sendbox.reply', {
+      messageId: pos.messageId,
+      content: pos.text,
+      position: pos.msgPos as 'left' | 'right' | 'center' | 'pop',
+    });
+    setPos(null);
+    window.getSelection()?.removeAllRanges();
+  };
+
   return (
-    <div
-      ref={buttonRef}
-      className='fixed z-9999 flex items-center gap-4px px-10px py-6px rd-8px cursor-pointer transition-colors select-none'
-      style={{
-        top: pos.top,
-        left: pos.left,
-        transform: 'translateX(-50%)',
-        background: 'var(--brand-light)',
-        border: '1px solid var(--brand-hover)',
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.12)',
-        color: 'var(--brand)',
-      }}
-      onMouseDown={(e) => {
-        e.preventDefault();
-        emitter.emit('sendbox.reply', {
-          messageId: pos.messageId,
-          content: pos.text,
-          position: pos.msgPos as 'left' | 'right' | 'center' | 'pop',
-        });
-        setPos(null);
-        window.getSelection()?.removeAllRanges();
-      }}
-    >
-      <Quote theme='outline' size='14' fill='currentColor' />
-      <span className='text-12px font-medium whitespace-nowrap'>{t('common.reply', { defaultValue: 'Reply' })}</span>
+    <div ref={buttonRef} className={styles.host}>
+      <SelectionActions
+        top={pos.top}
+        left={pos.left}
+        actions={[
+          {
+            id: 'quote',
+            label: t(selectionActionLabelKey('quote'), { defaultValue: 'Reply' }),
+            onClick: handleQuote,
+          },
+        ]}
+      />
     </div>
   );
 };

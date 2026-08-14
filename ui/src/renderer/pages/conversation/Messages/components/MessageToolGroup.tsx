@@ -4,8 +4,12 @@ import { ipcBridge } from '@/common';
 import { parseConfirmationCorrelationId, type IMessageToolGroup } from '@/common/chat/chatLib';
 import { optionalDisplayText, toDisplayText } from '@/common/chat/displayText';
 import { iconColors } from '@/renderer/styles/colors';
-import { Alert, Button, Radio, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Tooltip } from '@arco-design/web-react';
 import { Download, LoadingOne } from '@icon-park/react';
+import ApprovalCard from '@renderer/components/beautifulUi/approvalCard/ApprovalCard';
+import { kindFromConfirmationType } from '@renderer/components/beautifulUi/approvalCard/approvalCardModel';
+import { ToolChip } from '@renderer/components/beautifulUi/toolChips/ToolChips';
+import { resolveToolChipStatusFromToolGroup } from '@renderer/components/beautifulUi/toolChips/toolChipModel';
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import FeedbackButton from '@/renderer/components/base/FeedbackButton';
@@ -39,11 +43,6 @@ const resolveVideoUrl = (result: VideoGenerationResult): string | undefined => {
 };
 
 const isVideoGenerationTool = (name: string) => VIDEO_TOOL_NAMES.has(name);
-
-// Alert 组件样式常量 Alert component style constant
-// 顶部对齐图标与内容，避免多行文本时图标垂直居中
-const ALERT_CLASSES =
-  '!items-start !rd-8px !px-8px [&_.arco-alert-icon]:flex [&_.arco-alert-icon]:items-start [&_.arco-alert-content-wrapper]:flex [&_.arco-alert-content-wrapper]:items-start [&_.arco-alert-content-wrapper]:w-full [&_.arco-alert-content]:flex-1';
 
 // CollapsibleContent 高度常量 CollapsibleContent height constants
 const RESULT_MAX_HEIGHT = COLLAPSE_CONFIG.MAX_HEIGHT;
@@ -196,6 +195,10 @@ const ConfirmationDetails: React.FC<{
         return <span className='text-t-primary'>{toDisplayText(confirmationDetails.prompt)}</span>;
       case 'mcp':
         return <span className='text-t-primary'>{toDisplayText(confirmationDetails.tool_display_name)}</span>;
+      default: {
+        const exhaustive: never = confirmationDetails;
+        return exhaustive;
+      }
     }
   }, [confirmationDetails]);
 
@@ -204,48 +207,38 @@ const ConfirmationDetails: React.FC<{
   const [selected, setSelected] = useState<ToolConfirmationOutcome | null>(null);
 
   const isConfirm = content.status === 'Confirming';
+  const details =
+    confirmationDetails.type === 'edit' ? (
+      <EditConfirmationDiff
+        diff={toDisplayText(confirmationDetails?.file_diff)}
+        file_name={toDisplayText(confirmationDetails.file_name)}
+        title={isConfirm ? toDisplayText(confirmationDetails.title) : toDisplayText(content.description)}
+      />
+    ) : (
+      node
+    );
 
-  return (
-    <div>
-      {confirmationDetails.type === 'edit' ? (
-        <EditConfirmationDiff
-          diff={toDisplayText(confirmationDetails?.file_diff)}
-          file_name={toDisplayText(confirmationDetails.file_name)}
-          title={isConfirm ? toDisplayText(confirmationDetails.title) : toDisplayText(content.description)}
-        />
-      ) : (
-        node
-      )}
-      {!readOnly && content.status === 'Confirming' && (
-        <>
-          <div className='mt-10px text-t-primary'>{question}</div>
-          <Radio.Group direction='vertical' size='mini' value={selected} onChange={setSelected}>
-            {options.map((item) => {
-              return (
-                <Radio key={item.value} value={item.value}>
-                  {item.label}
-                </Radio>
-              );
-            })}
-          </Radio.Group>
-          <div className='flex justify-start pl-20px'>
-            <Button
-              type='primary'
-              size='mini'
-              disabled={!selected}
-              onClick={() => {
-                // The button is disabled while `selected` is null, so this guard
-                // never blocks a real click — it only narrows the type for onConfirm.
-                if (selected) onConfirm(selected);
-              }}
-            >
-              {t('messages.confirm')}
-            </Button>
-          </div>
-        </>
-      )}
-    </div>
-  );
+  if (!readOnly && content.status === 'Confirming') {
+    return (
+      <ApprovalCard
+        title={question}
+        kind={kindFromConfirmationType(confirmationDetails.type)}
+        options={options.map((item) => ({ id: item.value, label: item.label }))}
+        selectedId={selected}
+        onSelect={(id) => setSelected(id as ToolConfirmationOutcome)}
+        onConfirm={() => {
+          // The button is disabled while `selected` is null, so this guard
+          // never blocks a real click — it only narrows the type for onConfirm.
+          if (selected) onConfirm(selected);
+        }}
+        confirmLabel={t('messages.confirm')}
+      >
+        {details}
+      </ApprovalCard>
+    );
+  }
+
+  return <div>{details}</div>;
 };
 
 // Legacy tool-group image display. LocalImageView owns source-generation
@@ -439,7 +432,6 @@ const MessageToolGroup: React.FC<IMessageToolGroupProps> = ({ message }) => {
         const callIdText = toDisplayText(call_id, `tool-${index}`);
         const nameText = toDisplayText(name, 'Tool');
         const descriptionText = optionalDisplayText(description);
-        const isLoading = statusText !== 'Success' && statusText !== 'Error' && statusText !== 'Canceled';
         // status === "Confirming" &&
         if (confirmationDetails) {
           return (
@@ -505,33 +497,13 @@ const MessageToolGroup: React.FC<IMessageToolGroupProps> = ({ message }) => {
         }
 
         // 通用工具调用展示 Generic tool call display
-        // 将可展开的长内容放在 Alert 下方，保持 Alert 仅展示头部信息
         return (
           <div key={callIdText}>
-            <Alert
-              className={ALERT_CLASSES}
-              type={
-                statusText === 'Error'
-                  ? 'error'
-                  : statusText === 'Success'
-                    ? 'success'
-                    : statusText === 'Canceled'
-                      ? 'warning'
-                      : 'info'
-              }
-              icon={
-                isLoading && (
-                  <LoadingOne theme='outline' size='12' fill={iconColors.primary} className='loading lh-[1] flex' />
-                )
-              }
-              content={
-                <div>
-                  <Tag className={'mr-4px'}>
-                    {nameText}
-                    {statusText === 'Canceled' ? `(${t('messages.canceledExecution')})` : ''}
-                  </Tag>
-                </div>
-              }
+            <ToolChip
+              id={callIdText}
+              name={nameText}
+              detail={statusText === 'Canceled' ? t('messages.canceledExecution') : undefined}
+              status={resolveToolChipStatusFromToolGroup(status)}
             />
 
             {(descriptionText || result_display || statusText === 'Error') && (
@@ -545,9 +517,7 @@ const MessageToolGroup: React.FC<IMessageToolGroupProps> = ({ message }) => {
                 )}
                 {result_display && (
                   <div>
-                    {/* 在 Alert 外展示完整结果 Display full result outside Alert */}
                     {/* ToolResultDisplay 内部已包含 CollapsibleContent，避免嵌套 */}
-                    {/* ToolResultDisplay already contains CollapsibleContent internally, avoid nesting */}
                     <ToolResultDisplay content={content} />
                   </div>
                 )}

@@ -1,20 +1,19 @@
 
 
-import { Message } from '@arco-design/web-react';
-import { Copy, Down, Up } from '@icon-park/react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import katex from 'katex';
 import React, { useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { copyText } from '@/renderer/utils/ui/clipboard';
+import BeautifulUiCodeBlock from '@renderer/components/beautifulUi/codeBlock/CodeBlock';
+import { beautifulUiHighlightStyle } from '@renderer/components/beautifulUi/codeBlock/codeBlockHighlight';
+import { filenameFromFenceNode } from '@renderer/components/beautifulUi/codeBlock/codeBlockLanguage';
 import MermaidBlock from './MermaidBlock';
 import { formatCode, getDiffLineStyle } from './markdownUtils';
-import SyntaxHighlighter, { vs, vs2015 } from './SyntaxHighlighter';
+import SyntaxHighlighter from './SyntaxHighlighter';
 
 const PREVIEW_LINES = 3;
-// code span: font-size 13px, line-height 20px (per ShadowView injection)
 const CODE_LINE_HEIGHT = 20;
-// SyntaxHighlighter pre padding: 0.5em top + 0.5em bottom ≈ 13px each side
-const CODE_PADDING_VERTICAL = 13;
+const CODE_PADDING_VERTICAL = 20;
 const COLLAPSED_HEIGHT = PREVIEW_LINES * CODE_LINE_HEIGHT + CODE_PADDING_VERTICAL;
 
 type CodeBlockProps = {
@@ -28,6 +27,7 @@ type CodeBlockProps = {
 };
 
 function CodeBlock(props: CodeBlockProps) {
+  const { children, className, node: _node, hiddenCodeCopyButton, codeStyle: _c, isStreaming = false, ...rest } = props;
   const { t } = useTranslation();
   const blockId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -56,9 +56,9 @@ function CodeBlock(props: CodeBlockProps) {
     }
   };
 
-  const { children, className, node: _node, hiddenCodeCopyButton, codeStyle: _c, isStreaming = false, ...rest } = props;
   const match = /language-(\w+)/.exec(className || '');
   const language = match?.[1] || 'text';
+  const filename = filenameFromFenceNode(props.node);
 
   // KaTeX math blocks
   if (language === 'latex' || language === 'math' || language === 'tex') {
@@ -92,27 +92,8 @@ function CodeBlock(props: CodeBlockProps) {
   const totalLines = formattedContent.split('\n').length;
   const canCollapse = totalLines > PREVIEW_LINES;
   const isEffectivelyExpanded = isStreaming || expanded;
-  const codeTheme = currentTheme === 'dark' ? vs2015 : vs;
   const diffLines = isDiff ? formattedContent.split('\n') : [];
   const isDark = currentTheme === 'dark';
-
-  const handleCopy = () => {
-    void copyText(formattedContent)
-      .then(() => {
-        try {
-          Message.success(t('common.copySuccess'));
-        } catch {
-          /* Shadow DOM portal may fail silently */
-        }
-      })
-      .catch(() => {
-        try {
-          Message.error(t('common.copyFailed'));
-        } catch {
-          /* ignore */
-        }
-      });
-  };
 
   const codeContentId = `${blockId}-content`;
   const footerId = `${blockId}-footer`;
@@ -123,17 +104,14 @@ function CodeBlock(props: CodeBlockProps) {
       style={{ width: '100%', minWidth: 0, maxWidth: '100%', ...props.codeStyle }}
       className='markdown-code-block'
     >
-      <div className='markdown-code-surface'>
-        {/* Header */}
-        <div className='markdown-code-header'>
-          <span className='markdown-code-language'>
-            {language.toLocaleLowerCase()}
-          </span>
-          {/* Buttons: always visible on touch devices, hover-only on pointer devices */}
-          <div
-            className='markdown-code-toolbar'
-          >
-            {canCollapse && !isStreaming && (
+      <BeautifulUiCodeBlock
+        language={language}
+        filename={filename}
+        streaming={isStreaming}
+        hiddenCopyButton={hiddenCodeCopyButton}
+        toolbar={
+          canCollapse && !isStreaming ? (
+            <div className='markdown-code-toolbar'>
               <button
                 type='button'
                 title={expanded ? t('common.collapse') : t('common.expand')}
@@ -144,103 +122,116 @@ function CodeBlock(props: CodeBlockProps) {
                 onClick={toggleExpanded}
               >
                 {expanded ? (
-                  <Up theme='outline' size='14' style={{ display: 'block' }} fill='currentColor' />
+                  <ChevronUp size={14} strokeWidth={1.75} aria-hidden />
                 ) : (
-                  <Down theme='outline' size='14' style={{ display: 'block' }} fill='currentColor' />
+                  <ChevronDown size={14} strokeWidth={1.75} aria-hidden />
                 )}
               </button>
-            )}
-            {!hiddenCodeCopyButton && (
-              <button
-                type='button'
-                title={t('common.copy')}
-                aria-label={t('common.copy')}
-                className='markdown-code-action'
-                onClick={handleCopy}
-              >
-                <Copy theme='outline' size='14' style={{ display: 'block' }} fill='currentColor' />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Code content — always full content, clipped by maxHeight when collapsed */}
-        <div
+            </div>
+          ) : undefined
+        }
+        highlighted={
+          <div
             ref={(node) => {
               contentRef.current = node;
               if (node && isStreaming) {
                 node.scrollTop = node.scrollHeight;
               }
             }}
-          id={codeContentId}
-          className='markdown-code-content'
-          style={{
-            maxHeight: canCollapse && !isEffectivelyExpanded ? `${COLLAPSED_HEIGHT}px` : 'none',
-            overflowY: isStreaming ? 'auto' : 'hidden',
-            overflowX: 'visible',
-          }}
-        >
-          <SyntaxHighlighter
-            children={formattedContent}
-            language={language}
-            style={codeTheme}
-            PreTag='div'
-            wrapLines={isDiff}
-            lineProps={
-              isDiff
-                ? (lineNumber: number) => ({
-                    style: {
-                      display: 'block',
-                      ...getDiffLineStyle(diffLines[lineNumber - 1] || '', isDark),
-                    },
-                  })
-                : undefined
-            }
-            customStyle={{
-              margin: 0,
-              padding: '0 12px 8px',
-              borderRadius: 0,
-              border: 'none',
-              background: 'transparent',
-              color: 'var(--text-primary)',
-              overflowX: 'auto',
-              maxWidth: '100%',
+            id={codeContentId}
+            className='markdown-code-content'
+            style={{
+              maxHeight: canCollapse && !isEffectivelyExpanded ? `${COLLAPSED_HEIGHT}px` : 'none',
+              overflowX: 'clip',
+              overflowY: isStreaming ? 'auto' : 'clip',
             }}
-            codeTagProps={{
-              style: {
-                color: 'var(--text-primary)',
-                background: 'transparent',
-              },
-            }}
-          />
-        </div>
-
-        {/* Footer */}
-        {canCollapse && !isStreaming && (
-          <button
-            type='button'
-            id={footerId}
-            aria-expanded={expanded}
-            aria-controls={codeContentId}
-            aria-label={
-              expanded
-                ? t('common.collapse')
-                : t('common.viewMoreLines', { count: totalLines - PREVIEW_LINES })
-            }
-            className='markdown-code-footer'
-            onClick={toggleExpanded}
           >
-            <span className='markdown-code-footer-label'>
-              {expanded ? t('common.collapse') : t('common.viewMoreLines', { count: totalLines - PREVIEW_LINES })}
-            </span>
-            {expanded ? (
-              <Up theme='outline' size='12' fill='currentColor' />
-            ) : (
-              <Down theme='outline' size='12' fill='currentColor' />
-            )}
-          </button>
-        )}
-      </div>
+            <SyntaxHighlighter
+              children={formattedContent}
+              language={language}
+              style={beautifulUiHighlightStyle}
+              showLineNumbers
+              PreTag='div'
+              wrapLongLines
+              wrapLines
+              lineNumberStyle={{
+                minWidth: '20px',
+                paddingRight: '10px',
+                marginRight: 0,
+                color: 'color-mix(in srgb, var(--color-text-3, #86909c) 60%, transparent)',
+                fontSize: '10.5px',
+                lineHeight: 1.86,
+                textAlign: 'right',
+                userSelect: 'none',
+              }}
+              lineProps={(lineNumber: number) => ({
+                style: {
+                  display: 'block',
+                  minWidth: 0,
+                  ...(isDiff ? getDiffLineStyle(diffLines[lineNumber - 1] || '', isDark) : {}),
+                },
+              })}
+              customStyle={{
+                margin: 0,
+                padding: 0,
+                borderRadius: 0,
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--color-text-2, #4e5969)',
+                overflow: 'visible',
+                maxWidth: '100%',
+                minWidth: 0,
+                width: '100%',
+                fontSize: '11.5px',
+                lineHeight: 1.7,
+                whiteSpace: 'pre-wrap',
+              }}
+              codeTagProps={{
+                style: {
+                  color: 'inherit',
+                  background: 'transparent',
+                  display: 'block',
+                  maxWidth: '100%',
+                  minWidth: 0,
+                  overflow: 'visible',
+                  overflowWrap: 'anywhere',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontSize: '11.5px',
+                  lineHeight: 1.7,
+                },
+              }}
+            />
+          </div>
+        }
+        footer={
+          canCollapse && !isStreaming ? (
+            <button
+              type='button'
+              id={footerId}
+              aria-expanded={expanded}
+              aria-controls={codeContentId}
+              aria-label={
+                expanded
+                  ? t('common.collapse')
+                  : t('common.viewMoreLines', { count: totalLines - PREVIEW_LINES })
+              }
+              className='markdown-code-footer'
+              onClick={toggleExpanded}
+            >
+              <span className='markdown-code-footer-label'>
+                {expanded ? t('common.collapse') : t('common.viewMoreLines', { count: totalLines - PREVIEW_LINES })}
+              </span>
+              {expanded ? (
+                <ChevronUp size={12} strokeWidth={1.75} aria-hidden />
+              ) : (
+                <ChevronDown size={12} strokeWidth={1.75} aria-hidden />
+              )}
+            </button>
+          ) : null
+        }
+        children={formattedContent}
+      />
     </div>
   );
 }

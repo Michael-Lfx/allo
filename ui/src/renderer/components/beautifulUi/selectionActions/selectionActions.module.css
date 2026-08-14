@@ -1,0 +1,53 @@
+.toolbar {
+  position: absolute;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--color-border-2, #e5e6eb);
+  border-radius: 10px;
+  background: var(--color-bg-1, #fff);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-text-1, #1d2129) 12%, transparent);
+  color: var(--color-text-1, #1d2129);
+  transform: translateX(-50%);
+}
+
+.action {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-1, #1d2129);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.16s ease;
+}
+
+.action svg {
+  display: block;
+  flex-shrink: 0;
+}
+
+.action:hover {
+  background: var(--color-fill-2, #f2f3f5);
+}
+
+.action:focus-visible {
+  outline: 2px solid var(--color-primary-6, #165dff);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .action {
+    transition: none;
+  }
+}

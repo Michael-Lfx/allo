@@ -5,6 +5,7 @@
  */
 
 import type { IProvider, TProviderWithModel } from '@/common/config/storage';
+import { isManagedModelProvider } from '@/common/types/provider/managedModelService';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -46,12 +47,15 @@ export const useNomiModelSelection = ({
   const { groups, isLoading: isModelCatalogLoading, error: modelCatalogError, refresh: refreshModelCatalog } =
     useModelsForTask('chat');
 
-  // Nomicore does not support Google Auth — filter it out
+  // Nomicore does not support Google Auth — filter it out.
+  // Managed free models stay off the conversation picker; keep them in the
+  // catalog map so a currently selected free model still counts as available.
   const providers = useMemo(
     () =>
       groups
         .map((group) => group.provider)
-        .filter((p) => !p.platform?.toLowerCase().includes('gemini-with-google-auth')),
+        .filter((p) => !p.platform?.toLowerCase().includes('gemini-with-google-auth'))
+        .filter((p) => !isManagedModelProvider(p)),
     [groups]
   );
 

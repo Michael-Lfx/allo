@@ -118,29 +118,10 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
         a: ({ node: _node, ...rest }: React.JSX.IntrinsicElements['a'] & ExtraProps) => (
           <a {...rest} target='_blank' rel='noreferrer' onClick={handleLinkClick} />
         ),
-        table: ({ node: _node, style, ...rest }: React.JSX.IntrinsicElements['table'] & ExtraProps) => (
-          <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
-            <table
-              {...rest}
-              style={{
-                ...style,
-                borderCollapse: 'collapse',
-                border: '1px solid var(--bg-3)',
-                minWidth: '100%',
-              }}
-            />
+        table: ({ node: _node, ...rest }: React.JSX.IntrinsicElements['table'] & ExtraProps) => (
+          <div className='markdown-table-wrap'>
+            <table {...rest} />
           </div>
-        ),
-        td: ({ node: _node, style, ...rest }: React.JSX.IntrinsicElements['td'] & ExtraProps) => (
-          <td
-            {...rest}
-            style={{
-              ...style,
-              padding: '8px',
-              border: '1px solid var(--bg-3)',
-              minWidth: '120px',
-            }}
-          />
         ),
         img: ({ node: _node, ...rest }: React.JSX.IntrinsicElements['img'] & ExtraProps) => {
           const imgProps = rest;

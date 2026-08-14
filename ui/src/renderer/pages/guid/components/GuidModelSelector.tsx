@@ -5,16 +5,16 @@
  */
 
 import type { IProvider, TProviderWithModel } from '@/common/config/storage';
+import { isManagedModelProvider } from '@/common/types/provider/managedModelService';
 import { compositeKey } from '@/common/utils/compositeKey';
 import { modelHealthOf } from '@/common/utils/providerModels';
 import { iconColors } from '@/renderer/styles/colors';
 import { getModelDisplayLabel } from '@/renderer/utils/model/agentLogo';
 import type { AcpModelInfo } from '../types';
 import { Button, Dropdown, Menu } from '@arco-design/web-react';
-import { Brain, Down, Plus } from '@icon-park/react';
+import { Brain, Down } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
@@ -46,7 +46,6 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   setSelectedAcpModel,
 }) => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const defaultModelLabel = t('common.defaultModel');
   const providerLabel = useModelSelectorProviderLabel();
 
@@ -60,7 +59,9 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   // 过滤掉被禁用的 provider，且仅保留调用方允许的供应商
   const enabledGroups = React.useMemo(() => {
     const allowedIds = new Set(modelList.filter((p) => p.enabled !== false).map((p) => p.id));
-    return chatGroups.filter((group) => allowedIds.has(group.provider.id));
+    return chatGroups.filter(
+      (group) => allowedIds.has(group.provider.id) && !isManagedModelProvider(group.provider),
+    );
   }, [chatGroups, modelList]);
 
   const geminiSelectedLabel = React.useMemo(() => {
@@ -131,10 +132,6 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                   >
                     {t('settings.noAvailableModels')}
                   </Menu.Item>,
-                  <Menu.Item key='add-model' className='text-12px text-t-secondary' onClick={() => navigate('/models?section=models')}>
-                    <Plus theme='outline' size='12' />
-                    {t('settings.addModel')}
-                  </Menu.Item>,
                 ]
               : [
                   ...(defaultModelUnavailable
@@ -178,10 +175,6 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                       </Menu.ItemGroup>
                     );
                   }),
-                  <Menu.Item key='add-model' className='text-12px text-t-secondary' onClick={() => navigate('/models?section=models')}>
-                    <Plus theme='outline' size='12' />
-                    {t('settings.addModel')}
-                  </Menu.Item>,
                 ]}
           </Menu>
         }

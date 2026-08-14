@@ -119,6 +119,9 @@
   "noAgentsAvailable": "No agents available",
   "noModelConfigured": "No model configured yet. Add a provider in the dialog, then send again.",
   "createFailed": "Failed to create conversation",
+  "skeleton": {
+    "opening": "Opening conversation"
+  },
   "pending": {
     "creating": "Preparing your task…",
     "startingAutoWork": "Starting AutoWork…",
@@ -654,7 +657,14 @@
   },
   "thinking": {
     "complete": "Thought complete",
-    "label": "Thinking..."
+    "label": "Thinking...",
+    "search": "Searching...",
+    "searchComplete": "Search complete",
+    "coding": "Coding...",
+    "codingComplete": "Code complete",
+    "waiting": "Waiting for model output",
+    "failed": "Thinking failed",
+    "canceled": "Thinking canceled"
   },
   "skills": {
     "loaded": "Loaded Skills",

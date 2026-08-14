@@ -30,6 +30,14 @@
   --conversation-ease-press: cubic-bezier(0.25, 1, 0.5, 1);
 }
 
+/* Trailing room under the latest reply so follow-to-bottom doesn't glue
+   streaming tokens to the composer. */
+.message-list-end-spacer {
+  height: 64px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
 .message-item {
   --conversation-message-font-size: 14px;
   --conversation-message-line-height: 22px;
@@ -493,38 +501,69 @@
 
 .turn-process-disclosure {
   width: 100%;
+  padding-bottom: 16px;
   color: var(--color-text-2, #4e5969);
+}
+
+.turn-process-disclosure [data-testid='beautiful-ui-tool-chip'],
+.turn-process-disclosure [data-testid='beautiful-ui-tool-chip']:hover,
+.turn-process-disclosure [data-testid='beautiful-ui-tool-chip']:focus,
+.turn-process-trace-tool [data-testid='beautiful-ui-tool-chip'],
+.turn-process-trace-tool [data-testid='beautiful-ui-tool-chip']:hover,
+.turn-process-trace-tool [data-testid='beautiful-ui-tool-chip']:focus {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--conversation-message-font-size, 14px);
+  line-height: var(--conversation-message-line-height, 22px);
 }
 
 .turn-process-disclosure__item {
   min-width: 0;
   color: var(--color-text-2, #4e5969);
-  margin-top: 8px;
-  animation: turn-process-item-enter 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  margin-top: 6px;
 }
 
 .turn-process-disclosure__body {
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding: 6px 0 2px;
+  padding: 4px 0 0;
   animation: turn-process-body-enter 0.2s ease-out both;
+}
+
+.turn-process-disclosure__cycle {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  margin-top: 6px;
+}
+
+.turn-process-disclosure__cycle:first-child {
+  margin-top: 0;
+}
+
+.turn-process-disclosure__cycle-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  margin-top: 6px;
+  padding-left: 14px;
 }
 
 .turn-process-receipt {
   width: 100%;
   color: var(--color-text-2, #4e5969);
-  animation: turn-process-item-enter 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-.turn-process-receipt--completed .turn-process-receipt__icon {
-  animation: turn-process-complete-pop 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .turn-process-receipt__body {
   min-width: 0;
   margin-left: 24px;
-  margin-top: 2px;
+  margin-top: 6px;
   color: var(--color-text-2, #4e5969);
   animation: turn-process-body-enter 0.18s ease-out both;
 }
@@ -551,37 +590,12 @@
   transform-origin: 0 0;
 }
 
-@keyframes turn-process-item-enter {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 @keyframes turn-process-body-enter {
   from {
     opacity: 0;
   }
   to {
     opacity: 1;
-  }
-}
-
-@keyframes turn-process-complete-pop {
-  0% {
-    transform: scale(0.72);
-    opacity: 0.4;
-  }
-  70% {
-    transform: scale(1.08);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1);
   }
 }
 
@@ -618,10 +632,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .turn-process-disclosure__item,
   .turn-process-disclosure__body,
-  .turn-process-receipt,
-  .turn-process-receipt--completed .turn-process-receipt__icon,
   .turn-process-receipt__body,
   .turn-process-trace__row--running .turn-process-trace__row-icon,
   .message-bubble-enter {
@@ -709,6 +720,7 @@
 .turn-process-disclosure__toggle {
   display: inline-flex;
   min-width: 0;
+  width: 100%;
   align-items: center;
   gap: 6px;
   border: 0;
@@ -819,10 +831,14 @@
 .turn-process-disclosure__item {
   min-width: 0;
   color: var(--color-text-3, #86909c);
-  margin-top: 8px;
+  margin-top: 6px;
 }
 
 .turn-process-disclosure__item:first-child {
+  margin-top: 0;
+}
+
+.turn-process-disclosure__cycle-body .turn-process-disclosure__item:first-child {
   margin-top: 0;
 }
 
@@ -831,25 +847,25 @@
 .turn-process-disclosure__item--thinking + .turn-process-disclosure__item--thinking,
 .turn-process-disclosure__item--status + .turn-process-disclosure__item--status,
 .turn-process-disclosure__item--permission + .turn-process-disclosure__item--permission {
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .turn-process-disclosure__body .turn-process-trace,
 .turn-process-disclosure__body .turn-process-trace-tool {
-  gap: 3px;
+  gap: 6px;
 }
 
 .turn-process-disclosure__body .turn-process-trace__paragraph {
-  color: var(--color-text-1, #1d2129);
-  font-size: var(--conversation-message-font-size);
-  line-height: var(--conversation-message-line-height);
+  color: var(--color-text-2, #4e5969);
+  font-size: var(--conversation-message-font-size, 14px);
+  line-height: var(--conversation-message-line-height, 22px);
 }
 
 .turn-process-disclosure__body .turn-process-trace__row {
-  min-height: 20px;
+  min-height: 22px;
   color: var(--color-text-2, #4e5969);
-  font-size: var(--conversation-message-font-size);
-  line-height: var(--conversation-message-line-height);
+  font-size: var(--conversation-message-font-size, 14px);
+  line-height: var(--conversation-message-line-height, 22px);
 }
 
 .turn-process-disclosure__body .turn-process-trace__row--running {
@@ -995,7 +1011,7 @@
 .turn-process-receipt__body {
   min-width: 0;
   margin-left: 24px;
-  margin-top: 2px;
+  margin-top: 6px;
   color: var(--color-text-2, #4e5969);
 }
 
@@ -1007,38 +1023,19 @@
 
 /* ── Live current-step strip under the latest streaming reply ── */
 
-.turn-live-step .turn-process-receipt__icon {
-  animation: turn-live-step-breathing 1.8s ease-in-out infinite;
-}
-
-@keyframes turn-live-step-breathing {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.9;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .turn-live-step .turn-process-receipt__icon {
-    animation: none;
-  }
-}
-
 .turn-process-trace {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .turn-process-trace-tool {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 4px;
+  align-items: flex-start;
+  gap: 6px;
 }
 
 .turn-process-trace__row {
@@ -1125,7 +1122,7 @@ button.turn-process-trace__row:focus-visible {
 }
 
 .turn-process-trace__paragraph-row .turn-process-trace__row-icon {
-  margin-top: 3px;
+  margin-top: 1px;
 }
 
 .turn-process-trace__paragraph {
@@ -1339,11 +1336,8 @@ button.turn-process-trace__row:focus-visible {
   .turn-process-disclosure__arrow,
   .turn-process-receipt__arrow,
   .turn-process-trace-tool__arrow,
-  .turn-process-disclosure__item,
   .turn-process-disclosure__body,
-  .turn-process-receipt,
   .turn-process-receipt__body,
-  .turn-process-receipt--completed .turn-process-receipt__icon,
   .turn-process-disclosure--running .turn-process-disclosure__label,
   .turn-process-trace__row--running .turn-process-trace__row-icon,
   .message-bubble-enter,

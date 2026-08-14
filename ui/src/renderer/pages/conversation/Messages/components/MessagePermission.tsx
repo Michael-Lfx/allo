@@ -1,10 +1,11 @@
 
-
 import { parseConfirmationCorrelationId, type IMessagePermission } from '@/common/chat/chatLib';
 import { optionalDisplayText, toDisplayText } from '@/common/chat/displayText';
 import { ipcBridge } from '@/common';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
-import { Button, Card, Image, Radio, Typography } from '@arco-design/web-react';
+import ApprovalCard from '@renderer/components/beautifulUi/approvalCard/ApprovalCard';
+import { kindFromPermissionAction } from '@renderer/components/beautifulUi/approvalCard/approvalCardModel';
+import { Image, Typography } from '@arco-design/web-react';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -13,13 +14,6 @@ const { Text } = Typography;
 interface MessagePermissionProps {
   message: IMessagePermission;
 }
-
-const actionIcons: Record<string, string> = {
-  exec: '⚡',
-  edit: '✏️',
-  info: '📖',
-  mcp: '🔌',
-};
 
 const MessagePermission: React.FC<MessagePermissionProps> = React.memo(({ message }) => {
   const { t } = useTranslation();
@@ -35,8 +29,15 @@ const MessagePermission: React.FC<MessagePermissionProps> = React.memo(({ messag
   const [isResponding, setIsResponding] = useState(false);
   const [hasResponded, setHasResponded] = useState(false);
 
-  const icon = actionIcons[actionText || ''] || '🔐';
   const displayTitle = titleText || descriptionText || t('messages.permissionRequest');
+  const cardDescription = descriptionText && descriptionText !== displayTitle ? descriptionText : undefined;
+  const approvalOptions =
+    !readOnly && !hasResponded
+      ? options.map((option, index) => ({
+          id: String(option.value) || `option_${index}`,
+          label: t(toDisplayText(option.label), { ...option.params, defaultValue: toDisplayText(option.label) }),
+        }))
+      : [];
 
   const handleConfirm = async () => {
     if (readOnly || hasResponded || !selected) return;
@@ -60,72 +61,43 @@ const MessagePermission: React.FC<MessagePermissionProps> = React.memo(({ messag
   };
 
   return (
-    <Card className='mb-4' bordered={false} style={{ background: 'var(--bg-1)' }} data-testid='message-permission-card'>
-      <div className='space-y-4'>
-        <div className='flex items-center space-x-2'>
-          <span className='text-2xl'>{icon}</span>
-          <Text className='block'>{displayTitle}</Text>
-        </div>
-        {commandTypeText && (
+    <div className='mb-4' data-testid='message-permission-card'>
+      <ApprovalCard
+        title={displayTitle}
+        kind={kindFromPermissionAction(actionText)}
+        description={cardDescription}
+        options={approvalOptions}
+        selectedId={selected}
+        onSelect={setSelected}
+        onConfirm={() => {
+          void handleConfirm();
+        }}
+        confirmLabel={isResponding ? t('messages.processing') : t('messages.confirm')}
+        disabled={readOnly || isResponding || hasResponded}
+      >
+        {commandTypeText ? (
           <div>
             <Text className='text-xs text-t-secondary mb-1'>{t('messages.command')}</Text>
             <code className='text-xs bg-1 p-2 rounded block text-t-primary break-all'>{commandTypeText}</code>
           </div>
-        )}
-        {descriptionText && descriptionText !== displayTitle && (
-          <div>
-            <Text className='text-xs text-t-secondary'>{descriptionText}</Text>
-          </div>
-        )}
-        {screenshotSrc && (
+        ) : null}
+        {screenshotSrc ? (
           <div className='rounded-md overflow-hidden border' style={{ borderColor: 'var(--border-2)' }}>
             <Image src={screenshotSrc} alt={t('messages.browserApprovalPreview')} width='100%' style={{ maxHeight: 320, objectFit: 'contain' }} />
           </div>
-        )}
-        {!readOnly && !hasResponded && (
-          <>
-            <div className='mt-10px'>{t('messages.chooseAction')}</div>
-            <Radio.Group direction='vertical' size='mini' value={selected} onChange={setSelected}>
-              {options.length > 0 ? (
-                options.map((option, index) => (
-                  <div
-                    key={String(option.value) || `option_${index}`}
-                    data-testid={`message-permission-option-${String(option.value) || `option_${index}`}`}
-                  >
-                    <Radio value={String(option.value)}>
-                      {t(toDisplayText(option.label), { ...option.params, defaultValue: toDisplayText(option.label) })}
-                    </Radio>
-                  </div>
-                ))
-              ) : (
-                <Text type='secondary'>{t('messages.noOptionsAvailable')}</Text>
-              )}
-            </Radio.Group>
-            <div className='flex justify-start pl-20px'>
-              <Button
-                type='primary'
-                size='mini'
-                disabled={!selected || isResponding}
-                onClick={handleConfirm}
-                data-testid='message-permission-confirm'
-              >
-                {isResponding ? t('messages.processing') : t('messages.confirm')}
-              </Button>
-            </div>
-          </>
-        )}
-        {hasResponded && (
-          <div
-            className='mt-10px p-2 rounded-md border'
-            style={{ backgroundColor: 'var(--color-success-light-1)', borderColor: 'rgb(var(--success-3))' }}
-          >
-            <Text className='text-sm' style={{ color: 'rgb(var(--success-6))' }}>
-              ✓ {t('messages.responseSentSuccessfully')}
-            </Text>
-          </div>
-        )}
-      </div>
-    </Card>
+        ) : null}
+      </ApprovalCard>
+      {hasResponded && (
+        <div
+          className='mt-10px p-2 rounded-md border'
+          style={{ backgroundColor: 'var(--color-success-light-1)', borderColor: 'rgb(var(--success-3))' }}
+        >
+          <Text className='text-sm' style={{ color: 'rgb(var(--success-6))' }}>
+            ✓ {t('messages.responseSentSuccessfully')}
+          </Text>
+        </div>
+      )}
+    </div>
   );
 });
 

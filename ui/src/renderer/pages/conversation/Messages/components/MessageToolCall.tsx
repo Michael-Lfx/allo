@@ -1,33 +1,25 @@
 
-
 import type { IMessageToolCall } from '@/common/chat/chatLib';
 import { toDisplayText } from '@/common/chat/displayText';
 import { normalizeToolCall } from '@/common/chat/normalizeToolCall';
 import type { NormalizedToolStatus } from '@/common/chat/normalizeToolCall';
 import KnowledgeSearchChip from './KnowledgeSearchChip';
 import FileChangesPanel from '@/renderer/components/base/FileChangesPanel';
-import LocalImageView from '@/renderer/components/media/LocalImageView';
+import { ToolChip } from '@renderer/components/beautifulUi/toolChips/ToolChips';
+import type { ToolChipStatus } from '@renderer/components/beautifulUi/toolChips/ToolChips';
+import { chipDetailOmittingCommand, resolveToolChipStatus } from '@renderer/components/beautifulUi/toolChips/toolChipModel';
+import LocalImageView from '@renderer/components/media/LocalImageView';
 import { useDiffPreviewHandlers } from '@/renderer/hooks/file/useDiffPreviewHandlers';
 import { parseDiff } from '@/renderer/utils/file/diffUtils';
-import { Badge } from '@arco-design/web-react';
-import { IconDown, IconRight } from '@arco-design/web-react/icon';
 import { createTwoFilesPatch } from 'diff';
 import React, { useMemo, useState } from 'react';
-import type { BadgeProps } from '@arco-design/web-react';
 import './MessageToolDetails.css';
 
-const statusToBadge = (status: NormalizedToolStatus): BadgeProps['status'] => {
-  switch (status) {
-    case 'completed':
-      return 'success';
-    case 'error':
-      return 'error';
-    case 'running':
-      return 'processing';
-    default:
-      return 'default';
-  }
-};
+const chipStatusFromTool = (
+  status: NormalizedToolStatus,
+  skipped?: boolean,
+  notExecutedReason?: 'invalid_arguments'
+): ToolChipStatus => resolveToolChipStatus({ status, skipped, notExecutedReason });
 
 const ReplacePreview: React.FC<{ message: IMessageToolCall }> = ({ message }) => {
   const file_path = toDisplayText(message.content.args?.file_path ?? message.content.input?.file_path);
@@ -43,13 +35,21 @@ const ReplacePreview: React.FC<{ message: IMessageToolCall }> = ({ message }) =>
   const { handleFileClick, handleDiffClick } = useDiffPreviewHandlers({ diffText, display_name, file_path });
 
   return (
-    <FileChangesPanel
-      title={fileInfo.file_name}
-      files={[fileInfo]}
-      onFileClick={handleFileClick}
-      onDiffClick={handleDiffClick}
-      defaultExpanded={true}
-    />
+    <div className='flex flex-col gap-6px'>
+      <ToolChip
+        id={message.id}
+        name={toDisplayText(message.content.name, 'replace')}
+        detail={file_path}
+        status='completed'
+      />
+      <FileChangesPanel
+        title={fileInfo.file_name}
+        files={[fileInfo]}
+        onFileClick={handleFileClick}
+        onDiffClick={handleDiffClick}
+        defaultExpanded={true}
+      />
+    </div>
   );
 };
 
@@ -71,35 +71,24 @@ const MessageToolCall: React.FC<{ message: IMessageToolCall }> = ({ message }) =
   }
 
   const visibleArtifacts = normalized.status === 'completed' ? artifacts : [];
-  const hasDetail = normalized.input || normalized.output || visibleArtifacts.length > 0;
+  const hasDetail = Boolean(normalized.input || normalized.output || visibleArtifacts.length > 0);
+  const chipStatus = chipStatusFromTool(
+    normalized.status,
+    normalized.skipped,
+    normalized.notExecutedReason
+  );
 
   return (
     <div className='flex flex-col'>
-      <div className='flex flex-row color-#86909C gap-12px items-center'>
-        <Badge
-          status={statusToBadge(normalized.status)}
-          className={normalized.status === 'running' ? 'badge-breathing' : ''}
-        />
-        <span
-          className={
-            'flex-1 min-w-0' +
-            (expanded ? ' break-all' : ' truncate') +
-            (hasDetail ? ' cursor-pointer hover:color-#4E5969' : '')
-          }
-          onClick={hasDetail ? () => setExpanded(!expanded) : undefined}
-        >
-          <span className='font-medium text-13px'>{normalized.name}</span>
-          {normalized.description && <span className='m-l-4px opacity-80 text-13px'>{normalized.description}</span>}
-        </span>
-        {hasDetail && (
-          <span
-            className='flex-shrink-0 cursor-pointer hover:color-#4E5969 transition-colors'
-            onClick={() => setExpanded(!expanded)}
-          >
-            {expanded ? <IconDown style={{ fontSize: 12 }} /> : <IconRight style={{ fontSize: 12 }} />}
-          </span>
-        )}
-      </div>
+      <ToolChip
+        id={normalized.key || message.id}
+        name={normalized.name}
+        detail={chipDetailOmittingCommand(normalized.name, normalized.description)}
+        status={chipStatus}
+        expandable={hasDetail}
+        expanded={expanded}
+        onToggle={hasDetail ? () => setExpanded((value) => !value) : undefined}
+      />
       {visibleArtifacts.length > 0 && (
         <div className='tool-artifacts m-l-20px m-t-6px'>
           {visibleArtifacts.map((artifact) => (

@@ -22,6 +22,8 @@ import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
 import FilePreview from '@renderer/components/media/FilePreview';
 import HorizontalFileList from '@renderer/components/media/HorizontalFileList';
 import MarkdownView from '@renderer/components/Markdown';
+import CodeBlock from '@renderer/components/beautifulUi/codeBlock/CodeBlock';
+import StreamingText from '@renderer/components/beautifulUi/streamingText/StreamingText';
 import { stripThinkTags, hasThinkTags } from '@renderer/utils/chat/thinkTagFilter';
 import { stripSkillSuggest, hasSkillSuggest } from '@renderer/utils/chat/skillSuggestParser';
 import { MESSAGE_BODY_CLASS_NAME, MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
@@ -670,67 +672,61 @@ const MessageText: React.FC<{
               {
                 'message-bubble--user bg-aou-2': bubbleVariant === 'user',
                 'message-bubble--agent bg-3': bubbleVariant === 'agent',
-                'message-bubble-enter': shouldPlayEnterAnimation,
+                'message-bubble-enter': shouldPlayEnterAnimation && !isStreaming,
                 // C3: 编辑中气泡轻微置灰（正在回填/重发，行即将被替换）。
                 // C3: slightly dim the bubble while its message is being edited
                 // (recalled into the composer, or about to be replaced by resubmit).
                 'opacity-70': isEditingThis,
               }
             )}
+            data-testid='message-text-content'
           >
-            {/* JSON 内容使用折叠组件 Use CollapsibleContent for JSON content */}
-            {shouldRenderPlainText ? (
-              <div className={MESSAGE_BODY_CLASS_NAME} data-testid='message-text-content'>
-                {text}
-              </div>
-            ) : json ? (
-              <CollapsibleContent maxHeight={200} defaultCollapsed={true}>
-                <div data-testid='message-text-content'>
+            <StreamingText status={message.status === 'finish' || !isStreaming ? 'done' : 'streaming'}>
+              {/* JSON 内容使用折叠组件 Use CollapsibleContent for JSON content */}
+              {shouldRenderPlainText ? (
+                <div className={MESSAGE_BODY_CLASS_NAME}>
+                  {text}
+                </div>
+              ) : json ? (
+                <CollapsibleContent maxHeight={200} defaultCollapsed={true}>
                   <MarkdownView
                     codeStyle={CODE_STYLE}
                     fontSize={MESSAGE_BODY_FONT_SIZE}
                     lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                     allowUnverifiedImages={isUserMessage}
                   >{`\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``}</MarkdownView>
-                </div>
-              </CollapsibleContent>
-            ) : (
-              <div data-testid='message-text-content'>
-                {streamingParts ? (
-                  <div className='message-streaming-content'>
-                    {streamingParts.stablePrefix ? (
-                      <MarkdownView
-                        codeStyle={CODE_STYLE}
-                        fontSize={MESSAGE_BODY_FONT_SIZE}
-                        lineHeight={MESSAGE_BODY_LINE_HEIGHT}
-                        allowUnverifiedImages={isUserMessage}
-                      >
-                        {streamingParts.stablePrefix}
-                      </MarkdownView>
-                    ) : null}
-                    {streamingParts.tailKind === 'code' ? (
-                      <div className='message-streaming-code'>
-                        <div className='message-streaming-code__language'>{streamingParts.codeLanguage}</div>
-                        <pre className='message-streaming-code__content'>
-                          <code>{streamingParts.codeContent}</code>
-                        </pre>
-                      </div>
-                    ) : streamingParts.tail ? (
-                      <div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>{streamingParts.tail}</div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <MarkdownView
-                    codeStyle={CODE_STYLE}
-                    fontSize={MESSAGE_BODY_FONT_SIZE}
-                    lineHeight={MESSAGE_BODY_LINE_HEIGHT}
-                    allowUnverifiedImages={isUserMessage}
-                  >
-                    {data}
-                  </MarkdownView>
-                )}
-              </div>
-            )}
+                </CollapsibleContent>
+              ) : streamingParts ? (
+                <>
+                  {streamingParts.stablePrefix ? (
+                    <MarkdownView
+                      codeStyle={CODE_STYLE}
+                      fontSize={MESSAGE_BODY_FONT_SIZE}
+                      lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                      allowUnverifiedImages={isUserMessage}
+                    >
+                      {streamingParts.stablePrefix}
+                    </MarkdownView>
+                  ) : null}
+                  {streamingParts.tailKind === 'code' ? (
+                    <CodeBlock language={streamingParts.codeLanguage} streaming>
+                      {streamingParts.codeContent ?? ''}
+                    </CodeBlock>
+                  ) : streamingParts.tail ? (
+                    <div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>{streamingParts.tail}</div>
+                  ) : null}
+                </>
+              ) : (
+                <MarkdownView
+                  codeStyle={CODE_STYLE}
+                  fontSize={MESSAGE_BODY_FONT_SIZE}
+                  lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                  allowUnverifiedImages={isUserMessage}
+                >
+                  {data}
+                </MarkdownView>
+              )}
+            </StreamingText>
           </div>
         )}
         {writebackState && (

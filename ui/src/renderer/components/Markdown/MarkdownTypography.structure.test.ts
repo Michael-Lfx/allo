@@ -21,6 +21,7 @@ describe('Markdown typography controls', () => {
     expect(shadowSource.includes("const resolvedLineHeight = lineHeight ?? (isMobile ? '19.6px' : '28px');")).toBe(true);
     expect(shadowSource.includes('const usesExplicitTypography = Boolean(fontSize || lineHeight);')).toBe(true);
     expect(shadowSource.includes("margin-block-start: ${usesExplicitTypography ? '10px' : '16px'};")).toBe(true);
+    expect(shadowSource.includes('.markdown-shadow-body>h1:first-child')).toBe(true);
     expect(shadowSource.includes("font-size: ${usesExplicitTypography ? '18px' : '24px'};")).toBe(true);
     expect(shadowSource.includes("font-size: ${usesExplicitTypography ? '16px' : '18px'};")).toBe(true);
     expect(shadowSource.includes("font-size: ${usesExplicitTypography ? '15px' : '16px'};")).toBe(true);
@@ -28,5 +29,15 @@ describe('Markdown typography controls', () => {
     expect(shadowSource.includes("'--color-link':")).toBe(true);
     expect(shadowSource.includes('markdown-code-toolbar')).toBe(true);
     expect(shadowSource.includes('markdown-code-block:focus-within')).toBe(true);
+    expect(shadowSource.includes('.markdown-shadow-body .hljs code')).toBe(true);
+    expect(shadowSource.includes('.markdown-code-content::-webkit-scrollbar')).toBe(true);
+  });
+
+  test('keeps inline code in the sentence instead of painting a gray pill on every path', () => {
+    expect(shadowSource.includes('.markdown-shadow-body code:not(pre code)')).toBe(true);
+    expect(shadowSource.includes('background: none')).toBe(true);
+    expect(shadowSource.includes('padding: 0')).toBe(true);
+    expect(shadowSource.includes('border-radius: 0')).toBe(true);
+    expect(shadowSource.includes('padding: 2px 6px')).toBe(false);
   });
 });

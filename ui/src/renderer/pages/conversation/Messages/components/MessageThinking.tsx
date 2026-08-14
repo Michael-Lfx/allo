@@ -1,10 +1,17 @@
 
-
 import type { IMessageThinking } from '@/common/chat/chatLib';
 import { toDisplayText } from '@/common/chat/displayText';
-import { Spin } from '@arco-design/web-react';
-import { Brain, Right } from '@icon-park/react';
-import React, { useEffect, useId, useRef, useState } from 'react';
+import ThinkingTrace from '@renderer/components/beautifulUi/thinking/ThinkingTrace';
+import type { ThinkingTraceStatus, ThinkingTraceVariant } from '@renderer/components/beautifulUi/thinking/ThinkingTrace';
+import {
+  buildThinkingTraceItems,
+  inferThinkingTraceVariant,
+  isThinkingTraceSettled,
+  resolveThinkingTraceStatus,
+  type ThinkingTraceProcessState,
+} from '@renderer/components/beautifulUi/thinking/thinkingTraceModel';
+import type { TFunction } from 'i18next';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import styles from './MessageThinking.module.css';
 
@@ -13,34 +20,88 @@ interface MessageThinkingProps {
   variant?: 'standalone' | 'process';
   completed?: boolean;
   forceDone?: boolean;
+  processState?: ThinkingTraceProcessState;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
 }
+
+const liveLabelForVariant = (variant: ThinkingTraceVariant, t: TFunction): string => {
+  switch (variant) {
+    case 'search':
+      return t('conversation.thinking.search', { defaultValue: 'Searching...' });
+    case 'coding':
+      return t('conversation.thinking.coding', { defaultValue: 'Coding...' });
+    case 'steps':
+    case 'reasoning':
+      return t('conversation.thinking.label', { defaultValue: 'Thinking...' });
+    default: {
+      const exhaustive: never = variant;
+      return exhaustive;
+    }
+  }
+};
+
+const completeLabelForVariant = (variant: ThinkingTraceVariant, t: TFunction): string => {
+  switch (variant) {
+    case 'search':
+      return t('conversation.thinking.searchComplete', { defaultValue: 'Search complete' });
+    case 'coding':
+      return t('conversation.thinking.codingComplete', { defaultValue: 'Code complete' });
+    case 'steps':
+    case 'reasoning':
+      return t('conversation.thinking.complete', { defaultValue: 'Thought complete' });
+    default: {
+      const exhaustive: never = variant;
+      return exhaustive;
+    }
+  }
+};
+
+const headerLabelForStatus = (
+  status: ThinkingTraceStatus,
+  variant: ThinkingTraceVariant,
+  subject: string | undefined,
+  t: TFunction
+): string => {
+  switch (status) {
+    case 'waiting':
+      return t('conversation.thinking.waiting', { defaultValue: 'Waiting for model output' });
+    case 'failed':
+      return t('conversation.thinking.failed', { defaultValue: 'Thinking failed' });
+    case 'canceled':
+      return t('conversation.thinking.canceled', { defaultValue: 'Thinking canceled' });
+    case 'done':
+      return completeLabelForVariant(variant, t);
+    case 'thinking':
+      return toDisplayText(subject) || liveLabelForVariant(variant, t);
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
+};
 
 const MessageThinking: React.FC<MessageThinkingProps> = ({
   message,
   variant = 'standalone',
   completed,
   forceDone,
+  processState,
   expanded,
   onExpandedChange,
 }) => {
   const { t } = useTranslation();
   const isProcessVariant = variant === 'process';
-
-  const formatElapsedTime = (seconds: number): string => {
-    const sUnit = t('common.unit.second_short', { defaultValue: 's' });
-    const mUnit = t('common.unit.minute_short', { defaultValue: 'm' });
-
-    if (seconds < 60) return `${seconds}${sUnit}`;
-    const minutes = Math.floor(seconds / 60);
-    const remaining = seconds % 60;
-    return `${minutes}${mUnit} ${remaining}${sUnit}`;
-  };
-
   const { status, subject } = message.content;
   const text = toDisplayText(message.content.content);
-  const isDone = completed === true || forceDone === true || status === 'done';
+  const traceStatus = resolveThinkingTraceStatus({
+    messageStatus: status,
+    completed,
+    forceDone,
+    processState,
+  });
+  const traceVariant = inferThinkingTraceVariant(text, toDisplayText(subject));
+  const isDone = isThinkingTraceSettled(traceStatus);
   const defaultExpanded = expanded ?? (isProcessVariant ? !isDone : true);
   const [internalExpanded, setInternalExpanded] = useState(() => defaultExpanded);
   const resolvedExpanded = expanded ?? internalExpanded;
@@ -50,14 +111,12 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
   });
   const startTimeRef = useRef<number>(message.created_at ?? Date.now());
   const bodyRef = useRef<HTMLDivElement>(null);
-  const bodyId = useId();
 
   useEffect(() => {
     if (expanded !== undefined) return;
     setInternalExpanded(defaultExpanded);
   }, [defaultExpanded, expanded, message.id, message.msg_id]);
 
-  // Elapsed timer for active thinking
   useEffect(() => {
     if (isDone) return;
 
@@ -70,49 +129,40 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
     return () => clearInterval(timer);
   }, [isDone, message.created_at, message.msg_id]);
 
-  // Auto-scroll to bottom during streaming
   useEffect(() => {
     if (!isDone && resolvedExpanded && bodyRef.current) {
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
     }
   }, [text, isDone, resolvedExpanded]);
 
-  const handleToggle = () => {
-    const nextExpanded = !resolvedExpanded;
+  const handleToggle = (nextExpanded: boolean) => {
     if (expanded === undefined) {
       setInternalExpanded(nextExpanded);
     }
     onExpandedChange?.(nextExpanded);
   };
 
-  const summaryText = isDone
-    ? t('conversation.thinking.complete', { defaultValue: 'Thought complete' })
-    : `${toDisplayText(subject) || t('conversation.thinking.label', { defaultValue: 'Thinking...' })} · ${formatElapsedTime(elapsedTime)}`;
+  const summaryText = headerLabelForStatus(traceStatus, traceVariant, subject, t);
+
+  const items = useMemo(
+    () => buildThinkingTraceItems(text, traceStatus),
+    [text, traceStatus]
+  );
 
   return (
     <div className={`${styles.container} ${isProcessVariant ? styles.containerProcess : ''}`}>
-      <button
-        type='button'
-        className={`${styles.header} ${isProcessVariant ? styles.headerProcess : ''}`}
-        onClick={handleToggle}
-        aria-expanded={resolvedExpanded}
-        aria-controls={bodyId}
-      >
-        <span className={styles.headerIcon}>{!isDone ? <Spin size={12} /> : <Brain theme='outline' size='14' />}</span>
-        <span className={styles.summary} title={summaryText}>
-          {summaryText}
-        </span>
-        <span className={`${styles.arrow} ${resolvedExpanded ? styles.arrowExpanded : ''}`}>
-          <Right theme='outline' size='12' />
-        </span>
-      </button>
-      <div
-        ref={bodyRef}
-        id={bodyId}
-        className={`${styles.body} ${isProcessVariant ? styles.bodyProcess : ''} ${!resolvedExpanded ? styles.collapsed : ''}`}
-      >
-        {text}
-      </div>
+      <ThinkingTrace
+        variant={traceVariant}
+        status={traceStatus}
+        items={items}
+        label={summaryText}
+        layout={variant}
+        expanded={resolvedExpanded}
+        onExpandedChange={handleToggle}
+        bodyRef={bodyRef}
+        elapsedSeconds={elapsedTime}
+        showElapsed={!isDone}
+      />
     </div>
   );
 };

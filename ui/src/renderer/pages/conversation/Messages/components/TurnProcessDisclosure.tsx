@@ -5,6 +5,9 @@
  */
 
 import type { TurnDisclosureProcessState } from '../turnDisclosureModel';
+import { TaskGroup } from '@renderer/components/beautifulUi/taskRows/TaskRows';
+import { resolveTaskGroupStatus } from '@renderer/components/beautifulUi/taskRows/taskRowModel';
+import { groupTurnProcessItemsByCycle } from '../turnProcessCycleModel';
 import { Down } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -104,6 +107,32 @@ const formatTurnDuration = (ms: number, t: ReturnType<typeof useTranslation>['t'
   return `${hours}${hUnit} ${remainingMinutes}${mUnit}`;
 };
 
+const TurnProcessDurationLabel: React.FC<{
+  state: TurnDisclosureProcessState;
+  startAt: number;
+  endAt: number;
+  running: boolean;
+}> = ({ state, startAt, endAt, running }) => {
+  const { t } = useTranslation();
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  const durationEndAt = running ? now : endAt;
+  const displayState = state === 'failed' ? 'completed' : state;
+  return t(labelKeyByState[displayState], {
+    duration: formatTurnDuration(durationEndAt - startAt, t),
+    defaultValue: defaultLabelByState[displayState],
+  });
+};
+
 function TurnProcessDisclosure<T>({
   item,
   highlighted = false,
@@ -117,7 +146,6 @@ function TurnProcessDisclosure<T>({
   const hasProcessItems = item.processItems.length > 0;
   const [expanded, setExpanded] = useState(() => getDefaultExpanded(hasProcessItems, item.defaultCollapsed));
   const [expandAllProcessItemKeys, setExpandAllProcessItemKeys] = useState<Set<string>>(() => new Set());
-  const [now, setNow] = useState(() => Date.now());
   const expansionSnapshotRef = useRef<TurnProcessDisclosureExpansionSnapshot>({
     itemId: item.id,
     hasProcessItems,
@@ -145,15 +173,6 @@ function TurnProcessDisclosure<T>({
   useEffect(() => {
     if (highlighted && hasProcessItems) setExpanded(true);
   }, [hasProcessItems, highlighted]);
-
-  useEffect(() => {
-    if (!item.running) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => {
-      setNow(Date.now());
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [item.running]);
 
   const currentItemKey = useMemo(() => {
     const activeItem = item.processItems.findLast((processItem) => {
@@ -232,19 +251,45 @@ function TurnProcessDisclosure<T>({
     [expandAllProcessItemKeys]
   );
 
-  const durationEndAt = item.running ? now : item.endAt;
-  const duration = formatTurnDuration(durationEndAt - item.startAt, t);
   // Defensive compatibility: historical or third-party callers may still
   // provide an aggregate `failed` state. The header must remain lifecycle-only;
   // detailed rows continue to render their own failure state below.
   const displayState = item.state === 'failed' ? 'completed' : item.state;
-  const label = t(labelKeyByState[displayState], {
-    duration,
-    defaultValue: defaultLabelByState[displayState],
-  });
   const bodyId = `turn-process-disclosure-body-${sanitizeDomId(item.id)}`;
   const disclosureExpanded = hasProcessItems && expanded;
   const hasHeaderActions = disclosureExpanded && hasExpandableProcessItems;
+  const processGroups = useMemo(
+    () =>
+      groupTurnProcessItemsByCycle(
+        item.processItems,
+        (processItem) => getProcessItemLayoutKind?.(processItem) ?? 'other'
+      ),
+    [getProcessItemLayoutKind, item.processItems]
+  );
+
+  const renderDisclosureItem = (processItem: T) => {
+    const itemKey = getProcessItemKey(processItem);
+    const state = getProcessItemState(processItem);
+    const layoutKind = getProcessItemLayoutKind?.(processItem) ?? 'other';
+    const expansionControls = getProcessItemCanExpandAll?.(processItem)
+      ? getExpansionControls(itemKey)
+      : undefined;
+    const content = renderProcessItem(processItem, expansionControls);
+    if (content == null) return null;
+    return (
+      <div
+        key={itemKey}
+        className={classNames(
+          'turn-process-disclosure__item',
+          `turn-process-disclosure__item--${layoutKind}`,
+          `turn-process-disclosure__item--${state}`,
+          itemKey === currentItemKey && 'turn-process-disclosure__item--current'
+        )}
+      >
+        {content}
+      </div>
+    );
+  };
 
   return (
     <div className={classNames('turn-process-disclosure', `turn-process-disclosure--${displayState}`)}>
@@ -255,28 +300,26 @@ function TurnProcessDisclosure<T>({
           !hasProcessItems && 'turn-process-disclosure__header--static'
         )}
       >
-        {!hasProcessItems ? (
-          <div className='turn-process-disclosure__label turn-process-disclosure__label--static'>{label}</div>
-        ) : (
-          <button
-            type='button'
-            className='turn-process-disclosure__toggle'
-            onClick={() => setExpanded((value) => !value)}
-            aria-expanded={disclosureExpanded}
-            aria-controls={bodyId}
-          >
-            <span className='turn-process-disclosure__label'>{label}</span>
-            <Down
-              theme='outline'
-              size='14'
-              fill='currentColor'
-              className={classNames(
-                'turn-process-disclosure__arrow',
-                disclosureExpanded && 'turn-process-disclosure__arrow--open'
-              )}
+        <TaskGroup
+          title={
+            <TurnProcessDurationLabel
+              state={item.state}
+              startAt={item.startAt}
+              endAt={item.endAt}
+              running={item.running}
             />
-          </button>
-        )}
+          }
+          status={resolveTaskGroupStatus(item.state)}
+          expandable={hasProcessItems}
+          expanded={disclosureExpanded}
+          onToggle={hasProcessItems ? () => setExpanded((value) => !value) : undefined}
+          ariaControls={bodyId}
+          className={
+            hasProcessItems
+              ? 'turn-process-disclosure__toggle'
+              : 'turn-process-disclosure__label turn-process-disclosure__label--static'
+          }
+        />
         {hasProcessItems && hasHeaderActions && (
           <div className='turn-process-disclosure__header-actions'>
             <button
@@ -308,26 +351,29 @@ function TurnProcessDisclosure<T>({
       </div>
       {disclosureExpanded && (
         <div id={bodyId} className='turn-process-disclosure__body'>
-          {item.processItems.map((processItem) => {
-            const itemKey = getProcessItemKey(processItem);
-            const state = getProcessItemState(processItem);
-            const layoutKind = getProcessItemLayoutKind?.(processItem) ?? 'other';
-            const expansionControls = getProcessItemCanExpandAll?.(processItem)
-              ? getExpansionControls(itemKey)
-              : undefined;
-            return (
-              <div
-                key={itemKey}
-                className={classNames(
-                  'turn-process-disclosure__item',
-                  `turn-process-disclosure__item--${layoutKind}`,
-                  `turn-process-disclosure__item--${state}`,
-                  itemKey === currentItemKey && 'turn-process-disclosure__item--current'
-                )}
-              >
-                {renderProcessItem(processItem, expansionControls)}
-              </div>
-            );
+          {processGroups.map((group) => {
+            switch (group.type) {
+              case 'item':
+                return renderDisclosureItem(group.item);
+              case 'cycle': {
+                const [header, ...children] = group.items;
+                if (!header) return null;
+                return (
+                  <div key={getProcessItemKey(header)} className='turn-process-disclosure__cycle'>
+                    {renderDisclosureItem(header)}
+                    {children.length > 0 ? (
+                      <div className='turn-process-disclosure__cycle-body'>
+                        {children.map(renderDisclosureItem)}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              }
+              default: {
+                const exhaustive: never = group;
+                return exhaustive;
+              }
+            }
           })}
         </div>
       )}

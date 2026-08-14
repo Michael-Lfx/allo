@@ -1,0 +1,75 @@
+.root {
+  min-width: 0;
+  color: var(--color-text-1, #1d2129);
+  font-size: var(--conversation-message-font-size, 14px);
+  line-height: var(--conversation-message-line-height, 22px);
+}
+
+.sources {
+  margin: 0 0 8px;
+  color: var(--color-text-3, #86909c);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.body {
+  min-width: 0;
+}
+
+.streaming .body:empty,
+.streaming .body > :last-child {
+  --beautiful-ui-streaming-caret-content: '';
+  --beautiful-ui-streaming-caret-bg: var(--color-text-1, #1d2129);
+  --beautiful-ui-streaming-caret-shadow: none;
+  --beautiful-ui-streaming-caret-animation: streaming-caret 1s step-end infinite;
+}
+
+.streaming .body:empty::after,
+.streaming .body > :last-child::after,
+.streaming .body > :last-child:global(.message-streaming-code) :global(.message-streaming-code__content)::after {
+  content: var(--beautiful-ui-streaming-caret-content);
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.12em;
+  background: var(--beautiful-ui-streaming-caret-bg, var(--color-text-1, #1d2129));
+  box-shadow: var(--beautiful-ui-streaming-caret-shadow, none);
+  animation: streaming-caret 1s step-end infinite;
+}
+
+.streaming .body > :last-child:has(:global(.markdown-shadow))::after,
+.streaming .body > :last-child:global(.message-streaming-code)::after,
+.streaming .body > :last-child:global([data-testid='beautiful-ui-code-block'])::after {
+  content: none;
+  display: none;
+  animation: none;
+}
+
+@keyframes streaming-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming .body:empty,
+  .streaming .body > :last-child {
+    --beautiful-ui-streaming-caret-bg: var(--color-text-1, #1d2129);
+    --beautiful-ui-streaming-caret-shadow: none;
+    --beautiful-ui-streaming-caret-animation: none;
+  }
+
+  .streaming .body:empty::after,
+  .streaming .body > :last-child::after,
+  .streaming .body > :last-child:global(.message-streaming-code) :global(.message-streaming-code__content)::after {
+    animation: none;
+    opacity: 1;
+    background: var(--color-text-1, #1d2129);
+    box-shadow: none;
+  }
+}

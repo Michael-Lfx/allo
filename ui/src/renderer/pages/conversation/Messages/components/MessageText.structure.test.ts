@@ -40,6 +40,27 @@ describe('MessageText process action chrome', () => {
     expect(source.includes('{actionsRow}')).toBe(true);
   });
 
+  test('wraps the markdown and plain body in the Beautiful UI streaming shell', () => {
+    expect(source.includes('<StreamingText')).toBe(true);
+    expect(source.includes('fontSize={MESSAGE_BODY_FONT_SIZE}')).toBe(true);
+    expect(source.includes('hideActions?: boolean')).toBe(true);
+    expect(source.includes('actionsOnly?: boolean')).toBe(true);
+  });
+
+  test('gives StreamingText the markdown and plain bodies without an extra block wrapper', () => {
+    expect(source.includes("data-testid='message-text-content'")).toBe(true);
+    const streamingBlock = source.match(/<StreamingText[\s\S]*?<\/StreamingText>/)?.[0] ?? '';
+    expect(streamingBlock.includes('<MarkdownView')).toBe(true);
+    expect(streamingBlock.includes('className={MESSAGE_BODY_CLASS_NAME}')).toBe(true);
+    expect(streamingBlock.includes('<CollapsibleContent')).toBe(true);
+    expect(streamingBlock.includes("data-testid='message-text-content'")).toBe(false);
+    expect(streamingBlock.includes("className='message-streaming-content'")).toBe(false);
+  });
+
+  test('does not pop the bubble while text is still streaming', () => {
+    expect(source.includes("'message-bubble-enter': shouldPlayEnterAnimation && !isStreaming")).toBe(true);
+  });
+
   test('uses one body typography contract for plain text and markdown text', () => {
     expect(typographySource.includes("export const MESSAGE_BODY_FONT_SIZE = 'var(--conversation-message-font-size)';")).toBe(
       true

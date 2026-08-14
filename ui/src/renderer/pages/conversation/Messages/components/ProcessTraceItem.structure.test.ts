@@ -8,12 +8,15 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 
 const source = readFileSync(new URL('./ProcessTraceItem.tsx', import.meta.url), 'utf8');
-const cssSource = readFileSync(new URL('../messages.css', import.meta.url), 'utf8');
 
 describe('ProcessTraceItem Codex-style execution rows', () => {
   test('keeps tool rows interactive with expandable detail panels', () => {
     expect(source.includes('ToolTraceRow')).toBe(true);
-    expect(source.includes('aria-expanded={expanded}')).toBe(true);
+    expect(source.includes('<ToolChip')).toBe(true);
+    expect(source.includes('resolveToolChipStatusFromProcessState')).toBe(true);
+    expect(source.includes('chipDetailOmittingCommand')).toBe(true);
+    expect(source.includes('expandable={hasDetail}')).toBe(true);
+    expect(source.includes('expanded={expanded}')).toBe(true);
     expect(source.includes('turn-process-trace-detail')).toBe(true);
     expect(source.includes('messages.toolDetailInput')).toBe(true);
     expect(source.includes('messages.toolDetailOutput')).toBe(true);
@@ -66,14 +69,15 @@ describe('ProcessTraceItem Codex-style execution rows', () => {
     expect(source.includes('messages.processReceipt.fileEditTargets')).toBe(true);
   });
 
-  test('gives system and tool process rows a consistent icon slot', () => {
-    expect(source.includes('TraceRowIcon')).toBe(true);
-    expect(source.includes('getToolTraceIconKind')).toBe(true);
-    expect(source.includes('<TraceRowIcon kind={row.iconKind ??')).toBe(true);
-    expect(source.includes('<TraceRowIcon kind={getToolTraceIconKind(row.action)}')).toBe(true);
-    expect(source.includes("className='turn-process-trace__paragraph-row'")).toBe(true);
-    expect(cssSource.includes('.turn-process-trace__row-icon')).toBe(true);
-    expect(cssSource.includes('.turn-process-trace__paragraph-row')).toBe(true);
+  test('renders system process rows with Task Rows and paragraph text without a leading info icon', () => {
+    expect(source.includes('<TaskRows')).toBe(true);
+    expect(source.includes('resolveTaskRowStatusFromProcessState')).toBe(true);
+    expect(source.includes('layout=\'list\'')).toBe(true);
+    expect(source.includes('<ToolChip')).toBe(true);
+    expect(source.includes("className='turn-process-trace__paragraph'")).toBe(true);
+    expect(source.includes("className='turn-process-trace__paragraph-row'")).toBe(false);
+    expect(source.includes('<TraceRowIcon kind=\'system\'')).toBe(false);
+    expect(source.includes('if (!paragraphText) return null')).toBe(true);
   });
 
   test('can render closed process details with an effective state override', () => {
@@ -85,5 +89,6 @@ describe('ProcessTraceItem Codex-style execution rows', () => {
 
   test('passes soft-closed process state into MessageThinking so stale thinking stops showing as live', () => {
     expect(source.includes('forceDone={state !== \'running\' && state !== \'waiting\'}')).toBe(true);
+    expect(source.includes('processState={state}')).toBe(true);
   });
 });

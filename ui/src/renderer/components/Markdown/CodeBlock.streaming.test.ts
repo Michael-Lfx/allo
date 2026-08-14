@@ -15,7 +15,16 @@ describe('CodeBlock streaming behavior', () => {
 
     expect(source.includes('isStreaming?: boolean')).toBe(true);
     expect(source.includes('const isEffectivelyExpanded = isStreaming || expanded')).toBe(true);
-    expect(source.includes('overflowY: isStreaming ? \'auto\' : \'hidden\'')).toBe(true);
+    expect(source.includes("overflowX: 'clip'")).toBe(true);
+    expect(source.includes("overflowY: isStreaming ? 'auto' : 'clip'")).toBe(true);
+    expect(source.includes('wrapLongLines')).toBe(true);
+    expect(source.includes("whiteSpace: 'pre-wrap'")).toBe(true);
+    expect(source.includes("overflow: 'visible'")).toBe(true);
+    expect(source.includes("width: '100%'")).toBe(true);
+    expect(source.includes("marginRight: '10px'")).toBe(false);
+    expect(source.includes("overflowX: 'visible'")).toBe(false);
+    expect(source.includes('ResizeObserver')).toBe(false);
+    expect(source.includes("overflowY: isStreaming ? 'auto' : 'hidden'")).toBe(false);
     expect(source.includes('canCollapse && !isStreaming')).toBe(true);
     expect(source.includes('node.scrollTop = node.scrollHeight')).toBe(true);
   });
@@ -26,7 +35,7 @@ describe('CodeBlock streaming behavior', () => {
     );
 
     expect(source.includes('splitStreamingMarkdown')).toBe(true);
-    expect(source.includes('message-streaming-code')).toBe(true);
+    expect(source.includes("from '@renderer/components/beautifulUi/codeBlock/CodeBlock'")).toBe(true);
     expect(source.includes("streamingParts.tailKind === 'code'")).toBe(true);
   });
 
@@ -43,11 +52,10 @@ describe('CodeBlock streaming behavior', () => {
     const source = readSource(new URL('./CodeBlock.tsx', import.meta.url));
     const shadowSource = readSource(new URL('./ShadowView.tsx', import.meta.url));
 
-    expect(source.includes("className='markdown-code-surface'")).toBe(true);
-    expect(source.includes("className='markdown-code-language'")).toBe(true);
+    expect(source.includes('<BeautifulUiCodeBlock')).toBe(true);
     expect(source.includes("className='markdown-code-footer'")).toBe(true);
     expect(source.includes("className='markdown-code-footer-label'")).toBe(true);
-    expect(source.includes("fill='currentColor'")).toBe(true);
+    expect(source.includes('from \'lucide-react\'')).toBe(true);
     expect(source.includes('rgba(255,255,255,0.55)')).toBe(false);
     expect(shadowSource.includes('.markdown-code-footer:hover')).toBe(true);
     expect(shadowSource.includes('.markdown-code-footer:active')).toBe(true);

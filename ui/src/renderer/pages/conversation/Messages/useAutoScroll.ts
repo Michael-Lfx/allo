@@ -179,8 +179,11 @@ export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: Use
     });
   }, [followContentGrowth, scrollerEl]);
 
-  const resolveFollowOutput = useCallback((isAtBottom: boolean): FollowOutputMode => {
-    if (!isAtBottom || userIntentPausedRef.current || userScrolledRef.current) {
+  const resolveFollowOutput = useCallback((_isAtBottom: boolean): FollowOutputMode => {
+    // Virtuoso's isAtBottom flickers false during fast tail growth (default
+    // threshold is ~4px). Trusting it drops follow mid-stream. Stay pinned
+    // until the user actually scrolls away.
+    if (userIntentPausedRef.current || userScrolledRef.current) {
       return false;
     }
     return 'auto';
@@ -218,9 +221,12 @@ export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: Use
       const bottomGap = getBottomGap(target);
       const pinnedToBottom = bottomGap <= FOLLOW_BOTTOM_THRESHOLD_PX;
 
+      // Only an upward move counts as leaving the tail. Follow/content-growth
+      // scrolls down; treating those as user intent is why streaming sometimes
+      // stops pinning (especially after a click, which sets userInputActive).
       if (
         !pinnedToBottom &&
-        Math.abs(delta) > 2 &&
+        delta < -2 &&
         (userInputActiveRef.current || timeSinceGuard >= PROGRAMMATIC_SCROLL_GUARD_MS)
       ) {
         userScrolledRef.current = true;
