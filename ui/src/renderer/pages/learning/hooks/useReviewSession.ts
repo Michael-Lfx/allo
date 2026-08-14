@@ -32,7 +32,7 @@ export function useReviewSession({
     async (review: DueReview, response: unknown): Promise<ReviewAnswerResult | undefined> => {
       setBusyId(review.id);
       try {
-        return await learningApi.answerReview(review.source, review.id, response);
+        return await learningApi.answerReview(review.source, review.id, response, false);
       } catch (actionError) {
         Message.error(errorMessage(t, actionError));
         return undefined;

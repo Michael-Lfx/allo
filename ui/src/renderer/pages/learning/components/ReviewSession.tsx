@@ -14,7 +14,7 @@ export function ReviewCard({
   onForget,
   onRate,
   onSkip,
-  onDismiss,
+  onNext,
 }: {
   review: DueReview;
   busy: boolean;
@@ -23,7 +23,8 @@ export function ReviewCard({
   onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
   onRate: (review: DueReview, rating: ReviewRating) => void;
   onSkip: (review: DueReview) => void;
-  onDismiss: (reviewId: string) => void;
+  /** Leave the finished card and move to the next review item. */
+  onNext: () => void;
 }) {
   const { t } = useTranslation();
   const [response, setResponse] = useState<unknown>();
@@ -181,7 +182,7 @@ export function ReviewCard({
             size='small'
             className='self-start'
             disabled={locked}
-            onClick={() => onDismiss(review.id)}
+            onClick={onNext}
           >
             {t('learning.reviewNext')}
           </Button>
@@ -216,6 +217,8 @@ export function ReviewSessionModal({
     if (open) setIndex(0);
   }, [open]);
   const current = queue[index];
+  // Each queue card is its own review item with its own schedule, so rating,
+  // answering wrong or skipping all move straight to the next card.
   const advance = () => setIndex((value) => value + 1);
   return (
     <Modal
@@ -267,7 +270,7 @@ export function ReviewSessionModal({
                 if (handled) advance();
               })
             }
-            onDismiss={advance}
+            onNext={advance}
           />
         </div>
       )}

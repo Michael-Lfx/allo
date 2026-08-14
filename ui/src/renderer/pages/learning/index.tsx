@@ -277,19 +277,19 @@ const LearningPage: React.FC = () => {
         {error && <Alert key='load-error' type='error' content={`${t('learning.loadFailed')}: ${error}`} />}
         <Alert key='pack-contract' type='info' content={t('learning.packContract')} />
 
-        {(reviews.length > 0 || reviewCourseFilter.length > 0 || reviewTagFilter.length > 0) && (
-          <ReviewBanner
-            reviews={reviews}
-            courses={courses}
-            allTags={allTags}
-            reviewCourseFilter={reviewCourseFilter}
-            reviewTagFilter={reviewTagFilter}
-            busy={busyId === 'review-session'}
-            onCourseFilterChange={setReviewCourseFilter}
-            onTagFilterChange={setReviewTagFilter}
-            onStart={() => void reviewSession.startReviewSession()}
-          />
-        )}
+        {/* 复习横幅始终可见：队列为空时也保留“开始复习”入口，
+            点击后由 startReviewSession 提示暂无到期题目，避免按钮凭空消失 */}
+        <ReviewBanner
+          reviews={reviews}
+          courses={courses}
+          allTags={allTags}
+          reviewCourseFilter={reviewCourseFilter}
+          reviewTagFilter={reviewTagFilter}
+          busy={busyId === 'review-session'}
+          onCourseFilterChange={setReviewCourseFilter}
+          onTagFilterChange={setReviewTagFilter}
+          onStart={() => void reviewSession.startReviewSession()}
+        />
 
         <section key='learn-tabs'>
           <Tabs activeTab={listTab} onChange={(key) => setListTab(key)} type='line' lazyload>
