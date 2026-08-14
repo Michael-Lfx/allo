@@ -17,6 +17,7 @@ import { iconColors } from '@/renderer/styles/colors';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
+import ModelCreditRateHint from '@/renderer/components/model/ModelCreditRateHint';
 
 /** A concrete provider+model pick emitted by the unified selector. */
 export interface TaskModelSelection {
@@ -131,11 +132,16 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
                     }
                     onClick={() => onSelect({ providerId: provider.id, model: modelName })}
                   >
-                    <div className='flex items-center gap-8px w-full'>
-                      {healthStatus !== 'unknown' && (
-                        <div className={`w-6px h-6px rounded-full shrink-0 ${healthColor}`} />
-                      )}
-                      <span>{formatModelLabelForProvider(provider, modelName)}</span>
+                    <div className='flex items-center justify-between gap-12px w-full min-w-0'>
+                      <div className='flex items-center gap-8px min-w-0'>
+                        {healthStatus !== 'unknown' && (
+                          <div className={`w-6px h-6px rounded-full shrink-0 ${healthColor}`} />
+                        )}
+                        <span className='truncate min-w-0'>
+                          {formatModelLabelForProvider(provider, modelName)}
+                        </span>
+                      </div>
+                      <ModelCreditRateHint provider={provider} modelName={modelName} />
                     </div>
                   </Menu.Item>
                 );

@@ -71,8 +71,8 @@ pub use repository::mcp_server::{CreateMcpServerParams, UpdateMcpServerParams};
 pub use repository::miniapp::{CreateMiniAppParams, IMiniAppRepository, UpdateMiniAppParams};
 pub use repository::oauth_token::UpsertOAuthTokenParams;
 pub use repository::provider::{
-    CreateProviderParams, FLOWY_CATALOG_MAX_TOKENS_PARAM, FLOWY_CATALOG_REASONING_EFFORT_PARAM,
-    ProviderModelProfileSeed, UpdateProviderParams,
+    CreateProviderParams, FLOWY_CATALOG_CREDIT_RATE_PARAM, FLOWY_CATALOG_MAX_TOKENS_PARAM,
+    FLOWY_CATALOG_REASONING_EFFORT_PARAM, ProviderModelProfileSeed, UpdateProviderParams,
 };
 pub use repository::remote_agent::{CreateRemoteAgentParams, UpdateRemoteAgentParams};
 pub use repository::ssh_host::{

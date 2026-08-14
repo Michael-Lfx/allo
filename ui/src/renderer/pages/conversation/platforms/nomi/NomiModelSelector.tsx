@@ -6,6 +6,7 @@ import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { getModelDisplayLabel } from '@/renderer/utils/model/agentLogo';
 import { iconColors } from '@/renderer/styles/colors';
+import ModelCreditRateHint from '@/renderer/components/model/ModelCreditRateHint';
 import { Button, Dropdown, Menu } from '@arco-design/web-react';
 import { Brain, Down } from '@icon-park/react';
 import React from 'react';
@@ -88,8 +89,9 @@ const NomiModelSelector: React.FC<{
                     className={current_model?.id === provider.id && current_model?.use_model === modelName ? '!bg-2' : ''}
                     onClick={() => void handleSelectModel(provider, modelName)}
                   >
-                    <div className='flex items-center gap-8px w-full'>
-                      <span>{formatModelLabel(provider, modelName)}</span>
+                    <div className='flex items-center justify-between gap-12px w-full min-w-0'>
+                      <span className='truncate min-w-0'>{formatModelLabel(provider, modelName)}</span>
+                      <ModelCreditRateHint provider={provider} modelName={modelName} />
                     </div>
                   </Menu.Item>
                 ))}

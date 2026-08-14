@@ -119,6 +119,7 @@ import { ContextUsageRing } from './ContextUsageRing';
 import type { NomiModelSelection } from './useNomiModelSelection';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import { catalogReasoningEffortForModel } from '@/renderer/utils/model/reasoningEffort';
+import { formatCreditRateMultiplier, catalogCreditRateForModel } from '@/renderer/utils/model/creditRate';
 
 const imageAttachmentSignature = (paths: string[]) =>
   Array.from(new Set(paths.filter(isImageAttachment))).sort().join('\u0000');
@@ -1311,13 +1312,18 @@ const NomiSendBox: React.FC<{
     }));
 
     const modelOptions: MobileActionSheetOption[] = modelSelection.providers.flatMap((provider) =>
-      modelSelection.getAvailableModels(provider).map((modelName) => ({
-        key: `${provider.id}::${modelName}`,
-        label: modelSelection.formatModelLabel(provider, modelName),
-        description: providerLabel(provider),
-        active:
-          modelSelection.current_model?.id === provider.id && modelSelection.current_model?.use_model === modelName,
-      }))
+      modelSelection.getAvailableModels(provider).map((modelName) => {
+        const creditRate = formatCreditRateMultiplier(catalogCreditRateForModel(provider, modelName));
+        const providerName = providerLabel(provider);
+        return {
+          key: `${provider.id}::${modelName}`,
+          label: modelSelection.formatModelLabel(provider, modelName),
+          description: creditRate ? `${providerName} · ${creditRate}` : providerName,
+          active:
+            modelSelection.current_model?.id === provider.id &&
+            modelSelection.current_model?.use_model === modelName,
+        };
+      })
     );
 
     const currentModeLabel =

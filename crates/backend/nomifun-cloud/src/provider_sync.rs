@@ -211,6 +211,7 @@ fn build_profile_seeds(
                 .map_err(|error| format!("serialize Flowy model traits: {error}"))?,
             catalog_max_tokens: extra.max_output_tokens(),
             catalog_reasoning_effort: extra.reasoning_effort_levels(),
+            catalog_credit_rate: extra.credit_rate_multiplier(),
             catalog_vision: Some(supports_vision),
         });
     }
@@ -464,6 +465,25 @@ mod tests {
         assert_eq!(limits.get("AIPC-qwen-long"), Some(&200_000));
         assert_eq!(limits.get("AIPC-tiny"), Some(&32_000));
         assert!(!limits.contains_key("AIPC-no-extra"));
+    }
+
+    #[test]
+    fn build_profile_seeds_projects_catalog_credit_rate() {
+        let entries = vec![
+            catalog_entry(
+                "AIPC-qwen-long",
+                r#"{"credit_rate":1,"context_window":200000}"#,
+            ),
+            catalog_entry("AIPC-tiny", r#"{"credit_rate":0.5}"#),
+            catalog_entry("AIPC-invalid", r#"{"credit_rate":0}"#),
+            catalog_entry("AIPC-missing", "{}"),
+        ];
+
+        let seeds = build_profile_seeds(&entries, "openai").unwrap();
+        assert_eq!(seeds[0].catalog_credit_rate, Some(1.0));
+        assert_eq!(seeds[1].catalog_credit_rate, Some(0.5));
+        assert_eq!(seeds[2].catalog_credit_rate, None);
+        assert_eq!(seeds[3].catalog_credit_rate, None);
     }
 
     #[test]

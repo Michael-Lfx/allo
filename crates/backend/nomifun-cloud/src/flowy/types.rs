@@ -408,6 +408,12 @@ impl ClawModelExtra {
         self.max_tokens.filter(|v| *v > 0)
     }
 
+    /// Finite positive credit consumption multiplier when present.
+    pub fn credit_rate_multiplier(&self) -> Option<f64> {
+        self.credit_rate
+            .filter(|rate| rate.is_finite() && *rate > 0.0)
+    }
+
     /// User-selectable reasoning effort levels advertised by the catalog.
     ///
     /// Returns `None` unless the model is a reasoning model **and** the

@@ -680,6 +680,7 @@ export type I18nKey =
   | 'common.import'
   | 'common.loading'
   | 'common.model'
+  | 'common.modelCreditRate'
   | 'common.modelUnavailableHint'
   | 'common.more'
   | 'common.name'
