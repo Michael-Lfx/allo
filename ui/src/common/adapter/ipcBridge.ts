@@ -491,6 +491,14 @@ const fromApiResponseMessage = (message: IResponseMessage): IResponseMessage => 
     message.companion_id == null ? message.companion_id : parseCompanionId(message.companion_id),
 });
 
+/** Public conversation PATCHes merge `extra` keys, so the patch type must not
+ * require the full Nomi creation snapshot (`workspace`, agent metadata, etc.). */
+type ConversationUpdateParams = Omit<Partial<TChatConversation>, 'extra'> & {
+  extra?: Record<string, unknown>;
+  model?: TProviderWithModel;
+  pinned?: boolean;
+};
+
 const fromApiKnowledgeWritebackEvent = (
   event: IKnowledgeWritebackEvent
 ): IKnowledgeWritebackEvent => ({
@@ -667,7 +675,7 @@ export const conversation = {
   ),
   // updates 额外允许顶层 `pinned`：对应 conversations 表真列（UpdateConversationRequest.pinned，
   // 服务端置位时自动维护 pinned_at）；body 构造的 `...rest` 原样透传该字段。
-  update: httpPatch<boolean, { conversation_id: ConversationId; updates: Partial<TChatConversation> & { pinned?: boolean } }>(
+  update: httpPatch<boolean, { conversation_id: ConversationId; updates: ConversationUpdateParams }>(
     (p) => `/api/conversations/${p.conversation_id}`,
     (p) => {
       // 不要往 body 里加任何 UpdateConversationRequest 之外的字段：该 DTO 是
@@ -1113,6 +1121,7 @@ export const application = {
         storage_generation: string;
         platform: string;
         arch: string;
+        managed_free_models_enabled?: boolean;
         runtime_capabilities?: {
           runtime?: 'desktop' | 'web';
           can_restart_application?: boolean;
@@ -1136,6 +1145,7 @@ export const application = {
       storageGeneration: raw.storage_generation,
       platform: raw.platform,
       arch: raw.arch,
+      managedFreeModelsEnabled: raw.managed_free_models_enabled === true,
       runtimeCapabilities: {
         runtime: raw.runtime_capabilities?.runtime === 'desktop' ? 'desktop' : 'web',
         canRestartApplication: raw.runtime_capabilities?.can_restart_application === true,
@@ -3689,6 +3699,8 @@ export interface ICreateConversationParams {
      *  backend catalog (currently built-in MCP servers). */
     selected_session_mcp_servers?: ISessionMcpServer[];
     session_mode?: string;
+    /** Catalog-advertised reasoning depth for the next Nomi turn. */
+    reasoning_effort?: string;
     codex_model?: string;
     current_model_id?: string;
     cached_config_options?: import('../types/platform/acpTypes').AcpSessionConfigOption[];

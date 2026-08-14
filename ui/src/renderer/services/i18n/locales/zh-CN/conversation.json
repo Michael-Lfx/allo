@@ -846,6 +846,10 @@
   },
   "reasoningEffort": {
     "switchFailed": "更新推理深度失败",
+    "ariaLabel": "推理深度",
+    "hint": "点击打开并拖动调整推理深度",
+    "nextTurn": "下一轮生效",
+    "updated": "推理深度已应用",
     "level": {
       "low": "低",
       "medium": "中",

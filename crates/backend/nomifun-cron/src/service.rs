@@ -9,7 +9,7 @@ use nomifun_api_types::{
 };
 use nomifun_common::{
     AgentType, AppError, ConversationId, CronJobId, CronJobRunId, ExecutionAuthority, ProviderId,
-    UserId, now_ms,
+    UserId, is_managed_free_models_disabled_message, now_ms,
     workspace_path_has_edge_whitespace_segment,
 };
 use nomifun_conversation::service::{
@@ -18,7 +18,7 @@ use nomifun_conversation::service::{
 use nomifun_db::{
     AdvanceCronOccurrenceParams, CRON_RUN_HISTORY_LIMIT, CronJobRunRow, ICronRepository,
     FinalizeCronRunOutcome, FinalizeCronRunParams, ReserveCronRunParams, UpdateCronJobParams,
-    models::CronJobRow,
+    IProviderModelRepository, IProviderRepository, models::CronJobRow,
 };
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{error, info, warn};
@@ -87,6 +87,8 @@ pub struct CronService {
     preset_service: Arc<RwLock<Option<Arc<nomifun_preset::PresetService>>>>,
     job_gates: Arc<DashMap<String, Weak<AsyncMutex<()>>>>,
     active_scheduled_runs: Arc<DashMap<String, ()>>,
+    provider_repo: Option<Arc<dyn IProviderRepository>>,
+    provider_model_repo: Option<Arc<dyn IProviderModelRepository>>,
 }
 
 #[derive(Debug, Default)]
@@ -129,6 +131,136 @@ impl CronService {
             preset_service: Arc::new(RwLock::new(None)),
             job_gates: Arc::new(DashMap::new()),
             active_scheduled_runs: Arc::new(DashMap::new()),
+            provider_repo: None,
+            provider_model_repo: None,
+        }
+    }
+
+    /// Supply the model catalog used to migrate stale managed-free Cron
+    /// references before a run is admitted. Tests and lightweight embedders can
+    /// omit it; the production router always wires both repositories.
+    pub fn with_model_catalog_repositories(
+        mut self,
+        provider_repo: Arc<dyn IProviderRepository>,
+        provider_model_repo: Arc<dyn IProviderModelRepository>,
+    ) -> Self {
+        self.provider_repo = Some(provider_repo);
+        self.provider_model_repo = Some(provider_model_repo);
+        self
+    }
+
+    async fn migrate_disabled_free_model_job(&self, job: &CronJob) -> Result<CronJob, CronError> {
+        if nomifun_common::free_models_enabled() || job.agent_type != "nomi" {
+            return Ok(job.clone());
+        }
+        let Some(config) = job.agent_config.as_ref() else {
+            return Ok(job.clone());
+        };
+        let Some(provider_repo) = self.provider_repo.as_ref() else {
+            return Ok(job.clone());
+        };
+
+        let direct_free = match config.provider_id.as_deref() {
+            Some(provider_id) => provider_repo
+                .find_by_id(provider_id)
+                .await?
+                .is_some_and(|provider| nomifun_common::managed_free_models_disabled(&provider.platform)),
+            None => false,
+        };
+        let snapshot_free = match config
+            .preset_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.resolved_model.as_ref())
+            .and_then(|preference| preference.provider_id.as_deref())
+        {
+            Some(provider_id) => provider_repo
+                .find_by_id(provider_id)
+                .await?
+                .is_some_and(|provider| nomifun_common::managed_free_models_disabled(&provider.platform)),
+            None => false,
+        };
+        if !direct_free && !snapshot_free {
+            return Ok(job.clone());
+        }
+
+        let Some(provider_model_repo) = self.provider_model_repo.as_ref() else {
+            return Err(CronError::App(AppError::ManagedFreeModelsDisabled(
+                "MANAGED_FREE_MODELS_DISABLED: Cron requires a compatible Flowy Cloud model"
+                    .into(),
+            )));
+        };
+        let Some((cloud_provider_id, cloud_model)) = nomifun_ai_agent::resolve_flowy_cloud_model(
+            provider_repo,
+            provider_model_repo,
+        )
+        .await
+        else {
+            return Err(CronError::App(AppError::ManagedFreeModelsDisabled(
+                "MANAGED_FREE_MODELS_DISABLED: no compatible Flowy Cloud model is available"
+                    .into(),
+            )));
+        };
+
+        let mut migrated = job.clone();
+        let mut migrated_config = config.clone();
+        if direct_free {
+            migrated_config.provider_id = Some(cloud_provider_id.clone());
+            migrated_config.model = Some(cloud_model.clone());
+        }
+        if let Some(snapshot) = migrated_config.preset_snapshot.as_mut() {
+            if let Some(resolved_model) = snapshot.resolved_model.as_mut() {
+                if snapshot_free {
+                    resolved_model.provider_id = Some(cloud_provider_id.clone());
+                    resolved_model.model = cloud_model.clone();
+                }
+            }
+        }
+        migrated.agent_config = Some(migrated_config.clone());
+        self.repo
+            .update(
+                &job.user_id,
+                &job.cron_job_id,
+                &UpdateCronJobParams {
+                    expected_schedule_revision: Some(job.schedule_revision),
+                    agent_config: Some(Some(serde_json::to_string(&migrated_config)?)),
+                    preset_snapshot: Some(
+                        migrated_config
+                            .preset_snapshot
+                            .as_ref()
+                            .map(serde_json::to_string)
+                            .transpose()?,
+                    ),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(migrated)
+    }
+
+    async fn mark_job_unexecutable(&self, job: &CronJob, message: &str) {
+        if !is_managed_free_models_disabled_message(message) {
+            return;
+        }
+        if let Err(error) = self
+            .repo
+            .update(
+                &job.user_id,
+                &job.cron_job_id,
+                &UpdateCronJobParams {
+                    expected_schedule_revision: Some(job.schedule_revision),
+                    enabled: Some(false),
+                    last_status: Some(Some("error".into())),
+                    last_error: Some(Some(message.to_owned())),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            warn!(
+                job_id = %job.cron_job_id,
+                error = %error,
+                "Failed to mark Cron job unavailable after managed free-model disablement"
+            );
         }
     }
 
@@ -1533,6 +1665,21 @@ impl CronService {
         // Boot recovery must never guess a Conversation from mutable job state:
         // the reservation's immutable run id + attached conversation id are
         // the only coordinates of its exact delivery receipt.
+        let job = match self.migrate_disabled_free_model_job(&job).await {
+            Ok(job) => job,
+            Err(error) => {
+                self.handle_execution_result(
+                    job,
+                    &reservation.cron_job_run_id,
+                    planned_at_ms,
+                    ExecutionResult::Error {
+                        message: error.to_string(),
+                    },
+                )
+                .await;
+                return;
+            }
+        };
         let prepared = match self
             .executor
             .prepare_run_now(&job, &reservation.cron_job_run_id)
@@ -1853,6 +2000,24 @@ impl CronService {
             return Err(CronError::App(AppError::Conflict(message)));
         }
 
+        let job = match self.migrate_disabled_free_model_job(&job).await {
+            Ok(job) => job,
+            Err(error) => {
+                let message = error.to_string();
+                let _ = self
+                    .finalize_run_once(
+                        &job,
+                        &reservation.cron_job_run_id,
+                        "error",
+                        None,
+                        Some(&message),
+                        error_run_projection(&message),
+                    )
+                    .await;
+                self.mark_job_unexecutable(&job, &message).await;
+                return Err(error);
+            }
+        };
         let prepared = match self
             .executor
             .prepare_run_now(&job, &reservation.cron_job_run_id)
@@ -2204,6 +2369,9 @@ impl CronService {
                 {
                     return;
                 }
+                if let Some(error) = error.as_deref() {
+                    self.mark_job_unexecutable(&job, error).await;
+                }
                 self.advance_after_terminal_occurrence(
                     &job,
                     run_id,
@@ -2285,6 +2453,7 @@ impl CronService {
                 {
                     return;
                 }
+                self.mark_job_unexecutable(&job, &message).await;
                 self.advance_after_terminal_occurrence(
                     &job,
                     run_id,
@@ -2337,6 +2506,9 @@ impl CronService {
                 {
                     return;
                 }
+                if let Some(error) = error.as_deref() {
+                    self.mark_job_unexecutable(job, error).await;
+                }
                 self.emit_persisted_job_updated_for(job).await;
                 self.emit_job_executed_for(job, status, error.as_deref())
                     .await;
@@ -2355,6 +2527,7 @@ impl CronService {
                 {
                     return;
                 }
+                self.mark_job_unexecutable(job, &message).await;
                 self.emit_persisted_job_updated_for(job).await;
                 self.emit_job_executed_for(job, "error", Some(&message))
                     .await;

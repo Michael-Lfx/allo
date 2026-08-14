@@ -143,7 +143,9 @@ pub fn read_conversation_failover_override(extra_json: &str) -> Option<ModelFail
 /// 目录移除)按"未禁用/未知健康"处理,与旧 map 缺项语义一致 —— provider 存在性
 /// 本身仍是硬闸。
 fn model_is_candidate(provider: &Provider, model_rows: &[ProviderModelRow], model: &str) -> bool {
-    if !provider.enabled {
+    if !provider.enabled
+        || nomifun_common::managed_free_models_disabled(&provider.platform)
+    {
         return false;
     }
     let row = model_rows
@@ -323,6 +325,23 @@ mod tests {
         let providers = vec![provider(P1, false), provider(P2, true)];
         let pick = next_failover_model(&queue, &failed, &[], &providers, &[])
             .expect("should skip disabled p1");
+        assert_eq!(pick.provider_id, P2);
+    }
+
+    #[test]
+    fn skips_managed_free_provider_when_the_feature_is_disabled() {
+        if nomifun_common::free_models_enabled() {
+            return;
+        }
+
+        let queue = vec![pwm(P1, "free-model"), pwm(P2, "cloud-model")];
+        let failed = pwm(GHOST, "orig");
+        let mut free = provider(P1, true);
+        free.platform = nomifun_common::FREE_MODEL_PLATFORM.into();
+        let providers = vec![free, provider(P2, true)];
+
+        let pick = next_failover_model(&queue, &failed, &[], &providers, &[])
+            .expect("should skip the disabled managed free provider");
         assert_eq!(pick.provider_id, P2);
     }
 

@@ -31,7 +31,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-pub const FREE_MODEL_PLATFORM: &str = "nomifun-free-model";
+pub use nomifun_common::FREE_MODEL_PLATFORM;
 pub const MANAGED_MODEL_PROTOCOL_VERSION: &str = "1";
 
 const FREE_MODEL_PROVIDER_NAME: &str = "NomiFun Free Model";

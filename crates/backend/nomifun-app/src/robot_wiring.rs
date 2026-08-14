@@ -232,6 +232,10 @@ struct AppProviderRows {
 impl ProviderRowReader for AppProviderRows {
     async fn credentials(&self, provider_id: &str) -> Option<ProviderCredentials> {
         let provider = self.repo.find_by_id(provider_id).await.ok()??;
+        if nomifun_common::managed_free_models_disabled(&provider.platform) {
+            tracing::info!(provider_id, "robot: managed free-model provider is disabled");
+            return None;
+        }
         if !provider.enabled {
             tracing::warn!(provider_id, "robot: vision provider is disabled");
             return None;

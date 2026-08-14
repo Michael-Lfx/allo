@@ -121,6 +121,18 @@ const DELETE_CORE_GRACE: Duration = Duration::from_secs(5);
 const DELETE_CLEANUP_ITEM_GRACE: Duration = Duration::from_secs(5);
 const TURN_WRITEBACK_CANCEL_GRACE: Duration = Duration::from_secs(10);
 
+fn reasoning_effort_changed(
+    conversation_type: &AgentType,
+    request_extra: Option<&serde_json::Value>,
+    existing_extra: &serde_json::Value,
+    merged_extra: Option<&serde_json::Value>,
+) -> bool {
+    *conversation_type == AgentType::Nomi
+        && request_extra.is_some_and(|extra| extra.get("reasoning_effort").is_some())
+        && existing_extra.get("reasoning_effort")
+            != merged_extra.and_then(|extra| extra.get("reasoning_effort"))
+}
+
 fn is_auto_title_eligible(current_name: &str, first_user_content: &str) -> bool {
     let current_name = current_name.trim();
     current_name.is_empty() || current_name == first_user_content.trim()
@@ -5662,6 +5674,12 @@ impl ConversationService {
                     "Conversation {id} merged extra is invalid JSON: {error}"
                 ))
             })?;
+        let reasoning_effort_changed = reasoning_effort_changed(
+            &existing_type,
+            req.extra.as_ref(),
+            &existing_extra_value,
+            merged_extra_value.as_ref(),
+        );
         let workspace_changed = req
             .extra
             .as_ref()
@@ -5762,6 +5780,16 @@ impl ConversationService {
                 "conversation configuration update",
             )
             .await?;
+        }
+
+        if reasoning_effort_changed && !model_changed && !workspace_changed && !delegation_policy_changed {
+            if let Some(runtime) = runtime_registry.get_runtime(id) {
+                runtime.request_turn_boundary_recycle();
+                info!(
+                    conversation_id = id,
+                    "Queued Nomi reasoning effort change for the next turn"
+                );
+            }
         }
 
         // Re-fetch to return the updated version
@@ -15033,6 +15061,38 @@ mod tests {
     const PROVIDER_ID_1: &str = "0190f5fe-7c00-7a00-8000-000000000001";
     const PROVIDER_ID_2: &str = "0190f5fe-7c00-7a00-8000-000000000002";
     const RUNTIME_PRESET_ID: &str = "0190f5fe-7c00-7a00-8000-000000000003";
+
+    #[test]
+    fn reasoning_effort_change_only_marks_real_nomi_value_changes() {
+        let old = json!({ "reasoning_effort": "low" });
+        let high_patch = json!({ "reasoning_effort": "high" });
+        let high = json!({ "reasoning_effort": "high" });
+
+        assert!(reasoning_effort_changed(
+            &AgentType::Nomi,
+            Some(&high_patch),
+            &old,
+            Some(&high)
+        ));
+        assert!(!reasoning_effort_changed(
+            &AgentType::Nomi,
+            Some(&high_patch),
+            &high,
+            Some(&high)
+        ));
+        assert!(!reasoning_effort_changed(
+            &AgentType::Acp,
+            Some(&high_patch),
+            &old,
+            Some(&high)
+        ));
+        assert!(!reasoning_effort_changed(
+            &AgentType::Nomi,
+            None,
+            &old,
+            Some(&old)
+        ));
+    }
 
     fn runtime_preset_snapshot() -> ResolvedPresetSnapshot {
         ResolvedPresetSnapshot {

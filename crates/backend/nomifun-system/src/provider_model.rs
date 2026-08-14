@@ -6,6 +6,7 @@
 //! never take down `GET /api/providers` (same tolerance strategy as
 //! `row_to_profile` in `model_profile.rs` uses for profile rows).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use nomifun_api_types::{
@@ -17,6 +18,8 @@ use nomifun_db::{
     IProviderModelRepository, IProviderRepository, NewProviderModel, ProviderModelRow,
     ProviderModelUpdate,
 };
+
+use crate::managed_model::is_managed_provider_platform;
 
 fn source_from_str(s: &str) -> ProfileSource {
     match s {
@@ -38,6 +41,7 @@ fn source_from_str(s: &str) -> ProfileSource {
 pub struct ProviderModelService {
     repo: Arc<dyn IProviderModelRepository>,
     provider_repo: Arc<dyn IProviderRepository>,
+    include_managed_free_models: bool,
 }
 
 impl ProviderModelService {
@@ -45,7 +49,40 @@ impl ProviderModelService {
         repo: Arc<dyn IProviderModelRepository>,
         provider_repo: Arc<dyn IProviderRepository>,
     ) -> Self {
-        Self { repo, provider_repo }
+        Self {
+            repo,
+            provider_repo,
+            include_managed_free_models: nomifun_common::free_models_enabled(),
+        }
+    }
+
+    /// Control whether rows belonging to the reserved managed free provider
+    /// appear in active catalog listings. The database rows are preserved.
+    pub fn with_managed_free_models_enabled(mut self, enabled: bool) -> Self {
+        self.include_managed_free_models = enabled;
+        self
+    }
+
+    fn ensure_provider_writable(platform: &str) -> Result<(), AppError> {
+        // The caller has already applied the service-local feature flag. Use
+        // the exact reserved platform here instead of consulting the global
+        // OnceLock again, so explicit test/host composition overrides cannot
+        // accidentally reopen catalog writes.
+        if nomifun_common::is_free_model_platform(platform) {
+            return Err(AppError::ManagedFreeModelsDisabled(
+                "model catalog writes for the managed free-model supply are disabled".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn ensure_provider_writable_by_id(&self, provider_id: &str) -> Result<(), AppError> {
+        let provider = self
+            .provider_repo
+            .find_by_id(provider_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Provider '{provider_id}' not found")))?;
+        Self::ensure_provider_writable(&provider.platform)
     }
 
     /// All rows, or one provider's rows when `provider_id` is given.
@@ -62,7 +99,21 @@ impl ProviderModelService {
             }
             None => self.repo.list().await?,
         };
-        rows.into_iter().map(row_to_model_response).collect()
+        let hidden_provider_ids = if self.include_managed_free_models || provider_id.is_some() {
+            HashSet::new()
+        } else {
+            self.provider_repo
+                .list()
+                .await?
+                .into_iter()
+                .filter(|provider| is_managed_provider_platform(&provider.platform))
+                .map(|provider| provider.provider_id)
+                .collect()
+        };
+        rows.into_iter()
+            .filter(|row| !hidden_provider_ids.contains(&row.provider_id))
+            .map(row_to_model_response)
+            .collect()
     }
 
     /// Create one catalog row.
@@ -94,6 +145,9 @@ impl ProviderModelService {
             .find_by_id(&provider_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("Provider '{provider_id}' not found")))?;
+        if !self.include_managed_free_models {
+            Self::ensure_provider_writable(&provider.platform)?;
+        }
 
         let (tasks, traits, source): (Vec<ModelTask>, Vec<ModelTrait>, &str) = if req
             .tasks
@@ -171,6 +225,9 @@ impl ProviderModelService {
         let provider_id = ProviderId::parse(req.provider_id)
             .map_err(|error| AppError::BadRequest(format!("invalid provider_id: {error}")))?
             .into_string();
+        if !self.include_managed_free_models {
+            self.ensure_provider_writable_by_id(&provider_id).await?;
+        }
         // Double-Option: Some(Some(role)) sets and must satisfy the same role
         // grammar as the connections API; Some(None) clears without validation.
         if let Some(Some(role)) = req.connection_role.as_ref() {
@@ -221,9 +278,12 @@ impl ProviderModelService {
     /// Delete one row; returns whether a row was removed (same contract as
     /// `ModelProfileService::delete`).
     pub async fn delete(&self, provider_id: &str, model: &str) -> Result<bool, AppError> {
-        ProviderId::parse(provider_id)
+        let provider_id = ProviderId::parse(provider_id)
             .map_err(|error| AppError::BadRequest(format!("invalid provider_id: {error}")))?;
-        Ok(self.repo.delete(provider_id, model).await?)
+        if !self.include_managed_free_models {
+            self.ensure_provider_writable_by_id(provider_id.as_str()).await?;
+        }
+        Ok(self.repo.delete(provider_id.as_str(), model).await?)
     }
 }
 
@@ -744,5 +804,50 @@ mod tests {
         assert_eq!(one.len(), 1);
         assert_eq!(one[0].model, "gpt-4o");
         assert!(service.list(Some("not-a-uuid")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn disabled_managed_provider_models_are_hidden_but_readable_by_opt_in_service() {
+        let (service, _, provider_id, _db) = setup(crate::managed_model::FREE_MODEL_PLATFORM).await;
+        service
+            .clone()
+            .with_managed_free_models_enabled(true)
+            .create(create_req(&provider_id, "free-model"))
+            .await
+            .unwrap();
+
+        assert!(service
+            .clone()
+            .with_managed_free_models_enabled(false)
+            .list(None)
+            .await
+            .unwrap()
+            .is_empty());
+        let visible = service
+            .clone()
+            .with_managed_free_models_enabled(false)
+            .list(Some(&provider_id))
+            .await
+            .unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].model, "free-model");
+    }
+
+    #[tokio::test]
+    async fn disabled_managed_provider_rejects_model_catalog_writes() {
+        let (service, _, provider_id, _db) = setup(crate::managed_model::FREE_MODEL_PLATFORM).await;
+        let service = service.with_managed_free_models_enabled(false);
+
+        let err = service.create(create_req(&provider_id, "free-model")).await.unwrap_err();
+        assert_eq!(err.error_code(), "MANAGED_FREE_MODELS_DISABLED");
+
+        let err = service
+            .update(update_req(&provider_id, "free-model"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.error_code(), "MANAGED_FREE_MODELS_DISABLED");
+
+        let err = service.delete(&provider_id, "free-model").await.unwrap_err();
+        assert_eq!(err.error_code(), "MANAGED_FREE_MODELS_DISABLED");
     }
 }

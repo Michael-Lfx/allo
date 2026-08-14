@@ -1008,9 +1008,9 @@ const GuidPage: React.FC = () => {
     reasoningEffortLevels.length > 0 ? (
       <ReasoningEffortSelector
         levels={reasoningEffortLevels}
+        modelKey={`${modelSelection.current_model?.id ?? ''}:${modelSelection.current_model?.use_model ?? ''}`}
         initialEffort={selectedReasoningEffort}
         onEffortChanged={handleReasoningEffortChanged}
-        className='guid-config-btn'
       />
     ) : null;
 

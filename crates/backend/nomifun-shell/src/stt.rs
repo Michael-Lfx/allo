@@ -143,7 +143,8 @@ fn stt_error_from_invoke(error: InvokeError) -> SttError {
         | K::MissingConnection
         | K::InvalidParams
         | K::NotPollable
-        | K::Config => SttError::Unknown(error.to_string()),
+        | K::Config
+        | K::ManagedFreeModelsDisabled => SttError::Unknown(error.to_string()),
     }
 }
 
@@ -196,6 +197,7 @@ mod tests {
             InvokeErrorKind::NoAdapter,
             InvokeErrorKind::MissingConnection,
             InvokeErrorKind::Config,
+            InvokeErrorKind::ManagedFreeModelsDisabled,
         ] {
             let error = InvokeError::new(kind, "local");
             assert!(

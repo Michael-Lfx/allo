@@ -26,7 +26,9 @@ import React from 'react';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
+import { SWRConfig } from 'swr';
 import zhSettings from '@/renderer/services/i18n/locales/zh-CN/settings.json';
+import { MANAGED_FREE_MODELS_CAPABILITY_SWR_KEY } from '@/renderer/hooks/agent/useManagedFreeModelsEnabled';
 import ModelHubPage from './index';
 
 // The resizable sider reads a persisted width during render. Its own try/catch
@@ -53,7 +55,7 @@ await testI18n.use(initReactI18next).init({
 const hub = (zhSettings as unknown as { modelHub: Record<string, string> }).modelHub;
 
 /** The sidebar, top to bottom: one caption per group, one tab per section. */
-const EXPECTED_ORDER = [
+const EXPECTED_DEFAULT_ORDER = [
   hub.groupAccess,
   hub.sectionModels,
   hub.groupCapability,
@@ -65,32 +67,54 @@ const EXPECTED_ORDER = [
   hub.sectionVideo,
   hub.sectionEmbedding,
   hub.groupAdvanced,
-  hub.sectionFree,
   hub.sectionCreation,
   hub.sectionGlobal,
 ];
 
-const render = (initialEntry: string): string =>
+const EXPECTED_ENABLED_ORDER = [
+  ...EXPECTED_DEFAULT_ORDER.slice(0, -2),
+  hub.sectionFree,
+  ...EXPECTED_DEFAULT_ORDER.slice(-2),
+];
+
+const render = (initialEntry: string, freeModelsEnabled = false): string =>
   renderToStaticMarkup(
     <I18nextProvider i18n={testI18n}>
-      <MemoryRouter initialEntries={[initialEntry]}>
-        <ModelHubPage />
-      </MemoryRouter>
+      <SWRConfig
+        value={{
+          fallback: { [MANAGED_FREE_MODELS_CAPABILITY_SWR_KEY]: freeModelsEnabled },
+        }}
+      >
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <ModelHubPage />
+        </MemoryRouter>
+      </SWRConfig>
     </I18nextProvider>
   );
 
 describe('model hub sidebar renders', () => {
-  test('every group caption and section tab reaches the DOM, in order', () => {
+  test('the free section is hidden until the backend capability is enabled', () => {
     const html = render('/models');
     let cursor = -1;
-    for (const label of EXPECTED_ORDER) {
+    for (const label of EXPECTED_DEFAULT_ORDER) {
+      const at = html.indexOf(`>${label}<`);
+      expect(at).toBeGreaterThan(cursor);
+      cursor = at;
+    }
+    expect(html).not.toContain(`>${hub.sectionFree}<`);
+  });
+
+  test('the free section returns when the backend capability is explicitly enabled', () => {
+    const html = render('/models', true);
+    let cursor = -1;
+    for (const label of EXPECTED_ENABLED_ORDER) {
       const at = html.indexOf(`>${label}<`);
       expect(at).toBeGreaterThan(cursor);
       cursor = at;
     }
   });
 
-  test('the sidebar owns exactly one tab per section', () => {
+  test('the sidebar owns one tab per visible section', () => {
     const html = render('/models');
     const tabIds = [...html.matchAll(/id="model-hub-tab-([a-z]+)"/g)].map((m) => m[1]);
     expect(tabIds).toEqual([
@@ -102,7 +126,6 @@ describe('model hub sidebar renders', () => {
       'image',
       'video',
       'embedding',
-      'free',
       'creation',
       'global',
     ]);

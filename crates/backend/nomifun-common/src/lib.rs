@@ -18,6 +18,7 @@ mod fsname;
 mod hooks;
 mod id;
 mod idempotency;
+pub mod managed_free_model;
 pub mod miniapp_workspace;
 mod scoped_auth;
 mod pagination;
@@ -77,6 +78,11 @@ pub use id::{
     RequirementId, SshHostId, UserId, UuidV7Error, WebhookId,
     WorkshopAssetId, WorkshopCanvasId, WorkshopEdgeId, WorkshopNodeId, generate_id,
     is_reserved_provider_id, validate_uuidv7,
+};
+pub use managed_free_model::{
+    FREE_MODEL_PLATFORM, FREE_MODELS_ENV, MANAGED_FREE_MODELS_DISABLED_CODE,
+    free_models_enabled, is_free_model_platform, managed_free_models_disabled,
+    is_managed_free_models_disabled_message, parse_enabled_value,
 };
 pub use scoped_auth::{
     LOOPBACK_CAPABILITY_RENEW_PATH, LOOPBACK_CAPABILITY_RENEWAL_MARGIN_SECS,

@@ -6,7 +6,7 @@ import type { ProviderModelResponse, UpdateProviderModelRequest } from '@/common
 import type { ProviderId } from '@/common/types/ids';
 import { Button, Checkbox, Collapse, Divider, Input, Message, Modal, Popconfirm, Popover, Select, Switch, Tag, Tooltip } from '@arco-design/web-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
-import { Copy, DeleteFour, Info, Minus, Plus, Write, Heartbeat, Drag, TagOne } from '@icon-park/react';
+import { Copy, DeleteFour, Info, Minus, Write, Heartbeat, Drag, TagOne } from '@icon-park/react';
 import {
   closestCenter,
   DndContext,
@@ -33,7 +33,6 @@ import {
   parseProviderInUseDetails,
   type ProviderUsageFeature,
 } from './providerInUse';
-import AddModelModal from '@/renderer/pages/settings/components/AddModelModal';
 import AddPlatformModal from '@/renderer/pages/settings/components/AddPlatformModal';
 import ModelAdvancedEditor from '@/renderer/pages/settings/components/ModelAdvancedEditor';
 import ProviderConnectionsSection from '@/renderer/pages/settings/components/ProviderConnectionsSection';
@@ -875,15 +874,6 @@ const ModelModalContent: React.FC = () => {
     }
   }, [addPlatformModalCtrl]);
 
-  const [addModelModalCtrl, addModelModalContext] = AddModelModal.useModal({
-    onSubmit(platform) {
-      updatePlatform(platform, () => {
-        setCollapseKey((prev) => ({ ...prev, [platform.id]: true }));
-        addModelModalCtrl.close();
-      });
-    },
-  });
-
   const [editModalCtrl, editModalContext] = EditModeModal.useModal({
     onChange(platform) {
       updatePlatform(platform, () => editModalCtrl.close());
@@ -898,9 +888,8 @@ const ModelModalContent: React.FC = () => {
       {messageContext}
       {addPlatformModalContext}
       {editModalContext}
-      {addModelModalContext}
 
-      {/* Header with Add Button */}
+      {/* Header */}
       <div className='flex-shrink-0 border-b border-b-solid border-[var(--color-border-2)] pb-12px mb-14px flex flex-col gap-10px'>
         <div className='flex items-center justify-between gap-8px flex-wrap'>
           <div className='min-w-0'>
@@ -910,17 +899,6 @@ const ModelModalContent: React.FC = () => {
             <div className='mt-2px text-13px leading-18px text-t-secondary'>
               {t('settings.modelHub.provider.subtitle')}
             </div>
-          </div>
-          <div className='flex items-center gap-8px flex-wrap'>
-            <Button
-              type='outline'
-              shape='round'
-              icon={<Plus size='16' />}
-              onClick={() => addPlatformModalCtrl.open()}
-              className='rd-100px border-1px border-solid border-[var(--color-border-2)] h-34px px-14px text-t-secondary hover:text-t-primary'
-            >
-              {t('settings.addModel')}
-            </Button>
           </div>
         </div>
         <div
@@ -1033,12 +1011,6 @@ const ModelModalContent: React.FC = () => {
                             onChange={() => toggleProviderEnabled(platform)}
                           />
                           <div className='flex items-center gap-4px'>
-                            <Button
-                              size='mini'
-                              className='model-provider-action-btn !w-28px !h-28px !min-w-28px text-t-secondary hover:text-t-primary'
-                              icon={<Plus size='14' />}
-                              onClick={() => addModelModalCtrl.open({ data: platform })}
-                            />
                             <Popconfirm
                               title={t('settings.deleteAllModelConfirm')}
                               onOk={() => removePlatform(platform.id)}

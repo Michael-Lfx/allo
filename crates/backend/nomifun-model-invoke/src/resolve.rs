@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use nomifun_api_types::{ModelTask, derive_tasks_and_traits};
-use nomifun_common::ProviderId;
+use nomifun_common::{FLOWY_BUILTIN_PROVIDER_ID, ProviderId};
 use nomifun_db::models::Provider;
 
 use crate::adapter::ProtocolAdapter;
@@ -54,6 +54,42 @@ fn catalog_err(what: &str, e: nomifun_db::DbError) -> InvokeError {
     InvokeError::config(format!("{what}: {e}"))
 }
 
+async fn first_flowy_cloud_model(
+    service: &ModelInvokeService,
+    task: ModelTask,
+) -> Result<Option<(Provider, String)>, InvokeError> {
+    let Some(provider) = service
+        .provider_repo
+        .find_by_id(FLOWY_BUILTIN_PROVIDER_ID)
+        .await
+        .map_err(|error| catalog_err("failed to read Flowy Cloud provider", error))?
+    else {
+        return Ok(None);
+    };
+    if !provider.enabled {
+        return Ok(None);
+    }
+
+    let rows = service
+        .provider_model_repo
+        .list_for_provider(FLOWY_BUILTIN_PROVIDER_ID)
+        .await
+        .map_err(|error| catalog_err("failed to read Flowy Cloud model rows", error))?;
+    let model = rows.into_iter().filter(|row| row.enabled).find_map(|row| {
+        let declared = parse_tasks(&row.tasks);
+        let supports_task = if declared.is_empty() {
+            derive_tasks_and_traits(&provider.platform, &row.model)
+                .0
+                .contains(&task)
+        } else {
+            declared.contains(&task)
+        };
+        supports_task.then_some(row.model)
+    });
+
+    Ok(model.map(|model| (provider, model)))
+}
+
 impl ModelInvokeService {
     /// Resolve one task invocation against the catalog. The single algorithm
     /// (documented steps 1-6 below, in order); `enforce_task_membership =
@@ -89,18 +125,43 @@ impl ModelInvokeService {
         enforce_task_membership: bool,
     ) -> Result<(ResolvedCall, Arc<dyn ProtocolAdapter>), InvokeError> {
         // -- 1. Provider row + enabled gate --------------------------------
-        let provider_id = ProviderId::parse(m.provider_id.as_str()).map_err(|e| {
+        let requested_provider_id = ProviderId::parse(m.provider_id.as_str()).map_err(|e| {
             InvokeError::new(
                 InvokeErrorKind::InvalidParams,
                 format!("provider_id {:?} is not a canonical ProviderId: {e}", m.provider_id),
             )
         })?;
-        let provider = self
+        let mut provider_id = requested_provider_id.into_string();
+        let mut model = m.model.clone();
+        let mut provider = self
             .provider_repo
-            .find_by_id(provider_id.as_str())
+            .find_by_id(&provider_id)
             .await
             .map_err(|e| catalog_err("failed to read provider", e))?
             .ok_or_else(|| InvokeError::config(format!("provider not found: {provider_id}")))?;
+        if nomifun_common::managed_free_models_disabled(&provider.platform) {
+            // A fresh invocation may still carry a stale persisted model ref
+            // (Cron/IDMM/older clients). Rebind it to the first compatible
+            // Flowy Cloud row without ever constructing a free-provider call.
+            // Poll/probe paths stay fail-closed because a Cloud model cannot
+            // poll a job that was accepted by the disabled upstream.
+            if !enforce_task_membership {
+                return Err(InvokeError::new(
+                    InvokeErrorKind::ManagedFreeModelsDisabled,
+                    "MANAGED_FREE_MODELS_DISABLED: the selected provider uses the disabled managed free-model supply",
+                ));
+            }
+            let Some((cloud_provider, cloud_model)) = first_flowy_cloud_model(self, task).await?
+            else {
+                return Err(InvokeError::new(
+                    InvokeErrorKind::ManagedFreeModelsDisabled,
+                    "MANAGED_FREE_MODELS_DISABLED: no compatible Flowy Cloud model is available",
+                ));
+            };
+            provider_id = cloud_provider.provider_id.clone();
+            provider = cloud_provider;
+            model = cloud_model;
+        }
         if !provider.enabled {
             return Err(InvokeError::config(format!("provider disabled: {}", provider.name)));
         }
@@ -108,21 +169,21 @@ impl ModelInvokeService {
         // -- 2. Model row (probe tolerates absence: tasks treated as empty) --
         let row = self
             .provider_model_repo
-            .get(provider_id.as_str(), &m.model)
+            .get(&provider_id, &model)
             .await
             .map_err(|e| catalog_err("failed to read model row", e))?;
         let row = match row {
             Some(row) if !row.enabled => {
                 return Err(InvokeError::new(
                     InvokeErrorKind::UnsupportedTask,
-                    format!("model disabled: {}", m.model),
+                    format!("model disabled: {model}"),
                 ));
             }
             Some(row) => Some(row),
             None if enforce_task_membership => {
                 return Err(InvokeError::new(
                     InvokeErrorKind::UnsupportedTask,
-                    format!("model not in catalog: {}", m.model),
+                    format!("model not in catalog: {model}"),
                 ));
             }
             None => None,
@@ -133,14 +194,14 @@ impl ModelInvokeService {
             let declared = row.as_ref().map(|r| parse_tasks(&r.tasks)).unwrap_or_default();
             let allowed = if declared.is_empty() {
                 // Unseeded row: fall back to the name/platform heuristic.
-                derive_tasks_and_traits(&provider.platform, &m.model).0.contains(&task)
+                derive_tasks_and_traits(&provider.platform, &model).0.contains(&task)
             } else {
                 declared.contains(&task)
             };
             if !allowed {
                 return Err(InvokeError::new(
                     InvokeErrorKind::UnsupportedTask,
-                    format!("model {:?} does not declare task {task:?}", m.model),
+                    format!("model {:?} does not declare task {task:?}", model),
                 ));
             }
         }
@@ -174,7 +235,7 @@ impl ModelInvokeService {
         // -- 5. Connection material -----------------------------------------
         let connection = match role {
             None => self.default_connection(&provider)?,
-            Some(role) => self.role_connection(provider_id.as_str(), role).await?,
+            Some(role) => self.role_connection(&provider_id, role).await?,
         };
 
         // -- 6. Model params + adapter lookup --------------------------------
@@ -188,7 +249,7 @@ impl ModelInvokeService {
             if row_protocol == Some(protocol) && !self.registry.contains(protocol) {
                 InvokeError::config(format!(
                     "model {:?} declares unknown protocol {protocol:?}; fix the model's protocol override",
-                    m.model
+                    model
                 ))
             } else {
                 e
@@ -198,7 +259,7 @@ impl ModelInvokeService {
         let call = ResolvedCall {
             provider_id: provider.provider_id,
             platform: provider.platform,
-            model: m.model.clone(),
+            model,
             task,
             connection,
             model_params,
@@ -446,6 +507,51 @@ mod tests {
             .map(|_| ())
             .unwrap_err();
         assert_eq!(err.kind, InvokeErrorKind::InvalidParams);
+    }
+
+    #[tokio::test]
+    async fn disabled_free_provider_resolves_to_first_flowy_chat_model() {
+        if nomifun_common::free_models_enabled() {
+            return;
+        }
+        let (svc, pool) = setup(full_registry()).await;
+        let free_id = seed_provider(&pool, nomifun_common::FREE_MODEL_PLATFORM, true).await;
+        let repo = SqliteProviderRepository::new(pool.clone());
+        let encrypted = encrypt_string("cloud-key", &TEST_KEY).unwrap();
+        repo.create(CreateProviderParams {
+            provider_id: Some(FLOWY_BUILTIN_PROVIDER_ID),
+            platform: "openai",
+            name: "Flowy Cloud",
+            base_url: "https://cloud.example/v1",
+            api_key_encrypted: &encrypted,
+            models: "[]",
+            enabled: true,
+            model_context_limits: None,
+            model_protocols: None,
+            model_descriptions: None,
+            model_enabled: None,
+            bedrock_config: None,
+            is_full_url: false,
+            sort_order: Some(0),
+        })
+        .await
+        .unwrap();
+        seed_model(
+            &pool,
+            FLOWY_BUILTIN_PROVIDER_ID,
+            "cloud-chat",
+            r#"["chat"]"#,
+            None,
+            true,
+        )
+        .await;
+
+        let (call, _) = svc
+            .resolve(&mref(&free_id, "free-chat"), ModelTask::Chat, chat_request(), true)
+            .await
+            .unwrap();
+        assert_eq!(call.provider_id, FLOWY_BUILTIN_PROVIDER_ID);
+        assert_eq!(call.model, "cloud-chat");
     }
 
     #[tokio::test]

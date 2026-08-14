@@ -31,6 +31,10 @@ pub enum AppError {
     #[error("No usable model provider is configured: {0}")]
     ProviderUnavailable(String),
 
+    /// The optional managed free-model supply is disabled for this process.
+    #[error("Managed free models are disabled: {0}")]
+    ManagedFreeModelsDisabled(String),
+
     #[error("Rate limited")]
     RateLimited,
 
@@ -78,6 +82,7 @@ impl AppError {
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::ProviderInUse(_) => StatusCode::CONFLICT,
             Self::ProviderUnavailable(_) => StatusCode::BAD_REQUEST,
+            Self::ManagedFreeModelsDisabled(_) => StatusCode::BAD_REQUEST,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::BadGateway(_) => StatusCode::BAD_GATEWAY,
@@ -104,6 +109,7 @@ impl AppError {
             Self::Conflict(_) => "CONFLICT",
             Self::ProviderInUse(_) => "PROVIDER_IN_USE",
             Self::ProviderUnavailable(_) => "PROVIDER_UNAVAILABLE",
+            Self::ManagedFreeModelsDisabled(_) => "MANAGED_FREE_MODELS_DISABLED",
             Self::RateLimited => "RATE_LIMITED",
             Self::Internal(_) => "INTERNAL_ERROR",
             Self::BadGateway(_) => "BAD_GATEWAY",
@@ -265,6 +271,10 @@ mod tests {
             "PATH_OUTSIDE_SANDBOX"
         );
         assert_eq!(AppError::Conflict("x".into()).error_code(), "CONFLICT");
+        assert_eq!(
+            AppError::ManagedFreeModelsDisabled("disabled".into()).error_code(),
+            "MANAGED_FREE_MODELS_DISABLED"
+        );
         assert_eq!(AppError::RateLimited.error_code(), "RATE_LIMITED");
         assert_eq!(AppError::Internal("x".into()).error_code(), "INTERNAL_ERROR");
         assert_eq!(AppError::BadGateway("x".into()).error_code(), "BAD_GATEWAY");

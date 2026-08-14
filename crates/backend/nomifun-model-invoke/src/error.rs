@@ -43,6 +43,8 @@ pub enum InvokeErrorKind {
     NotPollable,
     /// Local provider/connection configuration is incomplete or invalid.
     Config,
+    /// The optional NomiFun-managed free-model supply is disabled.
+    ManagedFreeModelsDisabled,
 }
 
 /// The invocation-layer error: a kind + human-readable message, optionally
@@ -119,6 +121,7 @@ impl From<InvokeError> for nomifun_common::AppError {
             MissingConnection => AppError::BadRequest(msg),
             // Provider/connection configuration is incomplete or invalid.
             Config => AppError::BadRequest(msg),
+            ManagedFreeModelsDisabled => AppError::ManagedFreeModelsDisabled(msg),
             // Poll was requested for a job that cannot be polled.
             NotPollable => AppError::BadRequest(msg),
             // Preserve timeout semantics end to end.

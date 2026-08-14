@@ -23,6 +23,11 @@ pub struct SystemInfoResponse {
     /// this contract instead of inferring the runtime from browser globals.
     #[serde(default)]
     pub runtime_capabilities: RuntimeCapabilities,
+    /// Whether the optional NomiFun-managed free-model supply is enabled for
+    /// the current process. The renderer must default to hidden while this
+    /// capability is unavailable or still loading.
+    #[serde(default)]
+    pub managed_free_models_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -279,6 +284,7 @@ mod tests {
             arch: "x64".into(),
             work_dir_change: None,
             runtime_capabilities: RuntimeCapabilities::web(),
+            managed_free_models_enabled: false,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["cache_dir"], "/home/user/.cache/nomifun");
@@ -305,6 +311,7 @@ mod tests {
             arch: "arm64".into(),
             work_dir_change: None,
             runtime_capabilities: RuntimeCapabilities::desktop(),
+            managed_free_models_enabled: true,
         };
         let serialized = serde_json::to_string(&original).unwrap();
         let parsed: SystemInfoResponse = serde_json::from_str(&serialized).unwrap();

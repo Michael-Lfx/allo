@@ -638,6 +638,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             services.cloud_service.clone(),
             services.provider_repo.clone(),
             services.provider_model_repo.clone(),
+            Arc::new(SqliteClientPreferenceRepository::new(services.database.pool().clone())),
             services.encryption_key,
         ),
         companion: companion_state,
@@ -736,6 +737,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
             Arc::new(nomifun_db::SqliteProviderModelRepository::new(pool.clone())),
             encryption_key,
         )
+        .with_managed_free_models_enabled(nomifun_common::free_models_enabled())
         .with_deletion_coordinator(deletion_coordinator),
         provider_connection_service: nomifun_system::ProviderConnectionService::new(
             Arc::new(nomifun_db::SqliteProviderConnectionRepository::new(pool.clone())),
@@ -745,12 +747,15 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         model_fetch_service: ModelFetchService::new_dynamic(provider_repo, encryption_key),
         model_profile_service: nomifun_system::ModelProfileService::new(
             services.provider_model_repo.clone(),
-        ),
+        )
+        .with_provider_repository(Arc::new(SqliteProviderRepository::new(pool.clone())))
+        .with_managed_free_models_enabled(nomifun_common::free_models_enabled()),
         provider_model_service: nomifun_system::ProviderModelService::new(
             services.provider_model_repo.clone(),
             Arc::new(SqliteProviderRepository::new(pool.clone())),
-        ),
-        managed_model_service: Some(services.managed_model_service.clone()),
+        )
+        .with_managed_free_models_enabled(nomifun_common::free_models_enabled()),
+        managed_model_service: services.managed_model_service.clone(),
         protocol_detection_service: ProtocolDetectionService::new_dynamic(),
         version_check_service: VersionCheckService::new_dynamic(env!("CARGO_PKG_VERSION").to_owned()),
         data_dir: services.data_dir.clone(),
@@ -2221,14 +2226,22 @@ pub fn build_cron_state(
     )));
 
     let emitter = CronEventEmitter::new(services.event_bus.clone());
-    let cron_service = Arc::new(nomifun_cron::service::CronService::new(
+    let cron_service = Arc::new(
+        nomifun_cron::service::CronService::new(
         services.authoritative_user_id.clone(),
         cron_repo,
         scheduler,
         executor,
         emitter,
         services.data_dir.clone(),
-    ));
+        )
+        .with_model_catalog_repositories(
+            Arc::new(SqliteProviderRepository::new(services.database.pool().clone())),
+            Arc::new(nomifun_db::SqliteProviderModelRepository::new(
+                services.database.pool().clone(),
+            )),
+        ),
+    );
 
     tick_service_ref.0.lock().unwrap().replace(cron_service.clone());
 

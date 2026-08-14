@@ -1659,7 +1659,9 @@ const NomiSendBox: React.FC<{
                 <ReasoningEffortSelector
                   conversation_id={conversation_id}
                   levels={reasoningEffortLevels}
+                  modelKey={`${current_model?.id ?? ''}:${current_model?.use_model ?? ''}`}
                   initialEffort={currentReasoningEffort}
+                  isProcessing={running}
                   onEffortChanged={setCurrentReasoningEffort}
                 />
               )}

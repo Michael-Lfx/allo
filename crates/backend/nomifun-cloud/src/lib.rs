@@ -9,6 +9,7 @@ pub mod config_defaults;
 pub mod doctor;
 pub mod error;
 pub mod flowy;
+pub mod free_model_migration;
 pub mod http_routes;
 pub mod http_service;
 pub mod insights_config;
@@ -29,6 +30,7 @@ pub use config_defaults::{
 };
 pub use insights_config::effective_insights_contribution_config;
 pub use provider_sync::{disable_flowy_builtin_provider, sync_flowy_builtin_provider};
+pub use free_model_migration::migrate_free_model_preferences;
 pub use auth::{
     AuthManager, AuthPollResult, AuthUserInput, LoginMethod, PendingLogin, WhoamiStatus,
 };

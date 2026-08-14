@@ -297,6 +297,8 @@ export type TChatConversation =
         maxTurns?: number;
         /** Persisted session mode for resume support */
         session_mode?: string;
+        /** Catalog-advertised reasoning depth for the next Nomi turn. */
+        reasoning_effort?: string;
         /** Legacy marker for pre-provider-probe health-check conversations */
         is_health_check?: boolean;
         /** Last token usage stats */
