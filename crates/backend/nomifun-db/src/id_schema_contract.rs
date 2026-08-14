@@ -787,7 +787,7 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("learning_mastery_states", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_mastery_states_enrollment_id", Cascade),
     text_ref!("learning_mastery_states", "concept_id" => "learning_concepts", "concept_id", false, "idx_learning_mastery_states_concept_id", Cascade),
     text_ref!("learning_review_items", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_review_items_enrollment_id", Cascade),
-    text_ref!("learning_review_items", "concept_id" => "learning_concepts", "concept_id", false, "idx_learning_review_items_concept_id", Cascade),
+    text_ref!("learning_review_items", "activity_id" => "learning_activities", "activity_id", false, "idx_learning_review_items_activity_id", Cascade),
     text_ref!("learning_custom_questions", "user_id" => "users", "user_id", false, "idx_learning_custom_questions_user_id", Cascade),
     // Course-generation jobs: user-scoped tasks; kb/course links are history —
     // jobs keep working from persisted snapshots even if the base or the

@@ -10,27 +10,21 @@ export function ReviewCard({
   review,
   busy,
   locked,
-  isGroupTail,
   onAnswer,
   onForget,
   onRate,
   onSkip,
-  onAdvance,
-  onDismiss,
+  onNext,
 }: {
   review: DueReview;
   busy: boolean;
   locked: boolean;
-  /** Last card of its review item: only then the self-rating is offered. */
-  isGroupTail: boolean;
   onAnswer: (review: DueReview, response: unknown) => Promise<ReviewAnswerResult | undefined>;
   onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
   onRate: (review: DueReview, rating: ReviewRating) => void;
   onSkip: (review: DueReview) => void;
-  /** Move to the next card inside the same review item (no rating yet). */
-  onAdvance: () => void;
-  /** Leave the answered card and move to the next review item. */
-  onDismiss: (reviewId: string) => void;
+  /** Leave the finished card and move to the next review item. */
+  onNext: () => void;
 }) {
   const { t } = useTranslation();
   const [response, setResponse] = useState<unknown>();
@@ -138,51 +132,37 @@ export function ReviewCard({
             {t('learning.correct')}
             {result.feedback ? ` · ${result.feedback}` : ''}
           </Text>
-          {isGroupTail ? (
-            <>
-              <Text type='secondary' className='text-13px'>
-                {t('learning.reviewRatePrompt')}
-              </Text>
-              <div className='grid grid-cols-3 gap-8px'>
-                <Button
-                  status='warning'
-                  type='outline'
-                  loading={busy}
-                  disabled={locked && !busy}
-                  onClick={() => onRate(review, 'hard')}
-                >
-                  {t('learning.reviewHard')}
-                </Button>
-                <Button
-                  type='primary'
-                  loading={busy}
-                  disabled={locked && !busy}
-                  onClick={() => onRate(review, 'good')}
-                >
-                  {t('learning.reviewGood')}
-                </Button>
-                <Button
-                  status='success'
-                  type='outline'
-                  loading={busy}
-                  disabled={locked && !busy}
-                  onClick={() => onRate(review, 'easy')}
-                >
-                  {t('learning.reviewEasy')}
-                </Button>
-              </div>
-            </>
-          ) : (
+          <Text type='secondary' className='text-13px'>
+            {t('learning.reviewRatePrompt')}
+          </Text>
+          <div className='grid grid-cols-3 gap-8px'>
+            <Button
+              status='warning'
+              type='outline'
+              loading={busy}
+              disabled={locked && !busy}
+              onClick={() => onRate(review, 'hard')}
+            >
+              {t('learning.reviewHard')}
+            </Button>
             <Button
               type='primary'
-              size='small'
-              className='self-start'
-              disabled={locked}
-              onClick={onAdvance}
+              loading={busy}
+              disabled={locked && !busy}
+              onClick={() => onRate(review, 'good')}
             >
-              {t('learning.reviewNext')}
+              {t('learning.reviewGood')}
             </Button>
-          )}
+            <Button
+              status='success'
+              type='outline'
+              loading={busy}
+              disabled={locked && !busy}
+              onClick={() => onRate(review, 'easy')}
+            >
+              {t('learning.reviewEasy')}
+            </Button>
+          </div>
         </div>
       )}
       {result !== null && !result.correct && (
@@ -202,7 +182,7 @@ export function ReviewCard({
             size='small'
             className='self-start'
             disabled={locked}
-            onClick={() => onDismiss(review.id)}
+            onClick={onNext}
           >
             {t('learning.reviewNext')}
           </Button>
@@ -237,19 +217,9 @@ export function ReviewSessionModal({
     if (open) setIndex(0);
   }, [open]);
   const current = queue[index];
-  // The queue expands one review item into one card per objective question;
-  // cards of the same item sit next to each other. Only the tail card offers
-  // the self-rating, and finishing the item skips its remaining cards.
-  const isGroupTail =
-    current !== undefined &&
-    (index + 1 >= queue.length || queue[index + 1].id !== current.id);
+  // Each queue card is its own review item with its own schedule, so rating,
+  // answering wrong or skipping all move straight to the next card.
   const advance = () => setIndex((value) => value + 1);
-  const advanceGroup = () =>
-    setIndex((value) => {
-      let next = value + 1;
-      while (next < queue.length && queue[next].id === queue[value].id) next += 1;
-      return next;
-    });
   return (
     <Modal
       title={t('learning.reviewSessionTitle')}
@@ -284,25 +254,23 @@ export function ReviewSessionModal({
             </div>
           </div>
           <ReviewCard
-            key={`${current.id}:${current.question.activity_id ?? ''}`}
+            key={current.id}
             review={current}
             busy={busyId === current.id}
             locked={busyId !== null && busyId !== current.id}
-            isGroupTail={isGroupTail}
             onAnswer={onAnswer}
             onForget={onForget}
             onRate={(review, rating) =>
               void onRate(review, rating).then((handled) => {
-                if (handled) advanceGroup();
+                if (handled) advance();
               })
             }
             onSkip={(review) =>
               void onSkip(review).then((handled) => {
-                if (handled) advanceGroup();
+                if (handled) advance();
               })
             }
-            onAdvance={advance}
-            onDismiss={advanceGroup}
+            onNext={advance}
           />
         </div>
       )}

@@ -349,20 +349,10 @@ async fn answer_review(
     Json(request): Json<AnswerReviewRequest>,
 ) -> Result<Json<ApiResponse<crate::models::ReviewAnswerResult>>, AppError> {
     let id = parse_id::<LearningReviewItemId>(id)?;
-    let activity_id = request
-        .activity_id
-        .map(parse_id::<LearningActivityId>)
-        .transpose()?;
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .answer_review(
-                &id,
-                &user.id,
-                request.response,
-                request.forgot,
-                activity_id.as_ref(),
-            )
+            .answer_review(&id, &user.id, request.response, request.forgot)
             .await?,
     )))
 }
