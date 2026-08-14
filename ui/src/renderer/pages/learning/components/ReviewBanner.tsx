@@ -35,9 +35,13 @@ export function ReviewBanner({
           <Title heading={5} className='!m-0'>
             {t('learning.reviews')}
           </Title>
-          <Text type='secondary'>
-            {t('learning.reviewDueCount', { count: reviews.length })}
-          </Text>
+          {reviews.length === 0 ? (
+            <Text type='secondary'>{t('learning.noReviews')}</Text>
+          ) : (
+            <Text type='secondary'>
+              {t('learning.reviewDueCount', { count: reviews.length })}
+            </Text>
+          )}
         </div>
         <Select
           className='w-240px'
@@ -76,7 +80,13 @@ export function ReviewBanner({
         </Select>
       </div>
       <Badge count={reviews.length}>
-        <Button type='primary' size='large' loading={busy} onClick={onStart}>
+        <Button
+          type='primary'
+          size='large'
+          loading={busy}
+          disabled={reviews.length === 0}
+          onClick={onStart}
+        >
           {t('learning.startReview')}
         </Button>
       </Badge>
