@@ -61,12 +61,11 @@ const headerLabelForStatus = (
   status: ThinkingTraceStatus,
   variant: ThinkingTraceVariant,
   subject: string | undefined,
-  elapsedLabel: string,
   t: TFunction
 ): string => {
   switch (status) {
     case 'waiting':
-      return `${t('conversation.thinking.waiting', { defaultValue: 'Waiting for model output' })} · ${elapsedLabel}`;
+      return t('conversation.thinking.waiting', { defaultValue: 'Waiting for model output' });
     case 'failed':
       return t('conversation.thinking.failed', { defaultValue: 'Thinking failed' });
     case 'canceled':
@@ -74,7 +73,7 @@ const headerLabelForStatus = (
     case 'done':
       return completeLabelForVariant(variant, t);
     case 'thinking':
-      return `${toDisplayText(subject) || liveLabelForVariant(variant, t)} · ${elapsedLabel}`;
+      return toDisplayText(subject) || liveLabelForVariant(variant, t);
     default: {
       const exhaustive: never = status;
       return exhaustive;
@@ -113,16 +112,6 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
   const startTimeRef = useRef<number>(message.created_at ?? Date.now());
   const bodyRef = useRef<HTMLDivElement>(null);
 
-  const formatElapsedTime = (seconds: number): string => {
-    const sUnit = t('common.unit.second_short', { defaultValue: 's' });
-    const mUnit = t('common.unit.minute_short', { defaultValue: 'm' });
-
-    if (seconds < 60) return `${seconds}${sUnit}`;
-    const minutes = Math.floor(seconds / 60);
-    const remaining = seconds % 60;
-    return `${minutes}${mUnit} ${remaining}${sUnit}`;
-  };
-
   useEffect(() => {
     if (expanded !== undefined) return;
     setInternalExpanded(defaultExpanded);
@@ -153,13 +142,7 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
     onExpandedChange?.(nextExpanded);
   };
 
-  const summaryText = headerLabelForStatus(
-    traceStatus,
-    traceVariant,
-    subject,
-    formatElapsedTime(elapsedTime),
-    t
-  );
+  const summaryText = headerLabelForStatus(traceStatus, traceVariant, subject, t);
 
   const items = useMemo(
     () => buildThinkingTraceItems(text, traceStatus),
@@ -177,7 +160,8 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
         expanded={resolvedExpanded}
         onExpandedChange={handleToggle}
         bodyRef={bodyRef}
-        showElapsed={false}
+        elapsedSeconds={elapsedTime}
+        showElapsed={!isDone}
       />
     </div>
   );

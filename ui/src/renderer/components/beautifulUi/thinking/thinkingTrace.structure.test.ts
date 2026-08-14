@@ -102,4 +102,11 @@ describe('ThinkingTrace', () => {
     expect(cssRuleFor('.rootProcess .item').includes('padding-bottom: 6px')).toBe(true);
     expect(cssRuleFor('.rootProcess .item:last-child').includes('padding-bottom: 0')).toBe(true);
   });
+
+  test('keeps process thinking from translating in or anchoring the outer list', () => {
+    expect(cssRuleFor('.rootProcess').includes('overflow-anchor: none')).toBe(true);
+    expect(cssRuleFor('.rootProcess .body').includes('animation: none')).toBe(true);
+    expect(cssRuleFor('.elapsed').includes('font-variant-numeric: tabular-nums')).toBe(true);
+    expect(cssRuleFor('.elapsed').includes('min-width: 4ch')).toBe(true);
+  });
 });

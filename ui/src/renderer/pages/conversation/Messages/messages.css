@@ -30,6 +30,14 @@
   --conversation-ease-press: cubic-bezier(0.25, 1, 0.5, 1);
 }
 
+/* Trailing room under the latest reply so follow-to-bottom doesn't glue
+   streaming tokens to the composer. */
+.message-list-end-spacer {
+  height: 64px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
 .message-item {
   --conversation-message-font-size: 14px;
   --conversation-message-line-height: 22px;

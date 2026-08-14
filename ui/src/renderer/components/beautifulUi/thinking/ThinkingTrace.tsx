@@ -168,7 +168,7 @@ const ThinkingTrace: React.FC<ThinkingTraceProps> = ({
         </span>
         {!isSettled && shouldShowElapsed ? (
           <span className={styles.elapsed}>
-            {elapsedSeconds.toFixed(1)}
+            {Number.isInteger(elapsedSeconds) ? String(elapsedSeconds) : elapsedSeconds.toFixed(1)}
             {sUnit}
           </span>
         ) : null}

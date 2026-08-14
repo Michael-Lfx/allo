@@ -20,6 +20,14 @@ describe('MessageThinking expansion', () => {
     expect(source.includes('const isDone = isThinkingTraceSettled(traceStatus);')).toBe(true);
   });
 
+  test('keeps live elapsed out of the shimmering thinking label', () => {
+    expect(source.includes('showElapsed={!isDone}')).toBe(true);
+    expect(source.includes('elapsedSeconds={elapsedTime}')).toBe(true);
+    expect(source.includes('showElapsed={false}')).toBe(false);
+    expect(source.includes(' · ${elapsedLabel}')).toBe(false);
+    expect(source.includes('animated={false}')).toBe(false);
+  });
+
   test('collapses completed process thinking by default while keeping live thinking open', () => {
     expect(source.includes("const defaultExpanded = expanded ?? (isProcessVariant ? !isDone : true);")).toBe(true);
     expect(source.includes('useState(() => defaultExpanded)')).toBe(true);

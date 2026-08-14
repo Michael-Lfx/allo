@@ -18,3 +18,20 @@ describe('message list scroll button', () => {
     expect(messageStyles.includes('border-radius: 999px;')).toBe(true);
   });
 });
+
+describe('message list end spacer', () => {
+  test('keeps a modest trailing room under the latest reply', () => {
+    expect(messageListSource.includes("className='message-list-end-spacer'")).toBe(true);
+    expect(messageListSource.includes("data-streaming=")).toBe(false);
+    expect(messageStyles.includes('.message-list-end-spacer {')).toBe(true);
+    expect(messageStyles.includes('height: 64px;')).toBe(true);
+    expect(messageStyles.includes('height: 30vh;')).toBe(false);
+  });
+});
+
+describe('message list streaming follow', () => {
+  test('pins Virtuoso follow to the same bottom threshold as auto-scroll', () => {
+    expect(messageListSource.includes('followOutput={resolveFollowOutput}')).toBe(true);
+    expect(messageListSource.includes('atBottomThreshold={FOLLOW_BOTTOM_THRESHOLD_PX}')).toBe(true);
+  });
+});

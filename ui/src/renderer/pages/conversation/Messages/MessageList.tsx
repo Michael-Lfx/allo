@@ -58,7 +58,7 @@ import ProcessTraceItem, { type ProcessTraceItemExpansionControls } from './comp
 import { isContextCompressionTip } from './processTipModel';
 import { formatFileTargetPreview, splitToolReceiptTargets } from './processFileTargetLabel';
 import { useFirstWinMode } from '@/renderer/utils/onboarding/firstWinMode';
-import { useAutoScroll } from './useAutoScroll';
+import { FOLLOW_BOTTOM_THRESHOLD_PX, useAutoScroll } from './useAutoScroll';
 import { useAutoPreviewOfficeFiles } from '@/renderer/hooks/file/useAutoPreviewOfficeFiles';
 import { useAutoPreviewMiniApp } from '@/renderer/hooks/file/useAutoPreviewMiniApp';
 import SelectionReplyButton from './components/SelectionReplyButton';
@@ -1549,6 +1549,7 @@ const MessageList: React.FC<{
         />
       </div>
     ) : null;
+  const listEndSpacer = <div className='message-list-end-spacer' aria-hidden='true' />;
 
   const renderItem = (_index: number, item: (typeof displayList)[0]) => {
     const highlighted = matchesTargetMessage(item, highlightedMessageId);
@@ -1734,6 +1735,7 @@ const MessageList: React.FC<{
                   data={displayList}
                   customScrollParent={scrollParent}
                   followOutput={resolveFollowOutput}
+                  atBottomThreshold={FOLLOW_BOTTOM_THRESHOLD_PX}
                   computeItemKey={(_index, item) => item.id}
                   increaseViewportBy={{ top: 800, bottom: 800 }}
                   rangeChanged={({ startIndex, endIndex }) => {
@@ -1744,7 +1746,7 @@ const MessageList: React.FC<{
                     Footer: () => (
                       <>
                         {firstWinOutcomeFooter}
-                        <div className='h-20px' />
+                        {listEndSpacer}
                       </>
                     ),
                   }}
@@ -1757,7 +1759,7 @@ const MessageList: React.FC<{
                     <React.Fragment key={item.id}>{renderItem(index, item)}</React.Fragment>
                   ))}
                   {firstWinOutcomeFooter}
-                  <div className='h-20px' />
+                  {listEndSpacer}
                 </>
               )}
             </div>

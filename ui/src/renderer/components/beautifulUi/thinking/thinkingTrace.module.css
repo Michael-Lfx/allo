@@ -82,6 +82,7 @@
 
 .elapsed {
   flex-shrink: 0;
+  min-width: 4ch;
   color: var(--color-text-4, #c9cdd4);
   font-variant-numeric: tabular-nums;
 }
@@ -116,6 +117,11 @@
   margin-top: 6px;
 }
 
+.rootProcess {
+  contain: layout style;
+  overflow-anchor: none;
+}
+
 .rootProcess .body {
   padding: 0 0 0 14px;
   border: 0;
@@ -126,6 +132,8 @@
   line-height: var(--conversation-message-line-height, 22px);
   max-height: 240px;
   overflow-y: auto;
+  overflow-anchor: none;
+  animation: none;
 }
 
 .rootProcess .body:empty {

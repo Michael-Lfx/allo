@@ -40,4 +40,12 @@ describe('useAutoScroll thresholds and pause semantics', () => {
     expect(source.includes('resolveFollowOutput')).toBe(true);
     expect(source.includes('virtuosoModeRef.current')).toBe(true);
   });
+
+  test('keeps follow pinned through tail growth and only drops it on an upward scroll', () => {
+    const source = readSource(new URL('./useAutoScroll.ts', import.meta.url));
+
+    expect(source.includes('if (!isAtBottom || userIntentPausedRef.current || userScrolledRef.current)')).toBe(false);
+    expect(source.includes('if (userIntentPausedRef.current || userScrolledRef.current)')).toBe(true);
+    expect(source.includes('delta < -2')).toBe(true);
+  });
 });
