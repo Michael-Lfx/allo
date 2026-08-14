@@ -857,7 +857,7 @@ impl LearningService {
                      SELECT 1 FROM learning_activity_concepts ac \
                      JOIN learning_activities a ON a.activity_id = ac.activity_id \
                      WHERE ac.concept_id = r.concept_id \
-                     AND a.kind IN ('single_choice', 'true_false') \
+                     AND a.kind IN ('single_choice', 'true_false', 'fill_in_blank') \
                      AND EXISTS ( \
                          SELECT 1 FROM learning_lesson_progress p \
                          WHERE p.lesson_id = a.lesson_id \
@@ -1426,7 +1426,7 @@ impl LearningService {
                       ON p.lesson_id = a.lesson_id AND p.enrollment_id = e.enrollment_id \
                     LEFT JOIN learning_review_items ri \
                       ON ri.enrollment_id = e.enrollment_id AND ri.concept_id = ac.concept_id \
-                    WHERE a.kind IN ('single_choice', 'true_false')";
+                    WHERE a.kind IN ('single_choice', 'true_false', 'fill_in_blank')";
         let rows = match course_id {
             Some(course_id) => sqlx::query(&format!("{base} AND e.course_id = ? LIMIT 1000"))
                 .bind(user_id.as_str())
@@ -4522,12 +4522,30 @@ mod tests {
             )
             .await
             .unwrap();
+        let course_id = course.course.id.clone();
         let due = service
-            .due_reviews(&user_id, 30, &[course.course.id], true, false, &[])
+            .due_reviews(&user_id, 30, &[course_id.clone()], true, false, &[])
             .await
             .unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].question.prompt, "A vector has ___ and direction.");
+        // The blank counts towards the course's due-review badge and shows up
+        // in the question manager like any other objective question.
+        let detail = service
+            .course_detail(&course_id, Some(&user_id))
+            .await
+            .unwrap();
+        assert_eq!(detail.due_review_count, 1);
+        let entries = service
+            .question_entries(&user_id, None, None, None)
+            .await
+            .unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.question_kind == Some(ActivityKind::FillInBlank)),
+            "fill-in-the-blank activity must appear in the question manager"
+        );
     }
 
     #[tokio::test]
