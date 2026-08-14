@@ -1,6 +1,6 @@
 export function CanvasRefreshShell() {
     return (
-        <main className="relative h-full min-h-0 overflow-hidden bg-background text-foreground">
+        <main className="relative h-full min-h-0 overflow-hidden bg-background text-foreground" role="status" aria-live="polite" aria-busy="true">
             <div
                 className="absolute inset-0 opacity-60"
                 style={{
@@ -8,6 +8,12 @@ export function CanvasRefreshShell() {
                     backgroundSize: "28px 28px",
                 }}
             />
+
+            <div className="absolute inset-0 z-[var(--z-toolbar)] grid place-items-center">
+                <div className="rounded-xl border px-4 py-3 text-sm text-foreground/70 shadow-lg backdrop-blur" style={{ background: "var(--background)", borderColor: "var(--border)" }}>
+                    正在加载画布…
+                </div>
+            </div>
 
             <div
                 className="absolute bottom-5 left-1/2 z-[var(--z-toolbar)] flex h-14 -translate-x-1/2 items-center gap-1 rounded-xl border px-2 shadow-lg backdrop-blur"

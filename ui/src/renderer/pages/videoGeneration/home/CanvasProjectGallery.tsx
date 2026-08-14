@@ -37,6 +37,10 @@ function formatUpdatedAt(ms: number, t: TFunction): string {
   return t('videoGeneration.time.weeksAgo', { defaultValue: '上周' });
 }
 
+function prefetchCanvasProjectPage() {
+  void import('../../videoCanvas/ProjectPage');
+}
+
 const CanvasProjectGallery: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -45,6 +49,7 @@ const CanvasProjectGallery: React.FC = () => {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [openingId, setOpeningId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,6 +73,11 @@ const CanvasProjectGallery: React.FC = () => {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (!projects.length) return;
+    prefetchCanvasProjectPage();
+  }, [projects.length]);
+
   const displayed = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return projects;
@@ -78,14 +88,22 @@ const CanvasProjectGallery: React.FC = () => {
     );
   }, [projects, query]);
 
+  const openProject = (projectId: string) => {
+    if (openingId || creating || deletingId) return;
+    setOpeningId(projectId);
+    prefetchCanvasProjectPage();
+    navigate(`/video-generation/canvas/${encodeURIComponent(projectId)}`);
+  };
+
   const createBlankCanvas = async () => {
-    if (creating) return;
+    if (creating || openingId) return;
     setCreating(true);
     try {
       const { createServerBackedCanvasProject } = await import(
         '../../videoCanvas/lib/ocBridge'
       );
       const id = await createServerBackedCanvasProject(untitledCanvas);
+      setOpeningId(id);
       navigate(`/video-generation/canvas/${encodeURIComponent(id)}`);
     } catch (cause) {
       message.error(
@@ -100,7 +118,7 @@ const CanvasProjectGallery: React.FC = () => {
   };
 
   const removeProject = async (project: CanvasProjectMeta) => {
-    if (deletingId) return;
+    if (deletingId || openingId) return;
     setDeletingId(project.project_id);
     try {
       await deleteCanvasProject(project.project_id);
@@ -157,6 +175,7 @@ const CanvasProjectGallery: React.FC = () => {
             type='outline'
             size='small'
             loading={creating}
+            disabled={Boolean(openingId)}
             onClick={() => void createBlankCanvas()}
           >
             <span className='inline-flex items-center gap-5px'>
@@ -208,49 +227,66 @@ const CanvasProjectGallery: React.FC = () => {
         </button>
       ) : (
         <div className={styles.canvasGrid}>
-          {displayed.map((project) => (
-            <button
-              key={project.project_id}
-              type='button'
-              className={styles.canvasCard}
-              onClick={() =>
-                navigate(
-                  `/video-generation/canvas/${encodeURIComponent(project.project_id)}`
-                )
-              }
-            >
-              <span className={styles.canvasCardPreview}>
-                <Platte size={26} />
-                <small>
-                  {t('videoGeneration.create.gallery.nodes', {
-                    count: project.node_count,
-                    defaultValue: '{{count}} 个节点',
-                  })}
-                </small>
-              </span>
-              <span className={styles.canvasCardBody}>
-                <span>
-                  <strong>{project.title || untitledCanvas}</strong>
-                  <small>{formatUpdatedAt(project.updated_at, t)}</small>
+          {displayed.map((project) => {
+            const isOpening = openingId === project.project_id;
+            return (
+              <button
+                key={project.project_id}
+                type='button'
+                className={`${styles.canvasCard}${isOpening ? ` ${styles.canvasCardOpening}` : ''}`}
+                disabled={Boolean(openingId) && !isOpening}
+                aria-busy={isOpening}
+                onMouseEnter={prefetchCanvasProjectPage}
+                onFocus={prefetchCanvasProjectPage}
+                onClick={() => openProject(project.project_id)}
+              >
+                <span className={styles.canvasCardPreview}>
+                  {isOpening ? (
+                    <>
+                      <Spin size='small' />
+                      <small>
+                        {t('videoGeneration.create.gallery.opening', {
+                          defaultValue: '正在打开…',
+                        })}
+                      </small>
+                    </>
+                  ) : (
+                    <>
+                      <Platte size={26} />
+                      <small>
+                        {t('videoGeneration.create.gallery.nodes', {
+                          count: project.node_count,
+                          defaultValue: '{{count}} 个节点',
+                        })}
+                      </small>
+                    </>
+                  )}
                 </span>
-                <Button
-                  type='text'
-                  size='mini'
-                  status='danger'
-                  loading={deletingId === project.project_id}
-                  icon={<Delete size={14} />}
-                  aria-label={t('videoGeneration.create.gallery.deleteAria', {
-                    title: project.title || untitledCanvas,
-                    defaultValue: '删除 {{title}}',
-                  })}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void removeProject(project);
-                  }}
-                />
-              </span>
-            </button>
-          ))}
+                <span className={styles.canvasCardBody}>
+                  <span>
+                    <strong>{project.title || untitledCanvas}</strong>
+                    <small>{formatUpdatedAt(project.updated_at, t)}</small>
+                  </span>
+                  <Button
+                    type='text'
+                    size='mini'
+                    status='danger'
+                    loading={deletingId === project.project_id}
+                    disabled={Boolean(openingId)}
+                    icon={<Delete size={14} />}
+                    aria-label={t('videoGeneration.create.gallery.deleteAria', {
+                      title: project.title || untitledCanvas,
+                      defaultValue: '删除 {{title}}',
+                    })}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void removeProject(project);
+                    }}
+                  />
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
 

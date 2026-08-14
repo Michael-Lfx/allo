@@ -136,6 +136,9 @@ pub struct MediaModelOption {
     pub id: String,
     /// Human-readable catalog name for UI labels.
     pub name: String,
+    /// Optional catalog icon URL from Flowy (`icon` field).
+    #[serde(default)]
+    pub icon: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

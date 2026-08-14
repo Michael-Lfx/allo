@@ -363,7 +363,11 @@ fn to_media_model_option(entry: nomifun_cloud::ClawModelEntry) -> nomifun_api_ty
             n.to_string()
         }
     };
-    nomifun_api_types::MediaModelOption { id, name }
+    nomifun_api_types::MediaModelOption {
+        id,
+        name,
+        icon: entry.icon.trim().to_string(),
+    }
 }
 
 #[cfg(test)]

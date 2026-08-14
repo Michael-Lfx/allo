@@ -5,7 +5,7 @@ import { Popover } from "antd";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { modelCapabilityConfigFor, videoDurationOptions } from "@oc/lib/model-capabilities";
 import { cn } from "@oc/lib/utils";
-import { modelDisplayName, modelOptionLabel, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@oc/stores/use-config-store";
+import { modelDisplayName, modelIconUrl, modelOptionLabel, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@oc/stores/use-config-store";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
 
@@ -152,7 +152,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                                             window.requestAnimationFrame(() => triggerRef.current?.focus());
                                         }}
                                     >
-                                        <ModelLabel config={config} model={model} capability={capability} theme={theme} creationVariant={creationVariant} showPrice={false} />
+                                        <ModelLabel config={config} model={model} capability={capability} theme={theme} showPrice={false} />
                                         {selected ? <Check className="canvas-model-picker-option-check" style={{ color: theme.node.activeStroke }} /> : null}
                                     </button>
                                 );
@@ -169,7 +169,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
     );
 
     return (
-        <div className={cn(fullWidth ? "w-full min-w-0" : "w-fit max-w-full")} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                <div className={cn(fullWidth ? "w-full min-w-0 max-w-full overflow-hidden" : "w-fit max-w-full")} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
             <Popover
                 open={open}
                 onOpenChange={setPickerOpen}
@@ -195,7 +195,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                 >
                     <span className="canvas-model-picker-label flex min-w-0 items-center gap-1.5">
                         <span className="canvas-model-picker-trigger-icon" style={{ background: theme.toolbar.itemHover }}>
-                            <ModelIcon model={current} />
+                            <ModelIcon config={config} model={current} />
                         </span>
                         <span className="min-w-0 flex-1 truncate">{current ? (creationVariant ? modelDisplayName(config, current) : modelOptionLabel(config, current)) : placeholder}</span>
                     </span>
@@ -217,14 +217,12 @@ function ModelLabel({
     model,
     capability,
     theme,
-    creationVariant,
     showPrice,
 }: {
     config: AiConfig;
     model: string;
     capability?: ModelCapability;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
-    creationVariant: boolean;
     showPrice: boolean;
 }) {
     const meta = modelMenuMeta(model, capability);
@@ -233,7 +231,7 @@ function ModelLabel({
     return (
         <span className="flex w-full min-w-0 items-center gap-1.5 overflow-hidden py-0">
             <span className="grid size-6 shrink-0 place-items-center rounded-md" style={{ background: theme.toolbar.itemHover }}>
-                <ModelIcon model={model} />
+                <ModelIcon config={config} model={model} />
             </span>
             <span className="min-w-0 flex-1 overflow-hidden">
                 <span className="block min-w-0 truncate text-[var(--fs-label)] font-medium leading-none">{modelDisplayName(config, model)}</span>
@@ -242,11 +240,6 @@ function ModelLabel({
                 </span>
             </span>
             {showPrice ? <ModelPrice price={modelMenuPrice(config, model)} /> : null}
-            {!creationVariant && meta.time ? (
-                <span className="shrink-0 rounded-full px-1.5 py-0.5 text-[var(--fs-tiny)] tabular-nums" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}>
-                    {meta.time}
-                </span>
-            ) : null}
         </span>
     );
 }
@@ -276,7 +269,7 @@ function ModelPrice({ price, compact = false }: { price: { value: number; unit: 
     );
 }
 
-function modelMenuMeta(model: string, capability?: ModelCapability): { description: string; time?: string } {
+function modelMenuMeta(model: string, capability?: ModelCapability): { description: string } {
     const name = modelOptionName(model).toLowerCase();
     if (capability === "image") {
         if (name.includes("nano banana") || name.includes("nanobanana") || name.includes("imagen")) return { description: "Gemini 高质量图片生成，适合角色和商业成片" };
@@ -286,21 +279,40 @@ function modelMenuMeta(model: string, capability?: ModelCapability): { descripti
         return { description: "图片生成模型" };
     }
     if (capability === "video") {
-        if (name.includes("veo") || name.includes("omni flash") || name.includes("omni-flash")) return { description: "Gemini 镜头生成与图生视频，适合成片流程", time: "3m" };
-        if (name.includes("seedance") || name.includes("sora")) return { description: "镜头生成与图生视频，适合成片流程", time: "3m" };
-        return { description: "视频生成模型", time: "3m" };
+        if (name.includes("veo") || name.includes("omni flash") || name.includes("omni-flash")) return { description: "Gemini 镜头生成与图生视频，适合成片流程" };
+        if (name.includes("seedance") || name.includes("sora")) return { description: "镜头生成与图生视频，适合成片流程" };
+        return { description: "视频生成模型" };
     }
-    if (capability === "audio") return { description: "语音、音效或音乐生成", time: "20s" };
-    if (name.includes("claude")) return { description: "长文本、推理与创意写作", time: "10s" };
-    if (name.includes("gemini")) return { description: "多模态理解与快速文本生成", time: "10s" };
-    if (name.includes("deepseek")) return { description: "推理、代码和结构化文本", time: "10s" };
-    return { description: capability === "text" ? "文本生成模型" : "当前渠道模型", time: "10s" };
+    if (capability === "audio") return { description: "语音、音效或音乐生成" };
+    if (name.includes("claude")) return { description: "长文本、推理与创意写作" };
+    if (name.includes("gemini")) return { description: "多模态理解与快速文本生成" };
+    if (name.includes("deepseek")) return { description: "推理、代码和结构化文本" };
+    return { description: capability === "text" ? "文本生成模型" : "当前渠道模型" };
 }
 
-export function ModelIcon({ model }: { model: string }) {
-    const icon = resolveModelIcon(modelOptionName(model));
-    const monochrome = icon === "/icons/openai.svg" || icon === "/icons/grok.svg";
-    return icon ? <img src={icon} alt="" className={cn("size-3.5 shrink-0", monochrome && "dark:invert")} /> : <Cpu className="size-3.5 shrink-0 opacity-70" />;
+export function ModelIcon({ config, model }: { config?: AiConfig; model: string }) {
+    const catalogIcon = config ? modelIconUrl(config, model) : "";
+    const fallbackIcon = resolveModelIcon(modelOptionName(model));
+    const [src, setSrc] = useState(catalogIcon || fallbackIcon);
+    useEffect(() => {
+        setSrc(catalogIcon || fallbackIcon);
+    }, [catalogIcon, fallbackIcon]);
+    const monochrome = src === "/icons/openai.svg" || src === "/icons/grok.svg";
+    if (!src) return <Cpu className="size-3.5 shrink-0 opacity-70" />;
+    return (
+        <img
+            src={src}
+            alt=""
+            className={cn("size-3.5 shrink-0 object-contain", monochrome && "dark:invert")}
+            onError={() => {
+                if (catalogIcon && src === catalogIcon && fallbackIcon && fallbackIcon !== catalogIcon) {
+                    setSrc(fallbackIcon);
+                    return;
+                }
+                setSrc("");
+            }}
+        />
+    );
 }
 
 export function resolveModelIcon(model: string) {

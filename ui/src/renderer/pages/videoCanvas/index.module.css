@@ -124,6 +124,12 @@
   height: 100%;
 }
 
+.loadingHint {
+  margin: 0;
+  color: var(--color-text-3);
+  font-size: 13px;
+}
+
 .empty {
   display: flex;
   flex-direction: column;

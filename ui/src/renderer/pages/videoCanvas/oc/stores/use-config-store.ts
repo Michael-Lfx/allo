@@ -30,6 +30,7 @@ export type ModelChannel = {
     modelCosts?: Array<{
         model: string;
         displayName?: string;
+        icon?: string;
         capability: ModelCapability;
         protocol?: ModelProtocol;
         billingMode: "fixed_request" | "per_second" | "token";
@@ -87,7 +88,7 @@ export const defaultConfig: AiConfig = {
     channels: [
         {
             id: "default",
-            name: "ÄĹ ÄšÄ˝ĂÂĂÂÄšËĂÂ¤ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ",
+            name: "默认渠道",
             baseUrl: OPENAI_BASE_URL,
             apiKey: "",
             apiFormat: "openai",
@@ -207,17 +208,17 @@ export function filterModelsByCapability(models: string[], capability?: ModelCap
         const channel = decoded ? channels?.find((item) => item.id === decoded.channelId) : undefined;
         const modelName = decoded?.model || modelOptionName(model);
         const costEntry = channel?.modelCosts?.find((item) => item.model === modelName);
-        // ĂĹĂÂĂÂĂÂÄšËÄšËĂĹĂÂĂÂÄÂ¤ÄšĹĂÂĂĹĂÂĂÂÄÂ§ÄšÂĂÂ§ĂÂĂÂĂÂÄĹ ÄšÂ¤ĂÂĂÂÄšĹĂÂĂĹĂÂĂÂĂÂÄšËÄšËĂĹĂÂÄšÂĂĹÄšËĂÂ API ÄÂ§ÄšÂ¤ÄšĹĽÄÂ§ĂÂÄšÄĂÂÄšĹĂÂĂÂĂÂĂÂÄÂ§ĂÂÄšËĂĹĂÂĂÂÄÂ¤ÄšÂĂÂĂĹĂÂÄšÂÄÂ¤ÄšÄ˝ĂÂĂÂĂÂĂÂĂĹĂÂĂÂĂÂĂÂÄšÂÄÂ§ĂÂĂÂ´ĂÂĂÂĂËĂÂĂÂĂÂÄĹ ĂÂĂÂ¤ĂÂÄšĹĂÂ
-        // ÄĹ ĂÂĂÂĂÂĂÂ­ĂÂÄÂ§ĂÂĂÂ¨ĂÂĂÂĂÂĂĹĂÂ°ĂÂ video/image/audio ĂĹĂÂĂÂĂÂÄšËÄšËÄÂ§ĂÂĂÂĂÂĂÂ¨ĂÂĂĹĂÂĂÂĂÂÄšĹĽÄšĹĽĂÂĂÂ ĂÂÄÂ¤ĂÂ¸ÄšÂ text ĂĹĂÂĂÂĂÂĂÂĂÂĂĹĂÂĂËĂÂĂÂĂÂĂÂĂÂÄšĹĄÄÂ¤ĂÂ¸ĂÂĂÂĂÂĂÂĂÂĂÂĂÂ
+        // 协议层优先级最高：协议决定 API 端点，明确属于其他能力时直接排除，
+        // 防止用户将 video/image/audio 协议的模型误标为 text 后混入文本下拉。
         const protocolCapability = modelProtocolCapability(costEntry?.protocol);
         if (protocolCapability) return protocolCapability === capability;
-        // ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂĂÂĂÂĂËĂĹĂÂÄšÂĂĹĂÂĂÂĂÂÄšĹĂÂĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂÄÂ§ÄšÂĂÂ§ĂĹĂÂĂÂĂÂÄšËÄšËĂÂĂÂĂÂ¨ĂÂĂÂĂÂ­ĂÂĂÂĂÂĂĹĂÂĂÂ
+        // 渠道接口层：渠道级协议推断能力
         const channelCapability = capabilityForChannelInterface(channel?.interfaceType);
         if (channelCapability) return channelCapability === capability;
-        // ÄĹ ĂÂĂÂÄÂ§ĂÂÄšËĂÂĂÂĂÂĂĹĂÂĂÂĂĹĂÂĂÂĂÂÄšĹĂÂÄÂ§ĂÂĂÂ¨ĂÂĂÂĂÂĂÂĂÂÄšĹžĂĹÄšĹĂÂĂÂĂÂ ĂÂĂÂÄšËĂÂ°ÄÂ§ĂÂĂÂ capability
+        // 配置能力层：用户显式标记的 capability
         const configuredCapability = costEntry?.capability;
         if (configuredCapability) return configuredCapability === capability;
-        // ĂÂĂÂ¨ĂÂĂĹĂÂĂÂĂĹĂÂĂÂĂĹĂÂÄšĹĽĂĹĂÂĂÂĂĹÄšĹĂÂĂÂÄšĹĂÂĂÂĂÂĂÂĂĹĂÂĂÂĂĹĂÂĂÂÄĹ ĂÂĂÂ
+        // 模型名启发式：最后回退
         return modelMatchesCapability(model, capability);
     });
 }
@@ -268,7 +269,7 @@ export const useConfigStore = create<ConfigStore>()(
                         createModelChannel({
                             ...channel,
                             id: channel.id || `system-${index + 1}`,
-                            name: channel.name || `ÄÂ§ÄšÂÄšÄ˝ÄÂ§ÄšÄ˝ĂÂĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ ${index + 1}`,
+                            name: sanitizeChannelName(channel.name, `系统渠道 ${index + 1}`),
                             scope: "system",
                             apiKey: channel.apiKey || "system",
                         }),
@@ -294,7 +295,7 @@ export const useConfigStore = create<ConfigStore>()(
 );
 
 export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefined = {}) {
-    // ĂĹĂÂĂÂĂĹĂÂ­ĂÂĂĹĂÂĂÂ¨/ĂÂĂÂĂÂ§ÄÂ§ĂÂĂÂĂÂĂÂÄšĹĄĂĹÄšĹşÄšÂ¤ÄÂ§ĂÂĂÂ§ĂĹĂÂÄšĹĽĂÂĂÂĂÂĂÂĂÂÄšĹĽ undefined ĂÂĂÂĂÂÄÂ§ÄšĹÄšÂ configĂÂÄšĹĂÂĂĹĂÂĂÂĂĹÄšÂĂÂÄÂ¤ĂÂ¸ÄšÂ defaultConfigĂÂÄšĹĂÂÄÂ¤ÄšĹşĂÂĂÂÄšĹĽĂÂĂÂĂÂ¸ĂÂĂÂĂÂĂÂÄÂ¤ĂÂ¸ĂÂĂĹĂÂ´ÄšÂ ĂÂÄšÂĂÂ
+    // 坏存储/旧版本快照可能是 undefined 或缺 config，兜底为 defaultConfig，保证渲染不崩溃
     const persistedConfig = (snapshot?.config || {}) as Partial<AiConfig>;
     const config = { ...defaultConfig, ...persistedConfig };
     const hasPersistedChannels = Array.isArray(persistedConfig.channels);
@@ -322,7 +323,7 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
             audioFormat: config.audioFormat || defaultConfig.audioFormat,
             audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
 			audioInstructions: config.audioInstructions || "",
-            // ĂÂĂÂĂÂ§ÄÂ§ĂÂĂÂĂĹĂÂĂÂ¨ĂĹĂÂĂÂ systemPrompt ÄÂ¤ÄšĹĂÂĂÂĂÂĂÂ¨ÄÂ¤ÄšÄ˝ÄšÄ˝ĂĹĂÂĂÂĂÂĂÂĂÂĂÂĂÂĂÂĂÂÄšĹĽĂÂĂÂĂÂĂÂĂÂÄšĹĂÂĂÂĂÂĂÂÄÂ§ĂÂ¤ÄšÂĂÂÄšĹĽĂÂĂĹÄšËĂÂĂĹĂÂÄšÂÄÂ§ĂÂĂÂ°ĂĹĂÂĂÂĂÂĂÂĂÂ operation ÄÂ§ĂÂĂÂĂÂĂÂĂÂĂĹĂÂĂÂÄÂ§ÄšÂ¤ÄšĹĽÄÂ§ÄšĹĂÂĂÂÄšĹĽĂÂĂÂĂÂĂÂ
+            // 旧版本可能把 systemPrompt 写成巨大提示词模板，这里统一清空，避免污染 operation 请求体。
             systemPrompt: "",
             videoSeconds: normalizeVideoDuration(config.videoSeconds),
             vquality: normalizeVideoResolution(config.vquality),
@@ -354,7 +355,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
     const providedBaseUrl = channel?.baseUrl?.trim();
     return {
         id: channel?.id?.trim() || nanoid(),
-        name: channel?.name?.trim() || "ĂÂĂÂĂÂ°ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ",
+        name: sanitizeChannelName(channel?.name, "新渠道"),
         baseUrl: providedBaseUrl || (interfaceType ? defaultBaseUrlForChannelInterface(interfaceType) : defaultBaseUrlForApiFormat(apiFormat)),
         apiKey: channel?.apiKey || "",
         secretKey: channel?.secretKey || "",
@@ -393,7 +394,7 @@ export function modelDisplayName(config: AiConfig, value: string) {
     const channel = resolveModelChannel(config, value);
     const displayName = channel.modelCosts?.find((item) => item.model === model)?.displayName?.trim();
     if (displayName) return displayName;
-    return channel.scope === "system" ? "ÄÂ§ÄšÂÄšÄ˝ÄÂ§ÄšÄ˝ĂÂĂÂĂÂ¨ĂÂĂĹĂÂĂÂ" : model;
+    return channel.scope === "system" ? "系统模型" : model;
 }
 
 export function modelOptionLabel(config: AiConfig, value: string) {
@@ -401,7 +402,14 @@ export function modelOptionLabel(config: AiConfig, value: string) {
     if (!decoded) return modelDisplayName(config, value);
     const channel = config.channels.find((item) => item.id === decoded.channelId);
     const displayName = modelDisplayName(config, value);
-    return channel ? `${displayName}ĂÂÄšĹĂÂ${channel.name}ĂÂÄšĹĂÂ` : displayName;
+    return channel ? `${displayName}（${channel.name}）` : displayName;
+}
+
+
+export function modelIconUrl(config: AiConfig, value: string) {
+    const model = modelOptionName(value);
+    const channel = resolveModelChannel(config, value);
+    return channel.modelCosts?.find((item) => item.model === model)?.icon?.trim() || "";
 }
 
 export function modelOptionsFromChannels(channels: ModelChannel[]) {
@@ -437,7 +445,7 @@ export function resolveModelChannel(config: AiConfig, value: string) {
     const decoded = decodeChannelModel(value);
     const model = decoded?.model || value;
     const matched = decoded ? config.channels.find((channel) => channel.id === decoded.channelId) : config.channels.find((channel) => channel.models.includes(model));
-    return matched || config.channels[0] || createModelChannel({ id: "default", name: "ÄĹ ÄšÄ˝ĂÂĂÂÄšËĂÂ¤ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ", baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName) });
+    return matched || config.channels[0] || createModelChannel({ id: "default", name: "默认渠道", baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName) });
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {
@@ -458,6 +466,19 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
     };
 }
 
+
+/** Legacy UTF-8 mis-decoded labels from an early canvas port. */
+function looksLikeMojibake(value: string) {
+    // Corrupted labels keep Latin-1 leftovers and contain no CJK.
+    return /[\u0080-\u024F]/.test(value) && !/[\u4e00-\u9fff]/.test(value);
+}
+
+function sanitizeChannelName(name: string | undefined, fallback: string) {
+    const trimmed = name?.trim() || "";
+    if (!trimmed || looksLikeMojibake(trimmed)) return fallback;
+    return trimmed;
+}
+
 function normalizeChannels(config: AiConfig, ensureDefault = true) {
     const persistedChannels = Array.isArray(config.channels) ? config.channels : [];
     const channels = persistedChannels
@@ -465,7 +486,7 @@ function normalizeChannels(config: AiConfig, ensureDefault = true) {
             createModelChannel({
                 ...channel,
                 id: channel.id || (index === 0 ? "default" : `channel-${index + 1}`),
-                name: channel.name || (index === 0 ? "ÄĹ ÄšÄ˝ĂÂĂÂÄšËĂÂ¤ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ" : `ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ ${index + 1}`),
+                name: sanitizeChannelName(channel.name, index === 0 ? "默认渠道" : `渠道 ${index + 1}`),
                 models: uniqueRawModels(channel.models || []),
             }),
         )
@@ -474,7 +495,7 @@ function normalizeChannels(config: AiConfig, ensureDefault = true) {
         channels.push(
             createModelChannel({
                 id: "default",
-                name: "ÄĹ ÄšÄ˝ĂÂĂÂÄšËĂÂ¤ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ",
+                name: "默认渠道",
                 baseUrl: config.baseUrl || defaultConfig.baseUrl,
                 apiKey: config.apiKey || "",
                 apiFormat: config.apiFormat || defaultConfig.apiFormat,
@@ -487,7 +508,7 @@ function normalizeChannels(config: AiConfig, ensureDefault = true) {
 
 function isEmptyDefaultChannel(channel: ModelChannel) {
     if (channel.scope === "system") return false;
-    if (channel.id !== "default" || channel.name.trim() !== "ÄĹ ÄšÄ˝ĂÂĂÂÄšËĂÂ¤ĂÂĂÂ¸ĂÂ ÄĹ ĂÂĂÂ" || channel.apiKey.trim()) return false;
+    if (channel.id !== "default" || channel.name.trim() !== "默认渠道" || channel.apiKey.trim()) return false;
     const baseUrl = channel.baseUrl.trim().replace(/\/+$/, "");
     const defaultBaseUrl = defaultConfig.baseUrl.trim().replace(/\/+$/, "");
     if (baseUrl && baseUrl !== defaultBaseUrl) return false;
