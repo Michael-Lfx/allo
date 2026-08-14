@@ -6,8 +6,8 @@ use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService};
 use sqlx::Row;
 
 use crate::generation::{
-    Blueprint, LessonOutput, assemble_pack, build_blueprint_prompt, build_lesson_prompt,
-    generate_blueprint, generate_lesson, sample_base_files, validate_generated_pack,
+    Blueprint, LessonOutput, assemble_pack, build_blueprint_prompt, generate_blueprint,
+    generate_lesson, sample_base_files, validate_generated_pack,
 };
 use crate::models::GenerateCourseRequest;
 use crate::service::LearningService;
@@ -241,7 +241,10 @@ async fn run_lessons(
         .lessons
         .get(lesson_index + 1)
         .map(|next| next.title.as_str());
-    let prompt = build_lesson_prompt(
+    let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
+    let output = generate_lesson(
+        completer,
+        model_override,
         &blueprint,
         module,
         lesson,
@@ -250,16 +253,14 @@ async fn run_lessons(
         total_lessons,
         next_lesson_title,
         excerpt,
-    );
-    let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
-    let output = generate_lesson(completer, model_override, &prompt, &blueprint, module, lesson)
-        .await
-        .map_err(|error| {
-            AppError::UnprocessableEntity(format!(
-                "lesson \"{}\" failed to generate: {error}",
-                lesson.title
-            ))
-        })?;
+    )
+    .await
+    .map_err(|error| {
+        AppError::UnprocessableEntity(format!(
+            "lesson \"{}\" failed to generate: {error}",
+            lesson.title
+        ))
+    })?;
     outputs.push(output);
     let outputs_json = serde_json::to_string(&outputs).map_err(internal)?;
     sqlx::query(
