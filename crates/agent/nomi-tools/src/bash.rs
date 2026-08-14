@@ -653,6 +653,29 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_bash_surfaces_powershell_parser_errors() {
+        let result = tool(std::env::temp_dir())
+            .execute(json!({
+                "command": r#"Write-Output "$_ exists=$(-not [string]::IsNullOrEmpty((Test-Path $_))""#,
+                "timeout": 15_000
+            }))
+            .await;
+
+        assert!(result.is_error, "{}", result.content);
+        assert!(
+            result.content.contains("PowerShell error:"),
+            "parser errors must be visible to the model: {}",
+            result.content
+        );
+        assert!(
+            !result.content.trim_end().ends_with("PTY:\n"),
+            "parser errors must not yield an empty PTY body: {}",
+            result.content
+        );
+    }
+
     #[tokio::test]
     async fn execute_invalid_command_returns_error() {
         let result = tool(std::env::temp_dir())

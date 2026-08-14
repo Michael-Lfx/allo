@@ -2582,6 +2582,18 @@ fn powershell_executable() -> Result<OsString, ProcessError> {
 }
 
 fn powershell_payload(script: &str) -> String {
+    // Embed the agent script as UTF-8 base64 and compile it with
+    // [scriptblock]::Create inside try/catch. Interpolating the source into
+    // `-Command` made ParserErrors fail the whole wrapper before catch ran,
+    // so ConPTY often returned only terminal reset sequences.
+    //
+    // Status checks are appended into the same Create'd scriptblock. Invoking a
+    // Create'd block with `& $block` alone leaves `$?` true after native
+    // failures (e.g. `cmd /c exit 7`); keeping the checks in-source preserves
+    // the previous exit-code semantics.
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let encoded = STANDARD.encode(script.as_bytes());
     format!(
         "$ErrorActionPreference = 'Stop'\n\
          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)\n\
@@ -2590,21 +2602,27 @@ fn powershell_payload(script: &str) -> String {
          $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'\n\
          $global:LASTEXITCODE = $null\n\
          try {{\n\
-         & {{\n\
-         {script}\n\
-         $nomifunSucceeded = $?\n\
-         $nomifunLastExitCode = $global:LASTEXITCODE\n\
-         if ($null -ne $nomifunLastExitCode -and -not $nomifunSucceeded) {{ exit $nomifunLastExitCode }}\n\
-         if (-not $nomifunSucceeded) {{ exit 1 }}\n\
-         }}\n\
-         $commandSucceeded = $?\n\
-         if (-not $commandSucceeded) {{\n\
-           if ($null -ne $global:LASTEXITCODE) {{ exit $global:LASTEXITCODE }}\n\
-           exit 1\n\
-         }}\n\
+         $nomifunScript = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{encoded}'))\n\
+         $nomifunScript = $nomifunScript + @'\n\
+\n\
+$nomifunSucceeded = $?\n\
+$nomifunLastExitCode = $global:LASTEXITCODE\n\
+if ($null -ne $nomifunLastExitCode -and -not $nomifunSucceeded) {{ exit $nomifunLastExitCode }}\n\
+if (-not $nomifunSucceeded) {{ exit 1 }}\n\
+'@\n\
+         $nomifunBlock = [scriptblock]::Create($nomifunScript)\n\
+         & $nomifunBlock\n\
          exit 0\n\
          }} catch {{\n\
-         [Console]::Error.WriteLine($_.Exception.Message)\n\
+         $nomifunMessage = $_.Exception.Message\n\
+         if ($null -ne $_.Exception.ErrorRecord -and $_.Exception.ErrorRecord.InvocationInfo.PositionMessage) {{\n\
+           $nomifunMessage = $nomifunMessage + [Environment]::NewLine + $_.Exception.ErrorRecord.InvocationInfo.PositionMessage\n\
+         }} elseif ($_.InvocationInfo.PositionMessage) {{\n\
+           $nomifunMessage = $nomifunMessage + [Environment]::NewLine + $_.InvocationInfo.PositionMessage\n\
+         }}\n\
+         $nomifunLine = 'PowerShell error: ' + $nomifunMessage\n\
+         [Console]::Out.WriteLine($nomifunLine)\n\
+         [Console]::Error.WriteLine($nomifunLine)\n\
          exit 1\n\
          }}"
     )
@@ -3424,6 +3442,32 @@ mod tests {
 
         assert_eq!(args.last(), Some(&OsString::from(script)));
         assert!(!args.last().unwrap().to_string_lossy().contains("ErrorActionPreference"));
+    }
+
+    #[test]
+    fn powershell_payload_base64_embeds_script_instead_of_interpolating_source() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        let script = r#"Write-Output "$_ = $($env:TEMP)"; Set-Content "$env:TEMP\x" ($a -join "`n")"#;
+        let payload = powershell_payload(script);
+        let encoded = STANDARD.encode(script.as_bytes());
+
+        assert!(
+            payload.contains(&format!("FromBase64String('{encoded}')")),
+            "payload must embed the script as base64: {payload}"
+        );
+        assert!(
+            payload.contains("[scriptblock]::Create($nomifunScript)"),
+            "payload must compile via ScriptBlock.Create so ParserErrors are catchable: {payload}"
+        );
+        assert!(
+            !payload.contains(script),
+            "raw agent source must not be interpolated into -Command: {payload}"
+        );
+        assert!(
+            payload.contains("PowerShell error:"),
+            "catch path must emit a stable error prefix: {payload}"
+        );
     }
 
     #[test]
