@@ -32,16 +32,18 @@ function encodeOptions(models: IMediaModelOption[], channelId: string) {
 }
 
 function costEntries(
-  models: Array<{ id: string; name?: string }>,
+  models: Array<{ id: string; name?: string; icon?: string }>,
   capability: ModelCapability
 ): NonNullable<ModelChannel['modelCosts']> {
   return models
     .map((m) => {
       const model = (m.id || m.name || '').trim();
       if (!model) return null;
+      const icon = m.icon?.trim();
       return {
         model,
         displayName: (m.name || m.id || model).trim(),
+        ...(icon ? { icon } : {}),
         capability,
         billingMode: 'fixed_request' as const,
         unitPriceMicrocredits: 0,
@@ -100,11 +102,11 @@ export async function syncOcConfigFromAlloMediaModels(): Promise<void> {
   ]);
   const mediaCosts = [
     ...costEntries(
-      imageModels.map((m) => ({ id: m.id || m.name, name: m.name })),
+      imageModels.map((m) => ({ id: m.id || m.name, name: m.name, icon: m.icon })),
       'image'
     ),
     ...costEntries(
-      videoModels.map((m) => ({ id: m.id || m.name, name: m.name })),
+      videoModels.map((m) => ({ id: m.id || m.name, name: m.name, icon: m.icon })),
       'video'
     ),
   ];
@@ -126,7 +128,7 @@ export async function syncOcConfigFromAlloMediaModels(): Promise<void> {
   const textOptions = unique(chatModels.map((m) => encodeChannelModel(ALLO_CHAT_CHANNEL_ID, m.id)));
   const alloChatChannel = createModelChannel({
     id: ALLO_CHAT_CHANNEL_ID,
-    name: 'Allo Chat',
+    name: 'Flowy Cloud',
     models: chatRawIds,
     baseUrl: ALLO_CHAT_LLM_BASE_URL,
     apiKey: 'system',

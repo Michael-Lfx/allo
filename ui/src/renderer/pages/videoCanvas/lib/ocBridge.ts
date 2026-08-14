@@ -176,8 +176,11 @@ function docToProject(projectId: string, title: string, doc: CanvasDocument): Ca
   };
 }
 
-export async function hydrateCanvasProjectFromServer(projectId: string): Promise<CanvasProject> {
-  const { meta, doc } = await getCanvasProject(projectId);
+export async function hydrateCanvasProjectFromServer(
+  projectId: string,
+  prefetched?: Awaited<ReturnType<typeof getCanvasProject>>
+): Promise<CanvasProject> {
+  const { meta, doc } = prefetched ?? (await getCanvasProject(projectId));
   const project = docToProject(projectId, meta.title, doc as CanvasDocument);
   const store = useCanvasStore.getState();
   const existing = store.projects.filter((p) => p.id !== projectId);

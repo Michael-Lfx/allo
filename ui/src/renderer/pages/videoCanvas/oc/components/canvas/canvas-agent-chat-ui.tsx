@@ -194,7 +194,18 @@ export function AgentChatComposer({
     const fileInputRef = useRef<HTMLInputElement>(null);
     const canSubmit = !disabled && !sending && Boolean(prompt.trim() || attachments.length);
     return (
-        <div className="px-3 pb-3 pt-1" onWheelCapture={(event) => event.stopPropagation()}>
+        <div
+            className="px-3 pb-3 pt-1"
+            onWheelCapture={(event) => {
+                const target = event.target;
+                // Select/Dropdown 弹层挂在 body，但仍沿 React 树冒泡到本组件；
+                // 捕获阶段 stopPropagation 会阻断弹层内部的滚轮滚动。
+                if (target instanceof Element && target.closest(".ant-select-dropdown, .ant-dropdown, .ant-popover, .ant-picker-dropdown, [data-canvas-wheel-scroll]")) {
+                    return;
+                }
+                event.stopPropagation();
+            }}
+        >
             <div className="rounded-lg border px-3 pb-2.5 pt-3 transition-[border-color,box-shadow] duration-150 focus-within:border-current" style={{ background: theme.node.fill, borderColor: theme.toolbar.border, color: theme.accent.primary, boxShadow: `0 10px 30px ${theme.spatial.shadow}` }}>
                 {attachments.length ? (
                     <div className="thin-scrollbar mb-2 flex gap-2 overflow-x-auto pb-1">

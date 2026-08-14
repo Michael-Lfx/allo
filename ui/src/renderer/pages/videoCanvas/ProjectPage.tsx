@@ -10,6 +10,7 @@ import { Button } from '@arco-design/web-react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import CanvasProjectPage from '@oc/pages/canvas/project';
 import { hydrateCanvasProjectFromServer, syncCanvasProjectToServer } from './lib/ocBridge';
+import { getCanvasProject } from './api';
 import { createCanvasProjectAutosaveController } from './lib/canvasProjectAutosave';
 import VimaxProvenanceBar from './lib/VimaxProvenanceBar';
 import { syncOcConfigFromAlloMediaModels } from './lib/syncOcModels';
@@ -129,11 +130,13 @@ const VideoCanvasProjectPage: React.FC = () => {
               }
             });
           });
+        // Overlap network fetch with local persist hydrate — the document is
+        // needed to render the workspace. Models are only needed when a
+        // generation control is used, so do not hold the canvas behind an
+        // unavailable or slow catalog.
+        const fetchPromise = getCanvasProject(canvasId);
         await waitHydrated();
-        // The document is needed to render the workspace. Models are only
-        // needed when a generation control is used, so do not hold the canvas
-        // behind an unavailable or slow catalog.
-        await hydrateCanvasProjectFromServer(canvasId);
+        await hydrateCanvasProjectFromServer(canvasId, await fetchPromise);
         if (cancelled) return;
         setReady(true);
         void syncModelCatalog(generation);
@@ -192,8 +195,11 @@ const VideoCanvasProjectPage: React.FC = () => {
 
   if (!ready || !canvasId) {
     return (
-      <div className={styles.centerFull}>
+      <div className={styles.centerFull} role='status' aria-live='polite'>
         <Spin size='large' />
+        <p className={styles.loadingHint}>
+          {t('videoCanvas.project.loading', { defaultValue: '正在加载画布…' })}
+        </p>
       </div>
     );
   }

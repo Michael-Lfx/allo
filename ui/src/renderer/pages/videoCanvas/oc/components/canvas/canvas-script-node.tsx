@@ -192,7 +192,7 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, scale, mentionR
             <div className="flex h-9 shrink-0 items-center justify-center border-b" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
                 <button type="button" className="inline-flex h-7 items-center gap-1 rounded px-2 text-xs font-medium outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ "--tw-ring-color": theme.node.muted } as CSSProperties} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onAddRow(); }}><Plus className="size-3.5" />添加行</button>
             </div>
-            <div className="relative grid shrink-0 grid-rows-[minmax(0,1fr)_28px] gap-1.5 rounded-b-[17px] p-2.5" style={{ height: composerHeight, background: theme.node.panel }}>
+            <div className="relative grid shrink-0 grid-rows-[minmax(0,1fr)_1.75rem] gap-1.5 rounded-b-[17px] p-2.5" style={{ height: composerHeight, background: theme.node.panel }}>
                 <CanvasResourceMentionTextarea
                     rows={1}
                     references={mentionReferences}
@@ -217,12 +217,13 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, scale, mentionR
                     onPointerDown={(event) => event.stopPropagation()}
                     onWheel={(event) => event.stopPropagation()}
                 />
-                <div className="flex min-w-0 items-center justify-end gap-2" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                <div className="flex h-7 min-w-0 items-center justify-end gap-1.5 overflow-hidden" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
                     <Tooltip title="脚本生成需要文本理解与结构化输出能力，仅展示文本模型；视频/图片模型无法生成分镜表" placement="topLeft">
-                        <div className="mr-auto min-w-36 max-w-56 flex-1">
+                        <div className="mr-auto min-w-0 max-w-[13rem] flex-1 overflow-hidden">
                             <ModelPicker
-                                className="!h-7 !w-full !min-w-0 !text-[var(--fs-tiny)] !font-normal [&_img]:!size-3 [&_.lucide]:!size-3"
+                                className="!h-7 !max-h-7 !w-full !min-w-0 !max-w-full !text-[var(--fs-tiny)] !font-normal [&_.canvas-model-picker-trigger-icon]:!size-5 [&_img]:!size-3 [&_.lucide]:!size-3"
                                 fullWidth
+                                variant="creation"
                                 config={generationConfig}
                                 value={generationConfig.model}
                                 capability="text"
@@ -233,8 +234,8 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, scale, mentionR
                             />
                         </div>
                     </Tooltip>
-                    {simpleMode ? <span className="text-[var(--fs-label)]" style={{ color: theme.node.muted }}>自动拆分 · 默认时长</span> : <Select<StoryboardShotCount>
-                        className="min-w-32"
+                    {simpleMode ? <span className="shrink-0 truncate text-[var(--fs-label)]" style={{ color: theme.node.muted }}>自动拆分 · 默认时长</span> : <Select<StoryboardShotCount>
+                        className="w-[7.5rem] shrink-0"
                         size="small"
                         value={shotCount}
                         disabled={node.metadata?.status === "loading"}
@@ -243,7 +244,7 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, scale, mentionR
                         onChange={onShotCountChange}
                     />}
                     {simpleMode ? null : <Select<StoryboardShotDuration>
-                        className="min-w-36"
+                        className="w-[7.5rem] shrink-0"
                         size="small"
                         value={shotDuration}
                         disabled={node.metadata?.status === "loading"}
@@ -258,8 +259,10 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, scale, mentionR
                         onChange={onShotDurationChange}
                     />}
                     <Button
+                        size="small"
                         shape="circle"
-                        icon={<Send className="size-4" />}
+                        className="!h-7 !w-7 !min-w-7 shrink-0"
+                        icon={<Send className="size-3.5" />}
                         disabled={!prompt.trim() || node.metadata?.status === "loading"}
                         loading={node.metadata?.status === "loading"}
                         style={{ background: theme.toolbar.itemHover, borderColor: theme.node.stroke, color: theme.node.text }}

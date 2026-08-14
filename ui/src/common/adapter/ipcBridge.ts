@@ -7580,6 +7580,8 @@ export interface IMediaTurnCreditUsage {
 export interface IMediaModelOption {
   id: string;
   name: string;
+  /** Optional catalog icon URL from Flowy (`icon` field). */
+  icon?: string;
 }
 
 export interface IMediaModelList {
