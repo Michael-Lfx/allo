@@ -1,0 +1,122 @@
+.list {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+}
+
+.item {
+  min-width: 0;
+}
+
+.card {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--color-border-2, #e5e6eb);
+  border-radius: 12px;
+  background: var(--color-bg-1, #fff);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+button.card {
+  cursor: pointer;
+  transition: border-color 0.16s ease;
+}
+
+button.card:hover {
+  border-color: color-mix(in srgb, var(--color-primary-6, #165dff) 36%, var(--color-border-2, #e5e6eb));
+}
+
+button.card:focus-visible {
+  outline: 2px solid var(--color-primary-6, #165dff);
+  outline-offset: 2px;
+}
+
+.header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.title {
+  margin: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--color-text-1, #1d2129);
+}
+
+.kind {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border: 1px solid var(--color-border-2, #e5e6eb);
+  border-radius: 999px;
+  background: var(--color-fill-1, #f7f8fa);
+  color: var(--color-text-3, #86909c);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 18px;
+  text-transform: uppercase;
+}
+
+.kindIcon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  color: currentColor;
+}
+
+.kindIcon svg {
+  display: block;
+}
+
+.snippet {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-text-2, #4e5969);
+}
+
+.source {
+  margin: 0;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-text-3, #86909c);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  margin: 0;
+  color: var(--color-text-3, #86909c);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button.card {
+    transition: none;
+  }
+}

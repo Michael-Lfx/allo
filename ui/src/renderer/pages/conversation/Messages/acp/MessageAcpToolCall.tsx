@@ -2,38 +2,18 @@
 
 import type { IMessageAcpToolCall } from '@/common/chat/chatLib';
 import { toDisplayText } from '@/common/chat/displayText';
+import { normalizeAcpToolCall } from '@/common/chat/normalizeToolCall';
 import FileChangesPanel from '@/renderer/components/base/FileChangesPanel';
+import { ToolChip } from '@renderer/components/beautifulUi/toolChips/ToolChips';
+import { chipDetailOmittingCommand, resolveToolChipStatus } from '@renderer/components/beautifulUi/toolChips/toolChipModel';
 import { useDiffPreviewHandlers } from '@/renderer/hooks/file/useDiffPreviewHandlers';
 import { parseDiff } from '@/renderer/utils/file/diffUtils';
-import { Card, Tag } from '@arco-design/web-react';
 import { createTwoFilesPatch } from 'diff';
 import React, { useMemo } from 'react';
 import MarkdownView from '@renderer/components/Markdown';
 import LocalImageView from '@/renderer/components/media/LocalImageView';
 import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 
-const StatusTag: React.FC<{ status: string }> = ({ status }) => {
-  const statusText = toDisplayText(status);
-  const getTagProps = () => {
-    switch (statusText) {
-      case 'pending':
-        return { color: 'blue', text: 'Pending' };
-      case 'in_progress':
-        return { color: 'orange', text: 'In Progress' };
-      case 'completed':
-        return { color: 'green', text: 'Completed' };
-      case 'failed':
-        return { color: 'red', text: 'Failed' };
-      default:
-        return { color: 'gray', text: statusText };
-    }
-  };
-
-  const { color, text } = getTagProps();
-  return <Tag color={color}>{text}</Tag>;
-};
-
-// Diff content display as a separate component to ensure hooks are called unconditionally
 const DiffContentView: React.FC<{ old_text: string; new_text: string; path: string }> = ({
   old_text,
   new_text,
@@ -143,50 +123,43 @@ const MessageAcpToolCall: React.FC<{ message: IMessageAcpToolCall }> = ({ messag
     return null;
   }
   const { update } = content;
-  const { kind, title, status, rawInput, content: diffContent } = update;
-
-  const getKindDisplayName = (kind: string) => {
-    switch (kind) {
-      case 'edit':
-        return 'File Edit';
-      case 'read':
-        return 'File Read';
-      case 'execute':
-        return 'Shell Command';
-      default:
-        return kind;
-    }
-  };
+  const { rawInput, content: diffContent, status } = update;
+  const normalized = normalizeAcpToolCall(message);
+  if (!normalized) {
+    return null;
+  }
 
   return (
-    <Card className='w-full mb-2' size='small' bordered>
-      <div className='flex items-start gap-3'>
-        <div className='flex-1 min-w-0'>
-          <div className='flex items-center gap-2 mb-2'>
-            <span className='font-medium text-t-primary'>{toDisplayText(title) || getKindDisplayName(toDisplayText(kind))}</span>
-            <StatusTag status={toDisplayText(status)} />
-          </div>
-          {rawInput && (
-            <div className='text-sm'>
-              {typeof rawInput === 'string' ? (
-                <MarkdownView fontSize={MESSAGE_BODY_FONT_SIZE} lineHeight={MESSAGE_BODY_LINE_HEIGHT}>
-                  {`\`\`\`\n${rawInput}\n\`\`\``}
-                </MarkdownView>
-              ) : (
-                <pre className='bg-1 p-2 rounded text-xs overflow-x-auto'>{toDisplayText(rawInput)}</pre>
-              )}
-            </div>
-          )}
-          {diffContent && diffContent.length > 0 && (
-            <div>
-              {diffContent.map((content, index) => (
-                <ContentView key={index} content={content} terminalSuccess={status === 'completed'} />
-              ))}
-            </div>
+    <div className='flex flex-col gap-6px'>
+      <ToolChip
+        id={normalized.key || message.id}
+        name={normalized.name}
+        detail={chipDetailOmittingCommand(normalized.name, normalized.description)}
+        status={resolveToolChipStatus({
+          status: normalized.status,
+          skipped: normalized.skipped,
+          notExecutedReason: normalized.notExecutedReason,
+        })}
+      />
+      {rawInput && (
+        <div className='text-sm'>
+          {typeof rawInput === 'string' ? (
+            <MarkdownView fontSize={MESSAGE_BODY_FONT_SIZE} lineHeight={MESSAGE_BODY_LINE_HEIGHT}>
+              {`\`\`\`\n${rawInput}\n\`\`\``}
+            </MarkdownView>
+          ) : (
+            <pre className='bg-1 p-2 rounded text-xs overflow-x-auto'>{toDisplayText(rawInput)}</pre>
           )}
         </div>
-      </div>
-    </Card>
+      )}
+      {diffContent && diffContent.length > 0 && (
+        <div>
+          {diffContent.map((item, index) => (
+            <ContentView key={index} content={item} terminalSuccess={status === 'completed'} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 };
 

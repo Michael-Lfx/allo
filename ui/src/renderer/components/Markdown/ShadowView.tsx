@@ -48,7 +48,10 @@ const createInitStyle = (
     color: var(--text-primary);
     max-width: 100%;
   }
-  .markdown-shadow-body>p:first-child
+  .markdown-shadow-body>p:first-child,
+  .markdown-shadow-body>h1:first-child,
+  .markdown-shadow-body>h2:first-child,
+  .markdown-shadow-body>h3:first-child
   {
     margin-top:0px;
   }
@@ -84,22 +87,22 @@ const createInitStyle = (
     font-size: ${usesExplicitTypography ? '18px' : '24px'};
     line-height: ${usesExplicitTypography ? '26px' : '32px'};
     font-weight: bold;
-    margin-top: ${usesExplicitTypography ? '14px' : '20px'};
-    margin-bottom: ${usesExplicitTypography ? '8px' : '12px'};
+    margin-top: ${usesExplicitTypography ? '10px' : '20px'};
+    margin-bottom: ${usesExplicitTypography ? '6px' : '12px'};
   }
   h2{
     font-size: ${usesExplicitTypography ? '16px' : '18px'};
     line-height: ${usesExplicitTypography ? '24px' : '26px'};
     font-weight: 600;
-    margin-top: ${usesExplicitTypography ? '12px' : '20px'};
-    margin-bottom: ${usesExplicitTypography ? '8px' : '12px'};
+    margin-top: ${usesExplicitTypography ? '10px' : '20px'};
+    margin-bottom: ${usesExplicitTypography ? '6px' : '12px'};
   }
   h3{
     font-size: ${usesExplicitTypography ? '15px' : '16px'};
     line-height: ${usesExplicitTypography ? '22px' : '24px'};
     font-weight: 600;
-    margin-top: ${usesExplicitTypography ? '10px' : '16px'};
-    margin-bottom: ${usesExplicitTypography ? '6px' : '10px'};
+    margin-top: ${usesExplicitTypography ? '8px' : '16px'};
+    margin-bottom: ${usesExplicitTypography ? '4px' : '10px'};
   }
   h4,h5,h6{
     font-size: ${usesExplicitTypography ? '14px' : '15px'};
@@ -116,6 +119,26 @@ const createInitStyle = (
   .markdown-shadow-body>p:last-child{
     margin-bottom:0px;
   }
+  .markdown-shadow-body > :last-child::after {
+    content: var(--beautiful-ui-streaming-caret-content, none);
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    margin-left: 2px;
+    vertical-align: -0.12em;
+    background: var(--beautiful-ui-streaming-caret-bg, var(--color-text-1, #1d2129));
+    box-shadow: var(--beautiful-ui-streaming-caret-shadow, none);
+    animation: var(--beautiful-ui-streaming-caret-animation, none);
+  }
+  @keyframes streaming-caret {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0;
+    }
+  }
   ol, ul {
     padding-inline-start:24px;
   }
@@ -129,11 +152,12 @@ const createInitStyle = (
     color: var(--text-primary);
   }
   .markdown-shadow-body code:not(pre code) {
-    background: var(--bg-3);
-    color: var(--text-primary);
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-size: 0.92em;
+    background: none;
+    color: inherit;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    font-size: 0.94em;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   blockquote {
@@ -144,34 +168,40 @@ const createInitStyle = (
   }
   pre {
     max-width: 100%;
-    overflow-x: auto;
+    // overflow-x: auto;
     margin-block-start: 8px;
     margin-block-end: 8px;
   }
   /* Code block horizontal scrollbar — blends with bg-2 */
   pre,
-  .hljs {
+  .hljs,
+  .markdown-code-content {
     scrollbar-width: thin;
     scrollbar-color: ${currentTheme === 'dark' ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.1)'} transparent;
   }
   pre::-webkit-scrollbar,
-  .hljs::-webkit-scrollbar {
+  .hljs::-webkit-scrollbar,
+  .markdown-code-content::-webkit-scrollbar {
     height: 6px;
     background: transparent;
   }
   pre::-webkit-scrollbar-track,
   .hljs::-webkit-scrollbar-track,
+  .markdown-code-content::-webkit-scrollbar-track,
   pre::-webkit-scrollbar-corner,
-  .hljs::-webkit-scrollbar-corner {
+  .hljs::-webkit-scrollbar-corner,
+  .markdown-code-content::-webkit-scrollbar-corner {
     background: transparent;
   }
   pre::-webkit-scrollbar-thumb,
-  .hljs::-webkit-scrollbar-thumb {
+  .hljs::-webkit-scrollbar-thumb,
+  .markdown-code-content::-webkit-scrollbar-thumb {
     background-color: ${currentTheme === 'dark' ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.1)'};
     border-radius: 3px;
   }
   pre::-webkit-scrollbar-thumb:hover,
-  .hljs::-webkit-scrollbar-thumb:hover {
+  .hljs::-webkit-scrollbar-thumb:hover,
+  .markdown-code-content::-webkit-scrollbar-thumb:hover {
     background-color: ${currentTheme === 'dark' ? 'rgba(255, 255, 255, 0.28)' : 'rgba(0, 0, 0, 0.2)'};
   }
   .markdown-code-block {
@@ -377,19 +407,86 @@ const createInitStyle = (
     max-width: 100%;
     height: auto;
   }
-   /* Table border styles */
-  table {
-    border-collapse: collapse;
-    th{
-      padding: 8px;
-      border: 1px solid var(--bg-3);
-      background-color: var(--bg-1);
-      font-weight: bold;
+  .markdown-shadow-body > .markdown-table-wrap:first-child {
+    margin-top: 0;
+  }
+  .markdown-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    margin: 12px 0;
+    border: 1px solid var(--color-border-2, var(--bg-3));
+    border-radius: 12px;
+    background: var(--color-bg-1, var(--bg-1));
+    scrollbar-width: thin;
+    scrollbar-color: ${currentTheme === 'dark' ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.1)'} transparent;
+  }
+  .markdown-table-wrap::-webkit-scrollbar {
+    height: 6px;
+    background: transparent;
+  }
+  .markdown-table-wrap::-webkit-scrollbar-track,
+  .markdown-table-wrap::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  .markdown-table-wrap::-webkit-scrollbar-thumb {
+    background-color: ${currentTheme === 'dark' ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.1)'};
+    border-radius: 3px;
+  }
+  .markdown-table-wrap::-webkit-scrollbar-thumb:hover {
+    background-color: ${currentTheme === 'dark' ? 'rgba(255, 255, 255, 0.28)' : 'rgba(0, 0, 0, 0.2)'};
+  }
+  .markdown-table-wrap table {
+    width: 100%;
+    min-width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  .markdown-table-wrap th,
+  .markdown-table-wrap td {
+    padding: 8px 12px;
+    border: 0;
+    border-bottom: 1px solid var(--color-border-2, var(--bg-3));
+    vertical-align: top;
+  }
+  .markdown-table-wrap th {
+    background: var(--color-fill-1, var(--bg-1));
+    color: var(--color-text-3, var(--text-secondary));
+    font-size: 0.85em;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+  .markdown-table-wrap td {
+    color: var(--color-text-1, var(--text-primary));
+    overflow-wrap: anywhere;
+  }
+  .markdown-table-wrap tbody tr:last-child td {
+    border-bottom: 0;
+  }
+  .markdown-table-wrap th:first-child,
+  .markdown-table-wrap td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    font-weight: 600;
+    background: var(--color-bg-1, var(--bg-1));
+    box-shadow: 1px 0 0 var(--color-border-2, var(--bg-3));
+  }
+  .markdown-table-wrap thead th:first-child {
+    z-index: 2;
+    background: var(--color-fill-1, var(--bg-1));
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .markdown-table-wrap tbody tr:hover td,
+    .markdown-table-wrap tbody tr:hover td:first-child {
+      background: var(--color-fill-1, var(--bg-2));
+      transition: background 0.12s ease;
     }
-    td{
-        padding: 8px;
-        border: 1px solid var(--bg-3);
-        min-width: 120px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .markdown-table-wrap tbody tr:hover td {
+      transition: none;
     }
   }
   /* Inline code should wrap on small screens to avoid horizontal overflow */
@@ -397,6 +494,14 @@ const createInitStyle = (
     word-break: break-word;
     overflow-wrap: anywhere;
     max-width: 100%;
+  }
+  .markdown-shadow-body .hljs,
+  .markdown-shadow-body .hljs code {
+    max-width: 100%;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   /* Allow KaTeX to use its own line-height for proper fraction/superscript rendering */
   .katex,
@@ -428,6 +533,11 @@ const createInitStyle = (
   @media (prefers-reduced-motion: reduce) {
     .loading {
       animation: none;
+    }
+    .markdown-shadow-body > :last-child::after {
+      animation: none;
+      background: var(--color-text-1, #1d2129);
+      box-shadow: none;
     }
   }
 
@@ -536,6 +646,9 @@ const ShadowView = ({
         '--bg-1': computedStyle.getPropertyValue('--bg-1'),
         '--bg-2': computedStyle.getPropertyValue('--bg-2'),
         '--bg-3': computedStyle.getPropertyValue('--bg-3'),
+        '--color-bg-1': computedStyle.getPropertyValue('--color-bg-1'),
+        '--color-border-2': computedStyle.getPropertyValue('--color-border-2'),
+        '--color-fill-1': computedStyle.getPropertyValue('--color-fill-1'),
         '--color-text-1': computedStyle.getPropertyValue('--color-text-1'),
         '--color-text-2': computedStyle.getPropertyValue('--color-text-2'),
         '--color-text-3': computedStyle.getPropertyValue('--color-text-3'),

@@ -50,6 +50,7 @@ import videoGeneration from './videoGeneration.json';
 import videoCanvas from './videoCanvas.json';
 import ssh from './ssh.json';
 import miniApps from './miniApps.json';
+import beautifulUiPreview from './beautifulUiPreview.json';
 
 export default {
   common,
@@ -99,4 +100,5 @@ export default {
   videoCanvas,
   ssh,
   miniApps,
+  beautifulUiPreview,
 };

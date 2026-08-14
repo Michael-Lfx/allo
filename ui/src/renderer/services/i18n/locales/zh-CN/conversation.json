@@ -119,6 +119,9 @@
   "noAgentsAvailable": "没有可用的 Agent",
   "noModelConfigured": "还没有可用模型。请在弹窗中添加供应商，完成后即可发送。",
   "createFailed": "创建会话失败",
+  "skeleton": {
+    "opening": "正在打开对话"
+  },
   "pending": {
     "creating": "正在准备任务…",
     "startingAutoWork": "正在启动自动工作…",
@@ -654,7 +657,14 @@
   },
   "thinking": {
     "complete": "思考完成",
-    "label": "思考中..."
+    "label": "思考中...",
+    "search": "搜索中...",
+    "searchComplete": "搜索完成",
+    "coding": "编码中...",
+    "codingComplete": "编码完成",
+    "waiting": "正在等待模型开始输出",
+    "failed": "思考失败",
+    "canceled": "思考已取消"
   },
   "skills": {
     "loaded": "已加载技能",

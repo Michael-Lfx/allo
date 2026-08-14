@@ -1,0 +1,319 @@
+{
+  "title": "Beautiful UI preview",
+  "subtitle": "Isolated catalog with fake data. Thinking, Streaming Text, Tool Chips, Task Rows, Approval Card, Recommendation Card, Context Cards, Code Block, Diff Table, Selection Actions, and Loading State are also wired into conversation.",
+  "catalogLabel": "Components",
+  "previewLabel": "Preview",
+  "variantLabel": "Variant",
+  "runStateLabel": "Run state",
+  "layoutLabel": "Layout",
+  "contentLabel": "Content",
+  "themeLabel": "Theme",
+  "theme": {
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "thinking": "Thinking",
+  "thoughtComplete": "Thought complete",
+  "waiting": "Waiting",
+  "failed": "Failed",
+  "canceled": "Canceled",
+  "emptyTrace": "No trace yet",
+  "emptyChunks": "No chunks",
+  "notWired": "This primitive is listed only. It is not wired in this first cut.",
+  "status": {
+    "preview": "Preview",
+    "pending": "Not started",
+    "skipped": "Skipped"
+  },
+  "variants": {
+    "steps": "Steps",
+    "reasoning": "Reasoning",
+    "search": "Search",
+    "coding": "Coding"
+  },
+  "runState": {
+    "thinking": "In progress",
+    "waiting": "Waiting",
+    "done": "Done",
+    "failed": "Failed",
+    "canceled": "Canceled"
+  },
+  "layouts": {
+    "standalone": "Standalone",
+    "process": "Process"
+  },
+  "content": {
+    "typical": "Typical",
+    "empty": "Empty",
+    "long": "Long",
+    "mixed": "All statuses"
+  },
+  "components": {
+    "loadingState": "Loading State",
+    "thinking": "Thinking",
+    "streamingText": "Streaming Text",
+    "approvalCard": "Approval Card",
+    "toolChips": "Tool Chips",
+    "taskRows": "Task Rows",
+    "chat": "Chat",
+    "promptBar": "Prompt Bar",
+    "recommendationCard": "Recommendation Card",
+    "contextCards": "Context Cards",
+    "diffTable": "Diff Table",
+    "recordsTable": "Records Table",
+    "filterTable": "Filter Table",
+    "sidebarNav": "Sidebar Nav",
+    "search": "Search",
+    "insightCards": "Insight Cards",
+    "codeBlock": "Code Block",
+    "fineTuneCard": "Fine-tune Card",
+    "selectionActions": "Selection Actions"
+  },
+  "fixtures": {
+    "steps": {
+      "1": {
+        "title": "Read weekend POS export",
+        "detail": "3 files · pistachio, mint chip, waffle cones"
+      },
+      "2": {
+        "title": "Score stockout risk",
+        "detail": "Pistachio well drops below 40 scoops by 16:00"
+      },
+      "3": {
+        "title": "Draft Saturday churn order",
+        "detail": "Churn pistachio first so the batch can firm before the rush"
+      }
+    },
+    "reasoning": {
+      "1": {
+        "title": "Weekend pistachio still leads",
+        "detail": "Saturday afternoon is the peak. Churn early so the mix is firm before the line forms."
+      }
+    },
+    "search": {
+      "1": {
+        "title": "Vendor onboarding SOP.pdf",
+        "detail": "Cold-chain certification must be verified before adding a dairy."
+      },
+      "2": {
+        "title": "Sales velocity export.csv",
+        "detail": "Q4: pistachio +18%, vanilla +6%, rocky road −11%"
+      }
+    },
+    "coding": {
+      "1": {
+        "title": "Read churn.ts",
+        "detail": "src/kitchen/churn.ts"
+      },
+      "2": {
+        "title": "Edit reorder.ts",
+        "detail": "src/inventory/reorder.ts"
+      }
+    },
+    "long": {
+      "title": "Trace the Saturday pistachio rush",
+      "detail": "The weekend pistachio rush is not a one-off spike.\nThree summers of POS rows show Saturday 14:00–17:00 as the peak window.\nIf the batch is churned after lunch, it will still be soft when the line forms.\nChurning first thing Saturday gives the mix four hours to firm in the well.\nThat also leaves a buffer if the dasher needs a rinse between pistachio and mint."
+    },
+    "toolChips": {
+      "writeFile": {
+        "name": "writeFile",
+        "detail": "src/kitchen/churn.ts"
+      },
+      "runCommand": {
+        "name": "runCommand",
+        "detail": "bun test"
+      },
+      "search": {
+        "name": "search",
+        "detail": "Vendor onboarding SOP.pdf"
+      },
+      "long": {
+        "name": "replace",
+        "detail": "crates/backend/nomifun-conversation/src/stream_relay.rs"
+      }
+    },
+    "taskRows": {
+      "verify": {
+        "title": "Verified vendor records",
+        "detail": "12 suppliers",
+        "ids": "Matched tax and contact IDs",
+        "idsDetail": "12/12",
+        "stale": "Flagged stale records",
+        "staleDetail": "0"
+      },
+      "reorder": {
+        "title": "Build reorder task list",
+        "detail": "7 SKUs",
+        "read": "Reading POS export",
+        "readDetail": "3 files",
+        "score": "Scoring stockout risk",
+        "scoreDetail": "68%"
+      },
+      "draft": {
+        "title": "Draft supplier emails",
+        "detail": "2 messages",
+        "cone": "Cone supplier follow-up",
+        "coneDetail": "draft",
+        "pistachio": "Pistachio reorder note",
+        "pistachioDetail": "draft"
+      },
+      "long": {
+        "title": "Trace the Saturday pistachio rush across three summers of POS",
+        "detail": "Saturday 14:00–17:00 is the peak window. Churn first so the well is firm before the line forms."
+      }
+    },
+    "approvalCard": {
+      "title": "Which flavor should we churn first for Saturday?",
+      "confirm": "Confirm",
+      "options": {
+        "pistachio": "Pistachio — still leads the weekend rush",
+        "mint": "Mint chip — keep a second well ready",
+        "cone": "Waffle cones — restock before the line forms"
+      },
+      "descriptions": {
+        "edit": "Apply this reorder to Saturday's pistachio well.",
+        "exec": "Run the churn command for the weekend batch.",
+        "info": "Read the vendor onboarding SOP before adding a dairy.",
+        "mcp": "Allow the inventory MCP to score stockout risk.",
+        "plan": "Approve the Saturday churn plan, then start collaboration."
+      },
+      "children": {
+        "edit": "reorder.ts · pistachio well target 180 scoops",
+        "exec": "churn --flavor pistachio --batch saturday",
+        "info": "Vendor onboarding SOP.pdf · cold-chain certification",
+        "mcp": "inventory.score_stockout · pistachio, mint chip, waffle cones",
+        "plan": "Churn pistachio first so the batch can firm before 14:00."
+      }
+    },
+    "streamingText": {
+      "typical": "Saturday pistachio still leads the weekend rush. Churn first so the well is firm before 14:00.",
+      "long": "The weekend pistachio rush is not a one-off spike.\nThree summers of POS rows show Saturday 14:00–17:00 as the peak window.\nIf the batch is churned after lunch, it will still be soft when the line forms.\nChurning first thing Saturday gives the mix four hours to firm in the well.\nThat also leaves a buffer if the dasher needs a rinse between pistachio and mint.",
+      "sources": "POS export · 3 summers",
+      "followUps": {
+        "scoops": "How many scoops by 16:00?",
+        "churn": "When should we churn mint?"
+      }
+    },
+    "contextCards": {
+      "pdf": {
+        "title": "Vendor onboarding rule",
+        "snippet": "Cold-chain certification must be verified before a new dairy can be added to the reorder workflow.",
+        "source": "Dairy Onboarding SOP.pdf"
+      },
+      "csv": {
+        "title": "Seasonal demand row",
+        "snippet": "Q4 velocity table: pistachio +18%, vanilla +6%, rocky road −11%; retire flavors below 40 scoops weekly.",
+        "source": "Sales Velocity Export.csv"
+      }
+    },
+    "codeBlock": {
+      "filename": "churn.ts",
+      "language": "TypeScript",
+      "typical": "export const churnSaturday = (flavor: string): number => {\n  if (flavor === 'pistachio') return 180;\n  return 90;\n};\n"
+    },
+    "diffTable": {
+      "title": "2 file changes",
+      "churn": {
+        "title": "churn.ts",
+        "path": "src/kitchen/churn.ts"
+      },
+      "reorder": {
+        "title": "reorder.ts",
+        "path": "src/inventory/reorder.ts"
+      }
+    },
+    "recommendationCard": {
+      "title": "Want me to churn pistachio first on Saturday?",
+      "body": "Churn pistachio first so the well is firm before 14:00. Lead time from maple-orbit is 7 days.",
+      "actions": {
+        "accept": "Accept",
+        "dismiss": "Dismiss"
+      },
+      "alternatives": {
+        "mint": "Switch to mint chip",
+        "restock": "Full restock across every SKU"
+      }
+    },
+    "selectionActions": {
+      "sample": "Saturday pistachio still leads the weekend rush.",
+      "explain": "Explain",
+      "improve": "Improve",
+      "shorten": "Shorten",
+      "tone": "Tone",
+      "grammar": "Grammar"
+    },
+    "loadingState": {
+      "drive": "Churning",
+      "dots": "Thinking",
+      "orbit": "Searching"
+    }
+  },
+  "contextCardSourceKinds": {
+    "pdf": "PDF",
+    "csv": "CSV",
+    "md": "MD",
+    "code": "Code",
+    "other": "Other"
+  },
+  "toolChipStatusLabel": "Chip status",
+  "toolChipLayoutLabel": "Chip layout",
+  "toolChipStatuses": {
+    "pending": "Pending",
+    "running": "Running",
+    "completed": "Completed",
+    "error": "Error",
+    "canceled": "Canceled",
+    "skipped": "Skipped",
+    "invalid_arguments": "Invalid args"
+  },
+  "toolChipLayouts": {
+    "row": "Row",
+    "stack": "Stack"
+  },
+  "taskRowStatusLabel": "Row status",
+  "taskRowLayoutLabel": "Row layout",
+  "taskRowStatuses": {
+    "running": "Running",
+    "waiting": "Waiting",
+    "completed": "Completed",
+    "failed": "Failed",
+    "canceled": "Canceled"
+  },
+  "taskRowLayouts": {
+    "capsules": "Capsules",
+    "list": "List"
+  },
+  "approvalKindLabel": "Approval kind",
+  "approvalKinds": {
+    "edit": "Edit",
+    "exec": "Exec",
+    "info": "Info",
+    "mcp": "MCP",
+    "plan": "Plan"
+  },
+  "streamingStatusLabel": "Stream status",
+  "streamingStatuses": {
+    "streaming": "Streaming",
+    "done": "Done"
+  },
+  "recommendationVariantLabel": "Recommendation state",
+  "recommendationVariants": {
+    "high": "High confidence",
+    "alternatives": "Alternatives",
+    "accept": "Accept",
+    "review": "Needs review",
+    "none": "No signal"
+  },
+  "recommendationTones": {
+    "high": "High confidence",
+    "alternatives": "Alternatives",
+    "review": "Needs review",
+    "none": "No signal"
+  },
+  "loadingVariantLabel": "Loading variant",
+  "loadingVariants": {
+    "drive": "Drive",
+    "dots": "Dots",
+    "orbit": "Orbit"
+  }
+}

@@ -3,12 +3,21 @@ import { describe, expect, test } from 'bun:test';
 
 const source = readFileSync(new URL('./MessageThinking.tsx', import.meta.url), 'utf8');
 const cssSource = readFileSync(new URL('./MessageThinking.module.css', import.meta.url), 'utf8');
+const traceSource = readFileSync(
+  new URL('../../../../components/beautifulUi/thinking/ThinkingTrace.tsx', import.meta.url),
+  'utf8'
+);
+const traceCss = readFileSync(
+  new URL('../../../../components/beautifulUi/thinking/thinkingTrace.module.css', import.meta.url),
+  'utf8'
+);
 
 describe('MessageThinking expansion', () => {
   test('allows a closed process to override a stale streaming status', () => {
     expect(source.includes('completed?: boolean')).toBe(true);
     expect(source.includes('forceDone?: boolean')).toBe(true);
-    expect(source.includes("const isDone = completed === true || forceDone === true || status === 'done';")).toBe(true);
+    expect(source.includes('resolveThinkingTraceStatus')).toBe(true);
+    expect(source.includes('const isDone = isThinkingTraceSettled(traceStatus);')).toBe(true);
   });
 
   test('collapses completed process thinking by default while keeping live thinking open', () => {
@@ -20,31 +29,48 @@ describe('MessageThinking expansion', () => {
   });
 
   test('uses a semantic toggle with a labelled bounded detail region', () => {
-    expect(source.includes("import React, { useEffect, useId, useRef, useState } from 'react';")).toBe(true);
-    expect(source.includes('<button')).toBe(true);
-    expect(source.includes("type='button'")).toBe(true);
-    expect(source.includes('aria-expanded={resolvedExpanded}')).toBe(true);
-    expect(source.includes('aria-controls={bodyId}')).toBe(true);
-    expect(source.includes('id={bodyId}')).toBe(true);
-    expect(cssSource.includes('.header:focus-visible')).toBe(true);
-    expect(cssSource.includes('min-width: 0')).toBe(true);
-    expect(cssSource.includes('text-overflow: ellipsis')).toBe(true);
-    expect(cssSource.includes('max-height: 320px')).toBe(true);
-    expect(cssSource.includes('overflow-y: auto')).toBe(true);
+    expect(source.includes("import React, { useEffect, useMemo, useRef, useState } from 'react';")).toBe(true);
+    expect(traceSource.includes('<button')).toBe(true);
+    expect(traceSource.includes("type='button'")).toBe(true);
+    expect(traceSource.includes('aria-expanded={resolvedExpanded}')).toBe(true);
+    expect(traceSource.includes('aria-controls={bodyId}')).toBe(true);
+    expect(traceSource.includes('id={bodyId}')).toBe(true);
+    expect(traceCss.includes('.header:focus-visible')).toBe(true);
+    expect(traceCss.includes('min-width: 0')).toBe(true);
+    expect(traceCss.includes('text-overflow: ellipsis')).toBe(true);
+    expect(traceCss.includes('max-height: 320px')).toBe(true);
+    expect(traceCss.includes('overflow-y: auto')).toBe(true);
   });
 
   test('supports a neutral process timeline variant', () => {
     expect(source.includes("variant = 'standalone'")).toBe(true);
     expect(source.includes('styles.containerProcess')).toBe(true);
-    expect(source.includes('styles.bodyProcess')).toBe(true);
+    expect(source.includes('layout={variant}')).toBe(true);
     expect(cssSource.includes('.containerProcess')).toBe(true);
-    expect(cssSource.includes('.bodyProcess')).toBe(true);
-    expect(cssSource.includes('background: transparent')).toBe(true);
-    expect(cssSource.includes('font-size: var(--conversation-message-font-size')).toBe(true);
+    expect(traceCss.includes('.bodyProcess')).toBe(true);
+    expect(traceCss.includes('background: transparent')).toBe(true);
+    expect(traceCss.includes('font-size: var(--conversation-message-font-size')).toBe(true);
   });
 
-  test('frames thinking content with a light thin border', () => {
-    expect(cssSource.includes('border: 1px solid var(--color-border-2')).toBe(true);
-    expect(cssSource.includes('border-radius: 6px')).toBe(true);
+  test('frames standalone thinking with a light thin border and leaves process thinking unboxed', () => {
+    expect(traceCss.includes('border: 1px solid var(--color-border-2')).toBe(true);
+    expect(traceCss.includes('border-radius: 6px')).toBe(true);
+    expect(traceCss.includes('.rootProcess .body')).toBe(true);
+    expect(traceCss.includes('.item::before')).toBe(true);
+    expect(traceCss.includes('.rootProcess .item::before')).toBe(false);
+  });
+
+  test('renders the Beautiful UI thinking shell without changing message types', () => {
+    expect(source.includes('<ThinkingTrace')).toBe(true);
+    expect(source.includes('inferThinkingTraceVariant')).toBe(true);
+    expect(source.includes('buildThinkingTraceItems')).toBe(true);
+    expect(source.includes('resolveThinkingTraceStatus')).toBe(true);
+    expect(source.includes('processState?: ThinkingTraceProcessState')).toBe(true);
+    expect(source.includes("t('conversation.thinking.complete'")).toBe(true);
+    expect(source.includes("t('conversation.thinking.label'")).toBe(true);
+    expect(source.includes("t('conversation.thinking.waiting'")).toBe(true);
+    expect(source.includes("t('conversation.thinking.failed'")).toBe(true);
+    expect(source.includes("t('conversation.thinking.canceled'")).toBe(true);
+    expect(source.includes("variant='reasoning'")).toBe(false);
   });
 });

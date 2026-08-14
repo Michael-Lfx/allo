@@ -38,10 +38,11 @@ describe('turn process disclosure content layout', () => {
   });
 
   test('keeps the disclosure timer live while the current turn is running', () => {
-    expect(disclosureSource.includes('running: boolean')).toBe(true);
-    expect(disclosureSource.includes('if (!item.running) return;')).toBe(true);
+    expect(disclosureSource.includes('const TurnProcessDurationLabel')).toBe(true);
+    expect(disclosureSource.includes('<TurnProcessDurationLabel')).toBe(true);
+    expect(disclosureSource.includes('if (!running) return;')).toBe(true);
     expect(disclosureSource.includes('window.setInterval')).toBe(true);
-    expect(disclosureSource.includes('const durationEndAt = item.running ? now : item.endAt;')).toBe(true);
+    expect(disclosureSource.includes('const durationEndAt = running ? now : endAt;')).toBe(true);
     expect(messageListSource.includes('running: entry.running')).toBe(true);
   });
 
@@ -78,9 +79,12 @@ describe('turn process disclosure content layout', () => {
   test('does not render an empty disclosure body before process rows arrive', () => {
     expect(disclosureSource.includes('const hasProcessItems = item.processItems.length > 0')).toBe(true);
     expect(disclosureSource.includes('const disclosureExpanded = hasProcessItems && expanded')).toBe(true);
-    expect(disclosureSource.includes('{!hasProcessItems ? (')).toBe(true);
-    expect(disclosureSource.includes('turn-process-disclosure__label--static')).toBe(true);
+    expect(disclosureSource.includes("!hasProcessItems && 'turn-process-disclosure__header--static'")).toBe(true);
     expect(disclosureSource.includes('{disclosureExpanded && (')).toBe(true);
+  });
+
+  test('does not wrap blank process rows so empty output cannot reserve a line', () => {
+    expect(disclosureSource.includes('if (content == null) return null')).toBe(true);
   });
 
   test('offers a one-click control to expand all completed thinking blocks', () => {
@@ -130,12 +134,24 @@ describe('turn process disclosure content layout', () => {
     expect(/grid-template-areas:\s*'label'\s*'actions'/.test(cssSource)).toBe(true);
   });
 
-  test('uses tighter same-kind spacing and clearer cross-kind spacing', () => {
+  test('wraps thinking plus following text and tools into an indented cycle', () => {
+    expect(disclosureSource.includes('groupTurnProcessItemsByCycle')).toBe(true);
+    expect(disclosureSource.includes('turn-process-disclosure__cycle')).toBe(true);
+    expect(disclosureSource.includes('turn-process-disclosure__cycle-body')).toBe(true);
+    expect(cssRuleFor('.turn-process-disclosure__cycle').includes('margin-top: 6px')).toBe(true);
+    expect(cssRuleFor('.turn-process-disclosure__cycle-body').includes('margin-top: 6px')).toBe(true);
+    expect(cssRuleFor('.turn-process-disclosure__cycle-body').includes('padding-left: 14px')).toBe(true);
     expect(cssRuleFor('.turn-process-disclosure__body').includes('gap: 0')).toBe(true);
-    expect(cssRuleFor('.turn-process-disclosure__item').includes('margin-top: 8px')).toBe(true);
-    expect(cssSource.includes('.turn-process-disclosure__item:first-child')).toBe(true);
-    expect(cssSource.includes('.turn-process-disclosure__item--text + .turn-process-disclosure__item--text')).toBe(true);
-    expect(cssSource.includes('.turn-process-disclosure__item--tool + .turn-process-disclosure__item--tool')).toBe(true);
+    expect(cssRuleFor('.turn-process-disclosure__item').includes('margin-top: 6px')).toBe(true);
+    expect(/turn-process-trace-tool \{\s*gap: 6px/.test(cssSource)).toBe(true);
+  });
+
+  test('lets streaming process rows appear in place without enter or complete pop', () => {
+    expect(cssRuleFor('.turn-process-disclosure__item').includes('animation:')).toBe(false);
+    expect(cssRuleFor('.turn-process-receipt').includes('animation: turn-process-item-enter')).toBe(false);
+    expect(cssSource.includes('turn-process-item-enter')).toBe(false);
+    expect(cssSource.includes('turn-process-complete-pop')).toBe(false);
+    expect(cssSource.includes('scale(1.08)')).toBe(false);
   });
 
   test('keeps compact process groups inside one top-level message row', () => {
@@ -145,7 +161,7 @@ describe('turn process disclosure content layout', () => {
 
     expect(headerRule.includes('min-height: 30px')).toBe(true);
     expect(headerRule.includes('padding: 2px 2px 6px')).toBe(true);
-    expect(bodyRule.includes('padding: 6px 0 2px')).toBe(true);
+    expect(bodyRule.includes('padding: 4px 0 0')).toBe(true);
     expect(groupRule.includes('flex-direction: column')).toBe(true);
     expect(groupRule.includes('gap: 4px')).toBe(true);
     expect(messageListSource.includes("type: 'process_group'")).toBe(true);
@@ -164,12 +180,12 @@ describe('turn process disclosure content layout', () => {
     const paragraphRule = cssRuleFor('.turn-process-disclosure__body .turn-process-trace__paragraph');
     const rowRule = cssRuleFor('.turn-process-disclosure__body .turn-process-trace__row');
 
-    expect(paragraphRule.includes('color: var(--color-text-1')).toBe(true);
-    expect(paragraphRule.includes('font-size: var(--conversation-message-font-size)')).toBe(true);
-    expect(paragraphRule.includes('line-height: var(--conversation-message-line-height)')).toBe(true);
+    expect(paragraphRule.includes('color: var(--color-text-2')).toBe(true);
+    expect(paragraphRule.includes('--conversation-message-font-size')).toBe(true);
+    expect(paragraphRule.includes('--conversation-message-line-height')).toBe(true);
     expect(rowRule.includes('color: var(--color-text-2')).toBe(true);
-    expect(rowRule.includes('font-size: var(--conversation-message-font-size)')).toBe(true);
-    expect(rowRule.includes('line-height: var(--conversation-message-line-height)')).toBe(true);
+    expect(rowRule.includes('--conversation-message-font-size')).toBe(true);
+    expect(rowRule.includes('--conversation-message-line-height')).toBe(true);
   });
 
   test('keeps process text neutral while status color stays on icons', () => {

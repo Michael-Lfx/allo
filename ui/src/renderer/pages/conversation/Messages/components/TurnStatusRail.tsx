@@ -16,6 +16,29 @@ type TurnStatusRailProps = {
   };
 };
 
+const shouldShowLiveRail = (phase: TurnPresentationState['phase']): boolean => {
+  switch (phase) {
+    case 'waiting_permission':
+      return true;
+    case 'idle':
+    case 'local_pending':
+    case 'accepted':
+    case 'preparing':
+    case 'thinking':
+    case 'streaming':
+    case 'tooling':
+    case 'finalizing':
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+      return false;
+    default: {
+      const exhaustive: never = phase;
+      return exhaustive;
+    }
+  }
+};
+
 const formatElapsed = (ms: number): string => {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
@@ -40,7 +63,7 @@ const TurnStatusRail: React.FC<TurnStatusRailProps> = ({ presentation, completio
     [presentation.detail, presentation.phase, t]
   );
 
-  if (presentation.showStatusRail && label) {
+  if (presentation.showStatusRail && shouldShowLiveRail(presentation.phase) && label) {
     return (
       <div
         className='turn-status-rail mx-auto mb-8px max-w-780px px-8px text-12px text-t-secondary flex items-center gap-8px min-h-20px'

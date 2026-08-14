@@ -1,0 +1,184 @@
+.root {
+  width: 100%;
+  min-width: 0;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--color-border-2, #e5e6eb);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-2, #4e5969);
+  cursor: default;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: left;
+}
+
+button.chip {
+  cursor: pointer;
+}
+
+button.chip:hover {
+  border-color: var(--color-border-3, #c9cdd4);
+  color: var(--color-text-1, #1d2129);
+}
+
+.chip:focus-visible {
+  outline: 2px solid var(--color-primary-6, #165dff);
+  outline-offset: 2px;
+}
+
+.icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  color: currentColor;
+}
+
+.icon svg {
+  display: block;
+}
+
+.name {
+  flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 500;
+}
+
+.detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-3, #86909c);
+}
+
+.arrow {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  color: var(--color-text-4, #c9cdd4);
+  transition: transform 0.2s ease;
+}
+
+.arrowExpanded {
+  transform: rotate(90deg);
+}
+
+.chipPending {
+  color: var(--color-text-3, #86909c);
+}
+
+.chipRunning {
+  border-color: color-mix(in srgb, var(--color-primary-6, #165dff) 35%, var(--color-border-2, #e5e6eb));
+  color: var(--color-primary-6, #165dff);
+}
+
+.chipCompleted {
+  color: var(--color-text-2, #4e5969);
+}
+
+.chipError {
+  border-color: color-mix(in srgb, var(--color-danger-6, #f53f3f) 35%, var(--color-border-2, #e5e6eb));
+  color: var(--color-danger-6, #f53f3f);
+}
+
+.chipCanceled {
+  color: var(--color-text-4, #c9cdd4);
+}
+
+.chipCanceled .name {
+  text-decoration: line-through;
+}
+
+.chipSkipped {
+  border-style: dashed;
+  color: var(--color-text-4, #c9cdd4);
+}
+
+.chipInvalid {
+  border-color: color-mix(in srgb, var(--color-warning-6, #ff7d00) 35%, var(--color-border-2, #e5e6eb));
+  color: var(--color-warning-6, #ff7d00);
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    currentColor 0%,
+    var(--color-text-1, #1d2129) 40%,
+    currentColor 80%
+  );
+  background-size: 180% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: tool-chip-shimmer 1.6s ease-in-out infinite;
+}
+
+.spin {
+  box-sizing: border-box;
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  border: 1.5px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: tool-chip-spin 0.7s linear infinite;
+}
+
+@keyframes tool-chip-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -80% 0;
+  }
+}
+
+@keyframes tool-chip-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer,
+  .spin,
+  .arrow {
+    animation: none;
+    transition: none;
+  }
+
+  .shimmer {
+    background: none;
+    color: inherit;
+    -webkit-background-clip: unset;
+    background-clip: unset;
+  }
+}

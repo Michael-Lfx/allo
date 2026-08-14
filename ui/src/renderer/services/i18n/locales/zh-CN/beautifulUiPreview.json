@@ -1,0 +1,319 @@
+{
+  "title": "Beautiful UI 预览",
+  "subtitle": "独立目录，假数据。思考块、流式正文、工具芯片、任务行、批准卡、推荐卡、上下文卡片、代码块、改文件证据、划词操作栏和加载态已接到对话页。",
+  "catalogLabel": "组件",
+  "previewLabel": "预览",
+  "variantLabel": "变体",
+  "runStateLabel": "运行状态",
+  "layoutLabel": "布局",
+  "contentLabel": "内容",
+  "themeLabel": "主题",
+  "theme": {
+    "light": "浅色",
+    "dark": "深色"
+  },
+  "thinking": "思考中",
+  "thoughtComplete": "思考完成",
+  "waiting": "等待中",
+  "failed": "失败",
+  "canceled": "已取消",
+  "emptyTrace": "暂无轨迹",
+  "emptyChunks": "暂无分块",
+  "notWired": "这个原语只列在目录里，第一刀尚未接入。",
+  "status": {
+    "preview": "预览中",
+    "pending": "未开始",
+    "skipped": "跳过"
+  },
+  "variants": {
+    "steps": "步骤",
+    "reasoning": "推理",
+    "search": "搜索",
+    "coding": "编码"
+  },
+  "runState": {
+    "thinking": "进行中",
+    "waiting": "等待中",
+    "done": "已完成",
+    "failed": "失败",
+    "canceled": "已取消"
+  },
+  "layouts": {
+    "standalone": "独立",
+    "process": "过程条"
+  },
+  "content": {
+    "typical": "典型",
+    "empty": "空",
+    "long": "长文本",
+    "mixed": "全部状态"
+  },
+  "components": {
+    "loadingState": "Loading State",
+    "thinking": "Thinking",
+    "streamingText": "Streaming Text",
+    "approvalCard": "Approval Card",
+    "toolChips": "Tool Chips",
+    "taskRows": "Task Rows",
+    "chat": "Chat",
+    "promptBar": "Prompt Bar",
+    "recommendationCard": "Recommendation Card",
+    "contextCards": "Context Cards",
+    "diffTable": "Diff Table",
+    "recordsTable": "Records Table",
+    "filterTable": "Filter Table",
+    "sidebarNav": "Sidebar Nav",
+    "search": "Search",
+    "insightCards": "Insight Cards",
+    "codeBlock": "Code Block",
+    "fineTuneCard": "Fine-tune Card",
+    "selectionActions": "Selection Actions"
+  },
+  "fixtures": {
+    "steps": {
+      "1": {
+        "title": "读取周末 POS 导出",
+        "detail": "3 个文件 · 开心果、薄荷脆片、华夫筒"
+      },
+      "2": {
+        "title": "评估缺货风险",
+        "detail": "开心果井会在 16:00 前低于 40 勺"
+      },
+      "3": {
+        "title": "起草周六搅打安排",
+        "detail": "先搅开心果，让料在高峰前凝固"
+      }
+    },
+    "reasoning": {
+      "1": {
+        "title": "周末开心果仍然领先",
+        "detail": "周六下午是高峰。早点搅打，队伍来之前料已经成型。"
+      }
+    },
+    "search": {
+      "1": {
+        "title": "Vendor onboarding SOP.pdf",
+        "detail": "新增乳品前必须核验冷链认证。"
+      },
+      "2": {
+        "title": "Sales velocity export.csv",
+        "detail": "Q4：开心果 +18%，香草 +6%，落基路 −11%"
+      }
+    },
+    "coding": {
+      "1": {
+        "title": "读取 churn.ts",
+        "detail": "src/kitchen/churn.ts"
+      },
+      "2": {
+        "title": "编辑 reorder.ts",
+        "detail": "src/inventory/reorder.ts"
+      }
+    },
+    "long": {
+      "title": "追踪周六开心果高峰",
+      "detail": "周末开心果高峰不是偶然尖刺。\n连续三个夏天的 POS 都显示周六 14:00–17:00 是峰值。\n如果午饭后才搅打，队伍来时料还是软的。\n周六一早搅打，料有四个小时在井里凝固。\n搅完开心果再洗搅拌器、接下薄荷，也留得出缓冲。"
+    },
+    "toolChips": {
+      "writeFile": {
+        "name": "writeFile",
+        "detail": "src/kitchen/churn.ts"
+      },
+      "runCommand": {
+        "name": "runCommand",
+        "detail": "bun test"
+      },
+      "search": {
+        "name": "search",
+        "detail": "Vendor onboarding SOP.pdf"
+      },
+      "long": {
+        "name": "replace",
+        "detail": "crates/backend/nomifun-conversation/src/stream_relay.rs"
+      }
+    },
+    "taskRows": {
+      "verify": {
+        "title": "核验供应商档案",
+        "detail": "12 家供应商",
+        "ids": "匹配税号和联系人",
+        "idsDetail": "12/12",
+        "stale": "标出过期档案",
+        "staleDetail": "0"
+      },
+      "reorder": {
+        "title": "生成补货任务",
+        "detail": "7 个 SKU",
+        "read": "读取 POS 导出",
+        "readDetail": "3 个文件",
+        "score": "评估缺货风险",
+        "scoreDetail": "68%"
+      },
+      "draft": {
+        "title": "起草供应商邮件",
+        "detail": "2 封",
+        "cone": "华夫筒供应商跟进",
+        "coneDetail": "草稿",
+        "pistachio": "开心果补货说明",
+        "pistachioDetail": "草稿"
+      },
+      "long": {
+        "title": "顺着三个夏天的 POS 追周六开心果高峰",
+        "detail": "周六 14:00–17:00 是峰值。先搅打，队伍来之前井里的料已经成型。"
+      }
+    },
+    "approvalCard": {
+      "title": "周六先搅打哪一种口味？",
+      "confirm": "确认",
+      "options": {
+        "pistachio": "开心果 — 周末仍然领先",
+        "mint": "薄荷脆片 — 留一口井备用",
+        "cone": "华夫筒 — 队伍来之前补货"
+      },
+      "descriptions": {
+        "edit": "把这次补货写进周六的开心果井。",
+        "exec": "运行周末批次的搅打命令。",
+        "info": "新增乳品前先读供应商准入 SOP。",
+        "mcp": "允许库存 MCP 评估缺货风险。",
+        "plan": "批准周六搅打计划，然后开始协作。"
+      },
+      "children": {
+        "edit": "reorder.ts · 开心果井目标 180 勺",
+        "exec": "churn --flavor pistachio --batch saturday",
+        "info": "Vendor onboarding SOP.pdf · 冷链认证",
+        "mcp": "inventory.score_stockout · 开心果、薄荷脆片、华夫筒",
+        "plan": "先搅开心果，让料在 14:00 前凝固。"
+      }
+    },
+    "streamingText": {
+      "typical": "周六开心果仍然领跑周末高峰。先搅打，14:00 前井里的料已经成型。",
+      "long": "周末开心果高峰不是偶然尖刺。\n连续三个夏天的 POS 都显示周六 14:00–17:00 是峰值。\n如果午饭后才搅打，队伍来时料还是软的。\n周六一早搅打，料有四个小时在井里凝固。\n搅完开心果再洗搅拌器、接下薄荷，也留得出缓冲。",
+      "sources": "POS 导出 · 三个夏天",
+      "followUps": {
+        "scoops": "16:00 前还剩多少勺？",
+        "churn": "薄荷该什么时候搅？"
+      }
+    },
+    "contextCards": {
+      "pdf": {
+        "title": "供应商准入规则",
+        "snippet": "新增乳品进入补货流程前，必须核验冷链认证。",
+        "source": "Dairy Onboarding SOP.pdf"
+      },
+      "csv": {
+        "title": "季节需求行",
+        "snippet": "Q4 流速表：开心果 +18%，香草 +6%，落基路 −11%；周销量低于 40 勺的口味淘汰。",
+        "source": "Sales Velocity Export.csv"
+      }
+    },
+    "codeBlock": {
+      "filename": "churn.ts",
+      "language": "TypeScript",
+      "typical": "export const churnSaturday = (flavor: string): number => {\n  if (flavor === 'pistachio') return 180;\n  return 90;\n};\n"
+    },
+    "diffTable": {
+      "title": "2 个文件变更",
+      "churn": {
+        "title": "churn.ts",
+        "path": "src/kitchen/churn.ts"
+      },
+      "reorder": {
+        "title": "reorder.ts",
+        "path": "src/inventory/reorder.ts"
+      }
+    },
+    "recommendationCard": {
+      "title": "要我周六先搅开心果吗？",
+      "body": "先搅开心果，14:00 前井里的料已经成型。maple-orbit 的交货周期是 7 天。",
+      "actions": {
+        "accept": "接受",
+        "dismiss": "忽略"
+      },
+      "alternatives": {
+        "mint": "改成薄荷脆片",
+        "restock": "给每个 SKU 做一次全量补货"
+      }
+    },
+    "selectionActions": {
+      "sample": "周六开心果仍然领跑周末高峰。",
+      "explain": "解释",
+      "improve": "改进",
+      "shorten": "缩短",
+      "tone": "语气",
+      "grammar": "语法"
+    },
+    "loadingState": {
+      "drive": "搅打中",
+      "dots": "思考中",
+      "orbit": "搜索中"
+    }
+  },
+  "contextCardSourceKinds": {
+    "pdf": "PDF",
+    "csv": "CSV",
+    "md": "MD",
+    "code": "代码",
+    "other": "其他"
+  },
+  "toolChipStatusLabel": "工具状态",
+  "toolChipLayoutLabel": "排列",
+  "toolChipStatuses": {
+    "pending": "等待",
+    "running": "进行中",
+    "completed": "已完成",
+    "error": "失败",
+    "canceled": "已取消",
+    "skipped": "已跳过",
+    "invalid_arguments": "参数无效"
+  },
+  "toolChipLayouts": {
+    "row": "横排",
+    "stack": "竖排"
+  },
+  "taskRowStatusLabel": "行状态",
+  "taskRowLayoutLabel": "行布局",
+  "taskRowStatuses": {
+    "running": "进行中",
+    "waiting": "等待中",
+    "completed": "已完成",
+    "failed": "失败",
+    "canceled": "已取消"
+  },
+  "taskRowLayouts": {
+    "capsules": "胶囊",
+    "list": "列表"
+  },
+  "approvalKindLabel": "批准类型",
+  "approvalKinds": {
+    "edit": "编辑",
+    "exec": "执行",
+    "info": "信息",
+    "mcp": "MCP",
+    "plan": "计划"
+  },
+  "streamingStatusLabel": "流式状态",
+  "streamingStatuses": {
+    "streaming": "流式中",
+    "done": "已完成"
+  },
+  "recommendationVariantLabel": "推荐状态",
+  "recommendationVariants": {
+    "high": "高置信",
+    "alternatives": "备选",
+    "accept": "接受",
+    "review": "待复核",
+    "none": "无信号"
+  },
+  "recommendationTones": {
+    "high": "高置信",
+    "alternatives": "备选",
+    "review": "待复核",
+    "none": "无信号"
+  },
+  "loadingVariantLabel": "加载变体",
+  "loadingVariants": {
+    "drive": "Drive",
+    "dots": "Dots",
+    "orbit": "Orbit"
+  }
+}

@@ -29,16 +29,9 @@ describe('turn live step strip', () => {
     expect(messageListSource.includes('hasDetail: false')).toBe(true);
   });
 
-  test('animates only the state icon and respects reduced motion', () => {
-    expect(cssSource.includes('@keyframes turn-live-step-breathing')).toBe(true);
-    expect(cssSource.includes('.turn-live-step .turn-process-receipt__icon')).toBe(true);
-    expect(cssSource.includes('.turn-live-step .turn-process-receipt__label')).toBe(false);
-    const reducedMotionBlocks = cssSource.split('@media (prefers-reduced-motion: reduce)').slice(1);
-    expect(
-      reducedMotionBlocks.some((block) =>
-        block.slice(0, block.indexOf('}') + 200).includes('.turn-live-step .turn-process-receipt__icon')
-      )
-    ).toBe(true);
+  test('does not add a breathing pulse on top of live-step state', () => {
+    expect(cssSource.includes('@keyframes turn-live-step-breathing')).toBe(false);
+    expect(cssSource.includes('turn-live-step-breathing')).toBe(false);
   });
 
   test('ships bilingual live-step copy', () => {

@@ -58,6 +58,7 @@ const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabi
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
 const CloudLoginPage = React.lazy(() => import('@renderer/pages/cloudLogin'));
 const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
+const BeautifulUiPreviewPage = React.lazy(() => import('@renderer/pages/beautifulUiPreview'));
 
 type RouteFallbackProps = {
   Component: React.LazyExoticComponent<React.ComponentType>;
@@ -258,6 +259,8 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
         {/* The desktop-companion window route: fullscreen transparent, no app layout/sidebar. */}
         <Route path='/companion' element={withRouteFallback(CompanionPage, { fullscreen: true })} />
         <Route path='/nomi-memory-panel' element={withRouteFallback(MemoryPanelPage, { fullscreen: true })} />
+        {/* Isolated UI catalog — public so the first-cut preview works without login. */}
+        <Route path='/test/beautiful-ui' element={withRouteFallback(BeautifulUiPreviewPage, { fullscreen: true })} />
         <Route element={<ProtectedLayout layout={layout} />}>
           <Route index element={<Navigate to='/guid' replace />} />
           {/* Models, presets, skills, and MCP are independent top-level capabilities. */}
