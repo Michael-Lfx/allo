@@ -32,6 +32,8 @@ export const getTrackScrollTop = ({
   dotTop,
   dotBottom,
   scrollTop,
+  scrollHeight,
+  clientHeight,
   inset = 10,
 }: {
   trackTop: number;
@@ -39,8 +41,24 @@ export const getTrackScrollTop = ({
   dotTop: number;
   dotBottom: number;
   scrollTop: number;
+  scrollHeight?: number;
+  clientHeight?: number;
   inset?: number;
 }): number | null => {
+  const hasOverflow =
+    typeof scrollHeight === 'number' &&
+    typeof clientHeight === 'number' &&
+    Number.isFinite(scrollHeight) &&
+    Number.isFinite(clientHeight) &&
+    scrollHeight > clientHeight;
+  if (hasOverflow) {
+    const trackCenter = (trackTop + trackBottom) / 2;
+    const dotCenter = (dotTop + dotBottom) / 2;
+    const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
+    const centeredScrollTop = scrollTop + dotCenter - trackCenter;
+    return Math.min(maxScrollTop, Math.max(0, centeredScrollTop));
+  }
+
   if (dotTop < trackTop + inset) {
     return Math.max(0, scrollTop + dotTop - trackTop - inset);
   }
@@ -151,6 +169,40 @@ const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = 
     });
   }, [syncActiveQuestionFromScroll]);
 
+  const syncActiveDotVisibility = useCallback(() => {
+    if (!activeQuestionIdentity) return;
+    const track = trackRef.current;
+    const dot = activeDotRef.current;
+    if (!track || !dot) return;
+
+    const trackRect = track.getBoundingClientRect();
+    const dotRect = dot.getBoundingClientRect();
+    const nextScrollTop = getTrackScrollTop({
+      trackTop: trackRect.top,
+      trackBottom: trackRect.bottom,
+      dotTop: dotRect.top,
+      dotBottom: dotRect.bottom,
+      scrollTop: track.scrollTop,
+      scrollHeight: track.scrollHeight,
+      clientHeight: track.clientHeight,
+    });
+    if (nextScrollTop === null || nextScrollTop === track.scrollTop) return;
+
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+    track.scrollTo({ top: nextScrollTop, behavior: reduceMotion ? 'auto' : 'smooth' });
+  }, [activeQuestionIdentity]);
+
+  const scheduleActiveDotVisibility = useCallback(() => {
+    if (!activeQuestionIdentity) return;
+    if (dotScrollRafRef.current !== null) {
+      window.cancelAnimationFrame(dotScrollRafRef.current);
+    }
+    dotScrollRafRef.current = window.requestAnimationFrame(() => {
+      dotScrollRafRef.current = null;
+      syncActiveDotVisibility();
+    });
+  }, [activeQuestionIdentity, syncActiveDotVisibility]);
+
   useLayoutEffect(() => {
     setActiveIndex(0);
     setHoverIndex(null);
@@ -162,38 +214,35 @@ const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = 
   }, [turns.length]);
 
   useLayoutEffect(() => {
-    if (!activeQuestionIdentity) return;
-    if (dotScrollRafRef.current !== null) {
-      window.cancelAnimationFrame(dotScrollRafRef.current);
-    }
-    dotScrollRafRef.current = window.requestAnimationFrame(() => {
-      dotScrollRafRef.current = null;
-      const track = trackRef.current;
-      const dot = activeDotRef.current;
-      if (!track || !dot) return;
-
-      const trackRect = track.getBoundingClientRect();
-      const dotRect = dot.getBoundingClientRect();
-      const nextScrollTop = getTrackScrollTop({
-        trackTop: trackRect.top,
-        trackBottom: trackRect.bottom,
-        dotTop: dotRect.top,
-        dotBottom: dotRect.bottom,
-        scrollTop: track.scrollTop,
-      });
-      if (nextScrollTop === null || nextScrollTop === track.scrollTop) return;
-
-      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
-      track.scrollTo({ top: nextScrollTop, behavior: reduceMotion ? 'auto' : 'smooth' });
-    });
-
+    scheduleActiveDotVisibility();
     return () => {
       if (dotScrollRafRef.current !== null) {
         window.cancelAnimationFrame(dotScrollRafRef.current);
         dotScrollRafRef.current = null;
       }
     };
-  }, [activeQuestionIdentity, turns.length]);
+  }, [scheduleActiveDotVisibility, turns.length]);
+
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track || !activeQuestionIdentity) return;
+
+    const handleTrackScrollEnd = () => scheduleActiveDotVisibility();
+    track.addEventListener('scrollend', handleTrackScrollEnd);
+    window.addEventListener('resize', scheduleActiveDotVisibility);
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => scheduleActiveDotVisibility());
+      resizeObserver.observe(track);
+    }
+
+    return () => {
+      track.removeEventListener('scrollend', handleTrackScrollEnd);
+      window.removeEventListener('resize', scheduleActiveDotVisibility);
+      resizeObserver?.disconnect();
+    };
+  }, [activeQuestionIdentity, scheduleActiveDotVisibility]);
 
   useEffect(() => {
     const scroller = getScroller();

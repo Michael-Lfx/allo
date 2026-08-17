@@ -41,7 +41,21 @@ describe('getTrackScrollTop', () => {
     ).toBeNull();
   });
 
-  test('keeps an active dot inside the upper and lower track inset', () => {
+  test('centers an active dot inside an overflowing track', () => {
+    expect(
+      getTrackScrollTop({
+        trackTop: 100,
+        trackBottom: 300,
+        dotTop: 260,
+        dotBottom: 272,
+        scrollTop: 40,
+        scrollHeight: 600,
+        clientHeight: 200,
+      })
+    ).toBe(106);
+  });
+
+  test('clamps centered scrolling to the available track range', () => {
     expect(
       getTrackScrollTop({
         trackTop: 100,
@@ -49,8 +63,10 @@ describe('getTrackScrollTop', () => {
         dotTop: 90,
         dotBottom: 102,
         scrollTop: 40,
+        scrollHeight: 600,
+        clientHeight: 200,
       })
-    ).toBe(20);
+    ).toBe(0);
     expect(
       getTrackScrollTop({
         trackTop: 100,
@@ -58,8 +74,24 @@ describe('getTrackScrollTop', () => {
         dotTop: 298,
         dotBottom: 310,
         scrollTop: 40,
+        scrollHeight: 260,
+        clientHeight: 200,
       })
     ).toBe(60);
+  });
+
+  test('uses edge insets when the track does not overflow', () => {
+    expect(
+      getTrackScrollTop({
+        trackTop: 100,
+        trackBottom: 300,
+        dotTop: 90,
+        dotBottom: 102,
+        scrollTop: 40,
+        scrollHeight: 200,
+        clientHeight: 200,
+      })
+    ).toBe(20);
   });
 });
 

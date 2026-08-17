@@ -33,6 +33,8 @@ describe('conversation question locator structure', () => {
     expect(locatorSource.includes("data-distance-level={getDotDistanceLevel(index, boundedActiveIndex)}")).toBe(true);
     expect(locatorSource.includes('activeDotRef')).toBe(true);
     expect(locatorSource.includes('getTrackScrollTop')).toBe(true);
+    expect(locatorSource.includes('scrollHeight: track.scrollHeight')).toBe(true);
+    expect(locatorSource.includes('clientHeight: track.clientHeight')).toBe(true);
     expect(locatorSource.includes('track.scrollTo')).toBe(true);
     expect(locatorSource.includes("data-testid='conversation-question-locator-tooltip'")).toBe(true);
     expect(locatorSource.includes('hoverIndex')).toBe(true);
@@ -111,6 +113,10 @@ describe('conversation question locator structure', () => {
     expect(locatorSource.includes('if (displayPosition === \'above\')')).toBe(true);
     expect(locatorSource.includes('if (displayPosition === \'below\')')).toBe(true);
     expect(locatorSource.includes('scheduleActiveQuestionSync();')).toBe(true);
+    expect(locatorSource.includes('scheduleActiveDotVisibility')).toBe(true);
+    expect(locatorSource.includes("track.addEventListener('scrollend'")).toBe(true);
+    expect(locatorSource.includes('new ResizeObserver')).toBe(true);
+    expect(locatorSource.includes('window.addEventListener(\'resize\', scheduleActiveDotVisibility)')).toBe(true);
     expect(messageListSource.includes('const [rangeVersion, setRangeVersion] = useState(0);')).toBe(true);
     expect(messageListSource.includes('return normalizeDisplayIndex(displayIndex)')).toBe(true);
     expect(messageListSource.includes('rangeVersion={rangeVersion}')).toBe(true);

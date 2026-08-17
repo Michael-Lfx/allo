@@ -3232,6 +3232,34 @@ mod tests {
     }
 
     #[test]
+    fn main_window_builder_keeps_adaptive_creation_guards_and_centering() {
+        let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
+        let builder_start = source
+            .find("let win_builder =")
+            .expect("main window builder should exist");
+        let builder_end = source[builder_start..]
+            .find(".initialization_script(&init_script);")
+            .map(|offset| builder_start + offset)
+            .expect("main window builder should configure its initialization script");
+        let builder_source = &source[builder_start..builder_end];
+        let setup_source = &source[..builder_start];
+
+        assert!(setup_source.contains("primary_monitor()"));
+        let inner_size = builder_source.find(".inner_size(").expect("initial size should be configured");
+        let min_inner_size = builder_source
+            .find(".min_inner_size(")
+            .expect("minimum size should be configured");
+        let prevent_overflow = builder_source
+            .find(".prevent_overflow()")
+            .expect("creation overflow guard should be configured");
+        let center = builder_source.find(".center()").expect("window should be centered");
+
+        assert!(inner_size < min_inner_size);
+        assert!(min_inner_size < prevent_overflow);
+        assert!(prevent_overflow < center);
+    }
+
+    #[test]
     fn development_restart_marker_is_bounded_and_contains_the_launch_token() {
         let directory = tempfile::tempdir().expect("create marker directory");
         let marker_path = directory.path().join("restart.json");
