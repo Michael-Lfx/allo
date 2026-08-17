@@ -424,7 +424,7 @@ bun run test       # Rust 测试（日常可用 test:fast 跑 nextest）
 | `bun run build` | 为当前操作系统打桌面安装包 |
 | `bun run build:fast` | 快速构建可直接运行的 debug 桌面二进制（不打安装包） |
 | `bun run build:win` | 打 Windows 安装包（NSIS），汇总到 dist/desktop/ |
-| `bun run build:mac` | 打 macOS 安装包（.dmg），汇总到 dist/desktop/ |
+| `bun run build:mac` | 打 macOS 安装包（.dmg，默认 Apple Silicon），汇总到 dist/desktop/ |
 | `bun run build:linux` | 打 Linux 安装包（.deb/.AppImage/.rpm），汇总到 dist/desktop/ |
 | `bun run build:signed` | 打桌面包并签名+公证（仅 macOS） |
 | `bun run build:updater` | 打桌面包并产出自更新 .sig 制品 |

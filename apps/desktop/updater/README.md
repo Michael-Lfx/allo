@@ -57,7 +57,7 @@ names. Expected updater packages:
 ```bash
 # macOS
 export TAURI_SIGNING_PRIVATE_KEY="$(cat apps/desktop/signing/nomifun-updater.key)"
-bun run build:mac --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json
+bun run build:mac arm --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json
 bun run make:latest --host modelscope --channel macos --collect
 bun run upload:modelscope -- --channel macos
 ```

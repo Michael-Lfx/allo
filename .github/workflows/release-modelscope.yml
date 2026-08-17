@@ -187,7 +187,10 @@ jobs:
             echo "TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
             exit 1
           }
-          bun run build:mac --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json
+          # Apple Silicon only. Universal/Intel needs x86_64-apple-darwin, and
+          # ort-sys 2.0 (Silero VAD) has no ONNX Runtime prebuilt for that
+          # target after Microsoft dropped Intel macOS binaries.
+          bun run build:mac arm --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json
           bun run make:latest --host modelscope --channel macos --collect
 
       - name: Upload macOS release
@@ -207,7 +210,6 @@ jobs:
           python scripts/verify-modelscope-release.py \
             --channel macos \
             --version "$EXPECTED_VERSION" \
-            --platform darwin-x86_64 \
             --platform darwin-aarch64
 
   release-linux:

@@ -435,16 +435,18 @@ bun run build:<os> [arch ...] [--signed] [-- <args passed straight to `tauri bui
   `bun run build:<os> --config apps/desktop/tauri.updater.conf.json` — pass the file, not
   inline JSON, because Windows PowerShell 5.1 strips the quotes from `--config '{...}'`.
 
-**macOS — `build:mac`** (produces `.dmg`; default arch: `universal`)
+**macOS — `build:mac`** (produces `.dmg`; default arch: `arm` / Apple Silicon)
+
+Intel / universal slices currently fail: `ort-sys` has no ONNX Runtime prebuilt for `x86_64-apple-darwin`.
 
 | Goal | Command |
 | --- | --- |
-| Universal (Intel + Apple Silicon, one fat package) | `bun run build:mac` |
-| Universal, signed + notarized | `bun run build:mac --signed` |
-| Apple Silicon only | `bun run build:mac arm` |
+| Apple Silicon (default) | `bun run build:mac` |
+| Apple Silicon, signed + notarized | `bun run build:mac --signed` |
+| Apple Silicon only (explicit) | `bun run build:mac arm` |
 | Intel only | `bun run build:mac intel` |
 | Intel only, signed + notarized | `bun run build:mac --signed intel` |
-| All three separately (ARM + Intel + Universal) | `bun run build:mac arm intel universal` |
+| Universal (Intel + Apple Silicon) | `bun run build:mac universal` |
 
 Arch aliases: `arm`/`aarch64`/`silicon`, `intel`/`x64`/`x86_64`, `universal`/`all-arch`.
 Signing reads `apps/desktop/signing/.env.signing` (gitignored); missing → it errors with setup hints.
@@ -493,7 +495,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run build` | 为当前操作系统打桌面安装包 |
 | `bun run build:fast` | 快速构建可直接运行的 debug 桌面二进制（不打安装包） |
 | `bun run build:win` | 打 Windows 安装包（NSIS），汇总到 dist/desktop/ |
-| `bun run build:mac` | 打 macOS 安装包（.dmg），汇总到 dist/desktop/ |
+| `bun run build:mac` | 打 macOS 安装包（.dmg，默认 Apple Silicon），汇总到 dist/desktop/ |
 | `bun run build:linux` | 打 Linux 安装包（.deb/.AppImage/.rpm），汇总到 dist/desktop/ |
 | `bun run build:signed` | 打桌面包并签名+公证（仅 macOS） |
 | `bun run build:updater` | 打桌面包并产出自更新 .sig 制品 |

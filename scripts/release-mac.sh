@@ -37,7 +37,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
 Repo="nomifun/nomifun-tauri"
-Triple="universal-apple-darwin"
+Triple="aarch64-apple-darwin"
 KeyFile="${NOMIFUN_RELEASE_KEY_FILE:-apps/desktop/signing/nomifun-updater.key}"
 EnvRelease="${NOMIFUN_RELEASE_ENV_FILE:-apps/desktop/signing/.env.release}"
 SigningEnv="${NOMIFUN_RELEASE_SIGNING_ENV:-apps/desktop/signing/.env.signing}"
@@ -163,7 +163,7 @@ if (manifest.version !== version) {
   console.error(`latest.json version(${manifest.version}) != ${version}`);
   process.exit(1);
 }
-for (const key of ['darwin-x86_64', 'darwin-aarch64']) {
+for (const key of ['darwin-aarch64']) {
   const entry = manifest.platforms?.[key];
   if (!entry) {
     console.error(`latest.json 缺少 ${key} 条目。`);
@@ -231,7 +231,7 @@ fi
 
 Tar="target/$Triple/release/bundle/macos/Flowy.app.tar.gz"
 Sig="$Tar.sig"
-Dmg="dist/desktop/Flowy_${TargetVersion}_universal.dmg"
+Dmg="dist/desktop/Flowy_${TargetVersion}_aarch64.dmg"
 App="target/$Triple/release/bundle/macos/Flowy.app"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -357,7 +357,7 @@ fetch(endpoint, { redirect: 'follow' })
     if (manifest.version !== version) {
       console.warn(`published version(${manifest.version}) != ${version}（CDN 缓存延迟或 latest 非本版本）。`);
     }
-    for (const key of ['darwin-x86_64', 'darwin-aarch64']) {
+    for (const key of ['darwin-aarch64']) {
       if (!manifest.platforms?.[key]) console.warn(`published latest.json 缺少 ${key}。`);
     }
   })

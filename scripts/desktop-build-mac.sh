@@ -2,8 +2,8 @@
 # ============================================================================
 # 打 macOS 桌面端安装包(.dmg),并汇总到 dist/desktop/。仅能在 macOS 上运行。
 #
-#   bun run build:mac                 # 默认只打 Universal 一个 DMG(不签名)
-#   bun run build:mac --signed        # 默认 Universal,带 Developer ID 签名 + 公证
+#   bun run build:mac                 # 默认只打 Apple Silicon 一个 DMG(不签名)
+#   bun run build:mac --signed        # 默认 Apple Silicon,带 Developer ID 签名 + 公证
 #   bun run build:mac arm intel       # 显式指定架构(可多选,空格分隔)
 #   bun run build:mac --signed intel  # 只打 Intel,且签名+公证
 #   bun run build:mac --config '{"bundle":{"createUpdaterArtifacts":true}}'
@@ -71,14 +71,21 @@ resolve_triple() {
 
 TRIPLES=()
 if [[ "${#SELECT[@]}" -eq 0 ]]; then
-  # 默认只打 Universal 一个胖包:原生通吃 Intel + Apple Silicon,体验与单架构包无异,
-  # 只多占下载/磁盘体积,却省掉多轮编译与 Apple 公证等待。需要单架构包时显式指定。
-  TRIPLES=(universal-apple-darwin)
+  # 默认只打 Apple Silicon。Universal/Intel 需要 x86_64-apple-darwin,而 ort-sys
+  # 2.0(Silero VAD)已无该目标的 ONNX Runtime 预编译库(微软停更 Intel macOS 二进制)。
+  TRIPLES=(aarch64-apple-darwin)
 else
   for s in "${SELECT[@]}"; do
     TRIPLES+=("$(resolve_triple "$s")")
   done
 fi
+
+for t in "${TRIPLES[@]}"; do
+  if [[ "$t" == "x86_64-apple-darwin" || "$t" == "universal-apple-darwin" ]]; then
+    echo "⚠️  $t 需要 Intel Mac 的 ONNX Runtime 预编译库；ort-sys 2.0 已不再提供，构建很可能会失败。" >&2
+    echo "   发版与本地默认请用 Apple Silicon: bun run build:mac / bun run build:mac arm" >&2
+  fi
+done
 
 # ── 确保所需 Rust target 已安装(universal 需要底层两个 target 都在) ──────────
 ensure_target() {
