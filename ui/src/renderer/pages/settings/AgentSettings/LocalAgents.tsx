@@ -179,7 +179,7 @@ const LocalAgents: React.FC = () => {
           icon={<IconRefresh />}
           loading={refreshingDetection}
           data-testid='btn-refresh-local-agents'
-          className='!h-auto !p-0 !align-baseline !text-12px !font-normal !text-primary-6 hover:!text-primary-7 hover:!underline underline-offset-2'
+          className='flowy-icon-text-btn !h-auto !p-0 !align-baseline !text-12px !font-normal !text-primary-6 hover:!text-primary-7 hover:!underline underline-offset-2'
           onClick={() => void handleRefreshDetection()}
         >
           {t('settings.agentManagement.refreshDetection')}
@@ -212,7 +212,7 @@ const LocalAgents: React.FC = () => {
               type='primary'
               size='small'
               icon={<Plus size='14' className='!text-white' />}
-              className={classNames('!rounded-10px shrink-0', bannerWide && '!min-w-144px')}
+              className={classNames('flowy-icon-text-btn !rounded-10px shrink-0', bannerWide && '!min-w-144px')}
               onClick={() => setHubModalVisible(true)}
             >
               {t('settings.agentManagement.installFromMarket')}

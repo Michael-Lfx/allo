@@ -38,12 +38,12 @@ const GoalModeChip: React.FC<{
       type='text'
       shape='round'
       size='small'
-      className={styles.chip}
+      className={`${styles.chip} flowy-icon-text-btn`}
       aria-label={t('conversation.goal.chip.clearAria', { defaultValue: 'Clear goal mode' })}
       data-testid='goal-mode-chip'
       onClick={clearsPersistedGoal ? undefined : () => onArmedChange?.(false)}
     >
-      <span className={styles.chipContent}>
+      <span className={`${styles.chipContent} flowy-button-inline-content`}>
         <span className={styles.chipIcon} aria-hidden='true'>
           <span className={styles.chipMark}>
             <Aiming theme='outline' size='16' strokeWidth={3} fill='currentColor' />

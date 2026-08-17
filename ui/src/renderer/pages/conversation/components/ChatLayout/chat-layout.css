@@ -316,7 +316,7 @@
     color 0.16s ease;
 }
 
-.capability-header-btn .arco-btn-content {
+.capability-header-btn .flowy-button-inline-content {
   position: relative;
   z-index: 1;
 }
@@ -384,7 +384,7 @@
     border-radius: 999px !important;
   }
 
-  .agent-mode-compact-pill .arco-btn-content {
+  .agent-mode-compact-pill .flowy-button-inline-content {
     line-height: 1;
   }
 

@@ -28,6 +28,11 @@ describe('GuidActionRow MCP checkbox selection treatment', () => {
     expect(guidCss.includes('container-name: guid-action-config')).toBe(true);
     expect(guidCss.includes('@container guid-action-config (max-width: 440px)')).toBe(true);
     expect(guidCss.includes(':global(.guid-config-btn:hover)')).toBe(true);
+    expect(modelSelectorSource.includes('flowy-icon-text-btn')).toBe(true);
+    expect(modelSelectorSource.includes('flowy-button-inline-content')).toBe(true);
+    expect(actionRowSource.includes('flowy-icon-text-btn')).toBe(true);
+    expect(actionRowSource.includes('flowy-button-inline-content')).toBe(true);
+    expect(guidCss.includes('.flowy-button-inline-content')).toBe(true);
     expect(guidCss.includes('@media (hover: hover) and (pointer: fine)')).toBe(true);
   });
 

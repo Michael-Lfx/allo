@@ -192,6 +192,7 @@ const TerminalPanelItem: React.FC<TerminalPanelItemProps> = ({
                 type='text'
                 loading
                 disabled
+                className='flowy-icon-text-btn'
                 icon={<Power size={14} />}
               >
                 {t('terminal.conversationPanel.stopping')}
@@ -206,6 +207,7 @@ const TerminalPanelItem: React.FC<TerminalPanelItemProps> = ({
                   status='danger'
                   type='text'
                   loading={busy}
+                  className='flowy-icon-text-btn'
                   icon={<Power size={14} />}
                 >
                   {t('terminal.action.close')}
@@ -221,6 +223,7 @@ const TerminalPanelItem: React.FC<TerminalPanelItemProps> = ({
                   status='danger'
                   type='text'
                   loading={busy}
+                  className='flowy-icon-text-btn'
                   icon={<DeleteOne size={14} />}
                 >
                   {t('terminal.conversationPanel.remove')}

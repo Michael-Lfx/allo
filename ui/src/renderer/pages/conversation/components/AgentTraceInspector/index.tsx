@@ -5,6 +5,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
+import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { Button, Drawer, Empty, Spin, Tag, Tooltip } from '@arco-design/web-react';
 import { Bug, Refresh } from '@icon-park/react';
@@ -126,7 +127,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
           type='text'
           size='mini'
           shape='round'
-          className={capabilityHeaderButtonClass(open)}
+          className={classNames(capabilityHeaderButtonClass(open), 'flowy-icon-text-btn')}
           style={capabilityHeaderButtonStyle(ACCENT)}
           icon={<Bug theme='outline' size='14' strokeWidth={3} />}
           onClick={() => setOpen(true)}
@@ -161,6 +162,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
           <Button
             type='text'
             size='mini'
+            className='flowy-icon-text-btn'
             icon={<Refresh theme='outline' size='14' strokeWidth={3} />}
             onClick={() => void loadList()}
             disabled={loading}

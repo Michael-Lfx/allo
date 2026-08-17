@@ -71,6 +71,7 @@ const BrowserPageHeader: React.FC<BrowserPageHeaderProps> = ({
       )}
       <Button
         type='outline'
+        className='flowy-icon-text-btn'
         loading={refreshing}
         disabled={controlsDisabled}
         icon={<Refresh theme='outline' size='14' />}
@@ -82,6 +83,7 @@ const BrowserPageHeader: React.FC<BrowserPageHeaderProps> = ({
         <Button
           status='danger'
           type='outline'
+          className='flowy-icon-text-btn'
           disabled={!hasManagedResources || controlsDisabled}
           loading={closingAll}
           icon={<Delete theme='outline' size='14' />}

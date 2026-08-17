@@ -297,7 +297,7 @@ const ProviderConnectionsSection: React.FC<{ provider: IProvider }> = ({ provide
         {expanded && (
           <Button
             size='mini'
-            className='model-provider-action-btn !h-24px !min-w-24px shrink-0 px-6px text-t-secondary hover:text-t-primary'
+            className='flowy-icon-text-btn model-provider-action-btn !h-24px !min-w-24px shrink-0 px-6px text-t-secondary hover:text-t-primary'
             icon={<Plus size='12' />}
             onClick={() => setDrawer({})}
           >

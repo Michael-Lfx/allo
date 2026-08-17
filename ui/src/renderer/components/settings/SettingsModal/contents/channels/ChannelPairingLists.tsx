@@ -53,7 +53,7 @@ export const PendingPairingList: React.FC<{
       <SectionHeader
         title={t('settings.channels.pendingPairings', 'Pending Pairing Requests')}
         action={
-          <Button size='mini' type='text' icon={<Refresh size={14} />} loading={loading} onClick={onRefresh}>
+          <Button size='mini' type='text' className='flowy-icon-text-btn' icon={<Refresh size={14} />} loading={loading} onClick={onRefresh}>
             {t('common.refresh', 'Refresh')}
           </Button>
         }
@@ -92,13 +92,14 @@ export const PendingPairingList: React.FC<{
                 </div>
               </div>
               <div className='flex items-center gap-8px'>
-                <Button type='primary' size='small' icon={<CheckOne size={14} />} onClick={() => onApprove(pairing.code)}>
+                <Button type='primary' size='small' className='flowy-icon-text-btn' icon={<CheckOne size={14} />} onClick={() => onApprove(pairing.code)}>
                   {t('settings.channels.approve', 'Approve')}
                 </Button>
                 <Button
                   type='secondary'
                   size='small'
                   status='danger'
+                  className='flowy-icon-text-btn'
                   icon={<CloseOne size={14} />}
                   onClick={() => onReject(pairing.code)}
                 >
@@ -132,7 +133,7 @@ export const AuthorizedUserList: React.FC<{
       <SectionHeader
         title={t('settings.channels.authorizedUsers', 'Authorized Users')}
         action={
-          <Button size='mini' type='text' icon={<Refresh size={14} />} loading={loading} onClick={onRefresh}>
+          <Button size='mini' type='text' className='flowy-icon-text-btn' icon={<Refresh size={14} />} loading={loading} onClick={onRefresh}>
             {t('common.refresh', 'Refresh')}
           </Button>
         }

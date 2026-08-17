@@ -321,6 +321,7 @@ const TraceTimeline: React.FC<TraceTimelineProps> = ({ spans, turnStartedAtMs })
                       <Button
                         type='text'
                         size='mini'
+                        className='flowy-icon-text-btn'
                         icon={<Copy theme='outline' size='12' strokeWidth={3} />}
                         onClick={(e) => {
                           e.stopPropagation();

@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 
 const detailSource = readFileSync(new URL('./KnowledgeDetailPage/index.tsx', import.meta.url), 'utf8');
+const actionBarSource = readFileSync(new URL('./KnowledgeDetailPage/KnowledgeDetailActionBar.tsx', import.meta.url), 'utf8');
 
 describe('Knowledge detail document action bar', () => {
   test('keeps the back link icon and label vertically centered as one row', () => {
@@ -100,5 +101,14 @@ describe('Knowledge detail document action bar', () => {
     expect(detailSource.includes("className='flex items-center justify-end gap-8px'")).toBe(true);
     expect(detailSource.includes("t('knowledge.detail.docs.edit'")).toBe(true);
     expect(detailSource.includes('overflow-y-auto')).toBe(true);
+  });
+
+  test('opts icon and label actions into the shared horizontal layout contract', () => {
+    expect(detailSource.includes('KnowledgeDetailActionBar')).toBe(true);
+    expect(actionBarSource.includes("className='flowy-icon-text-btn'")).toBe(true);
+    expect(actionBarSource.includes("icon={<Search")).toBe(true);
+    expect(actionBarSource.includes("icon={<LinkOne")).toBe(true);
+    expect(actionBarSource.includes("data-testid='knowledge-detail-action-more'")).toBe(true);
+    expect(actionBarSource.includes("icon={<More")).toBe(true);
   });
 });

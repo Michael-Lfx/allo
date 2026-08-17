@@ -78,7 +78,7 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
             data-testid={`btn-add-market-skill-${testId}`}
             loading={busy || actionState === 'checking'}
             disabled={disabled}
-            className='!h-32px !min-w-88px !rounded-8px !px-10px !text-12px !whitespace-nowrap active:!scale-96 motion-reduce:active:!transform-none'
+            className='flowy-icon-text-btn !h-32px !min-w-88px !rounded-8px !px-10px !text-12px !whitespace-nowrap active:!scale-96 motion-reduce:active:!transform-none'
             icon={
               actionState === 'completed' ? (
                 <Check theme='outline' size={12} strokeWidth={3} fill='currentColor' />

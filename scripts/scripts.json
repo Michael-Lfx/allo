@@ -37,6 +37,14 @@
       "group": "check",
       "desc": "校验商业化切片的 UX 视觉基线（漏斗事件与关键页面基线）"
     },
+    "check:button-layout": {
+      "group": "check",
+      "desc": "使用 Windows Edge 矩阵验证 Arco 与 Icon Park 按钮的横向布局和对齐契约"
+    },
+    "check:button-layout-contract": {
+      "group": "check",
+      "desc": "扫描所有 Arco 图标文字按钮并校验共享横向布局契约"
+    },
     "dev":           { "group": "dev",   "desc": "启动桌面应用开发（tauri dev，热重载）" },
     "dev:web":       { "group": "dev",   "desc": "启动 Web 全栈开发（后端 API + 前端 vite）" },
     "dev:ui":        { "group": "dev",   "desc": "仅启动前端开发服务器（纯 vite，无后端）" },

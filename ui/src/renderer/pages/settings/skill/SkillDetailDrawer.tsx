@@ -144,7 +144,7 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
               type='primary'
               icon={<SettingOne size={14} strokeWidth={3} />}
               onClick={() => onEditTags(skill)}
-              className='rounded-[100px]'
+              className='flowy-icon-text-btn rounded-[100px]'
               data-testid='btn-detail-edit-tags'
             >
               {t('settings.skillsHub.editTags', { defaultValue: 'Edit Tags' })}
@@ -252,7 +252,7 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
                       defaultValue: 'The file may have moved or is no longer readable. Refresh the skill list and try again.',
                     })}
                   </div>
-                  <Button size='small' icon={<Refresh size={13} />} onClick={() => void loadContent()}>
+                  <Button size='small' className='flowy-icon-text-btn' icon={<Refresh size={13} />} onClick={() => void loadContent()}>
                     {t('common.retry', { defaultValue: 'Retry' })}
                   </Button>
                 </div>

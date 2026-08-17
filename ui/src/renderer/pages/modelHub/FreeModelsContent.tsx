@@ -225,10 +225,10 @@ const FreeModelsContent: React.FC = () => {
                 shape='round'
                 size='small'
                 icon={<Refresh theme='outline' size='15' />}
+                className='flowy-icon-text-btn rd-100px border-1px border-solid border-[var(--color-border-2)] h-34px px-14px text-t-secondary hover:text-t-primary'
                 loading={pendingAction === 'refresh'}
                 disabled={!status || serviceBusy || healthBusy}
                 onClick={() => void run(refresh, 'settings.modelHub.free.refreshSuccess', true)}
-                className='rd-100px border-1px border-solid border-[var(--color-border-2)] h-34px px-14px text-t-secondary hover:text-t-primary'
               >
                 {t('settings.modelHub.free.refresh')}
               </Button>
@@ -385,9 +385,9 @@ const FreeModelsContent: React.FC = () => {
                       shape='round'
                       size='mini'
                       icon={<Heartbeat theme='outline' size='14' />}
+                      className='flowy-icon-text-btn !h-28px !px-10px rd-100px border-[var(--color-border-2)] text-t-secondary hover:text-t-primary'
                       loading={healthCheckPending === 'all'}
                       disabled={!status.enabled || healthBusy || serviceBusy || enabledModelCount === 0}
-                      className='!h-28px !px-10px rd-100px border-[var(--color-border-2)] text-t-secondary hover:text-t-primary'
                       onClick={() => void runHealthCheck()}
                     >
                       {t('settings.modelHub.free.health.checkAll')}

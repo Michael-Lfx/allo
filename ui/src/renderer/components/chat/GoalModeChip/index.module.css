@@ -19,13 +19,6 @@
   border-color: transparent !important;
 }
 
-.chip :global(.arco-btn-content) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-}
-
 .chipContent {
   display: inline-flex;
   align-items: center;

@@ -330,6 +330,7 @@ const ParticipantProfilePanel: React.FC<{ detail: TAgentExecutionDetail }> = ({ 
                     size='small'
                     type={saved ? 'secondary' : 'primary'}
                     status={saved ? 'success' : undefined}
+                    className='flowy-icon-text-btn'
                     loading={saving}
                     disabled={saved || saving}
                     icon={saved ? <Check theme='outline' size='13' strokeWidth={4} /> : <AddUser theme='outline' size='13' strokeWidth={3} />}

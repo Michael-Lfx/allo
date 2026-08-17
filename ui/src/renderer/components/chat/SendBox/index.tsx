@@ -2063,7 +2063,7 @@ const SendBox: React.FC<{
       shape='circle'
       type='secondary'
       size='small'
-      className='sendbox-composer-plus-btn sendbox-mobile-plus-btn'
+      className='sendbox-composer-plus-btn sendbox-mobile-plus-btn flowy-button-icon'
       icon={<Plus theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
       onClick={onMobilePlusClick}
       data-testid='sendbox-mobile-plus-btn'

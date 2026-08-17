@@ -182,6 +182,7 @@ const McpServerHeader: React.FC<McpServerHeaderProps> = ({
           <Button
             size='mini'
             type='primary'
+            className='flowy-icon-text-btn'
             icon={<Login size={'14'} />}
             title={t('settings.mcpLogin') || 'Login'}
             loading={isLoggingIn}

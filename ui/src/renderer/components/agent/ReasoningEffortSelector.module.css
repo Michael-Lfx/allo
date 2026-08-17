@@ -206,6 +206,7 @@
   min-width: 0;
   outline: none;
   padding: 0 7px;
+  white-space: nowrap;
   transition:
     background-color 180ms ease-out,
     border-color 180ms ease-out,

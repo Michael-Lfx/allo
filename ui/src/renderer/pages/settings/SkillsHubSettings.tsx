@@ -314,7 +314,7 @@ const SkillsHubSettings: React.FC = () => {
                     </Menu>
                   }
                 >
-                  <Button size='small' className={`${IMPORT_ACTION_BUTTON_CLASS} !whitespace-nowrap`} icon={<FolderOpen size={14} fill='currentColor' />}>
+                  <Button size='small' className={`flowy-icon-text-btn ${IMPORT_ACTION_BUTTON_CLASS} !whitespace-nowrap`} icon={<FolderOpen size={14} fill='currentColor' />}>
                     {t('settings.skillsHub.manualImport', { defaultValue: 'Import Skills' })}
                   </Button>
                 </Dropdown>

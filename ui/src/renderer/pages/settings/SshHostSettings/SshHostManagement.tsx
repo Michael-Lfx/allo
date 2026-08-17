@@ -270,7 +270,7 @@ export const SshHostFormModal: React.FC<FormModalProps> = ({ visible, editHost, 
         </FormItem>
 
         {isEdit && (
-          <Button long type='outline' icon={<Speed theme='outline' size='14' />} loading={testing} onClick={handleTest}>
+          <Button long type='outline' className='flowy-icon-text-btn' icon={<Speed theme='outline' size='14' />} loading={testing} onClick={handleTest}>
             {t('ssh.form.test')}
           </Button>
         )}
@@ -450,6 +450,7 @@ const SshHostManagement: React.FC = () => {
             <Button
               size='small'
               type='text'
+              className='flowy-icon-text-btn'
               icon={<Download theme='outline' size='14' />}
               onClick={() => setImportVisible(true)}
             >
@@ -458,6 +459,7 @@ const SshHostManagement: React.FC = () => {
           ) : null}
           <Button
             type={importFirst ? 'outline' : 'primary'}
+            className='flowy-icon-text-btn'
             icon={<Plus theme='outline' size='14' />}
             onClick={openAdd}
           >
@@ -479,6 +481,7 @@ const SshHostManagement: React.FC = () => {
             <>
               <Button
                 type='primary'
+                className='flowy-icon-text-btn'
                 icon={<Download theme='outline' size='14' />}
                 onClick={() => setImportVisible(true)}
               >
@@ -489,7 +492,7 @@ const SshHostManagement: React.FC = () => {
               </div>
             </>
           ) : (
-            <Button type='primary' icon={<Plus theme='outline' size='14' />} onClick={openAdd}>
+            <Button type='primary' className='flowy-icon-text-btn' icon={<Plus theme='outline' size='14' />} onClick={openAdd}>
               {t('ssh.empty.add')}
             </Button>
           )}

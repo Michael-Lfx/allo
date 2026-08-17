@@ -202,7 +202,7 @@ const GuidCollaborationTemplatePicker: React.FC<Props> = ({
                 <Button
                   type='text'
                   size='mini'
-                  className='min-w-0 flex-1 justify-start'
+                  className='flowy-icon-text-btn flowy-icon-text-btn--start min-w-0 flex-1 justify-start'
                   icon={<FolderOpen theme='outline' size='13' />}
                   onClick={() => void apply(template)}
                 >
@@ -244,6 +244,7 @@ const GuidCollaborationTemplatePicker: React.FC<Props> = ({
           type='primary'
           loading={saving}
           disabled={!name.trim() || currentModels.length === 0}
+          className='flowy-icon-text-btn'
           icon={<Save theme='outline' size='13' />}
           onClick={() => void save()}
         >

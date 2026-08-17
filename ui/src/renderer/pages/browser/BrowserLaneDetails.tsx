@@ -217,6 +217,7 @@ const BrowserLaneDetails: React.FC<BrowserLaneDetailsProps> = ({
             {canChangeVisibility && hostHeadful != null && (
               <Button
                 type='primary'
+                className='flowy-icon-text-btn'
                 loading={visibilityChanging}
                 disabled={closing || actionsDisabled}
                 icon={<BringToFront theme='outline' size='14' />}
@@ -233,6 +234,7 @@ const BrowserLaneDetails: React.FC<BrowserLaneDetailsProps> = ({
             <Button
               status='danger'
               type='outline'
+              className='flowy-icon-text-btn'
               loading={closing}
               disabled={visibilityChanging || actionsDisabled}
               icon={<Delete theme='outline' size='14' />}

@@ -214,6 +214,7 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
               <Button
                 size='mini'
                 type='text'
+                className='flowy-icon-text-btn'
                 icon={<Link size={'14'} />}
                 title={t('settings.mcpGetApi', { defaultValue: 'Get API' })}
                 onClick={handleOpenApiKeyUrl}

@@ -35,6 +35,35 @@ type GuidModelSelectorProps = {
   setSelectedAcpModel: React.Dispatch<React.SetStateAction<string | null>>;
 };
 
+export const GuidModelSelectorButton: React.FC<{
+  label: string;
+  includeChevron?: boolean;
+  readOnly?: boolean;
+  labelClassName?: string;
+}> = ({ label, includeChevron = true, readOnly = false, labelClassName }) => (
+  <Button
+    className='sendbox-model-btn guid-config-btn flowy-icon-text-btn'
+    shape='round'
+    size='small'
+    data-testid='guid-model-selector'
+    style={readOnly ? { cursor: 'default' } : undefined}
+    aria-label={label}
+  >
+    <span className='flowy-button-inline-content flex items-center gap-6px min-w-0'>
+      <Brain theme='outline' size='14' fill={iconColors.secondary} className='shrink-0' />
+      <span className={`sendbox-responsive-label ${labelClassName ?? ''}`.trim()}>{label}</span>
+      {includeChevron && (
+        <Down
+          theme='outline'
+          size='12'
+          fill={iconColors.secondary}
+          className='sendbox-responsive-chevron shrink-0'
+        />
+      )}
+    </span>
+  </Button>
+);
+
 const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   isGeminiMode,
   modelList,
@@ -179,24 +208,7 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
           </Menu>
         }
       >
-        <Button
-          className={'sendbox-model-btn guid-config-btn'}
-          shape='round'
-          size='small'
-          data-testid='guid-model-selector'
-          aria-label={geminiButtonLabel}
-        >
-          <span className='flex items-center gap-6px min-w-0'>
-            <Brain theme='outline' size='14' fill={iconColors.secondary} className='shrink-0' />
-            <span className='sendbox-responsive-label truncate'>{geminiButtonLabel}</span>
-            <Down
-              theme='outline'
-              size='12'
-              fill={iconColors.secondary}
-              className='sendbox-responsive-chevron shrink-0'
-            />
-          </span>
-        </Button>
+        <GuidModelSelectorButton label={geminiButtonLabel} labelClassName='truncate' />
       </Dropdown>
     );
   }
@@ -238,60 +250,19 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
             </Menu>
           }
         >
-          <Button
-            className={'sendbox-model-btn guid-config-btn'}
-            shape='round'
-            size='small'
-            data-testid='guid-model-selector'
-            aria-label={acpButtonLabel}
-          >
-            <span className='flex items-center gap-6px min-w-0'>
-              <Brain theme='outline' size='14' fill={iconColors.secondary} className='shrink-0' />
-              <span className='sendbox-responsive-label'>{acpButtonLabel}</span>
-              <Down
-                theme='outline'
-                size='12'
-                fill={iconColors.secondary}
-                className='sendbox-responsive-chevron shrink-0'
-              />
-            </span>
-          </Button>
+          <GuidModelSelectorButton label={acpButtonLabel} />
         </Dropdown>
       );
     }
 
     return (
-      <Button
-        className={'sendbox-model-btn guid-config-btn'}
-        shape='round'
-        size='small'
-        data-testid='guid-model-selector'
-        style={{ cursor: 'default' }}
-        aria-label={acpButtonLabel}
-      >
-        <span className='flex items-center gap-6px min-w-0'>
-          <Brain theme='outline' size='14' fill={iconColors.secondary} className='shrink-0' />
-          <span className='sendbox-responsive-label'>{acpButtonLabel}</span>
-        </span>
-      </Button>
+      <GuidModelSelectorButton label={acpButtonLabel} includeChevron={false} readOnly />
     );
   }
 
   // Fallback: no model switching
   return (
-    <Button
-      className={'sendbox-model-btn guid-config-btn'}
-      shape='round'
-      size='small'
-      data-testid='guid-model-selector'
-      style={{ cursor: 'default' }}
-      aria-label={defaultModelLabel}
-    >
-      <span className='flex items-center gap-6px min-w-0'>
-        <Brain theme='outline' size='14' fill={iconColors.secondary} className='shrink-0' />
-        <span className='sendbox-responsive-label'>{defaultModelLabel}</span>
-      </span>
-    </Button>
+    <GuidModelSelectorButton label={defaultModelLabel} includeChevron={false} readOnly />
   );
 };
 

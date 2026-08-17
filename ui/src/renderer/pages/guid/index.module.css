@@ -93,7 +93,9 @@
   display: block;
 }
 
-.heroBackButton :global(.arco-btn-icon) {
+.heroBackButton :global(.i-icon),
+.heroBackButton :global(.arco-icon),
+.heroBackButton :global(svg) {
   margin: 0 !important;
   line-height: 0 !important;
   display: inline-flex;
@@ -1712,13 +1714,6 @@ button.guidResourceCard:focus-visible {
   transform: translateY(0);
 }
 
-.actionGoalButton :global(.arco-btn-content) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-}
-
 .actionGoalButtonContent {
   display: inline-flex;
   align-items: center;
@@ -1825,13 +1820,12 @@ button.guidResourceCard:focus-visible {
       opacity 160ms ease !important;
   }
 
-  .actionConfigGroup :global(.guid-config-btn .arco-btn-content),
-  .actionConfigGroup :global(.agent-mode-compact-pill .arco-btn-content) {
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
+  .actionConfigGroup :global(.guid-config-btn .flowy-button-inline-content),
+  .actionConfigGroup :global(.agent-mode-compact-pill .flowy-button-inline-content) {
+    display: flex !important;
     width: 100% !important;
     min-width: 0 !important;
+    gap: 0 !important;
     overflow: visible !important;
   }
 }
@@ -1907,14 +1901,6 @@ button.guidResourceCard:focus-visible {
 .actionConfigGroup :global(.sendbox-model-btn.arco-btn:focus-visible) {
   background: var(--color-fill-3) !important;
   color: var(--text-primary) !important;
-}
-
-.actionConfigGroup :global(.sendbox-model-btn .arco-btn-content) {
-  gap: 0 !important;
-}
-
-.actionConfigGroup :global(.sendbox-model-btn .arco-btn-content > span:first-child) {
-  gap: 4px !important;
 }
 
 .actionSubmit {

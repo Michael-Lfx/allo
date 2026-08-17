@@ -119,6 +119,7 @@ const SpeechToTextContent: React.FC = () => {
         <Button
           type='text'
           size='small'
+          className='flowy-icon-text-btn'
           icon={<LinkCloud theme='outline' size='14' />}
           onClick={() => navigate('/models?section=models')}
         >

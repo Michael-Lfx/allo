@@ -146,7 +146,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
               type='secondary'
               shape='circle'
               size='small'
-              className='sendbox-composer-plus-btn'
+              className='sendbox-composer-plus-btn flowy-button-icon'
               icon={<Plus theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
               onClick={onOpenAddMenu}
               data-testid='file-upload-btn'
@@ -183,12 +183,12 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             type='text'
             shape='round'
             size='small'
-            className={styles.actionGoalButton}
+            className={`${styles.actionGoalButton} flowy-icon-text-btn`}
             onClick={() => onGoalModeChange(false)}
             aria-label={t('guid.goalMode.clearAria', { defaultValue: '取消目标模式' })}
             data-testid='guid-goal-chip'
           >
-            <span className={styles.actionGoalButtonContent}>
+            <span className={`${styles.actionGoalButtonContent} flowy-button-inline-content`}>
               <span className={styles.actionGoalChipIcon} aria-hidden='true'>
                 <span className={styles.actionGoalChipMark}>
                   <Aiming theme='outline' size='14' strokeWidth={3} fill='currentColor' />

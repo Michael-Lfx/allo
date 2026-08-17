@@ -294,7 +294,7 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
             type='text'
             size='mini'
             data-testid={testId('btn-open-{market}-browser')}
-            className='!rounded-10px !px-10px !h-28px !text-12px !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
+            className='flowy-icon-text-btn !rounded-10px !px-10px !h-28px !text-12px !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
             icon={<LinkOne size={14} fill='currentColor' />}
             onClick={() => void handleOpenMarket()}
           >

@@ -172,7 +172,7 @@ const CssThemeModal: React.FC<CssThemeModalProps> = ({ visible, theme, onClose, 
         <div className='flex justify-between items-center pt-16px border-t border-t-solid border-arco-2'>
           <div>
             {onDelete && (
-              <Button type='text' icon={<Delete theme='outline' size='14' />} onClick={onDelete}>
+              <Button type='text' className='flowy-icon-text-btn' icon={<Delete theme='outline' size='14' />} onClick={onDelete}>
                 {t('common.delete')}
               </Button>
             )}

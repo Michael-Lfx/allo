@@ -148,7 +148,7 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
         <Button
           type='primary'
           size='small'
-          className={isMobile ? '!flex-1 !h-36px' : '!px-16px !h-34px'}
+          className={`flowy-icon-text-btn ${isMobile ? '!flex-1 !h-36px' : '!px-16px !h-34px'}`}
           icon={<Plus size={14} fill='currentColor' />}
           onClick={onCreate}
           data-testid='btn-create-preset'
@@ -214,7 +214,7 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
                 })}
           </div>
           {presets.length === 0 && (
-            <Button type='primary' size='small' icon={<Plus size={14} fill='currentColor' />} onClick={onCreate}>
+            <Button type='primary' size='small' className='flowy-icon-text-btn' icon={<Plus size={14} fill='currentColor' />} onClick={onCreate}>
               {t('settings.createPreset', { defaultValue: 'Create Preset' })}
             </Button>
           )}

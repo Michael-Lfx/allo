@@ -171,6 +171,7 @@ const Diff2Html = ({
                 <Button
                   type='text'
                   size='mini'
+                  className='flowy-icon-text-btn'
                   onClick={handlePreviewClick as any}
                   disabled={previewLoading}
                   icon={<PreviewOpen theme='outline' size='14' fill={iconColors.secondary} />}

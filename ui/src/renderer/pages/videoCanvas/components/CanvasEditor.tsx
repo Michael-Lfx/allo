@@ -329,13 +329,14 @@ const CanvasEditor: React.FC<Props> = ({ doc, onChange, busy }) => {
             trigger='click'
             position='bl'
           >
-            <Button type='primary' size='small' icon={<AddOne theme='outline' size={14} />}>
+            <Button type='primary' size='small' className='flowy-icon-text-btn' icon={<AddOne theme='outline' size={14} />}>
               添加节点
             </Button>
           </Dropdown>
           <Button
             size='small'
             status='danger'
+            className='flowy-icon-text-btn'
             disabled={!selectedId}
             icon={<Delete theme='outline' size={14} />}
             onClick={deleteSelected}
@@ -344,6 +345,7 @@ const CanvasEditor: React.FC<Props> = ({ doc, onChange, busy }) => {
           </Button>
           <Button
             size='small'
+            className='flowy-icon-text-btn'
             icon={<FullScreen theme='outline' size={14} />}
             onClick={() => updateViewport({ x: 0, y: 0, k: 1 })}
           >
@@ -546,6 +548,7 @@ const CanvasEditor: React.FC<Props> = ({ doc, onChange, busy }) => {
                     <Button
                       type='primary'
                       size='small'
+                      className='flowy-icon-text-btn'
                       long
                       loading={runningId === node.id}
                       disabled={!!busy || !!runningId}
