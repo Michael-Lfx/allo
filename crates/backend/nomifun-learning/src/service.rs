@@ -13,14 +13,15 @@ use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService};
 use serde_json::Value;
 use sqlx::{Row, Sqlite, Transaction};
 
-use crate::generation::{Blueprint, generate_lesson};
+use crate::generation::{Blueprint, generate_lesson, generate_lesson_activity};
 use crate::models::{
-    ActivityKind, ActivityView, AttemptResult, ConceptRef, ConceptView, CourseDetail,
-    CourseJobSource, CourseJobStatus, CourseJobView, CoursePack, CourseSummary,
-    CreateCustomQuestionRequest, DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest,
-    GenerateLessonRequest, LessonStatus, LessonView, ModuleView, QuestionEntry, RetryCourseJobRequest,
-    ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult, ReviewSource, SetTagsRequest,
-    SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
+    ActivityKind, ActivityView, AttemptResult, ConceptPack, ConceptRef, ConceptView,
+    CourseDetail, CourseJobSource, CourseJobStatus, CourseJobView, CoursePack, CourseSummary,
+    CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem, DiagnosticPlan,
+    DueReview, GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
+    GeneratedLessonActivity, LessonStatus, LessonView, ModuleView, QuestionEntry,
+    RetryCourseJobRequest, ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult,
+    ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
 };
 use crate::generation_job::GenerationJobRunner;
 use crate::scheduler::{SchedulerSettings, schedule_review};
@@ -1165,6 +1166,361 @@ impl LearningService {
 
         let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
         self.lesson_view(lesson_id, enrollment.as_ref()).await
+    }
+
+    /// Manually appends an activity to a generated lesson. The lesson must
+    /// belong to a course the learner is enrolled in (the enrollment is
+    /// created on demand like every other practice flow). An empty
+    /// `concept_ids` binds the activity to every concept of the lesson;
+    /// when the lesson is already completed, an objective question is also
+    /// admitted to the review queue immediately via the idempotent seeder.
+    pub async fn create_lesson_activity(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+        request: CreateLessonActivityRequest,
+    ) -> Result<LessonView, AppError> {
+        let (prompt, config) = validate_question_payload(
+            request.kind,
+            &request.prompt,
+            &request.options,
+            &request.answer,
+            &request.explanation,
+            &request.distractors,
+        )?;
+        // Resolve the enrollment through the lesson, creating it on demand
+        // exactly like update_lesson_progress does for the first write.
+        let enrollment_id: Option<String> = sqlx::query_scalar(
+            "SELECT e.enrollment_id FROM learning_enrollments e \
+             JOIN learning_modules m ON m.course_id = e.course_id \
+             JOIN learning_lessons l ON l.module_id = m.module_id \
+             WHERE e.user_id = ? AND l.lesson_id = ?",
+        )
+        .bind(user_id.as_str())
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let enrollment_id = match enrollment_id {
+            Some(enrollment_id) => enrollment_id,
+            None => {
+                let course_id: String = sqlx::query_scalar(
+                    "SELECT m.course_id FROM learning_modules m \
+                     JOIN learning_lessons l ON l.module_id = m.module_id \
+                     WHERE l.lesson_id = ?",
+                )
+                .bind(lesson_id.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
+                let enrollment =
+                    self.ensure_enrollment(&parse_id(course_id)?, user_id).await?;
+                enrollment.as_str().to_owned()
+            }
+        };
+        let enrollment: LearningEnrollmentId = parse_id(enrollment_id)?;
+
+        // Concept bindings: an empty list defaults to every concept of the
+        // lesson, matching course-generation semantics.
+        let lesson_concept_ids = self.lesson_concepts(lesson_id).await?;
+        let concept_ids: Vec<LearningConceptId> = if request.concept_ids.is_empty() {
+            lesson_concept_ids.clone()
+        } else {
+            for concept_id in &request.concept_ids {
+                if !lesson_concept_ids.contains(concept_id) {
+                    return Err(AppError::BadRequest(format!(
+                        "concept {concept_id} is not bound to this lesson"
+                    )));
+                }
+            }
+            request.concept_ids.clone()
+        };
+
+        let position: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM learning_activities WHERE lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        // A completed lesson admits objective questions into the review
+        // queue right away; the seeder keeps its own idempotence.
+        let completed: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM learning_lesson_progress \
+             WHERE enrollment_id = ? AND lesson_id = ? AND status = 'completed'",
+        )
+        .bind(enrollment.as_str())
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        let activity_id = LearningActivityId::new();
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        sqlx::query(
+            "INSERT INTO learning_activities \
+             (activity_id, lesson_id, kind, prompt, config_json, position) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(activity_id.as_str())
+        .bind(lesson_id.as_str())
+        .bind(request.kind.as_str())
+        .bind(&prompt)
+        .bind(serde_json::to_string(&config).map_err(internal)?)
+        .bind(position)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        for concept_id in &concept_ids {
+            sqlx::query(
+                "INSERT INTO learning_activity_concepts (activity_id, concept_id) VALUES (?, ?)",
+            )
+            .bind(activity_id.as_str())
+            .bind(concept_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        }
+        if completed.is_some() && request.kind != ActivityKind::Reflection {
+            let now = now_ms();
+            ensure_review_item(&mut transaction, &enrollment, activity_id.as_str(), now).await?;
+        }
+        transaction.commit().await.map_err(internal)?;
+
+        self.lesson_view(lesson_id, Some(&enrollment)).await
+    }
+
+    /// Generates ONE additional activity draft for an existing lesson, in the
+    /// learner-chosen kind, grounded in the finished lesson document, its
+    /// cited excerpt, and the lesson's concepts — with every existing
+    /// question listed so the model must cover new ground. The draft is
+    /// returned for preview and nothing is persisted.
+    pub async fn generate_lesson_activity(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+        request: GenerateLessonActivityRequest,
+    ) -> Result<GeneratedLessonActivity, AppError> {
+        // The lesson must belong to a course the learner is enrolled in;
+        // generation is a read-only preview, so no enrollment is created.
+        let enrolled: Option<String> = sqlx::query_scalar(
+            "SELECT e.enrollment_id FROM learning_enrollments e \
+             JOIN learning_modules m ON m.course_id = e.course_id \
+             JOIN learning_lessons l ON l.module_id = m.module_id \
+             WHERE e.user_id = ? AND l.lesson_id = ?",
+        )
+        .bind(user_id.as_str())
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        if enrolled.is_none() {
+            return Err(AppError::NotFound(format!("learning lesson {lesson_id}")));
+        }
+
+        let row = sqlx::query(
+            "SELECT l.title, l.position, l.summary, l.content_generated, m.course_id, \
+                    m.position AS module_position, m.title AS module_title \
+             FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE l.lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
+        let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
+        let content_generated: i64 = row.try_get("content_generated").map_err(internal)?;
+        if content_generated == 0 {
+            return Err(AppError::Conflict(
+                "lesson content has not been generated yet".into(),
+            ));
+        }
+        let summary: String = row.try_get("summary").map_err(internal)?;
+        let module_title: String = row.try_get("module_title").map_err(internal)?;
+        let lesson_title: String = row.try_get("title").map_err(internal)?;
+
+        let snapshot = sqlx::query(
+            "SELECT title, blueprint_json, samples_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let course_title: String = snapshot.try_get("title").map_err(internal)?;
+        let blueprint_json: Option<String> = snapshot.try_get("blueprint_json").map_err(internal)?;
+        let samples_json: Option<String> = snapshot.try_get("samples_json").map_err(internal)?;
+
+        // Prefer the outline snapshot when present. Courses imported without
+        // one (e.g. the built-in tutorial) fall back to concepts reconstructed
+        // from the database and an empty excerpt.
+        let (concepts, lesson_concept_keys, excerpt) =
+            if let (Some(blueprint_json), Some(samples_json)) = (blueprint_json, samples_json) {
+                let blueprint: Blueprint = serde_json::from_str(&blueprint_json).map_err(internal)?;
+                let samples: Vec<(String, String)> =
+                    serde_json::from_str(&samples_json).map_err(internal)?;
+                let module_position: i64 = row.try_get("module_position").map_err(internal)?;
+                let lesson_position: i64 = row.try_get("position").map_err(internal)?;
+                let module = blueprint
+                    .modules
+                    .get(module_position as usize)
+                    .ok_or_else(|| AppError::Internal("outline module position out of range".into()))?;
+                let lesson = module
+                    .lessons
+                    .get(lesson_position as usize)
+                    .ok_or_else(|| AppError::Internal("outline lesson position out of range".into()))?;
+                let excerpt = lesson
+                    .source
+                    .as_ref()
+                    .and_then(|source| {
+                        samples
+                            .iter()
+                            .find(|(path, _)| path == &source.path)
+                            .map(|(_, excerpt)| excerpt.as_str())
+                    })
+                    .unwrap_or_default()
+                    .to_string();
+                (blueprint.concepts, lesson.concepts.clone(), excerpt)
+            } else {
+                (
+                    self.course_concepts_from_db(&course_id).await?,
+                    self.lesson_concept_keys(lesson_id).await?,
+                    String::new(),
+                )
+            };
+        let existing_questions = self.existing_lesson_questions(lesson_id).await?;
+
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict("knowledge-backed course generation is not configured".into())
+            })?;
+        let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
+        let activity = generate_lesson_activity(
+            completer.as_ref(),
+            model_override,
+            request.kind,
+            request.focus.trim(),
+            course_title.trim(),
+            module_title.trim(),
+            lesson_title.trim(),
+            &concepts,
+            &lesson_concept_keys,
+            &summary,
+            &excerpt,
+            &existing_questions,
+        )
+        .await
+        .map_err(|error| {
+            AppError::UnprocessableEntity(format!("failed to generate lesson activity: {error}"))
+        })?;
+
+        // Suggested bindings: the model's own concept keys when present,
+        // otherwise every concept of the lesson.
+        let concept_ids = if activity.concepts.is_empty() {
+            self.lesson_concepts(lesson_id).await?
+        } else {
+            let concept_map = self.concept_map_for_course(&course_id).await?;
+            let mut ids = Vec::with_capacity(activity.concepts.len());
+            for key in &activity.concepts {
+                let concept_id = concept_map
+                    .get(key)
+                    .ok_or_else(|| AppError::Internal(format!("unknown concept key {key}")))?;
+                ids.push(concept_id.clone());
+            }
+            ids
+        };
+
+        Ok(GeneratedLessonActivity {
+            kind: activity.kind,
+            prompt: activity.prompt,
+            options: activity.options,
+            answer: activity.answer,
+            explanation: activity.explanation,
+            distractors: activity.distractors,
+            concept_ids,
+        })
+    }
+
+    /// Every concept of a course as prompt-ready packs, used when the outline
+    /// snapshot is missing (courses imported without one, e.g. the tutorial).
+    async fn course_concepts_from_db(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<Vec<ConceptPack>, AppError> {
+        let rows = sqlx::query(
+            "SELECT concept_key, title, description FROM learning_concepts \
+             WHERE course_id = ? ORDER BY title",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut concepts = Vec::with_capacity(rows.len());
+        for row in rows {
+            concepts.push(ConceptPack {
+                key: row.try_get("concept_key").map_err(internal)?,
+                title: row.try_get("title").map_err(internal)?,
+                description: row.try_get("description").map_err(internal)?,
+                prerequisites: Vec::new(),
+            });
+        }
+        Ok(concepts)
+    }
+
+    /// The concept keys bound to a lesson, for the generation prompt when the
+    /// blueprint snapshot is unavailable.
+    async fn lesson_concept_keys(
+        &self,
+        lesson_id: &LearningLessonId,
+    ) -> Result<Vec<String>, AppError> {
+        let keys: Vec<String> = sqlx::query_scalar(
+            "SELECT c.concept_key FROM learning_lesson_concepts lc \
+             JOIN learning_concepts c ON c.concept_id = lc.concept_id \
+             WHERE lc.lesson_id = ? ORDER BY c.concept_key",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(keys)
+    }
+
+    /// Every question already present in a lesson, ready for the
+    /// single-addition generation prompt's novelty requirement.
+    async fn existing_lesson_questions(
+        &self,
+        lesson_id: &LearningLessonId,
+    ) -> Result<Vec<crate::generation::ExistingLessonQuestion>, AppError> {
+        let rows = sqlx::query(
+            "SELECT kind, prompt, config_json FROM learning_activities \
+             WHERE lesson_id = ? ORDER BY position, activity_id",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut questions = Vec::with_capacity(rows.len());
+        for row in rows {
+            let kind_text: String = row.try_get("kind").map_err(internal)?;
+            let config: StoredActivityConfig = serde_json::from_str(
+                &row.try_get::<String, _>("config_json").map_err(internal)?,
+            )
+            .map_err(internal)?;
+            questions.push(crate::generation::ExistingLessonQuestion {
+                kind: ActivityKind::try_from(kind_text.as_str()).map_err(AppError::Internal)?,
+                prompt: row.try_get("prompt").map_err(internal)?,
+                answer: config.answer,
+                explanation: config.explanation,
+            });
+        }
+        Ok(questions)
     }
 
     pub async fn diagnostic_plan(

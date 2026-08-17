@@ -231,6 +231,7 @@ const LearningPage: React.FC = () => {
           onProgress={courseLearning.updateProgress}
           onAttempt={courseLearning.submitAttempt}
           onGenerate={courseLearning.generateLesson}
+          onRefresh={() => void load()}
         />
         <DiagnosticModal
           plan={courseLearning.diagnosticPlan}

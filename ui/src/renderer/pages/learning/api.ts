@@ -6,10 +6,13 @@ import type {
   CourseJobView,
   CourseSummary,
   CreateCustomQuestionRequest,
+  CreateLessonActivityRequest,
   DiagnosticPlan,
   DueReview,
   GenerateCourseRequest,
+  GenerateLessonActivityRequest,
   GenerateLessonRequest,
+  GeneratedLessonActivity,
   Lesson,
   LessonStatus,
   QuestionEntry,
@@ -59,6 +62,18 @@ export const learningApi = {
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
   generateLesson: (id: string, request: GenerateLessonRequest = {}) =>
     httpRequest<Lesson>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/generate`, request),
+  createLessonActivity: (lessonId: string, request: CreateLessonActivityRequest) =>
+    httpRequest<Lesson>(
+      'POST',
+      `${BASE}/lessons/${encodeURIComponent(lessonId)}/activities`,
+      request
+    ),
+  generateLessonActivity: (lessonId: string, request: GenerateLessonActivityRequest) =>
+    httpRequest<GeneratedLessonActivity>(
+      'POST',
+      `${BASE}/lessons/${encodeURIComponent(lessonId)}/activities/generate`,
+      request
+    ),
   submitAttempt: (id: string, request: SubmitAttemptRequest) =>
     httpRequest<AttemptResult>('POST', `${BASE}/activities/${encodeURIComponent(id)}/attempts`, request),
   listDueReviews: (

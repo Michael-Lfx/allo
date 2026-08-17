@@ -10,6 +10,7 @@ import {
   Tag,
   Typography,
 } from '@arco-design/web-react';
+import { IconPlus } from '@arco-design/web-react/icon';
 import { useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -28,6 +29,7 @@ import type {
 import { sliceSourceContent, statusLabel } from '../utils';
 import { ActivityInput } from './ActivityInput';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
+import { LessonQuestionDialog } from './LessonQuestionDialog';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -246,6 +248,7 @@ function LessonBlock({
   onProgress,
   onAttempt,
   onGenerate,
+  onRefresh,
 }: {
   lesson: Lesson;
   sourceKbId: string | null;
@@ -254,8 +257,10 @@ function LessonBlock({
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
   onGenerate: (lesson: Lesson) => void;
+  onRefresh: () => void;
 }) {
   const { t } = useTranslation();
+  const [addQuestionOpen, setAddQuestionOpen] = useState(false);
   if (!lesson.generated) {
     return (
       <div className='flex flex-col gap-12px'>
@@ -312,6 +317,26 @@ function LessonBlock({
           ))}
         </div>
       )}
+      {/* 仅已生成课时可追加练习（手动创建或 AI 生成） */}
+      <div className='rounded-10px border border-dashed border-[var(--color-border-2)] p-10px'>
+        <Button
+          type='text'
+          icon={<IconPlus />}
+          onClick={() => setAddQuestionOpen(true)}
+        >
+          {t('learning.lessonAddQuestion')}
+        </Button>
+      </div>
+      {addQuestionOpen && (
+        <LessonQuestionDialog
+          lesson={lesson}
+          onClose={() => setAddQuestionOpen(false)}
+          onSaved={() => {
+            setAddQuestionOpen(false);
+            onRefresh();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -325,6 +350,7 @@ export function CourseWorkspace({
   onProgress,
   onAttempt,
   onGenerate,
+  onRefresh,
 }: {
   detail: CourseDetail;
   busyId: string | null;
@@ -334,6 +360,7 @@ export function CourseWorkspace({
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
   onGenerate: (lesson: Lesson, allLessons?: Lesson[]) => void;
+  onRefresh: () => void;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -478,6 +505,7 @@ export function CourseWorkspace({
                       onProgress={onProgress}
                       onAttempt={onAttempt}
                       onGenerate={(target) => onGenerate(target, flatLessons)}
+                      onRefresh={onRefresh}
                     />
                   </Collapse.Item>
                 ))}

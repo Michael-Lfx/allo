@@ -530,6 +530,55 @@ pub struct CreateCustomQuestionRequest {
     pub distractors: Vec<String>,
 }
 
+/// Manually appends an activity to an existing lesson. All four kinds are
+/// accepted; when `concept_ids` is empty the activity binds to every concept
+/// of the lesson, matching course-generation semantics.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateLessonActivityRequest {
+    pub kind: ActivityKind,
+    pub prompt: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub answer: Value,
+    #[serde(default)]
+    pub explanation: String,
+    /// Near-synonym traps for fill_in_blank blanks; empty for other kinds.
+    #[serde(default)]
+    pub distractors: Vec<String>,
+    #[serde(default)]
+    pub concept_ids: Vec<LearningConceptId>,
+}
+
+/// Asks the knowledge-backed generator for a single activity draft for an
+/// existing lesson. The draft is returned for preview and never persisted.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GenerateLessonActivityRequest {
+    pub kind: ActivityKind,
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Optional focus hint steering the question topic; empty means the
+    /// generator picks the least-covered ground itself.
+    #[serde(default)]
+    pub focus: String,
+}
+
+/// AI-generated activity draft shown to the learner for preview before they
+/// confirm adding it to the lesson.
+#[derive(Debug, Clone, Serialize)]
+pub struct GeneratedLessonActivity {
+    pub kind: ActivityKind,
+    pub prompt: String,
+    pub options: Vec<String>,
+    pub answer: Value,
+    pub explanation: String,
+    pub distractors: Vec<String>,
+    /// Suggested concept bindings (the lesson's concepts by default).
+    pub concept_ids: Vec<LearningConceptId>,
+}
+
 /// Concept offered in the custom question form: any concept the learner
 /// has enrolled in, plus orphaned concepts still referenced by their
 /// surviving review items.

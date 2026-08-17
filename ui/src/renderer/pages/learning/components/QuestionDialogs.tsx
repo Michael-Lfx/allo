@@ -24,7 +24,7 @@ import {
 const { Paragraph, Text } = Typography;
 
 /** 单选题选项编辑列表：勾选正确答案、增删改选项（创建 / 编辑题目共用） */
-function OptionEditor({
+export function OptionEditor({
   options,
   answer,
   onOptionsChange,
@@ -76,7 +76,7 @@ function OptionEditor({
 }
 
 /** 判断题答案选择（创建 / 编辑题目共用） */
-function TrueFalseAnswer({
+export function TrueFalseAnswer({
   answer,
   onChange,
   t,
@@ -97,7 +97,7 @@ function TrueFalseAnswer({
 }
 
 /** 填空题答案与干扰项编辑：1-3 个可接受答案 + 可选近义干扰项（逗号分隔） */
-function FillBlankEditor({
+export function FillBlankEditor({
   answers,
   distractors,
   onAnswersChange,

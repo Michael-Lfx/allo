@@ -204,6 +204,39 @@ export interface CreateCustomQuestionRequest {
   distractors?: string[];
 }
 
+/** 手动向课时追加练习（4 种题型全支持）；concept_ids 为空时后端绑定课时全部概念 */
+export interface CreateLessonActivityRequest {
+  kind: ActivityKind;
+  prompt: string;
+  options?: string[];
+  answer: unknown;
+  explanation?: string;
+  /** 填空题的近义干扰项（可选，仅填空题型使用） */
+  distractors?: string[];
+  concept_ids?: string[];
+}
+
+/** AI 生成课时练习草案请求（不落库）；provider_id 与 model 同时传或不传 */
+export interface GenerateLessonActivityRequest {
+  kind: ActivityKind;
+  provider_id?: string;
+  model?: string;
+  /** 可选：用户指定的侧重方向 */
+  focus?: string;
+}
+
+/** AI 生成的草案（供前端预览确认） */
+export interface GeneratedLessonActivity {
+  kind: ActivityKind;
+  prompt: string;
+  options: string[];
+  answer: unknown;
+  explanation: string;
+  distractors: string[];
+  /** 建议绑定的概念（默认课时概念） */
+  concept_ids: string[];
+}
+
 export interface ConceptRef {
   concept_id: string;
   title: string;

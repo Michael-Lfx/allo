@@ -14,8 +14,9 @@ use url::form_urlencoded;
 
 use crate::models::{
     AnswerReviewRequest, CourseJobSource, CoursePack, CreateCustomQuestionRequest,
-    DeleteCourseRequest, GenerateCourseRequest, GenerateLessonRequest, RateReviewRequest,
-    SetTagsRequest, SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
+    CreateLessonActivityRequest, DeleteCourseRequest, GenerateCourseRequest,
+    GenerateLessonActivityRequest, GenerateLessonRequest, RateReviewRequest, SetTagsRequest,
+    SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -55,6 +56,14 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route(
             "/api/learning/lessons/{id}/generate",
             post(generate_lesson),
+        )
+        .route(
+            "/api/learning/lessons/{id}/activities",
+            post(create_lesson_activity),
+        )
+        .route(
+            "/api/learning/lessons/{id}/activities/generate",
+            post(generate_lesson_activity),
         )
         .route(
             "/api/learning/activities/{id}/attempts",
@@ -259,6 +268,36 @@ async fn generate_lesson(
         state
             .service
             .generate_lesson_content(&user.id, &id, &request)
+            .await?,
+    )))
+}
+
+async fn create_lesson_activity(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<CreateLessonActivityRequest>,
+) -> Result<Json<ApiResponse<crate::models::LessonView>>, AppError> {
+    let id = parse_id::<LearningLessonId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .create_lesson_activity(&user.id, &id, request)
+            .await?,
+    )))
+}
+
+async fn generate_lesson_activity(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<GenerateLessonActivityRequest>,
+) -> Result<Json<ApiResponse<crate::models::GeneratedLessonActivity>>, AppError> {
+    let id = parse_id::<LearningLessonId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .generate_lesson_activity(&user.id, &id, request)
             .await?,
     )))
 }
