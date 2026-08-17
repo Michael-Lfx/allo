@@ -14,8 +14,8 @@ use url::form_urlencoded;
 
 use crate::models::{
     AnswerReviewRequest, CourseJobSource, CoursePack, CreateCustomQuestionRequest,
-    DeleteCourseRequest, GenerateCourseRequest, RateReviewRequest, SetTagsRequest,
-    SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
+    DeleteCourseRequest, GenerateCourseRequest, GenerateLessonRequest, RateReviewRequest,
+    SetTagsRequest, SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -51,6 +51,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route(
             "/api/learning/lessons/{id}/progress",
             post(update_lesson_progress),
+        )
+        .route(
+            "/api/learning/lessons/{id}/generate",
+            post(generate_lesson),
         )
         .route(
             "/api/learning/activities/{id}/attempts",
@@ -240,6 +244,21 @@ async fn diagnostic_plan(
         state
             .service
             .diagnostic_plan(&id, &user.id, query.limit)
+            .await?,
+    )))
+}
+
+async fn generate_lesson(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<GenerateLessonRequest>,
+) -> Result<Json<ApiResponse<crate::models::LessonView>>, AppError> {
+    let id = parse_id::<LearningLessonId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .generate_lesson_content(&user.id, &id, &request)
             .await?,
     )))
 }

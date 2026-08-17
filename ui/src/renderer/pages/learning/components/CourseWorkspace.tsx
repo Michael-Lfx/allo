@@ -245,6 +245,7 @@ function LessonBlock({
   attemptResults,
   onProgress,
   onAttempt,
+  onGenerate,
 }: {
   lesson: Lesson;
   sourceKbId: string | null;
@@ -252,8 +253,28 @@ function LessonBlock({
   attemptResults: Record<string, AttemptResult>;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
+  onGenerate: (lesson: Lesson) => void;
 }) {
   const { t } = useTranslation();
+  if (!lesson.generated) {
+    return (
+      <div className='flex flex-col gap-12px'>
+        {lesson.purpose && (
+          <Paragraph className='!mb-0 text-t-secondary'>{lesson.purpose}</Paragraph>
+        )}
+        <div className='flex flex-wrap items-center gap-8px'>
+          <Tag color={statusColors[lesson.status]}>{statusLabel(lesson.status, t)}</Tag>
+          <Button
+            type='primary'
+            loading={busyId === lesson.id}
+            onClick={() => onGenerate(lesson)}
+          >
+            {t('learning.generateLessonContent')}
+          </Button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className='flex flex-col gap-14px'>
       {lesson.summary && <Markdown className='text-13px'>{lesson.summary}</Markdown>}
@@ -303,6 +324,7 @@ export function CourseWorkspace({
   onDiagnostic,
   onProgress,
   onAttempt,
+  onGenerate,
 }: {
   detail: CourseDetail;
   busyId: string | null;
@@ -311,6 +333,7 @@ export function CourseWorkspace({
   onDiagnostic: () => void;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
+  onGenerate: (lesson: Lesson, allLessons?: Lesson[]) => void;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -318,6 +341,10 @@ export function CourseWorkspace({
   const { choice: modelChoice, setChoice: setModelChoice } = useLearningAutogenModel();
   const recommendedLessonRef = useRef<HTMLDivElement>(null);
   const { course } = detail;
+  const flatLessons = useMemo(
+    () => detail.modules.flatMap((module) => module.lessons),
+    [detail.modules]
+  );
   const percent =
     course.total_lessons === 0
       ? 0
@@ -450,6 +477,7 @@ export function CourseWorkspace({
                       attemptResults={attemptResults}
                       onProgress={onProgress}
                       onAttempt={onAttempt}
+                      onGenerate={(target) => onGenerate(target, flatLessons)}
                     />
                   </Collapse.Item>
                 ))}

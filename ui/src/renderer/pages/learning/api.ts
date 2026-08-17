@@ -9,6 +9,8 @@ import type {
   DiagnosticPlan,
   DueReview,
   GenerateCourseRequest,
+  GenerateLessonRequest,
+  Lesson,
   LessonStatus,
   QuestionEntry,
   RetryCourseJobRequest,
@@ -55,6 +57,8 @@ export const learningApi = {
     ),
   updateLessonProgress: (id: string, status: LessonStatus) =>
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
+  generateLesson: (id: string, request: GenerateLessonRequest = {}) =>
+    httpRequest<Lesson>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/generate`, request),
   submitAttempt: (id: string, request: SubmitAttemptRequest) =>
     httpRequest<AttemptResult>('POST', `${BASE}/activities/${encodeURIComponent(id)}/attempts`, request),
   listDueReviews: (

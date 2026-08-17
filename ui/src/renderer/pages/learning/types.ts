@@ -11,6 +11,14 @@ export interface GenerateCourseRequest {
   model?: string;
   module_count?: number;
   lessons_per_module?: number;
+  /** 'full' 一次性生成全部课时；'on_demand' 先出大纲，学习时按需生成课时 */
+  mode?: 'full' | 'on_demand';
+}
+
+/** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传 */
+export interface GenerateLessonRequest {
+  provider_id?: string;
+  model?: string;
 }
 
 /** 重试课程生成任务时可选的模型偏好；两个字段同时传或不传 */
@@ -58,7 +66,9 @@ export interface Lesson {
   id: string;
   title: string;
   summary: string;
+  purpose: string;
   position: number;
+  generated: boolean;
   estimated_minutes: number;
   source: { path: string; start: number | null; end: number | null } | null;
   status: LessonStatus;

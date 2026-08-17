@@ -185,11 +185,11 @@ pub(crate) struct BlueprintLesson {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LessonOutput {
     #[serde(default, deserialize_with = "de_string_or_empty")]
-    summary: String,
+    pub(crate) summary: String,
     #[serde(default, deserialize_with = "de_estimated_minutes_or_default")]
-    estimated_minutes: i64,
+    pub(crate) estimated_minutes: i64,
     #[serde(default)]
-    activities: Vec<ActivityPack>,
+    pub(crate) activities: Vec<ActivityPack>,
 }
 
 /// Serde helper: tolerate `null` (or absence) for `estimated_minutes` by
@@ -1047,6 +1047,7 @@ pub(crate) fn assemble_pack(
                     LessonPack {
                         title: lesson.title.clone(),
                         summary: output.summary,
+                        purpose: lesson.purpose.clone(),
                         estimated_minutes: output.estimated_minutes,
                         source: lesson.source.clone(),
                         concepts: lesson.concepts.clone(),
@@ -1076,6 +1077,60 @@ pub(crate) fn assemble_pack(
         source_kb_id: Some(request.knowledge_base_id.clone()),
         version: blueprint.version.max(1),
         concepts: blueprint.concepts,
+        modules,
+    }
+}
+
+/// Outline-only pack for on-demand generation: every lesson keeps its title,
+/// purpose, source and concept bindings but no summary or activities. The
+/// blueprint and samples are persisted alongside the course so deferred lesson
+/// generation can reconstruct the exact grounding context later.
+pub(crate) fn assemble_outline_pack(
+    blueprint: &Blueprint,
+    request: &GenerateCourseRequest,
+) -> CoursePack {
+    let modules = blueprint
+        .modules
+        .iter()
+        .map(|module| ModulePack {
+            title: module.title.clone(),
+            description: module.description.clone(),
+            lessons: module
+                .lessons
+                .iter()
+                .map(|lesson| LessonPack {
+                    title: lesson.title.clone(),
+                    summary: String::new(),
+                    // No content yet: use the default study-time estimate.
+                    estimated_minutes: 10,
+                    purpose: lesson.purpose.clone(),
+                    source: lesson.source.clone(),
+                    concepts: lesson.concepts.clone(),
+                    activities: Vec::new(),
+                })
+                .collect(),
+        })
+        .collect();
+    let domain = request
+        .domain
+        .as_deref()
+        .map(str::trim)
+        .filter(|domain| !domain.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            if blueprint.domain.trim().is_empty() {
+                "general".to_owned()
+            } else {
+                blueprint.domain.clone()
+            }
+        });
+    CoursePack {
+        title: blueprint.title.clone(),
+        description: blueprint.description.clone(),
+        domain,
+        source_kb_id: Some(request.knowledge_base_id.clone()),
+        version: blueprint.version.max(1),
+        concepts: blueprint.concepts.clone(),
         modules,
     }
 }
@@ -1853,6 +1908,7 @@ mod tests {
             model: None,
             module_count: 1,
             lessons_per_module: 2,
+            mode: crate::models::CourseGenerationMode::Full,
         };
         let blueprint = Blueprint {
             title: "Trading 101".into(),
@@ -1930,6 +1986,7 @@ mod tests {
             model: None,
             module_count: 1,
             lessons_per_module: 1,
+            mode: crate::models::CourseGenerationMode::Full,
         };
         let blueprint = Blueprint {
             title: "Course".into(),
@@ -1983,6 +2040,7 @@ mod tests {
             model: None,
             module_count: 3,
             lessons_per_module: 3,
+            mode: crate::models::CourseGenerationMode::Full,
         };
         assert_eq!(request.knowledge_base_id, id);
     }

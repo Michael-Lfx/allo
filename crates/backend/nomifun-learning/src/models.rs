@@ -35,6 +35,51 @@ pub struct GenerateCourseRequest {
     pub module_count: u8,
     #[serde(default = "default_lessons_per_module")]
     pub lessons_per_module: u8,
+    #[serde(default)]
+    pub mode: CourseGenerationMode,
+}
+
+/// Course generation strategy: `full` materializes every lesson up front;
+/// `on_demand` imports the outline immediately and generates each lesson's
+/// body and activities only when the learner opens it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CourseGenerationMode {
+    #[default]
+    Full,
+    OnDemand,
+}
+
+impl CourseGenerationMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::OnDemand => "on_demand",
+        }
+    }
+}
+
+impl TryFrom<&str> for CourseGenerationMode {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "full" => Ok(Self::Full),
+            "on_demand" => Ok(Self::OnDemand),
+            other => Err(format!("unsupported course generation mode: {other}")),
+        }
+    }
+}
+
+/// On-demand lesson content generation: optional model preference, mirroring
+/// the reflection-grading request. Both fields are sent together (or neither);
+/// when absent the backend falls back to its default completer.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GenerateLessonRequest {
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Optional model preference for retrying a failed course-generation job.
@@ -88,6 +133,8 @@ pub struct LessonPack {
     pub title: String,
     #[serde(default)]
     pub summary: String,
+    #[serde(default)]
+    pub purpose: String,
     #[serde(default = "default_estimated_minutes")]
     pub estimated_minutes: i64,
     #[serde(default)]
@@ -261,8 +308,10 @@ pub struct LessonView {
     pub id: LearningLessonId,
     pub title: String,
     pub summary: String,
+    pub purpose: String,
     pub position: i64,
     pub estimated_minutes: i64,
+    pub generated: bool,
     pub source: Option<SourceSpan>,
     pub status: LessonStatus,
     pub concepts: Vec<LearningConceptId>,

@@ -13,13 +13,14 @@ use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService};
 use serde_json::Value;
 use sqlx::{Row, Sqlite, Transaction};
 
+use crate::generation::{Blueprint, generate_lesson};
 use crate::models::{
-    ActivityKind, ActivityView, AttemptResult, ConceptRef, ConceptView, CourseDetail, CourseJobSource,
-    CourseJobStatus, CourseJobView, CoursePack, CourseSummary, CreateCustomQuestionRequest,
-    DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest, LessonStatus, LessonView,
-    ModuleView, QuestionEntry, RetryCourseJobRequest, ReviewAnswerResult, ReviewQuestion,
-    ReviewRating, ReviewResult, ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig,
-    UpdateQuestionRequest,
+    ActivityKind, ActivityView, AttemptResult, ConceptRef, ConceptView, CourseDetail,
+    CourseJobSource, CourseJobStatus, CourseJobView, CoursePack, CourseSummary,
+    CreateCustomQuestionRequest, DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest,
+    GenerateLessonRequest, LessonStatus, LessonView, ModuleView, QuestionEntry, RetryCourseJobRequest,
+    ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult, ReviewSource, SetTagsRequest,
+    SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
 };
 use crate::generation_job::GenerationJobRunner;
 use crate::scheduler::{SchedulerSettings, schedule_review};
@@ -159,8 +160,8 @@ impl LearningService {
         let request_json = serde_json::to_string(&request).map_err(internal)?;
         sqlx::query(
             "INSERT INTO learning_course_jobs \
-             (job_id, user_id, session_id, source, kb_id, request_json, status, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+             (job_id, user_id, session_id, source, kb_id, request_json, status, generation_mode, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
         )
         .bind(&job_id)
         .bind(user_id.as_str())
@@ -168,6 +169,7 @@ impl LearningService {
         .bind(source.as_str())
         .bind(request.knowledge_base_id.as_str())
         .bind(&request_json)
+        .bind(request.mode.as_str())
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -533,6 +535,27 @@ impl LearningService {
     }
 
     pub async fn import_course(&self, pack: CoursePack) -> Result<CourseDetail, AppError> {
+        self.import_course_with_context(pack, None).await
+    }
+
+    /// Import an on-demand course skeleton: modules, lessons (title + purpose +
+    /// source + concepts, no body yet), concepts, plus the persisted blueprint
+    /// and source samples that deferred lesson generation will use.
+    pub(crate) async fn import_course_outline(
+        &self,
+        pack: CoursePack,
+        blueprint_json: String,
+        samples_json: String,
+    ) -> Result<CourseDetail, AppError> {
+        self.import_course_with_context(pack, Some((blueprint_json, samples_json)))
+            .await
+    }
+
+    async fn import_course_with_context(
+        &self,
+        pack: CoursePack,
+        outline: Option<(String, String)>,
+    ) -> Result<CourseDetail, AppError> {
         validate_pack(&pack)?;
         if let Some(kb_id) = &pack.source_kb_id {
             let exists: i64 =
@@ -548,13 +571,19 @@ impl LearningService {
             }
         }
 
+        let is_outline = outline.is_some();
+        let (blueprint_json, samples_json) = outline
+            .as_ref()
+            .map(|(blueprint, samples)| (Some(blueprint.as_str()), Some(samples.as_str())))
+            .unwrap_or((None, None));
+        let content_generated: i64 = if is_outline { 0 } else { 1 };
         let now = now_ms();
         let course_id = LearningCourseId::new();
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "INSERT INTO learning_courses \
-             (course_id, title, description, domain, source_kb_id, version, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (course_id, title, description, domain, source_kb_id, version, blueprint_json, samples_json, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(course_id.as_str())
         .bind(pack.title.trim())
@@ -562,6 +591,8 @@ impl LearningService {
         .bind(pack.domain.trim())
         .bind(pack.source_kb_id.as_ref().map(KnowledgeBaseId::as_str))
         .bind(pack.version)
+        .bind(blueprint_json)
+        .bind(samples_json)
         .bind(now)
         .bind(now)
         .execute(&mut *transaction)
@@ -631,16 +662,18 @@ impl LearningService {
                     .unwrap_or((None, None, None));
                 sqlx::query(
                     "INSERT INTO learning_lessons \
-                     (lesson_id, module_id, title, summary, position, estimated_minutes, \
-                      source_path, source_start, source_end) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+                      content_generated, source_path, source_start, source_end) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(lesson_id.as_str())
                 .bind(module_id.as_str())
                 .bind(lesson.title.trim())
                 .bind(lesson.summary.trim())
+                .bind(lesson.purpose.trim())
                 .bind(lesson_position as i64)
                 .bind(lesson.estimated_minutes)
+                .bind(content_generated)
                 .bind(source_path)
                 .bind(source_start)
                 .bind(source_end)
@@ -792,8 +825,8 @@ impl LearningService {
             let module_id: LearningModuleId =
                 parse_id(module_row.try_get("module_id").map_err(internal)?)?;
             let lesson_rows = sqlx::query(
-                "SELECT l.lesson_id, l.title, l.summary, l.position, l.estimated_minutes, \
-                        l.source_path, l.source_start, l.source_end, \
+                "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, \
+                        l.content_generated, l.source_path, l.source_start, l.source_end, \
                         COALESCE(p.status, 'not_started') AS status \
                  FROM learning_lessons l \
                  LEFT JOIN learning_lesson_progress p \
@@ -819,14 +852,18 @@ impl LearningService {
                     start: lesson_row.try_get("source_start").ok().flatten(),
                     end: lesson_row.try_get("source_end").ok().flatten(),
                 });
+                let content_generated: i64 =
+                    lesson_row.try_get("content_generated").map_err(internal)?;
                 lessons.push(LessonView {
                     id: lesson_id.clone(),
                     title: lesson_row.try_get("title").map_err(internal)?,
                     summary: lesson_row.try_get("summary").map_err(internal)?,
+                    purpose: lesson_row.try_get("purpose").map_err(internal)?,
                     position: lesson_row.try_get("position").map_err(internal)?,
                     estimated_minutes: lesson_row
                         .try_get("estimated_minutes")
                         .map_err(internal)?,
+                    generated: content_generated != 0,
                     source,
                     status,
                     concepts: self.lesson_concepts(&lesson_id).await?,
@@ -870,6 +907,264 @@ impl LearningService {
             next_lesson_id,
             due_review_count,
         })
+    }
+
+    /// Resolve the enrollment for a user/course pair without creating one.
+    async fn enrollment_id_for(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+    ) -> Result<Option<LearningEnrollmentId>, AppError> {
+        let id: Option<String> = sqlx::query_scalar(
+            "SELECT enrollment_id FROM learning_enrollments WHERE user_id = ? AND course_id = ?",
+        )
+        .bind(user_id.as_str())
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        id.map(parse_id).transpose()
+    }
+
+    /// Concept-key to concept-id map for a course, used to bind activities when
+    /// inserting deferred lesson content.
+    async fn concept_map_for_course(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<HashMap<String, LearningConceptId>, AppError> {
+        let rows = sqlx::query(
+            "SELECT concept_key, concept_id FROM learning_concepts WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut map = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let key: String = row.try_get("concept_key").map_err(internal)?;
+            let id: LearningConceptId = parse_id(row.try_get("concept_id").map_err(internal)?)?;
+            map.insert(key, id);
+        }
+        Ok(map)
+    }
+
+    /// A single lesson's public view (mirrors the per-lesson projection in
+    /// course_detail), used as the response of on-demand generation.
+    async fn lesson_view(
+        &self,
+        lesson_id: &LearningLessonId,
+        enrollment_id: Option<&LearningEnrollmentId>,
+    ) -> Result<LessonView, AppError> {
+        let enrollment_value = enrollment_id.map(LearningEnrollmentId::as_str);
+        let row = sqlx::query(
+            "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, COALESCE(p.status, 'not_started') AS status FROM learning_lessons l LEFT JOIN learning_lesson_progress p ON p.lesson_id = l.lesson_id AND p.enrollment_id = ? WHERE l.lesson_id = ?",
+        )
+        .bind(enrollment_value)
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
+        let id: LearningLessonId = parse_id(row.try_get("lesson_id").map_err(internal)?)?;
+        let status_text: String = row.try_get("status").map_err(internal)?;
+        let status = LessonStatus::try_from(status_text.as_str()).map_err(AppError::Internal)?;
+        let source_path: Option<String> = row.try_get("source_path").map_err(internal)?;
+        let source = source_path.map(|path| SourceSpan {
+            path,
+            start: row.try_get("source_start").ok().flatten(),
+            end: row.try_get("source_end").ok().flatten(),
+        });
+        let content_generated: i64 = row.try_get("content_generated").map_err(internal)?;
+        let concepts = self.lesson_concepts(&id).await?;
+        let activities = self.lesson_activities(&id).await?;
+        Ok(LessonView {
+            id,
+            title: row.try_get("title").map_err(internal)?,
+            summary: row.try_get("summary").map_err(internal)?,
+            purpose: row.try_get("purpose").map_err(internal)?,
+            position: row.try_get("position").map_err(internal)?,
+            estimated_minutes: row.try_get("estimated_minutes").map_err(internal)?,
+            generated: content_generated != 0,
+            source,
+            status,
+            concepts,
+            activities,
+        })
+    }
+
+    /// Generate the study document and activities for one on-demand lesson and
+    /// persist them, returning the updated lesson view. Idempotent: a lesson
+    /// that already has content returns its current view unchanged.
+    pub async fn generate_lesson_content(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+        request: &GenerateLessonRequest,
+    ) -> Result<LessonView, AppError> {
+        let row = sqlx::query(
+            "SELECT l.module_id, l.position, l.content_generated, m.course_id, m.position AS module_position FROM learning_lessons l JOIN learning_modules m ON m.module_id = l.module_id WHERE l.lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
+
+        let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
+        let content_generated: i64 = row.try_get("content_generated").map_err(internal)?;
+        if content_generated != 0 {
+            let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
+            return self.lesson_view(lesson_id, enrollment.as_ref()).await;
+        }
+
+        let snapshot = sqlx::query(
+            "SELECT blueprint_json, samples_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let blueprint_json: Option<String> = snapshot.try_get("blueprint_json").map_err(internal)?;
+        let samples_json: Option<String> = snapshot.try_get("samples_json").map_err(internal)?;
+        let blueprint_json = blueprint_json.ok_or_else(|| {
+            AppError::Conflict("course outline is missing its blueprint snapshot".into())
+        })?;
+        let samples_json = samples_json.ok_or_else(|| {
+            AppError::Conflict("course outline is missing its source samples".into())
+        })?;
+        let blueprint: Blueprint = serde_json::from_str(&blueprint_json).map_err(internal)?;
+        let samples: Vec<(String, String)> = serde_json::from_str(&samples_json).map_err(internal)?;
+
+        let module_position: i64 = row.try_get("module_position").map_err(internal)?;
+        let lesson_position: i64 = row.try_get("position").map_err(internal)?;
+        let module = blueprint
+            .modules
+            .get(module_position as usize)
+            .ok_or_else(|| AppError::Internal("outline module position out of range".into()))?;
+        let lesson = module
+            .lessons
+            .get(lesson_position as usize)
+            .ok_or_else(|| AppError::Internal("outline lesson position out of range".into()))?;
+
+        let excerpt = lesson
+            .source
+            .as_ref()
+            .and_then(|source| {
+                samples
+                    .iter()
+                    .find(|(path, _)| path == &source.path)
+                    .map(|(_, excerpt)| excerpt.as_str())
+            })
+            .unwrap_or_default();
+        let total_lessons: usize = blueprint
+            .modules
+            .iter()
+            .map(|module| module.lessons.len())
+            .sum();
+        let next_lesson_title = module
+            .lessons
+            .get(lesson_position as usize + 1)
+            .map(|next| next.title.as_str());
+
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict("knowledge-backed course generation is not configured".into())
+            })?;
+        let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
+        let output = generate_lesson(
+            completer.as_ref(),
+            model_override,
+            &blueprint,
+            module,
+            lesson,
+            module_position as usize,
+            lesson_position as usize,
+            total_lessons,
+            next_lesson_title,
+            excerpt,
+        )
+        .await
+        .map_err(|error| {
+            AppError::UnprocessableEntity(format!(
+                "lesson '{}' failed to generate: {error}",
+                lesson.title
+            ))
+        })?;
+
+        let concepts = self.concept_map_for_course(&course_id).await?;
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        sqlx::query(
+            "UPDATE learning_lessons SET summary = ?, estimated_minutes = ?, content_generated = 1 WHERE lesson_id = ?",
+        )
+        .bind(output.summary.trim())
+        .bind(output.estimated_minutes)
+        .bind(lesson_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
+
+        // Replace any prior partial activities (idempotent re-generation).
+        sqlx::query(
+            "DELETE FROM learning_activity_concepts WHERE activity_id IN (SELECT activity_id FROM learning_activities WHERE lesson_id = ?)",
+        )
+        .bind(lesson_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        sqlx::query("DELETE FROM learning_activities WHERE lesson_id = ?")
+            .bind(lesson_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+
+        for (position, activity) in output.activities.iter().enumerate() {
+            let activity_id = LearningActivityId::new();
+            let config = StoredActivityConfig {
+                options: activity.options.clone(),
+                answer: activity.answer.clone(),
+                explanation: activity.explanation.clone(),
+                distractors: activity.distractors.clone(),
+            };
+            sqlx::query(
+                "INSERT INTO learning_activities (activity_id, lesson_id, kind, prompt, config_json, position) VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(activity_id.as_str())
+            .bind(lesson_id.as_str())
+            .bind(activity.kind.as_str())
+            .bind(activity.prompt.trim())
+            .bind(serde_json::to_string(&config).map_err(internal)?)
+            .bind(position as i64)
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+
+            let activity_concepts = if activity.concepts.is_empty() {
+                &lesson.concepts
+            } else {
+                &activity.concepts
+            };
+            for concept_key in activity_concepts {
+                let concept_id = concepts.get(concept_key).ok_or_else(|| {
+                    AppError::Internal(format!("unknown concept key {concept_key}"))
+                })?;
+                sqlx::query(
+                    "INSERT INTO learning_activity_concepts (activity_id, concept_id) VALUES (?, ?)",
+                )
+                .bind(activity_id.as_str())
+                .bind(concept_id.as_str())
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+            }
+        }
+        transaction.commit().await.map_err(internal)?;
+
+        let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
+        self.lesson_view(lesson_id, enrollment.as_ref()).await
     }
 
     pub async fn diagnostic_plan(
@@ -3597,6 +3892,7 @@ mod tests {
             model: None,
             module_count: 3,
             lessons_per_module: 3,
+            mode: crate::models::CourseGenerationMode::Full,
         }
     }
 
@@ -3679,6 +3975,7 @@ mod tests {
                 lessons: vec![LessonPack {
                     title: "Vectors".into(),
                     summary: String::new(),
+                    purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
                     concepts: vec!["vector".into()],
@@ -3740,8 +4037,10 @@ mod tests {
             id,
             title: title.into(),
             summary: String::new(),
+            purpose: String::new(),
             position: 0,
             estimated_minutes: 10,
+            generated: true,
             source: None,
             status: LessonStatus::NotStarted,
             concepts: vec![concept],
@@ -3910,6 +4209,7 @@ mod tests {
                     LessonPack {
                         title: "Lesson A".into(),
                         summary: String::new(),
+                        purpose: String::new(),
                         estimated_minutes: 10,
                         source: None,
                         concepts: vec!["shared".into()],
@@ -3921,6 +4221,7 @@ mod tests {
                     LessonPack {
                         title: "Lesson B".into(),
                         summary: String::new(),
+                        purpose: String::new(),
                         estimated_minutes: 10,
                         source: None,
                         concepts: vec!["shared".into()],
@@ -4013,6 +4314,7 @@ mod tests {
                 lessons: vec![LessonPack {
                     title: "Vectors".into(),
                     summary: String::new(),
+                    purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
                     concepts: vec!["vector".into(), "matrix".into()],
@@ -4332,6 +4634,7 @@ mod tests {
                 lessons: vec![LessonPack {
                     title: "Vectors".into(),
                     summary: String::new(),
+                    purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
                     concepts: vec!["vector".into()],
@@ -4479,6 +4782,7 @@ mod tests {
                 lessons: vec![LessonPack {
                     title: "Vectors".into(),
                     summary: String::new(),
+                    purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
                     concepts: vec!["vector".into()],

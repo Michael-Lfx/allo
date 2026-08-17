@@ -16,7 +16,7 @@ use nomi_agent::learning_tools::{
 };
 use nomifun_common::{LearningCourseId, ProviderId, UserId};
 use nomifun_learning::{
-    CourseJobSource, GenerateCourseRequest, LearningService,
+    CourseGenerationMode, CourseJobSource, GenerateCourseRequest, LearningService,
 };
 
 /// Bridges the agent-facing course-generation trait to the backend
@@ -42,6 +42,11 @@ impl LearningCourseSink for LiveLearningCourseSink {
                     .map_err(|e| format!("invalid provider id {provider}: {e}"))
             })
             .transpose()?;
+        let mode = match req.mode.as_deref() {
+            None | Some("full") => CourseGenerationMode::Full,
+            Some("on_demand") => CourseGenerationMode::OnDemand,
+            Some(other) => return Err(format!("unsupported course generation mode: {other}")),
+        };
         let request = GenerateCourseRequest {
             knowledge_base_id: req.kb_id,
             domain: req.domain,
@@ -49,6 +54,7 @@ impl LearningCourseSink for LiveLearningCourseSink {
             model: req.model,
             module_count: req.module_count,
             lessons_per_module: req.lessons_per_module,
+            mode,
         };
         let view = self
             .service

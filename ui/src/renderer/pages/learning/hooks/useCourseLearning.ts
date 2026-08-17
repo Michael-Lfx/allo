@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Message } from '@arco-design/web-react';
 import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
@@ -6,6 +6,7 @@ import type {
   Activity,
   AttemptResult,
   DiagnosticPlan,
+  GenerateLessonRequest,
   Lesson,
   LessonStatus,
   SubmitAttemptRequest,
@@ -42,6 +43,53 @@ export function useCourseLearning({
       model: modelChoice?.model,
     }),
     [modelChoice]
+  );
+
+  const generateRequest = useCallback(
+    (): GenerateLessonRequest => ({
+      provider_id: modelChoice?.provider_id,
+      model: modelChoice?.model,
+    }),
+    [modelChoice]
+  );
+
+  // 预生成下一课时：尽力而为，失败不影响学习流程（用户仍可手动点击生成）
+  const prefetching = useRef(new Set<string>());
+  const prefetchLesson = useCallback(
+    async (id: string) => {
+      if (prefetching.current.has(id)) return;
+      prefetching.current.add(id);
+      try {
+        await learningApi.generateLesson(id, generateRequest());
+        await load();
+      } catch {
+        // 预生成失败可忽略
+      } finally {
+        prefetching.current.delete(id);
+      }
+    },
+    [generateRequest, load]
+  );
+
+  // 按需生成单个课时：生成当前课时并刷新；随后尽力预生成紧随其后的未生成课时
+  const generateLesson = useCallback(
+    async (lesson: Lesson, allLessons?: Lesson[]) => {
+      setBusyId(lesson.id);
+      try {
+        await learningApi.generateLesson(lesson.id, generateRequest());
+        await load();
+        if (allLessons) {
+          const index = allLessons.findIndex((item) => item.id === lesson.id);
+          const next = allLessons.slice(index + 1).find((item) => !item.generated);
+          if (next) void prefetchLesson(next.id);
+        }
+      } catch (actionError) {
+        Message.error(errorMessage(t, actionError));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [generateRequest, load, prefetchLesson, setBusyId, t]
   );
 
   const startDiagnostic = useCallback(async () => {
@@ -135,5 +183,6 @@ export function useCourseLearning({
     advanceDiagnostic,
     updateProgress,
     submitAttempt,
+    generateLesson,
   };
 }
