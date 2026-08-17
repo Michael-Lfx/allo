@@ -15,13 +15,27 @@ describe('CompanionSessionGroup structure', () => {
     expect(source.includes("t('sessionList.collapseDisplay')")).toBe(true);
   });
 
-  test('shows a purpose tip above companion session rows', () => {
+  test('aligns the companion group with the workspace list', () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'CompanionSessionGroup.tsx'), 'utf8');
+    const workpathDrawer = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
+    const sessionList = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'index.tsx'), 'utf8');
+
+    expect(sessionList).toContain("className='pl-10px pr-4px pb-6px flex items-center justify-between'");
+    expect(source).toContain("className='pl-10px pr-4px pb-6px flex items-center justify-between gap-8px min-w-0'");
+    expect(source).toContain("className='sider-section-title text-13px font-[500] leading-none tracking-wide truncate shrink-0 opacity-75 transition-opacity hover:opacity-100 cursor-pointer'");
+    expect(workpathDrawer).toContain('pl-10px pr-8px');
+    expect(source).toContain('pl-10px pr-8px h-34px');
+    expect(source).toContain("className='relative size-22px shrink-0 flex items-center justify-center'");
+  });
+
+  test('shows the purpose tip in a popup below the title icon', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'CompanionSessionGroup.tsx'), 'utf8');
 
-    expect(source.includes("import { Info, Robot } from '@icon-park/react';")).toBe(true);
+    expect(source.includes("import { Attention, Robot } from '@icon-park/react';")).toBe(true);
     expect(source.includes("t('sessionList.companionTip')")).toBe(true);
-    expect(source.includes('bg-[rgba(var(--primary-6),0.06)]')).toBe(true);
-    expect(source.includes('inline-flex h-16px w-16px shrink-0 items-center justify-center')).toBe(true);
+    expect(source.includes("<Attention theme='outline' size={12}")).toBe(true);
+    expect(source.includes("position='bottom'")).toBe(true);
+    expect(source.includes('bg-[rgba(var(--primary-6),0.06)]')).toBe(false);
   });
 
   test('nests each robot thread under its bound companion, not a separate bucket', () => {

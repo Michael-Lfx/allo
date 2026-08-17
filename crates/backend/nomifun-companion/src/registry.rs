@@ -19,7 +19,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use nomifun_common::{
-    AppError, CompanionId, ProviderWithModel, SharedProviderLifecycleBarrier,
+    AppError, CompanionId, FLOWY_BUILTIN_PROVIDER_ID, ProviderWithModel,
+    SharedProviderLifecycleBarrier,
 };
 use nomifun_db::IProviderRepository;
 use serde::{Deserialize, Serialize};
@@ -662,6 +663,12 @@ async fn validate_provider_model(
         .map_err(|error| AppError::Internal(format!("check companion model provider: {error}")))?
         .is_none()
     {
+        // Factory defaults point at the reserved Flowy Cloud singleton, which is
+        // inserted on first catalog sync. A missing row is "not yet provisioned",
+        // not an orphaned hard reference.
+        if model.provider_id == FLOWY_BUILTIN_PROVIDER_ID {
+            return Ok(());
+        }
         return Err(AppError::NotFound(format!(
             "provider '{}' not found",
             model.provider_id

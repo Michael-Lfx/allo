@@ -17,7 +17,6 @@ import {
   SiderKnowledgeEntry,
   SiderLearningEntry,
   SiderModelHubEntry,
-  SiderNomiEntry,
   SiderRequirementsEntry,
   SiderScheduledEntry,
   SiderSectionHeader,
@@ -41,7 +40,7 @@ interface SiderProps {
  * list, the create switches, and full-text search were lifted out into the
  * content-area secondary sidebar (`ConversationShell` / `ContentSider`),
  * reached via the "会话" entry. The rail holds top-level destinations grouped
- * by small-text section headers (`SiderSectionHeader`): 常用 (会话 / 桌面伙伴),
+ * by small-text section headers (`SiderSectionHeader`): 常用 (会话),
  * 对外服务 (对外伙伴), 数据空间 (学习 / 知识库), 自动化 (定时任务 / 需求平台),
  * 增强工具 (设定 / Skill / MCP), and a bottom-pinned 设置 group
  * (模型管理 + the footer). Execution engines live as an
@@ -307,6 +306,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
           planLabel={planLabel}
           showLogout={showLogout}
           onLogout={handleLogout}
+          onOpenCompanion={handleNomiClick}
           onSettingsClick={handleSettingsClick}
         />
       </div>

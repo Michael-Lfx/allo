@@ -17,6 +17,7 @@ interface SiderFooterProps {
   planLabel?: string;
   showLogout?: boolean;
   onLogout?: () => void;
+  onOpenCompanion?: () => void;
   onSettingsClick: () => void;
 }
 
@@ -37,6 +38,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
   planLabel,
   showLogout = false,
   onLogout,
+  onOpenCompanion,
   onSettingsClick,
 }) => {
   const { t } = useTranslation();
@@ -87,6 +89,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
             planLabel={planLabel}
             showLogout={showLogout}
             onLogout={onLogout}
+            onOpenCompanion={onOpenCompanion}
           />
           {settingsControl}
         </div>
@@ -100,6 +103,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
             planLabel={planLabel}
             showLogout={showLogout}
             onLogout={onLogout}
+            onOpenCompanion={onOpenCompanion}
           />
           <div className='shrink-0 flex items-center'>{settingsControl}</div>
         </div>
