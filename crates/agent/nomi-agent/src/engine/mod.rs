@@ -776,6 +776,10 @@ impl AgentEngine {
         self.tools.tool_names()
     }
 
+    pub fn system_prompt(&self) -> &str {
+        &self.system_prompt
+    }
+
     pub fn registry_mut(&mut self) -> &mut ToolRegistry {
         &mut self.tools
     }

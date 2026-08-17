@@ -249,6 +249,15 @@ async fn bootstrap_builtin_allowlist_restricts_tools() {
             "白名单外的工具必须被过滤: {denied}"
         );
     }
+    let prompt = result.engine.system_prompt();
+    assert!(
+        !prompt.contains("# Using your tools"),
+        "restricted allowlists must not inject unrestricted tool guidance"
+    );
+    assert!(
+        !prompt.contains("with Bash"),
+        "restricted allowlists must not tell the model to call Bash"
+    );
 }
 
 #[tokio::test]
@@ -322,10 +331,16 @@ async fn bootstrap_with_custom_system_prompt() {
     let mut config = minimal_config();
     config.system_prompt = Some("You are a pirate assistant.".into());
 
-    let _result = AgentBootstrap::new(config, "/tmp/test-workspace", null_output())
+    let result = AgentBootstrap::new(config, "/tmp/test-workspace", null_output())
         .build()
         .await
         .unwrap();
+    let prompt = result.engine.system_prompt();
+    assert!(prompt.contains("You are a pirate assistant."));
+    assert!(
+        prompt.contains("# Using your tools"),
+        "unrestricted sessions must keep generic tool guidance"
+    );
 }
 
 #[tokio::test]

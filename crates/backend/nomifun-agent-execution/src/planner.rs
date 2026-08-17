@@ -335,7 +335,7 @@ Rules:
 - Use failure_policy=skip_dependents only for a gate whose failure must prevent unsafe downstream work; otherwise fail_execution.
 - Assign cheap/fast participants to simple or bulk work and stronger participants to difficult reasoning. Do not route everything to the strongest model.
 - role is an optional short human-readable description of the work, in the goal's language. It is never a permission value.
-- tool_policy is exactly full, read_only, or read_shell. Use read_only for research/review that only needs Read/Grep/Glob, read_shell for verification/testing that also needs Bash, and full for implementation or any task that must modify files. Controller steps use full. A policy only narrows the caller's inherited authority.
+- tool_policy is exactly full, read_only, or read_shell. Use read_only for research/review that needs Read/Grep/Glob/web_search/web_extract without modifying files or running a shell, read_shell for verification/testing that also needs Bash, and full for implementation or any task that must modify files. Controller steps use full. A policy only narrows the caller's inherited authority.
 - title is short; spec is the complete instruction.
 - Use advanced patterns only when they materially improve the result.
 "#;

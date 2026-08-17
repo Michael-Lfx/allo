@@ -621,8 +621,17 @@ fn build_agent_extra(
 fn tool_policy_allowed_tools(policy: AgentToolPolicy) -> Option<Vec<&'static str>> {
     match policy {
         AgentToolPolicy::Full => None,
-        AgentToolPolicy::ReadOnly => Some(vec!["Read", "Grep", "Glob"]),
-        AgentToolPolicy::ReadShell => Some(vec!["Read", "Grep", "Glob", "Bash"]),
+        AgentToolPolicy::ReadOnly => {
+            Some(vec!["Read", "Grep", "Glob", "web_search", "web_extract"])
+        }
+        AgentToolPolicy::ReadShell => Some(vec![
+            "Read",
+            "Grep",
+            "Glob",
+            "web_search",
+            "web_extract",
+            "Bash",
+        ]),
     }
 }
 
@@ -1112,11 +1121,11 @@ mod tests {
     fn explicit_tool_policy_is_the_only_runtime_tool_narrowing() {
         assert_eq!(
             tool_policy_allowed_tools(AgentToolPolicy::ReadOnly).unwrap(),
-            ["Read", "Grep", "Glob"]
+            ["Read", "Grep", "Glob", "web_search", "web_extract"]
         );
         assert_eq!(
             tool_policy_allowed_tools(AgentToolPolicy::ReadShell).unwrap(),
-            ["Read", "Grep", "Glob", "Bash"]
+            ["Read", "Grep", "Glob", "web_search", "web_extract", "Bash"]
         );
         assert!(tool_policy_allowed_tools(AgentToolPolicy::Full).is_none());
     }

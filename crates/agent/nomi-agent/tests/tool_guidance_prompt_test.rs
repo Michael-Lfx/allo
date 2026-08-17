@@ -459,3 +459,65 @@ fn tc_4_3_08_guidance_in_plan_mode() {
         "plan mode instructions should NOT be in the cache-stable system prompt"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Restricted sessions (read_only / read_shell allowlists) omit generic guidance
+// ---------------------------------------------------------------------------
+
+#[test]
+fn restricted_allowlist_omits_generic_tool_guidance() {
+    let mut cache = SystemPromptCache::new();
+    cache.omit_generic_tool_guidance();
+    let result = build_system_prompt(
+        &mut cache,
+        Some("GOAL: research rust agent frameworks\nYOUR STEP: survey public APIs"),
+        "/tmp",
+        "test-model",
+        &[],
+        None,
+        None,
+        false,
+        false,
+    );
+
+    assert!(
+        !result.contains("# Using your tools"),
+        "restricted sessions must not receive the unrestricted tool-guidance block"
+    );
+    assert!(
+        !result.contains("with Bash"),
+        "restricted sessions must not be told to verify with Bash"
+    );
+    assert!(
+        result.contains("GOAL: research rust agent frameworks"),
+        "the step brief must still be present"
+    );
+    assert!(
+        result.contains("You are powered by the model test-model"),
+        "the intro must still be present"
+    );
+}
+
+#[test]
+fn unrestricted_session_still_includes_generic_tool_guidance() {
+    let result = build_system_prompt(
+        &mut SystemPromptCache::new(),
+        Some("GOAL: implement the feature"),
+        "/tmp",
+        "test-model",
+        &[],
+        None,
+        None,
+        false,
+        false,
+    );
+
+    assert!(
+        result.contains("# Using your tools"),
+        "full sessions must keep the generic tool-guidance block"
+    );
+    assert!(
+        result.contains("with Bash"),
+        "full sessions must keep Bash verification guidance"
+    );
+}

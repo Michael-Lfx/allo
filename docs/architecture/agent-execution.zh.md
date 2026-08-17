@@ -196,7 +196,7 @@ Execution 数据时由 dataset reset 退出旧代际。Template 不是另一套�
 
 四类聚合策略只存在于 Execution 顶层，不在 Step 中复制另一组策略 bag。Step 只保存自己的强类型路由、tool policy、failure policy 和 control policy；Engine 创建 ExecutionAttempt 时把实际 Participant 与最终生效配置写入不可变快照，保证恢复和历史复盘不受后续设置变化影响。
 
-Step 的 `role` 是自由文本，只用于人类展示、路由提示和协作方案沉淀，不承担权限语义。工具能力由独立强类型 `tool_policy` 表达：`full` 保留调用 Conversation 已有的工具边界，`read_only` 进一步收缩为 Read/Grep/Glob，`read_shell` 进一步收缩为 Read/Grep/Glob/Bash。任何 policy 都只能收缩既有权限，不能升权；未知持久值必须读取失败。这样 `builder`、`implementer`、中文角色和自定义角色都不会因描述字符串触发隐式授权或运行失败，Planner 和显式并行输入也必须单独给出 policy（省略时兼容为 `full`）。
+Step 的 `role` 是自由文本，只用于人类展示、路由提示和协作方案沉淀，不承担权限语义。工具能力由独立强类型 `tool_policy` 表达：`full` 保留调用 Conversation 已有的工具边界，`read_only` 进一步收缩为 Read/Grep/Glob/web_search/web_extract，`read_shell` 进一步收缩为 Read/Grep/Glob/web_search/web_extract/Bash。任何 policy 都只能收缩既有权限，不能升权；未知持久值必须读取失败。这样 `builder`、`implementer`、中文角色和自定义角色都不会因描述字符串触发隐式授权或运行失败，Planner 和显式并行输入也必须单独给出 policy（省略时兼容为 `full`）。
 
 Conversation 只保存协作入口默认值：`delegation_policy`、
 `execution_model_pool`、`decision_policy`，以及可选的一等字段

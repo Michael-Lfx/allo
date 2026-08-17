@@ -25,6 +25,10 @@ pub struct SystemPromptCache {
     pub(crate) last_toon_enabled: bool,
     /// Track last browser_enabled value to detect changes.
     pub(crate) last_browser_enabled: bool,
+    /// When true, skip the unrestricted `# Using your tools` block.
+    /// Restricted sessions (`read_only` / `read_shell` allowlists) set this so
+    /// the model is not told about Bash and other tools it cannot call.
+    omit_generic_tool_guidance: bool,
 }
 
 impl SystemPromptCache {
@@ -34,7 +38,19 @@ impl SystemPromptCache {
             joined: None,
             last_toon_enabled: false,
             last_browser_enabled: false,
+            omit_generic_tool_guidance: false,
         }
+    }
+
+    /// Drop the cache-stable generic tool-guidance section for this session.
+    ///
+    /// Restricted Agent Execution attempts advertise a narrowed tool list.
+    /// The unrestricted guidance still names Bash/Write/Browser, which those
+    /// sessions cannot call. The step brief and per-tool schemas remain.
+    pub fn omit_generic_tool_guidance(&mut self) {
+        self.omit_generic_tool_guidance = true;
+        self.sections.remove("tool_guidance");
+        self.joined = None;
     }
 
     /// Invalidate a specific section by name.
@@ -232,12 +248,15 @@ pub fn build_system_prompt(
     });
     parts.push(intro.clone());
 
-    // Section: tool guidance (session permanent)
-    let guidance = cache
-        .sections
-        .entry("tool_guidance")
-        .or_insert_with(tool_usage_guidance);
-    parts.push(guidance.clone());
+    // Section: tool guidance (session permanent). Restricted allowlists omit
+    // this block: it names Bash and other tools that were not advertised.
+    if !cache.omit_generic_tool_guidance {
+        let guidance = cache
+            .sections
+            .entry("tool_guidance")
+            .or_insert_with(tool_usage_guidance);
+        parts.push(guidance.clone());
+    }
 
     // Section: browser-use preset (session permanent once enabled). Feature-gated
     // at compile time + runtime `browser_enabled` flag (= config.tools.browser.enabled,

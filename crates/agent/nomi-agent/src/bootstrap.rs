@@ -298,7 +298,7 @@ pub struct BootstrapResult {
 /// (CLI, backend, delegated Agents) get consistent behavior:
 ///
 /// - System prompt always includes model identity, working directory, date
-/// - Tool usage guidance is always injected
+/// - Unrestricted sessions inject tool usage guidance; allowlisted sessions omit it
 /// - AGENTS.md is loaded from the workspace hierarchy
 /// - Skills, MCP, and plan mode are enabled from `Config`
 /// - Embedded AgentExecution is installed only when selected by the host
@@ -709,6 +709,9 @@ impl AgentBootstrap {
         }
 
         let mut prompt_cache = crate::context::SystemPromptCache::new();
+        if !self.config.tools.builtin_allowlist.is_empty() {
+            prompt_cache.omit_generic_tool_guidance();
+        }
         prompt_cache.set_agents_md(agents_snapshot.formatted);
         // SSH-bound session: `cwd` here is a LOCAL scratch directory (design F2
         // keeps `extra.workspace` local for transcripts and attachments), while
