@@ -3701,6 +3701,8 @@ export interface ICreateConversationParams {
     session_mode?: string;
     /** Catalog-advertised reasoning depth for the next Nomi turn. */
     reasoning_effort?: string;
+    /** Session work mode: office (default) or coding. */
+    task_profile?: string;
     codex_model?: string;
     current_model_id?: string;
     cached_config_options?: import('../types/platform/acpTypes').AcpSessionConfigOption[];

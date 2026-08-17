@@ -338,6 +338,32 @@ fn truncate_chars(s: &str, max: usize) -> String {
     format!("{truncated}…(truncated)")
 }
 
+/// Best-effort path for coding edit-converge / progress (engine-side JSON extract).
+fn coding_tool_file_path(name: &str, input: &serde_json::Value) -> Option<String> {
+    let direct = input
+        .get("file_path")
+        .or_else(|| input.get("path"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    if direct.is_some() {
+        return direct;
+    }
+    if name == "ApplyPatch" {
+        if let Some(path) = input
+            .get("files")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|f| f.get("file_path").or_else(|| f.get("path")))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            return Some(path.to_owned());
+        }
+    }
+    None
+}
+
 /// Hard safety-net turn cap applied when the session does not configure
 /// `max_turns` (the production default is `None`). Without this, a model stuck
 /// in a tool-call loop runs forever, burning tokens and appearing "stuck" to
@@ -543,6 +569,16 @@ pub struct AgentEngine {
     /// turn) and triggers a one-time corrective nudge. Always on — a safety net
     /// alongside the hard `max_turns` cap. (Loop-agent robustness)
     stagnation_guard: crate::loop_guard::StagnationGuard,
+    /// Coding harness when `task_profile=coding`. `None` = office / generic.
+    /// Policy (prompt, verify, tool surface, compact prefs) lives in
+    /// `nomi-coding`; the engine only invokes hooks.
+    coding_harness: Option<nomi_coding::CodingHarness>,
+    /// Baseline compact config from session construction. Coding overlays are
+    /// applied on top of this and restored when leaving coding mode.
+    compact_config_base: nomi_config::compact::CompactConfig,
+    /// Shared with Read/Edit/Write/ApplyPatch so microcompact can invalidate
+    /// Read cache entries whose tool results were cleared.
+    file_cache: Option<std::sync::Arc<std::sync::RwLock<nomi_tools::file_cache::FileStateCache>>>,
     /// Host-registered per-turn context sources (§3.5). Empty by default →
     /// system prompt unchanged; the backend registers contributors to inject
     /// dynamic context (knowledge RAG, memory, …) without the engine hard-coding
@@ -618,6 +654,8 @@ impl AgentEngine {
             protocol_writer: None,
             allow_list,
             current_reasoning_effort: None,
+            compact_config_base: compact_config.clone(),
+            file_cache: None,
             compact_config,
             compact_state: CompactState::new(),
             plan_state: PlanState::default(),
@@ -633,6 +671,7 @@ impl AgentEngine {
             last_context_breakdown: None,
             moa: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
+            coding_harness: None,
             context_contributors: Vec::new(),
             steering_inbox: None,
             system_resource_inbox: None,
@@ -699,6 +738,8 @@ impl AgentEngine {
             protocol_writer: None,
             allow_list,
             current_reasoning_effort: None,
+            compact_config_base: compact_config.clone(),
+            file_cache: None,
             compact_config,
             compact_state: CompactState::new(),
             plan_state: PlanState::default(),
@@ -714,6 +755,7 @@ impl AgentEngine {
             last_context_breakdown: None,
             moa: None,
             stagnation_guard: crate::loop_guard::StagnationGuard::new(crate::engine::STAGNATION_THRESHOLD),
+            coding_harness: None,
             context_contributors: Vec::new(),
             steering_inbox: None,
             system_resource_inbox: None,
@@ -972,6 +1014,102 @@ impl AgentEngine {
     /// Set the initial reasoning effort override used by delegated Agent invocations.
     pub fn set_initial_reasoning_effort(&mut self, effort: Option<String>) {
         self.current_reasoning_effort = effort;
+    }
+
+    pub fn set_task_profile(&mut self, profile: crate::task_profile::TaskProfile) {
+        match profile {
+            crate::task_profile::TaskProfile::Office => self.clear_coding_harness(),
+            crate::task_profile::TaskProfile::Coding => {
+                if self.coding_harness.is_none() {
+                    self.install_coding_harness(None, nomi_coding::CodingConfig::default());
+                }
+            }
+        }
+    }
+
+    pub fn set_coding_env(&mut self, env: Option<crate::task_profile::CodingEnvContext>) {
+        if let Some(harness) = self.coding_harness.as_mut() {
+            harness.set_env(env);
+        }
+    }
+
+    /// Install or replace the coding harness (policy owned by `nomi-coding`).
+    pub fn install_coding_harness(
+        &mut self,
+        env: Option<crate::task_profile::CodingEnvContext>,
+        config: nomi_coding::CodingConfig,
+    ) {
+        let harness = nomi_coding::CodingHarness::new(env, config);
+        self.apply_coding_compact_overrides(harness.compact_overrides());
+        self.coding_harness = Some(harness);
+    }
+
+    pub fn clear_coding_harness(&mut self) {
+        self.coding_harness = None;
+        self.compact_config = self.compact_config_base.clone();
+    }
+
+    fn apply_coding_compact_overrides(&mut self, overrides: nomi_coding::CompactPolicyOverrides) {
+        self.compact_config = self.compact_config_base.clone();
+        self.compact_config.micro_keep_recent = overrides.micro_keep_recent;
+        self.compact_config
+            .compactable_tools
+            .retain(|name| {
+                !overrides
+                    .exclude_compactable
+                    .iter()
+                    .any(|excluded| excluded.eq_ignore_ascii_case(name))
+            });
+    }
+
+    pub fn task_profile(&self) -> crate::task_profile::TaskProfile {
+        if self.coding_harness.is_some() {
+            crate::task_profile::TaskProfile::Coding
+        } else {
+            crate::task_profile::TaskProfile::Office
+        }
+    }
+
+    pub fn coding_harness(&self) -> Option<&nomi_coding::CodingHarness> {
+        self.coding_harness.as_ref()
+    }
+
+    pub fn set_file_cache(
+        &mut self,
+        cache: Option<
+            std::sync::Arc<std::sync::RwLock<nomi_tools::file_cache::FileStateCache>>,
+        >,
+    ) {
+        self.file_cache = cache;
+    }
+
+    fn harness_advertise_tool(&self, name: &str) -> bool {
+        match self.coding_harness.as_ref() {
+            Some(harness) => harness.advertise_tool(name),
+            None => true,
+        }
+    }
+
+    fn invalidate_file_cache_paths(&self, paths: &[String]) {
+        let Some(cache) = &self.file_cache else {
+            return;
+        };
+        let Ok(mut guard) = cache.write() else {
+            return;
+        };
+        let cwd = self
+            .coding_harness
+            .as_ref()
+            .and_then(|h| h.env())
+            .map(|e| e.cwd.as_path());
+        for path in paths {
+            guard.remove(std::path::Path::new(path));
+            if let Some(cwd) = cwd
+                && !std::path::Path::new(path).is_absolute()
+            {
+                guard.remove(&cwd.join(path));
+            }
+        }
     }
 
     /// Set the shared plan-mode active flag.
@@ -1266,6 +1404,9 @@ impl AgentEngine {
         // Stagnation is scoped to one user-request execution. A later user
         // instruction starts with a clean progress window.
         self.stagnation_guard.reset();
+        if let Some(harness) = self.coding_harness.as_mut() {
+            harness.reset_for_user_request();
+        }
         self.current_msg_id = msg_id.to_string();
         self.output.emit_stream_start(msg_id);
         if self
@@ -1321,22 +1462,34 @@ impl AgentEngine {
             // Run multi-level compaction before each API call.
             self.run_compaction().await?;
 
-            // Build tool list: filter based on plan mode state
-            let tools = if self.plan_state.is_active {
+            // Build tool list: filter based on plan mode state and harness policy
+            let mut tools = if self.plan_state.is_active {
                 // Plan mode: only Info-category tools (excluding EnterPlanMode)
                 self.tools.to_tool_defs_filtered(|t| {
-                    t.category() == ToolCategory::Info && t.name() != "EnterPlanMode"
+                    t.category() == ToolCategory::Info
+                        && t.name() != "EnterPlanMode"
+                        && self.harness_advertise_tool(t.name())
                 })
             } else {
                 // Normal mode: all tools except ExitPlanMode
-                self.tools
-                    .to_tool_defs_filtered(|t| t.name() != "ExitPlanMode")
+                self.tools.to_tool_defs_filtered(|t| {
+                    t.name() != "ExitPlanMode" && self.harness_advertise_tool(t.name())
+                })
             };
+            // Forced finalize advertises no tools so the model must write a
+            // closing reply instead of another explore/edit loop.
+            if self
+                .coding_harness
+                .as_ref()
+                .is_some_and(|h| h.is_forced_finalize())
+            {
+                tools.clear();
+            }
             // This exact request is the authority for what the provider may
             // call. Registry membership is broader (for example, plan mode
             // deliberately hides mutating tools), so dispatch must never use
             // the live registry as an implicit allow-list.
-            let tool_authority = ProviderToolAuthority::from_request_tools(&tools);
+            let mut tool_authority = ProviderToolAuthority::from_request_tools(&tools);
 
             // Cache-first design: the system prompt is the cache-stable
             // prefix. It must stay byte-stable across turns so the provider's
@@ -1373,6 +1526,35 @@ impl AgentEngine {
             // prompt so toggling plan mode doesn't break the prefix cache.
             if self.plan_state.is_active {
                 turn_tail_extras.push(plan_prompt::plan_mode_instructions().to_string());
+            }
+            if let Some(harness) = self.coding_harness.as_mut() {
+                if let Some(plan_nudge) = harness.before_provider_turn(self.plan_state.is_active) {
+                    turn_tail_extras.push(plan_nudge);
+                }
+                if let Some(reason) = harness.abort_before_provider() {
+                    tracing::warn!(
+                        target: "nomi_agent",
+                        %reason,
+                        "coding harness: plan-mode hard-stop → forced finalize (no tools)"
+                    );
+                    harness.begin_forced_finalize(reason.to_string());
+                }
+                if let Some(reason) = harness.forced_finalize_reason() {
+                    tools.clear();
+                    tool_authority = ProviderToolAuthority::from_request_tools(&tools);
+                    turn_tail_extras.push(format!(
+                        "{reason}\n\nWrite a concise final reply for the user now. Do not call tools."
+                    ));
+                }
+                let last_user_has_text = self.messages.last().is_some_and(|m| {
+                    m.role == Role::User
+                        && m.content
+                            .iter()
+                            .any(|b| matches!(b, ContentBlock::Text { .. }))
+                });
+                if let Some(tail) = harness.turn_tail(last_user_has_text) {
+                    turn_tail_extras.push(tail);
+                }
             }
             // §3.5: let registered contributors inject dynamic per-turn context
             // (knowledge RAG, memory, …) into the turn tail. No-op when none
@@ -1501,6 +1683,19 @@ impl AgentEngine {
                         input,
                         extra,
                     } => {
+                        if self
+                            .coding_harness
+                            .as_ref()
+                            .is_some_and(|h| h.is_forced_finalize())
+                        {
+                            tracing::warn!(
+                                target: "nomi_agent",
+                                tool = %name,
+                                tool_use_id = %id,
+                                "coding harness: ignoring tool call during forced finalize"
+                            );
+                            continue;
+                        }
                         if tool_calls.len() >= MAX_PROVIDER_TURN_TOOL_CALLS {
                             efficiency.observe_calls(&self.tools, &tool_calls);
                             return Err(AgentError::ApiError(format!(
@@ -1613,6 +1808,13 @@ impl AgentEngine {
                         // and reconcile its identity, but never publish a
                         // Running lifecycle until a complete ToolUse passes its
                         // full schema at the commit boundary.
+                        if self
+                            .coding_harness
+                            .as_ref()
+                            .is_some_and(|h| h.is_forced_finalize())
+                        {
+                            continue;
+                        }
                         if id.trim().is_empty() {
                             efficiency.observe_calls(&self.tools, &tool_calls);
                             return Err(AgentError::ApiError(format!(
@@ -1830,6 +2032,30 @@ impl AgentEngine {
                     signature: thinking_signature,
                 });
             }
+
+            // Coding policy stop: drop any unexpected tool calls and finish as
+            // a normal EndTurn so the host never surfaces NOMIFUN_INTERNAL_ERROR.
+            let coding_finalize = self
+                .coding_harness
+                .as_mut()
+                .and_then(|h| h.take_forced_finalize());
+            if let Some(reason) = coding_finalize.as_ref() {
+                if !tool_calls.is_empty() {
+                    tracing::warn!(
+                        target: "nomi_agent",
+                        tool_count = tool_calls.len(),
+                        "coding harness: discarding tool calls on forced finalize turn"
+                    );
+                    tool_calls.clear();
+                }
+                stop_reason = StopReason::EndTurn;
+                if assistant_text.trim().is_empty() {
+                    assistant_text = reason.clone();
+                    self.output
+                        .emit_text_delta(&assistant_text, &self.current_msg_id);
+                }
+            }
+
             if !assistant_text.is_empty() {
                 assistant_content.push(ContentBlock::Text {
                     text: assistant_text.clone(),
@@ -1872,18 +2098,55 @@ impl AgentEngine {
                     continue;
                 }
 
-                // Goal-driven continuation hook (only fires for opt-in goal
-                // sessions). The temporary borrow of `self.goal` ends with the
-                // match arm, before we mutate `self.messages`.
-                let continuation = match self.goal.as_ref() {
-                    Some(g) => {
-                        let judge = crate::goal::judge::ProviderJudgeClient::new(
-                            Arc::clone(&self.provider),
-                            self.model.clone(),
-                        );
-                        g.evaluate_and_continue(&assistant_text, &judge).await
+                // Forced finalize already produced the closing reply — do not
+                // reopen via verify/todo/goal continuations.
+                if coding_finalize.is_some() {
+                    self.save_session();
+                    return Ok(AgentResult {
+                        text: assistant_text,
+                        stop_reason,
+                        usage: self.total_usage.clone(),
+                        turns: turn + 1,
+                    });
+                }
+
+                // Coding harness finish policy (HardGate / todo continuation /
+                // system-continuation budget). Runs before goal continuation.
+                if let Some(harness) = self.coding_harness.as_mut() {
+                    match harness.on_natural_end() {
+                        nomi_coding::FinishDecision::Allow => {}
+                        nomi_coding::FinishDecision::ContinueWithNudge { nudge } => {
+                            self.messages.push(Message::now(
+                                Role::User,
+                                vec![ContentBlock::Text { text: nudge }],
+                            ));
+                            self.save_session();
+                            turn += 1;
+                            continue;
+                        }
                     }
-                    None => None,
+                }
+
+                // Goal-driven continuation (opt-in). Coding mode disables
+                // fail-open auto-continue by default — incomplete work is handled
+                // by the coding harness todo/explore gates instead.
+                let skip_goal = self
+                    .coding_harness
+                    .as_ref()
+                    .is_some_and(|h| h.disables_goal_auto_continue());
+                let continuation = if skip_goal {
+                    None
+                } else {
+                    match self.goal.as_ref() {
+                        Some(g) => {
+                            let judge = crate::goal::judge::ProviderJudgeClient::new(
+                                Arc::clone(&self.provider),
+                                self.model.clone(),
+                            );
+                            g.evaluate_and_continue(&assistant_text, &judge).await
+                        }
+                        None => None,
+                    }
                 };
                 if let Some(cont) = continuation {
                     self.messages.push(cont);
@@ -1908,6 +2171,15 @@ impl AgentEngine {
                 });
             }
 
+            let cascade_policy = if self
+                .coding_harness
+                .as_ref()
+                .is_some_and(|h| h.prefers_relaxed_error_cascade())
+            {
+                crate::tool_execution::ErrorCascadePolicy::HaltAfterMutatingOrGate
+            } else {
+                crate::tool_execution::ErrorCascadePolicy::HaltAllSubsequent
+            };
             let mut outcome = if let Some(ref approval_mgr) = self.approval_manager {
                 // JSON stream mode: use protocol-based approval
                 let writer = self
@@ -1927,6 +2199,7 @@ impl AgentEngine {
                     self.hooks.as_mut(),
                     self.compaction_level,
                     self.toon_enabled,
+                    cascade_policy,
                 )
                 .await
                 {
@@ -1947,6 +2220,7 @@ impl AgentEngine {
                     self.hooks.as_mut(),
                     self.compaction_level,
                     self.toon_enabled,
+                    cascade_policy,
                 )
                 .await
                 {
@@ -2114,6 +2388,50 @@ impl AgentEngine {
                 .stagnation_guard
                 .observe(outcome_signature, all_tool_results_failed);
 
+            let mut coding_nudge_texts: Vec<String> = Vec::new();
+            let mut coding_hard_stop: Option<String> = None;
+            if self.coding_harness.is_some() {
+                let mut outcomes: Vec<nomi_coding::ToolCallOutcome> = Vec::new();
+                for call in &tool_calls {
+                    let ContentBlock::ToolUse { id, name, input, .. } = call else {
+                        continue;
+                    };
+                    let result = outcome.results.iter().find_map(|block| match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                            ..
+                        } if tool_use_id == id => Some((content.as_str(), *is_error)),
+                        _ => None,
+                    });
+                    let success = matches!(result, Some((_, false)));
+                    let (error_content, result_content) = match result {
+                        Some((content, true)) => (Some(content.to_string()), Some(content.to_string())),
+                        Some((content, false)) => (None, Some(content.to_string())),
+                        None => (None, None),
+                    };
+                    let command = input
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned);
+                    let file_path = coding_tool_file_path(name, input);
+                    outcomes.push(nomi_coding::ToolCallOutcome {
+                        name: name.clone(),
+                        success,
+                        command,
+                        file_path,
+                        error_content,
+                        result_content,
+                    });
+                }
+                if let Some(harness) = self.coding_harness.as_mut() {
+                    let nudge = harness.after_tool_turn(&outcomes);
+                    coding_nudge_texts = nudge.texts;
+                    coding_hard_stop = nudge.hard_stop;
+                }
+            }
+
             // Apply any context modifiers from skill executions before the next turn
             self.apply_context_modifiers(&outcome.modifiers);
 
@@ -2132,8 +2450,13 @@ impl AgentEngine {
             };
             if !steered.is_empty() {
                 self.stagnation_guard.reset();
+                if let Some(harness) = self.coding_harness.as_mut() {
+                    harness.reset_progress();
+                }
                 tool_retry_tracker.clear();
                 stagnation_action = crate::loop_guard::StagnationAction::Continue;
+                coding_nudge_texts.clear();
+                coding_hard_stop = None;
             }
 
             let mut tool_result_blocks = outcome.results;
@@ -2158,6 +2481,14 @@ impl AgentEngine {
                     });
                 }
             }
+            for text in coding_nudge_texts {
+                tracing::warn!(
+                    target: "nomi_agent",
+                    nudge = %text,
+                    "coding harness: injecting tool-turn nudge"
+                );
+                tool_result_blocks.push(ContentBlock::Text { text });
+            }
             // Steering interjection (point A): append any queued steer messages
             // as trailing Text blocks on THIS turn's tool-result message, so the
             // model sees them next turn without a second consecutive user
@@ -2173,9 +2504,25 @@ impl AgentEngine {
             *safe_messages = self.messages.clone();
             self.save_session();
             if stagnation_action == crate::loop_guard::StagnationAction::Abort {
+                if let Some(harness) = self.coding_harness.as_mut() {
+                    harness.reset_progress();
+                }
                 return Err(AgentError::Stagnation(
                     crate::loop_guard::STAGNATION_ABORT.to_string(),
                 ));
+            }
+            if let Some(reason) = coding_hard_stop {
+                if let Some(harness) = self.coding_harness.as_mut() {
+                    harness.reset_progress();
+                    harness.begin_forced_finalize(reason.clone());
+                }
+                tracing::warn!(
+                    target: "nomi_agent",
+                    %reason,
+                    "coding harness: hard-stop → forced finalize (no tools)"
+                );
+                turn += 1;
+                continue;
             }
             turn += 1;
         }
@@ -2288,6 +2635,9 @@ impl AgentEngine {
                     result.cleared_count, result.estimated_tokens_freed
                 ));
             }
+            if !result.cleared_read_paths.is_empty() {
+                self.invalidate_file_cache_paths(&result.cleared_read_paths);
+            }
         }
 
         // 2. Autocompact (LLM summarization)
@@ -2332,6 +2682,21 @@ impl AgentEngine {
                         // not TtlExpiry. Mirrors Reasonix's RewriteVersion
                         // increment.
                         self.cache_detector.notify_compaction();
+                        // Codex-style reinject: restore cwd / write_root /
+                        // coding constitution after history was summarized.
+                        if let Some(harness) = self.coding_harness.as_ref() {
+                            let reinject = harness.post_compact_reinject();
+                            self.messages.push(Message::now(
+                                Role::User,
+                                vec![ContentBlock::Text { text: reinject }],
+                            ));
+                            // Cleared transcripts → force fresh Reads.
+                            if let Some(cache) = &self.file_cache
+                                && let Ok(mut guard) = cache.write()
+                            {
+                                guard.clear();
+                            }
+                        }
                     }
                 }
                 Err(auto::CompactError::CircuitBroken { .. }) => {

@@ -27,6 +27,7 @@ pub mod skill_tool;
 pub mod ssh_backend;
 pub mod ssh_tools;
 pub mod summon_tools;
+pub mod task_profile;
 mod local_agent_invocation;
 mod local_delegation_progress;
 mod local_delegate_tool;
@@ -38,3 +39,5 @@ pub use flowy_web::provider::SearchProvider;
 pub use bootstrap::{ExtractCoordinatorBinding, SearchProviderBinding};
 
 pub use knowledge_tools::{KnowledgeHit, KnowledgeReadTool, KnowledgeRetrievalSink, KnowledgeSearchTool};
+pub use task_profile::TaskProfile;
+pub use nomi_coding;

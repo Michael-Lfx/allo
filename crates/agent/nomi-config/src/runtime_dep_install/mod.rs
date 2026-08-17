@@ -1,8 +1,9 @@
-//! Silent runtime dependency installation for Allo (ffmpeg for long-video concat).
+//! Silent runtime dependency installation for Allo (ffmpeg, ripgrep, …).
 
 mod coordinator;
 mod ffmpeg;
 mod probe;
+mod ripgrep;
 
 use crate::dep_check::{RuntimeDep, is_available};
 use crate::gateway::env_var_enabled_default_true;
@@ -10,6 +11,7 @@ use tracing::{debug, info, warn};
 
 pub use coordinator::register_dep_gate_hooks;
 pub use ffmpeg::ensure_ffmpeg;
+pub use ripgrep::ensure_ripgrep;
 
 const AUTO_ENSURE_ENV: &str = "NOMIFUN_AUTO_ENSURE_DEPS";
 
@@ -26,7 +28,14 @@ pub async fn ensure_runtime_dep(dep: RuntimeDep, quiet: bool) -> bool {
     }
 
     let result = match dep {
-        RuntimeDep::Ffmpeg => ensure_ffmpeg(quiet).await.map(|_| ()),
+        RuntimeDep::Ffmpeg => ensure_ffmpeg(quiet)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        RuntimeDep::Ripgrep => ensure_ripgrep(quiet)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
         other => {
             warn!(%other, "auto-install is not implemented for this dependency in Allo");
             return false;

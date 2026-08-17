@@ -567,13 +567,13 @@ impl Tool for ExecCommandTool {
                 },
                 "yield_time_ms": {
                     "type": "number",
-                    "description": "Command mode only. Milliseconds to wait before yielding. Default 10000, range 250-30000."
+                    "description": "Command mode only. Milliseconds to wait before yielding. Default 10000, range 250-30000. Alias: `timeout` is also accepted in command mode and mapped to yield_time_ms (clamped)."
                 },
                 "timeout": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": MAX_SCRIPT_TIMEOUT_MS,
-                    "description": "Script mode only. Hard execution deadline in milliseconds."
+                    "description": "Script mode: hard deadline (ms). Command mode: optional alias for yield_time_ms (clamped to 250-30000)."
                 }
             },
             "oneOf": [
@@ -582,8 +582,7 @@ impl Tool for ExecCommandTool {
                     "not": {
                         "anyOf": [
                             { "required": ["script"] },
-                            { "required": ["language"] },
-                            { "required": ["timeout"] }
+                            { "required": ["language"] }
                         ]
                     }
                 },
@@ -750,9 +749,9 @@ fn requested_invocation(input: &Value) -> Result<PreparedInvocation, String> {
     }
 
     if has_command {
-        reject_unknown_fields(input, &["cmd", "workdir", "tty", "yield_time_ms"])?;
-        if input.get("language").is_some() || input.get("timeout").is_some() {
-            return Err("language and timeout are only valid with script mode".to_string());
+        reject_unknown_fields(input, &["cmd", "workdir", "tty", "yield_time_ms", "timeout"])?;
+        if input.get("language").is_some() {
+            return Err("language is only valid with script mode".to_string());
         }
         let command = input
             .get("cmd")
@@ -763,9 +762,12 @@ fn requested_invocation(input: &Value) -> Result<PreparedInvocation, String> {
         validate_shell_script(&command)?;
         let tty = input.get("tty").and_then(Value::as_bool).unwrap_or(false);
         let transport = shell_transport(tty);
+        // Models often pass `timeout` (script-mode name) with `cmd`. Accept it as
+        // an alias for yield_time_ms so common mis-calls still run.
         let yield_ms = input
             .get("yield_time_ms")
             .and_then(Value::as_u64)
+            .or_else(|| input.get("timeout").and_then(Value::as_u64))
             .unwrap_or(DEFAULT_YIELD_MS)
             .clamp(MIN_YIELD_MS, MAX_YIELD_MS);
         return Ok(PreparedInvocation {

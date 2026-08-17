@@ -354,6 +354,9 @@ pub struct AgentBootstrap {
     /// instead of the local implementations. The connection lives behind this
     /// backend; the model never sees credentials or host identity.
     ssh_session: Option<Arc<dyn crate::ssh_backend::SshBackend>>,
+    /// When true (coding profile), file tools use CODING_BOUNDARY rejection
+    /// copy and Bash refuses known broad/dangerous scans. Not an OS sandbox.
+    coding_boundary: bool,
 }
 
 impl AgentBootstrap {
@@ -376,6 +379,7 @@ impl AgentBootstrap {
             #[cfg(feature = "browser-use")]
             browser_lane_client: None,
             ssh_session: None,
+            coding_boundary: false,
         }
     }
 
@@ -477,6 +481,13 @@ impl AgentBootstrap {
         self
     }
 
+    /// Enable coding-mode boundary copy for Write/Edit/ApplyPatch/Bash
+    /// (structured `CODING_BOUNDARY:` errors; no OS sandbox escalate).
+    pub fn coding_boundary(mut self, enabled: bool) -> Self {
+        self.coding_boundary = enabled;
+        self
+    }
+
     /// Resume from a previously saved session.
     pub fn resume(mut self, session: Session) -> Self {
         self.resume_session = Some(session);
@@ -543,17 +554,20 @@ impl AgentBootstrap {
             registry.register(Box::new(
                 nomi_tools::write::WriteTool::new(file_cache.clone())
                     .with_write_root(write_root.clone())
-                    .with_cwd(Some(cwd_path.to_path_buf())),
+                    .with_cwd(Some(cwd_path.to_path_buf()))
+                    .with_coding_boundary(self.coding_boundary),
             ));
             registry.register(Box::new(
                 nomi_tools::edit::EditTool::new(file_cache.clone())
                     .with_write_root(write_root.clone())
-                    .with_cwd(Some(cwd_path.to_path_buf())),
+                    .with_cwd(Some(cwd_path.to_path_buf()))
+                    .with_coding_boundary(self.coding_boundary),
             ));
             registry.register(Box::new(
-                nomi_tools::apply_patch::ApplyPatchTool::new(file_cache)
+                nomi_tools::apply_patch::ApplyPatchTool::new(file_cache.clone())
                     .with_write_root(write_root.clone())
-                    .with_cwd(Some(cwd_path.to_path_buf())),
+                    .with_cwd(Some(cwd_path.to_path_buf()))
+                    .with_coding_boundary(self.coding_boundary),
             ));
             // Experimental `Lsp` code-navigation tool: registered only when at least
             // one language server is configured (default off → no behaviour change).
@@ -599,15 +613,26 @@ impl AgentBootstrap {
         // later wiring (`with_process_supervisor`, `set_process_supervisor`)
         // depends on it regardless of session kind.
         if ssh_backend.is_none() {
-            registry.register(Box::new(nomi_tools::bash::BashTool::new(
-                Arc::clone(&process_supervisor),
-                cwd_path.to_path_buf(),
-                process_capability.clone(),
-            )));
+            // Grep needs ripgrep; register install hooks and warm the managed
+            // binary in the background so the first search rarely blocks.
+            nomi_config::register_dep_gate_hooks();
+            nomi_config::spawn_background_install(vec![nomi_config::RuntimeDep::Ripgrep]);
+
+            registry.register(Box::new(
+                nomi_tools::bash::BashTool::new(
+                    Arc::clone(&process_supervisor),
+                    cwd_path.to_path_buf(),
+                    process_capability.clone(),
+                )
+                .with_coding_boundary(self.coding_boundary),
+            ));
             registry.register(Box::new(nomi_tools::grep::GrepTool::new(
                 cwd_path.to_path_buf(),
             )));
             registry.register(Box::new(nomi_tools::glob::GlobTool::new(
+                cwd_path.to_path_buf(),
+            )));
+            registry.register(Box::new(nomi_tools::dir_tree::DirTreeTool::new(
                 cwd_path.to_path_buf(),
             )));
 
@@ -1005,6 +1030,7 @@ impl AgentBootstrap {
         engine.set_plan_active_flag(plan_active_flag);
         engine.set_process_supervisor(Arc::clone(&process_supervisor));
         engine.set_system_prompt_sections(prompt_cache.sections);
+        engine.set_file_cache(file_cache);
         if let Some(spec) = self.goal {
             engine.set_goal(spec.objective, spec.max_auto_continuations);
         }

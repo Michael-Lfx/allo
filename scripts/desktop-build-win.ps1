@@ -125,8 +125,46 @@ function Ensure-Target($t) {
   }
 }
 
+# opusic-sys (robot Opus codec) builds vendored libopus via CMake. Many Windows
+# installs put cmake.exe under Program Files without adding it to PATH, which
+# otherwise stops the build at ``is `cmake` not installed?``.
+function Ensure-CMake {
+  $cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
+  if ($cmakeCmd) {
+    Write-Host "▶ CMake: $($cmakeCmd.Source)"
+    return
+  }
+
+  $candidates = @(
+    (Join-Path ${env:ProgramFiles} 'CMake\bin\cmake.exe'),
+    (Join-Path ${env:ProgramFiles(x86)} 'CMake\bin\cmake.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\CMake\bin\cmake.exe')
+  )
+  foreach ($exe in $candidates) {
+    if ($exe -and (Test-Path -LiteralPath $exe)) {
+      $binDir = Split-Path -Parent $exe
+      $env:Path = "$binDir;$env:Path"
+      Write-Host "▶ CMake: 已从 $binDir 注入 PATH"
+      return
+    }
+  }
+
+  Write-Error @"
+❌ 未找到 cmake（opusic-sys 编译内置 libopus 需要它）。
+
+本机若已安装 CMake，请把其 bin 目录加入 PATH 后重开终端，例如:
+  C:\Program Files\CMake\bin
+
+或用 winget 安装:
+  winget install Kitware.CMake
+"@
+  exit 1
+}
+
 try {
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
+
+Ensure-CMake
 
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 Write-Host "将依次构建以下目标: $($triples -join ' ')"

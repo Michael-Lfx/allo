@@ -299,6 +299,8 @@ export type TChatConversation =
         session_mode?: string;
         /** Catalog-advertised reasoning depth for the next Nomi turn. */
         reasoning_effort?: string;
+        /** Session work mode: office (default) or coding. */
+        task_profile?: 'office' | 'coding';
         /** Legacy marker for pre-provider-probe health-check conversations */
         is_health_check?: boolean;
         /** Last token usage stats */

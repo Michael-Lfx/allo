@@ -6,6 +6,7 @@
  * PowerShell/CMD. This script sets the env in-process and forwards argv.
  */
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -29,7 +30,41 @@ const tauriArgs = [
   ...process.argv.slice(2),
 ];
 
-const env = { ...process.env, NOMI_CHANNEL: 'dev' };
+/**
+ * opusic-sys builds vendored libopus via CMake. On Windows, Kitware often
+ * installs cmake.exe under Program Files without adding it to PATH (same
+ * issue `scripts/desktop-build-win.ps1` already handles for `build:win`).
+ */
+function ensureCmakeOnPath(env) {
+  const pathKey = Object.keys(env).find((k) => k.toLowerCase() === 'path') ?? 'Path';
+  const pathValue = env[pathKey] ?? '';
+  const pathParts = pathValue.split(/[;:]/).filter(Boolean);
+  const cmakeOnPath = pathParts.some((dir) => {
+    try {
+      return existsSync(join(dir, process.platform === 'win32' ? 'cmake.exe' : 'cmake'));
+    } catch {
+      return false;
+    }
+  });
+  if (cmakeOnPath) return env;
+
+  const candidates = [
+    join(process.env.ProgramFiles || 'C:\\Program Files', 'CMake', 'bin'),
+    join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'CMake', 'bin'),
+    join(process.env.LOCALAPPDATA || '', 'Programs', 'CMake', 'bin'),
+  ];
+  for (const binDir of candidates) {
+    if (!binDir) continue;
+    const exe = join(binDir, process.platform === 'win32' ? 'cmake.exe' : 'cmake');
+    if (existsSync(exe)) {
+      console.log(`[run-dev] CMake: injecting ${binDir} into PATH`);
+      return { ...env, [pathKey]: `${binDir};${pathValue}` };
+    }
+  }
+  return env;
+}
+
+const env = ensureCmakeOnPath({ ...process.env, NOMI_CHANNEL: 'dev' });
 const devSessionLock = createDevSessionLock({
   buildDir: join(ROOT, 'build.noindex'),
   workspaceRoot: ROOT,

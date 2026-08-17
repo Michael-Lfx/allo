@@ -858,5 +858,13 @@
       "minimal": "最低",
       "none": "关闭"
     }
+  },
+  "taskProfile": {
+    "label": "工作模式",
+    "office": "日常办公",
+    "coding": "代码开发",
+    "updated": "已切换工作模式",
+    "nextTurn": "将在下一轮生效",
+    "switchFailed": "更新工作模式失败"
   }
 }

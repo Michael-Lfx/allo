@@ -14,6 +14,17 @@ const COMPLETED_TURN_ID = parseMessageId('0190f5fe-7c00-7a00-8000-000000000041')
 const ACCEPTED_TURN_ID = parseMessageId('0190f5fe-7c00-7a00-8000-000000000042');
 
 describe('useNomiMessage terminal lifecycle fence', () => {
+  test('authoritative settle clears turn busy via reset, not stream-segment finish', () => {
+    const source = readFileSync(new URL('./useNomiMessage.ts', import.meta.url), 'utf8');
+    const settleStart = source.indexOf('const settleCompletedTurn = useCallback');
+    const settleEnd = source.indexOf('}, [resolveTimingKey]);', settleStart);
+    expect(settleStart).toBeGreaterThanOrEqual(0);
+    expect(settleEnd).toBeGreaterThan(settleStart);
+    const settleBody = source.slice(settleStart, settleEnd);
+    expect(settleBody.includes("dispatchTurn({ type: 'reset' })")).toBe(true);
+    expect(settleBody.includes("dispatchTurn({ type: 'finish' })")).toBe(false);
+  });
+
   test('the hook wires the idle snapshot fence before hydration can race a late start', () => {
     const source = readFileSync(new URL('./useNomiMessage.ts', import.meta.url), 'utf8');
     const resetIndex = source.indexOf("dispatchTurn({ type: 'reset' });");

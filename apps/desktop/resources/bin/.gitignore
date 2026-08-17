@@ -1,0 +1,4 @@
+# Downloaded by scripts/ensure-bundled-rg.mjs; do not commit binaries.
+*
+!.gitignore
+!.gitkeep

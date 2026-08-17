@@ -2732,6 +2732,8 @@ fn main() -> std::process::ExitCode {
                 nomifun_app::browser_resource::BUNDLED_CHROME_DIR_ENV,
                 resource_dir.join("chrome-for-testing"),
             );
+            // Packaged `bin/` (ripgrep, …). Must match `nomi_config::dep_check::BUNDLED_BIN_DIR_ENV`.
+            std::env::set_var("NOMIFUN_BUNDLED_BIN_DIR", resource_dir.join("bin"));
         }
     }
 

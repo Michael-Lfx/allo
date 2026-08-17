@@ -133,6 +133,18 @@ fn reasoning_effort_changed(
             != merged_extra.and_then(|extra| extra.get("reasoning_effort"))
 }
 
+fn task_profile_changed(
+    conversation_type: &AgentType,
+    request_extra: Option<&serde_json::Value>,
+    existing_extra: &serde_json::Value,
+    merged_extra: Option<&serde_json::Value>,
+) -> bool {
+    *conversation_type == AgentType::Nomi
+        && request_extra.is_some_and(|extra| extra.get("task_profile").is_some())
+        && existing_extra.get("task_profile")
+            != merged_extra.and_then(|extra| extra.get("task_profile"))
+}
+
 fn is_auto_title_eligible(current_name: &str, first_user_content: &str) -> bool {
     let current_name = current_name.trim();
     current_name.is_empty() || current_name == first_user_content.trim()
@@ -5680,6 +5692,12 @@ impl ConversationService {
             &existing_extra_value,
             merged_extra_value.as_ref(),
         );
+        let task_profile_changed = task_profile_changed(
+            &existing_type,
+            req.extra.as_ref(),
+            &existing_extra_value,
+            merged_extra_value.as_ref(),
+        );
         let workspace_changed = req
             .extra
             .as_ref()
@@ -5782,12 +5800,18 @@ impl ConversationService {
             .await?;
         }
 
-        if reasoning_effort_changed && !model_changed && !workspace_changed && !delegation_policy_changed {
+        if (reasoning_effort_changed || task_profile_changed)
+            && !model_changed
+            && !workspace_changed
+            && !delegation_policy_changed
+        {
             if let Some(runtime) = runtime_registry.get_runtime(id) {
                 runtime.request_turn_boundary_recycle();
                 info!(
                     conversation_id = id,
-                    "Queued Nomi reasoning effort change for the next turn"
+                    reasoning_effort_changed,
+                    task_profile_changed,
+                    "Queued Nomi session preference change for the next turn"
                 );
             }
         }
@@ -15087,6 +15111,38 @@ mod tests {
             Some(&high)
         ));
         assert!(!reasoning_effort_changed(
+            &AgentType::Nomi,
+            None,
+            &old,
+            Some(&old)
+        ));
+    }
+
+    #[test]
+    fn task_profile_change_only_marks_real_nomi_value_changes() {
+        let old = json!({ "task_profile": "office" });
+        let coding_patch = json!({ "task_profile": "coding" });
+        let coding = json!({ "task_profile": "coding" });
+
+        assert!(task_profile_changed(
+            &AgentType::Nomi,
+            Some(&coding_patch),
+            &old,
+            Some(&coding)
+        ));
+        assert!(!task_profile_changed(
+            &AgentType::Nomi,
+            Some(&coding_patch),
+            &coding,
+            Some(&coding)
+        ));
+        assert!(!task_profile_changed(
+            &AgentType::Acp,
+            Some(&coding_patch),
+            &old,
+            Some(&coding)
+        ));
+        assert!(!task_profile_changed(
             &AgentType::Nomi,
             None,
             &old,

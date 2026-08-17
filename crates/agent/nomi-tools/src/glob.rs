@@ -10,6 +10,31 @@ use crate::Tool;
 
 const MAX_RESULTS: usize = 100;
 
+/// Stop walking after this many candidate paths so Glob cannot hang forever on
+/// enormous trees (e.g. accidental recursion into `node_modules`).
+const MAX_WALKED: usize = 50_000;
+
+const SKIP_DIR_NAMES: &[&str] = &[
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    ".next",
+    "build",
+    "__pycache__",
+    ".turbo",
+    "vendor",
+];
+
+fn path_has_skipped_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| SKIP_DIR_NAMES.contains(&name))
+    })
+}
+
 pub struct GlobTool {
     cwd: PathBuf,
 }
@@ -31,6 +56,7 @@ impl Tool for GlobTool {
          - Supports glob patterns like \"**/*.rs\" or \"src/**/*.ts\".\n\
          - Returns matching file paths sorted by modification time (newest first).\n\
          - Returns at most 100 results. Only returns files, not directories.\n\
+         - Skips common vendor/build directories (node_modules, target, dist, …).\n\
          - The path parameter defaults to the current working directory.\n\
          - Use this OS-agnostic tool to list files in the current directory or workspace on every operating system: \"*\" lists top-level files and \"**/*\" lists files recursively.\n\
          - Use this tool when you need to find files by name or extension patterns, and prefer it over Bash for directory file listings."
@@ -95,11 +121,21 @@ impl Tool for GlobTool {
 
         let mut files: Vec<(std::time::SystemTime, String)> = Vec::new();
         let mut total_matched = 0usize;
+        let mut walked = 0usize;
+        let mut walk_capped = false;
 
         for entry in entries {
+            walked += 1;
+            if walked > MAX_WALKED {
+                walk_capped = true;
+                break;
+            }
             let Ok(path) = entry else {
                 continue;
             };
+            if path_has_skipped_component(&path) {
+                continue;
+            }
             if !path.is_file() {
                 continue;
             }
@@ -130,7 +166,14 @@ impl Tool for GlobTool {
 
         if files.is_empty() {
             return ToolResult {
-                content: "No files matched the pattern".to_string(),
+                content: if walk_capped {
+                    format!(
+                        "No files matched the pattern before the walk limit ({MAX_WALKED} paths). \
+                         Narrow `path` or `pattern` (and avoid scanning vendor trees)."
+                    )
+                } else {
+                    "No files matched the pattern".to_string()
+                },
                 is_error: false,
                 images: Vec::new(),
             };
@@ -141,6 +184,10 @@ impl Tool for GlobTool {
             result.push(format!(
                 "... [showing {} of {} matching files — refine the pattern or path]",
                 MAX_RESULTS, total_matched
+            ));
+        } else if walk_capped {
+            result.push(format!(
+                "... [walk stopped after {MAX_WALKED} paths — refine the pattern or path]"
             ));
         }
         ToolResult {

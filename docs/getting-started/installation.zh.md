@@ -26,11 +26,11 @@ NomiFun 有两种宿主模式，共享同一个 Rust 后端（参见
 | **Bun** | **≥ 1.3.13** | 前端包管理器与构建（同时也是智能体引擎的硬运行时依赖）。 | `1.1.38` 存在 stdin 缺陷——请勿使用。 |
 | **Tauri CLI** | v2 | 构建桌面外壳。 | 作为 `devDependency` 引入；无需全局安装。 |
 | **Git** | 任何近期版本 | 克隆仓库，以及技能发现与若干内置工具会用到。 | |
-| **C/C++ 构建工具** | 因平台而异 | `rusqlite`（bundled）、`aws-lc-rs`、`libgit2-sys` 需要。 | Windows：MSVC + WebView2 运行时。macOS：Xcode CLT。Linux：`build-essential cmake clang pkg-config perl`。 |
+| **C/C++ 构建工具** | 因平台而异 | `rusqlite`（bundled）、`aws-lc-rs`、`libgit2-sys`、以及机器人网关的 `opusic-sys`（内置 libopus）需要。 | Windows：MSVC + WebView2 运行时 + **CMake**（`winget install Kitware.CMake`；装在默认路径时 `build:win` 会自动注入 PATH）。macOS：Xcode CLT。Linux：`build-essential cmake clang pkg-config perl`。 |
 
 在运行 NomiFun 的宿主上推荐安装（构建机不需要）：
 
-- **`ripgrep`** —— 代码搜索后端；不可用时回退到 `grep`。
+- **`ripgrep`** —— 代码搜索后端。桌面安装包会打包 `rg`，首次使用时也会自动安装到应用数据目录的 `bin/`；一般无需用户手动安装。
 - **`node` / `npm` / `npx`** —— 许多用户安装的 MCP stdio 服务通过
   `npx -y …` 启动。
 

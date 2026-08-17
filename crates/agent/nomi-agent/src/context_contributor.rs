@@ -74,10 +74,12 @@ pub fn build_turn_tail_context(contributions: Vec<String>) -> Option<String> {
 
 /// Prepend `turn_tail_context` to the last user message in `messages`.
 ///
-/// If the last message is a `Role::User` with at least one `Text` block, the
-/// context is prepended as a new `Text` block at position 0. If the last
-/// message is not a user message (e.g. a tool result), a new `Role::User`
-/// message with the context is appended to the end of the messages.
+/// If the last message is a `Role::User`, the context is prepended as a new
+/// `Text` block at position 0 — including pure tool-result user messages so
+/// we do not invent a second consecutive User `[Context]` message (which
+/// confuses coding agents into another exploration loop). If the last
+/// message is not a user message, a new `Role::User` message with the
+/// context is appended.
 ///
 /// This preserves the cache-stable system prompt prefix: only the last
 /// message changes, all previous messages (and the system prompt) stay
@@ -102,22 +104,13 @@ pub fn inject_turn_tail_context(
         text: format!("[Context]\n{ctx}"),
     };
 
-    // Try to prepend to the last user message
-    if let Some(last) = messages.last_mut() {
-        if last.role == Role::User {
-            // Check if it has any Text blocks (vs pure ToolResult)
-            let has_text = last
-                .content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::Text { .. }));
-            if has_text {
-                last.content.insert(0, text_block);
-                return messages;
-            }
-        }
+    if let Some(last) = messages.last_mut()
+        && last.role == Role::User
+    {
+        last.content.insert(0, text_block);
+        return messages;
     }
 
-    // Last message is not a user text message — append a new user message
     messages.push(Message::new(Role::User, vec![text_block]));
     messages
 }
@@ -195,8 +188,12 @@ mod tests {
             }],
         )];
         let out = inject_turn_tail_context(msgs, Some("[RAG] fact".into()));
-        assert_eq!(out.len(), 2); // original + new context message
-        assert_eq!(out[1].role, Role::User);
+        assert_eq!(out.len(), 1, "tool-result user message should stay a single message");
+        assert_eq!(out[0].content.len(), 2);
+        match &out[0].content[0] {
+            ContentBlock::Text { text } => assert!(text.starts_with("[Context]")),
+            _ => panic!("context should be prepended as Text"),
+        }
     }
 
     #[tokio::test]

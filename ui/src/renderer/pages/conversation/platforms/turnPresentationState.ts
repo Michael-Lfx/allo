@@ -106,9 +106,11 @@ function withBusyFlags(
         streamFinished: false,
       };
     case 'finalizing':
+      // Keep Stop available: agent loops often emit stream-finish while tools
+      // (Grep/Bash/…) still run for a long time before turnCompleted.
       return {
         ...next,
-        showStop: false,
+        showStop: true,
         composerInteractive: true,
         showStatusRail: true,
       };

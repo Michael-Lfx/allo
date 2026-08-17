@@ -98,6 +98,7 @@ async fn test_execute_single_tool_call() {
         None,
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("execution should succeed");
@@ -140,6 +141,7 @@ async fn test_execute_concurrent_safe_tools() {
         None,
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("execution should succeed");
@@ -185,6 +187,7 @@ async fn test_execute_non_concurrent_tools_sequential() {
         None,
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("execution should succeed");
@@ -231,6 +234,7 @@ async fn test_execute_non_concurrent_tools_stops_after_error() {
         None,
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("execution should succeed");
@@ -277,6 +281,7 @@ async fn test_protocol_execution_stops_after_sequential_error() {
         None,
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("execution should succeed");
@@ -321,6 +326,7 @@ async fn test_unknown_tool_returns_error() {
         None,
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("execute_tool_calls itself should not fail");
@@ -359,6 +365,7 @@ async fn test_tool_error_returns_error_result() {
         None,
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("execution should succeed");
@@ -400,6 +407,7 @@ async fn test_pre_hook_blocks_tool() {
         Some(&mut hook_engine),
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("execute_tool_calls itself should not fail");
@@ -448,6 +456,7 @@ async fn test_post_hook_runs_after_tool() {
         Some(&mut hook_engine),
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("execution should succeed");
@@ -486,6 +495,7 @@ async fn test_tool_result_truncation() {
         None,
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("execution should succeed");

@@ -6076,6 +6076,7 @@ dependencies = [
  "is-terminal",
  "mockall",
  "nomi-browser",
+ "nomi-coding",
  "nomi-compact",
  "nomi-computer",
  "nomi-config",
@@ -6224,6 +6225,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomi-coding"
+version = "0.0.4"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nomi-compact"
 version = "0.0.4"
 dependencies = [
@@ -6261,6 +6270,7 @@ version = "0.0.4"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
+ "flate2",
  "futures",
  "glob",
  "nomi-compact",
@@ -6497,6 +6507,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "lru 0.18.1",
+ "nomi-coding",
  "nomi-config",
  "nomi-process-runtime",
  "nomi-protocol",

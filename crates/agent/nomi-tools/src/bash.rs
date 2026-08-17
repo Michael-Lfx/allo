@@ -34,6 +34,9 @@ pub struct BashTool {
     cwd: PathBuf,
     capability: CapabilityPolicy,
     invocation_id: Uuid,
+    /// When true, refuse known broad/dangerous scans and wrap capability
+    /// denials with CODING_BOUNDARY: copy.
+    coding_boundary: bool,
 }
 
 impl BashTool {
@@ -47,7 +50,14 @@ impl BashTool {
             cwd,
             capability,
             invocation_id: Uuid::now_v7(),
+            coding_boundary: false,
         }
+    }
+
+    /// Enable coding-mode boundary checks (structured errors; not an OS sandbox).
+    pub fn with_coding_boundary(mut self, enabled: bool) -> Self {
+        self.coding_boundary = enabled;
+        self
     }
 
     async fn run_supervised(
@@ -251,6 +261,15 @@ impl Tool for BashTool {
                 images: Vec::new(),
             };
         };
+        if self.coding_boundary
+            && nomi_coding::bash_hints::looks_like_broad_or_dangerous_scan(command)
+        {
+            return ToolResult {
+                content: nomi_coding::bash_hints::format_broad_scan_rejection(command),
+                is_error: true,
+                images: Vec::new(),
+            };
+        }
         if let Err(error) = validate_shell_script(command) {
             return ToolResult::error(error);
         }
@@ -280,6 +299,20 @@ impl Tool for BashTool {
             },
         };
         cancellation_guard.disarm();
+        if self.coding_boundary && result.is_error {
+            let lower = result.content.to_ascii_lowercase();
+            if lower.contains("denied")
+                || lower.contains("sandbox")
+                || lower.contains("capability")
+                || lower.contains("outside")
+            {
+                return ToolResult {
+                    content: nomi_coding::wrap_boundary_error(&result.content),
+                    is_error: true,
+                    images: result.images,
+                };
+            }
+        }
         result
     }
 
@@ -581,6 +614,20 @@ mod tests {
             cwd.clone(),
             CapabilityPolicy::local_owner(cwd),
         )
+    }
+
+    #[tokio::test]
+    async fn coding_boundary_rejects_broad_find() {
+        let tool = tool(std::env::temp_dir()).with_coding_boundary(true);
+        let result = tool
+            .execute(json!({"command": "find / -name '*.rs'"}))
+            .await;
+        assert!(result.is_error);
+        assert!(
+            result.content.starts_with(nomi_coding::BOUNDARY_PREFIX),
+            "got: {}",
+            result.content
+        );
     }
 
     fn shell_quote_path(path: &Path) -> String {

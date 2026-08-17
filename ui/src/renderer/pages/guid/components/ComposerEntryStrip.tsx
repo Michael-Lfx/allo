@@ -1,6 +1,9 @@
 import { ApplicationOne, CloseSmall, Robot } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import TaskProfileSelector, {
+  type TaskProfile,
+} from '@/renderer/components/agent/TaskProfileSelector';
 import styles from '../index.module.css';
 
 export interface ComposerEntryStripProps {
@@ -15,6 +18,11 @@ export interface ComposerEntryStripProps {
   miniAppActive?: boolean;
   /** Leaves mini-app mode. */
   onDismissMiniApp?: () => void;
+  /** Nomi session work mode (office | coding). */
+  taskProfile?: TaskProfile;
+  onTaskProfileChange?: (profile: TaskProfile) => void;
+  /** Hide the work-mode toggle (e.g. non-Nomi engines). */
+  hideTaskProfile?: boolean;
 }
 
 /**
@@ -31,6 +39,9 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   onCreateMiniApp,
   miniAppActive = false,
   onDismissMiniApp,
+  taskProfile = 'office',
+  onTaskProfileChange,
+  hideTaskProfile = false,
 }) => {
   const { t } = useTranslation();
 
@@ -82,6 +93,13 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
     </button>
   ) : null;
 
+  const taskProfileSelector = hideTaskProfile ? null : (
+    <TaskProfileSelector
+      initialProfile={taskProfile}
+      onProfileSelect={onTaskProfileChange}
+    />
+  );
+
   if (isPresetAgent) {
     return (
       <div className={styles.entryStrip}>
@@ -101,6 +119,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         >
           <CloseSmall theme='outline' size={14} />
         </button>
+        {taskProfileSelector}
       </div>
     );
   }
@@ -116,6 +135,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         <Robot theme='outline' size={15} fill='currentColor' />
         <span className={styles.entryButtonText}>{t('guid.entry.usePreset', { defaultValue: 'Use preset' })}</span>
       </button>
+      {taskProfileSelector}
       {miniAppEntry}
     </div>
   );

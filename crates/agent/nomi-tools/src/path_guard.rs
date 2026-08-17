@@ -84,14 +84,33 @@ pub fn resolve_against_cwd(file_path: &str, cwd: Option<&Path>) -> String {
 
 /// Guard a write to `file_path` against an optional `root`. Returns `Some(error)`
 /// when the write must be rejected, `None` when allowed (no root, or contained).
+///
+/// When `coding_boundary` is true, the rejection uses the stable
+/// `CODING_BOUNDARY:` prefix from `nomi-coding` so the model can recover.
 pub fn ensure_within_root(file_path: &str, root: Option<&Path>) -> Option<String> {
+    ensure_within_root_ex(file_path, root, false)
+}
+
+/// Same as [`ensure_within_root`], with optional coding-boundary copy.
+pub fn ensure_within_root_ex(
+    file_path: &str,
+    root: Option<&Path>,
+    coding_boundary: bool,
+) -> Option<String> {
     let root = root?;
     if is_within_root(Path::new(file_path), root) {
         None
+    } else if coding_boundary {
+        Some(nomi_coding::format_write_root_rejection(
+            file_path,
+            &root.display().to_string(),
+        ))
     } else {
         Some(format!(
             "Write rejected: {} is outside the allowed write root {}. \
-             (Move the target inside the workspace, or disable tools.write_root.)",
+             Recovery: use a path under that root (relative to the session working directory). \
+             Bash is not blocked by this guard — prefer Write/Edit/ApplyPatch for file changes. \
+             (Only disable tools.write_root if you intentionally need unrestricted writes.)",
             file_path,
             root.display()
         ))
@@ -191,5 +210,15 @@ mod tests {
         assert!(ensure_within_root(outside.to_str().unwrap(), Some(dir.path())).is_some());
         let inside = dir.path().join("x.txt");
         assert!(ensure_within_root(inside.to_str().unwrap(), Some(dir.path())).is_none());
+    }
+
+    #[test]
+    fn coding_boundary_rejection_uses_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let outside = other.path().join("x.txt");
+        let msg = ensure_within_root_ex(outside.to_str().unwrap(), Some(dir.path()), true)
+            .expect("reject");
+        assert!(msg.starts_with(nomi_coding::BOUNDARY_PREFIX));
     }
 }

@@ -314,6 +314,13 @@ pub struct NomiResolvedConfig {
     /// Validated against catalog/`compat` effort levels in the factory; `None`
     /// means the engine omits the field (provider default).
     pub reasoning_effort: Option<String>,
+    /// Session work mode (`office` | `coding`). Parsed by
+    /// [`nomi_agent::TaskProfile::parse`]; `None` means office default.
+    pub task_profile: Option<String>,
+    /// Coding verification: `soft_hint` | `hard_gate` | `off`.
+    pub coding_verification: Option<String>,
+    pub coding_protect_read: Option<bool>,
+    pub coding_micro_keep_recent: Option<usize>,
 }
 
 /// Host-resolved Mixture-of-Agents payload carried from the factory to the

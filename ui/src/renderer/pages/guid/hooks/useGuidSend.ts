@@ -79,6 +79,8 @@ export type GuidSendDeps = {
   current_model: TProviderWithModel | undefined;
   /** User-selected OpenAI-style reasoning effort for Nomi create. */
   reasoningEffort?: string;
+  /** Session work mode for Nomi create (`office` | `coding`). */
+  taskProfile?: 'office' | 'coding';
 
   // Agent helpers
   findAgentByKey: (key: string) => AvailableAgent | undefined;
@@ -179,6 +181,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     selectedAcpModel,
     current_model,
     reasoningEffort,
+    taskProfile,
     findAgentByKey,
     getEffectiveAgentType,
     initialSkillIds,
@@ -434,6 +437,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
             // Nomi consumes the authoritative session snapshot instead of
             // reloading only user servers from the global MCP repository.
             session_mode: selectedMode,
+            task_profile: taskProfile ?? 'office',
             ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
           },
         });
@@ -621,6 +625,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     selectedAcpModel,
     current_model,
     reasoningEffort,
+    taskProfile,
     findAgentByKey,
     getEffectiveAgentType,
     initialSkillIds,
