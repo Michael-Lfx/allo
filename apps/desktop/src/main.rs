@@ -39,6 +39,60 @@ use tauri_plugin_deep_link::DeepLinkExt;
 /// development supervisor uses the marker written below instead.
 const DEV_RESTART_REQUEST_CODE: i32 = 73;
 const DEV_RESTART_MARKER_MAX_BYTES: usize = 1024;
+const MAIN_WINDOW_DEFAULT_WIDTH: f64 = 1280.0;
+const MAIN_WINDOW_DEFAULT_HEIGHT: f64 = 832.0;
+const MAIN_WINDOW_DESKTOP_MIN_WIDTH: f64 = 880.0;
+const MAIN_WINDOW_DESKTOP_MIN_HEIGHT: f64 = 600.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MainWindowGeometry {
+    initial_width: f64,
+    initial_height: f64,
+    min_width: f64,
+    min_height: f64,
+}
+
+const fn default_main_window_geometry() -> MainWindowGeometry {
+    MainWindowGeometry {
+        initial_width: MAIN_WINDOW_DEFAULT_WIDTH,
+        initial_height: MAIN_WINDOW_DEFAULT_HEIGHT,
+        min_width: MAIN_WINDOW_DESKTOP_MIN_WIDTH,
+        min_height: MAIN_WINDOW_DESKTOP_MIN_HEIGHT,
+    }
+}
+
+/// Resolve the logical startup and minimum sizes for the main window.
+///
+/// Tauri's `prevent_overflow()` performs the final creation-time clamp against
+/// the native work area. We resolve the same monitor's logical minimum here so
+/// a high-DPI work area cannot leave the native minimum larger than the screen,
+/// which would otherwise make the compact responsive layout unreachable.
+fn resolve_main_window_geometry(
+    work_area_width: u32,
+    work_area_height: u32,
+    scale_factor: f64,
+) -> MainWindowGeometry {
+    if work_area_width == 0
+        || work_area_height == 0
+        || !scale_factor.is_finite()
+        || scale_factor <= 0.0
+    {
+        return default_main_window_geometry();
+    }
+
+    let available_width = (work_area_width as f64 / scale_factor).floor();
+    let available_height = (work_area_height as f64 / scale_factor).floor();
+    if available_width <= 0.0 || available_height <= 0.0 {
+        return default_main_window_geometry();
+    }
+
+    MainWindowGeometry {
+        initial_width: MAIN_WINDOW_DEFAULT_WIDTH.min(available_width),
+        initial_height: MAIN_WINDOW_DEFAULT_HEIGHT.min(available_height),
+        min_width: MAIN_WINDOW_DESKTOP_MIN_WIDTH.min(available_width),
+        min_height: MAIN_WINDOW_DESKTOP_MIN_HEIGHT.min(available_height),
+    }
+}
 
 mod memory_panel_window;
 mod companion_pointer;
@@ -2197,11 +2251,33 @@ fn complete_main_thread_setup(
         }
         return Ok(());
     }
+    // Keep the normal desktop defaults on a sufficiently large monitor, while
+    // allowing a low-resolution or high-DPI work area to enter the renderer's
+    // existing compact layout. `prevent_overflow()` remains the native
+    // creation-time guard because it uses the exact work area and decoration
+    // rules from the active Tauri runtime.
+    let main_window_geometry = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| {
+            let work_area = monitor.work_area();
+            resolve_main_window_geometry(
+                work_area.size.width,
+                work_area.size.height,
+                monitor.scale_factor(),
+            )
+        })
+        .unwrap_or_else(default_main_window_geometry);
     let win_builder =
         tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::App("index.html".into()))
             .title("Flowy")
-            .inner_size(1280.0, 832.0)
-            .min_inner_size(880.0, 600.0)
+            .inner_size(
+                main_window_geometry.initial_width,
+                main_window_geometry.initial_height,
+            )
+            .min_inner_size(main_window_geometry.min_width, main_window_geometry.min_height)
+            .prevent_overflow()
             .center()
             .initialization_script(&init_script);
     // macOS: Overlay makes the titlebar transparent + extends content under
@@ -3050,6 +3126,110 @@ mod tests {
     use super::*;
     use std::fs;
     use std::sync::{Arc, Mutex};
+
+    fn assert_geometry_fits_work_area(
+        geometry: MainWindowGeometry,
+        work_area_width: u32,
+        work_area_height: u32,
+        scale_factor: f64,
+    ) {
+        let available_width = (work_area_width as f64 / scale_factor).floor();
+        let available_height = (work_area_height as f64 / scale_factor).floor();
+        assert!(geometry.initial_width <= available_width);
+        assert!(geometry.initial_height <= available_height);
+        assert!(geometry.min_width <= available_width);
+        assert!(geometry.min_height <= available_height);
+        assert!(geometry.min_width <= geometry.initial_width);
+        assert!(geometry.min_height <= geometry.initial_height);
+    }
+
+    #[test]
+    fn main_window_geometry_preserves_default_on_large_work_area() {
+        assert_eq!(
+            resolve_main_window_geometry(1920, 1032, 1.0),
+            MainWindowGeometry {
+                initial_width: 1280.0,
+                initial_height: 832.0,
+                min_width: 880.0,
+                min_height: 600.0,
+            }
+        );
+    }
+
+    #[test]
+    fn main_window_geometry_clamps_height_to_a_1366x768_work_area() {
+        let geometry = resolve_main_window_geometry(1366, 738, 1.0);
+
+        assert_eq!(geometry.initial_width, 1280.0);
+        assert_eq!(geometry.initial_height, 738.0);
+        assert_eq!(geometry.min_width, 880.0);
+        assert_eq!(geometry.min_height, 600.0);
+        assert_geometry_fits_work_area(geometry, 1366, 738, 1.0);
+    }
+
+    #[test]
+    fn main_window_geometry_fits_a_1280x720_work_area() {
+        let geometry = resolve_main_window_geometry(1280, 690, 1.0);
+
+        assert_eq!(geometry.initial_width, 1280.0);
+        assert_eq!(geometry.initial_height, 690.0);
+        assert_geometry_fits_work_area(geometry, 1280, 690, 1.0);
+    }
+
+    #[test]
+    fn main_window_geometry_clamps_width_to_a_1024x768_work_area() {
+        let geometry = resolve_main_window_geometry(1024, 738, 1.0);
+
+        assert_eq!(geometry.initial_width, 1024.0);
+        assert_eq!(geometry.initial_height, 738.0);
+        assert_eq!(geometry.min_width, 880.0);
+        assert_eq!(geometry.min_height, 600.0);
+        assert_geometry_fits_work_area(geometry, 1024, 738, 1.0);
+    }
+
+    #[test]
+    fn main_window_geometry_accounts_for_high_dpi_logical_dimensions() {
+        let geometry = resolve_main_window_geometry(1366, 738, 1.25);
+
+        assert_eq!(geometry.initial_width, 1092.0);
+        assert_eq!(geometry.initial_height, 590.0);
+        assert_eq!(geometry.min_width, 880.0);
+        assert_eq!(geometry.min_height, 590.0);
+        assert_geometry_fits_work_area(geometry, 1366, 738, 1.25);
+    }
+
+    #[test]
+    fn main_window_geometry_allows_compact_layout_below_desktop_minimum() {
+        let geometry = resolve_main_window_geometry(720, 500, 1.0);
+
+        assert_eq!(
+            geometry,
+            MainWindowGeometry {
+                initial_width: 720.0,
+                initial_height: 500.0,
+                min_width: 720.0,
+                min_height: 500.0,
+            }
+        );
+        assert_geometry_fits_work_area(geometry, 720, 500, 1.0);
+    }
+
+    #[test]
+    fn main_window_geometry_falls_back_for_invalid_monitor_data() {
+        let expected = MainWindowGeometry {
+            initial_width: 1280.0,
+            initial_height: 832.0,
+            min_width: 880.0,
+            min_height: 600.0,
+        };
+
+        assert_eq!(resolve_main_window_geometry(0, 738, 1.0), expected);
+        assert_eq!(resolve_main_window_geometry(1366, 0, 1.0), expected);
+        assert_eq!(resolve_main_window_geometry(1366, 738, 0.0), expected);
+        assert_eq!(resolve_main_window_geometry(1366, 738, -1.0), expected);
+        assert_eq!(resolve_main_window_geometry(1366, 738, f64::NAN), expected);
+        assert_eq!(resolve_main_window_geometry(1366, 738, f64::INFINITY), expected);
+    }
 
     #[test]
     fn development_restart_marker_is_bounded_and_contains_the_launch_token() {
