@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:web": "vite --mode webdev",
-    "build": "vite build",
+    "build": "bun scripts/vite-production-build.mjs",
     "preview": "vite preview",
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit"
   },
