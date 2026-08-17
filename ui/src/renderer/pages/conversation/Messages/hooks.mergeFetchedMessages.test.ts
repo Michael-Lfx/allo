@@ -60,6 +60,46 @@ const baseMessage = (overrides: MessageOverrides): TMessage =>
   }) as TMessage;
 
 describe('mergeFetchedMessagesForConversation', () => {
+  test('keeps one canonical user row across interleaved event, HTTP, and DB arrivals', () => {
+    const conversationId = parseConversationId('0190f5fe-7c00-7a00-8000-000000000004');
+    const canonical = messageId('interleaved-user');
+    const eventRow = baseMessage({
+      id: 'user-created-event',
+      msg_id: 'interleaved-user',
+      position: 'right',
+      created_at: 1000,
+      content: { content: 'same user request' },
+    });
+    const responseRow = { ...eventRow, id: 'http-response-row' } as TMessage;
+    const dbRow = normalizeDbMessage({
+      ...eventRow,
+      id: 'db-user-row',
+      message_id: canonical,
+    } as TMessage);
+
+    const arrivals = [
+      ['event', 'http', 'db'],
+      ['db', 'http', 'event'],
+      ['http', 'event', 'db'],
+    ] as const;
+
+    for (const order of arrivals) {
+      let current: TMessage[] = [];
+      for (const arrival of order) {
+        if (arrival === 'db') {
+          current = mergeFetchedMessagesForConversation(current, [dbRow], conversationId);
+        } else {
+          current = composeMessageForTest(arrival === 'event' ? eventRow : responseRow, current);
+        }
+      }
+
+      expect(current).toHaveLength(1);
+      expect(current[0]?.msg_id).toBe(canonical);
+      expect(current[0]?.message_id).toBe(canonical);
+      expect(current[0]?.id).toBe('db-user-row');
+    }
+  });
+
   test('keeps a late ACP image completion before the final answer and produces one disclosure', () => {
     const conversationId = parseConversationId('0190f5fe-7c00-7a00-8000-000000000004');
     const userId = messageId('image-user');

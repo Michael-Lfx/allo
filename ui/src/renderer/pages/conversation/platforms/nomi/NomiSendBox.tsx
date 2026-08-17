@@ -1,6 +1,6 @@
 
 
-import { conversationTarget, type ConversationId, type MessageId, parseMessageId } from '@/common/types/ids';
+import { conversationTarget, type ConversationId, type MessageId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
 import type { IEditResubmitObservation, ISendMessageResult } from '@/common/adapter/ipcBridge';
@@ -66,7 +66,10 @@ import {
   readAuthorizedInitialMessageDelivery,
   releaseInitialMessageDelivery,
 } from '@/renderer/pages/conversation/platforms/initialMessageDelivery';
-import { classifyPublicMessageDelivery } from '@/renderer/pages/conversation/platforms/publicMessageDelivery';
+import {
+  classifyPublicMessageDelivery,
+  shouldRenderFreshUserMessage,
+} from '@/renderer/pages/conversation/platforms/publicMessageDelivery';
 import { stopConversationAndConfirmRelease } from '@/renderer/pages/conversation/platforms/requestConversationStop';
 import {
   shouldReleaseStopInteraction,
@@ -466,30 +469,15 @@ const NomiSendBox: React.FC<{
       // Persisted queue/recovery deliveries start behind an idle fence. Only
       // the atomic first-delivery winner may open a new local turn.
       if (!deferLocalTurnUntilFresh) setWaitingResponse(true);
-
-      const displayMessage = buildDisplayMessage(input, files, workspacePath);
-      const shouldRenderUserMessage = displayMessage.trim().length > 0;
-      let localMsgId: MessageId | null = null;
       if (!deferLocalTurnUntilFresh) {
-        localMsgId = parseMessageId(uuidv7());
-        notifyLocalSubmit(localMsgId, localMsgId);
-        if (shouldRenderUserMessage) {
-          addOrUpdateMessage({
-            id: localMsgId,
-            msg_id: localMsgId,
-            type: 'text',
-            position: 'right',
-            conversation_id,
-            content: {
-              content: displayMessage,
-            },
-            created_at: Date.now(),
-          });
-        }
-        setActiveMsgId(localMsgId);
+        // Track the request lifecycle before the POST, but keep the client
+        // idempotency key out of the durable message identity space. The
+        // visible user row is admitted only with the server-assigned msg_id.
+        notifyLocalSubmit(id);
       }
 
-      let msg_id: MessageId | null = null;
+      const displayMessage = buildDisplayMessage(input, files, workspacePath);
+
       try {
         const res = await ipcBridge.conversation.sendMessage.invoke({
           input: displayMessage,
@@ -500,7 +488,7 @@ const NomiSendBox: React.FC<{
           initial_only: initialOnly,
         });
         if (execution && !execution.isCurrent()) return;
-        msg_id = res.msg_id;
+        const msg_id = res.msg_id;
         const disposition = classifyPublicMessageDelivery(res);
         if (disposition === 'fresh') {
           if (deferLocalTurnUntilFresh) {
@@ -511,10 +499,7 @@ const NomiSendBox: React.FC<{
           // usageByTurn align on Guid first-turn (user row ≠ stream root).
           notifyAccepted(msg_id, res.turn_id ?? undefined);
           setActiveMsgId(msg_id);
-          if (localMsgId && msg_id !== localMsgId) {
-            removeMessageByMsgId(localMsgId);
-          }
-          if (shouldRenderUserMessage) {
+          if (shouldRenderFreshUserMessage(res, displayMessage)) {
             addOrUpdateMessage({
               id: uuid(),
               msg_id,
@@ -528,9 +513,6 @@ const NomiSendBox: React.FC<{
             });
           }
         } else {
-          if (localMsgId) {
-            removeMessageByMsgId(localMsgId);
-          }
           setActiveMsgId(null);
           reconcilePublicDeliveryReplay(res.completed);
         }
@@ -541,8 +523,6 @@ const NomiSendBox: React.FC<{
         return disposition;
       } catch (error) {
         if (execution && !execution.isCurrent()) return;
-        if (localMsgId) removeMessageByMsgId(localMsgId);
-        if (msg_id && localMsgId && msg_id !== localMsgId) removeMessageByMsgId(msg_id);
         setActiveMsgId(null);
         setWaitingResponse(false);
         notifyFailed(getConversationRuntimeWorkspaceErrorMessage(error, t));
@@ -560,7 +540,6 @@ const NomiSendBox: React.FC<{
       notifyLocalSubmit,
       reconcilePublicDeliveryReplay,
       setActiveMsgId,
-      removeMessageByMsgId,
       setWaitingResponse,
       t,
       workspacePath,
@@ -655,25 +634,20 @@ const NomiSendBox: React.FC<{
         // must settle before the first turn reaches the runtime. Navigation no
         // longer blocks on it, so the ordering is enforced here instead.
         await awaitConversationConfig(conversation_id);
-        // Optimistic first bubble: take executeCommand's direct-send path so
-        // the local user message renders synchronously (before the POST), then
-        // reveal the destination at once. The POST still runs to reconcile the
-        // bubble onto the real server id and seed the assistant turn, but it
-        // no longer gates the overlay teardown — cutting ~480ms of fake-screen
-        // dwell while the real page's TurnStatusRail shows the wait. On a
-        // non-fresh reply or failure executeCommand's own path removes the
-        // local bubble and reconciles, same as any direct send.
+        // Use the canonical-first send path. The request lifecycle can show
+        // the waiting state immediately, while the visible user bubble is
+        // admitted only after the server assigns its durable msg_id.
         const deferInitialTurnUntilFresh = false;
         const delivery = executeCommand(
           { id: idempotency_key, input, files, injectSkills: inject_skills, initialOnly: true },
           undefined,
           deferInitialTurnUntilFresh
         );
-        // executeCommand has synchronously rendered the optimistic user bubble
-        // before reaching its POST await, so the destination now matches the
-        // pending overlay — safe to reveal (the transition handshake).
-        emitter.emit('conversation.transition.reveal', { conversation_id });
         await delivery;
+        // The canonical user row is now either committed by the send response
+        // or already present from the userCreated/DB path. Reveal only after
+        // that authoritative handoff, matching the ACP initial-message flow.
+        emitter.emit('conversation.transition.reveal', { conversation_id });
         completeInitialMessageDelivery(sessionStorage, storageKey, idempotency_key);
       } catch (error) {
         // Reveal even on failure: the error toast is on the destination page,
@@ -1143,8 +1117,8 @@ const NomiSendBox: React.FC<{
 
   // Steering injects into the turn that is ALREADY running — it does NOT start a
   // new turn, so we deliberately skip setWaitingResponse(true) (unlike
-  // executeCommand). Renders the optimistic user bubble the same way so the
-  // interjection shows immediately.
+  // executeCommand). The canonical user row is admitted after the steer
+  // response, using the same durable msg_id as the server event/history row.
   const executeSteer = useCallback(
     async ({ input, files }: Pick<ConversationCommandQueueItem, 'input' | 'files'>) => {
       const displayMessage = buildDisplayMessage(input, files, workspacePath);

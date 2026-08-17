@@ -38,10 +38,47 @@ describe('NomiChat turn activity ownership', () => {
     expect(sendBoxSource.includes('turnActivity: NomiMessageRuntime')).toBe(true);
   });
 
-  test('renders an optimistic local user bubble before HTTP accept', () => {
-    expect(sendBoxSource.includes('notifyLocalSubmit')).toBe(true);
-    expect(sendBoxSource.includes('uuidv7()')).toBe(true);
-    expect(sendBoxSource.includes('removeMessageByMsgId(localMsgId)')).toBe(true);
+  test('keeps local turn activity separate from the canonical user bubble', () => {
+    const executeStart = sendBoxSource.indexOf('const executeCommand = useCallback(');
+    const post = sendBoxSource.indexOf('sendMessage.invoke({', executeStart);
+    const preResponse = sendBoxSource.slice(executeStart, post);
+
+    expect(preResponse.includes('notifyLocalSubmit(id)')).toBe(true);
+    expect(preResponse.includes('addOrUpdateMessage(')).toBe(false);
+    expect(preResponse.includes('setActiveMsgId(')).toBe(false);
+    expect(sendBoxSource.includes('localMsgId')).toBe(false);
+
+    const executeEnd = sendBoxSource.indexOf('const {', executeStart);
+    const executeSource = sendBoxSource.slice(executeStart, executeEnd);
+    expect(executeSource.includes('removeMessageByMsgId(')).toBe(false);
+  });
+
+  test('adopts the server message id before admitting the visible user row', () => {
+    const executeStart = sendBoxSource.indexOf('const executeCommand = useCallback(');
+    const post = sendBoxSource.indexOf('sendMessage.invoke({', executeStart);
+    const fresh = sendBoxSource.indexOf("if (disposition === 'fresh') {", post);
+    const accepted = sendBoxSource.indexOf('notifyAccepted(msg_id', fresh);
+    const active = sendBoxSource.indexOf('setActiveMsgId(msg_id)', accepted);
+    const canonicalRow = sendBoxSource.indexOf('addOrUpdateMessage({', active);
+
+    expect(post > executeStart).toBe(true);
+    expect(fresh > post).toBe(true);
+    expect(accepted > fresh).toBe(true);
+    expect(active > accepted).toBe(true);
+    expect(canonicalRow > active).toBe(true);
+
+    const replayStart = sendBoxSource.indexOf('} else {', canonicalRow);
+    const replayEnd = sendBoxSource.indexOf("emitter.emit('chat.history.refresh')", replayStart);
+    const replaySource = sendBoxSource.slice(replayStart, replayEnd);
+    expect(replaySource.includes('reconcilePublicDeliveryReplay(res.completed)')).toBe(true);
+    expect(replaySource.includes('addOrUpdateMessage(')).toBe(false);
+    expect(replaySource.includes('removeMessageByMsgId(')).toBe(false);
+
+    const catchStart = sendBoxSource.indexOf('} catch (error) {', canonicalRow);
+    const catchEnd = sendBoxSource.indexOf('throw error;', catchStart);
+    const catchSource = sendBoxSource.slice(catchStart, catchEnd);
+    expect(catchSource.includes('addOrUpdateMessage(')).toBe(false);
+    expect(catchSource.includes('removeMessageByMsgId(')).toBe(false);
   });
 
   test('ends visual turn activity on stream terminal events', () => {

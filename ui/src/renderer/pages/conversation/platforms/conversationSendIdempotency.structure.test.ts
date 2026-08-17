@@ -265,12 +265,10 @@ describe('conversation send idempotency wiring', () => {
     }
 
     const nomiInitial = nomiSource.indexOf('const processInitialMessage = async () => {');
-    // P1: the nomi initial turn takes the optimistic direct-send path so the
-    // local user bubble renders before the POST, and the reveal handshake fires
-    // as soon as that bubble is committed (before the POST resolves) — cutting
-    // the ~480ms POST-gated overlay dwell. The guid background config still
-    // precedes the turn (B4 invariant), and the handoff is only consumed after
-    // a fresh accepted response.
+    // The Nomi initial turn waits for canonical server acceptance before the
+    // destination reveal. The guid background config still precedes the turn
+    // (B4 invariant), and the handoff is only consumed after a fresh accepted
+    // response.
     const configAwait = nomiSource.indexOf(
       'await awaitConversationConfig(conversation_id)',
       nomiInitial
@@ -280,6 +278,8 @@ describe('conversation send idempotency wiring', () => {
       configAwait
     );
     const exec = nomiSource.indexOf('executeCommand(', deferVar);
+    const delivery = nomiSource.indexOf('const delivery = executeCommand(', deferVar);
+    const awaited = nomiSource.indexOf('await delivery;', delivery);
     const reveal = nomiSource.indexOf("'conversation.transition.reveal'", exec);
     const complete = nomiSource.indexOf(
       'completeInitialMessageDelivery(sessionStorage, storageKey, idempotency_key)',
@@ -293,7 +293,9 @@ describe('conversation send idempotency wiring', () => {
     expect(exec > deferVar).toBe(true);
     expect(execCall.includes('deferInitialTurnUntilFresh')).toBe(true);
     expect(execCall.includes('initialOnly: true')).toBe(true);
-    expect(reveal > exec).toBe(true);
+    expect(delivery > deferVar).toBe(true);
+    expect(awaited > delivery).toBe(true);
+    expect(reveal > awaited).toBe(true);
     expect(complete > reveal).toBe(true);
   });
 

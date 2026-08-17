@@ -8,6 +8,7 @@ import type {
   IMessageToolGroup,
   TMessage,
 } from '@/common/chat/chatLib';
+import { getMessageBusinessIdentity, isVisibleUserTextMessage } from '@/common/chat/messageVisibility';
 import { normalizeToolMessages } from '@/common/chat/normalizeToolCall';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { CHAT_MESSAGE_JUMP_EVENT, type ChatMessageJumpDetail } from '@/renderer/utils/chat/chatMinimapEvents';
@@ -63,6 +64,7 @@ import { useAutoPreviewOfficeFiles } from '@/renderer/hooks/file/useAutoPreviewO
 import { useAutoPreviewMiniApp } from '@/renderer/hooks/file/useAutoPreviewMiniApp';
 import SelectionReplyButton from './components/SelectionReplyButton';
 import ConversationQuestionLocator from '../components/ConversationTitleMinimap/ConversationQuestionLocator';
+import { normalizeDisplayIndex } from '../components/ConversationTitleMinimap/minimapUtils';
 import {
   assignTurnIdsFromUserRequests,
   buildTurnDisclosureItems,
@@ -222,7 +224,7 @@ const getProcessedItemSourceMessageIds = (item: IProcessedItem): SourceMessageId
     return item.sourceMessageIds;
   }
   const message = item as TMessage;
-  const businessId = message.message_id ?? message.msg_id;
+  const businessId = getMessageBusinessIdentity(message);
   return businessId ? [businessId] : [];
 };
 
@@ -232,9 +234,6 @@ const matchesTargetMessage = (item: IProcessedItem, targetMessageId?: MessageId)
   }
   return getProcessedItemSourceMessageIds(item).includes(targetMessageId);
 };
-
-const getMessageBusinessIdentity = (message: TMessage): SourceMessageId | undefined =>
-  message.message_id ?? message.msg_id;
 
 const getProcessedItemAnchorId = (item: IProcessedItem): string => {
   return 'id' in item ? item.id : uuid();
@@ -794,7 +793,7 @@ const MessageItem: React.FC<{ message: TMessage; highlighted?: boolean; hideActi
     return (
       <div
         id={`message-${message.id}`}
-        data-message-business-id={message.message_id ?? message.msg_id}
+        data-message-business-id={getMessageBusinessIdentity(message)}
         data-testid={`message-${message.type}-${message.position}`}
         data-message-type={message.type}
         data-message-position={message.position}
@@ -1271,8 +1270,7 @@ const MessageList: React.FC<{
         (item) =>
           !('type' in item &&
             ['turn_process_disclosure', 'process_receipt', 'process_group', 'artifact', 'turn_live_step'].includes(item.type)) &&
-          (item as TMessage).type === 'text' &&
-          (item as TMessage).position === 'right'
+          isVisibleUserTextMessage(item as TMessage)
       ),
     [displayList]
   );
@@ -1367,12 +1365,26 @@ const MessageList: React.FC<{
     startIndex: 0,
     endIndex: Number.POSITIVE_INFINITY,
   });
+  const [rangeVersion, setRangeVersion] = useState(0);
   // Maps a turn's question message id → its row index in `displayList`, so the
   // locator can tell whether that question is above/below/inside the rendered
   // window. Held in a latest-ref so the closure always sees the freshest
   // `displayList` without forcing the locator's scroll listener to resubscribe.
-  const resolveDisplayIndexRef = useLatestRef((messageId: string) =>
-    displayList.findIndex((item) => getProcessedItemSourceMessageIds(item).includes(messageId as SourceMessageId))
+  const resolveDisplayIndexRef = useLatestRef((messageId: string) => {
+    const displayIndex = displayList.findIndex((item) =>
+      getProcessedItemSourceMessageIds(item).includes(messageId as SourceMessageId)
+    );
+    return normalizeDisplayIndex(displayIndex);
+  });
+
+  const handleVirtuosoRangeChanged = useCallback(
+    ({ startIndex, endIndex }: { startIndex: number; endIndex: number }) => {
+      const previous = virtuosoRangeRef.current;
+      if (previous.startIndex === startIndex && previous.endIndex === endIndex) return;
+      virtuosoRangeRef.current = { startIndex, endIndex };
+      setRangeVersion((version) => version + 1);
+    },
+    []
   );
 
   const combinedScrollerRef = useCallback(
@@ -1704,6 +1716,7 @@ const MessageList: React.FC<{
         conversation_id={conversationContext?.conversation_id}
         rangeRef={virtuosoRangeRef}
         resolveDisplayIndexRef={resolveDisplayIndexRef}
+        rangeVersion={rangeVersion}
       />
 
       {/* Use PreviewGroup to wrap all messages for cross-message image preview */}
@@ -1738,9 +1751,7 @@ const MessageList: React.FC<{
                   atBottomThreshold={FOLLOW_BOTTOM_THRESHOLD_PX}
                   computeItemKey={(_index, item) => item.id}
                   increaseViewportBy={{ top: 800, bottom: 800 }}
-                  rangeChanged={({ startIndex, endIndex }) => {
-                    virtuosoRangeRef.current = { startIndex, endIndex };
-                  }}
+                  rangeChanged={handleVirtuosoRangeChanged}
                   components={{
                     Header: () => <div className='h-10px' />,
                     Footer: () => (

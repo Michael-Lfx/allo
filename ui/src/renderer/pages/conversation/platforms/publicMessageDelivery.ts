@@ -23,3 +23,12 @@ export const classifyPublicMessageDelivery = (
 export const shouldDeclareFreshTurn = (
   delivery: Pick<ISendMessageResult, 'replayed' | 'completed'>
 ): boolean => classifyPublicMessageDelivery(delivery) === 'fresh';
+
+/**
+ * Only a fresh, non-empty request may create a visible user text row. Empty
+ * input is still allowed for Skill/file-only runtime work, but has no bubble.
+ */
+export const shouldRenderFreshUserMessage = (
+  delivery: Pick<ISendMessageResult, 'replayed' | 'completed'>,
+  displayMessage: string
+): boolean => shouldDeclareFreshTurn(delivery) && displayMessage.trim().length > 0;

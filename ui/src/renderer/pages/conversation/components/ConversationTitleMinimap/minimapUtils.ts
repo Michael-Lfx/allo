@@ -2,7 +2,12 @@
 
 // Pure utility functions for the conversation minimap panel.
 
-import type { IMessageText, TMessage } from '@/common/chat/chatLib';
+import type { TMessage } from '@/common/chat/chatLib';
+import {
+  getMessageBusinessIdentity,
+  isVisibleTextMessage,
+  isVisibleUserTextMessage,
+} from '@/common/chat/messageVisibility';
 import React from 'react';
 import {
   defaultVisualStyle,
@@ -79,10 +84,6 @@ export const getPanelWidth = () => {
   return Math.max(Math.min(PANEL_MIN_WIDTH, viewportCap), target);
 };
 
-export const isTextMessage = (message: TMessage): message is IMessageText => {
-  return message.type === 'text' && typeof message.content?.content === 'string';
-};
-
 export const normalizeText = (value: string) => value.replace(/\s+/g, ' ').trim();
 
 export const truncate = (value: string, maxLen = MAX_LINE_LEN) => {
@@ -153,18 +154,24 @@ export const isIndexMatch = (index: number, keyword: string) => {
   return buildIndexSearchTokens(index).some((token) => token.toLowerCase().includes(normalized));
 };
 
+export const normalizeDisplayIndex = (index: number): number | null => (index >= 0 ? index : null);
+
 export const buildTurnPreview = (messages: TMessage[]): TurnPreviewItem[] => {
   const turns: TurnPreviewItem[] = [];
+  const seenQuestionIds = new Set<string>();
   let turnIndex = 0;
   let currentTurn: TurnPreviewItem | null = null;
 
   for (const message of messages) {
-    if (!isTextMessage(message)) continue;
+    if (!isVisibleTextMessage(message)) continue;
 
-    const text = normalizeText(message.content.content || '');
-    if (!text) continue;
+    const text = normalizeText(message.content.content);
 
     if (message.position === 'right') {
+      if (!isVisibleUserTextMessage(message)) continue;
+      const questionId = getMessageBusinessIdentity(message);
+      if (!questionId || seenQuestionIds.has(questionId)) continue;
+      seenQuestionIds.add(questionId);
       if (currentTurn) {
         turns.push(currentTurn);
       }
@@ -175,7 +182,7 @@ export const buildTurnPreview = (messages: TMessage[]): TurnPreviewItem[] => {
         answer: '',
         questionRaw: text,
         answerRaw: '',
-        messageId: message.message_id ?? message.msg_id,
+        messageId: questionId,
         msgId: message.msg_id,
       };
       continue;

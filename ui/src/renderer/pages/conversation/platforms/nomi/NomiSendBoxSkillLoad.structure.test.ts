@@ -32,7 +32,6 @@ describe('Nomi Skill load delivery', () => {
   test('accepts pre-conversation Skill handoffs and does not render a blank user bubble for Skill-only sends', () => {
     expect(source.includes('const { input, files, idempotency_key, inject_skills } = initialMessage;')).toBe(true);
     expect(source.includes('injectSkills: inject_skills')).toBe(true);
-    expect(source.includes('const shouldRenderUserMessage = displayMessage.trim().length > 0;')).toBe(true);
-    expect(source.includes('if (shouldRenderUserMessage) {')).toBe(true);
+    expect(source.includes('shouldRenderFreshUserMessage(res, displayMessage)')).toBe(true);
   });
 });

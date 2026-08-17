@@ -56,6 +56,26 @@ describe('message visibility across batching and conversation switches', () => {
     expect(list).toEqual([sent]);
   });
 
+  test('merges event and response rows when both use the canonical message id', () => {
+    const canonical = textMessage(conversationA, '03', 'canonical user message', 3);
+    const eventRow = { ...canonical, id: 'event-render-row' };
+    const responseRow = { ...canonical, id: 'response-render-row' };
+    const pendingRef = {
+      current: [
+        { message: eventRow, add: false },
+        { message: responseRow, add: false },
+      ],
+    };
+    let list: TMessage[] = [];
+    const update = (updater: (current: TMessage[]) => TMessage[]) => {
+      list = updater(list);
+    };
+
+    expect(drainPendingMessageUpdates(pendingRef, update)).toBe(true);
+    expect(list).toHaveLength(1);
+    expect(list[0]?.msg_id).toBe(canonical.msg_id);
+  });
+
   test('keeps a re-entrant event in a new batch instead of losing or duplicating it', () => {
     const first = textMessage(conversationA, '01', 'first', 1);
     const second = textMessage(conversationA, '02', 'second', 2);

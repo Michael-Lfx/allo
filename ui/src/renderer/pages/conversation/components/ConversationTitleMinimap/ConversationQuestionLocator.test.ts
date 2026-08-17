@@ -5,7 +5,63 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { getDotDistanceLevel, pickActiveQuestionIndex } from './ConversationQuestionLocator';
+import {
+  classifyDisplayIndex,
+  getDotDistanceLevel,
+  getTrackScrollTop,
+  pickActiveQuestionIndex,
+} from './ConversationQuestionLocator';
+
+const renderedRange = { startIndex: 10, endIndex: 20 };
+
+describe('classifyDisplayIndex', () => {
+  test('treats a missing or -1 resolver result as unresolved DOM fallback', () => {
+    expect(classifyDisplayIndex(null, renderedRange)).toBe('unresolved');
+    expect(classifyDisplayIndex(-1, renderedRange)).toBe('unresolved');
+  });
+
+  test('only classifies real display rows against the virtual range', () => {
+    expect(classifyDisplayIndex(9, renderedRange)).toBe('above');
+    expect(classifyDisplayIndex(10, renderedRange)).toBe('inside');
+    expect(classifyDisplayIndex(20, renderedRange)).toBe('inside');
+    expect(classifyDisplayIndex(21, renderedRange)).toBe('below');
+  });
+});
+
+describe('getTrackScrollTop', () => {
+  test('returns no movement when the active dot is already visible', () => {
+    expect(
+      getTrackScrollTop({
+        trackTop: 100,
+        trackBottom: 300,
+        dotTop: 180,
+        dotBottom: 192,
+        scrollTop: 40,
+      })
+    ).toBeNull();
+  });
+
+  test('keeps an active dot inside the upper and lower track inset', () => {
+    expect(
+      getTrackScrollTop({
+        trackTop: 100,
+        trackBottom: 300,
+        dotTop: 90,
+        dotBottom: 102,
+        scrollTop: 40,
+      })
+    ).toBe(20);
+    expect(
+      getTrackScrollTop({
+        trackTop: 100,
+        trackBottom: 300,
+        dotTop: 298,
+        dotBottom: 310,
+        scrollTop: 40,
+      })
+    ).toBe(60);
+  });
+});
 
 describe('pickActiveQuestionIndex', () => {
   test('chooses the latest question above the viewport anchor', () => {

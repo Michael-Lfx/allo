@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   classifyPublicMessageDelivery,
   shouldDeclareFreshTurn,
+  shouldRenderFreshUserMessage,
 } from './publicMessageDelivery';
 
 describe('public message delivery disposition', () => {
@@ -24,5 +25,12 @@ describe('public message delivery disposition', () => {
 
     expect(classifyPublicMessageDelivery(delivery)).toBe('replayed_completed');
     expect(shouldDeclareFreshTurn(delivery)).toBe(false);
+  });
+
+  test('only fresh non-empty delivery creates a visible user row', () => {
+    expect(shouldRenderFreshUserMessage({ replayed: false, completed: false }, 'hello')).toBe(true);
+    expect(shouldRenderFreshUserMessage({ replayed: true, completed: false }, 'hello')).toBe(false);
+    expect(shouldRenderFreshUserMessage({ replayed: true, completed: true }, 'hello')).toBe(false);
+    expect(shouldRenderFreshUserMessage({ replayed: false, completed: false }, '  ')).toBe(false);
   });
 });
