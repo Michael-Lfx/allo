@@ -92,7 +92,8 @@ $ bun run build
 
 The main window is **frameless** on Windows and Linux: the React titlebar component draws min/maximize/close on the same row as the in-app navigation. On macOS the native traffic-light buttons are kept via Tauri's `Overlay` title-bar style, with content extending under the bar.
 
-- Default size: `1280 × 832`, minimum `880 × 600`.
+- Maximum default size: `1280 × 832`; startup adapts it to the active monitor's work area, taskbar, and DPI.
+- Normal desktop minimum: `880 × 600`; low-resolution or high-DPI displays may lower the native minimum and use the existing compact layout.
 - Resizable everywhere (edge-resize and Snap still work on Windows even without OS-drawn decorations).
 - Title bar: `NomiFun`.
 

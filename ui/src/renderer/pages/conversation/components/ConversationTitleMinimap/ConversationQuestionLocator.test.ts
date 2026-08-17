@@ -5,7 +5,95 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { getDotDistanceLevel, pickActiveQuestionIndex } from './ConversationQuestionLocator';
+import {
+  classifyDisplayIndex,
+  getDotDistanceLevel,
+  getTrackScrollTop,
+  pickActiveQuestionIndex,
+} from './ConversationQuestionLocator';
+
+const renderedRange = { startIndex: 10, endIndex: 20 };
+
+describe('classifyDisplayIndex', () => {
+  test('treats a missing or -1 resolver result as unresolved DOM fallback', () => {
+    expect(classifyDisplayIndex(null, renderedRange)).toBe('unresolved');
+    expect(classifyDisplayIndex(-1, renderedRange)).toBe('unresolved');
+  });
+
+  test('only classifies real display rows against the virtual range', () => {
+    expect(classifyDisplayIndex(9, renderedRange)).toBe('above');
+    expect(classifyDisplayIndex(10, renderedRange)).toBe('inside');
+    expect(classifyDisplayIndex(20, renderedRange)).toBe('inside');
+    expect(classifyDisplayIndex(21, renderedRange)).toBe('below');
+  });
+});
+
+describe('getTrackScrollTop', () => {
+  test('returns no movement when the active dot is already visible', () => {
+    expect(
+      getTrackScrollTop({
+        trackTop: 100,
+        trackBottom: 300,
+        dotTop: 180,
+        dotBottom: 192,
+        scrollTop: 40,
+      })
+    ).toBeNull();
+  });
+
+  test('centers an active dot inside an overflowing track', () => {
+    expect(
+      getTrackScrollTop({
+        trackTop: 100,
+        trackBottom: 300,
+        dotTop: 260,
+        dotBottom: 272,
+        scrollTop: 40,
+        scrollHeight: 600,
+        clientHeight: 200,
+      })
+    ).toBe(106);
+  });
+
+  test('clamps centered scrolling to the available track range', () => {
+    expect(
+      getTrackScrollTop({
+        trackTop: 100,
+        trackBottom: 300,
+        dotTop: 90,
+        dotBottom: 102,
+        scrollTop: 40,
+        scrollHeight: 600,
+        clientHeight: 200,
+      })
+    ).toBe(0);
+    expect(
+      getTrackScrollTop({
+        trackTop: 100,
+        trackBottom: 300,
+        dotTop: 298,
+        dotBottom: 310,
+        scrollTop: 40,
+        scrollHeight: 260,
+        clientHeight: 200,
+      })
+    ).toBe(60);
+  });
+
+  test('uses edge insets when the track does not overflow', () => {
+    expect(
+      getTrackScrollTop({
+        trackTop: 100,
+        trackBottom: 300,
+        dotTop: 90,
+        dotBottom: 102,
+        scrollTop: 40,
+        scrollHeight: 200,
+        clientHeight: 200,
+      })
+    ).toBe(20);
+  });
+});
 
 describe('pickActiveQuestionIndex', () => {
   test('chooses the latest question above the viewport anchor', () => {

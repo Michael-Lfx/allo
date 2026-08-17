@@ -15,6 +15,6 @@ describe('Skill load history renderer', () => {
   test('keeps Skill-only history visible without a blank user transport row', () => {
     expect(messageListSource.includes("case 'skill_load':")).toBe(true);
     expect(messageListSource.includes('<MessageSkillLoad message={message}></MessageSkillLoad>')).toBe(true);
-    expect(messageListSource.includes("message.type === 'text' && message.position === 'right' && message.content.content.trim().length === 0")).toBe(true);
+    expect(messageListSource.includes('isVisibleUserTextMessage')).toBe(true);
   });
 });

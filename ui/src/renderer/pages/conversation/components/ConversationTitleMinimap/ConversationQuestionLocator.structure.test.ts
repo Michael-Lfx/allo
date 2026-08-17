@@ -30,7 +30,12 @@ describe('conversation question locator structure', () => {
     expect(locatorSource.includes('ConversationTitleMinimap')).toBe(false);
     expect(locatorSource.includes("data-testid='conversation-question-locator-track'")).toBe(true);
     expect(locatorSource.includes("data-testid='conversation-question-locator-dot'")).toBe(true);
-    expect(locatorSource.includes("data-distance-level={getDotDistanceLevel(index, activeIndex)}")).toBe(true);
+    expect(locatorSource.includes("data-distance-level={getDotDistanceLevel(index, boundedActiveIndex)}")).toBe(true);
+    expect(locatorSource.includes('activeDotRef')).toBe(true);
+    expect(locatorSource.includes('getTrackScrollTop')).toBe(true);
+    expect(locatorSource.includes('scrollHeight: track.scrollHeight')).toBe(true);
+    expect(locatorSource.includes('clientHeight: track.clientHeight')).toBe(true);
+    expect(locatorSource.includes('track.scrollTo')).toBe(true);
     expect(locatorSource.includes("data-testid='conversation-question-locator-tooltip'")).toBe(true);
     expect(locatorSource.includes('hoverIndex')).toBe(true);
     expect(locatorSource.includes('previewIndex')).toBe(true);
@@ -67,6 +72,7 @@ describe('conversation question locator structure', () => {
     const cssSource = readSource(new URL('./ConversationQuestionLocator.module.css', import.meta.url));
 
     expect(cssSource.includes('.track')).toBe(true);
+    expect(cssSource.includes('justify-content: safe center')).toBe(true);
     expect(cssSource.includes('.dotButton')).toBe(true);
     expect(cssSource.includes('.dot')).toBe(true);
     expect(cssSource.includes('left: -18px')).toBe(true);
@@ -93,5 +99,27 @@ describe('conversation question locator structure', () => {
     expect(cssSource.includes('.tooltipTitle')).toBe(true);
     expect(cssSource.includes('.tooltipExcerpt')).toBe(true);
     expect(cssSource.includes('.barLine')).toBe(false);
+  });
+
+  test('normalizes missing display rows and resyncs after virtual range changes', () => {
+    const locatorSource = readSource(new URL('./ConversationQuestionLocator.tsx', import.meta.url));
+    const messageListSource = readSource(new URL('../../Messages/MessageList.tsx', import.meta.url));
+
+    expect(locatorSource.includes('rangeVersion?: number')).toBe(true);
+    expect(locatorSource.includes('rangeVersion')).toBe(true);
+    expect(locatorSource.includes('const boundedActiveIndex')).toBe(true);
+    expect(locatorSource.includes('boundedActiveIndex === index')).toBe(true);
+    expect(locatorSource.includes('classifyDisplayIndex')).toBe(true);
+    expect(locatorSource.includes('if (displayPosition === \'above\')')).toBe(true);
+    expect(locatorSource.includes('if (displayPosition === \'below\')')).toBe(true);
+    expect(locatorSource.includes('scheduleActiveQuestionSync();')).toBe(true);
+    expect(locatorSource.includes('scheduleActiveDotVisibility')).toBe(true);
+    expect(locatorSource.includes("track.addEventListener('scrollend'")).toBe(true);
+    expect(locatorSource.includes('new ResizeObserver')).toBe(true);
+    expect(locatorSource.includes('window.addEventListener(\'resize\', scheduleActiveDotVisibility)')).toBe(true);
+    expect(messageListSource.includes('const [rangeVersion, setRangeVersion] = useState(0);')).toBe(true);
+    expect(messageListSource.includes('return normalizeDisplayIndex(displayIndex)')).toBe(true);
+    expect(messageListSource.includes('rangeVersion={rangeVersion}')).toBe(true);
+    expect(messageListSource.includes('setRangeVersion((version) => version + 1)')).toBe(true);
   });
 });

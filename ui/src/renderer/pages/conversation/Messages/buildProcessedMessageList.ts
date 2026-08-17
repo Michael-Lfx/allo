@@ -10,6 +10,10 @@ import type {
   IMessageToolGroup,
   TMessage,
 } from '@/common/chat/chatLib';
+import {
+  getMessageBusinessIdentity,
+  isVisibleUserTextMessage,
+} from '@/common/chat/messageVisibility';
 import type { MessageId } from '@/common/types/ids';
 import type { FileChangeInfo } from './MessageFileChanges';
 import { parseDiff } from './MessageFileChanges';
@@ -43,19 +47,11 @@ export type ProcessedMessageVO =
 
 type ToolSummaryVO = Extract<ProcessedMessageVO, { type: 'tool_summary' }>;
 
-const getMessageBusinessIdentity = (message: TMessage): SourceMessageId | undefined =>
-  message.message_id ?? message.msg_id;
-
 /** Index of the newest visible user text request in the raw transcript. */
 export const findLastUserTextIndex = (messages: TMessage[]): number => {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
-    if (message.hidden) continue;
-    if (
-      message.type === 'text' &&
-      message.position === 'right' &&
-      message.content.content.trim().length > 0
-    ) {
+    if (isVisibleUserTextMessage(message)) {
       return i;
     }
   }
@@ -173,7 +169,7 @@ export const buildProcessedMessageList = (
   for (let i = startIndex, len = endIndex; i < len; i++) {
     const message = list[i];
     if (message.hidden) continue;
-    if (message.type === 'text' && message.position === 'right' && message.content.content.trim().length === 0) {
+    if (message.type === 'text' && message.position === 'right' && !isVisibleUserTextMessage(message)) {
       continue;
     }
     if (

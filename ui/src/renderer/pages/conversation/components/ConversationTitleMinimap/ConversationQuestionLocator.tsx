@@ -13,11 +13,67 @@ import { useTranslation } from 'react-i18next';
 import styles from './ConversationQuestionLocator.module.css';
 import { buildTurnPreview, truncate } from './minimapUtils';
 
-type VirtuosoRange = { startIndex: number; endIndex: number };
+export type VirtuosoRange = { startIndex: number; endIndex: number };
+export type DisplayIndexPosition = 'above' | 'below' | 'inside' | 'unresolved';
+
+export const classifyDisplayIndex = (
+  displayIndex: number | null,
+  range: VirtuosoRange
+): DisplayIndexPosition => {
+  if (displayIndex == null || displayIndex < 0) return 'unresolved';
+  if (displayIndex < range.startIndex) return 'above';
+  if (displayIndex > range.endIndex) return 'below';
+  return 'inside';
+};
+
+export const getTrackScrollTop = ({
+  trackTop,
+  trackBottom,
+  dotTop,
+  dotBottom,
+  scrollTop,
+  scrollHeight,
+  clientHeight,
+  inset = 10,
+}: {
+  trackTop: number;
+  trackBottom: number;
+  dotTop: number;
+  dotBottom: number;
+  scrollTop: number;
+  scrollHeight?: number;
+  clientHeight?: number;
+  inset?: number;
+}): number | null => {
+  const hasOverflow =
+    typeof scrollHeight === 'number' &&
+    typeof clientHeight === 'number' &&
+    Number.isFinite(scrollHeight) &&
+    Number.isFinite(clientHeight) &&
+    scrollHeight > clientHeight;
+  if (hasOverflow) {
+    const trackCenter = (trackTop + trackBottom) / 2;
+    const dotCenter = (dotTop + dotBottom) / 2;
+    const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
+    const centeredScrollTop = scrollTop + dotCenter - trackCenter;
+    return Math.min(maxScrollTop, Math.max(0, centeredScrollTop));
+  }
+
+  if (dotTop < trackTop + inset) {
+    return Math.max(0, scrollTop + dotTop - trackTop - inset);
+  }
+  if (dotBottom > trackBottom - inset) {
+    return Math.max(0, scrollTop + dotBottom - trackBottom + inset);
+  }
+  return null;
+};
+
 type ConversationQuestionLocatorProps = {
   conversation_id?: ConversationId;
   /** Rendered window of the virtualized message list (default → all rendered). */
   rangeRef?: React.RefObject<VirtuosoRange>;
+  /** Increments when the virtualized rendered window changes. */
+  rangeVersion?: number;
   /** Resolves a question message id → its row index in the message list. */
   resolveDisplayIndexRef?: React.RefObject<(messageId: string) => number | null>;
 };
@@ -48,17 +104,23 @@ export const getDotDistanceLevel = (index: number, activeIndex: number): 0 | 1 |
 const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = ({
   conversation_id,
   rangeRef,
+  rangeVersion = 0,
   resolveDisplayIndexRef,
 }) => {
   const { t } = useTranslation();
   const list = useMessageList();
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const activeDotRef = useRef<HTMLButtonElement | null>(null);
   const rafRef = useRef<number | null>(null);
+  const dotScrollRafRef = useRef<number | null>(null);
   const turns = useMemo(() => buildTurnPreview(list), [list]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  const activeItem = turns[Math.min(activeIndex, turns.length - 1)];
-  const previewIndex = Math.min(hoverIndex ?? activeIndex, turns.length - 1);
+  const boundedActiveIndex = turns.length > 0 ? Math.min(activeIndex, turns.length - 1) : 0;
+  const activeItem = turns[boundedActiveIndex];
+  const activeQuestionIdentity = activeItem?.messageId ?? activeItem?.msgId;
+  const previewIndex = turns.length > 0 ? Math.min(hoverIndex ?? boundedActiveIndex, turns.length - 1) : 0;
   const previewItem = turns[previewIndex];
 
   const getScroller = useCallback(() => {
@@ -88,10 +150,10 @@ const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = 
     const questionTopOffsets = turns.map((item) => {
       const businessId = item.messageId ?? item.msgId;
       const displayIndex = businessId && resolveDisplayIndex ? resolveDisplayIndex(businessId) : null;
-      if (displayIndex == null) return measureTop(businessId);
-      if (displayIndex < range.startIndex) return Number.NEGATIVE_INFINITY; // scrolled past (above window)
-      if (displayIndex > range.endIndex) return Number.POSITIVE_INFINITY; // not yet reached (below window)
-      return measureTop(businessId); // inside rendered window → precise measurement
+      const displayPosition = classifyDisplayIndex(displayIndex, range);
+      if (displayPosition === 'above') return Number.NEGATIVE_INFINITY; // scrolled past (above window)
+      if (displayPosition === 'below') return Number.POSITIVE_INFINITY; // not yet reached (below window)
+      return measureTop(businessId); // inside or unresolved → precise DOM measurement
     });
     const nextIndex = pickActiveQuestionIndex(questionTopOffsets, anchorY);
     if (nextIndex >= 0) {
@@ -107,16 +169,86 @@ const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = 
     });
   }, [syncActiveQuestionFromScroll]);
 
+  const syncActiveDotVisibility = useCallback(() => {
+    if (!activeQuestionIdentity) return;
+    const track = trackRef.current;
+    const dot = activeDotRef.current;
+    if (!track || !dot) return;
+
+    const trackRect = track.getBoundingClientRect();
+    const dotRect = dot.getBoundingClientRect();
+    const nextScrollTop = getTrackScrollTop({
+      trackTop: trackRect.top,
+      trackBottom: trackRect.bottom,
+      dotTop: dotRect.top,
+      dotBottom: dotRect.bottom,
+      scrollTop: track.scrollTop,
+      scrollHeight: track.scrollHeight,
+      clientHeight: track.clientHeight,
+    });
+    if (nextScrollTop === null || nextScrollTop === track.scrollTop) return;
+
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+    track.scrollTo({ top: nextScrollTop, behavior: reduceMotion ? 'auto' : 'smooth' });
+  }, [activeQuestionIdentity]);
+
+  const scheduleActiveDotVisibility = useCallback(() => {
+    if (!activeQuestionIdentity) return;
+    if (dotScrollRafRef.current !== null) {
+      window.cancelAnimationFrame(dotScrollRafRef.current);
+    }
+    dotScrollRafRef.current = window.requestAnimationFrame(() => {
+      dotScrollRafRef.current = null;
+      syncActiveDotVisibility();
+    });
+  }, [activeQuestionIdentity, syncActiveDotVisibility]);
+
   useLayoutEffect(() => {
     setActiveIndex(0);
     setHoverIndex(null);
   }, [conversation_id]);
 
   useEffect(() => {
+    setActiveIndex((current) => (turns.length > 0 ? Math.min(current, turns.length - 1) : 0));
+    setHoverIndex((current) => (current !== null && current < turns.length ? current : null));
+  }, [turns.length]);
+
+  useLayoutEffect(() => {
+    scheduleActiveDotVisibility();
+    return () => {
+      if (dotScrollRafRef.current !== null) {
+        window.cancelAnimationFrame(dotScrollRafRef.current);
+        dotScrollRafRef.current = null;
+      }
+    };
+  }, [scheduleActiveDotVisibility, turns.length]);
+
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track || !activeQuestionIdentity) return;
+
+    const handleTrackScrollEnd = () => scheduleActiveDotVisibility();
+    track.addEventListener('scrollend', handleTrackScrollEnd);
+    window.addEventListener('resize', scheduleActiveDotVisibility);
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => scheduleActiveDotVisibility());
+      resizeObserver.observe(track);
+    }
+
+    return () => {
+      track.removeEventListener('scrollend', handleTrackScrollEnd);
+      window.removeEventListener('resize', scheduleActiveDotVisibility);
+      resizeObserver?.disconnect();
+    };
+  }, [activeQuestionIdentity, scheduleActiveDotVisibility]);
+
+  useEffect(() => {
     const scroller = getScroller();
     if (!scroller || !turns.length) return;
 
-    syncActiveQuestionFromScroll();
+    scheduleActiveQuestionSync();
     scroller.addEventListener('scroll', scheduleActiveQuestionSync, { passive: true });
     window.addEventListener('resize', scheduleActiveQuestionSync);
     return () => {
@@ -127,7 +259,7 @@ const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = 
         rafRef.current = null;
       }
     };
-  }, [getScroller, scheduleActiveQuestionSync, syncActiveQuestionFromScroll, turns.length]);
+  }, [getScroller, rangeVersion, scheduleActiveQuestionSync, syncActiveQuestionFromScroll, turns.length]);
 
   const jumpToQuestion = useCallback((index: number) => {
     const item = turns[index];
@@ -152,23 +284,25 @@ const ConversationQuestionLocator: React.FC<ConversationQuestionLocatorProps> = 
       onMouseLeave={() => setHoverIndex(null)}
     >
       <div
+        ref={trackRef}
         className={styles.track}
         data-testid='conversation-question-locator-track'
         role='list'
         aria-label={t('conversation.minimap.locatorAria', { defaultValue: 'Open question history' })}
       >
         {turns.map((item, index) => {
-          const isActive = activeIndex === index;
+          const isActive = boundedActiveIndex === index;
           const isHovered = hoverIndex === index;
           return (
             <button
+              ref={isActive ? activeDotRef : undefined}
               key={item.messageId || item.msgId || item.index}
               type='button'
               className={styles.dotButton}
               data-testid='conversation-question-locator-dot'
               data-active={isActive ? 'true' : undefined}
               data-hovered={isHovered ? 'true' : undefined}
-              data-distance-level={getDotDistanceLevel(index, activeIndex)}
+              data-distance-level={getDotDistanceLevel(index, boundedActiveIndex)}
               aria-current={isActive ? 'true' : undefined}
               aria-label={t('conversation.minimap.locatorItemAria', {
                 defaultValue: 'Jump to question {{index}}',
