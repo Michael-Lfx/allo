@@ -301,7 +301,16 @@ export function LessonQuestionDialog({
     >
       <Tabs activeTab={tab} onChange={(key) => setTab(key as 'manual' | 'ai')}>
         <Tabs.TabPane key='manual' title={t('learning.addQuestionManual')}>
-          <div className='max-h-[calc(100vh-280px)] overflow-y-auto'>
+          {/* 内联限高 + 滚动：AI 生成的长表单（长题干/多选项/长解析）超出弹窗范围时内部滚动，
+              避免撑破弹窗；不用 UnoCSS 任意值类以保证限高在任何构建下都生效 */}
+          <div
+            style={{
+              maxHeight: 'calc(100vh - 260px)',
+              overflowY: 'auto',
+              scrollbarWidth: 'thin',
+              scrollbarColor: 'color-mix(in srgb, var(--color-text-3) 52%, transparent) transparent',
+            }}
+          >
             <div className='flex flex-col gap-14px'>
               <div>
                 <div className='mb-6px font-500'>{t('learning.questionKind')}</div>
@@ -318,7 +327,14 @@ export function LessonQuestionDialog({
           </div>
         </Tabs.TabPane>
         <Tabs.TabPane key='ai' title={t('learning.addQuestionAi')}>
-          <div className='max-h-[calc(100vh-280px)] overflow-y-auto'>
+          <div
+            style={{
+              maxHeight: 'calc(100vh - 260px)',
+              overflowY: 'auto',
+              scrollbarWidth: 'thin',
+              scrollbarColor: 'color-mix(in srgb, var(--color-text-3) 52%, transparent) transparent',
+            }}
+          >
             <div className='flex flex-col gap-14px'>
               <div>
                 <div className='mb-6px font-500'>{t('learning.questionKind')}</div>
