@@ -24,6 +24,8 @@ pub struct ApplyPatchTool {
     /// Session working directory used to resolve relative `file_path` inputs
     /// (matching ReadTool / Grep / Glob / Bash). `None` = legacy process-cwd.
     cwd: Option<std::path::PathBuf>,
+    /// When true, write-root rejections use CODING_BOUNDARY: copy.
+    coding_boundary: bool,
 }
 
 fn err(msg: impl Into<String>) -> ToolResult {
@@ -40,6 +42,7 @@ impl ApplyPatchTool {
             file_cache,
             write_root: None,
             cwd: None,
+            coding_boundary: false,
         }
     }
 
@@ -56,6 +59,12 @@ impl ApplyPatchTool {
         self
     }
 
+    /// Use coding-mode boundary error copy for write-root rejections.
+    pub fn with_coding_boundary(mut self, enabled: bool) -> Self {
+        self.coding_boundary = enabled;
+        self
+    }
+
     /// Must-Read-first + staleness guard for one file (mirrors EditTool). Returns
     /// `Some(error)` if rejected, `None` if OK or no cache is wired.
     fn cache_guard(&self, path: &Path) -> Option<String> {
@@ -63,9 +72,9 @@ impl ApplyPatchTool {
         let mut cache = cache_arc.write().ok()?;
         let cached = cache.get(path);
         if cached.is_none() {
-            return Some(format!(
-                "You must Read {} before patching it.",
-                path.display()
+            return Some(nomi_coding::append_edit_recovery_hint(
+                &format!("You must Read {} before patching it.", path.display()),
+                nomi_coding::EditFailureKind::MustReadFirst,
             ));
         }
         let cached_mtime = cached.map(|s| s.mtime_ms);
@@ -73,9 +82,12 @@ impl ApplyPatchTool {
         if let (Some(c), Some(d)) = (cached_mtime, disk_mtime)
             && c != d
         {
-            return Some(format!(
-                "File {} changed on disk since last read; Read it again before patching.",
-                path.display()
+            return Some(nomi_coding::append_edit_recovery_hint(
+                &format!(
+                    "File {} changed on disk since last read; Read it again before patching.",
+                    path.display()
+                ),
+                nomi_coding::EditFailureKind::StaleAfterRead,
             ));
         }
         None
@@ -89,24 +101,39 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply edits across MULTIPLE files in a single call (atomic for the common\n\
-         failure mode: if any file's edits do not apply cleanly, nothing is written).\n\n\
-         Usage:\n\
-         - Each file is either {file_path, edits:[...]} to patch an existing file, or \
-         {file_path, content:\"...\"} to create a new file (or replace one whole).\n\
-         - Read each file first before using `edits`.\n\
-         - Prefer this over many separate Edit/Write calls when one change spans files.\n\
-         - Each file's `edits` is a list of {old_string, new_string, replace_all?} applied in order; \
-         each old_string must be unique in that file (or set replace_all)."
+        "Apply edits across one or more files in a single call (all-or-nothing for the\n\
+         common failure mode: if any hunk fails, nothing is written).\n\n\
+         Two input styles (pick one):\n\
+         1) Codex freeform — preferred for multi-hunk edits. Pass `patch` (or `input`):\n\
+            *** Begin Patch\n\
+            *** Update File: path/to/file.rs\n\
+            @@\n\
+             context\n\
+            -old line\n\
+            +new line\n\
+            *** Add File: new.rs\n\
+            +fn main() {}\n\
+            *** Delete File: obsolete.rs\n\
+            *** End Patch\n\
+         2) JSON `files:[{file_path, edits|content|delete}]` — same as before.\n\n\
+         Always Read a file before updating or deleting it. Prefer this over many Edit/Write calls."
     }
 
     fn input_schema(&self) -> JsonSchema {
         json!({
             "type": "object",
             "properties": {
+                "patch": {
+                    "type": "string",
+                    "description": "Codex-style freeform patch document (*** Begin Patch … *** End Patch). Prefer this for multi-hunk / multi-file edits."
+                },
+                "input": {
+                    "type": "string",
+                    "description": "Alias for `patch` (Codex freeform apply_patch input)."
+                },
                 "files": {
                     "type": "array",
-                    "description": "Files to patch or create. Each is either {file_path, edits:[{old_string,new_string,replace_all?}]} to patch an existing file, or {file_path, content} to create/replace a whole file.",
+                    "description": "Structured alternative to `patch`. Each item is {file_path, edits:[…]} or {file_path, content} or {file_path, delete:true}.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -136,8 +163,7 @@ impl Tool for ApplyPatchTool {
                         "required": ["file_path"]
                     }
                 }
-            },
-            "required": ["files"]
+            }
         })
     }
 
@@ -146,13 +172,210 @@ impl Tool for ApplyPatchTool {
     }
 
     async fn execute(&self, input: Value) -> ToolResult {
+        let freeform = input
+            .get("patch")
+            .and_then(|v| v.as_str())
+            .or_else(|| input.get("input").and_then(|v| v.as_str()))
+            .filter(|s| !s.trim().is_empty());
+        if let Some(patch) = freeform {
+            return self.execute_freeform(patch);
+        }
+
         let Some(files) = input["files"].as_array() else {
-            return err("Missing required parameter: files (array)");
+            return err(
+                "Missing required parameter: provide Codex freeform `patch`/`input`, \
+                 or structured `files` array",
+            );
         };
         if files.is_empty() {
             return err("files array must not be empty");
         }
 
+        self.execute_files_array(files)
+    }
+
+    fn describe(&self, input: &Value) -> String {
+        if input.get("patch").and_then(|v| v.as_str()).is_some()
+            || input.get("input").and_then(|v| v.as_str()).is_some()
+        {
+            return "ApplyPatch (freeform)".to_string();
+        }
+        let n = input
+            .get("files")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        format!("ApplyPatch across {n} file(s)")
+    }
+
+    fn max_result_size(&self) -> usize {
+        10_000
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Edit
+    }
+}
+
+impl ApplyPatchTool {
+    fn execute_freeform(&self, patch: &str) -> ToolResult {
+        let parsed = match nomi_coding::parse_freeform_patch(patch) {
+            Ok(p) => p,
+            Err(e) => {
+                return err(format!(
+                    "{e}\nNext: use Codex markers (`*** Begin Patch`, `*** Update File: path`, \
+                     `@@` hunks with -/+/space lines, `*** End Patch`), or pass structured `files`."
+                ));
+            }
+        };
+
+        let mut planned: Vec<(String, String)> = Vec::new();
+        let mut to_delete: Vec<String> = Vec::new();
+        let mut renames: Vec<(String, String)> = Vec::new();
+        let mut total = 0usize;
+        let mut created = 0usize;
+
+        for op in parsed.files {
+            match op {
+                nomi_coding::PatchFileOp::Add { path, content } => {
+                    let resolved =
+                        crate::path_guard::resolve_against_cwd(&path, self.cwd.as_deref());
+                    if let Some(msg) = crate::path_guard::ensure_within_root_ex(
+                        &resolved,
+                        self.write_root.as_deref(),
+                        self.coding_boundary,
+                    ) {
+                        return err(msg);
+                    }
+                    let p = Path::new(&resolved);
+                    if p.exists()
+                        && let Some(msg) = self.cache_guard(p)
+                    {
+                        return err(msg);
+                    }
+                    if !p.exists() {
+                        created += 1;
+                    }
+                    planned.push((resolved, content));
+                }
+                nomi_coding::PatchFileOp::Delete { path } => {
+                    let resolved =
+                        crate::path_guard::resolve_against_cwd(&path, self.cwd.as_deref());
+                    if let Some(msg) = crate::path_guard::ensure_within_root_ex(
+                        &resolved,
+                        self.write_root.as_deref(),
+                        self.coding_boundary,
+                    ) {
+                        return err(msg);
+                    }
+                    let p = Path::new(&resolved);
+                    if !p.exists() {
+                        return err(format!("{resolved}: cannot delete — file does not exist"));
+                    }
+                    if let Some(msg) = self.cache_guard(p) {
+                        return err(msg);
+                    }
+                    to_delete.push(resolved);
+                }
+                nomi_coding::PatchFileOp::Update {
+                    path,
+                    move_to,
+                    hunks,
+                } => {
+                    let resolved =
+                        crate::path_guard::resolve_against_cwd(&path, self.cwd.as_deref());
+                    if let Some(msg) = crate::path_guard::ensure_within_root_ex(
+                        &resolved,
+                        self.write_root.as_deref(),
+                        self.coding_boundary,
+                    ) {
+                        return err(msg);
+                    }
+                    if let Some(dest) = move_to.as_ref() {
+                        let dest_r =
+                            crate::path_guard::resolve_against_cwd(dest, self.cwd.as_deref());
+                        if let Some(msg) = crate::path_guard::ensure_within_root_ex(
+                            &dest_r,
+                            self.write_root.as_deref(),
+                            self.coding_boundary,
+                        ) {
+                            return err(msg);
+                        }
+                        renames.push((resolved.clone(), dest_r));
+                    }
+                    let p = Path::new(&resolved);
+                    if let Some(msg) = self.cache_guard(p) {
+                        return err(msg);
+                    }
+                    let content = match std::fs::read_to_string(&resolved) {
+                        Ok(c) => c,
+                        Err(e) => return err(format!("Failed to read {resolved}: {e}")),
+                    };
+                    let ops: Vec<EditOp> = hunks
+                        .into_iter()
+                        .map(|h| EditOp {
+                            old_string: h.old_text,
+                            new_string: h.new_text,
+                            replace_all: false,
+                        })
+                        .collect();
+                    if ops.is_empty() && move_to.is_some() {
+                        // Rename-only: keep content as-is.
+                        planned.push((resolved, content));
+                        continue;
+                    }
+                    match apply_edits(&content, &ops) {
+                        Ok((new_content, n)) => {
+                            total += n;
+                            planned.push((resolved, new_content));
+                        }
+                        Err(msg) => {
+                            let kind = if msg.contains("not found") {
+                                nomi_coding::EditFailureKind::OldStringNotFound
+                            } else if msg.contains("Multiple matches") {
+                                nomi_coding::EditFailureKind::MultipleMatches
+                            } else {
+                                nomi_coding::EditFailureKind::Other
+                            };
+                            return err(nomi_coding::append_edit_recovery_hint(
+                                &format!("{resolved}: {msg}"),
+                                kind,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        let result = self.commit_plan(planned, to_delete, created, total);
+        if result.is_error {
+            return result;
+        }
+        // Apply renames after successful writes (source path content already updated).
+        for (from, to) in renames {
+            if from == to {
+                continue;
+            }
+            if let Some(parent) = Path::new(&to).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::fs::rename(&from, &to) {
+                return err(format!("Patched {from} but failed to rename to {to}: {e}"));
+            }
+            if let Some(cache_arc) = &self.file_cache
+                && let Ok(mut cache) = cache_arc.write()
+            {
+                if let Some(state) = cache.remove(Path::new(&from)) {
+                    cache.insert(Path::new(&to).to_path_buf(), state);
+                }
+            }
+        }
+        result
+    }
+
+    fn execute_files_array(&self, files: &[Value]) -> ToolResult {
         // PHASE 1 — validate + compute the new content for every file. No writes.
         let mut planned: Vec<(String, String)> = Vec::with_capacity(files.len());
         let mut to_delete: Vec<String> = Vec::new();
@@ -169,7 +392,11 @@ impl Tool for ApplyPatchTool {
             // Write-root containment (opt-in): reject any file outside the root
             // before validating/writing anything (keeps the all-or-nothing
             // guarantee — a single out-of-root file aborts the whole patch).
-            if let Some(msg) = crate::path_guard::ensure_within_root(file_path, self.write_root.as_deref()) {
+            if let Some(msg) = crate::path_guard::ensure_within_root_ex(
+                file_path,
+                self.write_root.as_deref(),
+                self.coding_boundary,
+            ) {
                 return err(msg);
             }
             let content_field = f.get("content").and_then(|v| v.as_str());
@@ -181,13 +408,12 @@ impl Tool for ApplyPatchTool {
             if delete_field {
                 if content_field.is_some() || edits_field.is_some() {
                     return err(format!(
-                        "{}: `delete` cannot be combined with `content` or `edits`",
-                        file_path
+                        "{file_path}: `delete` cannot be combined with `content` or `edits`"
                     ));
                 }
                 let path = Path::new(file_path);
                 if !path.exists() {
-                    return err(format!("{}: cannot delete — file does not exist", file_path));
+                    return err(format!("{file_path}: cannot delete — file does not exist"));
                 }
                 if let Some(msg) = self.cache_guard(path) {
                     return err(msg);
@@ -199,12 +425,13 @@ impl Tool for ApplyPatchTool {
             match (content_field, edits_field) {
                 (Some(_), Some(_)) => {
                     return err(format!(
-                        "{}: specify either `content` (create/replace whole file) or `edits` (patch existing), not both",
-                        file_path
+                        "{file_path}: specify either `content` (create/replace whole file) or `edits` (patch existing), not both"
                     ));
                 }
                 (None, None) => {
-                    return err(format!("{}: each file needs either `content` or `edits`", file_path));
+                    return err(format!(
+                        "{file_path}: each file needs either `content` or `edits`"
+                    ));
                 }
                 // Create or replace the whole file with `content`.
                 (Some(content), None) => {
@@ -225,13 +452,16 @@ impl Tool for ApplyPatchTool {
                 // Patch an existing file with `edits`.
                 (None, Some(edits_arr)) => {
                     if edits_arr.is_empty() {
-                        return err(format!("{}: edits array must not be empty", file_path));
+                        return err(format!("{file_path}: edits array must not be empty"));
                     }
                     let mut ops = Vec::with_capacity(edits_arr.len());
                     for e in edits_arr {
-                        let (Some(o), Some(n)) = (e["old_string"].as_str(), e["new_string"].as_str())
+                        let (Some(o), Some(n)) =
+                            (e["old_string"].as_str(), e["new_string"].as_str())
                         else {
-                            return err(format!("{}: each edit needs old_string and new_string", file_path));
+                            return err(format!(
+                                "{file_path}: each edit needs old_string and new_string"
+                            ));
                         };
                         ops.push(EditOp {
                             old_string: o.to_string(),
@@ -245,7 +475,7 @@ impl Tool for ApplyPatchTool {
                     }
                     let content = match std::fs::read_to_string(file_path) {
                         Ok(c) => c,
-                        Err(e) => return err(format!("Failed to read {}: {}", file_path, e)),
+                        Err(e) => return err(format!("Failed to read {file_path}: {e}")),
                     };
                     match apply_edits(&content, &ops) {
                         Ok((new_content, n)) => {
@@ -253,12 +483,34 @@ impl Tool for ApplyPatchTool {
                             planned.push((file_path.to_string(), new_content));
                         }
                         // Abort: a hunk did not apply — leave ALL files untouched.
-                        Err(msg) => return err(format!("{}: {}", file_path, msg)),
+                        Err(msg) => {
+                            let kind = if msg.contains("not found") {
+                                nomi_coding::EditFailureKind::OldStringNotFound
+                            } else if msg.contains("Multiple matches") {
+                                nomi_coding::EditFailureKind::MultipleMatches
+                            } else {
+                                nomi_coding::EditFailureKind::Other
+                            };
+                            return err(nomi_coding::append_edit_recovery_hint(
+                                &format!("{file_path}: {msg}"),
+                                kind,
+                            ));
+                        }
                     }
                 }
             }
         }
 
+        self.commit_plan(planned, to_delete, created, total)
+    }
+
+    fn commit_plan(
+        &self,
+        planned: Vec<(String, String)>,
+        to_delete: Vec<String>,
+        created: usize,
+        total: usize,
+    ) -> ToolResult {
         // PHASE 2 — every file validated; commit writes atomically per file.
         for (path_str, new_content) in &planned {
             // Create the parent directory so a `content` create into a new
@@ -269,7 +521,7 @@ impl Tool for ApplyPatchTool {
                 let _ = std::fs::create_dir_all(parent);
             }
             if let Err(e) = crate::atomic_write(path_str, new_content) {
-                return err(format!("Failed to write {}: {}", path_str, e));
+                return err(format!("Failed to write {path_str}: {e}"));
             }
             if let Some(cache_arc) = &self.file_cache {
                 update_cache_after_write(cache_arc, Path::new(path_str), new_content);
@@ -279,7 +531,7 @@ impl Tool for ApplyPatchTool {
         // PHASE 2b — deletions (after writes; independent paths, order-agnostic).
         for path_str in &to_delete {
             if let Err(e) = std::fs::remove_file(path_str) {
-                return err(format!("Failed to delete {}: {}", path_str, e));
+                return err(format!("Failed to delete {path_str}: {e}"));
             }
             if let Some(cache_arc) = &self.file_cache
                 && let Ok(mut cache) = cache_arc.write()
@@ -300,23 +552,6 @@ impl Tool for ApplyPatchTool {
             images: Vec::new(),
         }
     }
-
-    fn max_result_size(&self) -> usize {
-        10_000
-    }
-
-    fn category(&self) -> ToolCategory {
-        ToolCategory::Edit
-    }
-
-    fn describe(&self, input: &Value) -> String {
-        let n = input
-            .get("files")
-            .and_then(|v| v.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        format!("ApplyPatch across {} file(s)", n)
-    }
 }
 
 #[cfg(test)]
@@ -324,6 +559,23 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn apply_patch_accepts_codex_freeform() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("foo.rs");
+        std::fs::write(&f, "fn a() {\n    old();\n}\n").unwrap();
+        let tool = ApplyPatchTool::new(None);
+        let patch = format!(
+            "*** Begin Patch\n*** Update File: {}\n@@\n fn a() {{\n-    old();\n+    new();\n }}\n*** End Patch\n",
+            f.display()
+        );
+        let result = tool.execute(json!({ "patch": patch })).await;
+        assert!(!result.is_error, "freeform patch should succeed: {}", result.content);
+        let body = std::fs::read_to_string(&f).unwrap();
+        assert!(body.contains("new()"), "got: {body}");
+        assert!(!body.contains("old()"));
+    }
 
     #[tokio::test]
     async fn apply_patch_resolves_relative_path_against_cwd() {

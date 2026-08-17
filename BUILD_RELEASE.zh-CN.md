@@ -44,6 +44,8 @@ allo/
 
 - **Rust** + **Bun**
 - **Tauri CLI**：`bun install` 后会带上 `@tauri-apps/cli`
+- **CMake**（Windows 上 `opusic-sys` 编译内置 libopus 需要；若已装在
+  `C:\Program Files\CMake\bin` 但未进 PATH，`bun run build:win` 会自动注入）
 - **Python 3** + `pip install modelscope`（仅上传步骤需要）
 
 ### 2. Updater 签名私钥

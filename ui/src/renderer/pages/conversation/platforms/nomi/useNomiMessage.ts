@@ -358,7 +358,11 @@ export const useNomiMessage = (
     activeMsgIdRef.current = null;
     setActiveTurnId(undefined);
     setActiveRequestMessageId(undefined);
-    dispatchTurn({ type: 'finish' });
+    // Authoritative turn completion must clear ALL busy flags. Nomi `finish`
+    // only ends a stream segment and intentionally raises `waitingResponse`
+    // when no tools are in flight (expecting another model round). Using it
+    // here left Stop lit until the user clicked terminate (`reset`).
+    dispatchTurn({ type: 'reset' });
     const timingKey = resolveTimingKey();
     if (timingKey) {
       markTurnIdle(timingKey, 'completed');
@@ -659,11 +663,18 @@ export const useNomiMessage = (
         case 'finish':
           {
             // Stream completion can precede backend turn-handle release.
+            // If tools are still active, stay in tooling (keep Stop) instead of
+            // flipping to finalizing while Grep/Bash continue.
+            const hadActiveTools = turnStateRef.current.hasActiveTools;
             setThought({ subject: '', description: '' });
             dispatchTurnIfOpen({ type: 'finish' });
             const timingKey = resolveTimingKey();
             if (timingKey) markTurnStreamFinished(timingKey);
-            dispatchPresentationEvent({ type: 'streamFinished' });
+            if (hadActiveTools) {
+              dispatchPresentationEvent({ type: 'tooling' });
+            } else {
+              dispatchPresentationEvent({ type: 'streamFinished' });
+            }
             if (message.msg_id) {
               void processCompletedAssistantMessage(message.msg_id);
               messageBufferRef.current.delete(message.msg_id);

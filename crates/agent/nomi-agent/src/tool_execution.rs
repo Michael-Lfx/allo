@@ -19,6 +19,37 @@ use nomi_tools::{ToolExecutionContext, registry::ToolRegistry};
 pub(crate) const SKIPPED_AFTER_PRIOR_ERROR: &str = "\
 Skipped because a previous tool call in this assistant turn failed. Inspect the failed result first, then decide whether to retry with a larger timeout, use exec_command/write_stdin for long-running commands, or choose a different next step. Do not assume this step ran.";
 
+/// How a failed tool call cascades to later calls in the same assistant turn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ErrorCascadePolicy {
+    /// Any error skips all subsequent tool calls (office / default).
+    #[default]
+    HaltAllSubsequent,
+    /// Only gate/schema/deny failures and mutating-tool failures halt the rest
+    /// (coding profile): a failed Read/Grep can still allow later calls.
+    HaltAfterMutatingOrGate,
+}
+
+fn should_halt_after(
+    policy: ErrorCascadePolicy,
+    tool_name: &str,
+    is_gate_or_schema: bool,
+) -> bool {
+    match policy {
+        ErrorCascadePolicy::HaltAllSubsequent => true,
+        ErrorCascadePolicy::HaltAfterMutatingOrGate => {
+            is_gate_or_schema || crate::task_profile::is_mutating_tool(tool_name)
+        }
+    }
+}
+
+fn tool_name_of_call(call: &ContentBlock) -> &str {
+    match call {
+        ContentBlock::ToolUse { name, .. } => name.as_str(),
+        _ => "",
+    }
+}
+
 /// The combined output of a tool execution batch: protocol content blocks
 /// paired with per-call context modifiers (None for non-skill tools).
 pub struct ToolCallOutcome {
@@ -88,6 +119,7 @@ pub async fn execute_tool_calls_scoped(
     mut hooks: Option<&mut HookEngine>,
     compaction_level: nomi_compact::CompactionLevel,
     toon_enabled: bool,
+    cascade_policy: ErrorCascadePolicy,
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
@@ -124,6 +156,9 @@ pub async fn execute_tool_calls_scoped(
                     call,
                     authority,
                 ) {
+                    if should_halt_after(cascade_policy, tool_name_of_call(call), true) {
+                        halt_after_error = true;
+                    }
                     completed[idx] = Some((gated, None));
                 }
             }
@@ -138,6 +173,9 @@ pub async fn execute_tool_calls_scoped(
                 }
                 match confirm_call(confirmer, call)? {
                     Some(denied) => {
+                        if should_halt_after(cascade_policy, tool_name_of_call(call), true) {
+                            halt_after_error = true;
+                        }
                         completed[idx] = Some((denied, None));
                     }
                     None => approved.push((idx, *call)),
@@ -160,14 +198,16 @@ pub async fn execute_tool_calls_scoped(
                 })
                 .collect();
             let batch_results = futures::future::join_all(futures).await;
-            for ((idx, _), outcome) in approved.into_iter().zip(batch_results) {
+            for ((idx, call), outcome) in approved.into_iter().zip(batch_results) {
+                if block_is_error(&outcome.0)
+                    && should_halt_after(cascade_policy, tool_name_of_call(call), false)
+                {
+                    halt_after_error = true;
+                }
                 completed[idx] = Some(outcome);
             }
             for outcome in completed {
                 let (block, modifier) = outcome.expect("every concurrent call has an outcome");
-                if block_is_error(&block) {
-                    halt_after_error = true;
-                }
                 results.push(block);
                 modifiers.push(modifier);
             }
@@ -183,14 +223,18 @@ pub async fn execute_tool_calls_scoped(
                     call,
                     authority,
                 ) {
-                    halt_after_error = true;
+                    if should_halt_after(cascade_policy, tool_name_of_call(call), true) {
+                        halt_after_error = true;
+                    }
                     results.push(gated);
                     modifiers.push(None);
                     continue;
                 }
                 match confirm_call(confirmer, call)? {
                     Some(denied) => {
-                        halt_after_error = true;
+                        if should_halt_after(cascade_policy, tool_name_of_call(call), true) {
+                            halt_after_error = true;
+                        }
                         results.push(denied);
                         modifiers.push(None);
                     }
@@ -214,7 +258,11 @@ pub async fn execute_tool_calls_scoped(
                         // Merge skill hooks after a successful sequential execution.
                         if !block_is_error(&block) {
                             maybe_merge_skill_hooks(registry, call, hooks.as_deref_mut());
-                        } else {
+                        } else if should_halt_after(
+                            cascade_policy,
+                            tool_name_of_call(call),
+                            false,
+                        ) {
                             halt_after_error = true;
                         }
                         results.push(block);
@@ -594,6 +642,7 @@ pub async fn execute_tool_calls_with_approval(
     mut hooks: Option<&mut HookEngine>,
     compaction_level: nomi_compact::CompactionLevel,
     toon_enabled: bool,
+    cascade_policy: ErrorCascadePolicy,
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
@@ -702,7 +751,13 @@ pub async fn execute_tool_calls_with_approval(
                         metadata: None,
                     });
                 }
-                if block_is_error(&block) {
+                if block_is_error(&block)
+                    && should_halt_after(
+                        cascade_policy,
+                        tool_name_of_call(&tool_calls[idx]),
+                        false,
+                    )
+                {
                     halt_after_error = true;
                 }
                 results.push(block);
@@ -724,7 +779,9 @@ pub async fn execute_tool_calls_with_approval(
         // ToolRequest or ToolRunning. Emit only the paired error ToolResult.
         if let Some(gated) = invocation_gate_result(registry, call, authority) {
             emit_tool_result_event(writer, msg_id, call, &gated);
-            halt_after_error = true;
+            if should_halt_after(cascade_policy, name, true) {
+                halt_after_error = true;
+            }
             results.push(gated);
             modifiers.push(None);
             continue;
@@ -767,7 +824,9 @@ pub async fn execute_tool_calls_with_approval(
                         call_id: id.clone(),
                         reason: reason.clone(),
                     });
-                    halt_after_error = true;
+                    if should_halt_after(cascade_policy, name, true) {
+                        halt_after_error = true;
+                    }
                     results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
                         content: format!("Tool denied: {reason}"),
@@ -832,7 +891,7 @@ pub async fn execute_tool_calls_with_approval(
         // Merge skill hooks after a successful execution.
         if !block_is_error(&result) {
             maybe_merge_skill_hooks(registry, call, hooks.as_deref_mut());
-        } else {
+        } else if should_halt_after(cascade_policy, name, false) {
             halt_after_error = true;
         }
 
@@ -1432,6 +1491,7 @@ mod tests {
                 None,
                 nomi_compact::CompactionLevel::Off,
                 false,
+                Default::default(),
             ),
         )
         .await
@@ -1499,6 +1559,7 @@ mod tests {
                 None,
                 nomi_compact::CompactionLevel::Off,
                 false,
+                Default::default(),
             ),
         )
         .await
@@ -1559,6 +1620,7 @@ mod tests {
             None,
             nomi_compact::CompactionLevel::Off,
             false,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1591,6 +1653,7 @@ mod tests {
             None,
             nomi_compact::CompactionLevel::Off,
             false,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1676,6 +1739,7 @@ mod tests {
             None,
             nomi_compact::CompactionLevel::Off,
             false,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1720,6 +1784,7 @@ mod tests {
             None,
             nomi_compact::CompactionLevel::Off,
             false,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1769,6 +1834,7 @@ mod tests {
             None,
             nomi_compact::CompactionLevel::Off,
             false,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1909,6 +1975,7 @@ mod tests {
             None,
             nomi_compact::CompactionLevel::Off,
             false,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1941,6 +2008,7 @@ mod tests {
             None,
             nomi_compact::CompactionLevel::Off,
             false,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -2027,6 +2095,7 @@ mod tests {
             None,
             nomi_compact::CompactionLevel::Off,
             false,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -2071,6 +2140,7 @@ mod tests {
                 None,
                 nomi_compact::CompactionLevel::Off,
                 false,
+                Default::default(),
             ),
         )
         .await
@@ -2118,6 +2188,7 @@ mod tests {
             None,
             nomi_compact::CompactionLevel::Off,
             false,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -2161,6 +2232,7 @@ mod tests {
             None,
             nomi_compact::CompactionLevel::Off,
             false,
+            Default::default(),
         )
         .await
         .unwrap();

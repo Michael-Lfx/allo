@@ -107,9 +107,18 @@ export function nomiTurnReducer(state: NomiTurnState, event: NomiTurnEvent): Nom
     }
 
     case 'finish':
+      // Assistant stream segment ended. Keep active tools so long Grep/Bash
+      // calls between sample→tool→sample rounds still show Stop. Clear only
+      // the model stream; raise waitingResponse when no tools are in flight
+      // (another model request is expected).
+      return {
+        streamRunning: false,
+        hasActiveTools: state.hasActiveTools,
+        waitingResponse: !state.hasActiveTools,
+      };
+
     case 'error':
-      // Terminal: the turn is over. Clear ALL activity — notably hasActiveTools,
-      // which the old code left set and caused a permanently stuck spinner.
+      // Hard failure: clear ALL activity.
       return { ...initialNomiTurnState };
 
     default:

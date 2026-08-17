@@ -21,6 +21,7 @@ nomi-protocol.workspace  = true
 nomi-config.workspace    = true
 nomi-providers.workspace = true
 nomi-tools.workspace     = true
+nomi-coding.workspace    = true
 nomi-mcp.workspace       = true
 nomi-skills.workspace    = true
 nomi-memory.workspace    = true

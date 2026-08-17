@@ -62,6 +62,7 @@ async fn case_1_off_passthrough() {
         None,
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("should succeed");
@@ -103,6 +104,7 @@ async fn case_2_safe_sanitizes() {
         None,
         CompactionLevel::Safe,
         false,
+        Default::default(),
     )
     .await
     .expect("should succeed");
@@ -154,6 +156,7 @@ async fn case_3_full_folds_and_compacts() {
         None,
         CompactionLevel::Full,
         false,
+        Default::default(),
     )
     .await
     .expect("should succeed");
@@ -203,6 +206,7 @@ async fn case_4_toon_encodes_array() {
         None,
         CompactionLevel::Full,
         true,
+        Default::default(),
     )
     .await
     .expect("should succeed");
@@ -239,6 +243,7 @@ async fn case_5_toon_disabled_no_encoding() {
         None,
         CompactionLevel::Full,
         false,
+        Default::default(),
     )
     .await
     .expect("should succeed");
@@ -386,6 +391,7 @@ async fn case_7_runtime_compaction_switch() {
         None,
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("should succeed");
@@ -400,6 +406,7 @@ async fn case_7_runtime_compaction_switch() {
         None,
         CompactionLevel::Full,
         false,
+        Default::default(),
     )
     .await
     .expect("should succeed");

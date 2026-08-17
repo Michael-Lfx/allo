@@ -584,7 +584,21 @@ pub(super) async fn build(
     let browser_source_default =
         read_string_pref(&deps, PREF_BROWSER_SOURCE, BROWSER_SOURCE_DEFAULT).await;
 
-    let browser_use_enabled = overrides.browser_use.unwrap_or(browser_use_default);
+    let coding_profile =
+        nomi_agent::TaskProfile::parse(overrides.task_profile.as_deref()).is_coding();
+
+    // Coding sessions default computer/browser off unless the session extra
+    // explicitly opts in. Global prefs are not mutated.
+    let browser_use_enabled = if coding_profile && overrides.browser_use.is_none() {
+        false
+    } else {
+        overrides.browser_use.unwrap_or(browser_use_default)
+    };
+    let computer_use_enabled = if coding_profile && overrides.computer_use.is_none() {
+        false
+    } else {
+        overrides.computer_use.unwrap_or(computer_use_default)
+    };
 
     // Build the shared browser secret-vault descriptor when browser-use is on.
     // Every caller uses `{data_dir}/browser-secrets/shared`; this policy store
@@ -763,7 +777,7 @@ pub(super) async fn build(
         extra_mcp_servers,
         loopback_capability_leases,
         bedrock_config: fields.bedrock_config,
-        computer_use: overrides.computer_use.unwrap_or(computer_use_default),
+        computer_use: computer_use_enabled,
         browser_use: browser_use_enabled,
         // Browser Host 可执行文件来源偏好；BrowserSessionHub 仍是唯一 owner。
         browser_source: browser_source_default,
@@ -805,16 +819,28 @@ pub(super) async fn build(
         // Per-session 工具白名单（受限角色的 Agent attempt；普通会话恒空）。
         allowed_tools: overrides.allowed_tools.clone(),
         // 原生文件工具写根：本地桌面全权（None），渠道会话收窄到工作区。
+        // Coding profile forces workspace containment when write_root would
+        // otherwise be None (local desktop unrestricted).
         // 与 gateway file-service 的 PathAuthority 同一信任模型（file-access spec）。
-        write_root: if is_instance_owner {
-            resolve_native_write_root(
-                overrides.channel_platform.as_deref(),
-                &ctx.workspace,
-            )
-        } else {
-            Some(ctx.workspace.clone())
+        write_root: {
+            let mut root = if is_instance_owner {
+                resolve_native_write_root(
+                    overrides.channel_platform.as_deref(),
+                    &ctx.workspace,
+                )
+            } else {
+                Some(ctx.workspace.clone())
+            };
+            if coding_profile && root.is_none() {
+                root = Some(ctx.workspace.clone());
+            }
+            root
         },
         reasoning_effort,
+        task_profile: overrides.task_profile.clone(),
+        coding_verification: overrides.coding_verification.clone(),
+        coding_protect_read: overrides.coding_protect_read,
+        coding_micro_keep_recent: overrides.coding_micro_keep_recent,
     };
 
     // Scope of the native knowledge_search / knowledge_read tools, derived

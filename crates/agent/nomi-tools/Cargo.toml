@@ -18,6 +18,7 @@ nomi-types.workspace    = true
 nomi-protocol.workspace = true
 nomi-config.workspace   = true
 nomi-process-runtime.workspace = true
+nomi-coding.workspace = true
 
 tracing.workspace     = true
 tokio.workspace       = true

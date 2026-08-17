@@ -830,7 +830,10 @@ impl NomiAgentManager {
             .install_embedded_agent_execution(
                 config_extra.install_embedded_agent_execution,
             )
-            .approval_manager(approval_manager.clone());
+            .approval_manager(approval_manager.clone())
+            .coding_boundary(
+                nomi_agent::TaskProfile::parse(config_extra.task_profile.as_deref()).is_coding(),
+            );
         bootstrap = match search_provider {
             nomi_agent::SearchProviderBinding::Provided(provider) => {
                 bootstrap.search_provider(provider)
@@ -910,6 +913,29 @@ impl NomiAgentManager {
         // chat models. Must land before the first turn so every LlmRequest
         // carries `reasoning_effort` when the catalog advertises levels.
         engine.set_initial_reasoning_effort(config_extra.reasoning_effort.clone());
+        let task_profile =
+            nomi_agent::TaskProfile::parse(config_extra.task_profile.as_deref());
+        if task_profile.is_coding() {
+            let cwd = std::path::PathBuf::from(&workspace);
+            let write_root = config_extra
+                .write_root
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from);
+            let coding_cfg = nomi_agent::task_profile::CodingConfig::from_host_extra(
+                config_extra.coding_verification.as_deref(),
+                config_extra.coding_micro_keep_recent,
+                config_extra.coding_protect_read,
+                None,
+            );
+            engine.install_coding_harness(
+                Some(nomi_agent::task_profile::CodingEnvContext { cwd, write_root }),
+                coding_cfg,
+            );
+        } else {
+            engine.set_task_profile(task_profile);
+        }
         // MoA bridge: inject the factory-resolved reference slots. Not calling
         // `set_moa_state` keeps the engine byte-identical to a no-MoA build.
         if let Some(moa) = config_extra.moa.clone() {
@@ -3568,6 +3594,10 @@ mod tests {
             allowed_tools: Vec::new(),
             write_root: None,
             reasoning_effort: None,
+            task_profile: None,
+            coding_verification: None,
+            coding_protect_read: None,
+            coding_micro_keep_recent: None,
         }
     }
 

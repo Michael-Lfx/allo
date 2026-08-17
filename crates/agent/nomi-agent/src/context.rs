@@ -118,8 +118,10 @@ already in context is sufficient.
 instead of separate Read calls or a shell reader. This preserves the native read-before-edit cache.
  - Prefer Edit over Write for modifying existing files — Edit sends only \
 the diff, which is easier to review.
- - Always Read a file before editing it.
- - When ApplyPatch is available, prefer one ApplyPatch call when one logical edit spans multiple files.
+ - Always Read a file before editing it. Prefer Edit anchor mode: copy `line:hash` \
+prefixes from Read/Grep output into `edits:[{anchor, new_text, ...}]`.
+ - When ApplyPatch is available (non-coding profiles), prefer one ApplyPatch call when one logical edit spans multiple files.
+ - Prefer DirTree or Glob for directory orientation over shell `find`/`ls` tours.
  - When exec_command script mode is available, use it for a deterministic, homogeneous, local, non-interactive batch \
 that needs no intermediate result, approval, or model decision. A script must validate \
 preconditions, stop with a non-zero exit on dependent-operation failure, bound its output, and \
@@ -132,11 +134,11 @@ model turn after its full schema has been activated.
  - When update_plan is available, use it for non-trivial multi-step work and synchronize it at each meaningful milestone, \
 not after each individual tool call or internal sub-step. Use a few user-relevant phases. At a \
 milestone transition, send one full snapshot that marks the previous milestone completed and the \
-next in_progress. Do not send an unchanged snapshot. Before the final response for code, file, \
-data, or user-visible changes, run verification, include it in the plan if a plan exists, and send \
-a final all-completed update_plan snapshot.
+next in_progress. Do not send an unchanged snapshot. Before the final response, complete remaining \
+plan steps or replace the plan to match the user's real ask, then send a final all-completed \
+update_plan snapshot when the work is done.
  - After changing code, verify before reporting done: run the project's build \
-and tests (or the narrowest command that exercises your change) with Bash, and \
+and tests (or the narrowest verification command that exercises your change) with Bash, and \
 fix what you broke. Don't claim something works that you haven't run.",
     );
     s.push_str(

@@ -71,6 +71,7 @@ describe('Nomi sendbox control layout', () => {
     const fileAttachIndex = sendBoxSource.indexOf('<FileAttachButton', toolsIndex);
     expect(fileAttachIndex).toBeGreaterThan(toolsIndex);
     expect(modeIndex).toBeGreaterThan(fileAttachIndex);
+    expect(sendBoxSource.includes('<TaskProfileSelector')).toBe(false);
     expect(chatSource.includes('GuidCollaboratorSelector')).toBe(false);
     expect(chatSource.includes('CollaborationPolicyControl')).toBe(false);
     expect(sendBoxSource.includes('collaboratorSelectorNode')).toBe(false);

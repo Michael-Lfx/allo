@@ -20,6 +20,9 @@ pub struct MicrocompactResult {
     pub cleared_count: usize,
     /// Rough estimate of tokens freed (content bytes / 4).
     pub estimated_tokens_freed: usize,
+    /// Paths from cleared `Read` tool calls (for file-cache invalidation so
+    /// FILE_UNCHANGED stubs cannot point at cleared context).
+    pub cleared_read_paths: Vec<String>,
 }
 
 // ── Trigger checks ──────────────────────────────────────────────────────────
@@ -92,6 +95,7 @@ pub fn microcompact(messages: &mut [Message], config: &CompactConfig) -> Microco
         return MicrocompactResult {
             cleared_count: 0,
             estimated_tokens_freed: 0,
+            cleared_read_paths: Vec::new(),
         };
     }
 
@@ -99,11 +103,24 @@ pub fn microcompact(messages: &mut [Message], config: &CompactConfig) -> Microco
 
     let mut cleared_count = 0usize;
     let mut tokens_freed = 0usize;
+    let mut cleared_read_paths = Vec::new();
+
+    // tool_use_id → (name, optional path) for Read invalidation.
+    let read_paths = build_read_path_map(messages);
 
     for &(mi, bi) in to_clear {
-        if let ContentBlock::ToolResult { content, images, .. } = &mut messages[mi].content[bi] {
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            images,
+            ..
+        } = &mut messages[mi].content[bi]
+        {
             // Rough token estimate: ~4 chars per token.
             tokens_freed += content.len() / 4;
+            if let Some(paths) = read_paths.get(tool_use_id.as_str()) {
+                cleared_read_paths.extend(paths.iter().cloned());
+            }
             *content = CLEARED_TOOL_RESULT.to_string();
             images.clear();
             cleared_count += 1;
@@ -113,6 +130,7 @@ pub fn microcompact(messages: &mut [Message], config: &CompactConfig) -> Microco
     MicrocompactResult {
         cleared_count,
         estimated_tokens_freed: tokens_freed,
+        cleared_read_paths,
     }
 }
 
@@ -126,6 +144,36 @@ fn build_tool_name_map(messages: &[Message]) -> HashMap<String, String> {
         for block in &msg.content {
             if let ContentBlock::ToolUse { id, name, .. } = block {
                 map.insert(id.clone(), name.clone());
+            }
+        }
+    }
+    map
+}
+
+/// Paths referenced by Read tool calls (`file_path` or `file_paths`).
+fn build_read_path_map(messages: &[Message]) -> HashMap<String, Vec<String>> {
+    let mut map = HashMap::new();
+    for msg in messages {
+        for block in &msg.content {
+            let ContentBlock::ToolUse { id, name, input, .. } = block else {
+                continue;
+            };
+            if !name.eq_ignore_ascii_case("Read") {
+                continue;
+            }
+            let mut paths = Vec::new();
+            if let Some(p) = input.get("file_path").and_then(|v| v.as_str()) {
+                paths.push(p.to_string());
+            }
+            if let Some(arr) = input.get("file_paths").and_then(|v| v.as_array()) {
+                for v in arr {
+                    if let Some(p) = v.as_str() {
+                        paths.push(p.to_string());
+                    }
+                }
+            }
+            if !paths.is_empty() {
+                map.insert(id.clone(), paths);
             }
         }
     }

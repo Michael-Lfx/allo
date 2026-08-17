@@ -242,6 +242,10 @@ impl ProviderHealthCheckService {
             allowed_tools: Vec::new(),
             write_root: None,
             reasoning_effort: None,
+            task_profile: None,
+            coding_verification: None,
+            coding_protect_read: None,
+            coding_micro_keep_recent: None,
 })
     }
 }
@@ -721,6 +725,10 @@ mod tests {
             allowed_tools: Vec::new(),
             write_root: None,
             reasoning_effort: None,
+            task_profile: None,
+            coding_verification: None,
+            coding_protect_read: None,
+            coding_micro_keep_recent: None,
         }
     }
 
@@ -817,6 +825,10 @@ mod tests {
             allowed_tools: Vec::new(),
             write_root: None,
             reasoning_effort: None,
+            task_profile: None,
+            coding_verification: None,
+            coding_protect_read: None,
+            coding_micro_keep_recent: None,
 };
 
         assert!(should_use_openai_model_probe("custom", &config));

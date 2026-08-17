@@ -858,5 +858,13 @@
       "minimal": "Minimal",
       "none": "Off"
     }
+  },
+  "taskProfile": {
+    "label": "Work mode",
+    "office": "Daily office",
+    "coding": "Coding",
+    "updated": "Work mode updated",
+    "nextTurn": "Applies on the next turn",
+    "switchFailed": "Failed to update work mode"
   }
 }

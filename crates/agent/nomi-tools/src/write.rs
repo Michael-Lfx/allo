@@ -18,6 +18,8 @@ pub struct WriteTool {
     /// (matching ReadTool / Grep / Glob / Bash). `None` leaves relative paths
     /// resolving against the process cwd (legacy behavior).
     cwd: Option<std::path::PathBuf>,
+    /// When true, write-root rejections use CODING_BOUNDARY: copy.
+    coding_boundary: bool,
 }
 
 impl WriteTool {
@@ -35,6 +37,7 @@ impl WriteTool {
             file_cache,
             write_root: None,
             cwd: None,
+            coding_boundary: false,
         }
     }
 
@@ -50,6 +53,12 @@ impl WriteTool {
     /// conversation's workspace.
     pub fn with_cwd(mut self, cwd: Option<std::path::PathBuf>) -> Self {
         self.cwd = cwd;
+        self
+    }
+
+    /// Use coding-mode boundary error copy for write-root rejections.
+    pub fn with_coding_boundary(mut self, enabled: bool) -> Self {
+        self.coding_boundary = enabled;
         self
     }
 }
@@ -117,7 +126,11 @@ impl Tool for WriteTool {
 
         // Write-root containment (opt-in): reject writes outside the configured
         // root before touching the filesystem.
-        if let Some(msg) = crate::path_guard::ensure_within_root(file_path, self.write_root.as_deref()) {
+        if let Some(msg) = crate::path_guard::ensure_within_root_ex(
+            file_path,
+            self.write_root.as_deref(),
+            self.coding_boundary,
+        ) {
             return ToolResult {
                 content: msg,
                 is_error: true,

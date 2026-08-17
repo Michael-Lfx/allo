@@ -133,6 +133,10 @@ fn make_nomi_config() -> NomiResolvedConfig {
         write_root: None,
         reasoning_effort: None,
         image_analysis_model: None,
+        task_profile: None,
+        coding_verification: None,
+        coding_protect_read: None,
+        coding_micro_keep_recent: None,
     }
 }
 

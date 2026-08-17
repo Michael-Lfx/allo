@@ -34,7 +34,7 @@ exact requirements:
 
 Optional but recommended on the host that runs Nomi (not for building):
 
-- **`ripgrep`** — code-search backend; falls back to `grep` if missing.
+- **`ripgrep`** — code-search backend. Desktop builds bundle `rg`, and the app also auto-installs it into the data-dir `bin/` on first need; end users usually do not need a system install.
 - **`node` / `npm` / `npx`** — many user-installed MCP stdio servers launch
   via `npx -y …`.
 

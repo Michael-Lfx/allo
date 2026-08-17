@@ -153,6 +153,7 @@ async fn case_9_off_vs_safe_content() {
         None,
         CompactionLevel::Off,
         false,
+        Default::default(),
     )
     .await
     .expect("should succeed");
@@ -168,6 +169,7 @@ async fn case_9_off_vs_safe_content() {
         None,
         CompactionLevel::Safe,
         false,
+        Default::default(),
     )
     .await
     .expect("should succeed");
@@ -358,6 +360,7 @@ async fn case_11_toon_comprehension_and_system_prompt() {
         None,
         CompactionLevel::Full,
         true,
+        Default::default(),
     )
     .await
     .expect("should succeed");

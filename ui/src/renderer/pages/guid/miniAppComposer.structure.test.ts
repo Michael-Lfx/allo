@@ -21,6 +21,8 @@ describe('mini-app composer entry wiring', () => {
     expect(entryStrip.includes('onCreateMiniApp')).toBe(true);
     expect(entryStrip.includes('miniAppActive')).toBe(true);
     expect(entryStrip.includes('onDismissMiniApp')).toBe(true);
+    expect(entryStrip.includes('TaskProfileSelector')).toBe(true);
+    expect(entryStrip.includes('taskProfile')).toBe(true);
     // Active state reuses the preset persona token styling.
     expect(entryStrip.includes('styles.entryButtonActive')).toBe(true);
     expect(entryStrip.includes('styles.entryDismiss')).toBe(true);

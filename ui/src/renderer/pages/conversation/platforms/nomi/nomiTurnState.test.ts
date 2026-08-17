@@ -75,15 +75,28 @@ describe('nomiTurnReducer — tool groups', () => {
   });
 });
 
-describe('nomiTurnReducer — terminal events clear ALL activity (stuck-spinner fix)', () => {
-  test('finish clears hasActiveTools even if a tool was still marked active', () => {
-    // Regression: the old code never reset hasActiveTools on finish, so the
-    // spinner stayed stuck running forever.
+describe('nomiTurnReducer — finish preserves tools; error clears all', () => {
+  test('finish keeps hasActiveTools so Stop stays available during long tools', () => {
+    // Agent loops emit stream-finish while Grep/Bash may still be running.
+    // Clearing tools here hid the Stop button for the rest of the tool call.
     const mid = run([{ type: 'toolGroup', hasActive: true, hasAny: true }]);
     expect(mid.hasActiveTools).toBe(true);
     const done = nomiTurnReducer(mid, { type: 'finish' });
-    expect(done).toEqual(initialNomiTurnState);
-    expect(isTurnRunning(done)).toBe(false);
+    expect(done.hasActiveTools).toBe(true);
+    expect(done.streamRunning).toBe(false);
+    expect(done.waitingResponse).toBe(false);
+    expect(isTurnRunning(done)).toBe(true);
+  });
+
+  test('finish without tools raises waitingResponse for the next model turn', () => {
+    const mid = run([{ type: 'content' }]);
+    const done = nomiTurnReducer(mid, { type: 'finish' });
+    expect(done).toEqual({
+      streamRunning: false,
+      hasActiveTools: false,
+      waitingResponse: true,
+    });
+    expect(isTurnRunning(done)).toBe(true);
   });
 
   test('error clears all activity', () => {
@@ -174,6 +187,10 @@ describe('nomiTurnReducer — a representative full turn', () => {
     s = nomiTurnReducer(s, { type: 'content' }); // model resumes
     expect(s.waitingResponse).toBe(false);
     s = nomiTurnReducer(s, { type: 'finish' });
-    expect(isTurnRunning(s)).toBe(false); // cleanly idle
+    // Segment done — keep waiting for the next model call or authoritative idle.
+    expect(s.waitingResponse).toBe(true);
+    expect(isTurnRunning(s)).toBe(true);
+    s = nomiTurnReducer(s, { type: 'reset' });
+    expect(isTurnRunning(s)).toBe(false);
   });
 });

@@ -16,7 +16,7 @@ pub fn plan_mode_instructions() -> &'static str {
 Plan mode is active. You MUST NOT make any edits, run any non-read-only tools, or otherwise make any changes to the system.
 
 ## Allowed actions
-- Read files, search code, and explore the codebase using read-only tools (Read, Grep, Glob)
+- Read files, search code, and explore the codebase using read-only tools (Read, Grep, Glob, DirTree)
 - Compose your implementation plan in your response text
 - Ask clarifying questions
 
@@ -44,7 +44,7 @@ Compose a clear, actionable implementation plan in your response including:
 - **Verification**: how to test the changes end-to-end
 
 ### Phase 4: Submit for review
-When your plan is complete, call ExitPlanMode to submit it for user review. Do not ask "Is this plan okay?" — calling ExitPlanMode is the way to request approval."#
+When your plan is complete, call ExitPlanMode to submit it for user review. Do not ask "Is this plan okay?" — calling ExitPlanMode is the way to request approval. Do not linger in open-ended exploration once you have enough context to write the plan."#
 }
 
 #[cfg(test)]

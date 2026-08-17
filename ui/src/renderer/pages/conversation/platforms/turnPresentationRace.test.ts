@@ -52,7 +52,7 @@ describe('turn presentation send/stop/retry races', () => {
     state = turnPresentationReducer(state, { type: 'streaming' });
     state = turnPresentationReducer(state, { type: 'streamFinished' });
     expect(state.phase).toBe('finalizing');
-    expect(state.showStop).toBe(false);
+    expect(state.showStop).toBe(true);
     expect(state.composerInteractive).toBe(true);
     expect(state.showStatusRail).toBe(true);
 

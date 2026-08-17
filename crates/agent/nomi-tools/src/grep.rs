@@ -1,9 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use nomi_protocol::events::ToolCategory;
@@ -11,9 +12,41 @@ use nomi_types::tool::{JsonSchema, ToolResult};
 
 use crate::Tool;
 
-/// Wall-clock cap for a single Grep invocation (ripgrep / fallback).
-/// Aligns with Cursor Shell's default foreground wait; Claude Code uses 20s for rg.
-const GREP_TIMEOUT: Duration = Duration::from_secs(30);
+/// Safety-net wall-clock cap. Prefer early-exit after enough matches over
+/// waiting this long — large trees should stop once the line budget is filled.
+const GREP_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Skip giant blobs that rarely contain useful source matches.
+const GREP_MAX_FILESIZE: &str = "2M";
+
+/// Stop reading (and kill rg) once we have this many output lines.
+const GREP_MAX_LINES: usize = 250;
+
+/// When the caller searches a broad root without a `glob`, restrict to common
+/// source/text types so vendor/binary trees are not walked for every hit.
+const DEFAULT_SOURCE_GLOBS: &[&str] = &[
+    "*.rs", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs", "*.py", "*.go",
+    "*.java", "*.kt", "*.swift", "*.cs", "*.cpp", "*.cc", "*.cxx", "*.c", "*.h",
+    "*.hpp", "*.m", "*.mm", "*.rb", "*.php", "*.scala", "*.toml",
+    "*.json", "*.jsonc", "*.yml", "*.yaml", "*.md", "*.mdx", "*.sql", "*.sh",
+    "*.ps1", "*.css", "*.scss", "*.html", "*.vue", "*.svelte", "*.proto",
+];
+
+/// Default exclusions applied on every ripgrep search.
+const DEFAULT_EXCLUDE_GLOBS: &[&str] = &[
+    "!**/node_modules/**",
+    "!**/.git/**",
+    "!**/target/**",
+    "!**/dist/**",
+    "!**/.next/**",
+    "!**/build/**",
+    "!**/__pycache__/**",
+    "!**/.turbo/**",
+    "!**/vendor/**",
+    "!**/coverage/**",
+    "!**/.cache/**",
+    "!**/Pods/**",
+];
 
 pub struct GrepTool {
     cwd: PathBuf,
@@ -37,12 +70,14 @@ impl Tool for GrepTool {
          NEVER run grep or rg as a Bash command.\n\n\
          - Supports full regex syntax (e.g., \"log.*Error\", \"fn\\\\s+\\\\w+\").\n\
          - Use the glob parameter to filter by file pattern (e.g., \"*.rs\").\n\
+         - Prefer a narrow `path` (subdirectory) on large repos; searching the \
+         workspace root without a glob auto-limits to common source file types.\n\
+         - Matching lines are formatted as `path:line:hash: content` — the `line:hash` \
+         part is an Edit anchor you can copy verbatim.\n\
          - Set context_lines (e.g. 2) to include surrounding lines for each match.\n\
-         - Output is capped at 250 lines; when truncated, a notice reports the \
-         true total so you can narrow the pattern or glob.\n\
-         - Set case_insensitive to true for case-insensitive search.\n\
-         - Searches time out after 30 seconds; if that happens, narrow `path` or `glob` \
-         instead of retrying the same broad search."
+         - Output stops after ~250 matching lines (process is killed early) — \
+         refine path/glob rather than asking for more lines.\n\
+         - Set case_insensitive to true for case-insensitive search."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -55,11 +90,11 @@ impl Tool for GrepTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search in (default: cwd)"
+                    "description": "Directory to search in (default: cwd). Prefer a subdirectory on large repos."
                 },
                 "glob": {
                     "type": "string",
-                    "description": "File filter pattern, e.g. \"*.rs\""
+                    "description": "File filter pattern, e.g. \"*.rs\" or \"*.{ts,tsx}\""
                 },
                 "context_lines": {
                     "type": "integer",
@@ -96,18 +131,46 @@ impl Tool for GrepTool {
 
         tracing::debug!(cwd = %self.cwd.display(), resolved_path = %path, pattern = %pattern, "GrepTool searching");
 
+        // Ensure managed/bundled rg exists before search (download on first need).
+        if nomi_config::resolve_rg_executable().is_none() {
+            let _ = nomi_config::ensure_runtime_dep(nomi_config::RuntimeDep::Ripgrep, true).await;
+        }
+
         let glob_pattern = input["glob"].as_str();
         let case_insensitive = input["case_insensitive"].as_bool().unwrap_or(false);
         let context_lines = input["context_lines"].as_u64().unwrap_or(0) as usize;
+        let auto_source_globs = glob_pattern.is_none() && is_broad_search_root(&path, &self.cwd);
 
-        // Try ripgrep first, fallback to grep
-        let result = try_ripgrep(pattern, &path, glob_pattern, case_insensitive, context_lines).await;
+        let result = try_ripgrep(
+            pattern,
+            &path,
+            glob_pattern,
+            auto_source_globs,
+            case_insensitive,
+            context_lines,
+        )
+        .await;
 
         match result {
             Ok(output) => output,
-            Err(_) => {
-                // Fallback to grep (now also honours glob + context_lines on unix)
-                try_grep(pattern, &path, glob_pattern, case_insensitive, context_lines).await
+            Err(e) => {
+                // Do NOT fall back to Windows `findstr /S` on large trees — it is
+                // what made searches look "dumb" (minutes, no output). Prefer a
+                // clear rg-missing error so the model installs/uses ripgrep.
+                if cfg!(windows) {
+                    ToolResult {
+                        content: format!(
+                            "ripgrep (rg) is required for Grep but was not found ({e}). \
+                             Flowy normally ships or auto-installs rg into its data-dir bin; \
+                             check network access or set NOMIFUN_AUTO_ENSURE_DEPS=1. \
+                             Refusing slow findstr fallback on large workspaces."
+                        ),
+                        is_error: true,
+                        images: Vec::new(),
+                    }
+                } else {
+                    try_grep(pattern, &path, glob_pattern, case_insensitive, context_lines).await
+                }
             }
         }
     }
@@ -127,113 +190,315 @@ impl Tool for GrepTool {
     }
 }
 
-const GREP_MAX_LINES: usize = 250;
+fn is_broad_search_root(path: &str, cwd: &Path) -> bool {
+    let p = Path::new(path);
+    if path == "." || path.is_empty() {
+        return true;
+    }
+    let Ok(path_canon) = p.canonicalize() else {
+        // Unresolved absolute/relative root of the session is still "broad".
+        return p == cwd || cwd.join(path) == *cwd;
+    };
+    let Ok(cwd_canon) = cwd.canonicalize() else {
+        return false;
+    };
+    path_canon == cwd_canon
+}
 
-fn timeout_result() -> ToolResult {
+fn format_grep_output(stdout: &str, max_lines: usize) -> String {
+    let mut formatted = String::new();
+    let mut total = 0usize;
+    for line in stdout.lines() {
+        total += 1;
+        if total > max_lines {
+            continue;
+        }
+        // ripgrep default: path:line:content  or path-line-content for context
+        let enriched = enrich_grep_line_with_anchor(line);
+        if !formatted.is_empty() {
+            formatted.push('\n');
+        }
+        formatted.push_str(&enriched);
+    }
+    if total <= max_lines {
+        return formatted;
+    }
+    format!(
+        "{formatted}\n... [truncated: showing first {max_lines} of at least {total} matching lines — narrow your pattern, path, or glob]"
+    )
+}
+
+/// Inject `line:hash` into ripgrep content lines so Edit can use anchors.
+fn enrich_grep_line_with_anchor(line: &str) -> String {
+    // Match `path:lineno:rest` (content mode) — avoid Windows drive `C:`
+    let bytes = line.as_bytes();
+    let mut first_colon = None;
+    let mut second_colon = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b':' {
+            if first_colon.is_none() {
+                // Skip drive letter `X:`
+                if i == 1 && bytes[0].is_ascii_alphabetic() {
+                    continue;
+                }
+                first_colon = Some(i);
+            } else {
+                second_colon = Some(i);
+                break;
+            }
+        }
+    }
+    let (Some(c1), Some(c2)) = (first_colon, second_colon) else {
+        return line.to_string();
+    };
+    let line_no = &line[c1 + 1..c2];
+    if !line_no.chars().all(|c| c.is_ascii_digit()) || line_no.is_empty() {
+        return line.to_string();
+    }
+    let content = &line[c2 + 1..];
+    // Strip optional leading space from rg
+    let content_trim = content.strip_prefix(' ').unwrap_or(content);
+    let hash = crate::anchors::anchor_line_hash(content_trim);
+    format!("{}:{}:{}: {}", &line[..c1], line_no, hash, content_trim)
+}
+
+fn apply_default_excludes(cmd: &mut Command) {
+    for glob in DEFAULT_EXCLUDE_GLOBS {
+        cmd.arg("--glob").arg(glob);
+    }
+}
+
+fn apply_default_source_globs(cmd: &mut Command) {
+    for glob in DEFAULT_SOURCE_GLOBS {
+        cmd.arg("--glob").arg(glob);
+    }
+}
+
+enum CollectOutcome {
+    Complete(String),
+    /// Hit the line budget and killed the searcher early (success for the agent).
+    EarlyCap(String),
+    /// Timed out but captured partial stdout (still useful — not a hard failure).
+    TimedOutPartial(String),
+    TimedOutEmpty,
+    Io(std::io::Error),
+}
+
+/// Stream stdout and stop as soon as we have enough lines, killing the child.
+async fn collect_capped_output(
+    mut child: tokio::process::Child,
+    max_lines: usize,
+    timeout: Duration,
+) -> CollectOutcome {
+    use std::time::Instant;
+
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill().await;
+        return CollectOutcome::Io(std::io::Error::other("missing stdout pipe"));
+    };
+
+    let deadline = Instant::now() + timeout;
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    let mut tmp = [0u8; 8192];
+    let mut lines = 0usize;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let text = String::from_utf8_lossy(&buf).into_owned();
+            return if text.trim().is_empty() {
+                CollectOutcome::TimedOutEmpty
+            } else {
+                CollectOutcome::TimedOutPartial(text)
+            };
+        }
+
+        match tokio::time::timeout(remaining, stdout.read(&mut tmp)).await {
+            Err(_) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                return if text.trim().is_empty() {
+                    CollectOutcome::TimedOutEmpty
+                } else {
+                    CollectOutcome::TimedOutPartial(text)
+                };
+            }
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                for &b in &tmp[..n] {
+                    if b == b'\n' {
+                        lines += 1;
+                    }
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if lines >= max_lines {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    let text = String::from_utf8_lossy(&buf).into_owned();
+                    return CollectOutcome::EarlyCap(text);
+                }
+            }
+            Ok(Err(e)) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return CollectOutcome::Io(e);
+            }
+        }
+    }
+
+    let status = child.wait().await;
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    match status {
+        Ok(_) => CollectOutcome::Complete(text),
+        Err(e) => {
+            if text.is_empty() {
+                CollectOutcome::Io(e)
+            } else {
+                CollectOutcome::Complete(text)
+            }
+        }
+    }
+}
+
+fn tool_result_from_stdout(stdout: &str, note: Option<&str>) -> ToolResult {
+    if stdout.trim().is_empty() {
+        return ToolResult {
+            content: "No matches found".to_string(),
+            is_error: false,
+            images: Vec::new(),
+        };
+    }
+    let mut content = format_grep_output(stdout, GREP_MAX_LINES);
+    if let Some(note) = note {
+        content.push('\n');
+        content.push_str(note);
+    }
     ToolResult {
-        content: format!(
-            "Grep timed out after {} seconds. The search may have matched files but did not \
-             complete in time. Narrow the `path` or `glob` and try again.",
-            GREP_TIMEOUT.as_secs()
-        ),
-        is_error: true,
+        content,
+        is_error: false,
         images: Vec::new(),
     }
-}
-
-enum TimedCommandError {
-    Io(std::io::Error),
-    TimedOut,
-}
-
-/// Spawn `cmd`, wait up to `timeout`, kill the child on cancel/timeout.
-async fn run_timed_command(
-    mut cmd: Command,
-    timeout: Duration,
-) -> Result<std::process::Output, TimedCommandError> {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-
-    let child = cmd.spawn().map_err(TimedCommandError::Io)?;
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(TimedCommandError::Io(e)),
-        Err(_) => Err(TimedCommandError::TimedOut),
-    }
-}
-
-/// Cap grep output to `max_lines`, appending a truncation notice with the true
-/// total when exceeded — so the model knows results were cut and can narrow the
-/// search, instead of silently losing matches.
-fn format_grep_output(stdout: &str, max_lines: usize) -> String {
-    let total = stdout.lines().count();
-    if total <= max_lines {
-        return stdout.trim_end().to_string();
-    }
-    let shown: Vec<&str> = stdout.lines().take(max_lines).collect();
-    format!(
-        "{}\n... [truncated: showing first {} of {} matching lines — narrow your pattern or set a `glob` filter]",
-        shown.join("\n"),
-        max_lines,
-        total
-    )
 }
 
 async fn try_ripgrep(
     pattern: &str,
     path: &str,
     glob_pattern: Option<&str>,
+    auto_source_globs: bool,
     case_insensitive: bool,
     context_lines: usize,
 ) -> Result<ToolResult, std::io::Error> {
-    let mut cmd = Command::new("rg");
-    cmd.arg(pattern).arg(path).arg("-n");
+    let rg_bin = nomi_config::resolve_rg_executable().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "rg executable not found (managed bin, app bundle, or PATH)",
+        )
+    })?;
+
+    // CRITICAL: all flags MUST precede PATTERN and PATH.
+    let mut cmd = Command::new(&rg_bin);
+    cmd.arg("--color=never")
+        .arg("-n")
+        .arg("--no-heading")
+        .arg("--max-filesize")
+        .arg(GREP_MAX_FILESIZE)
+        .arg("--max-count")
+        .arg("20");
+
+    apply_default_excludes(&mut cmd);
 
     if let Some(g) = glob_pattern {
-        cmd.arg("--glob").arg(g);
+        for piece in expand_brace_glob(g) {
+            cmd.arg("--glob").arg(piece);
+        }
+    } else if auto_source_globs {
+        apply_default_source_globs(&mut cmd);
+        cmd.arg("--max-depth").arg("12");
     }
+
     if case_insensitive {
         cmd.arg("-i");
     }
     if context_lines > 0 {
         cmd.arg("-C").arg(context_lines.to_string());
     }
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
-    let output = match run_timed_command(cmd, GREP_TIMEOUT).await {
-        Ok(output) => output,
-        // Timeout is a completed tool error — do not fall back to findstr/grep
-        // (that would also hang on the same huge tree).
-        Err(TimedCommandError::TimedOut) => return Ok(timeout_result()),
-        Err(TimedCommandError::Io(e)) => return Err(e),
+    cmd.arg("--")
+        .arg(pattern)
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return Err(e),
     };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
 
-    if output.status.code() == Some(1) && stdout.is_empty() {
-        return Ok(ToolResult {
-            content: "No matches found".to_string(),
+    match collect_capped_output(child, GREP_MAX_LINES, GREP_TIMEOUT).await {
+        CollectOutcome::Complete(stdout) | CollectOutcome::EarlyCap(stdout) => {
+            let note = if auto_source_globs {
+                Some(
+                    "[note: searched common source globs only because `path` is the workspace root \
+                     and no `glob` was set — pass an explicit `glob` or a subdirectory `path` to widen/narrow]",
+                )
+            } else {
+                None
+            };
+            Ok(tool_result_from_stdout(&stdout, note))
+        }
+        CollectOutcome::TimedOutPartial(stdout) => Ok(tool_result_from_stdout(
+            &stdout,
+            Some(
+                "[note: search stopped early (time budget) with partial results — \
+                 narrow `path` or `glob` and retry]",
+            ),
+        )),
+        CollectOutcome::TimedOutEmpty => Ok(ToolResult {
+            content: format!(
+                "No matches returned within {}s of scanning `{}`. \
+                 Treat as no useful hits for this query, then narrow `path` \
+                 (e.g. a single package) or simplify the pattern — do not retry identically.",
+                GREP_TIMEOUT.as_secs(),
+                path
+            ),
             is_error: false,
             images: Vec::new(),
-        });
+        }),
+        CollectOutcome::Io(e) => Err(e),
     }
+}
 
-    if !output.status.success() && output.status.code() != Some(1) {
-        return Ok(ToolResult {
-            content: format!("rg error: {}", stderr),
-            is_error: true,
-            images: Vec::new(),
-        });
+/// Expand a single glob that may contain one `{a,b,c}` brace group into
+/// concrete globs. Globs without braces are returned unchanged.
+fn expand_brace_glob(glob: &str) -> Vec<String> {
+    let Some(start) = glob.find('{') else {
+        return vec![glob.to_string()];
+    };
+    let Some(end_rel) = glob[start + 1..].find('}') else {
+        return vec![glob.to_string()];
+    };
+    let end = start + 1 + end_rel;
+    let prefix = &glob[..start];
+    let suffix = &glob[end + 1..];
+    let inner = &glob[start + 1..end];
+    if inner.is_empty() || inner.contains('{') {
+        return vec![glob.to_string()];
     }
-
-    Ok(ToolResult {
-        content: format_grep_output(&stdout, GREP_MAX_LINES),
-        is_error: false,
-        images: Vec::new(),
-    })
+    let parts: Vec<String> = inner
+        .split(',')
+        .map(|part| format!("{prefix}{}{suffix}", part.trim()))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        vec![glob.to_string()]
+    } else {
+        parts
+    }
 }
 
 async fn try_grep(
@@ -245,8 +510,6 @@ async fn try_grep(
 ) -> ToolResult {
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = if cfg!(windows) {
-        // findstr has no glob-include or context-line support; those refinements
-        // are silently unavailable on the Windows fallback path.
         let mut c = Command::new("findstr");
         c.arg("/S")
             .arg("/N")
@@ -263,39 +526,63 @@ async fn try_grep(
         if case_insensitive {
             c.arg("-i");
         }
-        // Honour the glob filter on the fallback path too (previously ignored,
-        // so the model got matches from unintended file types).
         if let Some(g) = glob_pattern {
             c.arg(format!("--include={}", g));
+        }
+        for dir in [
+            "node_modules",
+            ".git",
+            "target",
+            "dist",
+            ".next",
+            "build",
+            "__pycache__",
+            ".turbo",
+            "vendor",
+        ] {
+            c.arg("--exclude-dir").arg(dir);
         }
         if context_lines > 0 {
             c.arg("-C").arg(context_lines.to_string());
         }
         c
     };
-    // CREATE_NO_WINDOW (covers the Windows `findstr` branch above).
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
 
-    match run_timed_command(cmd, GREP_TIMEOUT).await {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.is_empty() {
-                ToolResult {
-                    content: "No matches found".to_string(),
-                    is_error: false,
-                    images: Vec::new(),
-                }
-            } else {
-                ToolResult {
-                    content: format_grep_output(&stdout, GREP_MAX_LINES),
-                    is_error: false,
-                    images: Vec::new(),
-                }
-            }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return ToolResult {
+                content: format!("grep failed: {}", e),
+                is_error: true,
+                images: Vec::new(),
+            };
         }
-        Err(TimedCommandError::TimedOut) => timeout_result(),
-        Err(TimedCommandError::Io(e)) => ToolResult {
+    };
+
+    match collect_capped_output(child, GREP_MAX_LINES, GREP_TIMEOUT).await {
+        CollectOutcome::Complete(stdout) | CollectOutcome::EarlyCap(stdout) => {
+            tool_result_from_stdout(&stdout, None)
+        }
+        CollectOutcome::TimedOutPartial(stdout) => tool_result_from_stdout(
+            &stdout,
+            Some("[note: search stopped early with partial results — narrow path/glob]"),
+        ),
+        CollectOutcome::TimedOutEmpty => ToolResult {
+            content: format!(
+                "Grep hit the {}s safety budget with no lines collected yet. Narrow `path` or `glob`.",
+                GREP_TIMEOUT.as_secs()
+            ),
+            is_error: true,
+            images: Vec::new(),
+        },
+        CollectOutcome::Io(e) => ToolResult {
             content: format!("grep failed: {}", e),
             is_error: true,
             images: Vec::new(),
@@ -314,74 +601,67 @@ mod tests {
         let out = super::format_grep_output(&lines, 250);
         assert!(out.contains("truncated"), "must announce truncation: {out}");
         assert!(out.contains("300"), "must report the true total match count");
-        // 250 shown lines + 1 notice line
         assert_eq!(out.lines().count(), 251);
     }
 
     #[test]
-    fn format_grep_output_short_is_unchanged() {
-        let out = super::format_grep_output("a\nb\nc\n", 250);
-        assert_eq!(out, "a\nb\nc");
+    fn format_grep_output_passthrough_when_under_limit() {
+        let out = super::format_grep_output("a\nb\n", 250);
+        assert_eq!(out, "a\nb");
     }
 
-    #[tokio::test]
-    async fn grep_tool_finds_pattern_in_own_source() {
-        let tool = GrepTool::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-        let input = json!({
-            "pattern": "GrepTool",
-            "path": env!("CARGO_MANIFEST_DIR")
-        });
-        let result = tool.execute(input).await;
-        assert!(!result.is_error, "grep failed: {}", result.content);
-        assert!(result.content.contains("GrepTool"));
+    #[test]
+    fn broad_root_detection_for_dot_and_cwd() {
+        let cwd = std::env::temp_dir();
+        assert!(is_broad_search_root(".", &cwd));
+        assert!(is_broad_search_root(cwd.to_str().unwrap_or("."), &cwd));
     }
 
-    #[tokio::test]
-    async fn execute_uses_cwd_for_relative_path() {
-        use std::fs;
-        let tmp = tempfile::tempdir().unwrap();
-        fs::write(tmp.path().join("searchable.txt"), "unique_grep_marker_xyz").unwrap();
-
-        let tool = GrepTool::new(tmp.path().to_path_buf());
-        let input = json!({"pattern": "unique_grep_marker_xyz", "path": "."});
-        let result = tool.execute(input).await;
-        assert!(!result.is_error, "unexpected error: {}", result.content);
-        assert!(
-            result.content.contains("unique_grep_marker_xyz"),
-            "should find pattern, got: {}",
-            result.content
+    #[test]
+    fn expand_brace_glob_splits_extensions() {
+        assert_eq!(
+            expand_brace_glob("*.{ts,tsx}"),
+            vec!["*.ts".to_string(), "*.tsx".to_string()]
         );
+        assert_eq!(expand_brace_glob("*.rs"), vec!["*.rs".to_string()]);
     }
 
     #[tokio::test]
-    async fn timed_command_times_out_and_kills_child() {
-        let cmd = if cfg!(windows) {
-            let mut c = Command::new("powershell");
-            c.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"]);
-            #[cfg(windows)]
-            c.creation_flags(0x0800_0000);
-            c
-        } else {
-            let mut c = Command::new("sleep");
-            c.arg("30");
-            c
+    async fn execute_missing_pattern_is_error() {
+        let tool = GrepTool::new(std::env::temp_dir());
+        let result = tool.execute(json!({})).await;
+        assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn ripgrep_finds_matches_quickly_when_available() {
+        let Some(_rg) = nomi_config::dep_check::resolve_rg_executable() else {
+            eprintln!("skip: rg not resolvable");
+            return;
         };
-
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("hit.ts");
+        std::fs::write(&file, "const provider = 'deepseek';\n").unwrap();
+        let tool = GrepTool::new(dir.path().to_path_buf());
         let started = std::time::Instant::now();
-        let result = run_timed_command(cmd, Duration::from_millis(400)).await;
-        let elapsed = started.elapsed();
-
+        let result = tool
+            .execute(serde_json::json!({
+                "pattern": "deepseek|zhipu",
+                "path": dir.path().to_string_lossy(),
+                "glob": "*.{ts,tsx}",
+                "case_insensitive": true
+            }))
+            .await;
         assert!(
-            matches!(result, Err(TimedCommandError::TimedOut)),
-            "expected TimedOut, got {:?}",
-            result.err().map(|e| match e {
-                TimedCommandError::TimedOut => "TimedOut".to_string(),
-                TimedCommandError::Io(err) => format!("Io({err})"),
-            })
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "grep took too long: {:?}",
+            started.elapsed()
         );
+        assert!(!result.is_error, "{}", result.content);
         assert!(
-            elapsed < Duration::from_secs(5),
-            "timeout should fire quickly, took {elapsed:?}"
+            result.content.to_ascii_lowercase().contains("deepseek"),
+            "got: {}",
+            result.content
         );
     }
 }

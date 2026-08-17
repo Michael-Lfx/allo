@@ -346,10 +346,12 @@ const NomiSendBox: React.FC<{
   const [isStopping, setIsStopping] = useState(false);
   const [editTargetChangedNotice, setEditTargetChangedNotice] = useState(false);
   const showStrongBusy =
-    (running || presentation.phase === 'local_pending' || presentation.phase === 'accepted') &&
-    presentation.showStop !== false &&
-    presentation.phase !== 'finalizing';
-  const isBusy = showStrongBusy || isStopping;
+    running ||
+    presentation.showStop ||
+    isStopping ||
+    presentation.phase === 'local_pending' ||
+    presentation.phase === 'accepted';
+  const isBusy = showStrongBusy;
   const { beginStopAttempt, getStopAttemptStatus } = useConversationStopAttemptGuard(
     conversation_id,
     getTurnStartGeneration,

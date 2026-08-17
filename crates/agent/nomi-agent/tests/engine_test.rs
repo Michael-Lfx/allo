@@ -1496,8 +1496,8 @@ async fn plan_mode_instructions_ride_turn_tail_not_system_prompt() {
         "plan mode instructions must NOT be appended to the system prompt"
     );
 
-    // Plan instructions ride the turn tail. After the tool result the last
-    // message is the fresh user message appended by inject_turn_tail_context.
+    // Plan instructions ride the turn tail (prepended onto the last user
+    // message — including pure tool-result turns).
     let last = requests[1]
         .messages
         .last()

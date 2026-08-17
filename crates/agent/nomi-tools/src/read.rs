@@ -19,7 +19,8 @@ use crate::output_truncation::{TruncationBudget, truncate_middle};
 /// Saves tokens by avoiding re-sending identical content.
 const FILE_UNCHANGED_STUB: &str = "File unchanged since last read. The content from the earlier Read \
      tool_result in this conversation is still current — refer to that \
-     instead of re-reading.";
+     instead of re-reading. Do NOT call Read on this path again; Edit with the \
+     anchors/text you already have, or stop.";
 
 /// Soft-miss guidance when the model probes for optional session memory.
 /// Must stay `is_error: false` so coordination does not cascade-skip the
@@ -283,11 +284,7 @@ impl ReadTool {
         let end = effective_offset.saturating_add(effective_limit).min(lines.len());
         let slice = &lines[effective_offset.min(lines.len())..end];
 
-        let numbered: Vec<String> = slice
-            .iter()
-            .enumerate()
-            .map(|(i, line)| format!("{:>6}\t{}", effective_offset + i + 1, line))
-            .collect();
+        let numbered: Vec<String> = crate::anchors::render_anchored_lines(slice, effective_offset + 1);
 
         let result_content = numbered.join("\n");
 
@@ -411,16 +408,17 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Reads one or more files from the local filesystem. Returns content with line numbers.\n\n\
+        "Reads one or more files from the local filesystem. Returns content with line:hash anchors.\n\n\
          Usage:\n\
          - Use file_path for one file, or file_paths for several already-known files that need the same slice.\n\
          - Prefer absolute paths; relative paths are resolved against the session working directory.\n\
          - By default, it reads the entire file. Use offset and limit for partial reads on large files.\n\
-         - Results are returned with line numbers (1-based) followed by a tab and the line content.\n\
+         - Each line is prefixed with `line:hash→` (e.g. `42:h7x2→code`). Copy the whole `line:hash` \
+         prefix into Edit anchor mode — never fabricate hashes.\n\
          - Image files (jpg/png/gif/webp) are returned as viewable images.\n\
          - Word `.docx` files return extracted body text (paragraphs). Prefer this over shell/officecli when the user only needs content or a summary.\n\
          - Other binary files return \"(binary file, N bytes)\".\n\
-         - This tool can only read files, not directories. To list a directory, use Bash with ls."
+         - This tool can only read files, not directories. To list a directory, use DirTree or Glob."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -551,9 +549,13 @@ mod tests {
         let result = tool.execute(input).await;
 
         assert!(!result.is_error);
-        assert!(result.content.contains("1\tline one"));
-        assert!(result.content.contains("2\tline two"));
-        assert!(result.content.contains("3\tline three"));
+        assert!(result.content.contains("1:"));
+        assert!(result.content.contains("line one"));
+        assert!(result.content.contains("2:"));
+        assert!(result.content.contains("line two"));
+        assert!(result.content.contains("3:"));
+        assert!(result.content.contains("line three"));
+        assert!(result.content.contains(crate::anchors::ANCHOR_SEPARATOR));
     }
 
     #[tokio::test]
@@ -577,9 +579,12 @@ mod tests {
         assert!(!result.is_error);
         let lines: Vec<&str> = result.content.lines().collect();
         assert_eq!(lines.len(), 3);
-        assert!(lines[0].contains("3\tline 3"));
-        assert!(lines[1].contains("4\tline 4"));
-        assert!(lines[2].contains("5\tline 5"));
+        assert!(lines[0].contains("3:"));
+        assert!(lines[0].contains("line 3"));
+        assert!(lines[1].contains("4:"));
+        assert!(lines[1].contains("line 4"));
+        assert!(lines[2].contains("5:"));
+        assert!(lines[2].contains("line 5"));
     }
 
     #[tokio::test]
@@ -667,8 +672,11 @@ mod tests {
         assert!(!result.is_error);
         let lines: Vec<&str> = result.content.lines().collect();
         assert_eq!(lines.len(), 200);
-        assert!(lines[0].contains("1\tline number 1"));
-        assert!(lines[199].contains("200\tline number 200"));
+        assert!(lines[0].contains("1:"));
+        assert!(lines[0].contains(crate::anchors::ANCHOR_SEPARATOR));
+        assert!(lines[0].contains("line number 1"));
+        assert!(lines[199].contains("200:"));
+        assert!(lines[199].contains("line number 200"));
     }
 
     // -- Dedup tests (with cache) --

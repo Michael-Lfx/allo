@@ -456,6 +456,18 @@ pub struct NomiBuildExtra {
     /// `extra.reasoning_effort`).
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// Session work mode: `office` (default) or `coding`.
+    #[serde(default)]
+    pub task_profile: Option<String>,
+    /// Coding harness verification mode: `soft_hint` (default) | `hard_gate` | `off`.
+    #[serde(default)]
+    pub coding_verification: Option<String>,
+    /// When true (default under coding), Read results are not microcompact-cleared.
+    #[serde(default)]
+    pub coding_protect_read: Option<bool>,
+    /// Optional override for microcompact keep-recent under coding mode.
+    #[serde(default)]
+    pub coding_micro_keep_recent: Option<usize>,
 }
 
 fn default_nomi_max_tokens() -> u32 {

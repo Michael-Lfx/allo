@@ -100,6 +100,7 @@ async fn bootstrap_registers_all_expected_tools() {
         "Bash",
         "Grep",
         "Glob",
+        "DirTree",
         "web_search",
         "web_extract",
         "exec_command",

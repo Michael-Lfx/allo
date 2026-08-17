@@ -128,6 +128,7 @@ const GuidPage: React.FC = () => {
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | undefined>(() =>
     readPreferredReasoningEffort()
   );
+  const [selectedTaskProfile, setSelectedTaskProfile] = useState<'office' | 'coding'>('office');
   const [isHomeAddMenuOpen, setIsHomeAddMenuOpen] = useState(false);
   const [homeAddMenuActiveIndex, setHomeAddMenuActiveIndex] = useState(0);
   const pendingAutoSendRef = useRef(false);
@@ -524,6 +525,7 @@ const GuidPage: React.FC = () => {
     selectedAcpModel: agentSelection.selectedAcpModel,
     current_model: modelSelection.current_model,
     reasoningEffort: selectedReasoningEffort,
+    taskProfile: selectedTaskProfile,
 
     // Agent helpers
     findAgentByKey: agentSelection.findAgentByKey,
@@ -1184,6 +1186,14 @@ const GuidPage: React.FC = () => {
                   }}
                   miniAppActive={miniAppMode}
                   onDismissMiniApp={() => setMiniAppMode(false)}
+                  taskProfile={selectedTaskProfile}
+                  onTaskProfileChange={setSelectedTaskProfile}
+                  hideTaskProfile={
+                    !(
+                      agentSelection.selectedAgent === 'nomi' ||
+                      agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi'
+                    )
+                  }
                 />
               }
             />
