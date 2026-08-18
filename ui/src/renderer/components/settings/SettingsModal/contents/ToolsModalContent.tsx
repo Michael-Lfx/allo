@@ -1,11 +1,10 @@
 
-
 import type { IMcpServer } from '@/common/config/storage';
 import { getAgents } from '@/renderer/hooks/agent/useAgents';
 import { Message, Button, Dropdown, Menu, Modal } from '@arco-design/web-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { Down, Plus } from '@icon-park/react';
-import React, { useCallback, useEffect, useImperativeHandle, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AddMcpServerModal from '@/renderer/pages/settings/components/AddMcpServerModal';
 import ExtensionMcpServerItem from '@/renderer/pages/settings/ToolsSettings/ExtensionMcpServerItem';
@@ -23,19 +22,104 @@ export type McpInstalledPanelHandle = {
   openAdd: (mode: 'json' | 'oneclick') => void;
 };
 
-const ModalMcpManagementSection = React.forwardRef<
-  McpInstalledPanelHandle,
-  {
-    message: MessageInstance;
-    mcpServers: IMcpServer[];
-    extensionMcpServers: ExtensionMcpServerContribution[];
-    setMcpServers: React.Dispatch<React.SetStateAction<IMcpServer[]>>;
-    saveMcpServers: (serversOrUpdater: IMcpServer[] | ((prev: IMcpServer[]) => IMcpServer[])) => Promise<void>;
-    hideChrome?: boolean;
-    searchQuery?: string;
-    showList?: boolean;
+type McpConnectionTesters = {
+  handleTestMcpConnection: (server: IMcpServer, options?: { notify?: boolean }) => Promise<void>;
+  handleTestMcpConnections: (
+    servers: IMcpServer[],
+    options?: { notify?: boolean; concurrency?: number }
+  ) => Promise<void>;
+};
+
+function McpAddChrome({
+  onOpenJson,
+  onOpenOneClick,
+}: {
+  onOpenJson: () => void;
+  onOpenOneClick: () => void;
+}) {
+  const { t } = useTranslation();
+  const [detectedAgents, setDetectedAgents] = useState<Array<{ backend: string; name: string }>>([]);
+
+  useEffect(() => {
+    void getAgents()
+      .then((agents) => {
+        setDetectedAgents(agents.map((agent) => ({ backend: agent.backend ?? '', name: agent.name })));
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to load agents:', error);
+      });
+  }, []);
+
+  if (detectedAgents.length > 0) {
+    return (
+      <Dropdown
+        trigger='click'
+        droplist={
+          <Menu>
+            <Menu.Item
+              key='json'
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenJson();
+              }}
+            >
+              {t('settings.mcpImportFromJSON')}
+            </Menu.Item>
+            <Menu.Item
+              key='oneclick'
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenOneClick();
+              }}
+            >
+              {t('settings.mcpOneKeyImport')}
+            </Menu.Item>
+          </Menu>
+        }
+      >
+        <Button type='outline' className='flowy-icon-text-btn' icon={<Plus size={'16'} />} shape='round' onClick={(e) => e.stopPropagation()}>
+          {t('settings.mcpAddServer')} <Down size='12' />
+        </Button>
+      </Dropdown>
+    );
   }
->(({ message, mcpServers, extensionMcpServers, setMcpServers, saveMcpServers, hideChrome = false, searchQuery = '', showList = true }, ref) => {
+
+  return (
+    <Button
+      type='outline'
+      className='flowy-icon-text-btn'
+      icon={<Plus size={'16'} />}
+      shape='round'
+      onClick={onOpenJson}
+    >
+      {t('settings.mcpAddServer')}
+    </Button>
+  );
+}
+
+function McpInstalledList({
+  message,
+  mcpServers,
+  extensionMcpServers,
+  setMcpServers,
+  searchQuery,
+  mcpCollapseKey,
+  toggleServerCollapse,
+  showEditMcpModal,
+  showDeleteConfirm,
+  testersRef,
+}: {
+  message: MessageInstance;
+  mcpServers: IMcpServer[];
+  extensionMcpServers: ExtensionMcpServerContribution[];
+  setMcpServers: React.Dispatch<React.SetStateAction<IMcpServer[]>>;
+  searchQuery: string;
+  mcpCollapseKey: Record<string, boolean>;
+  toggleServerCollapse: (uiKey: string) => void;
+  showEditMcpModal: (server: IMcpServer) => void;
+  showDeleteConfirm: (serverId: IMcpServer['mcp_server_id']) => void;
+  testersRef: React.RefObject<McpConnectionTesters | null>;
+}) {
   const { t } = useTranslation();
   const { oauthStatus, loggingIn, checkOAuthStatus, markLoginRequired, clearLoginRequired, login } = useMcpOAuth();
   const visibleMcpServers = useMemo(() => {
@@ -71,34 +155,13 @@ const ModalMcpManagementSection = React.forwardRef<
     handleAuthRequired,
     handleAuthResolved
   );
-  const {
-    showMcpModal,
-    editingMcpServer,
-    deleteConfirmVisible,
-    serverToDelete,
-    mcpCollapseKey,
-    showAddMcpModal,
-    showEditMcpModal,
-    hideMcpModal,
-    showDeleteConfirm,
-    hideDeleteConfirm,
-    toggleServerCollapse,
-  } = useMcpModal();
-  const { handleAddMcpServer, handleBatchImportMcpServers, handleEditMcpServer, handleDeleteMcpServer } =
-    useMcpServerCRUD(saveMcpServers);
-  const [detectedAgents, setDetectedAgents] = useState<Array<{ backend: string; name: string }>>([]);
-  const [importMode, setImportMode] = useState<'json' | 'oneclick'>('json');
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      openAdd: (mode) => {
-        setImportMode(mode);
-        showAddMcpModal();
-      },
-    }),
-    [showAddMcpModal]
-  );
+  useEffect(() => {
+    testersRef.current = { handleTestMcpConnection, handleTestMcpConnections };
+    return () => {
+      testersRef.current = null;
+    };
+  }, [handleTestMcpConnection, handleTestMcpConnections, testersRef]);
 
   const handleOAuthLogin = useCallback(
     async (server: IMcpServer) => {
@@ -114,54 +177,6 @@ const ModalMcpManagementSection = React.forwardRef<
     [login, message, t, handleTestMcpConnection]
   );
 
-  const wrappedHandleAddMcpServer = useCallback(
-    async (serverData: Omit<IMcpServer, 'mcp_server_id' | 'created_at' | 'updated_at'>) => {
-      const addedServer = await handleAddMcpServer(serverData);
-      if (addedServer) {
-        void handleTestMcpConnection(addedServer, { notify: false });
-      }
-    },
-    [handleAddMcpServer, handleTestMcpConnection]
-  );
-
-  const wrappedHandleEditMcpServer = useCallback(
-    async (serverToEdit: IMcpServer | undefined, serverData: Omit<IMcpServer, 'mcp_server_id' | 'created_at' | 'updated_at'>) => {
-      const updatedServer = await handleEditMcpServer(serverToEdit, serverData);
-      if (updatedServer) {
-        void handleTestMcpConnection(updatedServer, { notify: false });
-      }
-    },
-    [handleEditMcpServer, handleTestMcpConnection]
-  );
-
-  const wrappedHandleBatchImportMcpServers = useCallback(
-    async (serversData: Omit<IMcpServer, 'mcp_server_id' | 'created_at' | 'updated_at'>[]) => {
-      const addedServers = await handleBatchImportMcpServers(serversData);
-      if (addedServers && addedServers.length > 0) {
-        await handleTestMcpConnections(addedServers, { concurrency: 4, notify: false });
-      }
-      return addedServers;
-    },
-    [handleBatchImportMcpServers, handleTestMcpConnections]
-  );
-
-  useEffect(() => {
-    const loadAgents = async () => {
-      try {
-        const agents = await getAgents();
-        setDetectedAgents(
-          agents.map((agent) => ({
-            backend: agent.backend ?? '',
-            name: agent.name,
-          }))
-        );
-      } catch (error) {
-        console.error('Failed to load agents:', error);
-      }
-    };
-    void loadAgents();
-  }, []);
-
   useEffect(() => {
     const httpServers = mcpServers.filter(
       (s) => s.transport.type === 'http' || s.transport.type === 'sse' || s.transport.type === 'streamable_http'
@@ -173,115 +188,163 @@ const ModalMcpManagementSection = React.forwardRef<
     }
   }, [mcpServers, checkOAuthStatus]);
 
+  return (
+    <div className='flex-1 min-h-0'>
+      {visibleMcpServers.length === 0 && visibleExtensionServers.length === 0 ? (
+        <div className='py-24px text-center text-t-secondary text-14px border border-dashed border-border-2 rd-12px'>
+          {t('settings.mcpNoServersFound')}
+        </div>
+      ) : (
+        <div className='space-y-12px'>
+          {visibleMcpServers.map((server) => {
+            const uiKey = mcpServerUiKey(server.mcp_server_id);
+            return (
+              <McpServerItem
+                key={server.mcp_server_id}
+                server={server}
+                isCollapsed={mcpCollapseKey[uiKey] || false}
+                isTestingConnection={testingServers[server.mcp_server_id] || false}
+                oauthStatus={oauthStatus[server.mcp_server_id]}
+                isLoggingIn={loggingIn[server.mcp_server_id]}
+                onToggleCollapse={() => toggleServerCollapse(uiKey)}
+                onTestConnection={handleTestMcpConnection}
+                onEditServer={showEditMcpModal}
+                onDeleteServer={showDeleteConfirm}
+                onOAuthLogin={handleOAuthLogin}
+              />
+            );
+          })}
+          {visibleExtensionServers.map((server) => {
+            const uiKey = extensionMcpUiKey(server.source_key);
+            return (
+              <ExtensionMcpServerItem
+                key={uiKey}
+                server={server}
+                isCollapsed={mcpCollapseKey[uiKey] || false}
+                onToggleCollapse={() => toggleServerCollapse(uiKey)}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ModalMcpManagementSection = React.forwardRef<
+  McpInstalledPanelHandle,
+  {
+    message: MessageInstance;
+    mcpServers: IMcpServer[];
+    extensionMcpServers: ExtensionMcpServerContribution[];
+    setMcpServers: React.Dispatch<React.SetStateAction<IMcpServer[]>>;
+    saveMcpServers: (serversOrUpdater: IMcpServer[] | ((prev: IMcpServer[]) => IMcpServer[])) => Promise<void>;
+    hideChrome?: boolean;
+    searchQuery?: string;
+    showList?: boolean;
+  }
+>(({ message, mcpServers, extensionMcpServers, setMcpServers, saveMcpServers, hideChrome = false, searchQuery = '', showList = true }, ref) => {
+  const { t } = useTranslation();
+  const testersRef = useRef<McpConnectionTesters | null>(null);
+  const {
+    showMcpModal,
+    editingMcpServer,
+    deleteConfirmVisible,
+    serverToDelete,
+    mcpCollapseKey,
+    showAddMcpModal,
+    showEditMcpModal,
+    hideMcpModal,
+    showDeleteConfirm,
+    hideDeleteConfirm,
+    toggleServerCollapse,
+  } = useMcpModal();
+  const { handleAddMcpServer, handleBatchImportMcpServers, handleEditMcpServer, handleDeleteMcpServer } =
+    useMcpServerCRUD(saveMcpServers);
+  const [importMode, setImportMode] = useState<'json' | 'oneclick'>('json');
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      openAdd: (mode) => {
+        setImportMode(mode);
+        showAddMcpModal();
+      },
+    }),
+    [showAddMcpModal]
+  );
+
+  const wrappedHandleAddMcpServer = useCallback(
+    async (serverData: Omit<IMcpServer, 'mcp_server_id' | 'created_at' | 'updated_at'>) => {
+      const addedServer = await handleAddMcpServer(serverData);
+      if (addedServer) {
+        void testersRef.current?.handleTestMcpConnection(addedServer, { notify: false });
+      }
+    },
+    [handleAddMcpServer]
+  );
+
+  const wrappedHandleEditMcpServer = useCallback(
+    async (serverToEdit: IMcpServer | undefined, serverData: Omit<IMcpServer, 'mcp_server_id' | 'created_at' | 'updated_at'>) => {
+      const updatedServer = await handleEditMcpServer(serverToEdit, serverData);
+      if (updatedServer) {
+        void testersRef.current?.handleTestMcpConnection(updatedServer, { notify: false });
+      }
+    },
+    [handleEditMcpServer]
+  );
+
+  const wrappedHandleBatchImportMcpServers = useCallback(
+    async (serversData: Omit<IMcpServer, 'mcp_server_id' | 'created_at' | 'updated_at'>[]) => {
+      const addedServers = await handleBatchImportMcpServers(serversData);
+      if (addedServers && addedServers.length > 0) {
+        await testersRef.current?.handleTestMcpConnections(addedServers, { concurrency: 4, notify: false });
+      }
+      return addedServers;
+    },
+    [handleBatchImportMcpServers]
+  );
+
   const handleConfirmDelete = useCallback(async () => {
     if (!serverToDelete) return;
     hideDeleteConfirm();
     await handleDeleteMcpServer(serverToDelete);
   }, [serverToDelete, hideDeleteConfirm, handleDeleteMcpServer]);
 
-  const renderAddButton = () => {
-    if (detectedAgents.length > 0) {
-      return (
-        <Dropdown
-          trigger='click'
-          droplist={
-            <Menu>
-              <Menu.Item
-                key='json'
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setImportMode('json');
-                  showAddMcpModal();
-                }}
-              >
-                {t('settings.mcpImportFromJSON')}
-              </Menu.Item>
-              <Menu.Item
-                key='oneclick'
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setImportMode('oneclick');
-                  showAddMcpModal();
-                }}
-              >
-                {t('settings.mcpOneKeyImport')}
-              </Menu.Item>
-            </Menu>
-          }
-        >
-          <Button type='outline' className='flowy-icon-text-btn' icon={<Plus size={'16'} />} shape='round' onClick={(e) => e.stopPropagation()}>
-            {t('settings.mcpAddServer')} <Down size='12' />
-          </Button>
-        </Dropdown>
-      );
-    }
-
-    return (
-      <Button
-        type='outline'
-        className='flowy-icon-text-btn'
-        icon={<Plus size={'16'} />}
-        shape='round'
-        onClick={() => {
-          setImportMode('json');
-          showAddMcpModal();
-        }}
-      >
-        {t('settings.mcpAddServer')}
-      </Button>
-    );
-  };
-
   return (
     <div className='flex flex-col gap-16px min-h-0'>
       {!hideChrome && (
       <div className='flex gap-8px items-center justify-between'>
         <div className='text-14px text-t-primary'>{t('settings.mcpSettings')}</div>
-        <div>{renderAddButton()}</div>
+        <div>
+          <McpAddChrome
+            onOpenJson={() => {
+              setImportMode('json');
+              showAddMcpModal();
+            }}
+            onOpenOneClick={() => {
+              setImportMode('oneclick');
+              showAddMcpModal();
+            }}
+          />
+        </div>
       </div>
       )}
 
-      {showList && (
-      <div className='flex-1 min-h-0'>
-        {visibleMcpServers.length === 0 && visibleExtensionServers.length === 0 ? (
-          <div className='py-24px text-center text-t-secondary text-14px border border-dashed border-border-2 rd-12px'>
-            {t('settings.mcpNoServersFound')}
-          </div>
-        ) : (
-          <div className='space-y-12px'>
-              {visibleMcpServers.map((server) => {
-                const uiKey = mcpServerUiKey(server.mcp_server_id);
-                return (
-                  <McpServerItem
-                    key={server.mcp_server_id}
-                    server={server}
-                    isCollapsed={mcpCollapseKey[uiKey] || false}
-                    isTestingConnection={testingServers[server.mcp_server_id] || false}
-                    oauthStatus={oauthStatus[server.mcp_server_id]}
-                    isLoggingIn={loggingIn[server.mcp_server_id]}
-                    onToggleCollapse={() => toggleServerCollapse(uiKey)}
-                    onTestConnection={handleTestMcpConnection}
-                    onEditServer={showEditMcpModal}
-                    onDeleteServer={showDeleteConfirm}
-                    onOAuthLogin={handleOAuthLogin}
-                  />
-                );
-              })}
-              {visibleExtensionServers.map((server) => {
-                const uiKey = extensionMcpUiKey(server.source_key);
-                return (
-                  <ExtensionMcpServerItem
-                    key={uiKey}
-                    server={server}
-                    isCollapsed={mcpCollapseKey[uiKey] || false}
-                    onToggleCollapse={() => toggleServerCollapse(uiKey)}
-                  />
-                );
-              })}
-          </div>
-        )}
-      </div>
-      )}
+      {showList ? (
+        <McpInstalledList
+          message={message}
+          mcpServers={mcpServers}
+          extensionMcpServers={extensionMcpServers}
+          setMcpServers={setMcpServers}
+          searchQuery={searchQuery}
+          mcpCollapseKey={mcpCollapseKey}
+          toggleServerCollapse={toggleServerCollapse}
+          showEditMcpModal={showEditMcpModal}
+          showDeleteConfirm={showDeleteConfirm}
+          testersRef={testersRef}
+        />
+      ) : null}
 
       <AddMcpServerModal
         visible={showMcpModal}

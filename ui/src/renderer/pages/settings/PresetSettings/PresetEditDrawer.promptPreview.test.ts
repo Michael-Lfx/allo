@@ -17,12 +17,15 @@ describe('PresetEditDrawer prompt preview typography', () => {
         'const promptPreviewContent = useMemo(() => stripSkillFrontmatter(editContext).trim(), [editContext]);'
       )
     ).toBe(true);
-    expect(drawerSource.includes('<MarkdownView hiddenCodeCopyButton compact>')).toBe(true);
+    expect(/from ['"]@\/renderer\/components\/Markdown['"]/.test(drawerSource)).toBe(false);
+    expect(drawerSource.includes("from '@/renderer/components/Markdown/LazyMarkdownView'")).toBe(true);
+    expect(drawerSource.includes('<LazyMarkdownView hiddenCodeCopyButton compact>')).toBe(true);
     expect(
       drawerSource.match(
-        /<MarkdownView[^>]*compact[^>]*>[\s\S]*?\{promptPreviewContent\}[\s\S]*?<\/MarkdownView>/
+        /<LazyMarkdownView[^>]*compact[^>]*>[\s\S]*?\{promptPreviewContent\}[\s\S]*?<\/LazyMarkdownView>/
       )
     ).not.toBeNull();
+    expect(drawerSource.includes('{editContext}</LazyMarkdownView>')).toBe(false);
     expect(drawerSource.includes('{editContext}</MarkdownView>')).toBe(false);
   });
 });

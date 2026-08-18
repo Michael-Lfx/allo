@@ -2,13 +2,14 @@
  * SkillsSettingsPage — skills hub inside the shared capability chrome.
  * Market is the default surface; `?view=installed` shows the local library.
  */
-import { ipcBridge } from '@/common';
 import React, { useCallback, useEffect, useState } from 'react';
+import useSWR from 'swr';
 import CapabilityHubShell, { useCapabilityHubSearch } from './capabilityHub/CapabilityHubShell';
 import { useCapabilityHubRoute } from './capabilityHub/useCapabilityHubRoute';
 import SkillMarketSettings from './SkillMarketSettings';
 import SkillsHubSettings from './SkillsHubSettings';
 import SkillImportMenu from './skill/SkillImportMenu';
+import { AVAILABLE_SKILLS_SWR_KEY, fetchAvailableSkills } from './skill/availableSkills';
 
 const SkillsHubBody: React.FC<{ onInstalledCountChange: (count: number) => void }> = ({
   onInstalledCountChange,
@@ -37,18 +38,16 @@ const SkillsHubBody: React.FC<{ onInstalledCountChange: (count: number) => void 
 };
 
 const SkillsSettingsPage: React.FC = () => {
+  const { data: skills, mutate } = useSWR(AVAILABLE_SKILLS_SWR_KEY, fetchAvailableSkills);
   const [installedCount, setInstalledCount] = useState(0);
 
-  const refreshInstalledCount = useCallback(() => {
-    void ipcBridge.fs.listAvailableSkills
-      .invoke()
-      .then((skills) => setInstalledCount(skills.length))
-      .catch(() => setInstalledCount(0));
-  }, []);
-
   useEffect(() => {
-    refreshInstalledCount();
-  }, [refreshInstalledCount]);
+    if (skills) setInstalledCount(skills.length);
+  }, [skills]);
+
+  const refreshInstalledCount = useCallback(() => {
+    void mutate();
+  }, [mutate]);
 
   return (
     <CapabilityHubShell

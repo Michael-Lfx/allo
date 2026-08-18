@@ -27,7 +27,7 @@ import {
   type SelectedPresetSkill,
 } from './presetSkillBindings';
 import EmojiPicker from '@/renderer/components/chat/EmojiPicker';
-import MarkdownView from '@/renderer/components/Markdown';
+import LazyMarkdownView from '@/renderer/components/Markdown/LazyMarkdownView';
 import NomiSelect from '@/renderer/components/base/NomiSelect';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
@@ -247,7 +247,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
 
   const agentOptions = availableBackends;
 
-  const { groups: chatGroups } = useModelsForTask('chat');
+  const { groups: chatGroups } = useModelsForTask('chat', undefined, { enabled: editVisible });
   const providerLabel = useModelSelectorProviderLabel();
   const modelOptions = useMemo(() => {
     const options = new Map<string, { value: string; label: string }>();
@@ -264,8 +264,8 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
     return Array.from(options.values());
   }, [chatGroups, editModels, providerLabel]);
   const selectedModelValues = editModels.map((item) => `${item.provider_id ?? ANY_PROVIDER_TOKEN}::${item.model}`);
-  const { bases: knowledgeBases } = useKnowledgeBases();
-  const { mcpServers } = useMcpServers();
+  const { bases: knowledgeBases } = useKnowledgeBases({ enabled: editVisible });
+  const { mcpServers } = useMcpServers({ enabled: editVisible });
   const userMcpServers = mcpServers.filter((server) => server.builtin !== true);
 
   const targetOptions: Array<{ value: PresetTarget; label: string }> = [
@@ -373,6 +373,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
       }
       closable={false}
       visible={editVisible}
+      unmountOnExit
       placement='right'
       width={drawerWidth}
       zIndex={1200}
@@ -855,9 +856,9 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 ) : (
                   <div className='p-16px'>
                     {promptPreviewContent ? (
-                      <MarkdownView hiddenCodeCopyButton compact>
+                      <LazyMarkdownView hiddenCodeCopyButton compact>
                         {promptPreviewContent}
-                      </MarkdownView>
+                      </LazyMarkdownView>
                     ) : (
                       <div className='text-t-secondary text-center py-32px'>
                         {t('settings.promptPreviewEmpty', { defaultValue: 'No content to preview' })}

@@ -7,7 +7,6 @@ import { useTranslation } from 'react-i18next';
 import BeautifulUiCodeBlock from '@renderer/components/beautifulUi/codeBlock/CodeBlock';
 import { beautifulUiHighlightStyle } from '@renderer/components/beautifulUi/codeBlock/codeBlockHighlight';
 import { filenameFromFenceNode } from '@renderer/components/beautifulUi/codeBlock/codeBlockLanguage';
-import MermaidBlock from './MermaidBlock';
 import { formatCode, getDiffLineStyle } from './markdownUtils';
 import SyntaxHighlighter from './SyntaxHighlighter';
 
@@ -15,6 +14,8 @@ const PREVIEW_LINES = 3;
 const CODE_LINE_HEIGHT = 20;
 const CODE_PADDING_VERTICAL = 20;
 const COLLAPSED_HEIGHT = PREVIEW_LINES * CODE_LINE_HEIGHT + CODE_PADDING_VERTICAL;
+
+const MermaidBlock = React.lazy(() => import('./MermaidBlock'));
 
 type CodeBlockProps = {
   children: string;
@@ -75,7 +76,11 @@ function CodeBlock(props: CodeBlockProps) {
   }
 
   if (language === 'mermaid') {
-    return <MermaidBlock code={formatCode(children)} style={props.codeStyle} />;
+    return (
+      <React.Suspense fallback={<div className='markdown-mermaid-loading' aria-busy='true' />}>
+        <MermaidBlock code={formatCode(children)} style={props.codeStyle} />
+      </React.Suspense>
+    );
   }
 
   // Inline code (single line)

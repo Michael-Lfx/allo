@@ -8,13 +8,20 @@ import { parseExtensionMcpServers, type ExtensionMcpServerContribution } from '.
  * MCP server state hook.
  * Combines backend-managed user servers with extension-contributed servers.
  */
-export const useMcpServers = () => {
+export const useMcpServers = (options?: { enabled?: boolean }) => {
+  const enabled = options?.enabled ?? true;
   const [mcpServers, setMcpServers] = useState<IMcpServer[]>([]);
   const [extensionMcpServers, setExtensionMcpServers] = useState<ExtensionMcpServerContribution[]>([]);
-  const [isMcpServersLoading, setIsMcpServersLoading] = useState(true);
+  const [isMcpServersLoading, setIsMcpServersLoading] = useState(enabled);
   const [mcpServersLoadFailed, setMcpServersLoadFailed] = useState(false);
 
   useEffect(() => {
+    if (!enabled) {
+      setIsMcpServersLoading(false);
+      return;
+    }
+
+    setIsMcpServersLoading(true);
     void ensureBackendMcpCatalog()
       .then(({ allServers }) => {
         setMcpServers(allServers);
@@ -49,7 +56,7 @@ export const useMcpServers = () => {
         console.error('[useMcpServers] Failed to load extension MCP servers:', error);
         setExtensionMcpServers([]);
       });
-  }, []);
+  }, [enabled]);
 
   const saveMcpServers = useCallback((serversOrUpdater: IMcpServer[] | ((prev: IMcpServer[]) => IMcpServer[])) => {
     return new Promise<void>((resolve) => {

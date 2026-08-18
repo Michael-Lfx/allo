@@ -7,7 +7,8 @@ import type {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 /** Loads the merged tag vocabulary and exposes CRUD + per-dimension views. */
-export const usePresetTags = () => {
+export const usePresetTags = (options?: { enabled?: boolean }) => {
+  const enabled = options?.enabled ?? true;
   const [tags, setTags] = useState<PresetTag[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -24,8 +25,9 @@ export const usePresetTags = () => {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     void loadTags();
-  }, [loadTags]);
+  }, [enabled, loadTags]);
 
   const audienceTags = useMemo(
     () => tags.filter((t) => t.dimension === 'audience').sort((a, b) => a.sort_order - b.sort_order),

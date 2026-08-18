@@ -37,4 +37,13 @@ describe('CodeMirror shared seam', () => {
       expect(text.includes("@renderer/components/editors/CodeMirrorEditor")).toBe(true);
     }
   });
+
+  test('defers JsonImportModal until Add MCP is opened', () => {
+    const addModal = readFileSync(
+      new URL('../../pages/settings/components/AddMcpServerModal.tsx', import.meta.url),
+      'utf8'
+    );
+    expect(addModal.includes("import JsonImportModal from './JsonImportModal'")).toBe(false);
+    expect(addModal.includes("React.lazy(() => import('./JsonImportModal'))")).toBe(true);
+  });
 });

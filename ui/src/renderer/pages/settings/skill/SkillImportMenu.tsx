@@ -3,7 +3,7 @@ import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { Button, Dropdown, Menu } from '@arco-design/web-react';
 import { FileZip, FolderOpen } from '@icon-park/react';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AgentSkillImportDrawer from './AgentSkillImportDrawer';
 import type { ExternalAgentSkillSource } from './agentSkillImportUtils';
@@ -27,7 +27,8 @@ const SkillImportMenu: React.FC<SkillImportMenuProps> = ({ onImported }) => {
     }
   }, []);
 
-  useEffect(() => {
+  const openAgentImport = useCallback(() => {
+    setAgentImportVisible(true);
     void refreshExistingNames();
   }, [refreshExistingNames]);
 
@@ -93,7 +94,7 @@ const SkillImportMenu: React.FC<SkillImportMenuProps> = ({ onImported }) => {
         trigger='click'
         droplist={
           <Menu>
-            <Menu.Item key='agent' data-testid='btn-import-agent-skills' onClick={() => setAgentImportVisible(true)}>
+            <Menu.Item key='agent' data-testid='btn-import-agent-skills' onClick={openAgentImport}>
               <FolderOpen size={14} fill='currentColor' /> {t('settings.agentSkillImport.shortAction', { defaultValue: 'Import from Agent' })}
             </Menu.Item>
             <Menu.Item key='folder' data-testid='btn-manual-import' onClick={() => void handleImportFolder()}>

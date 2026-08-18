@@ -1,8 +1,9 @@
 import type { IMcpServer } from '@/common/config/storage';
 import { getAgents } from '@/renderer/hooks/agent/useAgents';
-import React, { useEffect, useState } from 'react';
-import JsonImportModal from './JsonImportModal';
-import OneClickImportModal from './OneClickImportModal';
+import React, { Suspense, useEffect, useState } from 'react';
+
+const JsonImportModal = React.lazy(() => import('./JsonImportModal'));
+const OneClickImportModal = React.lazy(() => import('./OneClickImportModal'));
 
 interface AddMcpServerModalProps {
   visible: boolean;
@@ -70,21 +71,25 @@ const AddMcpServerModal: React.FC<AddMcpServerModalProps> = ({
   if (!visible) return null;
 
   return (
-    <>
-      <JsonImportModal
-        visible={showJsonModal}
-        server={server}
-        onCancel={handleModalCancel}
-        onSubmit={onSubmit}
-        onBatchImport={onBatchImport}
-      />
-      <OneClickImportModal
-        visible={showOneClickModal}
-        existingServerNames={existingServerNames}
-        onCancel={handleModalCancel}
-        onBatchImport={onBatchImport}
-      />
-    </>
+    <Suspense fallback={null}>
+      {showJsonModal ? (
+        <JsonImportModal
+          visible={showJsonModal}
+          server={server}
+          onCancel={handleModalCancel}
+          onSubmit={onSubmit}
+          onBatchImport={onBatchImport}
+        />
+      ) : null}
+      {showOneClickModal ? (
+        <OneClickImportModal
+          visible={showOneClickModal}
+          existingServerNames={existingServerNames}
+          onCancel={handleModalCancel}
+          onBatchImport={onBatchImport}
+        />
+      ) : null}
+    </Suspense>
   );
 };
 

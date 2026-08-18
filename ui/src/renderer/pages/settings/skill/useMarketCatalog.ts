@@ -54,6 +54,9 @@ type UseMarketCatalogOptions = {
   text?: MarketCatalogText;
 };
 
+/** Skip automatic ranking sync when a full local cache is newer than this. */
+export const MARKET_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
 export const useMarketCatalog = ({
   sources,
   cacheKey,
@@ -75,22 +78,6 @@ export const useMarketCatalog = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [searchExpanded, setSearchExpanded] = useState(false);
   const [tagFilter, setTagFilter] = useState<TagFilterState>({ audience: [], scenario: [] });
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(cacheKey);
-      if (!raw) return;
-      const cache = JSON.parse(raw) as { fetched_at?: number; items?: unknown; errors?: unknown };
-      const cachedItems = normalizeSkillMarketItems(cache.items).filter((item) => sources.includes(item.source));
-      itemsRef.current = cachedItems;
-      setItems(cachedItems);
-      setActiveSource((source) => selectMarketSourceWithItems(source, sources, cachedItems));
-      setFetchedAt(typeof cache.fetched_at === 'number' ? cache.fetched_at : null);
-      setErrors(normalizeSkillMarketErrors(cache.errors));
-    } catch {
-      localStorage.removeItem(cacheKey);
-    }
-  }, [cacheKey, sources]);
 
   useEffect(() => {
     if (!enableTagFilter) return;
@@ -142,16 +129,45 @@ export const useMarketCatalog = ({
   );
 
   useEffect(() => {
+    let cachedItems: ISkillMarketItem[] = [];
+    let cachedFetchedAt: number | null = null;
+
+    try {
+      const raw = localStorage.getItem(cacheKey);
+      if (raw) {
+        const cache = JSON.parse(raw) as { fetched_at?: number; items?: unknown; errors?: unknown };
+        cachedItems = normalizeSkillMarketItems(cache.items).filter((item) => sources.includes(item.source));
+        cachedFetchedAt = typeof cache.fetched_at === 'number' ? cache.fetched_at : null;
+        itemsRef.current = cachedItems;
+        setItems(cachedItems);
+        setActiveSource((source) => selectMarketSourceWithItems(source, sources, cachedItems));
+        setFetchedAt(cachedFetchedAt);
+        setErrors(normalizeSkillMarketErrors(cache.errors));
+      }
+    } catch {
+      localStorage.removeItem(cacheKey);
+    }
+
     if (autoSyncStartedRef.current) return;
     autoSyncStartedRef.current = true;
+
+    const cacheIsFresh =
+      cachedItems.length > 0 &&
+      cachedFetchedAt !== null &&
+      Date.now() - cachedFetchedAt < MARKET_CACHE_TTL_MS;
+
     try {
       if (sessionStorage.getItem(autoSyncKey) === '1') return;
       sessionStorage.setItem(autoSyncKey, '1');
     } catch {
-      // Storage is an optimization only; the fetch itself is useful.
+      if (cacheIsFresh) return;
+      void syncMarket({ showToast: false });
+      return;
     }
+
+    if (cacheIsFresh) return;
     void syncMarket({ showToast: false });
-  }, [autoSyncKey, syncMarket]);
+  }, [autoSyncKey, cacheKey, sources, syncMarket]);
 
   const skillTagFilter = useMemo<SkillTagFilterState>(() => {
     if (!enableTagFilter) return { audience: [], scenario: [] };

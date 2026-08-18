@@ -34,6 +34,10 @@ describe('market and preset-editor polish contracts', () => {
     // content-visibility keeps offscreen market cards out of layout/paint; guard against silent removal.
     expect(read('./skill/MarketCardGrid.tsx')).toContain('[content-visibility:auto]');
     expect(read('./skill/MarketCardShell.tsx')).toContain('box-border');
+    expect(catalog).toContain('MARKET_CACHE_TTL_MS');
+    expect(catalog).toContain('6 * 60 * 60 * 1000');
+    expect(catalog).toContain('cacheIsFresh');
+    expect(catalog).toContain('Date.now() - cachedFetchedAt < MARKET_CACHE_TTL_MS');
   });
 
   test('keeps preset editing in one drawer with a dirty guard', () => {

@@ -27,4 +27,9 @@ describe('Mermaid Shadow DOM toolbar', () => {
     expect(shadowSource.includes('.markdown-mermaid-loading')).toBe(true);
     expect(shadowSource.includes('@media (prefers-reduced-motion: reduce)')).toBe(true);
   });
+
+  test('does not import the conversation Preview barrel', () => {
+    expect(/from ['"]@\/renderer\/pages\/conversation\/Preview['"]/.test(mermaidSource)).toBe(false);
+    expect(mermaidSource.includes("from '@/renderer/pages/conversation/Preview/context/PreviewContext'")).toBe(true);
+  });
 });

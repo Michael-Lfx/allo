@@ -6,7 +6,7 @@ import SyntaxHighlighter, { vs, vs2015 } from './SyntaxHighlighter';
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import { Message } from '@arco-design/web-react';
 import { Copy, PreviewOpen } from '@icon-park/react';
-import { usePreviewContextOptional } from '@/renderer/pages/conversation/Preview';
+import { usePreviewContextOptional } from '@/renderer/pages/conversation/Preview/context/PreviewContext';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 

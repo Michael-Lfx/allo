@@ -5,7 +5,7 @@
  */
 import { ipcBridge } from '@/common';
 import type { PresetTag } from '@/common/types/agent/presetTypes';
-import MarkdownView from '@/renderer/components/Markdown';
+import LazyMarkdownView from '@/renderer/components/Markdown/LazyMarkdownView';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import type { SkillInfo } from '@/renderer/pages/settings/PresetSettings/types';
 import { Button, Drawer, Spin } from '@arco-design/web-react';
@@ -123,6 +123,7 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
   return (
     <Drawer
       visible={visible}
+      unmountOnExit
       onCancel={onClose}
       placement='right'
       width={isMobile ? '100%' : 760}
@@ -264,9 +265,9 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
                   {content}
                 </pre>
               ) : previewContent ? (
-                <MarkdownView hiddenCodeCopyButton className='text-13px' fontSize='13px' lineHeight='1.65'>
+                <LazyMarkdownView hiddenCodeCopyButton className='text-13px' fontSize='13px' lineHeight='1.65'>
                   {previewContent}
-                </MarkdownView>
+                </LazyMarkdownView>
               ) : (
                 <div className='flex min-h-180px items-center justify-center text-12px text-t-tertiary'>
                   {t('settings.skillsHub.detailEmpty', { defaultValue: 'This skill has no instructions yet.' })}

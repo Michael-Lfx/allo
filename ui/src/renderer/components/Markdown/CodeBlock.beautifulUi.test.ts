@@ -19,6 +19,11 @@ describe('Markdown fenced CodeBlock Beautiful UI wrap', () => {
     expect(source.includes("width: 'fit-content'")).toBe(false);
   });
 
+  test('lazy-loads Mermaid instead of statically importing the diagram runtime', () => {
+    expect(source.includes("React.lazy(() => import('./MermaidBlock'))")).toBe(true);
+    expect(source.includes("import MermaidBlock from './MermaidBlock'")).toBe(false);
+  });
+
   test('does not wrap inline code in the Beautiful UI shell', () => {
     const inlineStart = source.indexOf("if (!String(children).includes('\\n'))");
     const inlineBlock = source.slice(inlineStart, source.indexOf('const isDiff', inlineStart));

@@ -31,9 +31,10 @@ export function removeKnowledgeBase(bases: IKnowledgeBase[], id: KnowledgeBaseId
   return bases.filter((base) => base.knowledge_base_id !== id);
 }
 
-export function useKnowledgeBases() {
+export function useKnowledgeBases(options?: { enabled?: boolean }) {
+  const enabled = options?.enabled ?? true;
   const [bases, setBases] = useState<IKnowledgeBase[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -51,10 +52,15 @@ export function useKnowledgeBases() {
   }, []);
 
   useEffect(() => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     void refresh();
-  }, [refresh]);
+  }, [enabled, refresh]);
 
   useEffect(() => {
+    if (!enabled) return;
     const unsubs = [
       ipcBridge.knowledge.onBaseCreated.on((base) => {
         setBases((current) => patchKnowledgeBase(current, base));
@@ -67,7 +73,7 @@ export function useKnowledgeBases() {
       }),
     ];
     return () => unsubs.forEach((u) => u());
-  }, []);
+  }, [enabled]);
 
   return { bases, loading, error, refresh };
 }
