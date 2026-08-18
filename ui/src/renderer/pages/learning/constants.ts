@@ -46,3 +46,4 @@ export const ORPHAN_COURSE_FILTER = '__orphan__';
 export const QUESTION_SELECTABLE_COLUMNS = ['source', 'state', 'due_at', 'tags'];
 export const QUESTION_COLUMNS_STORAGE_KEY = 'learning.questionTableColumns';
 export const REVIEW_FILTERS_STORAGE_KEY = 'learning.reviewFilters';
+export const REVIEW_BANNER_EXPANDED_KEY = 'learning.reviewBannerExpanded';

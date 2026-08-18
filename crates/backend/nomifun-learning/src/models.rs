@@ -481,6 +481,47 @@ pub struct CheckinStatus {
     pub locked_at: Option<i64>,
 }
 
+/// One lesson completed on a review day (calendar aggregation detail).
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarLessonRef {
+    pub lesson_id: String,
+    pub title: String,
+}
+
+/// One course created on a review day (calendar aggregation detail).
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarCourseRef {
+    pub course_id: String,
+    pub title: String,
+}
+
+/// One review day inside the requested calendar range, zero-filled when the
+/// user had no activity. `review_day` is the local YYYYMMDD of the review day
+/// (02:00 rollover), matching check-in and streak semantics.
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarDayStats {
+    pub review_day: i64,
+    pub reviewed_count: i64,
+    pub checkin_completed: bool,
+    pub completed_lessons: Vec<CalendarLessonRef>,
+    pub created_courses: Vec<CalendarCourseRef>,
+}
+
+/// Calendar aggregation for the learning page: review-day bucketed activity
+/// (review counts, check-in completion, completed lessons and created
+/// courses) plus the current streak.
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarStats {
+    pub year: i64,
+    /// 1..=12 for the month view, null for the year view.
+    pub month: Option<i64>,
+    pub tz_offset: i32,
+    /// Consecutive completed check-in days ending at the current review day;
+    /// 0 when today is not yet completed.
+    pub streak: i64,
+    pub days: Vec<CalendarDayStats>,
+}
+
 /// One row of the question management table. Course questions come from
 /// objective activities linked to concepts (review item optional: items
 /// only exist after the lesson is completed); custom questions are

@@ -150,6 +150,54 @@ export interface ReviewResult {
   lapse_count: number;
 }
 
+/** 当日打卡快照（对齐后端 CheckinStatus）：复习日、目标、进度与锁定状态 */
+export interface CheckinStatus {
+  /** 本地复习日 YYYYMMDD（02:00 日界线） */
+  review_day: number;
+  /** 每日复习目标（0 = 仅清空队列） */
+  goal: number;
+  /** 本复习日已提交的复习数 */
+  reviewed_count: number;
+  /** 当前到期卡片数（课程 + 自定义） */
+  due_count: number;
+  /** 当日是否已锁定为完成 */
+  completed: boolean;
+  /** 完成锁定时刻（UTC 毫秒），未完成时为 null */
+  locked_at: number | null;
+}
+
+/** 复习日内完成的课时（日历明细） */
+export interface CalendarLessonRef {
+  lesson_id: string;
+  title: string;
+}
+
+/** 复习日内创建的课程（日历明细） */
+export interface CalendarCourseRef {
+  course_id: string;
+  title: string;
+}
+
+/** 请求范围内的一个复习日，无活动时后端补零 */
+export interface CalendarDayStats {
+  review_day: number;
+  reviewed_count: number;
+  checkin_completed: boolean;
+  completed_lessons: CalendarLessonRef[];
+  created_courses: CalendarCourseRef[];
+}
+
+/** 日历聚合响应：月视图或年视图 + 当前 streak */
+export interface CalendarStats {
+  year: number;
+  /** 1..=12 为月视图，null 为年视图 */
+  month: number | null;
+  tz_offset: number;
+  /** 以当前复习日为终点的连续打卡天数；今日未完成时为 0 */
+  streak: number;
+  days: CalendarDayStats[];
+}
+
 export interface ReviewAnswerResult {
   correct: boolean;
   feedback: string;
