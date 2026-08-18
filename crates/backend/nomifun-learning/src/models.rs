@@ -462,6 +462,25 @@ pub struct ReviewResult {
     pub lapse_count: i64,
 }
 
+/// Daily check-in snapshot for the current review day: goal, progress and
+/// due count, with the completion flag derived from a locking snapshot
+/// persisted in `learning_checkins`.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckinStatus {
+    /// Local review day as YYYYMMDD.
+    pub review_day: i64,
+    /// Daily review goal snapshot (0 = clear-the-queue only).
+    pub goal: i64,
+    /// Reviews already submitted this review day.
+    pub reviewed_count: i64,
+    /// Cards currently due (`due_at <= now`), course + custom.
+    pub due_count: i64,
+    /// Whether the day is locked as completed (either condition met).
+    pub completed: bool,
+    /// Lock moment in UTC milliseconds when completed, else null.
+    pub locked_at: Option<i64>,
+}
+
 /// One row of the question management table. Course questions come from
 /// objective activities linked to concepts (review item optional: items
 /// only exist after the lesson is completed); custom questions are

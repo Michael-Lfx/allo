@@ -162,6 +162,9 @@ export type ConfigKeyMap = {
   'learning.reviewSessionLimit': number | undefined;
   // Max questions in a diagnostic plan (default 10).
   'learning.diagnosticLimit': number | undefined;
+  // Daily check-in review goal (default 15; 0 = clear-the-queue only).
+  // Read by the backend learning service for the daily check-in.
+  'learning.dailyCheckinGoal': number | undefined;
   // Default provider+model for every learning AI call (reflection grading,
   // course generation, job retry). Absent = the backend falls back to its
   // own default completer model.

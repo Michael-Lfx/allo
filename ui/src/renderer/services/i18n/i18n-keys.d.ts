@@ -3173,6 +3173,8 @@ export type I18nKey =
   | 'learning.reviewWrongMarkedAgain'
   | 'learning.reviews'
   | 'learning.selectKnowledgeBase'
+  | 'learning.settings.dailyCheckinGoal'
+  | 'learning.settings.dailyCheckinGoalHint'
   | 'learning.settings.description'
   | 'learning.settings.desiredRetention'
   | 'learning.settings.desiredRetentionHint'
