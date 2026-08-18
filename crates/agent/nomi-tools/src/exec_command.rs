@@ -1723,16 +1723,8 @@ mod tests {
         }))
         .expect("shell script should prepare");
 
-        #[cfg(windows)]
-        {
-            assert_eq!(legacy.transport, Transport::Pty { cols: 120, rows: 30 });
-            assert_eq!(script.transport, Transport::Pty { cols: 120, rows: 30 });
-        }
-        #[cfg(not(windows))]
-        {
-            assert_eq!(legacy.transport, Transport::Pipe);
-            assert_eq!(script.transport, Transport::Pipe);
-        }
+        assert_eq!(legacy.transport, Transport::Pipe);
+        assert_eq!(script.transport, Transport::Pipe);
     }
 
     #[cfg(windows)]

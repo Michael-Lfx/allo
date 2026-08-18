@@ -12,7 +12,7 @@ const AGENT_WEB_OPEN_ERROR: &str =
      Browser tool (browser navigate) to read or interact with web pages";
 
 pub(crate) fn shell_transport(requested_tty: bool) -> Transport {
-    if cfg!(windows) || requested_tty {
+    if requested_tty {
         Transport::Pty {
             cols: SHELL_PTY_COLS,
             rows: SHELL_PTY_ROWS,

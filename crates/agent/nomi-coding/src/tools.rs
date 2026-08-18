@@ -1,18 +1,18 @@
-//! Coding-mode tool advertising (hide desktop distractions + complex shell adapters).
+//! Coding-mode tool advertising (hide desktop distractions, keep coding essentials).
 
 use crate::profile::TaskProfile;
 
 /// Tools advertised in coding mode (plus MCP / companion that pass the allow path).
 ///
-/// Intentionally **Bash-only** for shell — Open Vetta coding agents use a single
-/// bash/shell tool. `exec_command`/`write_stdin` stay registered for office, but
-/// their dual-mode schema (`cmd` vs `script`+`language`+`timeout`) routinely
-/// causes invalid model calls in coding sessions.
+/// Keep shell defaults simple (`Bash`) while still exposing long-running process
+/// controls (`exec_command` + `write_stdin`) for bounded polling workflows.
 const CODING_CORE_TOOLS: &[&str] = &[
     "Read",
     "Write",
     "Edit",
     "Bash",
+    "exec_command",
+    "write_stdin",
     "Grep",
     "Glob",
     "DirTree",
@@ -37,9 +37,6 @@ const CODING_HIDDEN_TOOLS: &[&str] = &[
     // Coding UX is anchor Edit + Write; ApplyPatch remains for office / ACP Codex.
     "ApplyPatch",
     "apply_patch",
-    // Complex dual-mode process tools — prefer Bash in coding.
-    "exec_command",
-    "write_stdin",
 ];
 
 /// Whether `tool_name` should be advertised to the provider under `profile`.
@@ -67,8 +64,6 @@ pub fn advertise_tool(profile: TaskProfile, tool_name: &str) -> bool {
             | "LaunchApp"
             | "computer_use"
             | "ApplyPatch"
-            | "exec_command"
-            | "write_stdin"
     )
 }
 
@@ -77,12 +72,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn coding_hides_browser_computer_apply_patch_and_exec_pair() {
+    fn coding_hides_browser_computer_and_apply_patch_only() {
         assert!(!advertise_tool(TaskProfile::Coding, "Browser"));
         assert!(!advertise_tool(TaskProfile::Coding, "Computer"));
         assert!(!advertise_tool(TaskProfile::Coding, "ApplyPatch"));
-        assert!(!advertise_tool(TaskProfile::Coding, "exec_command"));
-        assert!(!advertise_tool(TaskProfile::Coding, "write_stdin"));
+        assert!(advertise_tool(TaskProfile::Coding, "exec_command"));
+        assert!(advertise_tool(TaskProfile::Coding, "write_stdin"));
         assert!(advertise_tool(TaskProfile::Coding, "Edit"));
         assert!(advertise_tool(TaskProfile::Coding, "Bash"));
         assert!(advertise_tool(TaskProfile::Coding, "DirTree"));

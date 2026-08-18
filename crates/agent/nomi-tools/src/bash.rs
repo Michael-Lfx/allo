@@ -533,7 +533,7 @@ fn render_output(output: &OutputSnapshot) -> String {
             });
             current_stream = Some(chunk.stream);
         }
-        rendered.push_str(&chunk.text);
+        rendered.push_str(&strip_ansi_sequences(&chunk.text));
     }
     if rendered.is_empty() {
         rendered.push_str("OUTPUT:\n");
@@ -553,6 +553,57 @@ fn render_output(output: &OutputSnapshot) -> String {
         ));
     }
     rendered
+}
+
+fn strip_ansi_sequences(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+
+        let Some(kind) = chars.next() else {
+            break;
+        };
+        match kind {
+            '[' => {
+                for c in chars.by_ref() {
+                    let code = c as u32;
+                    if (0x40..=0x7E).contains(&code) {
+                        break;
+                    }
+                }
+            }
+            ']' => {
+                let mut saw_esc = false;
+                for c in chars.by_ref() {
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if saw_esc && c == '\\' {
+                        break;
+                    }
+                    saw_esc = c == '\u{1b}';
+                }
+            }
+            _ => {
+                let mut code = kind as u32;
+                if !(0x40..=0x7E).contains(&code) {
+                    for c in chars.by_ref() {
+                        code = c as u32;
+                        if (0x40..=0x7E).contains(&code) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    out
 }
 
 fn append_cleanup(content: &mut String, cleanup: &CleanupReport) {
@@ -675,14 +726,14 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn windows_bash_runs_cmd_c_inside_the_pseudoconsole() {
+    async fn windows_bash_runs_cmd_c_with_noninteractive_pipe_transport() {
         let result = tool(std::env::temp_dir())
             .execute(json!({"command": "cmd /c echo conpty_marker"}))
             .await;
 
         assert!(!result.is_error, "{}", result.content);
         assert!(result.content.contains("conpty_marker"), "{}", result.content);
-        assert!(result.content.contains("PTY:\n"), "{}", result.content);
+        assert!(result.content.contains("STDOUT:\n"), "{}", result.content);
     }
 
     #[cfg(windows)]
@@ -836,6 +887,27 @@ mod tests {
         );
 
         assert!(result.content.contains("cleanup-tail"), "{}", result.content);
+    }
+
+    #[test]
+    fn render_output_strips_ansi_control_sequences() {
+        let snapshot = OutputSnapshot {
+            chunks: vec![nomi_process_runtime::OutputChunk {
+                seq: 1,
+                start: 0,
+                stream: OutputStream::Pty,
+                bytes: Vec::new(),
+                text: "\u{1b}[?9001h\u{1b}[?25lhello\u{1b}]0;title\u{7}\u{1b}[?25h".to_string(),
+            }],
+            next_cursor: OutputCursor::new(0),
+            retained_bytes: 0,
+            dropped_bytes: 0,
+            encoding: nomi_process_runtime::EncodingMetadata::default(),
+        };
+
+        let rendered = render_output(&snapshot);
+        assert!(rendered.contains("PTY:\nhello"), "{rendered}");
+        assert!(!rendered.contains("\u{1b}"), "{rendered}");
     }
 
     #[tokio::test]
