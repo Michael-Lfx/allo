@@ -99,6 +99,7 @@ pub struct NomiAgentManager {
     runtime: AgentRuntimeState,
     backend_output_sink: Arc<BackendOutputSink>,
     engine: Mutex<AgentEngine>,
+    observation: Option<Arc<nomi_agent::ObservationSession>>,
     /// Shared authority for every shell/tool process owned by this runtime.
     ///
     /// Kept outside the engine mutex so an explicit stop (which deliberately
@@ -474,6 +475,50 @@ impl NomiAgentManager {
         self.recycle_after_turn.load(Ordering::Acquire)
     }
 
+    pub fn bind_observation_ids(&self, ids: crate::ObservationIds) {
+        if let Some(session) = &self.observation {
+            session.bind_ids(ids);
+        }
+    }
+
+    /// Fill conversation/msg ids for this send without clobbering a wire
+    /// `root_turn_id` or `session_kind` already bound by the conversation host.
+    fn overlay_send_observation_ids(
+        mut ids: crate::ObservationIds,
+        conversation_id: String,
+        msg_id: &str,
+        source_message_id: Option<&str>,
+        origin: Option<&str>,
+    ) -> crate::ObservationIds {
+        ids.conversation_id = Some(conversation_id);
+        ids.msg_id = Some(msg_id.to_owned());
+        if ids
+            .root_turn_id
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(|value| value.is_empty())
+        {
+            ids.root_turn_id = Some(
+                source_message_id
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| msg_id.to_owned()),
+            );
+        }
+        if ids
+            .session_kind
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(|value| value.is_empty())
+        {
+            ids.session_kind = Some(
+                crate::classify_session_kind(origin, false, None).to_owned(),
+            );
+        }
+        ids
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         conversation_id: String,
@@ -825,6 +870,9 @@ impl NomiAgentManager {
         // them (MessagePermission) and resolves via `confirm`.
         let confirmations = Arc::new(std::sync::RwLock::new(Vec::new()));
 
+        let observation = nomi_agent::ObservationSession::new(
+            nomi_agent_trace::ObservationRecorder::shared(&gateway_data_dir),
+        );
         let mut bootstrap = AgentBootstrap::new(config, &workspace, sink)
             .goal(goal_spec)
             .install_embedded_agent_execution(
@@ -833,7 +881,8 @@ impl NomiAgentManager {
             .approval_manager(approval_manager.clone())
             .coding_boundary(
                 nomi_agent::TaskProfile::parse(config_extra.task_profile.as_deref()).is_coding(),
-            );
+            )
+            .observation(Arc::clone(&observation));
         bootstrap = match search_provider {
             nomi_agent::SearchProviderBinding::Provided(provider) => {
                 bootstrap.search_provider(provider)
@@ -1170,6 +1219,7 @@ impl NomiAgentManager {
             runtime,
             backend_output_sink,
             engine: Mutex::new(engine),
+            observation: Some(observation),
             process_supervisor,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
             slash_commands,
@@ -1501,6 +1551,16 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             self.backend_output_sink.begin_artifact_delivery_turn();
             engine.set_steering_inbox(Some(self.steering_inbox.clone()));
             engine.set_system_resource_inbox(Some(self.system_resource_inbox.clone()));
+            if let Some(session) = &self.observation {
+                let ids = Self::overlay_send_observation_ids(
+                    session.ids(),
+                    self.runtime.conversation_id().to_owned(),
+                    &data.msg_id,
+                    data.source_message_id.as_deref(),
+                    data.origin.as_deref(),
+                );
+                session.bind_ids(ids);
+            }
 
             // Each iteration runs one engine pass inside the same accepted
             // Agent turn. Re-run only for steering race-tail interjections or
@@ -3888,6 +3948,7 @@ mod tests {
             runtime,
             backend_output_sink,
             engine: Mutex::new(engine),
+            observation: None,
             process_supervisor: None,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
             slash_commands: Vec::new(),
@@ -3919,6 +3980,115 @@ mod tests {
             goal_repo: std::sync::RwLock::new(None),
             goal_registry_data_dir: std::env::temp_dir(),
             ssh_lease: None,
+        }
+    }
+
+    #[test]
+    fn overlay_send_observation_ids_keeps_bound_root_turn_id() {
+        let bound = crate::ObservationIds {
+            conversation_id: Some("old-conv".into()),
+            msg_id: Some("old-msg".into()),
+            root_turn_id: Some("wire-turn".into()),
+            session_kind: Some("session_dialogue".into()),
+            execution_id: Some("exec-1".into()),
+            ..crate::ObservationIds::default()
+        };
+        let ids = NomiAgentManager::overlay_send_observation_ids(
+            bound,
+            "conv-auto-continue".into(),
+            "msg-1",
+            Some("user-msg"),
+            None,
+        );
+        assert_eq!(ids.root_turn_id.as_deref(), Some("wire-turn"));
+        assert_eq!(ids.msg_id.as_deref(), Some("msg-1"));
+        assert_eq!(ids.conversation_id.as_deref(), Some("conv-auto-continue"));
+        assert_eq!(ids.session_kind.as_deref(), Some("session_dialogue"));
+        assert_eq!(ids.execution_id.as_deref(), Some("exec-1"));
+    }
+
+    #[test]
+    fn overlay_send_observation_ids_fills_root_turn_when_unbound() {
+        let ids = NomiAgentManager::overlay_send_observation_ids(
+            crate::ObservationIds::default(),
+            "conv".into(),
+            "msg-1",
+            Some("user-msg"),
+            None,
+        );
+        assert_eq!(ids.root_turn_id.as_deref(), Some("user-msg"));
+        assert_eq!(ids.session_kind.as_deref(), Some("session_dialogue"));
+    }
+
+    #[test]
+    fn overlay_send_observation_ids_fills_blank_session_kind() {
+        let bound = crate::ObservationIds {
+            session_kind: Some("   ".into()),
+            ..crate::ObservationIds::default()
+        };
+        let ids = NomiAgentManager::overlay_send_observation_ids(
+            bound,
+            "conv".into(),
+            "msg-1",
+            None,
+            None,
+        );
+        assert_eq!(ids.session_kind.as_deref(), Some("session_dialogue"));
+    }
+
+    #[tokio::test]
+    async fn send_message_preserves_bound_wire_root_turn_id() {
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            LlmEvent::TextDelta("ok".into()),
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: Default::default(),
+            },
+        ]]));
+        let mut agent = make_agent_with_provider(provider);
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = nomi_agent_trace::ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let session = nomi_agent::ObservationSession::new(recorder.clone());
+        session.bind_ids(crate::ObservationIds {
+            conversation_id: Some("conv-auto-continue".into()),
+            msg_id: Some("wire-turn".into()),
+            root_turn_id: Some("wire-turn".into()),
+            session_kind: Some("session_dialogue".into()),
+            ..crate::ObservationIds::default()
+        });
+        {
+            let mut engine = agent.engine.lock().await;
+            engine.set_observation(Arc::clone(&session));
+        }
+        agent.observation = Some(Arc::clone(&session));
+
+        agent
+            .send_message(SendMessageData {
+                content: "hello".into(),
+                msg_id: "wire-turn".into(),
+                source_message_id: Some("user-msg".into()),
+                files: Vec::new(),
+                inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
+                origin: None,
+            })
+            .await
+            .unwrap();
+
+        let events = recorder.read_events(Some("conv-auto-continue")).unwrap();
+        assert!(
+            !events.is_empty(),
+            "expected observation events for the send"
+        );
+        for event in &events {
+            assert_eq!(
+                nomi_agent_trace::ids_from_payload(&event.payload)
+                    .root_turn_id
+                    .as_deref(),
+                Some("wire-turn"),
+                "send_message must not replace the bound wire root_turn_id with source_message_id"
+            );
         }
     }
 
@@ -4108,6 +4278,7 @@ mod tests {
             runtime,
             backend_output_sink,
             engine: Mutex::new(engine),
+            observation: None,
             process_supervisor: None,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
             slash_commands: Vec::new(),

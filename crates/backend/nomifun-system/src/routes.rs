@@ -1,10 +1,11 @@
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Json, Path, Query, State};
+use axum::extract::{Extension, Json, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, patch, post};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use nomifun_api_types::{
     ApiResponse, ClientPreferencesResponse, CloneProviderRequest, CreateProviderModelRequest,
@@ -24,7 +25,9 @@ use nomifun_api_types::{
     WorkDirRelocationOperation, WorkDirRelocationOperationState, WorkDirRelocationResponse,
     UpsertProviderConnectionRequest,
 };
+use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
+use nomifun_db::IConversationRepository;
 
 use crate::client_pref::ClientPrefService;
 use crate::managed_model::ManagedModelService;
@@ -61,6 +64,9 @@ pub struct SystemRouterState {
     /// Capabilities supplied by the host composition. Web and Desktop use
     /// the same HTTP routes but expose different lifecycle operations.
     pub runtime_capabilities: RuntimeCapabilities,
+    /// Used to confirm `conversation_id` on support-log packing belongs to
+    /// the authenticated user before attaching observation JSONL.
+    pub conversation_repo: Option<Arc<dyn IConversationRepository>>,
 }
 
 /// Build the system router (settings + client prefs + providers + system).
@@ -630,38 +636,54 @@ async fn get_system_info(
 
 async fn pack_support_logs(
     State(state): State<SystemRouterState>,
+    Extension(user): Extension<CurrentUser>,
     body: Result<Json<PackSupportLogsRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<SupportLogsPackResponse>>, AppError> {
     let Json(request) = body.map_err(|error| AppError::BadRequest(error.to_string()))?;
     let info = crate::sysinfo::get_system_info();
 
-    let mut agent_trace_paths = Vec::new();
+    let mut observation_paths = Vec::new();
     if let Some(conversation_id) = request
         .conversation_id
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
-        let prefs = state
-            .client_pref_service
-            .get_preferences(Some(&["system.developerMode"]))
-            .await?;
-        let developer_mode = prefs
-            .get("system.developerMode")
-            .map(|value| match value {
-                serde_json::Value::Bool(enabled) => *enabled,
-                serde_json::Value::String(text) => {
-                    matches!(text.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes")
+        match state.conversation_repo.as_ref() {
+            None => {
+                tracing::warn!(
+                    conversation_id,
+                    "support pack skipped observation attach: conversation repository is not configured"
+                );
+            }
+            Some(repo) => {
+                let owned = repo
+                    .get(conversation_id)
+                    .await
+                    .map_err(|error| {
+                        AppError::Internal(format!("Failed to load conversation: {error}"))
+                    })?
+                    .filter(|row| row.user_id == user.id.as_str());
+                if owned.is_none() {
+                    return Err(AppError::NotFound(format!(
+                        "Conversation {conversation_id} not found"
+                    )));
                 }
-                serde_json::Value::Number(number) => number.as_i64() == Some(1),
-                _ => false,
-            })
-            .unwrap_or(false);
-        if developer_mode {
-            agent_trace_paths = crate::support_logs::list_agent_trace_files_for_conversation(
-                &state.data_dir,
-                conversation_id,
-            )?;
+                let prefs = state
+                    .client_pref_service
+                    .get_preferences(Some(&[crate::client_pref::DEVELOPER_MODE_PREF_KEY]))
+                    .await?;
+                let developer_mode = prefs
+                    .get(crate::client_pref::DEVELOPER_MODE_PREF_KEY)
+                    .is_some_and(crate::client_pref::preference_value_is_true);
+                if developer_mode {
+                    observation_paths =
+                        crate::support_logs::list_observation_files_for_conversation(
+                            &state.data_dir,
+                            conversation_id,
+                        )?;
+                }
+            }
         }
     }
 
@@ -669,7 +691,7 @@ async fn pack_support_logs(
         std::path::Path::new(&info.log_dir),
         &state.data_dir,
         request.turn_id.as_deref(),
-        &agent_trace_paths,
+        &observation_paths,
     )?;
     Ok(Json(ApiResponse::ok(packed)))
 }

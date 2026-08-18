@@ -306,6 +306,12 @@ impl AgentRuntimeHandle {
         self.as_runtime().send_message(data).await
     }
 
+    pub fn bind_observation_ids(&self, ids: crate::ObservationIds) {
+        if let Self::Nomi(manager) = self {
+            manager.bind_observation_ids(ids);
+        }
+    }
+
     /// Cancel the current streaming response without killing the agent.
     pub async fn cancel(&self) -> Result<(), AppError> {
         self.as_runtime().cancel().await

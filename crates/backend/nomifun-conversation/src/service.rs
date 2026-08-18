@@ -9540,6 +9540,9 @@ impl ConversationService {
         let accepted_wire_turn_id = stable_turn_id.clone();
         let owner_turn_generation = turn_handle.turn_id();
         let owner_conversation_id = conversation_key.clone();
+        let observation_execution = durable_delivery
+            .as_ref()
+            .and_then(|delivery| delivery.execution_authority.clone());
         #[cfg(test)]
         self.reach_public_admission_cutpoint(PublicAdmissionCutpoint::BeforeOwnerSpawn)
             .await;
@@ -9915,22 +9918,30 @@ impl ConversationService {
 
                 let rx = agent.subscribe();
                 if let Some(hub) = service.current_agent_trace_hub() {
-                    let trace_rx = agent.subscribe();
-                    nomifun_ai_agent::TurnTraceCollector::spawn(
-                        hub,
-                        trace_rx,
-                        nomifun_ai_agent::TurnTraceContext {
-                            conversation_id: conv_id.clone(),
-                            msg_id: turn_msg_id.clone(),
-                            root_turn_id: stable_turn_id.clone(),
-                            origin: origin.clone(),
-                            companion,
-                            channel_platform: channel_platform.clone(),
-                            provider: None,
-                            model: None,
-                            session_dialogue_only: true,
-                        },
-                    );
+                    hub.refresh_recording_enabled().await;
+                    agent.bind_observation_ids(nomifun_ai_agent::ObservationIds {
+                        conversation_id: Some(conv_id.clone()),
+                        msg_id: Some(turn_msg_id.clone()),
+                        root_turn_id: Some(stable_turn_id.clone()),
+                        session_kind: Some(
+                            nomifun_ai_agent::classify_session_kind(
+                                origin.as_deref(),
+                                companion,
+                                channel_platform.as_deref(),
+                            )
+                            .to_owned(),
+                        ),
+                        execution_id: observation_execution
+                            .as_ref()
+                            .map(|authority| authority.execution_id.clone()),
+                        step_id: observation_execution
+                            .as_ref()
+                            .map(|authority| authority.step_id.clone()),
+                        execution_attempt_id: observation_execution
+                            .as_ref()
+                            .map(|authority| authority.attempt_id.clone()),
+                        ..Default::default()
+                    });
                 }
                 let send_agent = agent.clone();
                 let conv_id_send = conv_id.clone();
