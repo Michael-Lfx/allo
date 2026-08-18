@@ -41,6 +41,10 @@
       "group": "check",
       "desc": "使用 Windows Edge 矩阵验证 Arco 与 Icon Park 按钮的横向布局和对齐契约"
     },
+    "check:error-surface": {
+      "group": "check",
+      "desc": "使用 Windows Edge 矩阵验证错误诊断摘要、详情展开、复制入口和窄屏溢出"
+    },
     "check:button-layout-contract": {
       "group": "check",
       "desc": "扫描所有 Arco 图标文字按钮并校验共享横向布局契约"

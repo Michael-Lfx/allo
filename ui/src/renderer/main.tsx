@@ -62,6 +62,7 @@ import RouteErrorBoundary from './components/layout/RouteErrorBoundary';
 import Router from './components/layout/Router';
 import Sider from './components/layout/Sider';
 import ButtonLayoutProbe from './pages/test/ButtonLayoutProbe';
+import ErrorSurfaceProbe from './pages/test/ErrorSurfaceProbe';
 import { refreshDetectedAgentsIfStale } from './hooks/agent/useAgents';
 import { clearAvailableModelsCache } from './hooks/agent/useModelProviderList';
 import {
@@ -353,14 +354,17 @@ void registerPwa();
 
 const root = createRoot(document.getElementById('root')!);
 const isButtonLayoutProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/button-layout';
+const isErrorSurfaceProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/error-surface';
 
-// Keep the browser-only button layout gate independent from auth/backend
-// startup. It still uses this real renderer entry and all global Arco styles,
-// but must be able to report a layout before an unauthenticated session is
-// ready. The exact hash guard prevents this from becoming a product bypass.
+// Keep browser-only visual gates independent from auth/backend startup. They
+// still use this real renderer entry and global Arco styles, but must be able
+// to report layout before an unauthenticated session is ready. The exact hash
+// guards prevent these probes from becoming product bypasses.
 root.render(
   isButtonLayoutProbe ? (
     <ButtonLayoutProbe />
+  ) : isErrorSurfaceProbe ? (
+    <ErrorSurfaceProbe />
   ) : (
     <RouteErrorBoundary scope='application'>
       <AppProviders>
