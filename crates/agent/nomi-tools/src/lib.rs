@@ -34,12 +34,15 @@ mod windows_shell_tests {
     use super::windows_shell::{shell_transport, validate_shell_script};
 
     #[test]
-    fn windows_shell_uses_pty_even_when_tty_is_not_requested() {
+    fn noninteractive_shell_uses_pipe_transport() {
         let transport = shell_transport(false);
-        #[cfg(windows)]
-        assert_eq!(transport, Transport::Pty { cols: 120, rows: 30 });
-        #[cfg(not(windows))]
         assert_eq!(transport, Transport::Pipe);
+    }
+
+    #[test]
+    fn tty_shell_uses_pty_transport() {
+        let transport = shell_transport(true);
+        assert_eq!(transport, Transport::Pty { cols: 120, rows: 30 });
     }
 
     #[test]

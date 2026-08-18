@@ -48,7 +48,7 @@ result — calling Read again is wasted turns.
 - Use **Bash** for build, test, lint, and git (on Windows this is PowerShell under the Bash tool name).
 - Prefer Grep/Read/Glob/DirTree for discovery — not shell find/cat/ls.
 - Stay inside the working directory / write root. Do not scan or mutate the whole disk.
-- Do not invent alternate shell tools; coding mode exposes Bash only for command execution.
+- Prefer Bash for one-shot commands; use `exec_command` + `write_stdin` only for long-running jobs that need polling.
 
 ## Stopping
 - Prefer finishing: after a successful Edit/Write that satisfies the ask (and needed verify), \
