@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import {
   buildThinkingTraceItems,
   inferThinkingTraceVariant,
+  isLiveProcessThinkingWindow,
+  pinScrollableToLatest,
   resolveThinkingTraceStatus,
 } from './thinkingTraceModel';
 
@@ -88,5 +90,31 @@ describe('resolveThinkingTraceStatus', () => {
     expect(resolveThinkingTraceStatus({ messageStatus: 'thinking', processState: 'completed' })).toBe('done');
     expect(resolveThinkingTraceStatus({ messageStatus: 'thinking', processState: 'failed' })).toBe('failed');
     expect(resolveThinkingTraceStatus({ messageStatus: 'thinking', processState: 'canceled' })).toBe('canceled');
+  });
+});
+
+describe('live process thinking window', () => {
+  test('keeps only in-flight process thinking inside the compact window', () => {
+    expect(isLiveProcessThinkingWindow('process', 'thinking')).toBe(true);
+    expect(isLiveProcessThinkingWindow('process', 'waiting')).toBe(true);
+    expect(isLiveProcessThinkingWindow('process', 'done')).toBe(false);
+    expect(isLiveProcessThinkingWindow('process', 'failed')).toBe(false);
+    expect(isLiveProcessThinkingWindow('process', 'canceled')).toBe(false);
+    expect(isLiveProcessThinkingWindow('standalone', 'thinking')).toBe(false);
+    expect(isLiveProcessThinkingWindow(undefined, 'thinking')).toBe(false);
+  });
+
+  test('pins the inner scroller to the latest line without changing its size', () => {
+    const element = { scrollTop: 12, scrollHeight: 240, clientHeight: 80 };
+    pinScrollableToLatest(element);
+    expect(element.scrollTop).toBe(160);
+    expect(element.scrollHeight).toBe(240);
+    expect(element.clientHeight).toBe(80);
+  });
+
+  test('does not pin past zero when the thinking body is shorter than its viewport', () => {
+    const element = { scrollTop: 0, scrollHeight: 40, clientHeight: 80 };
+    pinScrollableToLatest(element);
+    expect(element.scrollTop).toBe(0);
   });
 });

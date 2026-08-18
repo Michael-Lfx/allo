@@ -182,6 +182,9 @@ type IProcessedItem =
   | ITurnActionsVO
   | ITurnLiveStepVO;
 
+const isTurnLiveStepItem = (item: IProcessedItem): item is ITurnLiveStepVO =>
+  'type' in item && item.type === 'turn_live_step';
+
 type DisplayListCache = {
   processedList: IRenderableItem[];
   displayList: IProcessedItem[];
@@ -958,7 +961,12 @@ const MessageList: React.FC<{
     const previous = displayListCacheRef.current;
     const previousTail = previous?.processedList.at(-1);
     const nextTail = processedList.at(-1);
-    const canReuseStreamingTail =
+    const previousDisplayTail = previous != null ? previous.displayList.at(-1) : undefined;
+    const previousDisplayBeforeLiveStep =
+      previous != null && previousDisplayTail && isTurnLiveStepItem(previousDisplayTail)
+        ? previous.displayList.at(-2)
+        : undefined;
+    const canReuseStreamingContext =
       conversationContext?.isProcessing === true &&
       !conversationContext.stopNotice &&
       previous != null &&
@@ -971,19 +979,42 @@ const MessageList: React.FC<{
       previousTail.position === 'left' &&
       nextTail?.type === 'text' &&
       nextTail.position === 'left' &&
-      previousTail.id === nextTail.id &&
+      previousTail.id === nextTail.id;
+    const canReuseStreamingTail =
+      Boolean(canReuseStreamingContext) &&
+      previous != null &&
       hasStablePrefix(previous.processedList, processedList, processedList.length - 1);
+    const canReuseStreamingTailWithLiveStep =
+      Boolean(canReuseStreamingContext) &&
+      previous != null &&
+      previousDisplayTail != null &&
+      isTurnLiveStepItem(previousDisplayTail) &&
+      previousDisplayBeforeLiveStep != null &&
+      'type' in previousDisplayBeforeLiveStep &&
+      previousDisplayBeforeLiveStep.type === 'text' &&
+      previousDisplayBeforeLiveStep.position === 'left' &&
+      previousDisplayBeforeLiveStep.id === nextTail?.id &&
+      previous.processedList.every(
+        (item, index) => index === processedList.length - 1 || item.id === processedList[index]?.id
+      );
 
-    if (canReuseStreamingTail) {
-      const displayIndex = previous.displayList.indexOf(previousTail);
+    if (
+      (canReuseStreamingTail || canReuseStreamingTailWithLiveStep) &&
+      previous != null &&
+      previousTail &&
+      nextTail
+    ) {
+      const displayIndex = canReuseStreamingTailWithLiveStep
+        ? previous.displayList.length - 2
+        : previous.displayList.indexOf(previousTail);
       if (displayIndex >= 0) {
         const nextDisplayList = previous.displayList.slice();
         nextDisplayList[displayIndex] = nextTail;
         displayListCacheRef.current = {
           processedList,
           displayList: nextDisplayList,
-          activeTurnId: conversationContext.activeTurnId,
-          activeRequestMessageId: conversationContext.activeRequestMessageId,
+          activeTurnId: conversationContext?.activeTurnId,
+          activeRequestMessageId: conversationContext?.activeRequestMessageId,
           workspaceRoots,
           translate: t,
         };
@@ -1313,11 +1344,13 @@ const MessageList: React.FC<{
   const lastLiveStepLabelRef = useRef<string | undefined>(undefined);
   const [liveStepAnnouncement, setLiveStepAnnouncement] = useState('');
 
+  const liveStepItem = useMemo(
+    () => displayList.findLast(isTurnLiveStepItem),
+    [displayList]
+  );
+
   useEffect(() => {
-    const liveStep = displayList.findLast(
-      (item): item is ITurnLiveStepVO => 'type' in item && item.type === 'turn_live_step'
-    );
-    const nextLabel = liveStep?.label;
+    const nextLabel = liveStepItem?.label;
     if (nextLabel && nextLabel !== lastLiveStepLabelRef.current) {
       lastLiveStepLabelRef.current = nextLabel;
       setLiveStepAnnouncement(nextLabel);
@@ -1326,9 +1359,10 @@ const MessageList: React.FC<{
     if (!nextLabel) {
       lastLiveStepLabelRef.current = undefined;
     }
-  }, [displayList]);
+  }, [liveStepItem]);
 
   const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
 
   // Use auto-scroll hook
   const {
@@ -1346,6 +1380,7 @@ const MessageList: React.FC<{
   } = useAutoScroll({
     messages: list,
     itemCount: displayList.length,
+    virtuosoRef,
     virtuosoMode: scrollParent != null,
   });
 
@@ -1360,7 +1395,6 @@ const MessageList: React.FC<{
   // its scroll-spy can classify questions react-virtuoso has unmounted (off-screen)
   // instead of misreading them as "infinitely far below". Defaults cover the
   // non-virtualized branch (scrollParent == null → everything is rendered).
-  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
   const virtuosoRangeRef = useRef<{ startIndex: number; endIndex: number }>({
     startIndex: 0,
     endIndex: Number.POSITIVE_INFINITY,

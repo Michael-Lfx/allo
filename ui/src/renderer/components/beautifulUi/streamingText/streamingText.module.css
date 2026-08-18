@@ -22,6 +22,7 @@
   --beautiful-ui-streaming-caret-bg: var(--color-text-1, #1d2129);
   --beautiful-ui-streaming-caret-shadow: none;
   --beautiful-ui-streaming-caret-animation: streaming-caret 1s step-end infinite;
+  padding-right: 6px;
 }
 
 .streaming .body:empty::after,

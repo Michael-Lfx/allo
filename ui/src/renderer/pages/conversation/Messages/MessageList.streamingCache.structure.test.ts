@@ -23,4 +23,16 @@ describe('MessageList streaming caches', () => {
     );
     expect(source.includes('nextDisplayList[displayIndex] = nextTail')).toBe(true);
   });
+
+  test('reuses the stable display-list prefix when a live step trails growing text', () => {
+    expect(source.includes('canReuseStreamingTailWithLiveStep')).toBe(true);
+    expect(source.includes('isTurnLiveStepItem(')).toBe(true);
+    expect(source.includes('previous.displayList.at(-1)')).toBe(true);
+    expect(source.includes('previous.displayList.at(-2)')).toBe(true);
+    expect(source.includes('nextDisplayList[displayIndex] = nextTail')).toBe(true);
+  });
+
+  test('keeps virtuoso row keys on item.id so streaming replacements do not remount', () => {
+    expect(source.includes('computeItemKey={(_index, item) => item.id}')).toBe(true);
+  });
 });

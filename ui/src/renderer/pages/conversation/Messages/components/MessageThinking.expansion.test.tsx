@@ -36,8 +36,19 @@ describe('MessageThinking expansion', () => {
     expect(source.includes('setExpanded(false)')).toBe(false);
   });
 
+  test('keeps the live process window open and pins its inner scroll to the latest line', () => {
+    expect(source.includes('isLiveProcessThinkingWindow')).toBe(true);
+    expect(source.includes('pinScrollableToLatest')).toBe(true);
+    expect(source.includes('const liveWindow = isLiveProcessThinkingWindow(variant, traceStatus)')).toBe(true);
+    expect(source.includes('const resolvedExpanded = liveWindow ? true : (expanded ?? internalExpanded)')).toBe(true);
+    expect(source.includes('pinScrollableToLatest(element)')).toBe(true);
+    expect(source.includes('useLayoutEffect')).toBe(true);
+    expect(source.includes('requestAnimationFrame(() => {\n    pinScrollableToLatest(element)')).toBe(false);
+    expect((source.match(/pinScrollableToLatest\(element\)/g) ?? []).length).toBe(1);
+  });
+
   test('uses a semantic toggle with a labelled bounded detail region', () => {
-    expect(source.includes("import React, { useEffect, useMemo, useRef, useState } from 'react';")).toBe(true);
+    expect(source.includes("import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';")).toBe(true);
     expect(traceSource.includes('<button')).toBe(true);
     expect(traceSource.includes("type='button'")).toBe(true);
     expect(traceSource.includes('aria-expanded={resolvedExpanded}')).toBe(true);

@@ -33,5 +33,7 @@ describe('message list streaming follow', () => {
   test('pins Virtuoso follow to the same bottom threshold as auto-scroll', () => {
     expect(messageListSource.includes('followOutput={resolveFollowOutput}')).toBe(true);
     expect(messageListSource.includes('atBottomThreshold={FOLLOW_BOTTOM_THRESHOLD_PX}')).toBe(true);
+    expect(messageListSource.includes('virtuosoRef,')).toBe(true);
+    expect(messageListSource.includes('virtuosoMode: scrollParent != null')).toBe(true);
   });
 });

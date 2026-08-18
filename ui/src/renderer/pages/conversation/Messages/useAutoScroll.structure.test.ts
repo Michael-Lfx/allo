@@ -11,11 +11,17 @@ const source = readFileSync(new URL('./useAutoScroll.ts', import.meta.url), 'utf
 
 describe('useAutoScroll user layout changes', () => {
   test('does not auto-follow resize events caused by a recent pointer interaction inside the list', () => {
-    expect(source.includes('USER_LAYOUT_CHANGE_GUARD_MS')).toBe(true);
+    expect(source.includes('USER_LAYOUT_CHANGE_GUARD_MS = 600')).toBe(true);
     expect(source.includes('resizeAutoFollowBlockedUntilRef')).toBe(true);
     expect(source.includes('if (Date.now() < resizeAutoFollowBlockedUntilRef.current) return;')).toBe(true);
     expect(source.includes('resizeAutoFollowBlockedUntilRef.current = Date.now() + USER_LAYOUT_CHANGE_GUARD_MS')).toBe(
       true
     );
+  });
+
+  test('does not start the layout guard from a live thinking window', () => {
+    expect(source.includes("target.closest('[data-live-window=\"true\"]')")).toBe(true);
+    expect(source.includes('pauseAutoFollow()')).toBe(true);
+    expect(source.includes('virtuosoMode')).toBe(true);
   });
 });

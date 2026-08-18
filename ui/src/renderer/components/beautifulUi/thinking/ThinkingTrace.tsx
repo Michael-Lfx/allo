@@ -1,7 +1,7 @@
 import { ChevronRight, Code2, Search, Sparkle } from 'lucide-react';
 import React, { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { isThinkingTraceSettled } from './thinkingTraceModel';
+import { isLiveProcessThinkingWindow, isThinkingTraceSettled } from './thinkingTraceModel';
 import styles from './thinkingTrace.module.css';
 
 export type ThinkingTraceVariant = 'steps' | 'reasoning' | 'search' | 'coding';
@@ -63,6 +63,10 @@ const variantIcon = (variant: ThinkingTraceVariant, size = 14): React.ReactNode 
   }
 };
 
+const stopInnerWheelFromReachingTheList = (event: React.WheelEvent<HTMLDivElement>) => {
+  event.stopPropagation();
+};
+
 const itemStateClass = (state: ThinkingTraceItemState | undefined): string => {
   switch (state) {
     case 'running':
@@ -94,8 +98,9 @@ const ThinkingTrace: React.FC<ThinkingTraceProps> = ({
   const { t } = useTranslation();
   const isSettled = isThinkingTraceSettled(status);
   const isProcess = layout === 'process';
+  const liveWindow = isLiveProcessThinkingWindow(layout, status);
   const [internalExpanded, setInternalExpanded] = useState(() => expanded ?? !isSettled);
-  const resolvedExpanded = expanded ?? internalExpanded;
+  const resolvedExpanded = liveWindow ? true : (expanded ?? internalExpanded);
   const bodyId = useId();
   const sUnit = t('common.unit.second_short', { defaultValue: 's' });
   const shouldShowElapsed = showElapsed ?? label === undefined;
@@ -152,6 +157,7 @@ const ThinkingTrace: React.FC<ThinkingTraceProps> = ({
       data-testid='beautiful-ui-thinking'
       data-variant={variant}
       data-status={status}
+      data-live-window={liveWindow ? 'true' : 'false'}
     >
       <button
         type='button'
@@ -180,8 +186,9 @@ const ThinkingTrace: React.FC<ThinkingTraceProps> = ({
         ref={bodyRef}
         id={bodyId}
         className={`${styles.body}${isProcess ? ` ${styles.bodyProcess}` : ''} ${resolvedExpanded ? '' : styles.collapsed}`}
+        onWheel={liveWindow ? stopInnerWheelFromReachingTheList : undefined}
       >
-        {items.length === 0 ? (
+        {items.length === 0 && !liveWindow ? (
           label === undefined ? <div className={styles.empty}>{t('beautifulUiPreview.emptyTrace')}</div> : null
         ) : (
           <ol className={styles.list}>

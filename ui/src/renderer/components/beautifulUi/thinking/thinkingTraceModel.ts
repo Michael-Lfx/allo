@@ -168,3 +168,16 @@ export const isThinkingTraceSettled = (status: ThinkingTraceStatus): boolean => 
     }
   }
 };
+
+export const isLiveProcessThinkingWindow = (
+  layout: 'standalone' | 'process' | undefined,
+  status: ThinkingTraceStatus
+): boolean => layout === 'process' && !isThinkingTraceSettled(status);
+
+export const pinScrollableToLatest = (element: {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}): void => {
+  element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+};

@@ -34,6 +34,31 @@ describe('turn live step strip', () => {
     expect(cssSource.includes('turn-live-step-breathing')).toBe(false);
   });
 
+  test('keeps the live step in document flow so page scrolling is unchanged', () => {
+    expect(cssSource.includes('.turn_live_step')).toBe(true);
+    expect(cssSource.includes('position: sticky')).toBe(false);
+    expect(cssSource.includes('position: fixed')).toBe(false);
+    expect(messageListSource.includes("className='turn-live-step'")).toBe(true);
+    expect(messageListSource.includes('position: sticky')).toBe(false);
+    expect(messageListSource.includes('position: fixed')).toBe(false);
+  });
+
+  test('keeps every live-step kind in document flow without a viewport follow anchor', () => {
+    expect(messageListSource.includes('data-scroll-follow-anchor')).toBe(false);
+    expect(messageListSource.includes("data-testid='turn-live-step'")).toBe(true);
+    expect(messageListSource.includes("plan.kind === 'composing'")).toBe(true);
+    expect(messageListSource.includes("plan.kind === 'analyzing'")).toBe(true);
+  });
+
+  test('reserves a stable last-line height so status swaps do not jitter the strip', () => {
+    const liveStepRule = cssSource.slice(
+      cssSource.indexOf('.turn_live_step {'),
+      cssSource.indexOf('}', cssSource.indexOf('.turn_live_step {'))
+    );
+    expect(liveStepRule.includes('display: none')).toBe(false);
+    expect(liveStepRule.includes('min-height: 26px')).toBe(true);
+  });
+
   test('ships bilingual live-step copy', () => {
     expect((zhMessages.turnLiveStep as Record<string, string>).analyzing).toBe('正在分析需求');
     expect((zhMessages.turnLiveStep as Record<string, string>).composing).toBe('正在整理回复');

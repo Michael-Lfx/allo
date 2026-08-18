@@ -109,4 +109,20 @@ describe('ThinkingTrace', () => {
     expect(cssRuleFor('.elapsed').includes('font-variant-numeric: tabular-nums')).toBe(true);
     expect(cssRuleFor('.elapsed').includes('min-width: 4ch')).toBe(true);
   });
+
+  test('keeps the live process window growing with content, then scrolls inside', () => {
+    expect(source.includes('isLiveProcessThinkingWindow')).toBe(true);
+    expect(source.includes("data-live-window={liveWindow ? 'true' : 'false'}")).toBe(true);
+    expect(source.includes('onWheel={liveWindow ? stopInnerWheelFromReachingTheList : undefined}')).toBe(true);
+    const liveBody = cssRuleFor('.rootProcess[data-live-window=\'true\'] .body');
+    expect(liveBody.includes('max-height: 240px')).toBe(true);
+    expect(/\bheight:\s*240px/.test(liveBody.replace(/max-height:\s*240px/g, ''))).toBe(false);
+    expect(liveBody.includes('overscroll-behavior: contain')).toBe(true);
+    expect(cssRuleFor('.rootProcess[data-live-window=\'true\'] .list').includes('justify-content: flex-end')).toBe(
+      false
+    );
+    expect(cssSource.includes('justify-content: flex-end')).toBe(false);
+    expect(cssSource.includes('position: sticky')).toBe(false);
+    expect(cssSource.includes('position: fixed')).toBe(false);
+  });
 });

@@ -136,6 +136,12 @@
   animation: none;
 }
 
+.rootProcess[data-live-window='true'] .body {
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .rootProcess .body:empty {
   display: none;
   margin: 0;

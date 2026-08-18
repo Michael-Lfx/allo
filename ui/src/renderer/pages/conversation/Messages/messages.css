@@ -52,7 +52,7 @@
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
-  overflow-anchor: auto;
+  overflow-anchor: none;
   contain: layout style;
 }
 
@@ -909,6 +909,7 @@
 
 .turn_live_step {
   margin-top: 6px;
+  min-height: 26px;
 }
 
 .turn-process-trace__row--running .turn-process-trace__row-icon,

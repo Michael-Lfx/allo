@@ -6,12 +6,14 @@ import type { ThinkingTraceStatus, ThinkingTraceVariant } from '@renderer/compon
 import {
   buildThinkingTraceItems,
   inferThinkingTraceVariant,
+  isLiveProcessThinkingWindow,
   isThinkingTraceSettled,
+  pinScrollableToLatest,
   resolveThinkingTraceStatus,
   type ThinkingTraceProcessState,
 } from '@renderer/components/beautifulUi/thinking/thinkingTraceModel';
 import type { TFunction } from 'i18next';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import styles from './MessageThinking.module.css';
 
@@ -102,9 +104,10 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
   });
   const traceVariant = inferThinkingTraceVariant(text, toDisplayText(subject));
   const isDone = isThinkingTraceSettled(traceStatus);
+  const liveWindow = isLiveProcessThinkingWindow(variant, traceStatus);
   const defaultExpanded = expanded ?? (isProcessVariant ? !isDone : true);
   const [internalExpanded, setInternalExpanded] = useState(() => defaultExpanded);
-  const resolvedExpanded = expanded ?? internalExpanded;
+  const resolvedExpanded = liveWindow ? true : (expanded ?? internalExpanded);
   const [elapsedTime, setElapsedTime] = useState(() => {
     const initialStartedAt = message.created_at ?? Date.now();
     return isDone ? 0 : Math.max(0, Math.floor((Date.now() - initialStartedAt) / 1000));
@@ -129,11 +132,12 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
     return () => clearInterval(timer);
   }, [isDone, message.created_at, message.msg_id]);
 
-  useEffect(() => {
-    if (!isDone && resolvedExpanded && bodyRef.current) {
-      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
-    }
-  }, [text, isDone, resolvedExpanded]);
+  useLayoutEffect(() => {
+    if (!liveWindow || !resolvedExpanded) return;
+    const element = bodyRef.current;
+    if (!element) return;
+    pinScrollableToLatest(element);
+  }, [liveWindow, resolvedExpanded, text]);
 
   const handleToggle = (nextExpanded: boolean) => {
     if (expanded === undefined) {

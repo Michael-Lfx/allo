@@ -4,14 +4,20 @@
  *
  * Strategy:
  * - Track whether the user has intentionally scrolled away from the bottom.
- * - Observe content/scroller size changes and keep the list pinned to bottom
- *   only while auto-follow mode is active.
+ * - One owner: ResizeObserver pins scrollTop to the true content bottom
+ *   (including the 64px end spacer). Virtuoso followOutput stays off.
+ *   Tool chips grow the outer disclosure; followOutput would notice the
+ *   taller list while the spacer keeps it off the true bottom, then jump the
+ *   last two lines back into place.
+ * - Sending a user message always jumps to the tail, even if follow was paused.
  * - Use DOM-native scrollIntoView for explicit message jumps.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
+import type { VirtuosoHandle } from 'react-virtuoso';
 import type { TMessage } from '@/common/chat/chatLib';
 
 const PROGRAMMATIC_SCROLL_GUARD_MS = 150;
+const USER_LAYOUT_CHANGE_GUARD_MS = 600;
 // Must absorb sub-pixel scroll rounding on HiDPI/fractional-DPR displays, where
 // scrollTop can settle ~1-3px off an integer "bottom"; too small a threshold
 // (was 4) makes auto-follow intermittently think the user scrolled away and
@@ -23,7 +29,9 @@ export const SCROLL_BUTTON_THRESHOLD_PX = 12;
 interface UseAutoScrollOptions {
   messages: TMessage[];
   itemCount: number;
-  /** When true, Virtuoso `followOutput` owns tail pinning; skip ResizeObserver scroll nudges. */
+  /** When set, jump-to-bottom uses Virtuoso so off-screen tail rows still mount. */
+  virtuosoRef?: RefObject<VirtuosoHandle | null>;
+  /** True while Virtuoso is mounted and owns streaming tail follow. */
   virtuosoMode?: boolean;
 }
 
@@ -47,7 +55,7 @@ interface UseAutoScrollReturn {
   scrollElementIntoView: (element: HTMLElement | null, options?: ScrollElementIntoViewOptions) => void;
   pauseAutoFollow: () => void;
   hideScrollButton: () => void;
-  /** Virtuoso followOutput resolver — keeps tail pinned without fighting manual scroll. */
+  /** Virtuoso followOutput resolver — always off; DOM pin owns the tail. */
   resolveFollowOutput: (isAtBottom: boolean) => FollowOutputMode;
 }
 
@@ -55,7 +63,25 @@ const getBottomGap = (element: HTMLElement): number => {
   return element.scrollHeight - element.clientHeight - element.scrollTop;
 };
 
-export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: UseAutoScrollOptions): UseAutoScrollReturn {
+const getMaxScrollTop = (element: HTMLElement): number => {
+  return Math.max(0, element.scrollHeight - element.clientHeight);
+};
+
+const findLastUserMessageId = (messages: TMessage[]): string | undefined => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.position === 'right') {
+      return messages[index].id;
+    }
+  }
+  return undefined;
+};
+
+export function useAutoScroll({
+  messages,
+  itemCount,
+  virtuosoRef,
+  virtuosoMode: _virtuosoMode = false,
+}: UseAutoScrollOptions): UseAutoScrollReturn {
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null);
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -66,15 +92,13 @@ export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: Use
   const showScrollButtonRef = useRef(false);
   const hasNewContentBelowRef = useRef(false);
   const lastScrollTopRef = useRef(0);
-  const lastContentScrollHeightRef = useRef(0);
-  const previousListLengthRef = useRef(messages.length);
-  const previousLastIdRef = useRef<string | undefined>(messages[messages.length - 1]?.id);
   const lastProgrammaticScrollTimeRef = useRef(0);
   const initialScrollDoneRef = useRef(false);
-  const pendingAutoFollowFrameRef = useRef<number | null>(null);
   const userInputActiveRef = useRef(false);
-  const virtuosoModeRef = useRef(virtuosoMode);
-  virtuosoModeRef.current = virtuosoMode;
+  const resizeAutoFollowBlockedUntilRef = useRef(0);
+  const previousLastUserIdRef = useRef<string | undefined>(findLastUserMessageId(messages));
+  const virtuosoRefLatest = useRef(virtuosoRef);
+  virtuosoRefLatest.current = virtuosoRef;
 
   const markProgrammaticScroll = useCallback(() => {
     lastProgrammaticScrollTimeRef.current = Date.now();
@@ -84,7 +108,8 @@ export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: Use
     const bottomGap = getBottomGap(element);
     const withinButtonThreshold = bottomGap <= SCROLL_BUTTON_THRESHOLD_PX;
     const pinnedToBottom = bottomGap <= FOLLOW_BOTTOM_THRESHOLD_PX;
-    const nextShowButton = !withinButtonThreshold;
+    const leftTheBottom = userScrolledRef.current || userIntentPausedRef.current;
+    const nextShowButton = leftTheBottom && !withinButtonThreshold;
     const nextHasNew = userScrolledRef.current && !withinButtonThreshold;
 
     if (nextShowButton !== showScrollButtonRef.current) {
@@ -96,7 +121,7 @@ export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: Use
       setHasNewContentBelow(nextHasNew);
     }
 
-    if (pinnedToBottom) {
+    if (pinnedToBottom && Date.now() >= resizeAutoFollowBlockedUntilRef.current) {
       userScrolledRef.current = false;
       userIntentPausedRef.current = false;
       userInputActiveRef.current = false;
@@ -124,69 +149,56 @@ export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: Use
 
   const followContentGrowth = useCallback(() => {
     if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;
+    if (Date.now() < resizeAutoFollowBlockedUntilRef.current) return;
 
-    const prevHeight = lastContentScrollHeightRef.current;
-    const newHeight = scrollerEl.scrollHeight;
-    if (prevHeight === 0) {
-      lastContentScrollHeightRef.current = newHeight;
-      return;
-    }
-
-    const delta = newHeight - prevHeight;
-    lastContentScrollHeightRef.current = newHeight;
-    if (delta <= 0) return;
-
-    const gap = getBottomGap(scrollerEl);
-    if (gap > FOLLOW_BOTTOM_THRESHOLD_PX + delta) return;
-
+    const maxTop = getMaxScrollTop(scrollerEl);
+    if (Math.abs(scrollerEl.scrollTop - maxTop) < 1) return;
     markProgrammaticScroll();
-    scrollerEl.scrollTop += delta;
+    scrollerEl.scrollTop = maxTop;
   }, [markProgrammaticScroll, scrollerEl]);
 
   const scrollToBottom = useCallback(
     (behavior: ScrollBehavior = 'smooth') => {
-      if (itemCount <= 0 || !scrollerEl) return;
+      if (itemCount <= 0) return;
 
       markProgrammaticScroll();
-      scrollerEl.scrollTo({
-        top: scrollerEl.scrollHeight - scrollerEl.clientHeight,
-        behavior,
-      });
-      lastContentScrollHeightRef.current = scrollerEl.scrollHeight;
       userScrolledRef.current = false;
       userIntentPausedRef.current = false;
+      userInputActiveRef.current = false;
       showScrollButtonRef.current = false;
       hasNewContentBelowRef.current = false;
       setShowScrollButton(false);
       setHasNewContentBelow(false);
+
+      const lastIndex = itemCount - 1;
+      const virtuoso = virtuosoRefLatest.current?.current;
+      if (virtuoso && lastIndex >= 0) {
+        virtuoso.scrollToIndex({
+          index: lastIndex,
+          align: 'end',
+          behavior: 'auto',
+        });
+        if (!scrollerEl) return;
+        requestAnimationFrame(() => {
+          scrollerEl.scrollTo({
+            top: getMaxScrollTop(scrollerEl),
+            behavior,
+          });
+        });
+        return;
+      }
+
+      if (!scrollerEl) return;
+      scrollerEl.scrollTo({
+        top: getMaxScrollTop(scrollerEl),
+        behavior,
+      });
     },
     [itemCount, markProgrammaticScroll, scrollerEl]
   );
 
-  const scheduleAutoFollow = useCallback(() => {
-    if (virtuosoModeRef.current) return;
-    if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;
-
-    if (pendingAutoFollowFrameRef.current !== null) {
-      cancelAnimationFrame(pendingAutoFollowFrameRef.current);
-    }
-
-    pendingAutoFollowFrameRef.current = requestAnimationFrame(() => {
-      pendingAutoFollowFrameRef.current = null;
-      if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;
-
-      followContentGrowth();
-    });
-  }, [followContentGrowth, scrollerEl]);
-
   const resolveFollowOutput = useCallback((_isAtBottom: boolean): FollowOutputMode => {
-    // Virtuoso's isAtBottom flickers false during fast tail growth (default
-    // threshold is ~4px). Trusting it drops follow mid-stream. Stay pinned
-    // until the user actually scrolls away.
-    if (userIntentPausedRef.current || userScrolledRef.current) {
-      return false;
-    }
-    return 'auto';
+    return false;
   }, []);
 
   const handleScrollerRef = useCallback((ref: HTMLDivElement | null) => {
@@ -255,7 +267,10 @@ export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: Use
       userInputActiveRef.current = true;
       const target = event.target;
       if (target instanceof Element && target.closest('[aria-expanded]')) {
-        pauseAutoFollow();
+        if (!target.closest('[data-live-window="true"]')) {
+          resizeAutoFollowBlockedUntilRef.current = Date.now() + USER_LAYOUT_CHANGE_GUARD_MS;
+          pauseAutoFollow();
+        }
       }
     },
     [pauseAutoFollow]
@@ -265,7 +280,11 @@ export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: Use
     if (!scrollerEl || !contentEl) return;
 
     const observer = new ResizeObserver(() => {
-      scheduleAutoFollow();
+      if (Date.now() < resizeAutoFollowBlockedUntilRef.current) {
+        updateBottomState(scrollerEl);
+        return;
+      }
+      followContentGrowth();
       updateBottomState(scrollerEl);
     });
 
@@ -273,7 +292,7 @@ export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: Use
     observer.observe(contentEl);
 
     return () => observer.disconnect();
-  }, [contentEl, scheduleAutoFollow, scrollerEl, updateBottomState]);
+  }, [contentEl, followContentGrowth, scrollerEl, updateBottomState]);
 
   useEffect(() => {
     if (!scrollerEl || initialScrollDoneRef.current || itemCount === 0) return;
@@ -286,22 +305,18 @@ export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: Use
   }, [itemCount, scrollerEl, scrollToBottom]);
 
   useEffect(() => {
-    const currentListLength = messages.length;
-    const previousLength = previousListLengthRef.current;
-    const lastMessage = messages[messages.length - 1];
-    const previousLastId = previousLastIdRef.current;
-    previousListLengthRef.current = currentListLength;
-    previousLastIdRef.current = lastMessage?.id;
+    const lastUserId = findLastUserMessageId(messages);
+    const previousLastUserId = previousLastUserIdRef.current;
+    previousLastUserIdRef.current = lastUserId;
 
-    // Only auto-jump on a genuine NEW BOTTOM message: the list grew AND the last
-    // (newest) message changed. A scroll-up "load older" prepend also grows the
-    // length but leaves the last message unchanged — it must NOT yank the
-    // viewport to the bottom (that would fight the prepend scroll-anchor).
-    const grewAtBottom = currentListLength > previousLength && lastMessage?.id !== previousLastId;
-    if (!grewAtBottom) return;
+    // Jump on a new user send. Load-older prepends older rows but leaves the
+    // newest user message id unchanged, so it must not yank the viewport.
+    const sentNewUserMessage = lastUserId !== undefined && lastUserId !== previousLastUserId;
+    if (!sentNewUserMessage) return;
 
-    if (lastMessage?.position !== 'right') return;
-    if (userIntentPausedRef.current || userScrolledRef.current) return;
+    userScrolledRef.current = false;
+    userIntentPausedRef.current = false;
+    userInputActiveRef.current = false;
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -309,14 +324,6 @@ export function useAutoScroll({ messages, itemCount, virtuosoMode = false }: Use
       });
     });
   }, [messages, scrollToBottom]);
-
-  useEffect(() => {
-    return () => {
-      if (pendingAutoFollowFrameRef.current !== null) {
-        cancelAnimationFrame(pendingAutoFollowFrameRef.current);
-      }
-    };
-  }, []);
 
   const hideScrollButton = useCallback(() => {
     userScrolledRef.current = false;
