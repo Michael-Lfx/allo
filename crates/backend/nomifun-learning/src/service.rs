@@ -15,16 +15,19 @@ use sqlx::{Row, Sqlite, Transaction};
 
 use crate::generation::{Blueprint, generate_lesson, generate_lesson_activity};
 use crate::models::{
-    ActivityKind, ActivityView, AttemptResult, ConceptPack, ConceptRef, ConceptView,
-    CourseDetail, CourseJobSource, CourseJobStatus, CourseJobView, CoursePack, CourseSummary,
-    CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem, DiagnosticPlan,
-    DueReview, GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
-    GeneratedLessonActivity, LessonStatus, LessonView, ModuleView, QuestionEntry,
-    RetryCourseJobRequest, ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult,
-    ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
+    ActivityKind, ActivityView, AttemptResult, CheckinStatus, ConceptPack, ConceptRef,
+    ConceptView, CourseDetail, CourseJobSource, CourseJobStatus, CourseJobView, CoursePack,
+    CourseSummary, CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem,
+    DiagnosticPlan, DueReview, GenerateCourseRequest, GenerateLessonActivityRequest,
+    GenerateLessonRequest, GeneratedLessonActivity, LessonStatus, LessonView, ModuleView,
+    QuestionEntry, RetryCourseJobRequest, ReviewAnswerResult, ReviewQuestion, ReviewRating,
+    ReviewResult, ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig,
+    UpdateQuestionRequest,
 };
 use crate::generation_job::GenerationJobRunner;
-use crate::scheduler::{SchedulerSettings, schedule_review};
+use crate::scheduler::{
+    SchedulerSettings, first_review_due_at, review_day_number, review_day_start_utc, schedule_review,
+};
 
 #[derive(Clone)]
 pub struct LearningService {
@@ -1285,7 +1288,15 @@ impl LearningService {
         }
         if completed.is_some() && request.kind != ActivityKind::Reflection {
             let now = now_ms();
-            ensure_review_item(&mut transaction, &enrollment, activity_id.as_str(), now).await?;
+            let tz_offset_minutes = self.tz_offset_minutes().await;
+            ensure_review_item(
+                &mut transaction,
+                &enrollment,
+                activity_id.as_str(),
+                now,
+                tz_offset_minutes,
+            )
+            .await?;
         }
         transaction.commit().await.map_err(internal)?;
 
@@ -1694,10 +1705,18 @@ impl LearningService {
         .map_err(internal)?;
         if status == LessonStatus::Completed {
             // Completing a lesson admits its concepts into the review queue:
-            // seed one immediately-due item per concept (idempotent).
+            // seed one item per concept due on the next review day (idempotent).
             let enrollment = parse_id::<LearningEnrollmentId>(enrollment_id.clone())?;
             let mut transaction = self.pool.begin().await.map_err(internal)?;
-            seed_lesson_review_items(&mut transaction, &enrollment, lesson_id, now).await?;
+            let tz_offset_minutes = self.tz_offset_minutes().await;
+            seed_lesson_review_items(
+                &mut transaction,
+                &enrollment,
+                lesson_id,
+                now,
+                tz_offset_minutes,
+            )
+            .await?;
             transaction.commit().await.map_err(internal)?;
         }
         Ok(())
@@ -2404,6 +2423,7 @@ impl LearningService {
         }
         let question_id = LearningReviewItemId::new().into_string();
         let now = now_ms();
+        let due_at = first_review_due_at(now, self.tz_offset_minutes().await);
         sqlx::query(
             "INSERT INTO learning_custom_questions \
              (custom_question_id, user_id, kind, prompt, config_json, concept_id, \
@@ -2417,7 +2437,7 @@ impl LearningService {
         .bind(prompt)
         .bind(serde_json::to_string(&config).map_err(internal)?)
         .bind(request.concept_id.as_ref().map(LearningConceptId::as_str))
-        .bind(now)
+        .bind(due_at)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -2580,6 +2600,19 @@ impl LearningService {
                     .await?,
             )
         };
+        // Answered reviews (including auto-rated lapses) count toward the
+        // daily check-in regardless of the outcome.
+        sqlx::query(
+            "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
+             VALUES (?, ?, 'custom', ?, ?)",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(question_id)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
         Ok(ReviewAnswerResult {
             correct,
             feedback,
@@ -2964,6 +2997,7 @@ impl LearningService {
     /// back to FSRS defaults for anything missing or malformed.
     async fn scheduler_settings(&self) -> SchedulerSettings {
         let mut settings = SchedulerSettings::default();
+        settings.tz_offset_minutes = self.tz_offset_minutes().await;
         let Ok(rows) = sqlx::query(
             "SELECT key, value FROM client_preferences \
              WHERE key IN ('learning.desiredRetention', 'learning.fsrsParameters')",
@@ -3008,6 +3042,137 @@ impl LearningService {
             }
         }
         settings
+    }
+
+    /// Local-time offset in minutes east of UTC, reported by the frontend
+    /// (`learning.tzOffsetMinutes`); falls back to the server's local offset
+    /// when the preference is missing or malformed.
+    async fn tz_offset_minutes(&self) -> i32 {
+        let Ok(row) = sqlx::query_scalar::<_, String>(
+            "SELECT value FROM client_preferences WHERE key = 'learning.tzOffsetMinutes'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        else {
+            return SchedulerSettings::default().tz_offset_minutes;
+        };
+        match row {
+            Some(value) => serde_json::from_str::<Value>(&value)
+                .ok()
+                .and_then(|parsed| parsed.as_i64())
+                .and_then(|minutes| i32::try_from(minutes).ok())
+                .filter(|minutes| (-24 * 60..=24 * 60).contains(minutes))
+                .unwrap_or_else(|| SchedulerSettings::default().tz_offset_minutes),
+            None => SchedulerSettings::default().tz_offset_minutes,
+        }
+    }
+
+    /// Daily review goal from client preferences (`learning.dailyCheckinGoal`),
+    /// defaulting to 15; 0 means "clear the queue only" with no count target.
+    async fn daily_checkin_goal(&self) -> i64 {
+        let Ok(row) = sqlx::query_scalar::<_, String>(
+            "SELECT value FROM client_preferences WHERE key = 'learning.dailyCheckinGoal'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        else {
+            return 15;
+        };
+        match row {
+            Some(value) => serde_json::from_str::<Value>(&value)
+                .ok()
+                .and_then(|parsed| parsed.as_i64())
+                .filter(|goal| (0..=10_000).contains(goal))
+                .unwrap_or(15),
+            None => 15,
+        }
+    }
+
+    /// Daily check-in status for the current review day. Completion is a
+    /// momentary snapshot: goal reached (when N > 0) or no cards due. Once
+    /// satisfied the day is locked in `learning_checkins`, so cards arriving
+    /// later keep showing in the queue without changing the check-in state.
+    pub async fn checkin_today(&self, user_id: &UserId) -> Result<CheckinStatus, AppError> {
+        let now = now_ms();
+        let tz_offset_minutes = self.tz_offset_minutes().await;
+        let review_day_start = review_day_start_utc(now, tz_offset_minutes);
+        let review_day = review_day_number(now, tz_offset_minutes);
+
+        let goal = self.daily_checkin_goal().await;
+        let reviewed_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_review_events WHERE user_id = ? AND created_at >= ?",
+        )
+        .bind(user_id.as_str())
+        .bind(review_day_start)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let due_count: i64 = sqlx::query_scalar(
+            "SELECT \
+                (SELECT COUNT(*) FROM learning_review_items r \
+                 JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+                 WHERE e.user_id = ? AND r.due_at <= ?) \
+              + (SELECT COUNT(*) FROM learning_custom_questions q \
+                 WHERE q.user_id = ? AND q.due_at <= ?)",
+        )
+        .bind(user_id.as_str())
+        .bind(now)
+        .bind(user_id.as_str())
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        let locked: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT reviewed_count, completed_at FROM learning_checkins \
+             WHERE user_id = ? AND review_day = ?",
+        )
+        .bind(user_id.as_str())
+        .bind(review_day)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        let (completed, locked_at) = if let Some((_, completed_at)) = locked {
+            (true, Some(completed_at))
+        } else if (goal > 0 && reviewed_count >= goal) || due_count == 0 {
+            // Lock the review day; the UNIQUE(user_id, review_day) constraint
+            // keeps concurrent evaluations idempotent.
+            sqlx::query(
+                "INSERT OR IGNORE INTO learning_checkins \
+                 (checkin_id, user_id, review_day, goal, reviewed_count, completed_at) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(generate_id())
+            .bind(user_id.as_str())
+            .bind(review_day)
+            .bind(goal)
+            .bind(reviewed_count)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+            let completed_at: i64 = sqlx::query_scalar(
+                "SELECT completed_at FROM learning_checkins WHERE user_id = ? AND review_day = ?",
+            )
+            .bind(user_id.as_str())
+            .bind(review_day)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(internal)?;
+            (true, Some(completed_at))
+        } else {
+            (false, None)
+        };
+
+        Ok(CheckinStatus {
+            review_day,
+            goal,
+            reviewed_count,
+            due_count,
+            completed,
+            locked_at,
+        })
     }
 
     pub async fn rate_review(
@@ -3187,6 +3352,19 @@ impl LearningService {
         .bind(score)
         .bind(correct)
         .bind(&feedback)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        // Every answered review counts toward the daily check-in, so the
+        // event lands in the same transaction as the attempt.
+        sqlx::query(
+            "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
+             VALUES (?, ?, 'course', ?, ?)",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(review_id.as_str())
         .bind(now)
         .execute(&mut *transaction)
         .await
@@ -4106,14 +4284,15 @@ where
         .map_err(|error| AppError::Internal(format!("invalid persisted ID {value}: {error}")))
 }
 
-/// Creates one immediately-due review item per objective question of a lesson
-/// when the learner completes it. Each question carries its own memory curve.
-/// Existing items keep their schedule untouched.
+/// Creates one review item per objective question of a lesson when the learner
+/// completes it, due on the next review day. Each question carries its own
+/// memory curve. Existing items keep their schedule untouched.
 async fn seed_lesson_review_items(
     transaction: &mut Transaction<'_, Sqlite>,
     enrollment_id: &LearningEnrollmentId,
     lesson_id: &LearningLessonId,
     now: i64,
+    tz_offset_minutes: i32,
 ) -> Result<(), AppError> {
     let activity_ids: Vec<String> = sqlx::query_scalar(
         "SELECT activity_id FROM learning_activities \
@@ -4125,13 +4304,13 @@ async fn seed_lesson_review_items(
     .await
     .map_err(internal)?;
     for activity_id in activity_ids {
-        ensure_review_item(transaction, enrollment_id, &activity_id, now).await?;
+        ensure_review_item(transaction, enrollment_id, &activity_id, now, tz_offset_minutes).await?;
     }
     Ok(())
 }
 
-/// Creates the initial review item for one objective question, due
-/// immediately so it shows up in the queue. Existing items keep their
+/// Creates the initial review item for one objective question, due at the
+/// start of the next review day (02:00 local). Existing items keep their
 /// schedule untouched: in-course attempts never reschedule, only the review
 /// queue does.
 async fn ensure_review_item(
@@ -4139,6 +4318,7 @@ async fn ensure_review_item(
     enrollment_id: &LearningEnrollmentId,
     activity_id: &str,
     now: i64,
+    tz_offset_minutes: i32,
 ) -> Result<(), AppError> {
     let exists: Option<String> = sqlx::query_scalar(
         "SELECT review_item_id FROM learning_review_items \
@@ -4161,7 +4341,7 @@ async fn ensure_review_item(
     .bind(LearningReviewItemId::new().into_string())
     .bind(enrollment_id.as_str())
     .bind(activity_id)
-    .bind(now)
+    .bind(first_review_due_at(now, tz_offset_minutes))
     .bind(now)
     .execute(&mut **transaction)
     .await
@@ -5087,6 +5267,9 @@ mod tests {
             .await
             .unwrap();
         let course_id = course.course.id.clone();
+        // Fresh cards are due on the next review day, so the queue is empty
+        // right after completion; roll the schedule forward to serve it.
+        make_all_due(&service, &user_id).await;
         let due = service
             .due_reviews(&user_id, 30, &[course_id.clone()], true, false, &[])
             .await
@@ -5182,6 +5365,18 @@ mod tests {
             .unwrap();
         // Completing the lesson seeds one review item per objective question:
         // each card carries its own id, its own activity and its own schedule.
+        // New cards surface on the next review day, not immediately.
+        let scheduled = service
+            .due_reviews(&user_id, 30, &[], false, false, &[])
+            .await
+            .unwrap();
+        assert_eq!(scheduled.len(), 2);
+        let due_now = service
+            .due_reviews(&user_id, 30, &[], true, false, &[])
+            .await
+            .unwrap();
+        assert_eq!(due_now.len(), 0, "fresh cards are not due the same day");
+        make_all_due(&service, &user_id).await;
         let due = service
             .due_reviews(&user_id, 30, &[], true, false, &[])
             .await
@@ -5267,8 +5462,14 @@ mod tests {
         let config: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
         assert_eq!(config.answer, json!(["velocity", "velocity vector"]));
         assert_eq!(config.distractors, vec!["speed"]);
-        // The custom blank joins the orphan review queue immediately and is
-        // graded by the same rule-based evaluator.
+        // The custom blank joins the orphan queue due on the next review day
+        // and is graded by the same rule-based evaluator.
+        let before_due = service
+            .due_reviews(&user_id, 30, &[], true, true, &[])
+            .await
+            .unwrap();
+        assert_eq!(before_due.len(), 0, "fresh cards are not due the same day");
+        make_all_due(&service, &user_id).await;
         let due = service
             .due_reviews(&user_id, 30, &[], true, true, &[])
             .await
@@ -5321,5 +5522,167 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("only support"));
+    }
+
+    async fn checkin_test_service() -> (LearningService, UserId) {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        (service, user_id)
+    }
+
+    async fn set_checkin_goal(service: &LearningService, goal: i64) {
+        sqlx::query(
+            "INSERT INTO client_preferences (key, value, updated_at) VALUES \
+             ('learning.dailyCheckinGoal', ?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        )
+        .bind(goal.to_string())
+        .bind(now_ms())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+
+    async fn insert_review_event(service: &LearningService, user_id: &UserId, at: i64) {
+        sqlx::query(
+            "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
+             VALUES (?, ?, 'course', ?, ?)",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(generate_id())
+        .bind(at)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+
+    async fn insert_due_custom_question(service: &LearningService, user_id: &UserId) {
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO learning_custom_questions \
+             (custom_question_id, user_id, kind, prompt, config_json, concept_id, \
+              due_at, stability_days, difficulty, review_count, lapse_count, \
+              last_reviewed_at, created_at, updated_at) \
+             VALUES (?, ?, 'true_false', 'p', '{}', NULL, ?, 0, 5.0, 0, 0, NULL, ?, ?)",
+        )
+        .bind(LearningReviewItemId::new().into_string())
+        .bind(user_id.as_str())
+        .bind(now - 1000)
+        .bind(now)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+
+    async fn checkin_rows(service: &LearningService, user_id: &UserId) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_checkins WHERE user_id = ?")
+            .bind(user_id.as_str())
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap()
+    }
+
+    /// Rolls every card of the user to "due right now". Fresh cards enter
+    /// the queue due on the next review day; tests that exercise answering
+    /// call this to fast-forward past the rollover.
+    async fn make_all_due(service: &LearningService, user_id: &UserId) {
+        let now = now_ms();
+        sqlx::query(
+            "UPDATE learning_review_items SET due_at = ? WHERE review_item_id IN \
+             (SELECT r.review_item_id FROM learning_review_items r \
+              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+              WHERE e.user_id = ?)",
+        )
+        .bind(now - 1000)
+        .bind(user_id.as_str())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        sqlx::query("UPDATE learning_custom_questions SET due_at = ? WHERE user_id = ?")
+            .bind(now - 1000)
+            .bind(user_id.as_str())
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn checkin_locks_when_goal_reached() {
+        let (service, user_id) = checkin_test_service().await;
+        set_checkin_goal(&service, 5).await;
+        let now = now_ms();
+        for _ in 0..5 {
+            insert_review_event(&service, &user_id, now).await;
+        }
+        let status = service.checkin_today(&user_id).await.unwrap();
+        assert_eq!(status.reviewed_count, 5);
+        assert_eq!(status.goal, 5);
+        assert!(status.completed, "goal reached must complete the day");
+        assert!(status.locked_at.is_some());
+        assert_eq!(checkin_rows(&service, &user_id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn checkin_completes_when_queue_cleared() {
+        let (service, user_id) = checkin_test_service().await;
+        // goal = 0: no count target, clearing the (empty) queue completes.
+        set_checkin_goal(&service, 0).await;
+        let status = service.checkin_today(&user_id).await.unwrap();
+        assert_eq!(status.goal, 0);
+        assert_eq!(status.reviewed_count, 0);
+        assert_eq!(status.due_count, 0);
+        assert!(status.completed);
+        assert_eq!(checkin_rows(&service, &user_id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn checkin_stays_locked_after_new_due_cards() {
+        let (service, user_id) = checkin_test_service().await;
+        // An empty queue locks the day immediately.
+        let first = service.checkin_today(&user_id).await.unwrap();
+        assert!(first.completed);
+        // A card arriving later stays in the queue as extra work but does not
+        // reopen the locked day, and the lock row is not duplicated.
+        insert_due_custom_question(&service, &user_id).await;
+        let second = service.checkin_today(&user_id).await.unwrap();
+        assert!(second.completed);
+        assert_eq!(second.due_count, 1);
+        assert_eq!(checkin_rows(&service, &user_id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn checkin_rolls_over_on_new_review_day() {
+        let (service, user_id) = checkin_test_service().await;
+        // Lock yesterday's review day; today must still be open.
+        let now = now_ms();
+        let tz = SchedulerSettings::default().tz_offset_minutes;
+        let yesterday_start = review_day_start_utc(now, tz) - 86_400_000;
+        let yesterday = review_day_number(yesterday_start, tz);
+        sqlx::query(
+            "INSERT INTO learning_checkins \
+             (checkin_id, user_id, review_day, goal, reviewed_count, completed_at) \
+             VALUES (?, ?, ?, 15, 0, ?)",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(yesterday)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        // A due card today keeps the day open (an empty queue would complete
+        // it via the clear-the-queue condition).
+        insert_due_custom_question(&service, &user_id).await;
+        let status = service.checkin_today(&user_id).await.unwrap();
+        assert_eq!(status.review_day, review_day_number(now, tz));
+        assert_ne!(status.review_day, yesterday);
+        assert_eq!(status.due_count, 1);
+        assert!(!status.completed, "a new review day starts unchecked");
     }
 }

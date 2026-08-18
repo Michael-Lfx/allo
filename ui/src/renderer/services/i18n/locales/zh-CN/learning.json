@@ -280,6 +280,8 @@
     "reviewSessionLimitHint": "单次加载的到期复习卡片上限",
     "diagnosticLimit": "诊断题目数量",
     "diagnosticLimitHint": "单次知识诊断抽取的题目上限",
+    "dailyCheckinGoal": "每日打卡目标",
+    "dailyCheckinGoalHint": "每天计划复习的卡片数；达标或清空队列即完成当日打卡（0 表示仅清空队列，默认 15）",
     "saved": "已保存"
   }
 }

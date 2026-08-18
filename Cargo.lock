@@ -7313,6 +7313,7 @@ version = "1.0.4"
 dependencies = [
  "async-trait",
  "axum",
+ "chrono",
  "fsrs",
  "nomifun-api-types",
  "nomifun-auth",
@@ -7415,7 +7416,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-notify"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "async-trait",
  "nomifun-db",

@@ -280,6 +280,8 @@
     "reviewSessionLimitHint": "Maximum due review cards loaded per session",
     "diagnosticLimit": "Diagnostic questions",
     "diagnosticLimitHint": "Maximum questions sampled per knowledge diagnostic",
+    "dailyCheckinGoal": "Daily check-in goal",
+    "dailyCheckinGoalHint": "Cards planned per day; the day counts as done once reached or the queue is cleared (0 = clear the queue only, default 15)",
     "saved": "Saved"
   }
 }

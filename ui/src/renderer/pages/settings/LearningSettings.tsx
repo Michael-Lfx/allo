@@ -13,6 +13,7 @@ import SettingsPageWrapper from './components/SettingsPageWrapper';
 const DEFAULT_DESIRED_RETENTION = 0.9;
 const DEFAULT_REVIEW_SESSION_LIMIT = 30;
 const DEFAULT_DIAGNOSTIC_LIMIT = 10;
+const DEFAULT_DAILY_CHECKIN_GOAL = 15;
 
 const LearningSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -20,6 +21,7 @@ const LearningSettings: React.FC = () => {
   const [fsrsParameters, setFsrsParameters] = useConfig('learning.fsrsParameters');
   const [reviewSessionLimit, setReviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   const [diagnosticLimit, setDiagnosticLimit] = useConfig('learning.diagnosticLimit');
+  const [dailyCheckinGoal, setDailyCheckinGoal] = useConfig('learning.dailyCheckinGoal');
 
   const [parametersDraft, setParametersDraft] = useState('');
 
@@ -108,6 +110,19 @@ const LearningSettings: React.FC = () => {
                 max={100}
                 value={reviewSessionLimit ?? DEFAULT_REVIEW_SESSION_LIMIT}
                 onChange={(value) => value != null && void setReviewSessionLimit(Number(value))}
+              />
+            </PreferenceRow>
+            <PreferenceRow
+              label={t('learning.settings.dailyCheckinGoal')}
+              description={t('learning.settings.dailyCheckinGoalHint')}
+              controlLayout='field'
+            >
+              <InputNumber
+                className='w-full sm:w-180px'
+                min={0}
+                max={500}
+                value={dailyCheckinGoal ?? DEFAULT_DAILY_CHECKIN_GOAL}
+                onChange={(value) => value != null && void setDailyCheckinGoal(Number(value))}
               />
             </PreferenceRow>
             <PreferenceRow

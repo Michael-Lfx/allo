@@ -13,7 +13,7 @@ use serde::Deserialize;
 use url::form_urlencoded;
 
 use crate::models::{
-    AnswerReviewRequest, CourseJobSource, CoursePack, CreateCustomQuestionRequest,
+    AnswerReviewRequest, CheckinStatus, CourseJobSource, CoursePack, CreateCustomQuestionRequest,
     CreateLessonActivityRequest, DeleteCourseRequest, GenerateCourseRequest,
     GenerateLessonActivityRequest, GenerateLessonRequest, RateReviewRequest, SetTagsRequest,
     SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
@@ -70,6 +70,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             post(submit_attempt),
         )
         .route("/api/learning/reviews/due", get(due_reviews))
+        .route("/api/learning/checkins/today", get(checkin_today))
         .route("/api/learning/tags", get(list_tags))
         .route("/api/learning/reviews/{id}/answer", post(answer_review))
         .route("/api/learning/reviews/{id}/rate", post(rate_review))
@@ -382,6 +383,15 @@ async fn due_reviews(
             .service
             .due_reviews(&user.id, query.limit, &course_ids, query.due_only, query.orphan, &tags)
             .await?,
+    )))
+}
+
+async fn checkin_today(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<CheckinStatus>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.checkin_today(&user.id).await?,
     )))
 }
 
