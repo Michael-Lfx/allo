@@ -43,6 +43,9 @@ type PresetListPanelProps = {
   scenarioTags: PresetTag[];
   tagById: Map<string, PresetTag>;
   onManageTags: () => void;
+  hideChrome?: boolean;
+  searchQuery?: string;
+  onSearchQueryChange?: (value: string) => void;
 };
 
 const PresetListPanel: React.FC<PresetListPanelProps> = ({
@@ -61,11 +64,16 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
   scenarioTags,
   tagById,
   onManageTags,
+  hideChrome = false,
+  searchQuery: searchQueryProp,
+  onSearchQueryChange,
 }) => {
   const { t } = useTranslation();
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
-  const [search_query, setSearchQuery] = useState('');
+  const [search_query, setSearchQueryState] = useState('');
+  const search_query_value = searchQueryProp ?? search_query;
+  const setSearchQuery = onSearchQueryChange ?? setSearchQueryState;
   const [searchExpanded, setSearchExpanded] = useState(false);
   const [tagFilter, setTagFilter] = useState<TagFilterState>({ audience: [], scenario: [] });
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
@@ -114,15 +122,16 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
   }, [audienceTags, scenarioTags]);
 
   const filteredPresets = useMemo(
-    () => filterPresetsByTags(presets, search_query, tagFilter, localeKey),
-    [presets, search_query, tagFilter, localeKey]
+    () => filterPresetsByTags(presets, search_query_value, tagFilter, localeKey),
+    [presets, search_query_value, tagFilter, localeKey]
   );
 
-  const isSearchVisible = searchExpanded || search_query.length > 0;
+  const isSearchVisible = !hideChrome && (searchExpanded || search_query_value.length > 0);
 
   return (
     <div className='flex flex-col gap-16px pb-16px'>
       <div className={`flex items-center justify-end gap-8px ${isMobile ? 'w-full' : ''}`}>
+        {!hideChrome && (
         <Button
           type={isSearchVisible ? 'secondary' : 'text'}
           size='small'
@@ -145,6 +154,7 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
             setSearchExpanded(true);
           }}
         />
+        )}
         <Button
           type='primary'
           size='small'
@@ -161,7 +171,7 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
         <Input
           allowClear
           autoFocus
-          value={search_query}
+          value={search_query_value}
           onChange={setSearchQuery}
           data-testid='input-search-preset'
           className='!bg-[var(--color-bg-2)]'

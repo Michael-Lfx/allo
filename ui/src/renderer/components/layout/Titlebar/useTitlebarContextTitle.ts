@@ -11,15 +11,15 @@ export const resolveTitlebarStaticTitleKey = (pathname: string): string | null =
   if (pathname.startsWith('/conversation/')) return 'common.titlebar.conversation';
   if (pathname === '/terminal-new' || pathname.startsWith('/terminal/')) return 'common.titlebar.terminal';
   if (pathname.startsWith('/settings')) return 'common.titlebar.settings';
+  if (pathname.startsWith('/mcp') || pathname.startsWith('/presets') || pathname.startsWith('/skills') || pathname.startsWith('/plugins')) {
+    return 'common.titlebar.capabilityHub';
+  }
   if (pathname.startsWith('/video-generation')) return 'common.titlebar.videoGeneration';
   if (pathname.startsWith('/knowledge')) return 'common.titlebar.knowledge';
   if (pathname.startsWith('/learn')) return 'common.titlebar.learning';
   if (pathname.startsWith('/scheduled')) return 'common.titlebar.scheduled';
   if (pathname.startsWith('/requirements')) return 'common.titlebar.workspace';
   if (pathname.startsWith('/models')) return 'common.titlebar.models';
-  if (pathname.startsWith('/mcp')) return 'common.titlebar.mcp';
-  if (pathname.startsWith('/presets')) return 'common.titlebar.presets';
-  if (pathname.startsWith('/skills')) return 'common.titlebar.skills';
   if (pathname.startsWith('/nomi')) return 'common.titlebar.companion';
   return null;
 };

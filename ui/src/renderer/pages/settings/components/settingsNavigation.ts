@@ -39,6 +39,8 @@ export type SettingsNavItem = {
   icon: SettingsNavIcon | 'extension';
   iconUrl?: string;
   isExtension?: boolean;
+  /** Extra path segments that should keep this item selected (capability hub). */
+  activePaths?: string[];
 };
 
 export type SettingsNavGroup = {
@@ -53,8 +55,11 @@ type SettingsNavBuiltin = Omit<SettingsNavItem, 'label'> & { labelKey: I18nKey }
 export const LEGACY_ANCHOR_REMAP: Record<string, string> = {
   agent: 'execution-engines',
   'agent-runtime': 'execution-engines',
-  'skills-hub': 'skills',
-  tools: 'skills',
+  'skills-hub': 'capability-hub',
+  tools: 'capability-hub',
+  skills: 'capability-hub',
+  presets: 'capability-hub',
+  mcp: 'capability-hub',
 };
 
 export const SETTINGS_NAV_GROUP_ORDER: SettingsNavGroupId[] = [
@@ -80,9 +85,14 @@ const BUILTIN_NAVIGATION: SettingsNavBuiltin[] = [
   { id: 'insights', path: 'insights', groupId: 'intelligence', icon: 'insights', labelKey: 'settings.insightsNav' },
   { id: 'moa', path: 'moa', groupId: 'intelligence', icon: 'moa', labelKey: 'settings.moaNav' },
   { id: 'media', path: 'media', groupId: 'intelligence', icon: 'media', labelKey: 'settings.mediaNav' },
-  { id: 'presets', path: 'presets', groupId: 'capabilities', icon: 'presets', labelKey: 'settings.presetsHub.railTitle' },
-  { id: 'skills', path: 'skills', groupId: 'capabilities', icon: 'skills', labelKey: 'settings.skillsHub.railTitle' },
-  { id: 'mcp', path: 'mcp', groupId: 'capabilities', icon: 'mcp', labelKey: 'settings.mcpHub.railTitle' },
+  {
+    id: 'capability-hub',
+    path: 'presets',
+    groupId: 'capabilities',
+    icon: 'presets',
+    labelKey: 'settings.capabilityHub.navLabel',
+    activePaths: ['presets', 'skills', 'mcp', 'plugins'],
+  },
   { id: 'cloud-login', path: 'cloud-login', groupId: 'account', icon: 'cloud-login', labelKey: 'settings.cloudLoginNav' },
   { id: 'about', path: 'about', groupId: 'account', icon: 'about', labelKey: 'settings.about' },
 ];
@@ -155,6 +165,17 @@ export function buildSettingsNavigation(
 
   return groups.filter((group) => group.items.length > 0);
 }
+
+export const isSettingsNavItemActive = (
+  pathname: string,
+  item: Pick<SettingsNavItem, 'path' | 'activePaths'>
+): boolean => {
+  const paths = item.activePaths?.length ? item.activePaths : [item.path];
+  return paths.some((path) => {
+    const target = path.startsWith('/') ? path : `/settings/${path}`;
+    return pathname === target || pathname.startsWith(`${target}/`);
+  });
+};
 
 /**
  * Shared navigation data for both settings shells. No renderer owns a second

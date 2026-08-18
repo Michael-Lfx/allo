@@ -45,7 +45,19 @@ const CARD_GRID_COLS = 'repeat(auto-fit, minmax(min(270px, 100%), 1fr))';
 const IMPORT_ACTION_BUTTON_CLASS =
   '!rounded-[100px] !h-34px !px-14px !text-t-primary flex items-center gap-6px';
 
-const SkillsHubSettings: React.FC = () => {
+type SkillsHubSettingsProps = {
+  hideChrome?: boolean;
+  searchQuery?: string;
+  onSearchQueryChange?: (value: string) => void;
+  onInstalledCountChange?: (count: number) => void;
+};
+
+const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
+  hideChrome = false,
+  searchQuery: searchQueryProp,
+  onSearchQueryChange,
+  onInstalledCountChange,
+}) => {
   const { t, i18n } = useTranslation();
   const localeKey = resolveLocaleKey(i18n.language);
   const layout = useLayoutContext();
@@ -57,12 +69,14 @@ const SkillsHubSettings: React.FC = () => {
   const [highlightedSkill, setHighlightedSkill] = useState<string | null>(null);
   const skillRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
   const [skillPaths, setSkillPaths] = useState<{ user_skills_dir: string; builtin_skills_dir: string } | null>(null);
   const [builtinAutoSkills, setBuiltinAutoSkills] = useState<Array<{ name: string; description: string }>>([]);
 
-  const [search_query, setSearchQuery] = useState('');
+  const [search_query, setSearchQueryState] = useState('');
+  const search_query_value = searchQueryProp ?? search_query;
+  const setSearchQuery = onSearchQueryChange ?? setSearchQueryState;
   const [searchExpanded, setSearchExpanded] = useState(false);
   const [tagFilter, setTagFilter] = useState<TagFilterState>({ audience: [], scenario: [] });
   const [agentImportVisible, setAgentImportVisible] = useState(false);
@@ -102,6 +116,11 @@ const SkillsHubSettings: React.FC = () => {
     void fetchData();
   }, [fetchData]);
 
+  useEffect(() => {
+    if (loading) return;
+    onInstalledCountChange?.(availableSkills.length);
+  }, [availableSkills.length, loading, onInstalledCountChange]);
+
   const skillTagFilter = useMemo<SkillTagFilterState>(() => {
     const keyById = new Map(
       [...tags.audienceTags, ...tags.scenarioTags].map((tag) => [tag.preset_tag_id, tag.key] as const)
@@ -119,8 +138,8 @@ const SkillsHubSettings: React.FC = () => {
   }, [tagFilter, tags.audienceTags, tags.scenarioTags]);
 
   const filteredSkills = useMemo(() => {
-    return filterSkillsByTags(availableSkills, search_query, skillTagFilter, localeKey);
-  }, [availableSkills, search_query, skillTagFilter, localeKey]);
+    return filterSkillsByTags(availableSkills, search_query_value, skillTagFilter, localeKey);
+  }, [availableSkills, search_query_value, skillTagFilter, localeKey]);
 
   // Self-heal the tag filter against the current vocabulary: dropping a tag in
   // the management modal must not leave a stale key invisibly constraining a
@@ -246,7 +265,7 @@ const SkillsHubSettings: React.FC = () => {
     }
   };
 
-  const isSearchVisible = searchExpanded || search_query.length > 0;
+  const isSearchVisible = !hideChrome && (searchExpanded || search_query_value.length > 0);
 
   const mainContent = (
     <div className='w-full pb-16px'>
@@ -255,6 +274,7 @@ const SkillsHubSettings: React.FC = () => {
         <div className='py-2'>
           <div>
           {/* Header: title + actions */}
+          {!hideChrome && (
           <div className='flex flex-col gap-16px mb-20px'>
             <div className={`flex gap-12px ${isMobile ? 'flex-col' : 'items-start justify-between'}`}>
               <div className='min-w-0'>
@@ -325,7 +345,7 @@ const SkillsHubSettings: React.FC = () => {
               <Input
                 allowClear
                 autoFocus
-                value={search_query}
+                value={search_query_value}
                 onChange={setSearchQuery}
                 data-testid='input-search-skills'
                 className='!bg-[var(--color-bg-2)]'
@@ -333,7 +353,10 @@ const SkillsHubSettings: React.FC = () => {
                 prefix={<Search size={14} fill='currentColor' />}
               />
             )}
+          </div>
+          )}
 
+          <div className={hideChrome ? 'flex flex-col gap-16px mb-20px' : undefined}>
             {/* Shared tag filter bar — vocab from usePresetTags */}
             <PresetTagFilterBar
               audienceTags={tags.audienceTags}

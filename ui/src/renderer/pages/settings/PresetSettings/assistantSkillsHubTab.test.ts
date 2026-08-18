@@ -1,5 +1,3 @@
-
-
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 
@@ -11,28 +9,23 @@ describe('PresetSettings page shell', () => {
 
     expect(source.includes("searchParams.get('highlight')")).toBe(true);
     expect(source.includes('handleHighlightConsumed')).toBe(true);
-    // Highlight consumption is driven by the URL alone; the library/market tab
-    // state may never gate it or the highlight survives a tab switch.
     expect(source.includes('}, [searchParams, setSearchParams]);')).toBe(true);
     expect(/handleHighlightConsumed[\s\S]*?\}, \[[^\]]*activeTab/.test(source)).toBe(false);
     expect(source.includes('assistant-skills-hub-tabs')).toBe(false);
   });
 
-  test('renders through HubPageShell with the shared settings-tabs layout', () => {
+  test('renders through the shared capability hub chrome', () => {
     const source = readSource(new URL('./index.tsx', import.meta.url));
 
-    expect(source.includes('<HubPageShell')).toBe(true);
-    // The preset hub shares the `flowy-settings-tabs` class (header height /
-    // title weight come from CSS) and bounds the pane height with
-    // flex-1-min-h-0; lazyload defers inactive panes for performance.
-    expect(source.includes('flowy-settings-tabs')).toBe(true);
-    expect(source.includes('flex-1 min-h-0')).toBe(true);
+    expect(source.includes('<CapabilityHubShell')).toBe(true);
+    expect(source.includes("hub='presets'")).toBe(true);
+    expect(source.includes('flowy-settings-tabs')).toBe(false);
   });
 
-  test('uses the shared page-level header', () => {
+  test('hides the old page-level HubPageShell title', () => {
     const source = readSource(new URL('./index.tsx', import.meta.url));
 
-    expect(source.includes('hideHeader')).toBe(false);
-    expect(source.includes("title={t('settings.presetsHub.title'")).toBe(true);
+    expect(source.includes('<HubPageShell')).toBe(false);
+    expect(source.includes("title={t('settings.presetsHub.title'")).toBe(false);
   });
 });

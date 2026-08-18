@@ -26,6 +26,9 @@ type McpMarketSettingsProps = {
   saveMcpServers: (serversOrUpdater: IMcpServer[] | ((prev: IMcpServer[]) => IMcpServer[])) => Promise<void>;
   mcpServers: IMcpServer[];
   addedStateLoading?: boolean;
+  hideSearch?: boolean;
+  searchQuery?: string;
+  onSearchQueryChange?: (value: string) => void;
 };
 
 const MCP_MARKET_ORIGIN_KEY = '_nomifun_market';
@@ -136,6 +139,9 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
   saveMcpServers,
   mcpServers,
   addedStateLoading = false,
+  hideSearch = false,
+  searchQuery,
+  onSearchQueryChange,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -190,7 +196,7 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
               'Imported {{count}} MCP server(s) in a disabled state. Review the command and config before enabling or testing.',
           })
         );
-        navigate('/mcp');
+        navigate('/mcp?view=installed');
       }
     } catch (error) {
       console.error('Failed to import MCP market servers:', error);
@@ -219,6 +225,9 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
         defaultSource='mcpworld'
         searchPlaceholder={t('settings.mcpMarket.searchPlaceholder', { defaultValue: 'Search MCP servers...' })}
         emptyText={t('settings.mcpMarket.empty', { defaultValue: 'Refresh to load MCP market entries.' })}
+        hideSearch={hideSearch}
+        searchQuery={searchQuery}
+        onSearchQueryChange={onSearchQueryChange}
         primaryAction={{
           label: t('settings.market.import', { defaultValue: '导入' }),
           pendingLabel: t('settings.market.importing', { defaultValue: '正在导入' }),

@@ -19,7 +19,12 @@ import {
 } from '@icon-park/react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { type SettingsNavIcon, type SettingsNavItem, useSettingsNavigation } from './settingsNavigation';
+import {
+  isSettingsNavItemActive,
+  type SettingsNavIcon,
+  type SettingsNavItem,
+  useSettingsNavigation,
+} from './settingsNavigation';
 import './settings.css';
 
 interface SettingsPageWrapperProps {
@@ -45,11 +50,6 @@ const iconByName: Record<Exclude<SettingsNavIcon, 'extension'>, React.ComponentT
   about: Info,
 };
 
-const isActivePath = (pathname: string, path: string): boolean => {
-  const target = path.startsWith('/') ? path : `/settings/${path}`;
-  return pathname === target || pathname.startsWith(`${target}/`);
-};
-
 const MobileNavIcon: React.FC<{ item: SettingsNavItem }> = ({ item }) => {
   if (item.icon === 'extension' && item.iconUrl) {
     return <img src={item.iconUrl} alt='' className='size-16px object-contain' />;
@@ -68,7 +68,7 @@ const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({ children, cla
   const menuItems = React.useMemo(() => groups.flatMap((group) => group.items), [groups]);
 
   const containerClass = classNames(
-    'app-page-shell settings-page-wrapper w-full min-h-full box-border overflow-y-auto',
+    'app-page-shell settings-page-wrapper w-full min-h-0 flex-1 box-border overflow-y-auto',
     className
   );
   const contentClass = classNames(
@@ -83,7 +83,7 @@ const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({ children, cla
         {isMobile && (
           <nav className='settings-mobile-top-nav' aria-label={t('settings.title')}>
             {menuItems.map((item) => {
-              const active = isActivePath(pathname, item.path);
+              const active = isSettingsNavItemActive(pathname, item);
               const target = item.path.startsWith('/') ? item.path : `/settings/${item.path}`;
               return (
                 <button

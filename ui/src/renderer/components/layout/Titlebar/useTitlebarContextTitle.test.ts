@@ -19,9 +19,10 @@ describe('titlebar context title', () => {
     expect(resolveTitlebarStaticTitleKey('/scheduled/abc')).toBe('common.titlebar.scheduled');
     expect(resolveTitlebarStaticTitleKey('/requirements/extensions')).toBe('common.titlebar.workspace');
     expect(resolveTitlebarStaticTitleKey('/models')).toBe('common.titlebar.models');
-    expect(resolveTitlebarStaticTitleKey('/mcp')).toBe('common.titlebar.mcp');
-    expect(resolveTitlebarStaticTitleKey('/presets')).toBe('common.titlebar.presets');
-    expect(resolveTitlebarStaticTitleKey('/skills')).toBe('common.titlebar.skills');
+    expect(resolveTitlebarStaticTitleKey('/mcp')).toBe('common.titlebar.capabilityHub');
+    expect(resolveTitlebarStaticTitleKey('/presets')).toBe('common.titlebar.capabilityHub');
+    expect(resolveTitlebarStaticTitleKey('/skills')).toBe('common.titlebar.capabilityHub');
+    expect(resolveTitlebarStaticTitleKey('/plugins')).toBe('common.titlebar.capabilityHub');
     expect(resolveTitlebarStaticTitleKey('/nomi')).toBe('common.titlebar.companion');
     expect(resolveTitlebarStaticTitleKey('/unknown')).toBeNull();
   });

@@ -66,7 +66,7 @@ const FileAttachButton: React.FC<FileAttachButtonProps> = ({
   const handleOpenMcpSettings = useCallback(() => {
     setOpen(false);
     setMcpOpen(false);
-    void navigate('/mcp');
+    void navigate('/mcp?view=installed');
   }, [navigate]);
 
   const handleLocalFileChange = useCallback(

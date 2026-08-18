@@ -883,7 +883,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                       size='small'
                       type='outline'
                       icon={<Plus size={14} />}
-                      onClick={() => navigate('/skills')}
+                      onClick={() => navigate('/skills?view=installed')}
                       className='flowy-icon-text-btn !h-32px !rounded-8px !whitespace-nowrap'
                       data-testid='btn-add-skills'
                     >

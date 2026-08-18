@@ -5,7 +5,7 @@ import { getAgents } from '@/renderer/hooks/agent/useAgents';
 import { Message, Button, Dropdown, Menu, Modal } from '@arco-design/web-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { Down, Plus } from '@icon-park/react';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AddMcpServerModal from '@/renderer/pages/settings/components/AddMcpServerModal';
 import ExtensionMcpServerItem from '@/renderer/pages/settings/ToolsSettings/ExtensionMcpServerItem';
@@ -19,16 +19,39 @@ import {
 
 type MessageInstance = Required<ReturnType<typeof Message.useMessage>[0]>;
 
-const ModalMcpManagementSection: React.FC<{
-  message: MessageInstance;
-  mcpServers: IMcpServer[];
-  extensionMcpServers: ExtensionMcpServerContribution[];
-  setMcpServers: React.Dispatch<React.SetStateAction<IMcpServer[]>>;
-  saveMcpServers: (serversOrUpdater: IMcpServer[] | ((prev: IMcpServer[]) => IMcpServer[])) => Promise<void>;
-}> = ({ message, mcpServers, extensionMcpServers, setMcpServers, saveMcpServers }) => {
+export type McpInstalledPanelHandle = {
+  openAdd: (mode: 'json' | 'oneclick') => void;
+};
+
+const ModalMcpManagementSection = React.forwardRef<
+  McpInstalledPanelHandle,
+  {
+    message: MessageInstance;
+    mcpServers: IMcpServer[];
+    extensionMcpServers: ExtensionMcpServerContribution[];
+    setMcpServers: React.Dispatch<React.SetStateAction<IMcpServer[]>>;
+    saveMcpServers: (serversOrUpdater: IMcpServer[] | ((prev: IMcpServer[]) => IMcpServer[])) => Promise<void>;
+    hideChrome?: boolean;
+    searchQuery?: string;
+    showList?: boolean;
+  }
+>(({ message, mcpServers, extensionMcpServers, setMcpServers, saveMcpServers, hideChrome = false, searchQuery = '', showList = true }, ref) => {
   const { t } = useTranslation();
   const { oauthStatus, loggingIn, checkOAuthStatus, markLoginRequired, clearLoginRequired, login } = useMcpOAuth();
-  const visibleMcpServers = useMemo(() => mcpServers, [mcpServers]);
+  const visibleMcpServers = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return mcpServers;
+    return mcpServers.filter((server) =>
+      `${server.name} ${server.description ?? ''}`.toLowerCase().includes(query)
+    );
+  }, [mcpServers, searchQuery]);
+  const visibleExtensionServers = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return extensionMcpServers;
+    return extensionMcpServers.filter((server) =>
+      `${server.name} ${server.description ?? ''} ${server.source_key}`.toLowerCase().includes(query)
+    );
+  }, [extensionMcpServers, searchQuery]);
 
   const handleAuthRequired = useCallback(
     (server: IMcpServer) => {
@@ -63,6 +86,19 @@ const ModalMcpManagementSection: React.FC<{
   } = useMcpModal();
   const { handleAddMcpServer, handleBatchImportMcpServers, handleEditMcpServer, handleDeleteMcpServer } =
     useMcpServerCRUD(saveMcpServers);
+  const [detectedAgents, setDetectedAgents] = useState<Array<{ backend: string; name: string }>>([]);
+  const [importMode, setImportMode] = useState<'json' | 'oneclick'>('json');
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      openAdd: (mode) => {
+        setImportMode(mode);
+        showAddMcpModal();
+      },
+    }),
+    [showAddMcpModal]
+  );
 
   const handleOAuthLogin = useCallback(
     async (server: IMcpServer) => {
@@ -108,9 +144,6 @@ const ModalMcpManagementSection: React.FC<{
     },
     [handleBatchImportMcpServers, handleTestMcpConnections]
   );
-
-  const [detectedAgents, setDetectedAgents] = useState<Array<{ backend: string; name: string }>>([]);
-  const [importMode, setImportMode] = useState<'json' | 'oneclick'>('json');
 
   useEffect(() => {
     const loadAgents = async () => {
@@ -201,13 +234,16 @@ const ModalMcpManagementSection: React.FC<{
 
   return (
     <div className='flex flex-col gap-16px min-h-0'>
+      {!hideChrome && (
       <div className='flex gap-8px items-center justify-between'>
         <div className='text-14px text-t-primary'>{t('settings.mcpSettings')}</div>
         <div>{renderAddButton()}</div>
       </div>
+      )}
 
+      {showList && (
       <div className='flex-1 min-h-0'>
-        {visibleMcpServers.length === 0 && extensionMcpServers.length === 0 ? (
+        {visibleMcpServers.length === 0 && visibleExtensionServers.length === 0 ? (
           <div className='py-24px text-center text-t-secondary text-14px border border-dashed border-border-2 rd-12px'>
             {t('settings.mcpNoServersFound')}
           </div>
@@ -231,7 +267,7 @@ const ModalMcpManagementSection: React.FC<{
                   />
                 );
               })}
-              {extensionMcpServers.map((server) => {
+              {visibleExtensionServers.map((server) => {
                 const uiKey = extensionMcpUiKey(server.source_key);
                 return (
                   <ExtensionMcpServerItem
@@ -245,6 +281,7 @@ const ModalMcpManagementSection: React.FC<{
           </div>
         )}
       </div>
+      )}
 
       <AddMcpServerModal
         visible={showMcpModal}
@@ -273,7 +310,9 @@ const ModalMcpManagementSection: React.FC<{
       </Modal>
     </div>
   );
-};
+});
+
+ModalMcpManagementSection.displayName = 'ModalMcpManagementSection';
 
 const ToolsModalContent: React.FC = () => {
   const [mcpMessage, mcpMessageContext] = useArcoMessage({ maxCount: 10 });
@@ -295,29 +334,41 @@ const ToolsModalContent: React.FC = () => {
  * the /mcp hub page with its market tabs) can share one `useMcpServers`
  * instance across tabs instead of double-fetching.
  */
-export const ToolsModalContentWithState: React.FC<{
-  mcpMessage: MessageInstance;
-  mcpMessageContext: React.ReactNode;
-  mcpServers: IMcpServer[];
-  extensionMcpServers: ExtensionMcpServerContribution[];
-  setMcpServers: React.Dispatch<React.SetStateAction<IMcpServer[]>>;
-  saveMcpServers: (serversOrUpdater: IMcpServer[] | ((prev: IMcpServer[]) => IMcpServer[])) => Promise<void>;
-}> = ({ mcpMessage, mcpMessageContext, mcpServers, extensionMcpServers, saveMcpServers, setMcpServers }) => {
+export const ToolsModalContentWithState = React.forwardRef<
+  McpInstalledPanelHandle,
+  {
+    mcpMessage: MessageInstance;
+    mcpMessageContext: React.ReactNode;
+    mcpServers: IMcpServer[];
+    extensionMcpServers: ExtensionMcpServerContribution[];
+    setMcpServers: React.Dispatch<React.SetStateAction<IMcpServer[]>>;
+    saveMcpServers: (serversOrUpdater: IMcpServer[] | ((prev: IMcpServer[]) => IMcpServer[])) => Promise<void>;
+    hideChrome?: boolean;
+    searchQuery?: string;
+    showList?: boolean;
+  }
+>(({ mcpMessage, mcpMessageContext, mcpServers, extensionMcpServers, saveMcpServers, setMcpServers, hideChrome, searchQuery, showList }, ref) => {
   return (
     <div className='flex flex-col h-full w-full'>
       {mcpMessageContext}
 
-      <div className='flowy-settings-panel px-16px py-20px md:px-24px'>
+      <div className={showList === false ? undefined : 'flowy-settings-panel px-16px py-20px md:px-24px'}>
         <ModalMcpManagementSection
+          ref={ref}
           message={mcpMessage}
           mcpServers={mcpServers}
           extensionMcpServers={extensionMcpServers}
           setMcpServers={setMcpServers}
           saveMcpServers={saveMcpServers}
+          hideChrome={hideChrome}
+          searchQuery={searchQuery}
+          showList={showList}
         />
       </div>
     </div>
   );
-};
+});
+
+ToolsModalContentWithState.displayName = 'ToolsModalContentWithState';
 
 export default ToolsModalContent;

@@ -21,7 +21,12 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Tooltip } from '@arco-design/web-react';
 import { getSiderTooltipProps } from '@/renderer/utils/ui/siderTooltip';
-import { type SettingsNavIcon, type SettingsNavItem, useSettingsNavigation } from './settingsNavigation';
+import {
+  isSettingsNavItemActive,
+  type SettingsNavIcon,
+  type SettingsNavItem,
+  useSettingsNavigation,
+} from './settingsNavigation';
 import './settings.css';
 
 const iconByName: Record<Exclude<SettingsNavIcon, 'extension'>, React.ComponentType<any>> = {
@@ -38,11 +43,6 @@ const iconByName: Record<Exclude<SettingsNavIcon, 'extension'>, React.ComponentT
   mcp: Tool,
   'cloud-login': CloudStorage,
   about: Info,
-};
-
-const isActivePath = (pathname: string, path: string): boolean => {
-  const target = path.startsWith('/') ? path : `/settings/${path}`;
-  return pathname === target || pathname.startsWith(`${target}/`);
 };
 
 const SettingsNavIconSlot: React.FC<{ item: SettingsNavItem; selected: boolean }> = ({ item, selected }) => {
@@ -125,7 +125,7 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
             </h2>
           )}
           {group.items.map((item) => {
-            const selected = isActivePath(pathname, item.path);
+            const selected = isSettingsNavItemActive(pathname, item);
             const target = item.path.startsWith('/') ? item.path : `/settings/${item.path}`;
             return (
               <Tooltip key={item.id} {...siderTooltipProps} content={item.label} position='right'>

@@ -1,25 +1,68 @@
-
-
-import React from 'react';
-import { Tabs } from '@arco-design/web-react';
-import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router-dom';
-import HubPageShell from '@/renderer/components/layout/HubPageShell';
-import { ToolsModalContentWithState } from '@/renderer/components/settings/SettingsModal/contents/ToolsModalContent';
+import React, { useRef } from 'react';
 import { useMcpServers } from '@/renderer/hooks/mcp';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
+import {
+  ToolsModalContentWithState,
+  type McpInstalledPanelHandle,
+} from '@/renderer/components/settings/SettingsModal/contents/ToolsModalContent';
+import CapabilityHubShell, { useCapabilityHubSearch } from '@/renderer/pages/settings/capabilityHub/CapabilityHubShell';
+import { useCapabilityHubRoute } from '@/renderer/pages/settings/capabilityHub/useCapabilityHubRoute';
+import McpAddServerButton from './McpAddServerButton';
 import McpMarketSettings from './McpMarketSettings';
-import PluginSettingsPanel from './PluginSettingsPanel';
 
-type McpTab = 'servers' | 'market' | 'plugins' | 'plugin-market';
+const McpHubBody: React.FC<{
+  panelRef: React.RefObject<McpInstalledPanelHandle | null>;
+  mcpMessage: React.ComponentProps<typeof ToolsModalContentWithState>['mcpMessage'];
+  mcpMessageContext: React.ReactNode;
+  mcpServers: ReturnType<typeof useMcpServers>['mcpServers'];
+  extensionMcpServers: ReturnType<typeof useMcpServers>['extensionMcpServers'];
+  saveMcpServers: ReturnType<typeof useMcpServers>['saveMcpServers'];
+  setMcpServers: ReturnType<typeof useMcpServers>['setMcpServers'];
+  addedStateLoading: boolean;
+}> = ({
+  panelRef,
+  mcpMessage,
+  mcpMessageContext,
+  mcpServers,
+  extensionMcpServers,
+  saveMcpServers,
+  setMcpServers,
+  addedStateLoading,
+}) => {
+  const { view } = useCapabilityHubRoute('mcp');
+  const { searchQuery, setSearchQuery } = useCapabilityHubSearch();
 
-const isMcpTab = (value: string | null): value is McpTab =>
-  value === 'servers' || value === 'market' || value === 'plugins' || value === 'plugin-market';
+  return (
+    <>
+      <ToolsModalContentWithState
+        ref={panelRef}
+        mcpMessage={mcpMessage}
+        mcpMessageContext={mcpMessageContext}
+        mcpServers={mcpServers}
+        extensionMcpServers={extensionMcpServers}
+        saveMcpServers={saveMcpServers}
+        setMcpServers={setMcpServers}
+        hideChrome
+        searchQuery={searchQuery}
+        showList={view === 'installed'}
+      />
+      {view !== 'installed' && (
+        <McpMarketSettings
+          saveMcpServers={saveMcpServers}
+          mcpServers={mcpServers}
+          addedStateLoading={addedStateLoading}
+          hideSearch
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
+        />
+      )}
+    </>
+  );
+};
 
 const McpPage: React.FC = () => {
-  const { t } = useTranslation();
-  const [searchParams, setSearchParams] = useSearchParams();
   const [mcpMessage, mcpMessageContext] = useArcoMessage({ maxCount: 10 });
+  const panelRef = useRef<McpInstalledPanelHandle>(null);
   const {
     mcpServers,
     extensionMcpServers,
@@ -28,57 +71,24 @@ const McpPage: React.FC = () => {
     saveMcpServers,
     setMcpServers,
   } = useMcpServers();
-  const tabParam = searchParams.get('tab');
-  const activeTab: McpTab = isMcpTab(tabParam) ? tabParam : 'servers';
-
-  const handleTabChange = (key: string) => {
-    if (!isMcpTab(key)) return;
-    const next = new URLSearchParams(searchParams);
-    if (key === 'servers') next.delete('tab');
-    else next.set('tab', key);
-    setSearchParams(next, { replace: true });
-  };
 
   return (
-    <HubPageShell
-      title={t('settings.mcpHub.title', { defaultValue: 'MCP' })}
-      subtitle={t('settings.mcpHub.subtitle', {
-        defaultValue: 'Register MCP servers, browse MCP markets, and manage plugins.',
-      })}
-      maxWidthClass='md:max-w-1200px'
+    <CapabilityHubShell
+      hub='mcp'
+      installedCount={mcpServers.length + extensionMcpServers.length}
+      extraActions={<McpAddServerButton onOpen={(mode) => panelRef.current?.openAdd(mode)} />}
     >
-      <Tabs
-        activeTab={activeTab}
-        onChange={handleTabChange}
-        type='line'
-        lazyload
-        className='flowy-settings-tabs flex flex-col flex-1 min-h-0 [&>.arco-tabs-content]:pt-0'
-      >
-        <Tabs.TabPane key='servers' title={t('settings.mcpPage.installedMcpTab', { defaultValue: 'Installed MCP' })}>
-          <ToolsModalContentWithState
-            mcpMessage={mcpMessage}
-            mcpMessageContext={mcpMessageContext}
-            mcpServers={mcpServers}
-            extensionMcpServers={extensionMcpServers}
-            saveMcpServers={saveMcpServers}
-            setMcpServers={setMcpServers}
-          />
-        </Tabs.TabPane>
-        <Tabs.TabPane key='market' title={t('settings.mcpPage.mcpMarketTab', { defaultValue: 'MCP Market' })}>
-          <McpMarketSettings
-            saveMcpServers={saveMcpServers}
-            mcpServers={mcpServers}
-            addedStateLoading={isMcpServersLoading || mcpServersLoadFailed}
-          />
-        </Tabs.TabPane>
-        <Tabs.TabPane key='plugins' title={t('settings.mcpPage.installedPluginsTab', { defaultValue: 'Installed Plugins' })}>
-          <PluginSettingsPanel section='installed' />
-        </Tabs.TabPane>
-        <Tabs.TabPane key='plugin-market' title={t('settings.mcpPage.pluginMarketTab', { defaultValue: 'Plugin Market' })}>
-          <PluginSettingsPanel section='market' />
-        </Tabs.TabPane>
-      </Tabs>
-    </HubPageShell>
+      <McpHubBody
+        panelRef={panelRef}
+        mcpMessage={mcpMessage}
+        mcpMessageContext={mcpMessageContext}
+        mcpServers={mcpServers}
+        extensionMcpServers={extensionMcpServers}
+        saveMcpServers={saveMcpServers}
+        setMcpServers={setMcpServers}
+        addedStateLoading={isMcpServersLoading || mcpServersLoadFailed}
+      />
+    </CapabilityHubShell>
   );
 };
 

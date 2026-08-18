@@ -22,9 +22,17 @@ const AUTO_SYNC_KEY = 'nomifun.skillMarket.autoSynced.v4';
 
 type SkillMarketSettingsProps = {
   active?: boolean;
+  hideSearch?: boolean;
+  searchQuery?: string;
+  onSearchQueryChange?: (value: string) => void;
 };
 
-const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({ active = true }) => {
+const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({
+  active = true,
+  hideSearch = false,
+  searchQuery,
+  onSearchQueryChange,
+}) => {
   const { t, i18n } = useTranslation();
   const localeKey = resolveLocaleKey(i18n.language);
   const { start } = useNomiQuickStart();
@@ -114,6 +122,9 @@ const SkillMarketSettings: React.FC<SkillMarketSettingsProps> = ({ active = true
           }}
           enableTagFilter
           testIdPrefix='skill-market'
+          hideSearch={hideSearch}
+          searchQuery={searchQuery}
+          onSearchQueryChange={onSearchQueryChange}
           text={{
             syncSuccess: t('settings.skillsMarket.syncSuccess', { defaultValue: '技能市场已更新' }),
             syncKeptCache: t('settings.skillsMarket.syncKeptCache', { defaultValue: '未获取到新榜单，已保留本地缓存。' }),

@@ -33,15 +33,16 @@ describe('settings detail-page visual contracts', () => {
     expect(cloud).toContain('savedServerSettings');
   });
 
-  test('shares text tabs and a single scroll owner across capability hubs', () => {
+  test('shares capability hub chrome and a single scroll owner across capability hubs', () => {
     const skills = read('./SkillsSettingsPage.tsx');
     const presets = read('./PresetSettings/index.tsx');
     const mcp = read('../mcp/index.tsx');
+    const plugins = read('../mcp/PluginSettingsPage.tsx');
     const tools = read('../../components/settings/SettingsModal/contents/ToolsModalContent.tsx');
 
-    expect(skills).toContain("layout='hub'");
-    for (const source of [skills, presets, mcp]) {
-      expect(source).toContain('flowy-settings-tabs');
+    for (const source of [skills, presets, mcp, plugins]) {
+      expect(source).toContain('CapabilityHubShell');
+      expect(source).not.toContain('flowy-settings-tabs');
     }
     expect(presets).not.toContain('NomiScrollArea');
     expect(tools).not.toContain('NomiScrollArea');

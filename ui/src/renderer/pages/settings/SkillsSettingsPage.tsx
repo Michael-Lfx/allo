@@ -1,62 +1,63 @@
 /**
- * SkillsSettingsPage — top-level Skills capability with separate library and
- * market surfaces. Presets remain an independent capability and only reference
- * skills; the market therefore belongs here rather than under Presets.
+ * SkillsSettingsPage — skills hub inside the shared capability chrome.
+ * Market is the default surface; `?view=installed` shows the local library.
  */
-import { Tabs } from '@arco-design/web-react';
-import React, { useEffect, useState } from 'react';
-import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router-dom';
-import SettingsPageWrapper from './components/SettingsPageWrapper';
+import { ipcBridge } from '@/common';
+import React, { useCallback, useEffect, useState } from 'react';
+import CapabilityHubShell, { useCapabilityHubSearch } from './capabilityHub/CapabilityHubShell';
+import { useCapabilityHubRoute } from './capabilityHub/useCapabilityHubRoute';
 import SkillMarketSettings from './SkillMarketSettings';
 import SkillsHubSettings from './SkillsHubSettings';
+import SkillImportMenu from './skill/SkillImportMenu';
 
-type SkillsTab = 'library' | 'market';
+const SkillsHubBody: React.FC<{ onInstalledCountChange: (count: number) => void }> = ({
+  onInstalledCountChange,
+}) => {
+  const { view } = useCapabilityHubRoute('skills');
+  const { searchQuery, setSearchQuery } = useCapabilityHubSearch();
 
-const isSkillsTab = (value: string | null): value is SkillsTab => value === 'library' || value === 'market';
-
-const SkillsSettingsPage: React.FC = () => {
-  const { t } = useTranslation();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState<SkillsTab>(() => {
-    const tab = searchParams.get('tab');
-    return isSkillsTab(tab) ? tab : 'library';
-  });
-
-  useEffect(() => {
-    const tab = searchParams.get('tab');
-    const nextTab = isSkillsTab(tab) ? tab : 'library';
-    setActiveTab(nextTab);
-  }, [searchParams]);
-
-  const handleTabChange = (key: string) => {
-    if (!isSkillsTab(key)) return;
-    setActiveTab(key);
-    const next = new URLSearchParams(searchParams);
-    if (key === 'library') next.delete('tab');
-    else next.set('tab', key);
-    setSearchParams(next, { replace: true });
-  };
+  if (view === 'installed') {
+    return (
+      <SkillsHubSettings
+        hideChrome
+        searchQuery={searchQuery}
+        onSearchQueryChange={setSearchQuery}
+        onInstalledCountChange={onInstalledCountChange}
+      />
+    );
+  }
 
   return (
-    <SettingsPageWrapper layout='hub'>
-      <Tabs
-        activeTab={activeTab}
-        onChange={handleTabChange}
-        type='line'
-        className='flowy-settings-tabs skills-settings-hub-tabs [&>.arco-tabs-content]:pt-0'
-      >
-        <Tabs.TabPane
-          key='library'
-          title={t('settings.skillsPage.libraryTab', { defaultValue: 'Installed Skills' })}
-        >
-          <SkillsHubSettings />
-        </Tabs.TabPane>
-        <Tabs.TabPane key='market' title={t('settings.skillsPage.marketTab', { defaultValue: 'Skill Market' })}>
-          <SkillMarketSettings active={activeTab === 'market'} />
-        </Tabs.TabPane>
-      </Tabs>
-    </SettingsPageWrapper>
+    <SkillMarketSettings
+      hideSearch
+      searchQuery={searchQuery}
+      onSearchQueryChange={setSearchQuery}
+    />
+  );
+};
+
+const SkillsSettingsPage: React.FC = () => {
+  const [installedCount, setInstalledCount] = useState(0);
+
+  const refreshInstalledCount = useCallback(() => {
+    void ipcBridge.fs.listAvailableSkills
+      .invoke()
+      .then((skills) => setInstalledCount(skills.length))
+      .catch(() => setInstalledCount(0));
+  }, []);
+
+  useEffect(() => {
+    refreshInstalledCount();
+  }, [refreshInstalledCount]);
+
+  return (
+    <CapabilityHubShell
+      hub='skills'
+      installedCount={installedCount}
+      extraActions={<SkillImportMenu onImported={refreshInstalledCount} />}
+    >
+      <SkillsHubBody onInstalledCountChange={setInstalledCount} />
+    </CapabilityHubShell>
   );
 };
 

@@ -56,6 +56,9 @@
 .app-page-shell {
   padding: var(--flowy-space-6) var(--flowy-space-7);
   background-color: var(--flowy-canvas);
+  /* Keep the native scrollbar lane reserved so short/long views (market vs
+     installed) do not shift the page when overflow appears or disappears. */
+  scrollbar-gutter: stable;
 }
 
 .layout-content {

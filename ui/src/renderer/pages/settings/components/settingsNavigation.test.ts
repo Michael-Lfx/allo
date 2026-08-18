@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import type { IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import {
   buildSettingsNavigation,
+  isSettingsNavItemActive,
   LEGACY_ANCHOR_REMAP,
   type SettingsNavGroupId,
   type SettingsNavItem,
@@ -21,9 +22,14 @@ const builtinItems: SettingsNavItem[] = [
   { id: 'system', path: 'system', label: 'System', icon: 'system', groupId: 'application' },
   { id: 'browser-use', path: 'browser-use', label: 'Browser Use', icon: 'browser-use', groupId: 'application' },
   { id: 'poi', path: 'poi', label: 'Topics', icon: 'poi', groupId: 'intelligence' },
-  { id: 'presets', path: 'presets', label: 'Presets', icon: 'presets', groupId: 'capabilities' },
-  { id: 'skills', path: 'skills', label: 'Skills', icon: 'skills', groupId: 'capabilities' },
-  { id: 'mcp', path: 'mcp', label: 'MCP', icon: 'mcp', groupId: 'capabilities' },
+  {
+    id: 'capability-hub',
+    path: 'presets',
+    label: 'Capabilities',
+    icon: 'presets',
+    groupId: 'capabilities',
+    activePaths: ['presets', 'skills', 'mcp', 'plugins'],
+  },
   { id: 'about', path: 'about', label: 'About', icon: 'about', groupId: 'account' },
 ];
 
@@ -57,14 +63,26 @@ describe('settings navigation', () => {
     const capabilityItems = groups.find((group) => group.id === 'capabilities')?.items ?? [];
 
     expect(capabilityItems.map((item) => item.id)).toEqual([
-      'presets',
       'before-skills',
-      'skills',
-      'mcp',
+      'capability-hub',
       'retired-anchor',
       'no-anchor',
     ]);
     expect(LEGACY_ANCHOR_REMAP.agent).toBe('execution-engines');
+    expect(LEGACY_ANCHOR_REMAP.skills).toBe('capability-hub');
+  });
+
+  test('capability hub nav item stays active across presets, skills, MCP, and plugins', () => {
+    const item = {
+      path: 'presets',
+      activePaths: ['presets', 'skills', 'mcp', 'plugins'],
+    };
+
+    expect(isSettingsNavItemActive('/settings/presets', item)).toBe(true);
+    expect(isSettingsNavItemActive('/settings/skills', item)).toBe(true);
+    expect(isSettingsNavItemActive('/settings/mcp', item)).toBe(true);
+    expect(isSettingsNavItemActive('/settings/plugins', item)).toBe(true);
+    expect(isSettingsNavItemActive('/settings/system', item)).toBe(false);
   });
 
   test('desktop and narrow-window shells consume one shared navigation model', () => {
@@ -98,6 +116,7 @@ describe('settings navigation', () => {
     const en = JSON.parse(readSource(new URL('../../../services/i18n/locales/en-US/settings.json', import.meta.url))) as typeof zh;
 
     expect(navigationSource).toContain("application: 'settings.groupApp'");
+    expect(navigationSource).toContain("labelKey: 'settings.capabilityHub.navLabel'");
     expect(navigationSource).toContain('I18nKey');
     expect(navigationSource).not.toContain('settings.groupApplication');
     for (const label of [

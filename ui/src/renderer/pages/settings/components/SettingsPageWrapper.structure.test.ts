@@ -8,7 +8,7 @@ describe('SettingsPageWrapper layout contract', () => {
   test('keeps a single vertical page owner and exposes form and hub widths', () => {
     expect(source).toContain("layout?: 'form' | 'hub'");
     expect(source).toContain("layout: layoutMode = 'form'");
-    expect(source).toContain("'app-page-shell settings-page-wrapper w-full min-h-full box-border overflow-y-auto'");
+    expect(source).toContain("'app-page-shell settings-page-wrapper w-full min-h-0 flex-1 box-border overflow-y-auto'");
     expect(source).toContain("data-settings-page-content");
     expect(source).toContain("settings-page-content--hub");
     expect(source).toContain("settings-page-content--form");

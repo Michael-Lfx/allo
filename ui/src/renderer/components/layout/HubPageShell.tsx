@@ -9,7 +9,7 @@ import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 export const HUB_PAGE_TITLE_CLASS = 'text-22px font-600 text-t-primary leading-tight';
 
 interface HubPageShellProps {
-  title: string;
+  title?: string;
   subtitle?: string;
   /** Optional scope hook for page-specific visual contracts. */
   className?: string;
@@ -44,13 +44,13 @@ const HubPageShell: React.FC<HubPageShellProps> = ({
     <SettingsViewModeProvider value='page'>
       <div
         className={classNames(
-          'app-page-shell w-full min-h-full box-border overflow-y-auto',
+          'app-page-shell w-full min-h-0 flex-1 box-border overflow-y-auto',
           className,
           isMobile ? 'px-16px py-16px' : 'px-12px md:px-40px py-32px'
         )}
       >
         <div className={classNames('mx-auto w-full', maxWidthClass)}>
-          {!hideHeader && (
+          {!hideHeader && title && (
             <div className='mb-18px'>
               <div className={HUB_PAGE_TITLE_CLASS}>{title}</div>
               {subtitle && <div className='mt-6px text-13px leading-18px text-t-tertiary'>{subtitle}</div>}

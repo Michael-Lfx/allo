@@ -18,9 +18,11 @@ describe('capability hub navigation', () => {
     expect(siderSource.includes('<SiderConfigGroup')).toBe(false);
     expect(siderSource.includes('SiderExtensionsEntry')).toBe(false);
 
-    for (const id of ["'presets'", "'skills'", "'mcp'"]) {
-      expect(settingsNavigationSource.includes(id)).toBe(true);
-    }
+    expect(settingsNavigationSource.includes("id: 'capability-hub'")).toBe(true);
+    expect(settingsNavigationSource.includes("id: 'presets'")).toBe(false);
+    expect(settingsNavigationSource.includes("id: 'skills'")).toBe(false);
+    expect(settingsNavigationSource.includes("id: 'mcp'")).toBe(false);
+    expect(settingsNavigationSource.includes("id: 'plugins'")).toBe(false);
   });
 
   test('shows the full capability rail without first-win collapse', () => {
@@ -60,6 +62,7 @@ describe('capability hub navigation', () => {
     expect(routerSource.includes("path='/mcp'")).toBe(true);
     expect(routerSource.includes("path='/presets'")).toBe(true);
     expect(routerSource.includes("path='/skills'")).toBe(true);
+    expect(routerSource.includes("path='/plugins'")).toBe(true);
     expect(routerSource.includes('LegacyExtensionsRedirect')).toBe(true);
     expect(routerSource.includes("path='/extensions'")).toBe(true);
   });

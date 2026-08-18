@@ -64,6 +64,16 @@
     "tagsSaved": "Tags saved",
     "tagsSaveFailed": "Failed to save tags"
   },
+  "capabilityHub": {
+    "navLabel": "Presets · Skills · MCP · Plugins",
+    "tabPlugins": "Plugins",
+    "myPresets": "My Presets",
+    "myInstalled": "Installed",
+    "searchPresets": "Search presets",
+    "searchSkills": "Search skills",
+    "searchMcp": "Search MCP",
+    "searchPlugins": "Search plugins"
+  },
   "skillsPage": {
     "libraryTab": "Installed Skills",
     "marketTab": "Skill Market"

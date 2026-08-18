@@ -64,6 +64,16 @@
     "tagsSaved": "标签已保存",
     "tagsSaveFailed": "保存标签失败"
   },
+  "capabilityHub": {
+    "navLabel": "设定·技能·MCP·插件",
+    "tabPlugins": "插件",
+    "myPresets": "我的设定",
+    "myInstalled": "我安装的",
+    "searchPresets": "搜索设定",
+    "searchSkills": "搜索技能",
+    "searchMcp": "搜索 MCP",
+    "searchPlugins": "搜索插件"
+  },
   "skillsPage": {
     "libraryTab": "已安装技能",
     "marketTab": "技能市场"

@@ -64,6 +64,7 @@ The source of truth is
 | `/presets` | Reusable preset library. |
 | `/skills` | Skills capability library. |
 | `/mcp` | MCP server management. |
+| `/plugins` | Plugin market and installed extensions. |
 | `/open-capabilities` | Remote/public capability exposure. |
 | `/scheduled`, `/scheduled/:job_id` | Scheduled tasks. |
 | `/requirements`, `/requirements/extensions`, `/requirements/sources` | Requirements Platform, AutoWork, notification/source extensions. |

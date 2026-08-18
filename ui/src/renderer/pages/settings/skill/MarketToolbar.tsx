@@ -30,6 +30,7 @@ type MarketToolbarProps = {
   tagFilter?: TagFilterState;
   onTagFilterChange?: (value: TagFilterState) => void;
   localeKey?: string;
+  hideSearch?: boolean;
 };
 
 const MarketToolbar: React.FC<MarketToolbarProps> = ({
@@ -54,6 +55,7 @@ const MarketToolbar: React.FC<MarketToolbarProps> = ({
   tagFilter = { audience: [], scenario: [] },
   onTagFilterChange,
   localeKey = 'zh-CN',
+  hideSearch = false,
 }) => {
   const { t } = useTranslation();
   const headingId = useId();
@@ -117,10 +119,12 @@ const MarketToolbar: React.FC<MarketToolbarProps> = ({
             </div>
           ))}
           <Button type='text' size='small' data-testid={testId('btn-sync-{market}')} className='flex !h-34px !w-34px items-center justify-center !rounded-10px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary' icon={<Refresh size={16} fill='currentColor' className={loading ? 'animate-spin' : ''} />} onClick={onRefresh} title={t('common.refresh', { defaultValue: '刷新' })} />
+          {!hideSearch && (
           <Button type={isSearchVisible ? 'secondary' : 'text'} size='small' data-testid={testId('btn-search-{market}')} className='flex !h-34px !w-34px items-center justify-center !rounded-10px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary' icon={isSearchVisible ? <CloseSmall size={16} fill='currentColor' /> : <Search size={16} fill='currentColor' />} onClick={() => onSearchExpandedChange(!isSearchVisible)} aria-label={t('common.search', { defaultValue: '搜索' })} />
+          )}
         </div>
       </div>
-      {isSearchVisible && <Input allowClear autoFocus value={searchQuery} data-testid={testId('input-search-{market}')} className='!bg-[var(--color-bg-2)]' placeholder={searchPlaceholder} prefix={<Search size={14} fill='currentColor' />} onChange={onSearchQueryChange} />}
+      {!hideSearch && isSearchVisible && <Input allowClear autoFocus value={searchQuery} data-testid={testId('input-search-{market}')} className='!bg-[var(--color-bg-2)]' placeholder={searchPlaceholder} prefix={<Search size={14} fill='currentColor' />} onChange={onSearchQueryChange} />}
       {enableTagFilter && onTagFilterChange && <PresetTagFilterBar audienceTags={audienceTags} scenarioTags={scenarioTags} value={tagFilter} onChange={onTagFilterChange} localeKey={localeKey} onManageTags={() => undefined} hideManageTags />}
     </div>
   );

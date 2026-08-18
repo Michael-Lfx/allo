@@ -24,7 +24,8 @@ describe('model-owned tool configuration placement', () => {
     expect(source.includes('tools.speechToText')).toBe(false);
     expect(source.includes('tools.imageGenerationModel')).toBe(false);
     expect(source.includes('ModalMcpManagementSection')).toBe(true);
-    expect(source.includes('const visibleMcpServers = useMemo(() => mcpServers, [mcpServers])')).toBe(true);
+    expect(source.includes('visibleMcpServers')).toBe(true);
+    expect(source.includes('searchQuery')).toBe(true);
   });
 
   test('speech-to-text has a dedicated peer section and old copied cards are removed', () => {
@@ -49,7 +50,7 @@ describe('model-owned tool configuration placement', () => {
   test('MCP diagnostics link to the dedicated MCP page', () => {
     const source = readSource('../../components/media/FileAttachButton.tsx');
 
-    expect(source.includes("navigate('/mcp')")).toBe(true);
+    expect(source.includes("navigate('/mcp?view=installed')")).toBe(true);
     expect(source.includes('/settings/capabilities?tab=tools')).toBe(false);
   });
 });

@@ -36,6 +36,7 @@ describe('preset settings locale coverage', () => {
     expect(zhSettings.presetsHub.title).toBe('设定');
     expect(zhSettings.presetsHub.railTitle).toBe('设定');
     expect(zhSettings.skillsHub.railTitle).toBe('技能');
+    expect(zhSettings.capabilityHub.navLabel).toBe('设定·技能·MCP·插件');
   });
 
   test('localizes the inline preset-tag Enter hint', () => {

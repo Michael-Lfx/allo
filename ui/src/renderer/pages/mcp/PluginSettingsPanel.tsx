@@ -7,7 +7,7 @@ import { ipcBridge } from '@/common';
 import type { IExtensionInfo, ISkillMarketItem } from '@/common/adapter/ipcBridge';
 import { resolveLocaleKey } from '@/common/utils';
 import { Tag } from '@arco-design/web-react';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarketSettingsPanel from '@/renderer/pages/settings/MarketSettingsPanel';
 import {
@@ -19,9 +19,21 @@ import { useNomiQuickStart } from '@/renderer/hooks/agent/useNomiQuickStart';
 
 type PluginSettingsPanelProps = {
   section?: 'installed' | 'market' | 'both';
+  hideChrome?: boolean;
+  hideSearch?: boolean;
+  searchQuery?: string;
+  onSearchQueryChange?: (value: string) => void;
+  onInstalledCountChange?: (count: number) => void;
 };
 
-const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ section = 'both' }) => {
+const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({
+  section = 'both',
+  hideChrome = false,
+  hideSearch = false,
+  searchQuery = '',
+  onSearchQueryChange,
+  onInstalledCountChange,
+}) => {
   const { t, i18n } = useTranslation();
   const localeKey = resolveLocaleKey(i18n.language);
   const { start } = useNomiQuickStart();
@@ -36,6 +48,7 @@ const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ section = 'bo
       return;
     }
 
+    setLoading(true);
     void ipcBridge.extensions.getLoadedExtensions
       .invoke()
       .then(setExtensions)
@@ -45,6 +58,11 @@ const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ section = 'bo
       })
       .finally(() => setLoading(false));
   }, [showInstalled]);
+
+  useEffect(() => {
+    if (!showInstalled || loading) return;
+    onInstalledCountChange?.(extensions.length);
+  }, [extensions.length, loading, onInstalledCountChange, showInstalled]);
 
   const handleAdd = useCallback(
     async (item: ISkillMarketItem) => {
@@ -57,10 +75,21 @@ const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ section = 'bo
     [localeKey, start]
   );
 
+  const visibleExtensions = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return extensions;
+    return extensions.filter((extension) =>
+      `${extension.display_name || ''} ${extension.name} ${extension.description ?? ''}`
+        .toLowerCase()
+        .includes(query)
+    );
+  }, [extensions, searchQuery]);
+
   return (
     <div className='space-y-16px pb-24px'>
       {showInstalled && (
-        <div className='bg-fill-2 rounded-24px p-20px'>
+        <div className={hideChrome ? undefined : 'bg-fill-2 rounded-24px p-20px'}>
+          {!hideChrome && (
           <div className='flex items-start justify-between gap-12px mb-14px'>
             <div>
               <h2 className='m-0 text-22px font-600 text-t-primary'>
@@ -73,12 +102,13 @@ const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ section = 'bo
               </p>
             </div>
           </div>
+          )}
 
           {loading ? (
             <div className='py-24px text-center text-t-secondary text-14px'>
               {t('common.loading', { defaultValue: 'Loading...' })}
             </div>
-          ) : extensions.length === 0 ? (
+          ) : visibleExtensions.length === 0 ? (
             <div className='py-24px text-center text-t-secondary text-14px border border-dashed border-border-2 rd-12px'>
               {t('settings.plugins.emptyInstalled', { defaultValue: 'No installed plugins found.' })}
             </div>
@@ -87,7 +117,7 @@ const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ section = 'bo
               className='grid gap-12px'
               style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))' }}
             >
-              {extensions.map((extension) => (
+              {visibleExtensions.map((extension) => (
                 <div
                   key={extension.name}
                   className='rounded-16px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-14px'
@@ -144,6 +174,9 @@ const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ section = 'bo
             run: handleAdd,
           }}
           testIdPrefix='plugin-market'
+          hideSearch={hideSearch}
+          searchQuery={searchQuery}
+          onSearchQueryChange={onSearchQueryChange}
         />
       )}
     </div>

@@ -13,6 +13,9 @@ type PresetPackageMarketSettingsProps = {
   onImported: () => void | Promise<void>;
   presets: Preset[];
   addedStateLoading?: boolean;
+  hideSearch?: boolean;
+  searchQuery?: string;
+  onSearchQueryChange?: (value: string) => void;
 };
 
 const PRESET_MARKET_ID_STORAGE_KEY = 'nomifun.presetMarket.itemPresetIds.v1';
@@ -150,6 +153,9 @@ const PresetPackageMarketSettings: React.FC<PresetPackageMarketSettingsProps> = 
   onImported,
   presets,
   addedStateLoading = false,
+  hideSearch = false,
+  searchQuery,
+  onSearchQueryChange,
 }) => {
   const { t, i18n } = useTranslation();
 
@@ -253,6 +259,9 @@ const PresetPackageMarketSettings: React.FC<PresetPackageMarketSettingsProps> = 
       defaultSource='skillhub_packages'
       searchPlaceholder={t('settings.presetMarket.searchPlaceholder', { defaultValue: 'Search expert packages...' })}
       emptyText={t('settings.presetMarket.empty', { defaultValue: 'Refresh to load expert packages.' })}
+      hideSearch={hideSearch}
+      searchQuery={searchQuery}
+      onSearchQueryChange={onSearchQueryChange}
       primaryAction={{
         label: t('settings.market.add', { defaultValue: '添加' }),
         pendingLabel: t('settings.market.adding', { defaultValue: '正在添加' }),

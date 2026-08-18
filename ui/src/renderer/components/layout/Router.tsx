@@ -16,6 +16,7 @@ const PresetSettings = React.lazy(() => import('@renderer/pages/settings/PresetS
 const SkillsSettingsPage = React.lazy(() => import('@renderer/pages/settings/SkillsSettingsPage'));
 const ModelHubPage = React.lazy(() => import('@renderer/pages/modelHub'));
 const McpPage = React.lazy(() => import('@renderer/pages/mcp'));
+const PluginPage = React.lazy(() => import('@renderer/pages/mcp/PluginSettingsPage'));
 const BrowserPage = React.lazy(() => import('@renderer/pages/browser'));
 const SystemSettings = React.lazy(() => import('@renderer/pages/settings/SystemSettings'));
 const SshHostSettings = React.lazy(() => import('@renderer/pages/settings/SshHostSettings'));
@@ -267,6 +268,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/models' element={withRouteFallback(ModelHubPage)} />
           <Route path='/extensions' element={<LegacyExtensionsRedirect />} />
           <Route path='/mcp' element={withRouteFallback(McpPage)} />
+          <Route path='/plugins' element={withRouteFallback(PluginPage)} />
           <Route path='/open-capabilities' element={withRouteFallback(OpenCapabilitiesPage)} />
           <Route path='/browser' element={withRouteFallback(BrowserPage)} />
           <Route path='/presets' element={withRouteFallback(PresetSettings)} />
@@ -283,7 +285,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           {/* Relocated to the capability rail. */}
           <Route path='/settings/model' element={<Navigate to='/models?section=models' replace />} />
           <Route path='/settings/agent' element={<LegacyExecutionEngineRedirect />} />
-          <Route path='/settings/capabilities' element={<Navigate to='/skills' replace />} />
+          <Route path='/settings/capabilities' element={<Navigate to='/settings/presets' replace />} />
           <Route path='/settings/skills-hub' element={<Navigate to='/skills' replace />} />
           <Route path='/settings/tools' element={<Navigate to='/open-capabilities' replace />} />
           <Route path='/settings/display' element={<Navigate to='/settings/system' replace />} />
@@ -291,6 +293,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/presets' element={withRouteFallback(PresetSettings)} />
           <Route path='/settings/skills' element={withRouteFallback(SkillsSettingsPage)} />
           <Route path='/settings/mcp' element={withRouteFallback(McpPage)} />
+          <Route path='/settings/plugins' element={withRouteFallback(PluginPage)} />
           <Route path='/settings/system' element={withRouteFallback(SystemSettings)} />
           <Route path='/settings/ssh-hosts' element={withRouteFallback(SshHostSettings)} />
           <Route path='/settings/execution-engines' element={withRouteFallback(ExecutionEngineSettings)} />

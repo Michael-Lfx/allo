@@ -26,7 +26,7 @@ import {
 import { useMarketCatalog } from './skill/useMarketCatalog';
 import { Button } from '@arco-design/web-react';
 import { LinkOne } from '@icon-park/react';
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 /** Per-market wording overrides; every field falls back to the generic `settings.market.*` copy. */
@@ -62,6 +62,9 @@ type MarketSettingsPanelProps = {
    */
   testIdPrefix?: string;
   text?: MarketPanelTextOverrides;
+  hideSearch?: boolean;
+  searchQuery?: string;
+  onSearchQueryChange?: (value: string) => void;
 };
 
 /**
@@ -83,6 +86,9 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
   enableTagFilter = false,
   testIdPrefix,
   text,
+  hideSearch = false,
+  searchQuery: searchQueryProp,
+  onSearchQueryChange,
 }) => {
   const { t, i18n } = useTranslation();
   const localeKey = resolveLocaleKey(i18n.language);
@@ -130,6 +136,12 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
     sourceCounts,
     syncMarket,
   } = catalog;
+
+  useEffect(() => {
+    if (searchQueryProp === undefined) return;
+    setSearchQuery(searchQueryProp);
+    setSearchExpanded(searchQueryProp.length > 0);
+  }, [searchQueryProp, setSearchExpanded, setSearchQuery]);
 
   const testId = useCallback(
     (id: string): string | undefined => (testIdPrefix ? id.replace('{market}', testIdPrefix) : undefined),
@@ -215,13 +227,20 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
         searchPlaceholder={searchPlaceholder}
         searchQuery={searchQuery}
         searchExpanded={searchExpanded}
-        onSearchQueryChange={setSearchQuery}
+        onSearchQueryChange={(value) => {
+          onSearchQueryChange?.(value);
+          setSearchQuery(value);
+        }}
         onSearchExpandedChange={(expanded) => {
           setSearchExpanded(expanded);
-          if (!expanded) setSearchQuery('');
+          if (!expanded) {
+            setSearchQuery('');
+            onSearchQueryChange?.('');
+          }
         }}
         isMobile={isMobile}
         testId={testId}
+        hideSearch={hideSearch}
         enableTagFilter={enableTagFilter}
         audienceTags={tags.audienceTags}
         scenarioTags={tags.scenarioTags}
