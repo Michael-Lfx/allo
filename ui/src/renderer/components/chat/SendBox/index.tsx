@@ -67,7 +67,9 @@ import {
   commitComposerDraftChange,
   createComposerDraftRevisionState,
   recordComposerDraftChange,
+  rememberEditResubmitOperation,
   shouldCommitEditResubmitTerminal,
+  shouldRestoreRetrySubmittedInput,
 } from '@/renderer/components/chat/SendBox/editResubmitLifecycle';
 import { createComposerStopHandoffGate } from '@/renderer/components/chat/SendBox/composerStopHandoffGate';
 import type {
@@ -512,7 +514,7 @@ const SendBox: React.FC<{
                   authoritative
                 )
               ) return;
-              committedTerminalOperationsRef.current.add(retryOperationId);
+              rememberEditResubmitOperation(committedTerminalOperationsRef.current, retryOperationId);
               const outcome = resolveEditResubmitOutcome({
                 isCurrentOperation: true,
                 revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
@@ -569,14 +571,23 @@ const SendBox: React.FC<{
             conversation_type: conversationContext?.type,
           });
         } catch {
+          const terminalAlreadyCommitted = committedTerminalOperationsRef.current.has(retryOperationId);
+          const durableOperationId = retryConversationId
+            ? getEditResubmitOperation(retryConversationId)?.operationId
+            : undefined;
           // Restore the retried text only when THIS retry is still the current
           // operation AND the user never touched the composer mid-flight.
-          if (
-            !committedTerminalOperationsRef.current.has(retryOperationId) &&
-            activeRetryOperationRef.current === retryOperationId &&
-            inputRevisionStateRef.current.current === submittedInputRevision
-          ) {
+          if (shouldRestoreRetrySubmittedInput({
+            activeOperationId: activeRetryOperationRef.current,
+            committedOperationIds: committedTerminalOperationsRef.current,
+            eventOperationId: retryOperationId,
+            durableOperationId,
+            revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
+          })) {
             setInput(content);
+          }
+          if (!terminalAlreadyCommitted && durableOperationId === undefined) {
+            rememberEditResubmitOperation(committedTerminalOperationsRef.current, retryOperationId);
           }
         } finally {
           if (activeRetryOperationRef.current === retryOperationId) {
@@ -1777,7 +1788,7 @@ const SendBox: React.FC<{
             authoritative
           )
         ) return;
-        committedTerminalOperationsRef.current.add(operationId);
+        rememberEditResubmitOperation(committedTerminalOperationsRef.current, operationId);
         const outcome = resolveEditResubmitOutcome({
           isCurrentOperation: true,
           revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
@@ -1834,6 +1845,7 @@ const SendBox: React.FC<{
           // Lifecycle detach / requires-reset keeps the durable controller
           // record: do not downgrade that confirming operation to a fresh edit.
           if (cid && getEditResubmitOperation(cid)?.operationId === operationId) return;
+          rememberEditResubmitOperation(committedTerminalOperationsRef.current, operationId);
           const outcome = resolveEditResubmitOutcome({
             isCurrentOperation: isCurrentOperation(),
             revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,

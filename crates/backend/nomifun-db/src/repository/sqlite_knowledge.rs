@@ -494,6 +494,51 @@ impl IKnowledgeRepository for SqliteKnowledgeRepository {
         Ok(())
     }
 
+    async fn swap_knowledge_tags(&self, first_key: &str, second_key: &str) -> Result<(), DbError> {
+        if first_key == second_key {
+            return Err(DbError::Conflict("knowledge tag order requires two distinct tags".into()));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let rows = sqlx::query_as::<_, KnowledgeTagRow>(
+            "SELECT * FROM knowledge_tags WHERE key IN (?, ?)",
+        )
+        .bind(first_key)
+        .bind(second_key)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let first_order = rows
+            .iter()
+            .find(|row| row.key == first_key)
+            .map(|row| row.sort_order)
+            .ok_or_else(|| DbError::NotFound(format!("knowledge tag {first_key}")))?;
+        let second_order = rows
+            .iter()
+            .find(|row| row.key == second_key)
+            .map(|row| row.sort_order)
+            .ok_or_else(|| DbError::NotFound(format!("knowledge tag {second_key}")))?;
+
+        sqlx::query(
+            "UPDATE knowledge_tags
+             SET sort_order = CASE key
+                 WHEN ? THEN ?
+                 WHEN ? THEN ?
+             END
+             WHERE key IN (?, ?)",
+        )
+        .bind(first_key)
+        .bind(second_order)
+        .bind(second_key)
+        .bind(first_order)
+        .bind(first_key)
+        .bind(second_key)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn delete_knowledge_tag(&self, key: &str) -> Result<(), DbError> {
         let result = sqlx::query("DELETE FROM knowledge_tags WHERE key = ?")
             .bind(key)
@@ -574,6 +619,32 @@ mod tests {
         repo.delete_base(KB_A).await.unwrap();
         assert!(repo.get_base(KB_A).await.unwrap().is_none());
         assert!(matches!(repo.delete_base(KB_A).await, Err(DbError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn knowledge_tag_order_swap_is_atomic_at_repository_boundary() {
+        let db = init_database_memory().await.unwrap();
+        let repo = SqliteKnowledgeRepository::new(db.pool().clone());
+
+        for (key, sort_order) in [("first", 0), ("second", 1)] {
+            repo.create_knowledge_tag(CreateKnowledgeTagParams {
+                key: key.into(),
+                label: key.into(),
+                color: None,
+                sort_order,
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        }
+
+        repo.swap_knowledge_tags("second", "first").await.unwrap();
+
+        let tags = repo.list_knowledge_tags().await.unwrap();
+        assert_eq!(
+            tags.iter().map(|tag| tag.key.as_str()).collect::<Vec<_>>(),
+            vec!["second", "first"]
+        );
     }
 
     #[tokio::test]

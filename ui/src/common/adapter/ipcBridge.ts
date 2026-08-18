@@ -7323,6 +7323,10 @@ export const knowledge = {
     (p) => `/api/knowledge/tags/${p.key}`,
     (p) => ({ label: p.label, color: p.color, sortOrder: p.sortOrder })
   ),
+  reorderTags: httpPost<void, { firstKey: string; secondKey: string }>(
+    '/api/knowledge/tags/reorder',
+    (p) => ({ firstKey: p.firstKey, secondKey: p.secondKey })
+  ),
   deleteTag: httpDelete<void, { key: string }>((p) => `/api/knowledge/tags/${p.key}`),
   // ── Cross-base search ──
   search: withResponseMap(httpPost<IKnowledgeSearchHit[], { kbIds: KnowledgeBaseId[]; query: string; limit?: number }>(

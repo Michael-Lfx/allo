@@ -105,4 +105,23 @@ describe('ComposerSkillTokenInput beforeinput boundary', () => {
     handleComposerBeforeInputEvent({ inputType: 'deleteContentBackward', data: null }, actions);
     expect(calls).toEqual(['preventDefault', 'insert:中', 'preventDefault', 'delete:backward']);
   });
+
+  test('delegates malformed insertText data to the browser', () => {
+    const calls: string[] = [];
+    const actions = {
+      disabled: false,
+      isComposing: false,
+      preventDefault: () => calls.push('preventDefault'),
+      replaceSelectionWithText: (text: string) => calls.push(`insert:${text}`),
+      deleteSelection: (direction: 'backward' | 'forward') => calls.push(`delete:${direction}`),
+    };
+
+    handleComposerBeforeInputEvent({ inputType: 'insertText', data: undefined }, actions);
+    handleComposerBeforeInputEvent(
+      { inputType: 'insertText', data: 42 as unknown as string },
+      actions
+    );
+
+    expect(calls).toEqual([]);
+  });
 });

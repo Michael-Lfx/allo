@@ -152,10 +152,9 @@ export function handleComposerBeforeInputEvent(
 
   switch (inputType) {
     case 'insertText':
-      if (nativeEvent.data !== null) {
-        preventDefault();
-        replaceSelectionWithText(nativeEvent.data ?? '');
-      }
+      if (typeof nativeEvent.data !== 'string') return;
+      preventDefault();
+      replaceSelectionWithText(nativeEvent.data);
       break;
     case 'insertLineBreak':
     case 'insertParagraph':

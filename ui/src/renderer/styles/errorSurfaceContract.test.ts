@@ -28,4 +28,16 @@ describe('error surface browser probe contract', () => {
     expect(probeSource).toContain("id: 'config-recovery'");
     expect(auditSource).toContain("'config-recovery'");
   });
+
+  test('bounds browser process work and rejects unsafe launch conditions', () => {
+    expect(auditSource).toContain('const activeChildren = new Set();');
+    expect(auditSource).toContain('const maxCasesPerRun = 256;');
+    expect(auditSource).toContain('const maxAttemptsPerCase = 2;');
+    expect(auditSource).toContain('const selectCases = (cases, limit) => {');
+    expect(auditSource).toContain("const allowedHosts = new Set(['localhost', '127.0.0.1', '[::1]']);");
+    expect(auditSource).toContain('await cleanupActiveChildren();');
+    expect(auditSource).not.toContain("'--no-sandbox'");
+    expect(auditSource).not.toContain('deferred cleanup');
+    expect(auditSource).not.toContain('--max-runs 0');
+  });
 });

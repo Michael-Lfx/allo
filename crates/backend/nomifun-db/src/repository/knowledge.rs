@@ -80,6 +80,9 @@ pub trait IKnowledgeRepository: Send + Sync {
     /// if no tag with `key` exists.
     async fn update_knowledge_tag(&self, key: &str, params: UpdateKnowledgeTagParams) -> Result<(), DbError>;
 
+    /// Atomically exchange the sort order of two existing tags.
+    async fn swap_knowledge_tags(&self, first_key: &str, second_key: &str) -> Result<(), DbError>;
+
     /// Delete a tag by key. Returns `DbError::NotFound` if absent.
     async fn delete_knowledge_tag(&self, key: &str) -> Result<(), DbError>;
 }

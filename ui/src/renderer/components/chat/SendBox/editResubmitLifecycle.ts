@@ -77,7 +77,40 @@ export const shouldCommitEditResubmitTerminal = (
   authoritative: boolean
 ): boolean =>
   !committedOperationIds.has(eventOperationId) &&
-  (authoritative || activeOperationId === eventOperationId);
+  (activeOperationId === eventOperationId || (activeOperationId === null && authoritative));
+
+/** Restore a retry only when no terminal or durable owner has already handled it. */
+export const shouldRestoreRetrySubmittedInput = ({
+  activeOperationId,
+  committedOperationIds,
+  eventOperationId,
+  durableOperationId,
+  revisionUnchanged,
+}: {
+  activeOperationId: string | null;
+  committedOperationIds: ReadonlySet<string>;
+  eventOperationId: string;
+  durableOperationId?: string;
+  revisionUnchanged: boolean;
+}): boolean =>
+  activeOperationId === eventOperationId &&
+  !committedOperationIds.has(eventOperationId) &&
+  durableOperationId === undefined &&
+  revisionUnchanged;
+
+/** Keep terminal tombstones bounded while preventing late authoritative replays. */
+export const rememberEditResubmitOperation = (
+  committedOperationIds: Set<string>,
+  operationId: string,
+  maxEntries = 256
+): void => {
+  committedOperationIds.add(operationId);
+  while (committedOperationIds.size > maxEntries) {
+    const oldest = committedOperationIds.values().next().value;
+    if (typeof oldest !== 'string') return;
+    committedOperationIds.delete(oldest);
+  }
+};
 
 /** Publish the renderer terminal first, then retire shared operation ownership. */
 export const commitEditResubmitTerminal = ({

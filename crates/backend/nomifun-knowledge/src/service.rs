@@ -7293,6 +7293,13 @@ impl KnowledgeService {
         })
     }
 
+    /// Exchange two tag positions in one repository transaction.
+    pub async fn reorder_tags(&self, first_key: &str, second_key: &str) -> Result<(), AppError> {
+        self.repo.swap_knowledge_tags(first_key, second_key).await?;
+        self.emitter.emit_tag_changed();
+        Ok(())
+    }
+
     /// Delete a tag by key after explicitly removing every JSON reference.
     ///
     /// The repository boundary does not expose a cross-table transaction, so a
@@ -9954,6 +9961,9 @@ mod tests {
         async fn update_knowledge_tag(&self, key: &str, params: nomifun_db::models::UpdateKnowledgeTagParams) -> Result<(), nomifun_db::DbError> {
             self.0.update_knowledge_tag(key, params).await
         }
+        async fn swap_knowledge_tags(&self, first_key: &str, second_key: &str) -> Result<(), nomifun_db::DbError> {
+            self.0.swap_knowledge_tags(first_key, second_key).await
+        }
         async fn delete_knowledge_tag(&self, key: &str) -> Result<(), nomifun_db::DbError> {
             self.0.delete_knowledge_tag(key).await
         }
@@ -12539,6 +12549,21 @@ mod tests {
         }).await.unwrap();
         assert_eq!(updated.label, "beta");
         assert_eq!(updated.color, Some("red".into())); // unchanged
+    }
+
+    #[tokio::test]
+    async fn reorder_tags_swaps_order_as_one_repository_operation() {
+        let svc = test_service();
+        let first = svc.create_tag("first", None).await.unwrap();
+        let second = svc.create_tag("second", None).await.unwrap();
+
+        svc.reorder_tags(&second.key, &first.key).await.unwrap();
+
+        let tags = svc.list_tags().await.unwrap();
+        assert_eq!(
+            tags.iter().map(|tag| tag.key.as_str()).collect::<Vec<_>>(),
+            vec![second.key.as_str(), first.key.as_str()]
+        );
     }
 
     /// Non-URL source kinds are unsupported and must be rejected at create time.

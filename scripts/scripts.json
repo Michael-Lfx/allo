@@ -45,6 +45,10 @@
       "group": "check",
       "desc": "使用 Windows Edge 矩阵验证错误诊断摘要、详情展开、复制入口和窄屏溢出"
     },
+    "check:error-surface-contract": {
+      "group": "check",
+      "desc": "静态校验错误面板 Edge 矩阵的进程清理、回环 URL 和运行次数上限"
+    },
     "check:button-layout-contract": {
       "group": "check",
       "desc": "扫描所有 Arco 图标文字按钮并校验共享横向布局契约"

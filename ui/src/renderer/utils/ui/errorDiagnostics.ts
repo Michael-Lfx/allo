@@ -3,6 +3,10 @@ import { isBackendHttpError, redactSensitiveText } from '@/common/adapter/httpBr
 
 const MAX_DETAIL_CHARS = 1000;
 const MAX_SUMMARY_CHARS = 240;
+const MAX_SERIALIZED_DETAIL_CHARS = 8000;
+const MAX_SERIALIZED_STRING_CHARS = 512;
+const MAX_SERIALIZED_NODES = 256;
+const MAX_SERIALIZED_DEPTH = 5;
 
 export type ErrorDiagnosticInput = {
   message?: string;
@@ -44,39 +48,114 @@ export type SafeErrorDiagnostic = {
 };
 
 const truncate = (value: string, maxChars: number): string => {
-  const chars = [...value];
-  return chars.length > maxChars ? `${chars.slice(0, maxChars).join('')}...` : value;
+  if (value.length <= maxChars) return value;
+  let prefix = value.slice(0, maxChars);
+  if (/[\uD800-\uDBFF]$/u.test(prefix)) prefix = prefix.slice(0, -1);
+  return `${prefix}...`;
+};
+
+const SENSITIVE_DIAGNOSTIC_KEY_PATTERN =
+  /api[_-]?key|authorization|auth[_-]?token|access[_-]?token|refresh[_-]?token|viewer[_-]?token|csrf[_-]?token|session[_-]?token|token|secret|password|credential|cookie|user[_ -]?input|prompt|workspace|working[_ -]?directory|cwd|path|raw[_ -]?response|response[_ -]?body|stack|trace/i;
+
+const redactSensitiveAssignment = (value: string): string => {
+  const authorizationRedacted = value.replace(
+    /((?:["']?authorization["']?\s*[:=]\s*))(?:(["'])([^\r\n]*?)\2|([^\r\n,;}]+))/gi,
+    (_match, prefix: string, quote: string | undefined, quotedValue: string | undefined, rawValue: string | undefined) => {
+      const original = quotedValue ?? rawValue ?? '';
+      const scheme = original.trim().split(/\s+/u)[0];
+      const replacement = /^bearer$/iu.test(scheme) ? 'Bearer ' : '';
+      return `${prefix}${quote ?? ''}${replacement}[REDACTED]${quote ?? ''}`;
+    }
+  );
+
+  return authorizationRedacted
+    .replace(
+      /((?:["']?(?:api[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|viewer[_-]?token|csrf[_-]?token|session[_-]?token|token|secret|password|credential|cookie|user[_ -]?input|prompt|workspace[_ -]?path|working[_ -]?directory|cwd|path|stack|trace|raw[_ -]?response|response[_ -]?body)["']?\s*[:=]\s*))(["'])[^\r\n]*?\2/gi,
+      '$1$2[REDACTED]$2'
+    )
+    .replace(
+      /((?:["']?(?:api[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|viewer[_-]?token|csrf[_-]?token|session[_-]?token|token|secret|password|credential|cookie|user[_ -]?input|prompt|workspace[_ -]?path|working[_ -]?directory|cwd|path|stack|trace|raw[_ -]?response|response[_ -]?body)["']?\s*[:=]\s*))(?!["'])[^\r\n,;}]+/gi,
+      '$1[REDACTED]'
+    );
 };
 
 const safeText = (value: string | undefined, maxChars: number): string | undefined => {
   if (typeof value !== 'string' || !value.trim()) return undefined;
-  const redacted = redactSensitiveText(value)
+  const redacted = redactSensitiveAssignment(redactSensitiveText(value))
     .replace(
-      /((?:["']?authorization["']?\s*[:=]\s*["']?))([^"\r\n',;}]+)/gi,
-      (match: string, prefix: string, value: string) => {
-        const scheme = value.trim().split(/\s+/u)[0];
-        return `${prefix}${scheme || '[REDACTED]'} [REDACTED]`;
-      }
+      /((?:workspace[_ -]?path|working[_ -]?directory|cwd)\s*[:=]\s*)[^\r\n,;}]+/gi,
+      '$1[REDACTED_PATH]'
     )
-    .replace(
-      /((?:["']?(?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|token|secret|password|credential|cookie|user[_-]?input|prompt|workspace[_-]?path|path)["']?\s*[:=]\s*["']?))([^"',}\s]+)(["']?)/gi,
-      (match: string, prefix: string, secret: string, quote: string) =>
-        secret.toLowerCase() === 'bearer' ? match : `${prefix}[REDACTED]${quote}`
-    )
-    .replace(/((?:workspace[_ -]?path|working[_ -]?directory|cwd)\s*[:=]\s*)[^\r\n,;}]+/gi, '$1[REDACTED_PATH]')
-    .replace(/(?:[A-Za-z]:\\|\/(?:Users|home|root|private|var|tmp|opt|workspace)\/)[^\s"'<>]+/g, '[REDACTED_PATH]')
+    .replace(/(?:[A-Za-z]:\\)[^\r\n"'<>]+/g, '[REDACTED_PATH]')
+    .replace(/\\\\[^\\/\s"'<>]+[\\/][^\r\n"'<>]+/g, '[REDACTED_PATH]')
+    .replace(/file:\/\/\/[^\r\n"'<>]+/gi, '[REDACTED_PATH]')
+    .replace(/\/(?:Users|home|root|private|var|tmp|opt|workspace)\/[^\r\n"'<>]+/g, '[REDACTED_PATH]')
     .trim();
   return redacted ? truncate(redacted, maxChars) : undefined;
+};
+
+type DiagnosticSerializationState = {
+  nodes: number;
+  seen: WeakSet<object>;
+};
+
+const serializeDiagnosticValue = (
+  value: unknown,
+  depth = 0,
+  state: DiagnosticSerializationState = { nodes: 0, seen: new WeakSet<object>() }
+): string => {
+  if (state.nodes >= MAX_SERIALIZED_NODES) return '"[TRUNCATED]"';
+  state.nodes += 1;
+
+  if (value === null) return 'null';
+  if (typeof value === 'string') return JSON.stringify(truncate(value, MAX_SERIALIZED_STRING_CHARS));
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value !== 'object') return '"[UNSUPPORTED]"';
+  if (depth >= MAX_SERIALIZED_DEPTH) return '"[MAX_DEPTH]"';
+  if (state.seen.has(value)) return '"[CIRCULAR]"';
+
+  state.seen.add(value);
+  let result: string;
+  if (Array.isArray(value)) {
+    const entries = value
+      .slice(0, 32)
+      .map((entry) => serializeDiagnosticValue(entry, depth + 1, state));
+    result = `[${entries.join(',')}${value.length > 32 ? ',"[TRUNCATED]"' : ''}]`;
+  } else {
+    const entries: string[] = [];
+    let inspectedKeys = 0;
+    let truncatedObject = false;
+    for (const key in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      inspectedKeys += 1;
+      if (inspectedKeys > 64 || entries.length >= 32) {
+        truncatedObject = true;
+        break;
+      }
+      if (SENSITIVE_DIAGNOSTIC_KEY_PATTERN.test(key)) {
+        truncatedObject = true;
+        continue;
+      }
+      let entry: unknown;
+      try {
+        entry = (value as Record<string, unknown>)[key];
+      } catch {
+        entry = '[UNAVAILABLE]';
+      }
+      entries.push(
+        `${JSON.stringify(key)}:${serializeDiagnosticValue(entry, depth + 1, state)}`
+      );
+    }
+    result = `{${entries.join(',')}${truncatedObject ? ',"[TRUNCATED]":"[REDACTED]"' : ''}}`;
+  }
+  state.seen.delete(value);
+  return truncate(result, MAX_SERIALIZED_DETAIL_CHARS);
 };
 
 const safeDetailsText = (value: unknown): string | undefined => {
   if (typeof value === 'string') return safeText(value, MAX_DETAIL_CHARS);
   if (value == null) return undefined;
-  try {
-    return safeText(JSON.stringify(value, null, 2), MAX_DETAIL_CHARS);
-  } catch {
-    return undefined;
-  }
+  return safeText(serializeDiagnosticValue(value), MAX_DETAIL_CHARS);
 };
 
 const firstLine = (value: string | undefined): string | undefined => {

@@ -561,7 +561,7 @@ bun run check:theme  → passed
 - `bun run typecheck`：既有 `MessageText` provider 类型、`ProcessTraceItem` animated props、MediaPipe 缺失、视频 Canvas 类型、Arco `Popover showArrow` 等错误；没有本轮新增文件的错误。
 - `bun run build:ui`：既有 `@mediapipe/tasks-vision` 无法解析导致 Vite 构建停止。
 
-Edge headless 探针已执行，但当前机器的 Edge `--dump-dom` 在本项目现有 `check:button-layout` 和新增 `check:error-surface` 中均以退出码 0、空 stdout 返回，无法生成 `data-ready="true"` 报告；因此不能把本轮 Edge 矩阵记为通过。脚本已对 Windows Edge 临时 profile 的 `EBUSY` 清理做重试和容错，需在能输出 DOM 的 Edge/CI 或目标设备上重新执行：
+Edge headless 探针已执行，但当前机器的 Edge `--dump-dom` 在本项目现有 `check:button-layout` 和新增 `check:error-surface` 中均以退出码 0、空 stdout 返回，无法生成 `data-ready="true"` 报告；因此不能把本轮 Edge 矩阵记为通过。脚本会对 Windows Edge 临时 profile 的 `EBUSY` 清理重试，最终无法确认清理时会失败退出，需在能输出 DOM 的 Edge/CI 或目标设备上重新执行：
 
 ```powershell
 bun run check:error-surface -- --url http://127.0.0.1:5173 --smoke
@@ -588,7 +588,7 @@ Tauri WebView2、中文输入法 malformed `beforeinput`、100%/125%/150%/200% �
    - `MessageTips.render.test.tsx` 在真实 `ConversationProvider`、`MessageListProvider`、`MemoryRouter` 下渲染错误卡片，验证重试 → 编辑 → 复制 → 反馈顺序及旧格式回退。
 5. `ErrorSurfaceProbe` 不再手工仿制错误卡片，改为挂载真实 `MessageTips` 和消息上下文；详情展开由真实 Arco Collapse DOM 交互驱动后再测量。
 6. `check:error-surface --full` 增加默认运行上限，避免 6 个宽度 × 2 个高度 × 4 个 DPR × 2 个语言 × 2 个主题模式 × 6 个主题 × 4 个 fixture × 2 个展开状态 × 2 个 CSS 场景的笛卡尔矩阵在失败重试下失控。
-   默认最多执行 256 个 case；需要无上限运行时显式传 `--max-runs 0`。
+   默认最多执行 128 个 case；任意手工运行也不能超过硬上限 256 个 case，且每个 case 最多重试 2 次，不提供无上限模式。
 
 ### Review 后验证记录
 
@@ -643,3 +643,45 @@ bun run check:error-surface -- --url http://127.0.0.1:5173 --full
 5. 错误图标改为继承卡片语义色，避免 Icon Park 的固定填色覆盖内置主题；共享 Modal 诊断的 code/status 元数据使用可换行的轻量标签，详情仍保持滚动和脱敏。
 
 本轮新增/更新的回归约束包括：默认渲染不出现卡片头部关联 ID、技术详情仍保持渐进披露、主题语义变量存在、详情标题和操作按钮具备 focus/interaction 样式。受影响测试当前为 77 pass / 0 fail；浏览器矩阵和 Tauri WebView2 人工验收仍按第十四节记录的边界单独执行。
+
+## 十七、第二轮 Code Review 全部修复（2026-08-18）
+
+本节记录第二轮 review 对边界问题的收口，仍在 `fix/error-modal-details` 分支；无关的
+`Cargo.lock` 脏改动继续保留，不纳入本任务。
+
+### 已完成的安全与一致性修复
+
+1. `scripts/check-error-surface.mjs` 现在限制 URL 只能是无凭据的
+   `http(s)://localhost`、`127.0.0.1` 或 `[::1]`，移除 `--no-sandbox`，维护活跃 Edge 子进程集合，
+   在正常结束、超时、中断和 profile 清理前统一终止进程树；临时 profile 未确认删除时直接失败，
+   不再留下“延迟清理后继续”的成功路径。
+2. Edge 矩阵增加 256 case 硬上限、128 case 默认 full 上限和每 case 两次尝试；full 矩阵采用
+   代表性 case 加步进采样，避免截取笛卡尔积前 256 项而漏掉语言、DPR、主题或宽度维度。
+   `check:error-surface-contract` 作为不启动浏览器的静态门禁加入 `bun run check`，真实 Edge DOM
+   和 WebView2 仍是独立验收。
+3. `ComposerSkillTokenInput` 对 `insertText` 的 `data` 只接受字符串；缺失、数字或对象等 malformed
+   `beforeinput` 直接交给浏览器默认行为，再由后续 `input` 事件同步草稿，不再抛出运行时异常。
+4. 编辑/重试重发的终态判断不再允许活动的 `op-b` 被旧的权威 `op-a` 回调提交；安全失败会退休
+   已结束 operation，终态墓碑保留最近 256 项，避免既拦截旧回调又无限增长。
+5. 诊断 details 改为有深度、节点、字符串和总长度预算的序列化；敏感键、`stack`/`trace`、用户输入、
+   带空格的凭据、UNC 路径、`file:` URI、工作区路径和常见绝对路径均在 formatter 层脱敏。新增
+   循环对象、空格凭据、用户输入和路径回归测试。
+6. 知识库标签颜色和排序失败不再只有 `console.error`，改用统一安全诊断 Modal。排序新增
+   `POST /api/knowledge/tags/reorder`，由 SQLite transaction 和内存测试仓储一次交换两个
+   `sort_order`，避免两个独立 PUT 造成部分更新；API、hook、Modal 和中英文文案已同步。
+
+### 验证边界
+
+- 已加入 Composer malformed data、operation tombstone、formatter 脱敏/循环对象、标签 Modal
+  结构和原子 reorder 服务测试；本轮受影响前端聚焦测试最终 `38 pass / 0 fail`，
+  错误 formatter 最后回归为 `8 pass / 0 fail`。
+- `node --check`（两个错误面板脚本）、静态 safety contract、i18n、`git diff --check`
+  和 `cargo fmt --all -- --check` 已通过；SQLite 原子交换测试和知识服务 reorder 测试各
+  `1 pass / 0 fail`，API 类型测试 `1 pass / 0 fail`。
+- 本轮不再启动 Edge，也不把本机历史 Edge 进程异常后的人工清理当作自动化通过；需要在专用 Edge/CI
+  环境重新执行 `bun run check:error-surface -- --url http://127.0.0.1:5173 --smoke`，再单独完成
+  Tauri WebView2、中文输入法、系统缩放和目标主题的人工验收。
+- `bun run check` 和 `bun run build:ui` 在当前受限环境中会在 Bun workspace 子脚本阶段报
+  `Operation not permitted`；直接执行 UI TypeScript 检查时只看到既有 `CourseWorkspace` 按钮契约、
+  MediaPipe、Arco Popover、视频 Canvas 和 provider 类型错误，直接启动 Vite 构建时另遇 Bun
+  `node_modules` 二进制 remap 错误，均未归因于本轮修改。

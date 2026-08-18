@@ -48,12 +48,13 @@ describe('error diagnostics', () => {
   test('redacts credentials, URL queries, and caps long details', () => {
     const diagnostic = buildErrorDiagnostic({
       message: 'request failed',
-      detail: `Authorization: Bearer secret\ntoken=secret\nhttps://provider.test/path?api_key=secret&keep=yes\n${'x'.repeat(1200)}`,
+      detail: `Authorization: Bearer secret\ntoken=secret\npassword=two words that must not leak\nhttps://provider.test/path?api_key=secret&keep=yes\n${'x'.repeat(1200)}`,
     });
     const text = formatErrorDiagnosticText(diagnostic, labels);
 
     expect(text).not.toContain('Bearer secret');
     expect(text).not.toContain('token=secret');
+    expect(text).not.toContain('two words that must not leak');
     expect(text).not.toContain('api_key=secret');
     expect(diagnostic.detail?.length).toBeLessThanOrEqual(1003);
     expect(diagnostic.detail).toContain('...');
@@ -143,5 +144,36 @@ describe('error diagnostics', () => {
 
     expect(text).not.toContain('C:\\Users\\secret\\workspace');
     expect(text).toContain('safe diagnostic');
+  });
+
+  test('redacts space-containing secrets, user input, UNC paths, file URIs, and cycles', () => {
+    const details: Record<string, unknown> = {
+      password: 'two words that must not leak',
+      user_input: 'private phrase from the composer',
+      unc_path: '\\\\server\\share\\private\\file.txt',
+      file_uri: 'file:///Users/secret/private/file.txt',
+      stack: 'Error: private stack\n    at privateFunction (C:\\Users\\secret\\app.js:1:1)',
+      safe_reason: 'provider rejected the schema',
+    };
+    details.circular = details;
+
+    const error = Object.assign(new Error('request failed'), {
+      name: 'BackendHttpError',
+      status: 500,
+      code: 'INTERNAL_ERROR',
+      backendMessage: 'The request failed',
+      details,
+    });
+
+    const diagnostic = buildUnknownErrorDiagnostic(error, 'Fallback');
+    const text = formatErrorDiagnosticText(diagnostic, labels);
+
+    expect(text).not.toContain('two words that must not leak');
+    expect(text).not.toContain('private phrase from the composer');
+    expect(text).not.toContain('server\\share\\private\\file.txt');
+    expect(text).not.toContain('file:///Users/secret/private/file.txt');
+    expect(text).not.toContain('privateFunction');
+    expect(text).toContain('provider rejected the schema');
+    expect(diagnostic.detail?.length).toBeLessThanOrEqual(1003);
   });
 });

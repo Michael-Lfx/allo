@@ -5,14 +5,14 @@
  *   bun run check:error-surface -- --url http://127.0.0.1:5173 --smoke
  *   bun run check:error-surface -- --url http://127.0.0.1:5173
  *   bun run check:error-surface -- --url http://127.0.0.1:5173 --full
- *   bun run check:error-surface -- --url http://127.0.0.1:5173 --full --max-runs 0
+ *   bun run check:error-surface -- --url http://127.0.0.1:5173 --full --max-runs 128
  *
  * The probe reports the actual rendered error card and simple Modal, default
  * disclosure state, long-detail overflow, action order/enabled state, removal
  * of the legacy side rail, and the compact default header without a visible
  * incident ID. It is deliberately separate from unit tests and from manual
- * WebView2 visual acceptance. The full matrix is capped by default; pass
- * --max-runs 0 explicitly for an uncapped run.
+ * WebView2 visual acceptance. Every mode has a hard case limit; there is no
+ * unbounded process-spawning mode.
  */
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -36,11 +36,35 @@ const smoke = hasArg('--smoke');
 const fullMatrix = hasArg('--full');
 const screenshots = hasArg('--screenshots');
 const hasMaxRuns = hasArg('--max-runs');
-const requestedMaxRuns = Number(readArg('--max-runs', '0')) || 0;
-const defaultFullMatrixMaxRuns = 256;
-const maxRuns = hasMaxRuns ? Math.max(0, requestedMaxRuns) : fullMatrix ? defaultFullMatrixMaxRuns : 0;
+const maxCasesPerRun = 256;
+const defaultFullMatrixMaxRuns = 128;
+const defaultSmokeMatrixMaxRuns = 32;
+const maxAttemptsPerCase = 2;
+const requestedMaxRuns = Number(readArg('--max-runs', ''));
+if (hasMaxRuns && (!Number.isInteger(requestedMaxRuns) || requestedMaxRuns < 1)) {
+  throw new Error('[check:error-surface] --max-runs must be an integer between 1 and 256');
+}
+if (hasMaxRuns && requestedMaxRuns > maxCasesPerRun) {
+  throw new Error(`[check:error-surface] --max-runs cannot exceed ${maxCasesPerRun}`);
+}
+const maxRuns = hasMaxRuns
+  ? requestedMaxRuns
+  : fullMatrix
+    ? defaultFullMatrixMaxRuns
+    : smoke
+      ? defaultSmokeMatrixMaxRuns
+      : 0;
 const edgeTimeoutMs = Math.max(1_000, Number(readArg('--timeout-ms', '30000')) || 30_000);
 const edgeKillGraceMs = 5_000;
+
+const allowedHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
+const baseUrl = new URL(urlArg);
+if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) {
+  throw new Error('[check:error-surface] --url must be an http(s) URL without credentials');
+}
+if (!allowedHosts.has(baseUrl.hostname.toLowerCase())) {
+  throw new Error('[check:error-surface] --url is restricted to localhost, loopback IPv4, or loopback IPv6');
+}
 
 const edgeCandidates = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -77,22 +101,69 @@ const matrix = {
   scenarios: smoke ? ['off', 'normal'] : ['off', 'normal'],
 };
 
+const activeChildren = new Set();
+let interrupted = false;
+
 const terminateProcessTree = (child) => {
-  if (!child.pid) return;
+  if (!child?.pid) return Promise.resolve(true);
   if (process.platform === 'win32') {
-    const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
-      stdio: 'ignore',
-      windowsHide: true,
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (success) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        resolve(success);
+      };
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      const timeoutId = setTimeout(() => {
+        try {
+          child.kill();
+        } catch {
+          // The process may already be gone; the profile cleanup below is the
+          // final authoritative check.
+        }
+        finish(false);
+      }, edgeKillGraceMs);
+      killer.on('error', () => {
+        try {
+          child.kill();
+        } catch {
+          // Ignore an already-closed child.
+        }
+        finish(false);
+      });
+      killer.on('close', (code) => finish(code === 0 || child.exitCode !== null || child.signalCode !== null));
     });
-    killer.on('error', () => child.kill());
-    return;
   }
-  child.kill('SIGKILL');
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // Ignore an already-closed child.
+  }
+  return Promise.resolve(true);
 };
+
+const cleanupActiveChildren = async () => {
+  const children = [...activeChildren];
+  await Promise.all(children.map((child) => terminateProcessTree(child)));
+  for (const child of children) activeChildren.delete(child);
+};
+
+const onInterrupt = () => {
+  interrupted = true;
+  void cleanupActiveChildren();
+};
+process.once('SIGINT', onInterrupt);
+process.once('SIGTERM', onInterrupt);
 
 const run = (command, commandArgs, { timeoutMs = edgeTimeoutMs, ...spawnOptions } = {}) =>
   new Promise((resolve) => {
     const child = spawn(command, commandArgs, { windowsHide: true, ...spawnOptions });
+    activeChildren.add(child);
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -105,7 +176,7 @@ const run = (command, commandArgs, { timeoutMs = edgeTimeoutMs, ...spawnOptions 
       settled = true;
       clearTimeout(timeoutId);
       clearTimeout(killGraceId);
-      resolve({ code, signal, stdout, stderr, timedOut, spawnError });
+      resolve({ child, code, signal, stdout, stderr, timedOut, spawnError });
     };
 
     child.stdout?.on('data', (chunk) => {
@@ -122,9 +193,13 @@ const run = (command, commandArgs, { timeoutMs = edgeTimeoutMs, ...spawnOptions 
 
     timeoutId = setTimeout(() => {
       timedOut = true;
-      terminateProcessTree(child);
+      void terminateProcessTree(child);
       killGraceId = setTimeout(() => finish({ signal: 'SIGKILL' }), edgeKillGraceMs);
     }, timeoutMs);
+
+    // Keep the child in activeChildren until captureOnce has verified the
+    // isolated profile can be removed. This also lets SIGINT/SIGTERM clean up
+    // a child whose stdio has already closed but whose descendants remain.
   });
 
 const buildUrl = (query) => {
@@ -164,7 +239,6 @@ const captureOnce = async ({ width, height, dpr, locale, scheme, theme, fixture,
     '--disable-gpu-compositing',
     '--disable-features=VizDisplayCompositor',
     '--in-process-gpu',
-    '--no-sandbox',
     '--no-first-run',
     '--no-default-browser-check',
     '--force-prefers-reduced-motion',
@@ -176,34 +250,37 @@ const captureOnce = async ({ width, height, dpr, locale, scheme, theme, fixture,
     ...(screenshots ? [`--screenshot=${screenshotPath}`] : []),
     url,
   ];
+  let result;
   try {
-    const result = await run(edgePath, edgeArgs);
+    result = await run(edgePath, edgeArgs);
     writeFileSync(dumpPath, result.stdout);
     return { name, url, result, report: parseReport(result.stdout), dumpPath, screenshotPath };
   } finally {
+    if (result?.child) {
+      await terminateProcessTree(result.child);
+      activeChildren.delete(result.child);
+    }
+    let cleaned = false;
     for (let cleanupAttempt = 0; cleanupAttempt < 6; cleanupAttempt += 1) {
       try {
         rmSync(userDataDir, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+        cleaned = true;
         break;
       } catch (error) {
         if (error?.code !== 'EBUSY') throw error;
-        if (cleanupAttempt === 5) {
-          // Edge can keep a short-lived child process attached to the isolated
-          // profile after --dump-dom exits. Leave that exact temp directory for
-          // the OS to release instead of turning a valid DOM report into a
-          // false-negative gate.
-          console.warn(`[check:error-surface] deferred cleanup for ${userDataDir}`);
-          break;
-        }
+        if (cleanupAttempt === 5) break;
         await new Promise((resolve) => setTimeout(resolve, 150 * (cleanupAttempt + 1)));
       }
+    }
+    if (!cleaned) {
+      throw new Error(`[check:error-surface] Edge profile cleanup was not confirmed: ${userDataDir}`);
     }
   }
 };
 
 const capture = async (testCase) => {
   let captured;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < maxAttemptsPerCase; attempt += 1) {
     captured = await captureOnce({ ...testCase, attempt });
     if (captured.report) return captured;
     await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
@@ -267,48 +344,93 @@ const representativeCases = () => {
   return result;
 };
 
+const caseKey = (testCase) => [
+  testCase.width,
+  testCase.height,
+  testCase.dpr,
+  testCase.locale,
+  testCase.scheme,
+  testCase.theme,
+  testCase.fixture,
+  testCase.expanded,
+  testCase.scenario,
+].join('|');
+
+const selectCases = (cases, limit) => {
+  if (cases.length <= limit) return cases;
+  const selected = [];
+  const seen = new Set();
+  const add = (testCase) => {
+    const key = caseKey(testCase);
+    if (seen.has(key) || selected.length >= limit) return;
+    seen.add(key);
+    selected.push({ ...testCase, index: selected.length });
+  };
+
+  // Start with one-dimensional representatives so a capped run still
+  // exercises every width, DPR, locale, scheme, theme and fixture.
+  for (const testCase of representativeCases()) add(testCase);
+  const stride = Math.max(1, Math.floor(cases.length / Math.max(1, limit - selected.length)));
+  for (let index = 0; selected.length < limit && index < cases.length; index += stride) {
+    add(cases[index]);
+  }
+  for (const testCase of cases) {
+    if (selected.length >= limit) break;
+    add(testCase);
+  }
+  return selected;
+};
+
 const cases = fullMatrix ? cartesianCases() : representativeCases();
-const selectedCases = maxRuns > 0 ? cases.slice(0, maxRuns) : cases;
+const selectedCases = selectCases(cases, Math.min(maxRuns || cases.length, maxCasesPerRun));
 const failures = [];
 const reports = [];
 
-for (const testCase of selectedCases) {
-  const captured = await capture(testCase);
-  const report = captured.report;
-  const error = !report
-    ? `Edge did not emit a ready error surface report (exit=${captured.result.code})`
-    : report.ok
-      ? null
-      : (report.failures ?? []).join(', ') || 'error surface probe failed';
-  const summary = { ...testCase, ok: !error, error, report };
-  reports.push(summary);
-  if (error) failures.push({ ...summary, dumpPath: captured.dumpPath, stderr: captured.result.stderr.slice(0, 1000) });
+try {
+  for (const testCase of selectedCases) {
+    if (interrupted) throw new Error('[check:error-surface] interrupted; active Edge processes were terminated');
+    const captured = await capture(testCase);
+    const report = captured.report;
+    const error = !report
+      ? `Edge did not emit a ready error surface report (exit=${captured.result.code})`
+      : report.ok
+        ? null
+        : (report.failures ?? []).join(', ') || 'error surface probe failed';
+    const summary = { ...testCase, ok: !error, error, report };
+    reports.push(summary);
+    if (error) failures.push({ ...summary, dumpPath: captured.dumpPath, stderr: captured.result.stderr.slice(0, 1000) });
+  }
+
+  const output = {
+    generatedAt: new Date().toISOString(),
+    url: urlArg,
+    smoke,
+    fullMatrix,
+    caseStrategy: fullMatrix ? 'cartesian-stratified-cap' : 'representative',
+    caseLimit: maxRuns || cases.length,
+    attemptLimit: maxAttemptsPerCase,
+    matrix,
+    edgeTimeoutMs,
+    selectedCaseCount: selectedCases.length,
+    passCount: reports.filter((item) => item.ok).length,
+    failureCount: failures.length,
+    failures,
+    reports,
+  };
+  writeFileSync(join(outDir, 'summary.json'), JSON.stringify(output, null, 2));
+
+  console.log(JSON.stringify({
+    ok: failures.length === 0,
+    outDir: outDir.replaceAll('\\', '/'),
+    selectedCaseCount: selectedCases.length,
+    passCount: output.passCount,
+    failureCount: output.failureCount,
+    firstFailure: failures[0] ?? null,
+  }, null, 2));
+
+  if (failures.length > 0) process.exitCode = 1;
+} finally {
+  await cleanupActiveChildren();
+  process.off('SIGINT', onInterrupt);
+  process.off('SIGTERM', onInterrupt);
 }
-
-const output = {
-  generatedAt: new Date().toISOString(),
-  url: urlArg,
-  smoke,
-  fullMatrix,
-  caseStrategy: fullMatrix ? (maxRuns > 0 ? 'cartesian-capped' : 'cartesian') : 'representative',
-  caseLimit: maxRuns || null,
-  matrix,
-  edgeTimeoutMs,
-  selectedCaseCount: selectedCases.length,
-  passCount: reports.filter((item) => item.ok).length,
-  failureCount: failures.length,
-  failures,
-  reports,
-};
-writeFileSync(join(outDir, 'summary.json'), JSON.stringify(output, null, 2));
-
-console.log(JSON.stringify({
-  ok: failures.length === 0,
-  outDir: outDir.replaceAll('\\', '/'),
-  selectedCaseCount: selectedCases.length,
-  passCount: output.passCount,
-  failureCount: output.failureCount,
-  firstFailure: failures[0] ?? null,
-}, null, 2));
-
-if (failures.length > 0) process.exit(1);

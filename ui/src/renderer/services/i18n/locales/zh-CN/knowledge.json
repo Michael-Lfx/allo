@@ -442,6 +442,7 @@
   "tags": {
     "addPlaceholder": "新标签...",
     "changeColor": "更换颜色",
+    "colorFailed": "更新标签颜色失败",
     "createFailed": "创建标签失败",
     "deleteConfirm": "删除「{{label}}」？将从所有知识库移除。",
     "deleteFailed": "删除标签失败",
@@ -449,6 +450,7 @@
     "modalDesc": "用标签整理知识库，可重命名、换色、排序或删除。",
     "modalTitle": "管理标签",
     "renameFailed": "重命名标签失败",
+    "reorderFailed": "调整标签顺序失败",
     "renameHint": "点击重命名"
   },
   "renamePlaceholder": "输入新的名称",
