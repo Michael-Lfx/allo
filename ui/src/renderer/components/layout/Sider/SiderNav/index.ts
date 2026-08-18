@@ -11,7 +11,6 @@ export { default as SiderLearningEntry } from './SiderLearningEntry';
 export { default as SiderMiniAppsEntry } from './SiderMiniAppsEntry';
 export { default as SiderModelHubEntry } from './SiderModelHubEntry';
 export { default as SiderNewConversationEntry } from './SiderNewConversationEntry';
-export { default as SiderNomiEntry } from './SiderNomiEntry';
 export { default as SiderOpenCapabilitiesEntry } from './SiderOpenCapabilitiesEntry';
 export { default as SiderCustomerServiceEntry } from './SiderCustomerServiceEntry';
 export { default as SiderRequirementsEntry } from './SiderRequirementsEntry';

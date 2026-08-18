@@ -10,7 +10,7 @@ import { customFigureMetaOf } from '@renderer/pages/companion/characters/customM
 import { useCompanions } from '@renderer/pages/nomi/useNomi';
 import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
 import { Message, Tooltip } from '@arco-design/web-react';
-import { Info, Robot } from '@icon-park/react';
+import { Attention, Robot } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -210,28 +210,37 @@ const CompanionSessionGroup: React.FC<Props> = ({
 
   return (
     <div className='min-w-0 mb-2px'>
-      {/* 与「项目/工作路径」完全同款的纯 section 标题（无边框/盒子/箭头，只有标签 + 数字）。
-          点击整行切换持久化折叠态（默认展开）。 */}
-      <div className='px-2px'>
-        <div
-          className='h-22px px-2px flex items-center justify-between gap-8px select-none cursor-pointer min-w-0'
-          onClick={() => onToggleExpanded?.()}
-        >
-          <span className='text-13px text-t-tertiary font-[500] leading-none tracking-wide truncate min-w-0'>
+      {/* 感叹号跟在标题后；黑框提示出现在图标正下方。 */}
+      <div className='pl-10px pr-4px pb-6px flex items-center justify-between gap-8px min-w-0'>
+        <div className='flex items-center gap-4px min-w-0'>
+          <span
+            className='sider-section-title text-13px font-[500] leading-none tracking-wide truncate shrink-0 opacity-75 transition-opacity hover:opacity-100 cursor-pointer'
+            onClick={() => onToggleExpanded?.()}
+          >
             {t('sessionList.companionGroup')}
           </span>
-          <span className='text-12px text-t-tertiary leading-none shrink-0'>{companions.length}</span>
+          <Tooltip
+            content={t('sessionList.companionTip')}
+            position='bottom'
+            mini
+            className='sider-tooltip-popup'
+            unmountOnExit
+          >
+            <span
+              role='img'
+              aria-label={t('sessionList.companionTip')}
+              className='inline-flex size-14px shrink-0 items-center justify-center text-t-tertiary opacity-75 hover:opacity-100 cursor-default'
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Attention theme='outline' size={12} fill='currentColor' className='block leading-none' />
+            </span>
+          </Tooltip>
         </div>
+        <span className='text-12px text-t-tertiary leading-none shrink-0'>{companions.length}</span>
       </div>
 
       {expanded && (
-        <div className='flex flex-col gap-2px mt-2px'>
-          <div className='mx-6px mb-2px flex min-h-28px items-center gap-6px rounded-8px bg-[rgba(var(--primary-6),0.06)] px-8px py-5px text-11px text-t-tertiary'>
-            <span className='inline-flex h-16px w-16px shrink-0 items-center justify-center text-primary opacity-70'>
-              <Info theme='outline' size='13' fill='currentColor' className='block leading-none' />
-            </span>
-            <span className='min-w-0 flex-1 truncate leading-16px'>{t('sessionList.companionTip')}</span>
-          </div>
+        <div className='flex flex-col gap-2px'>
           {visibleCompanions.entries.map((c) => {
             const active =
               activeConversationId != null &&
@@ -243,18 +252,18 @@ const CompanionSessionGroup: React.FC<Props> = ({
               <div
                 onClick={() => void handleOpen(c)}
                 className={classNames(
-                  'group flex items-center gap-8px shrink-0 rd-10px px-8px py-6px cursor-pointer transition-colors box-border',
+                  'group flex items-center gap-8px shrink-0 rd-10px pl-10px pr-8px h-34px cursor-pointer transition-colors box-border min-w-0',
                   active ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
                 )}
               >
-                <div className='relative shrink-0'>
+                <div className='relative size-22px shrink-0 flex items-center justify-center'>
                   <CompanionAvatar
                     character={c.character}
                     companionId={c.companion_id}
                     customFigure={customFigureMetaOf(c)}
                     mood={(c.status.mood as CompanionMood) || 'content'}
                     activity='idle'
-                    size={32}
+                    size={20}
                   />
                   {/* 这圈边框把状态点从头像上「抠」出来，所以宽度和样式都得写实：
                       `border-2` 只是 --bg-2 颜色，没有宽度也没有 border-style（本仓库
@@ -269,13 +278,13 @@ const CompanionSessionGroup: React.FC<Props> = ({
                 <div className='flex flex-col gap-1px min-w-0 flex-1'>
                   <span
                     className={classNames(
-                      'text-13px font-600 truncate min-w-0',
+                      'text-13px font-600 leading-16px truncate min-w-0',
                       active ? '!text-primary-6' : 'text-t-primary'
                     )}
                   >
                     {c.name}
                   </span>
-                  <span className={classNames('text-11px', active ? 'text-primary-6 opacity-70' : 'text-t-tertiary')}>
+                  <span className={classNames('text-11px leading-13px', active ? 'text-primary-6 opacity-70' : 'text-t-tertiary')}>
                     Lv{c.status.level}
                   </span>
                 </div>
@@ -294,7 +303,7 @@ const CompanionSessionGroup: React.FC<Props> = ({
                         openRobotConversation(conv.id);
                       }}
                       className={classNames(
-                        'flex items-center gap-6px shrink-0 rd-8px pl-40px pr-8px py-3px cursor-pointer transition-colors box-border min-w-0',
+                        'flex items-center gap-6px shrink-0 rd-8px pl-42px pr-8px py-3px cursor-pointer transition-colors box-border min-w-0',
                         activeRobot ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
                       )}
                     >
@@ -320,7 +329,7 @@ const CompanionSessionGroup: React.FC<Props> = ({
             <button
               type='button'
               aria-expanded={showAllCompanions}
-              className='ml-48px mt-1px mb-2px inline-flex h-20px w-fit max-w-full appearance-none items-center border-none bg-transparent p-0 text-left text-12px leading-20px text-t-secondary transition-colors cursor-pointer select-none hover:text-t-primary focus:outline-none focus-visible:text-t-primary'
+              className='ml-42px mt-1px mb-2px inline-flex h-20px w-fit max-w-full appearance-none items-center border-none bg-transparent p-0 text-left text-12px leading-20px text-t-secondary transition-colors cursor-pointer select-none hover:text-t-primary focus:outline-none focus-visible:text-t-primary'
               onClick={(e) => {
                 e.stopPropagation();
                 setShowAllCompanions((value) => !value);

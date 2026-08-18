@@ -339,7 +339,9 @@ builders:
 - breaking config, data, API, or workflow changes;
 - known limitations created or removed by the PR.
 
-Maintainers may rewrite changelog entries during release preparation.
+Maintainers may rewrite changelog entries during release preparation. Heading
+format and how complete a section must be are in
+[the changelog format example](docs/contributing/changelog.example.md).
 
 ## Review Etiquette
 

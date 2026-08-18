@@ -27,7 +27,7 @@ contributor standards.
 | Change database schema or identifiers | [contributing/data-and-identifier-standards.md](contributing/data-and-identifier-standards.md) |
 | Community expectations | [../CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) |
 | Report a security issue | [../SECURITY.md](../SECURITY.md) |
-| Release notes and release process | [../CHANGELOG.md](../CHANGELOG.md), [../RELEASING.md](../RELEASING.md) |
+| Release notes and release process | [../CHANGELOG.md](../CHANGELOG.md), [changelog format example](contributing/changelog.example.md), [../RELEASING.md](../RELEASING.md) |
 | Continue Browser Platform release work | [continuity/07-browser-platform-handoff.zh.md](continuity/07-browser-platform-handoff.zh.md) |
 
 ## Current Documentation
@@ -38,7 +38,7 @@ docs/
 ├── guides/               current product/operator guides
 ├── architecture/         current system architecture and implementation map
 ├── reference/            configuration, API overview, troubleshooting, FAQ
-├── contributing/         development, project structure, data/ID standards, build/package notes
+├── contributing/         development, project structure, data/ID standards, build/package notes, changelog format example
 ├── continuity/           historical decisions, handoff notes, and release audits
 ├── skills/               exported skill docs for external agents
 └── images/               screenshot manifest and referenced images

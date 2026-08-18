@@ -7,7 +7,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, Tooltip } from '@arco-design/web-react';
-import { Check, Logout, Message, Right, Theme, Translate, User } from '@icon-park/react';
+import { Check, Logout, Message, Peoples, Right, Theme, Translate, User } from '@icon-park/react';
 import classNames from 'classnames';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import CreditsRefreshButton from '@/renderer/components/base/CreditsRefreshButton';
@@ -29,6 +29,7 @@ interface SiderUserMenuProps {
   planLabel?: string;
   showLogout?: boolean;
   onLogout?: () => void;
+  onOpenCompanion?: () => void;
 }
 
 const menuRowClass =
@@ -42,6 +43,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   planLabel,
   showLogout = false,
   onLogout,
+  onOpenCompanion,
 }) => {
   const { t, i18n } = useTranslation();
   const { openSupportChat, hasUnread, unreadCount } = useSupportChat();
@@ -72,6 +74,13 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
     setSkinVisible(false);
     setLanguageVisible(false);
     openSupportChat();
+  };
+
+  const handleOpenCompanion = () => {
+    setMenuVisible(false);
+    setSkinVisible(false);
+    setLanguageVisible(false);
+    onOpenCompanion?.();
   };
 
   const currentLanguage = normalizeLanguageCode(i18n.language);
@@ -120,6 +129,13 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
           )}
         </span>
       </div>
+
+      {onOpenCompanion && (
+        <button type='button' className={menuRowClass} onClick={handleOpenCompanion}>
+          <Peoples theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+          <span className='flex-1 text-12px text-t-primary'>{t('nomi.siderTitle')}</span>
+        </button>
+      )}
 
       <Popover
         className='sider-soft-popover sider-user-language-popover'

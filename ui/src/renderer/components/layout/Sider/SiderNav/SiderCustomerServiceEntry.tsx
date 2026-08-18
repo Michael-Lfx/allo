@@ -19,7 +19,7 @@ interface SiderCustomerServiceEntryProps {
   onClick: () => void;
 }
 
-/** 客服 (Customer Service) — top-level rail entry under the 服务 group. Mirrors SiderNomiEntry. */
+/** 客服 (Customer Service) — top-level rail entry under the 服务 group. */
 const SiderCustomerServiceEntry: React.FC<SiderCustomerServiceEntryProps> = ({
   isMobile,
   isActive,

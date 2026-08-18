@@ -1,200 +1,18 @@
 # Changelog
 
-Flowy is pre-1.0. Until the first public release, this file records release
-notes at a high level rather than a complete historical log.
+Flowy 1.0.0 is the first public release. This file records user-facing notes
+at a high level rather than a complete commit log.
 
 ## Unreleased
 
-- Unified Flowy reasoning-depth controls into a compact, discrete popover with
-  stable English catalog levels, queued next-turn updates, and guarded maximum
-  charge motion. Disabled managed free-model references now migrate only to
-  compatible Flowy Cloud models, while provider/model write routes and Cron
-  execution fail closed without rewriting history.
+## v1.0.0 - 2026-08-18
 
-- Fixed frameless Windows/Linux titlebar hit areas so blank menu and toolbar
-  space can drag or double-click to maximize without swallowing controls.
-  Shared titlebar and sidebar Tooltips now stay inside the viewport, flip when
-  needed, and preserve macOS Overlay and browser behavior.
-
-- Refined the Home and Settings experience with stable semantic surfaces,
-  theme-aware controls, clearer navigation and titlebar context, responsive
-  settings rows, compact capability markets with in-app details, and guarded
-  Preset editing. Home entry points remain spatially stable, Mini App shortcuts
-  stay hidden, and workspace pickers remain clickable above page content.
-
-- Web search now gives the first cold request enough time to reach its final
-  keyless fallback after earlier providers time out. Successful web results now
-  distinguish usable factual evidence from untrusted embedded instructions,
-  while extraction failures remain clearly labeled as diagnostics.
-
-- Editing or retrying a conversation message now recovers from response loss,
-  timeouts, remounts, and post-truncation failures with one durable operation
-  key. Ambiguous outcomes no longer revoke transcript barriers, current drafts
-  and newly added attachments are preserved, and orphaned edits require an
-  explicit single-flight Conversation reset. Terminal failures now clear the
-  Editing UI immediately in the current composer before releasing shared
-  operation ownership, without overwriting text typed while confirmation was
-  pending. A double-click can no longer cross from the submitted
-  Send button into the replacement Stop button and cancel its own edit, while
-  an intentional Stop remains available immediately. Long error transcripts
-  no longer hide the editable user turn behind a fixed history window; if the
-  target truly disappeared, the composer refreshes in place and preserves the
-  draft instead of showing a detached global error toast.
-
-- Composer paste handling no longer inserts plain text twice after page or
-  conversation switches; plain text remains owned by the Composer while files
-  and images continue through PasteService.
-- Desktop conversation streaming now keeps completed Markdown blocks visually
-  stable while the trailing block is generated, gives Markdown headings a clear
-  reading hierarchy, and makes code actions reveal on hover or keyboard focus.
-- Conversation streaming now follows new output without click-induced pauses,
-  preserves responsive process controls, keeps streamed code blocks expanded,
-  and avoids rebuilding settled history for every token across basic runtimes.
-- AutoWork/IDMM: bypass-model (sidecar) decisions with confidence below 0.4
-  now fall back to the conservative rule action instead of being applied
-  verbatim, restoring the Phase-1 safety posture. Previously the floor was
-  0.0, so the low-confidence fallback never triggered.
-- Provider API: the retired `capabilities` field was removed from the
-  provider wire shape (`GET/POST/PUT /api/providers*`). The backing column
-  was dropped in an earlier migration and the field had been an
-  accepted-and-ignored `[]` ever since. The UI/API contract version was
-  bumped accordingly.
-
-- Knowledge-base imports and companion (memory/companion bundle) imports now
-  enforce zip-bomb limits: at most 256 MB of cumulative decompressed data and
-  20,000 entries per archive. Oversized import bundles fail instead of
-  exhausting disk/memory.
-
-- `NOMIFUN_DATA_DIR` is now taken literally as the final data root on **every**
-  host — the desktop shell no longer appends `/Nomi` to the env value, matching
-  `nomifun-web` and `nomicore`. This fixes the 0.3.2 → 0.3.3 Windows
-  auto-update failure "Conflict: work directory ... is already a NomiFun data
-  root".
-- New default data roots: the unset data directory is now the per-user
-  `NomiFun` directory itself (`%LOCALAPPDATA%\NomiFun`,
-  `~/Library/Application Support/NomiFun`, `$XDG_DATA_HOME/NomiFun`) instead of
-  the nested `NomiFun/Nomi`. Non-stable channels use sibling directories
-  (`NomiFun-dev`, `NomiFun-beta`) that are never nested inside the stable root;
-  the extreme temp fallback is `<system temp>/nomifun-data`
-  (dev: `nomifun-data-dev`).
-- One-shot automatic migration: on the first boot after upgrading, an existing
-  legacy dataset at `NomiFun/Nomi<suffix>` is moved into `NomiFun<suffix>`.
-  The migration is crash-safe and resumes on the next boot if interrupted; if
-  the old app instance is still running it is deferred to the next launch.
-  Absolute paths persisted in the database (knowledge-base roots, terminal
-  cwds, custom workspaces) are rewritten once after the move.
-- Windows paths shown or persisted no longer carry the `\\?\` extended-length
-  prefix.
-- Work-dir resolution hardening: an inherited `NOMIFUN_WORK_DIR` that names a
-  default data-root location or a directory that no longer exists is ignored,
-  protecting against stale self-exported values across auto-update restarts.
-- **BREAKING**: The 对外伙伴 (public companion / public agent) domain has been
-  removed and replaced by the new 客服 (customer service) domain. Existing
-  public-companion configurations are NOT migrated — recreate the agent under
-  「服务 → 客服」, rebind its knowledge bases, service policy and channel bots
-  there. `/api/public-agents` and `channel_plugins.public_agent_id` are gone;
-  bot ↔ agent bindings now live in the customer-service domain
-  (`PUT /api/customer-service/agents/{id}/bindings`).
-- **BREAKING**: Presets targeting the old `public_companion` surface lose that
-  target: `parse_target("public_companion")` now resolves to none (the existing
-  unknown-target degrade semantic), so such presets simply stop offering the
-  retired surface.
-- New customer-service domain: stateless concurrent visitor dialogues over IM
-  channels (per-agent concurrency ceiling, same-visitor serial merge), replies
-  generated by disposable one-shot engine sessions whose tool registry is fixed
-  at construction to three read-only tools (knowledge search / knowledge read /
-  service notes) — dangerous capabilities are never registered, replacing the
-  retired runtime `ExposureMode::PublicService` clamp.
-
-- Added and enabled evidence-backed Managed Fetch for Desktop, with fail-closed
-  evaluation, policy-gated PDF/JavaScript/Empty fallback, safe MCP egress,
-  resumable evidence, and a Local-only rollback via
-  `NOMIFUN_MANAGED_FETCH_MODE=off`.
-- Managed Fetch cold-start admission now uses readiness-specific remaining-time
-  thresholds, so eligible PDF/JavaScript fallback can reach Parallel within the
-  existing 12-second `web_extract` deadline. Parallel endpoint health also
-  ignores stale successes after newer 401/429/network failures.
-- `web_extract` now explicitly advertises public direct-PDF and JavaScript-shell
-  reading to the agent, so a known URL is read before Browser or script
-  fallback. Downloading an original file remains a separate artifact workflow.
-
-## v0.3.3 - 2026-07-30
-
-- Hardened the managed browser platform across lane/host lifecycle, startup,
-  restart, cleanup, ownership lineage, and same-site resource handling.
-- Improved turn execution UX with retry actions for failed turns, a live current
-  step strip, stop-moment status copy, and verified deliverables surfaced in the
-  conversation UI.
-- Tightened agent/channel reliability around forwarded browser tool-call
-  delivery, queued knowledge fetches, cleanup cancellation lineage, busy-turn
-  handling, skill resolution, and AutoWork knowledge-service wiring.
-- Fixed WeChat inbound pairing and configuration-status handling.
-- Added focused regression coverage for browser platform, gateway, app, UI, and
-  scripted browser/UI test lanes.
-- Packaging note: this Windows-first GitHub release publishes the Windows x64
-  installer and signed Tauri updater assets. macOS and Linux packages are not
-  part of this first publication and should be appended from native build
-  machines when available.
-- The Windows installer is updater-signed but not Authenticode-signed, so manual
-  downloads may show a SmartScreen or unknown-publisher warning.
-
-## v0.3.0 - 2026-07-24
-
-- Rebuilt the persistence and identifier architecture around a v3 data
-  contract: local technical rows use integer identities, stable business
-  references use canonical UUIDv7 values, and cross-domain relationships use
-  explicit logical-reference policies.
-- Added a guarded whole-dataset reset lifecycle for pre-v3 installations,
-  including managed-root inventory, quarantine/retired-dataset receipts,
-  crash-safe recovery, generation isolation, and stricter v3-only
-  backup/restore validation.
-- Improved conversation and agent reliability with idempotent message delivery,
-  durable execution state, safer retries, stronger terminal/process cleanup,
-  bounded knowledge writeback, and more consistent provider/model routing.
-- Hardened AutoWork, requirement execution, scheduled-task delivery, channel
-  routing, and notification synchronization across reconnects and retries.
-- Added a Skill Market tab to the independent Skills capability, with bounded
-  ClawHub and SkillHub ranking sync, tag/search filtering, localized skill
-  descriptions, and a reviewed installation draft handoff to Flowy.
-- Reduced bundled built-in skills and made OfficeCLI opt-in to keep default
-  installations smaller and avoid injecting unused capabilities.
-- **Breaking upgrade:** upgrading from an earlier data contract does not migrate
-  local product data into v3. On first launch, the previous managed dataset is
-  retired/quarantined and a clean v3 dataset is initialized. Dataset-owned
-  credentials and integrations must be configured again; arbitrary external
-  user workspaces are not deleted.
-- Packaging note: this Windows-first release publishes the Windows x64
-  installer and signed Tauri updater assets. macOS and Linux packages can be
-  appended later from their native build machines.
-- The Windows installer is updater-signed but not Authenticode-signed, so manual
-  downloads may show a SmartScreen or unknown-publisher warning.
-
-## v0.1.13 - 2026-07-01
-
-- Improved orchestration reliability and control: DAG node pre-configuration,
-  per-node model selection, explicit in-conversation approval before execution,
-  and fixes for broken DAG lines, orphaned running nodes, one-node planning, and
-  blank pending states.
-- Added graceful handling for providers/models that do not support image input:
-  image capability tracking, proactive image removal, retry without interrupting
-  the conversation, and a visible in-conversation notice.
-- Expanded browser-use controls with silent mode defaults, managed/system
-  browser source selection, persistent encrypted browser login, a one-click
-  browser login action, and screenshot context for silent approvals.
-- Fixed WebUI credential persistence across restarts and added per-model context
-  window configuration.
-- Polished updater error handling, local update test clients, README screenshots,
-  provider quick links, and contact assets.
-- Packaging note: this Mac-side release publishes macOS installer and updater
-  assets. Windows and Linux packages must be added later from their native build
-  machines.
-
-## v0.1.12 - 2026-07-01
-
-- Documentation overhaul for public website and open-source preparation.
-- Clarified desktop, web, remote access, AutoWork, scheduled tasks, and
-  packaging documentation.
-- Removed proprietary PDF skill assets from the bundled built-in skills.
+- Fixed Windows/Linux frameless titlebar drag and maximize. Titlebar and sidebar tooltips stay inside the viewport.
+- Home and Settings layout, theme, and navigation are more stable. Capability markets open details in-app.
+- Web search cold start is less likely to fail early. Usable evidence is labeled separately from untrusted embedded instructions.
+- Editing or retrying a message keeps drafts and attachments after timeouts, dropped streams, and remounts.
+- Fixed duplicate plain-text paste after switching conversations. Desktop streaming Markdown stays visually stable while new tokens arrive.
+- AutoWork uses the conservative rule when sidecar confidence is low, instead of applying the bypass decision as-is.
 
 ## Release Note Policy
 
@@ -206,5 +24,4 @@ Every public release should include:
 - Packaging and updater notes.
 - Known limitations.
 
-Use calendar dates or semantic versions consistently once public releases
-begin.
+Use semantic versions consistently (`vX.Y.Z`) for public releases.

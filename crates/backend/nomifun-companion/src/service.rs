@@ -3644,7 +3644,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(dir.path()).await;
         let a = svc.create_companion("甲", "ink").await.unwrap();
-        assert!(a.model.is_none());
+        assert_eq!(
+            a.model.as_ref().map(|m| m.model.as_str()),
+            Some(crate::profile::DEFAULT_COMPANION_CHAT_MODEL)
+        );
         let provider_id = provider_fixture(5);
 
         let patched = svc

@@ -15,7 +15,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
-use nomifun_common::{CompanionId, FigureId, ProviderWithModel, now_ms};
+use nomifun_common::{CompanionId, FLOWY_BUILTIN_PROVIDER_ID, FigureId, ProviderWithModel, now_ms};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
@@ -306,6 +306,22 @@ pub const DEFAULT_VAD_MIN_SILENCE_MS: u32 = 700;
 pub const MIN_VAD_MIN_SILENCE_MS: u32 = 200;
 pub const MAX_VAD_MIN_SILENCE_MS: u32 = 3000;
 
+/// Factory defaults for a brand-new companion's chat / ASR / vision slots.
+/// Existing profiles that omitted these keys stay empty on load; only
+/// [`CompanionProfileConfig::new`] applies them. The provider is the reserved
+/// Flowy Cloud singleton (created on first catalog sync).
+pub const DEFAULT_COMPANION_CHAT_MODEL: &str = "AIPC-deepseek-v4-flash";
+pub const DEFAULT_COMPANION_ASR_MODEL: &str = "AIPC-qwen3-asr-flash";
+pub const DEFAULT_COMPANION_VISION_MODEL: &str = "AIPC-Minimax-M3";
+
+fn default_companion_slot(model: &str) -> ProviderWithModel {
+    ProviderWithModel {
+        provider_id: FLOWY_BUILTIN_PROVIDER_ID.to_owned(),
+        model: model.to_owned(),
+        use_model: None,
+    }
+}
+
 /// Per-companion voice-activity detection settings (语音活动检测).
 ///
 /// The engine runs locally (no Provider, no credential), so this block holds
@@ -498,10 +514,13 @@ impl CompanionProfileConfig {
             name: name.to_owned(),
             character: character.to_owned(),
             persona: PersonaConfig::default(),
-            model: None,
+            model: Some(default_companion_slot(DEFAULT_COMPANION_CHAT_MODEL)),
             fallback_model: None,
-            vision_model: None,
-            voice: CompanionVoiceConfig::default(),
+            vision_model: Some(default_companion_slot(DEFAULT_COMPANION_VISION_MODEL)),
+            voice: CompanionVoiceConfig {
+                asr: Some(default_companion_slot(DEFAULT_COMPANION_ASR_MODEL)),
+                ..CompanionVoiceConfig::default()
+            },
             learn: CompanionLearnConfig::default(),
             evolve: CompanionEvolveConfig::default(),
             skills: CompanionSkillConfig::default(),
@@ -1024,6 +1043,22 @@ mod tests {
     }
 
     #[test]
+    fn new_profile_defaults_to_flowy_cloud_chat_asr_and_vision() {
+        let profile = CompanionProfileConfig::new("新宠", "ink", 1);
+        let chat = profile.model.as_ref().expect("chat slot");
+        assert_eq!(chat.provider_id, FLOWY_BUILTIN_PROVIDER_ID);
+        assert_eq!(chat.model, DEFAULT_COMPANION_CHAT_MODEL);
+        let asr = profile.voice.asr.as_ref().expect("asr slot");
+        assert_eq!(asr.provider_id, FLOWY_BUILTIN_PROVIDER_ID);
+        assert_eq!(asr.model, DEFAULT_COMPANION_ASR_MODEL);
+        let vision = profile.vision_model.as_ref().expect("vision slot");
+        assert_eq!(vision.provider_id, FLOWY_BUILTIN_PROVIDER_ID);
+        assert_eq!(vision.model, DEFAULT_COMPANION_VISION_MODEL);
+        assert_eq!(profile.fallback_model, None);
+        assert_eq!(profile.voice.tts, None);
+    }
+
+    #[test]
     fn corrupt_profile_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(CompanionProfileConfig::config_path(dir.path()), "{not json").unwrap();
@@ -1495,7 +1530,18 @@ mod tests {
         };
 
         let empty = CompanionProfileConfig::new("空", "ink", 1);
-        assert!(empty.provider_model_slots().is_empty());
+        assert_eq!(
+            empty
+                .provider_model_slots()
+                .iter()
+                .map(|(label, model)| (*label, model.model.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("chat", DEFAULT_COMPANION_CHAT_MODEL),
+                ("vision", DEFAULT_COMPANION_VISION_MODEL),
+                ("asr", DEFAULT_COMPANION_ASR_MODEL),
+            ]
+        );
 
         let mut full = CompanionProfileConfig::new("满", "ink", 1);
         full.model = Some(model.clone());

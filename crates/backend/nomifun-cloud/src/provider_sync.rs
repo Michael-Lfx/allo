@@ -1,16 +1,16 @@
 //! Sync the logged-in Flowy JWT and server model catalog into the built-in provider row.
 //!
 //! The local `providers.models` JSON is a **projection** of the upstream
-//! `availableListClaw` catalog. On a successful catalog fetch it is fully
-//! replaced (delisted models must disappear). Transient fetch failures must
-//! **not** wipe or invent models — that left stale delisted entries in place
-//! when callers ignored soft errors, and previously also re-injected a config
-//! default that the server no longer lists.
+//! `availableListClaw` catalog (chat `category=1` plus ASR `category=7`).
+//! On a successful chat catalog fetch it is fully replaced (delisted models
+//! must disappear). Transient chat-catalog failures must **not** wipe or invent
+//! models. A failed ASR fetch is soft: chat models still replace, and ASR
+//! entries are omitted until the next successful category=7 pull.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use nomifun_api_types::{ModelTrait, derive_tasks_and_traits};
+use nomifun_api_types::{ModelTask, ModelTrait, derive_tasks_and_traits};
 use nomi_config::ServerConfig;
 use nomifun_common::encrypt_string;
 use nomifun_db::{
@@ -20,7 +20,7 @@ use nomifun_db::{
 use tracing::{info, warn};
 
 use crate::config_defaults::FLOWY_BUILTIN_PROVIDER_ID;
-use crate::flowy::{ClawModelEntry, FlowyApiClient};
+use crate::flowy::{ClawModelEntry, FlowyApiClient, MODEL_CATEGORY_ASR};
 use crate::session::ServerSession;
 
 /// Upsert Flowy Cloud provider with JWT + server model catalog for the model
@@ -51,18 +51,19 @@ pub async fn sync_flowy_builtin_provider(
     // so a blip cannot silently leave callers believing a soft-failed sync
     // "updated" anything — and so we never invent a fake one-model catalog
     // that masks the real failure mode (stale DB until the next success).
-    let (catalog_entries, catalog_fields, catalog_synced) = match fetch_chat_models(server, &session, data_dir).await {
-        Ok(entries) => {
-            let fields = build_model_fields(&entries, server);
-            (Some(entries), Some(fields), true)
-        }
-        Err(e) => {
-            warn!(
-                "Failed to fetch Flowy chat model catalog: {e}; keeping existing local model list"
-            );
-            (None, None, false)
-        }
-    };
+    let (catalog_entries, catalog_fields, catalog_synced) =
+        match fetch_catalog_models(server, &session, data_dir).await {
+            Ok(entries) => {
+                let fields = build_model_fields(&entries, server);
+                (Some(entries), Some(fields), true)
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to fetch Flowy chat model catalog: {e}; keeping existing local model list"
+                );
+                (None, None, false)
+            }
+        };
 
     let profile_fields = catalog_fields.clone().unwrap_or_else(|| BuiltModelFields {
         model_ids: Vec::new(),
@@ -186,23 +187,35 @@ fn build_profile_seeds(
             continue;
         }
         let extra = entry.model_extra();
-        let (mut tasks, mut traits) = derive_tasks_and_traits(platform, &model);
+        let is_asr = entry.category == MODEL_CATEGORY_ASR;
+        let (mut tasks, mut traits) = if is_asr {
+            (vec![ModelTask::SpeechRecognition], Vec::new())
+        } else {
+            derive_tasks_and_traits(platform, &model)
+        };
         // Catalog `extra` is authoritative for Flowy chat capabilities that
         // name heuristics cannot see (reasoning + selectable effort levels).
-        if extra.reasoning && !traits.contains(&nomifun_api_types::ModelTrait::Reasoning) {
-            traits.push(nomifun_api_types::ModelTrait::Reasoning);
+        if !is_asr {
+            if extra.reasoning && !traits.contains(&nomifun_api_types::ModelTrait::Reasoning) {
+                traits.push(nomifun_api_types::ModelTrait::Reasoning);
+            }
+            if extra.tools && !traits.contains(&nomifun_api_types::ModelTrait::FunctionCalling) {
+                traits.push(nomifun_api_types::ModelTrait::FunctionCalling);
+            }
+            let supports_vision = extra.supports_vision();
+            traits.retain(|trait_value| *trait_value != ModelTrait::VisionInput);
+            if supports_vision {
+                traits.push(nomifun_api_types::ModelTrait::VisionInput);
+            }
+            if tasks.is_empty() {
+                tasks.push(ModelTask::Chat);
+            }
         }
-        if extra.tools && !traits.contains(&nomifun_api_types::ModelTrait::FunctionCalling) {
-            traits.push(nomifun_api_types::ModelTrait::FunctionCalling);
-        }
-        let supports_vision = extra.supports_vision();
-        traits.retain(|trait_value| *trait_value != ModelTrait::VisionInput);
-        if supports_vision {
-            traits.push(nomifun_api_types::ModelTrait::VisionInput);
-        }
-        if tasks.is_empty() {
-            tasks.push(nomifun_api_types::ModelTask::Chat);
-        }
+        let catalog_vision = if is_asr {
+            None
+        } else {
+            Some(extra.supports_vision())
+        };
         profiles.push(ProviderModelProfileSeed {
             model,
             tasks: serde_json::to_string(&tasks)
@@ -212,32 +225,63 @@ fn build_profile_seeds(
             catalog_max_tokens: extra.max_output_tokens(),
             catalog_reasoning_effort: extra.reasoning_effort_levels(),
             catalog_credit_rate: extra.credit_rate_multiplier(),
-            catalog_vision: Some(supports_vision),
+            catalog_vision,
         });
     }
 
     Ok(profiles)
 }
 
-async fn fetch_chat_models(
+async fn fetch_catalog_models(
     server: &ServerConfig,
     session: &ServerSession,
     data_dir: &std::path::Path,
 ) -> Result<Vec<ClawModelEntry>, String> {
     let _ = data_dir;
     let api = FlowyApiClient::new(server).map_err(|e| e.to_string())?;
-    let resp = api
-        .get_available_models_claw(session, None)
-        .await
-        .map_err(|e| e.to_string())?;
-    for entry in &resp.cloud {
+    let (chat_res, asr_res) = tokio::join!(
+        api.get_available_models_claw(session, None),
+        api.get_available_models_claw(session, Some(MODEL_CATEGORY_ASR)),
+    );
+    let chat = chat_res.map_err(|e| e.to_string())?;
+    for entry in &chat.cloud {
         info!(
             model = %entry.api_model_id(),
             max_tokens = ?entry.model_extra().max_output_tokens(),
             "Flowy cloud catalog model output limit"
         );
     }
-    Ok(resp.cloud)
+    let asr = match asr_res {
+        Ok(resp) => resp.cloud,
+        Err(e) => {
+            warn!("Failed to fetch Flowy ASR catalog (category=7): {e}; syncing chat models only");
+            Vec::new()
+        }
+    };
+    Ok(merge_chat_and_asr_catalogs(chat.cloud, asr))
+}
+
+fn merge_chat_and_asr_catalogs(
+    chat: Vec<ClawModelEntry>,
+    asr: Vec<ClawModelEntry>,
+) -> Vec<ClawModelEntry> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for mut entry in chat {
+        if entry.category == 0 {
+            entry.category = 1;
+        }
+        if seen.insert(entry.api_model_id()) {
+            out.push(entry);
+        }
+    }
+    for mut entry in asr {
+        entry.category = MODEL_CATEGORY_ASR;
+        if seen.insert(entry.api_model_id()) {
+            out.push(entry);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -344,6 +388,10 @@ mod tests {
     };
 
     fn catalog_entry(id: &str, extra: &str) -> ClawModelEntry {
+        catalog_entry_with_category(id, extra, 1)
+    }
+
+    fn catalog_entry_with_category(id: &str, extra: &str, category: i32) -> ClawModelEntry {
         ClawModelEntry {
             id: id.into(),
             name: id.into(),
@@ -351,8 +399,12 @@ mod tests {
             endpoint: String::new(),
             anthropic_endpoint: String::new(),
             icon: String::new(),
-            category: 1,
+            category,
         }
+    }
+
+    fn seed_tasks(seed: &ProviderModelProfileSeed) -> Vec<String> {
+        serde_json::from_str(&seed.tasks).unwrap()
     }
 
     #[test]
@@ -548,6 +600,155 @@ mod tests {
         assert_eq!(seeds[1].catalog_vision, Some(false));
         assert!(!seeds[2].traits.contains("vision_input"));
         assert_eq!(seeds[2].catalog_vision, Some(false));
+    }
+
+    #[test]
+    fn asr_catalog_entries_seed_speech_recognition_only() {
+        let seeds = build_profile_seeds(
+            &[
+                catalog_entry("AIPC-glm-4.7", "{}"),
+                catalog_entry_with_category("AIPC-qwen3-asr-flash", "{}", MODEL_CATEGORY_ASR),
+                catalog_entry_with_category("AIPC-plain-voice", "{}", MODEL_CATEGORY_ASR),
+            ],
+            "openai",
+        )
+        .unwrap();
+
+        let chat = seeds.iter().find(|seed| seed.model == "AIPC-glm-4.7").unwrap();
+        assert_eq!(seed_tasks(chat), vec!["chat"]);
+
+        let asr = seeds
+            .iter()
+            .find(|seed| seed.model == "AIPC-qwen3-asr-flash")
+            .unwrap();
+        assert_eq!(seed_tasks(asr), vec!["speech_recognition"]);
+
+        let unnamed_asr = seeds
+            .iter()
+            .find(|seed| seed.model == "AIPC-plain-voice")
+            .unwrap();
+        assert_eq!(seed_tasks(unnamed_asr), vec!["speech_recognition"]);
+    }
+
+    #[test]
+    fn merge_chat_and_asr_catalogs_stamps_asr_category_and_keeps_chat_first() {
+        let merged = merge_chat_and_asr_catalogs(
+            vec![catalog_entry("AIPC-glm-4.7", "{}")],
+            vec![catalog_entry("AIPC-qwen3-asr-flash", "{}")],
+        );
+        assert_eq!(
+            merged.iter().map(|entry| entry.api_model_id()).collect::<Vec<_>>(),
+            vec!["AIPC-glm-4.7".to_string(), "AIPC-qwen3-asr-flash".to_string()]
+        );
+        assert_eq!(merged[0].category, 1);
+        assert_eq!(merged[1].category, MODEL_CATEGORY_ASR);
+    }
+
+    #[test]
+    fn merge_chat_and_asr_catalogs_does_not_let_asr_replace_a_chat_id() {
+        let merged = merge_chat_and_asr_catalogs(
+            vec![catalog_entry("AIPC-shared", "{}")],
+            vec![catalog_entry_with_category("AIPC-shared", "{}", MODEL_CATEGORY_ASR)],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].category, 1);
+    }
+
+    #[tokio::test]
+    async fn fetch_catalog_models_pulls_category_7_and_seeds_speech_recognition_only() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model/availableListClaw"))
+            .and(query_param("category", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-glm-4.7","name":"GLM 4.7"}]}}"#,
+            ))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/model/availableListClaw"))
+            .and(query_param("category", "7"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-qwen3-asr-flash","name":"Qwen3 ASR Flash"}]}}"#,
+            ))
+            .mount(&mock)
+            .await;
+
+        let config = ServerConfig {
+            base_url: mock.uri(),
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        unsafe { std::env::set_var("NOMIFUN_SERVER_TOKEN", "jwt-test-catalog-asr") };
+        let session = ServerSession::from_config(&config, tmp.path());
+        let entries = fetch_catalog_models(&config, &session, tmp.path())
+            .await
+            .expect("catalog");
+        let seeds = build_profile_seeds(&entries, "openai").unwrap();
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.api_model_id(), entry.category))
+                .collect::<Vec<_>>(),
+            vec![
+                ("AIPC-glm-4.7".to_string(), 1),
+                ("AIPC-qwen3-asr-flash".to_string(), MODEL_CATEGORY_ASR),
+            ]
+        );
+        assert_eq!(
+            seed_tasks(seeds.iter().find(|s| s.model == "AIPC-glm-4.7").unwrap()),
+            vec!["chat"]
+        );
+        assert_eq!(
+            seed_tasks(
+                seeds
+                    .iter()
+                    .find(|s| s.model == "AIPC-qwen3-asr-flash")
+                    .unwrap()
+            ),
+            vec!["speech_recognition"]
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_catalog_models_keeps_chat_when_asr_catalog_fails() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model/availableListClaw"))
+            .and(query_param("category", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-glm-4.7","name":"GLM 4.7"}]}}"#,
+            ))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/model/availableListClaw"))
+            .and(query_param("category", "7"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("nope"))
+            .mount(&mock)
+            .await;
+
+        let config = ServerConfig {
+            base_url: mock.uri(),
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        unsafe { std::env::set_var("NOMIFUN_SERVER_TOKEN", "jwt-test-catalog-asr-fail") };
+        let session = ServerSession::from_config(&config, tmp.path());
+        let entries = fetch_catalog_models(&config, &session, tmp.path())
+            .await
+            .expect("chat catalog still syncs");
+        assert_eq!(
+            entries.iter().map(|e| e.api_model_id()).collect::<Vec<_>>(),
+            vec!["AIPC-glm-4.7".to_string()]
+        );
     }
 
     #[tokio::test]
