@@ -486,12 +486,18 @@
 | `da76ef6b7` markdown 隔离 | **已吸收（适配）** → `d62064121` | **未**切换 Prism；保留 mike HLJS + Beautiful UI chrome；移植 `SyntaxHighlightBoundary`、`resolveSyntaxLanguage`、纯文本 fallback |
 | `9cb0e2568` model alias 文案 | **跳过** | `ModelDefinitionEditor` 在 mike 已删除，相关 i18n key 亦不存在 |
 | `c80555cef` / `16381ffd0` / `cd403baa2` / `12fd8b9fe` 主题/factory-reset | **本轮跳过** | 与 companion redesign / 数百 UI 文件缠死，整包 cherry-pick 冲突面过大；改标 careful 待拆 patch |
+| `96e0b5ab4` provider 编辑保存 | **已吸收** → `98a2ab7da` | `toUpdateProviderRequest` 过滤 response/form-only 字段，避免 deny_unknown_fields 丢保存 |
+| `34de3b229` SkillHub 专家包安装 | **已吸收（适配）** → `4c6b456eb` | Rust：detail 端点 + slug 冲突检测 + 错误映射；UI 市场卡片保留 mike redesign，仅合入错误分类/i18n |
+| `939320710` i18n 漏翻 | **跳过** | FreeModels 无 stale 探针 UI；`partialTitle` 在 mike TurnDeliverablesCard 未使用。整包会强塞 nomi 健康态 UI |
+| `4a2eacfd4` channels group access | **未做** | 体积过大（channel/plugins 上千行），留待单独分支 |
 
 验证：
 
 - `bun test`：Markdown 相关 3 文件 + knowledge CTA contrast → 13 pass
 - `cargo test -p nomifun-common zip_safe` → 9 pass
 - `cargo test -p nomifun-file path_` → path traversal 相关用例 pass
+- 续吸：`ipcBridge.provider-update-wire` + `PresetPackageMarketSettings` → 5 pass；`cargo test -p nomifun-extension --lib market` → 43 pass / 5 ignored
+
 
 ## 8. 后续任务建议
 
@@ -504,7 +510,7 @@
 
 - remote nomi: `nomifun/nomifun-tauri` → `nomi/main` @ `ae87ae915`
 - remote mike: `Michael-Lfx/allo` → `mike/main` @ `d791691c6`
-- 执行分支：`feat/absorb-nomi-priority-fixes`（ahead of `mike/main` by 3）
+- 执行分支：`feat/absorb-nomi-priority-fixes`（ahead of `mike/main`）
 - 生成命令：`git log --first-parent --format="%h|%ci|%s" remotes/mike/main..remotes/nomi/main`
 - 原始列表：`.absorb_tmp/nomi_first_parent.txt`（已 gitignore）
 - 本判断为 subject 级启发式 + 已知吸收锚点；落地前仍以 `git show` / 冲突实测为准。
