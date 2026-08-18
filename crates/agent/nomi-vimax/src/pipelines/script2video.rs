@@ -89,6 +89,22 @@ impl Script2VideoPipeline {
         )
         .await?;
 
+        emit_pct(
+            &progress,
+            "look_plate_start",
+            "正在锁定全片画风",
+            20.0,
+        );
+        let film_root = resolve_film_root(&self.working_dir);
+        let world_planner = WorldAssetsPlanner::new(
+            Arc::clone(&self.backends.chat),
+            Arc::clone(&self.backends.image),
+        );
+        let look_theme = crate::planning::portrait_theme_excerpt(script);
+        let look_refs = world_planner
+            .look_style_refs(&film_root, &style, &look_theme)
+            .await;
+
         // Global cast bible during planning (ViMax generates before frames; we also
         // expose portraits as plan artifacts so users can review identity early).
         emit_pct(
@@ -98,7 +114,7 @@ impl Script2VideoPipeline {
             22.0,
         );
         let _ = self
-            .generate_character_portraits(&characters, &style, script, &progress)
+            .generate_character_portraits(&characters, &style, script, &look_refs, &progress)
             .await?;
 
         emit_pct(
@@ -108,13 +124,8 @@ impl Script2VideoPipeline {
             30.0,
         );
         {
-            let film_root = resolve_film_root(&self.working_dir);
-            let planner = WorldAssetsPlanner::new(
-                Arc::clone(&self.backends.chat),
-                Arc::clone(&self.backends.image),
-            );
             let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
-            let _ = planner
+            let _ = world_planner
                 .ensure(
                     &film_root,
                     script,
@@ -236,18 +247,22 @@ impl Script2VideoPipeline {
             "character_portraits_start",
             "正在确认全局角色定妆图",
         );
+        let film_root = resolve_film_root(&self.working_dir);
+        let world_planner = WorldAssetsPlanner::new(
+            Arc::clone(&self.backends.chat),
+            Arc::clone(&self.backends.image),
+        );
+        let look_theme = crate::planning::portrait_theme_excerpt(script);
+        let look_refs = world_planner
+            .look_style_refs(&film_root, &style, &look_theme)
+            .await;
         let registry = self
-            .generate_character_portraits(&plan.characters, &style, script, &progress)
+            .generate_character_portraits(&plan.characters, &style, script, &look_refs, &progress)
             .await?;
 
         let world_pairs = {
-            let film_root = resolve_film_root(&self.working_dir);
-            let planner = WorldAssetsPlanner::new(
-                Arc::clone(&self.backends.chat),
-                Arc::clone(&self.backends.image),
-            );
             let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
-            let reg = planner
+            let reg = world_planner
                 .ensure(
                     &film_root,
                     script,
@@ -512,6 +527,7 @@ impl Script2VideoPipeline {
         characters: &[CharacterInScene],
         style: &str,
         theme_source: &str,
+        look_refs: &[PathBuf],
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<HashMap<String, HashMap<String, HashMap<String, String>>>> {
         let film_root = resolve_film_root(&self.working_dir);
@@ -556,14 +572,16 @@ impl Script2VideoPipeline {
             let character = character.clone();
             let style = style.to_string();
             let theme = theme.clone();
+            let look_refs = look_refs.to_vec();
             let permit = Arc::clone(&sem);
             set.spawn(async move {
                 let _permit = permit
                     .acquire()
                     .await
                     .map_err(|_| VimaxError::msg("semaphore closed"))?;
+                let refs: Vec<&Path> = look_refs.iter().map(|p| p.as_path()).collect();
                 portraits
-                    .generate_all_views(&character, &style, &theme, &dir)
+                    .generate_all_views(&character, &style, &theme, &dir, &refs)
                     .await
             });
         }

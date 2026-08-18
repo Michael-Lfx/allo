@@ -456,6 +456,8 @@
       "working": "Working…",
       "idleStep": "Idle",
       "log": "Recent activity",
+      "elapsedLive": "{{time}}",
+      "elapsedDone": "took {{time}}",
       "errorDetail": "Show raw error",
       "workdir": "Working directory",
       "workdirLine": "Working directory: {{path}}",

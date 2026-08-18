@@ -174,6 +174,17 @@ impl Idea2VideoPipeline {
         )
         .await?;
 
+        let world_planner = WorldAssetsPlanner::new(
+            Arc::clone(&self.backends.chat),
+            Arc::clone(&self.backends.image),
+        );
+        let look_theme = crate::planning::portrait_theme_excerpt(&story);
+        emit_pct(&progress, "look_plate_start", "正在锁定全片画风", 33.0);
+        let look_refs = world_planner
+            .look_style_refs(&self.working_dir, &style, &look_theme)
+            .await;
+        let look_ref_paths: Vec<&Path> = look_refs.iter().map(|p| p.as_path()).collect();
+
         // Global cast bible during planning (before per-scene storyboards).
         emit_pct(
             &progress,
@@ -204,7 +215,7 @@ impl Idea2VideoPipeline {
                 ));
                 let entry = self
                     .portraits
-                    .generate_all_views(character, &style, &story, &dir)
+                    .generate_all_views(character, &style, &story, &dir, &look_ref_paths)
                     .await?;
                 registry.extend(entry);
                 write_json_artifact(&registry_path, &registry).await?;
@@ -225,14 +236,10 @@ impl Idea2VideoPipeline {
             45.0,
         );
         {
-            let planner = WorldAssetsPlanner::new(
-                Arc::clone(&self.backends.chat),
-                Arc::clone(&self.backends.image),
-            );
             let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
             // Prefer full story for location/prop coverage across scenes.
             // When Cameo photos exist, plates are style-locked to those uploads.
-            let _ = planner
+            let _ = world_planner
                 .ensure(
                     &self.working_dir,
                     &story,
@@ -383,6 +390,16 @@ impl Idea2VideoPipeline {
         )
         .await?;
 
+        let world_planner = WorldAssetsPlanner::new(
+            Arc::clone(&self.backends.chat),
+            Arc::clone(&self.backends.image),
+        );
+        let look_theme = crate::planning::portrait_theme_excerpt(&story);
+        let look_refs = world_planner
+            .look_style_refs(&self.working_dir, &style, &look_theme)
+            .await;
+        let look_ref_paths: Vec<&Path> = look_refs.iter().map(|p| p.as_path()).collect();
+
         // Global portraits at idea root — single source of truth for all scenes.
         let registry_path = self.working_dir.join("character_portraits_registry.json");
         {
@@ -425,7 +442,7 @@ impl Idea2VideoPipeline {
                     ));
                     let entry = self
                         .portraits
-                        .generate_all_views(character, &style, &story, &dir)
+                        .generate_all_views(character, &style, &story, &dir, &look_ref_paths)
                         .await?;
                     registry.extend(entry);
                     write_json_artifact(&registry_path, &registry).await?;

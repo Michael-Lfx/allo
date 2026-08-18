@@ -12,6 +12,10 @@ use crate::session::{read_json_artifact, write_json_artifact};
 
 use super::formats::WORLD_ASSETS;
 
+/// Vacant production-look bible — shared img2img anchor for cast, sets, and props.
+pub const LOOK_PLATE_FILENAME: &str = "look_plate.png";
+const LOOK_PLATE_LOCK_FILENAME: &str = "look_plate_lock.txt";
+
 /// Extracted environment plate for global consistency.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvironmentAsset {
@@ -133,6 +137,75 @@ impl WorldAssetsPlanner {
         Ok(spec)
     }
 
+    /// Vacant production-look plate used as the shared img2img style bible.
+    ///
+    /// Best-effort: returns an empty vec when generation fails so planning can
+    /// still proceed on the text [`crate::planning::production_look_lock`].
+    pub async fn look_style_refs(
+        &self,
+        film_root: &Path,
+        style: &str,
+        theme: &str,
+    ) -> Vec<PathBuf> {
+        match self.ensure_look_plate(film_root, style, theme).await {
+            Ok(path) if crate::media_local::is_usable_image_file(&path) => vec![path],
+            Ok(path) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    "production look plate unusable; bible images fall back to text lock"
+                );
+                Vec::new()
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "production look plate skipped; bible images fall back to text lock"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Generate (or reuse) `look_plate.png` under `film_root`.
+    /// Regenerates when the stored style fingerprint no longer matches.
+    pub async fn ensure_look_plate(
+        &self,
+        film_root: &Path,
+        style: &str,
+        theme: &str,
+    ) -> VimaxResult<PathBuf> {
+        tokio::fs::create_dir_all(film_root).await?;
+        let style = crate::planning::resolve_visual_style(style);
+        let out = film_root.join(LOOK_PLATE_FILENAME);
+        let lock_path = film_root.join(LOOK_PLATE_LOCK_FILENAME);
+        let prev = tokio::fs::read_to_string(&lock_path)
+            .await
+            .unwrap_or_default();
+        let stale_style = prev.trim() != style.trim();
+        if stale_style && out.exists() {
+            tracing::info!(
+                film_root = %film_root.display(),
+                "production look lock changed — regenerating look plate"
+            );
+            let _ = tokio::fs::remove_file(&out).await;
+        }
+        if crate::media_local::is_usable_image_file(&out) {
+            if stale_style {
+                let _ = crate::session::write_text_artifact(&lock_path, &style).await;
+            }
+            return Ok(out);
+        }
+        let look = crate::planning::production_look_lock(&style);
+        let prompt = include_str!("../../prompts/world_assets__prompt_template_look_plate.txt")
+            .replace("{theme}", theme)
+            .replace("{style}", &look);
+        self.generate_empty_plate_resilient(&prompt, &[], &out)
+            .await?;
+        let _ = write_generation_prompt_sidecar(&out, &prompt).await;
+        let _ = crate::session::write_text_artifact(&lock_path, &style).await;
+        Ok(out)
+    }
+
     /// Extract (if needed) and generate missing environment / prop plates under `film_root`.
     ///
     /// When `style_refs` / `style_lock_token` come from user Cameo photos, plates are
@@ -186,11 +259,15 @@ impl WorldAssetsPlanner {
             }
         }
 
-        let style_ref_paths: Vec<PathBuf> = style_refs
-            .iter()
-            .filter(|p| crate::media_local::is_usable_image_file(p))
-            .cloned()
-            .collect();
+        let style_ref_paths: Vec<PathBuf> = {
+            let mut refs = self.look_style_refs(film_root, &style, &theme).await;
+            for p in style_refs {
+                if crate::media_local::is_usable_image_file(p) && !refs.iter().any(|e| e == p) {
+                    refs.push(p.clone());
+                }
+            }
+            refs
+        };
 
         let spec: WorldAssetsSpec = if spec_path.exists() {
             read_json_artifact(&spec_path).await?
@@ -246,16 +323,12 @@ impl WorldAssetsPlanner {
             }
             let stripped_desc = strip_people_mentions(&env.description);
             let prompt = if !out.exists() {
-                let style_clause = crate::planning::style_prompt_clause(&style);
-                Some(
-                    include_str!(
-                        "../../prompts/world_assets__prompt_template_environment_plate.txt"
-                    )
-                    .replace("{theme}", &theme)
-                    .replace("{slugline}", &env.slugline)
-                    .replace("{description}", &stripped_desc)
-                    .replace("{style}", &style_clause),
-                )
+                Some(environment_plate_prompt(
+                    &theme,
+                    &env.slugline,
+                    &stripped_desc,
+                    &style,
+                ))
             } else {
                 None
             };
@@ -292,14 +365,12 @@ impl WorldAssetsPlanner {
             }
             let stripped_desc = strip_people_mentions(&prop.description);
             let prompt = if !out.exists() {
-                let style_clause = crate::planning::style_prompt_clause(&style);
-                Some(
-                    include_str!("../../prompts/world_assets__prompt_template_prop.txt")
-                        .replace("{theme}", &theme)
-                        .replace("{name}", &prop.name)
-                        .replace("{description}", &stripped_desc)
-                        .replace("{style}", &style_clause),
-                )
+                Some(prop_plate_prompt(
+                    &theme,
+                    &prop.name,
+                    &stripped_desc,
+                    &style,
+                ))
             } else {
                 None
             };
@@ -627,25 +698,40 @@ async fn ensure_world_prompt_sidecar(
     if path.is_file() {
         return Ok(());
     }
-    let style_clause = crate::planning::style_prompt_clause(style);
     let prompt = match kind {
         WorldPromptKind::Environment {
             slugline,
             description,
-        } => include_str!("../../prompts/world_assets__prompt_template_environment_plate.txt")
-            .replace("{theme}", theme)
-            .replace("{slugline}", slugline)
-            .replace("{description}", &strip_people_mentions(description))
-            .replace("{style}", &style_clause),
-        WorldPromptKind::Prop { name, description } => {
-            include_str!("../../prompts/world_assets__prompt_template_prop.txt")
-                .replace("{theme}", theme)
-                .replace("{name}", name)
-                .replace("{description}", &strip_people_mentions(description))
-                .replace("{style}", &style_clause)
-        }
+        } => environment_plate_prompt(
+            theme,
+            slugline,
+            &strip_people_mentions(description),
+            style,
+        ),
+        WorldPromptKind::Prop { name, description } => prop_plate_prompt(
+            theme,
+            name,
+            &strip_people_mentions(description),
+            style,
+        ),
     };
     write_generation_prompt_sidecar(image_path, &prompt).await
+}
+
+fn environment_plate_prompt(theme: &str, slugline: &str, description: &str, style: &str) -> String {
+    include_str!("../../prompts/world_assets__prompt_template_environment_plate.txt")
+        .replace("{theme}", theme)
+        .replace("{slugline}", slugline)
+        .replace("{description}", description)
+        .replace("{style}", &crate::planning::production_look_lock(style))
+}
+
+fn prop_plate_prompt(theme: &str, name: &str, description: &str, style: &str) -> String {
+    include_str!("../../prompts/world_assets__prompt_template_prop.txt")
+        .replace("{theme}", theme)
+        .replace("{name}", name)
+        .replace("{description}", description)
+        .replace("{style}", &crate::planning::production_look_lock(style))
 }
 
 fn theme_excerpt(script_or_story: &str) -> String {
@@ -716,7 +802,7 @@ fn is_safe_world_style_ref(path: &Path) -> bool {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if name.contains("atmosphere") {
+    if name.contains("look_plate") || name.contains("atmosphere") {
         return true;
     }
     // Explicitly reject cast identity plates.
@@ -877,6 +963,7 @@ fn match_tokens(blob: &str) -> Vec<String> {
 mod tests {
     use super::{
         WorldAssetsSpec, is_people_centric_prop, is_safe_world_style_ref, rank_world_pairs_for_frame,
+        environment_plate_prompt, prop_plate_prompt,
         strip_people_mentions,
     };
     use std::path::{Path, PathBuf};
@@ -908,6 +995,23 @@ mod tests {
         assert!(is_safe_world_style_ref(Path::new(
             "character_portraits/0_Alice/Alice_cameo_atmosphere.png"
         )));
+        assert!(is_safe_world_style_ref(Path::new("look_plate.png")));
+    }
+
+    #[test]
+    fn world_plate_prompts_share_production_look_lock_not_face_clause() {
+        let style = "cinematic film look";
+        let look = crate::planning::production_look_lock(style);
+        let env = environment_plate_prompt("rainy alley", "EXT. ALLEY - NIGHT", "wet brick", style);
+        let prop = prop_plate_prompt("rainy alley", "red umbrella", "oil-paper", style);
+        assert!(env.contains(&look));
+        assert!(prop.contains(&look));
+        assert!(env.to_ascii_lowercase().contains("same production look"));
+        assert!(prop.to_ascii_lowercase().contains("same production look"));
+        assert!(!env.to_ascii_lowercase().contains("faces:"));
+        assert!(!prop.to_ascii_lowercase().contains("faces:"));
+        assert!(!env.contains("If Style is anime"));
+        assert!(!prop.contains("If Style is anime"));
     }
 
     #[test]

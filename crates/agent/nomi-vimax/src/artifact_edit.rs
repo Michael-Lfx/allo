@@ -461,7 +461,7 @@ async fn fallback_world_asset_prompt(
         .await?
         .or(read_nonempty_text_file(&working_dir.join("style.txt")).await?)
         .unwrap_or_default();
-    let style_clause = crate::planning::style_prompt_clause(&style);
+    let style_clause = crate::planning::production_look_lock(&style);
     let theme = read_nonempty_text_file(&film_root.join("story.txt"))
         .await?
         .or(read_nonempty_text_file(&working_dir.join("story.txt")).await?)
@@ -676,22 +676,9 @@ async fn fallback_portrait_prompt(
         .await?
         .or(read_nonempty_text_file(&working_dir.join("style.txt")).await?)
         .unwrap_or_default();
-    let style_line = crate::planning::portrait_style_line_for_image(&style);
-    let medium_lock = crate::planning::portrait_medium_lock_line(&style);
-    let face_guidance =
-        crate::planning::portrait_face_clause_for_character(id, &features, &style);
-    let age_lock =
-        crate::planning::child_style_lock_if_needed_for_style(id, &features, &style);
-    let prompt = include_str!(
-        "../prompts/character_portraits_generator__prompt_template_three_view.txt"
-    )
-    .replace("{identifier}", id)
-    .replace("{features}", &features)
-    .replace("{style}", &style_line)
-    .replace("{medium_lock}", &medium_lock)
-    .replace("{face_guidance}", &face_guidance)
-    .replace("{age_lock}", &age_lock);
-    Ok(Some(prompt))
+    Ok(Some(crate::agents::three_view_image_prompt(
+        id, &features, &style,
+    )))
 }
 
 async fn registry_description_for_image(

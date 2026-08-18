@@ -4,6 +4,6 @@ Never a group photo, portrait, selfie, framed photo of people, or mannequin.
 Theme: {theme}
 Prop: {name}
 Object only: {description}
-CRITICAL Visual style (MUST MATCH): {style}
-If Style is anime/animation/illustration, draw the prop in that look — NOT photoreal product photography.
-Output: prop bible plate matching Style — inanimate object alone, no people.
+{style}
+HARD LOOK LOCK: this PROP must share the SAME production look as the cast three-views and environment plates — one medium, one palette, one material language. Do not switch medium (no photoreal product shot if Style is drawn; no illustration if Style is live-action).
+Output: prop bible plate in that locked look — inanimate object alone, no people.

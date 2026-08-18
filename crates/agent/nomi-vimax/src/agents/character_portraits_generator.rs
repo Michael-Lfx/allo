@@ -6,6 +6,13 @@ use crate::backends::VimaxImage;
 use crate::domain::CharacterInScene;
 use crate::error::VimaxResult;
 
+/// Instruction when a vacant production look plate is passed as img2img.
+/// Match medium only — copying the look-plate location would destroy the studio turnaround.
+const LOOK_PLATE_REF_INSTRUCTION: &str = "\n\
+LOOK BIBLE (reference image): match ONLY the rendering medium, color science, lighting quality, \
+and material treatment. Do NOT copy its location, architecture, or composition. \
+Output remains a clean studio three-view turnaround on a light seamless backdrop.";
+
 pub struct CharacterPortraitsGenerator {
     image: Arc<dyn VimaxImage>,
 }
@@ -25,40 +32,12 @@ impl CharacterPortraitsGenerator {
         raw.chars().take(520).collect()
     }
 
-    fn style_line(style: &str) -> String {
-        crate::planning::portrait_style_line_for_image(style)
-    }
-
-    fn medium_lock(style: &str) -> String {
-        crate::planning::portrait_medium_lock_line(style)
-    }
-
-    fn face_guidance(character: &CharacterInScene, style: &str) -> String {
-        crate::planning::portrait_face_clause_for_character(
-            &character.identifier_in_scene,
-            &Self::features_line(character),
-            style,
-        )
-    }
-
-    fn age_lock(character: &CharacterInScene, style: &str) -> String {
-        crate::planning::child_style_lock_if_needed_for_style(
-            &character.identifier_in_scene,
-            &Self::features_line(character),
-            style,
-        )
-    }
-
     fn build_three_view_prompt(character: &CharacterInScene, style: &str) -> String {
-        include_str!(
-            "../../prompts/character_portraits_generator__prompt_template_three_view.txt"
+        three_view_image_prompt(
+            &character.identifier_in_scene,
+            &Self::features_line(character),
+            style,
         )
-        .replace("{identifier}", &character.identifier_in_scene)
-        .replace("{features}", &Self::features_line(character))
-        .replace("{style}", &Self::style_line(style))
-        .replace("{medium_lock}", &Self::medium_lock(style))
-        .replace("{face_guidance}", &Self::face_guidance(character, style))
-        .replace("{age_lock}", &Self::age_lock(character, style))
     }
 
     async fn cleanup_legacy_files(character_dir: &Path) {
@@ -71,13 +50,23 @@ impl CharacterPortraitsGenerator {
     }
 
     /// One character → one `{id}_three_view.png` (meaningful name for multi-ref prompts).
+    ///
+    /// `style_refs` is the vacant production look plate (and never a cast portrait).
     pub async fn generate_all_views(
         &self,
         character: &CharacterInScene,
         style: &str,
         _theme: &str,
         character_dir: &Path,
+        style_refs: &[&Path],
     ) -> VimaxResult<HashMap<String, HashMap<String, HashMap<String, String>>>> {
+        let style_refs: Vec<&Path> = style_refs
+            .iter()
+            .copied()
+            .filter(|p| crate::media_local::is_usable_image_file(p))
+            .collect();
+        let style_refs = style_refs.as_slice();
+
         tokio::fs::create_dir_all(character_dir).await?;
         let id_safe = safe_file_stem(&character.identifier_in_scene);
         let sheet_name = format!("{id_safe}_three_view.png");
@@ -92,23 +81,23 @@ impl CharacterPortraitsGenerator {
         }
 
         if !sheet.exists() {
-            let prompt = Self::build_three_view_prompt(character, style);
+            let prompt = Self::prompt_with_look_refs(character, style, style_refs);
             let _ = crate::session::write_text_artifact(
                 &character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt")),
                 &prompt,
             )
             .await;
-            self.image.generate(&prompt, &[], &sheet).await?;
+            self.image.generate(&prompt, style_refs, &sheet).await?;
         } else if !crate::media_local::is_usable_image_file(&sheet) {
             // e.g. JPEG bytes saved as .png without decode support — regenerate.
             let _ = tokio::fs::remove_file(&sheet).await;
-            let prompt = Self::build_three_view_prompt(character, style);
+            let prompt = Self::prompt_with_look_refs(character, style, style_refs);
             let _ = crate::session::write_text_artifact(
                 &character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt")),
                 &prompt,
             )
             .await;
-            self.image.generate(&prompt, &[], &sheet).await?;
+            self.image.generate(&prompt, style_refs, &sheet).await?;
         } else {
             // Backfill editable prompt for sheets generated before sidecar support.
             let sidecar =
@@ -143,6 +132,37 @@ impl CharacterPortraitsGenerator {
         registry.insert(character.identifier_in_scene.clone(), views);
         Ok(registry)
     }
+
+    fn prompt_with_look_refs(
+        character: &CharacterInScene,
+        style: &str,
+        style_refs: &[&Path],
+    ) -> String {
+        let mut prompt = Self::build_three_view_prompt(character, style);
+        if !style_refs.is_empty() {
+            prompt.push_str(LOOK_PLATE_REF_INSTRUCTION);
+        }
+        prompt
+    }
+}
+
+/// Shared three-view prompt so revise / sidecar rebuild matches first generation.
+pub fn three_view_image_prompt(identifier: &str, features: &str, style: &str) -> String {
+    let features: String = features.chars().take(520).collect();
+    include_str!("../../prompts/character_portraits_generator__prompt_template_three_view.txt")
+        .replace("{identifier}", identifier)
+        .replace("{features}", &features)
+        .replace("{style}", &crate::planning::portrait_style_line_for_image(style))
+        .replace("{look_lock}", &crate::planning::production_look_lock(style))
+        .replace("{medium_lock}", &crate::planning::portrait_medium_lock_line(style))
+        .replace(
+            "{face_guidance}",
+            &crate::planning::portrait_face_clause_for_character(identifier, &features, style),
+        )
+        .replace(
+            "{age_lock}",
+            &crate::planning::child_style_lock_if_needed_for_style(identifier, &features, style),
+        )
 }
 
 fn safe_file_stem(s: &str) -> String {
@@ -235,6 +255,7 @@ mod tests {
             "(static) red hanfu, black long hair; (dynamic) jade pendant",
         )
         .replace("{style}", "cinematic film look")
+        .replace("{look_lock}", "PRODUCTION LOOK LOCK")
         .replace("{medium_lock}", "live-action cinematic")
         .replace("{face_guidance}", "Clean healthy skin")
         .replace("{age_lock}", "");
@@ -246,7 +267,24 @@ mod tests {
         assert!(lower.contains("three-panel") || lower.contains("three-view") || lower.contains("panels"));
         assert!(prompt.contains("red hanfu"));
         assert!(lower.contains("no dirt") || lower.contains("clean"));
+        assert!(lower.contains("same production look") || lower.contains("production look lock"));
         assert!(!lower.contains("theme lock"));
+    }
+
+    #[test]
+    fn three_view_prompt_shares_production_look_lock_with_world() {
+        let prompt = three_view_image_prompt(
+            "李薇",
+            "(static) red hanfu, black long hair; (dynamic) jade pendant",
+            "cinematic film look",
+        );
+        let look = crate::planning::production_look_lock("cinematic film look");
+        assert!(prompt.contains(&look));
+        assert!(!prompt.contains("{look_lock}"));
+        let lower = prompt.to_ascii_lowercase();
+        assert!(lower.contains("environment") || lower.contains("prop"));
+        assert!(!prompt.contains("非真人") && !prompt.contains("无明星"));
+        assert!(!lower.contains("celebrity") && !lower.contains("real-person portrait"));
     }
 
     #[test]

@@ -1,11 +1,12 @@
 
 
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Progress, Button, Tag, Spin } from '@arco-design/web-react';
 import type { SessionStatus, VimaxRunStatus } from '../types';
 import { isInsufficientCreditsError } from '../creditsError';
+import { eventElapsed, formatElapsedClock } from '../progressEventElapsed';
 import { statusLabel, statusTagColor } from './SessionCard';
 import { stageLabel } from '../stageI18n';
 
@@ -204,10 +205,23 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
   models,
 }) => {
   const { t } = useTranslation();
+  const chronological = status?.events ?? [];
   const events = useMemo(() => {
     const list = status?.events ?? [];
-    return list.slice(-12).reverse();
+    const windowStart = Math.max(0, list.length - 12);
+    return list
+      .slice(windowStart)
+      .map((ev, i) => ({ ev, index: windowStart + i }))
+      .reverse();
   }, [status?.events]);
+  const busy = status?.status === 'planning' || status?.status === 'rendering';
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!busy) return;
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [busy]);
 
   const failure = useMemo(() => {
     if (!status?.error) return null;
@@ -249,7 +263,6 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
   }
 
   const active = stepIndex(status.status, status.stage);
-  const busy = status.status === 'planning' || status.status === 'rendering';
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
   const currentStage = stageLabel(status.stage, t);
 
@@ -399,17 +412,27 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
             {t('videoGeneration.workspace.progress.log')}
           </div>
           <div className='max-h-160px overflow-y-auto rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-10px py-8px flex flex-col gap-6px'>
-            {events.map((ev, idx) => {
+            {events.map(({ ev, index }, idx) => {
               const label = stageLabel(ev.stage, t);
+              const elapsed = eventElapsed(chronological, index, {
+                busy,
+                nowMs,
+                updatedAt: status.updated_at,
+              });
+              const clock =
+                elapsed.secs == null ? '' : formatElapsedClock(elapsed.secs);
               // Never show backend Chinese messages in the activity log — stage label is enough.
               return (
-                <div key={`${ev.at}-${ev.stage}-${idx}`} className='flex gap-8px text-11px leading-16px'>
+                <div
+                  key={`${ev.at}-${ev.stage}-${idx}`}
+                  className='flex gap-8px text-11px leading-16px items-baseline'
+                >
                   <span className='shrink-0 text-[var(--color-text-3)] tabular-nums'>
                     {formatEventTime(ev.at)}
                   </span>
                   <span
                     className={[
-                      'shrink-0 font-500',
+                      'min-w-0 flex-1 font-500',
                       ev.stage === 'failed'
                         ? 'text-[rgb(var(--danger-6))]'
                         : 'text-[rgb(var(--primary-6))]',
@@ -417,6 +440,27 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
                   >
                     {label}
                   </span>
+                  {clock ? (
+                    <span
+                      className={[
+                        'shrink-0 tabular-nums',
+                        elapsed.live
+                          ? 'text-[rgb(var(--primary-6))]'
+                          : 'text-[var(--color-text-3)]',
+                      ].join(' ')}
+                      aria-live={elapsed.live ? 'polite' : undefined}
+                    >
+                      {elapsed.live
+                        ? t('videoGeneration.workspace.progress.elapsedLive', {
+                            time: clock,
+                            defaultValue: '{{time}}',
+                          })
+                        : t('videoGeneration.workspace.progress.elapsedDone', {
+                            time: clock,
+                            defaultValue: '耗时 {{time}}',
+                          })}
+                    </span>
+                  ) : null}
                 </div>
               );
             })}

@@ -148,7 +148,7 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
         muted={compact}
         playsInline
         preload={compact ? 'metadata' : 'auto'}
-        className='h-full w-full object-contain'
+        className={compact ? 'h-full w-full object-contain' : styles.storyShot}
       />
     );
   }
@@ -160,7 +160,11 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
   if (path && url && !failed) {
     return (
       <div className={styles.videoStatusMediaWrap}>
-        <img src={url} alt={alt} className='h-full w-full object-cover opacity-50' />
+        <img
+          src={url}
+          alt={alt}
+          className={compact ? 'h-full w-full object-cover opacity-50' : `${styles.storyShot} opacity-50`}
+        />
         <div className={styles.videoStatusOverlay}>
           <VideoStatusPlaceholder compact={compact} status={status} />
         </div>
@@ -330,7 +334,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
             })}
             videoStatus={activeVideoStatus}
           />
-          <span className='absolute left-14px top-14px rd-full bg-black/55 px-9px py-4px text-11px font-650 text-white backdrop-blur'>
+          <span className='absolute left-14px top-14px z-2 rd-full bg-black/55 px-9px py-4px text-11px font-650 text-white backdrop-blur'>
             {t('videoGeneration.studio.storyboard.shotNumber', {
               number: sceneNumber,
               defaultValue: '镜头 {{number}}',

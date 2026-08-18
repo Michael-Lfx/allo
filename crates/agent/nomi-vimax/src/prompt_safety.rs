@@ -494,6 +494,23 @@ mod tests {
     }
 
     #[test]
+    fn look_plate_template_is_vacant_and_not_character_prefixed() {
+        let prompt = include_str!(
+            "../prompts/world_assets__prompt_template_look_plate.txt"
+        )
+        .replace("{theme}", "rainy alley")
+        .replace("{style}", &crate::planning::production_look_lock("cinematic film look"));
+        assert!(looks_like_vacant_world_prompt(&prompt));
+        let out = sanitize_image_prompt(&prompt);
+        let lower = out.to_ascii_lowercase();
+        assert!(
+            !lower.contains("fully clothed characters"),
+            "look plate must stay vacant: {out}"
+        );
+        assert!(lower.contains("vacant") || lower.contains("unoccupied"));
+    }
+
+    #[test]
     fn vacant_plates_do_not_get_characters_prefix() {
         let out = sanitize_image_prompt(
             "Wide 16:9 vacant film location plate. Completely unoccupied. Zero people. Location: INT. CAFE",
