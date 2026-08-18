@@ -456,6 +456,8 @@
       "working": "处理中…",
       "idleStep": "待命",
       "log": "最近动态",
+      "elapsedLive": "{{time}}",
+      "elapsedDone": "耗时 {{time}}",
       "errorDetail": "查看原始错误",
       "workdir": "工作目录",
       "workdirLine": "工作目录：{{path}}",

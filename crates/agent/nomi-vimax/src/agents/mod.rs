@@ -18,6 +18,7 @@ pub use camera_image_generator::CameraImageGenerator;
 pub use character_extractor::CharacterExtractor;
 pub use character_portraits_generator::{
     CharacterPortraitsGenerator, has_usable_cameo, has_usable_portrait, has_usable_portrait_sheet,
+    three_view_image_prompt,
 };
 pub use event_extractor::EventExtractor;
 pub use film_cover::{ensure_cover_from_final_video, ensure_film_cover, COVER_FILENAME};

@@ -197,19 +197,63 @@ fn after_last_clause_delim(before: &str) -> usize {
     i + ch.len_utf8()
 }
 
-/// Short style clause for image prompts (survives 800-char Z-Image truncate).
-pub fn style_prompt_clause(user_style: &str) -> String {
+/// Compact Style noun-phrase shared by every bible image (cast / set / prop).
+pub fn production_style_phrase(user_style: &str) -> String {
     let style = resolve_visual_style(user_style);
-    let clipped: String = style.chars().take(120).collect();
     if wants_stylized_non_photoreal(&style) {
-        let enriched = enrich_stylized_style_for_portraits(&style);
-        let clipped: String = enriched.chars().take(140).collect();
+        enrich_stylized_style_for_portraits(&style)
+            .chars()
+            .take(140)
+            .collect()
+    } else {
+        style.chars().take(120).collect()
+    }
+}
+
+/// Subject-agnostic medium lock — one rendering medium for cast, sets, and props.
+/// Portrait sheets add face/identity clauses separately; vacant plates must NOT.
+pub fn production_medium_lock_line(user_style: &str) -> String {
+    if wants_stylized_non_photoreal(user_style) {
+        "Medium: high-detail animation/illustration matching Style — same drawn look for cast, sets, and props; not a flat paper sticker; not photoreal live-action."
+            .into()
+    } else {
+        "Medium: live-action cinematic photography — same film look for cast, sets, and props; not anime, not manga, not cartoon, not illustration."
+            .into()
+    }
+}
+
+/// Canonical production-look lock for bible images (three-view, environment, prop).
+///
+/// T2I calls do not share a session. Consistency only comes from (1) this identical
+/// medium contract on every bible prompt and (2) a shared vacant look plate as img2img.
+/// Subject content (faces / architecture / objects) stays in the per-asset template.
+pub fn production_look_lock(user_style: &str) -> String {
+    let phrase = production_style_phrase(user_style);
+    let medium = production_medium_lock_line(user_style);
+    if wants_stylized_non_photoreal(user_style) {
         format!(
-            "MUST MATCH Visual style (non-photoreal, detailed volume): {clipped}. Keep the SAME drawn look for every character and set; do NOT switch to live-action photoreal; avoid flat paper-doll cutouts."
+            "PRODUCTION LOOK LOCK (cast + sets + props share ONE medium): {phrase}. {medium} \
+Do NOT switch to live-action photoreal. Do NOT flatten into paper-doll cutouts."
         )
     } else {
         format!(
-            "Visual style: {clipped}. Faces: clean healthy skin, clear sharp features (no melt/blur, no dirt or weird makeup)."
+            "PRODUCTION LOOK LOCK (cast + sets + props share ONE medium): {phrase}. {medium} \
+Absolutely NOT anime/manga/cartoon/cel-shaded/illustration."
+        )
+    }
+}
+
+/// Short style clause for shot/video image prompts (survives 800-char Z-Image truncate).
+///
+/// Bible plates (vacant env/prop) must use [`production_look_lock`] instead — the
+/// face-finish suffix here would pull empty-set models toward portraits.
+pub fn style_prompt_clause(user_style: &str) -> String {
+    let look = production_look_lock(user_style);
+    if wants_stylized_non_photoreal(user_style) {
+        look
+    } else {
+        format!(
+            "{look} Faces: clean healthy skin, clear sharp features (no melt/blur, no dirt or weird makeup)."
         )
     }
 }
@@ -224,18 +268,13 @@ Do NOT melt, warp, or heavy-blur the face. Do NOT make a plastic doll or cheap c
 pub const PORTRAIT_FACE_GUIDANCE_STYLIZED: &str = "\
 Face finish: premium animated-film character design — clean healthy skin tones, clear VOLUME under soft light, sharp readable eyes/brows/nose/mouth, hair strand detail. \
 Do NOT add dirt, blemishes, weird makeup, or distorted facial features. \
-Do NOT flatten into a paper cutout or blank sticker face. Do NOT render photoreal live-action skin or celebrity likeness.";
+Do NOT flatten into a paper cutout or blank sticker face. Do NOT render photoreal live-action skin.";
 
 /// Extra face lock for child / teen characters (models often age or over-make kids).
 pub const PORTRAIT_CHILD_FACE_GUIDANCE: &str = "\
 CHILD FACE LOCK: age-correct child/teen face — smooth healthy skin, soft natural cheeks, age-appropriate features. \
 No adult contour makeup, no heavy lipstick/eyeshadow, no aged wrinkles, no dirt/blemishes, no uncanny warped proportions. \
 Keep expression natural and clear; identity must stay cute/clean, not grotesque.";
-
-/// Not a real-person / celebrity likeness (Seedance privacy + originality).
-pub const PORTRAIT_NON_REAL_PERSON: &str = "\
-IDENTITY SAFETY: fictional designed character only — NOT a real-person portrait, NOT photoreal ID-photo, NOT a celebrity/star likeness, NOT a recognizable famous face. Original character design with a clean natural face. \
-非真人肖像，无明星样貌，虚构角色造型，禁止做成可辨认的真人/明星脸；面部保持干净自然，不要刻意丑化或污化。";
 
 /// Force adults and children to share one rendering style (models often anime-ify kids otherwise).
 pub const CAST_STYLE_LOCK: &str = "\
@@ -248,9 +287,6 @@ CAST STYLE LOCK: every character of every age must share the SAME premium animat
 Children/teens use age-correct proportions but the SAME drawn look as adults — do NOT mix photoreal adults with stylized kids or vice versa.";
 
 /// Compact locks for portrait image prompts (survive 800-char truncate).
-pub const PORTRAIT_IDENTITY_SHORT: &str =
-    "非真人肖像，无明星样貌; fictional designed character, clean natural face, not celebrity likeness.";
-
 pub const PORTRAIT_FACE_SHORT: &str =
     "Clean healthy skin, sharp eyes/brows/nose/mouth; no dirt, no weird makeup, no melt.";
 
@@ -294,11 +330,9 @@ hair strand detail, fabric folds and material contrast — NOT flat paper-doll /
 pub fn portrait_style_for_generation(user_style: &str) -> String {
     let base = enrich_stylized_style_for_portraits(user_style);
     if wants_stylized_non_photoreal(&base) {
-        format!(
-            "{base}. {PORTRAIT_NON_REAL_PERSON} {PORTRAIT_FACE_GUIDANCE_STYLIZED} {CAST_STYLE_LOCK_STYLIZED}"
-        )
+        format!("{base}. {PORTRAIT_FACE_GUIDANCE_STYLIZED} {CAST_STYLE_LOCK_STYLIZED}")
     } else {
-        format!("{base}. {PORTRAIT_NON_REAL_PERSON} {PORTRAIT_FACE_GUIDANCE} {CAST_STYLE_LOCK}")
+        format!("{base}. {PORTRAIT_FACE_GUIDANCE} {CAST_STYLE_LOCK}")
     }
 }
 
@@ -309,25 +343,16 @@ pub fn portrait_style_line_for_image(user_style: &str) -> String {
 }
 
 /// One-line medium lock so Style does not drown Features.
+/// Same medium contract as environment / prop bibles ([`production_medium_lock_line`]).
 pub fn portrait_medium_lock_line(user_style: &str) -> String {
-    if wants_stylized_non_photoreal(user_style) {
-        "Medium: match Style as high-detail animation/illustration with volume — not a flat paper sticker; not photoreal live-action."
-            .into()
-    } else {
-        "Medium: live-action cinematic cast portrait — not anime, not manga, not cartoon model-sheet."
-            .into()
-    }
+    production_medium_lock_line(user_style)
 }
 
 /// Short style block for three-view image generation (theme/features get priority in the template).
 pub fn portrait_image_style_clause(user_style: &str) -> String {
     let style = portrait_style_line_for_image(user_style);
     let medium = portrait_medium_lock_line(user_style);
-    if wants_stylized_non_photoreal(user_style) {
-        format!("{style}. {PORTRAIT_IDENTITY_SHORT} {medium}")
-    } else {
-        format!("{style}. {PORTRAIT_IDENTITY_SHORT} {medium}")
-    }
+    format!("{style}. {medium}")
 }
 
 /// Prompt fragments for the three-view template — style-aware (do NOT force anime on cinematic).
@@ -1312,12 +1337,8 @@ mod tests {
         assert!(lower.contains("clean") || lower.contains("healthy"));
         assert!(lower.contains("dirt") || lower.contains("blemish") || lower.contains("makeup"));
         assert!(lower.contains("cast style lock") || lower.contains("same style"));
-        assert!(
-            lower.contains("not a real-person")
-                || lower.contains("fictional")
-                || s.contains("非真人")
-                || s.contains("无明星")
-        );
+        assert!(!s.contains("非真人") && !s.contains("无明星"));
+        assert!(!lower.contains("celebrity") && !lower.contains("real-person"));
     }
 
     #[test]
@@ -1349,10 +1370,38 @@ mod tests {
     }
 
     #[test]
+    fn production_look_lock_is_one_medium_for_cast_and_world() {
+        let cine = production_look_lock("cinematic film look");
+        let cine_l = cine.to_ascii_lowercase();
+        assert!(cine.contains("PRODUCTION LOOK LOCK"));
+        assert!(cine_l.contains("live-action") || cine_l.contains("cinematic"));
+        assert!(cine_l.contains("sets") && cine_l.contains("props"));
+        assert!(cine_l.contains("not anime") || cine_l.contains("absolutely not anime"));
+        assert!(
+            !cine_l.contains("faces:"),
+            "vacant world plates reuse this lock — no face-finish: {cine}"
+        );
+
+        let anime = production_look_lock(
+            "stylized anime / animated film look, clearly drawn characters, storybook colors",
+        );
+        let anime_l = anime.to_ascii_lowercase();
+        assert!(anime_l.contains("animation") || anime_l.contains("illustration"));
+        assert!(anime_l.contains("not photoreal") || anime_l.contains("do not switch to live-action"));
+        assert!(!anime_l.contains("same cinematic style"));
+
+        // Shot clause may add a face suffix; the bible lock itself must stay subject-agnostic.
+        let shot = style_prompt_clause("cinematic film look");
+        assert!(shot.contains("PRODUCTION LOOK LOCK"));
+        assert!(shot.to_ascii_lowercase().contains("faces:"));
+        assert_eq!(production_medium_lock_line("cinematic"), portrait_medium_lock_line("cinematic"));
+    }
+
+    #[test]
     fn portrait_image_clause_is_compact_and_keeps_theme_room() {
         let s = portrait_image_style_clause("cinematic wuxia ink");
         assert!(s.chars().count() < 280, "too long for image budget: {}", s.chars().count());
-        assert!(s.contains("非真人") || s.to_ascii_lowercase().contains("fictional"));
+        assert!(!s.contains("非真人") && !s.to_ascii_lowercase().contains("celebrity"));
         let theme = portrait_theme_excerpt(
             "INT. ANCIENT TEMPLE - NIGHT. A young swordsman in travel-stained hanfu kneels before incense.",
         );
