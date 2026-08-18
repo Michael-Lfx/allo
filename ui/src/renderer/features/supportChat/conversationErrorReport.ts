@@ -5,6 +5,7 @@
  */
 
 import type { AgentStreamErrorInfo } from '@/common/chat/chatLib';
+import { buildAgentErrorDiagnostic, buildErrorDiagnostic } from '@/renderer/utils/ui/errorDiagnostics';
 
 export type ConversationErrorReportContext = {
   error: AgentStreamErrorInfo;
@@ -16,20 +17,29 @@ export type ConversationErrorReportContext = {
 
 export function buildConversationErrorReportMetadata(context: ConversationErrorReportContext) {
   const { error } = context;
+  const diagnostic = buildAgentErrorDiagnostic(error);
+  const safeMessage = buildErrorDiagnostic({ message: error.message }).summary;
+  const safeResolution = diagnostic.resolutionKind
+    ? {
+        kind: diagnostic.resolutionKind,
+        ...(diagnostic.resolutionTarget ? { target: diagnostic.resolutionTarget } : {}),
+      }
+    : undefined;
   return {
     schemaVersion: 1,
     reportType: 'conversation_error',
     source: 'error_card_feedback',
-    ...(error.incident_id ? { incidentId: error.incident_id } : {}),
+    ...(diagnostic.incidentId ? { incidentId: diagnostic.incidentId } : {}),
     error: {
-      message: error.message,
-      ...(error.code ? { code: error.code } : {}),
-      ...(error.ownership ? { ownership: error.ownership } : {}),
+      message: safeMessage,
+      ...(diagnostic.code ? { code: diagnostic.code } : {}),
+      ...(diagnostic.ownership ? { ownership: diagnostic.ownership } : {}),
       ...(error.retryable !== undefined ? { retryable: error.retryable } : {}),
       ...(error.feedback_recommended !== undefined
         ? { feedbackRecommended: error.feedback_recommended }
         : {}),
-      ...(error.resolution ? { resolution: error.resolution } : {}),
+      ...(diagnostic.detail ? { detail: diagnostic.detail } : {}),
+      ...(safeResolution ? { resolution: safeResolution } : {}),
     },
     correlation: {
       conversationId: context.conversationId,

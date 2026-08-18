@@ -8,7 +8,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 use nomifun_api_types::{
     ApiResponse, CreateKnowledgeTagRequest, KnowledgeDocumentImportResult, KnowledgeLocalSyncSummary,
-    KnowledgeSource, KnowledgeTag, UpdateKnowledgeTagRequest,
+    KnowledgeSource, KnowledgeTag, ReorderKnowledgeTagsRequest, UpdateKnowledgeTagRequest,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::{AppError, KnowledgeBaseId};
@@ -81,6 +81,7 @@ pub fn knowledge_routes(state: KnowledgeRouterState) -> Router {
             "/api/knowledge/tags",
             get(list_tags).post(create_tag),
         )
+        .route("/api/knowledge/tags/reorder", post(reorder_tags))
         .route(
             "/api/knowledge/tags/{key}",
             axum::routing::put(update_tag).delete(delete_tag),
@@ -780,6 +781,16 @@ async fn update_tag(
     Ok(Json(ApiResponse::ok(
         state.service.update_tag(&key, req).await?,
     )))
+}
+
+async fn reorder_tags(
+    State(state): State<KnowledgeRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    body: Result<Json<ReorderKnowledgeTagsRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    state.service.reorder_tags(&req.first_key, &req.second_key).await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 async fn delete_tag(

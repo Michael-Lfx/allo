@@ -59,6 +59,17 @@ describe('ComposerSkillTokenInput', () => {
     expect(source.includes('onCompositionEndCapture={handleCompositionEndCapture}')).toBe(true);
   });
 
+  test('guards malformed beforeinput inputType values before calling includes', () => {
+    const inputTypeRead = source.indexOf('const inputType = nativeEvent.inputType;');
+    const typeGuard = source.indexOf("if (typeof inputType !== 'string')", inputTypeRead);
+    const compositionIncludes = source.indexOf("inputType.includes('Composition')", typeGuard);
+
+    expect(inputTypeRead).toBeGreaterThan(-1);
+    expect(typeGuard).toBeGreaterThan(inputTypeRead);
+    expect(compositionIncludes).toBeGreaterThan(typeGuard);
+    expect(source.slice(typeGuard, compositionIncludes)).toContain('return;');
+  });
+
   test('hides the placeholder while the IME owns preedit text', () => {
     expect(source.includes('const [isComposing, setIsComposing] = useState(false);')).toBe(true);
     expect(source.includes('setIsComposing(true);')).toBe(true);

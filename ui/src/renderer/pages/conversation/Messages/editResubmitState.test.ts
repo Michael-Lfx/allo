@@ -164,6 +164,24 @@ describe('edit confirmation lifecycle (P1)', () => {
 });
 
 describe('edit submit mutex (P0-2 / P2-3)', () => {
+  test('clears the controlled composer only after admission and before the destructive request', () => {
+    const editSubmitBranch = sendBoxSource.slice(
+      sendBoxSource.indexOf('if (editingMsgId && onEditResubmit) {'),
+      sendBoxSource.indexOf('// Cancel any pending warmup:')
+    );
+    const admission = editSubmitBranch.indexOf('beginEditResubmitOperation({');
+    const clear = editSubmitBranch.indexOf('clearEditResubmitComposer({');
+    const request = editSubmitBranch.indexOf(
+      'onEditResubmit(\n        targetId,\n        targetCreatedAt,\n        finalMessage,'
+    );
+
+    expect(admission).toBeGreaterThan(-1);
+    expect(clear).toBeGreaterThan(admission);
+    expect(request).toBeGreaterThan(clear);
+    expect(editSubmitBranch.slice(clear, request)).toContain('clearDomSnippets,');
+    expect(editSubmitBranch.slice(clear, request)).toContain('clearReplyQuote:');
+  });
+
   test('the edit branch rejects a second same-tick submit via the operation ref', () => {
     // isLoading is React state — it cannot block two submits in the same render
     // tick. The synchronously-updated activeEditOperationRef is the real mutex:

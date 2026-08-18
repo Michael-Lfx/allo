@@ -442,6 +442,7 @@
   "tags": {
     "addPlaceholder": "New tag...",
     "changeColor": "Change color",
+    "colorFailed": "Failed to update tag color",
     "createFailed": "Failed to create tag",
     "deleteConfirm": "Delete \"{{label}}\"? It will be removed from all knowledge bases.",
     "deleteFailed": "Failed to delete tag",
@@ -449,6 +450,7 @@
     "modalDesc": "Organize knowledge bases with tags. Tags can be renamed, recolored, reordered, or deleted.",
     "modalTitle": "Manage Tags",
     "renameFailed": "Failed to rename tag",
+    "reorderFailed": "Failed to reorder tags",
     "renameHint": "Click to rename"
   },
   "renamePlaceholder": "Enter a new name",

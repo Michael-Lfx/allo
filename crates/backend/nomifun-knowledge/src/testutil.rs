@@ -221,6 +221,24 @@ impl IKnowledgeRepository for MemRepo {
         }
     }
 
+    async fn swap_knowledge_tags(&self, first_key: &str, second_key: &str) -> Result<(), DbError> {
+        if first_key == second_key {
+            return Err(DbError::Conflict("knowledge tag order requires two distinct tags".into()));
+        }
+        let mut tags = self.tags.lock().unwrap();
+        let first_index = tags.iter().position(|tag| tag.key == first_key);
+        let second_index = tags.iter().position(|tag| tag.key == second_key);
+        let (Some(first_index), Some(second_index)) = (first_index, second_index) else {
+            let missing = if first_index.is_none() { first_key } else { second_key };
+            return Err(DbError::NotFound(format!("knowledge tag {missing}")));
+        };
+        let first_order = tags[first_index].sort_order;
+        let second_order = tags[second_index].sort_order;
+        tags[first_index].sort_order = second_order;
+        tags[second_index].sort_order = first_order;
+        Ok(())
+    }
+
     async fn delete_knowledge_tag(&self, key: &str) -> Result<(), DbError> {
         let mut tags = self.tags.lock().unwrap();
         let before = tags.len();

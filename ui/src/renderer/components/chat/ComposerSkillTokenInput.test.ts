@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { ComposerSkillChip } from './composerSkill';
+import { handleComposerBeforeInputEvent } from './ComposerSkillTokenInput';
 import {
   createComposerDraft,
   getComposerEditableTextLength,
@@ -61,5 +62,66 @@ describe('ComposerSkillTokenInput document model', () => {
     expect(getComposerDocumentOffset(draft, 1)).toBe(1);
     expect(getComposerDocumentOffset(draft, 1, true)).toBe(2);
     expect(getComposerPlainTextOffset(draft, 2)).toBe(1);
+  });
+});
+
+describe('ComposerSkillTokenInput beforeinput boundary', () => {
+  test('delegates malformed inputType events to the browser without throwing', () => {
+    const calls: string[] = [];
+
+    let thrown: unknown;
+    try {
+      handleComposerBeforeInputEvent(
+        { inputType: undefined, data: 'x' },
+        {
+          disabled: false,
+          isComposing: false,
+          preventDefault: () => calls.push('preventDefault'),
+          replaceSelectionWithText: (text) => calls.push(`insert:${text}`),
+          deleteSelection: (direction) => calls.push(`delete:${direction}`),
+        }
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+
+  test('keeps composition and normal editing dispatch behavior intact', () => {
+    const calls: string[] = [];
+    const actions = {
+      disabled: false,
+      isComposing: false,
+      preventDefault: () => calls.push('preventDefault'),
+      replaceSelectionWithText: (text: string) => calls.push(`insert:${text}`),
+      deleteSelection: (direction: 'backward' | 'forward') => calls.push(`delete:${direction}`),
+    };
+
+    handleComposerBeforeInputEvent({ inputType: 'insertText', isComposing: true, data: '中' }, actions);
+    expect(calls).toEqual([]);
+
+    handleComposerBeforeInputEvent({ inputType: 'insertText', data: '中' }, actions);
+    handleComposerBeforeInputEvent({ inputType: 'deleteContentBackward', data: null }, actions);
+    expect(calls).toEqual(['preventDefault', 'insert:中', 'preventDefault', 'delete:backward']);
+  });
+
+  test('delegates malformed insertText data to the browser', () => {
+    const calls: string[] = [];
+    const actions = {
+      disabled: false,
+      isComposing: false,
+      preventDefault: () => calls.push('preventDefault'),
+      replaceSelectionWithText: (text: string) => calls.push(`insert:${text}`),
+      deleteSelection: (direction: 'backward' | 'forward') => calls.push(`delete:${direction}`),
+    };
+
+    handleComposerBeforeInputEvent({ inputType: 'insertText', data: undefined }, actions);
+    handleComposerBeforeInputEvent(
+      { inputType: 'insertText', data: 42 as unknown as string },
+      actions
+    );
+
+    expect(calls).toEqual([]);
   });
 });

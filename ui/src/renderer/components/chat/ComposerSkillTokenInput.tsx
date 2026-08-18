@@ -110,6 +110,70 @@ export function handleComposerPasteEvent(
   delegateToPasteService?.();
 }
 
+export type ComposerBeforeInputNativeEvent = {
+  inputType?: unknown;
+  isComposing?: boolean;
+  data?: string | null;
+};
+
+export type ComposerBeforeInputActions = {
+  disabled: boolean;
+  isComposing: boolean;
+  preventDefault: () => void;
+  replaceSelectionWithText: (text: string) => void;
+  deleteSelection: (direction: 'backward' | 'forward') => void;
+};
+
+/**
+ * Owns the beforeinput decision so malformed browser events are testable
+ * without mounting a contentEditable tree. Unknown inputType values are
+ * delegated to the browser, which will be reconciled by the input event.
+ */
+export function handleComposerBeforeInputEvent(
+  nativeEvent: ComposerBeforeInputNativeEvent,
+  {
+    disabled,
+    isComposing,
+    preventDefault,
+    replaceSelectionWithText,
+    deleteSelection,
+  }: ComposerBeforeInputActions
+): void {
+  const inputType = nativeEvent.inputType;
+  if (disabled) {
+    return;
+  }
+  if (typeof inputType !== 'string') {
+    return;
+  }
+  if (isComposing || nativeEvent.isComposing || inputType.includes('Composition')) {
+    return;
+  }
+
+  switch (inputType) {
+    case 'insertText':
+      if (typeof nativeEvent.data !== 'string') return;
+      preventDefault();
+      replaceSelectionWithText(nativeEvent.data);
+      break;
+    case 'insertLineBreak':
+    case 'insertParagraph':
+      preventDefault();
+      replaceSelectionWithText('\n');
+      break;
+    case 'deleteContentBackward':
+      preventDefault();
+      deleteSelection('backward');
+      break;
+    case 'deleteContentForward':
+      preventDefault();
+      deleteSelection('forward');
+      break;
+    default:
+      break;
+  }
+}
+
 function areSkillListsEqual(left: ComposerSkillChip[], right: ComposerSkillChip[]): boolean {
   return left.length === right.length && left.every((skill, index) => skill.skillId === right[index]?.skillId);
 }
@@ -606,37 +670,13 @@ const ComposerSkillTokenInput = forwardRef<ComposerSkillTokenInputHandle, Compos
     };
 
     const handleBeforeInput = (event: React.FormEvent<HTMLDivElement>) => {
-      if (disabled) {
-        return;
-      }
-      const nativeEvent = event.nativeEvent as InputEvent;
-      if (isComposingRef.current || nativeEvent.isComposing || nativeEvent.inputType.includes('Composition')) {
-        return;
-      }
-
-      switch (nativeEvent.inputType) {
-        case 'insertText':
-          if (nativeEvent.data !== null) {
-            event.preventDefault();
-            replaceSelectionWithText(nativeEvent.data);
-          }
-          break;
-        case 'insertLineBreak':
-        case 'insertParagraph':
-          event.preventDefault();
-          replaceSelectionWithText('\n');
-          break;
-        case 'deleteContentBackward':
-          event.preventDefault();
-          deleteSelection('backward');
-          break;
-        case 'deleteContentForward':
-          event.preventDefault();
-          deleteSelection('forward');
-          break;
-        default:
-          break;
-      }
+      handleComposerBeforeInputEvent(event.nativeEvent as InputEvent, {
+        disabled,
+        isComposing: isComposingRef.current,
+        preventDefault: () => event.preventDefault(),
+        replaceSelectionWithText,
+        deleteSelection,
+      });
     };
 
     const handleInput = (event: React.FormEvent<HTMLDivElement>) => {

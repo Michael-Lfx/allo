@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+  clearEditResubmitComposer,
   commitComposerDraftChange,
   commitEditResubmitTerminal,
   createComposerDraftRevisionState,
+  rememberEditResubmitOperation,
   shouldCommitEditResubmitTerminal,
+  shouldRestoreRetrySubmittedInput,
 } from '@/renderer/components/chat/SendBox/editResubmitLifecycle';
 import { resolveEditResubmitOutcome } from '@/renderer/components/chat/SendBox/editResubmitOutcome';
 
@@ -14,7 +17,7 @@ describe('commitEditResubmitTerminal', () => {
     expect(shouldCommitEditResubmitTerminal('op-1', new Set(['op-1']), 'op-1', false)).toBe(false);
     expect(shouldCommitEditResubmitTerminal('op-2', new Set(), 'op-1', false)).toBe(false);
     expect(shouldCommitEditResubmitTerminal(null, new Set(), 'op-1', true)).toBe(true);
-    expect(shouldCommitEditResubmitTerminal('op-2', new Set(), 'op-1', true)).toBe(true);
+    expect(shouldCommitEditResubmitTerminal('op-2', new Set(), 'op-1', true)).toBe(false);
     expect(shouldCommitEditResubmitTerminal(null, new Set(['op-1']), 'op-1', true)).toBe(false);
   });
 
@@ -26,6 +29,33 @@ describe('commitEditResubmitTerminal', () => {
     committed.add('op-b');
 
     expect(shouldCommitEditResubmitTerminal('op-b', committed, 'op-a', true)).toBe(false);
+  });
+
+  test('bounds terminal tombstones without dropping the newest operation', () => {
+    const committed = new Set<string>();
+    rememberEditResubmitOperation(committed, 'op-1', 2);
+    rememberEditResubmitOperation(committed, 'op-2', 2);
+    rememberEditResubmitOperation(committed, 'op-3', 2);
+
+    expect([...committed]).toEqual(['op-2', 'op-3']);
+  });
+
+  test('restores a retry only when no terminal or durable owner handled the failure', () => {
+    const committed = new Set<string>();
+    const base = {
+      activeOperationId: 'op-retry',
+      committedOperationIds: committed,
+      eventOperationId: 'op-retry',
+      revisionUnchanged: true,
+    };
+
+    expect(shouldRestoreRetrySubmittedInput(base)).toBe(true);
+    committed.add('op-retry');
+    expect(shouldRestoreRetrySubmittedInput(base)).toBe(false);
+    committed.clear();
+    expect(shouldRestoreRetrySubmittedInput({ ...base, durableOperationId: 'op-retry' })).toBe(false);
+    expect(shouldRestoreRetrySubmittedInput({ ...base, revisionUnchanged: false })).toBe(false);
+    expect(shouldRestoreRetrySubmittedInput({ ...base, activeOperationId: 'op-other' })).toBe(false);
   });
 
   test('publishes terminal before shared-state clear and controller release', () => {
@@ -94,5 +124,32 @@ describe('commitEditResubmitTerminal', () => {
 
     expect(revisionObservedBySetter).toBeGreaterThan(submittedRevision);
     expect(composerText).toBe('new user draft');
+  });
+});
+
+describe('clearEditResubmitComposer', () => {
+  test('clears the token document before transient references', () => {
+    const calls: string[] = [];
+
+    clearEditResubmitComposer({
+      tokenInput: { clear: () => calls.push('token-input') },
+      commitEmptyDraft: () => calls.push('controlled-draft'),
+      clearDomSnippets: () => calls.push('dom-snippets'),
+      clearReplyQuote: () => calls.push('reply-quote'),
+    });
+
+    expect(calls).toEqual(['token-input', 'dom-snippets', 'reply-quote']);
+  });
+
+  test('uses the controlled draft fallback when the token input is absent', () => {
+    const calls: string[] = [];
+
+    clearEditResubmitComposer({
+      commitEmptyDraft: () => calls.push('controlled-draft'),
+      clearDomSnippets: () => calls.push('dom-snippets'),
+      clearReplyQuote: () => calls.push('reply-quote'),
+    });
+
+    expect(calls).toEqual(['controlled-draft', 'dom-snippets', 'reply-quote']);
   });
 });

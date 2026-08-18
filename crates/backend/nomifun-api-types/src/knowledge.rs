@@ -204,6 +204,15 @@ pub struct UpdateKnowledgeTagRequest {
     pub sort_order: Option<i64>,
 }
 
+/// Request body for atomically exchanging the order of two knowledge tags.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ReorderKnowledgeTagsRequest {
+    pub first_key: String,
+    pub second_key: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

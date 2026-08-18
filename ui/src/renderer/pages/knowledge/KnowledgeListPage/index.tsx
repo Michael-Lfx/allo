@@ -111,7 +111,7 @@ const KnowledgeListPage: React.FC = () => {
 
   // Data
   const { bases, loading, error, refresh } = useKnowledgeBases();
-  const { tags, createTag, updateTag, deleteTag } = useKnowledgeTags();
+  const { tags, createTag, updateTag, reorderTags, deleteTag } = useKnowledgeTags();
   const [tagModalVisible, setTagModalVisible] = useState(false);
 
   // Filter state
@@ -468,6 +468,7 @@ const KnowledgeListPage: React.FC = () => {
         tags={tags}
         createTag={createTag}
         updateTag={updateTag}
+        reorderTags={reorderTags}
         deleteTag={deleteTag}
       />
     </div>

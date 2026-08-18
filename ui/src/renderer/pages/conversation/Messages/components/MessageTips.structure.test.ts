@@ -24,10 +24,28 @@ const cssRulesFor = (selector: string) => {
 describe('MessageTips structured error presentation', () => {
   test('uses a NomiFun-native diagnostic note instead of the legacy open-source alert block', () => {
     expect(source.includes('message-error-note')).toBe(true);
-    expect(source.includes('message-error-note__rail')).toBe(true);
+    expect(source.includes('message-error-note__rail')).toBe(false);
     expect(source.includes('message-error-note__status')).toBe(true);
+    expect(source.includes('message-error-note__diagnostic-summary')).toBe(true);
+    expect(source.includes('message-error-note__incident')).toBe(false);
+    expect(source.includes('buildAgentErrorDiagnostic')).toBe(true);
+    expect(source.includes('buildErrorDiagnostic')).toBe(true);
+    expect(source.includes("if (type === 'error')")).toBe(true);
+    expect(source.includes('CopyIconButton')).toBe(true);
     expect(source.includes('message-error-note__details')).toBe(true);
     expect(source.includes("defaultActiveKey={['technical-details']}")).toBe(false);
+  });
+
+  test('uses a full semantic border and no decorative side stripe or gradient', () => {
+    const cardRule = cssRuleFor('.message-error-note');
+
+    expect(cardRule.includes('display: block')).toBe(true);
+    expect(cardRule.includes('background: color-mix')).toBe(true);
+    expect(cardRule.includes('linear-gradient')).toBe(false);
+    expect(cssSource.includes('.message-error-note__rail')).toBe(false);
+    expect(cssSource.includes('.message-error-note__incident')).toBe(false);
+    expect(cssSource.includes('var(--info, var(--color-primary')).toBe(true);
+    expect(cssSource.includes('var(--warning, var(--flowy-warning')).toBe(true);
   });
 
   test('keeps feedback and retry/configuration status close to the diagnosis header', () => {
@@ -61,6 +79,15 @@ describe('MessageTips structured error presentation', () => {
     expect(iconRule.includes('transform: none')).toBe(true);
   });
 
+  test('wraps and scrolls long diagnostic details without clipping', () => {
+    const detailRule = cssRuleFor('.message-error-note__detail-body');
+
+    expect(detailRule.includes('max-height: 220px')).toBe(true);
+    expect(detailRule.includes('overflow: auto')).toBe(true);
+    expect(detailRule.includes('white-space: pre-wrap')).toBe(true);
+    expect(detailRule.includes('overflow-wrap: anywhere')).toBe(true);
+  });
+
   test('spaces footer actions and centers the feedback icon with its label', () => {
     expect(cssSource.includes('grid-template-columns: minmax(0, 1fr) auto')).toBe(true);
     const actionRules = cssRulesFor('.message-error-note__actions');
@@ -75,11 +102,14 @@ describe('MessageTips structured error presentation', () => {
     expect(cssSource.includes('.message-error-note__actions .message-error-note__feedback')).toBe(true);
     expect(cssSource.includes('.message-error-note__feedback .pt-4px')).toBe(true);
     expect(cssSource.includes('padding-top: 0 !important')).toBe(true);
+    expect(cssSource.includes('.message-error-note__actions .message-error-note__copy')).toBe(true);
+    expect(cssSource.includes('.message-error-note__details .arco-collapse-item-header:hover')).toBe(true);
+    expect(cssSource.includes('.message-error-note__actions button:focus-visible')).toBe(true);
   });
 
   test('routes conversation error feedback through Support IM with correlation context', () => {
     expect(source.includes("import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';")).toBe(true);
     expect(source.includes('const conversationErrorReport = useMemo<ConversationErrorReportContext | undefined>')).toBe(true);
-    expect(source.match(/conversationErrorReport=\{conversationErrorReport\}/g)).toHaveLength(3);
+    expect(source.match(/conversationErrorReport=\{conversationErrorReport\}/g)).toHaveLength(1);
   });
 });

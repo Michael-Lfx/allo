@@ -59,6 +59,14 @@ export function useKnowledgeTags() {
     [refresh]
   );
 
+  const reorderTags = useCallback(
+    async (firstKey: string, secondKey: string) => {
+      await ipcBridge.knowledge.reorderTags.invoke({ firstKey, secondKey });
+      await refresh();
+    },
+    [refresh]
+  );
+
   const deleteTag = useCallback(
     async (key: string) => {
       await ipcBridge.knowledge.deleteTag.invoke({ key });
@@ -67,5 +75,5 @@ export function useKnowledgeTags() {
     [refresh]
   );
 
-  return { tags, loading, error, createTag, updateTag, deleteTag, refresh };
+  return { tags, loading, error, createTag, updateTag, reorderTags, deleteTag, refresh };
 }

@@ -13,6 +13,8 @@ import { Input, Modal, Popconfirm } from '@arco-design/web-react';
 import { Check, Close, Delete, Down, Plus, Up } from '@icon-park/react';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import ErrorDiagnosticContent from '@/renderer/components/base/ErrorDiagnosticContent';
+import { buildUnknownErrorDiagnostic } from '@/renderer/utils/ui/errorDiagnostics';
 
 // ─── Color palette (theme-safe presets) ─────────────────────────────────────
 
@@ -35,16 +37,11 @@ export type KnowledgeTagManagementModalProps = {
   tags: IKnowledgeTag[];
   createTag: (label: string, color?: string) => Promise<unknown>;
   updateTag: (key: string, patch: { label?: string; color?: string; sortOrder?: number }) => Promise<void>;
+  reorderTags: (firstKey: string, secondKey: string) => Promise<void>;
   deleteTag: (key: string) => Promise<void>;
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-const errorText = (error: unknown): string => {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
-  return '';
-};
 
 // ─── Color dot ──────────────────────────────────────────────────────────────
 
@@ -273,6 +270,7 @@ const KnowledgeTagManagementModal: React.FC<KnowledgeTagManagementModalProps> = 
   tags,
   createTag,
   updateTag,
+  reorderTags,
   deleteTag,
 }) => {
   const { t } = useTranslation();
@@ -292,7 +290,14 @@ const KnowledgeTagManagementModal: React.FC<KnowledgeTagManagementModalProps> = 
       console.error('Failed to create knowledge tag:', error);
       Modal.error({
         title: t('knowledge.tags.createFailed', { defaultValue: 'Failed to create tag' }),
-        content: errorText(error),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              error,
+              t('knowledge.tags.createFailed', { defaultValue: 'Failed to create tag' })
+            )}
+          />
+        ),
       });
     } finally {
       setBusy(false);
@@ -307,7 +312,14 @@ const KnowledgeTagManagementModal: React.FC<KnowledgeTagManagementModalProps> = 
       console.error('Failed to rename knowledge tag:', error);
       Modal.error({
         title: t('knowledge.tags.renameFailed', { defaultValue: 'Failed to rename tag' }),
-        content: errorText(error),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              error,
+              t('knowledge.tags.renameFailed', { defaultValue: 'Failed to rename tag' })
+            )}
+          />
+        ),
       });
     } finally {
       setBusy(false);
@@ -320,6 +332,17 @@ const KnowledgeTagManagementModal: React.FC<KnowledgeTagManagementModalProps> = 
       await updateTag(key, { color });
     } catch (error) {
       console.error('Failed to update tag color:', error);
+      Modal.error({
+        title: t('knowledge.tags.colorFailed', { defaultValue: 'Failed to update tag color' }),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              error,
+              t('knowledge.tags.colorFailed', { defaultValue: 'Failed to update tag color' })
+            )}
+          />
+        ),
+      });
     } finally {
       setBusy(false);
     }
@@ -333,10 +356,20 @@ const KnowledgeTagManagementModal: React.FC<KnowledgeTagManagementModalProps> = 
     const curr = tags[idx];
     setBusy(true);
     try {
-      await updateTag(curr.key, { sortOrder: prev.sortOrder });
-      await updateTag(prev.key, { sortOrder: curr.sortOrder });
+      await reorderTags(curr.key, prev.key);
     } catch (error) {
       console.error('Failed to reorder tags:', error);
+      Modal.error({
+        title: t('knowledge.tags.reorderFailed', { defaultValue: 'Failed to reorder tags' }),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              error,
+              t('knowledge.tags.reorderFailed', { defaultValue: 'Failed to reorder tags' })
+            )}
+          />
+        ),
+      });
     } finally {
       setBusy(false);
     }
@@ -350,10 +383,20 @@ const KnowledgeTagManagementModal: React.FC<KnowledgeTagManagementModalProps> = 
     const curr = tags[idx];
     setBusy(true);
     try {
-      await updateTag(curr.key, { sortOrder: next.sortOrder });
-      await updateTag(next.key, { sortOrder: curr.sortOrder });
+      await reorderTags(curr.key, next.key);
     } catch (error) {
       console.error('Failed to reorder tags:', error);
+      Modal.error({
+        title: t('knowledge.tags.reorderFailed', { defaultValue: 'Failed to reorder tags' }),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              error,
+              t('knowledge.tags.reorderFailed', { defaultValue: 'Failed to reorder tags' })
+            )}
+          />
+        ),
+      });
     } finally {
       setBusy(false);
     }
@@ -367,7 +410,14 @@ const KnowledgeTagManagementModal: React.FC<KnowledgeTagManagementModalProps> = 
       console.error('Failed to delete knowledge tag:', error);
       Modal.error({
         title: t('knowledge.tags.deleteFailed', { defaultValue: 'Failed to delete tag' }),
-        content: errorText(error),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              error,
+              t('knowledge.tags.deleteFailed', { defaultValue: 'Failed to delete tag' })
+            )}
+          />
+        ),
       });
     } finally {
       setBusy(false);

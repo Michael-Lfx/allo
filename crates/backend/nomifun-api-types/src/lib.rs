@@ -186,7 +186,7 @@ pub use knowledge::{
     CreateKnowledgeTagRequest, KnowledgeDocumentImportResult, KnowledgeDocumentImportStatus, KnowledgeLocalSyncError,
     KnowledgeLocalSyncState, KnowledgeLocalSyncSummary, KnowledgeMountInfo,
     KnowledgeSource, KnowledgeSourceEntry, KnowledgeSourceMode, KnowledgeTag,
-    UpdateKnowledgeTagRequest,
+    ReorderKnowledgeTagsRequest, UpdateKnowledgeTagRequest,
 };
 pub use lifecycle::{
     GitHubReleaseAsset, PackSupportLogsRequest, SupportLogsPackResponse, SystemInfoResponse,

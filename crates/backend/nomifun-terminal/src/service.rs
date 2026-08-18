@@ -4311,6 +4311,13 @@ mod tests {
         ) -> Result<(), nomifun_db::DbError> {
             Ok(())
         }
+        async fn swap_knowledge_tags(
+            &self,
+            _first_key: &str,
+            _second_key: &str,
+        ) -> Result<(), nomifun_db::DbError> {
+            Ok(())
+        }
         async fn delete_knowledge_tag(&self, _key: &str) -> Result<(), nomifun_db::DbError> {
             Ok(())
         }

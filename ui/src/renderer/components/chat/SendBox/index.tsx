@@ -63,10 +63,13 @@ import { getConversationInputHistory } from '@/renderer/utils/chat/messageHistor
 import { uuid, uuidv7 } from '@/common/utils';
 import { resolveEditResubmitOutcome } from '@/renderer/components/chat/SendBox/editResubmitOutcome';
 import {
+  clearEditResubmitComposer,
   commitComposerDraftChange,
   createComposerDraftRevisionState,
   recordComposerDraftChange,
+  rememberEditResubmitOperation,
   shouldCommitEditResubmitTerminal,
+  shouldRestoreRetrySubmittedInput,
 } from '@/renderer/components/chat/SendBox/editResubmitLifecycle';
 import { createComposerStopHandoffGate } from '@/renderer/components/chat/SendBox/composerStopHandoffGate';
 import type {
@@ -511,7 +514,7 @@ const SendBox: React.FC<{
                   authoritative
                 )
               ) return;
-              committedTerminalOperationsRef.current.add(retryOperationId);
+              rememberEditResubmitOperation(committedTerminalOperationsRef.current, retryOperationId);
               const outcome = resolveEditResubmitOutcome({
                 isCurrentOperation: true,
                 revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
@@ -568,14 +571,23 @@ const SendBox: React.FC<{
             conversation_type: conversationContext?.type,
           });
         } catch {
+          const terminalAlreadyCommitted = committedTerminalOperationsRef.current.has(retryOperationId);
+          const durableOperationId = retryConversationId
+            ? getEditResubmitOperation(retryConversationId)?.operationId
+            : undefined;
           // Restore the retried text only when THIS retry is still the current
           // operation AND the user never touched the composer mid-flight.
-          if (
-            !committedTerminalOperationsRef.current.has(retryOperationId) &&
-            activeRetryOperationRef.current === retryOperationId &&
-            inputRevisionStateRef.current.current === submittedInputRevision
-          ) {
+          if (shouldRestoreRetrySubmittedInput({
+            activeOperationId: activeRetryOperationRef.current,
+            committedOperationIds: committedTerminalOperationsRef.current,
+            eventOperationId: retryOperationId,
+            durableOperationId,
+            revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
+          })) {
             setInput(content);
+          }
+          if (!terminalAlreadyCommitted && durableOperationId === undefined) {
+            rememberEditResubmitOperation(committedTerminalOperationsRef.current, retryOperationId);
           }
         } finally {
           if (activeRetryOperationRef.current === retryOperationId) {
@@ -1726,9 +1738,10 @@ const SendBox: React.FC<{
       const targetCreatedAt = editingCreatedAtRef.current;
       const cid = conversationIdRef.current;
       // Stamp this resubmit with an operation token and snapshot the input
-      // revision. Edit state + input are cleared ONLY after backend acceptance
-      // (the .then below); a stale operation or a user who typed mid-flight must
-      // not have its input/edit/loading state touched.
+      // revision. The operation record keeps the pre-clear revision for
+      // recovery/audit; the local comparison baseline is captured immediately
+      // after the intentional composer clear below so only subsequent user
+      // input counts as a mid-flight edit.
       const operationId = uuidv7();
       if (
         cid &&
@@ -1749,6 +1762,17 @@ const SendBox: React.FC<{
       // replaces Send after this synchronous admission. Keep that click from
       // cancelling the preparation lease of the operation it just created.
       stopHandoffGateRef.current.armAfterEditSubmit();
+      // Clear through the same controlled draft path used by normal sends.
+      // This publishes the empty draft synchronously, removes skill chips and
+      // transient references, and gives the user immediate visual feedback
+      // while the destructive request is in flight.
+      clearEditResubmitComposer({
+        tokenInput: tokenInputRef.current ?? undefined,
+        commitEmptyDraft: () =>
+          commitComposerDraftChange(inputRevisionStateRef.current, '', setInputRef.current),
+        clearDomSnippets,
+        clearReplyQuote: () => setReplyQuote(null),
+      });
       const submittedInputRevision = inputRevisionStateRef.current.current;
       const isCurrentOperation = () => activeEditOperationRef.current === operationId;
       const ownerId = editingOwnerId();
@@ -1764,7 +1788,7 @@ const SendBox: React.FC<{
             authoritative
           )
         ) return;
-        committedTerminalOperationsRef.current.add(operationId);
+        rememberEditResubmitOperation(committedTerminalOperationsRef.current, operationId);
         const outcome = resolveEditResubmitOutcome({
           isCurrentOperation: true,
           revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
@@ -1821,6 +1845,7 @@ const SendBox: React.FC<{
           // Lifecycle detach / requires-reset keeps the durable controller
           // record: do not downgrade that confirming operation to a fresh edit.
           if (cid && getEditResubmitOperation(cid)?.operationId === operationId) return;
+          rememberEditResubmitOperation(committedTerminalOperationsRef.current, operationId);
           const outcome = resolveEditResubmitOutcome({
             isCurrentOperation: isCurrentOperation(),
             revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
