@@ -149,12 +149,7 @@ impl ReadTool {
         // Relative paths resolve against the session working directory when one
         // was injected (matching Grep/Glob/Bash). Everything below — including
         // the cache key — uses the resolved path so dedup stays consistent.
-        let resolved: String = match &self.cwd {
-            Some(cwd) if !Path::new(raw_path).is_absolute() => {
-                cwd.join(raw_path).to_string_lossy().into_owned()
-            }
-            _ => raw_path.to_owned(),
-        };
+        let resolved = crate::path_guard::resolve_against_cwd(raw_path, self.cwd.as_deref());
         let file_path = resolved.as_str();
 
         // Get file mtime for dedup and cache.
@@ -191,7 +186,7 @@ impl ReadTool {
                     };
                 }
                 return ToolResult {
-                    content: format!("Failed to read file {}: {}", file_path, e),
+                    content: crate::path_guard::format_file_read_error(file_path, &e),
                     is_error: true,
                     images: Vec::new(),
                 };
@@ -595,6 +590,31 @@ mod tests {
 
         assert!(result.is_error);
         assert!(result.content.contains("Failed to read file"));
+        assert!(
+            result.content.contains("'/tmp/nonexistent_file_abc123.txt'"),
+            "path must be quoted: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_directory_is_explicit_error() {
+        let dir = tempdir().unwrap();
+        let tool = ReadTool::new(None, None);
+        let input = json!({ "file_path": dir.path().to_str().unwrap() });
+        let result = tool.execute(input).await;
+
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("it is a directory, not a file"),
+            "got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains(&format!("'{}'", dir.path().display())),
+            "path must be quoted: {}",
+            result.content
+        );
     }
 
     #[tokio::test]

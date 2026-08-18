@@ -221,7 +221,7 @@ describe('normalizeToolCall', () => {
 
   it('marks only explicit direct read/search probe misses as non-fatal', () => {
     for (const [name, output] of [
-      ['Read', 'Failed to read file missing.file: No such file or directory (os error 2)'],
+      ['Read', "Failed to read file 'missing.file': No such file or directory (os error 2)"],
       ['Glob', 'No files matched the pattern'],
       ['Grep', 'No matches found'],
     ]) {
@@ -242,7 +242,7 @@ describe('normalizeToolCall', () => {
 
   it('keeps direct probe permission and syntax failures fatal', () => {
     for (const [name, output] of [
-      ['Read', 'Failed to read file secret.txt: Permission denied (os error 13)'],
+      ['Read', "Failed to read file 'secret.txt': Permission denied (os error 13)"],
       ['Glob', 'Invalid glob pattern: Pattern syntax error near position 2'],
       ['Grep', 'rg error: permission denied'],
     ]) {

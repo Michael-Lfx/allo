@@ -82,6 +82,19 @@ pub fn resolve_against_cwd(file_path: &str, cwd: Option<&Path>) -> String {
     }
 }
 
+/// Format a filesystem read failure for the model and logs.
+///
+/// The path is quoted so a Windows drive letter (`C:\...`) cannot be glued to
+/// the OS error by the `path: error` convention — that concatenation is how
+/// `C:\foo.ts: 系统找不到指定的文件 (os error 2)` gets misread as a broken path.
+pub fn format_file_read_error(file_path: &str, err: &std::io::Error) -> String {
+    if Path::new(file_path).is_dir() {
+        format!("Failed to read file '{file_path}': it is a directory, not a file")
+    } else {
+        format!("Failed to read file '{file_path}': {err}")
+    }
+}
+
 /// Guard a write to `file_path` against an optional `root`. Returns `Some(error)`
 /// when the write must be rejected, `None` when allowed (no root, or contained).
 ///
@@ -220,5 +233,34 @@ mod tests {
         let msg = ensure_within_root_ex(outside.to_str().unwrap(), Some(dir.path()), true)
             .expect("reject");
         assert!(msg.starts_with(nomi_coding::BOUNDARY_PREFIX));
+    }
+
+    #[test]
+    fn format_file_read_error_quotes_path_away_from_os_error() {
+        let path = r"C:\flowy-workspace\code\open-vetta\packages\ai\scripts\generate-models.ts";
+        let err = std::io::Error::from_raw_os_error(2);
+        let msg = format_file_read_error(path, &err);
+        assert!(
+            msg.starts_with("Failed to read file 'C:\\flowy-workspace\\"),
+            "{msg}"
+        );
+        assert!(msg.contains("generate-models.ts': "), "{msg}");
+        assert!(
+            !msg.contains("generate-models.ts:"),
+            "path must not glue to the OS error: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_file_read_error_names_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let err = std::io::Error::other("should be ignored for directories");
+        let msg = format_file_read_error(path, &err);
+        assert!(
+            msg.contains("it is a directory, not a file"),
+            "{msg}"
+        );
+        assert!(msg.contains(&format!("'{path}'")), "{msg}");
     }
 }

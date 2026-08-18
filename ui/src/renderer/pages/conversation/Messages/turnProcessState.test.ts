@@ -182,7 +182,7 @@ describe('turn process state', () => {
             name: 'Read',
             status: 'error',
             args: { file_path: 'missing.file' },
-            output: 'Failed to read file missing.file: No such file or directory (os error 2)',
+            output: "Failed to read file 'missing.file': No such file or directory (os error 2)",
           },
         } as any,
       ])
@@ -199,7 +199,7 @@ describe('turn process state', () => {
             name: 'Read',
             status: 'error',
             args: { file_path: 'secret.file' },
-            output: 'Failed to read file secret.file: Permission denied (os error 13)',
+            output: "Failed to read file 'secret.file': Permission denied (os error 13)",
           },
         } as any,
       ])

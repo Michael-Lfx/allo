@@ -628,7 +628,7 @@ impl Tool for EditTool {
             Ok(c) => c,
             Err(e) => {
                 return ToolResult {
-                    content: format!("Failed to read file {}: {}", file_path, e),
+                    content: crate::path_guard::format_file_read_error(file_path, &e),
                     is_error: true,
                     images: Vec::new(),
                 };
@@ -968,6 +968,11 @@ mod tests {
         assert!(
             result.content.contains("Failed to read file"),
             "expected read failure message, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains(&format!("'{}'", file_path.display())),
+            "path must be quoted: {}",
             result.content
         );
     }
