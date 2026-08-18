@@ -24,7 +24,7 @@
 | 修改数据库 schema 或 ID | [contributing/data-and-identifier-standards.zh.md](contributing/data-and-identifier-standards.zh.md) |
 | 社区行为准则 | [../CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) |
 | 报告安全问题 | [../SECURITY.md](../SECURITY.md) |
-| 版本记录与发布流程 | [../CHANGELOG.md](../CHANGELOG.md)、[../RELEASING.md](../RELEASING.md) |
+| 版本记录与发布流程 | [../CHANGELOG.md](../CHANGELOG.md)、[changelog 格式示例](contributing/changelog.example.zh.md)、[../RELEASING.md](../RELEASING.md) |
 
 ## 当前文档
 
@@ -34,7 +34,7 @@ docs/
 ├── guides/               当前产品与运维指南
 ├── architecture/         当前系统架构与实现地图
 ├── reference/            配置、API 概览、排障、FAQ
-├── contributing/         开发、项目结构、数据/ID 规范、构建与打包
+├── contributing/         开发、项目结构、数据/ID 规范、构建与打包、changelog 格式示例
 ├── continuity/           历史决策、交接说明与发布审计
 ├── skills/               面向外部 agent 的 skill 文档
 └── images/               截图清单与图片资源

@@ -268,7 +268,8 @@ cargo test -p <crate>
 - 破坏性配置、数据、API 或流程变化；
 - PR 带来的已知限制或移除的已知限制。
 
-维护者可能会在发版前重写 changelog 文案。
+维护者可能会在发版前重写 changelog 文案。标题怎么写、必须填到哪一档，见
+[changelog 格式示例](docs/contributing/changelog.example.zh.md)。
 
 ## Review 协作方式
 
