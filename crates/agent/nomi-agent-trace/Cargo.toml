@@ -1,6 +1,6 @@
 [package]
 name = "nomi-agent-trace"
-description = "Agent turn observability: structured traces, redacted previews, and file-backed storage"
+description = "Session observation: canonical event log, capture policy, and JSONL storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,7 +12,8 @@ serde_json.workspace  = true
 thiserror.workspace   = true
 tracing.workspace     = true
 chrono.workspace      = true
-uuid.workspace        = true
+sha2.workspace        = true
+base64.workspace      = true
 nomi-redact.workspace = true
 
 [dev-dependencies]

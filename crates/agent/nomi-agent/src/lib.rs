@@ -18,6 +18,7 @@ pub mod knowledge_tools;
 pub mod learning_tools;
 pub mod loop_guard;
 pub mod moa;
+pub mod observation;
 pub mod tool_execution;
 pub mod output;
 pub mod plan;
@@ -39,5 +40,6 @@ pub use flowy_web::provider::SearchProvider;
 pub use bootstrap::{ExtractCoordinatorBinding, SearchProviderBinding};
 
 pub use knowledge_tools::{KnowledgeHit, KnowledgeReadTool, KnowledgeRetrievalSink, KnowledgeSearchTool};
+pub use observation::{stream_llm, ObservationSession};
 pub use task_profile::TaskProfile;
 pub use nomi_coding;

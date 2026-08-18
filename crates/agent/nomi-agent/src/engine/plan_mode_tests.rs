@@ -73,6 +73,7 @@ fn make_plan_engine(allow_list: Vec<String>) -> super::AgentEngine {
         system_resource_inbox: None,
         process_supervisor: None,
         editable_turn: None,
+        observation: None,
     }
 }
 

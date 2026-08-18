@@ -66,6 +66,7 @@ fn make_engine() -> super::AgentEngine {
         system_resource_inbox: None,
         process_supervisor: None,
         editable_turn: None,
+        observation: None,
     }
 }
 

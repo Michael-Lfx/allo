@@ -46,6 +46,7 @@ struct SessionExtractModel {
     provider: Arc<dyn LlmProvider>,
     model: String,
     max_tokens: u32,
+    observation: Option<Arc<crate::observation::ObservationSession>>,
 }
 
 #[cfg(feature = "browser-use")]
@@ -68,11 +69,15 @@ impl nomi_browser::extract::ExtractModel for SessionExtractModel {
             reasoning_effort: None,
             temperature: None,
         };
-        let mut rx = self
-            .provider
-            .stream(&request)
-            .await
-            .map_err(|e| format!("extract model stream failed: {e}"))?;
+        let mut rx = crate::observation::stream_llm(
+            self.provider.as_ref(),
+            &request,
+            self.observation.clone(),
+            "browser_extract",
+            nomi_agent_trace::ObservationScope::SessionWorkflow,
+        )
+        .await
+        .map_err(|e| format!("extract model stream failed: {e}"))?;
         let mut out = String::new();
         while let Some(event) = rx.recv().await {
             match event {
@@ -103,6 +108,7 @@ struct SessionVisualLocator {
     provider: Arc<dyn LlmProvider>,
     model: String,
     max_tokens: u32,
+    observation: Option<Arc<crate::observation::ObservationSession>>,
 }
 
 #[cfg(feature = "browser-use")]
@@ -134,11 +140,15 @@ impl SessionVisualLocator {
             temperature: None,
         };
 
-        let mut rx = self
-            .provider
-            .stream(&request)
-            .await
-            .map_err(|e| format!("visual locator stream failed: {e}"))?;
+        let mut rx = crate::observation::stream_llm(
+            self.provider.as_ref(),
+            &request,
+            self.observation.clone(),
+            "visual_locate",
+            nomi_agent_trace::ObservationScope::SessionWorkflow,
+        )
+        .await
+        .map_err(|e| format!("visual locator stream failed: {e}"))?;
         let mut out = String::new();
         while let Some(event) = rx.recv().await {
             match event {
@@ -357,6 +367,7 @@ pub struct AgentBootstrap {
     /// When true (coding profile), file tools use CODING_BOUNDARY rejection
     /// copy and Bash refuses known broad/dangerous scans. Not an OS sandbox.
     coding_boundary: bool,
+    observation: Option<Arc<crate::observation::ObservationSession>>,
 }
 
 impl AgentBootstrap {
@@ -380,7 +391,13 @@ impl AgentBootstrap {
             browser_lane_client: None,
             ssh_session: None,
             coding_boundary: false,
+            observation: None,
         }
+    }
+
+    pub fn observation(mut self, session: Arc<crate::observation::ObservationSession>) -> Self {
+        self.observation = Some(session);
+        self
     }
 
     /// Use a pre-created provider instead of creating one from config.
@@ -944,6 +961,7 @@ impl AgentBootstrap {
                 provider: provider.clone(),
                 model: self.config.model.clone(),
                 max_tokens: self.config.max_tokens,
+                observation: self.observation.clone(),
             });
             browser_tool = browser_tool.with_extract_model(extract_model);
             // P7B: visual fallback opt-in (LIVE pref `agent.browserUse.visualFallback`, default
@@ -957,6 +975,7 @@ impl AgentBootstrap {
                     provider: provider.clone(),
                     model: self.config.model.clone(),
                     max_tokens: self.config.max_tokens,
+                    observation: self.observation.clone(),
                 });
                 browser_tool = browser_tool
                     .with_visual_locator(locator)
@@ -1031,6 +1050,9 @@ impl AgentBootstrap {
         engine.set_process_supervisor(Arc::clone(&process_supervisor));
         engine.set_system_prompt_sections(prompt_cache.sections);
         engine.set_file_cache(file_cache);
+        if let Some(session) = self.observation {
+            engine.set_observation(session);
+        }
         if let Some(spec) = self.goal {
             engine.set_goal(spec.objective, spec.max_auto_continuations);
         }

@@ -6075,6 +6075,7 @@ dependencies = [
  "glob",
  "is-terminal",
  "mockall",
+ "nomi-agent-trace",
  "nomi-browser",
  "nomi-coding",
  "nomi-compact",
@@ -6101,6 +6102,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
+ "uuid",
  "wiremock",
 ]
 
@@ -6130,14 +6132,15 @@ dependencies = [
 name = "nomi-agent-trace"
 version = "1.0.1"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "nomi-redact",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.19",
  "tracing",
- "uuid",
 ]
 
 [[package]]

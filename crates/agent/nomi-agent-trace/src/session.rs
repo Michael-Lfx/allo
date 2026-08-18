@@ -15,7 +15,7 @@ pub fn is_session_dialogue(
     origin_empty && !companion && channel_empty
 }
 
-/// Classify into a stable `session_kind` string for [`crate::TurnTrace`].
+/// Classify into a stable `session_kind` string for observation payloads.
 ///
 /// Priority:
 /// 1. `companion == true` → `"companion"`

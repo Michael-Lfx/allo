@@ -5,13 +5,17 @@
 //! then replaces the full history with a compact boundary marker and the
 //! summary.  A circuit breaker prevents runaway retries.
 
+use nomi_agent_trace::ObservationScope;
 use nomi_config::compact::CompactConfig;
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_types::compact::{CompactMetadata, CompactTrigger};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role, TokenUsage};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+use crate::observation::ObservationSession;
 
 use super::estimate::estimate_tokens_from_messages;
 use super::prompt::{
@@ -322,7 +326,28 @@ pub async fn autocompact(
     config: &CompactConfig,
     state: &mut CompactState,
 ) -> Result<CompactResult, CompactError> {
-    autocompact_with(provider, messages, model, config, state, false).await
+    autocompact_with(provider, messages, model, config, state, false, None).await
+}
+
+/// Like [`autocompact`], with an optional observation session for the summarizer.
+pub async fn autocompact_observed(
+    provider: &dyn LlmProvider,
+    messages: &[Message],
+    model: &str,
+    config: &CompactConfig,
+    state: &mut CompactState,
+    observation: Option<Arc<ObservationSession>>,
+) -> Result<CompactResult, CompactError> {
+    autocompact_with(
+        provider,
+        messages,
+        model,
+        config,
+        state,
+        false,
+        observation,
+    )
+    .await
 }
 
 /// Like [`autocompact`], but `force_mechanical` skips the LLM summarizer and
@@ -336,6 +361,7 @@ pub async fn autocompact_with(
     config: &CompactConfig,
     state: &mut CompactState,
     force_mechanical: bool,
+    observation: Option<Arc<ObservationSession>>,
 ) -> Result<CompactResult, CompactError> {
     if !force_mechanical && state.is_circuit_broken(config) {
         return Err(CompactError::CircuitBroken {
@@ -373,10 +399,14 @@ pub async fn autocompact_with(
 
     let messages_summarized = fold.len();
 
+    // Attempt LLM summarization. On failure, fall back to a mechanical fold
+    // digest — a deterministic stand-in that notes the gap. This ensures
+    // compaction always frees context and auto-compaction can't loop on a
+    // still-full window. Mirrors Reasonix's `mechanicalFoldDigest`.
     let (summary_text, mechanical_fold) = if force_mechanical {
         (mechanical_fold_digest(messages_summarized), true)
     } else {
-        match summarize_with_retry(provider, &fold, model, config).await {
+        match summarize_with_retry(provider, &fold, model, config, observation).await {
             Ok(text) => (text, false),
             Err(e) => {
                 tracing::warn!(target: "nomi_agent", error = %e, "compaction summary unavailable; folding mechanically");
@@ -447,6 +477,7 @@ async fn summarize_with_retry(
     fold: &[Message],
     model: &str,
     config: &CompactConfig,
+    observation: Option<Arc<ObservationSession>>,
 ) -> Result<String, CompactError> {
     let prompt = build_compact_prompt();
     let mut conv_messages = fold.to_vec();
@@ -490,10 +521,15 @@ async fn summarize_with_retry(
         let timeout_result = tokio::time::timeout(
             Duration::from_secs(SUMMARY_TIMEOUT_SECS),
             async {
-                let rx = provider
-                    .stream(&request)
-                    .await
-                    .map_err(CompactError::Provider)?;
+                let rx = crate::observation::stream_llm(
+                    provider,
+                    &request,
+                    observation.clone(),
+                    "compaction",
+                    ObservationScope::SessionWorkflow,
+                )
+                .await
+                .map_err(CompactError::Provider)?;
                 collect_stream_text(rx).await
             },
         )

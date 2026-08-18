@@ -12,7 +12,8 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use nomi_agent::compact::auto::{
-    CompactError, autocompact, extract_compact_metadata, is_compact_boundary, should_autocompact,
+    CompactError, autocompact, autocompact_observed, extract_compact_metadata, is_compact_boundary,
+    should_autocompact,
 };
 use nomi_agent::compact::prompt::{
     build_compact_prompt, build_summary_content, format_compact_summary,
@@ -804,4 +805,48 @@ async fn small_session_keeps_recent_tail() {
         ContentBlock::Text { text } => assert!(text.contains("follow-up")),
         _ => panic!("expected tail text"),
     }
+}
+
+#[tokio::test]
+async fn autocompact_observed_writes_llm_request_and_response() {
+    let summary = "<summary>observed compact</summary>";
+    let provider = MockProvider::with_summary(summary);
+    let messages = sample_conversation(20);
+    let config = default_config();
+    let mut state = CompactState::new();
+    state.last_input_tokens = 170_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = nomi_agent_trace::ObservationRecorder::isolated(dir.path());
+    recorder.set_enabled(true);
+    let session = nomi_agent::ObservationSession::new(recorder.clone());
+    session.bind_ids(nomi_agent_trace::ObservationIds {
+        conversation_id: Some("c-compact".into()),
+        root_turn_id: Some("t-compact".into()),
+        ..Default::default()
+    });
+
+    autocompact_observed(
+        &provider,
+        &messages,
+        "test-model",
+        &config,
+        &mut state,
+        Some(session),
+    )
+    .await
+    .expect("observed autocompact should succeed");
+
+    let events = recorder.read_events(Some("c-compact")).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == nomi_agent_trace::EVENT_LLM_REQUEST
+                && event.payload["call_kind"] == "compaction")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == nomi_agent_trace::EVENT_LLM_RESPONSE)
+    );
 }

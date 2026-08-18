@@ -143,6 +143,7 @@ fn make_compact_engine_with_output(
         system_resource_inbox: None,
         process_supervisor: None,
         editable_turn: None,
+        observation: None,
     }
 }
 
