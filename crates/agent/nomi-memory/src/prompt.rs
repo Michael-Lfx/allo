@@ -99,7 +99,8 @@ pub fn build_memory_prompt_minimal(memory_dir: &Path) -> String {
 /// citation block whenever its answer drew on a stored memory. The backend
 /// parses the filenames out of this block at turn end and bumps each cited
 /// file's `usage_count` / `last_used` (see `distill::parse_citation_filenames`
-/// and `store::bump_memory_usage`).
+/// and `store::bump_memory_usage`). The block is protocol, not answer text:
+/// `citation::strip_citation_blocks` removes it before the user ever sees it.
 ///
 /// Kept short (a few dozen tokens) and only injected when a memory directory
 /// exists. The block is appended *after* the visible answer, one entry per

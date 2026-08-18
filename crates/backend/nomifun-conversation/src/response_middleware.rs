@@ -30,6 +30,37 @@ pub fn strip_think_tags(text: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Memory-citation protocol cleaning
+// ---------------------------------------------------------------------------
+
+const MEM_CITATION_OPEN: &str = "<nomi-mem-citation>";
+const MEM_CITATION_CLOSE: &str = "</nomi-mem-citation>";
+
+/// Remove `<nomi-mem-citation>…</nomi-mem-citation>` blocks from finished
+/// assistant text. An unclosed opening tag drops the remainder (the model
+/// started the protocol and the stream ended). A mere prefix of the tag is
+/// kept as literal text.
+pub fn strip_mem_citations(text: &str) -> String {
+    if !text.contains(MEM_CITATION_OPEN) {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let Some(start) = rest.find(MEM_CITATION_OPEN) else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..start]);
+        let after = &rest[start + MEM_CITATION_OPEN.len()..];
+        match after.find(MEM_CITATION_CLOSE) {
+            Some(end) => rest = &after[end + MEM_CITATION_CLOSE.len()..],
+            None => return out,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Cron command detection
 // ---------------------------------------------------------------------------
 
@@ -302,8 +333,10 @@ impl MessageMiddleware {
         conversation_id: &str,
         cancellation: Option<&CancellationToken>,
     ) -> MiddlewareResult {
-        // Step 1: Strip think tags
-        let cleaned = strip_think_tags(message);
+        // Step 1: Strip think tags and memory-citation protocol blocks.
+        // Citations are an internal reflow contract (`<nomi-mem-citation>`),
+        // not answer text — same role as think tags.
+        let cleaned = strip_mem_citations(&strip_think_tags(message));
 
         // Step 2: Detect cron commands
         if !has_cron_commands(&cleaned) {
@@ -491,6 +524,23 @@ mod tests {
     fn strip_think_tags_with_code_blocks() {
         let input = "```rust\nfn main() {}\n```\n<think>private</think>\nResult";
         assert_eq!(strip_think_tags(input), "```rust\nfn main() {}\n```\n\nResult");
+    }
+
+    #[test]
+    fn strip_mem_citations_removes_trailing_protocol_block() {
+        let input = "Here is the answer.\n\n<nomi-mem-citation>\nuser_role.md|note=[x]\n</nomi-mem-citation>";
+        assert_eq!(strip_mem_citations(input), "Here is the answer.\n\n");
+    }
+
+    #[test]
+    fn strip_mem_citations_is_noop_without_tags() {
+        assert_eq!(strip_mem_citations("plain answer"), "plain answer");
+    }
+
+    #[test]
+    fn strip_mem_citations_drops_unclosed_block() {
+        let input = "answer\n<nomi-mem-citation>\nuser_role.md|note=[x]";
+        assert_eq!(strip_mem_citations(input), "answer\n");
     }
 
     // -----------------------------------------------------------------------
@@ -765,6 +815,22 @@ mod tests {
             .process("<think>reasoning</think>The answer is 42.", "user1", "conv1")
             .await;
         assert_eq!(result.message, "The answer is 42.");
+        assert!(result.display_message.is_none());
+        assert!(result.system_responses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn middleware_strips_mem_citation_blocks() {
+        let mw = MessageMiddleware::new(None);
+        let result = mw
+            .process(
+                "The answer is 42.\n\n<nomi-mem-citation>\nuser_role.md|note=[x]\n</nomi-mem-citation>",
+                "user1",
+                "conv1",
+            )
+            .await;
+        assert_eq!(result.message.trim(), "The answer is 42.");
+        assert!(!result.message.contains("nomi-mem-citation"));
         assert!(result.display_message.is_none());
         assert!(result.system_responses.is_empty());
     }

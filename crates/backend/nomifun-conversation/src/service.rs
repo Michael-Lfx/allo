@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::panic::AssertUnwindSafe;
 
 use crate::response_middleware::ICronService;
-use crate::response_middleware::strip_think_tags;
+use crate::response_middleware::{strip_mem_citations, strip_think_tags};
 use crate::runtime_state::{
     AgentTurnCancellation, AgentTurnHandle, ConversationDeletionGuard,
     ConversationPreparationGuard, ConversationRuntimeStateService, InMemoryCancelAuthority,
@@ -151,7 +151,7 @@ fn is_auto_title_eligible(current_name: &str, first_user_content: &str) -> bool 
 }
 
 fn provisional_title(content: &str) -> Option<String> {
-    let cleaned = strip_think_tags(content).replace('\r', "");
+    let cleaned = strip_mem_citations(&strip_think_tags(content)).replace('\r', "");
     cleaned.split('\n').map(str::trim).find_map(|line| {
         if line.is_empty() || line.starts_with("```") {
             return None;
@@ -184,7 +184,7 @@ fn title_attempt_id(conversation_id: &str, user_message_id: &str) -> String {
 }
 
 fn title_comparison_key(value: &str) -> String {
-    let cleaned = strip_think_tags(value);
+    let cleaned = strip_mem_citations(&strip_think_tags(value));
     let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     clamp_title(&collapsed).to_lowercase()
 }

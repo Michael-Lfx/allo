@@ -34,6 +34,10 @@ pub struct BackendOutputSink {
     /// Accumulates this turn's assistant text so the `<nomi-mem-citation>`
     /// block can be parsed at stream end. Reset on each stream start.
     turn_text: Mutex<String>,
+    /// Holds citation-tag prefixes / in-block body so the protocol never
+    /// reaches the websocket or the persisted transcript. Independent of
+    /// `distill_dir`: a copied tag from history must still be hidden.
+    citation_filter: Mutex<nomi_memory::citation::CitationBlockFilter>,
     /// Schema-valid, committed tool calls announced to the frontend that have
     /// not yet produced a result. Unexpected termination and cancellation drain
     /// this map so no Running lifecycle can leak into a later turn.
@@ -592,6 +596,7 @@ impl BackendOutputSink {
             artifact_store: None,
             artifact_workspace: None,
             turn_text: Mutex::new(String::new()),
+            citation_filter: Mutex::new(nomi_memory::citation::CitationBlockFilter::new()),
             active_tool_calls: Mutex::new(HashMap::new()),
             tool_result_contexts: Mutex::new(HashMap::new()),
             artifact_delivery_turn: Mutex::new(ArtifactDeliveryTurn::default()),
@@ -1338,8 +1343,15 @@ impl OutputSink for BackendOutputSink {
         {
             buf.push_str(text);
         }
+        let visible = match self.citation_filter.lock() {
+            Ok(mut filter) => filter.push(text),
+            Err(poisoned) => poisoned.into_inner().push(text),
+        };
+        if visible.is_empty() {
+            return;
+        }
         let _ = self.event_tx.send(AgentStreamEvent::Text(TextEventData {
-            content: text.to_owned(),
+            content: visible,
         }));
     }
 
@@ -1799,6 +1811,10 @@ impl OutputSink for BackendOutputSink {
         if let Ok(mut buf) = self.turn_text.lock() {
             buf.clear();
         }
+        match self.citation_filter.lock() {
+            Ok(mut filter) => filter.reset(),
+            Err(poisoned) => poisoned.into_inner().reset(),
+        }
         let _ = self
             .event_tx
             .send(AgentStreamEvent::Start(StartEventData { session_id: None }));
@@ -1824,6 +1840,15 @@ impl OutputSink for BackendOutputSink {
             if !full.is_empty() {
                 self.reflow_citations(&full);
             }
+        }
+        let leftover = match self.citation_filter.lock() {
+            Ok(mut filter) => filter.finish(),
+            Err(poisoned) => poisoned.into_inner().finish(),
+        };
+        if !leftover.is_empty() {
+            let _ = self.event_tx.send(AgentStreamEvent::Text(TextEventData {
+                content: leftover,
+            }));
         }
         let _ = self
             .event_tx
@@ -3704,6 +3729,43 @@ mod tests {
     }
 
     // -- citation reflow ------------------------------------------------------
+
+    fn drain_forwarded_text(rx: &mut broadcast::Receiver<AgentStreamEvent>) -> String {
+        let mut out = String::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentStreamEvent::Text(data) = event {
+                out.push_str(&data.content);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn citation_block_is_not_forwarded_on_the_text_stream() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let sink = BackendOutputSink::new(tx);
+        sink.emit_stream_start("m1");
+        sink.emit_text_delta("Here is the answer.\n\n", "m1");
+        sink.emit_text_delta(
+            "<nomi-mem-citation>\nuser_role.md|note=[x]\n</nomi-mem-citation>",
+            "m1",
+        );
+        sink.emit_stream_end("m1", 1, 10, 5, 0, 0);
+        assert_eq!(drain_forwarded_text(&mut rx), "Here is the answer.\n\n");
+    }
+
+    #[test]
+    fn citation_block_split_across_deltas_is_held_back() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let sink = BackendOutputSink::new(tx);
+        sink.emit_stream_start("m1");
+        sink.emit_text_delta("answer\n", "m1");
+        sink.emit_text_delta("<nomi-mem-", "m1");
+        sink.emit_text_delta("citation>\nfile.md\n", "m1");
+        sink.emit_text_delta("</nomi-mem-citation>", "m1");
+        sink.emit_stream_end("m1", 1, 10, 5, 0, 0);
+        assert_eq!(drain_forwarded_text(&mut rx), "answer\n");
+    }
 
     #[test]
     fn citation_reflow_bumps_cited_file_on_stream_end() {

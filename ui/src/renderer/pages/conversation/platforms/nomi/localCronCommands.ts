@@ -1,4 +1,5 @@
 import type { ConversationId } from '@/common/types/ids';
+import { stripMemCitations } from '@renderer/utils/chat/memCitationFilter';
 
 
 type LocalCronProcessingResult = {
@@ -38,7 +39,7 @@ export async function processLocalCronResponse(
     return { systemResponses: [] };
   }
 
-  const thinkStripped = stripThinkTags(rawContent);
+  const thinkStripped = stripMemCitations(stripThinkTags(rawContent)).trim();
   const hasCronTags =
     CRON_CREATE_RE.test(thinkStripped) ||
     CRON_UPDATE_RE.test(thinkStripped) ||

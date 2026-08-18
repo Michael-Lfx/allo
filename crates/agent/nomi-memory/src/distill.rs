@@ -138,8 +138,8 @@ pub fn apply_distilled(dir: &Path, out: &DistillOutput) -> Result<usize> {
 ///
 /// A missing block, an empty block, or stray text yields an empty vec.
 pub fn parse_citation_filenames(text: &str) -> Vec<String> {
-    const OPEN: &str = "<nomi-mem-citation>";
-    const CLOSE: &str = "</nomi-mem-citation>";
+    const OPEN: &str = crate::citation::CITATION_OPEN;
+    const CLOSE: &str = crate::citation::CITATION_CLOSE;
 
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();

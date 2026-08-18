@@ -25,6 +25,7 @@ import MarkdownView from '@renderer/components/Markdown';
 import CodeBlock from '@renderer/components/beautifulUi/codeBlock/CodeBlock';
 import StreamingText from '@renderer/components/beautifulUi/streamingText/StreamingText';
 import { stripThinkTags, hasThinkTags } from '@renderer/utils/chat/thinkTagFilter';
+import { hasMemCitations, stripMemCitations } from '@renderer/utils/chat/memCitationFilter';
 import { stripSkillSuggest, hasSkillSuggest } from '@renderer/utils/chat/skillSuggestParser';
 import { MESSAGE_BODY_CLASS_NAME, MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 import { parseMessageFileMarker } from './messageFileMarker';
@@ -341,6 +342,9 @@ const MessageText: React.FC<{
     let content = toDisplayText(message.content.content);
     if (hasThinkTags(content)) {
       content = stripThinkTags(content);
+    }
+    if (hasMemCitations(content)) {
+      content = stripMemCitations(content);
     }
     // Strip any inline [SKILL_SUGGEST] blocks (now handled via separate skill_suggest message type)
     if (hasSkillSuggest(content)) {
@@ -704,6 +708,7 @@ const MessageText: React.FC<{
                       fontSize={MESSAGE_BODY_FONT_SIZE}
                       lineHeight={MESSAGE_BODY_LINE_HEIGHT}
                       allowUnverifiedImages={isUserMessage}
+                      isStreaming
                     >
                       {streamingParts.stablePrefix}
                     </MarkdownView>

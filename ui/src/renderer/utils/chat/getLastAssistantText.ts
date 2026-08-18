@@ -1,5 +1,6 @@
 import type { IMessageText, TMessage } from '@/common/chat/chatLib';
 import { stripThinkTags } from '@/renderer/utils/chat/thinkTagFilter';
+import { stripMemCitations } from '@/renderer/utils/chat/memCitationFilter';
 
 const isCopyableAssistantText = (message: TMessage): message is IMessageText => {
   return message.type === 'text' && message.position === 'left' && !message.hidden;
@@ -10,7 +11,7 @@ const stripSkillSuggestPreserveWhitespace = (content: string): string => {
 };
 
 const sanitizeAssistantText = (content: string): string => {
-  return stripSkillSuggestPreserveWhitespace(stripThinkTags(content));
+  return stripSkillSuggestPreserveWhitespace(stripMemCitations(stripThinkTags(content)));
 };
 
 export const getLastAssistantText = (messageList: TMessage[], loading: boolean): string | null => {

@@ -10,4 +10,5 @@ pub mod prompt;
 pub mod store;
 pub mod types;
 
+pub mod citation;
 pub mod distill;

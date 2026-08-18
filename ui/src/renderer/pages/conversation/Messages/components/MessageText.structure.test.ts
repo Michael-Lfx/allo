@@ -61,6 +61,14 @@ describe('MessageText process action chrome', () => {
     expect(source.includes("'message-bubble-enter': shouldPlayEnterAnimation && !isStreaming")).toBe(true);
   });
 
+  test('keeps completed markdown fences expanded while the reply is still streaming', () => {
+    const prefixView = source.slice(
+      source.indexOf('streamingParts.stablePrefix'),
+      source.indexOf('streamingParts.tailKind')
+    );
+    expect(prefixView.includes('isStreaming')).toBe(true);
+  });
+
   test('uses one body typography contract for plain text and markdown text', () => {
     expect(typographySource.includes("export const MESSAGE_BODY_FONT_SIZE = 'var(--conversation-message-font-size)';")).toBe(
       true
@@ -89,6 +97,12 @@ describe('MessageText process action chrome', () => {
     expect(source.includes('messageId={message.message_id ?? message.msg_id}')).toBe(true);
     expect(source.includes('disabled={retrying}')).toBe(true);
     expect(source.includes("event.stopPropagation();")).toBe(true);
+  });
+
+  test('strips memory citation protocol blocks before rendering', () => {
+    expect(source.includes("from '@renderer/utils/chat/memCitationFilter'")).toBe(true);
+    expect(source.includes('hasMemCitations(content)')).toBe(true);
+    expect(source.includes('content = stripMemCitations(content)')).toBe(true);
   });
 
   test('routes file marker parsing through the message-side trust boundary', () => {

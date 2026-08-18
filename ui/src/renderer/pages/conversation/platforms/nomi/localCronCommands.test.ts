@@ -19,4 +19,14 @@ describe('processLocalCronResponse', () => {
     expect(result.displayContent).toBe('Final answer');
     expect(result.systemResponses).toEqual([]);
   });
+
+  test('strips memory citation protocol blocks from display content', async () => {
+    const result = await processLocalCronResponse(
+      parseConversationId('0190f5fe-7c00-7a00-8000-000000000005'),
+      'Final answer\n\n<nomi-mem-citation>\nuser_role.md|note=[x]\n</nomi-mem-citation>'
+    );
+
+    expect(result.displayContent).toBe('Final answer');
+    expect(result.systemResponses).toEqual([]);
+  });
 });
