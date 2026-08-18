@@ -88,6 +88,33 @@ impl Respond for OpenAiBedrockSchemaResponder {
     }
 }
 
+const OPENAI_FUNCTION_SCHEMA_INCOMPATIBLE_BODY: &str = r#"{"error":{"message":"Invalid schema for function 'Read': In context=('oneOf',), schema must have type 'object' at the top level.","type":"invalid_request_error"}}"#;
+
+#[derive(Clone)]
+struct OpenAiFunctionSchemaResponder;
+
+impl Respond for OpenAiFunctionSchemaResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        let schema = &body["tools"][0]["function"]["parameters"];
+        if schema.get("oneOf").is_some() {
+            return ResponseTemplate::new(500)
+                .set_body_string(OPENAI_FUNCTION_SCHEMA_INCOMPATIBLE_BODY);
+        }
+        let chunk = json!({
+            "choices": [{ "delta": { "content": "Recovered" }, "finish_reason": null }]
+        })
+        .to_string();
+        let finish = json!({
+            "choices": [{ "delta": {}, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        })
+        .to_string();
+        ResponseTemplate::new(200)
+            .set_body_raw(build_sse_body(&[&chunk, &finish]), "text/event-stream")
+    }
+}
+
 #[derive(Clone)]
 struct OpenAiFailedSanitizedResendResponder {
     attempt: Arc<AtomicUsize>,
@@ -139,6 +166,43 @@ fn request_with_composed_tool_schema() -> LlmRequest {
         deferred: false,
     });
     request
+}
+
+#[tokio::test]
+async fn openai_gateway_recovers_and_remembers_openai_function_schema_requirement() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(OpenAiFunctionSchemaResponder)
+        .expect(3)
+        .mount(&server)
+        .await;
+    let provider = OpenAIProvider::new(
+        "test-key",
+        &server.uri(),
+        ProviderCompat::openai_defaults(),
+    );
+    let request = request_with_composed_tool_schema();
+    for _ in 0..2 {
+        let events = collect_events(provider.stream(&request).await.unwrap()).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "Recovered"))
+        );
+    }
+    let received = server.received_requests().await.unwrap();
+    let has_root_one_of: Vec<bool> = received
+        .iter()
+        .map(|request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            body["tools"][0]["function"]["parameters"]
+                .get("oneOf")
+                .is_some()
+        })
+        .collect();
+    assert_eq!(has_root_one_of, vec![true, false, false]);
+    server.verify().await;
 }
 
 #[tokio::test]

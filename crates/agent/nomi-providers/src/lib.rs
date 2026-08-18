@@ -68,12 +68,20 @@ impl ProviderError {
             return false;
         };
         let lower = message.to_ascii_lowercase();
-        lower.contains("tool_schema_invalid")
-            || (lower.contains("input_schema")
-                && lower.contains("top level")
-                && ["oneof", "allof", "anyof"]
-                    .iter()
-                    .any(|keyword| lower.contains(keyword)))
+        if lower.contains("tool_schema_invalid") {
+            return true;
+        }
+
+        let has_schema_error = lower.contains("input_schema")
+            || lower.contains("invalid schema for function")
+            || lower.contains("schema must have type 'object'")
+            || lower.contains("schema must have type \"object\"");
+        let has_top_level_restriction =
+            lower.contains("top level") || lower.contains("top-level");
+        let has_composition_keyword = ["oneof", "allof", "anyof"]
+            .iter()
+            .any(|keyword| lower.contains(keyword));
+        has_schema_error && has_top_level_restriction && has_composition_keyword
     }
 
     /// A number of otherwise OpenAI-compatible gateways implement streaming
@@ -487,6 +495,20 @@ mod retryable_tests {
     }
 
     #[test]
+    fn tool_schema_classifier_accepts_openai_function_schema_wording() {
+        let screenshot = ProviderError::Api {
+            status: 500,
+            message: r#"{"error":{"message":"Invalid schema for function 'Read': In context=('oneOf',), schema must have type 'object' at the top level.","type":"invalid_request_error"}}"#.into(),
+        };
+        let object_type = ProviderError::Api {
+            status: 500,
+            message: "Invalid schema for function 'Read': In context=('oneOf',), schema must have type 'object' at the top level.".into(),
+        };
+        assert!(screenshot.is_tool_schema_incompatible());
+        assert!(object_type.is_tool_schema_incompatible());
+    }
+
+    #[test]
     fn tool_schema_classifier_rejects_unrelated_failures() {
         let errors = [
             ProviderError::Api {
@@ -496,6 +518,14 @@ mod retryable_tests {
             ProviderError::Api {
                 status: 400,
                 message: "input_schema is malformed".into(),
+            },
+            ProviderError::Api {
+                status: 500,
+                message: "Invalid schema for function 'Read': None is not of type 'array'".into(),
+            },
+            ProviderError::Api {
+                status: 500,
+                message: "schema must have type 'object'".into(),
             },
             ProviderError::Connection("input_schema connection reset".into()),
         ];
