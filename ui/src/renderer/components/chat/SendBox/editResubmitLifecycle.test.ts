@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+  clearEditResubmitComposer,
   commitComposerDraftChange,
   commitEditResubmitTerminal,
   createComposerDraftRevisionState,
@@ -94,5 +95,32 @@ describe('commitEditResubmitTerminal', () => {
 
     expect(revisionObservedBySetter).toBeGreaterThan(submittedRevision);
     expect(composerText).toBe('new user draft');
+  });
+});
+
+describe('clearEditResubmitComposer', () => {
+  test('clears the token document before transient references', () => {
+    const calls: string[] = [];
+
+    clearEditResubmitComposer({
+      tokenInput: { clear: () => calls.push('token-input') },
+      commitEmptyDraft: () => calls.push('controlled-draft'),
+      clearDomSnippets: () => calls.push('dom-snippets'),
+      clearReplyQuote: () => calls.push('reply-quote'),
+    });
+
+    expect(calls).toEqual(['token-input', 'dom-snippets', 'reply-quote']);
+  });
+
+  test('uses the controlled draft fallback when the token input is absent', () => {
+    const calls: string[] = [];
+
+    clearEditResubmitComposer({
+      commitEmptyDraft: () => calls.push('controlled-draft'),
+      clearDomSnippets: () => calls.push('dom-snippets'),
+      clearReplyQuote: () => calls.push('reply-quote'),
+    });
+
+    expect(calls).toEqual(['controlled-draft', 'dom-snippets', 'reply-quote']);
   });
 });

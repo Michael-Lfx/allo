@@ -16,7 +16,7 @@ const context: ConversationErrorReportContext = {
     incident_id: '019c0000-0000-7000-8000-000000000001',
     code: 'USER_LLM_PROVIDER_GATEWAY_ERROR',
     ownership: 'user_llm_provider',
-    detail: 'Provider response containing a secret',
+    detail: 'Authorization: Bearer secret\nProvider response was rejected',
     workspacePath: 'C:\\private\\workspace',
     retryable: true,
     feedback_recommended: false,
@@ -29,7 +29,7 @@ const context: ConversationErrorReportContext = {
 };
 
 describe('conversation error support report', () => {
-  test('builds stable correlation metadata without raw detail or workspace paths', () => {
+  test('builds stable correlation metadata with safe detail and without workspace paths', () => {
     const metadata = buildConversationErrorReportMetadata(context);
 
     expect(metadata).toEqual({
@@ -43,6 +43,7 @@ describe('conversation error support report', () => {
         ownership: context.error.ownership,
         retryable: true,
         feedbackRecommended: false,
+        detail: 'Authorization: Bearer [REDACTED]\nProvider response was rejected',
         resolution: { kind: 'retry' },
       },
       correlation: {
@@ -52,7 +53,7 @@ describe('conversation error support report', () => {
         occurredAt: context.occurredAt,
       },
     });
-    expect(JSON.stringify(metadata)).not.toContain('Provider response containing a secret');
+    expect(JSON.stringify(metadata)).not.toContain('Bearer secret');
     expect(JSON.stringify(metadata)).not.toContain('private');
   });
 });

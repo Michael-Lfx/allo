@@ -63,6 +63,7 @@ import { getConversationInputHistory } from '@/renderer/utils/chat/messageHistor
 import { uuid, uuidv7 } from '@/common/utils';
 import { resolveEditResubmitOutcome } from '@/renderer/components/chat/SendBox/editResubmitOutcome';
 import {
+  clearEditResubmitComposer,
   commitComposerDraftChange,
   createComposerDraftRevisionState,
   recordComposerDraftChange,
@@ -1726,9 +1727,10 @@ const SendBox: React.FC<{
       const targetCreatedAt = editingCreatedAtRef.current;
       const cid = conversationIdRef.current;
       // Stamp this resubmit with an operation token and snapshot the input
-      // revision. Edit state + input are cleared ONLY after backend acceptance
-      // (the .then below); a stale operation or a user who typed mid-flight must
-      // not have its input/edit/loading state touched.
+      // revision. The operation record keeps the pre-clear revision for
+      // recovery/audit; the local comparison baseline is captured immediately
+      // after the intentional composer clear below so only subsequent user
+      // input counts as a mid-flight edit.
       const operationId = uuidv7();
       if (
         cid &&
@@ -1749,6 +1751,17 @@ const SendBox: React.FC<{
       // replaces Send after this synchronous admission. Keep that click from
       // cancelling the preparation lease of the operation it just created.
       stopHandoffGateRef.current.armAfterEditSubmit();
+      // Clear through the same controlled draft path used by normal sends.
+      // This publishes the empty draft synchronously, removes skill chips and
+      // transient references, and gives the user immediate visual feedback
+      // while the destructive request is in flight.
+      clearEditResubmitComposer({
+        tokenInput: tokenInputRef.current ?? undefined,
+        commitEmptyDraft: () =>
+          commitComposerDraftChange(inputRevisionStateRef.current, '', setInputRef.current),
+        clearDomSnippets,
+        clearReplyQuote: () => setReplyQuote(null),
+      });
       const submittedInputRevision = inputRevisionStateRef.current.current;
       const isCurrentOperation = () => activeEditOperationRef.current === operationId;
       const ownerId = editingOwnerId();

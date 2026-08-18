@@ -34,6 +34,33 @@ export const commitComposerDraftChange = (
   commit(nextInput);
 };
 
+export type EditResubmitComposerClearActions = {
+  tokenInput?: { clear: () => unknown };
+  commitEmptyDraft: () => void;
+  clearDomSnippets: () => void;
+  clearReplyQuote: () => void;
+};
+
+/**
+ * Clear every transient composer surface after edit admission. The token input
+ * owns the canonical draft when mounted; the controlled fallback keeps the
+ * revision ledger correct for hosts that render a plain input instead.
+ */
+export const clearEditResubmitComposer = ({
+  tokenInput,
+  commitEmptyDraft,
+  clearDomSnippets,
+  clearReplyQuote,
+}: EditResubmitComposerClearActions): void => {
+  if (tokenInput) {
+    tokenInput.clear();
+  } else {
+    commitEmptyDraft();
+  }
+  clearDomSnippets();
+  clearReplyQuote();
+};
+
 interface CommitEditResubmitTerminalOptions {
   event: Extract<EditResubmitLifecycleEvent, { kind: 'terminal' }>;
   publish?: (event: EditResubmitLifecycleEvent) => void;
