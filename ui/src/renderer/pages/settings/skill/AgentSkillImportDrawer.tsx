@@ -192,7 +192,7 @@ export const AgentSkillImportContent: React.FC<AgentSkillImportContentProps> = (
         </div>
         <div className='flex items-center justify-between gap-10px'>
           <div className='text-14px font-600 text-t-primary'>{t('settings.agentSkillImport.sources', { defaultValue: 'Detected sources' })}</div>
-          <Button size='small' type='text' onClick={fetchSources} loading={loading} icon={<Refresh size={14} fill='currentColor' />} className='!rounded-10px' data-testid='btn-refresh-agent-skills'>
+          <Button size='small' type='text' onClick={fetchSources} loading={loading} icon={<Refresh size={14} fill='currentColor' />} className='flowy-icon-text-btn !rounded-10px' data-testid='btn-refresh-agent-skills'>
             {t('common.refresh', { defaultValue: 'Refresh' })}
           </Button>
         </div>
@@ -250,7 +250,7 @@ const AgentSkillImportFooter: React.FC<{
         <Button onClick={onClose} className='!h-36px !rounded-8px'>
           {closeLabel ?? t('common.cancel', { defaultValue: 'Cancel' })}
         </Button>
-        <Button type='primary' loading={importing} disabled={selectedRows.length === 0} onClick={handleImport} className='!h-36px !rounded-8px !whitespace-nowrap' icon={<ImportAndExport size={14} fill='currentColor' />} data-testid='btn-confirm-agent-skill-import'>
+        <Button type='primary' loading={importing} disabled={selectedRows.length === 0} onClick={handleImport} className='flowy-icon-text-btn !h-36px !rounded-8px !whitespace-nowrap' icon={<ImportAndExport size={14} fill='currentColor' />} data-testid='btn-confirm-agent-skill-import'>
           {mode === 'preset' ? t('settings.agentSkillImport.addToPreset', { defaultValue: 'Add to preset' }) : t('settings.agentSkillImport.importSelected', { defaultValue: 'Import selected' })}
         </Button>
       </div>

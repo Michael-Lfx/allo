@@ -432,6 +432,7 @@ const RemoteAgentFormModal: React.FC<{
           <Button
             long
             type='outline'
+            className='flowy-icon-text-btn'
             icon={<Speed theme='outline' size='14' />}
             loading={testing}
             onClick={handleTestConnection}
@@ -510,7 +511,7 @@ const RemoteAgentManagement: React.FC = () => {
           size='small'
           icon={<Plus size='16' />}
           onClick={handleAdd}
-          className='rd-100px border-1px border-solid border-[var(--color-border-2)] h-34px px-14px text-t-secondary hover:text-t-primary'
+          className='flowy-icon-text-btn rd-100px border-1px border-solid border-[var(--color-border-2)] h-34px px-14px text-t-secondary hover:text-t-primary'
         >
           {t('settings.remoteAgent.add')}
         </Button>
@@ -527,7 +528,7 @@ const RemoteAgentManagement: React.FC = () => {
             size='small'
             icon={<Plus size='16' />}
             onClick={handleAdd}
-            className='rd-100px border-1px border-solid border-[var(--color-border-2)] h-34px px-14px text-t-secondary hover:text-t-primary'
+            className='flowy-icon-text-btn rd-100px border-1px border-solid border-[var(--color-border-2)] h-34px px-14px text-t-secondary hover:text-t-primary'
           >
             {t('settings.remoteAgent.emptyAction')}
           </Button>
@@ -584,7 +585,7 @@ const RemoteAgentManagement: React.FC = () => {
                   size='small'
                   type='secondary'
                   icon={<Edit theme='outline' size='14' />}
-                  className={remoteActionButtonClassName}
+                  className={`flowy-icon-text-btn ${remoteActionButtonClassName}`}
                   disabled={agent.protocol !== 'openclaw'}
                   onClick={() => handleEdit(agent)}
                 >
@@ -595,7 +596,7 @@ const RemoteAgentManagement: React.FC = () => {
                   type='secondary'
                   status='danger'
                   icon={<ReduceOne theme='outline' size='14' />}
-                  className={remoteActionButtonClassName}
+                  className={`flowy-icon-text-btn ${remoteActionButtonClassName}`}
                   onClick={() => void handleDelete(agent)}
                 >
                   {t('common.delete', { defaultValue: 'Delete' })}

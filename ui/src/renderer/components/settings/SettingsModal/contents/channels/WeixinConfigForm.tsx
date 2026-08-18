@@ -526,6 +526,7 @@ const WeixinConfigForm: React.FC<WeixinConfigFormProps> = ({
               <Button
                 size='mini'
                 type='text'
+                className='flowy-icon-text-btn'
                 icon={<Refresh size={14} />}
                 loading={pairingLoading}
                 onClick={loadPendingPairings}
@@ -591,6 +592,7 @@ const WeixinConfigForm: React.FC<WeixinConfigFormProps> = ({
                     <Button
                       type='primary'
                       size='small'
+                      className='flowy-icon-text-btn'
                       icon={<CheckOne size={14} />}
                       onClick={() => handleApprovePairing(pairing.code)}
                     >
@@ -600,6 +602,7 @@ const WeixinConfigForm: React.FC<WeixinConfigFormProps> = ({
                       type='secondary'
                       size='small'
                       status='danger'
+                      className='flowy-icon-text-btn'
                       icon={<CloseOne size={14} />}
                       onClick={() => handleRejectPairing(pairing.code)}
                     >
@@ -622,6 +625,7 @@ const WeixinConfigForm: React.FC<WeixinConfigFormProps> = ({
               <Button
                 size='mini'
                 type='text'
+                className='flowy-icon-text-btn'
                 icon={<Refresh size={14} />}
                 loading={usersLoading}
                 onClick={loadAuthorizedUsers}

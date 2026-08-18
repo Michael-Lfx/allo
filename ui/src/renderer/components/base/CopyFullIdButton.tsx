@@ -2,6 +2,7 @@
 
 import { Button, Message } from '@arco-design/web-react';
 import { Copy } from '@icon-park/react';
+import classNames from 'classnames';
 import React, { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -37,7 +38,7 @@ const CopyFullIdButton: React.FC<CopyFullIdButtonProps> = ({ id, size = 'mini', 
     <Button
       size={size}
       type='secondary'
-      className={className}
+      className={classNames('flowy-icon-text-btn', className)}
       icon={<Copy theme='outline' size='12' fill='currentColor' />}
       onClick={handleClick}
     >

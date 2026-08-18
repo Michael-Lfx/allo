@@ -66,7 +66,7 @@ const MarketDetailDrawer: React.FC<MarketDetailDrawerProps> = ({
             <Button className='!h-36px !rounded-8px' onClick={() => onCopyInstallCommand(item)}>
               {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
             </Button>
-            <Button className='!h-36px !rounded-8px' onClick={() => onOpenSource(item)} icon={<LinkOne size={14} fill='currentColor' />}>
+            <Button className='flowy-icon-text-btn !h-36px !rounded-8px' onClick={() => onOpenSource(item)} icon={<LinkOne size={14} fill='currentColor' />}>
               {t('settings.market.openSource', { defaultValue: '打开来源' })}
             </Button>
             <Button

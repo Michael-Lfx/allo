@@ -884,7 +884,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                       type='outline'
                       icon={<Plus size={14} />}
                       onClick={() => navigate('/skills')}
-                      className='!h-32px !rounded-8px !whitespace-nowrap'
+                      className='flowy-icon-text-btn !h-32px !rounded-8px !whitespace-nowrap'
                       data-testid='btn-add-skills'
                     >
                       {t('settings.addSkills', { defaultValue: 'Add Skills' })}
@@ -894,7 +894,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                       type='outline'
                       icon={<Plus size={14} />}
                       onClick={() => setAgentImportVisible(true)}
-                      className='!h-32px !rounded-8px !whitespace-nowrap'
+                      className='flowy-icon-text-btn !h-32px !rounded-8px !whitespace-nowrap'
                       data-testid='btn-import-agent-skills-to-preset'
                     >
                       {t('settings.agentSkillImport.shortAction', { defaultValue: 'Import from Agent' })}

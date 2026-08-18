@@ -251,9 +251,10 @@ const CompanionAccessTokenPanel: React.FC<{
               long
               loading={minting}
               disabled={!selectedId || revoking}
+              className='flowy-icon-text-btn'
               onClick={() => void handleMint()}
             >
-              <span className='inline-flex items-center gap-4px'>
+              <span className='flowy-button-inline-content inline-flex items-center gap-4px'>
                 <Key theme='outline' size='14' fill='currentColor' />
                 {configured
                   ? t('settings.webui.companionToken.regenerate')
@@ -274,8 +275,9 @@ const CompanionAccessTokenPanel: React.FC<{
                   size='small'
                   loading={revoking}
                   disabled={minting}
+                  className='flowy-icon-text-btn'
                 >
-                  <span className='inline-flex items-center gap-4px'>
+                  <span className='flowy-button-inline-content inline-flex items-center gap-4px'>
                     <Delete theme='outline' size='14' fill='currentColor' />
                     {t('settings.webui.companionToken.revoke')}
                   </span>

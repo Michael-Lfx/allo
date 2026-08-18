@@ -461,7 +461,7 @@ const DirectorySelectionModal: React.FC<DirectorySelectionModalProps> = ({
           {!isFileMode && (
             <Button
               type='text'
-              className={styles.newFolderButton}
+              className={`${styles.newFolderButton} flowy-icon-text-btn`}
               icon={<IconFolderAdd />}
               disabled={!canCreateFolder || creatingFolder}
               title={canCreateFolder ? t('fileSelection.newFolder') : t('fileSelection.selectParentForNewFolder')}

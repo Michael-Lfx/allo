@@ -624,7 +624,7 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
       className={capabilityHeaderButtonClass(binding.enabled, 'shrink-0')}
       style={capabilityHeaderButtonStyle(dotColor)}
     >
-      <span className='inline-flex items-center gap-6px leading-none'>
+      <span className='flowy-button-inline-content inline-flex items-center gap-6px leading-none'>
         {/* Icon tinted by enabled-state (primary when mounted, gray off) — the
             status used to live on a separate dot beside a primary-blue button. */}
         <BookOne theme='outline' size='14' fill={dotColor} className='block' style={{ lineHeight: 0 }} />

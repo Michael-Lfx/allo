@@ -15,7 +15,7 @@ interface AgentHubModalProps {
 export const AgentHubModal: React.FC<AgentHubModalProps> = ({ visible, onCancel }) => {
   const { t } = useTranslation();
   const { agents, loading, error, install, retryInstall, update } = useHubAgents();
-  const actionButtonClassName = '!min-w-80px !rounded-9px !px-10px';
+  const actionButtonClassName = 'flowy-icon-text-btn !min-w-80px !rounded-9px !px-10px';
 
   const renderActionBtn = (agent: IHubAgentItem) => {
     switch (agent.status) {

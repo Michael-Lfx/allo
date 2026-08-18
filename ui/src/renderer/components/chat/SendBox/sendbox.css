@@ -62,8 +62,10 @@
   color: var(--text-primary) !important;
 }
 
-.sendbox-composer-plus-btn .arco-btn-icon,
-.sendbox-mobile-plus-btn .arco-btn-icon {
+.sendbox-composer-plus-btn > .i-icon,
+.sendbox-composer-plus-btn > .arco-icon,
+.sendbox-mobile-plus-btn > .i-icon,
+.sendbox-mobile-plus-btn > .arco-icon {
   width: 16px !important;
   height: 16px !important;
   display: inline-flex !important;
@@ -72,8 +74,12 @@
   line-height: 0 !important;
 }
 
-.sendbox-composer-plus-btn .arco-btn-icon svg,
-.sendbox-mobile-plus-btn .arco-btn-icon svg {
+.sendbox-composer-plus-btn > .i-icon svg,
+.sendbox-composer-plus-btn > .arco-icon svg,
+.sendbox-composer-plus-btn > svg,
+.sendbox-mobile-plus-btn > .i-icon svg,
+.sendbox-mobile-plus-btn > .arco-icon svg,
+.sendbox-mobile-plus-btn > svg {
   display: block !important;
   vertical-align: 0 !important;
 }
@@ -368,8 +374,9 @@
   color: var(--color-text-3) !important;
 }
 
-.speech-input-button .arco-btn-icon,
-.speech-input-button .arco-icon {
+.speech-input-button > .i-icon,
+.speech-input-button > .arco-icon,
+.speech-input-button > svg {
   margin: 0 !important;
   width: 18px !important;
   height: 18px !important;
@@ -583,12 +590,9 @@
       opacity 160ms ease !important;
   }
 
-  .sendbox-responsive-config-group .nomi-sendbox-model-btn .arco-btn-content,
-  .sendbox-responsive-config-group .nomi-sendbox-policy-btn .arco-btn-content,
-  .sendbox-responsive-config-group .agent-mode-compact-pill .arco-btn-content {
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
+  .sendbox-responsive-config-group .nomi-sendbox-model-btn .flowy-button-inline-content,
+  .sendbox-responsive-config-group .nomi-sendbox-policy-btn .flowy-button-inline-content,
+  .sendbox-responsive-config-group .agent-mode-compact-pill .flowy-button-inline-content {
     width: 100% !important;
     min-width: 0 !important;
     overflow: visible !important;
@@ -669,9 +673,9 @@
   max-width: max-content !important;
 }
 
-.sendbox-tools .agent-mode-compact-pill .arco-btn-content,
-.sendbox-actions .agent-mode-compact-pill .arco-btn-content,
-.composer-toolbar-tools .agent-mode-compact-pill .arco-btn-content {
+.sendbox-tools .agent-mode-compact-pill .flowy-button-inline-content,
+.sendbox-actions .agent-mode-compact-pill .flowy-button-inline-content,
+.composer-toolbar-tools .agent-mode-compact-pill .flowy-button-inline-content {
   min-width: 0 !important;
   overflow: hidden !important;
 }
@@ -686,10 +690,7 @@
   padding: 0 6px !important;
 }
 
-.composer-toolbar-tools .agent-mode-compact-pill .arco-btn-content {
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
+.composer-toolbar-tools .agent-mode-compact-pill .flowy-button-inline-content {
   height: 100% !important;
   line-height: 1 !important;
 }

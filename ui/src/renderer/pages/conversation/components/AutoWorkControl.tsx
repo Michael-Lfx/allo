@@ -301,7 +301,7 @@ const AutoWorkControl: React.FC<AutoWorkControlProps> = ({
       className={capabilityHeaderButtonClass(enabled, 'shrink-0')}
       style={capabilityHeaderButtonStyle(dotColor)}
     >
-      <span className='inline-flex items-center gap-6px leading-none'>
+      <span className='flowy-button-inline-content inline-flex items-center gap-6px leading-none'>
         <Robot
           theme='outline'
           size='14'

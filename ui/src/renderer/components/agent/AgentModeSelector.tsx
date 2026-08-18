@@ -315,7 +315,7 @@ const AgentModeSelector: React.FC<AgentModeSelectorProps> = ({
       <span data-testid='mode-selector' data-current-mode={current_mode} className='inline-flex'>
         <Button
           data-testid={backend ? `agent-mode-selector-${backend}` : 'agent-mode-selector'}
-          className={`sendbox-model-btn agent-mode-compact-pill ${canInteract ? '' : 'agent-mode-compact-pill--readonly'}`}
+          className={`sendbox-model-btn agent-mode-compact-pill flowy-icon-text-btn ${canInteract ? '' : 'agent-mode-compact-pill--readonly'}`}
           shape='round'
           size='small'
           onClick={canInteract ? () => !isLoading && setDropdownVisible((visible) => !visible) : undefined}
@@ -326,7 +326,7 @@ const AgentModeSelector: React.FC<AgentModeSelectorProps> = ({
             cursor: canInteract ? 'pointer' : 'default',
           }}
         >
-          <span className='flex items-center gap-6px min-w-0 leading-none'>
+          <span className='flowy-button-inline-content flex items-center gap-6px min-w-0 leading-none'>
             {compactLeadingIcon && <span className='shrink-0 inline-flex items-center'>{compactLeadingIcon}</span>}
             {showLogoInCompact && <span className='shrink-0 inline-flex items-center'>{renderLogo()}</span>}
             <span className='sendbox-responsive-label inline-flex min-w-0 overflow-hidden'>

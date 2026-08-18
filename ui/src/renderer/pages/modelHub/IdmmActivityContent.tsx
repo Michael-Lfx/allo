@@ -77,6 +77,7 @@ const IdmmActivityContent: React.FC = () => {
         <div className='flex items-center gap-8px shrink-0'>
           <Button
             size='small'
+            className='flowy-icon-text-btn'
             icon={<Refresh theme='outline' size='14' fill='currentColor' />}
             loading={loading}
             onClick={() => void load()}

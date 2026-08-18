@@ -509,6 +509,7 @@ const TerminalSessionContent: React.FC<{ sessionId: TerminalId }> = ({ sessionId
               <Button
                 size='small'
                 loading={fallingBack}
+                className='flowy-icon-text-btn'
                 icon={<Terminal size='14' />}
                 onClick={handleFallbackShell}
                 title={t('terminal.fallbackShellTip')}
@@ -521,6 +522,7 @@ const TerminalSessionContent: React.FC<{ sessionId: TerminalId }> = ({ sessionId
                 type='primary'
                 size='small'
                 loading={relaunching}
+                className='flowy-icon-text-btn'
                 icon={<Refresh size='14' />}
                 onClick={handleRelaunch}
               >

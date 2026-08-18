@@ -120,6 +120,7 @@ const RegisterKnowledgeButton: React.FC<RegisterKnowledgeButtonProps> = ({ cwd, 
         <Button
           size='small'
           type={compact ? 'secondary' : 'primary'}
+          className='flowy-icon-text-btn'
           icon={<LinkCloud size='14' />}
           disabled={cwdEmpty}
           loading={loading}

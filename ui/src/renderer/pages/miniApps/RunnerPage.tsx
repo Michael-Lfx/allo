@@ -268,6 +268,7 @@ const MiniAppRunnerPage: React.FC = () => {
             <Button
               size='mini'
               type='primary'
+              className='flowy-icon-text-btn'
               loading={publishing}
               icon={<Upload theme='outline' size='14' strokeWidth={3} />}
               onClick={() => void publish()}
@@ -279,6 +280,7 @@ const MiniAppRunnerPage: React.FC = () => {
               leaves the page, and the only non-obvious one. */}
           <Button
             size='mini'
+            className='flowy-icon-text-btn'
             loading={iterating}
             icon={<MagicWand theme='outline' size='14' strokeWidth={3} />}
             onClick={startIterating}

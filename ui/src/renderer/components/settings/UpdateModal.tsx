@@ -504,7 +504,7 @@ const UpdateModal: React.FC = () => {
         size='small'
         onClick={openBaiduReleaseMirror}
         icon={<Download size='14' />}
-        className={`!px-16px ${className}`}
+        className={`flowy-icon-text-btn !px-16px ${className}`}
       >
         {t('settings.baiduManualDownload')}
       </Button>
@@ -649,8 +649,8 @@ const UpdateModal: React.FC = () => {
             description={t('update.installWarning')}
             actions={
               <>
-                <Button type='primary' onClick={quitAndInstall} className='!px-20px min-w-128px'>
-                  <span className='inline-flex items-center' style={{ gap: 10 }}>
+                <Button type='primary' onClick={quitAndInstall} className='flowy-icon-text-btn !px-20px min-w-128px'>
+                  <span className='flowy-button-inline-content inline-flex items-center' style={{ gap: 10 }}>
                     <Install theme='outline' size='16' fill='currentColor' strokeWidth={3} />
                     {t('update.installNow')}
                   </span>
@@ -693,7 +693,7 @@ const UpdateModal: React.FC = () => {
             description={<span className='break-all line-clamp-2'>{downloadPath}</span>}
             actions={
               <>
-                <Button size='small' onClick={showInFolder} icon={<FolderOpen size='14' />} className='!px-16px'>
+                <Button size='small' onClick={showInFolder} icon={<FolderOpen size='14' />} className='flowy-icon-text-btn !px-16px'>
                   {t('update.showInFolder')}
                 </Button>
                 <Button type='primary' size='small' onClick={openFile} className='!px-16px'>
@@ -714,7 +714,7 @@ const UpdateModal: React.FC = () => {
             description={errorMsg}
             actions={
               <>
-                <Button onClick={checkForUpdates} icon={<Refresh size='16' />} className='!px-20px'>
+                <Button onClick={checkForUpdates} icon={<Refresh size='16' />} className='flowy-icon-text-btn !px-20px'>
                   {t('common.retry')}
                 </Button>
                 {!isNativeUpdater && renderBaiduManualDownloadButton()}

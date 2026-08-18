@@ -1024,7 +1024,7 @@ body[arco-theme='dark'] .arco-message-error {
   overflow: hidden !important;
 }
 
-[data-mobile='true'] .agent-mode-compact-pill .arco-btn-content {
+[data-mobile='true'] .agent-mode-compact-pill .flowy-button-inline-content {
   min-width: 0 !important;
   overflow: hidden !important;
 }

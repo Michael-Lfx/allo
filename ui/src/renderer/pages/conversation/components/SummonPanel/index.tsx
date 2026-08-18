@@ -412,7 +412,7 @@ const SummonControl: React.FC<{ conversationId: ConversationId }> = ({ conversat
         icon={<EveryUser theme='outline' size='14' fill='currentColor' />}
         onClick={() => setVisible(true)}
         data-testid='summon-control-button'
-        className='nomi-sendbox-summon-btn'
+        className='nomi-sendbox-summon-btn flowy-icon-text-btn'
         aria-label={summon ? summonedName ?? undefined : t('conversation.summon.button')}
       >
         <span className='sendbox-responsive-label text-12px max-w-90px inline-block overflow-hidden text-ellipsis whitespace-nowrap align-middle'>

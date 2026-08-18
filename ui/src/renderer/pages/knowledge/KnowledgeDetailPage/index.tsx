@@ -81,6 +81,7 @@ import { useKnowledgeTags } from '../useKnowledgeTags';
 import KnowledgeModelSelector, { useKnowledgeAutogenModel } from '../KnowledgeModelSelector';
 import KnowledgeConsumersSection from '../KnowledgeConsumersSection';
 import TagPicker from '../CreateStudio/TagPicker';
+import KnowledgeDetailActionBar from './KnowledgeDetailActionBar';
 import { getKindConfig, KindIcon, type KindConfig } from '../knowledgeKind';
 import {
   buildKnowledgeSearchTree,
@@ -331,6 +332,7 @@ const SettingsTab: React.FC<SettingsTabProps> = ({
             <div className='flex items-center gap-9px'>
               <Input value={base.root_path} readOnly className={`${knowledgeDetailSettingsInputClass} flex-1`} />
               <Button
+                className='flowy-icon-text-btn'
                 icon={<FolderOpen theme='outline' size='14' />}
                 onClick={() => {
                   void ipcBridge.shell.openFolderWith.invoke({ folder_path: base.root_path, tool: 'explorer' }).catch((e: unknown) => Message.error(String(e)));
@@ -354,6 +356,7 @@ const SettingsTab: React.FC<SettingsTabProps> = ({
                 </div>
                 <Button
                   size='small'
+                  className='flowy-icon-text-btn'
                   icon={<Refresh theme='outline' size='14' />}
                   loading={localSyncLoading}
                   disabled={localSync?.state === 'syncing'}
@@ -380,6 +383,7 @@ const SettingsTab: React.FC<SettingsTabProps> = ({
               {t('knowledge.detail.settings.webHint', { defaultValue: '网页来源 — 点击"刷新"重新抓取所有 URL。' })}
             </span>
             <Button
+              className='flowy-icon-text-btn'
               icon={<Refresh theme='outline' size='14' />}
               loading={sourceLoading}
               onClick={() => void handleRefreshSource()}
@@ -1154,41 +1158,21 @@ const KnowledgeDetailPage: React.FC = () => {
           </div>
 
           {/* Right: action buttons */}
-          <div className='flex items-center gap-8px flex-wrap'>
-            <Button
-              shape='round'
-              icon={<Search theme='outline' size='14' />}
-              onClick={() => Message.info(t('knowledge.detail.searchPlaceholder', { defaultValue: '检索功能开发中' }))}
-            >
-              {t('knowledge.detail.search', { defaultValue: '检索' })}
-            </Button>
-            <Button
-              type='primary'
-              shape='round'
-              icon={<LinkOne theme='outline' size='14' />}
-              onClick={() => setTab('use')}
-            >
-              {t('knowledge.detail.mountToSession', { defaultValue: '挂载到会话' })}
-            </Button>
-            <Dropdown
-              droplist={
-                <Menu className='knowledge-detail-actions-menu'>
-                  <Menu.Item key='export' onClick={() => setTab('set')}>
-                    {t('knowledge.detail.export', { defaultValue: '导出' })}
-                  </Menu.Item>
-                  <Menu.Item key='openFolder' onClick={() => void handleOpenFolder()}>
-                    {t('knowledge.actions.openFolder', { defaultValue: '打开文件夹' })}
-                  </Menu.Item>
-                  <Menu.Item key='delete' className='knowledge-detail-danger-menu-item' onClick={() => setTab('set')}>
-                    {t('knowledge.detail.delete', { defaultValue: '删除知识库' })}
-                  </Menu.Item>
-                </Menu>
-              }
-              position='br'
-            >
-              <Button shape='round' icon={<More theme='outline' size='14' />} />
-            </Dropdown>
-          </div>
+          <KnowledgeDetailActionBar
+            labels={{
+              search: t('knowledge.detail.search', { defaultValue: '检索' }),
+              mountToSession: t('knowledge.detail.mountToSession', { defaultValue: '挂载到会话' }),
+              export: t('knowledge.detail.export', { defaultValue: '导出' }),
+              openFolder: t('knowledge.actions.openFolder', { defaultValue: '打开文件夹' }),
+              delete: t('knowledge.detail.delete', { defaultValue: '删除知识库' }),
+              more: t('common.more', { defaultValue: '更多' }),
+            }}
+            onSearch={() => Message.info(t('knowledge.detail.searchPlaceholder', { defaultValue: '检索功能开发中' }))}
+            onMountToSession={() => setTab('use')}
+            onExport={() => setTab('set')}
+            onOpenFolder={() => void handleOpenFolder()}
+            onDelete={() => setTab('set')}
+          />
         </div>
 
         {/* ─── Meta info row ─────────────────────────────────────────────────── */}
@@ -1494,6 +1478,7 @@ const KnowledgeDetailPage: React.FC = () => {
                 <Button
                   shape='round'
                   size='small'
+                  className='flowy-icon-text-btn'
                   loading={autogenLoading}
                   icon={<MagicHat theme='outline' size='14' />}
                   onClick={() => void handleAutogen()}
@@ -1505,6 +1490,7 @@ const KnowledgeDetailPage: React.FC = () => {
                   <Button
                     shape='round'
                     size='small'
+                    className='flowy-icon-text-btn'
                     icon={<Refresh theme='outline' size='12' />}
                     loading={refreshingSource}
                     onClick={() => void handleRefreshSource()}
@@ -1525,7 +1511,7 @@ const KnowledgeDetailPage: React.FC = () => {
                       </Button>
                     </>
                   ) : (
-                    <Button size='small' icon={<EditTwo theme='outline' size='14' />} onClick={startEdit}>
+                    <Button size='small' className='flowy-icon-text-btn' icon={<EditTwo theme='outline' size='14' />} onClick={startEdit}>
                       {t('knowledge.detail.docs.edit', { defaultValue: '编辑' })}
                     </Button>
                   )}
@@ -1651,6 +1637,7 @@ const KnowledgeDetailPage: React.FC = () => {
                 </p>
                 <Button
                   size='small'
+                  className='flowy-icon-text-btn'
                   icon={<LinkCloud theme='outline' size='14' />}
                   onClick={() => navigate('/terminal')}
                 >
@@ -1729,10 +1716,10 @@ const KnowledgeDetailPage: React.FC = () => {
               {t('knowledge.detail.docs.uploadSourceLabel', { defaultValue: '选择来源' })}
             </span>
             <div className='grid grid-cols-2 gap-8px'>
-              <Button icon={<FileText theme='outline' size='15' />} onClick={() => openUploadPicker('files')}>
+              <Button className='flowy-icon-text-btn' icon={<FileText theme='outline' size='15' />} onClick={() => openUploadPicker('files')}>
                 {t('knowledge.detail.docs.uploadFiles', { defaultValue: '选择文档' })}
               </Button>
-              <Button icon={<FolderOpen theme='outline' size='15' />} onClick={() => openUploadPicker('folder')}>
+              <Button className='flowy-icon-text-btn' icon={<FolderOpen theme='outline' size='15' />} onClick={() => openUploadPicker('folder')}>
                 {t('knowledge.detail.docs.uploadFolder', { defaultValue: '选择文件夹' })}
               </Button>
             </div>

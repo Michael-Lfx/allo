@@ -61,6 +61,7 @@ import Layout from './components/layout/Layout';
 import RouteErrorBoundary from './components/layout/RouteErrorBoundary';
 import Router from './components/layout/Router';
 import Sider from './components/layout/Sider';
+import ButtonLayoutProbe from './pages/test/ButtonLayoutProbe';
 import { refreshDetectedAgentsIfStale } from './hooks/agent/useAgents';
 import { clearAvailableModelsCache } from './hooks/agent/useModelProviderList';
 import {
@@ -351,10 +352,20 @@ const App = HOC.Wrapper(Config)(Main);
 void registerPwa();
 
 const root = createRoot(document.getElementById('root')!);
+const isButtonLayoutProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/button-layout';
+
+// Keep the browser-only button layout gate independent from auth/backend
+// startup. It still uses this real renderer entry and all global Arco styles,
+// but must be able to report a layout before an unauthenticated session is
+// ready. The exact hash guard prevents this from becoming a product bypass.
 root.render(
-  <RouteErrorBoundary scope='application'>
-    <AppProviders>
-      <App />
-    </AppProviders>
-  </RouteErrorBoundary>
+  isButtonLayoutProbe ? (
+    <ButtonLayoutProbe />
+  ) : (
+    <RouteErrorBoundary scope='application'>
+      <AppProviders>
+        <App />
+      </AppProviders>
+    </RouteErrorBoundary>
+  )
 );

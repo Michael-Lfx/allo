@@ -97,6 +97,7 @@ const CreationModelsPanel: React.FC<CreationModelsPanelProps> = ({
           <Button
             type='text'
             size='mini'
+            className='flowy-icon-text-btn'
             icon={<LinkCloud theme='outline' size='12' />}
             onClick={() => navigate('/models?section=models')}
           >

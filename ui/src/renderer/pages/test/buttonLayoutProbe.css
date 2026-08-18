@@ -1,0 +1,169 @@
+.button-layout-probe {
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: 24px;
+  color: var(--color-text-1);
+  background: var(--color-bg-1);
+  font-family: var(--font-family, system-ui, sans-serif);
+}
+
+.button-layout-probe__header {
+  max-width: 1100px;
+  margin: 0 auto 20px;
+}
+
+.button-layout-probe__header h1,
+.button-layout-probe__header p,
+.button-layout-probe__card h2 {
+  margin: 0;
+}
+
+.button-layout-probe__header p {
+  margin-top: 6px;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+
+.button-layout-probe__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.button-layout-probe__card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 12px;
+  background: var(--color-bg-2);
+}
+
+.button-layout-probe__card h2 {
+  color: var(--color-text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.button-layout-probe__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 14px;
+}
+
+.button-layout-probe__production-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  min-width: 0;
+  margin-top: 14px;
+}
+
+.button-layout-probe__production-sendbox {
+  display: flex !important;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+.button-layout-probe__production-sendbox .sendbox-responsive-config-group {
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.button-layout-probe__production-guid {
+  container-name: button-layout-probe-guid;
+  container-type: inline-size;
+  display: flex !important;
+  align-items: center;
+  justify-content: flex-start;
+  flex: 0 1 auto !important;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+@container button-layout-probe-guid (max-width: 440px) {
+  .button-layout-probe__production-guid .sendbox-responsive-label,
+  .button-layout-probe__production-guid .sendbox-responsive-chevron {
+    display: none !important;
+  }
+
+  .button-layout-probe__production-guid .guid-config-btn {
+    width: 28px !important;
+    min-width: 28px !important;
+    max-width: 28px !important;
+    height: 28px !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+
+  .button-layout-probe__production-guid .guid-config-btn .flowy-button-inline-content {
+    display: flex !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    gap: 0 !important;
+    overflow: visible !important;
+  }
+}
+
+/* The standalone probe has no real Guid action-row flex parent. Keep the
+ * viewport matrix equivalent to the production 440px collapse when the
+ * container query has no measurable parent in headless Edge. */
+@media (max-width: 440px) {
+  .button-layout-probe__production-guid .sendbox-responsive-label,
+  .button-layout-probe__production-guid .sendbox-responsive-chevron {
+    display: none !important;
+  }
+
+  .button-layout-probe__production-guid .guid-config-btn {
+    width: 28px !important;
+    min-width: 28px !important;
+    max-width: 28px !important;
+    height: 28px !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+
+  .button-layout-probe__production-guid .guid-config-btn .flowy-button-inline-content {
+    display: flex !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    gap: 0 !important;
+    overflow: visible !important;
+  }
+}
+
+.button-layout-probe .flowy-button-inline-content {
+  gap: 6px;
+}
+
+#button-layout-probe-result {
+  position: fixed;
+  right: 8px;
+  bottom: 8px;
+  z-index: -1;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (max-width: 560px) {
+  .button-layout-probe {
+    padding: 12px;
+  }
+
+  .button-layout-probe__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

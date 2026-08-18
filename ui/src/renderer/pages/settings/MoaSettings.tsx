@@ -229,7 +229,7 @@ const MoaSettings: React.FC = () => {
             <SettingsList>
               <SettingsEmptyState
                 title={t('settings.moa.referencesEmpty')}
-                action={<Button size='small' icon={<Plus theme='outline' size='14' />} onClick={addReference}>{t('settings.moa.addReference')}</Button>}
+                action={<Button size='small' className='flowy-icon-text-btn' icon={<Plus theme='outline' size='14' />} onClick={addReference}>{t('settings.moa.addReference')}</Button>}
               />
             </SettingsList>
           ) : (
@@ -265,7 +265,7 @@ const MoaSettings: React.FC = () => {
                 })}
               </SettingsList>
               <SettingsControlGroup className='mt-10px justify-start'>
-                <Button size='small' icon={<Plus theme='outline' size='14' />} onClick={addReference}>{t('settings.moa.addReference')}</Button>
+                <Button size='small' className='flowy-icon-text-btn' icon={<Plus theme='outline' size='14' />} onClick={addReference}>{t('settings.moa.addReference')}</Button>
               </SettingsControlGroup>
             </>
           )}

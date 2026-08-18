@@ -176,7 +176,7 @@ const ModalMcpManagementSection: React.FC<{
             </Menu>
           }
         >
-          <Button type='outline' icon={<Plus size={'16'} />} shape='round' onClick={(e) => e.stopPropagation()}>
+          <Button type='outline' className='flowy-icon-text-btn' icon={<Plus size={'16'} />} shape='round' onClick={(e) => e.stopPropagation()}>
             {t('settings.mcpAddServer')} <Down size='12' />
           </Button>
         </Dropdown>
@@ -186,6 +186,7 @@ const ModalMcpManagementSection: React.FC<{
     return (
       <Button
         type='outline'
+        className='flowy-icon-text-btn'
         icon={<Plus size={'16'} />}
         shape='round'
         onClick={() => {

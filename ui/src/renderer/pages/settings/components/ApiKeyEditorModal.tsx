@@ -286,7 +286,7 @@ const ApiKeyEditorModal: React.FC<ApiKeyEditorModalProps> = ({ visible, api_keys
               </>
             )}
             <Button
-              className='flex'
+              className='flowy-icon-text-btn flex'
               type='outline'
               size='small'
               icon={<Plus theme='outline' size={14} className='' />}

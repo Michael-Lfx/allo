@@ -1035,7 +1035,7 @@ const IdmmControl: React.FC<IdmmControlProps> = ({ target, draft, disabledReason
       className={capabilityHeaderButtonClass(enabled, 'shrink-0')}
       style={capabilityHeaderButtonStyle(dotColor)}
     >
-      <span className='inline-flex items-center gap-6px leading-none'>
+      <span className='flowy-button-inline-content inline-flex items-center gap-6px leading-none'>
         {/* Icon tinted by run-state (same hue as the session-list IDMM icon); the
             status used to live on a separate dot beside a primary-blue button. */}
         <span className='inline-flex' style={{ color: dotColor, lineHeight: 0 }}>

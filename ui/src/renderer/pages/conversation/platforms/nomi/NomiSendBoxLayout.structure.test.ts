@@ -128,6 +128,11 @@ describe('Nomi sendbox control layout', () => {
     expect(sendBoxCss.includes('.composer-toolbar-tools .agent-mode-compact-pill:hover')).toBe(true);
     expect(arcoOverrideSource.includes(".sendbox-actions [data-testid='nomi-model-selector'].arco-btn:hover")).toBe(true);
     expect(sendBoxCss.includes('display: inline-flex !important')).toBe(true);
+    expect(modelSource.includes('flowy-icon-text-btn')).toBe(true);
+    expect(modelSource.includes('flowy-button-inline-content')).toBe(true);
+    expect(modeSource.includes('flowy-icon-text-btn')).toBe(true);
+    expect(modeSource.includes('flowy-button-inline-content')).toBe(true);
+    expect(sendBoxCss.includes('.flowy-button-inline-content')).toBe(true);
 
     for (const source of [modelSource, collaboratorSource, modeSource]) {
       expect(source.includes('<Tooltip')).toBe(false);

@@ -38,6 +38,7 @@ const NomiModelSelector: React.FC<{
         data-testid='nomi-model-selector'
         className={classNames(
           'sendbox-model-btn header-model-btn min-w-0',
+          'flowy-icon-text-btn',
           compact ? '!max-w-[120px]' : '!max-w-[280px]',
           isMobileHeaderCompact && '!max-w-[160px]',
           className
@@ -47,7 +48,7 @@ const NomiModelSelector: React.FC<{
         style={{ cursor: 'default' }}
         aria-label={t('conversation.welcome.useCliModel')}
       >
-        <span className='flex items-center gap-6px min-w-0'>
+        <span className='flowy-button-inline-content flex items-center gap-6px min-w-0'>
           {renderLogo()}
           <span className='sendbox-responsive-label block truncate min-w-0'>
             {t('conversation.welcome.useCliModel')}
@@ -105,6 +106,7 @@ const NomiModelSelector: React.FC<{
         data-testid='nomi-model-selector'
         className={classNames(
           'sendbox-model-btn header-model-btn min-w-0',
+          'flowy-icon-text-btn',
           compact ? '!max-w-[120px]' : '!max-w-[280px]',
           isMobileHeaderCompact && '!max-w-[160px]',
           className
@@ -113,7 +115,7 @@ const NomiModelSelector: React.FC<{
         size='small'
         aria-label={label}
       >
-        <span className='flex items-center gap-6px min-w-0'>
+        <span className='flowy-button-inline-content flex items-center gap-6px min-w-0'>
           {renderLogo()}
           <span className='sendbox-responsive-label block truncate min-w-0'>{label}</span>
           <Down

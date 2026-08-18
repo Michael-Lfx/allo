@@ -116,7 +116,7 @@ const SshHostStatusPill: React.FC<Props> = ({ conversationId, sshHostId }) => {
           className={capabilityHeaderButtonClass(false, 'shrink-0')}
           style={capabilityHeaderButtonStyle(SSH_STATUS_COLOR.idle)}
         >
-          <span className='inline-flex items-center gap-6px leading-none'>
+          <span className='flowy-button-inline-content inline-flex items-center gap-6px leading-none'>
             <Server
               theme='outline'
               size='14'
@@ -213,7 +213,7 @@ const SshHostStatusPill: React.FC<Props> = ({ conversationId, sshHostId }) => {
       className={capabilityHeaderButtonClass(linked, 'shrink-0')}
       style={capabilityHeaderButtonStyle(dotColor)}
     >
-      <span className='inline-flex items-center gap-6px leading-none'>
+      <span className='flowy-button-inline-content inline-flex items-center gap-6px leading-none'>
         {/* The icon carries the phase colour, matching the sidebar host icon —
             the same "no separate dot" treatment AutoWork / IDMM use. */}
         <Server theme='outline' size='14' fill={dotColor} className='block' style={{ lineHeight: 0 }} />

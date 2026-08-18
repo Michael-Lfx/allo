@@ -75,12 +75,12 @@ const AcpModelSelector: React.FC<{
     return (
       <Tooltip content={t('conversation.welcome.modelSwitchNotSupported')} position='top'>
         <Button
-          className='sendbox-model-btn header-model-btn agent-mode-compact-pill'
+          className='sendbox-model-btn header-model-btn agent-mode-compact-pill flowy-icon-text-btn'
           shape='round'
           size='small'
           style={{ cursor: 'default' }}
         >
-          <span className='flex items-center gap-6px min-w-0 leading-none'>
+          <span className='flowy-button-inline-content flex items-center gap-6px min-w-0 leading-none'>
             {renderLogo()}
             <MarqueePillLabel>{t('conversation.welcome.useCliModel')}</MarqueePillLabel>
           </span>
@@ -93,12 +93,12 @@ const AcpModelSelector: React.FC<{
     return (
       <Tooltip content={tooltipContent} position='top'>
         <Button
-          className='sendbox-model-btn header-model-btn agent-mode-compact-pill'
+          className='sendbox-model-btn header-model-btn agent-mode-compact-pill flowy-icon-text-btn'
           shape='round'
           size='small'
           style={{ cursor: 'default' }}
         >
-          <span className='flex items-center gap-6px min-w-0 leading-none'>
+          <span className='flowy-button-inline-content flex items-center gap-6px min-w-0 leading-none'>
             {renderLogo()}
             <MarqueePillLabel>{display_label}</MarqueePillLabel>
           </span>
@@ -129,8 +129,8 @@ const AcpModelSelector: React.FC<{
         </Menu>
       }
     >
-      <Button className='sendbox-model-btn header-model-btn agent-mode-compact-pill' shape='round' size='small'>
-        <span className='flex items-center gap-6px min-w-0 leading-none'>
+      <Button className='sendbox-model-btn header-model-btn agent-mode-compact-pill flowy-icon-text-btn' shape='round' size='small'>
+        <span className='flowy-button-inline-content flex items-center gap-6px min-w-0 leading-none'>
           {renderLogo()}
           <MarqueePillLabel>{display_label}</MarqueePillLabel>
           <Down theme='outline' size={12} fill={iconColors.secondary} className='shrink-0' />

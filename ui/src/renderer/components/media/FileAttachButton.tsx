@@ -110,7 +110,7 @@ const FileAttachButton: React.FC<FileAttachButtonProps> = ({
         type='secondary'
         shape='circle'
         size='small'
-        className='sendbox-composer-plus-btn'
+        className='sendbox-composer-plus-btn flowy-button-icon'
         icon={plusIcon}
         loading={uploading}
         disabled={uploading}
@@ -157,16 +157,18 @@ const FileAttachButton: React.FC<FileAttachButtonProps> = ({
         <Button
           type='text'
           size='mini'
-          className='mt-6px h-auto! px-0! text-12px! inline-flex! items-center! gap-4px!'
+          className='flowy-icon-text-btn mt-6px h-auto! px-0! text-12px! inline-flex! items-center! gap-4px!'
           onClick={handleOpenMcpSettings}
         >
-          <span className='leading-none'>
-            {t('conversation.mcp.openSettings', {
-              defaultValue: 'Open MCP management',
-            })}
-          </span>
-          <span className='inline-flex h-12px w-12px flex-shrink-0 items-center justify-center'>
-            <Right theme='outline' size={12} strokeWidth={3} className='block' />
+          <span className='flowy-button-inline-content inline-flex items-center gap-4px'>
+            <span className='leading-none'>
+              {t('conversation.mcp.openSettings', {
+                defaultValue: 'Open MCP management',
+              })}
+            </span>
+            <span className='inline-flex h-12px w-12px flex-shrink-0 items-center justify-center'>
+              <Right theme='outline' size={12} strokeWidth={3} className='block' />
+            </span>
           </span>
         </Button>
       </div>
@@ -239,7 +241,7 @@ const FileAttachButton: React.FC<FileAttachButtonProps> = ({
           type='secondary'
           shape='circle'
           size='small'
-          className='sendbox-composer-plus-btn'
+          className='sendbox-composer-plus-btn flowy-button-icon'
           icon={plusIcon}
           loading={uploading}
           disabled={uploading}

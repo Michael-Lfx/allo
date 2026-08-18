@@ -374,7 +374,7 @@ const InlineAgentEditor: React.FC<InlineAgentEditorProps> = ({ agent, onSave, on
           size='small'
           icon={<Plus theme='outline' size={14} />}
           onClick={addEnvVar}
-          className='mt-8px !px-0 text-t-secondary hover:!text-primary-6'
+          className='flowy-icon-text-btn mt-8px !px-0 text-t-secondary hover:!text-primary-6'
         >
           {t('settings.addEnvVar')}
         </Button>

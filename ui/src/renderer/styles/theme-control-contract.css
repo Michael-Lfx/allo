@@ -295,6 +295,110 @@ body[arco-theme='dark'] .arco-switch-checked .arco-switch-text {
   box-shadow: 0 0 0 3px var(--control-focus-ring, var(--color-primary-light-3)) !important;
 }
 
+/* —— Flowy button icon/text layout contract ——
+ *
+ * Arco 2.66 renders the `icon` prop and text as direct children. Icon Park
+ * adds an `.i-icon` span around the SVG, so Arco's legacy `svg + span`
+ * spacing selectors do not establish a reliable row or baseline. These
+ * classes are opt-in: they do not change third-party antd buttons, native
+ * buttons, or icon-only actions.
+ *
+ * Layout declarations intentionally carry !important. Preset/custom CSS is
+ * injected before this sheet and is allowed to style surfaces, but a custom
+ * display/flex-direction rule must not turn an application action into a
+ * vertical stack. */
+
+.arco-btn.flowy-icon-text-btn {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-sizing: border-box !important;
+  gap: 8px !important;
+  white-space: nowrap !important;
+}
+
+.arco-btn.flowy-icon-text-btn.arco-btn-size-mini {
+  gap: 4px !important;
+}
+
+.arco-btn.flowy-icon-text-btn.arco-btn-size-small {
+  gap: 6px !important;
+}
+
+.arco-btn.flowy-icon-text-btn.arco-btn-size-default,
+.arco-btn.flowy-icon-text-btn.arco-btn-size-large {
+  gap: 8px !important;
+}
+
+/* A few list rows intentionally keep their label flush with the leading edge. */
+.arco-btn.flowy-icon-text-btn.flowy-icon-text-btn--start {
+  justify-content: flex-start !important;
+}
+
+.arco-btn.flowy-button-icon {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-sizing: border-box !important;
+}
+
+.arco-btn.flowy-button-icon > .i-icon,
+.arco-btn.flowy-button-icon > .arco-icon,
+.arco-btn.flowy-button-icon > svg,
+.arco-btn.flowy-icon-text-btn > .i-icon,
+.arco-btn.flowy-icon-text-btn > .arco-icon,
+.arco-btn.flowy-icon-text-btn > svg,
+.arco-btn.flowy-icon-text-btn > .flowy-button-icon,
+.flowy-button-inline-content > .i-icon,
+.flowy-button-inline-content > .arco-icon,
+.flowy-button-inline-content > svg,
+.flowy-button-inline-content > .flowy-button-icon {
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin: 0 !important;
+  line-height: 0 !important;
+  vertical-align: middle !important;
+}
+
+.arco-btn.flowy-icon-text-btn > .arco-icon,
+.flowy-button-inline-content > .arco-icon {
+  width: 1em !important;
+  height: 1em !important;
+}
+
+.arco-btn.flowy-icon-text-btn > span:not(.i-icon):not(.arco-icon):not(.flowy-button-inline-content):not(.flowy-button-icon),
+.flowy-button-inline-content > span:not(.i-icon):not(.arco-icon):not(.flowy-button-icon) {
+  /* Keep this declaration non-important so SendBox/Guid responsive rules
+   * can intentionally collapse labels with `display: none !important`. */
+  display: inline-flex;
+  align-items: center !important;
+  min-width: 0;
+  white-space: nowrap !important;
+}
+
+.flowy-button-inline-content {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-sizing: border-box !important;
+  min-width: 0;
+  white-space: nowrap !important;
+}
+
+.flowy-button-icon {
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 0 !important;
+  vertical-align: middle !important;
+}
+
 /* —— Flowy commercial control matrix (Button / Input / Select / Card / Tabs / Tooltip / Toast / Skeleton) —— */
 
 .arco-btn {
