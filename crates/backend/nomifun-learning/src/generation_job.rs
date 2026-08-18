@@ -6,10 +6,10 @@ use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService};
 use sqlx::Row;
 
 use crate::generation::{
-    Blueprint, LessonOutput, assemble_pack, build_blueprint_prompt, generate_blueprint,
-    generate_lesson, sample_base_files, validate_generated_pack,
+    Blueprint, LessonOutput, assemble_outline_pack, assemble_pack, build_blueprint_prompt,
+    generate_blueprint, generate_lesson, sample_base_files, validate_generated_pack,
 };
-use crate::models::GenerateCourseRequest;
+use crate::models::{CourseGenerationMode, GenerateCourseRequest};
 use crate::service::LearningService;
 
 /// Background driver for persistent course-generation jobs. Every job is one
@@ -48,7 +48,7 @@ impl GenerationJobRunner {
     /// cancelled while queued never starts.
     pub(crate) async fn claim_and_spawn(&self, job_id: &str) -> Result<bool, AppError> {
         let claimed = sqlx::query(
-            "UPDATE learning_course_jobs SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' WHEN samples_json IS NULL THEN 'sampling' WHEN blueprint_json IS NULL THEN 'blueprint' ELSE 'lessons' END, cancel_requested = 0, error = NULL, updated_at = ? WHERE job_id = ? AND status IN ('queued', 'interrupted', 'cancelled', 'failed')",
+            "UPDATE learning_course_jobs SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' WHEN samples_json IS NULL THEN 'sampling' WHEN blueprint_json IS NULL THEN 'blueprint' WHEN generation_mode = 'on_demand' THEN 'importing' ELSE 'lessons' END, cancel_requested = 0, error = NULL, updated_at = ? WHERE job_id = ? AND status IN ('queued', 'interrupted', 'cancelled', 'failed')",
         )
         .bind(now_ms())
         .bind(job_id)
@@ -184,11 +184,19 @@ async fn run_blueprint(
         .map(|module| module.lessons.len() as i64)
         .sum();
     let blueprint_json = serde_json::to_string(&blueprint).map_err(internal)?;
+    // On-demand mode imports the outline right after the blueprint; full mode
+    // continues into the per-lesson document stage.
+    let next_status = if request.mode == CourseGenerationMode::OnDemand {
+        "importing"
+    } else {
+        "lessons"
+    };
     sqlx::query(
-        "UPDATE learning_course_jobs SET blueprint_json = ?, total_lessons = ?, status = 'lessons', updated_at = ? WHERE job_id = ?",
+        "UPDATE learning_course_jobs SET blueprint_json = ?, total_lessons = ?, status = ?, updated_at = ? WHERE job_id = ?",
     )
     .bind(&blueprint_json)
     .bind(total_lessons)
+    .bind(next_status)
     .bind(now_ms())
     .bind(job_id)
     .execute(pool)
@@ -301,13 +309,25 @@ async fn run_importing(
     let request = parse_request(&row.request_json)?;
     let samples: Vec<(String, String)> = parse_snapshot("samples", row.samples_json.as_deref())?;
     let blueprint: Blueprint = parse_snapshot("blueprint", row.blueprint_json.as_deref())?;
-    let outputs: Vec<LessonOutput> =
-        parse_snapshot("lesson outputs", row.lesson_outputs_json.as_deref())?;
-    let pack = assemble_pack(blueprint, outputs, &request);
-    validate_generated_pack(&pack, &samples).map_err(|error| {
-        AppError::UnprocessableEntity(format!("model did not return a valid course pack: {error}"))
-    })?;
-    let detail = service.import_course(pack).await?;
+    let detail = if request.mode == CourseGenerationMode::OnDemand {
+        let pack = assemble_outline_pack(&blueprint, &request);
+        crate::service::validate_pack(&pack).map_err(|error| {
+            AppError::UnprocessableEntity(format!(
+                "model did not return a valid course outline: {error}"
+            ))
+        })?;
+        let blueprint_json = serde_json::to_string(&blueprint).map_err(internal)?;
+        let samples_json = serde_json::to_string(&samples).map_err(internal)?;
+        service.import_course_outline(pack, blueprint_json, samples_json).await?
+    } else {
+        let outputs: Vec<LessonOutput> =
+            parse_snapshot("lesson outputs", row.lesson_outputs_json.as_deref())?;
+        let pack = assemble_pack(blueprint, outputs, &request);
+        validate_generated_pack(&pack, &samples).map_err(|error| {
+            AppError::UnprocessableEntity(format!("model did not return a valid course pack: {error}"))
+        })?;
+        service.import_course(pack).await?
+    };
     sqlx::query(
         "UPDATE learning_course_jobs SET course_id = ?, status = 'completed', updated_at = ? WHERE job_id = ?",
     )

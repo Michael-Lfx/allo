@@ -51,6 +51,9 @@ pub struct CourseGenerationRequest {
     pub model: Option<String>,
     pub module_count: u8,
     pub lessons_per_module: u8,
+    /// "full" (default) materializes every lesson up front; "on_demand" imports
+    /// the outline and generates each lesson's body when the learner opens it.
+    pub mode: Option<String>,
 }
 
 /// A background course-generation job has been accepted. `job_id` is the handle
@@ -225,6 +228,18 @@ impl Tool for LearningGenerateCourseTool {
                 "lessons_per_module": {
                     "type": "integer",
                     "description": "Lessons per module (default 3, max 6)."
+                },
+                "mode": {
+                    "type": "string",
+                    "description": "Generation strategy: \"full\" (default) generates every lesson up front; \"on_demand\" imports the outline first and generates each lesson's body when the learner opens it."
+                },
+                "provider_id": {
+                    "type": "string",
+                    "description": "Optional provider id to run generation on; pass only when the caller was told to use a specific model. Omit to use the conversation's model."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional model name; must be passed together with provider_id. Omit to use the conversation's model."
                 }
             },
             "required": []
@@ -263,13 +278,40 @@ impl Tool for LearningGenerateCourseTool {
             .map(ToOwned::to_owned);
         let module_count = size_arg(&input, "module_count", DEFAULT_MODULE_COUNT);
         let lessons_per_module = size_arg(&input, "lessons_per_module", DEFAULT_LESSONS_PER_MODULE);
+        let mode = input
+            .get("mode")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|mode| !mode.is_empty())
+            .map(ToOwned::to_owned);
+        // An explicit provider/model pair (instructed by the caller) wins over the
+        // conversation's active model; otherwise generation honors the session model.
+        let (provider_id, model) = match (
+            input
+                .get("provider_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
+            input
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
+        ) {
+            (Some(provider), Some(model)) => (Some(provider.to_owned()), Some(model.to_owned())),
+            _ => (
+                self.session_model.as_ref().map(|(provider, _)| provider.clone()),
+                self.session_model.as_ref().map(|(_, model)| model.clone()),
+            ),
+        };
         let req = CourseGenerationRequest {
             kb_id,
             domain,
-            provider_id: self.session_model.as_ref().map(|(provider, _)| provider.clone()),
-            model: self.session_model.as_ref().map(|(_, model)| model.clone()),
+            provider_id,
+            model,
             module_count,
             lessons_per_module,
+            mode,
         };
         match self
             .sink
@@ -493,6 +535,30 @@ mod tests {
         let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
         assert_eq!(req.provider_id.as_deref(), Some("provider-x"));
         assert_eq!(req.model.as_deref(), Some("model-y"));
+    }
+
+    #[tokio::test]
+    async fn forwards_explicit_mode_and_model_override() {
+        let sink = Arc::new(FakeCourseSink::default());
+        let tool = LearningGenerateCourseTool::new(
+            sink.clone(),
+            vec![(kb_id("kb1"), "Finance".to_owned())],
+            USER,
+            Some("session-1".to_owned()),
+            Some(("session-provider".to_owned(), "session-model".to_owned())),
+        );
+        let res = tool
+            .execute(json!({
+                "mode": "on_demand",
+                "provider_id": "explicit-provider",
+                "model": "explicit-model"
+            }))
+            .await;
+        assert!(!res.is_error, "{res:?}");
+        let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
+        assert_eq!(req.mode.as_deref(), Some("on_demand"));
+        assert_eq!(req.provider_id.as_deref(), Some("explicit-provider"));
+        assert_eq!(req.model.as_deref(), Some("explicit-model"));
     }
 
     fn status_tool() -> (LearningCourseStatusTool, Arc<FakeCourseSink>) {

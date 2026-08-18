@@ -35,6 +35,51 @@ pub struct GenerateCourseRequest {
     pub module_count: u8,
     #[serde(default = "default_lessons_per_module")]
     pub lessons_per_module: u8,
+    #[serde(default)]
+    pub mode: CourseGenerationMode,
+}
+
+/// Course generation strategy: `full` materializes every lesson up front;
+/// `on_demand` imports the outline immediately and generates each lesson's
+/// body and activities only when the learner opens it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CourseGenerationMode {
+    #[default]
+    Full,
+    OnDemand,
+}
+
+impl CourseGenerationMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::OnDemand => "on_demand",
+        }
+    }
+}
+
+impl TryFrom<&str> for CourseGenerationMode {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "full" => Ok(Self::Full),
+            "on_demand" => Ok(Self::OnDemand),
+            other => Err(format!("unsupported course generation mode: {other}")),
+        }
+    }
+}
+
+/// On-demand lesson content generation: optional model preference, mirroring
+/// the reflection-grading request. Both fields are sent together (or neither);
+/// when absent the backend falls back to its default completer.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GenerateLessonRequest {
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Optional model preference for retrying a failed course-generation job.
@@ -88,6 +133,8 @@ pub struct LessonPack {
     pub title: String,
     #[serde(default)]
     pub summary: String,
+    #[serde(default)]
+    pub purpose: String,
     #[serde(default = "default_estimated_minutes")]
     pub estimated_minutes: i64,
     #[serde(default)]
@@ -261,8 +308,10 @@ pub struct LessonView {
     pub id: LearningLessonId,
     pub title: String,
     pub summary: String,
+    pub purpose: String,
     pub position: i64,
     pub estimated_minutes: i64,
+    pub generated: bool,
     pub source: Option<SourceSpan>,
     pub status: LessonStatus,
     pub concepts: Vec<LearningConceptId>,
@@ -479,6 +528,55 @@ pub struct CreateCustomQuestionRequest {
     /// learner authors the question by hand).
     #[serde(default)]
     pub distractors: Vec<String>,
+}
+
+/// Manually appends an activity to an existing lesson. All four kinds are
+/// accepted; when `concept_ids` is empty the activity binds to every concept
+/// of the lesson, matching course-generation semantics.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateLessonActivityRequest {
+    pub kind: ActivityKind,
+    pub prompt: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub answer: Value,
+    #[serde(default)]
+    pub explanation: String,
+    /// Near-synonym traps for fill_in_blank blanks; empty for other kinds.
+    #[serde(default)]
+    pub distractors: Vec<String>,
+    #[serde(default)]
+    pub concept_ids: Vec<LearningConceptId>,
+}
+
+/// Asks the knowledge-backed generator for a single activity draft for an
+/// existing lesson. The draft is returned for preview and never persisted.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GenerateLessonActivityRequest {
+    pub kind: ActivityKind,
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Optional focus hint steering the question topic; empty means the
+    /// generator picks the least-covered ground itself.
+    #[serde(default)]
+    pub focus: String,
+}
+
+/// AI-generated activity draft shown to the learner for preview before they
+/// confirm adding it to the lesson.
+#[derive(Debug, Clone, Serialize)]
+pub struct GeneratedLessonActivity {
+    pub kind: ActivityKind,
+    pub prompt: String,
+    pub options: Vec<String>,
+    pub answer: Value,
+    pub explanation: String,
+    pub distractors: Vec<String>,
+    /// Suggested concept bindings (the lesson's concepts by default).
+    pub concept_ids: Vec<LearningConceptId>,
 }
 
 /// Concept offered in the custom question form: any concept the learner

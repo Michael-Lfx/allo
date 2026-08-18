@@ -10,6 +10,7 @@ import {
   Tag,
   Typography,
 } from '@arco-design/web-react';
+import { IconPlus } from '@arco-design/web-react/icon';
 import { useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -28,6 +29,7 @@ import type {
 import { sliceSourceContent, statusLabel } from '../utils';
 import { ActivityInput } from './ActivityInput';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
+import { LessonQuestionDialog } from './LessonQuestionDialog';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -245,6 +247,8 @@ function LessonBlock({
   attemptResults,
   onProgress,
   onAttempt,
+  onGenerate,
+  onRefresh,
 }: {
   lesson: Lesson;
   sourceKbId: string | null;
@@ -252,8 +256,30 @@ function LessonBlock({
   attemptResults: Record<string, AttemptResult>;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
+  onGenerate: (lesson: Lesson) => void;
+  onRefresh: () => void;
 }) {
   const { t } = useTranslation();
+  const [addQuestionOpen, setAddQuestionOpen] = useState(false);
+  if (!lesson.generated) {
+    return (
+      <div className='flex flex-col gap-12px'>
+        {lesson.purpose && (
+          <Paragraph className='!mb-0 text-t-secondary'>{lesson.purpose}</Paragraph>
+        )}
+        <div className='flex flex-wrap items-center gap-8px'>
+          <Tag color={statusColors[lesson.status]}>{statusLabel(lesson.status, t)}</Tag>
+          <Button
+            type='primary'
+            loading={busyId === lesson.id}
+            onClick={() => onGenerate(lesson)}
+          >
+            {t('learning.generateLessonContent')}
+          </Button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className='flex flex-col gap-14px'>
       {lesson.summary && <Markdown className='text-13px'>{lesson.summary}</Markdown>}
@@ -291,6 +317,26 @@ function LessonBlock({
           ))}
         </div>
       )}
+      {/* 仅已生成课时可追加练习（手动创建或 AI 生成） */}
+      <div className='rounded-10px border border-dashed border-[var(--color-border-2)] p-10px'>
+        <Button
+          type='text'
+          icon={<IconPlus />}
+          onClick={() => setAddQuestionOpen(true)}
+        >
+          {t('learning.lessonAddQuestion')}
+        </Button>
+      </div>
+      {addQuestionOpen && (
+        <LessonQuestionDialog
+          lesson={lesson}
+          onClose={() => setAddQuestionOpen(false)}
+          onSaved={() => {
+            setAddQuestionOpen(false);
+            onRefresh();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -303,6 +349,8 @@ export function CourseWorkspace({
   onDiagnostic,
   onProgress,
   onAttempt,
+  onGenerate,
+  onRefresh,
 }: {
   detail: CourseDetail;
   busyId: string | null;
@@ -311,6 +359,8 @@ export function CourseWorkspace({
   onDiagnostic: () => void;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
+  onGenerate: (lesson: Lesson, allLessons?: Lesson[]) => void;
+  onRefresh: () => void;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -318,6 +368,10 @@ export function CourseWorkspace({
   const { choice: modelChoice, setChoice: setModelChoice } = useLearningAutogenModel();
   const recommendedLessonRef = useRef<HTMLDivElement>(null);
   const { course } = detail;
+  const flatLessons = useMemo(
+    () => detail.modules.flatMap((module) => module.lessons),
+    [detail.modules]
+  );
   const percent =
     course.total_lessons === 0
       ? 0
@@ -450,6 +504,8 @@ export function CourseWorkspace({
                       attemptResults={attemptResults}
                       onProgress={onProgress}
                       onAttempt={onAttempt}
+                      onGenerate={(target) => onGenerate(target, flatLessons)}
+                      onRefresh={onRefresh}
                     />
                   </Collapse.Item>
                 ))}
