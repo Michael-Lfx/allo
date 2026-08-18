@@ -5,6 +5,18 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.0.1 - 2026-08-18
+
+- Settings keep presets, skills, MCP, and plugins in one hub with shared search. The hub also opens faster by deferring Markdown and market work.
+- Flowy Cloud TTS and new companions default to qwen3-tts.
+- Vimax keeps a shared production look across portraits, environments, and props, and the storyboard studio is easier to preview and edit.
+- Home model switching works again. Streaming chat stays pinned while thinking or tool output grows.
+- Memory citation protocol blocks stay out of the visible answer.
+- Failed turns show a clearer error card and diagnostic dialog. You can copy diagnostics, see whether to retry or fix setup, and edit-then-resend without losing the draft or attachments. Secrets stay redacted.
+- Knowledge tag management reports color and reorder failures instead of failing silently.
+- Windows coding shells start over pipes instead of ConPTY, so noninteractive jobs are quieter and faster.
+- OpenAI-compatible gateways that reject tool schemas now trigger the sanitization retry. Read/Edit path errors no longer look like a broken Windows drive letter.
+
 ## v1.0.0 - 2026-08-18
 
 - Fixed Windows/Linux frameless titlebar drag and maximize. Titlebar and sidebar tooltips stay inside the viewport.
