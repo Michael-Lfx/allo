@@ -20,6 +20,7 @@ import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 import ModelCreditRateHint from '@/renderer/components/model/ModelCreditRateHint';
+import { findChatModelForMenuKey } from './guidModelMenu';
 
 type GuidModelSelectorProps = {
   // Gemini model state
@@ -35,34 +36,41 @@ type GuidModelSelectorProps = {
   setSelectedAcpModel: React.Dispatch<React.SetStateAction<string | null>>;
 };
 
-export const GuidModelSelectorButton: React.FC<{
+type GuidModelSelectorButtonProps = {
   label: string;
   includeChevron?: boolean;
   readOnly?: boolean;
   labelClassName?: string;
-}> = ({ label, includeChevron = true, readOnly = false, labelClassName }) => (
-  <Button
-    className='sendbox-model-btn guid-config-btn flowy-icon-text-btn'
-    shape='round'
-    size='small'
-    data-testid='guid-model-selector'
-    style={readOnly ? { cursor: 'default' } : undefined}
-    aria-label={label}
-  >
-    <span className='flowy-button-inline-content flex items-center gap-6px min-w-0'>
-      <Brain theme='outline' size='14' fill={iconColors.secondary} className='shrink-0' />
-      <span className={`sendbox-responsive-label ${labelClassName ?? ''}`.trim()}>{label}</span>
-      {includeChevron && (
-        <Down
-          theme='outline'
-          size='12'
-          fill={iconColors.secondary}
-          className='sendbox-responsive-chevron shrink-0'
-        />
-      )}
-    </span>
-  </Button>
+} & Omit<React.ComponentProps<typeof Button>, 'children' | 'shape' | 'size'>;
+
+export const GuidModelSelectorButton = React.forwardRef<HTMLButtonElement, GuidModelSelectorButtonProps>(
+  ({ label, includeChevron = true, readOnly = false, labelClassName, className, style, ...rest }, ref) => (
+    <Button
+      ref={ref}
+      {...rest}
+      className={`sendbox-model-btn guid-config-btn flowy-icon-text-btn ${className ?? ''}`.trim()}
+      shape='round'
+      size='small'
+      data-testid='guid-model-selector'
+      style={readOnly ? { cursor: 'default', ...style } : style}
+      aria-label={label}
+    >
+      <span className='flowy-button-inline-content flex items-center gap-6px min-w-0'>
+        <Brain theme='outline' size='14' fill={iconColors.secondary} className='shrink-0' />
+        <span className={`sendbox-responsive-label ${labelClassName ?? ''}`.trim()}>{label}</span>
+        {includeChevron && (
+          <Down
+            theme='outline'
+            size='12'
+            fill={iconColors.secondary}
+            className='sendbox-responsive-chevron shrink-0'
+          />
+        )}
+      </span>
+    </Button>
+  ),
 );
+GuidModelSelectorButton.displayName = 'GuidModelSelectorButton';
 
 const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   isGeminiMode,
@@ -133,6 +141,17 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
     });
   }, [acpSelectedLabel, currentAcpCachedModelInfo?.current_model_id, defaultModelLabel, selectedAcpModel]);
 
+  const handleChatMenuItem = React.useCallback(
+    (key: string) => {
+      const match = findChatModelForMenuKey(enabledGroups, key);
+      if (!match) return;
+      void setCurrentModel({ ...match.provider, use_model: match.modelName }).catch((error) => {
+        console.error('Failed to set current model:', error);
+      });
+    },
+    [enabledGroups, setCurrentModel],
+  );
+
   if (isGeminiMode) {
     const hasModels = enabledGroups.length > 0;
 
@@ -151,60 +170,54 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
       <Dropdown
         trigger='click'
         droplist={
-          <Menu selectedKeys={current_model ? [current_model.id + current_model.use_model] : []}>
-            {!hasModels
-              ? [
-                  <Menu.Item
-                    key='no-models'
-                    className='px-12px py-12px text-t-secondary text-14px text-center flex justify-center items-center'
-                    disabled
-                  >
-                    {t('settings.noAvailableModels')}
-                  </Menu.Item>,
-                ]
-              : [
-                  ...(defaultModelUnavailable
-                    ? [
-                        <Menu.Item key='unavailable-default' disabled className='text-12px text-t-secondary'>
-                          {t('conversation.chat.defaultModelUnavailable')}
-                        </Menu.Item>,
-                      ]
-                    : []),
-                  ...enabledGroups.map(({ provider, models }) => {
-                    return (
-                      <Menu.ItemGroup title={providerLabel(provider)} key={provider.id}>
-                        {models.map((modelName) => {
-                          const dot = healthDotColor(provider.id, modelName);
-                          return (
-                            <Menu.Item
-                              key={compositeKey(provider.id, modelName)}
-                              className={
-                                current_model?.id === provider.id && current_model?.use_model === modelName
-                                  ? '!bg-2'
-                                  : ''
-                              }
-                              onClick={() => {
-                                setCurrentModel({ ...provider, use_model: modelName }).catch((error) => {
-                                  console.error('Failed to set current model:', error);
-                                });
-                              }}
-                            >
-                              <div className='flex items-center justify-between gap-12px w-full min-w-0'>
-                                <div className='flex items-center gap-8px min-w-0'>
-                                  {dot && <div className={`w-6px h-6px rounded-full shrink-0 ${dot}`} />}
-                                  <span className='truncate min-w-0'>
-                                    {formatModelLabelForProvider(provider, modelName)}
-                                  </span>
-                                </div>
-                                <ModelCreditRateHint provider={provider} modelName={modelName} />
-                              </div>
-                            </Menu.Item>
-                          );
-                        })}
-                      </Menu.ItemGroup>
-                    );
-                  }),
-                ]}
+          <Menu
+            selectedKeys={current_model ? [compositeKey(current_model.id, current_model.use_model)] : []}
+            onClickMenuItem={handleChatMenuItem}
+          >
+            {!hasModels ? (
+              <Menu.Item
+                key='no-models'
+                className='px-12px py-12px text-t-secondary text-14px text-center flex justify-center items-center'
+                disabled
+              >
+                {t('settings.noAvailableModels')}
+              </Menu.Item>
+            ) : (
+              <>
+                {defaultModelUnavailable ? (
+                  <Menu.Item key='unavailable-default' disabled className='text-12px text-t-secondary'>
+                    {t('conversation.chat.defaultModelUnavailable')}
+                  </Menu.Item>
+                ) : null}
+                {enabledGroups.map(({ provider, models }) => (
+                  <Menu.ItemGroup title={providerLabel(provider)} key={provider.id}>
+                    {models.map((modelName) => {
+                      const dot = healthDotColor(provider.id, modelName);
+                      return (
+                        <Menu.Item
+                          key={compositeKey(provider.id, modelName)}
+                          className={
+                            current_model?.id === provider.id && current_model?.use_model === modelName
+                              ? '!bg-2'
+                              : ''
+                          }
+                        >
+                          <div className='flex items-center justify-between gap-12px w-full min-w-0'>
+                            <div className='flex items-center gap-8px min-w-0'>
+                              {dot && <div className={`w-6px h-6px rounded-full shrink-0 ${dot}`} />}
+                              <span className='truncate min-w-0'>
+                                {formatModelLabelForProvider(provider, modelName)}
+                              </span>
+                            </div>
+                            <ModelCreditRateHint provider={provider} modelName={modelName} />
+                          </div>
+                        </Menu.Item>
+                      );
+                    })}
+                  </Menu.ItemGroup>
+                ))}
+              </>
+            )}
           </Menu>
         }
       >
@@ -220,7 +233,10 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
         <Dropdown
           trigger='click'
           droplist={
-            <Menu selectedKeys={selectedAcpModel ? [selectedAcpModel] : []}>
+            <Menu
+              selectedKeys={selectedAcpModel ? [selectedAcpModel] : []}
+              onClickMenuItem={(key) => setSelectedAcpModel(key)}
+            >
               {currentAcpCachedModelInfo.available_models.map((model) => {
                 // 获取模型健康状态
                 const providerConfig = modelConfig?.find((p) => p.platform?.includes(''));
@@ -236,7 +252,6 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
                   <Menu.Item
                     key={model.id}
                     className={model.id === selectedAcpModel ? '!bg-2' : ''}
-                    onClick={() => setSelectedAcpModel(model.id)}
                   >
                     <div className='flex items-center gap-8px w-full'>
                       {healthStatus !== 'unknown' && (
