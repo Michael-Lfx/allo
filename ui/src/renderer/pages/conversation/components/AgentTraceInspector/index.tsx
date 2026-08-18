@@ -16,23 +16,12 @@ import {
   capabilityHeaderButtonClass,
   capabilityHeaderButtonStyle,
 } from '../CapabilityHeaderButton';
-import TraceSessionArtifacts from './TraceSessionArtifacts';
-import TraceTimeline from './TraceTimeline';
-import TraceTurnSummary from './TraceTurnSummary';
+import ObservationWorkflow from './ObservationWorkflow';
+import { shortId } from './format';
 import {
-  formatClock,
-  formatElapsed,
-  formatTokenCount,
-  outcomeLabel,
-  shortId,
-} from './format';
-import {
-  getAgentTrace,
-  listAgentTraceArtifacts,
-  listAgentTraces,
-  type AgentTraceArtifactIndexEntry,
-  type AgentTraceIndexEntry,
-  type AgentTurnTrace,
+  getSessionObservationTurn,
+  listSessionObservations,
+  type ProjectedTurn,
 } from './useAgentTraces';
 
 export interface AgentTraceInspectorProps {
@@ -42,8 +31,8 @@ export interface AgentTraceInspectorProps {
 const ACCENT = 'var(--color-text-2)';
 
 /**
- * Developer Mode–gated drawer that lists turn traces for the current
- * conversation and shows detailed span / metrics for a selected turn.
+ * Developer Mode–gated drawer: left turns, right REQUEST → RESPONSE → tools.
+ * Renders persisted observation projections only — never chat bubbles.
  */
 export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conversationId }) => {
   const { t } = useTranslation();
@@ -51,33 +40,30 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorKey, setErrorKey] = useState<'loadFailed' | 'developerModeRequired' | null>(null);
-  const [entries, setEntries] = useState<AgentTraceIndexEntry[]>([]);
-  const [artifacts, setArtifacts] = useState<AgentTraceArtifactIndexEntry[]>([]);
-  const [artifactsLoading, setArtifactsLoading] = useState(false);
+  const [entries, setEntries] = useState<ProjectedTurn[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<AgentTurnTrace | null>(null);
+  const [detail, setDetail] = useState<ProjectedTurn | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   const loadList = useCallback(async () => {
     setLoading(true);
-    setArtifactsLoading(true);
     setErrorKey(null);
     try {
-      const [rows, arts] = await Promise.all([
-        listAgentTraces(String(conversationId), 100),
-        listAgentTraceArtifacts(String(conversationId), 100).catch(() => [] as AgentTraceArtifactIndexEntry[]),
-      ]);
-      setEntries(rows);
-      setArtifacts(arts);
-      if (rows.length === 0) {
+      const rows = await listSessionObservations(String(conversationId));
+      const ordered = [...rows].reverse();
+      setEntries(ordered);
+      if (ordered.length === 0) {
         setSelectedId(null);
         setDetail(null);
-      } else if (!selectedId || !rows.some((r) => r.trace_id === selectedId)) {
-        setSelectedId(rows[0].trace_id);
+      } else {
+        setSelectedId((current) =>
+          current && ordered.some((row) => row.root_turn_id === current)
+            ? current
+            : ordered[0].root_turn_id
+        );
       }
     } catch (err) {
       setEntries([]);
-      setArtifacts([]);
       setDetail(null);
       setSelectedId(null);
       if (isBackendHttpError(err) && err.status === 403) {
@@ -87,23 +73,21 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
       }
     } finally {
       setLoading(false);
-      setArtifactsLoading(false);
     }
-  }, [conversationId, selectedId]);
+  }, [conversationId]);
 
   useEffect(() => {
     if (!open || developerMode !== true) return;
     void loadList();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh on open / conversation change only
-  }, [open, conversationId, developerMode]);
+  }, [open, conversationId, developerMode, loadList]);
 
   useEffect(() => {
     if (!open || !selectedId || developerMode !== true) return;
     let cancelled = false;
     setDetailLoading(true);
-    void getAgentTrace(selectedId)
-      .then((trace) => {
-        if (!cancelled) setDetail(trace);
+    void getSessionObservationTurn(String(conversationId), selectedId)
+      .then((turn) => {
+        if (!cancelled) setDetail(turn);
       })
       .catch(() => {
         if (!cancelled) setDetail(null);
@@ -114,7 +98,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
     return () => {
       cancelled = true;
     };
-  }, [open, selectedId, developerMode]);
+  }, [open, selectedId, developerMode, conversationId]);
 
   if (developerMode !== true) {
     return null;
@@ -154,9 +138,6 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
             <div className='text-11px text-[var(--color-text-3)] truncate'>{conversationId}</div>
             <div className='text-10px text-[var(--color-text-4)]'>
               {t('conversation.agentTrace.turnCount', { count: entries.length })}
-              {artifacts.length > 0
-                ? ` · ${t('conversation.agentTrace.artifactCount', { count: artifacts.length })}`
-                : ''}
             </div>
           </div>
           <Button
@@ -183,21 +164,13 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
           <Empty className='py-40px' description={t('conversation.agentTrace.empty')} />
         ) : (
           <div className='flex flex-col min-h-0' style={{ height: 'calc(100% - 49px)' }}>
-            <TraceSessionArtifacts
-              entries={artifacts}
-              loading={artifactsLoading}
-              selectedTraceId={selectedId}
-              onSelectTrace={setSelectedId}
-            />
-
             <div className='max-h-[26%] overflow-auto border-b border-solid border-[var(--color-border-2)] shrink-0'>
               {entries.map((entry) => {
-                const active = entry.trace_id === selectedId;
-                const outcome = outcomeLabel(entry.success, entry.stop_reason);
-                const artCount = entry.artifact_count ?? 0;
+                const active = entry.root_turn_id === selectedId;
+                const degraded = entry.integrity === 'degraded';
                 return (
                   <button
-                    key={entry.trace_id}
+                    key={entry.root_turn_id}
                     type='button'
                     className='w-full text-left px-12px py-8px border-0 border-b border-solid border-[var(--color-border-1)] cursor-pointer'
                     style={{
@@ -205,63 +178,43 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
                         ? 'color-mix(in srgb, var(--color-text-2) 8%, var(--color-bg-1))'
                         : 'transparent',
                     }}
-                    onClick={() => setSelectedId(entry.trace_id)}
+                    onClick={() => setSelectedId(entry.root_turn_id)}
                   >
                     <div className='flex items-center justify-between gap-8px'>
                       <div className='flex items-center gap-6px min-w-0'>
-                        {outcome === 'fail' ? (
-                          <Tag size='small' color='red'>
-                            fail
+                        <Tag size='small' color={degraded ? 'orangered' : 'green'}>
+                          {degraded
+                            ? t('conversation.agentTrace.integrityDegraded')
+                            : t('conversation.agentTrace.integrityComplete')}
+                        </Tag>
+                        {entry.interrupted ? (
+                          <Tag size='small' color='orange'>
+                            {t('conversation.agentTrace.interrupted')}
                           </Tag>
-                        ) : outcome === 'cancelled' ? (
-                          <Tag size='small' color='orangered'>
-                            cancel
-                          </Tag>
-                        ) : outcome === 'ok' ? (
-                          <Tag size='small' color='green'>
-                            ok
-                          </Tag>
-                        ) : (
-                          <Tag size='small' color='gray'>
-                            —
-                          </Tag>
-                        )}
-                        <span className='text-12px font-600 text-[var(--color-text-1)] truncate'>
-                          {entry.session_kind}
-                        </span>
-                        {entry.stop_reason ? (
-                          <span className='text-10px text-[var(--color-text-3)] truncate'>
-                            {entry.stop_reason}
-                          </span>
                         ) : null}
+                        <span className='text-12px font-600 text-[var(--color-text-1)] truncate'>
+                          {entry.session_kind ?? t('conversation.agentTrace.sessionKind')}
+                        </span>
                       </div>
                       <span className='text-11px text-[var(--color-text-3)] tabular-nums shrink-0'>
-                        {formatElapsed(entry.elapsed_ms)}
+                        {t('conversation.agentTrace.modelCalls')}: {entry.model_calls.length}
                       </span>
                     </div>
                     <div className='text-11px text-[var(--color-text-3)] mt-3px flex gap-x-10px gap-y-2px flex-wrap'>
-                      <span>{formatClock(entry.started_at_ms)}</span>
                       <span>
-                        {t('conversation.agentTrace.tokens')}:{' '}
-                        {formatTokenCount(entry.input_tokens)}→
-                        {formatTokenCount(entry.output_tokens)}
+                        {t('conversation.agentTrace.tools')}:{' '}
+                        {entry.model_calls.reduce((sum, call) => sum + call.tools.length, 0)}
                       </span>
-                      <span>
-                        {t('conversation.agentTrace.tools')}: {entry.tool_call_count}
-                        {entry.tool_error_count > 0
-                          ? ` · ${entry.tool_error_count} err`
-                          : ''}
-                      </span>
-                      {artCount > 0 ? (
+                      {entry.gap_count > 0 ? (
                         <span>
-                          {t('conversation.agentTrace.artifacts')}: {artCount}
+                          {t('conversation.agentTrace.gap')}: {entry.gap_count}
                         </span>
                       ) : null}
-                      <span className='font-mono' title={entry.msg_id}>
+                      <span className='font-mono' title={entry.msg_id ?? undefined}>
                         msg={shortId(entry.msg_id)}
                       </span>
-                      <span className='font-mono' title={entry.trace_id}>
-                        trace={shortId(entry.trace_id)}
+                      <span className='font-mono' title={entry.root_turn_id}>
+                        turn={shortId(entry.root_turn_id)}
                       </span>
                     </div>
                   </button>
@@ -275,10 +228,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
                   <Spin />
                 </div>
               ) : detail ? (
-                <>
-                  <TraceTurnSummary trace={detail} />
-                  <TraceTimeline spans={detail.spans ?? []} turnStartedAtMs={detail.started_at_ms} />
-                </>
+                <ObservationWorkflow turn={detail} />
               ) : (
                 <Empty className='py-24px' description={t('conversation.agentTrace.empty')} />
               )}
