@@ -10,6 +10,7 @@ import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarkdownView from '@renderer/components/Markdown';
 import FeedbackButton from '@renderer/components/base/FeedbackButton';
+import CopyIconButton from '@renderer/components/base/CopyIconButton';
 import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
 import { emitter } from '@/renderer/utils/emitter';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
@@ -19,6 +20,12 @@ import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography'
 import { useNavigate } from 'react-router-dom';
 import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import type { ConversationErrorReportContext } from '@/renderer/features/supportChat/conversationErrorReport';
+import {
+  buildAgentErrorDiagnostic,
+  buildErrorDiagnostic,
+  formatErrorDiagnosticText,
+  getErrorDiagnosticLabels,
+} from '@/renderer/utils/ui/errorDiagnostics';
 
 const MODEL_RECOVERY_KINDS = new Set([
   'change_model',
@@ -52,7 +59,7 @@ const icon = {
       size='16'
       strokeLinejoin='bevel'
       className='m-t-2px'
-      fill={theme.Color.FunctionalColor.error}
+      fill='currentColor'
     />
   ),
 };
@@ -114,7 +121,6 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
   ) : null;
 
   const displayContent = json ? '' : content;
-  const shouldShowFeedback = type === 'error';
   const conversationErrorReport = useMemo<ConversationErrorReportContext | undefined>(() => {
     if (type !== 'error') return undefined;
     return {
@@ -176,9 +182,17 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
     return null;
   }, [structuredError?.code, structuredError?.resolution?.kind, t]);
 
-  if (structuredError) {
-    const code = structuredError.code;
-    const ownership = structuredError.ownership;
+  if (type === 'error') {
+    const diagnostic = structuredError
+      ? buildAgentErrorDiagnostic(structuredError)
+      : buildErrorDiagnostic({ message: content, detail: json ? content : undefined });
+    const diagnosticSummary = diagnostic.summary || t('conversation.agentError.unknownError');
+    const diagnosticText = formatErrorDiagnosticText(
+      diagnostic.summary ? diagnostic : { ...diagnostic, summary: diagnosticSummary },
+      getErrorDiagnosticLabels((key) => t(key))
+    );
+    const code = structuredError?.code;
+    const ownership = structuredError?.ownership;
     const title = code
       ? t(`conversation.agentError.codes.${code}.title`, {
           defaultValue: t('conversation.agentError.fallbackTitle'),
@@ -186,37 +200,29 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
       : t('conversation.agentError.fallbackTitle');
     const body = code
       ? t(
-          structuredError.workspacePath
-            ? `conversation.agentError.codes.${code}.bodyWithPath`
-            : `conversation.agentError.codes.${code}.body`,
+          `conversation.agentError.codes.${code}.body`,
           {
-            workspacePath: structuredError.workspacePath,
-            defaultValue: structuredError.message || content,
+            defaultValue: diagnosticSummary,
           }
         )
-      : structuredError.message || content;
+      : diagnosticSummary;
     const ownershipLabel = ownership
       ? t(`conversation.agentError.ownership.${ownership}`, {
           defaultValue: t('conversation.agentError.ownership.unknown_upstream'),
         })
       : null;
     const retryHint =
-      structuredError.retryable === undefined
+      structuredError?.retryable === undefined
         ? null
         : structuredError.retryable
           ? t('conversation.agentError.retryable')
           : t('conversation.agentError.notRetryable');
-    const resolutionText = structuredError.resolution
+    const resolutionText = structuredError?.resolution
       ? t(`conversation.agentError.resolution.${structuredError.resolution.kind}`)
       : null;
-    const detailParts = [
-      code ? `${t('conversation.agentError.errorCode')}: ${code}` : '',
-      structuredError.detail || structuredError.message,
-    ].filter(Boolean);
     return (
       <div className='w-full'>
         <div className={classNames('message-error-note', ownership && `message-error-note--${ownership}`)}>
-          <div className='message-error-note__rail' aria-hidden='true' />
           <div className='message-error-note__content'>
             <div className='message-error-note__header'>
               <div className='message-error-note__status'>
@@ -227,8 +233,13 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                 {retryHint && (
                   <Tag
                     size='small'
-                    color={structuredError.retryable ? 'green' : 'gray'}
-                    className='message-error-note__tag'
+                    color={structuredError?.retryable ? 'green' : 'gray'}
+                    className={classNames(
+                      'message-error-note__tag',
+                      structuredError?.retryable
+                        ? 'message-error-note__tag--retryable'
+                        : 'message-error-note__tag--neutral'
+                    )}
                   >
                     {retryHint}
                   </Tag>
@@ -239,6 +250,12 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
             <div className='message-error-note__main'>
               <div className='message-error-note__title'>{title}</div>
               <div className='message-error-note__body'>{body}</div>
+              <div className='message-error-note__diagnostic-summary' role='status'>
+                <span className='message-error-note__diagnostic-label'>
+                  {t('conversation.agentError.diagnosticSummary')}
+                </span>
+                <span className='message-error-note__diagnostic-text'>{diagnosticSummary}</span>
+              </div>
               {resolutionText && (
                 <div className='message-error-note__resolution'>
                   <span className='message-error-note__resolution-label'>
@@ -249,7 +266,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
               )}
               <div className='message-error-note__footer'>
                 <div className='message-error-note__footer-main'>
-                  {detailParts.length > 0 && (
+                  {diagnosticText.length > 0 && (
                     <Collapse bordered={false} className='message-error-note__details'>
                       <Collapse.Item
                         name='technical-details'
@@ -257,51 +274,55 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                           <span className='message-error-note__details-label'>{t('common.technical_details')}</span>
                         }
                       >
-                        <div className='message-error-note__detail-body'>{detailParts.join('\n')}</div>
+                        <pre className='message-error-note__detail-body'>{diagnosticText}</pre>
                       </Collapse.Item>
                     </Collapse>
                   )}
-                  {shouldShowFeedback && (
-                    <div className='message-error-note__actions'>
-                      {retryPayload && (
-                        <Button
-                          size='mini'
-                          type='primary'
-                          className='message-error-note__retry'
-                          onClick={() => {
-                            emitter.emit('sendbox.retry', {
-                              content: retryPayload.content,
-                              ...(retryPayload.msgId ? { msgId: retryPayload.msgId } : {}),
-                              ...(retryPayload.createdAt ? { createdAt: retryPayload.createdAt } : {}),
-                            });
-                          }}
-                        >
-                          {t('conversation.agentError.retryAction', { defaultValue: 'Retry' })}
-                        </Button>
-                      )}
-                      {recoveryAction && (
-                        <Button
-                          size='mini'
-                          className='message-error-note__recovery'
-                          data-testid='message-error-recovery'
-                          onClick={() => {
-                            trackFunnelEvent('prerequisite_resolved', {
-                              kind: recoveryAction.source,
-                              source: 'error_recovery',
-                            });
-                            navigate(recoveryAction.href);
-                          }}
-                        >
-                          {recoveryAction.label}
-                        </Button>
-                      )}
-                      {editButton}
-                      <FeedbackButton
-                        conversationErrorReport={conversationErrorReport}
-                        className='message-error-note__feedback'
-                      />
-                    </div>
-                  )}
+                  <div className='message-error-note__actions'>
+                    {retryPayload && (
+                      <Button
+                        size='mini'
+                        type='primary'
+                        className='message-error-note__retry'
+                        onClick={() => {
+                          emitter.emit('sendbox.retry', {
+                            content: retryPayload.content,
+                            ...(retryPayload.msgId ? { msgId: retryPayload.msgId } : {}),
+                            ...(retryPayload.createdAt ? { createdAt: retryPayload.createdAt } : {}),
+                          });
+                        }}
+                      >
+                        {t('conversation.agentError.retryAction', { defaultValue: 'Retry' })}
+                      </Button>
+                    )}
+                    {!retryPayload && recoveryAction && (
+                      <Button
+                        size='mini'
+                        className='message-error-note__recovery'
+                        data-testid='message-error-recovery'
+                        onClick={() => {
+                          trackFunnelEvent('prerequisite_resolved', {
+                            kind: recoveryAction.source,
+                            source: 'error_recovery',
+                          });
+                          navigate(recoveryAction.href);
+                        }}
+                      >
+                        {recoveryAction.label}
+                      </Button>
+                    )}
+                    {editButton}
+                    <CopyIconButton
+                      text={diagnosticText}
+                      tooltip={t('conversation.agentError.copyDiagnostic')}
+                      successMessage={t('conversation.agentError.copyDiagnosticSuccess')}
+                      className='message-error-note__copy'
+                    />
+                    <FeedbackButton
+                      conversationErrorReport={conversationErrorReport}
+                      className='message-error-note__feedback'
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -323,44 +344,6 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
               </MarkdownView>
             </div>
           </div>
-          {type === 'error' && (
-            <div className='flex justify-end gap-8px'>
-              {retryPayload && (
-                <Button
-                  size='mini'
-                  type='primary'
-                  className='message-error-note__retry'
-                  onClick={() => {
-                    emitter.emit('sendbox.retry', {
-                      content: retryPayload.content,
-                      ...(retryPayload.msgId ? { msgId: retryPayload.msgId } : {}),
-                      ...(retryPayload.createdAt ? { createdAt: retryPayload.createdAt } : {}),
-                    });
-                  }}
-                >
-                  {t('conversation.agentError.retryAction', { defaultValue: 'Retry' })}
-                </Button>
-              )}
-              {recoveryAction && (
-                <Button
-                  size='mini'
-                  className='message-error-note__recovery'
-                  data-testid='message-error-recovery'
-                  onClick={() => {
-                    trackFunnelEvent('prerequisite_resolved', {
-                      kind: recoveryAction.source,
-                      source: 'error_recovery',
-                    });
-                    navigate(recoveryAction.href);
-                  }}
-                >
-                  {recoveryAction.label}
-                </Button>
-              )}
-              {editButton}
-              <FeedbackButton conversationErrorReport={conversationErrorReport} />
-            </div>
-          )}
         </div>
       </div>
     );
@@ -375,44 +358,6 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
             </CollapsibleContent>
           </div>
         </div>
-        {shouldShowFeedback && (
-          <div className='flex justify-end gap-8px'>
-            {retryPayload && (
-              <Button
-                size='mini'
-                type='primary'
-                className='message-error-note__retry'
-                onClick={() => {
-                  emitter.emit('sendbox.retry', {
-                    content: retryPayload.content,
-                    ...(retryPayload.msgId ? { msgId: retryPayload.msgId } : {}),
-                    ...(retryPayload.createdAt ? { createdAt: retryPayload.createdAt } : {}),
-                  });
-                }}
-              >
-                {t('conversation.agentError.retryAction', { defaultValue: 'Retry' })}
-              </Button>
-            )}
-            {recoveryAction && (
-              <Button
-                size='mini'
-                className='message-error-note__recovery'
-                data-testid='message-error-recovery'
-                onClick={() => {
-                  trackFunnelEvent('prerequisite_resolved', {
-                    kind: recoveryAction.source,
-                    source: 'error_recovery',
-                  });
-                  navigate(recoveryAction.href);
-                }}
-              >
-                {recoveryAction.label}
-              </Button>
-            )}
-            {editButton}
-            <FeedbackButton conversationErrorReport={conversationErrorReport} />
-          </div>
-        )}
       </div>
     </div>
   );

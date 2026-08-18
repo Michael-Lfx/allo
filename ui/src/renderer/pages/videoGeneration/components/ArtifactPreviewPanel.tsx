@@ -8,6 +8,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Modal, Spin } from '@arco-design/web-react';
 import { Edit, Refresh, Upload } from '@icon-park/react';
+import ErrorDiagnosticContent from '@/renderer/components/base/ErrorDiagnosticContent';
+import { buildUnknownErrorDiagnostic } from '@/renderer/utils/ui/errorDiagnostics';
 import {
   getArtifactImagePrompt,
   replaceArtifactFile,
@@ -98,7 +100,14 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
     } catch (e) {
       Modal.error({
         title: t('videoGeneration.artifacts.saveFailed', { defaultValue: '保存失败' }),
-        content: e instanceof Error ? e.message : String(e),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              e,
+              t('videoGeneration.artifacts.saveFailed', { defaultValue: '保存失败' })
+            )}
+          />
+        ),
       });
     } finally {
       setSaving(false);
@@ -121,7 +130,14 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
       } catch (e) {
         Modal.error({
           title: t('videoGeneration.artifacts.replaceFailed', { defaultValue: '替换失败' }),
-          content: e instanceof Error ? e.message : String(e),
+          content: (
+            <ErrorDiagnosticContent
+              diagnostic={buildUnknownErrorDiagnostic(
+                e,
+                t('videoGeneration.artifacts.replaceFailed', { defaultValue: '替换失败' })
+              )}
+            />
+          ),
         });
       } finally {
         setReplacing(false);
@@ -154,7 +170,14 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
         title: t('videoGeneration.artifacts.promptLoadFailed', {
           defaultValue: '无法加载生图提示词',
         }),
-        content: e instanceof Error ? e.message : String(e),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              e,
+              t('videoGeneration.artifacts.promptLoadFailed', { defaultValue: '无法加载生图提示词' })
+            )}
+          />
+        ),
       });
     } finally {
       setPromptLoading(false);
@@ -181,7 +204,14 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
         title: t('videoGeneration.artifacts.promptSaveFailed', {
           defaultValue: '提示词保存失败',
         }),
-        content: e instanceof Error ? e.message : String(e),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              e,
+              t('videoGeneration.artifacts.promptSaveFailed', { defaultValue: '提示词保存失败' })
+            )}
+          />
+        ),
       });
     } finally {
       setPromptSaving(false);

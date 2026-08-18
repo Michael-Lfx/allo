@@ -13,6 +13,8 @@ import { Input, Modal, Popconfirm } from '@arco-design/web-react';
 import { Check, Close, Delete, Down, Plus, Up } from '@icon-park/react';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import ErrorDiagnosticContent from '@/renderer/components/base/ErrorDiagnosticContent';
+import { buildUnknownErrorDiagnostic } from '@/renderer/utils/ui/errorDiagnostics';
 
 // ─── Color palette (theme-safe presets) ─────────────────────────────────────
 
@@ -39,12 +41,6 @@ export type KnowledgeTagManagementModalProps = {
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-const errorText = (error: unknown): string => {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
-  return '';
-};
 
 // ─── Color dot ──────────────────────────────────────────────────────────────
 
@@ -292,7 +288,14 @@ const KnowledgeTagManagementModal: React.FC<KnowledgeTagManagementModalProps> = 
       console.error('Failed to create knowledge tag:', error);
       Modal.error({
         title: t('knowledge.tags.createFailed', { defaultValue: 'Failed to create tag' }),
-        content: errorText(error),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              error,
+              t('knowledge.tags.createFailed', { defaultValue: 'Failed to create tag' })
+            )}
+          />
+        ),
       });
     } finally {
       setBusy(false);
@@ -307,7 +310,14 @@ const KnowledgeTagManagementModal: React.FC<KnowledgeTagManagementModalProps> = 
       console.error('Failed to rename knowledge tag:', error);
       Modal.error({
         title: t('knowledge.tags.renameFailed', { defaultValue: 'Failed to rename tag' }),
-        content: errorText(error),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              error,
+              t('knowledge.tags.renameFailed', { defaultValue: 'Failed to rename tag' })
+            )}
+          />
+        ),
       });
     } finally {
       setBusy(false);
@@ -367,7 +377,14 @@ const KnowledgeTagManagementModal: React.FC<KnowledgeTagManagementModalProps> = 
       console.error('Failed to delete knowledge tag:', error);
       Modal.error({
         title: t('knowledge.tags.deleteFailed', { defaultValue: 'Failed to delete tag' }),
-        content: errorText(error),
+        content: (
+          <ErrorDiagnosticContent
+            diagnostic={buildUnknownErrorDiagnostic(
+              error,
+              t('knowledge.tags.deleteFailed', { defaultValue: 'Failed to delete tag' })
+            )}
+          />
+        ),
       });
     } finally {
       setBusy(false);

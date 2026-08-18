@@ -24,6 +24,8 @@ import type {
   ICloudImLogUploadResponse,
 } from '@/common/adapter/ipcBridge';
 import { useCloudAuth } from '@/renderer/hooks/context/CloudAuthContext';
+import ErrorDiagnosticContent from '@/renderer/components/base/ErrorDiagnosticContent';
+import { buildAgentErrorDiagnostic } from '@/renderer/utils/ui/errorDiagnostics';
 import { supportChatApi } from './api/supportChatApi';
 import { collectSupportDeviceInfo } from './collectSupportDeviceInfo';
 import { collectSupportLogUserInfo } from './collectSupportLogUserInfo';
@@ -406,6 +408,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
       const clientMsgId = crypto.randomUUID();
       const content = t('common.supportChat.uploadLogsDefaultContent');
+      const diagnostic = buildAgentErrorDiagnostic(context.error);
       let preparedLogPayload: ICloudImAttachmentPayload | undefined;
 
       const prepareLogPayload = async (): Promise<ICloudImAttachmentPayload> => {
@@ -441,11 +444,7 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
           <div className='text-13px leading-20px text-t-secondary'>
             <p className='m-0'>{t('settings.bugReportAutoInfo')}</p>
             <p className='m-0 mt-8px'>{t('common.supportChat.uploadLogsConfirm')}</p>
-            {context.error.code ? (
-              <div className='conversation-error-report-code'>
-                {t('conversation.agentError.errorCode')}: {context.error.code}
-              </div>
-            ) : null}
+            <ErrorDiagnosticContent diagnostic={diagnostic} className='conversation-error-diagnostic--support' />
           </div>
         ),
         okText: t('settings.bugReportSubmit'),
