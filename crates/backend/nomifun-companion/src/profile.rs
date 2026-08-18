@@ -313,6 +313,8 @@ pub const MAX_VAD_MIN_SILENCE_MS: u32 = 3000;
 pub const DEFAULT_COMPANION_CHAT_MODEL: &str = "AIPC-deepseek-v4-flash";
 pub const DEFAULT_COMPANION_ASR_MODEL: &str = "AIPC-qwen3-asr-flash";
 pub const DEFAULT_COMPANION_VISION_MODEL: &str = "AIPC-Minimax-M3";
+pub const DEFAULT_COMPANION_TTS_MODEL: &str = "AIPC-qwen3-tts";
+pub const DEFAULT_COMPANION_TTS_VOICE: &str = "Cherry";
 
 fn default_companion_slot(model: &str) -> ProviderWithModel {
     ProviderWithModel {
@@ -519,6 +521,11 @@ impl CompanionProfileConfig {
             vision_model: Some(default_companion_slot(DEFAULT_COMPANION_VISION_MODEL)),
             voice: CompanionVoiceConfig {
                 asr: Some(default_companion_slot(DEFAULT_COMPANION_ASR_MODEL)),
+                tts: Some(CompanionTtsSelection {
+                    provider_id: FLOWY_BUILTIN_PROVIDER_ID.to_owned(),
+                    model: DEFAULT_COMPANION_TTS_MODEL.to_owned(),
+                    voice: Some(DEFAULT_COMPANION_TTS_VOICE.to_owned()),
+                }),
                 ..CompanionVoiceConfig::default()
             },
             learn: CompanionLearnConfig::default(),
@@ -1055,7 +1062,10 @@ mod tests {
         assert_eq!(vision.provider_id, FLOWY_BUILTIN_PROVIDER_ID);
         assert_eq!(vision.model, DEFAULT_COMPANION_VISION_MODEL);
         assert_eq!(profile.fallback_model, None);
-        assert_eq!(profile.voice.tts, None);
+        let tts = profile.voice.tts.as_ref().expect("tts slot");
+        assert_eq!(tts.provider_id, FLOWY_BUILTIN_PROVIDER_ID);
+        assert_eq!(tts.model, DEFAULT_COMPANION_TTS_MODEL);
+        assert_eq!(tts.voice.as_deref(), Some(DEFAULT_COMPANION_TTS_VOICE));
     }
 
     #[test]
@@ -1540,6 +1550,7 @@ mod tests {
                 ("chat", DEFAULT_COMPANION_CHAT_MODEL),
                 ("vision", DEFAULT_COMPANION_VISION_MODEL),
                 ("asr", DEFAULT_COMPANION_ASR_MODEL),
+                ("tts", DEFAULT_COMPANION_TTS_MODEL),
             ]
         );
 

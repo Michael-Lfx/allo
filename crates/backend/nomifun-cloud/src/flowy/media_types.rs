@@ -12,6 +12,9 @@ pub const MODEL_CATEGORY_VIDEO: i32 = 4;
 /// `tb_model.category` for ASR models (`GET .../model/availableListClaw?category=7`).
 pub const MODEL_CATEGORY_ASR: i32 = 7;
 
+/// `tb_model.category` for TTS models (`GET .../model/availableListClaw?category=8`).
+pub const MODEL_CATEGORY_TTS: i32 = 8;
+
 /// Local `tb_video_task.status` — succeeded.
 pub const VIDEO_TASK_STATUS_SUCCEEDED: i32 = 4;
 

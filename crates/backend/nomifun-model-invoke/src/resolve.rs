@@ -224,7 +224,14 @@ impl ModelInvokeService {
             .and_then(|r| r.protocol.as_deref())
             .map(str::trim)
             .filter(|p| !p.is_empty());
-        let protocol = row_protocol.unwrap_or(route.protocol);
+        let protocol = if provider.provider_id == FLOWY_BUILTIN_PROVIDER_ID
+            && task == ModelTask::SpeechSynthesis
+            && row_protocol.is_none()
+        {
+            "flowy.audio_speech"
+        } else {
+            row_protocol.unwrap_or(route.protocol)
+        };
         let role = row
             .as_ref()
             .and_then(|r| r.connection_role.as_deref())
@@ -343,7 +350,7 @@ mod tests {
 
     use super::*;
     use crate::adapter::AdapterRegistry;
-    use crate::types::{AsrRequest, ChatTextRequest, ImageGenRequest, InputAsset};
+    use crate::types::{AsrRequest, ChatTextRequest, ImageGenRequest, InputAsset, TtsRequest};
     use crate::{TaskOutcome, TaskResult};
 
     const TEST_KEY: [u8; 32] = [0x42; 32];
@@ -381,6 +388,8 @@ mod tests {
         vec![
             fake("openai.images", &[ImageGeneration, ImageEdit]),
             fake("openai.chat_text", &[Chat]),
+            fake("openai.audio_speech", &[SpeechSynthesis]),
+            fake("flowy.audio_speech", &[SpeechSynthesis]),
             fake("custom.images", &[ImageGeneration]),
             fake("volc.asr_file", &[SpeechRecognition]),
             fake("deepgram.listen", &[SpeechRecognition]),
@@ -484,6 +493,15 @@ mod tests {
             audio: InputAsset { id: None, role: "audio".into(), bytes: vec![1], mime: "audio/wav".into() },
             language: None,
             prompt: None,
+            extra: json!({}),
+        })
+    }
+
+    fn tts_request() -> TaskRequest {
+        TaskRequest::SpeechSynthesis(TtsRequest {
+            text: "今天天气真不错".into(),
+            voice: None,
+            format: None,
             extra: json!({}),
         })
     }
@@ -766,6 +784,62 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(adapter.id(), "custom.images");
+    }
+
+    #[tokio::test]
+    async fn flowy_cloud_tts_uses_claw_speech_protocol() {
+        let (svc, pool) = setup(full_registry()).await;
+        let encrypted = encrypt_string("cloud-key", &TEST_KEY).unwrap();
+        SqliteProviderRepository::new(pool.clone())
+            .create(CreateProviderParams {
+                provider_id: Some(FLOWY_BUILTIN_PROVIDER_ID),
+                platform: "openai",
+                name: "Flowy Cloud",
+                base_url: "https://api.example.com/v1",
+                api_key_encrypted: &encrypted,
+                models: "[]",
+                enabled: true,
+                model_context_limits: None,
+                model_protocols: None,
+                model_descriptions: None,
+                model_enabled: None,
+                bedrock_config: None,
+                is_full_url: false,
+                sort_order: None,
+            })
+            .await
+            .unwrap();
+        seed_model(
+            &pool,
+            FLOWY_BUILTIN_PROVIDER_ID,
+            "AIPC-qwen3-tts",
+            r#"["speech_synthesis"]"#,
+            None,
+            true,
+        )
+        .await;
+        let (_, adapter) = svc
+            .resolve(
+                &mref(FLOWY_BUILTIN_PROVIDER_ID, "AIPC-qwen3-tts"),
+                ModelTask::SpeechSynthesis,
+                tts_request(),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(adapter.id(), "flowy.audio_speech");
+    }
+
+    #[tokio::test]
+    async fn other_openai_tts_keeps_audio_speech_protocol() {
+        let (svc, pool) = setup(full_registry()).await;
+        let pid = seed_provider(&pool, "openai", true).await;
+        seed_model(&pool, &pid, "tts-1", r#"["speech_synthesis"]"#, None, true).await;
+        let (_, adapter) = svc
+            .resolve(&mref(&pid, "tts-1"), ModelTask::SpeechSynthesis, tts_request(), true)
+            .await
+            .unwrap();
+        assert_eq!(adapter.id(), "openai.audio_speech");
     }
 
     #[tokio::test]

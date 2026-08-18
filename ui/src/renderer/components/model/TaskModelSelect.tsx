@@ -92,7 +92,7 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
   const providerId = draftProviderId;
   const selectedModel = value?.provider_id === providerId ? value.model : null;
   const currentPlatform = state.providers.find((p) => p.id === providerId)?.platform;
-  const voices = voiceOptions ?? ttsVoiceOptionsFor(currentPlatform);
+  const voices = voiceOptions ?? ttsVoiceOptionsFor(currentPlatform, providerId);
   const selectedVoice = value?.provider_id === providerId ? (value.voice ?? null) : null;
 
   const hint =

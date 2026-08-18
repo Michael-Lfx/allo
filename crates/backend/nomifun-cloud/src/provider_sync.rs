@@ -1,11 +1,12 @@
 //! Sync the logged-in Flowy JWT and server model catalog into the built-in provider row.
 //!
 //! The local `providers.models` JSON is a **projection** of the upstream
-//! `availableListClaw` catalog (chat `category=1` plus ASR `category=7`).
+//! `availableListClaw` catalog (chat `category=1`, ASR `category=7`, TTS
+//! `category=8`).
 //! On a successful chat catalog fetch it is fully replaced (delisted models
 //! must disappear). Transient chat-catalog failures must **not** wipe or invent
-//! models. A failed ASR fetch is soft: chat models still replace, and ASR
-//! entries are omitted until the next successful category=7 pull.
+//! models. A failed ASR or TTS fetch is soft: chat models still replace, and
+//! the missing modality is omitted until the next successful pull.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -20,7 +21,7 @@ use nomifun_db::{
 use tracing::{info, warn};
 
 use crate::config_defaults::FLOWY_BUILTIN_PROVIDER_ID;
-use crate::flowy::{ClawModelEntry, FlowyApiClient, MODEL_CATEGORY_ASR};
+use crate::flowy::{ClawModelEntry, FlowyApiClient, MODEL_CATEGORY_ASR, MODEL_CATEGORY_TTS};
 use crate::session::ServerSession;
 
 /// Upsert Flowy Cloud provider with JWT + server model catalog for the model
@@ -188,14 +189,17 @@ fn build_profile_seeds(
         }
         let extra = entry.model_extra();
         let is_asr = entry.category == MODEL_CATEGORY_ASR;
+        let is_tts = entry.category == MODEL_CATEGORY_TTS;
         let (mut tasks, mut traits) = if is_asr {
             (vec![ModelTask::SpeechRecognition], Vec::new())
+        } else if is_tts {
+            (vec![ModelTask::SpeechSynthesis], Vec::new())
         } else {
             derive_tasks_and_traits(platform, &model)
         };
         // Catalog `extra` is authoritative for Flowy chat capabilities that
         // name heuristics cannot see (reasoning + selectable effort levels).
-        if !is_asr {
+        if !is_asr && !is_tts {
             if extra.reasoning && !traits.contains(&nomifun_api_types::ModelTrait::Reasoning) {
                 traits.push(nomifun_api_types::ModelTrait::Reasoning);
             }
@@ -211,7 +215,7 @@ fn build_profile_seeds(
                 tasks.push(ModelTask::Chat);
             }
         }
-        let catalog_vision = if is_asr {
+        let catalog_vision = if is_asr || is_tts {
             None
         } else {
             Some(extra.supports_vision())
@@ -239,9 +243,10 @@ async fn fetch_catalog_models(
 ) -> Result<Vec<ClawModelEntry>, String> {
     let _ = data_dir;
     let api = FlowyApiClient::new(server).map_err(|e| e.to_string())?;
-    let (chat_res, asr_res) = tokio::join!(
+    let (chat_res, asr_res, tts_res) = tokio::join!(
         api.get_available_models_claw(session, None),
         api.get_available_models_claw(session, Some(MODEL_CATEGORY_ASR)),
+        api.get_available_models_claw(session, Some(MODEL_CATEGORY_TTS)),
     );
     let chat = chat_res.map_err(|e| e.to_string())?;
     for entry in &chat.cloud {
@@ -254,16 +259,32 @@ async fn fetch_catalog_models(
     let asr = match asr_res {
         Ok(resp) => resp.cloud,
         Err(e) => {
-            warn!("Failed to fetch Flowy ASR catalog (category=7): {e}; syncing chat models only");
+            warn!("Failed to fetch Flowy ASR catalog (category=7): {e}; syncing without ASR models");
             Vec::new()
         }
     };
-    Ok(merge_chat_and_asr_catalogs(chat.cloud, asr))
+    let tts = match tts_res {
+        Ok(resp) => resp.cloud,
+        Err(e) => {
+            warn!("Failed to fetch Flowy TTS catalog (category=8): {e}; syncing without TTS models");
+            Vec::new()
+        }
+    };
+    Ok(merge_catalog_modalities(chat.cloud, asr, tts))
 }
 
+#[cfg(test)]
 fn merge_chat_and_asr_catalogs(
     chat: Vec<ClawModelEntry>,
     asr: Vec<ClawModelEntry>,
+) -> Vec<ClawModelEntry> {
+    merge_catalog_modalities(chat, asr, Vec::new())
+}
+
+fn merge_catalog_modalities(
+    chat: Vec<ClawModelEntry>,
+    asr: Vec<ClawModelEntry>,
+    tts: Vec<ClawModelEntry>,
 ) -> Vec<ClawModelEntry> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -275,13 +296,23 @@ fn merge_chat_and_asr_catalogs(
             out.push(entry);
         }
     }
-    for mut entry in asr {
-        entry.category = MODEL_CATEGORY_ASR;
+    append_stamped_catalog(&mut out, &mut seen, asr, MODEL_CATEGORY_ASR);
+    append_stamped_catalog(&mut out, &mut seen, tts, MODEL_CATEGORY_TTS);
+    out
+}
+
+fn append_stamped_catalog(
+    out: &mut Vec<ClawModelEntry>,
+    seen: &mut HashSet<String>,
+    entries: Vec<ClawModelEntry>,
+    category: i32,
+) {
+    for mut entry in entries {
+        entry.category = category;
         if seen.insert(entry.api_model_id()) {
             out.push(entry);
         }
     }
-    out
 }
 
 #[derive(Debug, Clone)]
@@ -631,6 +662,59 @@ mod tests {
     }
 
     #[test]
+    fn tts_catalog_entries_seed_speech_synthesis_only() {
+        let seeds = build_profile_seeds(
+            &[
+                catalog_entry("AIPC-glm-4.7", "{}"),
+                catalog_entry_with_category("AIPC-qwen3-tts", "{}", MODEL_CATEGORY_TTS),
+            ],
+            "openai",
+        )
+        .unwrap();
+
+        let chat = seeds.iter().find(|seed| seed.model == "AIPC-glm-4.7").unwrap();
+        assert_eq!(seed_tasks(chat), vec!["chat"]);
+
+        let tts = seeds
+            .iter()
+            .find(|seed| seed.model == "AIPC-qwen3-tts")
+            .unwrap();
+        assert_eq!(seed_tasks(tts), vec!["speech_synthesis"]);
+        assert_eq!(tts.catalog_vision, None);
+    }
+
+    #[test]
+    fn merge_catalog_modalities_appends_tts_after_asr() {
+        let merged = merge_catalog_modalities(
+            vec![catalog_entry("AIPC-glm-4.7", "{}")],
+            vec![catalog_entry("AIPC-qwen3-asr-flash", "{}")],
+            vec![catalog_entry("AIPC-qwen3-tts", "{}")],
+        );
+        assert_eq!(
+            merged
+                .iter()
+                .map(|entry| (entry.api_model_id(), entry.category))
+                .collect::<Vec<_>>(),
+            vec![
+                ("AIPC-glm-4.7".to_string(), 1),
+                ("AIPC-qwen3-asr-flash".to_string(), MODEL_CATEGORY_ASR),
+                ("AIPC-qwen3-tts".to_string(), MODEL_CATEGORY_TTS),
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_catalog_modalities_does_not_let_tts_replace_a_chat_id() {
+        let merged = merge_catalog_modalities(
+            vec![catalog_entry("AIPC-shared", "{}")],
+            Vec::new(),
+            vec![catalog_entry_with_category("AIPC-shared", "{}", MODEL_CATEGORY_TTS)],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].category, 1);
+    }
+
+    #[test]
     fn merge_chat_and_asr_catalogs_stamps_asr_category_and_keeps_chat_first() {
         let merged = merge_chat_and_asr_catalogs(
             vec![catalog_entry("AIPC-glm-4.7", "{}")],
@@ -748,6 +832,65 @@ mod tests {
         assert_eq!(
             entries.iter().map(|e| e.api_model_id()).collect::<Vec<_>>(),
             vec!["AIPC-glm-4.7".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_catalog_models_pulls_category_8_and_seeds_speech_synthesis_only() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model/availableListClaw"))
+            .and(query_param("category", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-glm-4.7","name":"GLM 4.7"}]}}"#,
+            ))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/model/availableListClaw"))
+            .and(query_param("category", "7"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"cloud":[]}}"#,
+            ))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/model/availableListClaw"))
+            .and(query_param("category", "8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-qwen3-tts","name":"qwen3-tts","category":8}]}}"#,
+            ))
+            .mount(&mock)
+            .await;
+
+        let config = ServerConfig {
+            base_url: mock.uri(),
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        unsafe { std::env::set_var("NOMIFUN_SERVER_TOKEN", "jwt-test-catalog-tts") };
+        let session = ServerSession::from_config(&config, tmp.path());
+        let entries = fetch_catalog_models(&config, &session, tmp.path())
+            .await
+            .expect("catalog");
+        let seeds = build_profile_seeds(&entries, "openai").unwrap();
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.api_model_id(), entry.category))
+                .collect::<Vec<_>>(),
+            vec![
+                ("AIPC-glm-4.7".to_string(), 1),
+                ("AIPC-qwen3-tts".to_string(), MODEL_CATEGORY_TTS),
+            ]
+        );
+        assert_eq!(
+            seed_tasks(seeds.iter().find(|s| s.model == "AIPC-qwen3-tts").unwrap()),
+            vec!["speech_synthesis"]
         );
     }
 

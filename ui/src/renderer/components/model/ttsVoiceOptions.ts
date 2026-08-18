@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { FLOWY_BUILTIN_PROVIDER_ID, type ProviderId } from '@/common/types/ids';
+
 /**
  * Candidate voice ids offered by the TTS variant of `TaskModelSelect`.
  *
@@ -48,5 +50,18 @@ export const TTS_VOICE_OPTIONS_BY_PLATFORM: Record<string, readonly string[]> = 
   ],
 };
 
-export const ttsVoiceOptionsFor = (platform: string | undefined): readonly string[] =>
-  (platform && TTS_VOICE_OPTIONS_BY_PLATFORM[platform]) || [];
+/** Qwen3-TTS voices used by Flowy Cloud `AIPC-qwen3-tts`. */
+export const FLOWY_CLOUD_TTS_VOICES: readonly string[] = ['Cherry', 'Serena', 'Ethan', 'Chelsie'];
+
+export const ttsVoiceOptionsFor = (
+  platform: string | undefined,
+  providerId?: ProviderId | string | null
+): readonly string[] => {
+  if (
+    providerId === FLOWY_BUILTIN_PROVIDER_ID ||
+    providerId === 'flowy-cloud'
+  ) {
+    return FLOWY_CLOUD_TTS_VOICES;
+  }
+  return (platform && TTS_VOICE_OPTIONS_BY_PLATFORM[platform]) || [];
+};

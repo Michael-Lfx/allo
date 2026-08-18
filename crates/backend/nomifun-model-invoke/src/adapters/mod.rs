@@ -32,7 +32,7 @@
 //!   video submit/status protocols.
 //! - [`xai`] — xAI JSON image/edit, deferred video, `/tts`, and `/stt`
 //!   protocols.
-//! - [`zhipu`] — Zhipu v4 asynchronous video submit/result protocol.
+//! - [`flowy_audio`] — Flowy Cloud claw non-streaming TTS (`"flowy.audio_speech"`).
 
 use std::sync::Arc;
 
@@ -55,6 +55,7 @@ pub(crate) fn has_endpoint_override(params: &serde_json::Value) -> bool {
 pub mod ark;
 pub mod dashscope;
 pub mod deepgram;
+pub mod flowy_audio;
 pub mod gemini;
 pub mod generic_rerank;
 pub mod minimax;
@@ -81,6 +82,7 @@ pub fn default_adapters() -> Vec<Arc<dyn ProtocolAdapter>> {
         Arc::new(generic_rerank::GenericRerankAdapter),
         Arc::new(openai_audio::OpenAiAudioTranscriptionsAdapter),
         Arc::new(openai_audio::OpenAiAudioSpeechAdapter),
+        Arc::new(flowy_audio::FlowyAudioSpeechAdapter),
         Arc::new(gemini::GeminiGenerateContentAdapter),
         Arc::new(gemini::GeminiGenerateTextAdapter),
         Arc::new(deepgram::DeepgramListenAdapter),
@@ -155,6 +157,7 @@ mod tests {
             ("generic.rerank", ModelTask::Rerank),
             ("openai.audio_transcriptions", ModelTask::SpeechRecognition),
             ("openai.audio_speech", ModelTask::SpeechSynthesis),
+            ("flowy.audio_speech", ModelTask::SpeechSynthesis),
             ("gemini.generate_content", ModelTask::ImageGeneration),
             ("gemini.generate_content", ModelTask::ImageEdit),
             ("gemini.generate_text", ModelTask::Chat),
@@ -181,7 +184,7 @@ mod tests {
             let adapter = registry.get(protocol, task).expect("registered + supported");
             assert_eq!(adapter.id(), protocol);
         }
-        assert_eq!(default_adapters().len(), 26);
+        assert_eq!(default_adapters().len(), 27);
         // Tasks outside an adapter's declared support are refused.
         assert!(registry.get("openai.images", ModelTask::Chat).is_err());
         assert!(registry.get("openai.videos", ModelTask::ImageGeneration).is_err());
@@ -189,6 +192,7 @@ mod tests {
         assert!(registry.get("openai.embeddings", ModelTask::Chat).is_err());
         assert!(registry.get("openai.audio_transcriptions", ModelTask::Chat).is_err());
         assert!(registry.get("openai.audio_speech", ModelTask::SpeechRecognition).is_err());
+        assert!(registry.get("flowy.audio_speech", ModelTask::SpeechRecognition).is_err());
         assert!(registry.get("gemini.generate_content", ModelTask::Chat).is_err());
         assert!(registry.get("gemini.generate_text", ModelTask::ImageGeneration).is_err());
         assert!(registry.get("deepgram.listen", ModelTask::SpeechSynthesis).is_err());

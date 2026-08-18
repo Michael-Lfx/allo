@@ -6,7 +6,8 @@
 
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { ttsVoiceOptionsFor, TTS_VOICE_OPTIONS_BY_PLATFORM } from './ttsVoiceOptions';
+import { FLOWY_BUILTIN_PROVIDER_ID } from '@/common/types/ids';
+import { FLOWY_CLOUD_TTS_VOICES, TTS_VOICE_OPTIONS_BY_PLATFORM, ttsVoiceOptionsFor } from './ttsVoiceOptions';
 
 const src = readFileSync(new URL('./TaskModelSelect.tsx', import.meta.url), 'utf8');
 const companionControl = readFileSync(
@@ -61,5 +62,7 @@ describe('tts voice candidates', () => {
     // verified would offer the user values that just fail at synthesis time.
     expect(ttsVoiceOptionsFor('some-gateway')).toEqual([]);
     expect(ttsVoiceOptionsFor(undefined)).toEqual([]);
+    expect(ttsVoiceOptionsFor('openai', FLOWY_BUILTIN_PROVIDER_ID)).toEqual(FLOWY_CLOUD_TTS_VOICES);
+    expect(ttsVoiceOptionsFor('openai', FLOWY_BUILTIN_PROVIDER_ID).includes('Cherry')).toBe(true);
   });
 });

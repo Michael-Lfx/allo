@@ -18,7 +18,7 @@ pub use media::{
 };
 pub use media_types::{
     CreateVideoTaskResponse, ImageGenerationRequest, MODEL_CATEGORY_ASR, MODEL_CATEGORY_IMAGE,
-    MODEL_CATEGORY_VIDEO, OssPresignPutData, OssPresignPutRequest, VIDEO_TASK_STATUS_CANCELLED,
+    MODEL_CATEGORY_TTS, MODEL_CATEGORY_VIDEO, OssPresignPutData, OssPresignPutRequest, VIDEO_TASK_STATUS_CANCELLED,
     VIDEO_TASK_STATUS_EXPIRED, VIDEO_TASK_STATUS_FAILED, VIDEO_TASK_STATUS_SUCCEEDED,
     VideoContentImage, VideoCreateParams, VideoTaskRecord,
 };
