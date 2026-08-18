@@ -13,10 +13,11 @@ use serde::Deserialize;
 use url::form_urlencoded;
 
 use crate::models::{
-    AnswerReviewRequest, CheckinStatus, CourseJobSource, CoursePack, CreateCustomQuestionRequest,
-    CreateLessonActivityRequest, DeleteCourseRequest, GenerateCourseRequest,
-    GenerateLessonActivityRequest, GenerateLessonRequest, RateReviewRequest, SetTagsRequest,
-    SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
+    AnswerReviewRequest, CalendarStats, CheckinStatus, CourseJobSource, CoursePack,
+    CreateCustomQuestionRequest, CreateLessonActivityRequest, DeleteCourseRequest,
+    GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
+    RateReviewRequest, SetTagsRequest, SubmitAttemptRequest, UpdateLessonProgressRequest,
+    UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -71,6 +72,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         )
         .route("/api/learning/reviews/due", get(due_reviews))
         .route("/api/learning/checkins/today", get(checkin_today))
+        .route("/api/learning/stats/calendar", get(calendar_stats))
         .route("/api/learning/tags", get(list_tags))
         .route("/api/learning/reviews/{id}/answer", post(answer_review))
         .route("/api/learning/reviews/{id}/rate", post(rate_review))
@@ -392,6 +394,46 @@ async fn checkin_today(
 ) -> Result<Json<ApiResponse<CheckinStatus>>, AppError> {
     Ok(Json(ApiResponse::ok(
         state.service.checkin_today(&user.id).await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct CalendarStatsQuery {
+    /// Minutes east of UTC (same sign as `SchedulerSettings::tz_offset_minutes`),
+    /// reported by the frontend as `-Date().getTimezoneOffset()`.
+    tz_offset: i32,
+    year: i64,
+    /// 1..=12; absent = year view (heatmap).
+    month: Option<u32>,
+}
+
+async fn calendar_stats(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(query): Query<CalendarStatsQuery>,
+) -> Result<Json<ApiResponse<CalendarStats>>, AppError> {
+    if !(-24 * 60..=24 * 60).contains(&query.tz_offset) {
+        return Err(AppError::BadRequest(format!(
+            "tz_offset out of range: {}",
+            query.tz_offset
+        )));
+    }
+    if !(1900..=2999).contains(&query.year) {
+        return Err(AppError::BadRequest(format!(
+            "year out of range: {}",
+            query.year
+        )));
+    }
+    if let Some(month) = query.month {
+        if !(1..=12).contains(&month) {
+            return Err(AppError::BadRequest(format!("month out of range: {month}")));
+        }
+    }
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .calendar_stats(&user.id, query.tz_offset, query.year, query.month)
+            .await?,
     )))
 }
 

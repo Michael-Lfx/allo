@@ -1,6 +1,8 @@
 import { httpRequest } from '@/common/adapter/httpBridge';
 import type {
   AttemptResult,
+  CalendarStats,
+  CheckinStatus,
   ConceptRef,
   CourseDetail,
   CourseJobView,
@@ -90,6 +92,12 @@ export const learningApi = {
     return httpRequest<DueReview[]>('GET', `${BASE}/reviews/due?${query.toString()}`);
   },
   listTags: () => httpRequest<string[]>('GET', `${BASE}/tags`),
+  checkinToday: () => httpRequest<CheckinStatus>('GET', `${BASE}/checkins/today`),
+  getCalendarStats: (year: number, month: number | undefined, tzOffset: number) =>
+    httpRequest<CalendarStats>(
+      'GET',
+      `${BASE}/stats/calendar?tz_offset=${tzOffset}&year=${year}${month ? `&month=${month}` : ''}`
+    ),
   setCourseTags: (id: string, request: SetTagsRequest) =>
     httpRequest<string[]>('PUT', `${BASE}/courses/${encodeURIComponent(id)}/tags`, request),
   setQuestionTags: (

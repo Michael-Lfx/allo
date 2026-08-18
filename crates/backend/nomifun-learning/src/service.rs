@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
+use chrono::Datelike;
 use nomifun_common::{
     AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptId,
     LearningCourseId, LearningEnrollmentId, LearningLessonId, LearningModuleId,
@@ -15,14 +16,14 @@ use sqlx::{Row, Sqlite, Transaction};
 
 use crate::generation::{Blueprint, generate_lesson, generate_lesson_activity};
 use crate::models::{
-    ActivityKind, ActivityView, AttemptResult, CheckinStatus, ConceptPack, ConceptRef,
-    ConceptView, CourseDetail, CourseJobSource, CourseJobStatus, CourseJobView, CoursePack,
-    CourseSummary, CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem,
-    DiagnosticPlan, DueReview, GenerateCourseRequest, GenerateLessonActivityRequest,
-    GenerateLessonRequest, GeneratedLessonActivity, LessonStatus, LessonView, ModuleView,
-    QuestionEntry, RetryCourseJobRequest, ReviewAnswerResult, ReviewQuestion, ReviewRating,
-    ReviewResult, ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig,
-    UpdateQuestionRequest,
+    ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
+    CalendarLessonRef, CalendarStats, CheckinStatus, ConceptPack, ConceptRef, ConceptView,
+    CourseDetail, CourseJobSource, CourseJobStatus, CourseJobView, CoursePack, CourseSummary,
+    CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem, DiagnosticPlan,
+    DueReview, GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
+    GeneratedLessonActivity, LessonStatus, LessonView, ModuleView, QuestionEntry,
+    RetryCourseJobRequest, ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult,
+    ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
 };
 use crate::generation_job::GenerationJobRunner;
 use crate::scheduler::{
@@ -3089,9 +3090,11 @@ impl LearningService {
     }
 
     /// Daily check-in status for the current review day. Completion is a
-    /// momentary snapshot: goal reached (when N > 0) or no cards due. Once
-    /// satisfied the day is locked in `learning_checkins`, so cards arriving
-    /// later keep showing in the queue without changing the check-in state.
+    /// momentary snapshot: goal reached (when N > 0), or the queue cleared
+    /// after at least one review today — an empty queue with zero reviews is
+    /// just the initial state and never completes the day. Once satisfied the
+    /// day is locked in `learning_checkins`, so cards arriving later keep
+    /// showing in the queue without changing the check-in state.
     pub async fn checkin_today(&self, user_id: &UserId) -> Result<CheckinStatus, AppError> {
         let now = now_ms();
         let tz_offset_minutes = self.tz_offset_minutes().await;
@@ -3135,7 +3138,9 @@ impl LearningService {
 
         let (completed, locked_at) = if let Some((_, completed_at)) = locked {
             (true, Some(completed_at))
-        } else if (goal > 0 && reviewed_count >= goal) || due_count == 0 {
+        } else if (goal > 0 && reviewed_count >= goal)
+            || (reviewed_count > 0 && due_count == 0)
+        {
             // Lock the review day; the UNIQUE(user_id, review_day) constraint
             // keeps concurrent evaluations idempotent.
             sqlx::query(
@@ -3173,6 +3178,204 @@ impl LearningService {
             completed,
             locked_at,
         })
+    }
+
+    /// Calendar aggregation for the learning page: review-day bucketed
+    /// activity (review counts, check-in completion, completed lessons and
+    /// created courses) plus the current streak. Every day of the requested
+    /// range is present, zero-filled when the user had no activity, so the
+    /// frontend can render a full grid without padding. The tz offset comes
+    /// from the request, not from client preferences, so a timezone change
+    /// takes effect immediately.
+    pub async fn calendar_stats(
+        &self,
+        user_id: &UserId,
+        tz_offset_minutes: i32,
+        year: i64,
+        month: Option<u32>,
+    ) -> Result<CalendarStats, AppError> {
+        let year = i32::try_from(year)
+            .map_err(|_| AppError::BadRequest(format!("year out of range: {year}")))?;
+        let (range_start, range_end) = match month {
+            Some(m) if (1..=12).contains(&m) => (
+                local_wall_clock_utc_ms(year, m, 1, 2, tz_offset_minutes).ok_or_else(|| {
+                    AppError::BadRequest(format!("invalid month range: {year}-{m}"))
+                })?,
+                local_wall_clock_utc_ms(
+                    if m == 12 { year + 1 } else { year },
+                    if m == 12 { 1 } else { m + 1 },
+                    1,
+                    2,
+                    tz_offset_minutes,
+                )
+                .ok_or_else(|| {
+                    AppError::BadRequest(format!("invalid month range: {year}-{m}"))
+                })?,
+            ),
+            Some(m) => {
+                return Err(AppError::BadRequest(format!("month out of range: {m}")));
+            }
+            None => (
+                local_wall_clock_utc_ms(year, 1, 1, 2, tz_offset_minutes)
+                    .ok_or_else(|| AppError::BadRequest("invalid year".into()))?,
+                local_wall_clock_utc_ms(year + 1, 1, 1, 2, tz_offset_minutes)
+                    .ok_or_else(|| AppError::BadRequest("invalid year".into()))?,
+            ),
+        };
+
+        // Review events bucketed by review day (02:00 rollover).
+        let mut reviewed: HashMap<i64, i64> = HashMap::new();
+        {
+            let rows = sqlx::query(
+                "SELECT created_at FROM learning_review_events \
+                 WHERE user_id = ? AND created_at >= ? AND created_at < ?",
+            )
+            .bind(user_id.as_str())
+            .bind(range_start)
+            .bind(range_end)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
+            for row in rows {
+                let created_at: i64 = row.try_get("created_at").map_err(internal)?;
+                *reviewed
+                    .entry(review_day_number(created_at, tz_offset_minutes))
+                    .or_insert(0) += 1;
+            }
+        }
+
+        // Completed check-in days within the year (review_day is YYYYMMDD).
+        let checkins: HashSet<i64> = sqlx::query_scalar(
+            "SELECT review_day FROM learning_checkins \
+             WHERE user_id = ? AND review_day >= ? AND review_day <= ?",
+        )
+        .bind(user_id.as_str())
+        .bind(i64::from(year) * 10_000 + 101)
+        .bind(i64::from(year) * 10_000 + 1231)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?
+        .into_iter()
+        .collect();
+
+        // Lessons the user completed, bucketed by review day.
+        let mut completed_lessons: HashMap<i64, Vec<CalendarLessonRef>> = HashMap::new();
+        {
+            let rows = sqlx::query(
+                "SELECT lp.completed_at, l.lesson_id, l.title \
+                 FROM learning_lesson_progress lp \
+                 JOIN learning_enrollments e ON e.enrollment_id = lp.enrollment_id \
+                 JOIN learning_lessons l ON l.lesson_id = lp.lesson_id \
+                 WHERE e.user_id = ? AND lp.status = 'completed' \
+                   AND lp.completed_at >= ? AND lp.completed_at < ?",
+            )
+            .bind(user_id.as_str())
+            .bind(range_start)
+            .bind(range_end)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
+            for row in rows {
+                let completed_at: i64 = row.try_get("completed_at").map_err(internal)?;
+                completed_lessons
+                    .entry(review_day_number(completed_at, tz_offset_minutes))
+                    .or_default()
+                    .push(CalendarLessonRef {
+                        lesson_id: row.try_get("lesson_id").map_err(internal)?,
+                        title: row.try_get("title").map_err(internal)?,
+                    });
+            }
+        }
+
+        // Courses created in range (global catalog, not per user).
+        let mut created_courses: HashMap<i64, Vec<CalendarCourseRef>> = HashMap::new();
+        {
+            let rows = sqlx::query(
+                "SELECT course_id, title, created_at FROM learning_courses \
+                 WHERE created_at >= ? AND created_at < ?",
+            )
+            .bind(range_start)
+            .bind(range_end)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
+            for row in rows {
+                let created_at: i64 = row.try_get("created_at").map_err(internal)?;
+                created_courses
+                    .entry(review_day_number(created_at, tz_offset_minutes))
+                    .or_default()
+                    .push(CalendarCourseRef {
+                        course_id: row.try_get("course_id").map_err(internal)?,
+                        title: row.try_get("title").map_err(internal)?,
+                    });
+            }
+        }
+
+        let current_review_day = review_day_number(now_ms(), tz_offset_minutes);
+        let streak = self.streak_days(user_id, current_review_day).await?;
+
+        // Zero-filled day range: every local calendar day of the request.
+        let mut cursor = chrono::NaiveDate::from_ymd_opt(year, 1, 1)
+            .ok_or_else(|| AppError::BadRequest("invalid year".into()))?;
+        if let Some(m) = month {
+            cursor = chrono::NaiveDate::from_ymd_opt(year, m, 1).ok_or_else(|| {
+                AppError::BadRequest(format!("invalid month range: {year}-{m}"))
+            })?;
+        }
+        let end = if month.is_some() && month != Some(12) {
+            chrono::NaiveDate::from_ymd_opt(year, month.unwrap() + 1, 1)
+        } else {
+            chrono::NaiveDate::from_ymd_opt(year + 1, 1, 1)
+        }
+        .ok_or_else(|| AppError::BadRequest("invalid range".into()))?;
+        let mut days = Vec::new();
+        while cursor < end {
+            let review_day =
+                i64::from(cursor.year()) * 10_000 + i64::from(cursor.month()) * 100
+                    + i64::from(cursor.day());
+            days.push(CalendarDayStats {
+                review_day,
+                reviewed_count: reviewed.get(&review_day).copied().unwrap_or(0),
+                checkin_completed: checkins.contains(&review_day),
+                completed_lessons: completed_lessons.remove(&review_day).unwrap_or_default(),
+                created_courses: created_courses.remove(&review_day).unwrap_or_default(),
+            });
+            cursor += chrono::Duration::days(1);
+        }
+
+        Ok(CalendarStats {
+            year: i64::from(year),
+            month: month.map(i64::from),
+            tz_offset: tz_offset_minutes,
+            streak,
+            days,
+        })
+    }
+
+    /// Consecutive completed check-in days ending at `current_review_day`.
+    /// The current day must itself be completed for the streak to continue;
+    /// a gap anywhere stops the count. Zero-review days never lock, so every
+    /// streak day contains real review activity.
+    async fn streak_days(&self, user_id: &UserId, current_review_day: i64) -> Result<i64, AppError> {
+        let days: HashSet<i64> = sqlx::query_scalar(
+            "SELECT review_day FROM learning_checkins WHERE user_id = ?",
+        )
+        .bind(user_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?
+        .into_iter()
+        .collect();
+        let mut streak = 0;
+        let mut day = current_review_day;
+        while days.contains(&day) {
+            streak += 1;
+            let Some(previous) = previous_review_day(day) else {
+                break;
+            };
+            day = previous;
+        }
+        Ok(streak)
     }
 
     pub async fn rate_review(
@@ -4347,6 +4550,35 @@ async fn ensure_review_item(
     .await
     .map_err(internal)?;
     Ok(())
+}
+
+/// Local wall-clock moment (year/month/day/hour) as UTC milliseconds for the
+/// given tz offset in minutes east of UTC. Returns None for out-of-range
+/// dates (e.g. year 0 or month 13).
+fn local_wall_clock_utc_ms(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    tz_offset_minutes: i32,
+) -> Option<i64> {
+    let naive = chrono::NaiveDate::from_ymd_opt(year, month, day)?.and_hms_opt(hour, 0, 0)?;
+    Some(
+        naive.and_utc().timestamp_millis() - i64::from(tz_offset_minutes) * 60_000,
+    )
+}
+
+/// Review day number (YYYYMMDD) of the day before the given one, using real
+/// date arithmetic so month and year boundaries stay correct.
+fn previous_review_day(review_day: i64) -> Option<i64> {
+    let year = (review_day / 10_000) as i32;
+    let month = ((review_day / 100) % 100) as u32;
+    let day = (review_day % 100) as u32;
+    let previous = chrono::NaiveDate::from_ymd_opt(year, month, day)?.pred_opt()?;
+    Some(
+        i64::from(previous.year()) * 10_000 + i64::from(previous.month()) * 100
+            + i64::from(previous.day()),
+    )
 }
 
 fn internal(error: impl std::fmt::Display) -> AppError {
@@ -5588,6 +5820,103 @@ mod tests {
             .unwrap()
     }
 
+    /// Seeds a completed check-in row for a specific review day (as the
+    /// locking logic would, with a snapshot reviewed_count of 1).
+    async fn insert_checkin(service: &LearningService, user_id: &UserId, review_day: i64) {
+        sqlx::query(
+            "INSERT INTO learning_checkins \
+             (checkin_id, user_id, review_day, goal, reviewed_count, completed_at) \
+             VALUES (?, ?, ?, 15, 1, ?)",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(review_day)
+        .bind(now_ms())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+
+    /// Seeds one course with one module and lesson, enrolled by `user_id`;
+    /// returns (course_id, lesson_id, enrollment_id).
+    async fn seed_course_with_lesson(
+        service: &LearningService,
+        user_id: &UserId,
+        created_at: i64,
+    ) -> (String, String, String) {
+        let now = now_ms();
+        let course_id = LearningCourseId::new().into_string();
+        let module_id = LearningModuleId::new().into_string();
+        let lesson_id = LearningLessonId::new().into_string();
+        let enrollment_id = LearningEnrollmentId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_courses \
+             (course_id, title, description, domain, version, created_at, updated_at) \
+             VALUES (?, 'Calendar test course', '', 'general', 1, ?, ?)",
+        )
+        .bind(&course_id)
+        .bind(created_at)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+             VALUES (?, ?, 'Module', '', 0)",
+        )
+        .bind(&module_id)
+        .bind(&course_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_lessons (lesson_id, module_id, title, summary, position) \
+             VALUES (?, ?, 'Lesson', '', 0)",
+        )
+        .bind(&lesson_id)
+        .bind(&module_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_enrollments \
+             (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&enrollment_id)
+        .bind(user_id.as_str())
+        .bind(&course_id)
+        .bind(now)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        (course_id, lesson_id, enrollment_id)
+    }
+
+    /// Marks a lesson as completed at `at` (started one minute earlier to
+    /// satisfy the progress CHECK constraint).
+    async fn complete_lesson(
+        service: &LearningService,
+        enrollment_id: &str,
+        lesson_id: &str,
+        at: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO learning_lesson_progress \
+             (enrollment_id, lesson_id, status, started_at, completed_at, updated_at) \
+             VALUES (?, ?, 'completed', ?, ?, ?)",
+        )
+        .bind(enrollment_id)
+        .bind(lesson_id)
+        .bind(at - 60_000)
+        .bind(at)
+        .bind(at)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+
     /// Rolls every card of the user to "due right now". Fresh cards enter
     /// the queue due on the next review day; tests that exercise answering
     /// call this to fast-forward past the rollover.
@@ -5629,22 +5958,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn checkin_completes_when_queue_cleared() {
+    async fn checkin_empty_queue_without_review_stays_open() {
         let (service, user_id) = checkin_test_service().await;
-        // goal = 0: no count target, clearing the (empty) queue completes.
-        set_checkin_goal(&service, 0).await;
+        // 收窄后的语义：零复习 + 空队列只是初始状态，绝不锁定“完成”。
         let status = service.checkin_today(&user_id).await.unwrap();
-        assert_eq!(status.goal, 0);
         assert_eq!(status.reviewed_count, 0);
         assert_eq!(status.due_count, 0);
-        assert!(status.completed);
+        assert!(!status.completed, "no review action must never complete the day");
+        assert_eq!(checkin_rows(&service, &user_id).await, 0);
+    }
+
+    #[tokio::test]
+    async fn checkin_completes_after_reviewing_then_clearing_queue() {
+        let (service, user_id) = checkin_test_service().await;
+        // goal = 0: no count target, clearing the queue after at least one
+        // review completes the day.
+        set_checkin_goal(&service, 0).await;
+        let before = service.checkin_today(&user_id).await.unwrap();
+        assert_eq!(before.goal, 0);
+        assert_eq!(before.reviewed_count, 0);
+        assert_eq!(before.due_count, 0);
+        assert!(!before.completed, "an empty queue without review is not a check-in");
+        assert_eq!(checkin_rows(&service, &user_id).await, 0);
+        insert_review_event(&service, &user_id, now_ms()).await;
+        let status = service.checkin_today(&user_id).await.unwrap();
+        assert_eq!(status.reviewed_count, 1);
+        assert_eq!(status.due_count, 0);
+        assert!(status.completed, "queue cleared after reviewing must complete");
         assert_eq!(checkin_rows(&service, &user_id).await, 1);
     }
 
     #[tokio::test]
     async fn checkin_stays_locked_after_new_due_cards() {
         let (service, user_id) = checkin_test_service().await;
-        // An empty queue locks the day immediately.
+        // 先刷一张卡（队列本就为空）→ 清空条件锁定当天。
+        insert_review_event(&service, &user_id, now_ms()).await;
         let first = service.checkin_today(&user_id).await.unwrap();
         assert!(first.completed);
         // A card arriving later stays in the queue as extra work but does not
@@ -5676,13 +6024,119 @@ mod tests {
         .execute(service.pool_for_tests())
         .await
         .unwrap();
-        // A due card today keeps the day open (an empty queue would complete
-        // it via the clear-the-queue condition).
+        // A due card today keeps the day open (an empty queue without review
+        // would no longer complete it either).
         insert_due_custom_question(&service, &user_id).await;
         let status = service.checkin_today(&user_id).await.unwrap();
         assert_eq!(status.review_day, review_day_number(now, tz));
         assert_ne!(status.review_day, yesterday);
         assert_eq!(status.due_count, 1);
         assert!(!status.completed, "a new review day starts unchecked");
+    }
+
+    #[tokio::test]
+    async fn calendar_buckets_by_review_day_and_tz() {
+        let (service, user_id) = checkin_test_service().await;
+        let tz = 480;
+        // UTC 2026-08-01 06:00：tz=+480 视图下本地 8 月 1 日 14:00 → 复习日 20260801；
+        // tz=-300 视图下本地 8 月 1 日 01:00（02:00 日界线前）→ 复习日 20260731，
+        // 不出现在 8 月视图中。同一时刻在两种时区下归属不同复习日。
+        let at = local_wall_clock_utc_ms(2026, 8, 1, 1, -300).unwrap();
+        insert_review_event(&service, &user_id, at).await;
+        let stats = service.calendar_stats(&user_id, tz, 2026, Some(8)).await.unwrap();
+        assert_eq!(stats.year, 2026);
+        assert_eq!(stats.month, Some(8));
+        assert_eq!(stats.tz_offset, 480);
+        assert_eq!(stats.days.len(), 31, "month view must zero-fill every day");
+        assert_eq!(stats.days.first().unwrap().review_day, 20260801);
+        assert_eq!(stats.days.last().unwrap().review_day, 20260831);
+        let day = stats.days.iter().find(|d| d.review_day == 20260801).unwrap();
+        assert_eq!(day.reviewed_count, 1);
+        // 同一事件、另一时区（UTC-5）：本地 8 月 1 日 01:00 → 复习日 20260731，
+        // 不出现在 8 月视图中。
+        let west = service.calendar_stats(&user_id, -300, 2026, Some(8)).await.unwrap();
+        let west_day = west.days.iter().find(|d| d.review_day == 20260801).unwrap();
+        assert_eq!(west_day.reviewed_count, 0);
+    }
+
+    #[tokio::test]
+    async fn calendar_year_view_zero_fills_every_day() {
+        let (service, user_id) = checkin_test_service().await;
+        let stats = service.calendar_stats(&user_id, 480, 2026, None).await.unwrap();
+        assert_eq!(stats.month, None);
+        assert_eq!(stats.days.len(), 365, "year view must cover the whole year");
+        assert_eq!(stats.days.first().unwrap().review_day, 20260101);
+        assert_eq!(stats.days.last().unwrap().review_day, 20261231);
+        assert!(stats.days.iter().all(|d| d.reviewed_count == 0 && !d.checkin_completed));
+    }
+
+    #[tokio::test]
+    async fn calendar_details_scope_lessons_to_user_and_bucket_courses() {
+        let (service, user_id) = checkin_test_service().await;
+        let tz = 480;
+        let created_at = local_wall_clock_utc_ms(2026, 8, 10, 10, tz).unwrap();
+        let completed_at = local_wall_clock_utc_ms(2026, 8, 11, 10, tz).unwrap();
+        let (course_id, lesson_id, enrollment_id) =
+            seed_course_with_lesson(&service, &user_id, created_at).await;
+        complete_lesson(&service, &enrollment_id, &lesson_id, completed_at).await;
+        // 另一用户的进度不应混入本用户的课时明细；但课程创建是全局目录聚合
+        // （不过滤用户），两个用户的课程都应出现在创建明细中。
+        let other_user = UserId::new();
+        let (_, other_lesson_id, other_enrollment_id) =
+            seed_course_with_lesson(&service, &other_user, created_at).await;
+        complete_lesson(&service, &other_enrollment_id, &other_lesson_id, completed_at).await;
+        let stats = service.calendar_stats(&user_id, tz, 2026, Some(8)).await.unwrap();
+        let created_day = stats.days.iter().find(|d| d.review_day == 20260810).unwrap();
+        assert_eq!(created_day.created_courses.len(), 2, "course catalog is global");
+        assert!(
+            created_day.created_courses.iter().any(|c| c.course_id == course_id),
+            "own course present"
+        );
+        assert!(
+            created_day
+                .created_courses
+                .iter()
+                .any(|c| c.title == "Calendar test course"),
+            "catalog titles present"
+        );
+        let completed_day = stats.days.iter().find(|d| d.review_day == 20260811).unwrap();
+        assert_eq!(completed_day.completed_lessons.len(), 1, "other users' progress must not leak");
+        assert_eq!(completed_day.completed_lessons[0].lesson_id, lesson_id);
+        assert_eq!(completed_day.completed_lessons[0].title, "Lesson");
+    }
+
+    #[tokio::test]
+    async fn calendar_streak_stops_at_gap_and_zero_without_today() {
+        let (service, user_id) = checkin_test_service().await;
+        let tz = SchedulerSettings::default().tz_offset_minutes;
+        let anchor = review_day_start_utc(now_ms(), tz) + 3_600_000; // 当天 03:00，属当天复习日
+        let today = review_day_number(anchor, tz);
+        // 今天 + 前 3 天完成，第 5 天缺失（断）但更早还有 → 从今天往前数 streak = 4。
+        for offset in [0_i64, 1, 2, 3, 5] {
+            insert_checkin(
+                &service,
+                &user_id,
+                review_day_number(anchor - offset * 86_400_000, tz),
+            )
+            .await;
+        }
+        let stats = service
+            .calendar_stats(&user_id, tz, today / 10_000, None)
+            .await
+            .unwrap();
+        assert_eq!(stats.streak, 4);
+        // 今天未完成（无今天行）→ streak = 0。
+        let (service2, user_id2) = checkin_test_service().await;
+        insert_checkin(
+            &service2,
+            &user_id2,
+            review_day_number(anchor - 86_400_000, tz),
+        )
+        .await;
+        let stats2 = service2
+            .calendar_stats(&user_id2, tz, today / 10_000, None)
+            .await
+            .unwrap();
+        assert_eq!(stats2.streak, 0);
     }
 }
