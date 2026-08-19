@@ -5,7 +5,13 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
-- Developer-mode Session Logs replaces Agent Trace. Closing developer mode hides the inspector and blocks HTTP reads; it no longer stops recording conversation observations to disk.
+## v1.0.2 - 2026-08-19
+
+- Session Logs replaces Agent Trace. Developer mode inspects conversations; closing it hides the inspector but recording continues.
+- Vimax can imitate actions from a character still and a reference video.
+- MiniMax-H3 video generation chains continuity across scenes.
+- Context is compacted automatically before the model window overflows.
+- The skill market shows package icons and installs SkillHub COS zips.
 
 ## v1.0.1 - 2026-08-18
 
