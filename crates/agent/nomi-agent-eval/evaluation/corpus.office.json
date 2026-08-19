@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "corpus_version": "2026-08-19-office-v1",
+  "suite": "office_tasks",
+  "cases": [
+    {
+      "id": "memo-write",
+      "category": "document",
+      "task_profile": "office",
+      "timeout_secs": 180,
+      "prompt": "You are an office assistant. Write a short internal memo as markdown in a file named memo.md at the workspace root.\n\nRequirements:\n- Include headings or labels for Subject, To, and Date.\n- Subject is the Q3 office move.\n- To is All Staff.\n- The body must mention the move date 15 September and that desks stay assigned.\n- The last line of the file must be exactly: MEMO_OK\n\nDo not create code or test files.",
+      "enabled": true,
+      "budgets": { "max_turns": 10, "max_tokens": 65536 },
+      "scorers": [
+        { "type": "file_exists", "path": "memo.md" },
+        { "type": "file_contains", "path": "memo.md", "marker": "MEMO_OK" },
+        { "type": "file_contains", "path": "memo.md", "marker": "15 September" },
+        { "type": "tool_called", "name": "Write" }
+      ],
+      "notes": "Office document generation via Write."
+    },
+    {
+      "id": "meeting-minutes",
+      "category": "document",
+      "task_profile": "office",
+      "timeout_secs": 180,
+      "prompt": "Read scratch-notes.txt in the workspace. Turn those messy notes into clean meeting minutes in minutes.md.\n\nminutes.md must include:\n- a title\n- Attendees (include Ada, Lin, and Sam)\n- Decisions\n- Action items\n- the token MINUTES_OK somewhere in the file\n\nDo not copy the scratch notes verbatim. Do not write test files.",
+      "enabled": true,
+      "budgets": { "max_turns": 12, "max_tokens": 65536 },
+      "workspace_files": {
+        "scratch-notes.txt": "standup leftover\nada said ship friday if qa green\nlin worried about invoice template\nsam will ping legal\nwe agreed: use the new letterhead, delay the banner ads\naction: ada send recap, lin fix spreadsheet, sam book legal 30min\n"
+      },
+      "scorers": [
+        { "type": "tool_called", "name": "Read" },
+        { "type": "file_exists", "path": "minutes.md" },
+        { "type": "file_contains", "path": "minutes.md", "marker": "MINUTES_OK" },
+        { "type": "file_contains", "path": "minutes.md", "marker": "Ada" },
+        { "type": "file_contains", "path": "minutes.md", "marker": "Lin" }
+      ]
+    },
+    {
+      "id": "budget-csv",
+      "category": "spreadsheet",
+      "task_profile": "office",
+      "timeout_secs": 180,
+      "prompt": "Create a small department budget as budget.csv in the workspace root.\n\nRules:\n- First row header: Category,Amount\n- Include rows for Travel, Meals, and Software\n- Include a final row whose Category is Total\n- Use only integers in Amount\n- The file must contain the token BUDGET_OK either as a comment-free extra last line or inside a cell\n\nThis is an office spreadsheet task, not a coding task.",
+      "enabled": true,
+      "budgets": { "max_turns": 10, "max_tokens": 65536 },
+      "scorers": [
+        { "type": "file_exists", "path": "budget.csv" },
+        { "type": "file_contains", "path": "budget.csv", "marker": "Category,Amount" },
+        { "type": "file_contains", "path": "budget.csv", "marker": "Travel" },
+        { "type": "file_contains", "path": "budget.csv", "marker": "Total" },
+        { "type": "file_contains", "path": "budget.csv", "marker": "BUDGET_OK" }
+      ]
+    },
+    {
+      "id": "client-email",
+      "category": "email",
+      "task_profile": "office",
+      "timeout_secs": 180,
+      "prompt": "Draft a polite client email in email.md.\n\nAudience: Jordan at Northwind.\nPurpose: apologize for a two-day delivery slip and give a new arrival window of Thursday–Friday.\nTone: professional, no slang.\nThe file must start with a Subject line and include EMAIL_OK on its own last line.",
+      "enabled": true,
+      "budgets": { "max_turns": 8, "max_tokens": 65536 },
+      "scorers": [
+        { "type": "file_exists", "path": "email.md" },
+        { "type": "file_contains", "path": "email.md", "marker": "EMAIL_OK" },
+        { "type": "file_contains", "path": "email.md", "marker": "Northwind" },
+        { "type": "file_contains", "path": "email.md", "marker": "Thursday" }
+      ]
+    },
+    {
+      "id": "rewrite-brief",
+      "category": "edit",
+      "task_profile": "office",
+      "timeout_secs": 180,
+      "prompt": "The workspace has draft.md, which is too casual. Edit it in place so it becomes a short formal briefing.\n\nKeep the revenue figure 4.2M. Add a one-sentence summary at the top. The last line must be exactly REPORT_OK. Do not create a second file.",
+      "enabled": true,
+      "budgets": { "max_turns": 10, "max_tokens": 65536 },
+      "workspace_files": {
+        "draft.md": "hey team lol q2 was kinda wild we hit like 4.2M revenue which is cool i guess. sales did the thing. more later.\n"
+      },
+      "scorers": [
+        { "type": "file_contains", "path": "draft.md", "marker": "4.2M" },
+        { "type": "file_contains", "path": "draft.md", "marker": "REPORT_OK" },
+        { "type": "tool_called", "name": "Edit" }
+      ]
+    }
+  ]
+}

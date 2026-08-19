@@ -1,0 +1,79 @@
+{
+  "title": "Eval",
+  "dev": {
+    "tag": "dev",
+    "navTooltip": "Agent eval lab (developer mode)"
+  },
+  "subtitle": "Score the real harness and runtime on isolated workspaces. User conversations are never written.",
+  "isolationNote": "Each case runs production AgentEngine in a private workspace under diagnostics/agent-evals. Office suites use the Office profile (Read/Write/Edit); coding suites install CodingHarness. MCP, browser, computer-use, and web search stay off. One run at a time. Use Office tasks for office KPIs and Aider Polyglot / ClassEval for coding-agent KPIs — HumanEval is only a unit-coding floor. Expand a case for the full trajectory and artifacts; in-flight runs stream the live trace.",
+  "developerModeRequired": "Turn on Developer Mode in Settings → System to use evals.",
+  "model": "Model",
+  "suite": "Suite",
+  "limit": "Case limit",
+  "pull": "Download dataset",
+  "run": "Run",
+  "cancel": "Cancel",
+  "cached": "cached",
+  "needsDownload": "not downloaded yet",
+  "progressLabel": "{{completed}} / {{planned}}  current {{current}}",
+  "cases": "Cases",
+  "liveTrace": "Live case trace",
+  "pass": "pass",
+  "fail": "fail",
+  "form": {
+    "modelSelectTooltip": "Model used by the live eval harness. Default uses the first enabled chat model.",
+    "modelUnavailable": "Unavailable",
+    "modelUnavailableHint": "This saved model is no longer available. Choose another model or Default Model."
+  },
+  "status": {
+    "loading": "Loading",
+    "queued": "Queued",
+    "running": "Running",
+    "cancelling": "Cancelling",
+    "cancelled": "Cancelled",
+    "completed": "Completed",
+    "failed": "Failed"
+  },
+  "metric": {
+    "passed": "Passed / scored",
+    "successRate": "Success rate",
+    "avgTurns": "Avg turns",
+    "avgElapsed": "Avg latency",
+    "avgTokens": "Avg tokens in / out",
+    "model": "Model"
+  },
+  "col": {
+    "category": "Category",
+    "total": "Total",
+    "passed": "Passed",
+    "successRate": "Rate",
+    "case": "Case",
+    "result": "Result",
+    "turns": "Turns",
+    "tools": "Tools",
+    "tokens": "Tokens",
+    "elapsed": "Elapsed",
+    "scorer": "Scorer",
+    "detail": "Detail",
+    "events": "Trace",
+    "artifacts": "Artifacts"
+  },
+  "trace": {
+    "title": "Trajectory",
+    "live": "live",
+    "empty": "No trajectory yet",
+    "assistant": "Assistant reply",
+    "artifacts": "Artifacts",
+    "noArtifacts": "No workspace files to show",
+    "binary": "binary",
+    "size": "{{bytes}} bytes",
+    "kind": {
+      "text": "text",
+      "thinking": "thinking",
+      "tool_call": "tool call",
+      "tool_result": "tool result",
+      "error": "error",
+      "info": "info"
+    }
+  }
+}

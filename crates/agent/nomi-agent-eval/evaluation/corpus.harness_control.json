@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "corpus_version": "2026-08-18-harness-control-v1",
+  "suite": "harness_control",
+  "cases": [
+    {
+      "id": "write-marker",
+      "category": "file_tools",
+      "prompt": "Create a file named MARKER.txt in the workspace root. The file must contain exactly the token HARNESS_OK on its own line. Do not write files outside the workspace.",
+      "enabled": true,
+      "task_profile": "coding",
+      "timeout_secs": 180,
+      "budgets": { "max_turns": 8, "max_tokens": 65536 },
+      "scorers": [
+        { "type": "file_contains", "path": "MARKER.txt", "marker": "HARNESS_OK" },
+        { "type": "tool_called", "name": "Write" }
+      ],
+      "notes": "Live coding harness must actually write a file; offline demo does not cover this suite."
+    },
+    {
+      "id": "edit-existing",
+      "category": "file_tools",
+      "prompt": "The workspace already contains notes.txt. Edit it so the file contains exactly DONE_OK and nothing else.",
+      "enabled": true,
+      "task_profile": "coding",
+      "timeout_secs": 180,
+      "budgets": { "max_turns": 8 },
+      "workspace_files": {
+        "notes.txt": "replace this placeholder\n"
+      },
+      "scorers": [
+        { "type": "file_contains", "path": "notes.txt", "marker": "DONE_OK" }
+      ]
+    }
+  ]
+}

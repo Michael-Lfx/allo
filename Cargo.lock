@@ -6111,9 +6111,11 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "flate2",
  "nomi-agent-trace",
  "nomi-redact",
  "regex",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -6121,6 +6123,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -6614,6 +6617,7 @@ dependencies = [
  "image",
  "libc",
  "nomi-agent",
+ "nomi-agent-eval",
  "nomi-agent-trace",
  "nomi-auxiliary",
  "nomi-browser",

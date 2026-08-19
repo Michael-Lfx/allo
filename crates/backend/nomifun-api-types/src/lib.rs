@@ -1,4 +1,5 @@
 //! All HTTP request/response DTOs shared across the API surface.
+mod agent_eval;
 mod acp;
 mod agent_build_extra;
 mod agent_discovery;
@@ -51,6 +52,11 @@ mod terminal;
 mod webhook;
 mod websocket;
 
+pub use agent_eval::{
+    EvalArtifactView, EvalCaseTraceView, EvalCaseView, EvalCategoryView, EvalRunView,
+    EvalScorerView, EvalSuiteDescriptor, EvalSummaryView, EvalTrajectoryEventView,
+    PullEvalDatasetResponse, StartEvalRunRequest,
+};
 pub use acp::{
     AcpHealthCheckRequest, AcpHealthCheckResponse, AgentModeResponse,
     GetModelInfoResponse, ModelInfoEntry, ModelInfoPayload,

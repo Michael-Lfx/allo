@@ -1,0 +1,79 @@
+{
+  "title": "评测",
+  "dev": {
+    "tag": "dev",
+    "navTooltip": "Agent 评测实验室（开发者模式）"
+  },
+  "subtitle": "用真实 harness 与 runtime 打分；每条 case 在隔离工作区执行，不会写入用户会话。",
+  "isolationNote": "每条 case 走生产 AgentEngine，工作区在 diagnostics/agent-evals 下。办公套件用 Office profile（Read/Write/Edit）；coding 套件才装 CodingHarness。MCP、浏览器、computer-use、联网搜索默认关闭。同时只允许跑一轮。办公 KPI 用 Office tasks；coding-agent KPI 用 Aider Polyglot / ClassEval，不要把 HumanEval 当 KPI。展开用例可查看完整 trajectory 与产物，评测进行中也会实时刷新。",
+  "developerModeRequired": "请在 设置 → 系统 中打开开发者模式后再使用评测。",
+  "model": "模型",
+  "suite": "套件",
+  "limit": "条数上限",
+  "pull": "下载数据集",
+  "run": "开始评测",
+  "cancel": "取消",
+  "cached": "已缓存",
+  "needsDownload": "尚未下载",
+  "progressLabel": "{{completed}} / {{planned}}  当前 {{current}}",
+  "cases": "用例",
+  "liveTrace": "当前用例轨迹",
+  "pass": "通过",
+  "fail": "失败",
+  "form": {
+    "modelSelectTooltip": "现场评测使用的模型。默认取第一个已启用的对话模型。",
+    "modelUnavailable": "不可用",
+    "modelUnavailableHint": "已保存的模型当前不可用。请另选模型或改用默认模型。"
+  },
+  "status": {
+    "loading": "准备中",
+    "queued": "排队",
+    "running": "运行中",
+    "cancelling": "取消中",
+    "cancelled": "已取消",
+    "completed": "已完成",
+    "failed": "失败"
+  },
+  "metric": {
+    "passed": "通过 / 已评分",
+    "successRate": "成功率",
+    "avgTurns": "平均轮次",
+    "avgElapsed": "平均耗时",
+    "avgTokens": "平均 token 入 / 出",
+    "model": "模型"
+  },
+  "col": {
+    "category": "类别",
+    "total": "总数",
+    "passed": "通过",
+    "successRate": "成功率",
+    "case": "用例",
+    "result": "结果",
+    "turns": "轮次",
+    "tools": "工具",
+    "tokens": "Token",
+    "elapsed": "耗时",
+    "scorer": "Scorer",
+    "detail": "详情",
+    "events": "轨迹",
+    "artifacts": "产物"
+  },
+  "trace": {
+    "title": "执行轨迹",
+    "live": "进行中",
+    "empty": "暂无轨迹",
+    "assistant": "助手回复",
+    "artifacts": "产物",
+    "noArtifacts": "工作区没有可展示的文件",
+    "binary": "二进制",
+    "size": "{{bytes}} 字节",
+    "kind": {
+      "text": "文本",
+      "thinking": "思考",
+      "tool_call": "工具调用",
+      "tool_result": "工具结果",
+      "error": "错误",
+      "info": "信息"
+    }
+  }
+}

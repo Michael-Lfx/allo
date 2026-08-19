@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nomifun_ai_agent::{
-    AgentRouterState, AgentRuntimeRegistry, AgentService, RemoteAgentRouterState,
+    AgentRouterState, AgentRuntimeRegistry, AgentService, EvalLab, RemoteAgentRouterState,
     RemoteAgentService,
 };
 use nomifun_api_types::TerminalExitEvent;
@@ -607,6 +607,15 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         agent: AgentRouterState {
             agent_registry: services.agent_registry.clone(),
             service: agent_service,
+            eval_lab: Arc::new(EvalLab::new(
+                services.data_dir.clone(),
+                services.provider_repo.clone(),
+                services.provider_model_repo.clone(),
+                services.encryption_key,
+                Arc::new(SqliteClientPreferenceRepository::new(
+                    services.database.pool().clone(),
+                )) as Arc<dyn nomifun_db::IClientPreferenceRepository>,
+            )),
         },
         connection_test: build_connection_test_state(),
         file: build_file_state(services),

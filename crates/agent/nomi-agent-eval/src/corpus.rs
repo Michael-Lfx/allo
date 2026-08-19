@@ -7,6 +7,7 @@ use std::path::Path;
 use thiserror::Error;
 
 use crate::types::{Case, Manifest, ScorerSpec, SCHEMA_VERSION};
+use crate::workspace::safe_join;
 
 #[derive(Debug, Error)]
 pub enum CorpusError {
@@ -18,10 +19,35 @@ pub enum CorpusError {
     Invalid(String),
 }
 
+const BUNDLED_SESSION_DIALOGUE: &str =
+    include_str!("../evaluation/corpus.conversation.json");
+const BUNDLED_HARNESS_CONTROL: &str =
+    include_str!("../evaluation/corpus.harness_control.json");
+const BUNDLED_OFFICE_TASKS: &str = include_str!("../evaluation/corpus.office.json");
+
 /// Load a corpus manifest from disk and validate it.
 pub fn load_manifest(path: impl AsRef<Path>) -> Result<Manifest, CorpusError> {
     let text = fs::read_to_string(path)?;
-    let manifest: Manifest = serde_json::from_str(&text)?;
+    parse_manifest(&text)
+}
+
+/// Load a suite compiled into the binary.
+pub fn load_bundled_manifest(suite: &str) -> Result<Manifest, CorpusError> {
+    let text = match suite.trim() {
+        "session_dialogue" => BUNDLED_SESSION_DIALOGUE,
+        "harness_control" => BUNDLED_HARNESS_CONTROL,
+        "office_tasks" => BUNDLED_OFFICE_TASKS,
+        other => {
+            return Err(CorpusError::Invalid(format!(
+                "unknown bundled suite {other}"
+            )));
+        }
+    };
+    parse_manifest(text)
+}
+
+fn parse_manifest(text: &str) -> Result<Manifest, CorpusError> {
+    let manifest: Manifest = serde_json::from_str(text)?;
     validate_manifest(&manifest)?;
     Ok(manifest)
 }
@@ -91,6 +117,29 @@ fn validate_case(case: &Case) -> Result<(), CorpusError> {
             case.id
         )));
     }
+    if let Some(profile) = case.task_profile.as_deref() {
+        let normalized = profile.trim().to_ascii_lowercase();
+        if normalized != "office" && normalized != "coding" {
+            return Err(CorpusError::Invalid(format!(
+                "case {} task_profile must be office or coding",
+                case.id
+            )));
+        }
+    }
+    if let Some(timeout) = case.timeout_secs {
+        if timeout == 0 || timeout > 600 {
+            return Err(CorpusError::Invalid(format!(
+                "case {} timeout_secs must be 1..=600",
+                case.id
+            )));
+        }
+    }
+    let root = std::path::Path::new(".");
+    for relative in case.workspace_files.keys() {
+        safe_join(root, relative).map_err(|e| {
+            CorpusError::Invalid(format!("case {} workspace file: {e}", case.id))
+        })?;
+    }
     for scorer in &case.scorers {
         validate_scorer(&case.id, scorer)?;
     }
@@ -148,6 +197,61 @@ fn validate_scorer(case_id: &str, scorer: &ScorerSpec) -> Result<(), CorpusError
                 CorpusError::Invalid(format!("case {case_id} regex_match pattern invalid: {e}"))
             })?;
         }
+        ScorerSpec::ToolNotCalled { name } => {
+            if name.trim().is_empty() {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} tool_not_called name must not be empty"
+                )));
+            }
+        }
+        ScorerSpec::FileContains { path, marker } => {
+            if path.trim().is_empty() || marker.is_empty() {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} file_contains path and marker must not be empty"
+                )));
+            }
+            safe_join(std::path::Path::new("."), path).map_err(|e| {
+                CorpusError::Invalid(format!("case {case_id} file_contains: {e}"))
+            })?;
+        }
+        ScorerSpec::FileExists { path } => {
+            if path.trim().is_empty() {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} file_exists path must not be empty"
+                )));
+            }
+            safe_join(std::path::Path::new("."), path).map_err(|e| {
+                CorpusError::Invalid(format!("case {case_id} file_exists: {e}"))
+            })?;
+        }
+        ScorerSpec::CommandExitZero { command } => {
+            if command.trim().is_empty() {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} command_exit_zero command must not be empty"
+                )));
+            }
+        }
+        ScorerSpec::PythonModule { args } => {
+            if args.is_empty() || args.iter().any(|a| a.trim().is_empty()) {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} python_module args must be non-empty"
+                )));
+            }
+        }
+        ScorerSpec::StopReasonIn { reasons } => {
+            if reasons.is_empty() || reasons.iter().any(|r| r.trim().is_empty()) {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} stop_reason_in must list non-empty reasons"
+                )));
+            }
+        }
+        ScorerSpec::PythonHiddenCheck { entry_point, test } => {
+            if entry_point.trim().is_empty() || test.trim().is_empty() {
+                return Err(CorpusError::Invalid(format!(
+                    "case {case_id} python_hidden_check entry_point and test must not be empty"
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -172,6 +276,9 @@ mod tests {
                 minimum_hits: 1,
             }],
             notes: None,
+            task_profile: None,
+            workspace_files: std::collections::BTreeMap::new(),
+            timeout_secs: None,
         }
     }
 
