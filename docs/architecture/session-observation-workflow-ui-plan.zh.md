@@ -102,7 +102,7 @@ Shutdown                    // drain → flush → 退出线程
 
 ### 0.4 队列内存预算（不变式是 16 MiB，不是 64 KiB 神圣）
 
-**现状：** `MAX_PREVIEW_CHARS=2000` 只限制**每个字符串**，不限制整 event。`llm_request_to_value` 仍带全量 `tools[].input_schema`，coding agent 一条 request 很容易 >64 KiB。没有真实线上 P50/P95。
+**现状：** `MAX_PREVIEW_CHARS=2000` 限制每个字符串。`llm_request_to_value` 在入队前即 stub `tools[].input_schema`（`omitted_reason=event_size_limit`，不 clone / 不 `to_vec` 测字节），并对 system / messages 预截断（inline media 不拷贝、不哈希）。`capture_and_size_cap` 仍是 128 KiB backstop。没有真实线上 P50/P95。
 
 **冻结：**
 

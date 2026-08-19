@@ -14,7 +14,10 @@ mod session;
 /// Shared major schema version for observation events and eval alignment.
 pub const SCHEMA_VERSION: u32 = 1;
 
-pub use capture::{capture_and_size_cap, capture_canonical_request, MAX_EVENT_BYTES};
+pub use capture::{
+    capture_and_size_cap, capture_borrowed, capture_canonical_request, omitted_binary_payload,
+    MAX_EVENT_BYTES, OMITTED_REASON_BINARY_PAYLOAD,
+};
 pub use event::{
     ids_from_payload, read_event, Capture, ExecutionStatus, Fidelity, Integrity, ModelCallContext,
     ObservationEvent, ObservationIds, ObservationScope, Omitted, EVENT_LLM_REQUEST,
