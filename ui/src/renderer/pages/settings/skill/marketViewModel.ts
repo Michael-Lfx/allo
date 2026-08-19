@@ -25,6 +25,7 @@ export type MarketItemViewModel = {
   sourceUrl: string;
   requiresApi: boolean;
   noApi: boolean;
+  avatar?: string;
 };
 
 type MarketTag = {
@@ -106,6 +107,7 @@ export const createMarketItemViewModel = (
     sourceUrl: item.url,
     requiresApi: item.tags?.includes('requires_api_key') ?? false,
     noApi: item.tags?.includes('no_api_key') ?? false,
+    avatar: item.avatar,
   };
 };
 

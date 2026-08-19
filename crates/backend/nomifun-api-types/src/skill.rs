@@ -486,6 +486,9 @@ pub struct SkillMarketItemResponse {
     pub scenario_tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stats: Option<String>,
+    /// Optional https image URL for the ranking card (e.g. SkillHub `iconUrl`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 /// Response for `POST /api/skills/market/rankings/sync`.
@@ -1014,6 +1017,7 @@ mod tests {
                 audience_tags: vec!["developer".into()],
                 scenario_tags: vec!["coding".into()],
                 stats: Some("1.2k installs".into()),
+                avatar: None,
             }],
             errors: vec![],
         };

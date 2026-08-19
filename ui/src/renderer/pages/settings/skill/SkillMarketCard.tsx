@@ -1,6 +1,6 @@
 import { Button, Dropdown, Menu, Tag } from '@arco-design/web-react';
 import { Check, LinkOne, More, Plus } from '@icon-park/react';
-import React, { useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { normalizeTestId } from './skillPresentation';
 import MarketCardShell from './MarketCardShell';
@@ -43,15 +43,36 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
   const { t } = useTranslation();
   const testId = normalizeTestId(item.id);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
+  const [avatarBroken, setAvatarBroken] = useState(false);
+
+  useEffect(() => {
+    setAvatarBroken(false);
+  }, [item.avatar]);
+
+  const avatarSrc = item.avatar && !avatarBroken ? item.avatar : undefined;
 
   return (
     <MarketCardShell testId={`skill-market-card-${testId}`}>
       <header className='grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-10px'>
         <span
-          className='flex h-32px min-w-32px items-center justify-center rounded-8px bg-[var(--color-fill-2)] px-7px text-12px font-semibold text-t-secondary'
+          className='flex h-32px w-32px min-w-32px items-center justify-center overflow-hidden rounded-8px bg-[var(--color-fill-2)] text-12px font-semibold text-t-secondary'
           aria-label={item.rank ? `${t('settings.market.rank', { defaultValue: '排名' })} ${item.rank}` : undefined}
         >
-          {item.rank ? `#${item.rank}` : '–'}
+          {avatarSrc ? (
+            <img
+              src={avatarSrc}
+              alt=''
+              width={32}
+              height={32}
+              referrerPolicy='no-referrer'
+              className='h-32px w-32px object-contain'
+              onError={() => setAvatarBroken(true)}
+            />
+          ) : item.rank ? (
+            `#${item.rank}`
+          ) : (
+            '–'
+          )}
         </span>
         <div className='min-w-0 pt-2px'>
           <h3

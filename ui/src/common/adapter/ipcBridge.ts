@@ -1391,6 +1391,7 @@ export interface ISkillMarketItem {
   audience_tags?: string[];
   scenario_tags?: string[];
   stats?: string;
+  avatar?: string;
 }
 
 export interface ISkillMarketSyncResponse {

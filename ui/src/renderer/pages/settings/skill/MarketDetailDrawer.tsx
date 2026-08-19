@@ -55,8 +55,22 @@ const MarketDetailDrawer: React.FC<MarketDetailDrawerProps> = ({
       placement='right'
       title={
         <div ref={headingRef} tabIndex={-1} className='min-w-0 outline-none'>
-          <div className='truncate text-16px font-semibold text-t-primary'>{item?.title}</div>
-          <div className='mt-2px text-12px font-normal text-t-tertiary'>{t('settings.market.details', { defaultValue: '市场详情' })}</div>
+          <div className='flex min-w-0 items-center gap-10px'>
+            {item?.avatar ? (
+              <img
+                src={item.avatar}
+                alt=''
+                width={32}
+                height={32}
+                referrerPolicy='no-referrer'
+                className='h-32px w-32px shrink-0 rounded-8px object-contain'
+              />
+            ) : null}
+            <div className='min-w-0'>
+              <div className='truncate text-16px font-semibold text-t-primary'>{item?.title}</div>
+              <div className='mt-2px text-12px font-normal text-t-tertiary'>{t('settings.market.details', { defaultValue: '市场详情' })}</div>
+            </div>
+          </div>
         </div>
       }
       onCancel={onClose}

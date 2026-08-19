@@ -21,7 +21,7 @@ use super::client::{
 };
 use super::parse::{
     clean_market_text, dedup_strings, is_market_slug, json_string_array, json_text, json_text_preserve,
-    last_url_segment, market_ref_suffix, title_from_slug,
+    last_url_segment, market_https_image_url, market_ref_suffix, title_from_slug,
 };
 use super::{SKILLHUB_PACKAGES_SOURCE, SKILLHUB_PACKAGES_URL};
 
@@ -91,7 +91,7 @@ fn build_skillhub_package_response(
         .or_else(|| json_text_preserve(package, "contentEn", 120_000))
         .ok_or_else(|| AppError::BadGateway("SkillHub package content missing".into()))?;
     let skill_slugs = package_skill_slugs(package, &instructions);
-    let avatar = json_text(package, "iconUrl", 260);
+    let avatar = json_text(package, "iconUrl", 260).and_then(|url| market_https_image_url(&url));
 
     Ok(SkillMarketPackageResponse {
         name,
@@ -391,12 +391,17 @@ mod tests {
             "displayName": "Test Automation",
             "summary": "End-to-end automated testing workflow.",
             "skillSlugs": ["name", "superpowers-tdd", "description", "superpowers-tdd"],
+            "iconUrl": "https://cloudcache.tencent-cloud.com/qcloud/tea/app/skillhub/assets/source/ai-buddy-decouple/expert-profiles/tech-test-automation.v20260625.avif",
             "content": "---\nname: tech-test-automation\ndescription: Test package\nmetadata:\n  author: SkillHub\norchestration:\n  children:\n    - test-case-generator\n    - metadata\n---\n# Test Automation\nUse this package."
         });
 
         let response = build_skillhub_package_response(&package, "tech-test-automation").unwrap();
 
         assert_eq!(response.skill_slugs, vec!["superpowers-tdd", "test-case-generator"]);
+        assert_eq!(
+            response.avatar.as_deref(),
+            Some("https://cloudcache.tencent-cloud.com/qcloud/tea/app/skillhub/assets/source/ai-buddy-decouple/expert-profiles/tech-test-automation.v20260625.avif")
+        );
         assert!(response.instructions.starts_with("---\nname: tech-test-automation"));
         assert!(response.instructions.contains("metadata:"));
         assert!(response.instructions.contains("# Test Automation"));

@@ -312,6 +312,7 @@ mod tests {
             audience_tags: vec![],
             scenario_tags: vec![],
             stats: None,
+            avatar: None,
         }
     }
 

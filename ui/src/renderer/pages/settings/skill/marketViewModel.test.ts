@@ -38,6 +38,14 @@ describe('market item view model', () => {
     expect(model.compactStats).toBeUndefined();
     expect(model.fullStats).toBe('settings.market.downloadsCount:0 · settings.market.starsCount:0');
     expect(model.requiresApi).toBe(true);
+    expect(model.avatar).toBeUndefined();
+  });
+
+  test('forwards a sanitized package avatar to the card', () => {
+    const avatar =
+      'https://cloudcache.tencent-cloud.com/qcloud/tea/app/skillhub/assets/source/ai-buddy-decouple/expert-profiles/tech-test-automation.v20260625.avif';
+    const model = createMarketItemViewModel({ ...item, avatar }, { localeKey: 'en-US', t });
+    expect(model.avatar).toBe(avatar);
   });
 
   test('localizes known statistic units and preserves unknown formats', () => {

@@ -35,10 +35,31 @@ const MARKET_ALLOWED_HOSTS: &[&str] = &[
     "www.mcpworld.com",
 ];
 
-/// SSRF redirect guard predicate: is `host` an exact (case-insensitive)
-/// match for an allowlisted market host?
+/// SkillHub 302s `/api/v1/download` onto this dedicated Tencent COS bucket.
+/// Only this bucket's COS hostnames are trusted — arbitrary `*.myqcloud.com`
+/// buckets are not, because anyone can create one.
+const SKILLHUB_COS_BUCKET_PREFIX: &str = "skillhub-1388575217.cos.";
+const SKILLHUB_COS_HOST_SUFFIX: &str = ".myqcloud.com";
+
+/// SSRF redirect guard predicate: exact allowlisted market host, or SkillHub's
+/// dedicated COS download bucket (accelerate / regional).
 fn is_allowed_market_host(host: &str) -> bool {
-    MARKET_ALLOWED_HOSTS.iter().any(|allowed| host.eq_ignore_ascii_case(allowed))
+    MARKET_ALLOWED_HOSTS
+        .iter()
+        .any(|allowed| host.eq_ignore_ascii_case(allowed))
+        || is_skillhub_cos_download_host(host)
+}
+
+fn is_skillhub_cos_download_host(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    let Some(rest) = host
+        .strip_prefix(SKILLHUB_COS_BUCKET_PREFIX)
+        .and_then(|h| h.strip_suffix(SKILLHUB_COS_HOST_SUFFIX))
+    else {
+        return false;
+    };
+    // "accelerate" or a region like "ap-guangzhou" — a single DNS label.
+    !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// Build the shared market HTTP client. Redirects are only followed when the
@@ -162,6 +183,20 @@ mod tests {
         assert!(is_allowed_market_host("ClawHub.AI"));
     }
 
+    /// SkillHub 302s skill zips to a dedicated Tencent COS bucket. The
+    /// redirect policy must follow that bucket's COS hosts or expert-package
+    /// install fails for every child skill.
+    #[test]
+    fn market_host_allowlist_accepts_skillhub_cos_download_hosts() {
+        for host in [
+            "skillhub-1388575217.cos.accelerate.myqcloud.com",
+            "skillhub-1388575217.cos.ap-guangzhou.myqcloud.com",
+            "SkillHub-1388575217.COS.accelerate.myqcloud.com",
+        ] {
+            assert!(is_allowed_market_host(host), "{host}");
+        }
+    }
+
     /// SSRF redirect guard: internal addresses and off-allowlist hosts can
     /// never satisfy the redirect policy's host predicate.
     #[test]
@@ -180,7 +215,20 @@ mod tests {
         }
 
         // Off-allowlist public hosts are rejected too.
-        for host in ["evil.example.com", "clawhub.ai.evil.com", "sub.skillhub.cn", "example.com"] {
+        for host in [
+            "evil.example.com",
+            "clawhub.ai.evil.com",
+            "sub.skillhub.cn",
+            "example.com",
+            // Other people's COS buckets, and suffix / prefix tricks around the
+            // SkillHub bucket hostname, must stay rejected.
+            "evil.cos.accelerate.myqcloud.com",
+            "not-skillhub-1388575217.cos.accelerate.myqcloud.com",
+            "evil.skillhub-1388575217.cos.accelerate.myqcloud.com",
+            "skillhub-1388575217.cos.accelerate.myqcloud.com.evil.com",
+            "skillhub-1388575217.cos.accelerate.evil.myqcloud.com",
+            "skillhub-1388575217.cos..myqcloud.com",
+        ] {
             assert!(!is_allowed_market_host(host), "{host} must be rejected");
         }
     }

@@ -19,6 +19,8 @@ describe('market and preset-editor polish contracts', () => {
     expect(card).toContain('open-source');
     expect(card).toContain('copy-command');
     expect(card).toContain('MarketCardShell');
+    expect(card).toContain('item.avatar');
+    expect(card).toContain("referrerPolicy='no-referrer'");
     expect(card).not.toContain('h-full');
     expect(card).toContain("fill='currentColor'");
     expect(market).toContain('<MarketDetailDrawer');

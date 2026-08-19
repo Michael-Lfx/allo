@@ -56,6 +56,9 @@ export const isSkillMarketItemInstalled = (
 const MAX_NAME_LENGTH = 96;
 const MAX_DESCRIPTION_LENGTH = 220;
 const MAX_COMMAND_LENGTH = 320;
+const MAX_AVATAR_URL_LENGTH = 260;
+const MARKET_AVATAR_HOSTS = new Set(['cloudcache.tencent-cloud.com', 'skillhub.cn', 'www.skillhub.cn']);
+const MARKET_AVATAR_EXTENSIONS = ['.avif', '.png', '.jpg', '.jpeg', '.webp', '.gif'];
 
 export const isSkillMarketSource = (value: unknown): value is SkillMarketSource =>
   value === 'clawhub' ||
@@ -90,6 +93,24 @@ const isSafeMarketUrl = (source: SkillMarketSource, url: string): boolean => {
   } catch {
     return false;
   }
+};
+
+const isSafeMarketAvatarUrl = (url: string): boolean => {
+  if (!url || url.length > MAX_AVATAR_URL_LENGTH) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port) return false;
+    if (!MARKET_AVATAR_HOSTS.has(parsed.hostname.toLowerCase())) return false;
+    const path = parsed.pathname.toLowerCase();
+    return MARKET_AVATAR_EXTENSIONS.some((ext) => path.endsWith(ext));
+  } catch {
+    return false;
+  }
+};
+
+const cleanMarketAvatar = (value: unknown): string | undefined => {
+  const url = cleanMarketText(value, MAX_AVATAR_URL_LENGTH);
+  return isSafeMarketAvatarUrl(url) ? url : undefined;
 };
 
 const isSafeInstallCommand = (source: SkillMarketSource, value: string): boolean => {
@@ -143,6 +164,7 @@ export const normalizeSkillMarketItem = (raw: unknown): ISkillMarketItem | null 
     audience_tags: cleanTagList(data.audience_tags),
     scenario_tags: cleanTagList(data.scenario_tags),
     stats: cleanMarketText(data.stats, 60) || undefined,
+    avatar: cleanMarketAvatar(data.avatar),
   };
 };
 

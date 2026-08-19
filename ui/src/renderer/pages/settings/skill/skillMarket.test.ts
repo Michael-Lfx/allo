@@ -92,6 +92,23 @@ describe('skill market helpers', () => {
     expect(normalizeSkillMarketItem({ ...mcpWorldItem, url: 'https://evil.example/zh/detail/demo' })).toBeNull();
   });
 
+  test('keeps SkillHub CDN package avatars and drops unsafe ones without rejecting the item', () => {
+    const packageItem = {
+      ...item,
+      id: 'skillhub_packages:tech-test-automation',
+      source: 'skillhub_packages' as const,
+      url: 'https://skillhub.cn/skillspackage/tech-test-automation',
+      install_command: 'skillhub package add tech-test-automation',
+    };
+    const avatar =
+      'https://cloudcache.tencent-cloud.com/qcloud/tea/app/skillhub/assets/source/ai-buddy-decouple/expert-profiles/tech-test-automation.v20260625.avif';
+
+    expect(normalizeSkillMarketItem({ ...packageItem, avatar })?.avatar).toBe(avatar);
+    expect(normalizeSkillMarketItem({ ...packageItem, avatar: 'javascript:alert(1)' })?.avatar).toBeUndefined();
+    expect(normalizeSkillMarketItem({ ...packageItem, avatar: 'https://evil.example/x.avif' })?.avatar).toBeUndefined();
+    expect(normalizeSkillMarketItem({ ...packageItem, avatar: 'https://cloudcache.tencent-cloud.com/x.svg' })?.avatar).toBeUndefined();
+  });
+
   test('keeps cached market items when a sync returns no valid entries', () => {
     expect(resolveMarketSyncItems([item], [])).toEqual([item]);
     expect(resolveMarketSyncItems([], [item])).toEqual([item]);

@@ -28,6 +28,9 @@ static STATS_STRIP_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static HTML_TAG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<[^>]+>").expect("valid html tag regex"));
+const MAX_MARKET_AVATAR_URL_CHARS: usize = 260;
+const MARKET_AVATAR_IMAGE_EXTENSIONS: &[&str] = &[".avif", ".png", ".jpg", ".jpeg", ".webp", ".gif"];
+const MARKET_AVATAR_HOSTS: &[&str] = &["cloudcache.tencent-cloud.com", "skillhub.cn", "www.skillhub.cn"];
 
 // ---------------------------------------------------------------------------
 // Ranking helpers
@@ -103,6 +106,7 @@ fn parse_clawhub_api_item(item: &serde_json::Value) -> Option<SkillMarketItemRes
         audience_tags,
         scenario_tags,
         stats,
+        avatar: None,
     })
 }
 
@@ -139,6 +143,7 @@ fn parse_clawhub_html_rankings(html: &str) -> Vec<SkillMarketItemResponse> {
             audience_tags,
             scenario_tags,
             stats,
+            avatar: None,
         });
         if parsed.len() >= MAX_MARKET_ITEMS_PER_SOURCE {
             break;
@@ -218,6 +223,7 @@ fn parse_skillhub_api_item(item: &serde_json::Value) -> Option<SkillMarketItemRe
         audience_tags,
         scenario_tags,
         stats,
+        avatar: None,
     })
 }
 
@@ -259,6 +265,7 @@ fn parse_skillhub_html_rankings(html: &str) -> Vec<SkillMarketItemResponse> {
             audience_tags,
             scenario_tags,
             stats,
+            avatar: None,
         });
         if parsed.len() >= MAX_MARKET_ITEMS_PER_SOURCE {
             break;
@@ -311,6 +318,7 @@ fn parse_loophub_item(item: &serde_json::Value) -> Option<SkillMarketItemRespons
         audience_tags,
         scenario_tags,
         stats,
+        avatar: None,
     })
 }
 
@@ -362,6 +370,7 @@ fn parse_skillhub_mcp_item(item: &serde_json::Value) -> Option<SkillMarketItemRe
         audience_tags,
         scenario_tags,
         stats,
+        avatar: None,
     })
 }
 
@@ -409,6 +418,7 @@ fn parse_mcpworld_item(item: &serde_json::Value) -> Option<SkillMarketItemRespon
         audience_tags,
         scenario_tags,
         stats,
+        avatar: None,
     })
 }
 
@@ -462,6 +472,7 @@ fn parse_clawhub_plugin_api_item(item: &serde_json::Value) -> Option<SkillMarket
         audience_tags,
         scenario_tags,
         stats,
+        avatar: None,
     })
 }
 
@@ -498,6 +509,7 @@ fn parse_clawhub_plugins_html(html: &str) -> Vec<SkillMarketItemResponse> {
             audience_tags,
             scenario_tags,
             stats,
+            avatar: None,
         });
         if parsed.len() >= MAX_MARKET_ITEMS_PER_SOURCE {
             break;
@@ -556,6 +568,7 @@ fn parse_skillhub_package_item(item: &serde_json::Value) -> Option<SkillMarketIt
         audience_tags,
         scenario_tags,
         stats: Some(format!("{skill_count} skills")),
+        avatar: json_market_avatar(item, "iconUrl"),
     })
 }
 
@@ -721,6 +734,39 @@ pub(crate) fn json_text(item: &serde_json::Value, key: &str, max_chars: usize) -
         .and_then(serde_json::Value::as_str)
         .map(|value| clean_market_text(value, max_chars))
         .filter(|value| !value.is_empty())
+}
+
+fn json_market_avatar(item: &serde_json::Value, key: &str) -> Option<String> {
+    json_text(item, key, MAX_MARKET_AVATAR_URL_CHARS).and_then(|url| market_https_image_url(&url))
+}
+
+/// Accept only https image URLs on SkillHub's known icon CDNs. Ranking cards
+/// and cached market JSON both render this as `<img src>`, so `javascript:`
+/// and third-party hosts are dropped instead of passed through.
+pub(crate) fn market_https_image_url(value: &str) -> Option<String> {
+    let url = reqwest::Url::parse(value).ok()?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+    {
+        return None;
+    }
+    let host = url.host_str()?;
+    if !MARKET_AVATAR_HOSTS
+        .iter()
+        .any(|allowed| host.eq_ignore_ascii_case(allowed))
+    {
+        return None;
+    }
+    let path = url.path().to_ascii_lowercase();
+    if !MARKET_AVATAR_IMAGE_EXTENSIONS
+        .iter()
+        .any(|ext| path.ends_with(ext))
+    {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 /// Read a string field verbatim (whitespace preserved), capped at
@@ -1187,7 +1233,8 @@ mod tests {
             "displayName": "Test Automation",
             "summary": "End-to-end automated testing workflow.",
             "skillCount": 6,
-            "skillSlugs": ["superpowers-tdd", "test-case-generator"]
+            "skillSlugs": ["superpowers-tdd", "test-case-generator"],
+            "iconUrl": "https://cloudcache.tencent-cloud.com/qcloud/tea/app/skillhub/assets/source/ai-buddy-decouple/expert-profiles/tech-test-automation.v20260625.avif"
           }],
           "total": 1
         }"#;
@@ -1196,6 +1243,37 @@ mod tests {
         assert_eq!(items[0].source, SKILLHUB_PACKAGES_SOURCE);
         assert_eq!(items[0].install_command, "skillhub package add tech-test-automation");
         assert!(items[0].stats.as_deref().unwrap_or_default().contains("6 skills"));
+        assert_eq!(
+            items[0].avatar.as_deref(),
+            Some("https://cloudcache.tencent-cloud.com/qcloud/tea/app/skillhub/assets/source/ai-buddy-decouple/expert-profiles/tech-test-automation.v20260625.avif")
+        );
+    }
+
+    #[test]
+    fn parse_skillhub_packages_drops_unsafe_icon_url() {
+        let body = r#"{
+          "skillSets": [{
+            "slug": "tech-test-automation",
+            "displayName": "Test Automation",
+            "summary": "End-to-end automated testing workflow.",
+            "iconUrl": "javascript:alert(1)"
+          }],
+          "total": 1
+        }"#;
+        let items = parse_skillhub_packages(body);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].avatar, None);
+    }
+
+    #[test]
+    fn market_https_image_url_accepts_skillhub_cdn_and_rejects_the_rest() {
+        let ok = "https://cloudcache.tencent-cloud.com/qcloud/tea/app/skillhub/assets/source/ai-buddy-decouple/expert-profiles/tech-test-automation.v20260625.avif";
+        assert_eq!(market_https_image_url(ok).as_deref(), Some(ok));
+        assert!(market_https_image_url("http://cloudcache.tencent-cloud.com/x.avif").is_none());
+        assert!(market_https_image_url("https://evil.example/x.avif").is_none());
+        assert!(market_https_image_url("https://cloudcache.tencent-cloud.com/x.svg").is_none());
+        assert!(market_https_image_url("https://user:pass@cloudcache.tencent-cloud.com/x.avif").is_none());
+        assert!(market_https_image_url("javascript:alert(1)").is_none());
     }
 
     #[test]
