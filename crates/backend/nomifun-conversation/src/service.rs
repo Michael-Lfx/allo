@@ -9924,8 +9924,7 @@ impl ConversationService {
                 }
 
                 let rx = agent.subscribe();
-                if let Some(hub) = service.current_agent_trace_hub() {
-                    hub.refresh_recording_enabled().await;
+                if service.current_agent_trace_hub().is_some() {
                     if !observation_opened {
                         observation_started_at = now_ms();
                         observation_opened = true;

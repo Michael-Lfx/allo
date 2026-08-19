@@ -47,15 +47,24 @@ impl ObservationSession {
 
     pub fn bind_ids_with_preview(&self, mut ids: ObservationIds, prompt_preview: Option<&str>) {
         ids.model_call_id = None;
-        *self.ids.lock().unwrap_or_else(|e| e.into_inner()) = ids;
-        *self
-            .last_model_call_id
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
-        self.tool_parents
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        let same_turn = {
+            let mut current = self.ids.lock().unwrap_or_else(|e| e.into_inner());
+            let same_turn = current.root_turn_id.is_some()
+                && current.root_turn_id == ids.root_turn_id
+                && current.conversation_id == ids.conversation_id;
+            *current = ids;
+            same_turn
+        };
+        if !same_turn {
+            *self
+                .last_model_call_id
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            self.tool_parents
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+        }
         self.emit_turn_start_once(prompt_preview);
     }
 
@@ -872,6 +881,43 @@ mod tests {
         assert!(
             after.iter().any(|event| event.event_type == EVENT_TURN_END),
             "clear must allow a later turn/end, got {after:?}"
+        );
+    }
+
+    #[test]
+    fn same_turn_rebind_keeps_in_flight_tool_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        let session = ObservationSession::new(recorder.clone());
+        let ids = ObservationIds {
+            conversation_id: Some("c-rebind".into()),
+            root_turn_id: Some("t-rebind".into()),
+            msg_id: Some("m-1".into()),
+            ..ObservationIds::default()
+        };
+        session.bind_ids(ids.clone());
+        let model_call_id = session.begin_model_call();
+        session.emit_tool_started("tool-1", "bash", &json!({ "cmd": "ls" }));
+        session.bind_ids_with_preview(
+            ObservationIds {
+                msg_id: Some("m-2".into()),
+                ..ids
+            },
+            Some("retry"),
+        );
+        session.emit_tool_finished("tool-1", "bash", false, "ok");
+
+        let events = recorder.read_events(Some("c-rebind")).unwrap();
+        let finished = events
+            .iter()
+            .find(|event| event.event_type == EVENT_TOOL_EXECUTION_COMPLETED)
+            .expect("tool completed");
+        assert_eq!(
+            nomi_agent_trace::ids_from_payload(&finished.payload)
+                .model_call_id
+                .as_deref(),
+            Some(model_call_id.as_str()),
+            "continuation bind must not drop in-flight tool parents: {events:?}"
         );
     }
 }

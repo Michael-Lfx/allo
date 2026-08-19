@@ -376,19 +376,40 @@ pub fn list_observation_files_for_conversation(
     Ok(selected)
 }
 
-/// Keep only ASCII alphanumeric, `-`, and `_`. Empty → `"unknown"`.
+/// Percent-encode anything outside ASCII alphanumeric / `-` / `_` so distinct
+/// conversation ids cannot collapse onto one folder. Empty → `"unknown"`.
 /// Mirrors `nomi_agent_trace::sanitize_path_segment` without taking that crate
 /// as a dependency of `nomifun-system`.
 fn sanitize_path_segment(raw: &str) -> String {
-    let filtered: String = raw
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-        .take(128)
-        .collect();
-    if filtered.is_empty() {
-        "unknown".to_owned()
+    const MAX: usize = 128;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "unknown".to_owned();
+    }
+    if trimmed.len() <= MAX
+        && trimmed
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return trimmed.to_owned();
+    }
+    let mut encoded = String::with_capacity(trimmed.len());
+    for byte in trimmed.as_bytes() {
+        if byte.is_ascii_alphanumeric() || *byte == b'-' || *byte == b'_' {
+            encoded.push(*byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    if encoded.len() <= MAX {
+        encoded
     } else {
-        filtered
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for byte in trimmed.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        format!("h_{hash:016x}")
     }
 }
 
@@ -660,5 +681,16 @@ mod tests {
         drop(entry);
         assert!(archive.by_name("failed-provider-sse/other.sse").is_err());
         let _ = std::fs::remove_file(&result.zip_path);
+    }
+
+    #[test]
+    fn observation_folder_names_do_not_collapse_distinct_ids() {
+        assert_eq!(sanitize_path_segment("abc-DEF_09"), "abc-DEF_09");
+        assert_eq!(sanitize_path_segment("../evil/x"), "%2E%2E%2Fevil%2Fx");
+        assert_ne!(
+            sanitize_path_segment("foo.bar"),
+            sanitize_path_segment("foobar")
+        );
+        assert_eq!(sanitize_path_segment("   "), "unknown");
     }
 }

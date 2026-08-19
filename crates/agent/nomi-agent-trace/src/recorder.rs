@@ -24,16 +24,48 @@ use crate::project::{
     event_belongs_to_turn, project_event_refs, ObservationSummary, ObservationSummaryFold,
 };
 
+const FOLDER_SEGMENT_MAX: usize = 128;
+
+fn fnv1a64(raw: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in raw.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+fn percent_encode_path_segment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.as_bytes() {
+        if byte.is_ascii_alphanumeric() || *byte == b'-' || *byte == b'_' {
+            out.push(*byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// Folder name for one conversation. Safe charset is kept as-is; anything else
+/// is percent-encoded so `foo.bar` and `foobar` cannot share a directory.
 fn sanitize_path_segment(raw: &str) -> String {
-    let filtered: String = raw
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-        .take(128)
-        .collect();
-    if filtered.is_empty() {
-        "unknown".to_owned()
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "unknown".to_owned();
+    }
+    if trimmed.len() <= FOLDER_SEGMENT_MAX
+        && trimmed
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return trimmed.to_owned();
+    }
+    let encoded = percent_encode_path_segment(trimmed);
+    if encoded.len() <= FOLDER_SEGMENT_MAX {
+        encoded
     } else {
-        filtered
+        format!("h_{:016x}", fnv1a64(trimmed))
     }
 }
 
@@ -46,6 +78,8 @@ const GC_INTERVAL_SECS: u64 = 60 * 60;
 const WRITER_FLUSH_INTERVAL: Duration = Duration::from_millis(75);
 const WRITER_FLUSH_BATCH: usize = 32;
 const WRITER_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+/// List/turn/call reads wait this long for a flush ACK, then read whatever is on disk.
+const READ_FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
 const BUFWRITER_CAPACITY: usize = 64 * 1024;
 const WRITER_IDLE: Duration = Duration::from_secs(10 * 60);
 const SEQ_IDLE: Duration = Duration::from_secs(10 * 60);
@@ -169,6 +203,8 @@ pub(crate) struct DualQueue {
     max_normal: usize,
     max_control: usize,
     dropped_normal: u64,
+    /// `(conversation_id, root_turn_id, generation)` → lost count. Empty strings mean unbound.
+    dropped_overflows: HashMap<(String, String, u64), u64>,
     flush_pending: bool,
     extra_flush_acks: Vec<mpsc::Sender<()>>,
 }
@@ -182,9 +218,39 @@ impl DualQueue {
             max_normal,
             max_control,
             dropped_normal: 0,
+            dropped_overflows: HashMap::new(),
             flush_pending: false,
             extra_flush_acks: Vec::new(),
         }
+    }
+
+    fn overflow_key(ids: &ObservationIds, generation: u64) -> (String, String, u64) {
+        (
+            ids.conversation_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .unwrap_or("")
+                .to_owned(),
+            ids.root_turn_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .unwrap_or("")
+                .to_owned(),
+            generation,
+        )
+    }
+
+    fn note_dropped_event(&mut self, command: &WriterCommand) {
+        self.dropped_normal = self.dropped_normal.saturating_add(1);
+        let WriterCommand::Event { ids, generation, .. } = command else {
+            return;
+        };
+        *self
+            .dropped_overflows
+            .entry(Self::overflow_key(ids, *generation))
+            .or_insert(0) += 1;
     }
 
     fn take_extra_flush_acks(&mut self) -> Vec<mpsc::Sender<()>> {
@@ -211,21 +277,21 @@ impl DualQueue {
         }
         if command.is_control() {
             if self.control.len() >= self.max_control {
-                if self.normal.pop_front().is_some() {
-                    self.dropped_normal += 1;
+                if let Some((_, dropped)) = self.normal.pop_front() {
+                    self.note_dropped_event(&dropped);
                 }
                 if self.control.len() >= self.max_control {
                     return EnqueueOutcome::DroppedControl;
                 }
             } else if self.normal.len() >= self.max_normal {
-                if self.normal.pop_front().is_some() {
-                    self.dropped_normal += 1;
+                if let Some((_, dropped)) = self.normal.pop_front() {
+                    self.note_dropped_event(&dropped);
                 }
             }
             self.control.push_back((order, command));
             EnqueueOutcome::Queued
         } else if self.normal.len() >= self.max_normal {
-            self.dropped_normal += 1;
+            self.note_dropped_event(&command);
             EnqueueOutcome::DroppedNormal
         } else {
             self.normal.push_back((order, command));
@@ -252,12 +318,55 @@ impl DualQueue {
         next
     }
 
+    fn take_dropped_overflows(&mut self) -> Vec<(ObservationIds, u64, u64)> {
+        let buckets = std::mem::take(&mut self.dropped_overflows);
+        self.dropped_normal = 0;
+        buckets
+            .into_iter()
+            .map(|((conversation_id, root_turn_id, generation), count)| {
+                (
+                    ObservationIds {
+                        conversation_id: if conversation_id.is_empty() {
+                            None
+                        } else {
+                            Some(conversation_id)
+                        },
+                        root_turn_id: if root_turn_id.is_empty() {
+                            None
+                        } else {
+                            Some(root_turn_id)
+                        },
+                        ..ObservationIds::default()
+                    },
+                    generation,
+                    count,
+                )
+            })
+            .collect()
+    }
+
+    fn restore_dropped_overflows(&mut self, buckets: Vec<(ObservationIds, u64, u64)>) {
+        for (ids, generation, count) in buckets {
+            if count == 0 {
+                continue;
+            }
+            self.dropped_normal = self.dropped_normal.saturating_add(count);
+            *self
+                .dropped_overflows
+                .entry(Self::overflow_key(&ids, generation))
+                .or_insert(0) += count;
+        }
+    }
+
+    #[cfg(test)]
     fn take_dropped_normal(&mut self) -> u64 {
         let dropped = self.dropped_normal;
         self.dropped_normal = 0;
+        self.dropped_overflows.clear();
         dropped
     }
 
+    #[cfg(test)]
     fn restore_dropped_normal(&mut self, count: u64) {
         self.dropped_normal = self.dropped_normal.saturating_add(count);
     }
@@ -382,7 +491,7 @@ pub struct ObservationRecorder {
 }
 
 impl ObservationRecorder {
-    /// Interned recorder for `data_dir`. Writes stay off until [`set_enabled`].
+    /// Interned recorder for `data_dir`. Capture stays on; developer mode gates HTTP reads.
     pub fn shared(data_dir: impl AsRef<Path>) -> Arc<Self> {
         let key = normalize_data_dir(data_dir.as_ref());
         let mut registry = shared_registry().lock().unwrap_or_else(|e| e.into_inner());
@@ -445,7 +554,7 @@ impl ObservationRecorder {
         Self {
             data_dir,
             shared,
-            enabled: AtomicBool::new(false),
+            enabled: AtomicBool::new(true),
             writer: Mutex::new(Some(handle)),
         }
     }
@@ -537,7 +646,7 @@ impl ObservationRecorder {
     }
 
     pub fn read_events(&self, conversation_id: Option<&str>) -> Result<Vec<ObservationEvent>, RecorderError> {
-        self.flush_blocking()?;
+        self.flush_for_read();
         let dir = conversation_dir(&self.shared.root, conversation_id);
         read_dir_events(&dir, None)
     }
@@ -547,7 +656,7 @@ impl ObservationRecorder {
         conversation_id: Option<&str>,
         root_turn_id: &str,
     ) -> Result<Vec<ObservationEvent>, RecorderError> {
-        self.flush_blocking()?;
+        self.flush_for_read();
         let dir = conversation_dir(&self.shared.root, conversation_id);
         read_dir_events_for_turn(&dir, root_turn_id)
     }
@@ -559,7 +668,7 @@ impl ObservationRecorder {
         conversation_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<ObservationEvent>, RecorderError> {
-        self.flush_blocking()?;
+        self.flush_for_read();
         let dir = conversation_dir(&self.shared.root, conversation_id);
         read_dir_events_latest_turns(&dir, limit.max(1))
     }
@@ -569,7 +678,7 @@ impl ObservationRecorder {
         &self,
         conversation_id: Option<&str>,
     ) -> Result<ObservationSummary, RecorderError> {
-        self.flush_blocking()?;
+        self.flush_for_read();
         let dir = conversation_dir(&self.shared.root, conversation_id);
         fold_dir_summary(&dir)
     }
@@ -686,6 +795,25 @@ impl ObservationRecorder {
             );
         }
         Ok(outcome)
+    }
+
+    fn flush_for_read(&self) {
+        if self.shared.shutdown.load(Ordering::Relaxed) {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        if self.try_send(WriterCommand::Flush { ack: Some(tx) }).is_err() {
+            return;
+        }
+        match rx.recv_timeout(READ_FLUSH_TIMEOUT) {
+            Ok(()) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                tracing::debug!("observation read proceeding without flush ack");
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                tracing::debug!("observation writer disconnected during read flush");
+            }
+        }
     }
 
     fn flush_blocking(&self) -> Result<(), RecorderError> {
@@ -1077,27 +1205,33 @@ fn persist_event(
 }
 
 fn write_overflow_gap(shared: &WriterShared, unflushed: &mut usize) {
-    let dropped = shared
+    let buckets = shared
         .queue
         .lock()
         .ok()
-        .map(|mut queue| queue.take_dropped_normal())
-        .unwrap_or(0);
-    if dropped == 0 {
+        .map(|mut queue| queue.take_dropped_overflows())
+        .unwrap_or_default();
+    if buckets.is_empty() {
         return;
     }
-    let ids = ObservationIds::default();
-    let payload = serde_json::json!({
-        "ids": ids,
-        "reason": "writer_queue_overflow",
-        "lost_count": dropped,
-    });
-    match persist_event(shared, EVENT_OBSERVATION_GAP, &ids, payload, 0) {
-        Ok(true) => *unflushed += 1,
-        Ok(false) | Err(_) => {
-            if let Ok(mut queue) = shared.queue.lock() {
-                queue.restore_dropped_normal(dropped);
-            }
+    let mut failed = Vec::new();
+    for (ids, generation, count) in buckets {
+        if count == 0 {
+            continue;
+        }
+        let payload = serde_json::json!({
+            "ids": ids,
+            "reason": "writer_queue_overflow",
+            "lost_count": count,
+        });
+        match persist_event(shared, EVENT_OBSERVATION_GAP, &ids, payload, generation) {
+            Ok(true) => *unflushed += 1,
+            Ok(false) | Err(_) => failed.push((ids, generation, count)),
+        }
+    }
+    if !failed.is_empty() {
+        if let Ok(mut queue) = shared.queue.lock() {
+            queue.restore_dropped_overflows(failed);
         }
     }
 }
@@ -1521,12 +1655,70 @@ fn read_dir_events_latest_turns(
     Ok(newest_first_chunks.into_iter().rev().flatten().collect())
 }
 
+fn jsonl_corrupt_gap(last: Option<&ObservationEvent>, lost_count: u64) -> ObservationEvent {
+    let ids = last
+        .map(|event| ids_from_payload(&event.payload))
+        .unwrap_or_default();
+    let timestamp = last
+        .map(|event| event.timestamp.clone())
+        .unwrap_or_else(|| Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true));
+    let timestamp_ms = last.map(|event| event.timestamp_ms).unwrap_or(0);
+    ObservationEvent::new(
+        EVENT_OBSERVATION_GAP,
+        last.map(|event| event.event_seq).unwrap_or(0),
+        timestamp,
+        timestamp_ms,
+        serde_json::json!({
+            "ids": ids,
+            "reason": "jsonl_corrupt",
+            "lost_count": lost_count,
+        }),
+    )
+}
+
+fn attach_jsonl_corrupt_gap(
+    out: &mut Vec<ObservationEvent>,
+    last: Option<&ObservationEvent>,
+    lost_count: u64,
+    root_turn_id: Option<&str>,
+) {
+    if lost_count == 0 {
+        return;
+    }
+    let mut gap = jsonl_corrupt_gap(last, lost_count);
+    if let Some(turn_id) = root_turn_id {
+        let file_had_turn = out.iter().any(|event| event_belongs_to_turn(event, turn_id));
+        if !file_had_turn && !event_belongs_to_turn(&gap, turn_id) {
+            return;
+        }
+        if file_had_turn {
+            let sample_ids = out
+                .iter()
+                .rev()
+                .find(|event| event_belongs_to_turn(event, turn_id))
+                .map(|event| ids_from_payload(&event.payload))
+                .unwrap_or_else(|| ObservationIds {
+                    root_turn_id: Some(turn_id.to_owned()),
+                    ..ObservationIds::default()
+                });
+            if let Some(obj) = gap.payload.as_object_mut() {
+                if let Ok(value) = serde_json::to_value(&sample_ids) {
+                    obj.insert("ids".into(), value);
+                }
+            }
+        }
+    }
+    out.push(gap);
+}
+
 fn read_jsonl_file(
     path: &Path,
     out: &mut Vec<ObservationEvent>,
     root_turn_id: Option<&str>,
 ) -> Result<(), RecorderError> {
     let file = File::open(path)?;
+    let mut last_good: Option<ObservationEvent> = None;
+    let mut corrupt = 0u64;
     for line in BufReader::new(file).lines() {
         let line = line?;
         let trimmed = line.trim();
@@ -1535,6 +1727,7 @@ fn read_jsonl_file(
         }
         match crate::event::read_event(trimmed) {
             Ok(event) => {
+                last_good = Some(event.clone());
                 if let Some(turn_id) = root_turn_id {
                     if !event_belongs_to_turn(&event, turn_id) {
                         continue;
@@ -1543,10 +1736,17 @@ fn read_jsonl_file(
                 out.push(event);
             }
             Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "skipping corrupt observation line");
+                corrupt += 1;
+                tracing::warn!(path = %path.display(), %error, "observation JSONL line is corrupt");
             }
         }
     }
+    attach_jsonl_corrupt_gap(
+        out,
+        last_good.as_ref(),
+        corrupt,
+        root_turn_id,
+    );
     Ok(())
 }
 
@@ -1608,6 +1808,8 @@ fn fold_jsonl_file(path: &Path, fold: &mut ObservationSummaryFold) -> Result<(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
+    let mut last_good: Option<ObservationEvent> = None;
+    let mut corrupt = 0u64;
     for line in BufReader::new(file).lines() {
         let line = line?;
         let trimmed = line.trim();
@@ -1615,11 +1817,18 @@ fn fold_jsonl_file(path: &Path, fold: &mut ObservationSummaryFold) -> Result<(),
             continue;
         }
         match crate::event::read_event(trimmed) {
-            Ok(event) => fold.observe(&event),
+            Ok(event) => {
+                last_good = Some(event.clone());
+                fold.observe(&event);
+            }
             Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "skipping corrupt observation line");
+                corrupt += 1;
+                tracing::warn!(path = %path.display(), %error, "observation JSONL line is corrupt");
             }
         }
+    }
+    if corrupt > 0 {
+        fold.observe(&jsonl_corrupt_gap(last_good.as_ref(), corrupt));
     }
     Ok(())
 }
@@ -1695,6 +1904,7 @@ mod tests {
     use crate::capture::MAX_EVENT_BYTES;
     use crate::event::{EVENT_LLM_REQUEST, EVENT_LLM_RESPONSE};
     use serde_json::json;
+    use std::io::Write;
     use std::sync::Arc;
 
     fn ids(turn: &str) -> ObservationIds {
@@ -1714,10 +1924,21 @@ mod tests {
     }
 
     #[test]
-    fn set_enabled_defaults_false_and_skips_writes() {
+    fn writes_are_enabled_by_default() {
         let dir = tempfile::tempdir().unwrap();
         let recorder = ObservationRecorder::isolated(dir.path());
-        assert!(!recorder.is_enabled());
+        assert!(recorder.is_enabled());
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t1"), json!({"ok": true}))
+            .unwrap();
+        assert!(!recorder.read_events(Some("conv-a")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_enabled_false_skips_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(false);
         let written = recorder
             .emit(EVENT_LLM_REQUEST, &ids("t1"), json!({"ok": true}))
             .unwrap();
@@ -1900,10 +2121,89 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_path_segment_filters() {
+    fn sanitize_path_segment_encodes_unsafe_chars() {
         assert_eq!(sanitize_path_segment("abc-DEF_09"), "abc-DEF_09");
-        assert_eq!(sanitize_path_segment("../evil/x"), "evilx");
-        assert_eq!(sanitize_path_segment("!!!"), "unknown");
+        assert_eq!(sanitize_path_segment("../evil/x"), "%2E%2E%2Fevil%2Fx");
+        assert_ne!(
+            sanitize_path_segment("foo.bar"),
+            sanitize_path_segment("foobar")
+        );
+        assert_eq!(sanitize_path_segment("!!!"), "%21%21%21");
+        assert_eq!(sanitize_path_segment("   "), "unknown");
+    }
+
+    #[test]
+    fn overflow_gap_lands_in_the_conversation_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let (recorder, gate) = ObservationRecorder::isolated_with_write_gate(dir.path());
+        for _ in 0..(MAX_QUEUE_EVENTS + 8) {
+            recorder
+                .emit(EVENT_LLM_REQUEST, &ids("t-overflow"), json!({ "ok": true }))
+                .unwrap();
+        }
+        assert_eq!(recorder.health().status, RecorderHealthStatus::QueueDropped);
+        gate.release();
+        let events = recorder.read_events(Some("conv-a")).unwrap();
+        let gaps: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == EVENT_OBSERVATION_GAP)
+            .collect();
+        assert!(
+            !gaps.is_empty(),
+            "overflow must write observation/gap into the conversation JSONL, got {events:?}"
+        );
+        assert_eq!(gaps[0].payload["reason"], "writer_queue_overflow");
+        let gap_ids = ids_from_payload(&gaps[0].payload);
+        assert_eq!(gap_ids.conversation_id.as_deref(), Some("conv-a"));
+        assert_eq!(gap_ids.root_turn_id.as_deref(), Some("t-overflow"));
+        let turns = crate::project::project_turns(&events);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].integrity, crate::event::Integrity::Degraded);
+    }
+
+    #[test]
+    fn corrupt_jsonl_line_degrades_turn_integrity() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder
+            .emit(
+                EVENT_TURN_START,
+                &ids("t-corrupt"),
+                json!({ "prompt_preview": "hi" }),
+            )
+            .unwrap();
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t-corrupt"), json!({}))
+            .unwrap();
+        recorder
+            .emit(
+                crate::event::EVENT_TURN_END,
+                &ids("t-corrupt"),
+                json!({ "status": "completed", "elapsed_ms": 4 }),
+            )
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+
+        let jsonl = recorder.root().join("conv-a").join(EVENTS_FILE);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&jsonl)
+            .unwrap()
+            .write_all(b"{not-json\n")
+            .unwrap();
+
+        let events = recorder.read_events(Some("conv-a")).unwrap();
+        assert!(
+            events.iter().any(|event| {
+                event.event_type == EVENT_OBSERVATION_GAP
+                    && event.payload["reason"] == "jsonl_corrupt"
+            }),
+            "corrupt line must surface as observation/gap, got {events:?}"
+        );
+        let turns = crate::project::project_turns(&events);
+        assert_eq!(turns[0].integrity, crate::event::Integrity::Degraded);
+        let summary = recorder.read_summary(Some("conv-a")).unwrap();
+        assert_eq!(summary.integrity, crate::event::Integrity::Degraded);
     }
 
     #[test]

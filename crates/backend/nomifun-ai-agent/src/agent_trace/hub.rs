@@ -1,4 +1,4 @@
-//! Process-wide session observation hub: recorder + developer-mode preference gate.
+//! Process-wide session observation hub: recorder + developer-mode read gate.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -104,11 +104,6 @@ impl AgentTraceHub {
         if let Err(error) = self.recorder.reset_all() {
             tracing::warn!(error = %error, "Failed to reset session observation store");
         }
-    }
-
-    pub async fn refresh_recording_enabled(&self) {
-        self.recorder
-            .set_enabled(self.developer_mode_enabled().await);
     }
 
     /// Require developer mode for HTTP read APIs. Returns `Ok(())` when enabled.

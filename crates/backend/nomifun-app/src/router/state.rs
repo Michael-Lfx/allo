@@ -601,12 +601,6 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
     let execution_conversation = conversation.service.clone();
     let system = build_system_state(services);
     if let Some(hub) = conversation.agent_trace_hub.clone() {
-        let recorder = hub.observation_recorder();
-        system
-            .client_pref_service
-            .set_developer_mode_listener(Arc::new(move |enabled| {
-                recorder.set_enabled(enabled);
-            }));
         let reset_hub = hub.clone();
         if let Ok(mut slot) = system.observation_reset.lock() {
             *slot = Some(Arc::new(move || {
