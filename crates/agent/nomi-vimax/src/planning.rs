@@ -751,6 +751,16 @@ pub fn enrich_requirement_for_scene(
     // Strip a previous film-level block so we don't double-confuse the LLM with two totals.
     let base = strip_duration_constraint_blocks(base);
     let base = with_language_lock(&base, &[&base, user_requirement]);
+    let cross_scene = if scene_idx > 0 && scene_count > 1 {
+        format!(
+            "         - CROSS-SCENE OPENING: This is NOT the first scene. The FIRST shot must open as a \
+match-cut from the previous scene's final shot ending state (carry cast identity / wardrobe / lighting mood \
+when story-consistent; camera or location may change for the new beat). The renderer feeds that ending frame \
+as continuity Image 1 — write the opening beat to continue from that still, not a cold establish.\n"
+        )
+    } else {
+        String::new()
+    };
     let block = format!(
         "[VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]\n\
          - This is scene {scene_num}/{scene_count} of a film targeting ≈ {film_total_secs}s total.\n\
@@ -774,10 +784,10 @@ do NOT pad with empty static holds or \"磨叽\" waiting.\n\
 rich in-shot motion. For dialogue, prioritize clear pacing — pack reaction into the same framing only \
 when the spoken payload still fits the speech budget.\n\
          - Reuse cam_idx whenever possible. Prefer in-shot motion when a cut adds no new information.\n\
-         - SHOT CONTINUITY (this scene only): for every adjacent pair of shots, shot N+1 must open from \
+         - SHOT CONTINUITY: for every adjacent pair of shots in this scene, shot N+1 must open from \
 shot N's ending state so Seedance can match-cut (first frame of next = last frame of previous). \
-Camera/angle may change; cast identity, wardrobe, lighting mood, and set must carry over. \
-Do NOT require continuity from the previous scene's final shot into this scene's first shot.\n\
+Camera/angle may change; cast identity, wardrobe, lighting mood, and set must carry over.\n\
+         {cross_scene}\
          - If you would create more than {max_shots} shots, merge beats instead.\n\
          [DIRECTOR_DENSITY — MUST FOLLOW]\n\
          - Each shot must change something the audience can see or hear (new info, new emotion, new action). \
@@ -788,6 +798,7 @@ Ban back-to-back redundant wide establishes and repeated \"looks around slowly\"
 and volume intention. Write the same BGM phrase into every audio_desc (or a clear \"same underscore as prior shot\"). \
 Do NOT invent a new music style per shot — abrupt BGM changes between cuts are forbidden.",
         scene_num = scene_idx + 1,
+        cross_scene = cross_scene,
     );
     format!("{base}\n\n{block}")
 }

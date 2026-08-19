@@ -1,4 +1,5 @@
 import type { ModelProtocol } from "@oc/lib/model-protocols";
+import { isMiniMaxH3VideoModel, MINIMAX_H3_DURATION_DEFAULT, MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN } from "@oc/lib/minimax-h3-video";
 
 export type ModelCapabilityConfig = {
     version: number;
@@ -34,6 +35,38 @@ export type VideoCapabilityConfig = {
     operations: string[];
     defaultOperation: string;
 };
+
+function minimaxH3VideoCapability(): VideoCapabilityConfig {
+    return {
+        references: {
+            promptMaxChars: 7000,
+            maxImages: 9,
+            maxImageBytes: 30 * 1024 * 1024,
+            maxVideos: 3,
+            maxVideoBytes: 50 * 1024 * 1024,
+            maxVideoDurationSeconds: 15,
+            maxAudios: 3,
+            maxAudioBytes: 15 * 1024 * 1024,
+            maxAudioDurationSeconds: 15,
+        },
+        duration: {
+            selection: "range",
+            min: MINIMAX_H3_DURATION_MIN,
+            max: MINIMAX_H3_DURATION_MAX,
+            step: 1,
+            default: MINIMAX_H3_DURATION_DEFAULT,
+        },
+        ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+        defaultRatio: "16:9",
+        resolutions: ["768P", "2K"],
+        defaultResolution: "768P",
+        // Prefer MiniMax `aigc_watermark` via backend; do not expose Ark watermark / generate_audio.
+        generateAudio: { supported: false, default: false },
+        watermark: { supported: false, default: false },
+        operations: ["text_to_video", "image_to_video"],
+        defaultOperation: "text_to_video",
+    };
+}
 
 export function defaultModelCapabilityConfig(protocol?: ModelProtocol): ModelCapabilityConfig {
     const video: VideoCapabilityConfig = {
@@ -80,6 +113,9 @@ export function modelCapabilityConfigFor(config: { channels: Array<{ id: string;
     const separator = model.indexOf("::");
     const channelId = separator >= 0 ? model.slice(0, separator) : "";
     const modelName = separator >= 0 ? model.slice(separator + 2) : model;
+    if (isMiniMaxH3VideoModel(modelName) || isMiniMaxH3VideoModel(model)) {
+        return { version: 1, video: minimaxH3VideoCapability() };
+    }
     const channel = config.channels.find((item) => item.id === channelId) || config.channels.find((item) => item.models.includes(modelName));
     const cost = channel?.modelCosts?.find((item) => item.model === modelName);
     return cost?.capabilityConfig || defaultModelCapabilityConfig(cost?.protocol);

@@ -216,6 +216,21 @@ impl Script2VideoPipeline {
         style: &str,
         progress: Option<ProgressCallback>,
     ) -> VimaxResult<PathBuf> {
+        self.render_with_prior_continuity(script, user_requirement, style, progress, None)
+            .await
+    }
+
+    /// Like [`Self::render`], but the first shot of this scene match-cuts from
+    /// `prior_continuity` (typically the previous scene's last shot
+    /// `video_last_frame.png`) — same multi-ref Image 1 path as intra-scene chaining.
+    pub async fn render_with_prior_continuity(
+        &self,
+        script: &str,
+        user_requirement: &str,
+        style: &str,
+        progress: Option<ProgressCallback>,
+        prior_continuity: Option<&Path>,
+    ) -> VimaxResult<PathBuf> {
         emit(&progress, "render_start", "开始渲染脚本成片");
         let style = crate::planning::resolve_visual_style(style);
         let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
@@ -296,6 +311,7 @@ impl Script2VideoPipeline {
             &world_pairs,
             &style,
             &progress,
+            prior_continuity,
         )
         .await?;
 
@@ -781,9 +797,10 @@ impl Script2VideoPipeline {
     /// Submit video-generation API calls one-by-one.
     /// On failure/cancel, stop immediately; already-saved clips remain for resume.
     ///
-    /// Within a scene, every timeline-adjacent shot passes the previous clip's
-    /// `video_last_frame.png` as a `reference_image` (multi-ref R2V continuity).
-    /// Cross-scene continuity is intentionally skipped (each scene has its own pipeline).
+    /// Timeline-adjacent shots pass the previous clip's `video_last_frame.png` as a
+    /// `reference_image` (multi-ref R2V continuity + prompt Image 1 binding).
+    /// `prior_continuity` seeds the first shot of this scene from the previous
+    /// scene's last shot (cross-scene match-cut).
     async fn generate_videos_sequential(
         &self,
         shots: &[ShotDescription],
@@ -792,6 +809,7 @@ impl Script2VideoPipeline {
         world_pairs: &[(PathBuf, String)],
         style: &str,
         progress: &Option<ProgressCallback>,
+        prior_continuity: Option<&Path>,
     ) -> VimaxResult<()> {
         // Always drive continuity by timeline idx, not whatever order the planner cached.
         let mut shots = shots.to_vec();
@@ -819,6 +837,7 @@ impl Script2VideoPipeline {
             needs = ?needs,
             durations = ?clip_durs,
             scene_bgm = %scene_bgm,
+            prior_continuity = ?prior_continuity.map(|p| p.display().to_string()),
             "content-aware shot durations (audio+motion)"
         );
         let phase_started = std::time::Instant::now();
@@ -841,7 +860,7 @@ impl Script2VideoPipeline {
                 serde_json::json!({ "shot_idx": shot.idx }),
             );
 
-            // Timeline-adjacent continuity: previous shot's ending still as reference_image.
+            // Timeline-adjacent continuity: previous shot (or prior scene tail) ending still.
             let continuity_first = if i > 0 {
                 let prev = &shots[i - 1];
                 match ensure_shot_video_last_frame(&self.working_dir, prev.idx, false).await {
@@ -876,7 +895,33 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                         )));
                     }
                 }
+            } else if let Some(path) = prior_continuity
+                .filter(|p| media_local::is_usable_image_file(p))
+            {
+                emit(
+                    progress,
+                    "video_continuity",
+                    &format!(
+                        "Shot {}: reference_image ← previous scene last-shot video_last_frame ({})",
+                        shot.idx,
+                        path.file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("video_last_frame.png")
+                    ),
+                );
+                tracing::info!(
+                    shot = shot.idx,
+                    continuity = %path.display(),
+                    "cross-scene multi-ref continuity locked to prior scene video_last_frame"
+                );
+                Some(path.to_path_buf())
             } else {
+                if prior_continuity.is_some() {
+                    tracing::warn!(
+                        shot = shot.idx,
+                        "prior scene continuity path unusable; first shot of scene starts without match-cut frame"
+                    );
+                }
                 None
             };
 
@@ -2219,6 +2264,49 @@ async fn ensure_shot_video_last_frame(
     }
 }
 
+/// Highest shot idx that has a usable `video.mp4` under `scene_working_dir/shots/`.
+async fn last_shot_idx_in_scene(scene_working_dir: &Path) -> Option<i32> {
+    let desc_path = scene_working_dir.join("shot_descriptions.json");
+    if let Ok(shots) = read_json_artifact::<Vec<ShotDescription>>(&desc_path).await {
+        if let Some(idx) = shots.iter().map(|s| s.idx).max() {
+            return Some(idx);
+        }
+    }
+    let shots_dir = scene_working_dir.join("shots");
+    let mut max_idx: Option<i32> = None;
+    let Ok(mut rd) = tokio::fs::read_dir(&shots_dir).await else {
+        return None;
+    };
+    while let Ok(Some(ent)) = rd.next_entry().await {
+        let name = ent.file_name();
+        let Ok(idx) = name.to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        let video = ent.path().join("video.mp4");
+        if media_local::is_usable_video_file(&video) {
+            max_idx = Some(max_idx.map_or(idx, |m| m.max(idx)));
+        }
+    }
+    max_idx
+}
+
+/// Previous scene's last-shot `video_last_frame.png` for cross-scene match-cut continuity.
+pub async fn resolve_scene_tail_continuity(scene_working_dir: &Path) -> Option<PathBuf> {
+    let last_idx = last_shot_idx_in_scene(scene_working_dir).await?;
+    match ensure_shot_video_last_frame(scene_working_dir, last_idx, false).await {
+        Ok(path) => path,
+        Err(e) => {
+            tracing::warn!(
+                scene = %scene_working_dir.display(),
+                last_idx,
+                error = %e,
+                "failed to resolve scene tail continuity frame"
+            );
+            None
+        }
+    }
+}
+
 async fn load_target_duration_secs(working_dir: &Path) -> Option<u32> {
     for dir in [working_dir, working_dir.parent().unwrap_or(working_dir)] {
         let p = dir.join("target_duration_secs.txt");
@@ -2343,7 +2431,8 @@ video_last_frame for match-cut continuity from the previous shot. "
         )
     };
     let continuity_clause = if from_prev_video_tail {
-        "CONTINUITY: Image 1 is the previous adjacent shot's ending frame — begin motion immediately from that pose/framing; \
+        "CONTINUITY: Image 1 is the previous timeline-adjacent shot's ending frame \
+(same scene or prior scene's last shot) — begin motion immediately from that pose/framing; \
 seamless match-cut continuation into this beat (camera/angle may already differ; keep identity and set). "
     } else {
         ""
@@ -2390,7 +2479,7 @@ fn shot_video_ref_pairs(
     if let Some(path) = continuity.filter(|p| media_local::is_usable_image_file(p)) {
         pairs.push((
             path.to_path_buf(),
-            "Previous adjacent shot ending frame — match-cut continuity; start motion immediately from this pose, framing, wardrobe, and set."
+            "Previous timeline-adjacent shot ending frame — match-cut continuity; start motion immediately from this pose, framing, wardrobe, and set."
                 .into(),
         ));
     }

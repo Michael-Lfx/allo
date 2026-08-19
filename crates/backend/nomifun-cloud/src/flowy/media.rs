@@ -940,6 +940,83 @@ mod tests {
     }
 
     #[test]
+    fn build_minimax_h3_text_only_body() {
+        use crate::flowy::media_types::is_minimax_h3_model;
+        assert!(is_minimax_h3_model("flowy/MiniMax-H3"));
+        assert!(is_minimax_h3_model("AIPC-MiniMax-H3"));
+
+        let body = FlowyApiClient::build_video_create_params(VideoCreateParams {
+            model: "flowy/MiniMax-H3".into(),
+            prompt: "海边日落".into(),
+            duration: Some(5),
+            aspect_ratio: "16:9".into(),
+            resolution: Some("720p".into()),
+            negative_prompt: Some("blur".into()),
+            seed: Some(1),
+            watermark: true,
+            generate_audio: Some(true),
+            return_last_frame: Some(true),
+            images: vec![],
+            reference_video_url: None,
+            reference_audio_url: None,
+        });
+        assert_eq!(body["model"], "flowy/MiniMax-H3");
+        assert_eq!(body["resolution"], "768P");
+        assert_eq!(body["duration"], 5);
+        assert_eq!(body["ratio"], "16:9");
+        assert_eq!(body["aigc_watermark"], true);
+        assert!(body.get("watermark").is_none());
+        assert!(body.get("generate_audio").is_none());
+        assert!(body.get("return_last_frame").is_none());
+        assert!(body.get("negative_prompt").is_none());
+        assert!(body.get("seed").is_none());
+    }
+
+    #[test]
+    fn build_minimax_h3_i2v_uses_adaptive_ratio() {
+        let body = FlowyApiClient::build_video_create_params(VideoCreateParams {
+            model: "flowy/MiniMax-H3".into(),
+            prompt: "镜头推进".into(),
+            duration: Some(6),
+            aspect_ratio: "16:9".into(),
+            resolution: Some("2K".into()),
+            negative_prompt: None,
+            seed: None,
+            watermark: false,
+            generate_audio: None,
+            return_last_frame: None,
+            images: vec![VideoContentImage {
+                url: "https://example.com/first.png".into(),
+                role: "first_frame".into(),
+            }],
+            reference_video_url: None,
+            reference_audio_url: None,
+        });
+        assert_eq!(body["ratio"], "adaptive");
+        assert_eq!(body["resolution"], "2K");
+        assert_eq!(body["duration"], 6);
+        assert!(body.get("aigc_watermark").is_none());
+    }
+
+    #[test]
+    fn video_task_record_falls_back_to_content_url() {
+        let rec = VideoTaskRecord {
+            id: 1,
+            task_id: None,
+            status: 4,
+            result: Some(serde_json::json!({
+                "content": { "url": "https://cdn.example/h3.mp4" }
+            })),
+            created_at: None,
+            updated_at: None,
+        };
+        assert_eq!(
+            rec.video_url().as_deref(),
+            Some("https://cdn.example/h3.mp4")
+        );
+    }
+
+    #[test]
     fn build_video_create_body_with_first_frame() {
         let body = FlowyApiClient::build_video_create_body(
             "flowy/doubao-seedance-1-0-pro",

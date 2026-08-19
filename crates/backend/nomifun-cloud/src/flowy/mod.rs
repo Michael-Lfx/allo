@@ -17,10 +17,12 @@ pub use media::{
     video_task_failure_message, video_task_status_label, video_task_status_user_message_zh,
 };
 pub use media_types::{
+    clamp_minimax_h3_duration, is_minimax_h3_model, normalize_minimax_h3_resolution,
     CreateVideoTaskResponse, ImageGenerationRequest, MODEL_CATEGORY_ASR, MODEL_CATEGORY_IMAGE,
-    MODEL_CATEGORY_TTS, MODEL_CATEGORY_VIDEO, OssPresignPutData, OssPresignPutRequest, VIDEO_TASK_STATUS_CANCELLED,
-    VIDEO_TASK_STATUS_EXPIRED, VIDEO_TASK_STATUS_FAILED, VIDEO_TASK_STATUS_SUCCEEDED,
-    VideoContentImage, VideoCreateParams, VideoTaskRecord,
+    MODEL_CATEGORY_TTS, MODEL_CATEGORY_VIDEO, DEFAULT_MINIMAX_H3_RESOLUTION, MINIMAX_H3_DURATION_MAX,
+    MINIMAX_H3_DURATION_MIN, MINIMAX_H3_RESOLUTIONS, OssPresignPutData, OssPresignPutRequest,
+    VIDEO_TASK_STATUS_CANCELLED, VIDEO_TASK_STATUS_EXPIRED, VIDEO_TASK_STATUS_FAILED,
+    VIDEO_TASK_STATUS_SUCCEEDED, VideoContentImage, VideoCreateParams, VideoTaskRecord,
 };
 pub use model_resolve::resolve_model_in_catalog;
 pub use oss::OssUploadResult;

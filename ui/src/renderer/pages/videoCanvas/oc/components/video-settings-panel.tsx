@@ -3,6 +3,7 @@ import { Switch } from "antd";
 
 import { ImageSettingsTheme } from "@oc/components/image-settings-panel";
 import { boolConfig, isSeedanceFastModel, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceRatioOptions } from "@oc/lib/seedance-video";
+import { isMiniMaxH3VideoModel, normalizeMiniMaxH3Duration, normalizeMiniMaxH3Resolution } from "@oc/lib/minimax-h3-video";
 import { type CanvasTheme } from "@oc/lib/canvas-theme";
 import { normalizeVideoDuration, normalizeVideoResolution, VIDEO_DURATION_MIN } from "@oc/lib/video-generation-options";
 import { modelCapabilityConfigFor, videoDurationOptions, type VideoCapabilityConfig } from "@oc/lib/model-capabilities";
@@ -29,6 +30,9 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const profile = modelCapabilityConfigFor(config, config.model).video!;
     if (resolveModelRequestConfig(config, config.model).interfaceType === "volcengine-jimeng-video") {
         return <JiMengVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+    }
+    if (isMiniMaxH3VideoModel(modelOptionName(config.model || config.videoModel))) {
+        return <MiniMaxH3VideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
     if (isSeedanceVideoConfig(config)) {
         return <SeedanceVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
@@ -94,6 +98,50 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </div>
                 </SettingGroup>
                 {profile.generateAudio.supported || profile.watermark.supported ? <SettingGroup title="输出" color={theme.node.muted}><div className="grid grid-cols-2 gap-3 rounded-md px-2" style={{ background: theme.toolbar.itemHover }}>{profile.generateAudio.supported ? <SwitchRow label="生成声音" checked={generateAudio} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} /> : null}{profile.watermark.supported ? <SwitchRow label="添加水印" checked={watermark} theme={theme} onChange={(checked) => onConfigChange("videoWatermark", String(checked))} /> : null}</div></SettingGroup> : null}
+            </div>
+        </ImageSettingsTheme>
+    );
+}
+
+function MiniMaxH3VideoSettingsPanel({ config, profile, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps & { profile: VideoCapabilityConfig }) {
+    const resolution = normalizeMiniMaxH3Resolution(config.vquality);
+    const ratio = profile.ratios.includes(config.size) ? config.size : profile.defaultRatio;
+    const duration = normalizeMiniMaxH3Duration(config.videoSeconds);
+    const durationOptions = videoDurationOptions(profile);
+    const durationColumns = durationOptions.length + (profile.duration.selection === "range" ? 1 : 0);
+
+    return (
+        <ImageSettingsTheme theme={theme}>
+            <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
+                {showTitle ? <div className="text-sm font-semibold">视频设置</div> : null}
+                <SettingGroup title="分辨率" color={theme.node.muted}>
+                    <div className="grid grid-cols-2 gap-1.5">
+                        {profile.resolutions.map((value) => (
+                            <OptionPill key={value} selected={resolution === value} theme={theme} onClick={() => onConfigChange("vquality", value)}>
+                                {value}
+                            </OptionPill>
+                        ))}
+                    </div>
+                </SettingGroup>
+                <SettingGroup title="比例" color={theme.node.muted}>
+                    <div className="grid grid-cols-3 gap-1.5">
+                        {profile.ratios.map((value) => (
+                            <OptionPill key={value} selected={ratio === value} theme={theme} onClick={() => onConfigChange("size", value)}>
+                                {value}
+                            </OptionPill>
+                        ))}
+                    </div>
+                    <div className="text-[var(--fs-tiny)] leading-4 opacity-55">文生视频需指定比例；图生视频由服务端按画面自适应</div>
+                </SettingGroup>
+                <SettingGroup title="时长" color={theme.node.muted}>
+                    <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.min(durationColumns, 6)}, minmax(0, 1fr))` }}>
+                        {durationOptions.map((value) => (
+                            <OptionPill key={value} selected={duration === value} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>
+                                {value}s
+                            </OptionPill>
+                        ))}
+                    </div>
+                </SettingGroup>
             </div>
         </ImageSettingsTheme>
     );

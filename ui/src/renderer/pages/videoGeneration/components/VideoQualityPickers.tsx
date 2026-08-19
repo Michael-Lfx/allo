@@ -88,7 +88,7 @@ const VideoQualityPickers: React.FC<VideoQualityPickersProps> = ({
         </div>
         <span className='text-11px text-[var(--color-text-4)]'>
           {t('videoGeneration.workspace.source.resolutionHint', {
-            defaultValue: '可选档位随当前视频模型变化（Fast/Mini 最高 720p）',
+            defaultValue: '可选档位随当前视频模型变化（Seedance Fast/Mini 最高 720p；MiniMax-H3 为 768P/2K）',
           })}
         </span>
       </div>

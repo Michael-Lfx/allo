@@ -356,7 +356,7 @@
       "durationHintShort": "Drag or tap a tick",
       "durationCreditsHint": "Est. ~{{credits}} credits (~{{rate}}/sec)",
       "resolutionLabel": "Resolution",
-      "resolutionHint": "Available resolutions depend on the video model (Fast/Mini max 720p)",
+      "resolutionHint": "Available resolutions depend on the video model (Seedance Fast/Mini max 720p; MiniMax-H3 uses 768P/2K)",
       "fpsLabel": "Frame rate",
       "fpsHint": "Available frame rates depend on the video model",
       "fpsLockedHint": "This model is locked to {{fps}} fps (cinematic)",

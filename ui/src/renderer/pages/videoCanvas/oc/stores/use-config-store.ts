@@ -157,6 +157,7 @@ function isVideoModelName(model: string) {
         || value.includes("ltx-video")
         || value.includes("ltxvideo")
         || value.includes("minimax-video")
+        || value.includes("minimax-h3")
         || value.includes("abab-video");
 }
 

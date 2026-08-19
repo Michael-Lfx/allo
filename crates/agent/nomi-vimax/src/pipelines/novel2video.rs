@@ -13,7 +13,7 @@ use crate::progress::ProgressCallback;
 use crate::rag;
 use crate::session::{write_json_artifact, write_text_artifact};
 
-use super::script2video::Script2VideoPipeline;
+use super::script2video::{resolve_scene_tail_continuity, Script2VideoPipeline};
 use super::{PipelineBackends, emit, emit_meta, emit_pct, load_or_write_text};
 
 pub struct Novel2VideoPipeline {
@@ -329,6 +329,9 @@ impl Novel2VideoPipeline {
         let mut all_videos = Vec::new();
         let mut pending = 0usize;
         let mut total_scenes = 0usize;
+        // Film-order continuity across events/scenes: next scene's first shot
+        // match-cuts from the previous scene's last video_last_frame.
+        let mut prior_continuity: Option<PathBuf> = None;
         for event in &events {
             let scenes_dir = self
                 .working_dir
@@ -355,11 +358,12 @@ impl Novel2VideoPipeline {
                             event.index, scene.index
                         ),
                     );
+                    prior_continuity = resolve_scene_tail_continuity(&scene_work).await;
                     all_videos.push(scene_final);
                     continue;
                 }
                 pending += 1;
-                let s2v = Script2VideoPipeline::new(self.backends.clone(), scene_work);
+                let s2v = Script2VideoPipeline::new(self.backends.clone(), scene_work.clone());
                 emit_meta(
                     &progress,
                     "render_scene",
@@ -370,8 +374,15 @@ impl Novel2VideoPipeline {
                     serde_json::json!({ "scene_idx": scene.index }),
                 );
                 let video = s2v
-                    .render(&scene.script, user_requirement, style, None)
+                    .render_with_prior_continuity(
+                        &scene.script,
+                        user_requirement,
+                        style,
+                        progress.clone(),
+                        prior_continuity.as_deref(),
+                    )
                     .await?;
+                prior_continuity = resolve_scene_tail_continuity(&scene_work).await;
                 all_videos.push(video);
             }
         }

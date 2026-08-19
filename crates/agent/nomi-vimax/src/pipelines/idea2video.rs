@@ -20,7 +20,7 @@ use crate::session::{read_json_artifact, write_json_artifact, write_text_artifac
 use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, resolve_session_root, world_cameo_context,
 };
-use super::script2video::Script2VideoPipeline;
+use super::script2video::{resolve_scene_tail_continuity, Script2VideoPipeline};
 use super::{
     PipelineBackends, emit_pct, emit_pct_meta, load_or_write_json, load_or_write_text, safe_component,
 };
@@ -460,7 +460,9 @@ impl Idea2VideoPipeline {
 
         // Sequential scenes so a mid-failure surfaces immediately (no stuck JoinSet wait)
         // and progress keeps moving. Per-shot videos are also sequential + fail-fast.
+        // Cross-scene: scene N+1's first shot match-cuts from scene N's last video_last_frame.
         let mut scene_videos: Vec<PathBuf> = Vec::new();
+        let mut prior_continuity: Option<PathBuf> = None;
         for (i, scene_script) in scenes.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
             let scene_final = scene_dir.join("final_video.mp4");
@@ -472,6 +474,7 @@ impl Idea2VideoPipeline {
                     &format!("场景 {}/{scene_total} 已完成，跳过", i + 1),
                     20.0 + 70.0 * ((i + 1) as f32 / scene_total as f32),
                 );
+                prior_continuity = resolve_scene_tail_continuity(&scene_dir).await;
                 scene_videos.push(scene_final);
                 continue;
             }
@@ -497,12 +500,19 @@ impl Idea2VideoPipeline {
                 pct,
                 serde_json::json!({ "scene_idx": i }),
             );
-            let s2v = Script2VideoPipeline::new(self.backends.clone(), scene_dir);
+            let s2v = Script2VideoPipeline::new(self.backends.clone(), scene_dir.clone());
             match s2v
-                .render(scene_script, &scene_req, &style, progress.clone())
+                .render_with_prior_continuity(
+                    scene_script,
+                    &scene_req,
+                    &style,
+                    progress.clone(),
+                    prior_continuity.as_deref(),
+                )
                 .await
             {
                 Ok(video) => {
+                    prior_continuity = resolve_scene_tail_continuity(&scene_dir).await;
                     scene_videos.push(video);
                     emit_pct(
                         &progress,

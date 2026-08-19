@@ -439,7 +439,7 @@ const SUPPORTED_TASKS_BY_PLATFORM: Readonly<Record<string, readonly ModelTask[]>
   'mimo-token-plan-cn': CHAT_ONLY,
   'mimo-token-plan-sgp': CHAT_ONLY,
   'mimo-token-plan-ams': CHAT_ONLY,
-  minimax: ['chat', 'speech_synthesis'],
+  minimax: ['chat', 'speech_synthesis', 'video_generation', 'image_generation'],
   'minimax-code': CHAT_ONLY,
   'minimax-coding-plan': CHAT_ONLY,
   novita: ['chat', 'embedding'],

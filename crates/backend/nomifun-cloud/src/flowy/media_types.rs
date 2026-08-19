@@ -48,12 +48,20 @@ pub struct VideoTaskRecord {
 
 impl VideoTaskRecord {
     pub fn video_url(&self) -> Option<String> {
-        self.result
-            .as_ref()
-            .and_then(|r| r.get("content"))
-            .and_then(|c| c.get("video_url"))
-            .and_then(|u| u.as_str())
-            .map(str::to_string)
+        let content = self.result.as_ref().and_then(|r| r.get("content"))?;
+        // Prefer normalized `video_url`; MiniMax-H3 may only expose upstream `url`
+        // until the gateway mirrors it (server docs guarantee both when possible).
+        for key in ["video_url", "url"] {
+            if let Some(url) = content
+                .get(key)
+                .and_then(|u| u.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return Some(url.to_string());
+            }
+        }
+        None
     }
 
     /// Last-frame still URL when the create request set `return_last_frame=true`.
@@ -136,7 +144,9 @@ pub struct VideoContentImage {
     pub role: String,
 }
 
-/// High-level parameters for building a Seedance video create body.
+/// High-level parameters for building a Flowy video create body.
+///
+/// Serialization branches on [`is_minimax_h3_model`]: Seedance/Ark fields vs MiniMax V2.
 #[derive(Debug, Clone, Default)]
 pub struct VideoCreateParams {
     pub model: String,
@@ -149,15 +159,71 @@ pub struct VideoCreateParams {
     pub watermark: bool,
     pub generate_audio: Option<bool>,
     /// When true, Seedance returns a still of the clip ending (`last_frame_url`).
+    /// Ignored for MiniMax-H3 (not part of MiniMax V2 create schema).
     pub return_last_frame: Option<bool>,
     pub images: Vec<VideoContentImage>,
     pub reference_video_url: Option<String>,
     pub reference_audio_url: Option<String>,
 }
 
+/// True when `model` is MiniMax-H3 (Flowy id forms: `flowy/MiniMax-H3`, `AIPC-…`, bare name).
+pub fn is_minimax_h3_model(model: &str) -> bool {
+    let blob = model
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['_', '.', ' ', '/'], "-");
+    blob.contains("minimax-h3") || blob.contains("minimaxh3")
+}
+
+/// MiniMax-H3 create API resolutions (`768P` | `2K`).
+pub const MINIMAX_H3_RESOLUTIONS: &[&str] = &["768P", "2K"];
+pub const DEFAULT_MINIMAX_H3_RESOLUTION: &str = "768P";
+pub const MINIMAX_H3_DURATION_MIN: u32 = 4;
+pub const MINIMAX_H3_DURATION_MAX: u32 = 15;
+
+/// Map UI / Seedance-style tokens onto MiniMax-H3 `resolution`.
+pub fn normalize_minimax_h3_resolution(resolution: &str) -> String {
+    let lower = resolution
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "")
+        .replace(' ', "");
+    match lower.as_str() {
+        "2k" | "1080p" | "1080" | "2160p" | "4k" | "high" => "2K".into(),
+        "768p" | "768" | "480p" | "720p" | "low" | "medium" | "auto" => {
+            DEFAULT_MINIMAX_H3_RESOLUTION.into()
+        }
+        _ if MINIMAX_H3_RESOLUTIONS
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(resolution.trim())) =>
+        {
+            // Preserve canonical casing from the allow-list.
+            MINIMAX_H3_RESOLUTIONS
+                .iter()
+                .find(|r| r.eq_ignore_ascii_case(resolution.trim()))
+                .copied()
+                .unwrap_or(DEFAULT_MINIMAX_H3_RESOLUTION)
+                .to_string()
+        }
+        _ => DEFAULT_MINIMAX_H3_RESOLUTION.into(),
+    }
+}
+
+pub fn clamp_minimax_h3_duration(duration: u32) -> u32 {
+    duration.clamp(MINIMAX_H3_DURATION_MIN, MINIMAX_H3_DURATION_MAX)
+}
+
 impl VideoCreateParams {
-    /// Build Ark-compatible `POST /video/generations/tasks` JSON.
+    /// Build `POST /video/generations/tasks` JSON (Seedance Ark or MiniMax-H3 V2).
     pub fn to_json(&self) -> Value {
+        if is_minimax_h3_model(&self.model) {
+            self.to_minimax_h3_json()
+        } else {
+            self.to_seedance_json()
+        }
+    }
+
+    fn build_content_array(&self) -> Vec<Value> {
         let mut content = vec![json!({"type": "text", "text": self.prompt})];
 
         for img in &self.images {
@@ -194,6 +260,62 @@ impl VideoCreateParams {
                 "role": "reference_audio",
             }));
         }
+        content
+    }
+
+    fn has_media_content(&self) -> bool {
+        !self.images.is_empty()
+            || self
+                .reference_video_url
+                .as_deref()
+                .is_some_and(|u| !u.trim().is_empty())
+            || self
+                .reference_audio_url
+                .as_deref()
+                .is_some_and(|u| !u.trim().is_empty())
+    }
+
+    /// MiniMax V2 `/v2/video_generation` shape (gateway rewrites `model` upstream).
+    fn to_minimax_h3_json(&self) -> Value {
+        let content = self.build_content_array();
+        let resolution = self
+            .resolution
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(normalize_minimax_h3_resolution)
+            .unwrap_or_else(|| DEFAULT_MINIMAX_H3_RESOLUTION.to_string());
+        let duration = clamp_minimax_h3_duration(self.duration.unwrap_or(5));
+
+        // Text-only: ratio is required and must not be `adaptive`.
+        // Image / multimodal reference: always `adaptive` (upstream ignores other values).
+        let ratio = if self.has_media_content() {
+            "adaptive".to_string()
+        } else {
+            let r = self.aspect_ratio.trim();
+            if r.is_empty() || r.eq_ignore_ascii_case("adaptive") || r.eq_ignore_ascii_case("auto")
+            {
+                "16:9".to_string()
+            } else {
+                r.to_string()
+            }
+        };
+
+        let mut body = serde_json::Map::new();
+        body.insert("model".into(), json!(self.model));
+        body.insert("content".into(), Value::Array(content));
+        body.insert("resolution".into(), json!(resolution));
+        body.insert("duration".into(), json!(duration));
+        body.insert("ratio".into(), json!(ratio));
+        // Prefer MiniMax `aigc_watermark`; never send Ark `watermark`.
+        if self.watermark {
+            body.insert("aigc_watermark".into(), json!(true));
+        }
+        Value::Object(body)
+    }
+
+    /// Ark / Seedance create-task shape.
+    fn to_seedance_json(&self) -> Value {
+        let content = self.build_content_array();
 
         let mut body = serde_json::Map::new();
         body.insert("model".into(), json!(self.model));
