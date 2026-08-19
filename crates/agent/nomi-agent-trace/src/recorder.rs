@@ -258,6 +258,10 @@ impl DualQueue {
         dropped
     }
 
+    fn restore_dropped_normal(&mut self, count: u64) {
+        self.dropped_normal = self.dropped_normal.saturating_add(count);
+    }
+
     fn drop_pending_for_conversation(&mut self, conversation_id: &str) {
         let matches = |command: &WriterCommand| match command {
             WriterCommand::Event { ids, .. } => {
@@ -931,9 +935,17 @@ fn handle_writer_command(
             payload,
             generation,
         } => {
-            persist_event(shared, &event_type, &ids, payload, generation)?;
-            recover_health_after_success(shared);
-            *unflushed += 1;
+            if persist_event(shared, &event_type, &ids, payload, generation)? {
+                if ids
+                    .conversation_id
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|id| !id.is_empty())
+                {
+                    recover_health_after_success(shared);
+                }
+                *unflushed += 1;
+            }
         }
         WriterCommand::Flush { ack } => {
             flush_all_writers(shared)?;
@@ -1006,15 +1018,15 @@ fn persist_event(
     ids: &ObservationIds,
     payload: Value,
     generation: u64,
-) -> Result<(), RecorderError> {
+) -> Result<bool, RecorderError> {
     let conversation_id = ids.conversation_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
     {
         let lifecycle = shared.lifecycle.lock().map_err(|_| RecorderError::LockPoisoned)?;
         if lifecycle.is_tombstoned(conversation_id) {
-            return Ok(());
+            return Ok(false);
         }
         if lifecycle.current_generation(conversation_id) != generation {
-            return Ok(());
+            return Ok(false);
         }
     }
     let boundary = ids_from_payload(&payload).boundary_id();
@@ -1032,7 +1044,7 @@ fn persist_event(
     };
     write_event(&mut inner, &shared.root, ids, &event, shared.rotate_bytes)?;
     prune_idle_maps(&mut inner, Instant::now());
-    Ok(())
+    Ok(true)
 }
 
 fn write_overflow_gap(shared: &WriterShared, unflushed: &mut usize) {
@@ -1051,8 +1063,13 @@ fn write_overflow_gap(shared: &WriterShared, unflushed: &mut usize) {
         "reason": "writer_queue_overflow",
         "lost_count": dropped,
     });
-    if persist_event(shared, EVENT_OBSERVATION_GAP, &ids, payload, 0).is_ok() {
-        *unflushed += 1;
+    match persist_event(shared, EVENT_OBSERVATION_GAP, &ids, payload, 0) {
+        Ok(true) => *unflushed += 1,
+        Ok(false) | Err(_) => {
+            if let Ok(mut queue) = shared.queue.lock() {
+                queue.restore_dropped_normal(dropped);
+            }
+        }
     }
 }
 
@@ -1064,7 +1081,7 @@ fn delete_conversation_dir(shared: &WriterShared, conversation_id: &str) -> Resu
     {
         let mut inner = shared.inner.lock().map_err(|_| RecorderError::LockPoisoned)?;
         inner.writers.remove(&folder);
-        inner.seq_by_boundary.remove(&folder);
+        drop_seq_for_folder(&mut inner, &folder);
     }
     let dir = conversation_dir(&shared.root, Some(conversation_id));
     match fs::remove_dir_all(&dir) {
@@ -1147,18 +1164,31 @@ fn prepare_payload(ids: &ObservationIds, payload: Value) -> Value {
     capture_and_size_cap(payload)
 }
 
+fn seq_map_key(folder: &str, boundary: &str) -> String {
+    format!("{folder}\0{boundary}")
+}
+
+fn drop_seq_for_folder(inner: &mut RecorderInner, folder: &str) {
+    let prefix = format!("{folder}\0");
+    inner
+        .seq_by_boundary
+        .retain(|key, _| key != folder && !key.starts_with(&prefix));
+}
+
 fn next_seq(
     inner: &mut RecorderInner,
     root: &Path,
     ids: &ObservationIds,
     boundary: &str,
 ) -> Result<u64, RecorderError> {
-    if !inner.seq_by_boundary.contains_key(boundary) {
+    let folder = folder_id(ids.conversation_id.as_deref());
+    let key = seq_map_key(&folder, boundary);
+    if !inner.seq_by_boundary.contains_key(&key) {
         let dir = conversation_dir(root, ids.conversation_id.as_deref());
         let loaded = load_max_seqs(&dir)?;
         let loaded_at = Instant::now();
-        for (key, seq) in loaded {
-            inner.seq_by_boundary.entry(key).or_insert(SeqEntry {
+        for (loaded_boundary, seq) in loaded {
+            inner.seq_by_boundary.entry(seq_map_key(&folder, &loaded_boundary)).or_insert(SeqEntry {
                 seq,
                 last_used: loaded_at,
             });
@@ -1167,7 +1197,7 @@ fn next_seq(
     let now = Instant::now();
     let entry = inner
         .seq_by_boundary
-        .entry(boundary.to_owned())
+        .entry(key)
         .or_insert(SeqEntry {
             seq: 0,
             last_used: now,
@@ -2027,6 +2057,24 @@ mod tests {
     }
 
     #[test]
+    fn restore_dropped_normal_returns_count_to_the_queue() {
+        let mut queue = DualQueue::new(1, 1);
+        assert_eq!(
+            queue.try_enqueue(queued_event(EVENT_LLM_REQUEST, "kept")),
+            EnqueueOutcome::Queued
+        );
+        assert_eq!(
+            queue.try_enqueue(queued_event(EVENT_LLM_REQUEST, "lost")),
+            EnqueueOutcome::DroppedNormal
+        );
+        let dropped = queue.take_dropped_normal();
+        assert_eq!(dropped, 1);
+        assert_eq!(queue.take_dropped_normal(), 0);
+        queue.restore_dropped_normal(dropped);
+        assert_eq!(queue.take_dropped_normal(), 1);
+    }
+
+    #[test]
     fn control_enqueue_drops_normal_not_turn_end_when_normal_is_full() {
         let mut queue = DualQueue::new(2, 2);
         assert_eq!(
@@ -2162,6 +2210,27 @@ mod tests {
     }
 
     #[test]
+    fn tombstoned_persist_does_not_recover_queue_dropped_health() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t-before"), json!({}))
+            .unwrap();
+        recorder.remove_conversation("conv-a").unwrap();
+        set_health(
+            &recorder.shared,
+            RecorderHealthStatus::QueueDropped,
+            Some("observation writer queue overflow".into()),
+        );
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t-after"), json!({}))
+            .unwrap();
+        let _ = recorder.read_events(Some("conv-a")).unwrap();
+        assert_eq!(recorder.health().status, RecorderHealthStatus::QueueDropped);
+    }
+
+    #[test]
     fn shutdown_joins_writer_thread() {
         let dir = tempfile::tempdir().unwrap();
         let recorder = ObservationRecorder::isolated(dir.path());
@@ -2240,6 +2309,29 @@ mod tests {
             ids_from_payload(&events[0].payload).root_turn_id.as_deref(),
             Some("turn-new")
         );
+        assert_eq!(events[0].event_seq, 1);
+    }
+
+    #[test]
+    fn clear_conversation_resets_seq_for_reused_turn_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("turn-reuse"), json!({ "n": 1 }))
+            .unwrap();
+        recorder
+            .emit(EVENT_LLM_RESPONSE, &ids("turn-reuse"), json!({ "n": 2 }))
+            .unwrap();
+        let before = recorder.read_events(Some("conv-a")).unwrap();
+        assert_eq!(before.last().map(|event| event.event_seq), Some(2));
+        recorder.clear_conversation("conv-a").unwrap();
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("turn-reuse"), json!({ "n": 3 }))
+            .unwrap();
+        let after = recorder.read_events(Some("conv-a")).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].event_seq, 1);
     }
 
     #[test]

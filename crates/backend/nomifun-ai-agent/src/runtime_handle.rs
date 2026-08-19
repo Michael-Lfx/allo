@@ -21,7 +21,7 @@ use crate::manager::nanobot::NanobotAgentManager;
 use crate::manager::nomi::NomiAgentManager;
 use crate::manager::openclaw::OpenClawAgentManager;
 use crate::manager::remote::RemoteAgentManager;
-use crate::protocol::events::AgentStreamEvent;
+use crate::protocol::events::{AgentStreamEvent, TurnStopReason};
 use crate::protocol::send_error::AgentSendError;
 use crate::types::SendMessageData;
 
@@ -329,6 +329,24 @@ impl AgentRuntimeHandle {
     ) {
         if let Self::Nomi(manager) = self {
             manager.emit_observation_turn_end(status, elapsed_ms, stop_reason, usage);
+        }
+    }
+
+    pub fn set_observation_turn_end_deferred(&self, deferred: bool) {
+        if let Self::Nomi(manager) = self {
+            manager.set_observation_turn_end_deferred(deferred);
+        }
+    }
+
+    pub fn close_observation_turn_from_relay(
+        &self,
+        cancelled: bool,
+        stop_reason: Option<TurnStopReason>,
+        finished: bool,
+        elapsed_ms: i64,
+    ) {
+        if let Self::Nomi(manager) = self {
+            manager.close_observation_turn_from_relay(cancelled, stop_reason, finished, elapsed_ms);
         }
     }
 

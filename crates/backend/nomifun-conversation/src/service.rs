@@ -9840,6 +9840,10 @@ impl ConversationService {
             } else {
                 None
             };
+            let mut last_relay_stop: Option<TurnStopReason> = None;
+            let mut last_relay_finished = false;
+            let mut observation_opened = false;
+            let mut observation_started_at = 0i64;
 
             while let Some((current_send, msg_id)) = pending_send.take() {
                 if turn_token.is_cancelled() {
@@ -9922,6 +9926,11 @@ impl ConversationService {
                 let rx = agent.subscribe();
                 if let Some(hub) = service.current_agent_trace_hub() {
                     hub.refresh_recording_enabled().await;
+                    if !observation_opened {
+                        observation_started_at = now_ms();
+                        observation_opened = true;
+                    }
+                    agent.set_observation_turn_end_deferred(true);
                     agent.bind_observation_ids_with_preview(nomifun_ai_agent::ObservationIds {
                         conversation_id: Some(conv_id.clone()),
                         msg_id: Some(turn_msg_id.clone()),
@@ -9970,6 +9979,8 @@ impl ConversationService {
                 });
                 // 2. Wait for the agent to process the message and complete the turn, while the relay streams events in real time.
                 let outcome = relay.consume_with_send_error(rx, send_error_rx).await;
+                last_relay_stop = outcome.stop_reason;
+                last_relay_finished = matches!(&outcome.terminal, RelayTerminal::Finish);
 
                 if turn_token.is_cancelled() || outcome.stop_reason == Some(TurnStopReason::Cancelled) {
                     durable_completion = Some((
@@ -10273,6 +10284,16 @@ impl ConversationService {
                     },
                     next_turn_msg_id,
                 ));
+            }
+
+            if observation_opened {
+                agent.close_observation_turn_from_relay(
+                    turn_token.is_cancelled()
+                        || last_relay_stop == Some(TurnStopReason::Cancelled),
+                    last_relay_stop,
+                    last_relay_finished,
+                    now_ms().saturating_sub(observation_started_at),
+                );
             }
 
             let (ok, text, error, error_code) = durable_completion.unwrap_or_else(|| {

@@ -100,6 +100,8 @@ pub struct NomiAgentManager {
     backend_output_sink: Arc<BackendOutputSink>,
     engine: Mutex<AgentEngine>,
     observation: Option<Arc<nomi_agent::ObservationSession>>,
+    /// Conversation host owns `turn/end` for failover/continuation segments.
+    defer_observation_turn_end: AtomicBool,
     /// Shared authority for every shell/tool process owned by this runtime.
     ///
     /// Kept outside the engine mutex so an explicit stop (which deliberately
@@ -510,6 +512,11 @@ impl NomiAgentManager {
         }
     }
 
+    pub fn set_observation_turn_end_deferred(&self, deferred: bool) {
+        self.defer_observation_turn_end
+            .store(deferred, Ordering::Release);
+    }
+
     pub fn emit_observation_turn_end(
         &self,
         status: nomi_agent_trace::ExecutionStatus,
@@ -517,9 +524,42 @@ impl NomiAgentManager {
         stop_reason: Option<&str>,
         usage: Option<serde_json::Value>,
     ) {
+        if self.defer_observation_turn_end.load(Ordering::Acquire) {
+            return;
+        }
         if let Some(session) = &self.observation {
             session.emit_turn_end(status, elapsed_ms.max(0) as u64, stop_reason, usage);
         }
+    }
+
+    pub fn close_observation_turn_from_relay(
+        &self,
+        cancelled: bool,
+        stop_reason: Option<TurnStopReason>,
+        finished: bool,
+        elapsed_ms: i64,
+    ) {
+        self.set_observation_turn_end_deferred(false);
+        let (status, reason) = if cancelled || stop_reason == Some(TurnStopReason::Cancelled) {
+            (
+                nomi_agent_trace::ExecutionStatus::Cancelled,
+                Some("cancelled"),
+            )
+        } else if !finished {
+            (nomi_agent_trace::ExecutionStatus::Failed, Some("error"))
+        } else {
+            match stop_reason {
+                Some(reason) => (
+                    observation_status_from_stop(reason),
+                    Some(turn_stop_reason_name(reason)),
+                ),
+                None => (
+                    nomi_agent_trace::ExecutionStatus::Completed,
+                    Some("end_turn"),
+                ),
+            }
+        };
+        self.emit_observation_turn_end(status, elapsed_ms, reason, None);
     }
 
     /// Fill conversation/msg ids for this send without clobbering a wire
@@ -1261,6 +1301,7 @@ impl NomiAgentManager {
             backend_output_sink,
             engine: Mutex::new(engine),
             observation: Some(observation),
+            defer_observation_turn_end: AtomicBool::new(false),
             process_supervisor,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
             slash_commands,
@@ -1494,6 +1535,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             process_supervisor: process_supervisor.clone(),
             mcp_managers: self.mcp_managers.clone(),
             turn_teardown_fence: Arc::clone(&self.turn_teardown_fence),
+            observation: self.observation.clone(),
             #[cfg(feature = "browser-use")]
             browser_lane_binding: self.browser_lane_binding.clone(),
             armed: true,
@@ -1558,6 +1600,12 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     let send_error = AgentSendError::from_app_error(AppError::BadRequest(format!(
                         "Invalid parameters: {error}"
                     )));
+                    self.emit_observation_turn_end(
+                        nomi_agent_trace::ExecutionStatus::Failed,
+                        now_ms().saturating_sub(started_at),
+                        Some("error"),
+                        None,
+                    );
                     self.backend_output_sink.fail_active_tool_calls(
                         "The turn failed while loading its attachments.",
                     );
@@ -1826,16 +1874,16 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     context_breakdown,
                     moa,
                 }));
-                self.emit_observation_turn_end(
+                let observation_end = (
                     observation_status_from_stop(stop_reason),
                     elapsed_ms,
-                    Some(turn_stop_reason_name(stop_reason)),
-                    Some(serde_json::json!({
+                    turn_stop_reason_name(stop_reason),
+                    serde_json::json!({
                         "input_tokens": agent_result.usage.input_tokens,
                         "output_tokens": agent_result.usage.output_tokens,
                         "cache_creation_tokens": agent_result.usage.cache_creation_tokens,
                         "cache_read_tokens": agent_result.usage.cache_read_tokens,
-                    })),
+                    }),
                 );
 
                 // —— Post-session memory distillation (exact turn child) ——
@@ -1891,6 +1939,12 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     None => !turn_cancel.is_cancelled(),
                 };
                 if !distill_completed || turn_cancel.is_cancelled() {
+                    self.emit_observation_turn_end(
+                        nomi_agent_trace::ExecutionStatus::Cancelled,
+                        elapsed_ms,
+                        Some("cancelled"),
+                        None,
+                    );
                     self.backend_output_sink.cancel_active_tool_calls(
                         "The tool call was cancelled because the user stopped the turn.",
                     );
@@ -1904,6 +1958,13 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     }).await.map_err(AgentSendError::from_app_error)?;
                     return Ok(());
                 }
+
+                self.emit_observation_turn_end(
+                    observation_end.0,
+                    observation_end.1,
+                    Some(observation_end.2),
+                    Some(observation_end.3),
+                );
 
                 if origin_is_human
                     && let Some(transcript) = review_transcript
@@ -2016,6 +2077,7 @@ struct TurnTerminationGuard {
     process_supervisor: Option<Arc<nomi_process_runtime::ProcessSupervisor>>,
     mcp_managers: Vec<Arc<McpManager>>,
     turn_teardown_fence: Arc<TurnTeardownFence>,
+    observation: Option<Arc<nomi_agent::ObservationSession>>,
     /// Reusable runtime binding. Turn cleanup closes its current Lanes but must
     /// not revoke the owner lease; the next turn lazily opens a fresh Lane.
     #[cfg(feature = "browser-use")]
@@ -2094,9 +2156,18 @@ impl Drop for TurnTerminationGuard {
             let process_supervisor = self.process_supervisor.clone();
             let mcp_managers = self.mcp_managers.clone();
             let turn_teardown_fence = Arc::clone(&self.turn_teardown_fence);
+            let observation = self.observation.clone();
             #[cfg(feature = "browser-use")]
             let browser_lane_binding = self.browser_lane_binding.clone();
             let terminalize = move || {
+                if let Some(session) = &observation {
+                    session.emit_turn_end(
+                        nomi_agent_trace::ExecutionStatus::Cancelled,
+                        0,
+                        Some("cancelled"),
+                        None,
+                    );
+                }
                 terminalize_exact_nomi_turn(
                     &runtime,
                     &lifecycle_gate,
@@ -3516,6 +3587,7 @@ mod tests {
                 process_supervisor: None,
                 mcp_managers: Vec::new(),
                 turn_teardown_fence: Arc::clone(&fence),
+                observation: None,
                 browser_lane_binding: Some(binding),
                 armed: true,
             };
@@ -3569,6 +3641,7 @@ mod tests {
             process_supervisor: None,
             mcp_managers: Vec::new(),
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
+            observation: None,
             browser_lane_binding: Some(binding),
             armed: true,
         };
@@ -3647,6 +3720,53 @@ mod tests {
                 .iter()
                 .any(|event| event.event_type == nomi_agent_trace::EVENT_TURN_END),
             "idle-kill must persist turn/end, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn termination_guard_drop_emits_observation_turn_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = Arc::new(nomi_agent_trace::ObservationRecorder::isolated(dir.path()));
+        recorder.set_enabled(true);
+        let session = nomi_agent::ObservationSession::new(Arc::clone(&recorder));
+        session.bind_ids(crate::ObservationIds {
+            conversation_id: Some("c-guard-obs".into()),
+            msg_id: Some("msg-guard".into()),
+            root_turn_id: Some("turn-guard".into()),
+            ..crate::ObservationIds::default()
+        });
+        let rt = AgentRuntimeState::new("c-guard-obs", "/w", 16);
+        let mut rx = rt.subscribe();
+        let backend_output_sink = Arc::new(BackendOutputSink::new(rt.event_sender()));
+        let turn = rt.reset_for_new_turn(ConversationStatus::Running);
+        let active_turn = Arc::new(std::sync::Mutex::new(Some(turn)));
+        {
+            let _g = TurnTerminationGuard {
+                runtime: rt.clone(),
+                turn,
+                active_turn: Arc::clone(&active_turn),
+                lifecycle_gate: Arc::new(std::sync::Mutex::new(())),
+                steering_inbox: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+                backend_output_sink,
+                process_supervisor: None,
+                mcp_managers: Vec::new(),
+                turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
+                observation: Some(session),
+                #[cfg(feature = "browser-use")]
+                browser_lane_binding: None,
+                armed: true,
+            };
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+            Ok(Ok(AgentStreamEvent::Finish(_))) => {}
+            other => panic!("expected Finish after armed drop, got {other:?}"),
+        }
+        let events = recorder.read_events(Some("c-guard-obs")).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == nomi_agent_trace::EVENT_TURN_END),
+            "armed guard drop must persist turn/end, got {events:?}"
         );
     }
 
@@ -4067,6 +4187,7 @@ mod tests {
             backend_output_sink,
             engine: Mutex::new(engine),
             observation: None,
+            defer_observation_turn_end: AtomicBool::new(false),
             process_supervisor: None,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
             slash_commands: Vec::new(),
@@ -4208,6 +4329,113 @@ mod tests {
                 "send_message must not replace the bound wire root_turn_id with source_message_id"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn prep_failure_emits_observation_turn_end() {
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let mut agent = make_agent_with_provider(provider);
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = nomi_agent_trace::ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let session = nomi_agent::ObservationSession::new(recorder.clone());
+        session.bind_ids(crate::ObservationIds {
+            conversation_id: Some("conv-auto-continue".into()),
+            msg_id: Some("prep-fail".into()),
+            root_turn_id: Some("prep-fail".into()),
+            ..crate::ObservationIds::default()
+        });
+        {
+            let mut engine = agent.engine.lock().await;
+            engine.set_observation(Arc::clone(&session));
+        }
+        agent.observation = Some(Arc::clone(&session));
+
+        let missing = dir.path().join("missing.png");
+        let result = agent
+            .send_message(SendMessageData {
+                content: "hello".into(),
+                msg_id: "prep-fail".into(),
+                source_message_id: Some("user-msg".into()),
+                files: vec![missing.to_string_lossy().into_owned()],
+                inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
+                origin: None,
+            })
+            .await;
+        assert!(result.is_err(), "missing image attachment must fail prepare");
+
+        let events = recorder.read_events(Some("conv-auto-continue")).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == nomi_agent_trace::EVENT_TURN_END),
+            "direct prep failure must emit turn/end, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_observation_turn_end_skips_until_host_closes() {
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            LlmEvent::TextDelta("ok".into()),
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: Default::default(),
+            },
+        ]]));
+        let mut agent = make_agent_with_provider(provider);
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = nomi_agent_trace::ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let session = nomi_agent::ObservationSession::new(recorder.clone());
+        session.bind_ids(crate::ObservationIds {
+            conversation_id: Some("conv-auto-continue".into()),
+            msg_id: Some("defer-turn".into()),
+            root_turn_id: Some("defer-turn".into()),
+            ..crate::ObservationIds::default()
+        });
+        {
+            let mut engine = agent.engine.lock().await;
+            engine.set_observation(Arc::clone(&session));
+        }
+        agent.observation = Some(Arc::clone(&session));
+        agent.set_observation_turn_end_deferred(true);
+
+        agent
+            .send_message(SendMessageData {
+                content: "hello".into(),
+                msg_id: "defer-turn".into(),
+                source_message_id: Some("user-msg".into()),
+                files: Vec::new(),
+                inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
+                origin: None,
+            })
+            .await
+            .unwrap();
+
+        let events = recorder.read_events(Some("conv-auto-continue")).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == nomi_agent_trace::EVENT_TURN_START),
+            "deferred send must still emit turn/start, got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event.event_type != nomi_agent_trace::EVENT_TURN_END),
+            "deferred send must not emit turn/end, got {events:?}"
+        );
+
+        agent.close_observation_turn_from_relay(false, Some(TurnStopReason::EndTurn), true, 12);
+        let events = recorder.read_events(Some("conv-auto-continue")).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == nomi_agent_trace::EVENT_TURN_END),
+            "host close must emit the deferred turn/end, got {events:?}"
+        );
     }
 
     #[test]
@@ -4397,6 +4625,7 @@ mod tests {
             backend_output_sink,
             engine: Mutex::new(engine),
             observation: None,
+            defer_observation_turn_end: AtomicBool::new(false),
             process_supervisor: None,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
             slash_commands: Vec::new(),
@@ -5705,6 +5934,7 @@ mod tests {
                 process_supervisor: None,
                 mcp_managers: Vec::new(),
                 turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
+                observation: None,
                 #[cfg(feature = "browser-use")]
                 browser_lane_binding: None,
                 armed: true,
@@ -5754,6 +5984,7 @@ mod tests {
                 process_supervisor: None,
                 mcp_managers: Vec::new(),
                 turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
+                observation: None,
                 #[cfg(feature = "browser-use")]
                 browser_lane_binding: None,
                 armed: true,
