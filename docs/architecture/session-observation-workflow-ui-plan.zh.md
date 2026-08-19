@@ -1,11 +1,11 @@
 # Session Logs — 执行计划（U0–U5）
 
-> **文档状态：实施稿；语义已与 Session Logs 执行计划对齐**  
+> **文档状态：实施稿；U0–U5 已在 `feat/session-observation` 落地，现行语义以本文 + 源码为准**  
 > 日期：2026-08-19  
-> 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待。  
+> 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待、控制队满与 `try_enqueue` 对齐、§1 改为已落地/收口缺口。  
 > 分支：只改 `feat/session-observation`  
-> **作废：** 只做 Drawer 卡片的稿；功能打通但不写 IO 的稿；把执行失败写成 `integrity=degraded` 的稿；**control 优先消费 / 永久 tombstone 用于 Clear/Reset / 64KiB×256 神圣 / health 塞进 Session Summary / `turn/end` 等 50ms。**  
-> **读者：** 按本文与执行计划实施。第 14 节钉死项已按执行答案改写。  
+> **作废：** 只做 Drawer 卡片的稿；功能打通但不写 IO 的稿；把执行失败写成 `integrity=degraded` 的稿；**control 优先消费 / 永久 tombstone 用于 Clear/Reset / 64KiB×256 神圣 / health 塞进 Session Summary / `turn/end` 等 50ms /「control 满时保证不丢 turn/end」。**  
+> **读者：** U0–U5 已完成。未完成项只看 **§1 本轮缺口** 与 **§9.1 收口**。  
 > **词汇**仍以 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 与提案第 7 节为准。本文补产品、投影与 writer 语义，不另起第三套领域。
 
 | | 是什么 |
@@ -62,7 +62,7 @@ Call #1 的工具已 completed 后，即使 #3 还在跑、尚无 `turn/end`，#
 
 ### 0.3 异步 Writer 下的删除 / 清空 / 重置 / shutdown barrier
 
-**必须做。** 当前 `drop_conversation_observations` → `remove_conversation` 是同步删目录。改异步后，queue 里未写事件会把目录写活。
+**已落地。** Writer 异步后，Delete/Clear/Reset 必须 ACK，否则 queue 里未写事件会把目录写活。
 
 **永久 tombstone 只用于 Delete。** Clear / Reset 保留同一 `conversation_id`，必须 bump Recorder 内部 `observation_generation: u64`（**不进 JSONL schema**）：pending 旧 generation 丢弃；ACK 后新 send 用新 generation 照常入队。否则同一会话清空后观测永远停写。
 
@@ -129,18 +129,22 @@ MAX_CONTROL_EVENTS         = 64
 - 入队时 `enqueue_order = AtomicU64::fetch_add(1)`（进程内，**不进 JSONL schema**）。
 - 两个 `VecDeque<(u64, WriterCommand)>`：`normal` 与 `control`。
 - Writer **看两个队首，取更小 `enqueue_order` 的那条** 写盘，**然后再**分配 `event_seq`。
-- Control 的特权只是：**独立容量 + 满时宁可丢 normal 也要入队**；**禁止**无条件先写 control。
+- Control 的特权只是：**独立容量 + 满时先丢恰好一条 normal 再入队**；**禁止**无条件先写 control。不循环清空整个 normal 队。
 
 ```text
 normal:  llm/request, llm/response, tool/*
-control: turn/start, turn/end, observation/gap, Delete/Clear/ResetAll/Flush/Shutdown
+control Event: turn/start, turn/end, observation/gap
+lifecycle（不受 MAX_CONTROL_EVENTS=64 约束，始终入队）:
+  Flush / DeleteConversation / ClearConversation / ResetAll / Shutdown
 ```
 
+与 `DualQueue::try_enqueue` 对齐：
+
 - 普通满：`lost++`，立即返回，不阻塞 Agent。
-- Control 满：先丢 **一条普通**（`lost++`）再入 control。
-- **`turn/end` 禁止等 50ms。** Agent 产生的观测事件永不回压。Control 靠预留容量 + 丢 normal + `RecorderHealth.queue_dropped`。
+- control Event 满：先丢 **恰好一条** normal（`lost++`）再入队；若 control 仍满 → `DroppedControl`（含 `turn/end`），`RecorderHealth.queue_dropped`。
+- **`turn/end` 禁止等 50ms。** Agent 产生的观测事件永不回压。
 - Delete / Clear / Reset / Shutdown 才 ACK 等待。
-- 若 `turn/end` 最终没进去：`RecorderHealth.queue_dropped`，Workspace 不得因缺 end 而永久 poll（见 8）。
+- 若 `turn/end` 最终没进去：`RecorderHealth.queue_dropped`，Workspace 不得因缺 end 而永久 poll（见 7.1）。
 
 `event_seq` = writer 持久化全序，不是业务 happen-before。
 
@@ -184,24 +188,37 @@ Workspace 分两行：当前写入器 / 当前会话日志。不是第二套 SSO
 
 ---
 
-## 1. 现状（已对源码）
+## 1. 现状（已对源码，2026-08-19）
+
+### 已落地（不要再当 U0 待做）
+
+| 项 | 落点 |
+| --- | --- |
+| `enqueue_order` 合并写盘，再分配 `event_seq` | `recorder.rs` `DualQueue` / `persist_event` |
+| Delete tombstone + ACK；reset / clear_context / clear_messages = generation++ | `service.rs` ~6034 / ~6349 / ~12741 / ~12844 |
+| Factory `ResetAll` + `diagnostics` Retire | `nomifun-system` + `dataset_roots.rs` |
+| 128KiB × 128（条数×上限锁 16 MiB，不做 byte-aware channel） | `capture.rs` / `recorder.rs` |
+| `recorder_health` 在 list 顶层；Call 410 `observation_retention` | `hub.rs` / `routes_trace.rs` |
+| `turn/start` 在 conversation bind 后；`turn/end` 在 Nomi send 结算 | `service.rs` ~9947 / `agent.rs` |
+| preview：`current_send.content` 首次 bind 胜出，agent 二次 bind 不覆盖 | `ObservationSession::emit_turn_start_once` |
+| Workspace overlay、虚拟化、懒 Call GET、LRU=2、omitted、原始 token 芯片 | `AgentTraceInspector/` |
+
+### 本轮缺口（§9.1 收口）
 
 | 缺口 | 证据 |
 | --- | --- |
-| Refresh 只刷列表 | `loadList()` only |
-| Token 不能 `input+cache` | `openai.rs` `input_tokens` 已含 cache |
-| 计时偏小 | `Instant` 在 `stream()` 返回后 |
-| Error 仍写 response | 不得当 completed |
-| 悬空 tool | 仅当 **turn 已结束** 才 degraded（0.1） |
-| 无 turn 边界事件 | 补 `turn/start` / `turn/end` |
-| 写盘在热路径 | `emit` 锁内 `write_all`+`flush` |
-| 假 async 读 | Hub 内同步 `read_*` |
-| 读物化 payload | `read_jsonl_file` → `Vec<Event>` |
-| 删目录无 queue barrier | `remove_conversation` 直接 `remove_dir_all` |
-| capture 无整 event 上限 | 只有 `MAX_PREVIEW_CHARS` |
-| 14 天 GC 无全局体积 | rotate 48 MiB / 目录 idle，无 `max_total_observation_bytes` |
+| Refresh 只刷列表 | `loadList()` only，不重拉当前 turn / 已展开 call |
+| list/turn/call 共用一个 `listSeqRef` | turn/call bump 后 list `finally` 可能永不 `setLoading(false)` |
+| poll 无 abort/seq，且依赖整个 `entries` | 旧 tick 可盖新会话；每次 applyList 重置 timer |
+| 控制队满语义文档打架 | 0.5 允许最后丢 `turn/end`；旧 U0 DoD 写成「保证不丢」——**以 `try_enqueue` 为准，不改 DualQueue** |
 
-Writer 句柄上限合格（64 / 4096 / 10min）。危险是锁内等盘，不是句柄爆炸。
+### 不在本轮
+
+- idle-kill 路径没有 `emit_observation_turn_end`
+- hub 未挂上时 delete/clear 是 no-op
+- 读路径 `flush_blocking`（不改文件结构）
+- Call 410 空 payload 启发式可能把 emit 失败的空 call 当成 retention
+- [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 仍写 Drawer
 
 ---
 
@@ -305,7 +322,7 @@ Summary `active_duration_ms = Σ turn.elapsed_ms`。`wall_span_ms` 次要。禁�
 
 ### 5.4 preview
 
-1. `turn/start.prompt_preview`  
+1. `turn/start.prompt_preview`：conversation bind 时写入 **`current_send.content`**（本轮用户原文，truncated+redacted）。同一 `root_turn_id` 只发一次 start；agent 在 knowledge/skill 注入后的二次 bind **不得覆盖**。  
 2. 否则该 turn `event_seq` 最大的 `llm/request`，**从 messages 尾向前**最近 `role=user` 且含 Text，排除纯 ToolResult  
 3. 否则「观测未记录」  
 
@@ -379,8 +396,14 @@ Retention = age 14d AND total ≤ 1 GiB
 ### 7.1 新鲜度
 
 ```text
-Refresh = health+summary+list + 当前 turn headers + 若已展开则当前 call
+refreshWorkspace = health+summary+list + 当前 turn headers + 若已展开则当前 call
+Refresh 按钮与 poll tick 走同一条路径
 ```
+
+- list / turn / call **各自** seq；禁止共用一个计数器。  
+- 每次 `refreshWorkspace` 带 `AbortController`；换会话 / 关 overlay / effect cleanup 时 abort。  
+- 410 → `retentionRemoved`，不得进空 `catch` 当成加载失败。  
+- poll effect 只依赖「是否还应 poll」布尔，**不要**依赖整个 `entries` 数组。
 
 Poll **仅** `has turn/start && !turn/end` 的 new-format turn。  
 **legacy（无 turn/start）不自动 poll。**
@@ -398,7 +421,7 @@ Poll **仅** `has turn/start && !turn/end` 的 new-format turn。
 
 ## 9. 阶段
 
-未提交的生命周期修补并入 U0，且必须改成 **WriterCommand ACK**，不能只同步 `remove_dir_all`。Delete 走 tombstone；reset / clear_context / clear_messages 走 generation bump。
+**U0–U5 已完成**（`feat/session-observation` 本地 commit）。下面保留验收清单，不再当实施顺序。
 
 ### U0 — Writer + 正确性
 
@@ -414,7 +437,7 @@ Poll **仅** `has turn/start && !turn/end` 的 new-format turn。
 - Shutdown join  
 - 超 `MAX_EVENT_BYTES` 带 `event_size_limit` 仍能入队，integrity 仍 complete  
 - 先入 normal 再入 `turn/end`：持久化顺序不得 end 在前  
-- control 满时丢的是 normal 不是 `turn/end`；`turn/end` 零等待  
+- control Event 满：先丢恰好一条 normal；仍满则 `DroppedControl`（可含 `turn/end`）+ `queue_dropped`；lifecycle 始终入队；`turn/end` 零等待  
 - **阻塞 sink：** writer 卡住时 `emit`/try_send 不等待 latch（**不要**用 p95 磁盘 CI）  
 - 热路径不 `flush`；quota GC 不删 active segment
 
@@ -438,7 +461,15 @@ Refresh 双/三拉；new-format 才 poll；legacy 不 poll；退避；abort 旧�
 
 ### U5 — Token 正规化
 
-`nomi-providers` usage 单测。
+观测层 `NormalizedObservationUsage` 拷贝原始字段，不改公共 `TokenUsage`。`input_uncached` 仍等 provider 正规化。
+
+### 9.1 收口（本轮唯一未完成代码）
+
+只改 `AgentTraceInspector/index.tsx` 与结构测试。不重开 writer / DualQueue / HTTP。
+
+1. `refreshWorkspace`：list + 当前 turn headers + 已展开 call；Refresh 与 poll 共用。  
+2. 独立 `listSeq` / `turnSeq` / `callSeq` + abort。  
+3. poll 不依赖整个 `entries`；`max_event_seq` 变化回到 1.5s 后不要立刻被 finally 再加成 3s。
 
 ---
 
@@ -447,7 +478,7 @@ Refresh 双/三拉；new-format 才 poll；legacy 不 poll；退避；abort 旧�
 | 要证明 | 怎么测（CI） |
 | --- | --- |
 | 热路径不等盘 | writer 阻塞 latch，producer 仍返回 |
-| overflow | 普通事件 lost+gap；`turn/end` 不被同等丢 |
+| overflow | 普通事件 lost+gap；control 满先丢一条 normal，仍满才 DroppedControl |
 | Delete barrier | pending event 不能重建已删目录 |
 | Summary 不持正文 | accumulator 类型/夹具，不是 RSS 断言 |
 | Header 无 schema | serde 快照 / 禁止字段 |
@@ -518,5 +549,5 @@ fix(providers): make token usage buckets unambiguous
 
 ## 15. 授权
 
-第 14 节钉死项已按执行计划改写。实施从 Doc-sync 后的 U0-A 开始。  
-合并后更新 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)：Workspace、status≠integrity、writer 命令、Call 懒加载、health/coverage。
+U0–U5 已落地。未完成项只做 §9.1 收口。  
+合并后更新 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)：Workspace、status≠integrity、writer 命令、Call 懒加载、health/coverage（本轮不扩写那篇）。

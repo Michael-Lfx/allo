@@ -1,13 +1,14 @@
 # Session Observation 开发文档与分步实施计划
 
-> **文档状态：开发计划（尚未授权改实现代码）**  
-> 日期：2026-08-18  
+> **文档状态：S0–S8 历史步骤；U0–U5 已在 `feat/session-observation` 落地**  
+> 日期：2026-08-19  
 > 分支：`feat/session-observation`  
 > **Baseline：** `fcf5c4e203da2b30a05444729ff8108aa9bd22d9`（`main`，Merge PR #106）  
+> **现行语义：** [session-observation-workflow-ui-plan.zh.md](session-observation-workflow-ui-plan.zh.md)（含控制队满、generation vs tombstone、收口缺口）  
 > 契约原文：[session-observation-workflow-proposal.zh.md](session-observation-workflow-proposal.zh.md)  
 > 现状说明：[agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)
 
-本文是**怎么做**，不是再开一轮架构辩论。契约以提案第 7 节为准。实施时一次只做一个阶段，阶段验收后再进入下一阶段。
+本文保留 S0–S8 怎么走完 JSONL 数据路径，**不要**再当未授权的实施入口。未完成项只看 workflow-ui-plan §1 / §9.1。
 
 ---
 
