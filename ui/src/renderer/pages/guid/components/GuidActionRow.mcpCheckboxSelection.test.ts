@@ -43,4 +43,19 @@ describe('GuidActionRow MCP checkbox selection treatment', () => {
     expect(addButtonIndex).toBeGreaterThan(-1);
     expect(modeSelectorIndex).toBeGreaterThan(addButtonIndex);
   });
+
+  test('does not nest Tooltip around the MCP dropdown trigger', () => {
+    const mcpBlockStart = actionRowSource.indexOf('{mcpServers.length > 0 && (');
+    const mcpBlockEnd = actionRowSource.indexOf('{showModeSwitch && (');
+
+    expect(mcpBlockStart).toBeGreaterThan(-1);
+    expect(mcpBlockEnd).toBeGreaterThan(mcpBlockStart);
+
+    const mcpBlock = actionRowSource.slice(mcpBlockStart, mcpBlockEnd);
+    expect(mcpBlock.includes('<Dropdown')).toBe(true);
+    expect(mcpBlock.includes("data-testid='guid-mcp-menu-btn'")).toBe(true);
+    expect(mcpBlock.includes('<Tooltip')).toBe(false);
+    expect(mcpBlock.includes('<Tool theme')).toBe(true);
+    expect(mcpBlock.includes('<Shield')).toBe(false);
+  });
 });

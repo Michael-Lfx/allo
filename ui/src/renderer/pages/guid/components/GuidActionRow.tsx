@@ -10,8 +10,8 @@ import type { Preset } from '@/common/types/agent/presetTypes';
 import PresetAgentTag, { type AgentSwitcherItem } from './PresetAgentTag';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
-import { Button, Checkbox, Dropdown, Menu, Tooltip } from '@arco-design/web-react';
-import { Aiming, CloseSmall, Plus, Shield } from '@icon-park/react';
+import { Button, Checkbox, Dropdown, Menu } from '@arco-design/web-react';
+import { Aiming, CloseSmall, Plus, Shield, Tool } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/renderer/components/chat/SendBox/sendbox.css';
@@ -110,6 +110,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
     t(`agentMode.${mode.value}`, { defaultValue: mode.label });
 
   const activeMcpCount = selectedMcpServerIds.length;
+  const mcpTriggerLabel = `${t('mcp.label')} (${activeMcpCount}/${mcpServers.length})`;
 
   const mcpMenuContent = (
     <Menu className='min-w-200px'>
@@ -155,18 +156,17 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
           </span>
         </div>
         {mcpServers.length > 0 && (
-          <Tooltip content={`${t('mcp.label')} (${activeMcpCount}/${mcpServers.length})`}>
-            <Dropdown trigger='click' droplist={mcpMenuContent}>
-              <Button
-                type='text'
-                shape='circle'
-                size='small'
-                icon={<Shield theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
-                aria-label={`${t('mcp.label')} (${activeMcpCount}/${mcpServers.length})`}
-                data-testid='guid-mcp-menu-btn'
-              />
-            </Dropdown>
-          </Tooltip>
+          <Dropdown trigger='click' droplist={mcpMenuContent}>
+            <Button
+              type='text'
+              shape='circle'
+              size='small'
+              icon={<Tool theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
+              title={mcpTriggerLabel}
+              aria-label={mcpTriggerLabel}
+              data-testid='guid-mcp-menu-btn'
+            />
+          </Dropdown>
         )}
         {showModeSwitch && (
           <AgentModeSelector
