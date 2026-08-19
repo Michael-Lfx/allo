@@ -5,7 +5,7 @@
  */
 
 /**
- * MiniAppPanel — 会话右栏常驻的小程序快捷入口
+ * MiniAppPanel — 会话右栏小程序快捷入口（descriptor 仍在 `./tab.tsx`；当前未挂到 extraTabs）
  *
  * A read-only companion to the `/mini-apps` library: it lists every solidified
  * mini-app, lets the user search them, and runs the one they pick *inside the
@@ -25,10 +25,12 @@
  * restart. There is no mini-app WS event to subscribe to today.
  *
  * Rendered through the rail's existing `extraTabs` slot (descriptor declared
- * once in `./tab.tsx`), so it needs no changes to WorkspaceToolRail,
- * WorkspaceRailBody, WorkspacePanelHeader or ChatLayout. It follows the
- * ConversationTerminalPanel precedent: own data, own compact header row, own
- * loading/empty/error states, and a layout that survives the rail's 220px floor.
+ * once in `./tab.tsx`). The conversation layouts currently leave that slot
+ * unmounted so the cube shortcut stays off the rail; remounting needs no
+ * changes to WorkspaceToolRail, WorkspaceRailBody, WorkspacePanelHeader or
+ * ChatLayout. It follows the ConversationTerminalPanel precedent: own data,
+ * own compact header row, own loading/empty/error states, and a layout that
+ * survives the rail's 220px floor.
  *
  * Design spec: docs/specs/2026-08-09-miniapps.zh.md
  */

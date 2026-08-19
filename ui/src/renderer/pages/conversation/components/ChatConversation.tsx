@@ -38,7 +38,6 @@ import ReadOnlyConversationView from '../execution/ReadOnlyConversationView';
 import StarOfficeMonitorCard from '../platforms/openclaw/StarOfficeMonitorCard.tsx';
 import NomiSessionMetricsPanel from '../platforms/nomi/NomiSessionMetricsPanel';
 import ConversationTerminalPanel from './ConversationTerminalPanel';
-import { useConversationMiniAppTab } from '@/renderer/pages/conversation/Workspace/MiniAppPanel/tab';
 import SshHostStatusPill from './SshHostStatusPill';
 import { useExecutionModelPool } from '../execution/useExecutionModelPool';
 import { reconcileModelRefs, sameModelRefs } from '../execution/executionModelRefs';
@@ -193,7 +192,6 @@ const NomiConversationLayout: React.FC<{
   presetPresetName,
 }) => {
   const { t } = useTranslation();
-  const miniAppTab = useConversationMiniAppTab();
   const workspaceExtraTabs = useMemo(
     () => [
       {
@@ -202,7 +200,6 @@ const NomiConversationLayout: React.FC<{
         icon: <Terminal size={18} />,
         content: <ConversationTerminalPanel conversationId={conversation.id} />,
       },
-      miniAppTab,
       {
         key: 'nomi-session-metrics',
         title: t('conversation.sessionMetrics.tab'),
@@ -210,7 +207,7 @@ const NomiConversationLayout: React.FC<{
         content: <NomiSessionMetricsPanel conversation={conversation} />,
       },
     ],
-    [conversation, miniAppTab, t],
+    [conversation, t],
   );
 
   return (
@@ -517,7 +514,6 @@ const ChatConversation: React.FC<{
     );
   }, [t]);
 
-  const miniAppTab = useConversationMiniAppTab();
   const workspaceExtraTabs = useMemo(
     () =>
       conversation?.extra?.workspace
@@ -528,10 +524,9 @@ const ChatConversation: React.FC<{
               icon: <Terminal size={18} />,
               content: <ConversationTerminalPanel conversationId={conversation.id} />,
             },
-            miniAppTab,
           ]
         : [],
-    [conversation?.id, conversation?.extra?.workspace, miniAppTab, t],
+    [conversation?.id, conversation?.extra?.workspace, t],
   );
 
   const isRetainedAttemptTranscript = Boolean(

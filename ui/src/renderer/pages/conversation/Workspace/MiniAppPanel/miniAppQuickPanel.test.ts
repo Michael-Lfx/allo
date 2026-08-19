@@ -8,9 +8,10 @@
  * Source contracts for the right-rail mini-app quick panel.
  *
  * These pin the decisions that are cheap to regress and expensive to notice: the
- * entry sits directly below the terminal icon and exists exactly once, the panel
- * runs the ONE shared frame instead of a second iframe, and it stays read-only —
- * editing and deleting belong to the left "Mini-Apps" tab.
+ * cube shortcut stays off the conversation rail (same hide as the left home nav),
+ * the descriptor exists in one place, the panel runs the ONE shared frame instead
+ * of a second iframe, and it stays read-only — editing and deleting belong to the
+ * left "Mini-Apps" tab.
  */
 
 import { readFileSync } from 'node:fs';
@@ -33,21 +34,22 @@ const descriptor = read('./tab.tsx');
 const registration = read('../../components/ChatConversation.tsx');
 const library = read('../../../miniApps/index.tsx');
 
-describe('the rail entry sits below the terminal icon, exactly once', () => {
+describe('the conversation rail hides the mini-app entry', () => {
   test('the descriptor is declared in one place only', () => {
     const occurrences = descriptor.match(/CONVERSATION_MINIAPP_TAB_KEY = 'conversation-miniapps'/g) ?? [];
     expect(occurrences.length).toBe(1);
     expect(registration.includes("key: 'conversation-miniapps'")).toBe(false);
   });
 
-  test('render order puts it directly after terminals in every rail', () => {
-    // The rail renders files → changes → extraTabs in array order, so "below the
-    // terminal icon" is purely this array position. Every array that carries the
-    // terminal entry must splice the shared descriptor in right after it.
+  test('no extraTabs array mounts the mini-app descriptor', () => {
+    // Same hide as the left home rail: keep the panel/descriptor for /mini-apps
+    // and preview, but do not expose the cube shortcut on the conversation rail.
+    expect(registration.includes('useConversationMiniAppTab')).toBe(false);
+    expect(registration.includes('miniAppTab')).toBe(false);
     const arrays = registration.match(/key: 'conversation-terminals'[\s\S]*?\n(\s*)\]/g) ?? [];
     expect(arrays.length).toBeGreaterThan(0);
     for (const array of arrays) {
-      expect(array.includes('miniAppTab,')).toBe(true);
+      expect(array.includes('miniAppTab,')).toBe(false);
     }
   });
 

@@ -7,11 +7,9 @@
 /**
  * The single declaration site for the right-rail mini-app entry.
  *
- * The rail renders `files → changes → extraTabs` in array order, so "directly
- * below the terminal icon" is purely where callers splice this descriptor into
- * their `extraTabs` array. Declared once here because more than one
- * conversation layout builds its own array; a second literal would let the two
- * rails drift apart in label, glyph or position.
+ * Currently unmounted from conversation `extraTabs` (the cube shortcut is hidden
+ * on the rail, matching the left home nav). Keep this descriptor in one place so
+ * a later remount cannot let two layouts drift apart in label, glyph or position.
  */
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
