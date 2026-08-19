@@ -199,13 +199,15 @@ Workspace 分两行：当前写入器 / 当前会话日志。不是第二套 SSO
 | Factory `ResetAll` + `diagnostics` Retire | `nomifun-system` + `dataset_roots.rs` |
 | 128KiB × 128（条数×上限锁 16 MiB，不做 byte-aware channel） | `capture.rs` / `recorder.rs` |
 | `recorder_health` 在 list 顶层；Call 410 `observation_retention` | `hub.rs` / `routes_trace.rs` |
-| `turn/start` 在 conversation bind 后；`turn/end` 在 Nomi send 结算 | `service.rs` ~9947 / `agent.rs` |
+| `turn/start` 在 conversation bind 后；同一 `root_turn_id` 的 `turn/end` 在 send loop 退出时写一次 | `service.rs` bind + `close_observation_turn_from_relay` |
 | preview：`current_send.content` 首次 bind 胜出，agent 二次 bind 不覆盖 | `ObservationSession::emit_turn_start_once` |
 | Workspace overlay、虚拟化、懒 Call GET、LRU=2、omitted、原始 token 芯片 | `AgentTraceInspector/` |
 
 ### 本轮已收口
 
-Refresh / poll 共用 `refreshWorkspace`（独立 seq + abort）；选中 turn 跳转清展开；Refresh/poll 必 GET call（LRU 只服务卡片点击）；`queue_dropped` 只警告不停 poll；成功 persist 可从 `queue_dropped`/`storage_error` 恢复；idle-kill 补 `turn/end`；Call 410 仅 turn 已结束后的空 payload；hub 未挂上时 drop/clear 打 warn；Flush ACK 合并。
+Refresh / poll 共用 `refreshWorkspace`（独立 seq + abort）；选中 turn 跳转清展开；Refresh/poll 必 GET call（LRU 只服务卡片点击）；`queue_dropped` 只警告不停 poll；**真正写盘**成功才从 `queue_dropped`/`storage_error` 恢复（tombstone / generation skip 不恢复；overflow gap 失败归还 `lost_count`）；idle-kill 与 `TurnTerminationGuard` drop **绕过 defer** 直写 `turn/end`；Call 410 仅 turn 已结束后的空 payload，UI 删 LRU 键；切换会话清空 list/detail/health；选中 turn 变化时 refresh 不重复 GET（交给 `selectedId` effect）；`seq_by_boundary` 按 `{folder}\0{boundary}` 分桶，clear/delete 丢掉该 folder。
+
+Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failover / 剔图 / cron continuation **不得**提前 `turn/end`；loop 退出（含 cancel `return` 之前）`close_observation_turn_from_relay`。无 hub 的直连 `send_message` 仍立即结算。Prep 失败在未 defer 时立即 `Failed`；distill 取消写 `Cancelled`，成功 `turn/end` 在 distill 之后。
 
 ### 不在本轮
 
@@ -285,7 +287,7 @@ Agent ──capture+size cap──► enqueue_order
 不升 schema major。
 
 - `turn/start`：bind 后；同一 `root_turn_id` 一条；preview = 本次 send 文本（truncated+redacted）。  
-- `turn/end`：**回合结算**（`TurnCompleted` / 取消 / 失败收口），含 `status, elapsed_ms, stop_reason, aggregate_usage?`。不是第一条 `llm/response` 时写。
+- `turn/end`：**用户回合结算**（同一 `root_turn_id` 一条，first-write-wins）。Conversation loop 退出时写；不是每个 failover/continuation 的 `send_message` 结算，也不是第一条 `llm/response`。含 `status, elapsed_ms, stop_reason, aggregate_usage?`。idle-kill / panic guard 直写 `Cancelled`，不受 defer 吞掉。
 
 ### 5.2 时间
 
