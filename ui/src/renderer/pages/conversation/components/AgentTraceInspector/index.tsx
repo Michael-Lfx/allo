@@ -59,6 +59,19 @@ function shouldPollTurns(turns: ProjectedTurn[], health: RecorderHealth | null):
   return turns.some((turn) => turn.has_turn_start === true && turn.has_turn_end !== true);
 }
 
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    (error instanceof Error && error.name === 'AbortError')
+  );
+}
+
+function resolveSelectedId(ordered: ProjectedTurn[], current: string | null): string | null {
+  if (ordered.length === 0) return null;
+  if (current && ordered.some((row) => row.root_turn_id === current)) return current;
+  return ordered[0].root_turn_id;
+}
+
 /**
  * Developer Mode–gated workspace overlay: navigator + summary + lazy Call GET.
  * Renders persisted observation projections only — never chat bubbles.
@@ -86,9 +99,19 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
   >(null);
 
   const listSeqRef = useRef(0);
+  const turnSeqRef = useRef(0);
+  const callSeqRef = useRef(0);
+  const selectedIdRef = useRef<string | null>(null);
+  const expandedCallIdRef = useRef<string | null>(null);
+  const conversationRef = useRef(conversationId);
+  const workspaceAbortRef = useRef<AbortController | null>(null);
   const callCacheRef = useRef(new CallDetailLru());
   const pollDelayRef = useRef(POLL_START_MS);
   const lastSeqRef = useRef(0);
+
+  selectedIdRef.current = selectedId;
+  expandedCallIdRef.current = expandedCallId;
+  conversationRef.current = conversationId;
 
   const applyList = useCallback((page: SessionObservationList) => {
     const ordered = [...page.turns].reverse();
@@ -99,62 +122,163 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
       lastSeqRef.current = page.summary.max_event_seq;
       pollDelayRef.current = POLL_START_MS;
     }
-    if (ordered.length === 0) {
+    const nextSelected = resolveSelectedId(ordered, selectedIdRef.current);
+    if (nextSelected == null) {
       setSelectedId(null);
       setDetail(null);
       setExpandedCallId(null);
       setCallDetail(null);
     } else {
-      setSelectedId((current) =>
-        current && ordered.some((row) => row.root_turn_id === current)
-          ? current
-          : ordered[0].root_turn_id
-      );
+      setSelectedId(nextSelected);
     }
+    return nextSelected;
   }, []);
 
-  const loadList = useCallback(async () => {
-    setLoading(true);
-    setErrorKey(null);
-    const requestSeq = ++listSeqRef.current;
-    try {
-      const page = await listSessionObservations(String(conversationId));
-      if (requestSeq < listSeqRef.current) return;
-      applyList(page);
-    } catch (err) {
-      if (requestSeq < listSeqRef.current) return;
-      setEntries([]);
-      setSummary(null);
-      setHealth(null);
-      setDetail(null);
-      setSelectedId(null);
-      if (isBackendHttpError(err) && err.status === 403) {
-        setErrorKey('developerModeRequired');
-      } else {
-        setErrorKey('loadFailed');
+  const abortWorkspaceFetches = useCallback(() => {
+    workspaceAbortRef.current?.abort();
+    workspaceAbortRef.current = null;
+  }, []);
+
+  const refreshWorkspace = useCallback(
+    async (options?: { signal?: AbortSignal; showListLoading?: boolean }) => {
+      const conversation = String(conversationId);
+      let signal = options?.signal;
+      if (!signal) {
+        abortWorkspaceFetches();
+        const controller = new AbortController();
+        workspaceAbortRef.current = controller;
+        signal = controller.signal;
       }
-    } finally {
-      if (requestSeq >= listSeqRef.current) setLoading(false);
-    }
-  }, [applyList, conversationId]);
+      const listSeq = ++listSeqRef.current;
+      if (options?.showListLoading) setLoading(true);
+      setErrorKey(null);
+      const seqBefore = lastSeqRef.current;
+      try {
+        const page = await listSessionObservations(conversation, { signal });
+        if (signal.aborted || conversationRef.current !== conversationId || listSeq < listSeqRef.current) {
+          return { seqChanged: false };
+        }
+        const nextSelected = applyList(page);
+        const seqChanged = lastSeqRef.current !== seqBefore;
+
+        if (nextSelected) {
+          const turnSeq = ++turnSeqRef.current;
+          setDetailLoading(true);
+          setDetailErrorKey(null);
+          try {
+            const turn = await getSessionObservationTurn(conversation, nextSelected, { signal });
+            if (
+              signal.aborted ||
+              conversationRef.current !== conversationId ||
+              turnSeq < turnSeqRef.current
+            ) {
+              return { seqChanged };
+            }
+            setDetail(turn);
+            setDetailErrorKey(null);
+          } catch (err) {
+            if (signal.aborted || isAbortError(err) || turnSeq < turnSeqRef.current) {
+              return { seqChanged };
+            }
+            setDetail(null);
+            if (isBackendHttpError(err) && err.status === 403) {
+              setDetailErrorKey('developerModeRequired');
+            } else {
+              setDetailErrorKey('loadFailed');
+            }
+          } finally {
+            if (!signal.aborted && turnSeq >= turnSeqRef.current) setDetailLoading(false);
+          }
+
+          const callId = expandedCallIdRef.current;
+          if (callId) {
+            const cacheKey = callCacheKey(conversation, nextSelected, callId);
+            const cached = callCacheRef.current.get(cacheKey);
+            if (cached) {
+              setCallDetail(cached);
+              setCallErrorKey(null);
+              setCallLoading(false);
+            } else {
+              const callSeq = ++callSeqRef.current;
+              setCallLoading(true);
+              setCallErrorKey(null);
+              try {
+                const call = await getSessionObservationCall(conversation, nextSelected, callId, {
+                  signal,
+                });
+                if (
+                  signal.aborted ||
+                  conversationRef.current !== conversationId ||
+                  callSeq < callSeqRef.current
+                ) {
+                  return { seqChanged };
+                }
+                callCacheRef.current.set(cacheKey, call);
+                setCallDetail(call);
+                setCallErrorKey(null);
+              } catch (err) {
+                if (signal.aborted || isAbortError(err) || callSeq < callSeqRef.current) {
+                  return { seqChanged };
+                }
+                setCallDetail(null);
+                if (isObservationRetentionError(err)) {
+                  setCallErrorKey('retentionRemoved');
+                } else if (isBackendHttpError(err) && err.status === 403) {
+                  setCallErrorKey('developerModeRequired');
+                } else {
+                  setCallErrorKey('loadFailed');
+                }
+              } finally {
+                if (!signal.aborted && callSeq >= callSeqRef.current) setCallLoading(false);
+              }
+            }
+          }
+        }
+        return { seqChanged };
+      } catch (err) {
+        if (signal.aborted || isAbortError(err) || listSeq < listSeqRef.current) {
+          return { seqChanged: false };
+        }
+        setEntries([]);
+        setSummary(null);
+        setHealth(null);
+        setDetail(null);
+        setSelectedId(null);
+        if (isBackendHttpError(err) && err.status === 403) {
+          setErrorKey('developerModeRequired');
+        } else {
+          setErrorKey('loadFailed');
+        }
+        return { seqChanged: false };
+      } finally {
+        if (!signal.aborted && listSeq >= listSeqRef.current) setLoading(false);
+      }
+    },
+    [abortWorkspaceFetches, applyList, conversationId]
+  );
 
   const closeWorkspace = useCallback(() => {
+    abortWorkspaceFetches();
     setOpen(false);
     setExpandedCallId(null);
     setCallDetail(null);
     callCacheRef.current.clear();
-  }, []);
+  }, [abortWorkspaceFetches]);
 
   useEffect(() => {
+    abortWorkspaceFetches();
     callCacheRef.current.clear();
     setExpandedCallId(null);
     setCallDetail(null);
-  }, [conversationId]);
+  }, [abortWorkspaceFetches, conversationId]);
 
   useEffect(() => {
     if (!open || developerMode !== true) return;
-    void loadList();
-  }, [open, conversationId, developerMode, loadList]);
+    void refreshWorkspace({ showListLoading: true });
+    return () => {
+      abortWorkspaceFetches();
+    };
+  }, [open, conversationId, developerMode, refreshWorkspace, abortWorkspaceFetches]);
 
   useEffect(() => {
     if (!open) return;
@@ -168,19 +292,21 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
   useEffect(() => {
     if (!open || !selectedId || developerMode !== true) return;
     const controller = new AbortController();
-    const requestSeq = ++listSeqRef.current;
+    const requestSeq = ++turnSeqRef.current;
     setDetailLoading(true);
     setDetailErrorKey(null);
     void getSessionObservationTurn(String(conversationId), selectedId, {
       signal: controller.signal,
     })
       .then((turn) => {
-        if (requestSeq < listSeqRef.current) return;
+        if (controller.signal.aborted || requestSeq < turnSeqRef.current) return;
         setDetail(turn);
         setDetailErrorKey(null);
       })
       .catch((err) => {
-        if (controller.signal.aborted || requestSeq < listSeqRef.current) return;
+        if (controller.signal.aborted || isAbortError(err) || requestSeq < turnSeqRef.current) {
+          return;
+        }
         setDetail(null);
         if (isBackendHttpError(err) && err.status === 403) {
           setDetailErrorKey('developerModeRequired');
@@ -189,7 +315,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
         }
       })
       .finally(() => {
-        if (!controller.signal.aborted && requestSeq >= listSeqRef.current) {
+        if (!controller.signal.aborted && requestSeq >= turnSeqRef.current) {
           setDetailLoading(false);
         }
       });
@@ -209,7 +335,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
       return;
     }
     const controller = new AbortController();
-    const requestSeq = ++listSeqRef.current;
+    const requestSeq = ++callSeqRef.current;
     setCallLoading(true);
     setCallErrorKey(null);
     setCallDetail(null);
@@ -217,13 +343,15 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
       signal: controller.signal,
     })
       .then((call) => {
-        if (requestSeq < listSeqRef.current) return;
+        if (controller.signal.aborted || requestSeq < callSeqRef.current) return;
         callCacheRef.current.set(cacheKey, call);
         setCallDetail(call);
         setCallErrorKey(null);
       })
       .catch((err) => {
-        if (controller.signal.aborted || requestSeq < listSeqRef.current) return;
+        if (controller.signal.aborted || isAbortError(err) || requestSeq < callSeqRef.current) {
+          return;
+        }
         setCallDetail(null);
         if (isObservationRetentionError(err)) {
           setCallErrorKey('retentionRemoved');
@@ -234,7 +362,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
         }
       })
       .finally(() => {
-        if (!controller.signal.aborted && requestSeq >= listSeqRef.current) {
+        if (!controller.signal.aborted && requestSeq >= callSeqRef.current) {
           setCallLoading(false);
         }
       });
@@ -243,45 +371,34 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
     };
   }, [open, selectedId, expandedCallId, developerMode, conversationId]);
 
+  const shouldPoll = shouldPollTurns(entries, health);
+
   useEffect(() => {
-    if (!open || developerMode !== true) return;
-    if (!shouldPollTurns(entries, health)) return;
+    if (!open || developerMode !== true || !shouldPoll) return;
+    const controller = new AbortController();
     let cancelled = false;
-    const tick = async () => {
-      try {
-        const page = await listSessionObservations(String(conversationId));
-        if (cancelled) return;
-        applyList(page);
-        if (selectedId) {
-          const turn = await getSessionObservationTurn(String(conversationId), selectedId);
-          if (cancelled) return;
-          setDetail(turn);
-        }
-        if (selectedId && expandedCallId) {
-          const cacheKey = callCacheKey(String(conversationId), selectedId, expandedCallId);
-          const call = await getSessionObservationCall(
-            String(conversationId),
-            selectedId,
-            expandedCallId
-          );
-          if (cancelled) return;
-          callCacheRef.current.set(cacheKey, call);
-          setCallDetail(call);
-        }
-      } catch {
-        if (!cancelled) pollDelayRef.current = nextPollDelay(pollDelayRef.current);
-      }
+    let timeoutId = 0;
+    const schedule = () => {
+      timeoutId = window.setTimeout(() => {
+        const seqBefore = lastSeqRef.current;
+        void refreshWorkspace({ signal: controller.signal })
+          .catch(() => undefined)
+          .finally(() => {
+            if (cancelled) return;
+            if (lastSeqRef.current === seqBefore) {
+              pollDelayRef.current = nextPollDelay(pollDelayRef.current);
+            }
+            schedule();
+          });
+      }, pollDelayRef.current);
     };
-    const id = window.setTimeout(() => {
-      void tick().finally(() => {
-        if (!cancelled) pollDelayRef.current = nextPollDelay(pollDelayRef.current);
-      });
-    }, pollDelayRef.current);
+    schedule();
     return () => {
       cancelled = true;
-      window.clearTimeout(id);
+      controller.abort();
+      window.clearTimeout(timeoutId);
     };
-  }, [applyList, conversationId, developerMode, entries, expandedCallId, health, open, selectedId]);
+  }, [conversationId, developerMode, open, refreshWorkspace, shouldPoll]);
 
   if (developerMode !== true) {
     return null;
@@ -349,7 +466,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
                 size='mini'
                 className='flowy-icon-text-btn'
                 icon={<Refresh theme='outline' size='14' strokeWidth={3} />}
-                onClick={() => void loadList()}
+                onClick={() => void refreshWorkspace({ showListLoading: true })}
                 disabled={loading}
               >
                 {t('conversation.agentTrace.refresh')}

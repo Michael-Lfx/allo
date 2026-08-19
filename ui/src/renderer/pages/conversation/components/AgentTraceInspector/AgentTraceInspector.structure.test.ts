@@ -57,7 +57,15 @@ describe('AgentTraceInspector', () => {
     expect(hook.includes('conversation_id')).toBe(true);
     expect(inspector.includes('listSessionObservations')).toBe(true);
     expect(inspector.includes('[...page.turns].reverse()')).toBe(true);
-    expect(inspector.includes('ordered[0].root_turn_id')).toBe(true);
+    expect(inspector.includes('refreshWorkspace')).toBe(true);
+    expect(inspector.includes('void loadList()')).toBe(false);
+    expect(inspector.includes('onClick={() => void refreshWorkspace({ showListLoading: true })}')).toBe(
+      true
+    );
+    expect(inspector.includes('listSeqRef')).toBe(true);
+    expect(inspector.includes('turnSeqRef')).toBe(true);
+    expect(inspector.includes('callSeqRef')).toBe(true);
+    expect(inspector.includes('refreshWorkspace({ signal: controller.signal })')).toBe(true);
     expect(inspector.includes('getSessionObservationTurn')).toBe(true);
     expect(inspector.includes('getSessionObservationCall')).toBe(true);
     expect(inspector.includes("setDetailErrorKey('loadFailed')")).toBe(true);
@@ -65,6 +73,19 @@ describe('AgentTraceInspector', () => {
     expect(hook.includes('canonicalRequestFromPayload')).toBe(true);
     expect(hook.includes('Never invent omitted fields')).toBe(true);
     expect(hook.includes('AbortSignal')).toBe(true);
+  });
+
+  test('refreshWorkspace reloads list turn and call with independent seqs', () => {
+    const inspector = readSource(new URL('./index.tsx', import.meta.url));
+    expect(inspector.includes('const refreshWorkspace = useCallback')).toBe(true);
+    expect(inspector.includes('void loadList()')).toBe(false);
+    expect(inspector.includes('listSeqRef')).toBe(true);
+    expect(inspector.includes('turnSeqRef')).toBe(true);
+    expect(inspector.includes('callSeqRef')).toBe(true);
+    expect(inspector.includes('refreshWorkspace({ signal: controller.signal })')).toBe(true);
+    expect(inspector.includes('[applyList, conversationId, developerMode, entries, expandedCallId, health, open, selectedId]')).toBe(
+      false
+    );
   });
 
   test('call detail cache keeps two most recent entries', () => {
