@@ -22,6 +22,9 @@ async-trait.workspace = true
 regex.workspace = true
 nomi-agent-trace.workspace = true
 nomi-redact.workspace = true
+reqwest.workspace = true
+flate2.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 clap.workspace = true

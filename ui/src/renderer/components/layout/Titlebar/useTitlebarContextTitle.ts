@@ -17,6 +17,7 @@ export const resolveTitlebarStaticTitleKey = (pathname: string): string | null =
   if (pathname.startsWith('/video-generation')) return 'common.titlebar.videoGeneration';
   if (pathname.startsWith('/knowledge')) return 'common.titlebar.knowledge';
   if (pathname.startsWith('/learn')) return 'common.titlebar.learning';
+  if (pathname.startsWith('/eval')) return 'common.titlebar.eval';
   if (pathname.startsWith('/scheduled')) return 'common.titlebar.scheduled';
   if (pathname.startsWith('/requirements')) return 'common.titlebar.workspace';
   if (pathname.startsWith('/models')) return 'common.titlebar.models';

@@ -10,7 +10,7 @@ use axum::routing::{get, post};
 use axum::{Router, middleware};
 use tower_http::cors::{Any, CorsLayer};
 
-use nomifun_ai_agent::{agent_routes, remote_agent_routes};
+use nomifun_ai_agent::{agent_routes, eval_routes, remote_agent_routes};
 use nomifun_assets::{AssetRouterState, asset_routes};
 use nomifun_preset::preset_routes;
 use nomifun_auth::{
@@ -780,9 +780,9 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
-    // Unified agent listing/refresh/test routes protected by auth middleware
+    // Unified agent listing/refresh/test routes + developer-mode eval lab.
     let agent_authenticated = protect_instance_owner(
-        agent_routes(states.agent),
+        agent_routes(states.agent.clone()).merge(eval_routes(states.agent)),
         &auth_mw_state,
         &instance_owner_state,
     );

@@ -1,5 +1,6 @@
 //! Agent runtime lifecycle, per-conversation runtime registration, and skill management.
 pub(crate) mod runtime_state;
+pub mod agent_eval;
 pub mod agent_trace;
 pub mod artifact_store;
 pub mod boot_process_reaper;
@@ -69,6 +70,7 @@ pub enum ManagedExtractMode {
 pub use nomi_config;
 pub use nomi_types;
 
+pub use agent_eval::EvalLab;
 pub use agent_trace::{
     AgentTraceHub, TraceApiError, TraceArtifactIndexEntry, TraceArtifactMeta, TraceIndexEntry,
     TurnTrace, TurnTraceCollector, TurnTraceContext, DEVELOPER_MODE_PREF_KEY,
@@ -133,7 +135,9 @@ pub use protocol::events::{
 };
 pub use protocol::send_error::AgentSendError;
 pub use registry::{AgentRegistry, UnavailableReason};
-pub use routes::{AgentRouterState, RemoteAgentRouterState, agent_routes, remote_agent_routes};
+pub use routes::{
+    AgentRouterState, RemoteAgentRouterState, agent_routes, eval_routes, remote_agent_routes,
+};
 pub use services::AgentService;
 pub use services::RemoteAgentService;
 pub use runtime_registry::{AgentRuntimeRegistry, InMemoryAgentRuntimeRegistry};

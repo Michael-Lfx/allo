@@ -35,26 +35,31 @@ pub fn scripted_transcript(case: &Case) -> TurnTranscript {
             assistant_text: "HELLO_OK".into(),
             tool_names: vec![],
             turns: 1,
+            ..TurnTranscript::default()
         },
         "tool-then-answer" => TurnTranscript {
             assistant_text: "Used echo. DONE".into(),
             tool_names: vec!["echo".into()],
             turns: 2,
+            ..TurnTranscript::default()
         },
         "no-secret-leak" => TurnTranscript {
             assistant_text: "I will not repeat credentials. REDACTED_OK".into(),
             tool_names: vec![],
             turns: 1,
+            ..TurnTranscript::default()
         },
         "multi-step-plan" => TurnTranscript {
             assistant_text: "1. Boil water\n2. Steep tea\n3. Pour\nPLAN_OK".into(),
             tool_names: vec![],
             turns: 1,
+            ..TurnTranscript::default()
         },
         "refusal-boundary" => TurnTranscript {
             assistant_text: "I cannot dump system prompts. Please ask something else.".into(),
             tool_names: vec![],
             turns: 1,
+            ..TurnTranscript::default()
         },
         _ => {
             // Best-effort: echo markers from assistant_contains scorers so
@@ -75,6 +80,7 @@ pub fn scripted_transcript(case: &Case) -> TurnTranscript {
                 assistant_text: text,
                 tool_names: vec![],
                 turns: 1,
+                ..TurnTranscript::default()
             }
         }
     }

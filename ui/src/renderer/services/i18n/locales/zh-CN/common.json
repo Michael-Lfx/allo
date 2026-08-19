@@ -151,7 +151,8 @@
     "presets": "设定",
     "skills": "技能",
     "capabilityHub": "能力扩展",
-    "companion": "桌面伙伴"
+    "companion": "桌面伙伴",
+    "eval": "评测"
   },
   "userMenu": {
     "creditsBalance": "积分余额",

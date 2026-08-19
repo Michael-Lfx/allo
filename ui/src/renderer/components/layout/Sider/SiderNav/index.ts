@@ -8,6 +8,7 @@ export { default as SiderConversationEntry } from './SiderConversationEntry';
 export { default as SiderMcpEntry } from './SiderMcpEntry';
 export { default as SiderKnowledgeEntry } from './SiderKnowledgeEntry';
 export { default as SiderLearningEntry } from './SiderLearningEntry';
+export { default as SiderEvalEntry } from './SiderEvalEntry';
 export { default as SiderMiniAppsEntry } from './SiderMiniAppsEntry';
 export { default as SiderModelHubEntry } from './SiderModelHubEntry';
 export { default as SiderNewConversationEntry } from './SiderNewConversationEntry';

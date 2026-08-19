@@ -38,6 +38,7 @@ const CustomerServiceDetailPage = React.lazy(() => import('@renderer/pages/custo
 const KnowledgeListPage = React.lazy(() => import('@renderer/pages/knowledge/KnowledgeListPage'));
 const KnowledgeDetailPage = React.lazy(() => import('@renderer/pages/knowledge/KnowledgeDetailPage'));
 const LearningPage = React.lazy(() => import('@renderer/pages/learning'));
+const EvalPage = React.lazy(() => import('@renderer/pages/eval'));
 const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
 const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
 const VideoCanvasProjectPage = React.lazy(() => import('@renderer/pages/videoCanvas/ProjectPage'));
@@ -345,6 +346,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/knowledge/:id' element={withRouteFallback(KnowledgeDetailPage)} />
           <Route path='/learn' element={withRouteFallback(LearningPage)} />
           <Route path='/learn/:id' element={withRouteFallback(LearningPage)} />
+          <Route path='/eval' element={withRouteFallback(EvalPage)} />
           <Route path='/video-generation' element={withRouteFallback(VideoGenerationListPage)} />
           <Route
             path='/video-generation/canvas'

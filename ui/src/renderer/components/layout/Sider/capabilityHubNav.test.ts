@@ -47,6 +47,18 @@ describe('capability hub navigation', () => {
     expect(learningEntrySource.includes("t('learning.dev.navTooltip')")).toBe(true);
   });
 
+  test('places Eval below Learning and gates it on developer mode', () => {
+    const siderSource = readSource(new URL('./index.tsx', import.meta.url));
+    const evalEntrySource = readSource(new URL('./SiderNav/SiderEvalEntry.tsx', import.meta.url));
+
+    expect(siderSource.includes('SiderEvalEntry')).toBe(true);
+    expect(siderSource.includes("useConfig('system.developerMode')")).toBe(true);
+    expect(siderSource.includes('developerMode === true')).toBe(true);
+    expect(siderSource.indexOf('<SiderLearningEntry')).toBeLessThan(siderSource.indexOf('<SiderEvalEntry'));
+    expect(evalEntrySource.includes("t('eval.dev.tag')")).toBe(true);
+    expect(evalEntrySource.includes("t('eval.dev.navTooltip')")).toBe(true);
+  });
+
   test('keeps Open Capabilities routes compatible while hiding its settings entry', () => {
     const routerSource = readSource(new URL('../Router.tsx', import.meta.url));
     const settingsSiderSource = readSource(

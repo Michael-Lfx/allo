@@ -5,6 +5,7 @@ import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/s
 import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
+import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { blurActiveElement } from '@renderer/utils/ui/focus';
 import { isDesktopShell } from '@renderer/utils/platform';
 import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
@@ -16,6 +17,7 @@ import {
   SiderConversationEntry,
   SiderKnowledgeEntry,
   SiderLearningEntry,
+  SiderEvalEntry,
   SiderModelHubEntry,
   SiderRequirementsEntry,
   SiderScheduledEntry,
@@ -49,6 +51,7 @@ interface SiderProps {
  */
 const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const { t } = useTranslation();
+  const [developerMode] = useConfig('system.developerMode');
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const location = useLocation();
@@ -141,6 +144,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleKnowledgeClick = () => navTo('/knowledge');
   const handleNomiClick = () => navTo('/nomi');
   const handleLearningClick = () => navTo('/learn');
+  const handleEvalClick = () => navTo('/eval');
   const handleRequirementsClick = () => navTo('/requirements');
   const handlePresetClick = () => navTo('/presets');
   const handleSkillsClick = () => navTo('/skills');
@@ -260,6 +264,15 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleLearningClick}
             />
+            {developerMode === true && (
+              <SiderEvalEntry
+                isMobile={isMobile}
+                isActive={pathname.startsWith('/eval')}
+                collapsed={collapsed}
+                siderTooltipProps={siderTooltipProps}
+                onClick={handleEvalClick}
+              />
+            )}
             {/* 自动化 — automation platforms */}
             <SiderScheduledEntry
               isMobile={isMobile}

@@ -46,6 +46,7 @@ import insights from './insights.json';
 import media from './media.json';
 import cloudLogin from './cloudLogin.json';
 import learning from './learning.json';
+import evalLocale from './eval.json';
 import videoGeneration from './videoGeneration.json';
 import videoCanvas from './videoCanvas.json';
 import ssh from './ssh.json';
@@ -96,6 +97,7 @@ export default {
   media,
   cloudLogin,
   learning,
+  eval: evalLocale,
   videoGeneration,
   videoCanvas,
   ssh,
