@@ -283,8 +283,12 @@ mod tests {
         assert!(!prompt.contains("{look_lock}"));
         let lower = prompt.to_ascii_lowercase();
         assert!(lower.contains("environment") || lower.contains("prop"));
-        assert!(!prompt.contains("非真人") && !prompt.contains("无明星"));
-        assert!(!lower.contains("celebrity") && !lower.contains("real-person portrait"));
+        assert!(prompt.contains("非真人") || prompt.contains("无明星") || prompt.contains("无真实人脸"));
+        assert!(
+            lower.contains("fictional")
+                || lower.contains("identity safety")
+                || prompt.contains("无明星样貌")
+        );
     }
 
     #[test]

@@ -15,4 +15,5 @@ HARD IDENTITY LOCK: identical face, hair, body, wardrobe, and colors in all thre
 HARD LOOK LOCK: this sheet MUST share the SAME production look as the film's environment and prop bibles (one medium, one palette, one lighting language). Studio backdrop only — do not place the character in a story location.
 Clean white / light-gray studio backdrop. Thin vertical gaps between panels OK.
 Face must look clean and natural — no dirt, blemishes, intentional ugliness, or strange makeup unless Features explicitly require it.
+IDENTITY SAFETY: original fictional character design only — 无真实人脸信息，无明星样貌.
 Output a single three-view continuity plate.
