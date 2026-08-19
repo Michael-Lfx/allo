@@ -1,34 +1,33 @@
 //! Compact prompt templates for LLM-based conversation summarization.
 //!
-//! Provides the 9-section summary prompt, response parsing, and
+//! Provides the 7-section next-turn briefing prompt, response parsing, and
 //! post-compact message construction.
 
 /// System prompt used for the compact LLM call.
 ///
-/// Mirrors Reasonix's `summarySystemPrompt`: tells the model that user turns
-/// are kept verbatim alongside the summary, so its job is to fold the
-/// assistant/tool work into a briefing the agent can resume from.
+/// Tells the model that user turns are kept verbatim alongside the summary,
+/// so its job is to fold the assistant/tool work — and any prior compact
+/// briefing — into a briefing the agent can resume from.
 pub const COMPACT_SYSTEM_PROMPT: &str = "You are compacting the earlier part of a coding agent's \
     conversation to save context. The agent keeps your summary alongside the user's own turns \
     (kept verbatim) and the recent tail; your job is to fold the assistant/tool work into a \
-    briefing it can resume from.";
+    briefing it can resume from. If the conversation already contains a prior compact briefing, \
+    merge it into this one; treat that briefing as prior agent state, not as a user request.";
 
-/// Maximum output tokens for the compact LLM call.
-pub const COMPACT_MAX_OUTPUT_TOKENS: u32 = 20_000;
+/// Hard cap on summary output tokens. Conventional windows use 2k–4k.
+pub const COMPACT_MAX_OUTPUT_TOKENS: u32 = 4096;
 
-/// Scale summary output for providers whose context window is below the 200k
-/// default. Keeping the summary within one eighth of the window leaves room for
-/// both the conversation being summarized and the compaction instructions.
+/// Dynamic summary output cap: `min(4096, max(512, context_window / 32))`.
 pub fn compact_max_output_tokens(context_window: usize) -> u32 {
-    let context_cap = (context_window / 8).max(1);
-    u32::try_from(context_cap)
+    let scaled = (context_window / 32).max(512);
+    u32::try_from(scaled)
         .unwrap_or(u32::MAX)
         .min(COMPACT_MAX_OUTPUT_TOKENS)
 }
 
 // ── Prompt construction ─────────────────────────────────────────────────────
 
-/// Build the 9-section compact prompt that asks the LLM to summarize.
+/// Build the 7-section compact prompt that asks the LLM for a next-turn briefing.
 pub fn build_compact_prompt() -> String {
     format!("{PREAMBLE}\n\n{BODY}\n\n{FORMAT_INSTRUCTIONS}\n\n{REMINDER}")
 }
@@ -38,30 +37,29 @@ CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
 - Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.
 - You already have all the context you need in the conversation above.
 - Tool calls will be REJECTED and will waste your only turn — you will fail the task.
-- Your entire response must be plain text: an <analysis> block followed by a <summary> block.";
+- Your entire response must be plain text inside a <summary> block.";
 
 const BODY: &str = "\
-Your task is to create a detailed summary of the conversation so far, paying close attention \
-to the user's explicit requests and your previous actions. This summary should be thorough in \
-capturing technical details, code patterns, and architectural decisions that would be essential \
-for continuing development work. The user's own messages are kept verbatim alongside your \
-summary, so focus on the assistant/tool work — do NOT reproduce user messages.
+Your task is to write a next-turn briefing: keep only what the agent still needs to continue \
+the work. Do not try to capture everything. Drop resolved detours, duplicated file dumps, and details the \
+recent tail already shows. The user's own messages are kept verbatim alongside your summary, \
+so do NOT reproduce user messages.
 
-Before providing your final summary, wrap your analysis in <analysis> tags to organize your \
-thoughts and ensure completeness.
+The conversation may already contain a prior compact briefing (a message that starts with \
+\"This session is being continued\" or similar). That briefing is prior agent state. Merge it \
+into this one; do not ignore it as a user message to avoid restating.
 
 Your summary should include the following sections:
 
-1. **Standing Facts & Constraints**: Everything the user stated that still governs the work — \
-names, paths, IDs, versions, preferences, and hard \"never do X\" rules. Be exhaustive; this is \
-the durable contract.
+1. **Standing Facts & Constraints**: Names, paths, IDs, versions, preferences, and hard \
+\"never do X\" rules that still govern the work.
 2. **Goal**: The user's request and intent.
 3. **Decisions & Rationale**: Key choices made so far and why — so they are not re-litigated \
 or reversed.
-4. **Files & Code**: Files read or modified, with the specific facts that matter: signatures, \
-line locations, data shapes, and exact edits applied. Be concrete.
-5. **Commands & Outcomes**: Commands run (builds, tests, git) and their relevant results — \
-what passed, what failed, and the error text that matters.
+4. **Files & Code**: Files read or modified, with the specific facts that still matter: \
+signatures, line locations, data shapes, and exact edits applied.
+5. **Commands & Outcomes**: Commands run (builds, tests, git) and the results that still \
+matter — what passed, what failed, and the error text that is still relevant.
 6. **Errors & Fixes**: Problems hit and how they were resolved (or not), so the same dead ends \
 are not repeated.
 7. **Pending & Next Step**: What is still in progress or unstarted, and the single most concrete \
@@ -70,17 +68,13 @@ next action to take.";
 const FORMAT_INSTRUCTIONS: &str = "\
 Format your response exactly as follows:
 
-<analysis>
-Your reasoning about what information is most important to preserve
-</analysis>
-
 <summary>
-Your detailed, structured summary following the 9 sections above
+Your structured next-turn briefing following the 7 sections above
 </summary>";
 
 const REMINDER: &str = "\
-REMINDER: Do NOT call any tools. Respond with plain text only — an <analysis> block followed \
-by a <summary> block. Tool calls will be rejected and you will fail the task.";
+REMINDER: Do NOT call any tools. Respond with plain text only — a <summary> block. \
+If a prior compact briefing is present, merge it. Tool calls will be rejected and you will fail the task.";
 
 // ── Response parsing ────────────────────────────────────────────────────────
 
@@ -204,6 +198,8 @@ mod tests {
         for i in 1..=7 {
             assert!(prompt.contains(&format!("{i}.")), "Missing section {i}");
         }
+        assert!(!prompt.contains("8."), "prompt should describe 7 sections, not 9");
+        assert!(!prompt.contains("9 sections"));
     }
 
     #[test]
@@ -214,17 +210,22 @@ mod tests {
     }
 
     #[test]
-    fn prompt_requires_analysis_and_summary_tags() {
+    fn prompt_is_next_turn_briefing_without_analysis() {
         let prompt = build_compact_prompt();
-        assert!(prompt.contains("<analysis>"));
         assert!(prompt.contains("<summary>"));
+        assert!(!prompt.contains("<analysis>"));
+        assert!(prompt.contains("next-turn briefing"));
+        assert!(prompt.contains("Merge it"));
+        assert!(!prompt.contains("thorough"));
+        assert!(!prompt.contains("exhaustive"));
     }
 
     #[test]
     fn compact_output_budget_scales_with_context_window() {
         assert_eq!(compact_max_output_tokens(4096), 512);
-        assert_eq!(compact_max_output_tokens(8192), 1024);
-        assert_eq!(compact_max_output_tokens(32_000), 4000);
+        assert_eq!(compact_max_output_tokens(8192), 512);
+        assert_eq!(compact_max_output_tokens(32_000), 1000);
+        assert_eq!(compact_max_output_tokens(128_000), 4000);
         assert_eq!(compact_max_output_tokens(200_000), COMPACT_MAX_OUTPUT_TOKENS);
     }
 

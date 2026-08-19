@@ -14,6 +14,7 @@ use nomi_types::message::{ContentBlock, Message, Role, StopReason};
 use serde_json::json;
 
 use crate::compact::state::CompactState;
+use crate::compact::CompactReason;
 use crate::confirm::ToolConfirmer;
 use crate::output::OutputSink;
 use crate::output::null_sink::NullSink;
@@ -452,7 +453,7 @@ async fn emergency_fires_when_at_limit() {
     state.last_input_tokens = 198_000; // >= 197k limit
 
     let mut engine = make_compact_engine(config, state, vec![]);
-    let result = engine.run_compaction().await;
+    let result = engine.run_compaction(CompactReason::EmergencyRecovery).await;
 
     match result {
         Err(super::AgentError::ContextTooLong {
@@ -479,7 +480,7 @@ async fn emergency_silent_below_limit() {
     state.last_input_tokens = 190_000; // below 197k limit
 
     let mut engine = make_compact_engine(config, state, vec![]);
-    assert!(engine.run_compaction().await.is_ok());
+    assert!(engine.run_compaction(CompactReason::TurnEnd).await.is_ok());
 }
 
 // -- Microcompact runs when count trigger fires --
@@ -501,7 +502,7 @@ async fn microcompact_clears_old_results() {
     let state = CompactState::new();
 
     let mut engine = make_compact_engine(config, state, messages);
-    engine.run_compaction().await.unwrap();
+    engine.run_compaction(CompactReason::TurnEnd).await.unwrap();
 
     // Last 3 tool results should be preserved
     let cleared_count = engine
@@ -535,7 +536,7 @@ async fn disabled_config_skips_micro_auto() {
     let state = CompactState::new();
 
     let mut engine = make_compact_engine(config, state, messages);
-    engine.run_compaction().await.unwrap();
+    engine.run_compaction(CompactReason::TurnEnd).await.unwrap();
 
     // Nothing should be cleared (microcompact skipped)
     let cleared_count = engine
@@ -565,7 +566,7 @@ async fn disabled_config_still_fires_emergency() {
     state.last_input_tokens = 198_000;
 
     let mut engine = make_compact_engine(config, state, vec![]);
-    let result = engine.run_compaction().await;
+    let result = engine.run_compaction(CompactReason::EmergencyRecovery).await;
 
     assert!(
         matches!(result, Err(super::AgentError::ContextTooLong { .. })),
@@ -581,8 +582,39 @@ async fn first_turn_zero_tokens_no_compaction() {
     let state = CompactState::new(); // last_input_tokens = 0
 
     let mut engine = make_compact_engine(config, state, vec![]);
-    assert!(engine.run_compaction().await.is_ok());
+    assert!(engine.run_compaction(CompactReason::TurnEnd).await.is_ok());
     assert_eq!(engine.compact_state.last_input_tokens, 0);
+}
+
+#[tokio::test]
+async fn compact_lowers_watermark() {
+    let mut messages = Vec::new();
+    messages.push(Message::new(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "Start the work".into(),
+        }],
+    ));
+    for i in 0..8 {
+        messages.push(tool_use_msg(&format!("t{i}"), "Read"));
+        messages.push(tool_result_msg(&format!("t{i}"), &"x".repeat(20_000)));
+    }
+    let config = CompactConfig {
+        context_window: 200_000,
+        ..Default::default()
+    };
+    let mut state = CompactState::new();
+    state.last_input_tokens = 180_000;
+    let mut engine = make_compact_engine(config, state, messages);
+    engine
+        .run_compaction(CompactReason::TurnEnd)
+        .await
+        .unwrap();
+    assert!(
+        engine.compact_state.last_input_tokens < 180_000,
+        "watermark should drop after compact, got {}",
+        engine.compact_state.last_input_tokens
+    );
 }
 
 // -- Circuit broken prevents autocompact, emergency still fires --
@@ -600,7 +632,7 @@ async fn circuit_broken_skips_auto_but_emergency_fires() {
     state.consecutive_failures = 3; // circuit broken
 
     let mut engine = make_compact_engine(config, state, vec![]);
-    let result = engine.run_compaction().await;
+    let result = engine.run_compaction(CompactReason::EmergencyRecovery).await;
 
     // Auto is skipped due to circuit breaker; emergency fires
     assert!(matches!(

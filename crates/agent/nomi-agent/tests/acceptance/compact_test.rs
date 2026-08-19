@@ -126,9 +126,9 @@ async fn autocompact_triggers_llm_summary() {
         }
     };
 
-    // Use gpt-4.1-mini which supports up to 32768 output tokens.
-    // The autocompact function requests COMPACT_MAX_OUTPUT_TOKENS (20000),
-    // which exceeds gpt-4o-mini's 16384 limit.
+    // Use gpt-4.1-mini which supports large output budgets.
+    // The autocompact function requests compact_max_output_tokens(window),
+    // capped at 4096.
     let config = {
         let base = helpers::openai_config(&api_key);
         nomi_config::config::Config {

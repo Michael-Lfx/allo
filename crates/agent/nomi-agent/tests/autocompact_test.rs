@@ -29,12 +29,16 @@ use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 /// A mock LLM provider that returns pre-configured responses in order.
 struct MockProvider {
     responses: Mutex<VecDeque<Result<Vec<LlmEvent>, ProviderError>>>,
+    last_max_tokens: Mutex<Option<u32>>,
+    last_messages: Mutex<Option<Vec<Message>>>,
 }
 
 impl MockProvider {
     fn new(responses: Vec<Result<Vec<LlmEvent>, ProviderError>>) -> Self {
         Self {
             responses: Mutex::new(VecDeque::from(responses)),
+            last_max_tokens: Mutex::new(None),
+            last_messages: Mutex::new(None),
         }
     }
 
@@ -63,7 +67,7 @@ impl MockProvider {
 impl LlmProvider for MockProvider {
     async fn stream(
         &self,
-        _request: &LlmRequest,
+        request: &LlmRequest,
     ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
         let response = self
             .responses
@@ -71,6 +75,8 @@ impl LlmProvider for MockProvider {
             .unwrap()
             .pop_front()
             .expect("MockProvider: no more responses queued");
+        *self.last_max_tokens.lock().unwrap() = Some(request.max_tokens);
+        *self.last_messages.lock().unwrap() = Some(request.messages.clone());
 
         match response {
             Ok(events) => {
@@ -117,22 +123,22 @@ fn default_config() -> CompactConfig {
 
 #[test]
 fn tc_2_4_01_above_threshold_triggers() {
-    // effective_window = 200k - 20k = 180k, threshold = 180k - 13k = 167k
-    assert!(should_autocompact(170_000, &default_config()));
+    // default window 128k; threshold = 128k - 20k - 13k = 95k
+    assert!(should_autocompact(100_000, &default_config()));
 }
 
 // ── TC-2.4-02: Below threshold does not trigger ─────────────────────────────
 
 #[test]
 fn tc_2_4_02_below_threshold_does_not_trigger() {
-    assert!(!should_autocompact(160_000, &default_config()));
+    assert!(!should_autocompact(90_000, &default_config()));
 }
 
 // ── TC-2.4-03: Exact threshold triggers ─────────────────────────────────────
 
 #[test]
 fn tc_2_4_03_at_exact_threshold_triggers() {
-    assert!(should_autocompact(167_000, &default_config()));
+    assert!(should_autocompact(95_000, &default_config()));
 }
 
 // ── TC-2.4-04: Circuit breaker initial state ────────────────────────────────
@@ -235,20 +241,24 @@ async fn tc_2_4_12_post_compact_message_structure() {
         .await
         .expect("autocompact should succeed");
 
-    // Should have 2 messages: boundary + summary
-    assert_eq!(result.messages.len(), 2);
-    assert_eq!(result.messages_summarized, 20);
-
-    // First message is the boundary marker
-    assert!(is_compact_boundary(&result.messages[0]));
+    let boundaries = result
+        .messages
+        .iter()
+        .filter(|m| is_compact_boundary(m))
+        .count();
+    assert_eq!(boundaries, 1, "exactly one compact boundary");
+    assert!(result.messages_summarized > 0);
     assert_eq!(result.messages[0].role, Role::User);
 
-    // Second message is the summary
-    assert_eq!(result.messages[1].role, Role::User);
-    match &result.messages[1].content[0] {
+    let summary = result.messages.iter().find(|m| {
+        m.content.iter().any(|block| {
+            matches!(block, ContentBlock::Text { text } if text.contains("This session is being continued"))
+        })
+    });
+    assert!(summary.is_some(), "summary briefing should be present");
+    match &summary.unwrap().content[0] {
         ContentBlock::Text { text } => {
             assert!(text.contains("Detailed summary here"));
-            assert!(text.contains("This session is being continued"));
         }
         _ => panic!("expected Text block"),
     }
@@ -268,10 +278,14 @@ async fn tc_2_4_13_boundary_metadata() {
         .await
         .expect("autocompact should succeed");
 
-    let metadata = extract_compact_metadata(&result.messages[0]).expect("should have metadata");
+    let metadata = result
+        .messages
+        .iter()
+        .find_map(extract_compact_metadata)
+        .expect("should have metadata");
     assert_eq!(metadata.trigger, CompactTrigger::Auto);
     assert_eq!(metadata.pre_compact_tokens, 170_000);
-    assert_eq!(metadata.messages_summarized, 15);
+    assert!(metadata.messages_summarized > 0);
 }
 
 // ── TC-2.4-14: Disabled config skips (tested via should_autocompact) ────────
@@ -330,6 +344,7 @@ async fn tc_2_4_17_provider_error_mechanical_fold() {
     let messages = sample_conversation(10);
     let config = default_config();
     let mut state = CompactState::new();
+    state.last_input_tokens = 170_000;
 
     let result = autocompact(&provider, &messages, "test-model", &config, &mut state)
         .await
@@ -337,7 +352,7 @@ async fn tc_2_4_17_provider_error_mechanical_fold() {
 
     // Mechanical fold: context is freed even when summarizer is unreachable
     assert!(result.mechanical_fold);
-    assert_eq!(result.messages_summarized, 10);
+    assert!(result.messages_summarized > 0);
     // record_success is called — this is a graceful degradation, not a failure
     assert_eq!(state.consecutive_failures, 0);
 }
@@ -370,16 +385,18 @@ async fn tc_2_4_18_ptl_retry_succeeds() {
         .await
         .expect("autocompact should succeed after retry");
 
-    assert_eq!(result.messages.len(), 2);
-    assert_eq!(state.consecutive_failures, 0);
-
-    // Verify summary content
-    match &result.messages[1].content[0] {
-        ContentBlock::Text { text } => {
-            assert!(text.contains("retried summary"));
-        }
-        _ => panic!("expected Text block"),
-    }
+    assert!(
+        result.messages.iter().any(|m| {
+            m.content.iter().any(|block| {
+                matches!(block, ContentBlock::Text { text } if text.contains("retried summary"))
+            })
+        }),
+        "retried summary should appear in the compacted transcript"
+    );
+    assert_eq!(
+        result.messages.iter().filter(|m| is_compact_boundary(m)).count(),
+        1
+    );
 }
 
 // ── TC-2.4-19: PTL retry exhausted → mechanical fold ────────────────────────
@@ -395,6 +412,7 @@ async fn tc_2_4_19_ptl_retry_exhausted_mechanical_fold() {
     let messages = sample_conversation(20);
     let config = default_config();
     let mut state = CompactState::new();
+    state.last_input_tokens = 170_000;
 
     let result = autocompact(&provider, &messages, "test-model", &config, &mut state)
         .await
@@ -460,7 +478,7 @@ async fn tc_2_4_20_ptl_retry_truncates_messages() {
         attempt: Mutex::new(0),
     };
 
-    let messages = sample_conversation(20);
+    let messages = sample_conversation(40);
     let config = default_config();
     let mut state = CompactState::new();
     state.last_input_tokens = 170_000;
@@ -471,13 +489,11 @@ async fn tc_2_4_20_ptl_retry_truncates_messages() {
 
     let counts = request_counts.lock().unwrap();
     assert_eq!(counts.len(), 2, "should have 2 attempts");
-
-    // First attempt: 20 conversation + 1 prompt = 21
-    assert_eq!(counts[0], 21);
-
-    // Second attempt: truncated (~20% dropped from 20 = 4 dropped) + 1 prompt
-    // 20 - 4 = 16, + 1 prompt = 17
-    assert_eq!(counts[1], 17);
+    assert!(
+        counts[1] < counts[0],
+        "PTL retry should truncate summarizer input, got {:?}",
+        *counts
+    );
 }
 
 // ── Additional edge cases ───────────────────────────────────────────────────
@@ -500,6 +516,7 @@ async fn empty_response_mechanical_fold() {
     let messages = sample_conversation(10);
     let config = default_config();
     let mut state = CompactState::new();
+    state.last_input_tokens = 170_000;
 
     let result = autocompact(&provider, &messages, "test-model", &config, &mut state)
         .await
@@ -527,6 +544,7 @@ async fn stream_error_mechanical_fold() {
     let messages = sample_conversation(10);
     let config = default_config();
     let mut state = CompactState::new();
+    state.last_input_tokens = 170_000;
 
     let result = autocompact(&provider, &messages, "test-model", &config, &mut state)
         .await
@@ -573,6 +591,7 @@ async fn transient_error_retry_succeeds() {
     let messages = sample_conversation(10);
     let config = default_config();
     let mut state = CompactState::new();
+    state.last_input_tokens = 170_000;
 
     let result = autocompact(&provider, &messages, "test-model", &config, &mut state)
         .await
@@ -581,13 +600,14 @@ async fn transient_error_retry_succeeds() {
     assert!(!result.mechanical_fold);
     assert_eq!(state.consecutive_failures, 0);
 
-    // Verify summary content from the second attempt
-    match &result.messages[1].content[0] {
-        ContentBlock::Text { text } => {
-            assert!(text.contains("retried successfully"));
-        }
-        _ => panic!("expected Text block"),
-    }
+    assert!(
+        result.messages.iter().any(|m| {
+            m.content.iter().any(|block| {
+                matches!(block, ContentBlock::Text { text } if text.contains("retried successfully"))
+            })
+        }),
+        "retried summary should appear in the compacted transcript"
+    );
 }
 
 // ── P5: Force compaction ratio bypasses fold economics ─────────────────────
@@ -650,10 +670,13 @@ async fn no_force_ratio_skips_small_fold() {
 
     let config = CompactConfig {
         context_window: 1_000,
+        output_reserve: 50,
+        autocompact_buffer: 50,
+        emergency_buffer: 50,
         ..default_config()
     };
     let mut state = CompactState::new();
-    // 80% of 1000 = 800 → force = false (below 90%)
+    // threshold = 1000 - 50 - 50 = 900; 80% of window is below force ratio 0.9
     state.last_input_tokens = 800;
 
     let result = autocompact(&provider, &msgs, "test-model", &config, &mut state)
@@ -662,4 +685,123 @@ async fn no_force_ratio_skips_small_fold() {
 
     // Fold economics skipped compaction — no messages summarized
     assert_eq!(result.messages_summarized, 0);
+}
+
+#[tokio::test]
+async fn summary_output_cap_follows_context_window() {
+    let provider = MockProvider::with_summary("<summary>brief</summary>");
+    let messages = sample_conversation(20);
+    let config = CompactConfig {
+        context_window: 128_000,
+        ..default_config()
+    };
+    let mut state = CompactState::new();
+    state.last_input_tokens = 170_000;
+    autocompact(&provider, &messages, "test-model", &config, &mut state)
+        .await
+        .expect("compact");
+    assert_eq!(*provider.last_max_tokens.lock().unwrap(), Some(4000));
+}
+
+#[tokio::test]
+async fn prior_briefing_is_sent_to_summarizer() {
+    let provider = MockProvider::with_summary("<summary>merged briefing</summary>");
+    let mut messages = sample_conversation(20);
+    messages.insert(
+        1,
+        text_msg(Role::User, "[Conversation compacted]\n{}"),
+    );
+    messages.insert(
+        2,
+        text_msg(
+            Role::User,
+            "This session is being continued from a previous conversation that ran out of context. Prior briefing here.",
+        ),
+    );
+    let config = default_config();
+    let mut state = CompactState::new();
+    state.last_input_tokens = 170_000;
+    autocompact(&provider, &messages, "test-model", &config, &mut state)
+        .await
+        .expect("compact");
+    let sent = provider
+        .last_messages
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("summarizer request");
+    let saw_prior = sent.iter().any(|m| {
+        m.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Text { text } if text.contains("Prior briefing here")
+            )
+        })
+    });
+    assert!(saw_prior, "old summary must be folded into the next summarizer input");
+}
+
+#[tokio::test]
+async fn repeated_autocompact_keeps_one_boundary() {
+    let provider = MockProvider::new(vec![
+        Ok(vec![
+            LlmEvent::TextDelta("<summary>first</summary>".into()),
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: TokenUsage::default(),
+            },
+        ]),
+        Ok(vec![
+            LlmEvent::TextDelta("<summary>second</summary>".into()),
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: TokenUsage::default(),
+            },
+        ]),
+    ]);
+    let mut messages = sample_conversation(20);
+    let config = default_config();
+    let mut state = CompactState::new();
+    state.last_input_tokens = 170_000;
+    let first = autocompact(&provider, &messages, "test-model", &config, &mut state)
+        .await
+        .expect("first compact");
+    messages = first.messages;
+    state.last_input_tokens = 170_000;
+    let second = autocompact(&provider, &messages, "test-model", &config, &mut state)
+        .await
+        .expect("second compact");
+    let boundaries = second
+        .messages
+        .iter()
+        .filter(|m| is_compact_boundary(m))
+        .count();
+    assert_eq!(boundaries, 1);
+}
+
+#[tokio::test]
+async fn small_session_keeps_recent_tail() {
+    let provider = MockProvider::with_summary("<summary>brief</summary>");
+    let mut messages = vec![text_msg(Role::User, "Start the task")];
+    for i in 0..6 {
+        messages.push(text_msg(Role::Assistant, &"a".repeat(8000)));
+        messages.push(text_msg(Role::User, &format!("follow-up {i}")));
+    }
+    let config = default_config();
+    let mut state = CompactState::new();
+    state.last_input_tokens = 170_000;
+    let result = autocompact(&provider, &messages, "test-model", &config, &mut state)
+        .await
+        .expect("compact");
+    assert!(result.messages.len() > 2, "recent tail should be kept");
+    assert_eq!(result.messages[0].role, Role::User);
+    match &result.messages[0].content[0] {
+        ContentBlock::Text { text } => assert_eq!(text, "Start the task"),
+        _ => panic!("expected first user message"),
+    }
+    let last = result.messages.last().unwrap();
+    match &last.content[0] {
+        ContentBlock::Text { text } => assert!(text.contains("follow-up")),
+        _ => panic!("expected tail text"),
+    }
 }

@@ -63,6 +63,19 @@ impl ProviderError {
         }
     }
 
+    /// Recoverable context-window overflow: the engine may compact and retry
+    /// once when no visible content has been emitted yet.
+    pub fn is_context_overflow(&self) -> bool {
+        match self {
+            ProviderError::PromptTooLong(_) => true,
+            ProviderError::Api { status, message } => {
+                is_context_overflow_status_body(*status, message)
+            }
+            ProviderError::Parse(message) => is_context_overflow_text(message),
+            _ => false,
+        }
+    }
+
     pub(crate) fn is_tool_schema_incompatible(&self) -> bool {
         let ProviderError::Api { message, .. } = self else {
             return false;
@@ -114,6 +127,36 @@ impl ProviderError {
         .any(|signal| lower.contains(signal));
         names_usage_extension && rejects_parameter
     }
+}
+
+/// Classify an HTTP status + body as a context-window overflow.
+///
+/// Generic 400s are not overflows. Only bodies that name a prompt/context
+/// length failure count, so ordinary validation errors stay terminal.
+pub fn is_context_overflow_status_body(status: u16, body: &str) -> bool {
+    matches!(status, 400 | 413 | 422) && is_context_overflow_text(body)
+}
+
+/// Classify a streaming error string as a context-window overflow.
+pub fn is_context_overflow_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    const SIGNALS: &[&str] = &[
+        "prompt is too long",
+        "prompt_too_long",
+        "context_length_exceeded",
+        "context length exceeded",
+        "maximum context length",
+        "max context length",
+        "please reduce the length of the messages",
+        "input is too long",
+        "too many tokens",
+        "token count exceeds",
+        "exceeds the context window",
+        "exceeded the context window",
+        "context window exceeded",
+        "request too large",
+    ];
+    SIGNALS.iter().any(|signal| lower.contains(signal))
 }
 
 /// Split the stored provider credential into individual API keys.
@@ -170,6 +213,9 @@ pub(crate) async fn send_initial(
                 retry_after_ms,
                 message: non_empty_rate_limit_message(body_text),
             });
+        }
+        if is_context_overflow_status_body(status.as_u16(), &body_text) {
+            return Err(ProviderError::PromptTooLong(body_text));
         }
         Err(ProviderError::Api {
             status: status.as_u16(),
@@ -431,6 +477,7 @@ mod retryable_tests {
     use super::{
         is_api_key_rotation_error, parse_api_keys, parse_retry_after_ms,
         parse_tool_call_arguments, MAX_DOUBLE_ENCODED_TOOL_ARGUMENT_BYTES,
+        is_context_overflow_text,
     };
 
     #[test]
@@ -478,6 +525,40 @@ mod retryable_tests {
         assert!(ProviderError::Connection("x".to_string()).is_retryable());
         assert!(!ProviderError::PromptTooLong("x".to_string()).is_retryable());
         assert!(!ProviderError::Parse("x".to_string()).is_retryable());
+    }
+
+    #[test]
+    fn context_overflow_classifier_accepts_known_provider_bodies() {
+        let anthropic = ProviderError::Api {
+            status: 400,
+            message: r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 200000 tokens > 200000 maximum"}}"#.into(),
+        };
+        let openai = ProviderError::Api {
+            status: 400,
+            message: r#"{"error":{"message":"This model's maximum context length is 128000 tokens","code":"context_length_exceeded"}}"#.into(),
+        };
+        assert!(anthropic.is_context_overflow());
+        assert!(openai.is_context_overflow());
+        assert!(ProviderError::PromptTooLong("x".into()).is_context_overflow());
+        assert!(is_context_overflow_text(
+            "Request too large: input exceeds the context window"
+        ));
+    }
+
+    #[test]
+    fn context_overflow_classifier_rejects_ordinary_errors() {
+        let generic_400 = ProviderError::Api {
+            status: 400,
+            message: r#"{"error":{"message":"invalid_request_error: missing required field"}}"#.into(),
+        };
+        let server = ProviderError::Api {
+            status: 500,
+            message: "prompt is too long".into(),
+        };
+        assert!(!generic_400.is_context_overflow());
+        assert!(!server.is_context_overflow());
+        assert!(!ProviderError::Connection("x".into()).is_context_overflow());
+        assert!(!is_context_overflow_text("max_tokens truncated the response"));
     }
 
     #[test]

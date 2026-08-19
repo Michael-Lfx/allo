@@ -19,7 +19,7 @@ use tracing::Instrument;
 
 use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheStats};
 use crate::compact::state::CompactState;
-use crate::compact::{auto, emergency, estimate, micro};
+use crate::compact::{auto, emergency, estimate, micro, CompactReason};
 use crate::confirm::ToolConfirmer;
 use crate::tool_execution::{
     ExecutionControl, ProviderToolAuthority, SKIPPED_AFTER_PRIOR_ERROR,
@@ -1447,21 +1447,6 @@ impl AgentEngine {
             // provider with the current conversation.
             self.prune_old_tool_images();
 
-            // Pre-send token estimate (§3.1): feed the CURRENT message size into
-            // the compaction watermark so a turn that grew large (a big tool
-            // result, or a large first message) compacts BEFORE the request
-            // rather than failing with PromptTooLong and wasting a round-trip.
-            // Only ever RAISES the watermark, and reuses the existing autocompact
-            // thresholds + circuit breaker, so it cannot over-compact a small
-            // context or loop.
-            let pre_send_estimate =
-                estimate::estimate_tokens_from_messages(&self.messages);
-            self.compact_state.last_input_tokens =
-                self.compact_state.last_input_tokens.max(pre_send_estimate);
-
-            // Run multi-level compaction before each API call.
-            self.run_compaction().await?;
-
             // Build tool list: filter based on plan mode state and harness policy
             let mut tools = if self.plan_state.is_active {
                 // Plan mode: only Info-category tools (excluding EnterPlanMode)
@@ -1569,9 +1554,22 @@ impl AgentEngine {
             }
             let turn_tail =
                 crate::context_contributor::build_turn_tail_context(turn_tail_extras.clone());
+
+            let mut overflow_retried = false;
+            let mut assistant_text = String::new();
+            let mut thinking_text = String::new();
+            let mut thinking_signature: Option<String>;
+            let mut tool_calls: Vec<ContentBlock>;
+            let mut previewed_tool_calls: BTreeMap<String, String>;
+            let mut stop_reason: StopReason;
+            let mut turn_usage: TokenUsage;
+            let mut done_count: u8;
+            let mut request_breakdown;
+
+            'provider_attempt: loop {
             let messages = crate::context_contributor::inject_turn_tail_context(
                 self.messages.clone(),
-                turn_tail,
+                turn_tail.clone(),
             );
 
             // Record prompt state for cache diagnostics
@@ -1579,7 +1577,7 @@ impl AgentEngine {
 
             // Capture a raw category estimate for this exact request. After the
             // provider reports input tokens we calibrate it to the occupancy gauge.
-            let mut request_breakdown = crate::context_usage::estimate_context_usage(
+            request_breakdown = crate::context_usage::estimate_context_usage(
                 crate::context_usage::ContextUsageRequest {
                     system_prompt: &system,
                     system_prompt_sections: &self.system_prompt_sections,
@@ -1590,11 +1588,36 @@ impl AgentEngine {
                 },
             );
 
+            let request_estimate = request_breakdown.total();
+            self.compact_state.last_input_tokens =
+                self.compact_state.last_input_tokens.max(request_estimate);
+
+            if emergency::is_at_emergency_limit(
+                self.compact_state.last_input_tokens,
+                &self.compact_config,
+            ) {
+                self.run_compaction(CompactReason::EmergencyRecovery)
+                    .await?;
+                if emergency::is_at_emergency_limit(
+                    self.compact_state.last_input_tokens,
+                    &self.compact_config,
+                ) {
+                    return Err(AgentError::ContextTooLong {
+                        input_tokens: self.compact_state.last_input_tokens,
+                        limit: self
+                            .compact_config
+                            .context_window
+                            .saturating_sub(self.compact_config.emergency_buffer),
+                    });
+                }
+                continue 'provider_attempt;
+            }
+
             let request = LlmRequest {
                 model: self.model.clone(),
-                system,
+                system: system.clone(),
                 messages,
-                tools,
+                tools: tools.clone(),
                 max_tokens: self.max_tokens,
                 thinking: self.thinking.clone(),
                 reasoning_effort: self.current_reasoning_effort.clone(),
@@ -1603,18 +1626,28 @@ impl AgentEngine {
 
             efficiency.observe_model_turn_attempt();
             let stream_start = std::time::Instant::now();
-            let mut rx = self.provider.stream(&request).await?;
-            let mut assistant_text = String::new();
-            let mut thinking_text = String::new();
-            let mut thinking_signature: Option<String> = None;
-            let mut tool_calls: Vec<ContentBlock> = Vec::new();
-            let mut previewed_tool_calls: BTreeMap<String, String> = BTreeMap::new();
-            let mut stop_reason = StopReason::EndTurn;
-            let mut turn_usage = TokenUsage::default();
-            let mut done_count = 0_u8;
+            let mut rx = match self.provider.stream(&request).await {
+                Ok(rx) => rx,
+                Err(e) if e.is_context_overflow() && !overflow_retried => {
+                    overflow_retried = true;
+                    self.run_compaction(CompactReason::EmergencyRecovery)
+                        .await?;
+                    continue 'provider_attempt;
+                }
+                Err(e) => return Err(e.into()),
+            };
+            assistant_text.clear();
+            thinking_text.clear();
+            thinking_signature = None;
+            tool_calls = Vec::new();
+            previewed_tool_calls = BTreeMap::new();
+            stop_reason = StopReason::EndTurn;
+            turn_usage = TokenUsage::default();
+            done_count = 0;
 
             let mut idle_activity_active = false;
             let mut first_token_logged = false;
+            let mut stream_overflow = false;
             loop {
                 let event = tokio::time::timeout(STREAM_IDLE_ACTIVITY_AFTER, rx.recv()).await;
                 let event = match event {
@@ -1896,10 +1929,30 @@ impl AgentEngine {
                         turn_usage = usage;
                     }
                     LlmEvent::Error(e) => {
+                        let no_visible = assistant_text.is_empty()
+                            && thinking_text.is_empty()
+                            && tool_calls.is_empty();
+                        if !overflow_retried
+                            && no_visible
+                            && nomi_providers::is_context_overflow_text(&e)
+                        {
+                            stream_overflow = true;
+                            break;
+                        }
                         efficiency.observe_calls(&self.tools, &tool_calls);
                         return Err(AgentError::ApiError(e));
                     }
                 }
+            }
+
+            if stream_overflow {
+                overflow_retried = true;
+                self.run_compaction(CompactReason::EmergencyRecovery)
+                    .await?;
+                continue 'provider_attempt;
+            }
+
+            break 'provider_attempt;
             }
 
             efficiency.observe_calls(&self.tools, &tool_calls);
@@ -1989,11 +2042,15 @@ impl AgentEngine {
             self.total_usage.cache_read_tokens += turn_usage.cache_read_tokens;
 
             // Track per-turn input tokens for compaction watermark.
-            // Use max(provider_reported, local_estimate) as a safety net:
-            // some providers (e.g. DeepSeek with prefix caching) underreport
-            // prompt_tokens, causing compaction to never trigger.
-            let local_estimate = estimate::estimate_tokens_from_messages(&self.messages);
-            let effective_watermark = turn_usage.input_tokens.max(local_estimate);
+            // Raise to max(previous, provider, request estimate) so a
+            // continuation pass cannot forget a larger earlier observation.
+            // Compaction is the only path allowed to lower this value.
+            let local_estimate = request_breakdown.total();
+            let effective_watermark = self
+                .compact_state
+                .last_input_tokens
+                .max(turn_usage.input_tokens)
+                .max(local_estimate);
 
             if local_estimate > turn_usage.input_tokens
                 && local_estimate.saturating_sub(turn_usage.input_tokens) > 10_000
@@ -2101,6 +2158,7 @@ impl AgentEngine {
                 // Forced finalize already produced the closing reply — do not
                 // reopen via verify/todo/goal continuations.
                 if coding_finalize.is_some() {
+                    self.run_compaction(CompactReason::TurnEnd).await?;
                     self.save_session();
                     return Ok(AgentResult {
                         text: assistant_text,
@@ -2161,6 +2219,9 @@ impl AgentEngine {
                     // round by `limit`.
                     turn = 0;
                     continue; // don't return — run another turn toward the goal
+                }
+                if stop_reason == StopReason::EndTurn {
+                    self.run_compaction(CompactReason::TurnEnd).await?;
                 }
                 self.save_session();
                 return Ok(AgentResult {
@@ -2620,30 +2681,107 @@ impl AgentEngine {
         changed
     }
 
-    /// Run the multi-level compaction pipeline before each API call.
+    /// Run the compaction pipeline for a specific reason.
     ///
-    /// Execution order: microcompact → autocompact → emergency check.
-    /// After a successful autocompact the emergency check is skipped
-    /// because the context has been significantly reduced.
-    async fn run_compaction(&mut self) -> Result<(), AgentError> {
-        // 1. Microcompact (lightweight, no LLM call)
-        if micro::should_microcompact(&self.messages, &self.compact_config) {
-            let result = micro::microcompact(&mut self.messages, &self.compact_config);
-            if result.cleared_count > 0 {
-                self.output.emit_info(&format!(
-                    "Microcompact: cleared {} tool results (~{} tokens freed)",
-                    result.cleared_count, result.estimated_tokens_freed
-                ));
+    /// `TurnEnd` runs microcompact then autocompact at the normal threshold.
+    /// `EmergencyRecovery` still folds (mechanically if stuck) and only
+    /// returns `ContextTooLong` when the watermark remains at the emergency
+    /// limit after that attempt.
+    async fn run_compaction(&mut self, reason: CompactReason) -> Result<(), AgentError> {
+        match reason {
+            CompactReason::TurnEnd => {
+                self.run_microcompact();
+                if !self.compact_state.is_compact_stuck() {
+                    self.run_autocompact(false).await?;
+                }
+                Ok(())
             }
-            if !result.cleared_read_paths.is_empty() {
-                self.invalidate_file_cache_paths(&result.cleared_read_paths);
+            CompactReason::EmergencyRecovery => {
+                if self.compact_config.enabled {
+                    self.run_microcompact();
+                    let force_mechanical = self.compact_state.is_compact_stuck()
+                        || self.compact_state.is_circuit_broken(&self.compact_config);
+                    self.run_autocompact(force_mechanical).await?;
+                }
+                if emergency::is_at_emergency_limit(
+                    self.compact_state.last_input_tokens,
+                    &self.compact_config,
+                ) {
+                    return Err(AgentError::ContextTooLong {
+                        input_tokens: self.compact_state.last_input_tokens,
+                        limit: self
+                            .compact_config
+                            .context_window
+                            .saturating_sub(self.compact_config.emergency_buffer),
+                    });
+                }
+                Ok(())
             }
         }
+    }
 
-        // 2. Autocompact (LLM summarization)
-        let mut compacted = false;
-        let should_compact =
-            auto::should_autocompact(self.compact_state.last_input_tokens, &self.compact_config);
+    fn advertised_tools(&self) -> Vec<nomi_types::tool::ToolDef> {
+        let mut tools = if self.plan_state.is_active {
+            self.tools.to_tool_defs_filtered(|t| {
+                t.category() == ToolCategory::Info
+                    && t.name() != "EnterPlanMode"
+                    && self.harness_advertise_tool(t.name())
+            })
+        } else {
+            self.tools.to_tool_defs_filtered(|t| {
+                t.name() != "ExitPlanMode" && self.harness_advertise_tool(t.name())
+            })
+        };
+        if self
+            .coding_harness
+            .as_ref()
+            .is_some_and(|h| h.is_forced_finalize())
+        {
+            tools.clear();
+        }
+        tools
+    }
+
+    fn request_token_estimate(&self) -> u64 {
+        estimate::estimate_tokens_from_request(
+            &self.system_prompt,
+            &self.advertised_tools(),
+            &self.messages,
+            None,
+        )
+    }
+
+    fn apply_compact_watermark(&mut self, messages_summarized: usize) {
+        let estimate = self.request_token_estimate();
+        let still_above = auto::should_autocompact(estimate, &self.compact_config);
+        self.compact_state
+            .set_watermark(estimate, &self.compact_config);
+        if messages_summarized > 0 {
+            self.compact_state.note_compact_outcome(still_above);
+        } else if !still_above {
+            self.compact_state.clear_compact_stall();
+        }
+    }
+
+    fn run_microcompact(&mut self) {
+        if !micro::should_microcompact(&self.messages, &self.compact_config) {
+            return;
+        }
+        let result = micro::microcompact(&mut self.messages, &self.compact_config);
+        if result.cleared_count > 0 {
+            self.output.emit_info(&format!(
+                "Microcompact: cleared {} tool results (~{} tokens freed)",
+                result.cleared_count, result.estimated_tokens_freed
+            ));
+        }
+        if !result.cleared_read_paths.is_empty() {
+            self.invalidate_file_cache_paths(&result.cleared_read_paths);
+        }
+    }
+
+    async fn run_autocompact(&mut self, force_mechanical: bool) -> Result<(), AgentError> {
+        let should_compact = force_mechanical
+            || auto::should_autocompact(self.compact_state.last_input_tokens, &self.compact_config);
         if should_compact {
             tracing::info!(target: "nomi_agent", last_input_tokens = self.compact_state.last_input_tokens, "context compaction triggered");
             if let Some(pct) = self.compact_config.autocompact_threshold_pct {
@@ -2655,91 +2793,81 @@ impl AgentEngine {
                 ));
             }
         }
-        if should_compact && !self.compact_state.is_circuit_broken(&self.compact_config) {
-            let provider = Arc::clone(&self.provider);
-            match auto::autocompact(
-                provider.as_ref(),
-                &self.messages,
-                &self.model,
+        if !should_compact {
+            if !self.compact_config.enabled {
+                let threshold = auto::autocompact_threshold(&self.compact_config);
+                if self.compact_state.last_input_tokens as usize >= threshold {
+                    self.output.emit_info(&format!(
+                        "Autocompact: disabled (compact.enabled=false, \
+                         last_input_tokens={}, threshold={})",
+                        self.compact_state.last_input_tokens, threshold
+                    ));
+                }
+            } else if !auto::should_autocompact(
+                self.compact_state.last_input_tokens,
                 &self.compact_config,
-                &mut self.compact_state,
-            )
-            .await
-            {
-                Ok(result) => {
+            ) {
+                self.compact_state.clear_compact_stall();
+            }
+            return Ok(());
+        }
+
+        if !force_mechanical && self.compact_state.is_circuit_broken(&self.compact_config) {
+            self.output.emit_info(&format!(
+                "Autocompact: skipped (circuit breaker tripped after {} consecutive failures, \
+                 last_input_tokens={})",
+                self.compact_state.consecutive_failures, self.compact_state.last_input_tokens
+            ));
+            return Ok(());
+        }
+
+        let provider = Arc::clone(&self.provider);
+        match auto::autocompact_with(
+            provider.as_ref(),
+            &self.messages,
+            &self.model,
+            &self.compact_config,
+            &mut self.compact_state,
+            force_mechanical,
+        )
+        .await
+        {
+            Ok(result) => {
+                let compacted = result.messages_summarized > 0;
+                if compacted {
                     self.output.emit_info(&format!(
                         "Autocompact: summarized {} messages ({} tokens → compact)",
                         result.messages_summarized, result.pre_compact_tokens
                     ));
                     self.messages = result.messages;
                     self.editable_turn = None;
-                    // A no-op autocompact (too few messages to fold) must not
-                    // suppress the emergency gate — context was not reduced.
-                    compacted = result.messages_summarized > 0;
-                    if compacted {
-                        // Notify the cache detector that a compaction happened —
-                        // the next cache miss should be attributed to Compaction,
-                        // not TtlExpiry. Mirrors Reasonix's RewriteVersion
-                        // increment.
-                        self.cache_detector.notify_compaction();
-                        // Codex-style reinject: restore cwd / write_root /
-                        // coding constitution after history was summarized.
-                        if let Some(harness) = self.coding_harness.as_ref() {
-                            let reinject = harness.post_compact_reinject();
-                            self.messages.push(Message::now(
-                                Role::User,
-                                vec![ContentBlock::Text { text: reinject }],
-                            ));
-                            // Cleared transcripts → force fresh Reads.
-                            if let Some(cache) = &self.file_cache
-                                && let Ok(mut guard) = cache.write()
-                            {
-                                guard.clear();
-                            }
+                    self.cache_detector.notify_compaction();
+                    if let Some(harness) = self.coding_harness.as_ref() {
+                        let reinject = harness.post_compact_reinject();
+                        self.messages.push(Message::now(
+                            Role::User,
+                            vec![ContentBlock::Text { text: reinject }],
+                        ));
+                        if let Some(cache) = &self.file_cache
+                            && let Ok(mut guard) = cache.write()
+                        {
+                            guard.clear();
                         }
                     }
-                }
-                Err(auto::CompactError::CircuitBroken { .. }) => {
-                    // Already tripped; logged at circuit-breaker level
-                }
-                Err(e) => {
-                    self.output
-                        .emit_warning(&format!("Autocompact failed: {}", e));
+                    self.apply_compact_watermark(result.messages_summarized);
+                } else if !auto::should_autocompact(
+                    self.compact_state.last_input_tokens,
+                    &self.compact_config,
+                ) {
+                    self.compact_state.clear_compact_stall();
                 }
             }
-        } else if should_compact {
-            self.output.emit_info(&format!(
-                "Autocompact: skipped (circuit breaker tripped after {} consecutive failures, \
-                 last_input_tokens={})",
-                self.compact_state.consecutive_failures, self.compact_state.last_input_tokens
-            ));
-        } else if !self.compact_config.enabled {
-            let threshold = auto::autocompact_threshold(&self.compact_config);
-            if self.compact_state.last_input_tokens as usize >= threshold {
-                self.output.emit_info(&format!(
-                    "Autocompact: disabled (compact.enabled=false, \
-                     last_input_tokens={}, threshold={})",
-                    self.compact_state.last_input_tokens, threshold
-                ));
+            Err(auto::CompactError::CircuitBroken { .. }) => {}
+            Err(e) => {
+                self.output
+                    .emit_warning(&format!("Autocompact failed: {}", e));
             }
         }
-
-        // 3. Emergency check (skip if autocompact just succeeded)
-        if !compacted
-            && emergency::is_at_emergency_limit(
-                self.compact_state.last_input_tokens,
-                &self.compact_config,
-            )
-        {
-            return Err(AgentError::ContextTooLong {
-                input_tokens: self.compact_state.last_input_tokens,
-                limit: self
-                    .compact_config
-                    .context_window
-                    .saturating_sub(self.compact_config.emergency_buffer),
-            });
-        }
-
         Ok(())
     }
 

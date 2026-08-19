@@ -2,6 +2,7 @@ use async_trait::async_trait;
 
 use super::{CommandContext, CommandResult, SlashCommand};
 use crate::compact::auto;
+use crate::compact::estimate::estimate_tokens_from_messages;
 use nomi_types::compact::CompactTrigger;
 
 pub struct CompactCommand;
@@ -44,7 +45,12 @@ impl SlashCommand for CompactCommand {
                 let msgs_summarized = result.messages_summarized;
                 *ctx.messages = result.messages;
 
-                if let Some(boundary) = ctx.messages.first_mut() {
+                if let Some(boundary) = ctx
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|message| auto::is_compact_boundary(message))
+                {
                     for block in &mut boundary.content {
                         if let nomi_types::message::ContentBlock::Text { text } = block
                             && text.starts_with(auto::BOUNDARY_PREFIX)
@@ -63,6 +69,11 @@ impl SlashCommand for CompactCommand {
                         }
                     }
                 }
+
+                ctx.compact_state.set_watermark(
+                    estimate_tokens_from_messages(ctx.messages),
+                    ctx.compact_config,
+                );
 
                 ctx.output.emit_info(&format!(
                     "Context compacted: {}k → compact ({} messages summarized)",
