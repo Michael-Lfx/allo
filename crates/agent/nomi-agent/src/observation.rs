@@ -3,7 +3,7 @@
 //! Does not change `nomi-providers`. Emit failures only warn (and may write
 //! `observation/gap`); they never abort an agent turn.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -25,8 +25,6 @@ pub struct ObservationSession {
     last_model_call_id: Mutex<Option<String>>,
     /// `tool_call_id` → the model call that issued the tool, captured at start.
     tool_parents: Mutex<HashMap<String, String>>,
-    started_root_turns: Mutex<HashSet<String>>,
-    ended_root_turns: Mutex<HashSet<String>>,
 }
 
 impl ObservationSession {
@@ -36,8 +34,6 @@ impl ObservationSession {
             ids: Mutex::new(ObservationIds::default()),
             last_model_call_id: Mutex::new(None),
             tool_parents: Mutex::new(HashMap::new()),
-            started_root_turns: Mutex::new(HashSet::new()),
-            ended_root_turns: Mutex::new(HashSet::new()),
         })
     }
 
@@ -65,22 +61,8 @@ impl ObservationSession {
 
     fn emit_turn_start_once(&self, prompt_preview: Option<&str>) {
         let ids = self.ids();
-        let Some(root) = ids
-            .root_turn_id
-            .clone()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-        else {
+        if !self.recorder.claim_turn_start(&ids) {
             return;
-        };
-        {
-            let mut started = self
-                .started_root_turns
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if !started.insert(root) {
-                return;
-            }
         }
         let preview = prompt_preview
             .map(str::trim)
@@ -102,22 +84,8 @@ impl ObservationSession {
         usage: Option<Value>,
     ) {
         let ids = self.ids();
-        let Some(root) = ids
-            .root_turn_id
-            .clone()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-        else {
+        if !self.recorder.claim_turn_end(&ids) {
             return;
-        };
-        {
-            let mut ended = self
-                .ended_root_turns
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if !ended.insert(root) {
-                return;
-            }
         }
         observe_with_model_call(
             self,
@@ -516,8 +484,8 @@ fn stop_reason_name(reason: StopReason) -> &'static str {
 mod tests {
     use super::*;
     use nomi_agent_trace::{
-        EVENT_LLM_REQUEST, EVENT_LLM_RESPONSE, EVENT_TOOL_EXECUTION_COMPLETED,
-        EVENT_TOOL_EXECUTION_STARTED,
+        ExecutionStatus, EVENT_LLM_REQUEST, EVENT_LLM_RESPONSE, EVENT_TOOL_EXECUTION_COMPLETED,
+        EVENT_TOOL_EXECUTION_STARTED, EVENT_TURN_END, EVENT_TURN_START,
     };
     use nomi_types::message::{Message, Role, TokenUsage};
     use serde_json::json;
@@ -846,6 +814,64 @@ mod tests {
                 .model_call_id
                 .as_deref(),
             Some(extract_id.as_str())
+        );
+    }
+
+    #[test]
+    fn turn_start_and_end_are_first_write_wins_across_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let ids = ObservationIds {
+            conversation_id: Some("c-share".into()),
+            root_turn_id: Some("t-share".into()),
+            msg_id: Some("m-share".into()),
+            ..ObservationIds::default()
+        };
+        let first = ObservationSession::new(recorder.clone());
+        let rebuilt = ObservationSession::new(recorder.clone());
+        first.bind_ids(ids.clone());
+        rebuilt.bind_ids(ids.clone());
+        first.emit_turn_end(
+            ExecutionStatus::Completed,
+            11,
+            Some("end_turn"),
+            Some(json!({ "input_tokens": 3 })),
+        );
+        rebuilt.emit_turn_end(
+            ExecutionStatus::Cancelled,
+            99,
+            Some("cancelled"),
+            None,
+        );
+
+        let events = recorder.read_events(Some("c-share")).unwrap();
+        let starts: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == EVENT_TURN_START)
+            .collect();
+        let ends: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == EVENT_TURN_END)
+            .collect();
+        assert_eq!(starts.len(), 1, "failover rebuild must not emit a second turn/start: {events:?}");
+        assert_eq!(ends.len(), 1, "failover rebuild must not emit a second turn/end: {events:?}");
+        assert_eq!(ends[0].payload["status"], "completed");
+        assert_eq!(ends[0].payload["elapsed_ms"], 11);
+
+        recorder.clear_conversation("c-share").unwrap();
+        rebuilt.bind_ids(ids);
+        rebuilt.emit_turn_end(ExecutionStatus::Completed, 4, Some("end_turn"), None);
+        let after = recorder.read_events(Some("c-share")).unwrap();
+        assert!(
+            after
+                .iter()
+                .any(|event| event.event_type == EVENT_TURN_START),
+            "clear must allow a later turn/start, got {after:?}"
+        );
+        assert!(
+            after.iter().any(|event| event.event_type == EVENT_TURN_END),
+            "clear must allow a later turn/end, got {after:?}"
         );
     }
 }

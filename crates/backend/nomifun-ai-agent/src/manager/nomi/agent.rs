@@ -95,6 +95,13 @@ impl TurnTeardownFence {
     }
 }
 
+struct DeferredObservationTurnEnd {
+    status: nomi_agent_trace::ExecutionStatus,
+    elapsed_ms: i64,
+    stop_reason: Option<String>,
+    usage: Option<serde_json::Value>,
+}
+
 pub struct NomiAgentManager {
     runtime: AgentRuntimeState,
     backend_output_sink: Arc<BackendOutputSink>,
@@ -102,6 +109,7 @@ pub struct NomiAgentManager {
     observation: Option<Arc<nomi_agent::ObservationSession>>,
     /// Conversation host owns `turn/end` for failover/continuation segments.
     defer_observation_turn_end: AtomicBool,
+    pending_observation_turn_end: std::sync::Mutex<Option<DeferredObservationTurnEnd>>,
     /// Shared authority for every shell/tool process owned by this runtime.
     ///
     /// Kept outside the engine mutex so an explicit stop (which deliberately
@@ -525,6 +533,15 @@ impl NomiAgentManager {
         usage: Option<serde_json::Value>,
     ) {
         if self.defer_observation_turn_end.load(Ordering::Acquire) {
+            *self
+                .pending_observation_turn_end
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(DeferredObservationTurnEnd {
+                status,
+                elapsed_ms,
+                stop_reason: stop_reason.map(str::to_owned),
+                usage,
+            });
             return;
         }
         if let Some(session) = &self.observation {
@@ -539,13 +556,37 @@ impl NomiAgentManager {
         finished: bool,
         elapsed_ms: i64,
     ) {
+        let pending = self
+            .pending_observation_turn_end
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         self.set_observation_turn_end_deferred(false);
-        let (status, reason) = if cancelled || stop_reason == Some(TurnStopReason::Cancelled) {
-            (
+        let cancelled = cancelled || stop_reason == Some(TurnStopReason::Cancelled);
+        if cancelled {
+            let elapsed = pending
+                .as_ref()
+                .map(|end| end.elapsed_ms)
+                .unwrap_or(elapsed_ms);
+            let usage = pending.and_then(|end| end.usage);
+            self.emit_observation_turn_end(
                 nomi_agent_trace::ExecutionStatus::Cancelled,
+                elapsed,
                 Some("cancelled"),
-            )
-        } else if !finished {
+                usage,
+            );
+            return;
+        }
+        if let Some(pending) = pending {
+            self.emit_observation_turn_end(
+                pending.status,
+                pending.elapsed_ms,
+                pending.stop_reason.as_deref(),
+                pending.usage,
+            );
+            return;
+        }
+        let (status, reason) = if !finished {
             (nomi_agent_trace::ExecutionStatus::Failed, Some("error"))
         } else {
             match stop_reason {
@@ -1302,6 +1343,7 @@ impl NomiAgentManager {
             engine: Mutex::new(engine),
             observation: Some(observation),
             defer_observation_turn_end: AtomicBool::new(false),
+            pending_observation_turn_end: std::sync::Mutex::new(None),
             process_supervisor,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
             slash_commands,
@@ -2044,6 +2086,11 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             binding.revoke();
         }
         if !was_running {
+            let observation = if self.defer_observation_turn_end.load(Ordering::Acquire) {
+                None
+            } else {
+                self.observation.clone()
+            };
             schedule_nomi_cancelled_terminal_after_process_fence(
                 self.runtime.clone(),
                 Arc::clone(&self.active_turn),
@@ -2054,7 +2101,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 self.mcp_managers.clone(),
                 #[cfg(feature = "browser-use")]
                 self.browser_lane_binding.clone(),
-                self.observation.clone(),
+                observation,
             )?;
         }
         Ok(())
@@ -4188,6 +4235,7 @@ mod tests {
             engine: Mutex::new(engine),
             observation: None,
             defer_observation_turn_end: AtomicBool::new(false),
+            pending_observation_turn_end: std::sync::Mutex::new(None),
             process_supervisor: None,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
             slash_commands: Vec::new(),
@@ -4428,13 +4476,81 @@ mod tests {
             "deferred send must not emit turn/end, got {events:?}"
         );
 
+        agent.close_observation_turn_from_relay(false, Some(TurnStopReason::EndTurn), true, 999_999);
+        let events = recorder.read_events(Some("conv-auto-continue")).unwrap();
+        let end = events
+            .iter()
+            .find(|event| event.event_type == nomi_agent_trace::EVENT_TURN_END)
+            .expect("host close must emit the deferred turn/end");
+        assert!(
+            !end.payload["usage"].is_null(),
+            "host close must keep stashed engine usage, got {:?}",
+            end.payload
+        );
+        assert_ne!(
+            end.payload["elapsed_ms"],
+            serde_json::json!(999_999),
+            "host close must keep stashed engine elapsed, got {:?}",
+            end.payload
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_idle_kill_does_not_emit_observation_turn_end() {
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            LlmEvent::TextDelta("ok".into()),
+            LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: Default::default(),
+            },
+        ]]));
+        let mut agent = make_agent_with_provider(provider);
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = nomi_agent_trace::ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let session = nomi_agent::ObservationSession::new(recorder.clone());
+        session.bind_ids(crate::ObservationIds {
+            conversation_id: Some("conv-auto-continue".into()),
+            msg_id: Some("defer-idle".into()),
+            root_turn_id: Some("defer-idle".into()),
+            ..crate::ObservationIds::default()
+        });
+        {
+            let mut engine = agent.engine.lock().await;
+            engine.set_observation(Arc::clone(&session));
+        }
+        agent.observation = Some(Arc::clone(&session));
+        agent.set_observation_turn_end_deferred(true);
+
+        agent
+            .send_message(SendMessageData {
+                content: "hello".into(),
+                msg_id: "defer-idle".into(),
+                source_message_id: Some("user-msg".into()),
+                files: Vec::new(),
+                inject_skills: Vec::new(),
+                loaded_skill_snapshots: Vec::new(),
+                origin: None,
+            })
+            .await
+            .unwrap();
+        agent.kill(None).expect("deferred idle-kill should succeed");
+
+        let events = recorder.read_events(Some("conv-auto-continue")).unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|event| event.event_type != nomi_agent_trace::EVENT_TURN_END),
+            "deferred idle-kill must not emit turn/end, got {events:?}"
+        );
+
         agent.close_observation_turn_from_relay(false, Some(TurnStopReason::EndTurn), true, 12);
         let events = recorder.read_events(Some("conv-auto-continue")).unwrap();
         assert!(
             events
                 .iter()
                 .any(|event| event.event_type == nomi_agent_trace::EVENT_TURN_END),
-            "host close must emit the deferred turn/end, got {events:?}"
+            "host close after deferred idle-kill must emit turn/end, got {events:?}"
         );
     }
 
@@ -4626,6 +4742,7 @@ mod tests {
             engine: Mutex::new(engine),
             observation: None,
             defer_observation_turn_end: AtomicBool::new(false),
+            pending_observation_turn_end: std::sync::Mutex::new(None),
             process_supervisor: None,
             turn_teardown_fence: Arc::new(TurnTeardownFence::new()),
             slash_commands: Vec::new(),

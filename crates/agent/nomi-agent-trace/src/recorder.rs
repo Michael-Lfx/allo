@@ -328,6 +328,8 @@ impl WriteGate {
 struct LifecycleState {
     tombstones: HashSet<String>,
     generation: HashMap<String, u64>,
+    started_root_turns: HashSet<String>,
+    ended_root_turns: HashSet<String>,
 }
 
 impl LifecycleState {
@@ -344,6 +346,15 @@ impl LifecycleState {
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .is_some_and(|id| self.tombstones.contains(id))
+    }
+
+    fn drop_turn_claims_for_conversation(&mut self, conversation_id: &str) {
+        let folder = folder_id(Some(conversation_id));
+        let prefix = format!("{folder}\0");
+        self.started_root_turns
+            .retain(|key| key != &folder && !key.starts_with(&prefix));
+        self.ended_root_turns
+            .retain(|key| key != &folder && !key.starts_with(&prefix));
     }
 }
 
@@ -409,6 +420,8 @@ impl ObservationRecorder {
             lifecycle: Mutex::new(LifecycleState {
                 tombstones: HashSet::new(),
                 generation: HashMap::new(),
+                started_root_turns: HashSet::new(),
+                ended_root_turns: HashSet::new(),
             }),
             shutdown: AtomicBool::new(false),
             last_gc_unix_secs: AtomicU64::new(0),
@@ -581,6 +594,7 @@ impl ObservationRecorder {
                 .lock()
                 .map_err(|_| RecorderError::LockPoisoned)?;
             lifecycle.tombstones.insert(trimmed.to_owned());
+            lifecycle.drop_turn_claims_for_conversation(trimmed);
             let mut queue = self.shared.queue.lock().map_err(|_| RecorderError::LockPoisoned)?;
             queue.drop_pending_for_conversation(trimmed);
         }
@@ -608,6 +622,7 @@ impl ObservationRecorder {
             let next = lifecycle.current_generation(Some(trimmed)).saturating_add(1);
             lifecycle.generation.insert(trimmed.to_owned(), next);
             lifecycle.tombstones.remove(trimmed);
+            lifecycle.drop_turn_claims_for_conversation(trimmed);
             let mut queue = self.shared.queue.lock().map_err(|_| RecorderError::LockPoisoned)?;
             queue.drop_pending_for_conversation(trimmed);
         }
@@ -629,12 +644,26 @@ impl ObservationRecorder {
                 .map_err(|_| RecorderError::LockPoisoned)?;
             lifecycle.tombstones.clear();
             lifecycle.generation.clear();
+            lifecycle.started_root_turns.clear();
+            lifecycle.ended_root_turns.clear();
             let mut queue = self.shared.queue.lock().map_err(|_| RecorderError::LockPoisoned)?;
             queue.drop_all_events();
         }
         let (tx, rx) = mpsc::channel();
         self.try_send(WriterCommand::ResetAll { ack: Some(tx) })?;
         wait_ack(rx)
+    }
+
+    /// First writer for this conversation/`root_turn_id` wins. Shared across
+    /// interned sessions so failover rebuilds do not emit a second `turn/start`.
+    pub fn claim_turn_start(&self, ids: &ObservationIds) -> bool {
+        claim_turn_boundary(&self.shared, ids, true)
+    }
+
+    /// First writer for this conversation/`root_turn_id` wins. Shared across
+    /// interned sessions so a rebuilt runtime cannot emit a second `turn/end`.
+    pub fn claim_turn_end(&self, ids: &ObservationIds) -> bool {
+        claim_turn_boundary(&self.shared, ids, false)
     }
 
     pub fn gc(&self) {
@@ -1166,6 +1195,30 @@ fn prepare_payload(ids: &ObservationIds, payload: Value) -> Value {
 
 fn seq_map_key(folder: &str, boundary: &str) -> String {
     format!("{folder}\0{boundary}")
+}
+
+fn turn_claim_key(conversation_id: Option<&str>, root_turn_id: &str) -> String {
+    format!("{}\0{}", folder_id(conversation_id), root_turn_id.trim())
+}
+
+fn claim_turn_boundary(shared: &WriterShared, ids: &ObservationIds, start: bool) -> bool {
+    let Some(root) = ids
+        .root_turn_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    let key = turn_claim_key(ids.conversation_id.as_deref(), root);
+    let Ok(mut lifecycle) = shared.lifecycle.lock() else {
+        return false;
+    };
+    if start {
+        lifecycle.started_root_turns.insert(key)
+    } else {
+        lifecycle.ended_root_turns.insert(key)
+    }
 }
 
 fn drop_seq_for_folder(inner: &mut RecorderInner, folder: &str) {
@@ -2332,6 +2385,20 @@ mod tests {
         let after = recorder.read_events(Some("conv-a")).unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].event_seq, 1);
+    }
+
+    #[test]
+    fn turn_start_and_end_claims_are_shared_and_reset_on_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        let turn = ids("turn-claim");
+        assert!(recorder.claim_turn_start(&turn));
+        assert!(!recorder.claim_turn_start(&turn));
+        assert!(recorder.claim_turn_end(&turn));
+        assert!(!recorder.claim_turn_end(&turn));
+        recorder.clear_conversation("conv-a").unwrap();
+        assert!(recorder.claim_turn_start(&turn));
+        assert!(recorder.claim_turn_end(&turn));
     }
 
     #[test]
