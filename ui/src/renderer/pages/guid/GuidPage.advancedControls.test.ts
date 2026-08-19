@@ -29,4 +29,19 @@ describe('GuidPage homepage controls', () => {
     expect(source.includes('autoWork: AutoWorkDraftValue')).toBe(true);
     expect(source.includes('idmm: IIdmmConfig')).toBe(true);
   });
+
+  test('exposes the knowledge draft control in the homepage top-right corner', () => {
+    const source = readSource(new URL('./GuidPage.tsx', import.meta.url));
+    const css = readSource(new URL('./index.module.css', import.meta.url));
+    const corner = css.match(/\.guidCornerActions\s*\{[^}]*\}/)?.[0] ?? '';
+
+    expect(source.includes('<KnowledgeControl')).toBe(true);
+    expect(source.includes('draft={{ value: advancedConfig.knowledge, onChange: advancedConfig.setKnowledge }}')).toBe(
+      true
+    );
+    expect(source.includes("data-testid='guid-knowledge-control'")).toBe(true);
+    expect(corner.includes('position: absolute')).toBe(true);
+    expect(corner.includes('top: 12px')).toBe(true);
+    expect(corner.includes('right: 16px')).toBe(true);
+  });
 });

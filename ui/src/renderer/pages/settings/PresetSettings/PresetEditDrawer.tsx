@@ -529,7 +529,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
           </div>
 
           {/* Running preferences */}
-          <section className='flex-shrink-0 border-t border-solid border-border-2 pt-20px'>
+          <section className='flex-shrink-0 border-t border-t-solid border-arco-2 pt-20px'>
             <Typography.Title heading={6} className='!mb-14px !text-t-primary'>
               {t('settings.presetSectionPreferences', { defaultValue: '运行偏好' })}
             </Typography.Title>
@@ -622,7 +622,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 })}
           </div>
 
-          <section ref={targetsFieldRef} className='flex-shrink-0 border-t border-solid border-border-2 pt-20px'>
+          <section ref={targetsFieldRef} className='flex-shrink-0 border-t border-t-solid border-arco-2 pt-20px'>
             <Typography.Text bold>{t('settings.presetApplication', { defaultValue: 'Application' })}</Typography.Text>
             <Checkbox.Group
               className='preset-scope-selection-checkbox mt-10px flex flex-wrap gap-x-16px gap-y-8px'
@@ -657,7 +657,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
             </div>
           </section>
 
-          <section className='flex-shrink-0 border-t border-solid border-border-2 pt-20px'>
+          <section className='flex-shrink-0 border-t border-t-solid border-arco-2 pt-20px'>
             <div className='flex items-center justify-between gap-12px'>
               <div>
                 <Typography.Text bold>{t('settings.presetKnowledge', { defaultValue: 'Knowledge scope' })}</Typography.Text>

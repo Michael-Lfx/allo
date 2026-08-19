@@ -275,7 +275,7 @@ export const AgentSkillImportEmbedded: React.FC<AgentSkillImportDrawerProps & { 
   return (
     <section className='flex min-h-0 flex-1 flex-col' data-testid='agent-skill-import-embedded'>
       <div className='min-h-0 flex-1 pr-2px'><AgentSkillImportContent controller={controller} /></div>
-      <div className='mt-16px border-t border-solid border-border-2 pt-12px'>
+      <div className='mt-16px border-t border-t-solid border-arco-2 pt-12px'>
         <AgentSkillImportFooter controller={controller} mode={mode} onClose={props.onClose} closeLabel={props.closeLabel} />
       </div>
     </section>
