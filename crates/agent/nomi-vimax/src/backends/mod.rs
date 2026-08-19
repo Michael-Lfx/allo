@@ -217,6 +217,87 @@ impl FlowyVimaxServices {
         }
         Ok(url)
     }
+
+    /// Upload a local video via OSS presign PUT and return the HTTPS `publicUrl`.
+    ///
+    /// Does not re-encode. Identical files (size + mtime) reuse the process-wide cache.
+    pub async fn upload_video_public_url(
+        &self,
+        path: &std::path::Path,
+        role: &str,
+    ) -> Result<String, crate::error::VimaxError> {
+        use tracing::debug;
+
+        let meta = tokio::fs::metadata(path).await.ok();
+        let size = meta.as_ref().map(|m| m.len());
+        let modified = meta.and_then(|m| m.modified().ok());
+        if let Some(size) = size
+            && let Some(url) = oss_url_cache_get(path, size, modified)
+        {
+            debug!(path = %path.display(), "OSS publicUrl cache hit (video)");
+            return Ok(url);
+        }
+
+        let bytes = tokio::fs::read(path).await?;
+        let kind = crate::media_local::video_magic_kind(&bytes).ok_or_else(|| {
+            crate::error::VimaxError::Video(format!(
+                "reference video is not a recognizable container: {}",
+                path.display()
+            ))
+        })?;
+        let (mime, ext) = match kind {
+            "webm" => ("video/webm", "webm"),
+            "avi" => ("video/x-msvideo", "avi"),
+            _ => ("video/mp4", "mp4"),
+        };
+
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(role);
+        let safe_stem: String = stem
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let safe_stem = {
+            let t = safe_stem.trim_matches('_');
+            if t.is_empty() {
+                role.to_string()
+            } else {
+                t.chars().take(64).collect()
+            }
+        };
+        let file_name = format!("{safe_stem}.{ext}");
+
+        debug!(
+            role = %safe_stem,
+            path = %path.display(),
+            bytes = bytes.len(),
+            mime,
+            "uploading media video to OSS"
+        );
+
+        let url = self
+            .api
+            .upload_bytes_via_oss(&self.session, &bytes, &file_name, mime)
+            .await
+            .map_err(|e| {
+                crate::error::VimaxError::msg(format!(
+                    "OSS video upload failed ({safe_stem}): {e}"
+                ))
+            })?;
+        if let Some(size) = size {
+            oss_url_cache_put(path, size, modified, &url);
+        }
+        Ok(url)
+    }
 }
 
 /// Cache key: canonical path + file size + mtime (cheap content fingerprint).

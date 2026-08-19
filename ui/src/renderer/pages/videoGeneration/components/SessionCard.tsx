@@ -5,6 +5,7 @@ import type { TFunction } from 'i18next';
 import { Popconfirm, Tag } from '@arco-design/web-react';
 import { Delete, VideoOne } from '@icon-park/react';
 import type { SessionSummary, VimaxRunStatus, VimaxWorkflow } from '../types';
+import { normalizeWorkflow } from '../workflowKind';
 import { loadArtifactMediaUrl } from '../api';
 import { stageLabel } from '../stageI18n';
 import styles from '../index.module.css';
@@ -35,12 +36,7 @@ function formatRelativeTime(epochMs: number, t: TFunction): string {
 }
 
 /** Normalize API workflow ids (`novel2_video` → `novel2video`). */
-export function normalizeWorkflow(workflow: string | null | undefined): VimaxWorkflow {
-  const raw = (workflow ?? '').trim().toLowerCase().replace(/_/g, '');
-  if (raw === 'script2video' || raw === 'script') return 'script2video';
-  if (raw === 'novel2video' || raw === 'novel' || raw === 'novel2movie') return 'novel2video';
-  return 'idea2video';
-}
+export { isActionImitationWorkflow, normalizeWorkflow } from '../workflowKind';
 
 export function workflowLabel(workflow: VimaxWorkflow | string, t: TFunction): string {
   switch (normalizeWorkflow(workflow)) {
@@ -50,8 +46,8 @@ export function workflowLabel(workflow: VimaxWorkflow | string, t: TFunction): s
       return t('videoGeneration.workflow.script2video.title', { defaultValue: '剧本成片' });
     case 'novel2video':
       return t('videoGeneration.workflow.novel2video.title', { defaultValue: '小说成片' });
-    default:
-      return String(workflow);
+    case 'action2video':
+      return t('videoGeneration.workflow.action2video.title', { defaultValue: '动作模仿' });
   }
 }
 

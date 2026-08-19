@@ -13,6 +13,12 @@ export interface CanvasReferenceDraft {
   previewUrl: string;
 }
 
+/** Home-composer action-imitation inputs. Files never persist to sessionStorage. */
+export interface ActionAssetDraft {
+  file: File;
+  previewUrl: string;
+}
+
 export interface GenerationPreferences {
   automatic: boolean;
   /** Prefer model-chosen aspect; still keep aspectRatio as fallback for APIs. */
@@ -39,6 +45,10 @@ export interface VideoCreateDraft {
   cameos: CameoDraftItem[];
   /** Creation-only image references. Files and object URLs are never persisted. */
   canvasReferences: CanvasReferenceDraft[];
+  /** Action-imitation character still. File and object URL are never persisted. */
+  actionCharacter: ActionAssetDraft | null;
+  /** Action-imitation motion reference. File and object URL are never persisted. */
+  actionVideo: ActionAssetDraft | null;
 }
 
 /** Agent Mode definition (idea / script / novel) — formerly labeled "skill". */

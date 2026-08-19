@@ -4,6 +4,7 @@ import {
   displayFileStem,
   isSupportedImageFile,
   isSupportedTextFile,
+  isSupportedVideoFile,
   readUploadedTextFile,
 } from './documentUpload';
 
@@ -17,6 +18,12 @@ describe('video home document uploads', () => {
     ).toBe(true);
     expect(
       isSupportedTextFile(new File(['story'], 'story.docx', { type: '' }))
+    ).toBe(true);
+    expect(
+      isSupportedVideoFile(new File(['x'], 'ref.mp4', { type: 'video/mp4' }))
+    ).toBe(true);
+    expect(
+      isSupportedVideoFile(new File(['x'], 'ref.mov', { type: '' }))
     ).toBe(true);
   });
 

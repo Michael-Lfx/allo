@@ -1,7 +1,7 @@
 
 
 /** ViMax workflow kinds — chosen at session create and locked thereafter. */
-export type VimaxWorkflow = 'idea2video' | 'script2video' | 'novel2video';
+export type VimaxWorkflow = 'idea2video' | 'script2video' | 'novel2video' | 'action2video';
 
 /** Session / pipeline run status from `GET .../status`. */
 export type VimaxRunStatus =
@@ -254,6 +254,12 @@ export interface PlanBody {
   fps?: number;
   /** Source-qualified vertical skill ids (`builtin:luxury-tvc`, `user:…`). */
   vertical_skill_ids?: string[];
+}
+
+/** Character still + motion video for action imitation (`GET/POST .../action-assets`). */
+export interface ActionAssetsInfo {
+  character?: string | null;
+  reference_video?: string | null;
 }
 
 /** Server-side Cameo photo metadata (`GET/POST /api/vimax/sessions/:id/cameos`). */

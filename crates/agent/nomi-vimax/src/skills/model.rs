@@ -155,6 +155,10 @@ pub struct VerticalSkill {
 
 impl VerticalSkill {
     pub fn compatible_with(&self, mode: WorkflowKind) -> bool {
+        // Action imitation has no planning overlay surface — only opt-in skills apply.
+        if mode.is_action_imitation() {
+            return self.compatible_modes.contains(&mode);
+        }
         self.compatible_modes.is_empty() || self.compatible_modes.contains(&mode)
     }
 

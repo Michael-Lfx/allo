@@ -1,6 +1,6 @@
 {
   "title": "Video Generation",
-  "subtitle": "Start from an idea, script, or novel — plan artifacts and render a finished video.",
+  "subtitle": "Start from an idea, script, novel, or action imitation — plan artifacts and render a finished video.",
   "mode": {
     "agent": "Agent",
     "canvas": "Canvas",
@@ -110,12 +110,15 @@
     "homeHeroPrefix": "Start your",
     "homeHeroSuffix": " and create now!",
     "homeHintAgent": "Type in stories or thoughts — Flowy turns them into a film.",
+    "homeHintAction": "Upload a character image and a reference video to imitate the motion.",
     "homeHintCreation": "Describe scenes and shots, then arrange generation on the infinite canvas.",
     "advanced": "Style & models",
     "generateStoryboard": "Generate storyboard",
+    "generateActionVideo": "Generate video",
     "enterCanvas": "Open canvas",
     "customize": "Customize generation preferences",
     "modelRequired": "A planning model is required before generating.",
+    "modelRequiredAction": "A MiniMax-H3 video model is required before generating.",
     "configureModels": "Open Model Hub",
     "tryExample": "Try:",
     "skillsMenuTitle": "Choose a style skill",
@@ -127,9 +130,11 @@
       "idea": "One idea",
       "script": "Full script",
       "novel": "Novel text",
+      "action": "Action imitation",
       "ideaDesc": "Expand one spark into a complete film",
       "scriptDesc": "Break the plot into editable shots",
-      "novelDesc": "Extract the storyline and design shots"
+      "novelDesc": "Extract the storyline and design shots",
+      "actionDesc": "Character still + reference video, imitate the motion"
     },
     "skills": {
       "cinematic": {
@@ -190,6 +195,18 @@
       "docxNoBody": "No document body was found in the DOCX.",
       "untitledAsset": "Untitled asset"
     },
+    "action": {
+      "character": "Character",
+      "video": "Reference video",
+      "characterAria": "Upload a character image (PNG / JPEG / WEBP)",
+      "videoAria": "Upload a reference video (MP4 / WebM / MOV)",
+      "removeCharacter": "Remove character image",
+      "removeVideo": "Remove reference video",
+      "required": "Please upload a character image and a reference video.",
+      "characterTooLarge": "Character images must be 10 MB or smaller.",
+      "videoTooLarge": "Reference videos must be 80 MB or smaller.",
+      "unsupported": "Upload a PNG / JPEG / WEBP character image, or an MP4 / WebM / MOV reference video."
+    },
     "gallery": {
       "title": "Recent canvases",
       "subtitle": "Continue an existing project, or start from a blank canvas.",
@@ -236,6 +253,10 @@
     "novel2video": {
       "title": "Novel to Video",
       "desc": "Extract a storyline from novel text and generate video."
+    },
+    "action2video": {
+      "title": "Action Imitation",
+      "desc": "Upload a character still and a reference video to imitate the motion."
     }
   },
   "status": {
@@ -305,7 +326,9 @@
     "cancelled": "Cancelled",
     "plan": "Planning",
     "render": "Rendering",
-    "revise": "Revising"
+    "revise": "Revising",
+    "action_prepare": "Checking character image and reference video",
+    "action_generate": "Imitating the reference motion"
   },
   "actions": {
     "createFailed": "Failed to create",
@@ -322,7 +345,8 @@
     "openInCanvas": "Open in Canvas",
     "openInCanvasOk": "Opened in Canvas: {{shots}} shots · {{media}} media",
     "openInCanvasReused": "Opened existing Canvas for this project",
-    "openInCanvasFailed": "Failed to open in Canvas"
+    "openInCanvasFailed": "Failed to open in Canvas",
+    "openInCanvasUnsupported": "Action imitation has no storyboard, so it cannot open in Canvas"
   },
   "workspace": {
     "back": "Back to list",
@@ -333,6 +357,9 @@
       "title": "Bound character references",
       "empty": "No Cameo yet. Upload at create time; re-plan after deleting to refresh bindings.",
       "delete": "Delete"
+    },
+    "action": {
+      "replaceHint": "Click a slot to replace the asset. Duration follows the reference video; aspect is adaptive."
     },
     "plan": "Start planning",
     "planContinue": "Resume planning",
@@ -431,6 +458,8 @@
       "video": "Video model",
       "videoPlaceholder": "Select a video model",
       "mediaRequired": "Please select image and video models first",
+      "h3Required": "Action imitation requires a MiniMax-H3 video model",
+      "h3Empty": "No MiniMax-H3 video model available",
       "empty": "No models available",
       "noProviders": "Configure a platform in Model Hub first"
     },
@@ -493,10 +522,14 @@
       "brief": "Creative",
       "storyboard": "Storyboard",
       "render": "Render",
-      "film": "Film"
+      "film": "Film",
+      "assets": "Assets",
+      "generate": "Generate"
     },
     "briefTitle": "Give Flowy your story",
     "briefHint": "This creates an editable storyboard before any expensive rendering starts.",
+    "actionTitle": "Upload assets, generate the clip",
+    "actionHint": "One character still + one reference video. No prompt needed; duration follows the reference.",
     "briefAndModels": "Creative brief & model settings",
     "modelSettings": "Model settings",
     "filmReady": "Your film is ready",

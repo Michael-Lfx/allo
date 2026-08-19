@@ -370,6 +370,25 @@ impl VimaxApiService {
             .map_err(map_vimax_err)
     }
 
+    pub fn list_action_assets(
+        &self,
+        id: &str,
+    ) -> Result<nomi_vimax::ActionAssetsInfo, AppError> {
+        self.inner.list_action_assets(id).map_err(map_vimax_err)
+    }
+
+    pub async fn upload_action_assets(
+        &self,
+        id: &str,
+        character: Option<Vec<u8>>,
+        video: Option<Vec<u8>>,
+    ) -> Result<nomi_vimax::ActionAssetsInfo, AppError> {
+        self.inner
+            .upload_action_assets(id, character, video)
+            .await
+            .map_err(map_vimax_err)
+    }
+
     // ── TV Show (Flowy cloud) ──────────────────────────────────────────────
 
     async fn flowy_client_and_session(&self) -> Result<(FlowyApiClient, ServerSession), AppError> {

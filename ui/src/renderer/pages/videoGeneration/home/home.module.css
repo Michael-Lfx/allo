@@ -169,6 +169,89 @@
   background: rgb(var(--primary-6));
 }
 
+.actionSlots {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  min-height: 168px;
+  padding: 16px 16px 10px;
+}
+
+.actionSlot {
+  position: relative;
+  display: flex;
+  min-height: 148px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  overflow: hidden;
+  border: 1px dashed var(--color-border-3);
+  border-radius: 16px;
+  color: var(--color-text-3);
+  background: var(--color-fill-1);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    color 160ms ease,
+    background 160ms ease;
+}
+
+.actionSlot:hover:not(:disabled) {
+  border-color: rgba(var(--primary-6), 0.5);
+  color: rgb(var(--primary-6));
+  background: rgba(var(--primary-6), 0.04);
+}
+
+.actionSlot:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.actionSlotFilled {
+  border-style: solid;
+  color: #fff;
+}
+
+.actionSlotPreview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.actionSlotMeta {
+  position: relative;
+  z-index: 1;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.actionSlotFilled .actionSlotMeta {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 8px 10px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.55));
+}
+
+.actionSlotClear {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+}
+
 @keyframes upload-doc-bounce {
   0% {
     transform: translateY(0) rotate(0deg) scale(1);
@@ -1367,6 +1450,16 @@
   .uploadSlot {
     width: 64px;
     height: 64px;
+  }
+
+  .actionSlots {
+    min-height: 0;
+    padding: 12px 12px 8px;
+    gap: 8px;
+  }
+
+  .actionSlot {
+    min-height: 120px;
   }
 
   .composerToolbar {

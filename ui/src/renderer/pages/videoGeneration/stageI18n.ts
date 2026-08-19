@@ -67,6 +67,8 @@ const KNOWN_STAGES = new Set([
   'plan',
   'render',
   'revise',
+  'action_prepare',
+  'action_generate',
 ]);
 
 /** True when the stage has a dedicated i18n label (prefer over backend message). */

@@ -29,6 +29,8 @@ import {
   importSession,
   listSessions,
   planSession,
+  renderSession,
+  uploadActionAssets,
   uploadCameo,
 } from './api';
 import type { PlanBody, SessionSummary } from './types';
@@ -95,6 +97,12 @@ function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
       return { ...common, script: draft.sourceText };
     case 'novel2video':
       return { ...common, novel_text: draft.sourceText };
+    case 'action2video':
+      return {
+        video_model: draft.preferences.models.video_model || undefined,
+        resolution: draft.preferences.resolution,
+        fps: draft.preferences.fps,
+      };
     default: {
       const exhaustive: never = draft.workflow;
       return exhaustive;
@@ -103,6 +111,10 @@ function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
 }
 
 function titleForDraft(draft: VideoCreateDraft): string {
+  if (draft.workflow === 'action2video') {
+    const fromCharacter = draft.actionCharacter?.file.name.replace(/\.[^.]+$/, '').trim();
+    return fromCharacter?.slice(0, 48) || '';
+  }
   return draft.sourceText.split(/\r?\n/, 1)[0]?.trim().slice(0, 48) || '';
 }
 
@@ -214,16 +226,35 @@ const VideoGenerationListPage: React.FC = () => {
           session_id: created.id,
         });
         try {
-          const pendingCameos = draft.cameos.filter((c) => c.file && c.characterName.trim());
-          for (const cameo of pendingCameos) {
-            await uploadCameo(
-              created.id,
-              cameo.file!,
-              cameo.characterName.trim(),
-              cameo.description.trim()
-            );
+          if (draft.workflow === 'action2video') {
+            if (!draft.actionCharacter?.file || !draft.actionVideo?.file) {
+              throw new Error(
+                t('videoGeneration.create.action.required', {
+                  defaultValue: '请上传一张角色图和一个参考视频。',
+                })
+              );
+            }
+            await uploadActionAssets(created.id, {
+              character: draft.actionCharacter.file,
+              video: draft.actionVideo.file,
+            });
+            await renderSession(created.id, {
+              video_model: draft.preferences.models.video_model || undefined,
+              resolution: draft.preferences.resolution,
+              fps: draft.preferences.fps,
+            });
+          } else {
+            const pendingCameos = draft.cameos.filter((c) => c.file && c.characterName.trim());
+            for (const cameo of pendingCameos) {
+              await uploadCameo(
+                created.id,
+                cameo.file!,
+                cameo.characterName.trim(),
+                cameo.description.trim()
+              );
+            }
+            await planSession(created.id, sourceBodyForDraft(draft));
           }
-          await planSession(created.id, sourceBodyForDraft(draft));
           trackFunnelEvent('first_task_started', {
             feature: 'video_generation',
             workflow: draft.workflow,
@@ -232,12 +263,16 @@ const VideoGenerationListPage: React.FC = () => {
           clearVideoHomeDraft();
         } catch (planError) {
           const raw = planError instanceof Error ? planError.message : String(planError);
+          const failedLabel =
+            draft.workflow === 'action2video'
+              ? t('videoGeneration.workspace.renderFailed', { defaultValue: '渲染失败' })
+              : t('videoGeneration.workspace.planFailed', { defaultValue: '规划失败' });
           message.error(
             isInsufficientCreditsError(raw)
               ? t('videoGeneration.workspace.failure.creditsToast', {
                   defaultValue: '积分不足，请充值或缩短时长后从断点继续。',
                 })
-              : `${t('videoGeneration.workspace.planFailed', { defaultValue: '规划失败' })}: ${raw}`
+              : `${failedLabel}: ${raw}`
           );
           navigate(`/video-generation/${created.id}`, {
             state: { launchDraft: draft, launchError: true },

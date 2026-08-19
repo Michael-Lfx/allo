@@ -1,0 +1,3 @@
+The person in Image 1 performs the exact same actions, poses, timing, and camera movement as the reference video. Preserve the character's identity, face, body shape, clothing, and appearance from the image. Match the reference video's motion, rhythm, and shot language as closely as possible. Do not invent a new story, extra characters, or a different outfit. Natural motion. No subtitles, no watermark, no text overlay.
+
+让参考图中的人物完整模仿参考视频中的动作、姿态节奏、运镜与时间线。严格保持角色图的身份、五官、体型、服饰与外观；动作、姿态序列与镜头语言以参考视频为准。不要编造新剧情、不要新增角色、不要更换服装。自然流畅，无字幕无水印。

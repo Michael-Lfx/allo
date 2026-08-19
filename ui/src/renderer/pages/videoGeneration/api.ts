@@ -33,6 +33,7 @@ import type {
   VimaxWorkflow,
   ArtifactEditResult,
   ImagePromptInfo,
+  ActionAssetsInfo,
 } from './types';
 
 const BASE = '/api/vimax';
@@ -502,6 +503,63 @@ export async function deleteCameo(sessionId: string, cameoId: string): Promise<v
     'DELETE',
     `${BASE}/sessions/${encodeURIComponent(sessionId)}/cameos/${encodeURIComponent(cameoId)}`
   );
+}
+
+export async function listActionAssets(sessionId: string): Promise<ActionAssetsInfo> {
+  const data = await httpRequest<ActionAssetsInfo>(
+    'GET',
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/action-assets`
+  );
+  return data ?? {};
+}
+
+export function uploadActionAssets(
+  sessionId: string,
+  files: { character?: File; video?: File },
+  onProgress?: (percent: number) => void
+): Promise<ActionAssetsInfo> {
+  if (!files.character && !files.video) {
+    return Promise.reject(new Error('upload a character image and/or a reference video'));
+  }
+  const formData = new FormData();
+  if (files.character) formData.append('character', files.character);
+  if (files.video) formData.append('video', files.video);
+
+  return new Promise<ActionAssetsInfo>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(
+      'POST',
+      `${getBaseUrl()}${BASE}/sessions/${encodeURIComponent(sessionId)}/action-assets`
+    );
+    for (const [name, value] of Object.entries(buildBackendAuthHeaders('POST'))) {
+      xhr.setRequestHeader(name, value);
+    }
+    if (onProgress) {
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+      });
+    }
+    xhr.addEventListener('load', () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`Action asset upload failed: ${xhr.status} ${xhr.statusText}`));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(xhr.responseText) as unknown;
+        const info =
+          parsed && typeof parsed === 'object' && 'data' in parsed
+            ? (parsed as { data: ActionAssetsInfo }).data
+            : (parsed as ActionAssetsInfo);
+        resolve(info ?? {});
+      } catch {
+        reject(new Error('Action asset upload failed: invalid server response'));
+      }
+    });
+    xhr.addEventListener('error', () =>
+      reject(new Error('Action asset upload failed: network error'))
+    );
+    xhr.send(formData);
+  });
 }
 
 // ── TV Show (cloud plaza via local proxy) ───────────────────────────────────

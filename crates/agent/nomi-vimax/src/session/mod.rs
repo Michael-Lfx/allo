@@ -12,9 +12,11 @@ use crate::domain::WorkflowKind;
 use crate::error::{VimaxError, VimaxResult};
 use crate::progress::{RenderStatus, RunStatus};
 
+pub mod action_assets;
 pub mod archive;
 pub mod cameo;
 pub mod path_remap;
+pub use action_assets::ActionAssetsInfo;
 pub use archive::{ARCHIVE_EXTENSION, ArchiveManifest};
 pub use cameo::{CameoManifest, CameoPhotoEntry, CameoUpdate};
 pub use path_remap::{remap_imported_working_paths, resolve_stored_asset_path};
@@ -442,6 +444,20 @@ impl SessionIndex {
             novel_dir
                 .join("novel")
                 .join("novel_compressed.txt")
+                .exists(),
+        );
+        map.insert(
+            "action2video/character".into(),
+            action_assets::character_abs(&root.join("action2video")).is_some(),
+        );
+        map.insert(
+            "action2video/reference".into(),
+            action_assets::reference_abs(&root.join("action2video")).is_some(),
+        );
+        map.insert(
+            "action2video/final_video.mp4".into(),
+            root.join("action2video")
+                .join(action_assets::FINAL_VIDEO_FILENAME)
                 .exists(),
         );
         map.insert(

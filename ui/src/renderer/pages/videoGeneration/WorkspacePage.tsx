@@ -57,10 +57,11 @@ import DurationTimelineBar, { clampDuration } from './components/DurationTimelin
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
 import ProgressTimeline from './components/ProgressTimeline';
 import VideoQualityPickers from './components/VideoQualityPickers';
-import { normalizeWorkflow, statusLabel, statusTagColor, workflowLabel } from './components/SessionCard';
+import { normalizeWorkflow, isActionImitationWorkflow, statusLabel, statusTagColor, workflowLabel } from './components/SessionCard';
 import StoryboardBoard from './components/StoryboardBoard';
 import StudioStageRail from './components/StudioStageRail';
 import VisualStyleSelect from './components/VisualStyleSelect';
+import WorkspaceActionAssets from './components/WorkspaceActionAssets';
 import WorkspaceCameoStrip from './components/WorkspaceCameoStrip';
 import type { VideoCreateDraft } from './home/types';
 import type { StoryboardScene } from './artifactPresentation';
@@ -73,6 +74,7 @@ import {
 import {
   DEFAULT_VIDEO_FPS,
   DEFAULT_VIDEO_RESOLUTION,
+  isMiniMaxH3VideoModel,
   normalizeVideoFps,
   normalizeVideoResolution,
   type VideoResolution,
@@ -93,7 +95,8 @@ function sourceFieldForWorkflow(workflow: VimaxWorkflow | string): 'idea' | 'scr
       return 'script';
     case 'novel2video':
       return 'novel_text';
-    default:
+    case 'action2video':
+    case 'idea2video':
       return 'idea';
   }
 }
@@ -146,6 +149,7 @@ const WorkspacePage: React.FC = () => {
 
   const [previewEpoch, setPreviewEpoch] = useState(0);
   const storyboardVisibleTracked = useRef(false);
+  const [actionAssetsReady, setActionAssetsReady] = useState(false);
 
   const launchDraft = (
     location.state as { launchDraft?: VideoCreateDraft; launchError?: boolean } | null
@@ -585,7 +589,17 @@ const WorkspacePage: React.FC = () => {
 
   const handleRender = useCallback(async () => {
     if (!sessionId) return;
-    if (!models.image_model.trim() || !models.video_model.trim()) {
+    const actionMode = isActionImitationWorkflow(session?.workflow);
+    if (actionMode) {
+      if (!models.video_model.trim() || !isMiniMaxH3VideoModel(models.video_model)) {
+        message.warning(
+          t('videoGeneration.workspace.models.h3Required', {
+            defaultValue: '动作模仿需要选择 MiniMax-H3 视频模型',
+          })
+        );
+        return;
+      }
+    } else if (!models.image_model.trim() || !models.video_model.trim()) {
       message.warning(
         t('videoGeneration.workspace.models.mediaRequired', {
           defaultValue: '请先选择图片模型与视频模型',
@@ -596,8 +610,8 @@ const WorkspacePage: React.FC = () => {
     setRendering(true);
     try {
       await renderSession(sessionId, {
-        llm_model: models.llm_model.trim() || undefined,
-        image_model: models.image_model.trim() || undefined,
+        llm_model: actionMode ? undefined : models.llm_model.trim() || undefined,
+        image_model: actionMode ? undefined : models.image_model.trim() || undefined,
         video_model: models.video_model.trim() || undefined,
         resolution,
         fps,
@@ -623,7 +637,7 @@ const WorkspacePage: React.FC = () => {
     } finally {
       setRendering(false);
     }
-  }, [sessionId, models, resolution, fps, message, t, refreshStatus]);
+  }, [sessionId, session?.workflow, models, resolution, fps, message, t, refreshStatus]);
 
   const handleCancel = useCallback(async () => {
     if (!sessionId) return;
@@ -680,6 +694,8 @@ const WorkspacePage: React.FC = () => {
       'concat_start',
       'video_generate',
       'image_generate',
+      'action_prepare',
+      'action_generate',
     ]);
     return renderStages.has(stage) || stage.startsWith('render_');
   }, [runStatus, session?.stage]);
@@ -689,12 +705,12 @@ const WorkspacePage: React.FC = () => {
     (runStatus?.status ?? session?.status) === 'cancelled';
 
   const handleContinue = useCallback(() => {
-    if (continueAsRender) {
+    if (isActionImitationWorkflow(session?.workflow) || continueAsRender) {
       void handleRender();
     } else {
       void handlePlan();
     }
-  }, [continueAsRender, handleRender, handlePlan]);
+  }, [continueAsRender, handleRender, handlePlan, session?.workflow]);
 
   const handleArtifactsChanged = useCallback(() => {
     void refreshArtifacts();
@@ -876,14 +892,18 @@ const WorkspacePage: React.FC = () => {
   }, [message, runStatus?.final_video, runStatus?.working_dir_abs, session?.final_video, sessionId, t]);
 
   const busy = isActiveStatus(runStatus?.status) || planning || rendering;
+  const isAction = isActionImitationWorkflow(session?.workflow);
   const hasStoryboard =
-    Boolean(findStoryboardPath(artifacts)) ||
-    session?.stage === 'planned' ||
-    runStatus?.stage === 'planned' ||
-    runStatus?.status === 'rendering' ||
-    runStatus?.status === 'succeeded' ||
-    session?.status === 'succeeded';
-  const canRender = !busy && (hasStoryboard || isFailed);
+    !isAction &&
+    (Boolean(findStoryboardPath(artifacts)) ||
+      session?.stage === 'planned' ||
+      runStatus?.stage === 'planned' ||
+      runStatus?.status === 'rendering' ||
+      runStatus?.status === 'succeeded' ||
+      session?.status === 'succeeded');
+  const canRender = isAction
+    ? !busy && actionAssetsReady
+    : !busy && (hasStoryboard || isFailed);
   const canContinue = isFailed && !busy;
   const currentStatus = runStatus?.status ?? session?.status;
   /** Plan finished (idle + `planned`) but the film is not rendered yet. */
@@ -899,6 +919,7 @@ const WorkspacePage: React.FC = () => {
     Boolean(runStatus?.final_video || session?.final_video) &&
     Boolean(runStatus?.cover || session?.cover);
   const canOpenInCanvas =
+    !isAction &&
     !busy &&
     !materializing &&
     (hasStoryboard ||
@@ -1041,6 +1062,13 @@ const WorkspacePage: React.FC = () => {
               size='small'
               loading={materializing}
               disabled={!canOpenInCanvas}
+              title={
+                isAction
+                  ? t('videoGeneration.actions.openInCanvasUnsupported', {
+                      defaultValue: '动作模仿没有分镜，无法打开到 Canvas',
+                    })
+                  : undefined
+              }
               onClick={() => void handleOpenInCanvas()}
             >
               <span className='inline-flex items-center gap-4px'>
@@ -1094,6 +1122,7 @@ const WorkspacePage: React.FC = () => {
           stage={runStatus?.stage ?? session.stage}
           hasStoryboard={hasStoryboard}
           hasFinalVideo={Boolean(finalBlobUrl)}
+          variant={isAction ? 'action' : 'film'}
         />
 
         {artifacts.length > 0 ? (
@@ -1211,7 +1240,76 @@ const WorkspacePage: React.FC = () => {
           </section>
         ) : null}
 
-        {!hasStoryboard ? (
+        {isAction ? (
+          <section className={`${styles.studioPanel} p-16px md:p-20px`}>
+            <div className='mb-14px flex flex-wrap items-start justify-between gap-10px'>
+              <div>
+                <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
+                  {t('videoGeneration.studio.actionTitle', { defaultValue: '上传素材，生成成片' })}
+                </h2>
+                <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
+                  {t('videoGeneration.studio.actionHint', {
+                    defaultValue: '一张角色图 + 一段参考视频。无需提示词，时长跟随参考视频。',
+                  })}
+                </p>
+              </div>
+              <div className='flex flex-wrap items-center gap-8px'>
+                {canContinue ? (
+                  <Button
+                    type='primary'
+                    status='warning'
+                    loading={rendering}
+                    onClick={() => void handleContinue()}
+                  >
+                    {t('videoGeneration.workspace.continue', { defaultValue: '从断点继续' })}
+                  </Button>
+                ) : null}
+                <Button
+                  type='primary'
+                  loading={rendering}
+                  disabled={!canRender || busy}
+                  onClick={() => void handleRender()}
+                >
+                  <span className='inline-flex items-center gap-7px'>
+                    <Play theme='outline' size={15} fill='currentColor' />
+                    {isFailed && continueAsRender
+                      ? t('videoGeneration.workspace.renderContinue', {
+                          defaultValue: '继续生成成片',
+                        })
+                      : t('videoGeneration.create.generateActionVideo', {
+                          defaultValue: '生成视频',
+                        })}
+                  </span>
+                </Button>
+              </div>
+            </div>
+            <WorkspaceActionAssets
+              sessionId={sessionId}
+              disabled={busy}
+              onReadyChange={setActionAssetsReady}
+            />
+            <div className='mt-14px'>
+              <ModelSelectors
+                value={models}
+                onChange={setModels}
+                disabled={busy}
+                isMobile={isMobile}
+                mode='action'
+              />
+              <div className='mt-12px'>
+                <VideoQualityPickers
+                  videoModel={models.video_model}
+                  value={{ resolution, fps }}
+                  onChange={({ resolution: nextRes, fps: nextFps }) => {
+                    setResolution(nextRes);
+                    setFps(nextFps);
+                  }}
+                  disabled={busy}
+                />
+              </div>
+            </div>
+          </section>
+        ) : !hasStoryboard ? (
           <section className={`${styles.studioPanel} p-16px md:p-20px`}>
             <div className='mb-14px flex flex-wrap items-start justify-between gap-10px'>
               <div>
@@ -1381,7 +1479,7 @@ const WorkspacePage: React.FC = () => {
           </details>
         )}
 
-        {hasStoryboard ? (
+        {!isAction && hasStoryboard ? (
           <section className={`${styles.studioPanel} flex flex-wrap items-center justify-between gap-14px p-16px`}>
             {plannedIdle ? (
               <div className='w-full rd-8px px-12px py-10px border border-solid border-[rgba(var(--primary-6),0.35)] bg-[rgba(var(--primary-6),0.06)]'>
@@ -1440,7 +1538,7 @@ const WorkspacePage: React.FC = () => {
           </section>
         ) : null}
 
-        {hasStoryboard ? (
+        {!isAction && hasStoryboard ? (
           <section className={`${styles.studioPanel} p-14px md:p-18px`}>
             <div className='mb-12px flex items-end justify-between gap-10px'>
               <div>

@@ -36,6 +36,7 @@ pub trait VimaxVideo: Send + Sync {
     /// - `ref_images`: `reference_image` roles (multi-ref R2V). Prefer this for Seedance 2.0.
     /// - `last_frame_out`: when set, request `return_last_frame` and save the still here
     ///   (caller may still ffmpeg-extract as fallback).
+    /// - `ref_video`: MiniMax-H3 `reference_video` (mutually exclusive with first/last_frame).
     async fn generate(
         &self,
         prompt: &str,
@@ -45,5 +46,28 @@ pub trait VimaxVideo: Send + Sync {
         duration_secs: u32,
         out_path: &Path,
         last_frame_out: Option<&Path>,
+        ref_video: Option<&Path>,
     ) -> VimaxResult<()>;
+
+    /// Character still + motion video (MiniMax-H3 multimodal reference).
+    async fn generate_from_action_refs(
+        &self,
+        prompt: &str,
+        character_image: &Path,
+        reference_video: &Path,
+        duration_secs: u32,
+        out_path: &Path,
+    ) -> VimaxResult<()> {
+        self.generate(
+            prompt,
+            None,
+            None,
+            &[character_image],
+            duration_secs,
+            out_path,
+            None,
+            Some(reference_video),
+        )
+        .await
+    }
 }

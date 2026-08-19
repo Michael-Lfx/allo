@@ -11,6 +11,7 @@ import type { IMediaModelOption } from '@/common/adapter/ipcBridge';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
+import { isMiniMaxH3VideoModel } from '../videoModelCapabilities';
 
 export interface VimaxModelSelection {
   llm_model: string;
@@ -44,6 +45,21 @@ export function pickDefaultVideoModel(videoModels: IMediaModelOption[]): string 
   return preferred?.id ?? videoModels[0]?.id;
 }
 
+/** MiniMax-H3 only — required for `reference_video` action imitation. */
+export function filterActionImitationVideoModels(
+  videoModels: IMediaModelOption[]
+): IMediaModelOption[] {
+  return videoModels.filter(
+    (model) => isMiniMaxH3VideoModel(model.id) || isMiniMaxH3VideoModel(model.name)
+  );
+}
+
+export function pickActionImitationVideoModel(
+  videoModels: IMediaModelOption[]
+): string | undefined {
+  return filterActionImitationVideoModels(videoModels)[0]?.id;
+}
+
 /** Keep only Seedream 5.0 Lite entries (match catalog `name`, fall back to id). */
 export function filterAllowedImageModels(imageModels: IMediaModelOption[]): IMediaModelOption[] {
   const needle = normalizeModelKey(ALLOWED_IMAGE_MODEL_NAME);
@@ -60,7 +76,7 @@ interface ModelSelectorsProps {
   disabled?: boolean;
   isMobile?: boolean;
   /** Limit visible pickers for compact generation-preference surfaces. */
-  mode?: 'all' | 'agent' | 'image' | 'video' | 'llm';
+  mode?: 'all' | 'agent' | 'image' | 'video' | 'llm' | 'action';
   /** Mount dropdowns on body so nested popovers do not clip or auto-close. */
   popupContainer?: HTMLElement | (() => HTMLElement);
 }
@@ -111,39 +127,57 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
   }, [imageModels]);
 
   const videoOptions = useMemo(() => {
-    return videoModels.map((m) => ({
+    const source =
+      mode === 'action' ? filterActionImitationVideoModels(videoModels) : videoModels;
+    return source.map((m) => ({
       value: m.id,
       label: mediaModelLabel(m),
     }));
-  }, [videoModels]);
+  }, [mode, videoModels]);
 
   // Prefer first available model when session has none yet.
   useEffect(() => {
     const patch: Partial<VimaxModelSelection> = {};
-    if (!value.llm_model && llmOptions[0]) patch.llm_model = llmOptions[0].value;
-    if (!value.image_model && imageOptions[0]) patch.image_model = imageOptions[0].value;
-    if (!value.video_model) {
-      const preferred = pickDefaultVideoModel(videoModels);
-      if (preferred) patch.video_model = preferred;
+    if (mode !== 'action' && mode !== 'video' && mode !== 'image') {
+      if (!value.llm_model && llmOptions[0]) patch.llm_model = llmOptions[0].value;
     }
-    // If a previously selected image model is no longer in the allowed list, reset.
-    if (
-      value.image_model &&
-      imageOptions.length > 0 &&
-      !imageOptions.some((o) => o.value === value.image_model)
+    if (mode !== 'action' && mode !== 'video') {
+      if (!value.image_model && imageOptions[0]) patch.image_model = imageOptions[0].value;
+      if (
+        value.image_model &&
+        imageOptions.length > 0 &&
+        !imageOptions.some((o) => o.value === value.image_model)
+      ) {
+        patch.image_model = imageOptions[0].value;
+      }
+    }
+    if (!value.video_model) {
+      const preferred =
+        mode === 'action'
+          ? pickActionImitationVideoModel(videoModels)
+          : pickDefaultVideoModel(videoModels);
+      if (preferred) patch.video_model = preferred;
+    } else if (
+      videoOptions.length > 0 &&
+      !videoOptions.some((o) => o.value === value.video_model)
     ) {
-      patch.image_model = imageOptions[0].value;
+      const preferred =
+        mode === 'action'
+          ? pickActionImitationVideoModel(videoModels)
+          : pickDefaultVideoModel(videoModels);
+      if (preferred) patch.video_model = preferred;
     }
     if (Object.keys(patch).length > 0) {
       onChange({ ...value, ...patch });
     }
     // Only seed once catalogs load / when empty.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [llmOptions, imageOptions, videoModels]);
+  }, [llmOptions, imageOptions, videoModels, videoOptions, mode]);
 
   const showLlm = mode === 'all' || mode === 'agent' || mode === 'llm';
   const showImage = mode === 'all' || mode === 'agent' || mode === 'image';
-  const showVideo = mode === 'all' || mode === 'agent' || mode === 'video';
+  const showVideo =
+    mode === 'all' || mode === 'agent' || mode === 'video' || mode === 'action';
   const visibleCount = [showLlm, showImage, showVideo].filter(Boolean).length;
   const grid =
     isMobile || visibleCount === 1
@@ -236,9 +270,19 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
                 onChange({ ...value, video_model: (v as string) || '' })
               }
               options={videoOptions}
-              notFoundContent={t('videoGeneration.workspace.models.empty', {
-                defaultValue: '暂无可用模型',
-              })}
+              notFoundContent={
+                mediaLoading
+                  ? t('videoGeneration.workspace.models.empty', {
+                      defaultValue: '暂无可用模型',
+                    })
+                  : mode === 'action'
+                    ? t('videoGeneration.workspace.models.h3Empty', {
+                        defaultValue: '暂无 MiniMax-H3 视频模型',
+                      })
+                    : t('videoGeneration.workspace.models.empty', {
+                        defaultValue: '暂无可用模型',
+                      })
+              }
               {...selectPopupProps}
             />
           )}
