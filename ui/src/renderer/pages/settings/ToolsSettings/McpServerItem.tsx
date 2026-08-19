@@ -2,9 +2,10 @@ import { Collapse } from '@arco-design/web-react';
 import React from 'react';
 import type { IMcpServer } from '@/common/config/storage';
 import type { McpServerId } from '@/common/types/ids';
+import type { McpOAuthStatus } from '@/renderer/hooks/mcp/useMcpOAuth';
 import McpServerHeader from './McpServerHeader';
 import McpServerToolsList from './McpServerToolsList';
-import type { McpOAuthStatus } from '@/renderer/hooks/mcp/useMcpOAuth';
+import { MCP_SERVER_COLLAPSE_CLASS } from './mcpServerCollapse';
 
 interface McpServerItemProps {
   server: IMcpServer;
@@ -39,7 +40,7 @@ const McpServerItem: React.FC<McpServerItemProps> = ({
       key={server.mcp_server_id}
       activeKey={isCollapsed ? ['1'] : []}
       onChange={onToggleCollapse}
-      className='mb-4 [&_div.arco-collapse-item-header-title]:flex-1'
+      className={MCP_SERVER_COLLAPSE_CLASS}
     >
       <Collapse.Item
         header={

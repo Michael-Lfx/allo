@@ -297,7 +297,8 @@ const NomiModal: React.FC<NomiModalProps> = ({
               onClick={(e) => {
                 props.onOk?.(e instanceof MouseEvent ? e : undefined);
               }}
-              loading={props.confirmLoading}
+              loading={props.confirmLoading || props.okButtonProps?.loading}
+              disabled={props.okButtonProps?.disabled}
               className='px-20px min-w-80px'
               style={{ borderRadius: 8 }}
             >
@@ -315,7 +316,7 @@ const NomiModal: React.FC<NomiModalProps> = ({
       };
     }
     return footer as ModalFooterConfig;
-  }, [footer, onCancel, props.cancelText, props.okText, props.onOk, props.confirmLoading, t]);
+  }, [footer, onCancel, props.cancelText, props.okText, props.onOk, props.confirmLoading, props.okButtonProps, t]);
 
   // 渲染 Header
   const renderHeader = () => {
