@@ -6031,6 +6031,7 @@ impl ConversationService {
             deletion_guard.commit();
             service.runtime_state.clear_knowledge_signature(&conversation_id);
             service.runtime_state.clear_turn_tokens(&conversation_id);
+            service.drop_conversation_observations(&conversation_id);
             info!(conversation_id, "Conversation deleted");
             service.broadcast_list_changed(
                 &user_id,
@@ -6344,6 +6345,8 @@ impl ConversationService {
                 )));
             }
         }
+
+        self.clear_conversation_observations(id);
 
         // Keep both fences through the durable commit, then release the inner
         // lifecycle tombstone while the outer preparation gate still excludes
@@ -9919,7 +9922,7 @@ impl ConversationService {
                 let rx = agent.subscribe();
                 if let Some(hub) = service.current_agent_trace_hub() {
                     hub.refresh_recording_enabled().await;
-                    agent.bind_observation_ids(nomifun_ai_agent::ObservationIds {
+                    agent.bind_observation_ids_with_preview(nomifun_ai_agent::ObservationIds {
                         conversation_id: Some(conv_id.clone()),
                         msg_id: Some(turn_msg_id.clone()),
                         root_turn_id: Some(stable_turn_id.clone()),
@@ -9941,7 +9944,7 @@ impl ConversationService {
                             .as_ref()
                             .map(|authority| authority.attempt_id.clone()),
                         ..Default::default()
-                    });
+                    }, Some(current_send.content.as_str()));
                 }
                 let send_agent = agent.clone();
                 let conv_id_send = conv_id.clone();
@@ -12735,6 +12738,8 @@ impl ConversationService {
         // runtime silently recover the supposedly archived context.
         self.acp_session_repo.clear_session_id(conv_id).await?;
 
+        self.clear_conversation_observations(conversation_id);
+
         drop(reset_guard);
         drop(preparation_guard);
         info!("Conversation context cleared");
@@ -12835,6 +12840,8 @@ impl ConversationService {
                 )));
             }
         }
+
+        self.clear_conversation_observations(conversation_id);
 
         drop(clear_guard);
         drop(preparation_guard);
@@ -14208,6 +14215,18 @@ impl ConversationService {
         match self.agent_trace_hub.read() {
             Ok(guard) => guard.as_ref().map(Arc::clone),
             Err(_) => None,
+        }
+    }
+
+    fn drop_conversation_observations(&self, conversation_id: &str) {
+        if let Some(hub) = self.current_agent_trace_hub() {
+            hub.drop_conversation_observations(conversation_id);
+        }
+    }
+
+    fn clear_conversation_observations(&self, conversation_id: &str) {
+        if let Some(hub) = self.current_agent_trace_hub() {
+            hub.clear_conversation_observations(conversation_id);
         }
     }
 

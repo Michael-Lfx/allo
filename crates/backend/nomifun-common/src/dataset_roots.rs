@@ -179,6 +179,14 @@ pub const MANAGED_DATASET_ROOTS: &[ManagedDatasetRoot] = &[
         backup: BackupPolicy::Exclude(RUNTIME_ONLY),
     },
     ManagedDatasetRoot {
+        // Developer-mode session observation JSONL and failed-provider SSE
+        // captures under `{data_dir}/diagnostics/`.
+        path: "diagnostics",
+        kind: DatasetRootKind::Directory,
+        reset: ResetPolicy::Retire,
+        backup: BackupPolicy::Exclude(RUNTIME_ONLY),
+    },
+    ManagedDatasetRoot {
         path: "browser-profile",
         kind: DatasetRootKind::Directory,
         reset: ResetPolicy::Retire,
@@ -428,5 +436,23 @@ mod tests {
             retired.contains("video-canvas"),
             "video-canvas projects/media must retire with factory reset"
         );
+    }
+
+    #[test]
+    fn diagnostics_root_is_retired_on_factory_reset() {
+        // Session observation JSONL and failed-provider SSE live under
+        // `{data_dir}/diagnostics/` and must not survive an explicit wipe.
+        let retired = reset_managed_dataset_roots()
+            .map(|root| root.path)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            retired.contains("diagnostics"),
+            "diagnostics/observation and failed-provider-sse must retire with factory reset"
+        );
+        let diagnostics = managed_dataset_roots()
+            .find(|root| root.path == "diagnostics")
+            .expect("diagnostics must be a managed dataset root");
+        assert_eq!(diagnostics.kind, DatasetRootKind::Directory);
+        assert_eq!(diagnostics.backup, BackupPolicy::Exclude(RUNTIME_ONLY));
     }
 }

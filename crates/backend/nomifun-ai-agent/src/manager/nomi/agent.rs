@@ -1,4 +1,4 @@
-﻿use std::path::PathBuf;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -424,6 +424,27 @@ pub(crate) fn map_engine_stop_reason(
     }
 }
 
+fn observation_status_from_stop(reason: TurnStopReason) -> nomi_agent_trace::ExecutionStatus {
+    match reason {
+        TurnStopReason::EndTurn => nomi_agent_trace::ExecutionStatus::Completed,
+        TurnStopReason::MaxTokens | TurnStopReason::MaxTurnRequests => {
+            nomi_agent_trace::ExecutionStatus::Truncated
+        }
+        TurnStopReason::Refusal => nomi_agent_trace::ExecutionStatus::Failed,
+        TurnStopReason::Cancelled => nomi_agent_trace::ExecutionStatus::Cancelled,
+    }
+}
+
+fn turn_stop_reason_name(reason: TurnStopReason) -> &'static str {
+    match reason {
+        TurnStopReason::EndTurn => "end_turn",
+        TurnStopReason::MaxTokens => "max_tokens",
+        TurnStopReason::MaxTurnRequests => "max_turn_requests",
+        TurnStopReason::Refusal => "refusal",
+        TurnStopReason::Cancelled => "cancelled",
+    }
+}
+
 /// Process-host wiring kept deliberately separate from [`NomiResolvedConfig`].
 ///
 /// None of these values can be deserialized from model/config JSON. The app
@@ -476,8 +497,28 @@ impl NomiAgentManager {
     }
 
     pub fn bind_observation_ids(&self, ids: crate::ObservationIds) {
+        self.bind_observation_ids_with_preview(ids, None);
+    }
+
+    pub fn bind_observation_ids_with_preview(
+        &self,
+        ids: crate::ObservationIds,
+        prompt_preview: Option<&str>,
+    ) {
         if let Some(session) = &self.observation {
-            session.bind_ids(ids);
+            session.bind_ids_with_preview(ids, prompt_preview);
+        }
+    }
+
+    pub fn emit_observation_turn_end(
+        &self,
+        status: nomi_agent_trace::ExecutionStatus,
+        elapsed_ms: i64,
+        stop_reason: Option<&str>,
+        usage: Option<serde_json::Value>,
+    ) {
+        if let Some(session) = &self.observation {
+            session.emit_turn_end(status, elapsed_ms.max(0) as u64, stop_reason, usage);
         }
     }
 
@@ -1559,7 +1600,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     data.source_message_id.as_deref(),
                     data.origin.as_deref(),
                 );
-                session.bind_ids(ids);
+                session.bind_ids_with_preview(ids, Some(content.as_str()));
             }
 
             // Each iteration runs one engine pass inside the same accepted
@@ -1683,6 +1724,12 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
         };
 
         let Some((result, engine)) = accepted_turn else {
+            self.emit_observation_turn_end(
+                nomi_agent_trace::ExecutionStatus::Cancelled,
+                now_ms().saturating_sub(started_at),
+                Some("cancelled"),
+                None,
+            );
             self.backend_output_sink.cancel_active_tool_calls(
                 "The tool call was cancelled because the user stopped the turn.",
             );
@@ -1736,6 +1783,12 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     let send_error = AgentSendError::from_app_error(AppError::Internal(format!(
                         "Artifact delivery failed: {delivery_error}"
                     )));
+                    self.emit_observation_turn_end(
+                        nomi_agent_trace::ExecutionStatus::Failed,
+                        elapsed_ms,
+                        Some("error"),
+                        None,
+                    );
                     let stream_error = send_error.stream_error().clone();
                     term_guard.terminalize(move |runtime, turn| {
                         runtime.emit_error_data_for_turn(turn, stream_error)
@@ -1773,6 +1826,17 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     context_breakdown,
                     moa,
                 }));
+                self.emit_observation_turn_end(
+                    observation_status_from_stop(stop_reason),
+                    elapsed_ms,
+                    Some(turn_stop_reason_name(stop_reason)),
+                    Some(serde_json::json!({
+                        "input_tokens": agent_result.usage.input_tokens,
+                        "output_tokens": agent_result.usage.output_tokens,
+                        "cache_creation_tokens": agent_result.usage.cache_creation_tokens,
+                        "cache_read_tokens": agent_result.usage.cache_read_tokens,
+                    })),
+                );
 
                 // —— Post-session memory distillation (exact turn child) ——
                 // Eligibility gates, cheapest first:
@@ -1884,6 +1948,12 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     "Nomi engine.execute_turn() failed, emitting terminal Error"
                 );
                 let send_error = nomi_engine_error_to_send_error(error_msg);
+                self.emit_observation_turn_end(
+                    nomi_agent_trace::ExecutionStatus::Failed,
+                    elapsed_ms,
+                    Some("error"),
+                    None,
+                );
                 self.backend_output_sink.fail_active_tool_calls(&format!(
                     "The model/provider turn failed before this tool call completed: {e}"
                 ));

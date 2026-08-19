@@ -607,6 +607,12 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             .set_developer_mode_listener(Arc::new(move |enabled| {
                 recorder.set_enabled(enabled);
             }));
+        let reset_hub = hub.clone();
+        if let Ok(mut slot) = system.observation_reset.lock() {
+            *slot = Some(Arc::new(move || {
+                reset_hub.reset_all_observations();
+            }));
+        }
     }
     let states = ModuleStates {
         system,
@@ -781,6 +787,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         work_dir_is_cli_override: services.work_dir_is_cli_override,
         runtime_capabilities: services.runtime_capabilities,
         conversation_repo: Some(services.conversation_repo.clone()),
+        observation_reset: nomifun_system::idle_observation_reset(),
     }
 }
 

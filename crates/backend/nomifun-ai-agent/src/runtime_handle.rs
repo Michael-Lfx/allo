@@ -307,8 +307,28 @@ impl AgentRuntimeHandle {
     }
 
     pub fn bind_observation_ids(&self, ids: crate::ObservationIds) {
+        self.bind_observation_ids_with_preview(ids, None);
+    }
+
+    pub fn bind_observation_ids_with_preview(
+        &self,
+        ids: crate::ObservationIds,
+        prompt_preview: Option<&str>,
+    ) {
         if let Self::Nomi(manager) = self {
-            manager.bind_observation_ids(ids);
+            manager.bind_observation_ids_with_preview(ids, prompt_preview);
+        }
+    }
+
+    pub fn emit_observation_turn_end(
+        &self,
+        status: nomi_agent_trace::ExecutionStatus,
+        elapsed_ms: i64,
+        stop_reason: Option<&str>,
+        usage: Option<serde_json::Value>,
+    ) {
+        if let Self::Nomi(manager) = self {
+            manager.emit_observation_turn_end(status, elapsed_ms, stop_reason, usage);
         }
     }
 

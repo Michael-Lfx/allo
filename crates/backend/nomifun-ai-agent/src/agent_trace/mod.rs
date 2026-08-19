@@ -7,7 +7,7 @@ mod hub;
 mod prefs;
 
 pub use hub::{
-    AgentTraceHub, TraceApiError, DEFAULT_SESSION_OBSERVATION_LIST_LIMIT,
+    AgentTraceHub, SessionObservationList, TraceApiError, DEFAULT_SESSION_OBSERVATION_LIST_LIMIT,
     MAX_SESSION_OBSERVATION_LIST_LIMIT,
 };
 pub use prefs::{DEVELOPER_MODE_PREF_KEY, developer_mode_enabled};

@@ -67,6 +67,14 @@ pub struct SystemRouterState {
     /// Used to confirm `conversation_id` on support-log packing belongs to
     /// the authenticated user before attaching observation JSONL.
     pub conversation_repo: Option<Arc<dyn IConversationRepository>>,
+    /// When a live observation writer exists, factory reset ACKs `ResetAll`
+    /// before the next-boot dataset Retire.
+    pub observation_reset: Arc<std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+}
+
+/// Empty hook slot for tests and boot before the observation hub is wired.
+pub fn idle_observation_reset() -> Arc<std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>> {
+    Arc::new(std::sync::Mutex::new(None))
 }
 
 /// Build the system router (settings + client prefs + providers + system).
@@ -709,11 +717,12 @@ async fn check_update(
 // Factory reset handler
 // ===========================================================================
 
-/// Arm a factory reset: write the marker that the next boot consumes. The
-/// actual database/derived-data wipe happens early on the next startup (see
+/// Arm a factory reset: ACK live observation `ResetAll` while the writer is
+/// still alive, then write the marker that the next boot consumes. Database
+/// and derived-data wipe still happen early on the next startup (see
 /// `nomifun_common::factory_reset`); the client should restart the app right
-/// after this returns. Nothing is deleted synchronously here — that would race
-/// with the live connection pool and the background write loops.
+/// after this returns. Those remaining deletions stay off the live pool and
+/// background write loops.
 async fn factory_reset(State(state): State<SystemRouterState>) -> Result<Json<ApiResponse<()>>, AppError> {
     nomifun_common::factory_reset::require_safe_data_work_root_layout(
         &state.data_dir,
@@ -726,6 +735,14 @@ async fn factory_reset(State(state): State<SystemRouterState>) -> Result<Json<Ap
                 .into(),
         )
     })?;
+    let reset = state
+        .observation_reset
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+    if let Some(reset) = reset {
+        reset();
+    }
     nomifun_common::factory_reset::request_v3_dataset_reset(
         &state.data_dir,
         &state.work_dir,

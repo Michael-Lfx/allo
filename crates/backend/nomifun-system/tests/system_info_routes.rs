@@ -66,6 +66,7 @@ fn build_state(db: &nomifun_db::Database, version_check_service: VersionCheckSer
         work_dir_is_cli_override: false,
         runtime_capabilities: nomifun_api_types::RuntimeCapabilities::web(),
         conversation_repo: None,
+        observation_reset: nomifun_system::idle_observation_reset(),
     }
 }
 

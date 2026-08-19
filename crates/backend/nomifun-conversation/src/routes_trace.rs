@@ -3,12 +3,16 @@
 use axum::Extension;
 use axum::Router;
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::Deserialize;
+use serde_json::json;
 
 use nomifun_api_types::ApiResponse;
 use nomifun_ai_agent::{
-    ProjectedTurn, DEFAULT_SESSION_OBSERVATION_LIST_LIMIT, MAX_SESSION_OBSERVATION_LIST_LIMIT,
+    SessionObservationList, DEFAULT_SESSION_OBSERVATION_LIST_LIMIT,
+    MAX_SESSION_OBSERVATION_LIST_LIMIT, TraceApiError,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
@@ -38,6 +42,20 @@ fn clamp_list_limit(limit: Option<usize>) -> usize {
         .clamp(1, MAX_SESSION_OBSERVATION_LIST_LIMIT)
 }
 
+fn observation_retention_response() -> Response {
+    (
+        StatusCode::GONE,
+        axum::Json(json!({
+            "success": false,
+            "error": "This call detail was removed by the observation retention policy",
+            "code": "OBSERVATION_RETENTION",
+            "reason": "observation_retention",
+            "details": { "reason": "observation_retention" },
+        })),
+    )
+        .into_response()
+}
+
 /// Debug routes for inspecting persisted session observations.
 ///
 /// All handlers require authentication (applied by the caller), conversation
@@ -53,13 +71,17 @@ pub fn conversation_trace_routes() -> Router<ConversationRouterState> {
             "/api/debug/session-observations/turns/{root_turn_id}",
             get(get_session_observation_turn),
         )
+        .route(
+            "/api/debug/session-observations/turns/{root_turn_id}/calls/{model_call_id}",
+            get(get_session_observation_call),
+        )
 }
 
 async fn list_session_observations(
     State(state): State<ConversationRouterState>,
     Extension(user): Extension<CurrentUser>,
     Query(query): Query<SessionObservationQuery>,
-) -> Result<axum::Json<ApiResponse<Vec<ProjectedTurn>>>, AppError> {
+) -> Result<axum::Json<ApiResponse<SessionObservationList>>, AppError> {
     let hub = require_hub(&state)?;
     let conversation_id = query.conversation_id.trim();
     if conversation_id.is_empty() {
@@ -68,11 +90,11 @@ async fn list_session_observations(
         ));
     }
     state.service.get(&user.id, conversation_id).await?;
-    let turns = hub
+    let page = hub
         .list_session_observations(conversation_id, clamp_list_limit(query.limit))
         .await
         .map_err(|error| error.into_app_error())?;
-    Ok(axum::Json(ApiResponse::ok(turns)))
+    Ok(axum::Json(ApiResponse::ok(page)))
 }
 
 async fn get_session_observation_turn(
@@ -80,7 +102,7 @@ async fn get_session_observation_turn(
     Extension(user): Extension<CurrentUser>,
     Path(root_turn_id): Path<String>,
     Query(query): Query<SessionObservationQuery>,
-) -> Result<axum::Json<ApiResponse<ProjectedTurn>>, AppError> {
+) -> Result<axum::Json<ApiResponse<nomifun_ai_agent::ProjectedTurn>>, AppError> {
     let hub = require_hub(&state)?;
     let conversation_id = query.conversation_id.trim();
     if conversation_id.is_empty() {
@@ -99,4 +121,28 @@ async fn get_session_observation_turn(
             ))
         })?;
     Ok(axum::Json(ApiResponse::ok(turn)))
+}
+
+async fn get_session_observation_call(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path((root_turn_id, model_call_id)): Path<(String, String)>,
+    Query(query): Query<SessionObservationQuery>,
+) -> Result<Response, AppError> {
+    let hub = require_hub(&state)?;
+    let conversation_id = query.conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err(AppError::BadRequest(
+            "conversation_id query parameter is required".into(),
+        ));
+    }
+    state.service.get(&user.id, conversation_id).await?;
+    match hub
+        .get_session_observation_call(conversation_id, &root_turn_id, &model_call_id)
+        .await
+    {
+        Ok(detail) => Ok(axum::Json(ApiResponse::ok(detail)).into_response()),
+        Err(TraceApiError::ObservationRetention) => Ok(observation_retention_response()),
+        Err(error) => Err(error.into_app_error()),
+    }
 }
