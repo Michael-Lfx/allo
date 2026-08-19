@@ -15,12 +15,12 @@ use tokio::sync::mpsc;
 use nomi_agent::engine::{AgentEngine, AgentError};
 use nomi_agent::output::OutputSink;
 use nomi_agent::output::terminal::TerminalSink;
-use nomi_agent::session::SessionManager;
+use nomi_agent::session::{Session, SessionManager};
 use nomi_config::compact::CompactConfig;
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_tools::registry::ToolRegistry;
 use nomi_types::llm::{LlmEvent, LlmRequest};
-use nomi_types::message::{StopReason, TokenUsage};
+use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 use tempfile::tempdir;
 
 use common::test_config;
@@ -109,6 +109,39 @@ fn tool_turn(id: &str, input_tokens: u64) -> Vec<LlmEvent> {
     ]
 }
 
+fn bulky_resumed_session(pairs: usize, chars_each: usize) -> Session {
+    let blob = "x".repeat(chars_each);
+    let mut messages = Vec::with_capacity(pairs * 2);
+    for i in 0..pairs {
+        messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: format!("user-{i} {blob}"),
+            }],
+        ));
+        messages.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: format!("asst-{i} {blob}"),
+            }],
+        ));
+    }
+    let now = chrono::Utc::now();
+    Session {
+        id: "resume-smaller-window".into(),
+        created_at: now,
+        updated_at: now,
+        provider: "anthropic".into(),
+        model: "test-model".into(),
+        cwd: "/tmp".into(),
+        total_usage: TokenUsage::default(),
+        messages,
+        owner_token: None,
+        activated_deferred_tools: Vec::new(),
+        editable_turn: None,
+    }
+}
+
 /// Build events for a summary LLM call (used by autocompact internally).
 fn summary_turn(summary_text: &str) -> Vec<LlmEvent> {
     vec![
@@ -122,6 +155,82 @@ fn summary_turn(summary_text: &str) -> Vec<LlmEvent> {
             },
         },
     ]
+}
+
+// ── Pre-turn compact after switching to a smaller context window ───────────
+
+#[tokio::test]
+async fn resumed_turn_compacts_before_provider_when_occupancy_exceeds_new_threshold() {
+    // History is above the new model's autocompact threshold (16k) but below
+    // its emergency limit (19k). Mid-turn autocompact must still wait for
+    // EndTurn; the *first* provider pass of this send must compact first.
+    struct OrderProvider {
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for OrderProvider {
+        async fn stream(
+            &self,
+            request: &LlmRequest,
+        ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            let kind = if request.system.contains("compacting the earlier part") {
+                "compact"
+            } else {
+                "regular"
+            };
+            self.calls.lock().unwrap().push(kind);
+            let events = if kind == "compact" {
+                summary_turn("<summary>folded for smaller window</summary>")
+            } else {
+                text_turn("ok after compact", 1_000)
+            };
+            let (tx, rx) = mpsc::channel(64);
+            tokio::spawn(async move {
+                for event in events {
+                    let _ = tx.send(event).await;
+                }
+            });
+            Ok(rx)
+        }
+    }
+
+    let provider = Arc::new(OrderProvider {
+        calls: Mutex::new(Vec::new()),
+    });
+    let mut config = test_config();
+    config.compact = CompactConfig {
+        context_window: 20_000,
+        output_reserve: 2_000,
+        autocompact_buffer: 2_000,
+        emergency_buffer: 1_000,
+        ..CompactConfig::default()
+    };
+
+    let mut engine = AgentEngine::resume_with_provider(
+        provider.clone(),
+        config,
+        ToolRegistry::new(),
+        silent_output(),
+        bulky_resumed_session(20, 1_700),
+        std::env::temp_dir(),
+    );
+    let result = engine
+        .execute_turn("continue on the smaller model", "msg-switch")
+        .await
+        .expect("turn should succeed after pre-turn compact");
+
+    assert_eq!(result.text, "ok after compact");
+    let calls = provider.calls.lock().unwrap().clone();
+    assert_eq!(
+        calls.first().copied(),
+        Some("compact"),
+        "switching onto a smaller window must compact before the next model call, got {calls:?}"
+    );
+    assert!(
+        calls.iter().any(|kind| *kind == "regular"),
+        "the user turn must still reach the model after compact, got {calls:?}"
+    );
 }
 
 // ── TC-2.6-01: First turn does not trigger compaction ──────────────────────

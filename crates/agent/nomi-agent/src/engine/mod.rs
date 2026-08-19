@@ -1426,6 +1426,7 @@ impl AgentEngine {
         self.save_session();
 
         let mut turn: usize = 0;
+        let mut pre_turn_compacted = false;
         let mut tool_retry_tracker = ToolRetryTracker::default();
         loop {
             // Hard safety net: an unconfigured (`None`) max_turns still gets a
@@ -1591,6 +1592,18 @@ impl AgentEngine {
             let request_estimate = request_breakdown.total();
             self.compact_state.last_input_tokens =
                 self.compact_state.last_input_tokens.max(request_estimate);
+
+            if turn == 0
+                && !pre_turn_compacted
+                && auto::should_compact_before_turn(
+                    self.compact_state.last_input_tokens,
+                    &self.compact_config,
+                )
+            {
+                pre_turn_compacted = true;
+                self.run_compaction(CompactReason::TurnStart).await?;
+                continue 'provider_attempt;
+            }
 
             if emergency::is_at_emergency_limit(
                 self.compact_state.last_input_tokens,
@@ -2683,13 +2696,13 @@ impl AgentEngine {
 
     /// Run the compaction pipeline for a specific reason.
     ///
-    /// `TurnEnd` runs microcompact then autocompact at the normal threshold.
-    /// `EmergencyRecovery` still folds (mechanically if stuck) and only
-    /// returns `ContextTooLong` when the watermark remains at the emergency
-    /// limit after that attempt.
+    /// `TurnEnd` / `TurnStart` run microcompact then autocompact at the
+    /// normal threshold. `EmergencyRecovery` still folds (mechanically if
+    /// stuck) and only returns `ContextTooLong` when the watermark remains
+    /// at the emergency limit after that attempt.
     async fn run_compaction(&mut self, reason: CompactReason) -> Result<(), AgentError> {
         match reason {
-            CompactReason::TurnEnd => {
+            CompactReason::TurnEnd | CompactReason::TurnStart => {
                 self.run_microcompact();
                 if !self.compact_state.is_compact_stuck() {
                     self.run_autocompact(false).await?;

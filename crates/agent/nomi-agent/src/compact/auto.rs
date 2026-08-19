@@ -84,6 +84,20 @@ pub fn should_autocompact(last_input_tokens: u64, config: &CompactConfig) -> boo
     last_input_tokens as usize >= autocompact_threshold(config)
 }
 
+/// Whether the next user send should compact before the first provider call.
+///
+/// Used after switching onto a smaller context window: occupancy may already
+/// sit above the new model's autocompact threshold (or fill the window)
+/// even though `last_input_tokens` starts at 0 on a freshly built engine
+/// until the request is estimated.
+pub fn should_compact_before_turn(last_input_tokens: u64, config: &CompactConfig) -> bool {
+    if !config.enabled {
+        return false;
+    }
+    should_autocompact(last_input_tokens, config)
+        || last_input_tokens as usize >= config.context_window
+}
+
 // ── Tail-preservation compaction ──────────────────────────────────────────
 //
 // Autocompact preserves a recent tail verbatim and only summarizes the older
@@ -689,6 +703,33 @@ mod tests {
     fn zero_tokens_does_not_trigger() {
         let config = default_config();
         assert!(!should_autocompact(0, &config));
+    }
+
+    #[test]
+    fn should_compact_before_turn_follows_autocompact_threshold() {
+        let config = default_config();
+        assert!(!should_compact_before_turn(90_000, &config));
+        assert!(should_compact_before_turn(95_000, &config));
+    }
+
+    #[test]
+    fn should_compact_before_turn_when_occupancy_fills_the_window() {
+        let config = CompactConfig {
+            context_window: 200_000,
+            autocompact_threshold_pct: Some(100),
+            ..default_config()
+        };
+        assert!(!should_compact_before_turn(199_999, &config));
+        assert!(should_compact_before_turn(200_000, &config));
+    }
+
+    #[test]
+    fn should_compact_before_turn_respects_disabled_compact() {
+        let config = CompactConfig {
+            enabled: false,
+            ..default_config()
+        };
+        assert!(!should_compact_before_turn(999_999, &config));
     }
 
     #[test]
