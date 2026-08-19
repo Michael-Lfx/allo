@@ -144,7 +144,7 @@ lifecycle（不受 MAX_CONTROL_EVENTS=64 约束，始终入队）:
 - control Event 满：先丢 **恰好一条** normal（`lost++`）再入队；若 control 仍满 → `DroppedControl`（含 `turn/end`），`RecorderHealth.queue_dropped`。
 - **`turn/end` 禁止等 50ms。** Agent 产生的观测事件永不回压。
 - Delete / Clear / Reset / Shutdown 才 ACK 等待。
-- 若 `turn/end` 最终没进去：`RecorderHealth.queue_dropped`，Workspace 不得因缺 end 而永久 poll（见 7.1）。
+- 若 `turn/end` 最终没进去：`RecorderHealth.queue_dropped` 作顶栏警告；成功 persist 后可恢复 `healthy`。Workspace **不**因 `queue_dropped` 停 poll（见 7.1）。
 
 `event_seq` = writer 持久化全序，不是业务 happen-before。
 
@@ -203,21 +203,13 @@ Workspace 分两行：当前写入器 / 当前会话日志。不是第二套 SSO
 | preview：`current_send.content` 首次 bind 胜出，agent 二次 bind 不覆盖 | `ObservationSession::emit_turn_start_once` |
 | Workspace overlay、虚拟化、懒 Call GET、LRU=2、omitted、原始 token 芯片 | `AgentTraceInspector/` |
 
-### 本轮缺口（§9.1 收口）
+### 本轮已收口
 
-| 缺口 | 证据 |
-| --- | --- |
-| Refresh 只刷列表 | `loadList()` only，不重拉当前 turn / 已展开 call |
-| list/turn/call 共用一个 `listSeqRef` | turn/call bump 后 list `finally` 可能永不 `setLoading(false)` |
-| poll 无 abort/seq，且依赖整个 `entries` | 旧 tick 可盖新会话；每次 applyList 重置 timer |
-| 控制队满语义文档打架 | 0.5 允许最后丢 `turn/end`；旧 U0 DoD 写成「保证不丢」——**以 `try_enqueue` 为准，不改 DualQueue** |
+Refresh / poll 共用 `refreshWorkspace`（独立 seq + abort）；选中 turn 跳转清展开；Refresh/poll 必 GET call（LRU 只服务卡片点击）；`queue_dropped` 只警告不停 poll；成功 persist 可从 `queue_dropped`/`storage_error` 恢复；idle-kill 补 `turn/end`；Call 410 仅 turn 已结束后的空 payload；hub 未挂上时 drop/clear 打 warn；Flush ACK 合并。
 
 ### 不在本轮
 
-- idle-kill 路径没有 `emit_observation_turn_end`
-- hub 未挂上时 delete/clear 是 no-op
 - 读路径 `flush_blocking`（不改文件结构）
-- Call 410 空 payload 启发式可能把 emit 失败的空 call 当成 retention
 - [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 仍写 Drawer
 
 ---
@@ -368,7 +360,7 @@ GET .../turns/{root_turn_id}/calls/{model_call_id}?conversation_id=
 
 鉴权不变。Call GET 同样 developer mode + 会话归属。
 
-Call GET 在 header 还在、segment 已 GC：返回 **410**，body `reason=observation_retention`。在 `routes_trace.rs` 映射即可，**不要**为调试 API 去扩公共 `AppError`（现无 Gone 变体）。UI：「此调用详情已被观测保留策略清理」，不是「加载失败」。
+Call GET 在 header 还在、segment 已 GC：返回 **410**，body `reason=observation_retention`。仅当 **turn 已 `has_turn_end` 且 call payload 全空**；turn 仍在跑时的空 body 回 **200**，不得当成 retention。在 `routes_trace.rs` 映射即可，**不要**为调试 API 去扩公共 `AppError`（现无 Gone 变体）。UI：「此调用详情已被观测保留策略清理」，不是「加载失败」。
 
 ### 6.3 磁盘 quota
 
@@ -409,7 +401,7 @@ Poll **仅** `has turn/start && !turn/end` 的 new-format turn。
 **legacy（无 turn/start）不自动 poll。**
 
 退避：1.5s → 3s → 5s → 最大 10s；`max_event_seq` 变化则回到 1.5s。  
-`turn/end` 或 health 已 `storage_error`/`writer_disconnected`/`queue_dropped` → 停 poll。
+`turn/end` 或 health 已 `storage_error`/`writer_disconnected` → 停 poll。`queue_dropped` 只作顶栏警告，不停 poll。
 
 ---
 
