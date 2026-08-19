@@ -4,41 +4,53 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Button, Collapse, Message, Spin, Tag, Tooltip } from '@arco-design/web-react';
-import { Copy } from '@icon-park/react';
+import { Button, Message, Spin, Tooltip } from '@arco-design/web-react';
+import { Copy, Down, Up } from '@icon-park/react';
 import { copyText } from '@renderer/utils/ui/clipboard';
-import { formatJson, shortId } from './format';
+import { formatClock, formatDurationMs, turnToolCount } from './format';
+import ObservationJsonTree from './ObservationJsonTree';
 import {
   asRecord,
   canonicalRequestFromPayload,
   toolStatus,
   type ProjectedGap,
   type ProjectedModelCall,
+  type ProjectedRequestSummary,
+  type ProjectedResponseSummary,
   type ProjectedTokenUsage,
   type ProjectedToolExecution,
   type ProjectedTurn,
 } from './useAgentTraces';
 
+export type InspectStage = 'request' | 'response' | 'tool';
+
+export interface InspectTarget {
+  modelCallId: string;
+  stage: InspectStage;
+  toolCallId?: string;
+}
+
 export interface ObservationWorkflowProps {
   turn: ProjectedTurn;
-  expandedCallId: string | null;
+  inspectTarget: InspectTarget | null;
   callDetail: ProjectedModelCall | null;
   callLoading: boolean;
   callErrorKey: 'loadFailed' | 'developerModeRequired' | 'retentionRemoved' | null;
-  onToggleCall: (modelCallId: string) => void;
+  onInspect: (target: InspectTarget | null) => void;
 }
 
 const MetaRow: React.FC<{
   label: string;
   value: string;
   mono?: boolean;
-}> = ({ label, value, mono }) => {
+  copyable?: boolean;
+}> = ({ label, value, mono, copyable = true }) => {
   const { t } = useTranslation();
   const onCopy = useCallback(async () => {
-    if (!value || value === '—') return;
+    if (!value || value === '-') return;
     try {
       await copyText(value);
       Message.success(t('conversation.agentTrace.copied'));
@@ -57,68 +69,21 @@ const MetaRow: React.FC<{
       >
         {value}
       </span>
-      {value && value !== '—' ? (
-        <Tooltip content={t('conversation.agentTrace.copy')}>
+      {copyable && value && value !== '-' ? (
+        <Tooltip content={t('conversation.agentTrace.copyField', { label })}>
           <Button
             type='text'
             size='mini'
             className='shrink-0 !p-0 !h-18px !w-18px'
             icon={<Copy theme='outline' size='12' strokeWidth={3} />}
             onClick={() => void onCopy()}
-            aria-label={t('conversation.agentTrace.copy')}
+            aria-label={t('conversation.agentTrace.copyField', { label })}
           />
         </Tooltip>
       ) : null}
     </div>
   );
 };
-
-const JsonBlock: React.FC<{ label: string; value: unknown }> = ({ label, value }) => {
-  const { t } = useTranslation();
-  const onCopy = useCallback(async () => {
-    try {
-      await copyText(formatJson(value));
-      Message.success(t('conversation.agentTrace.copied'));
-    } catch {
-      Message.error(t('conversation.agentTrace.copyFailed'));
-    }
-  }, [t, value]);
-
-  return (
-    <div className='min-w-280px flex-1'>
-      <div className='flex items-center justify-between gap-8px mb-2px'>
-        <div className='text-11px font-600 text-[var(--color-text-2)]'>{label}</div>
-        <Tooltip content={t('conversation.agentTrace.copyJson')}>
-          <Button
-            type='text'
-            size='mini'
-            className='flowy-icon-text-btn'
-            icon={<Copy theme='outline' size='12' strokeWidth={3} />}
-            onClick={() => void onCopy()}
-          >
-            {t('conversation.agentTrace.copyJson')}
-          </Button>
-        </Tooltip>
-      </div>
-      <pre className='m-0 max-h-280px overflow-auto rounded-4px bg-[var(--color-fill-1)] px-8px py-6px text-11px text-[var(--color-text-1)] whitespace-pre-wrap break-all font-mono'>
-        {formatJson(value)}
-      </pre>
-    </div>
-  );
-};
-
-function toolStatusColor(status: ReturnType<typeof toolStatus>): string {
-  switch (status) {
-    case 'failed':
-      return 'red';
-    case 'cancelled':
-      return 'orangered';
-    case 'completed':
-      return 'green';
-    default:
-      return 'arcoblue';
-  }
-}
 
 function collectOmitted(payload: unknown): Array<Record<string, unknown>> {
   const record = asRecord(payload);
@@ -229,36 +194,12 @@ const TokenChips: React.FC<{ usage?: ProjectedTokenUsage | null }> = ({ usage })
   );
 };
 
-const ToolBlock: React.FC<{ tool: ProjectedToolExecution }> = ({ tool }) => {
-  const { t } = useTranslation();
-  const status = toolStatus(tool);
-  const payload = tool.cancelled ?? tool.failed ?? tool.completed ?? tool.started ?? {};
-  return (
-    <div className='rounded-4px border border-solid border-[var(--color-border-2)] px-8px py-8px min-w-220px'>
-      <div className='flex items-center gap-6px min-w-0 mb-6px'>
-        <Tag size='small' color={toolStatusColor(status)}>
-          {t(`conversation.agentTrace.tool_${status}`)}
-        </Tag>
-        <span className='text-12px text-[var(--color-text-1)] truncate'>
-          {tool.name ?? t('conversation.agentTrace.tools')}
-        </span>
-        <span className='text-11px font-mono text-[var(--color-text-3)] truncate' title={tool.tool_call_id}>
-          {shortId(tool.tool_call_id)}
-        </span>
-      </div>
-      <pre className='m-0 max-h-200px overflow-auto text-11px text-[var(--color-text-1)] whitespace-pre-wrap break-all font-mono'>
-        {formatJson(payload)}
-      </pre>
-    </div>
-  );
-};
-
 const GapRow: React.FC<{ gap: ProjectedGap }> = ({ gap }) => {
   const { t } = useTranslation();
   return (
-    <div className='rounded-4px border border-dashed border-[var(--color-warning-6,#ff7d00)] px-8px py-6px text-12px text-[var(--color-text-2)]'>
-      <div className='font-600 text-[var(--color-warning-6,#ff7d00)]'>
-        {t('conversation.agentTrace.gap')}
+    <div className='rounded-4px border border-dashed border-[var(--color-border-3)] px-8px py-6px text-12px text-[var(--color-text-2)]'>
+      <div className='font-600'>
+        <span className='session-logs-flag'>{t('conversation.agentTrace.gap')}</span>
         {gap.reason ? ` · ${gap.reason}` : ''}
       </div>
       <div className='text-11px text-[var(--color-text-3)] font-mono mt-2px'>
@@ -270,252 +211,468 @@ const GapRow: React.FC<{ gap: ProjectedGap }> = ({ gap }) => {
   );
 };
 
-function statusColor(status: ProjectedModelCall['status'] | ProjectedTurn['status']): string {
-  switch (status) {
-    case 'failed':
-      return 'red';
-    case 'cancelled':
-    case 'interrupted':
-      return 'orangered';
-    case 'truncated':
-      return 'orange';
-    case 'completed':
-      return 'green';
-    case 'running':
-      return 'arcoblue';
-    default:
-      return 'gray';
-  }
+function requestCounts(summary?: ProjectedRequestSummary | null): string {
+  if (!summary) return '';
+  const system = summary.has_system ? 1 : 0;
+  return [system, summary.message_count, summary.tool_definition_count].join(' · ');
 }
 
-const ModelCallCard: React.FC<{
-  header: ProjectedModelCall;
-  index: number;
-  expanded: boolean;
+function sameInspect(a: InspectTarget | null, b: InspectTarget): boolean {
+  return (
+    a != null &&
+    a.modelCallId === b.modelCallId &&
+    a.stage === b.stage &&
+    a.toolCallId === b.toolCallId
+  );
+}
+
+function callElapsedMs(call: ProjectedModelCall): number | null {
+  if (call.response_summary?.elapsed_ms != null) return call.response_summary.elapsed_ms;
+  if (call.started_at_ms != null && call.ended_at_ms != null) {
+    return Math.max(0, call.ended_at_ms - call.started_at_ms);
+  }
+  return null;
+}
+
+function toolElapsedMs(tool: ProjectedToolExecution): number | null {
+  if (tool.started_at_ms != null && tool.ended_at_ms != null) {
+    return Math.max(0, tool.ended_at_ms - tool.started_at_ms);
+  }
+  return null;
+}
+
+const StageTile: React.FC<{
+  stage: 'request' | 'response' | 'tool';
+  label: string;
+  title: string;
+  meta?: string;
+  selected?: boolean;
+  onClick: () => void;
+}> = ({ stage, label, title, meta, selected, onClick }) => (
+  <button
+    type='button'
+    className={[
+      'session-logs-tile',
+      `session-logs-tile--${stage}`,
+      selected ? 'is-selected' : '',
+    ]
+      .filter(Boolean)
+      .join(' ')}
+    aria-pressed={selected}
+    aria-expanded={selected}
+    onClick={onClick}
+  >
+    <div className='session-logs-tile__head'>{label}</div>
+    <div className='session-logs-tile__body'>
+      <div className='session-logs-tile__title'>{title}</div>
+      {meta ? <div className='session-logs-tile__meta'>{meta}</div> : null}
+    </div>
+  </button>
+);
+
+function RequestInspector({ payload }: { payload: unknown }) {
+  const { t } = useTranslation();
+  const body = asRecord(canonicalRequestFromPayload(payload));
+  if (!body) {
+    return (
+      <div className='text-12px text-[var(--color-text-3)]'>
+        {t('conversation.agentTrace.requestStage')} · {t('conversation.agentTrace.previewMissing')}
+      </div>
+    );
+  }
+  return (
+    <>
+      <div className='session-logs-inspector__grid'>
+        <ObservationJsonTree
+          label={t('conversation.agentTrace.inspectSystem')}
+          hint={t('conversation.agentTrace.inspectSystemHint')}
+          value={body.system ?? null}
+          textValue={typeof body.system === 'string'}
+        />
+        <ObservationJsonTree
+          label={t('conversation.agentTrace.inspectMessages')}
+          hint={t('conversation.agentTrace.inspectMessagesHint')}
+          value={body.messages ?? null}
+        />
+        <ObservationJsonTree
+          label={t('conversation.agentTrace.inspectToolDefs')}
+          hint={t('conversation.agentTrace.inspectToolDefsHint')}
+          value={body.tools ?? null}
+        />
+      </div>
+      <OmittedNotes payload={payload} />
+    </>
+  );
+}
+
+function ResponseInspector({ payload }: { payload: unknown }) {
+  const { t } = useTranslation();
+  const record = asRecord(payload);
+  if (!record) {
+    return (
+      <div className='rounded-4px bg-[var(--color-fill-1)] px-8px py-8px text-12px text-[var(--color-text-2)]'>
+        {t('conversation.agentTrace.noResponse')}
+      </div>
+    );
+  }
+  return (
+    <>
+      <div className='session-logs-inspector__grid'>
+        <ObservationJsonTree
+          label={t('conversation.agentTrace.inspectReasoning')}
+          hint={t('conversation.agentTrace.inspectReasoningHint')}
+          value={record.thinking ?? null}
+          textValue
+        />
+        <ObservationJsonTree
+          label={t('conversation.agentTrace.inspectContent')}
+          hint={t('conversation.agentTrace.inspectContentHint')}
+          value={record.text ?? null}
+          textValue
+        />
+        <ObservationJsonTree
+          label={t('conversation.agentTrace.inspectMetadata')}
+          hint={t('conversation.agentTrace.inspectMetadataHint')}
+          value={{
+            tool_use: record.tool_use,
+            stop_reason: record.stop_reason,
+            usage: record.usage,
+            error: record.error,
+            elapsed_ms: record.elapsed_ms,
+            ttft_ms: record.ttft_ms,
+          }}
+        />
+      </div>
+      <OmittedNotes payload={payload} />
+    </>
+  );
+}
+
+function ToolInspector({ tool }: { tool: ProjectedToolExecution }) {
+  const { t } = useTranslation();
+  const started = asRecord(tool.started);
+  const finished = asRecord(tool.completed ?? tool.failed ?? tool.cancelled);
+  return (
+    <>
+      <div className='session-logs-inspector__grid'>
+        <ObservationJsonTree
+          label={t('conversation.agentTrace.inspectArguments')}
+          hint={t('conversation.agentTrace.inspectArgumentsHint')}
+          value={started?.arguments ?? started ?? null}
+        />
+        <ObservationJsonTree
+          label={t('conversation.agentTrace.inspectResult')}
+          hint={t('conversation.agentTrace.inspectResultHint')}
+          value={finished?.result ?? finished ?? null}
+        />
+      </div>
+      <OmittedNotes payload={tool.started} />
+      <OmittedNotes payload={tool.completed ?? tool.failed ?? tool.cancelled} />
+    </>
+  );
+}
+
+function inspectorTitle(
+  t: (key: string) => string,
+  stage: InspectStage
+): string {
+  if (stage === 'request') return t('conversation.agentTrace.inspectRequestTitle');
+  if (stage === 'response') return t('conversation.agentTrace.inspectResponseTitle');
+  return t('conversation.agentTrace.inspectToolTitle');
+}
+
+const CallInspector: React.FC<{
+  stage: InspectStage;
+  toolCallId?: string;
   detail: ProjectedModelCall | null;
   loading: boolean;
   errorKey: ObservationWorkflowProps['callErrorKey'];
-  onToggle: () => void;
-}> = ({ header, index, expanded, detail, loading, errorKey, onToggle }) => {
+  onCollapse: () => void;
+}> = ({ stage, toolCallId, detail, loading, errorKey, onCollapse }) => {
   const { t } = useTranslation();
-  const call = detail ?? header;
-  const requestBody = canonicalRequestFromPayload(call.request);
-  const responseRecord = asRecord(call.response);
-  const status = header.status ?? (header.interrupted ? 'interrupted' : undefined);
+  let inner: React.ReactNode = null;
+  if (loading && !detail) {
+    inner = (
+      <div className='flex justify-center py-16px'>
+        <Spin />
+      </div>
+    );
+  } else if (errorKey === 'retentionRemoved') {
+    inner = (
+      <div className='text-12px text-[var(--color-text-2)]'>
+        {t('conversation.agentTrace.retentionRemoved')}
+      </div>
+    );
+  } else if (errorKey) {
+    inner = (
+      <div className='text-12px text-[var(--color-text-2)]'>
+        {t(`conversation.agentTrace.${errorKey}`)}
+      </div>
+    );
+  } else if (!detail) {
+    inner = null;
+  } else if (stage === 'request') {
+    inner = <RequestInspector payload={detail.request} />;
+  } else if (stage === 'response') {
+    inner =
+      detail.response == null ? (
+        <div className='rounded-4px bg-[var(--color-fill-1)] px-8px py-8px text-12px text-[var(--color-text-2)]'>
+          {t('conversation.agentTrace.noResponse')}
+        </div>
+      ) : (
+        <ResponseInspector payload={detail.response} />
+      );
+  } else {
+    const tool = detail.tools.find((item) => item.tool_call_id === toolCallId);
+    inner = tool ? <ToolInspector tool={tool} /> : null;
+  }
+
+  if (!inner) return null;
 
   return (
-    <div className='flex flex-col gap-8px px-12px py-10px border-b border-solid border-[var(--color-border-2)]'>
-      <button
-        type='button'
-        className='flex items-center gap-6px flex-wrap text-left border-0 bg-transparent p-0 cursor-pointer min-w-0'
-        onClick={onToggle}
-        aria-expanded={expanded}
-        aria-label={
-          expanded
-            ? t('conversation.agentTrace.collapseCall')
-            : t('conversation.agentTrace.expandCall')
-        }
-      >
-        <span className='text-10px text-[var(--color-text-3)] tabular-nums'>{index + 1}</span>
-        {status ? (
-          <Tag size='small' color={statusColor(status)}>
-            {t(`conversation.agentTrace.status_${status}`)}
-          </Tag>
-        ) : null}
-        <Tag size='small' color='arcoblue'>
-          {header.call_kind ?? t('conversation.agentTrace.callKind')}
-        </Tag>
-        {header.observation_scope ? (
-          <Tag size='small' color='gray'>
-            {header.observation_scope}
-          </Tag>
-        ) : null}
-        {header.interrupted ? (
-          <Tag size='small' color='orangered'>
-            {t('conversation.agentTrace.interrupted')}
-          </Tag>
-        ) : null}
-        <span className='text-11px font-mono text-[var(--color-text-3)]' title={header.model_call_id}>
-          {shortId(header.model_call_id)}
-        </span>
-        <TokenChips usage={header.usage} />
-      </button>
+    <div className='session-logs-inspector'>
+      <div className='session-logs-inspector__head'>
+        <div className='session-logs-inspector__title'>{inspectorTitle(t, stage)}</div>
+        <Tooltip content={t('conversation.agentTrace.collapseInspector')}>
+          <Button
+            type='text'
+            size='mini'
+            className='session-logs-json-tree__icon-btn'
+            icon={<Up theme='outline' size='12' strokeWidth={3} />}
+            onClick={onCollapse}
+            aria-label={t('conversation.agentTrace.collapseInspector')}
+          />
+        </Tooltip>
+      </div>
+      {inner}
+    </div>
+  );
+};
 
-      {expanded ? (
-        loading && !detail ? (
-          <div className='flex justify-center py-16px'>
-            <Spin />
-          </div>
-        ) : errorKey === 'retentionRemoved' ? (
-          <div className='text-12px text-[var(--color-text-2)]'>
-            {t('conversation.agentTrace.retentionRemoved')}
-          </div>
-        ) : errorKey ? (
-          <div className='text-12px text-[var(--color-text-2)]'>
-            {t(`conversation.agentTrace.${errorKey}`)}
-          </div>
+function responseTileCopy(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  summary?: ProjectedResponseSummary | null
+): { title: string; meta: string } {
+  const title = summary?.text_preview?.trim()
+    ? summary.text_preview
+    : summary?.has_text
+      ? t('conversation.agentTrace.partText')
+      : t('conversation.agentTrace.responseToolsOnly');
+  const parts: string[] = [];
+  if (summary?.has_thinking) parts.push(t('conversation.agentTrace.partThinking'));
+  if (summary?.has_text) parts.push(t('conversation.agentTrace.partText'));
+  if ((summary?.tool_use_count ?? 0) > 0) {
+    parts.push(t('conversation.agentTrace.partToolUse', { count: summary?.tool_use_count ?? 0 }));
+  }
+  return { title, meta: parts.join(' · ') };
+}
+
+const ModelCallSection: React.FC<{
+  header: ProjectedModelCall;
+  index: number;
+  inspectTarget: InspectTarget | null;
+  detail: ProjectedModelCall | null;
+  loading: boolean;
+  errorKey: ObservationWorkflowProps['callErrorKey'];
+  onInspect: (target: InspectTarget) => void;
+}> = ({ header, index, inspectTarget, detail, loading, errorKey, onInspect }) => {
+  const { t } = useTranslation();
+  const status = header.status ?? (header.interrupted ? 'interrupted' : undefined);
+  const elapsed = formatDurationMs(callElapsedMs(header));
+  const started = formatClock(header.started_at_ms);
+  const request = header.request_summary;
+  const response = header.response_summary;
+  const responseCopy = responseTileCopy(t, response);
+  const selected = inspectTarget?.modelCallId === header.model_call_id ? inspectTarget : null;
+
+  return (
+    <section className='session-logs-call'>
+      <div className='session-logs-call__title'>
+        {t('conversation.agentTrace.modelCallLabel', { n: index + 1 })}
+      </div>
+      <div className='session-logs-call__meta'>
+        {started ? <span>{started}</span> : null}
+        {elapsed ? <span>{elapsed}</span> : null}
+        {status ? <span>{t(`conversation.agentTrace.status_${status}`)}</span> : null}
+        <TokenChips usage={header.usage} />
+      </div>
+
+      <div className='session-logs-flow'>
+        <StageTile
+          stage='request'
+          label={t('conversation.agentTrace.requestStage')}
+          title={request?.model?.trim() || t('conversation.agentTrace.previewMissing')}
+          meta={
+            request
+              ? t('conversation.agentTrace.requestCounts', {
+                  system: request.has_system ? 1 : 0,
+                  messages: request.message_count,
+                  tools: request.tool_definition_count,
+                })
+              : requestCounts(request)
+          }
+          selected={selected?.stage === 'request'}
+          onClick={() => onInspect({ modelCallId: header.model_call_id, stage: 'request' })}
+        />
+        <span className='session-logs-flow__arrow' aria-hidden='true'>
+          →
+        </span>
+        <StageTile
+          stage='response'
+          label={t('conversation.agentTrace.responseStage')}
+          title={responseCopy.title}
+          meta={responseCopy.meta}
+          selected={selected?.stage === 'response'}
+          onClick={() => onInspect({ modelCallId: header.model_call_id, stage: 'response' })}
+        />
+        {header.tools.length === 0 ? (
+          <>
+            <span className='session-logs-flow__arrow' aria-hidden='true'>
+              →
+            </span>
+            <div className='session-logs-flow__end'>
+              <div className='session-logs-flow__end-label'>
+                {t('conversation.agentTrace.finalReply')}
+              </div>
+              <div className='session-logs-flow__end-title'>{responseCopy.title}</div>
+            </div>
+          </>
         ) : (
-          <div className='overflow-x-auto'>
-            <div className='flex gap-12px items-start min-w-min'>
-              {call.request != null ? (
-                <JsonBlock label={t('conversation.agentTrace.request')} value={requestBody} />
-              ) : (
-                <div className='text-12px text-[var(--color-text-3)] min-w-220px'>
-                  {t('conversation.agentTrace.request')} · {t('conversation.agentTrace.previewMissing')}
-                </div>
-              )}
-              {call.response != null ? (
-                <JsonBlock
-                  label={t('conversation.agentTrace.response')}
-                  value={
-                    responseRecord
-                      ? {
-                          text: responseRecord.text,
-                          thinking: responseRecord.thinking,
-                          tool_use: responseRecord.tool_use,
-                          stop_reason: responseRecord.stop_reason,
-                          usage: responseRecord.usage,
-                          error: responseRecord.error,
-                          elapsed_ms: responseRecord.elapsed_ms,
-                          ttft_ms: responseRecord.ttft_ms,
-                        }
-                      : call.response
+          header.tools.map((tool) => {
+            const statusLabel = t(`conversation.agentTrace.tool_${toolStatus(tool)}`);
+            const duration = formatDurationMs(toolElapsedMs(tool));
+            return (
+              <React.Fragment key={tool.tool_call_id}>
+                <span className='session-logs-flow__arrow' aria-hidden='true'>
+                  →
+                </span>
+                <StageTile
+                  stage='tool'
+                  label={t('conversation.agentTrace.toolStage')}
+                  title={
+                    tool.argument_preview?.trim() ||
+                    tool.name?.trim() ||
+                    t('conversation.agentTrace.tools')
+                  }
+                  meta={[statusLabel, duration].filter(Boolean).join(' · ')}
+                  selected={selected?.stage === 'tool' && selected.toolCallId === tool.tool_call_id}
+                  onClick={() =>
+                    onInspect({
+                      modelCallId: header.model_call_id,
+                      stage: 'tool',
+                      toolCallId: tool.tool_call_id,
+                    })
                   }
                 />
-              ) : (
-                <div className='rounded-4px bg-[var(--color-fill-1)] px-8px py-8px text-12px text-[var(--color-text-2)] min-w-220px'>
-                  {t('conversation.agentTrace.noResponse')}
-                </div>
-              )}
-              {call.tools.length > 0 ? (
-                <div className='flex flex-col gap-6px min-w-220px'>
-                  <div className='text-11px font-600 text-[var(--color-text-2)]'>
-                    {t('conversation.agentTrace.tools')} · {call.tools.length}
-                  </div>
-                  {call.tools.map((tool) => (
-                    <ToolBlock key={tool.tool_call_id || formatJson(tool)} tool={tool} />
-                  ))}
-                </div>
-              ) : null}
-            </div>
-            <div className='mt-8px flex flex-col gap-6px'>
-              <OmittedNotes payload={call.request} />
-              <OmittedNotes payload={call.response} />
-            </div>
-          </div>
-        )
-      ) : (
-        <div className='text-11px text-[var(--color-text-4)]'>
-          {t('conversation.agentTrace.loadCall')}
-        </div>
-      )}
-    </div>
+              </React.Fragment>
+            );
+          })
+        )}
+      </div>
+
+      {selected ? (
+        <CallInspector
+          stage={selected.stage}
+          toolCallId={selected.toolCallId}
+          detail={detail}
+          loading={loading}
+          errorKey={errorKey}
+          onCollapse={() => onInspect(selected)}
+        />
+      ) : null}
+    </section>
   );
 };
 
 const ObservationWorkflow: React.FC<ObservationWorkflowProps> = ({
   turn,
-  expandedCallId,
+  inspectTarget,
   callDetail,
   callLoading,
   callErrorKey,
-  onToggleCall,
+  onInspect,
 }) => {
   const { t } = useTranslation();
   const parentRef = useRef<HTMLDivElement>(null);
+  const [idsOpen, setIdsOpen] = useState(false);
   const virtualizer = useVirtualizer({
     count: turn.model_calls.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 88,
+    estimateSize: () => 168,
     overscan: 4,
     getItemKey: (index) => turn.model_calls[index]?.model_call_id || index,
   });
 
-  const copyJson = useCallback(async () => {
-    try {
-      await copyText(formatJson(turn));
-      Message.success(t('conversation.agentTrace.copied'));
-    } catch {
-      Message.error(t('conversation.agentTrace.copyFailed'));
-    }
-  }, [t, turn]);
-
   const degraded = turn.integrity === 'degraded';
+  const toolCount = turnToolCount(turn);
+  const elapsed = formatDurationMs(turn.elapsed_ms);
+  const started = formatClock(turn.started_at_ms);
+  const status = turn.status;
+
+  const selectInspect = (next: InspectTarget) => {
+    onInspect(sameInspect(inspectTarget, next) ? null : next);
+  };
 
   return (
     <div className='flex flex-col min-h-0 h-full'>
-      {(degraded || turn.interrupted || turn.gap_count > 0) && (
-        <div
-          className='mx-12px mt-10px mb-2px rounded-4px border border-solid px-10px py-8px shrink-0'
-          style={{
-            borderColor: 'var(--color-warning-6,#ff7d00)',
-            background: 'color-mix(in srgb, var(--color-warning-6, #ff7d00) 8%, transparent)',
-          }}
-        >
-          <div className='text-12px font-600 text-[var(--color-warning-6,#ff7d00)] mb-2px'>
-            {t('conversation.agentTrace.integrityDegraded')}
-            {turn.interrupted ? ` · ${t('conversation.agentTrace.interrupted')}` : ''}
-            {turn.gap_count > 0
-              ? ` · ${t('conversation.agentTrace.gapCount', { count: turn.gap_count })}`
-              : ''}
-          </div>
-          <div className='text-12px text-[var(--color-text-2)]'>
-            {t('conversation.agentTrace.gapBanner')}
-          </div>
+      <div className='px-12px pt-10px pb-8px shrink-0 border-b border-solid border-[var(--color-border-1)]'>
+        <div className='text-13px font-600 text-[var(--color-text-1)] leading-20px'>
+          {turn.prompt_preview || t('conversation.agentTrace.previewMissing')}
         </div>
-      )}
-
-      <div className='px-12px pt-10px pb-6px flex items-center justify-between gap-8px flex-wrap shrink-0'>
-        <div className='flex items-center gap-8px min-w-0 flex-wrap'>
-          <Tag size='small' color={degraded ? 'orangered' : 'green'}>
-            {degraded
-              ? t('conversation.agentTrace.integrityDegraded')
-              : t('conversation.agentTrace.integrityComplete')}
-          </Tag>
-          {turn.status ? (
-            <Tag size='small' color={statusColor(turn.status)}>
-              {t(`conversation.agentTrace.status_${turn.status}`)}
-            </Tag>
-          ) : null}
-          {turn.session_kind ? <Tag size='small'>{turn.session_kind}</Tag> : null}
-        </div>
-        <Button type='outline' size='mini' onClick={() => void copyJson()}>
-          {t('conversation.agentTrace.copyJson')}
-        </Button>
-      </div>
-
-      <div className='px-12px pb-10px shrink-0'>
-        <Collapse bordered={false} defaultActiveKey={['ids']} style={{ background: 'transparent' }}>
-          <Collapse.Item
-            name='ids'
-            header={t('conversation.agentTrace.showIds')}
-            style={{
-              border: '1px solid var(--color-border-2)',
-              borderRadius: 4,
-              overflow: 'hidden',
-              background: 'var(--color-bg-1)',
-            }}
+        <div className='session-logs-turn-meta'>
+          {started ? <span>{started}</span> : null}
+          {elapsed ? <span>{elapsed}</span> : null}
+          <span>{t('conversation.agentTrace.modelCallCount', { count: turn.model_calls.length })}</span>
+          <span>{t('conversation.agentTrace.toolCallCount', { count: toolCount })}</span>
+          {status ? <span>{t(`conversation.agentTrace.status_${status}`)}</span> : null}
+          <button
+            type='button'
+            className={idsOpen ? 'session-logs-identity-toggle is-open' : 'session-logs-identity-toggle'}
+            aria-expanded={idsOpen}
+            onClick={() => setIdsOpen((open) => !open)}
           >
-            <div className='flex flex-col gap-4px'>
-              <MetaRow label='root_turn_id' value={turn.root_turn_id} mono />
-              <MetaRow label='msg_id' value={turn.msg_id ?? '—'} mono />
-              <MetaRow label='execution_id' value={turn.execution_id ?? '—'} mono />
-              <MetaRow
-                label='execution_attempt_id'
-                value={turn.execution_attempt_id ?? '—'}
-                mono
-              />
-              <MetaRow
-                label={t('conversation.agentTrace.sessionKind')}
-                value={turn.session_kind ?? '—'}
-              />
-            </div>
-          </Collapse.Item>
-        </Collapse>
+            {t('conversation.agentTrace.identityFields')}
+            <span className='session-logs-identity-toggle__chevron'>
+              <Down theme='outline' size='12' strokeWidth={3} />
+            </span>
+          </button>
+        </div>
+        {(degraded || turn.interrupted || turn.gap_count > 0) && (
+          <div className='session-logs-nav__flags mt-6px'>
+            {degraded ? (
+              <span className='session-logs-flag'>{t('conversation.agentTrace.integrityDegraded')}</span>
+            ) : null}
+            {turn.interrupted ? (
+              <span className='session-logs-flag'>{t('conversation.agentTrace.interrupted')}</span>
+            ) : null}
+            {turn.gap_count > 0 ? (
+              <span className='session-logs-flag'>
+                {t('conversation.agentTrace.gapCount', { count: turn.gap_count })}
+              </span>
+            ) : null}
+          </div>
+        )}
+        {idsOpen ? (
+          <div className='session-logs-identity'>
+            <MetaRow label='root_turn_id' value={turn.root_turn_id} mono />
+            <MetaRow label='msg_id' value={turn.msg_id ?? '-'} mono />
+            <MetaRow label='execution_id' value={turn.execution_id ?? '-'} mono />
+            <MetaRow
+              label='execution_attempt_id'
+              value={turn.execution_attempt_id ?? '-'}
+              mono
+            />
+            <MetaRow
+              label={t('conversation.agentTrace.sessionKind')}
+              value={turn.session_kind ?? '-'}
+              copyable={false}
+            />
+          </div>
+        ) : null}
       </div>
 
       {turn.gaps.length > 0 ? (
-        <div className='px-12px pb-8px flex flex-col gap-6px shrink-0'>
+        <div className='px-12px py-8px flex flex-col gap-6px shrink-0'>
           {turn.gaps.map((gap) => (
             <GapRow key={`gap-${gap.event_seq}`} gap={gap} />
           ))}
@@ -538,6 +695,7 @@ const ObservationWorkflow: React.FC<ObservationWorkflowProps> = ({
             {virtualizer.getVirtualItems().map((item) => {
               const call = turn.model_calls[item.index];
               if (!call) return null;
+              const expanded = inspectTarget?.modelCallId === call.model_call_id;
               return (
                 <div
                   key={item.key}
@@ -551,14 +709,14 @@ const ObservationWorkflow: React.FC<ObservationWorkflowProps> = ({
                     transform: `translateY(${item.start}px)`,
                   }}
                 >
-                  <ModelCallCard
+                  <ModelCallSection
                     header={call}
                     index={item.index}
-                    expanded={expandedCallId === call.model_call_id}
-                    detail={expandedCallId === call.model_call_id ? callDetail : null}
-                    loading={expandedCallId === call.model_call_id && callLoading}
-                    errorKey={expandedCallId === call.model_call_id ? callErrorKey : null}
-                    onToggle={() => onToggleCall(call.model_call_id)}
+                    inspectTarget={inspectTarget}
+                    detail={expanded ? callDetail : null}
+                    loading={expanded && callLoading}
+                    errorKey={expanded ? callErrorKey : null}
+                    onInspect={selectInspect}
                   />
                 </div>
               );

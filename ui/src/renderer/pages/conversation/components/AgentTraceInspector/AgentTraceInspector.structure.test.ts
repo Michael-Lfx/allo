@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 import { CallDetailLru, MAX_CALL_DETAIL_CACHE } from './callDetailCache';
+import { assignTurnRounds, formatClock, formatDurationMs } from './format';
 import type { ProjectedModelCall } from './useAgentTraces';
 
 const readSource = (url: URL) => readFileSync(url, 'utf8');
@@ -15,36 +16,132 @@ describe('AgentTraceInspector', () => {
   test('gates rendering on system.developerMode and mounts from ChatLayout', () => {
     const inspector = readSource(new URL('./index.tsx', import.meta.url));
     const layout = readSource(new URL('../ChatLayout/index.tsx', import.meta.url));
+    const layoutCss = readSource(new URL('../ChatLayout/chat-layout.css', import.meta.url));
 
     expect(inspector.includes("useConfig('system.developerMode')")).toBe(true);
     expect(inspector.includes('if (developerMode !== true)')).toBe(true);
     expect(inspector.includes('return null')).toBe(true);
     expect(inspector.includes('/api/debug/agent-traces')).toBe(false);
     expect(inspector.includes('ObservationWorkflow')).toBe(true);
-    expect(inspector.includes('fixed inset-0')).toBe(true);
+    expect(inspector.includes('createPortal')).toBe(false);
+    expect(inspector.includes('document.body')).toBe(false);
+    expect(inspector.includes('fixed inset-0')).toBe(false);
+    expect(inspector.includes('z-[10000]')).toBe(false);
     expect(inspector.includes('min(760px')).toBe(false);
     expect(layout.includes("from '@/renderer/pages/conversation/components/AgentTraceInspector'")).toBe(true);
-    expect(layout.includes('<AgentTraceInspector conversationId={conversation_id} />')).toBe(true);
+    expect(layout.includes('<SessionLogsRoot')).toBe(true);
+    expect(layout.includes('<AgentTraceTrigger />')).toBe(true);
+    expect(layout.includes('<SessionLogWorkspace />')).toBe(true);
+    expect(layout.includes('conversation-column-track')).toBe(true);
+    expect(layout.includes('tabDialogue')).toBe(false);
+    expect(layout.includes('tabLogs')).toBe(false);
+    expect(layout.includes('conversation-column-tabs')).toBe(false);
+    expect(layout.includes('hideAdvancedControls')).toBe(true);
+    expect(layoutCss.includes('transform: translateX')).toBe(true);
+    expect(layoutCss.includes('--ease-out-expo')).toBe(true);
+    expect(layoutCss.includes('prefers-reduced-motion')).toBe(true);
+    expect(layoutCss.includes('container-type: inline-size')).toBe(true);
+
+    const triggerIndex = layout.indexOf('{logsEnabled ? <AgentTraceTrigger /> : null}');
+    const knowledgeIndex = layout.indexOf('<KnowledgeControl');
+    expect(triggerIndex).toBeGreaterThan(-1);
+    expect(knowledgeIndex).toBeGreaterThan(-1);
+    expect(triggerIndex).toBeLessThan(knowledgeIndex);
   });
 
-  test('detail surfaces integrity, gap, interrupted, and REQUEST→RESPONSE→tools', () => {
+  test('observe pill and nav chrome replace column tabs', () => {
+    const inspector = readSource(new URL('./index.tsx', import.meta.url));
+    const css = readSource(new URL('./session-logs.css', import.meta.url));
+    expect(inspector.includes('aria-pressed={open}')).toBe(true);
+    expect(inspector.includes('newestFirst')).toBe(true);
+    expect(inspector.includes('oldestFirst')).toBe(true);
+    expect(inspector.includes('SortAmountDown')).toBe(true);
+    expect(inspector.includes('SortAmountUp')).toBe(true);
+    expect(inspector.includes('Popover')).toBe(true);
+    expect(inspector.includes('glossaryAria')).toBe(true);
+    expect(inspector.includes('session-logs-glossary')).toBe(true);
+    expect(inspector.includes('metricTurnHint')).toBe(true);
+    expect(inspector.includes('metricModelHint')).toBe(true);
+    expect(inspector.includes('metricToolHint')).toBe(true);
+    expect(inspector.includes('metricDurationHint')).toBe(true);
+    expect(inspector.includes('integrityHint')).toBe(true);
+    expect(inspector.includes('session-logs-integrity')).toBe(false);
+    expect(inspector.includes("hint={t('conversation.agentTrace.metricTurnHint')}")).toBe(false);
+    expect(inspector.includes('userTurnCount')).toBe(false);
+    expect(inspector.includes('formatClock(entry.started_at_ms)')).toBe(true);
+    expect(inspector.includes('assignTurnRounds')).toBe(true);
+    expect(inspector.includes('closeWorkspace')).toBe(true);
+    expect(inspector.includes("icon={<Close")).toBe(false);
+    expect(inspector.includes('Sliding back to dialogue must not abort poll')).toBe(true);
+    expect(inspector.includes('capabilityHeaderButtonStyle(OBSERVE_ACCENT)')).toBe(true);
+    expect(inspector.includes("capabilityHeaderButtonStyle(ACCENT)")).toBe(false);
+    expect(css.includes('.session-logs-nav__item.is-active')).toBe(true);
+    expect(css.includes('rgb(var(--primary-6)) 8%')).toBe(true);
+    expect(css.includes('container-name: session-logs')).toBe(true);
+    expect(css.includes('session-logs-nav__list')).toBe(true);
+    expect(css.includes('@container session-logs (max-width: 720px)')).toBe(true);
+    expect(css.includes('padding: 12px 16px 14px')).toBe(true);
+    expect(css.includes('session-logs-order')).toBe(false);
+  });
+
+  test('detail surfaces integrity, gap, interrupted, and model-call request→response→tool flow', () => {
     const inspector = readSource(new URL('./index.tsx', import.meta.url));
     const workflow = readSource(new URL('./ObservationWorkflow.tsx', import.meta.url));
+    const tree = readSource(new URL('./ObservationJsonTree.tsx', import.meta.url));
     expect(inspector.includes('integrity')).toBe(true);
     expect(inspector.includes('interrupted')).toBe(true);
     expect(inspector.includes('writerHealth')).toBe(true);
-    expect(inspector.includes('sessionLog')).toBe(true);
-    expect(workflow.includes('conversation.agentTrace.request')).toBe(true);
-    expect(workflow.includes('conversation.agentTrace.response')).toBe(true);
-    expect(workflow.includes('conversation.agentTrace.tools')).toBe(true);
+    expect(inspector.includes('roundLabel')).toBe(true);
+    expect(inspector.includes('modelCallCount')).toBe(true);
+    expect(inspector.includes('msg=')).toBe(false);
+    expect(inspector.includes('title={entry.root_turn_id}')).toBe(false);
+    expect(inspector.includes('turn={shortId')).toBe(false);
+    expect(workflow.includes('conversation.agentTrace.requestStage')).toBe(true);
+    expect(workflow.includes('conversation.agentTrace.responseStage')).toBe(true);
+    expect(workflow.includes('conversation.agentTrace.toolStage')).toBe(true);
+    expect(workflow.includes('conversation.agentTrace.modelCallLabel')).toBe(true);
+    expect(workflow.includes('conversation.agentTrace.finalReply')).toBe(true);
     expect(workflow.includes('conversation.agentTrace.gap')).toBe(true);
     expect(workflow.includes('conversation.agentTrace.interrupted')).toBe(true);
-    expect(workflow.includes('copyJson')).toBe(true);
+    expect(workflow.includes("t('conversation.agentTrace.copyJson')")).toBe(false);
+    expect(workflow.includes('copyTurn')).toBe(false);
+    expect(workflow.includes('copyField')).toBe(true);
+    expect(workflow.includes('identityFields')).toBe(true);
+    expect(workflow.includes('<Collapse')).toBe(false);
+    expect(workflow.includes('copyable={false}')).toBe(true);
+    expect(workflow.includes('session-logs-flow__end')).toBe(true);
+    expect(workflow.includes('staticTile')).toBe(false);
+    expect(workflow.includes('aria-expanded={selected}')).toBe(true);
+    expect(workflow.includes('argument_preview')).toBe(true);
     expect(workflow.includes('root_turn_id')).toBe(true);
     expect(workflow.includes('canonicalRequestFromPayload')).toBe(true);
     expect(workflow.includes('useVirtualizer')).toBe(true);
     expect(workflow.includes('omittedField')).toBe(true);
     expect(workflow.includes('retentionRemoved')).toBe(true);
+    expect(workflow.includes('inspectSystem')).toBe(true);
+    expect(workflow.includes('inspectSystemHint')).toBe(true);
+    expect(workflow.includes('inspectReasoning')).toBe(true);
+    expect(workflow.includes('inspectRequestTitle')).toBe(true);
+    expect(workflow.includes("JsonBlock label={t('conversation.agentTrace.request')}")).toBe(false);
+    expect(workflow.includes("JsonBlock label={t('conversation.agentTrace.response')}")).toBe(false);
+    expect(tree.includes("from 'react-json-view-lite'")).toBe(true);
+    expect(tree.includes('shouldExpandObservationNode')).toBe(true);
+    expect(tree.includes("field === 'messages'")).toBe(true);
+    expect(tree.includes("field === 'tools'")).toBe(true);
+    expect(tree.includes('forwardPunctuationToggle')).toBe(true);
+    expect(tree.includes(':scope > [role="button"]')).toBe(true);
+    expect(tree.includes('session-logs-json-tree__punct')).toBe(true);
+    expect(tree.includes('session-logs-json-tree__expander')).toBe(true);
+    expect(tree.includes('session-logs-json-tree__collapsed')).toBe(true);
+    expect(tree.includes('copyField')).toBe(true);
+    expect(tree.includes('hint?: string')).toBe(true);
+    const css = readSource(new URL('./session-logs.css', import.meta.url));
+    expect(css.includes('border: 1px solid var(--color-border-2)')).toBe(true);
+    expect(css.includes('session-logs-json-tree__expander')).toBe(true);
+    expect(css.includes('button.session-logs-tile:hover')).toBe(true);
+    expect(css.includes('session-logs-flow__end')).toBe(true);
+    expect(css.includes('height: 26px')).toBe(true);
+    expect(css.includes('.session-logs-json-tree:hover')).toBe(false);
   });
 
   test('fetch helpers target session-observations and do not rebuild chat messages', () => {
@@ -55,8 +152,11 @@ describe('AgentTraceInspector', () => {
     expect(hook.includes('/calls/')).toBe(true);
     expect(hook.includes('/api/debug/agent-traces')).toBe(false);
     expect(hook.includes('conversation_id')).toBe(true);
+    expect(hook.includes('ProjectedRequestSummary')).toBe(true);
+    expect(hook.includes('ProjectedResponseSummary')).toBe(true);
+    expect(hook.includes('argument_preview')).toBe(true);
     expect(inspector.includes('listSessionObservations')).toBe(true);
-    expect(inspector.includes('[...page.turns].reverse()')).toBe(true);
+    expect(inspector.includes('[...entries].reverse()')).toBe(true);
     expect(inspector.includes('refreshWorkspace')).toBe(true);
     expect(inspector.includes('void loadList()')).toBe(false);
     expect(inspector.includes('onClick={() => void refreshWorkspace({ showListLoading: true })}')).toBe(
@@ -102,6 +202,7 @@ describe('AgentTraceInspector', () => {
     const refreshBody = inspector.slice(refreshStart, refreshEnd);
     expect(refreshBody.includes('callCacheRef.current.get(')).toBe(false);
     expect(refreshBody.includes('getSessionObservationCall')).toBe(true);
+    expect(inspector.includes("onViewChange('dialogue')")).toBe(true);
   });
 
   test('call detail cache keeps two most recent entries', () => {
@@ -122,5 +223,23 @@ describe('AgentTraceInspector', () => {
     cache.delete('b');
     expect(cache.get('b')).toBeUndefined();
     expect(cache.size).toBe(1);
+  });
+
+  test('formatDurationMs uses seconds and minutes, not raw milliseconds', () => {
+    expect(formatDurationMs(2500)).toBe('2.5s');
+    expect(formatDurationMs(65730)).toBe('1m6s');
+    expect(formatDurationMs(65730).includes('ms')).toBe(false);
+  });
+
+  test('formatClock and round numbers stay stable across display order', () => {
+    expect(formatClock(1_700_000_000_000).length).toBeGreaterThan(0);
+    const rounds = assignTurnRounds([
+      { root_turn_id: 'b', started_at_ms: 200 },
+      { root_turn_id: 'a', started_at_ms: 100 },
+      { root_turn_id: 'c', started_at_ms: 300 },
+    ]);
+    expect(rounds.get('a')).toBe(1);
+    expect(rounds.get('b')).toBe(2);
+    expect(rounds.get('c')).toBe(3);
   });
 });

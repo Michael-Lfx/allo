@@ -4,11 +4,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
-import { Button, Empty, Spin, Tag, Tooltip } from '@arco-design/web-react';
-import { Bug, Close, Refresh } from '@icon-park/react';
+import { Button, Empty, Popover, Spin, Tooltip } from '@arco-design/web-react';
+import { Bug, Info, Refresh, SortAmountDown, SortAmountUp } from '@icon-park/react';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { ConversationId } from '@/common/types/ids';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
@@ -17,8 +25,9 @@ import {
   capabilityHeaderButtonStyle,
 } from '../CapabilityHeaderButton';
 import { CallDetailLru, callCacheKey } from './callDetailCache';
-import ObservationWorkflow from './ObservationWorkflow';
-import { shortId } from './format';
+import ObservationWorkflow, { type InspectTarget } from './ObservationWorkflow';
+import { formatClock, formatDurationMs, assignTurnRounds, turnToolCount } from './format';
+import './session-logs.css';
 import {
   getSessionObservationCall,
   getSessionObservationTurn,
@@ -31,11 +40,16 @@ import {
   type SessionObservationList,
 } from './useAgentTraces';
 
-export interface AgentTraceInspectorProps {
+export type ConversationColumnView = 'dialogue' | 'logs';
+
+export interface SessionLogsRootProps {
   conversationId: ConversationId;
+  view: ConversationColumnView;
+  onViewChange: (view: ConversationColumnView) => void;
+  children: React.ReactNode;
 }
 
-const ACCENT = 'var(--color-text-2)';
+const OBSERVE_ACCENT = 'rgb(var(--primary-6))';
 const POLL_START_MS = 1500;
 const POLL_MAX_MS = 10000;
 
@@ -64,32 +78,96 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
+const MetricStat: React.FC<{
+  value: string | number;
+  label: string;
+}> = ({ value, label }) => (
+  <div className='session-logs-metrics__item'>
+    <span className='session-logs-metrics__value'>{value}</span>
+    <span className='session-logs-metrics__label'>{label}</span>
+  </div>
+);
+
+function newestTurnId(turns: ProjectedTurn[]): string | null {
+  if (turns.length === 0) return null;
+  let best = turns[turns.length - 1];
+  for (const turn of turns) {
+    if (
+      turn.started_at_ms != null &&
+      (best.started_at_ms == null || turn.started_at_ms >= best.started_at_ms)
+    ) {
+      best = turn;
+    }
+  }
+  return best.root_turn_id;
+}
+
 function resolveSelectedId(ordered: ProjectedTurn[], current: string | null): string | null {
   if (ordered.length === 0) return null;
   if (current && ordered.some((row) => row.root_turn_id === current)) return current;
-  return ordered[0].root_turn_id;
+  return newestTurnId(ordered);
+}
+
+type SessionLogsContextValue = {
+  conversationId: ConversationId;
+  view: ConversationColumnView;
+  onViewChange: (view: ConversationColumnView) => void;
+  developerMode: boolean;
+  loading: boolean;
+  errorKey: 'loadFailed' | 'developerModeRequired' | null;
+  entries: ProjectedTurn[];
+  summary: ObservationSummary | null;
+  health: RecorderHealth | null;
+  selectedId: string | null;
+  setSelectedId: (id: string) => void;
+  detail: ProjectedTurn | null;
+  detailLoading: boolean;
+  detailErrorKey: 'loadFailed' | 'developerModeRequired' | null;
+  inspectTarget: InspectTarget | null;
+  setInspectTarget: React.Dispatch<React.SetStateAction<InspectTarget | null>>;
+  callDetail: ProjectedModelCall | null;
+  callLoading: boolean;
+  callErrorKey: 'loadFailed' | 'developerModeRequired' | 'retentionRemoved' | null;
+  refreshWorkspace: (options?: { signal?: AbortSignal; showListLoading?: boolean }) => Promise<{
+    seqChanged: boolean;
+  } | void>;
+};
+
+const SessionLogsContext = createContext<SessionLogsContextValue | null>(null);
+
+function useSessionLogs(): SessionLogsContextValue {
+  const value = useContext(SessionLogsContext);
+  if (!value) {
+    throw new Error('Session logs controls require SessionLogsRoot');
+  }
+  return value;
 }
 
 /**
- * Developer Mode–gated workspace overlay: navigator + summary + lazy Call GET.
+ * Developer Mode–gated session logs: navigator + summary + lazy Call GET.
  * Renders persisted observation projections only — never chat bubbles.
  */
-export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conversationId }) => {
-  const { t } = useTranslation();
+export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
+  conversationId,
+  view,
+  onViewChange,
+  children,
+}) => {
   const [developerMode] = useConfig('system.developerMode');
-  const [open, setOpen] = useState(false);
+  const logsVisible = view === 'logs';
+  const [activated, setActivated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorKey, setErrorKey] = useState<'loadFailed' | 'developerModeRequired' | null>(null);
   const [entries, setEntries] = useState<ProjectedTurn[]>([]);
   const [summary, setSummary] = useState<ObservationSummary | null>(null);
   const [health, setHealth] = useState<RecorderHealth | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedIdState] = useState<string | null>(null);
   const [detail, setDetail] = useState<ProjectedTurn | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailErrorKey, setDetailErrorKey] = useState<
     'loadFailed' | 'developerModeRequired' | null
   >(null);
-  const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
+  const [inspectTarget, setInspectTarget] = useState<InspectTarget | null>(null);
   const [callDetail, setCallDetail] = useState<ProjectedModelCall | null>(null);
   const [callLoading, setCallLoading] = useState(false);
   const [callErrorKey, setCallErrorKey] = useState<
@@ -108,11 +186,23 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
   const lastSeqRef = useRef(0);
 
   selectedIdRef.current = selectedId;
-  expandedCallIdRef.current = expandedCallId;
+  expandedCallIdRef.current = inspectTarget?.modelCallId ?? null;
   conversationRef.current = conversationId;
 
+  // Sliding back to dialogue must not abort poll or clear LRU. `activated` stays
+  // true after the first open; only a conversation change resets it.
+  const live = developerMode === true && activated;
+
+  useEffect(() => {
+    setActivated(false);
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (logsVisible) setActivated(true);
+  }, [conversationId, logsVisible]);
+
   const applyList = useCallback((page: SessionObservationList) => {
-    const ordered = [...page.turns].reverse();
+    const ordered = page.turns;
     setEntries(ordered);
     setSummary(page.summary);
     setHealth(page.recorder_health);
@@ -124,16 +214,16 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
     const nextSelected = resolveSelectedId(ordered, previousSelected);
     const selectedChanged = nextSelected !== previousSelected;
     if (nextSelected == null || selectedChanged) {
-      setExpandedCallId(null);
+      setInspectTarget(null);
       setCallDetail(null);
       setCallErrorKey(null);
       expandedCallIdRef.current = null;
       setDetail(null);
     }
     if (nextSelected == null) {
-      setSelectedId(null);
+      setSelectedIdState(null);
     } else {
-      setSelectedId(nextSelected);
+      setSelectedIdState(nextSelected);
     }
     return { nextSelected, selectedChanged };
   }, []);
@@ -241,7 +331,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
         setSummary(null);
         setHealth(null);
         setDetail(null);
-        setSelectedId(null);
+        setSelectedIdState(null);
         if (isBackendHttpError(err) && err.status === 403) {
           setErrorKey('developerModeRequired');
         } else {
@@ -256,22 +346,18 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
   );
 
   const closeWorkspace = useCallback(() => {
-    abortWorkspaceFetches();
-    setOpen(false);
-    setExpandedCallId(null);
-    setCallDetail(null);
-    callCacheRef.current.clear();
-  }, [abortWorkspaceFetches]);
+    onViewChange('dialogue');
+  }, [onViewChange]);
 
   useEffect(() => {
     abortWorkspaceFetches();
     callCacheRef.current.clear();
-    setExpandedCallId(null);
+    setInspectTarget(null);
     setCallDetail(null);
     setEntries([]);
     setSummary(null);
     setHealth(null);
-    setSelectedId(null);
+    setSelectedIdState(null);
     setDetail(null);
     setErrorKey(null);
     setDetailErrorKey(null);
@@ -287,24 +373,24 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
   }, [abortWorkspaceFetches, conversationId]);
 
   useEffect(() => {
-    if (!open || developerMode !== true) return;
+    if (!live) return;
     void refreshWorkspace({ showListLoading: true });
     return () => {
       abortWorkspaceFetches();
     };
-  }, [open, conversationId, developerMode, refreshWorkspace, abortWorkspaceFetches]);
+  }, [live, conversationId, refreshWorkspace, abortWorkspaceFetches]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!logsVisible) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') closeWorkspace();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [closeWorkspace, open]);
+  }, [closeWorkspace, logsVisible]);
 
   useEffect(() => {
-    if (!open || !selectedId || developerMode !== true) return;
+    if (!live || !selectedId) return;
     const controller = new AbortController();
     const requestSeq = ++turnSeqRef.current;
     setDetailLoading(true);
@@ -336,10 +422,12 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
     return () => {
       controller.abort();
     };
-  }, [open, selectedId, developerMode, conversationId]);
+  }, [live, selectedId, conversationId]);
+
+  const expandedCallId = inspectTarget?.modelCallId ?? null;
 
   useEffect(() => {
-    if (!open || !selectedId || !expandedCallId || developerMode !== true) return;
+    if (!live || !selectedId || !expandedCallId) return;
     const cacheKey = callCacheKey(String(conversationId), selectedId, expandedCallId);
     const cached = callCacheRef.current.get(cacheKey);
     if (cached) {
@@ -384,12 +472,12 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
     return () => {
       controller.abort();
     };
-  }, [open, selectedId, expandedCallId, developerMode, conversationId]);
+  }, [live, selectedId, expandedCallId, conversationId]);
 
   const shouldPoll = shouldPollTurns(entries, health);
 
   useEffect(() => {
-    if (!open || developerMode !== true || !shouldPoll) return;
+    if (!live || !shouldPoll) return;
     const controller = new AbortController();
     let cancelled = false;
     let timeoutId = 0;
@@ -413,202 +501,334 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
       controller.abort();
       window.clearTimeout(timeoutId);
     };
-  }, [conversationId, developerMode, open, refreshWorkspace, shouldPoll]);
+  }, [conversationId, live, refreshWorkspace, shouldPoll]);
 
-  if (developerMode !== true) {
-    return null;
-  }
+  const setSelectedId = useCallback((id: string) => {
+    setSelectedIdState(id);
+    setInspectTarget(null);
+    setCallDetail(null);
+  }, []);
 
-  const healthStatus = health?.status ?? 'healthy';
+  const value = useMemo<SessionLogsContextValue>(
+    () => ({
+      conversationId,
+      view,
+      onViewChange,
+      developerMode: developerMode === true,
+      loading,
+      errorKey,
+      entries,
+      summary,
+      health,
+      selectedId,
+      setSelectedId,
+      detail,
+      detailLoading,
+      detailErrorKey,
+      inspectTarget,
+      setInspectTarget,
+      callDetail,
+      callLoading,
+      callErrorKey,
+      refreshWorkspace,
+    }),
+    [
+      conversationId,
+      view,
+      onViewChange,
+      developerMode,
+      loading,
+      errorKey,
+      entries,
+      summary,
+      health,
+      selectedId,
+      setSelectedId,
+      detail,
+      detailLoading,
+      detailErrorKey,
+      inspectTarget,
+      callDetail,
+      callLoading,
+      callErrorKey,
+      refreshWorkspace,
+    ]
+  );
 
+  return <SessionLogsContext.Provider value={value}>{children}</SessionLogsContext.Provider>;
+};
+
+export const AgentTraceTrigger: React.FC = () => {
+  const { t } = useTranslation();
+  const { view, onViewChange, developerMode } = useSessionLogs();
+  if (developerMode !== true) return null;
+  const open = view === 'logs';
   return (
-    <>
-      <Tooltip content={t('conversation.agentTrace.openInspector')}>
-        <Button
-          type='text'
-          size='mini'
-          shape='round'
-          className={classNames(capabilityHeaderButtonClass(open), 'flowy-icon-text-btn')}
-          style={capabilityHeaderButtonStyle(ACCENT)}
-          icon={<Bug theme='outline' size='14' strokeWidth={3} />}
-          onClick={() => setOpen(true)}
-          aria-label={t('conversation.agentTrace.openInspector')}
-        >
-          {t('conversation.agentTrace.openInspector')}
-        </Button>
-      </Tooltip>
-
-      {open ? (
-        <div
-          className='fixed inset-0 z-1000 flex flex-col bg-[var(--color-bg-1)]'
-          role='dialog'
-          aria-modal='true'
-          aria-label={t('conversation.agentTrace.workspaceTitle')}
-        >
-          <div className='flex items-start justify-between gap-12px px-16px py-10px border-b border-solid border-[var(--color-border-2)]'>
-            <div className='min-w-0 flex-1'>
-              <div className='flex items-center gap-8px'>
-                <div className='text-14px font-600 text-[var(--color-text-1)]'>
-                  {t('conversation.agentTrace.workspaceTitle')}
-                </div>
-                <span className='text-11px text-[var(--color-text-3)] truncate'>{conversationId}</span>
-              </div>
-              <div className='mt-6px text-12px text-[var(--color-text-2)]'>
-                {t('conversation.agentTrace.writerHealth')}
-                {' · '}
-                {t(`conversation.agentTrace.health_${healthStatus}`)}
-                {health?.last_error ? ` · ${health.last_error}` : ''}
-              </div>
-              <div className='mt-2px text-12px text-[var(--color-text-2)]'>
-                {t('conversation.agentTrace.sessionLog')}
-                {' · '}
-                {summary
-                  ? t(
-                      summary.integrity === 'degraded'
-                        ? 'conversation.agentTrace.integrityDegraded'
-                        : 'conversation.agentTrace.integrityComplete'
-                    )
-                  : '—'}
-                {summary ? ` · ${t('conversation.agentTrace.coverageRetained')}` : ''}
-                {summary
-                  ? ` · ${t('conversation.agentTrace.turnCount', { count: summary.turn_count })} · ${t('conversation.agentTrace.activeDuration')} ${summary.active_duration_ms}ms`
-                  : ''}
-              </div>
-            </div>
-            <div className='flex items-center gap-4px shrink-0'>
-              <Button
-                type='text'
-                size='mini'
-                className='flowy-icon-text-btn'
-                icon={<Refresh theme='outline' size='14' strokeWidth={3} />}
-                onClick={() => void refreshWorkspace({ showListLoading: true })}
-                disabled={loading}
-              >
-                {t('conversation.agentTrace.refresh')}
-              </Button>
-              <Button
-                type='text'
-                size='mini'
-                className='flowy-icon-text-btn'
-                icon={<Close theme='outline' size='14' strokeWidth={3} />}
-                onClick={closeWorkspace}
-                aria-label={t('conversation.agentTrace.closeWorkspace')}
-              />
-            </div>
-          </div>
-
-          {loading && entries.length === 0 ? (
-            <div className='flex justify-center py-40px'>
-              <Spin />
-            </div>
-          ) : errorKey ? (
-            <div className='px-16px py-24px text-13px text-[var(--color-text-2)]'>
-              {t(`conversation.agentTrace.${errorKey}`)}
-            </div>
-          ) : entries.length === 0 ? (
-            <Empty className='py-40px' description={t('conversation.agentTrace.empty')} />
-          ) : (
-            <div className='flex min-h-0 flex-1'>
-              <div className='w-280px shrink-0 overflow-auto border-r border-solid border-[var(--color-border-2)]'>
-                {entries.map((entry) => {
-                  const active = entry.root_turn_id === selectedId;
-                  const degraded = entry.integrity === 'degraded';
-                  return (
-                    <button
-                      key={entry.root_turn_id}
-                      type='button'
-                      className='w-full text-left px-12px py-8px border-0 border-b border-solid border-[var(--color-border-1)] cursor-pointer'
-                      style={{
-                        background: active
-                          ? 'color-mix(in srgb, var(--color-text-2) 8%, var(--color-bg-1))'
-                          : 'transparent',
-                      }}
-                      onClick={() => {
-                        setSelectedId(entry.root_turn_id);
-                        setExpandedCallId(null);
-                        setCallDetail(null);
-                      }}
-                    >
-                      <div className='flex items-center justify-between gap-8px'>
-                        <div className='flex items-center gap-6px min-w-0'>
-                          <Tag size='small' color={degraded ? 'orangered' : 'green'}>
-                            {degraded
-                              ? t('conversation.agentTrace.integrityDegraded')
-                              : t('conversation.agentTrace.integrityComplete')}
-                          </Tag>
-                          {entry.interrupted ? (
-                            <Tag size='small' color='orange'>
-                              {t('conversation.agentTrace.interrupted')}
-                            </Tag>
-                          ) : null}
-                          <span className='text-12px font-600 text-[var(--color-text-1)] truncate'>
-                            {entry.prompt_preview ||
-                              entry.session_kind ||
-                              t('conversation.agentTrace.previewMissing')}
-                          </span>
-                        </div>
-                        <span className='text-11px text-[var(--color-text-3)] tabular-nums shrink-0'>
-                          {t('conversation.agentTrace.modelCalls')}: {entry.model_calls.length}
-                        </span>
-                      </div>
-                      <div className='text-11px text-[var(--color-text-3)] mt-3px flex gap-x-10px gap-y-2px flex-wrap'>
-                        <span>
-                          {t('conversation.agentTrace.tools')}:{' '}
-                          {entry.model_calls.reduce((sum, call) => sum + call.tools.length, 0)}
-                        </span>
-                        {entry.gap_count > 0 ? (
-                          <span>
-                            {t('conversation.agentTrace.gap')}: {entry.gap_count}
-                          </span>
-                        ) : null}
-                        <span className='font-mono' title={entry.msg_id ?? undefined}>
-                          msg={shortId(entry.msg_id)}
-                        </span>
-                        <span className='font-mono' title={entry.root_turn_id}>
-                          turn={shortId(entry.root_turn_id)}
-                        </span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className='flex-1 min-w-0 min-h-0'>
-                {detailLoading && !detail ? (
-                  <div className='flex justify-center py-24px'>
-                    <Spin />
-                  </div>
-                ) : detailErrorKey ? (
-                  <div className='px-16px py-24px text-13px text-[var(--color-text-2)]'>
-                    {t(`conversation.agentTrace.${detailErrorKey}`)}
-                  </div>
-                ) : detail ? (
-                  <ObservationWorkflow
-                    turn={detail}
-                    expandedCallId={expandedCallId}
-                    callDetail={callDetail}
-                    callLoading={callLoading}
-                    callErrorKey={callErrorKey}
-                    onToggleCall={(modelCallId) => {
-                      setExpandedCallId((current) => {
-                        if (current === modelCallId) {
-                          setCallDetail(null);
-                          return null;
-                        }
-                        return modelCallId;
-                      });
-                    }}
-                  />
-                ) : (
-                  <Empty className='py-24px' description={t('conversation.agentTrace.empty')} />
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      ) : null}
-    </>
+    <Tooltip content={t('conversation.agentTrace.openInspector')}>
+      <Button
+        type='text'
+        size='mini'
+        shape='round'
+        className={classNames(capabilityHeaderButtonClass(open), 'flowy-icon-text-btn')}
+        style={capabilityHeaderButtonStyle(OBSERVE_ACCENT)}
+        icon={<Bug theme='outline' size='14' strokeWidth={3} />}
+        onClick={() => onViewChange(open ? 'dialogue' : 'logs')}
+        aria-label={t('conversation.agentTrace.openInspector')}
+        aria-pressed={open}
+      >
+        {t('conversation.agentTrace.openInspector')}
+      </Button>
+    </Tooltip>
   );
 };
 
+export const SessionLogWorkspace: React.FC = () => {
+  const { t } = useTranslation();
+  const {
+    developerMode,
+    loading,
+    errorKey,
+    entries,
+    summary,
+    health,
+    selectedId,
+    setSelectedId,
+    detail,
+    detailLoading,
+    detailErrorKey,
+    inspectTarget,
+    setInspectTarget,
+    callDetail,
+    callLoading,
+    callErrorKey,
+    refreshWorkspace,
+  } = useSessionLogs();
+  const [newestFirst, setNewestFirst] = useState(true);
+  const rounds = useMemo(() => assignTurnRounds(entries), [entries]);
+  const displayed = useMemo(
+    () => (newestFirst ? [...entries].reverse() : entries),
+    [entries, newestFirst]
+  );
+
+  if (developerMode !== true) return null;
+
+  const healthStatus = health?.status ?? 'healthy';
+  const healthFault = healthIsFault(health);
+  const healthUnhealthy = health != null && health.status !== 'healthy';
+
+  return (
+    <div
+      className='session-logs-workspace'
+      role='region'
+      aria-label={t('conversation.agentTrace.workspaceTitle')}
+    >
+      {loading && entries.length === 0 ? (
+        <div className='flex justify-center py-40px'>
+          <Spin />
+        </div>
+      ) : errorKey ? (
+        <div className='px-16px py-24px text-13px text-[var(--color-text-2)]'>
+          {t(`conversation.agentTrace.${errorKey}`)}
+        </div>
+      ) : entries.length === 0 ? (
+        <Empty className='py-40px' description={t('conversation.agentTrace.empty')} />
+      ) : (
+        <div className='session-logs-body'>
+          <div className='session-logs-nav'>
+            <div className='session-logs-nav__header'>
+              <div className='session-logs-nav__toolbar'>
+                <Popover
+                  trigger={['click', 'hover']}
+                  position='bl'
+                  content={
+                    <dl className='session-logs-glossary'>
+                      <dt>{t('conversation.agentTrace.metricTurn')}</dt>
+                      <dd>{t('conversation.agentTrace.metricTurnHint')}</dd>
+                      <dt>{t('conversation.agentTrace.metricModel')}</dt>
+                      <dd>{t('conversation.agentTrace.metricModelHint')}</dd>
+                      <dt>{t('conversation.agentTrace.metricTool')}</dt>
+                      <dd>{t('conversation.agentTrace.metricToolHint')}</dd>
+                      <dt>{t('conversation.agentTrace.metricDuration')}</dt>
+                      <dd>{t('conversation.agentTrace.metricDurationHint')}</dd>
+                      <dt>{t('conversation.agentTrace.glossaryIntegrity')}</dt>
+                      <dd>{t('conversation.agentTrace.integrityHint')}</dd>
+                    </dl>
+                  }
+                >
+                  <button
+                    type='button'
+                    className='session-logs-info'
+                    aria-label={t('conversation.agentTrace.glossaryAria')}
+                  >
+                    <Info theme='outline' size='14' strokeWidth={3} />
+                  </button>
+                </Popover>
+                <div className='session-logs-nav__toolbar-actions'>
+                  <Tooltip
+                    content={
+                      newestFirst
+                        ? t('conversation.agentTrace.newestFirst')
+                        : t('conversation.agentTrace.oldestFirst')
+                    }
+                  >
+                    <Button
+                      type='text'
+                      size='mini'
+                      className='session-logs-json-tree__icon-btn'
+                      icon={
+                        newestFirst ? (
+                          <SortAmountDown theme='outline' size='14' strokeWidth={3} />
+                        ) : (
+                          <SortAmountUp theme='outline' size='14' strokeWidth={3} />
+                        )
+                      }
+                      aria-pressed={newestFirst}
+                      aria-label={
+                        newestFirst
+                          ? t('conversation.agentTrace.newestFirst')
+                          : t('conversation.agentTrace.oldestFirst')
+                      }
+                      onClick={() => setNewestFirst((value) => !value)}
+                    />
+                  </Tooltip>
+                  <Tooltip content={t('conversation.agentTrace.refresh')}>
+                    <Button
+                      type='text'
+                      size='mini'
+                      className='session-logs-json-tree__icon-btn'
+                      icon={<Refresh theme='outline' size='14' strokeWidth={3} />}
+                      onClick={() => void refreshWorkspace({ showListLoading: true })}
+                      disabled={loading}
+                      aria-label={t('conversation.agentTrace.refresh')}
+                    />
+                  </Tooltip>
+                </div>
+              </div>
+              {summary ? (
+                <div className='session-logs-metrics'>
+                  <MetricStat
+                    value={summary.turn_count}
+                    label={t('conversation.agentTrace.metricTurn')}
+                  />
+                  <MetricStat
+                    value={summary.model_call_count}
+                    label={t('conversation.agentTrace.metricModel')}
+                  />
+                  <MetricStat
+                    value={summary.tool_count}
+                    label={t('conversation.agentTrace.metricTool')}
+                  />
+                  <MetricStat
+                    value={
+                      formatDurationMs(summary.active_duration_ms) ||
+                      t('conversation.agentTrace.activeDuration')
+                    }
+                    label={t('conversation.agentTrace.metricDuration')}
+                  />
+                </div>
+              ) : null}
+              {healthUnhealthy ? (
+                <div
+                  className={classNames(
+                    'session-logs-health',
+                    healthFault && 'session-logs-health--fault'
+                  )}
+                >
+                  {t('conversation.agentTrace.writerHealth')}
+                  {' · '}
+                  {t(`conversation.agentTrace.health_${healthStatus}`)}
+                  {health?.last_error ? ` · ${health.last_error}` : ''}
+                </div>
+              ) : null}
+            </div>
+            <div className='session-logs-nav__list'>
+              {displayed.map((entry) => {
+                const active = entry.root_turn_id === selectedId;
+                const round = rounds.get(entry.root_turn_id) ?? 0;
+                const toolCount = turnToolCount(entry);
+                const elapsed = formatDurationMs(entry.elapsed_ms);
+                const clock = formatClock(entry.started_at_ms);
+                return (
+                  <button
+                    key={entry.root_turn_id}
+                    type='button'
+                    className={classNames('session-logs-nav__item', active && 'is-active')}
+                    onClick={() => setSelectedId(entry.root_turn_id)}
+                  >
+                    <div className='flex items-baseline justify-between gap-8px'>
+                      <span className='session-logs-nav__round'>
+                        {t('conversation.agentTrace.roundLabel', { n: round })}
+                      </span>
+                      {clock ? (
+                        <time className='session-logs-nav__time'>{clock}</time>
+                      ) : null}
+                    </div>
+                    <div className='session-logs-nav__prompt'>
+                      {entry.prompt_preview || t('conversation.agentTrace.previewMissing')}
+                    </div>
+                    <div className='session-logs-nav__counts'>
+                      {t('conversation.agentTrace.modelCallCount', {
+                        count: entry.model_calls.length,
+                      })}
+                      {' · '}
+                      {t('conversation.agentTrace.toolCallCount', { count: toolCount })}
+                      {elapsed ? ` · ${elapsed}` : ''}
+                      {entry.status
+                        ? ` · ${t(`conversation.agentTrace.status_${entry.status}`)}`
+                        : ''}
+                    </div>
+                    {entry.interrupted || entry.gap_count > 0 || entry.integrity === 'degraded' ? (
+                      <div className='session-logs-nav__flags'>
+                        {entry.interrupted ? (
+                          <span className='session-logs-flag'>
+                            {t('conversation.agentTrace.interrupted')}
+                          </span>
+                        ) : null}
+                        {entry.gap_count > 0 ? (
+                          <span className='session-logs-flag'>
+                            {t('conversation.agentTrace.gapCount', { count: entry.gap_count })}
+                          </span>
+                        ) : null}
+                        {entry.integrity === 'degraded' ? (
+                          <span className='session-logs-flag'>
+                            {t('conversation.agentTrace.integrityDegraded')}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className='session-logs-detail'>
+            {detailLoading && !detail ? (
+              <div className='flex justify-center py-24px'>
+                <Spin />
+              </div>
+            ) : detailErrorKey ? (
+              <div className='px-16px py-24px text-13px text-[var(--color-text-2)]'>
+                {t(`conversation.agentTrace.${detailErrorKey}`)}
+              </div>
+            ) : detail ? (
+              <ObservationWorkflow
+                turn={detail}
+                inspectTarget={inspectTarget}
+                callDetail={callDetail}
+                callLoading={callLoading}
+                callErrorKey={callErrorKey}
+                onInspect={setInspectTarget}
+              />
+            ) : (
+              <Empty className='py-24px' description={t('conversation.agentTrace.empty')} />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AgentTraceInspector = AgentTraceTrigger;
 export default AgentTraceInspector;

@@ -10,7 +10,7 @@
 
 | | 是什么 |
 | --- | --- |
-| 图 1 | 当前 Drawer |
+| 图 1 | 当前对话列滑动 pane |
 | 图 2 | DSH Workflow 信息架构（对齐呈现，不装插件） |
 | S0–S8 | **保留** JSONL / capture / `event_seq` / canonical request / 工具生命周期 / debug API / developer mode |
 
@@ -201,7 +201,7 @@ Workspace 分两行：当前写入器 / 当前会话日志。不是第二套 SSO
 | `recorder_health` 在 list 顶层；Call 410 `observation_retention` | `hub.rs` / `routes_trace.rs` |
 | `turn/start` 在 conversation bind 后；同一 `root_turn_id` 的 `turn/end` 在 send loop 退出时写一次 | `service.rs` bind + `close_observation_turn_from_relay` |
 | preview：`current_send.content` 首次 bind 胜出，agent 二次 bind 不覆盖 | `ObservationSession::emit_turn_start_once` |
-| Workspace overlay、虚拟化、懒 Call GET、LRU=2、omitted、原始 token 芯片 | `AgentTraceInspector/` |
+| Workspace 观测 pill、左列计数、虚拟化、懒 Call GET、LRU=2、omitted、原始 token 芯片 | `AgentTraceInspector/` |
 
 ### 本轮已收口
 
@@ -212,7 +212,6 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
 ### 不在本轮
 
 - 读路径 `flush_blocking`（不改文件结构）
-- [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 仍写 Drawer
 
 ---
 
@@ -228,10 +227,10 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
 8. 观测/队列/磁盘失败不 `?` 打断 Agent。  
 9. 不扩大采集（one_shot / health / speech / ACP）。  
 10. 不做 replay / OTel / 导出 Sink。  
-11. 虚拟列表用已有 `@tanstack/react-virtual`（或 `react-virtuoso`），不手写、不加 JSON 树依赖。  
+11. 虚拟列表用已有 `@tanstack/react-virtual`（或 `react-virtuoso`），不手写。Call 检查器允许 `react-json-view-lite`；禁止自写树，禁止把树用在 List/Turn。  
 12. 不上子进程 / mmap / 观测 SQLite / 无界 channel。
 
-产品面：Developer Mode 全屏 Workspace；入口仍是「观测」按钮。
+产品面：Developer Mode 下顶栏最左能力按钮是「观测」pill（`aria-pressed`）；点开后对话列滑动到会话日志。Esc 与再点观测回到对话。无列内 tab，无日志顶栏 X，无 Arco Switch。不展示 `msg=` / `turn=` / `mc-xxxx`；不发明 `input_uncached`。切回对话不清 LRU、不 abort poll。
 
 ---
 
@@ -246,7 +245,7 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
 | P5 | Summary streaming fold，禁止全量 `Vec`+`project_turns` 只为四数。 |
 | P6 | List / Turn GET 不带 canonical 大正文；正文只在 Call GET。 |
 | P7 | Model Call 行虚拟化。 |
-| P8 | 同时 ≤2–3 个 **call detail**；关 Workspace / 换会话清空。不接 `videoCanvas` QueryClient。 |
+| P8 | 同时 ≤2–3 个 **call detail**；换会话 `clear()`。切回对话不清 LRU、不 abort poll。不接 `videoCanvas` QueryClient。 |
 | P9 | 禁止 mmap / 全历史 preload。 |
 | P10 | 单 event ≤ `MAX_EVENT_BYTES` 才入队。 |
 | P11 | 磁盘：14 天 **且** `max_total_observation_bytes`（默认 **1 GiB**）。先删 age>14d 的非 active segment，再按 mtime 删最老非 active；**禁止删当前 writer 打开的 `events.jsonl`。** |
@@ -256,10 +255,12 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
 ## 4. 目标信息架构与数据流
 
 ```text
-聊天页 [观测] → Workspace overlay
-  写入器 health（进程活状态）与会话 integrity / coverage 分行
-  Turn Navigator（窗口 ≤200）
-  Selected Turn：虚拟化 Call headers → 点开才 GET 单 call 正文
+聊天页 [观测] pill（最左能力按钮，aria-pressed）
+  → 对话列滑动 pane（translateX；侧栏/标题栏保持可见）
+  左列顶：用户回合 / 模型 / 工具 / 有效时长 + 刷新 + 最新在上|最早在上
+  写入器 health（进程活状态）与会话 integrity / coverage 次级
+  Turn Navigator（窗口 ≤200；行上时钟；第 N 轮按时间升序编号）
+  Selected Turn：虚拟化 Call headers → 点瓦片才 GET 单 call 正文 → 可收缩 object tree
 ```
 
 ```text
@@ -379,13 +380,15 @@ Retention = age 14d AND total ≤ 1 GiB
 
 ## 7. UI
 
-- Workspace overlay；Esc 关闭。入口仍是「观测」按钮。无新侧栏路由。  
-- 顶栏分两行：当前写入器 health / 当前会话 integrity + coverage。  
-- Call 行 `useVirtualizer`，overscan 3–5。宽屏横轴可横滚。  
-- 点卡片才 GET call detail；关详情 unmount。  
-- 缓存：summary + ≤200 turn headers + `MAX_CALL_DETAIL_CACHE=2` LRU。关 Workspace / 换会话 `clear()`。  
-- Token 芯片：U3 只显示原始 `input_tokens` / cache_read / cache_write / output。不画未命中。  
-- omitted 字段必须可见，不得显示成「观测未记录 / 加载失败」。  
+- 顶栏「观测」pill 切换对话列 view（`aria-pressed`）；无列内 tab。Esc / 再点「观测」回到对话。无新侧栏路由。无 `document.body` 全屏 overlay。无日志顶栏 X。  
+- 左列顶是标注四数（数字 + 短标签）与图标排序/刷新；释义合一到工具条左 Info Popover。写入器 health 仅异常时强调；顶栏不出完整/降级字，降级只在回合行 flags。  
+- 回合行：第 N 轮（按 `started_at_ms` 升序编号，与显示倒正向无关）、预览、时钟、模型/工具次数、时长。默认最新在上。  
+- Call 行 `useVirtualizer`，overscan 3–5。宽屏横轴可横滚。窄对话列（`@container` ~720px，按列宽不是 window）左列改横向回合条，检查器单列。  
+- 点瓦片才 GET call detail，不自动展开第一张；关详情 unmount。瓦片 `aria-expanded`。工具瓦片 title 用 `argument_preview`，无则 name。`最终回复` 是不可点文案终点，不是瓦片。  
+- Call 检查器：对象/数组用 `react-json-view-lite`（根与 `messages`/`tools` 数组展开，元素默认收起）；`{` / `}` 必须能开合（punctuation 转发到 expander，禁止自写树）。短 string 与响应 reasoning/content 直接展示；omitted 原样。复制用图标，禁止每块「复制 JSON」文案。详情字段是 hairline Raised 面板，不是灰底 dump。  
+- 缓存：summary + ≤200 turn headers + `MAX_CALL_DETAIL_CACHE=2` LRU。换会话 `clear()`。切回对话保持 poll 与 LRU。  
+- Token 芯片：U3 只显示原始 `input_tokens` / cache_read / cache_write / output。不画未命中，不发明 `input_uncached`。  
+- omitted 字段必须可见，不得显示成「观测未记录 / 加载失败」。不展示 `msg=` / `turn=` / `mc-xxxx`。  
 
 ### 7.1 新鲜度
 
@@ -395,7 +398,7 @@ Refresh 按钮与 poll tick 走同一条路径
 ```
 
 - list / turn / call **各自** seq；禁止共用一个计数器。  
-- 每次 `refreshWorkspace` 带 `AbortController`；换会话 / 关 overlay / effect cleanup 时 abort。  
+- 每次 `refreshWorkspace` 带 `AbortController`；换会话 / effect cleanup 时 abort。切回对话不 abort。  
 - 410 → `retentionRemoved`，不得进空 `catch` 当成加载失败。  
 - poll effect 只依赖「是否还应 poll」布尔，**不要**依赖整个 `entries` 数组。
 
@@ -443,11 +446,11 @@ Poll **仅** `has turn/start && !turn/end` 的 new-format turn。
 
 ### U2 — Workspace
 
-全屏、Summary（active_duration + health + coverage 说明）、Navigator。无新侧栏路由。
+对话列滑动 pane（`translateX`，约 240ms / `--ease-out-expo`；`prefers-reduced-motion` 改为 120ms 透明度）。入口是顶栏最左「观测」pill，无列内 tab。侧栏和标题栏保持可见。左列顶：用户回合 / 模型调用 / 工具调用 / 有效时长（`2.5s` / `1m5s`）+ 刷新 + 最新在上|最早在上；写入器 health 仅异常时强调；integrity / coverage 次级。Navigator：第 N 轮 + 用户预览 + 时钟 + 模型/工具次数。无新侧栏路由。切回对话不 abort poll。
 
 ### U3 — Call 工作流
 
-虚拟化 headers + **Call GET 懒正文** + 三列详情 + 合法 token 字段。
+虚拟化 headers + **Call GET 懒正文** + 可收缩 object tree（`react-json-view-lite`）+ 合法 token 字段。点瓦片才拉正文，不默认双 JSON。
 
 ### U4 — Fresh度
 

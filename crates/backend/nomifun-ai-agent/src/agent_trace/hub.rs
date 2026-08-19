@@ -304,6 +304,8 @@ mod tests {
             usage: None,
             request: None,
             response: None,
+            request_summary: None,
+            response_summary: None,
             tools: Vec::new(),
         }
     }

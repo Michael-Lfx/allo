@@ -23,11 +23,12 @@ Nomi-owned 模型调用与工具执行写入 unlabeled JSONL 事件，落盘于�
 
 ### UI
 
-会话页 `ChatLayout` 在开发者模式开启且存在 `conversation_id` 时显示 **观测** 按钮，打开嵌入式 Drawer（`AgentTraceInspector`）：
+会话页 `ChatLayout` 在开发者模式开启且存在 `conversation_id` 时，在能力按钮最左显示 **观测** pill（`aria-pressed`）。打开后对话列滑动到会话日志 pane（`AgentTraceInspector`），不是 Drawer：
 
-- 左侧回合列表（integrity / interrupted / gap 计数）
-- 右侧按模型调用展示 REQUEST → RESPONSE → tools
-- 顶栏标 degraded / gap / interrupted
+- 左列顶：会话四数 + 刷新 + 最新在上|最早在上；integrity / interrupted / gap 次级
+- 回合行带时钟；第 N 轮按时间升序编号
+- 右侧按模型调用展示 REQUEST → RESPONSE → tools；点瓦片才 Call GET
+- 详情为可收缩 object tree（`react-json-view-lite`）；切回对话不 abort poll、不清 LRU
 
 未开启开发者模式时组件不渲染；API 在未开启时返回 403。
 

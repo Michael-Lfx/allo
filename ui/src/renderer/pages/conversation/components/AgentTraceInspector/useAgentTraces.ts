@@ -76,6 +76,24 @@ export interface ProjectedToolExecution {
   completed?: unknown | null;
   failed?: unknown | null;
   cancelled?: unknown | null;
+  argument_preview?: string | null;
+}
+
+export interface ProjectedRequestSummary {
+  model?: string | null;
+  has_system: boolean;
+  message_count: number;
+  tool_definition_count: number;
+}
+
+export interface ProjectedResponseSummary {
+  has_text: boolean;
+  has_thinking: boolean;
+  tool_use_count: number;
+  elapsed_ms?: number | null;
+  ttft_ms?: number | null;
+  stop_reason?: string | null;
+  text_preview?: string | null;
 }
 
 export interface ProjectedModelCall {
@@ -90,6 +108,8 @@ export interface ProjectedModelCall {
   usage?: ProjectedTokenUsage | null;
   request?: unknown | null;
   response?: unknown | null;
+  request_summary?: ProjectedRequestSummary | null;
+  response_summary?: ProjectedResponseSummary | null;
   tools: ProjectedToolExecution[];
 }
 

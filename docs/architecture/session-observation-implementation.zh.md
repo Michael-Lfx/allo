@@ -1,5 +1,6 @@
 # Session Observation 开发文档与分步实施计划
 
+> **现行 UI 以 [session-observation-workflow-ui-plan.zh.md](session-observation-workflow-ui-plan.zh.md) 与 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准，文内 Drawer 已作废。**  
 > **文档状态：S0–S8 历史步骤；U0–U5 已在 `feat/session-observation` 落地**  
 > 日期：2026-08-19  
 > 分支：`feat/session-observation`  

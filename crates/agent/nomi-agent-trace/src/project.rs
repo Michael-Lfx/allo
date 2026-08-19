@@ -9,7 +9,10 @@ use crate::event::{
     EVENT_TOOL_EXECUTION_COMPLETED, EVENT_TOOL_EXECUTION_FAILED, EVENT_TOOL_EXECUTION_STARTED,
     EVENT_TURN_END, EVENT_TURN_START,
 };
-use crate::redact::redact_preview;
+use crate::redact::{redact_preview, truncate_chars};
+
+/// Scan-line preview kept after payload strip. Not the captured body.
+const SCAN_PREVIEW_CHARS: usize = 80;
 
 pub const COVERAGE_RETAINED_OBSERVATION_HISTORY: &str = "retained_observation_history";
 
@@ -89,6 +92,38 @@ pub struct ProjectedTurn {
     pub gaps: Vec<ProjectedGap>,
 }
 
+/// Counts extracted from a captured `llm/request` before bodies are stripped.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ProjectedRequestSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub has_system: bool,
+    #[serde(default)]
+    pub message_count: u32,
+    #[serde(default)]
+    pub tool_definition_count: u32,
+}
+
+/// Counts extracted from a captured `llm/response` before bodies are stripped.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ProjectedResponseSummary {
+    #[serde(default)]
+    pub has_text: bool,
+    #[serde(default)]
+    pub has_thinking: bool,
+    #[serde(default)]
+    pub tool_use_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttft_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_preview: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectedModelCall {
     pub model_call_id: String,
@@ -109,6 +144,10 @@ pub struct ProjectedModelCall {
     pub request: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_summary: Option<ProjectedRequestSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_summary: Option<ProjectedResponseSummary>,
     #[serde(default)]
     pub tools: Vec<ProjectedToolExecution>,
 }
@@ -123,6 +162,8 @@ pub struct ProjectedToolExecution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at_ms: Option<u64>,
     pub status: ToolExecutionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_preview: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -267,6 +308,7 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
                     .get("observation_scope")
                     .and_then(|v| serde_json::from_value(v.clone()).ok());
                 call.request = Some(event.payload.clone());
+                call.request_summary = Some(request_summary_from_payload(&event.payload));
                 call.started_at_ms = Some(event.timestamp_ms);
                 latest_request = Some(event);
             }
@@ -280,6 +322,7 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
                     call.call_kind = string_field(&event.payload, "call_kind");
                 }
                 call.response = Some(event.payload.clone());
+                call.response_summary = Some(response_summary_from_payload(&event.payload));
                 call.ended_at_ms = Some(event.timestamp_ms);
                 if call.usage.is_none() {
                     call.usage = usage_from_payload(&event.payload);
@@ -309,6 +352,9 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
                     EVENT_TOOL_EXECUTION_STARTED => {
                         tool.started = Some(event.payload.clone());
                         tool.started_at_ms = Some(event.timestamp_ms);
+                        if tool.argument_preview.is_none() {
+                            tool.argument_preview = argument_preview_from_payload(&event.payload);
+                        }
                     }
                     EVENT_TOOL_EXECUTION_COMPLETED => {
                         tool.completed = Some(event.payload.clone());
@@ -482,6 +528,8 @@ fn upsert_call<'a>(calls: &'a mut Vec<ProjectedModelCall>, model_call_id: &str) 
         usage: None,
         request: None,
         response: None,
+        request_summary: None,
+        response_summary: None,
         tools: Vec::new(),
     });
     calls.last_mut().expect("just pushed")
@@ -500,6 +548,7 @@ fn upsert_tool<'a>(
         started_at_ms: None,
         ended_at_ms: None,
         status: ToolExecutionStatus::Started,
+        argument_preview: None,
         started: None,
         completed: None,
         failed: None,
@@ -538,6 +587,84 @@ fn call_integrity(turn_ended: bool, call: &ProjectedModelCall, gaps: &[Projected
         return Integrity::Degraded;
     }
     Integrity::Complete
+}
+
+fn request_object(payload: &Value) -> &Value {
+    payload.get("request").unwrap_or(payload)
+}
+
+fn value_is_omitted(value: &Value) -> bool {
+    value.get("omitted_reason").and_then(Value::as_str).is_some()
+}
+
+fn array_len_present(value: Option<&Value>) -> u32 {
+    match value {
+        Some(item) if !value_is_omitted(item) => {
+            item.as_array().map(|items| items.len() as u32).unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
+fn request_summary_from_payload(payload: &Value) -> ProjectedRequestSummary {
+    let request = request_object(payload);
+    let model = request
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let has_system = match request.get("system") {
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        Some(Value::Array(items)) => !items.is_empty(),
+        Some(other) if value_is_omitted(other) => false,
+        _ => false,
+    };
+    ProjectedRequestSummary {
+        model,
+        has_system,
+        message_count: array_len_present(request.get("messages")),
+        tool_definition_count: array_len_present(request.get("tools")),
+    }
+}
+
+fn scan_text_preview(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(truncate_chars(&redact_preview(trimmed), SCAN_PREVIEW_CHARS))
+}
+
+fn argument_preview_from_payload(payload: &Value) -> Option<String> {
+    let arguments = payload.get("arguments")?;
+    if value_is_omitted(arguments) {
+        return None;
+    }
+    match arguments {
+        Value::Null => None,
+        Value::String(text) => scan_text_preview(text),
+        other => scan_text_preview(&serde_json::to_string(other).ok()?),
+    }
+}
+
+fn response_summary_from_payload(payload: &Value) -> ProjectedResponseSummary {
+    let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
+    let thinking = payload.get("thinking").and_then(Value::as_str).unwrap_or("");
+    ProjectedResponseSummary {
+        has_text: !text.trim().is_empty(),
+        has_thinking: !thinking.trim().is_empty(),
+        tool_use_count: array_len_present(payload.get("tool_use")),
+        elapsed_ms: payload.get("elapsed_ms").and_then(Value::as_u64),
+        ttft_ms: payload.get("ttft_ms").and_then(Value::as_u64),
+        stop_reason: payload
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        text_preview: scan_text_preview(text),
+    }
 }
 
 fn usage_from_payload(payload: &Value) -> Option<ProjectedTokenUsage> {
@@ -879,6 +1006,139 @@ mod tests {
         assert!(turns[0].model_calls[0].request.is_none());
         assert!(turns[0].model_calls[0].response.is_none());
         assert_eq!(turns[0].model_calls.len(), 1);
+    }
+
+    #[test]
+    fn strip_keeps_request_and_response_summaries() {
+        let events = vec![
+            event(
+                EVENT_LLM_REQUEST,
+                1,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "request": {
+                        "model": "test-model",
+                        "system": "be brief",
+                        "messages": [
+                            { "role": "user", "content": [{ "type": "text", "text": "hello" }] },
+                            { "role": "assistant", "content": [{ "type": "text", "text": "hi" }] }
+                        ],
+                        "tools": [{ "name": "bash" }, { "name": "read" }]
+                    }
+                }),
+            ),
+            event(
+                EVENT_LLM_RESPONSE,
+                2,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "text": "done with the task",
+                    "thinking": "check tools",
+                    "tool_use": [{ "name": "bash" }],
+                    "elapsed_ms": 1200,
+                    "ttft_ms": 80,
+                    "stop_reason": "tool_use"
+                }),
+            ),
+        ];
+        let mut turns = project_turns(&events);
+        let call = &turns[0].model_calls[0];
+        assert!(call.request.is_some());
+        assert!(call.response.is_some());
+        let request = call.request_summary.clone().expect("request summary");
+        assert_eq!(request.model.as_deref(), Some("test-model"));
+        assert!(request.has_system);
+        assert_eq!(request.message_count, 2);
+        assert_eq!(request.tool_definition_count, 2);
+        let response = call.response_summary.clone().expect("response summary");
+        assert!(response.has_text);
+        assert!(response.has_thinking);
+        assert_eq!(response.tool_use_count, 1);
+        assert_eq!(response.elapsed_ms, Some(1200));
+        assert_eq!(response.ttft_ms, Some(80));
+        assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
+        assert_eq!(response.text_preview.as_deref(), Some("done with the task"));
+
+        strip_projected_turn_payloads(&mut turns[0]);
+        let call = &turns[0].model_calls[0];
+        assert!(call.request.is_none());
+        assert!(call.response.is_none());
+        assert_eq!(call.request_summary.as_ref().map(|s| s.model.as_deref()), Some(Some("test-model")));
+        assert_eq!(
+            call.response_summary.as_ref().map(|s| s.tool_use_count),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn strip_keeps_tool_argument_preview() {
+        let events = vec![
+            event(EVENT_LLM_REQUEST, 1, turn_ids("t1", "mc1"), serde_json::json!({})),
+            event(
+                EVENT_TOOL_EXECUTION_STARTED,
+                2,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "tool_call_id": "tool-1",
+                    "name": "web_search",
+                    "arguments": { "query": "chengdu weather" }
+                }),
+            ),
+        ];
+        let mut turns = project_turns(&events);
+        let tool = &turns[0].model_calls[0].tools[0];
+        assert!(tool.started.is_some());
+        assert_eq!(
+            tool.argument_preview.as_deref(),
+            Some("{\"query\":\"chengdu weather\"}")
+        );
+        strip_projected_turn_payloads(&mut turns[0]);
+        let tool = &turns[0].model_calls[0].tools[0];
+        assert!(tool.started.is_none());
+        assert_eq!(
+            tool.argument_preview.as_deref(),
+            Some("{\"query\":\"chengdu weather\"}")
+        );
+    }
+
+    #[test]
+    fn argument_preview_does_not_invent_omitted_arguments() {
+        let events = vec![event(
+            EVENT_TOOL_EXECUTION_STARTED,
+            1,
+            turn_ids("t1", "mc1"),
+            serde_json::json!({
+                "tool_call_id": "tool-1",
+                "name": "bash",
+                "arguments": { "omitted_reason": "event_size_limit" }
+            }),
+        )];
+        let tool = &project_turns(&events)[0].model_calls[0].tools[0];
+        assert!(tool.argument_preview.is_none());
+    }
+
+    #[test]
+    fn summaries_do_not_invent_omitted_counts() {
+        let events = vec![event(
+            EVENT_LLM_REQUEST,
+            1,
+            turn_ids("t1", "mc1"),
+            serde_json::json!({
+                "request": {
+                    "model": "m",
+                    "system": { "omitted_reason": "event_size_limit" },
+                    "messages": { "omitted_reason": "event_size_limit" },
+                    "tools": { "omitted_reason": "event_size_limit" }
+                }
+            }),
+        )];
+        let summary = project_turns(&events)[0].model_calls[0]
+            .request_summary
+            .clone()
+            .expect("summary");
+        assert!(!summary.has_system);
+        assert_eq!(summary.message_count, 0);
+        assert_eq!(summary.tool_definition_count, 0);
     }
 
     #[test]

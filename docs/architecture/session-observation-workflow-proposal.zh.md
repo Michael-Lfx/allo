@@ -1,5 +1,6 @@
 # Session Logs / 工作流观测：背景、对照与分阶段方案
 
+> **现行 UI 以 [session-observation-workflow-ui-plan.zh.md](session-observation-workflow-ui-plan.zh.md) 与 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准，文内 Drawer 已作废。**  
 > **文档状态：契约已冻结；开发步骤见实施文档，尚未授权改实现代码**  
 > 撰写日期：2026-08-18  
 > 修订：同日吸收多轮 review；并确认**直接替换旧 Trace**（项目未发布，无双轨）  
