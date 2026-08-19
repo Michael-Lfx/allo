@@ -1027,6 +1027,19 @@ mod tests {
         }
     }
 
+    /// Serialize tests that drive `prepare_v3_data_layer`.
+    ///
+    /// That path writes PROCESS-GLOBAL env vars (`NOMIFUN_DATA_DIR`,
+    /// `NOMIFUN_WORK_DIR`, `NOMIFUN_STORAGE_GENERATION`). Rust runs tests as
+    /// parallel threads inside one process, so two of these racing each other
+    /// overwrite one another's paths and a test then reads a sibling's data dir —
+    /// which is why they passed when filtered down and failed only in the full
+    /// workspace run, where the whole binary's tests share the process.
+    async fn env_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        LOCK.lock().await
+    }
+
     #[tokio::test]
     async fn probe_accepts_database_created_from_all_embedded_migrations() {
         let dir = tempfile::tempdir().unwrap();
@@ -1137,6 +1150,7 @@ mod tests {
 
     #[tokio::test]
     async fn finalized_current_database_is_ready_for_doctor() {
+        let _env = env_guard().await;
         let data = tempfile::tempdir().unwrap();
         let path = data.path().join("nomifun-backend.db");
         let database = nomifun_db::init_database(&path).await.unwrap();
@@ -1270,6 +1284,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_reset_overrides_current_receipt_and_retires_managed_side_store() {
+        let _env = env_guard().await;
         let data = tempfile::tempdir().unwrap();
         let config = test_config(data.path(), data.path());
         let database = nomifun_db::init_database(&config.database_path()).await.unwrap();
@@ -1321,6 +1336,7 @@ mod tests {
 
     #[tokio::test]
     async fn finalize_publishes_receipt_only_after_side_store_bootstrap_succeeds() {
+        let _env = env_guard().await;
         let data = tempfile::tempdir().unwrap();
         let config = test_config(data.path(), data.path());
         std::fs::write(config.database_path(), b"old database").unwrap();
@@ -1374,6 +1390,7 @@ mod tests {
 
     #[tokio::test]
     async fn forged_receipt_retires_legacy_database_before_writable_init() {
+        let _env = env_guard().await;
         let data = tempfile::tempdir().unwrap();
         let path = data.path().join("nomifun-backend.db");
         let options = SqliteConnectOptions::new()
@@ -1494,7 +1511,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn work_root_change_plan_resumes_after_request_clear_crash_gap() {
+        let _env = env_guard().await;
+        let data = tempfile::tempdir().unwrap();
+        let old_work = tempfile::tempdir().unwrap();
+        let new_work = tempfile::tempdir().unwrap();
+        let config = test_config(data.path(), new_work.path());
+        let database =
+            nomifun_db::init_database(&config.database_path()).await.unwrap();
+        database.close().await;
+        let old_generation = uuid::Uuid::now_v7().to_string();
+        std::fs::write(
+            data.path().join("storage-generation"),
+            &old_generation,
+        )
+        .unwrap();
+        nomifun_common::factory_reset::write_v3_dataset_receipt_for_work_dir(
+            data.path(),
+            old_work.path(),
+            &old_generation,
+        )
+        .unwrap();
+        std::fs::create_dir_all(old_work.path().join("conversations"))
+            .unwrap();
+        let old_sentinel =
+            old_work.path().join("conversations/current-before-change");
+        std::fs::write(&old_sentinel, b"old-current").unwrap();
+
+        nomifun_common::factory_reset::request_v3_dataset_reset_for_work_dir(
+            data.path(),
+            new_work.path(),
+        )
+        .unwrap();
+        let plan =
+            nomifun_common::factory_reset::arm_v3_dataset_reset(
+                data.path(),
+                new_work.path(),
+                nomifun_common::factory_reset::DatasetResetReason::WorkDirChange,
+            )
+            .unwrap();
+        assert!(
+            !data
+                .path()
+                .join(
+                    nomifun_common::factory_reset::V3_DATASET_RESET_REQUEST_FILE,
+                )
+                .exists(),
+            "the immutable plan must have consumed the transient request"
+        );
+        assert!(
+            config.database_path().is_file(),
+            "simulate a crash before the plan applies the old data roots"
+        );
+
+        assert_eq!(
+            prepare_v3_data_layer(&config).await.unwrap(),
+            V3DataLayerState::BootstrapRequired
+        );
+        let resumed =
+            nomifun_common::factory_reset::read_pending_v3_reset(
+                data.path(),
+                new_work.path(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.operation_id, plan.operation_id);
+        assert_eq!(resumed.generation, plan.generation);
+        assert!(!config.database_path().exists());
+        assert!(
+            old_sentinel.is_file(),
+            "the detached old work root is preserved rather than migrated"
+        );
+        assert!(!new_work.path().join("conversations").exists());
+    }
+
+    #[tokio::test]
     async fn finalized_database_rejects_a_different_resolved_work_root() {
+        let _env = env_guard().await;
         let data = tempfile::tempdir().unwrap();
         let first_work = tempfile::tempdir().unwrap();
         let second_work = tempfile::tempdir().unwrap();
