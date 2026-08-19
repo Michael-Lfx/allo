@@ -9,6 +9,8 @@
     "agentHint": "Agent 模式：一句话规划分镜并渲染成片。",
     "canvasHint": "Canvas 模式（dev）：节点画布精准控制生成参数与链路。",
     "agentMenuDesc": "自动规划分镜并渲染成片",
+    "actionLabel": "动作模仿",
+    "actionMenuDesc": "角色图 + 参考视频，模仿动作成片",
     "creationMenuDesc": "进入无限画布自由编排"
   },
   "nav": {
@@ -118,7 +120,7 @@
     "enterCanvas": "进入画布",
     "customize": "自定义生成偏好",
     "modelRequired": "生成前需要可用的规划模型。",
-    "modelRequiredAction": "生成前需要 MiniMax-H3 视频模型。",
+    "modelRequiredAction": "生成前需要选择视频模型。",
     "configureModels": "前往模型中心",
     "tryExample": "试试：",
     "skillsMenuTitle": "选择风格技能",
@@ -458,6 +460,7 @@
       "video": "视频模型",
       "videoPlaceholder": "选择视频模型",
       "mediaRequired": "请先选择图片模型与视频模型",
+      "videoRequired": "请先选择视频模型",
       "h3Required": "动作模仿需要选择 MiniMax-H3 视频模型",
       "h3Empty": "暂无 MiniMax-H3 视频模型",
       "empty": "暂无可用模型",

@@ -74,7 +74,6 @@ import {
 import {
   DEFAULT_VIDEO_FPS,
   DEFAULT_VIDEO_RESOLUTION,
-  isMiniMaxH3VideoModel,
   normalizeVideoFps,
   normalizeVideoResolution,
   type VideoResolution,
@@ -591,10 +590,10 @@ const WorkspacePage: React.FC = () => {
     if (!sessionId) return;
     const actionMode = isActionImitationWorkflow(session?.workflow);
     if (actionMode) {
-      if (!models.video_model.trim() || !isMiniMaxH3VideoModel(models.video_model)) {
+      if (!models.video_model.trim()) {
         message.warning(
-          t('videoGeneration.workspace.models.h3Required', {
-            defaultValue: '动作模仿需要选择 MiniMax-H3 视频模型',
+          t('videoGeneration.workspace.models.videoRequired', {
+            defaultValue: '请先选择视频模型',
           })
         );
         return;

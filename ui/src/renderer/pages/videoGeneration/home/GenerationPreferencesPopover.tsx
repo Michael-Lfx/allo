@@ -21,12 +21,9 @@ import {
 } from '../durationBounds';
 import {
   filterAllowedImageModels,
-  filterActionImitationVideoModels,
-  pickActionImitationVideoModel,
   pickDefaultVideoModel,
 } from '../components/ModelSelectors';
 import {
-  isMiniMaxH3VideoModel,
   normalizeVideoFps,
   normalizeVideoResolution,
   videoModelCapabilities,
@@ -121,6 +118,11 @@ function isInsideSelectUi(target: EventTarget | null): boolean {
   );
 }
 
+function isVideoHomeSubmitTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest('[data-video-home-submit]'));
+}
+
 const SELECT_POPUP_Z_INDEX = 1600;
 /** Stable global class — Arco Trigger overwrites popupStyle.zIndex from context. */
 const SELECT_POPUP_CLASS = 'video-home-prefs-select-popup';
@@ -166,7 +168,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   workflow,
 }) => {
   const { t } = useTranslation();
-  const isAction = workflow === 'action2video';
+  const isAction = mode === 'action' || workflow === 'action2video';
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const panelPosRef = useRef<PanelPlacement>({
@@ -266,13 +268,14 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     [imageModels]
   );
 
-  const videoOptions = useMemo(() => {
-    const source = isAction ? filterActionImitationVideoModels(videoModels) : videoModels;
-    return source.map((model) => ({
-      value: model.id,
-      label: model.name.trim() || formatCloudModelLabel(model.id),
-    }));
-  }, [isAction, videoModels]);
+  const videoOptions = useMemo(
+    () =>
+      videoModels.map((model) => ({
+        value: model.id,
+        label: model.name.trim() || formatCloudModelLabel(model.id),
+      })),
+    [videoModels]
+  );
 
   const resolutionOptions = useMemo(
     () => videoModelCapabilities(value.models.video_model).resolutions,
@@ -383,7 +386,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
       if (!(target instanceof Node)) return;
       if (anchorRef.current?.contains(target)) return;
       if (panelRef.current?.contains(target)) return;
-      if (isInsideSelectUi(target) || isSelectPopupOpen()) return;
+      if (isVideoHomeSubmitTarget(target) || isInsideSelectUi(target) || isSelectPopupOpen()) {
+        return;
+      }
       onOpenChange(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -433,20 +438,12 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     ) {
       patch.image_model = imageOptions[0].value;
     }
-    const preferredVideo = isAction
-      ? pickActionImitationVideoModel(videoModels)
-      : pickDefaultVideoModel(videoModels);
+    const preferredVideo = pickDefaultVideoModel(videoModels);
     if (!current.models.video_model) {
       if (preferredVideo) patch.video_model = preferredVideo;
     } else if (
       videoOptions.length > 0 &&
       !videoOptions.some((option) => option.value === current.models.video_model)
-    ) {
-      if (preferredVideo) patch.video_model = preferredVideo;
-    } else if (
-      isAction &&
-      current.models.video_model &&
-      !isMiniMaxH3VideoModel(current.models.video_model)
     ) {
       if (preferredVideo) patch.video_model = preferredVideo;
     }
@@ -840,7 +837,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                       : 'videoGeneration.create.modelRequired',
                     {
                       defaultValue: isAction
-                        ? '生成前需要 MiniMax-H3 视频模型。'
+                        ? '生成前需要选择视频模型。'
                         : '生成前需要可用的规划模型。',
                     }
                   )}

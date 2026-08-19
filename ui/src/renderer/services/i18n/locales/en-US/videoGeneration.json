@@ -9,6 +9,8 @@
     "agentHint": "Agent mode: plan storyboards from a prompt and render a film.",
     "canvasHint": "Canvas mode (dev): node-based canvas for precise generation control.",
     "agentMenuDesc": "Auto-plan storyboards and render a film",
+    "actionLabel": "Action imitation",
+    "actionMenuDesc": "Character still + reference video to imitate motion",
     "creationMenuDesc": "Open the infinite canvas to arrange freely"
   },
   "nav": {
@@ -118,7 +120,7 @@
     "enterCanvas": "Open canvas",
     "customize": "Customize generation preferences",
     "modelRequired": "A planning model is required before generating.",
-    "modelRequiredAction": "A MiniMax-H3 video model is required before generating.",
+    "modelRequiredAction": "A video model is required before generating.",
     "configureModels": "Open Model Hub",
     "tryExample": "Try:",
     "skillsMenuTitle": "Choose a style skill",
@@ -458,6 +460,7 @@
       "video": "Video model",
       "videoPlaceholder": "Select a video model",
       "mediaRequired": "Please select image and video models first",
+      "videoRequired": "Please select a video model first",
       "h3Required": "Action imitation requires a MiniMax-H3 video model",
       "h3Empty": "No MiniMax-H3 video model available",
       "empty": "No models available",
