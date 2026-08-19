@@ -6,164 +6,229 @@
 
 import { httpRequest } from '@/common/adapter/httpBridge';
 
-/** Index row from `GET /api/debug/agent-traces` (snake_case from Rust). */
-export interface AgentTraceIndexEntry {
-  schema_version: number;
-  trace_id: string;
-  conversation_id: string;
-  msg_id: string;
-  root_turn_id: string;
-  session_kind: string;
-  started_at_ms: number;
+/** Matches `Integrity` in `nomi-agent-trace` (`rename_all = "snake_case"`). */
+export type ObservationIntegrity = 'complete' | 'degraded';
+
+export type ExecutionStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+  | 'truncated'
+  | 'unknown';
+
+export type RecorderHealthStatus =
+  | 'healthy'
+  | 'queue_dropped'
+  | 'storage_error'
+  | 'writer_disconnected';
+
+/** Matches `ObservationScope` in `nomi-agent-trace`. */
+export type ObservationScope =
+  | 'session_workflow'
+  | 'session_auxiliary'
+  | 'process_diagnostic';
+
+export interface RecorderHealth {
+  status: RecorderHealthStatus;
+  last_error?: string | null;
+}
+
+export interface ObservationSummary {
+  turn_count: number;
+  model_call_count: number;
+  tool_count: number;
+  active_duration_ms: number;
+  wall_span_ms?: number | null;
+  integrity: ObservationIntegrity;
+  coverage: string;
+  max_event_seq: number;
+}
+
+export interface SessionObservationList {
+  recorder_health: RecorderHealth;
+  summary: ObservationSummary;
+  turns: ProjectedTurn[];
+}
+
+export interface ProjectedGap {
+  event_seq: number;
+  reason?: string | null;
+  from_seq?: number | null;
+  to_seq?: number | null;
+}
+
+export interface ProjectedTokenUsage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_creation_tokens?: number | null;
+}
+
+export interface ProjectedToolExecution {
+  tool_call_id: string;
+  name?: string | null;
+  started_at_ms?: number | null;
   ended_at_ms?: number | null;
-  elapsed_ms?: number | null;
-  tool_call_count: number;
-  tool_error_count: number;
-  artifact_count?: number;
-  input_tokens: number;
-  output_tokens: number;
-  stop_reason?: string | null;
-  success?: boolean | null;
-  relative_path: string;
+  status?: 'started' | 'completed' | 'failed' | 'cancelled';
+  started?: unknown | null;
+  completed?: unknown | null;
+  failed?: unknown | null;
+  cancelled?: unknown | null;
+  argument_preview?: string | null;
 }
 
-/** Metadata-only verified artifact (no absolute path / no bytes). */
-export interface AgentTraceArtifactMeta {
-  id: string;
-  kind: string;
-  mime_type: string;
-  relative_path: string;
-  size_bytes: number;
-  sha256: string;
-  call_id?: string | null;
-  tool_name?: string | null;
-  /** `receipt` = verified PersistedArtifact; `reported` = Write/Edit-style path. */
-  source?: string | null;
-}
-
-export interface AgentTraceArtifactIndexEntry {
-  schema_version: number;
-  trace_id: string;
-  conversation_id: string;
-  msg_id: string;
-  started_at_ms: number;
-  artifact: AgentTraceArtifactMeta;
-}
-
-export interface AgentTraceSpan {
-  span_id: string;
-  parent_span_id?: string | null;
-  kind: string;
-  name: string;
-  started_at_ms: number;
-  ended_at_ms?: number | null;
-  status: string;
-  attributes?: Record<string, unknown>;
-  preview?: string | null;
-}
-
-export interface AgentTurnSummary {
-  elapsed_ms?: number | null;
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_creation_tokens?: number;
-  cache_read_tokens?: number;
-  context_tokens?: number;
-  context_window?: number;
-  stop_reason?: string | null;
-  tool_call_count?: number;
-  tool_error_count?: number;
-  llm_round_count?: number;
-  artifact_count?: number;
-  artifacts?: AgentTraceArtifactMeta[];
-  success?: boolean | null;
-  error_code?: string | null;
-  error_message?: string | null;
-}
-
-export interface AgentTurnTrace {
-  schema_version: number;
-  trace_id: string;
-  conversation_id: string;
-  msg_id: string;
-  root_turn_id: string;
-  session_kind: string;
-  origin?: string | null;
-  companion?: boolean;
-  channel_platform?: string | null;
-  provider?: string | null;
+export interface ProjectedRequestSummary {
   model?: string | null;
-  started_at_ms: number;
+  has_system: boolean;
+  message_count: number;
+  tool_definition_count: number;
+  system_omitted?: boolean;
+  messages_omitted?: boolean;
+  tools_omitted?: boolean;
+}
+
+export interface ProjectedResponseSummary {
+  has_text: boolean;
+  has_thinking: boolean;
+  text_omitted?: boolean;
+  thinking_omitted?: boolean;
+  tool_use_count: number;
+  elapsed_ms?: number | null;
+  ttft_ms?: number | null;
+  stop_reason?: string | null;
+  text_preview?: string | null;
+}
+
+export interface ProjectedModelCall {
+  model_call_id: string;
+  call_kind?: string | null;
+  observation_scope?: ObservationScope | null;
+  status?: ExecutionStatus;
+  integrity?: ObservationIntegrity;
+  interrupted: boolean;
+  started_at_ms?: number | null;
   ended_at_ms?: number | null;
-  spans: AgentTraceSpan[];
-  summary: AgentTurnSummary;
+  usage?: ProjectedTokenUsage | null;
+  request?: unknown | null;
+  response?: unknown | null;
+  request_summary?: ProjectedRequestSummary | null;
+  response_summary?: ProjectedResponseSummary | null;
+  tools: ProjectedToolExecution[];
 }
 
-export async function listAgentTraces(
+/** Projection from `GET /api/debug/session-observations`. */
+export interface ProjectedTurn {
+  root_turn_id: string;
+  conversation_id?: string | null;
+  msg_id?: string | null;
+  session_kind?: string | null;
+  execution_id?: string | null;
+  step_id?: string | null;
+  execution_attempt_id?: string | null;
+  status?: ExecutionStatus;
+  integrity: ObservationIntegrity;
+  interrupted: boolean;
+  started_at_ms?: number | null;
+  ended_at_ms?: number | null;
+  elapsed_ms?: number | null;
+  prompt_preview?: string | null;
+  max_event_seq?: number;
+  has_turn_start?: boolean;
+  has_turn_end?: boolean;
+  gap_count: number;
+  model_calls: ProjectedModelCall[];
+  gaps: ProjectedGap[];
+}
+
+export interface ObservationFetchOptions {
+  signal?: AbortSignal;
+}
+
+export async function listSessionObservations(
   conversationId: string,
-  limit = 50
-): Promise<AgentTraceIndexEntry[]> {
+  options?: ObservationFetchOptions
+): Promise<SessionObservationList> {
   const params = new URLSearchParams({
     conversation_id: conversationId,
-    limit: String(limit),
+    limit: '200',
   });
-  return httpRequest<AgentTraceIndexEntry[]>(
+  return httpRequest<SessionObservationList>(
     'GET',
-    `/api/debug/agent-traces?${params.toString()}`,
+    `/api/debug/session-observations?${params.toString()}`,
     undefined,
-    { silentStatuses: [403] }
+    { silentStatuses: [403], signal: options?.signal }
   );
 }
 
-export async function listAgentTraceArtifacts(
+export async function getSessionObservationTurn(
   conversationId: string,
-  limit = 100
-): Promise<AgentTraceArtifactIndexEntry[]> {
+  rootTurnId: string,
+  options?: ObservationFetchOptions
+): Promise<ProjectedTurn> {
   const params = new URLSearchParams({
     conversation_id: conversationId,
-    limit: String(limit),
   });
-  return httpRequest<AgentTraceArtifactIndexEntry[]>(
+  return httpRequest<ProjectedTurn>(
     'GET',
-    `/api/debug/agent-traces/artifacts?${params.toString()}`,
+    `/api/debug/session-observations/turns/${encodeURIComponent(rootTurnId)}?${params.toString()}`,
     undefined,
-    { silentStatuses: [403] }
+    { silentStatuses: [403, 404], signal: options?.signal }
   );
 }
 
-export async function getAgentTrace(traceId: string): Promise<AgentTurnTrace> {
-  return httpRequest<AgentTurnTrace>(
+export async function getSessionObservationCall(
+  conversationId: string,
+  rootTurnId: string,
+  modelCallId: string,
+  options?: ObservationFetchOptions
+): Promise<ProjectedModelCall> {
+  const params = new URLSearchParams({
+    conversation_id: conversationId,
+  });
+  return httpRequest<ProjectedModelCall>(
     'GET',
-    `/api/debug/agent-traces/${encodeURIComponent(traceId)}`,
+    `/api/debug/session-observations/turns/${encodeURIComponent(rootTurnId)}/calls/${encodeURIComponent(modelCallId)}?${params.toString()}`,
     undefined,
-    { silentStatuses: [403, 404] }
+    { silentStatuses: [403, 404, 410], signal: options?.signal }
   );
 }
 
-/** Parse span.attributes.artifacts when present. */
-export function spanArtifacts(
-  attributes: Record<string, unknown> | undefined
-): AgentTraceArtifactMeta[] {
-  const raw = attributes?.artifacts;
-  if (!Array.isArray(raw)) return [];
-  const out: AgentTraceArtifactMeta[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const row = item as Record<string, unknown>;
-    const id = typeof row.id === 'string' ? row.id : null;
-    const relative_path = typeof row.relative_path === 'string' ? row.relative_path : null;
-    if (!id || !relative_path) continue;
-    out.push({
-      id,
-      kind: typeof row.kind === 'string' ? row.kind : 'file',
-      mime_type: typeof row.mime_type === 'string' ? row.mime_type : '',
-      relative_path,
-      size_bytes: typeof row.size_bytes === 'number' ? row.size_bytes : 0,
-      sha256: typeof row.sha256 === 'string' ? row.sha256 : '',
-      call_id: typeof row.call_id === 'string' ? row.call_id : null,
-      tool_name: typeof row.tool_name === 'string' ? row.tool_name : null,
-      source: typeof row.source === 'string' ? row.source : null,
-    });
+export function isObservationRetentionError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const body = 'body' in error ? (error as { body?: unknown }).body : undefined;
+  if (!body || typeof body !== 'object') return false;
+  const record = body as Record<string, unknown>;
+  return (
+    record.reason === 'observation_retention' ||
+    record.code === 'OBSERVATION_RETENTION' ||
+    (record.details != null &&
+      typeof record.details === 'object' &&
+      (record.details as { reason?: unknown }).reason === 'observation_retention')
+  );
+}
+
+export function toolStatus(
+  tool: ProjectedToolExecution
+): 'cancelled' | 'failed' | 'completed' | 'started' {
+  if (tool.status) return tool.status;
+  if (tool.cancelled != null) return 'cancelled';
+  if (tool.failed != null) return 'failed';
+  if (tool.completed != null) return 'completed';
+  return 'started';
+}
+
+export function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
   }
-  return out;
+  return null;
+}
+
+/** Canonical request body from an `llm/request` payload. Never invent omitted fields. */
+export function canonicalRequestFromPayload(payload: unknown): unknown {
+  const record = asRecord(payload);
+  if (!record) return payload;
+  return record.request ?? payload;
 }

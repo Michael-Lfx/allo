@@ -72,8 +72,9 @@ pub use nomi_types;
 
 pub use agent_eval::EvalLab;
 pub use agent_trace::{
-    AgentTraceHub, TraceApiError, TraceArtifactIndexEntry, TraceArtifactMeta, TraceIndexEntry,
-    TurnTrace, TurnTraceCollector, TurnTraceContext, DEVELOPER_MODE_PREF_KEY,
+    AgentTraceHub, ObservationIds, ObservationRecorder, ProjectedTurn, SessionObservationList,
+    TraceApiError, DEFAULT_SESSION_OBSERVATION_LIST_LIMIT, DEVELOPER_MODE_PREF_KEY,
+    MAX_SESSION_OBSERVATION_LIST_LIMIT, classify_session_kind,
 };
 pub use runtime_state::AgentRuntimeState;
 pub use boot_process_reaper::{

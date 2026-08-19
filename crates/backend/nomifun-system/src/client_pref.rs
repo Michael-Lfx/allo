@@ -21,6 +21,8 @@ const MAX_KEY_LENGTH: usize = 255;
 ///   visible window the user never chose.
 const SYSTEM_RESERVED_PREFIXES: &[&str] = &["managedModel.", "agent.browserUse.displayMode"];
 
+pub(crate) const DEVELOPER_MODE_PREF_KEY: &str = "system.developerMode";
+
 /// Business logic for client preferences (generic key-value store).
 #[derive(Clone)]
 pub struct ClientPrefService {
@@ -188,6 +190,17 @@ impl ClientPrefService {
             }
         }
         self.repo.update_batch(&restore_upserts, &restore_deletes).await
+    }
+}
+
+pub(crate) fn preference_value_is_true(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Bool(enabled) => *enabled,
+        serde_json::Value::String(text) => {
+            matches!(text.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes")
+        }
+        serde_json::Value::Number(number) => number.as_i64() == Some(1),
+        _ => false,
     }
 }
 

@@ -1,40 +1,38 @@
 # Agent 可观测性与评测
 
-本文说明 Flowy / allo 中 **Developer Mode Trace** 与 **Agent Eval（真实 harness / runtime）** 的职责边界与用法。
+本文说明 Flowy / allo 中 **Session Observation（开发者模式）** 与 **Agent Eval（真实 harness / runtime）** 的职责边界与用法。契约细节见 [session-observation-workflow-proposal.zh.md](session-observation-workflow-proposal.zh.md) 第 7 节。
 
-## Trace（Developer Mode）
+## Session Observation（Developer Mode）
 
-Agent 回合会写入结构化 turn trace（spans、token、工具计数），落盘于：
+Nomi-owned 模型调用与工具执行写入 unlabeled JSONL 事件，落盘于：
 
-`{data_dir}/diagnostics/agent-traces/`
+`{data_dir}/diagnostics/observation/{conversation_id}/events.jsonl`
 
-读取受 **开发者模式**（`system.developerMode`）门控：
+超过 48 MiB 旋转为 `events.{n}.jsonl`；GC 14 天。写入前执行 capture（truncated + redacted；媒体 metadata_only）。会话发送即写盘；`system.developerMode` 不控制采集。
+
+读取与支持包附带 JSONL 受 **开发者模式** 门控：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/debug/agent-traces?conversationId=&limit=` | 按会话列出索引 |
-| GET | `/api/debug/agent-traces/recent?limit=` | 最近条目 |
-| GET | `/api/debug/agent-traces/artifacts?conversationId=&limit=` | 会话级已验证产物元数据（无二进制） |
-| GET | `/api/debug/agent-traces/{trace_id}` | 完整 turn（含 spans） |
+| GET | `/api/debug/session-observations?conversation_id=` | 按会话投影回合列表（摘要，不含 request/response 全文；默认 50 条、最多 200 条） |
+| GET | `/api/debug/session-observations/turns/{root_turn_id}?conversation_id=` | 单个回合的 REQUEST → RESPONSE → tools |
 
-实现：`nomi-agent-trace`（存储 / 脱敏）→ `nomifun_ai_agent::AgentTraceHub` → `nomifun-conversation::routes_trace`。
+实现：`nomi-agent-trace`（事件 / capture / JSONL / 投影）→ `nomifun-ai-agent::AgentTraceHub` → `nomifun-conversation::routes_trace`。采集走 `ObservationSession` + `stream_llm`，失败只 warn / `observation/gap`，不打断回合。
 
-工具完成后，collector 会写入两类产物元数据（不写绝对路径 / 二进制）：
-
-1. **receipt**：已验证的 `PersistedArtifact`（媒体/导出类工具）
-2. **reported**：`Write` / `Edit` / `ApplyPatch` 等文件变更工具的 `file_path`（以及工具输出里的 `Created/Updated/Edited …` 回填）
-
-会话级列表 API 也会对历史 turn 做 span preview 回填，因此开发者模式开启后产生的 Write/Edit 脚本与文档会出现在 Session artifacts 中。
+投影规则：只按 `event_seq` 排序。无对应 `llm/response` → 该 `model_call_id` 标 `interrupted`，执行边界 `integrity=degraded`。`observation/gap` 同样降级。禁止用聊天气泡拼 `messages[]`。
 
 ### UI
 
-会话页 `ChatLayout` 在开发者模式开启且存在 `conversation_id` 时显示 **Trace** 按钮，打开嵌入式 Drawer（`AgentTraceInspector`）：
+会话页 `ChatLayout` 在开发者模式开启且存在 `conversation_id` 时，在能力按钮最左显示 **观测** pill（`aria-pressed`）。打开后对话列滑动到会话日志 pane（`AgentTraceInspector`），不是 Drawer：
 
-- 会话产物列表（跨 turn 聚合，点击跳到对应 turn）
-- 列出该会话的 turn 索引（含 artifact 计数）
-- 点击行查看 span 瀑布、tokens / tools / artifacts、可展开 attributes / preview
+- 左列顶：会话四数 + 刷新 + 最新在上|最早在上；integrity / interrupted / gap 次级
+- 回合行带时钟；第 N 轮按时间升序编号
+- 右侧按模型调用展示 REQUEST → RESPONSE → tools；点瓦片才 Call GET
+- 详情为可收缩 object tree（`react-json-view-lite`）；切回对话不 abort poll、不清 LRU
 
 未开启开发者模式时组件不渲染；API 在未开启时返回 403。
+
+支持包在开发者模式开启且指定 `conversation_id` 时，把 `diagnostics/observation/` 下的 JSONL 打进 ZIP 的 `observation/`。
 
 ## Eval（真实 AgentEngine）
 
@@ -112,7 +110,7 @@ cargo run -p nomi-agent-eval --example agent_eval --features agent-eval -- \
 
 | 能力 | 面向 | 是否依赖 LLM |
 | --- | --- | --- |
-| Trace Inspector | 开发者调试真实用户回合 | 否（只读已落盘 trace） |
+| Session Observation | 开发者调试真实回合的 canonical 请求 / 响应 / 工具 | 否（只读已落盘 JSONL） |
 | Agent Eval | 回归 / 准入真实 harness | 离线 demo 否；live lab 是 |
 
-二者互补：Eval 保证行为契约，Trace 解释线上回合。
+二者互补：Eval 保证行为契约，Observation 解释线上回合。

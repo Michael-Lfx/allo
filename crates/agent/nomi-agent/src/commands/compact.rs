@@ -32,12 +32,13 @@ impl SlashCommand for CompactCommand {
 
         let pre_tokens = ctx.compact_state.last_input_tokens;
 
-        match auto::autocompact(
+        match auto::autocompact_observed(
             ctx.provider.as_ref(),
             ctx.messages,
             ctx.model,
             ctx.compact_config,
             ctx.compact_state,
+            ctx.observation.clone(),
         )
         .await
         {
@@ -135,6 +136,7 @@ mod tests {
             model: "test-model",
             output: &output,
             registry: &registry,
+            observation: None,
         };
 
         let cmd = CompactCommand;
@@ -175,6 +177,7 @@ mod tests {
             model: "test-model",
             output: &output,
             registry: &registry,
+            observation: None,
         };
 
         let cmd = CompactCommand;

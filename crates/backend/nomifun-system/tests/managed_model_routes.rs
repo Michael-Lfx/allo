@@ -78,6 +78,8 @@ async fn setup_with_managed_service(
         work_dir: std::env::temp_dir(),
         work_dir_is_cli_override: false,
         runtime_capabilities: nomifun_api_types::RuntimeCapabilities::web(),
+        conversation_repo: None,
+        observation_reset: nomifun_system::idle_observation_reset(),
     };
     (system_routes(state), db, server)
 }

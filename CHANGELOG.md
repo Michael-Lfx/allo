@@ -5,6 +5,8 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Developer-mode Session Logs replaces Agent Trace. Closing developer mode hides the inspector and blocks HTTP reads; it no longer stops recording conversation observations to disk.
+
 ## v1.0.1 - 2026-08-18
 
 - Settings keep presets, skills, MCP, and plugins in one hub with shared search. The hub also opens faster by deferring Markdown and market work.

@@ -599,8 +599,17 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
     conversation.service.with_supervision_hook(idmm_hook.clone());
     services.terminal_service.with_terminal_supervision_hook(idmm_hook);
     let execution_conversation = conversation.service.clone();
+    let system = build_system_state(services);
+    if let Some(hub) = conversation.agent_trace_hub.clone() {
+        let reset_hub = hub.clone();
+        if let Ok(mut slot) = system.observation_reset.lock() {
+            *slot = Some(Arc::new(move || {
+                reset_hub.reset_all_observations();
+            }));
+        }
+    }
     let states = ModuleStates {
-        system: build_system_state(services),
+        system,
         conversation,
         remote_agent: build_remote_agent_state(services),
         ssh_host: build_ssh_host_state(services),
@@ -771,6 +780,8 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         work_dir: services.work_dir.clone(),
         work_dir_is_cli_override: services.work_dir_is_cli_override,
         runtime_capabilities: services.runtime_capabilities,
+        conversation_repo: Some(services.conversation_repo.clone()),
+        observation_reset: nomifun_system::idle_observation_reset(),
     }
 }
 

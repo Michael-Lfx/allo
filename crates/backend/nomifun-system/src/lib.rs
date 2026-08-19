@@ -35,6 +35,6 @@ pub use provider::ProviderService;
 pub use provider_connection::ProviderConnectionService;
 pub use provider_deletion::{ProviderDeletionCoordinator, SharedProviderDeletionCoordinator};
 pub use provider_model::ProviderModelService;
-pub use routes::{SystemRouterState, system_routes};
+pub use routes::{SystemRouterState, idle_observation_reset, system_routes};
 pub use settings::SettingsService;
 pub use version::VersionCheckService;

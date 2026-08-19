@@ -100,6 +100,8 @@ async fn setup_with_work_and_cli_override(
         work_dir_is_cli_override,
         data_dir,
         runtime_capabilities: nomifun_api_types::RuntimeCapabilities::web(),
+        conversation_repo: None,
+        observation_reset: nomifun_system::idle_observation_reset(),
     };
     system_routes(state)
 }

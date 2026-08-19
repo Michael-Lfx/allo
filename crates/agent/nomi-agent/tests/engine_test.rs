@@ -1509,3 +1509,86 @@ async fn plan_mode_instructions_ride_turn_tail_not_system_prompt() {
         "plan mode instructions must ride the turn tail, got: {text}"
     );
 }
+
+#[tokio::test]
+async fn agent_tool_agent_observation_aligns_intent_and_execution() {
+    let provider = Arc::new(MockLlmProvider::with_turns(vec![
+        vec![
+            LlmEvent::ToolUse {
+                id: "call-echo".into(),
+                name: "echo".into(),
+                input: json!({ "text": "ping" }),
+                extra: None,
+            },
+            done(StopReason::ToolUse),
+        ],
+        vec![
+            LlmEvent::TextDelta("pong".into()),
+            done(StopReason::EndTurn),
+        ],
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool::new("echo", "pong", false)));
+    let mut engine = AgentEngine::new_with_provider(
+        provider,
+        test_config(),
+        registry,
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = nomi_agent_trace::ObservationRecorder::isolated(dir.path());
+    recorder.set_enabled(true);
+    let session = nomi_agent::ObservationSession::new(recorder.clone());
+    session.bind_ids(nomi_agent_trace::ObservationIds {
+        conversation_id: Some("c-tools".into()),
+        root_turn_id: Some("t-tools".into()),
+        ..Default::default()
+    });
+    engine.set_observation(Arc::clone(&session));
+
+    engine
+        .execute_turn("use the echo tool", "msg-tools")
+        .await
+        .unwrap();
+
+    let events = recorder.read_events(Some("c-tools")).unwrap();
+    let response = events
+        .iter()
+        .find(|event| event.event_type == nomi_agent_trace::EVENT_LLM_RESPONSE)
+        .expect("first model call should record llm/response");
+    let model_call_id = nomi_agent_trace::ids_from_payload(&response.payload)
+        .model_call_id
+        .expect("llm/response must carry model_call_id");
+    let tool_use = response.payload["tool_use"]
+        .as_array()
+        .expect("llm/response should include tool_use intent");
+    assert_eq!(tool_use[0]["id"], "call-echo");
+
+    let started = events
+        .iter()
+        .find(|event| event.event_type == nomi_agent_trace::EVENT_TOOL_EXECUTION_STARTED)
+        .expect("tool/execution_started");
+    let completed = events
+        .iter()
+        .find(|event| event.event_type == nomi_agent_trace::EVENT_TOOL_EXECUTION_COMPLETED)
+        .expect("tool/execution_completed");
+    assert_eq!(started.payload["tool_call_id"], "call-echo");
+    assert_eq!(completed.payload["tool_call_id"], "call-echo");
+    assert_eq!(
+        nomi_agent_trace::ids_from_payload(&started.payload).model_call_id.as_deref(),
+        Some(model_call_id.as_str())
+    );
+    assert_eq!(
+        nomi_agent_trace::ids_from_payload(&completed.payload).model_call_id.as_deref(),
+        Some(model_call_id.as_str())
+    );
+    assert!(
+        events
+            .iter()
+            .filter(|event| event.event_type == nomi_agent_trace::EVENT_LLM_REQUEST)
+            .count()
+            >= 2,
+        "Agent→tool→Agent should record two model calls"
+    );
+}

@@ -6031,6 +6031,7 @@ impl ConversationService {
             deletion_guard.commit();
             service.runtime_state.clear_knowledge_signature(&conversation_id);
             service.runtime_state.clear_turn_tokens(&conversation_id);
+            service.drop_conversation_observations(&conversation_id);
             info!(conversation_id, "Conversation deleted");
             service.broadcast_list_changed(
                 &user_id,
@@ -6344,6 +6345,8 @@ impl ConversationService {
                 )));
             }
         }
+
+        self.clear_conversation_observations(id);
 
         // Keep both fences through the durable commit, then release the inner
         // lifecycle tombstone while the outer preparation gate still excludes
@@ -9540,6 +9543,9 @@ impl ConversationService {
         let accepted_wire_turn_id = stable_turn_id.clone();
         let owner_turn_generation = turn_handle.turn_id();
         let owner_conversation_id = conversation_key.clone();
+        let observation_execution = durable_delivery
+            .as_ref()
+            .and_then(|delivery| delivery.execution_authority.clone());
         #[cfg(test)]
         self.reach_public_admission_cutpoint(PublicAdmissionCutpoint::BeforeOwnerSpawn)
             .await;
@@ -9834,6 +9840,10 @@ impl ConversationService {
             } else {
                 None
             };
+            let mut last_relay_stop: Option<TurnStopReason> = None;
+            let mut last_relay_finished = false;
+            let mut observation_opened = false;
+            let mut observation_started_at = 0i64;
 
             while let Some((current_send, msg_id)) = pending_send.take() {
                 if turn_token.is_cancelled() {
@@ -9914,23 +9924,35 @@ impl ConversationService {
                 }
 
                 let rx = agent.subscribe();
-                if let Some(hub) = service.current_agent_trace_hub() {
-                    let trace_rx = agent.subscribe();
-                    nomifun_ai_agent::TurnTraceCollector::spawn(
-                        hub,
-                        trace_rx,
-                        nomifun_ai_agent::TurnTraceContext {
-                            conversation_id: conv_id.clone(),
-                            msg_id: turn_msg_id.clone(),
-                            root_turn_id: stable_turn_id.clone(),
-                            origin: origin.clone(),
-                            companion,
-                            channel_platform: channel_platform.clone(),
-                            provider: None,
-                            model: None,
-                            session_dialogue_only: true,
-                        },
-                    );
+                if service.current_agent_trace_hub().is_some() {
+                    if !observation_opened {
+                        observation_started_at = now_ms();
+                        observation_opened = true;
+                    }
+                    agent.set_observation_turn_end_deferred(true);
+                    agent.bind_observation_ids_with_preview(nomifun_ai_agent::ObservationIds {
+                        conversation_id: Some(conv_id.clone()),
+                        msg_id: Some(turn_msg_id.clone()),
+                        root_turn_id: Some(stable_turn_id.clone()),
+                        session_kind: Some(
+                            nomifun_ai_agent::classify_session_kind(
+                                origin.as_deref(),
+                                companion,
+                                channel_platform.as_deref(),
+                            )
+                            .to_owned(),
+                        ),
+                        execution_id: observation_execution
+                            .as_ref()
+                            .map(|authority| authority.execution_id.clone()),
+                        step_id: observation_execution
+                            .as_ref()
+                            .map(|authority| authority.step_id.clone()),
+                        execution_attempt_id: observation_execution
+                            .as_ref()
+                            .map(|authority| authority.attempt_id.clone()),
+                        ..Default::default()
+                    }, Some(current_send.content.as_str()));
                 }
                 let send_agent = agent.clone();
                 let conv_id_send = conv_id.clone();
@@ -9956,6 +9978,8 @@ impl ConversationService {
                 });
                 // 2. Wait for the agent to process the message and complete the turn, while the relay streams events in real time.
                 let outcome = relay.consume_with_send_error(rx, send_error_rx).await;
+                last_relay_stop = outcome.stop_reason;
+                last_relay_finished = matches!(&outcome.terminal, RelayTerminal::Finish);
 
                 if turn_token.is_cancelled() || outcome.stop_reason == Some(TurnStopReason::Cancelled) {
                     durable_completion = Some((
@@ -10259,6 +10283,16 @@ impl ConversationService {
                     },
                     next_turn_msg_id,
                 ));
+            }
+
+            if observation_opened {
+                agent.close_observation_turn_from_relay(
+                    turn_token.is_cancelled()
+                        || last_relay_stop == Some(TurnStopReason::Cancelled),
+                    last_relay_stop,
+                    last_relay_finished,
+                    now_ms().saturating_sub(observation_started_at),
+                );
             }
 
             let (ok, text, error, error_code) = durable_completion.unwrap_or_else(|| {
@@ -12724,6 +12758,8 @@ impl ConversationService {
         // runtime silently recover the supposedly archived context.
         self.acp_session_repo.clear_session_id(conv_id).await?;
 
+        self.clear_conversation_observations(conversation_id);
+
         drop(reset_guard);
         drop(preparation_guard);
         info!("Conversation context cleared");
@@ -12824,6 +12860,8 @@ impl ConversationService {
                 )));
             }
         }
+
+        self.clear_conversation_observations(conversation_id);
 
         drop(clear_guard);
         drop(preparation_guard);
@@ -14197,6 +14235,28 @@ impl ConversationService {
         match self.agent_trace_hub.read() {
             Ok(guard) => guard.as_ref().map(Arc::clone),
             Err(_) => None,
+        }
+    }
+
+    fn drop_conversation_observations(&self, conversation_id: &str) {
+        if let Some(hub) = self.current_agent_trace_hub() {
+            hub.drop_conversation_observations(conversation_id);
+        } else {
+            warn!(
+                conversation_id,
+                "session observation hub is not attached; drop is a no-op"
+            );
+        }
+    }
+
+    fn clear_conversation_observations(&self, conversation_id: &str) {
+        if let Some(hub) = self.current_agent_trace_hub() {
+            hub.clear_conversation_observations(conversation_id);
+        } else {
+            warn!(
+                conversation_id,
+                "session observation hub is not attached; clear is a no-op"
+            );
         }
     }
 

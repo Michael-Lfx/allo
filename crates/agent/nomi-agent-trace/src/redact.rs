@@ -1,7 +1,7 @@
 //! Truncation and secret redaction for trace previews.
 
 use nomi_redact::redact_secrets;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 /// Maximum characters kept in any preview string after redaction.
 pub const MAX_PREVIEW_CHARS: usize = 2000;
@@ -28,23 +28,18 @@ pub fn redact_preview(s: &str) -> String {
 
 /// Deep-clone a JSON value, redacting and truncating every string leaf.
 ///
-/// Intended for tool arguments and similar structured payloads before they
-/// land in span attributes / previews.
-///
-/// Object keys that look like secret names (`api_key`, `token`, `password`, …)
-/// have their string values fully replaced with `[REDACTED_SECRET]`.
-///
-/// Bulky Write/Edit payload keys (`content`, `old_string`, …) are replaced with
-/// a short length placeholder so trace collection cannot stall the event bus.
-pub fn redact_json_value(value: &Value) -> Value {
+/// Write path uses [`crate::capture::capture_canonical_request`]. This helper
+/// remains as the unit-test oracle for bulky/sensitive key rules.
+#[cfg(test)]
+fn redact_json_value(value: &Value) -> Value {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
         Value::String(s) => Value::String(redact_preview(s)),
         Value::Array(items) => Value::Array(items.iter().map(redact_json_value).collect()),
         Value::Object(map) => {
-            let mut out = Map::new();
+            let mut out = serde_json::Map::new();
             for (k, v) in map {
-                if is_bulky_tool_arg_key(k) {
+                if should_omit_bulky(k, v) {
                     out.insert(k.clone(), bulky_placeholder(v));
                     continue;
                 }
@@ -65,7 +60,15 @@ pub fn redact_json_value(value: &Value) -> Value {
     }
 }
 
-fn is_bulky_tool_arg_key(key: &str) -> bool {
+pub(crate) fn should_omit_bulky(key: &str, value: &Value) -> bool {
+    // Message `content` is an array of blocks and must be walked (media lives there).
+    if matches!(key, "content" | "contents") && matches!(value, Value::Array(_)) {
+        return false;
+    }
+    is_bulky_tool_arg_key(key)
+}
+
+pub(crate) fn is_bulky_tool_arg_key(key: &str) -> bool {
     matches!(
         key.to_ascii_lowercase().as_str(),
         "content"
@@ -86,7 +89,17 @@ fn is_bulky_tool_arg_key(key: &str) -> bool {
     )
 }
 
-fn bulky_placeholder(value: &Value) -> Value {
+pub const OMITTED_REASON_EVENT_SIZE_LIMIT: &str = "event_size_limit";
+
+pub(crate) fn event_size_limit_placeholder(original_bytes: usize, captured_bytes: usize) -> Value {
+    serde_json::json!({
+        "omitted_reason": OMITTED_REASON_EVENT_SIZE_LIMIT,
+        "original_bytes": original_bytes,
+        "captured_bytes": captured_bytes,
+    })
+}
+
+pub(crate) fn bulky_placeholder(value: &Value) -> Value {
     let chars = match value {
         Value::String(s) => s.chars().count(),
         Value::Array(items) => items.len(),
@@ -96,7 +109,7 @@ fn bulky_placeholder(value: &Value) -> Value {
     Value::String(format!("[{chars} omitted]"))
 }
 
-fn is_sensitive_key(key: &str) -> bool {
+pub(crate) fn is_sensitive_key(key: &str) -> bool {
     let normalized: String = key
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -194,5 +207,22 @@ mod tests {
         let out = redact_json_value(&json!({ "body": long }));
         let body = out["body"].as_str().unwrap();
         assert!(body.contains("…(truncated)"));
+    }
+
+    #[test]
+    fn redact_json_walks_content_arrays() {
+        let value = json!({
+            "content": [{ "type": "text", "text": "hi" }]
+        });
+        let out = redact_json_value(&value);
+        assert_eq!(out["content"][0]["text"], "hi");
+    }
+
+    #[test]
+    fn event_size_limit_placeholder_is_capture_metadata() {
+        let out = event_size_limit_placeholder(90_000, 0);
+        assert_eq!(out["omitted_reason"], OMITTED_REASON_EVENT_SIZE_LIMIT);
+        assert_eq!(out["original_bytes"], 90_000);
+        assert_eq!(out["captured_bytes"], 0);
     }
 }

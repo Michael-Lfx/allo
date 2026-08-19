@@ -9,10 +9,13 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
+use nomi_agent_trace::ObservationScope;
 use nomi_config::config::Config;
 use nomi_providers::{LlmProvider, create_provider};
 use nomi_types::llm::{LlmEvent, LlmRequest};
 use nomi_types::message::{ContentBlock, Message, Role, TokenUsage};
+
+use crate::observation::ObservationSession;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -166,7 +169,7 @@ impl MoaRunner {
             join_set.spawn(async move {
                 let _permit = semaphore.acquire_owned().await;
                 let result =
-                    match tokio::time::timeout(timeout, collect_advice(provider, &request)).await {
+                    match tokio::time::timeout(timeout, collect_advice(provider, &request, None)).await {
                         Ok(result) => result,
                         Err(_) => Err(format!("timeout after {}s", timeout.as_secs())),
                     };
@@ -231,8 +234,17 @@ impl MoaRunner {
 async fn collect_advice(
     provider: Arc<dyn LlmProvider>,
     request: &LlmRequest,
+    observer: Option<Arc<ObservationSession>>,
 ) -> Result<(String, TokenUsage), String> {
-    let mut rx = provider.stream(request).await.map_err(|e| e.to_string())?;
+    let mut rx = crate::observation::stream_llm(
+        provider.as_ref(),
+        request,
+        observer,
+        "moa",
+        ObservationScope::SessionWorkflow,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let mut text = String::new();
     let mut usage = TokenUsage::default();
     while let Some(event) = rx.recv().await {

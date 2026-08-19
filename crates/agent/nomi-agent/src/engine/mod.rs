@@ -606,6 +606,8 @@ pub struct AgentEngine {
     /// provider retries from moving the boundary into the middle of one
     /// logical user turn. Compaction and context clearing invalidate it.
     editable_turn: Option<EditableTurnCheckpoint>,
+    /// Optional session observation (explicit, no thread-local).
+    observation: Option<Arc<crate::observation::ObservationSession>>,
 }
 
 impl AgentEngine {
@@ -677,6 +679,7 @@ impl AgentEngine {
             system_resource_inbox: None,
             process_supervisor: None,
             editable_turn: None,
+            observation: None,
         }
     }
 
@@ -761,6 +764,7 @@ impl AgentEngine {
             system_resource_inbox: None,
             process_supervisor: None,
             editable_turn,
+            observation: None,
         }
     }
 
@@ -871,6 +875,62 @@ impl AgentEngine {
     /// Install host-resolved Mixture of Agents state.
     pub fn set_moa_state(&mut self, state: crate::moa::MoaState) {
         self.moa = Some(state);
+    }
+
+    pub fn set_observation(&mut self, session: Arc<crate::observation::ObservationSession>) {
+        self.observation = Some(session);
+    }
+
+    pub fn observation(&self) -> Option<Arc<crate::observation::ObservationSession>> {
+        self.observation.clone()
+    }
+
+    fn observe_tool_calls_started(&self, tool_calls: &[ContentBlock]) {
+        let Some(session) = &self.observation else {
+            return;
+        };
+        for call in tool_calls {
+            if let ContentBlock::ToolUse { id, name, input, .. } = call {
+                session.emit_tool_started(id, name, input);
+            }
+        }
+    }
+
+    fn observe_tool_calls_finished(&self, tool_calls: &[ContentBlock], results: &[ContentBlock]) {
+        let Some(session) = &self.observation else {
+            return;
+        };
+        for result in results {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } = result
+            {
+                let name = tool_calls
+                    .iter()
+                    .find_map(|call| match call {
+                        ContentBlock::ToolUse { id, name, .. } if id == tool_use_id => {
+                            Some(name.as_str())
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or("unknown");
+                session.emit_tool_finished(tool_use_id, name, *is_error, content);
+            }
+        }
+    }
+
+    fn observe_tool_calls_cancelled(&self, tool_calls: &[ContentBlock]) {
+        let Some(session) = &self.observation else {
+            return;
+        };
+        for call in tool_calls {
+            if let ContentBlock::ToolUse { id, name, .. } = call {
+                session.emit_tool_cancelled(id, name);
+            }
+        }
     }
 
     /// Cursor-style category breakdown for the last provider request, if any.
@@ -1236,6 +1296,7 @@ impl AgentEngine {
             model: &self.model,
             output: self.output.as_ref(),
             registry: &self.commands,
+            observation: self.observation.clone(),
         };
 
         let result = cmd.execute(&mut ctx, args).await;
@@ -1639,7 +1700,15 @@ impl AgentEngine {
 
             efficiency.observe_model_turn_attempt();
             let stream_start = std::time::Instant::now();
-            let mut rx = match self.provider.stream(&request).await {
+            let mut rx = match crate::observation::stream_llm(
+                self.provider.as_ref(),
+                &request,
+                self.observation.clone(),
+                "agent_turn",
+                nomi_agent_trace::ObservationScope::SessionWorkflow,
+            )
+            .await
+            {
                 Ok(rx) => rx,
                 Err(e) if e.is_context_overflow() && !overflow_retried => {
                     overflow_retried = true;
@@ -2210,10 +2279,13 @@ impl AgentEngine {
                 } else {
                     match self.goal.as_ref() {
                         Some(g) => {
-                            let judge = crate::goal::judge::ProviderJudgeClient::new(
+                            let mut judge = crate::goal::judge::ProviderJudgeClient::new(
                                 Arc::clone(&self.provider),
                                 self.model.clone(),
                             );
+                            if let Some(session) = self.observation.clone() {
+                                judge = judge.with_observation(session);
+                            }
                             g.evaluate_and_continue(&assistant_text, &judge).await
                         }
                         None => None,
@@ -2254,6 +2326,7 @@ impl AgentEngine {
             } else {
                 crate::tool_execution::ErrorCascadePolicy::HaltAllSubsequent
             };
+            self.observe_tool_calls_started(&tool_calls);
             let mut outcome = if let Some(ref approval_mgr) = self.approval_manager {
                 // JSON stream mode: use protocol-based approval
                 let writer = self
@@ -2279,6 +2352,7 @@ impl AgentEngine {
                 {
                     Ok(o) => o,
                     Err(ExecutionControl::Quit) => {
+                        self.observe_tool_calls_cancelled(&tool_calls);
                         self.save_session();
                         return Err(AgentError::UserAborted);
                     }
@@ -2300,11 +2374,13 @@ impl AgentEngine {
                 {
                     Ok(o) => o,
                     Err(ExecutionControl::Quit) => {
+                        self.observe_tool_calls_cancelled(&tool_calls);
                         self.save_session();
                         return Err(AgentError::UserAborted);
                     }
                 }
             };
+            self.observe_tool_calls_finished(&tool_calls, &outcome.results);
             let confirmed_invalid_argument_call_ids =
                 confirmed_predispatch_schema_invalid_call_ids(
                     &invalid_argument_call_ids,
@@ -2842,6 +2918,7 @@ impl AgentEngine {
             &self.compact_config,
             &mut self.compact_state,
             force_mechanical,
+            self.observation.clone(),
         )
         .await
         {

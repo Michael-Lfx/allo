@@ -107,6 +107,7 @@ mod tests {
             model: "test",
             output: &output,
             registry: &registry,
+            observation: None,
         };
 
         let cmd = HelpCommand;
@@ -139,6 +140,7 @@ mod tests {
             model: "test",
             output: &output,
             registry: &registry,
+            observation: None,
         };
 
         let cmd = HelpCommand;

@@ -11,9 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use nomi_agent_trace::ObservationScope;
 use nomi_providers::LlmProvider;
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role};
+
+use crate::observation::ObservationSession;
 
 use crate::goal::state::{
     GoalContract, GoalVerdict, render_contract_block, render_subgoals_block,
@@ -324,11 +327,21 @@ pub trait GoalJudgeClient: Send + Sync {
 pub struct ProviderJudgeClient {
     provider: Arc<dyn LlmProvider>,
     model: String,
+    observation: Option<Arc<ObservationSession>>,
 }
 
 impl ProviderJudgeClient {
     pub fn new(provider: Arc<dyn LlmProvider>, model: String) -> Self {
-        Self { provider, model }
+        Self {
+            provider,
+            model,
+            observation: None,
+        }
+    }
+
+    pub fn with_observation(mut self, session: Arc<ObservationSession>) -> Self {
+        self.observation = Some(session);
+        self
     }
 }
 
@@ -352,11 +365,15 @@ impl GoalJudgeClient for ProviderJudgeClient {
         };
 
         let collected = tokio::time::timeout(Duration::from_secs(JUDGE_TIMEOUT_SECS), async {
-            let mut rx = self
-                .provider
-                .stream(&request)
-                .await
-                .map_err(|e| format!("judge request failed: {e}"))?;
+            let mut rx = crate::observation::stream_llm(
+                self.provider.as_ref(),
+                &request,
+                self.observation.clone(),
+                "goal_judge",
+                ObservationScope::SessionWorkflow,
+            )
+            .await
+            .map_err(|e| format!("judge request failed: {e}"))?;
             let mut text = String::new();
             while let Some(event) = rx.recv().await {
                 match event {
@@ -1124,5 +1141,56 @@ pub(crate) mod tests {
         let s = "目标".repeat(3000);
         let t = truncate_chars(&s, 100);
         assert!(t.chars().count() <= 101);
+    }
+
+    struct ScriptedJudgeProvider;
+
+    #[async_trait]
+    impl LlmProvider for ScriptedJudgeProvider {
+        async fn stream(
+            &self,
+            _: &LlmRequest,
+        ) -> Result<tokio::sync::mpsc::Receiver<LlmEvent>, nomi_providers::ProviderError> {
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            tx.send(LlmEvent::TextDelta(
+                r#"{"verdict":"continue","reason":"more work"}"#.into(),
+            ))
+            .await
+            .ok();
+            tx.send(LlmEvent::Done {
+                stop_reason: nomi_types::message::StopReason::EndTurn,
+                usage: Default::default(),
+            })
+            .await
+            .ok();
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_judge_client_writes_observation_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = nomi_agent_trace::ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let session = ObservationSession::new(recorder.clone());
+        session.bind_ids(nomi_agent_trace::ObservationIds {
+            conversation_id: Some("c-judge".into()),
+            root_turn_id: Some("t-judge".into()),
+            ..Default::default()
+        });
+        let client = ProviderJudgeClient::new(Arc::new(ScriptedJudgeProvider), "judge-model".into())
+            .with_observation(session);
+        let text = client.complete("sys", "user").await.unwrap();
+        assert!(text.contains("continue"));
+        let events = recorder.read_events(Some("c-judge")).unwrap();
+        assert!(events.iter().any(|event| {
+            event.event_type == nomi_agent_trace::EVENT_LLM_REQUEST
+                && event.payload["call_kind"] == "goal_judge"
+        }));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == nomi_agent_trace::EVENT_LLM_RESPONSE)
+        );
     }
 }

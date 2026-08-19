@@ -81,6 +81,7 @@ mod tests {
             model: "test",
             output: &output,
             registry: &registry,
+            observation: None,
         };
 
         let cmd = ClearCommand;
@@ -109,6 +110,7 @@ mod tests {
             model: "test",
             output: &output,
             registry: &registry,
+            observation: None,
         };
 
         let cmd = ClearCommand;

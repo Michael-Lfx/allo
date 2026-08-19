@@ -4,10 +4,16 @@ import { browserStorageKey } from '@/common/utils/browserStorageKey';
 import type { PresetInfo } from '@/renderer/hooks/agent/usePresetInfo';
 import appLogo from '@/renderer/assets/logo.svg';
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
+import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
 import ChatTitleEditor from '@/renderer/pages/conversation/components/ChatTitleEditor';
-import AgentTraceInspector from '@/renderer/pages/conversation/components/AgentTraceInspector';
+import {
+  AgentTraceTrigger,
+  SessionLogWorkspace,
+  SessionLogsRoot,
+  type ConversationColumnView,
+} from '@/renderer/pages/conversation/components/AgentTraceInspector';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { SummonHeaderBadge } from '@/renderer/pages/conversation/components/SummonPanel';
 import MobileWorkspaceOverlay from './MobileWorkspaceOverlay';
@@ -104,6 +110,18 @@ export interface ChatLayoutProps {
 const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
   const { t } = useTranslation();
   const { conversation_id, workspacePath, isTemporaryWorkspace } = props;
+  const [developerMode] = useConfig('system.developerMode');
+  const [columnView, setColumnView] = useState<ConversationColumnView>('dialogue');
+  const conversationViewKey = conversation_id ?? '';
+  const conversationViewRef = useRef(conversationViewKey);
+  if (conversationViewRef.current !== conversationViewKey) {
+    conversationViewRef.current = conversationViewKey;
+    if (columnView !== 'dialogue') {
+      setColumnView('dialogue');
+    }
+  }
+  const logsEnabled =
+    developerMode === true && !props.hideAdvancedControls && conversation_id != null;
   const workspaceTarget = conversation_id != null ? conversationTarget(conversation_id) : undefined;
   const { workspaceEnabled = true } = props;
   const layout = useLayoutContext();
@@ -309,8 +327,8 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
           <>
             {/* 召唤伙伴徽标（设计 B5）：仅已召唤会话渲染，被动展示伙伴名。 */}
             <SummonHeaderBadge conversationId={conversation_id} />
+            {logsEnabled ? <AgentTraceTrigger /> : null}
             <KnowledgeControl target={{ kind: 'conversation', id: conversation_id }} />
-            <AgentTraceInspector conversationId={conversation_id} />
           </>
         )}
         {props.headerExtra}
@@ -327,7 +345,44 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
     </>
   );
 
-  return (
+  const chatColumnBody = logsEnabled ? (
+    <div className='conversation-column-slide'>
+      <div className='conversation-column-viewport'>
+        <div
+          className={classNames(
+            'conversation-column-track',
+            columnView === 'logs' && 'conversation-column-track--logs'
+          )}
+        >
+          <div
+            className={classNames(
+              'conversation-column-pane',
+              columnView === 'dialogue' && 'is-active'
+            )}
+            inert={columnView !== 'dialogue' ? true : undefined}
+            aria-hidden={columnView !== 'dialogue'}
+          >
+            <ArcoLayout.Content className='flex flex-col flex-1 bg-1 overflow-hidden h-full'>
+              {props.children}
+            </ArcoLayout.Content>
+          </div>
+          <div
+            className={classNames('conversation-column-pane', columnView === 'logs' && 'is-active')}
+            inert={columnView !== 'logs' ? true : undefined}
+            aria-hidden={columnView !== 'logs'}
+          >
+            <SessionLogWorkspace />
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : (
+    <ArcoLayout.Content className='flex flex-col flex-1 bg-1 overflow-hidden'>
+      {props.children}
+    </ArcoLayout.Content>
+  );
+
+  const layoutTree = (
     <ArcoLayout
       className='size-full color-black '
       style={{
@@ -348,7 +403,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
           <div className='flex flex-1 min-h-0 relative'>
             {/* Chat area - always mounted, never unmounted on preview toggle */}
             <div
-              className='flex flex-col relative'
+              className='flex flex-col relative min-h-0'
               style={{
                 flexGrow: isPreviewOpen && isDesktop ? 0 : 1,
                 flexShrink: 0,
@@ -360,9 +415,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
                 if (window.innerWidth < 768 && !rightSiderCollapsed) setRightSiderCollapsed(true);
               }}
             >
-              <ArcoLayout.Content className='flex flex-col flex-1 bg-1 overflow-hidden'>
-                {props.children}
-              </ArcoLayout.Content>
+              {chatColumnBody}
             </div>
             {/* Preview panel - conditionally rendered */}
             {isPreviewOpen && (
@@ -506,6 +559,19 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
       </div>
     </ArcoLayout>
   );
+
+  if (logsEnabled && conversation_id) {
+    return (
+      <SessionLogsRoot
+        conversationId={conversation_id}
+        view={columnView}
+        onViewChange={setColumnView}
+      >
+        {layoutTree}
+      </SessionLogsRoot>
+    );
+  }
+  return layoutTree;
 };
 
 /**

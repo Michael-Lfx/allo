@@ -1,19 +1,17 @@
-//! Developer-mode agent turn tracing.
+//! Developer-mode session observation.
 //!
-//! Collects a side-channel mirror of [`AgentStreamEvent`] into
-//! [`nomi_agent_trace::FileTraceStore`]. Recording is gated by the
-//! `system.developerMode` client preference and never alters turn control
-//! flow — every failure degrades to a warning.
+//! Recording is gated by the `system.developerMode` client preference and
+//! never alters turn control flow — every failure degrades to a warning.
 
-mod collector;
 mod hub;
 mod prefs;
 
-pub use collector::{TurnTraceCollector, TurnTraceContext};
-pub use hub::{AgentTraceHub, TraceApiError};
+pub use hub::{
+    AgentTraceHub, SessionObservationList, TraceApiError, DEFAULT_SESSION_OBSERVATION_LIST_LIMIT,
+    MAX_SESSION_OBSERVATION_LIST_LIMIT,
+};
 pub use prefs::{DEVELOPER_MODE_PREF_KEY, developer_mode_enabled};
 
 pub use nomi_agent_trace::{
-    FileTraceStore, TraceArtifactIndexEntry, TraceArtifactMeta, TraceIndexEntry, TraceStoreError,
-    TurnTrace, classify_session_kind, is_session_dialogue,
+    ObservationIds, ObservationRecorder, ProjectedTurn, classify_session_kind, is_session_dialogue,
 };

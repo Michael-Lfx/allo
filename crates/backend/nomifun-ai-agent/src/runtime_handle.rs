@@ -21,7 +21,7 @@ use crate::manager::nanobot::NanobotAgentManager;
 use crate::manager::nomi::NomiAgentManager;
 use crate::manager::openclaw::OpenClawAgentManager;
 use crate::manager::remote::RemoteAgentManager;
-use crate::protocol::events::AgentStreamEvent;
+use crate::protocol::events::{AgentStreamEvent, TurnStopReason};
 use crate::protocol::send_error::AgentSendError;
 use crate::types::SendMessageData;
 
@@ -304,6 +304,50 @@ impl AgentRuntimeHandle {
     /// Send a user message to the agent.
     pub async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         self.as_runtime().send_message(data).await
+    }
+
+    pub fn bind_observation_ids(&self, ids: crate::ObservationIds) {
+        self.bind_observation_ids_with_preview(ids, None);
+    }
+
+    pub fn bind_observation_ids_with_preview(
+        &self,
+        ids: crate::ObservationIds,
+        prompt_preview: Option<&str>,
+    ) {
+        if let Self::Nomi(manager) = self {
+            manager.bind_observation_ids_with_preview(ids, prompt_preview);
+        }
+    }
+
+    pub fn emit_observation_turn_end(
+        &self,
+        status: nomi_agent_trace::ExecutionStatus,
+        elapsed_ms: i64,
+        stop_reason: Option<&str>,
+        usage: Option<serde_json::Value>,
+    ) {
+        if let Self::Nomi(manager) = self {
+            manager.emit_observation_turn_end(status, elapsed_ms, stop_reason, usage);
+        }
+    }
+
+    pub fn set_observation_turn_end_deferred(&self, deferred: bool) {
+        if let Self::Nomi(manager) = self {
+            manager.set_observation_turn_end_deferred(deferred);
+        }
+    }
+
+    pub fn close_observation_turn_from_relay(
+        &self,
+        cancelled: bool,
+        stop_reason: Option<TurnStopReason>,
+        finished: bool,
+        elapsed_ms: i64,
+    ) {
+        if let Self::Nomi(manager) = self {
+            manager.close_observation_turn_from_relay(cancelled, stop_reason, finished, elapsed_ms);
+        }
     }
 
     /// Cancel the current streaming response without killing the agent.
