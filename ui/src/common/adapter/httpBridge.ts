@@ -348,8 +348,8 @@ function handleHttpAuthExpired(): void {
  *   diagnosable message instead of letting that raw string escape to the UI.
  */
 export class BackendRequestError extends Error {
-  readonly kind: 'timeout' | 'network';
-  constructor(kind: 'timeout' | 'network', message: string) {
+  readonly kind: 'timeout' | 'network' | 'aborted';
+  constructor(kind: 'timeout' | 'network' | 'aborted', message: string) {
     super(message);
     this.name = 'BackendRequestError';
     this.kind = kind;
@@ -401,6 +401,8 @@ export type HttpRequestOptions = {
    * timed mutations must be idempotent or serialized by the backend.
    */
   timeoutMs?: number;
+  /** Abort an in-flight request when a newer fetch supersedes it. */
+  signal?: AbortSignal;
 };
 
 const SENSITIVE_LOG_KEY_PATTERN =
@@ -530,7 +532,13 @@ export async function httpRequest<T>(
     // Optional client-side deadline (opt-in via options.timeoutMs). Aborts a
     // request that outlives it so a hung/unreachable backend surfaces a legible
     // error instead of the opaque platform network timeout minutes later.
-    const controller = options?.timeoutMs != null ? new AbortController() : undefined;
+    const controller =
+      options?.timeoutMs != null || options?.signal != null ? new AbortController() : undefined;
+    const onCallerAbort = () => controller?.abort();
+    options?.signal?.addEventListener('abort', onCallerAbort);
+    if (options?.signal?.aborted) {
+      controller?.abort();
+    }
     const timeoutHandle =
       controller && options?.timeoutMs != null
         ? setTimeout(() => controller.abort(), options.timeoutMs)
@@ -557,6 +565,9 @@ export async function httpRequest<T>(
       // failure (backend unreachable / connection reset). WKWebView renders the
       // latter as an opaque "TypeError: Load failed"; rethrow something the UI
       // and logs can actually act on.
+      if (options?.signal?.aborted) {
+        throw new BackendRequestError('aborted', `Backend ${method} ${safePath} was aborted`);
+      }
       if (controller?.signal.aborted) {
         throw new BackendRequestError(
           'timeout',
@@ -569,6 +580,7 @@ export async function httpRequest<T>(
         `Backend ${method} ${safePath} failed: backend unreachable (${detail})`
       );
     } finally {
+      options?.signal?.removeEventListener('abort', onCallerAbort);
       if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
 
