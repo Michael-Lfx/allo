@@ -7,7 +7,7 @@ mod script2video;
 
 pub use idea2video::Idea2VideoPipeline;
 pub use novel2video::Novel2VideoPipeline;
-pub use script2video::Script2VideoPipeline;
+pub use script2video::{resolve_scene_tail_continuity, Script2VideoPipeline};
 
 use std::path::Path;
 use std::sync::Arc;

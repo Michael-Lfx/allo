@@ -110,6 +110,7 @@ const VIDEO_GENERATION_INCLUDE: &[&str] = &[
     "runway",
     "luma",
     "dream-machine",
+    "minimax-h3",
 ];
 
 /// Infer the Creative Workshop generation capabilities suggested by a model
@@ -221,6 +222,8 @@ mod tests {
             "runway-gen3",
             "luma-ray2",
             "dream-machine",
+            "minimax-h3",
+            "MiniMax-H3",
         ] {
             assert!(
                 super::infer_generation_capabilities(m).contains(&ModelType::VideoGeneration),

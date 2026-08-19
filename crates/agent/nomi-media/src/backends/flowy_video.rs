@@ -92,6 +92,7 @@ impl FlowyVideoGenBackend {
 
         let images = build_seedance_video_images(&request)?;
         let uses_frame_roles = seedance_uses_frame_roles(&images);
+        let is_h3 = nomifun_cloud::is_minimax_h3_model(&model);
 
         let params = VideoCreateParams {
             model: model.clone(),
@@ -99,10 +100,19 @@ impl FlowyVideoGenBackend {
             duration,
             aspect_ratio,
             resolution: resolution.map(|s| s.to_string()),
-            negative_prompt: request.negative_prompt.clone(),
-            seed: request.seed,
+            // MiniMax-H3 V2 rejects Ark-only fields; body builder also strips them.
+            negative_prompt: if is_h3 {
+                None
+            } else {
+                request.negative_prompt.clone()
+            },
+            seed: if is_h3 { None } else { request.seed },
             watermark: false,
-            generate_audio: request.generate_audio.or(request.audio),
+            generate_audio: if is_h3 {
+                None
+            } else {
+                request.generate_audio.or(request.audio)
+            },
             return_last_frame: None,
             images,
             reference_video_url: if uses_frame_roles {

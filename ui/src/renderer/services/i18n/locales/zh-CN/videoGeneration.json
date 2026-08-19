@@ -356,7 +356,7 @@
       "durationHintShort": "拖动或点击刻度选择",
       "durationCreditsHint": "预估约 {{credits}} 积分（约 {{rate}}/秒）",
       "resolutionLabel": "清晰度",
-      "resolutionHint": "可选档位随当前视频模型变化（Fast/Mini 最高 720p）",
+      "resolutionHint": "可选档位随当前视频模型变化（Seedance Fast/Mini 最高 720p；MiniMax-H3 为 768P/2K）",
       "fpsLabel": "帧率",
       "fpsHint": "可选帧率随当前视频模型变化",
       "fpsLockedHint": "当前模型固定 {{fps}}fps（电影感帧率）",

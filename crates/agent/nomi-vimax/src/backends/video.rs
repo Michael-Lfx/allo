@@ -8,8 +8,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use nomifun_cloud::{
-    video_task_failure_message, MODEL_CATEGORY_VIDEO, VideoContentImage, VideoCreateParams,
-    resolve_model_in_catalog, VideoTaskRecord,
+    video_task_failure_message, is_minimax_h3_model, MODEL_CATEGORY_VIDEO, VideoContentImage,
+    VideoCreateParams, resolve_model_in_catalog, VideoTaskRecord,
 };
 
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
@@ -264,9 +264,10 @@ impl VimaxVideo for FlowyVideo {
 
         let aspect = self.resolved_aspect();
         let resolution = Some(self.resolved_resolution(&model));
-        // Seedance 2.0 / 2.0-fast I2V accepts [4, 15]; ViMax plans clips in [5, 15].
-        // `default_duration` is only a fallback when callers omit duration — never a max cap.
-        // (Capping at default_duration=5 previously forced every shot to 5s and cut dialogue.)
+        let is_h3 = is_minimax_h3_model(&model);
+        // Seedance 2.0 / 2.0-fast I2V accepts [4, 15]; MiniMax-H3 accepts [4, 15].
+        // ViMax plans clips in [5, 15]. `default_duration` is only a fallback when
+        // callers omit duration — never a max cap.
         let duration = duration_secs.clamp(
             crate::planning::MIN_CLIP_DURATION_SECS,
             crate::planning::MAX_CLIP_DURATION_SECS,
@@ -275,7 +276,8 @@ impl VimaxVideo for FlowyVideo {
             tracing::warn!(
                 requested = duration_secs,
                 clamped = duration,
-                "video duration clamped to Seedance [{}, {}]",
+                model = %model,
+                "video duration clamped to [{}, {}]",
                 crate::planning::MIN_CLIP_DURATION_SECS,
                 crate::planning::MAX_CLIP_DURATION_SECS,
             );
@@ -291,9 +293,10 @@ impl VimaxVideo for FlowyVideo {
             negative_prompt: None,
             seed: None,
             watermark: false,
-            // Seedance 2.0 requires non-empty audio captions in the prompt when true.
-            generate_audio: Some(true),
-            return_last_frame: Some(want_last_frame),
+            // Seedance 2.0 requires non-empty audio captions when true.
+            // MiniMax-H3 does not use generate_audio / return_last_frame.
+            generate_audio: if is_h3 { None } else { Some(true) },
+            return_last_frame: if is_h3 { None } else { Some(want_last_frame) },
             images,
             reference_video_url: None,
             reference_audio_url: None,
@@ -339,7 +342,7 @@ impl VimaxVideo for FlowyVideo {
 
         let record = match first {
             Ok(r) => r,
-            Err(e) if is_seedance_caption_empty_err(&e) => {
+            Err(e) if !is_h3 && is_seedance_caption_empty_err(&e) => {
                 // First reinforce captions (keep audio on); only then fall back to silent.
                 tracing::warn!(
                     model = %model_for_err,

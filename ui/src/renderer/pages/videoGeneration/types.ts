@@ -46,7 +46,7 @@ export interface VimaxSession extends SessionSummary {
   target_duration_secs?: number | null;
   /** Seedance video + poster aspect ratio (`16:9`, `9:16`, …). */
   aspect_ratio?: string | null;
-  /** Output resolution (`480p` / `720p` / `1080p`); clamped per video model. */
+  /** Output resolution (Seedance: `480p`/`720p`/`1080p`; MiniMax-H3: `768P`/`2K`). */
   resolution?: string | null;
   /** Output fps (Seedance fixed at 24). */
   fps?: number | null;
@@ -248,7 +248,7 @@ export interface PlanBody {
   target_duration_secs?: number;
   /** Seedance / poster aspect ratio. */
   aspect_ratio?: string;
-  /** Output resolution (`480p` / `720p` / `1080p`). */
+  /** Output resolution (Seedance: `480p`/`720p`/`1080p`; MiniMax-H3: `768P`/`2K`). */
   resolution?: string;
   /** Output fps. */
   fps?: number;

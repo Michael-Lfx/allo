@@ -15,9 +15,13 @@ use tokio::process::Command;
 use crate::assets::persist_bytes;
 use crate::progress::report_media_progress;
 
-/// Per-model maximum seconds for a single Seedance generation request.
+/// Per-model maximum seconds for a single generation request.
 pub fn max_clip_duration_for_model(model: &str) -> u32 {
-    let _ = model.to_ascii_lowercase();
+    let lower = model.to_ascii_lowercase();
+    // MiniMax-H3 accepts 4–15s per task.
+    if lower.contains("minimax-h3") || lower.contains("minimaxh3") {
+        return 15;
+    }
     // Seedance (Flowy default video backend) caps at ~10s per task today.
     10
 }

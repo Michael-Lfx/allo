@@ -3,6 +3,12 @@
  */
 
 import { generationErrorMessage } from '@oc/lib/generation-error';
+import {
+  isMiniMaxH3VideoModel,
+  normalizeMiniMaxH3Duration,
+  normalizeMiniMaxH3Ratio,
+  normalizeMiniMaxH3Resolution,
+} from '@oc/lib/minimax-h3-video';
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } from '@oc/services/api/resources';
 import { modelOptionName } from '@oc/stores/use-config-store';
 import {
@@ -290,14 +296,23 @@ function alloBodyFromCreateInput(input: CreateTaskInput): CreateGenerationBody {
   const modelValue = String(input.model || config.model || '');
   const model = modelValue ? modelOptionName(modelValue) : undefined;
   const durationRaw = Number(config.videoSeconds ?? metadata.durationSecs ?? 5);
-  const duration_secs = Number.isFinite(durationRaw) ? Math.max(1, Math.round(durationRaw)) : 5;
+  let duration_secs = Number.isFinite(durationRaw) ? Math.max(1, Math.round(durationRaw)) : 5;
+  let resolution = String(config.vquality || metadata.resolution || '720p');
+  let aspect_ratio = String(config.size || metadata.aspectRatio || '16:9');
+  if (model && isMiniMaxH3VideoModel(model)) {
+    const hasMedia =
+      Boolean(firstFrameId || lastFrameId) || referenceIds.length > 0;
+    duration_secs = normalizeMiniMaxH3Duration(duration_secs);
+    resolution = normalizeMiniMaxH3Resolution(resolution);
+    aspect_ratio = normalizeMiniMaxH3Ratio(aspect_ratio, hasMedia);
+  }
 
   return {
     mode,
     prompt: String(payload.prompt || input.prompt || ''),
     model,
-    aspect_ratio: String(config.size || metadata.aspectRatio || '16:9'),
-    resolution: String(config.vquality || metadata.resolution || '720p'),
+    aspect_ratio,
+    resolution,
     duration_secs,
     reference_media_ids: referenceIds,
     first_frame_media_id: firstFrameId,

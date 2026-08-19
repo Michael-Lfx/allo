@@ -177,8 +177,8 @@ async fn run_video(
         resolve_media_paths(service, &task.reference_media_ids).await?
     };
     let ref_refs: Vec<&Path> = ref_images.iter().map(PathBuf::as_path).collect();
-    // Seedance 系列常用 4–15s；默认 5s，与 Agent 规划预算一致。
-    let duration = task.duration_secs.unwrap_or(5).clamp(2, 15);
+    // Flowy video clips commonly accept 4–15s (Seedance / MiniMax-H3); default 5s.
+    let duration = task.duration_secs.unwrap_or(5).clamp(4, 15);
 
     let backend: FlowyVideo = flowy.video_with_session_quality(
         task.model.clone(),
