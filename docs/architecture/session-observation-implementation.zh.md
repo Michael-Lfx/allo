@@ -114,7 +114,7 @@ stream_llm(provider, request, observer, call_kind, scope)
 | 触发 | `nomifun-conversation/src/service.rs` 在 `send` 前 `TurnTraceCollector::spawn` |
 | API | `nomifun-conversation/src/routes_trace.rs` → `/api/debug/agent-traces` |
 | UI | `ui/src/renderer/pages/conversation/components/AgentTraceInspector/` |
-| 支持包 | `nomifun-system/src/support_logs.rs` 的 `diagnostics/agent-traces` |
+| 支持包 | `nomifun-system/src/support_logs.rs` 的 `diagnostics/observation` |
 | Eval 对齐 | `nomi-agent-eval` 只引用 `SCHEMA_VERSION` |
 
 ### 4.2 Nomi-owned `.stream(`（必须分类接入）
@@ -254,15 +254,15 @@ S9+：用户 sinks 配置、导出、OTel、ACP 采集、wire body、会话一�
 
 ## 7. 工作区纪律
 
-2026-08-18 曾有一次未完成的 crate 改写（删了 `TurnTrace` 但未接完 API）。**已回退**，当前实现树与 baseline 一致。
+S1–S8 已落地。运行时契约以 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准；本文保留阶段史，不形成第三套长期真相。
 
-之后每个阶段：
+2026-08-18 曾有一次未完成的 crate 改写（删了 `TurnTrace` 但未接完 API），随后回退并以本文件为实施依据重新落地。
+
+之后每个阶段（历史约束，供读阶段表时对照）：
 
 1. 只改该阶段列出的文件；
 2. 跑该阶段验收命令；
 3. 停下来等授权下一步。
-
-不要在同一回合里把 S1–S8 做完。
 
 ---
 

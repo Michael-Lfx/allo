@@ -1,496 +1,522 @@
-# Session Observation Workflow UI — 执行计划（供 Review）
+# Session Logs — 执行计划（U0–U5）
 
-> **文档状态：待 review，未授权改实现代码**  
+> **文档状态：实施稿；语义已与 Session Logs 执行计划对齐**  
 > 日期：2026-08-19  
-> 分支：`feat/session-observation`  
-> **本文读者：** 审查 agent（先读完再给意见）与实施 agent（授权后按阶段做）  
-> **本文不是新契约。** 运行时 / 存储 / 词汇仍以  
-> [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 与  
-> [session-observation-workflow-proposal.zh.md](session-observation-workflow-proposal.zh.md) 第 7 节为准。
+> 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待。  
+> 分支：只改 `feat/session-observation`  
+> **作废：** 只做 Drawer 卡片的稿；功能打通但不写 IO 的稿；把执行失败写成 `integrity=degraded` 的稿；**control 优先消费 / 永久 tombstone 用于 Clear/Reset / 64KiB×256 神圣 / health 塞进 Session Summary / `turn/end` 等 50ms。**  
+> **读者：** 按本文与执行计划实施。第 14 节钉死项已按执行答案改写。  
+> **词汇**仍以 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 与提案第 7 节为准。本文补产品、投影与 writer 语义，不另起第三套领域。
 
-对照截图：
-
-| 图 | 是什么 |
+| | 是什么 |
 | --- | --- |
-| **图 1（当前 Flowy）** | Developer Drawer：`AgentTraceInspector` + `ObservationWorkflow`。左回合摘要，右整段 REQUEST JSON + interrupted 文案。 |
-| **图 2（目标信息密度）** | `dsh-plugin-agent-workflow` 的 Workflow 页：左用户回合、中 Model Call 横向卡片流、点 REQUEST 后三列系统 / messages[] / tools。 |
+| 图 1 | 当前 Drawer |
+| 图 2 | DSH Workflow 信息架构（对齐呈现，不装插件） |
+| S0–S8 | **保留** JSONL / capture / `event_seq` / canonical request / 工具生命周期 / debug API / developer mode |
 
-**拍板：** 对齐图 2 的**信息与呈现**，继续挂在图 1 的 Drawer，不装插件、不上一等 Tab。方案编号 **U0–U3**（本轮 UI 刀）。S9+ / 提案 M3 其余项 / M4 仍延后。
-
-审查时请按第 11 节清单给意见。未授权前不要改业务代码。
-
----
-
-## 1. 背景与问题
-
-S0–S8 已落地：JSONL 采集、投影、debug API、Drawer MVP。图 1 证明采集和契约 UI 在工作（`integrity=degraded`、`interrupted`、canonical `LlmRequest` 已能看到 `ApplyPatch` 定义）。
-
-图 1 **不能**当排障主界面，因为：
-
-1. REQUEST 把 `system` / `messages[]` / `tools[]` 揉成一块 JSON，首屏落到某个 tool schema（图 1 的 `ApplyPatch`），看不出「这次交给模型的信封结构」。
-2. 没有 Model Call 顶栏（时间、墙钟耗时、token / cache）。
-3. 没有 REQUEST → RESPONSE → 工具 的横向摘要卡；工具没有单步耗时。
-4. 身份字段默认展开，占掉工作流视口。
-
-图 2 解决的是**同一份观测数据的呈现**，不是另一套采集。插件只消费 harness session log；Flowy 已有自有 JSONL + `project_turns`。本计划只补「投影时间字段 + Drawer 呈现」。
+不再改总体架构：磁盘 JSONL SSOT、bounded queue、writer 线程、`spawn_blocking`、streaming summary、有界 UI 缓存、Call 虚拟化。不上子进程、mmap、观测 SQLite。
 
 ---
 
-## 2. 冻结约束（Review 不得重开，除非指出与现状冲突）
+## 0. 已钉死的 7 个实现语义（授权前不再开放）
 
-来自已拍板提案，实施时违反即拒收：
+对照源码后的执行答案，不是待议项。
 
-1. **方案 B：** 对齐插件信息与呈现；自有 schema。禁止安装 `dsh-plugin-agent-workflow`，禁止把其 TypeScript / Cordis 类型当存储或 API 契约。
-2. **Canonical ≠ HTTP wire。** 只展示 `fidelity=canonical` 的 `LlmRequest`。禁止记 / 展 wire body。
-3. **禁止用聊天气泡 / SQLite 产品消息补全 `messages[]` 或 system。** 缺字段就写「观测未记录」。图 1 横幅文案必须保留。
-4. **显式 `ObservationSession`。** 禁止 async thread-local。禁止重新引入 `model_call_id` 栈 / `ModelCallGuard`。
-5. **排序只认 `event_seq`。** `timestamp` / `timestamp_ms` 仅展示与耗时。
-6. **禁止无限定词 `Run`。** AgentExecution attempt → `execution_attempt_id`。
-7. **开发者模式**同时门控写入与 API 读取。Drawer 在 `system.developerMode !== true` 时不渲染。
-8. **观测失败不打断 Agent 回合。**
-9. **采集范围本轮不扩大：** one_shot / health probe / speech / ACP 仍跳过。
-10. **产品对话 SSOT 仍是 SQLite。** 观测是诊断 SSOT。禁止 replay / fork / 从 log 恢复业务。
-11. **最小完整实现。** 不为「以后一等 Tab / OTel / 导出」预留抽象、sink 数组或配置层。
+### 0.1 `ExecutionStatus` 与 `ObservationIntegrity` 分开
 
-冲突优先级：当前阶段验收 > 正确性与数据安全 > 公共契约 > 项目规则与测试 > 现有惯例 > 最小完整实现。
-
----
-
-## 3. 本轮范围
-
-### 3.1 做
-
-在现有会话页 Developer Drawer 内，把图 1 的 JSON dump 换成图 2 同构的：
-
-- Model Call **横向卡片流**（REQUEST / RESPONSE / 工具）
-- 点卡片后的 **详情面板**（REQUEST = 三列树：系统 | messages | tools）
-- Model Call 顶栏：**开始时间、耗时、token 芯片（含 cache）、状态**
-- 工具卡：**名称、参数摘要、状态、单工具耗时**
-- 保留图 1 已做对的：降级 / 中断 / gap 横幅、身份字段、复制 JSON、developer mode 门控
-
-### 3.2 不做（相对图 2 的刻意缺口）
-
-| 图 2 有 | 本轮 | 原因 |
-| --- | --- | --- |
-| 会话页一等 Tab（对话 / 轨迹 / 工作流 / 文件 / 终端） | 不做 | 提案 M3 其余 / S9+ |
-| 页头「1 用户对话 / 49 模型 / 49 工具 / 5m 27s」 | 不做 | 可后做加总；本刀不改 list 契约 |
-| 左栏用户问题预览 + 回合墙钟 | 不做 | list API 已 `strip` request 正文；加 `prompt_preview` 另开一刀 |
-| Trace / Raw Events inspector 三栏 | 不做 | S9+ |
-| 运行中 live 投影 / load older / 虚拟列表 | 不做 | 无新 WS；继续「刷新」 |
-| 独立 Compaction 区 | 不做 | 已有 `call_kind=compaction`，当普通 Model Call |
-| 工具卡「schema」列 | 不做 | 未按 call 持久化 advertise schema（REQUEST 三列已有当次 tools[]） |
-| 装插件、抄 CSS Module、加 `react-json-view-lite` | 不做 | 用 Arco + UnoCSS + 自写轻量树 |
-
-### 3.3 产品面选择（已拍板，供 Review 确认）
-
-- **挂载：** 仍是 `ChatLayout` → `AgentTraceInspector` Drawer，不是新路由。
-- **宽度：** `min(760px, …)` → `min(1080px, calc(100vw - 12px))`。卡片 `flex-wrap`，窄屏折行，禁止整行横向长滚作为主交互。
-- **身份字段：** 保留，**默认折叠**（图 1 默认展开占视口）。
-- **刷新模型：** 不变。半截 `tool/execution_started` 展示 `started`，文案不得写成 live「运行中」。
-
----
-
-## 4. 现状（实施前以源码为准，路径会漂移）
-
-### 4.1 采集 / 存储 / API（本轮原则上不改路径）
-
-| 层 | 路径 | 本轮 |
-| --- | --- | --- |
-| 事件信封 | `crates/agent/nomi-agent-trace/src/event.rs`（含 `timestamp` / `timestamp_ms`） | 只读 |
-| JSONL writer | `.../recorder.rs`；目录 `{data_dir}/diagnostics/observation/` | 不改 |
-| 投影 | `.../project.rs` → `ProjectedTurn` / `ProjectedModelCall` / `ProjectedToolExecution` | **U0 加时间字段** |
-| 采集 | `crates/agent/nomi-agent/src/observation.rs`（`stream_llm`、`llm_request_to_value`） | 不改 |
-| Hub | `crates/backend/nomifun-ai-agent/src/agent_trace/hub.rs` | list 仍 strip 正文；**时间字段不得被 strip 掉** |
-| HTTP | `GET /api/debug/session-observations`；`GET .../turns/{root_turn_id}` | 路径 / 鉴权不改 |
-| 门控 | JWT + 会话归属 + developer mode | 不改 |
-
-`LlmRequest` **没有** `Serialize`。落盘形状由 `llm_request_to_value` 固定：
+**同意分开。** 完整记下的工具失败是观测成功、执行失败。
 
 ```text
-request.model
-request.system
-request.messages
-request.tools[] { name, description, input_schema, deferred }
-request.max_tokens / thinking / reasoning_effort / temperature
+ExecutionStatus:  running | completed | failed | cancelled | interrupted | truncated
+ObservationIntegrity: complete | degraded
 ```
 
-`llm/response` payload（`emit_response`）：
+`status` = Agent **做了什么**。  
+`integrity` = **日志缺不缺**。
 
-```text
-text, thinking, tool_use[], stop_reason, usage, error, elapsed_ms, ttft_ms
-```
+`integrity=degraded` **仅**当：
 
-`usage` 对齐 `nomi_types::message::TokenUsage`：
+- `observation/gap`（含 `writer_queue_overflow`）
+- JSONL 解析损坏
+- `llm/request` 无 `llm/response` **且** 该 turn 已 `turn/end`（或等价正式结束）
+- `tool/execution_started` 无终态 **且** 该 turn 已正式结束
+- writer/storage 失败（见 0.7；此时 UI 还看 RecorderHealth）
 
-```text
-input_tokens
-output_tokens
-cache_creation_tokens
-cache_read_tokens
-```
+因此：`tool/execution_started` + `tool/execution_failed` 都在 → `status=failed`，`integrity=complete`。  
+Workspace「降级」只表示观测不可信，失败用红色 `failed`，两套词不要混。
 
-工具 payload：`tool_call_id`、`name`、`arguments`（started）；完成/失败/取消另有结果字段。信封时间在 `ObservationEvent`，**当前投影没有带出去**。
+现有 `Integrity` 枚举保留；投影赋值改成上面这条，不要把 failed/cancelled 本身标 degraded。
 
-### 4.2 前端（本轮主改）
+### 0.2 Model Call `completed` 与 `turn/end` 解耦
 
-```text
-ui/src/renderer/pages/conversation/components/AgentTraceInspector/
-  index.tsx                         Drawer + 回合列表
-  ObservationWorkflow.tsx           身份 / 横幅 / 整段 JsonBlock（将被拆）
-  useAgentTraces.ts                 投影 TS 类型 + fetch
-  format.ts                         shortId / formatJson
-  AgentTraceInspector.structure.test.ts
-```
+**同意解耦。**
 
-i18n：`conversation.agentTrace.*`（`zh-CN` + `en-US`）。  
-结构测试断言 `min(760px`、`ObservationWorkflow`、`canonicalRequestFromPayload`。
-
-list 响应：`model_calls.length` 与工具个数在，**request/response/tool 正文为 null**。因此图 2 左栏「用户问题预览」本轮做不到，除非另加 list 字段（明确不做）。
-
----
-
-## 5. 目标信息架构（Drawer 内，不是图 2 整页）
-
-```text
-Drawer 1080px
-├── 顶栏：conversation_id · N 条 turn · 刷新
-├── 回合列表（现有摘要：完整/降级、中断、模型调用数、工具数、msg/turn 短 ID）
-└── 选中回合详情 ObservationWorkflow
-    ├── 降级/中断/gap 横幅（保留图 1 文案）
-    ├── 完整/降级 Tag + session_kind +「复制 JSON」（整份 ProjectedTurn）
-    ├── 身份字段 Collapse（默认折叠）
-    ├── gaps[]
-    └── ModelCallRow × N
-        ├── 顶栏：#N · call_kind · scope · 开始时间 · 耗时 · token 芯片 · 状态
-        ├── 横向流：RequestCard → ResponseCard → ToolCard*
-        └── 若选中该行某张卡：DetailPanel（其下）
-```
-
-交互：
-
-- 再点同一张卡：收起详情。
-- 点另一张卡：替换详情，不同时展开两块。
-- 详情每列：复制；树可折叠；Arco `Modal` 全屏。不引入插件 Modal / `react-json-view-lite`。
-
----
-
-## 6. 字段合同（插件视觉 → Flowy 数据）
-
-实施与 Review 都按此表验收。缺字段 → `undefined` / 不画芯片 / 「观测未记录」。**禁止补 0 或编造。**
-
-### 6.1 Model Call 顶栏
-
-| 图 2 | Flowy 来源 | 缺失时 |
-| --- | --- | --- |
-| Model Call #N | 详情里 `model_calls` 下标 + 1 | — |
-| 开始时间 `20:03:34` | U0：`ProjectedModelCall.started_at_ms`（该 call 的 `llm/request` 信封 `timestamp_ms`） | `—` |
-| 墙钟 4.7s | `response.elapsed_ms` | interrupted 或无 response → `—` |
-| 输入合计 | `input_tokens + cache_read_tokens + cache_creation_tokens` | 无 `usage` → 整组 token 不画 |
-| 未命中缓存 | `input_tokens` | 同上 |
-| 缓存命中 | `cache_read_tokens`，**>0 才显示** | 隐藏 |
-| 缓存写入 | `cache_creation_tokens`，**>0 才显示** | 隐藏 |
-| 输出 | `output_tokens` | 无 usage → 不画 |
-| 完成勾 | 有 response 且工具均终态 | — |
-| 中断 | `call.interrupted` | 图 1 已有橙 Tag |
-
-状态优先级：`interrupted` > 任一门工具 `failed` > 全部终态且有 response → 完成 > 仅 `started` → `started`（不是 live running）。
-
-### 6.2 REQUEST 卡
-
-| 图 2 | Flowy |
+| 对象 | 谁决定终态 |
 | --- | --- |
-| 预览模型名 | `canonicalRequestFromPayload(call.request).model` |
-| 系统 N | `system` trim 后非空 → 1，否则 0 |
-| 消息 N | `messages.length`（`messages` 非数组则不当 0，计数缺失） |
-| 工具定义 N | `tools.length` |
+| ModelCall.status | 自己的 request / response / **该 call 的** tools |
+| Turn.status | `turn/start` / `turn/end` |
+| Turn.integrity | 观测完整性（0.1） |
 
-卡片上**禁止**展开某个 `input_schema`（这正是图 1 的问题）。
+Call #1 的工具已 completed 后，即使 #3 还在跑、尚无 `turn/end`，#1 必须显示 **completed**。  
+`turn/end` 只回答「这个用户回合整体是否结束」。
 
-### 6.3 点 REQUEST → 三列
+### 0.3 异步 Writer 下的删除 / 清空 / 重置 / shutdown barrier
 
-| 列 | 数据 | 禁止 |
+**必须做。** 当前 `drop_conversation_observations` → `remove_conversation` 是同步删目录。改异步后，queue 里未写事件会把目录写活。
+
+**永久 tombstone 只用于 Delete。** Clear / Reset 保留同一 `conversation_id`，必须 bump Recorder 内部 `observation_generation: u64`（**不进 JSONL schema**）：pending 旧 generation 丢弃；ACK 后新 send 用新 generation 照常入队。否则同一会话清空后观测永远停写。
+
+对照 `ConversationService`：
+
+| 操作 | 保留同一 `conversation_id` | Writer 语义 |
 | --- | --- | --- |
-| 系统提示词 | `request.system` | 用欢迎语 / 气泡 / 产品消息顶替 |
-| 消息 | `request.messages` | 从 SQLite / WS transcript 重拼 |
-| 工具定义 | `request.tools` | 臆造未写入观测的 tool |
+| Delete | **否** | 永久 tombstone + ACK |
+| Reset | **是** | `ClearConversation` + generation++ + ACK |
+| 清上下文 `clear_context` | **是** | generation bump + ACK |
+| 清空消息 `clear_messages` | **是** | generation bump + ACK |
+| Factory reset | 全局 | `ResetAll` ACK（writer 仍活着时） |
 
-`omitted_reason`、`…(truncated)`、redact 结果原样展示。
-
-### 6.4 RESPONSE 卡与详情
-
-| 图 2 | Flowy |
-| --- | --- |
-| 预览 | `text` 首行；空且有 `tool_use` →「仅工具调用」；`interrupted` → 现有 `noResponse` |
-| 推理 / 正文 / 工具调用 | `thinking` 非空 0\|1；`text` 非空 0\|1；`tool_use.length` |
-| 点开 | thinking \| text \| metadata（`usage` / `elapsed_ms` / `ttft_ms` / `stop_reason` / `error`） |
-
-### 6.5 工具卡与详情
-
-| 图 2 | Flowy |
-| --- | --- |
-| 名称 | `ProjectedToolExecution.name` |
-| 参数摘要 | `started.arguments` 单行截断 |
-| 状态条 | cancelled > failed > completed > started |
-| 耗时 | U0：`ended_at_ms - started_at_ms`；缺一端 → `—` |
-| 点开 | 参数 \| 结果（completed/failed/cancelled payload）\| `tool_call_id` |
-
-本轮无 schema 第三列。
-
-### 6.6 回合列表（刻意保持图 1）
-
-继续：完整/降级、中断、`session_kind`、模型调用数、工具数、`msg` / `turn` 短 ID。  
-不加用户 prompt 预览。
-
----
-
-## 7. 后端：U0 投影增量（唯一允许的 Rust 行为变化）
-
-**目的：** 信封时间已在 JSONL，投影丢掉了，前端无法画图 2 的时间和工具耗时。  
-**不是**新事件、不是升 `schema_version`、不改 `stream_llm`。
-
-### 7.1 类型
-
-`crates/agent/nomi-agent-trace/src/project.rs`：
+Writer 只消费 `WriterCommand`：
 
 ```text
-ProjectedModelCall
-  + started_at_ms: Option<u64>   // 该 model_call 的 llm/request.event.timestamp_ms
-
-ProjectedToolExecution
-  + started_at_ms: Option<u64>   // tool/execution_started
-  + ended_at_ms: Option<u64>     // completed / failed / cancelled 的事件时间
+Event { … }                 // 普通或 control 观测事件（携带入队时 generation）
+Flush
+DeleteConversation(id)      // ACK；永久 tombstone
+ClearConversation(id)       // ACK；generation++，不是永久拒绝
+ResetAll                    // ACK；factory reset / 清整个 observation 根
+Shutdown                    // drain → flush → 退出线程
 ```
 
-Serde：`skip_serializing_if = "Option::is_none"`，与现有字段一致。  
-前端 `useAgentTraces.ts` 同步可选字段。
+`DeleteConversation`：
 
-### 7.2 赋值规则
+1. 先丢弃该 id 的 pending Event，再 flush/drop writer，再删目录，再清 seq/lost
+2. 删除生效后，该 id 的后续 Event **拒绝入队**（进程内 tombstone）
+3. 管理路径 **等待 ACK**（Delete / Clear / Reset / Shutdown 不是 Agent 热路径）
 
-- 只在对应 `event_type` 分支写入；禁止用「邻近事件」猜时间。
-- 同一 `model_call_id` 多次 `llm/request`（不应发生）：保留**第一条** `started_at_ms`。
-- 工具 `ended_at_ms`：取终态事件时间；多个终态（异常）保留**第一个终态**。
-- **禁止**用 `timestamp` 重排 `model_calls` / tools。顺序仍是投影遍历的 `event_seq`。
+`ClearConversation`：丢掉该 id 的 pending 旧 generation Event → 删目录（或等价清空 JSONL）→ generation++ → 清该 id 的 seq/lost → ACK。之后同 id 新 Event **必须能写**。
 
-### 7.3 strip
+`ResetAll`：停收普通 Event → drain 或丢弃全部 pending Event → flush → 删 `diagnostics/observation/` → 清全部 seq/lost/generation/tombstone → ACK。  
+进程内 factory-reset 相关清理走这条；**下次启动**的目录 Retire 仍由现有 `dataset_roots` `diagnostics` 处理，但若 writer 还活着必须先 `ResetAll`/`Shutdown`。
 
-`strip_projected_turn_payloads` 继续清空 request/response/tool **正文**。  
-**必须保留** `started_at_ms` / `ended_at_ms`。本轮 list UI 可以先不用这些字段，但不得在 strip 时抹掉，避免下一刀 list 时间再改投影。
+`Shutdown`：drain → flush → join。进 U0 DoD。
 
-### 7.4 不改
+### 0.4 队列内存预算（不变式是 16 MiB，不是 64 KiB 神圣）
 
-- `ObservationEvent` 形状、JSONL 目录、rotate / GC
-- HTTP 路径、鉴权、developer mode
-- `nomifun-conversation` 路由注册
-- 采集 call site
+**现状：** `MAX_PREVIEW_CHARS=2000` 只限制**每个字符串**，不限制整 event。`llm_request_to_value` 仍带全量 `tools[].input_schema`，coding agent 一条 request 很容易 >64 KiB。没有真实线上 P50/P95。
 
-若 Review 认为「前端从详情 payload 自己算时间就够、不必改 Rust」：**否决。** 详情 API 返回的是 payload，不含信封 `timestamp_ms`；工具 payload 也没有 started/ended。要时间就必须投影带出，或改采集往 payload 里写时间（更差，污染事件合同）。
+**冻结：**
+
+```text
+NORMAL_QUEUE_MEMORY_BUDGET = 16 MiB     // 真正的不变式
+MAX_EVENT_BYTES            = 128 KiB    // 开工默认；若夹具 P95 远小于 64 KiB 再改回 64×256
+MAX_QUEUE_EVENTS           = 128        // 普通队列
+MAX_CONTROL_EVENTS         = 64
+最坏积压 ≈ 128 × 128 KiB = 16 MiB
+```
+
+流程：`capture` → 序列化试算 → `> MAX_EVENT_BYTES` 则按从大到小省略 `request.tools` / `request.messages` / `request.system`（或对称的 response/tool 大字段），写入 `omitted_reason=event_size_limit` 与 `original_bytes` / `captured_bytes`，直到 ≤ 上限或变成 stub。然后再 `try_send`。
+
+**超限 omit 是 capture policy，不是完整性失败。** `capture=truncated` + `omitted_reason=event_size_limit`。**不得**因此 `integrity=degraded`。UI 必须能看见 omitted，不能显示成「观测未记录 / 加载失败」。
+
+不要做复杂的 byte-aware channel。用「硬 cap 单 event × 事件数」锁死 RAM。
+
+### 0.5 双队列保序：enqueue_order 合并，禁止 control-first persist
+
+**属实：无条件先写 control 会让 `turn/end` 插到已入队的 tool/response 前面，`event_seq` 会撒谎。**
+
+冻结：
+
+- 入队时 `enqueue_order = AtomicU64::fetch_add(1)`（进程内，**不进 JSONL schema**）。
+- 两个 `VecDeque<(u64, WriterCommand)>`：`normal` 与 `control`。
+- Writer **看两个队首，取更小 `enqueue_order` 的那条** 写盘，**然后再**分配 `event_seq`。
+- Control 的特权只是：**独立容量 + 满时宁可丢 normal 也要入队**；**禁止**无条件先写 control。
+
+```text
+normal:  llm/request, llm/response, tool/*
+control: turn/start, turn/end, observation/gap, Delete/Clear/ResetAll/Flush/Shutdown
+```
+
+- 普通满：`lost++`，立即返回，不阻塞 Agent。
+- Control 满：先丢 **一条普通**（`lost++`）再入 control。
+- **`turn/end` 禁止等 50ms。** Agent 产生的观测事件永不回压。Control 靠预留容量 + 丢 normal + `RecorderHealth.queue_dropped`。
+- Delete / Clear / Reset / Shutdown 才 ACK 等待。
+- 若 `turn/end` 最终没进去：`RecorderHealth.queue_dropped`，Workspace 不得因缺 end 而永久 poll（见 8）。
+
+`event_seq` = writer 持久化全序，不是业务 happen-before。
+
+### 0.6 大 Turn：Rendering lazy ≠ Data lazy
+
+**按 capture 数学，整 Turn 拉 500 份 canonical request 会进 HTTP/JS 堆（约数十 MB 量级）。** 不把「先测再决定」拖过 U3。
+
+**U3 默认 API：**
+
+```text
+GET /turns/{root_turn_id}
+  → turn metadata + model_calls[] **headers only**
+    (id, call_kind, scope, status, integrity, times, usage 标量, tool 名/状态/耗时)
+  → 无 system/messages/tools schema/response 正文
+
+GET /turns/{root_turn_id}/calls/{model_call_id}
+  → 该 call 的 request / response / tool payloads
+```
+
+点卡片才 fetch 后者。虚拟化解决 DOM；这条解决数据内存。
+
+U1 用夹具量 50/100 call 的 **header 包** 与 **单 call 包** 字节数，写入测试断言（防止 header 里误带正文）。不把「500 call 全量 ProjectedTurn」当 U3 默认。
+
+### 0.7 Writer 无法写 JSONL 时的真相出口
+
+磁盘满 / 权限 / writer panic 时，**不能**再靠 JSONL 里的 gap。
+
+进程内（重启可丢）：
+
+```text
+RecorderHealth { healthy | queue_dropped | storage_error | writer_disconnected, last_error }
+```
+
+**`recorder_health` 移出 Session Summary，放在 list 顶层。** 进程活状态 ≠ 该会话历史完整性。
+
+```json
+{ "recorder_health": { "status": "healthy", "last_error": null }, "summary": { ... }, "turns": [] }
+```
+
+Workspace 分两行：当前写入器 / 当前会话日志。不是第二套 SSOT，只是 recorder 活着与否。
 
 ---
 
-## 8. 前端：文件与职责
+## 1. 现状（已对源码）
 
-全部落在现有 `AgentTraceInspector/`，不新开路由、不新 crate。
+| 缺口 | 证据 |
+| --- | --- |
+| Refresh 只刷列表 | `loadList()` only |
+| Token 不能 `input+cache` | `openai.rs` `input_tokens` 已含 cache |
+| 计时偏小 | `Instant` 在 `stream()` 返回后 |
+| Error 仍写 response | 不得当 completed |
+| 悬空 tool | 仅当 **turn 已结束** 才 degraded（0.1） |
+| 无 turn 边界事件 | 补 `turn/start` / `turn/end` |
+| 写盘在热路径 | `emit` 锁内 `write_all`+`flush` |
+| 假 async 读 | Hub 内同步 `read_*` |
+| 读物化 payload | `read_jsonl_file` → `Vec<Event>` |
+| 删目录无 queue barrier | `remove_conversation` 直接 `remove_dir_all` |
+| capture 无整 event 上限 | 只有 `MAX_PREVIEW_CHARS` |
+| 14 天 GC 无全局体积 | rotate 48 MiB / 目录 idle，无 `max_total_observation_bytes` |
 
-| 文件 | 动作 | 职责 |
+Writer 句柄上限合格（64 / 4096 / 10min）。危险是锁内等盘，不是句柄爆炸。
+
+---
+
+## 2. 冻结约束
+
+1. 方案 B；不装插件；不抄 Cordis 类型。  
+2. Canonical ≠ wire。  
+3. 禁止气泡 / SQLite 补 REQUEST。  
+4. 显式 `ObservationSession`。  
+5. **查询排序**只认 `event_seq`。`event_seq` = **writer 接受并持久化的全序**，不是纳秒级 happen-before。  
+6. 禁止无限定 `Run`。  
+7. 开发者模式门控读写。  
+8. 观测/队列/磁盘失败不 `?` 打断 Agent。  
+9. 不扩大采集（one_shot / health / speech / ACP）。  
+10. 不做 replay / OTel / 导出 Sink。  
+11. 虚拟列表用已有 `@tanstack/react-virtual`（或 `react-virtuoso`），不手写、不加 JSON 树依赖。  
+12. 不上子进程 / mmap / 观测 SQLite / 无界 channel。
+
+产品面：Developer Mode 全屏 Workspace；入口仍是「观测」按钮。
+
+---
+
+## 3. 性能不变式
+
+| # | 不变式 |
+| --- | --- |
+| P1 | 热路径无 blocking write/flush/GC。 |
+| P2 | bounded 双队列；`enqueue_order` 合并写盘；普通 overflow 不阻塞；control 见 0.5。 |
+| P3 | JSONL SSOT；UI cache 可丢。 |
+| P4 | 读/投影 `spawn_blocking`；Hub **Semaphore(4)** 限制并发重扫描。 |
+| P5 | Summary streaming fold，禁止全量 `Vec`+`project_turns` 只为四数。 |
+| P6 | List / Turn GET 不带 canonical 大正文；正文只在 Call GET。 |
+| P7 | Model Call 行虚拟化。 |
+| P8 | 同时 ≤2–3 个 **call detail**；关 Workspace / 换会话清空。不接 `videoCanvas` QueryClient。 |
+| P9 | 禁止 mmap / 全历史 preload。 |
+| P10 | 单 event ≤ `MAX_EVENT_BYTES` 才入队。 |
+| P11 | 磁盘：14 天 **且** `max_total_observation_bytes`（默认 **1 GiB**）。先删 age>14d 的非 active segment，再按 mtime 删最老非 active；**禁止删当前 writer 打开的 `events.jsonl`。** |
+
+---
+
+## 4. 目标信息架构与数据流
+
+```text
+聊天页 [观测] → Workspace overlay
+  写入器 health（进程活状态）与会话 integrity / coverage 分行
+  Turn Navigator（窗口 ≤200）
+  Selected Turn：虚拟化 Call headers → 点开才 GET 单 call 正文
+```
+
+```text
+Agent ──capture+size cap──► enqueue_order
+        ├ normal (128 × 128 KiB)
+        └ control (64)     独立容量；满时丢 normal
+                 ▼
+        Writer 取两队首更小 enqueue_order，再分配 event_seq
+        WriterCommand: Event | Flush | Delete | Clear | ResetAll | Shutdown
+                 ▼
+        JSONL + rotate + age/quota GC（不删 active segment）
+                 ▼
+        spawn_blocking + semaphore
+        streaming summary | turn headers | lazy call detail
+                 ▼
+        有界 UI 缓存 + TanStack Virtual
+```
+
+---
+
+## 5. 事件与投影
+
+### 5.1 `turn/start` / `turn/end`
+
+不升 schema major。
+
+- `turn/start`：bind 后；同一 `root_turn_id` 一条；preview = 本次 send 文本（truncated+redacted）。  
+- `turn/end`：**回合结算**（`TurnCompleted` / 取消 / 失败收口），含 `status, elapsed_ms, stop_reason, aggregate_usage?`。不是第一条 `llm/response` 时写。
+
+### 5.2 时间
+
+Call/tool 墙钟 = 信封 `ended_at_ms - started_at_ms`。  
+`Instant` 移到 `provider.stream().await` 前。此前不把旧 `ttft_ms` 标成真 TTFT。
+
+Turn 主耗时 = `turn/end.elapsed_ms`。  
+Summary `active_duration_ms = Σ turn.elapsed_ms`。`wall_span_ms` 次要。禁止用隔夜 wall 当「总耗时」。
+
+### 5.3 状态（分层）
+
+**ModelCall.status**（与 turn/end 无关）：
+
+| 状态 | 条件 |
+| --- | --- |
+| failed | `response.error` / `stop_reason==error` **或** 该 call 任一 tool failed |
+| cancelled | 该 call 任一 tool cancelled |
+| interrupted | 有 request 无 response **且** 所属 turn 已结束 |
+| running | 有 request 无 response，或工具 started 无终态，且 turn **未** end |
+| truncated | `stop_reason==max_tokens`（警告） |
+| completed | 有 response、非 failed/cancelled、该 call 工具均终态 |
+
+**Turn.status：** 有 `turn/end` 用其 status；仅有 start 无 end → `running`；legacy 无 start 也无 end → `unknown`（不 poll）。
+
+**integrity：** 只按 0.1。运行中缺 response **不是** degraded。
+
+### 5.4 preview
+
+1. `turn/start.prompt_preview`  
+2. 否则该 turn `event_seq` 最大的 `llm/request`，**从 messages 尾向前**最近 `role=user` 且含 Text，排除纯 ToolResult  
+3. 否则「观测未记录」  
+
+禁止首条 user，禁止气泡。
+
+### 5.5 Summary
+
+```text
+turn_count, model_call_count, tool_count
+active_duration_ms, wall_span_ms?
+integrity, coverage, max_event_seq  // coverage=retained_observation_history
+```
+
+`recorder_health` **不在** summary 内，见 0.7。  
+GC/quota 后「32 回合」≠ SQLite 全会话。UI 写明「基于当前保留的观测日志」。
+
+---
+
+## 6. Writer / 读 / API
+
+### 6.1 Writer
+
+热路径：capture → 字节封顶 → `try_send`（Agent 事件永不回压；`turn/end` 零等待）。  
+writer：按 `enqueue_order` 出队 → 分配 `event_seq` → BufWriter → rotate 48 MiB → flush（batch / 50–100ms / Shutdown）→ 不每条 fsync → overflow 后写 gap → GC（离开热路径，且只在 writer 线程）。  
+生产路径不使用 `emit` 的同步 `ObservationEvent` 返回值。
+
+### 6.2 读
+
+Hub：`spawn_blocking` + `Semaphore(4)`。  
+前端：换 `selectedId` **abort** 上一个 detail；`A.seq < current` 丢弃乱序响应；Summary 不并发重复算（single-flight）。  
+List / Turn GET：metadata。Call GET：正文。
+
+```text
+GET /api/debug/session-observations?conversation_id=
+  { recorder_health, summary, turns[] }   // headers only，含 max_event_seq
+
+GET .../turns/{root_turn_id}?conversation_id=
+  { turn metadata, model_calls[] headers }
+
+GET .../turns/{root_turn_id}/calls/{model_call_id}?conversation_id=
+  { request, response, tools }
+```
+
+鉴权不变。Call GET 同样 developer mode + 会话归属。
+
+Call GET 在 header 还在、segment 已 GC：返回 **410**，body `reason=observation_retention`。在 `routes_trace.rs` 映射即可，**不要**为调试 API 去扩公共 `AppError`（现无 Gone 变体）。UI：「此调用详情已被观测保留策略清理」，不是「加载失败」。
+
+### 6.3 磁盘 quota
+
+**所有 observation 文件 mutation 只在 writer 线程**（rotate、age GC、quota GC、delete）。Query 只读。
+
+```text
+Retention = age 14d AND total ≤ 1 GiB
+1. 先删 age>14d 的非 active segment
+2. 再算总量；仍 >1 GiB 则按 mtime 删最老非 active segment，直到 ≤quota
+禁止删当前 writer 打开的 events.jsonl
+```
+
+---
+
+## 7. UI
+
+- Workspace overlay；Esc 关闭。入口仍是「观测」按钮。无新侧栏路由。  
+- 顶栏分两行：当前写入器 health / 当前会话 integrity + coverage。  
+- Call 行 `useVirtualizer`，overscan 3–5。宽屏横轴可横滚。  
+- 点卡片才 GET call detail；关详情 unmount。  
+- 缓存：summary + ≤200 turn headers + `MAX_CALL_DETAIL_CACHE=2` LRU。关 Workspace / 换会话 `clear()`。  
+- Token 芯片：U3 只显示原始 `input_tokens` / cache_read / cache_write / output。不画未命中。  
+- omitted 字段必须可见，不得显示成「观测未记录 / 加载失败」。  
+
+### 7.1 新鲜度
+
+```text
+Refresh = health+summary+list + 当前 turn headers + 若已展开则当前 call
+```
+
+Poll **仅** `has turn/start && !turn/end` 的 new-format turn。  
+**legacy（无 turn/start）不自动 poll。**
+
+退避：1.5s → 3s → 5s → 最大 10s；`max_event_seq` 变化则回到 1.5s。  
+`turn/end` 或 health 已 `storage_error`/`writer_disconnected`/`queue_dropped` → 停 poll。
+
+---
+
+## 8. Token（U5）
+
+与前版同：provider 正规化后才有 `input_uncached`。U3 不抢跑。
+
+---
+
+## 9. 阶段
+
+未提交的生命周期修补并入 U0，且必须改成 **WriterCommand ACK**，不能只同步 `remove_dir_all`。Delete 走 tombstone；reset / clear_context / clear_messages 走 generation bump。
+
+### U0 — Writer + 正确性
+
+双队列 `enqueue_order` 合并、128KiB×128 字节封顶、WriterCommand、Delete tombstone / Clear generation / ResetAll / Shutdown ACK、Health 顶层、投影 status/integrity 分离、Call 与 turn/end 解耦、时间字段、`Instant` 前移、consumer-drop、工厂重置登记（已有 diagnostics Retire）+ ResetAll 衔接。
+
+**DoD：** `cargo test -p nomi-agent-trace`
+
+- 工具失败 → call `failed` + integrity `complete`  
+- 运行中无 response → call `running`，integrity `complete`  
+- turn 已 end 仍无 response → `interrupted` + `degraded`  
+- 先 enqueue 再 DeleteConversation：目录不复活  
+- Clear 后同 id 新事件能写  
+- Shutdown join  
+- 超 `MAX_EVENT_BYTES` 带 `event_size_limit` 仍能入队，integrity 仍 complete  
+- 先入 normal 再入 `turn/end`：持久化顺序不得 end 在前  
+- control 满时丢的是 normal 不是 `turn/end`；`turn/end` 零等待  
+- **阻塞 sink：** writer 卡住时 `emit`/try_send 不等待 latch（**不要**用 p95 磁盘 CI）  
+- 热路径不 `flush`；quota GC 不删 active segment
+
+### U1 — Turn 边界 + streaming summary + 读隔离
+
+`turn/start`/`end`；preview 尾部 user；`{recorder_health,summary,turns}`；spawn_blocking+semaphore；quota GC（不删 active）；Call GET 410 `observation_retention`。
+
+**DoD：** Summary accumulator 最终结构只有标量；巨大 payload fixture 的 list **不**返回该正文。测 50/100 call 的 header JSON 字节（断言无 `input_schema`）。`cargo check -p nomifun-conversation`。
+
+### U2 — Workspace
+
+全屏、Summary（active_duration + health + coverage 说明）、Navigator。无新侧栏路由。
+
+### U3 — Call 工作流
+
+虚拟化 headers + **Call GET 懒正文** + 三列详情 + 合法 token 字段。
+
+### U4 — Fresh度
+
+Refresh 双/三拉；new-format 才 poll；legacy 不 poll；退避；abort 旧请求。
+
+### U5 — Token 正规化
+
+`nomi-providers` usage 单测。
+
+---
+
+## 10. 测试（可执行，少 flaky）
+
+| 要证明 | 怎么测（CI） |
+| --- | --- |
+| 热路径不等盘 | writer 阻塞 latch，producer 仍返回 |
+| overflow | 普通事件 lost+gap；`turn/end` 不被同等丢 |
+| Delete barrier | pending event 不能重建已删目录 |
+| Summary 不持正文 | accumulator 类型/夹具，不是 RSS 断言 |
+| Header 无 schema | serde 快照 / 禁止字段 |
+| 虚拟化 | 结构测试存在 virtualizer；500 行 fixture 不要求真测 DOM 数（可测 window API） |
+
+RSS / 切 30 会话 / 1 GiB quota 扫盘：本地清单，非默认 CI 门禁。
+
+---
+
+## 11. 落点
+
+| 区域 | 路径 | U |
 | --- | --- | --- |
-| `workflowViewModel.ts` | **新建** | 纯函数：拆 canonical request、计数、usage 芯片、预览、工具状态/耗时。缺字段 `undefined` |
-| `workflowViewModel.test.ts` | **新建** | 上表合同的单元测试 |
-| `ModelCallFlow.tsx` | **新建** | 一行调用：顶栏 + 卡片流 + 选中态 |
-| `WorkflowDetailPanel.tsx` | **新建** | REQUEST 三列 / RESPONSE 三列 / 工具两列+id |
-| `ObservationJsonTree.tsx` | **新建** | 轻量可折叠树 + 复制；全屏走 Arco Modal |
-| `ObservationWorkflow.tsx` | **改** | 编排横幅 / 身份 / gaps / `ModelCallFlow`；删除主路径整段 `JsonBlock` |
-| `index.tsx` | **改** | Drawer 宽度 1080；结构测试同步 |
-| `useAgentTraces.ts` | **改** | 时间可选字段；`canonicalRequestFromPayload` 语义不变 |
-| `format.ts` | **可小改** | `formatDuration(ms)` / `formatClock(ms)`；locale 用 `undefined`（本机） |
-| `*.structure.test.ts` | **改** | 见 §10 |
-| `zh-CN/en-US conversation.json` | **改** | 新 key，旧 key 能复用则复用 |
+| 队列/命令/health/size/quota/generation | `nomi-agent-trace` `recorder.rs` | 0 |
+| status/integrity 投影 | `project.rs` | 0 |
+| Instant、非阻塞 emit | `nomi-agent` `observation.rs` | 0 |
+| start/end 发射 | conversation bind + TurnCompleted | 1 |
+| Delete ACK | Hub + `ConversationService::drop_conversation_observations` | 0 |
+| Hub 读 + 新 Call 路由 | `hub.rs` `routes_trace.rs` | 1–3 |
+| Workspace | `AgentTraceInspector/` | 2–4 |
+| Token | `nomi-providers` | 5 |
 
-**禁止：**
-
-- 从 `dsh-plugin-agent-workflow` 复制组件 / CSS Module / 类型
-- 新增 npm 依赖（含 `react-json-view-lite`）
-- 在 renderer 直连 Tauri
-- 把聊天 store / `AgentStreamEvent` 当 REQUEST 数据源
-
-配色：主题变量（`--color-primary` / `--color-warning` / `--color-success` 等）。REQUEST / RESPONSE / 工具用左边框或浅底区分即可，不建独立色盘。
-
----
-
-## 9. 分步执行（一次一步，验收后再下一步）
-
-### U0 — 投影时间字段
-
-**改：** `project.rs` + 现有 / 新增投影测试；`useAgentTraces.ts` 类型可在 U1 再对，但 Rust 必须先绿。
-
-**验收：**
+建议提交：
 
 ```text
-cargo test -p nomi-agent-trace
+fix(agent): isolate observation writer and split status from integrity
+feat(agent): emit turn boundaries and stream observation summaries
+feat(ui): add session logs workspace with lazy call payloads
+fix(ui): poll new-format turns until turn/end
+fix(providers): make token usage buckets unambiguous
 ```
-
-至少覆盖：
-
-1. `llm/request` 的 `timestamp_ms` → `started_at_ms`
-2. 工具 started + completed → 两端时间；duration 由 UI 减
-3. 只有 started → `ended_at_ms` 为空
-4. `strip_projected_turn_payloads` 后时间仍在、正文为空
-5. 排序仍按 `event_seq`（已有测试不得坏）
-
-**停。** 不改 UI。
-
-### U1 — View model 纯函数
-
-**改：** `workflowViewModel.ts` + `workflowViewModel.test.ts`（及 `format` 时长函数若放这里）。
-
-**验收：** bun 测该文件。用例：
-
-1. 拆出 `system` / `messages` / `tools` / `model`；`canonicalRequestFromPayload` 包一层 `request` 时不丢层
-2. `messages` 缺失 → 计数 `undefined`，不当 0
-3. usage 芯片公式与 §6.1 一致；全 0 的 cache 芯片不出现
-4. 无 usage → `usage` 为 `undefined`
-5. interrupted → 耗时 `undefined`，不把 0 当 0ms
-6. 工具 duration 两端齐全才有数
-7. **不**读取任何「chat / transcript / bubble」字段名
-
-**停。** 不改 Drawer JSX。
-
-### U2 — 卡片流 + 三列详情 + Drawer 宽度
-
-**改：** §8 所列 tsx、i18n、`ObservationWorkflow`、`index.tsx`、结构测试。
-
-**UI 验收（结构测试 + 目视）：**
-
-- 主路径不再把完整 `tools[]` schema 当作 REQUEST 首屏
-- 存在 RequestCard / ResponseCard / ToolCard 选择面（可用 `data-` 或 i18n key 断言）
-- REQUEST 详情三列 key：`system` / `messages` / `tools`（i18n）
-- interrupted 仍显示 `noResponse`，不编造 response
-- 横幅 `gapBanner` 仍在
-- `canonicalRequestFromPayload` 仍被调用
-- Drawer 宽度断言改为 `min(1080px`
-- 身份 Collapse **无** `defaultActiveKey={['ids']}`（或等价默认折叠）
-
-i18n：`zh-CN` + `en-US` 成对。建议新 key（名称可微调，但语义固定）：
-
-```text
-conversation.agentTrace.modelCall          模型调用
-conversation.agentTrace.systemPrompt       系统提示词
-conversation.agentTrace.messages           消息
-conversation.agentTrace.toolDefinitions    工具定义
-conversation.agentTrace.requestDetails     请求详情
-conversation.agentTrace.responseDetails    响应详情
-conversation.agentTrace.toolDetails        工具详情
-conversation.agentTrace.notRecorded        观测未记录
-conversation.agentTrace.toolOnly           仅工具调用
-conversation.agentTrace.reasoning          推理
-conversation.agentTrace.content            正文
-conversation.agentTrace.inputTokens        输入
-conversation.agentTrace.inputUncached      未命中缓存
-conversation.agentTrace.cacheRead          缓存命中
-conversation.agentTrace.cacheWrite         缓存写入
-conversation.agentTrace.outputTokens       输出
-conversation.agentTrace.expandJson         全屏
-conversation.agentTrace.closeDetails       收起详情
-```
-
-能复用的不要新造：`request` / `response` / `tools` / `interrupted` / `noResponse` / `copy` / `copied`。
-
-**停。** 不改采集、不加 Tab。
-
-### U3 — 门禁
-
-```text
-cargo test -p nomi-agent-trace
-bun run typecheck
-bun run check:i18n
-```
-
-结构测试必须覆盖 U2 断言。能跑则再跑 `bun run check`（图标 / theme 无改时应无感）。
-
-`cargo test -p nomifun-ai-agent` **不是本刀最低门禁**（HTTP 形状只多了可选时间字段）。若碰了 Hub strip，补一条 Hub 单测：strip 后时间仍在。
 
 ---
 
-## 10. 测试与回归面
-
-| 测试 | 断言 |
-| --- | --- |
-| `nomi-agent-trace` 投影 | §9 U0 |
-| `workflowViewModel.test.ts` | §9 U1 |
-| `AgentTraceInspector.structure.test.ts` | 开发者模式门控、新 API 路径、宽度 1080、卡片/三列、禁止 `agent-traces`、禁止从 chat 拼 messages |
-| i18n check | 新 key 双语 |
-| 目视（实施者） | 用图 1 同类 interrupted 回合：首屏是模型名+计数，不是 `ApplyPatch` schema；点开三列能看到 system / messages / tools |
-
-不要求：Playwright e2e、完整 `nomifun-ai-agent` Windows 套件、支持包 ZIP e2e。
-
----
-
-## 11. 给 Review Agent 的清单
-
-请按缺陷优先写回。下列为**开放审查点**，不是实施时再发明需求。
-
-### 11.1 必须挡下的错误
-
-- [ ] 用聊天气泡 / 会话 store 补 REQUEST
-- [ ] 新依赖、复制插件源码、一等 Tab
-- [ ] 改 `LlmProvider` / 采集范围 / JSONL schema_version
-- [ ] 用 `timestamp` 排序重建工作流
-- [ ] strip 掉时间字段，或往 payload 里塞时间代替投影字段
-- [ ] 无 usage 时画 0 token 冒充已采集
-- [ ] interrupted 仍渲染假 RESPONSE 卡内容（卡可以在，正文必须是 `noResponse`）
-- [ ] 为 M4 / 一等 Tab 预留 Sink 接口或配置
-
-### 11.2 请 Review 明确表态的设计点
-
-1. **Drawer 1080 vs 保持 760 + 仅折行。** 计划取 1080。若认为盖住聊天不可接受，给替代宽度，不要既要三列又锁 760。
-2. **U0 改投影 vs 另开 raw events API。** 计划只加三个 `Option<u64>`。反对请给出同等信息、更小的读路径。
-3. **list 不做 prompt 预览。** 与图 2 左栏差一截。是否接受本刀此缺口。
-4. **半截工具叫 `started` 不叫 running。** 避免和插件 live 语义混淆。
-5. **身份默认折叠。** 排障是否仍要默认展开（图 1）。计划折叠。
-
-### 11.3 非目标确认
-
-请确认第 3.2 节缺口（一等 Tab、会话汇总、live、compaction 专区）**不要**在本刀 review 里改成范围。
-
----
-
-## 12. 风险与残留差距
+## 12. 风险
 
 | 风险 | 处理 |
 | --- | --- |
-| 1080 Drawer 挡聊天 | 折行 + 可关抽屉；不改成一等页 |
-| 旧 JSONL 无时间？ | 信封从第一天就有 `timestamp_ms`；缺则 `—` |
-| list 无预览 | 文档化缺口；禁止从聊天补 |
-| 工具耗时依赖 U0 | U0 不做则工具卡只能 `—`，相对图 2 最假 |
-| 刷新非 live | 文案与状态词约束 |
-| 结构测试改宽度 | 同步改 `min(1080px` 断言 |
-
-相对图 2，本轮结束后**仍没有**：一等 Workflow 路由、会话级 49/49/5m27s、左栏 prompt 标题、Raw Events、compaction 专区、live running。这些不是本刀失败条件。
+| 删会话等 ACK 略慢 | 可接受（管理路径） |
+| 崩溃丢未 flush 尾 | 诊断数据，接受 |
+| 旧日志无 start/end | `unknown`，不 poll |
+| 1 GiB quota 砍历史 | UI `coverage` 说明 |
+| Call 多一次 RTT | 点开才发生 |
 
 ---
 
-## 13. 实施原则（授权后）
+## 13. 实施纪律
 
-1. 先读调用链：`project.rs`、`ObservationWorkflow.tsx`、`useAgentTraces.ts`、Hub strip、结构测试。
-2. 只改当前 U 步列出的文件。
-3. 不预留 ObservationSink[]、不抽「通用 workflow SDK」。
-4. 发现无关问题只记在 PR / review 回复，不顺手改。
-5. 提交信息 Conventional Commits；Git 作者必须是人类。禁止 AI 作为 author / committer / Co-authored-by。
-6. 不 `--no-verify`。
-
-建议提交切分（授权实施后再提交，本文件不要求现在 commit）：
-
-```text
-feat(agent): project observation event timestamps for workflow cards
-feat(ui): render session observation model-call cards and request columns
-```
-
-或 squash 成一条 UI+投影，只要 Review 不要求拆 PR。
+先读 `recorder.rs` `emit`/`remove_conversation`、`project.rs`、`observation.rs` `stream_llm`、`openai.rs` usage、`routes_trace.rs`、conversation `drop_conversation_observations`。  
+只改当前 U 文件。Git 人类作者，无 AI trailer。只推 `feat/session-observation`。
 
 ---
 
-## 14. 授权
+## 14. 短 Review（只审钉死项）
 
-- 本文 + 已冻结提案 = **U0–U3 的审查与实施依据**。
-- **现在不授权改实现代码。**
-- Review 通过且产品负责人授权后，从 **U0** 开始，一步一验收。
-- 不得把本文写成第三套运行时契约。合并后只需在 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 的 UI 小节补一句「Drawer 为卡片流 + 三列详情」。
+1. `failed + complete` 表示执行失败、日志完整 —— 同意 / 不同意  
+2. Call 终态不依赖 `turn/end` —— 同意 / 不同意  
+3. `WriterCommand` + Delete tombstone / Clear generation / ResetAll / Shutdown ACK，防 JSONL 复活 —— 同意 / 不同意  
+4. `128 KiB × 128` 普通队列（16 MiB 预算）+ 超限 `event_size_limit` 不降级 integrity —— 同意 / 不同意  
+5. 双队列按 `enqueue_order` 合并写盘；control 只保容量、禁止 control-first persist；`turn/end` 零等待 —— 同意 / 不同意  
+6. U3 默认 Call 级懒加载，不整 Turn 下发正文 —— 同意 / 不同意  
+7. `RecorderHealth` 在 list **顶层**（不进 Session Summary）—— 同意 / 不同意  
+8. 14 天 **且** 1 GiB quota；不删 active segment；Call 410 `observation_retention`；Summary `coverage` —— 同意 / 不同意  
+9. legacy 不 poll；new-format 退避 poll —— 同意 / 不同意  
+10. 读路径 Semaphore(4) + 前端 abort —— 同意 / 不同意  
+
+---
+
+## 15. 授权
+
+第 14 节钉死项已按执行计划改写。实施从 Doc-sync 后的 U0-A 开始。  
+合并后更新 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)：Workspace、status≠integrity、writer 命令、Call 懒加载、health/coverage。
