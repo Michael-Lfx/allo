@@ -86,6 +86,13 @@ describe('AgentTraceInspector', () => {
     expect(inspector.includes('[applyList, conversationId, developerMode, entries, expandedCallId, health, open, selectedId]')).toBe(
       false
     );
+    expect(inspector.includes('nextSelected !== previousSelected')).toBe(true);
+    expect(inspector.includes("health.status === 'queue_dropped'")).toBe(false);
+    const refreshStart = inspector.indexOf('const refreshWorkspace = useCallback');
+    const refreshEnd = inspector.indexOf('const closeWorkspace = useCallback');
+    const refreshBody = inspector.slice(refreshStart, refreshEnd);
+    expect(refreshBody.includes('callCacheRef.current.get(')).toBe(false);
+    expect(refreshBody.includes('getSessionObservationCall')).toBe(true);
   });
 
   test('call detail cache keeps two most recent entries', () => {

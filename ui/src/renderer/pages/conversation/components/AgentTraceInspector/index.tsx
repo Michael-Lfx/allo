@@ -48,9 +48,7 @@ function nextPollDelay(current: number): number {
 function healthIsFault(health: RecorderHealth | null): boolean {
   return (
     health != null &&
-    (health.status === 'storage_error' ||
-      health.status === 'writer_disconnected' ||
-      health.status === 'queue_dropped')
+    (health.status === 'storage_error' || health.status === 'writer_disconnected')
   );
 }
 
@@ -122,12 +120,17 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
       lastSeqRef.current = page.summary.max_event_seq;
       pollDelayRef.current = POLL_START_MS;
     }
-    const nextSelected = resolveSelectedId(ordered, selectedIdRef.current);
+    const previousSelected = selectedIdRef.current;
+    const nextSelected = resolveSelectedId(ordered, previousSelected);
+    if (nextSelected == null || nextSelected !== previousSelected) {
+      setExpandedCallId(null);
+      setCallDetail(null);
+      setCallErrorKey(null);
+      expandedCallIdRef.current = null;
+    }
     if (nextSelected == null) {
       setSelectedId(null);
       setDetail(null);
-      setExpandedCallId(null);
-      setCallDetail(null);
     } else {
       setSelectedId(nextSelected);
     }
@@ -193,44 +196,37 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
           const callId = expandedCallIdRef.current;
           if (callId) {
             const cacheKey = callCacheKey(conversation, nextSelected, callId);
-            const cached = callCacheRef.current.get(cacheKey);
-            if (cached) {
-              setCallDetail(cached);
-              setCallErrorKey(null);
-              setCallLoading(false);
-            } else {
-              const callSeq = ++callSeqRef.current;
-              setCallLoading(true);
-              setCallErrorKey(null);
-              try {
-                const call = await getSessionObservationCall(conversation, nextSelected, callId, {
-                  signal,
-                });
-                if (
-                  signal.aborted ||
-                  conversationRef.current !== conversationId ||
-                  callSeq < callSeqRef.current
-                ) {
-                  return { seqChanged };
-                }
-                callCacheRef.current.set(cacheKey, call);
-                setCallDetail(call);
-                setCallErrorKey(null);
-              } catch (err) {
-                if (signal.aborted || isAbortError(err) || callSeq < callSeqRef.current) {
-                  return { seqChanged };
-                }
-                setCallDetail(null);
-                if (isObservationRetentionError(err)) {
-                  setCallErrorKey('retentionRemoved');
-                } else if (isBackendHttpError(err) && err.status === 403) {
-                  setCallErrorKey('developerModeRequired');
-                } else {
-                  setCallErrorKey('loadFailed');
-                }
-              } finally {
-                if (!signal.aborted && callSeq >= callSeqRef.current) setCallLoading(false);
+            const callSeq = ++callSeqRef.current;
+            setCallLoading(true);
+            setCallErrorKey(null);
+            try {
+              const call = await getSessionObservationCall(conversation, nextSelected, callId, {
+                signal,
+              });
+              if (
+                signal.aborted ||
+                conversationRef.current !== conversationId ||
+                callSeq < callSeqRef.current
+              ) {
+                return { seqChanged };
               }
+              callCacheRef.current.set(cacheKey, call);
+              setCallDetail(call);
+              setCallErrorKey(null);
+            } catch (err) {
+              if (signal.aborted || isAbortError(err) || callSeq < callSeqRef.current) {
+                return { seqChanged };
+              }
+              setCallDetail(null);
+              if (isObservationRetentionError(err)) {
+                setCallErrorKey('retentionRemoved');
+              } else if (isBackendHttpError(err) && err.status === 403) {
+                setCallErrorKey('developerModeRequired');
+              } else {
+                setCallErrorKey('loadFailed');
+              }
+            } finally {
+              if (!signal.aborted && callSeq >= callSeqRef.current) setCallLoading(false);
             }
           }
         }
