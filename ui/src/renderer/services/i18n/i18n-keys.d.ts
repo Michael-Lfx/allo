@@ -1132,6 +1132,8 @@ export type I18nKey =
   | 'conversation.agentTrace.gap'
   | 'conversation.agentTrace.gapBanner'
   | 'conversation.agentTrace.gapCount'
+  | 'conversation.agentTrace.gapSeq'
+  | 'conversation.agentTrace.gapSeqRange'
   | 'conversation.agentTrace.glossaryAria'
   | 'conversation.agentTrace.glossaryIntegrity'
   | 'conversation.agentTrace.health_healthy'

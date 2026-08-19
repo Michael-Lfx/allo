@@ -103,6 +103,12 @@ pub struct ProjectedRequestSummary {
     pub message_count: u32,
     #[serde(default)]
     pub tool_definition_count: u32,
+    #[serde(default)]
+    pub system_omitted: bool,
+    #[serde(default)]
+    pub messages_omitted: bool,
+    #[serde(default)]
+    pub tools_omitted: bool,
 }
 
 /// Counts extracted from a captured `llm/response` before bodies are stripped.
@@ -112,6 +118,10 @@ pub struct ProjectedResponseSummary {
     pub has_text: bool,
     #[serde(default)]
     pub has_thinking: bool,
+    #[serde(default)]
+    pub text_omitted: bool,
+    #[serde(default)]
+    pub thinking_omitted: bool,
     #[serde(default)]
     pub tool_use_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -336,12 +346,7 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
                     .model_call_id
                     .clone()
                     .unwrap_or_else(|| format!("anon-{}", event.event_seq));
-                let tool_call_id = event
-                    .payload
-                    .get("tool_call_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
+                let tool_call_id = tool_call_id_from_event(event, &model_call_id);
                 let call = upsert_call(&mut calls, &model_call_id);
                 let tool = upsert_tool(&mut call.tools, &tool_call_id);
                 if tool.name.is_none() {
@@ -597,6 +602,21 @@ fn value_is_omitted(value: &Value) -> bool {
     value.get("omitted_reason").and_then(Value::as_str).is_some()
 }
 
+fn field_is_omitted(object: &Value, field: &str) -> bool {
+    object.get(field).is_some_and(value_is_omitted)
+}
+
+fn tool_call_id_from_event(event: &ObservationEvent, model_call_id: &str) -> String {
+    event
+        .payload
+        .get("tool_call_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("anon-{model_call_id}"))
+}
+
 fn array_len_present(value: Option<&Value>) -> u32 {
     match value {
         Some(item) if !value_is_omitted(item) => {
@@ -608,6 +628,7 @@ fn array_len_present(value: Option<&Value>) -> u32 {
 
 fn request_summary_from_payload(payload: &Value) -> ProjectedRequestSummary {
     let request = request_object(payload);
+    let envelope_omitted = value_is_omitted(request);
     let model = request
         .get("model")
         .and_then(Value::as_str)
@@ -625,6 +646,9 @@ fn request_summary_from_payload(payload: &Value) -> ProjectedRequestSummary {
         has_system,
         message_count: array_len_present(request.get("messages")),
         tool_definition_count: array_len_present(request.get("tools")),
+        system_omitted: envelope_omitted || field_is_omitted(request, "system"),
+        messages_omitted: envelope_omitted || field_is_omitted(request, "messages"),
+        tools_omitted: envelope_omitted || field_is_omitted(request, "tools"),
     }
 }
 
@@ -649,11 +673,14 @@ fn argument_preview_from_payload(payload: &Value) -> Option<String> {
 }
 
 fn response_summary_from_payload(payload: &Value) -> ProjectedResponseSummary {
+    let envelope_omitted = value_is_omitted(payload);
     let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
     let thinking = payload.get("thinking").and_then(Value::as_str).unwrap_or("");
     ProjectedResponseSummary {
         has_text: !text.trim().is_empty(),
         has_thinking: !thinking.trim().is_empty(),
+        text_omitted: envelope_omitted || field_is_omitted(payload, "text"),
+        thinking_omitted: envelope_omitted || field_is_omitted(payload, "thinking"),
         tool_use_count: array_len_present(payload.get("tool_use")),
         elapsed_ms: payload.get("elapsed_ms").and_then(Value::as_u64),
         ttft_ms: payload.get("ttft_ms").and_then(Value::as_u64),
@@ -812,28 +839,24 @@ impl SummaryFold {
                 }
             }
             EVENT_TOOL_EXECUTION_STARTED => {
-                if let Some(tool) = event
-                    .payload
-                    .get("tool_call_id")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned)
-                {
-                    self.tools.insert(tool.clone());
-                    self.open_tools.insert((turn, tool));
-                }
+                let call = ids
+                    .model_call_id
+                    .clone()
+                    .unwrap_or_else(|| format!("anon-{}", event.event_seq));
+                let tool = tool_call_id_from_event(event, &call);
+                self.tools.insert(tool.clone());
+                self.open_tools.insert((turn, tool));
             }
             EVENT_TOOL_EXECUTION_COMPLETED
             | EVENT_TOOL_EXECUTION_FAILED
             | EVENT_TOOL_EXECUTION_CANCELLED => {
-                if let Some(tool) = event
-                    .payload
-                    .get("tool_call_id")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned)
-                {
-                    self.tools.insert(tool.clone());
-                    self.open_tools.remove(&(turn, tool));
-                }
+                let call = ids
+                    .model_call_id
+                    .clone()
+                    .unwrap_or_else(|| format!("anon-{}", event.event_seq));
+                let tool = tool_call_id_from_event(event, &call);
+                self.tools.insert(tool.clone());
+                self.open_tools.remove(&(turn, tool));
             }
             EVENT_OBSERVATION_GAP => {
                 self.has_gap = true;
@@ -1139,6 +1162,56 @@ mod tests {
         assert!(!summary.has_system);
         assert_eq!(summary.message_count, 0);
         assert_eq!(summary.tool_definition_count, 0);
+        assert!(summary.system_omitted);
+        assert!(summary.messages_omitted);
+        assert!(summary.tools_omitted);
+    }
+
+    #[test]
+    fn omitted_response_fields_are_flagged_without_inventing_text() {
+        let events = vec![event(
+            EVENT_LLM_RESPONSE,
+            1,
+            turn_ids("t1", "mc1"),
+            serde_json::json!({
+                "text": { "omitted_reason": "event_size_limit" },
+                "thinking": { "omitted_reason": "event_size_limit" },
+                "tool_use": { "omitted_reason": "event_size_limit" }
+            }),
+        )];
+        let summary = project_turns(&events)[0].model_calls[0]
+            .response_summary
+            .clone()
+            .expect("summary");
+        assert!(!summary.has_text);
+        assert!(!summary.has_thinking);
+        assert!(summary.text_omitted);
+        assert!(summary.thinking_omitted);
+        assert_eq!(summary.tool_use_count, 0);
+        assert!(summary.text_preview.is_none());
+    }
+
+    #[test]
+    fn missing_tool_call_id_stays_paired_per_model_call() {
+        let events = vec![
+            event(
+                EVENT_TOOL_EXECUTION_STARTED,
+                3,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({ "name": "bash" }),
+            ),
+            event(
+                EVENT_TOOL_EXECUTION_COMPLETED,
+                4,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({ "tool_call_id": "", "name": "bash" }),
+            ),
+        ];
+        let tools = &project_turns(&events)[0].model_calls[0].tools;
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool_call_id, "anon-mc1");
+        assert!(tools[0].started.is_some());
+        assert!(tools[0].completed.is_some());
     }
 
     #[test]

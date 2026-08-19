@@ -27,6 +27,7 @@ import {
 import { CallDetailLru, callCacheKey } from './callDetailCache';
 import ObservationWorkflow, { type InspectTarget } from './ObservationWorkflow';
 import { formatClock, formatDurationMs, assignTurnRounds, turnToolCount } from './format';
+import { sessionLogsOverlayOpen, shouldCloseWorkspaceOnEscape } from './scanCopy';
 import './session-logs.css';
 import {
   getSessionObservationCall,
@@ -244,8 +245,10 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
         signal = controller.signal;
       }
       const listSeq = ++listSeqRef.current;
-      if (options?.showListLoading) setLoading(true);
-      setErrorKey(null);
+      if (options?.showListLoading) {
+        setLoading(true);
+        setErrorKey(null);
+      }
       const seqBefore = lastSeqRef.current;
       try {
         const page = await listSessionObservations(conversation, { signal });
@@ -253,6 +256,7 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
           return { seqChanged: false };
         }
         const { nextSelected, selectedChanged } = applyList(page);
+        setErrorKey(null);
         const seqChanged = lastSeqRef.current !== seqBefore;
 
         if (nextSelected && !selectedChanged) {
@@ -274,7 +278,6 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
             if (signal.aborted || isAbortError(err) || turnSeq < turnSeqRef.current) {
               return { seqChanged };
             }
-            setDetail(null);
             if (isBackendHttpError(err) && err.status === 403) {
               setDetailErrorKey('developerModeRequired');
             } else {
@@ -308,9 +311,9 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
               if (signal.aborted || isAbortError(err) || callSeq < callSeqRef.current) {
                 return { seqChanged };
               }
-              setCallDetail(null);
               if (isObservationRetentionError(err)) {
                 callCacheRef.current.delete(cacheKey);
+                setCallDetail(null);
                 setCallErrorKey('retentionRemoved');
               } else if (isBackendHttpError(err) && err.status === 403) {
                 setCallErrorKey('developerModeRequired');
@@ -327,11 +330,6 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
         if (signal.aborted || isAbortError(err) || listSeq < listSeqRef.current) {
           return { seqChanged: false };
         }
-        setEntries([]);
-        setSummary(null);
-        setHealth(null);
-        setDetail(null);
-        setSelectedIdState(null);
         if (isBackendHttpError(err) && err.status === 403) {
           setErrorKey('developerModeRequired');
         } else {
@@ -383,7 +381,9 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
   useEffect(() => {
     if (!logsVisible) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeWorkspace();
+      if (shouldCloseWorkspaceOnEscape(event, sessionLogsOverlayOpen())) {
+        closeWorkspace();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -407,7 +407,7 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
         if (controller.signal.aborted || isAbortError(err) || requestSeq < turnSeqRef.current) {
           return;
         }
-        setDetail(null);
+        setDetail((current) => (current?.root_turn_id === selectedId ? current : null));
         if (isBackendHttpError(err) && err.status === 403) {
           setDetailErrorKey('developerModeRequired');
         } else {
@@ -425,6 +425,10 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
   }, [live, selectedId, conversationId]);
 
   const expandedCallId = inspectTarget?.modelCallId ?? null;
+  const selectedTurnEnded =
+    detail?.root_turn_id === selectedId
+      ? detail.has_turn_end === true
+      : entries.some((turn) => turn.root_turn_id === selectedId && turn.has_turn_end === true);
 
   useEffect(() => {
     if (!live || !selectedId || !expandedCallId) return;
@@ -434,13 +438,15 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
       setCallDetail(cached);
       setCallErrorKey(null);
       setCallLoading(false);
-      return;
+      if (selectedTurnEnded) return;
     }
     const controller = new AbortController();
     const requestSeq = ++callSeqRef.current;
-    setCallLoading(true);
-    setCallErrorKey(null);
-    setCallDetail(null);
+    if (!cached) {
+      setCallLoading(true);
+      setCallErrorKey(null);
+      setCallDetail(null);
+    }
     void getSessionObservationCall(String(conversationId), selectedId, expandedCallId, {
       signal: controller.signal,
     })
@@ -454,13 +460,15 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
         if (controller.signal.aborted || isAbortError(err) || requestSeq < callSeqRef.current) {
           return;
         }
-        setCallDetail(null);
         if (isObservationRetentionError(err)) {
           callCacheRef.current.delete(cacheKey);
+          setCallDetail(null);
           setCallErrorKey('retentionRemoved');
         } else if (isBackendHttpError(err) && err.status === 403) {
+          if (!cached) setCallDetail(null);
           setCallErrorKey('developerModeRequired');
         } else {
+          if (!cached) setCallDetail(null);
           setCallErrorKey('loadFailed');
         }
       })
@@ -472,7 +480,7 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
     return () => {
       controller.abort();
     };
-  }, [live, selectedId, expandedCallId, conversationId]);
+  }, [live, selectedId, expandedCallId, conversationId, selectedTurnEnded]);
 
   const shouldPoll = shouldPollTurns(entries, health);
 
@@ -507,6 +515,9 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
     setSelectedIdState(id);
     setInspectTarget(null);
     setCallDetail(null);
+    setDetail(null);
+    setDetailErrorKey(null);
+    setCallErrorKey(null);
   }, []);
 
   const value = useMemo<SessionLogsContextValue>(
@@ -610,6 +621,20 @@ export const SessionLogWorkspace: React.FC = () => {
     [entries, newestFirst]
   );
 
+  const retryWorkspace = () => void refreshWorkspace({ showListLoading: true });
+  const errorMessage = errorKey ? t(`conversation.agentTrace.${errorKey}`) : null;
+  const retryControl = (
+    <Button
+      type='text'
+      size='mini'
+      className='session-logs-retry'
+      onClick={retryWorkspace}
+      disabled={loading}
+    >
+      {t('conversation.agentTrace.refresh')}
+    </Button>
+  );
+
   if (developerMode !== true) return null;
 
   const healthStatus = health?.status ?? 'healthy';
@@ -626,12 +651,17 @@ export const SessionLogWorkspace: React.FC = () => {
         <div className='flex justify-center py-40px'>
           <Spin />
         </div>
-      ) : errorKey ? (
-        <div className='px-16px py-24px text-13px text-[var(--color-text-2)]'>
-          {t(`conversation.agentTrace.${errorKey}`)}
-        </div>
       ) : entries.length === 0 ? (
-        <Empty className='py-40px' description={t('conversation.agentTrace.empty')} />
+        <div className='session-logs-empty'>
+          {errorMessage ? (
+            <>
+              <div className='px-16px pt-24px text-13px text-[var(--color-text-2)]'>{errorMessage}</div>
+              <div className='flex justify-center pt-8px'>{retryControl}</div>
+            </>
+          ) : (
+            <Empty className='py-40px' description={t('conversation.agentTrace.empty')} />
+          )}
+        </div>
       ) : (
         <div className='session-logs-body'>
           <div className='session-logs-nav'>
@@ -727,6 +757,11 @@ export const SessionLogWorkspace: React.FC = () => {
                   />
                 </div>
               ) : null}
+              {errorMessage ? (
+                <div className='session-logs-health session-logs-health--fault'>
+                  {errorMessage}
+                </div>
+              ) : null}
               {healthUnhealthy ? (
                 <div
                   className={classNames(
@@ -807,10 +842,6 @@ export const SessionLogWorkspace: React.FC = () => {
               <div className='flex justify-center py-24px'>
                 <Spin />
               </div>
-            ) : detailErrorKey ? (
-              <div className='px-16px py-24px text-13px text-[var(--color-text-2)]'>
-                {t(`conversation.agentTrace.${detailErrorKey}`)}
-              </div>
             ) : detail ? (
               <ObservationWorkflow
                 turn={detail}
@@ -820,6 +851,10 @@ export const SessionLogWorkspace: React.FC = () => {
                 callErrorKey={callErrorKey}
                 onInspect={setInspectTarget}
               />
+            ) : detailErrorKey ? (
+              <div className='px-16px py-24px text-13px text-[var(--color-text-2)]'>
+                {t(`conversation.agentTrace.${detailErrorKey}`)}
+              </div>
             ) : (
               <Empty className='py-24px' description={t('conversation.agentTrace.empty')} />
             )}

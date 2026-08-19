@@ -244,6 +244,8 @@ impl TraceApiError {
             Self::ObservationJoin(error) => nomifun_common::AppError::Internal(format!(
                 "session observation store error: {error}"
             )),
+            // Call GET maps this in `routes_trace.rs` to HTTP 410. Do not send
+            // this variant through the generic mapper — Internal would be 500.
             Self::ObservationRetention => nomifun_common::AppError::Internal(
                 "observation_retention".into(),
             ),

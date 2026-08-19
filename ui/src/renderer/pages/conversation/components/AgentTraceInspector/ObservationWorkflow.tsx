@@ -11,6 +11,12 @@ import { Button, Message, Spin, Tooltip } from '@arco-design/web-react';
 import { Copy, Down, Up } from '@icon-park/react';
 import { copyText } from '@renderer/utils/ui/clipboard';
 import { formatClock, formatDurationMs, turnToolCount } from './format';
+import {
+  gapSeqLabel,
+  requestTileMeta,
+  requestTileTitle,
+  responseTileCopy,
+} from './scanCopy';
 import ObservationJsonTree from './ObservationJsonTree';
 import {
   asRecord,
@@ -18,8 +24,6 @@ import {
   toolStatus,
   type ProjectedGap,
   type ProjectedModelCall,
-  type ProjectedRequestSummary,
-  type ProjectedResponseSummary,
   type ProjectedTokenUsage,
   type ProjectedToolExecution,
   type ProjectedTurn,
@@ -202,20 +206,10 @@ const GapRow: React.FC<{ gap: ProjectedGap }> = ({ gap }) => {
         <span className='session-logs-flag'>{t('conversation.agentTrace.gap')}</span>
         {gap.reason ? ` · ${gap.reason}` : ''}
       </div>
-      <div className='text-11px text-[var(--color-text-3)] font-mono mt-2px'>
-        seq={gap.event_seq}
-        {gap.from_seq != null ? ` · from=${gap.from_seq}` : ''}
-        {gap.to_seq != null ? ` · to=${gap.to_seq}` : ''}
-      </div>
+      <div className='text-11px text-[var(--color-text-3)] mt-2px'>{gapSeqLabel(t, gap)}</div>
     </div>
   );
 };
-
-function requestCounts(summary?: ProjectedRequestSummary | null): string {
-  if (!summary) return '';
-  const system = summary.has_system ? 1 : 0;
-  return [system, summary.message_count, summary.tool_definition_count].join(' · ');
-}
 
 function sameInspect(a: InspectTarget | null, b: InspectTarget): boolean {
   return (
@@ -403,28 +397,30 @@ const CallInspector: React.FC<{
         {t('conversation.agentTrace.retentionRemoved')}
       </div>
     );
+  } else if (detail) {
+    if (stage === 'request') {
+      inner = <RequestInspector payload={detail.request} />;
+    } else if (stage === 'response') {
+      inner =
+        detail.response == null ? (
+          <div className='rounded-4px bg-[var(--color-fill-1)] px-8px py-8px text-12px text-[var(--color-text-2)]'>
+            {t('conversation.agentTrace.noResponse')}
+          </div>
+        ) : (
+          <ResponseInspector payload={detail.response} />
+        );
+    } else {
+      const tool = detail.tools.find((item) => item.tool_call_id === toolCallId);
+      inner = tool ? <ToolInspector tool={tool} /> : null;
+    }
   } else if (errorKey) {
     inner = (
       <div className='text-12px text-[var(--color-text-2)]'>
         {t(`conversation.agentTrace.${errorKey}`)}
       </div>
     );
-  } else if (!detail) {
-    inner = null;
-  } else if (stage === 'request') {
-    inner = <RequestInspector payload={detail.request} />;
-  } else if (stage === 'response') {
-    inner =
-      detail.response == null ? (
-        <div className='rounded-4px bg-[var(--color-fill-1)] px-8px py-8px text-12px text-[var(--color-text-2)]'>
-          {t('conversation.agentTrace.noResponse')}
-        </div>
-      ) : (
-        <ResponseInspector payload={detail.response} />
-      );
   } else {
-    const tool = detail.tools.find((item) => item.tool_call_id === toolCallId);
-    inner = tool ? <ToolInspector tool={tool} /> : null;
+    inner = null;
   }
 
   if (!inner) return null;
@@ -448,24 +444,6 @@ const CallInspector: React.FC<{
     </div>
   );
 };
-
-function responseTileCopy(
-  t: (key: string, options?: Record<string, unknown>) => string,
-  summary?: ProjectedResponseSummary | null
-): { title: string; meta: string } {
-  const title = summary?.text_preview?.trim()
-    ? summary.text_preview
-    : summary?.has_text
-      ? t('conversation.agentTrace.partText')
-      : t('conversation.agentTrace.responseToolsOnly');
-  const parts: string[] = [];
-  if (summary?.has_thinking) parts.push(t('conversation.agentTrace.partThinking'));
-  if (summary?.has_text) parts.push(t('conversation.agentTrace.partText'));
-  if ((summary?.tool_use_count ?? 0) > 0) {
-    parts.push(t('conversation.agentTrace.partToolUse', { count: summary?.tool_use_count ?? 0 }));
-  }
-  return { title, meta: parts.join(' · ') };
-}
 
 const ModelCallSection: React.FC<{
   header: ProjectedModelCall;
@@ -501,16 +479,8 @@ const ModelCallSection: React.FC<{
         <StageTile
           stage='request'
           label={t('conversation.agentTrace.requestStage')}
-          title={request?.model?.trim() || t('conversation.agentTrace.previewMissing')}
-          meta={
-            request
-              ? t('conversation.agentTrace.requestCounts', {
-                  system: request.has_system ? 1 : 0,
-                  messages: request.message_count,
-                  tools: request.tool_definition_count,
-                })
-              : requestCounts(request)
-          }
+          title={requestTileTitle(t, request)}
+          meta={requestTileMeta(t, request)}
           selected={selected?.stage === 'request'}
           onClick={() => onInspect({ modelCallId: header.model_call_id, stage: 'request' })}
         />
@@ -538,11 +508,11 @@ const ModelCallSection: React.FC<{
             </div>
           </>
         ) : (
-          header.tools.map((tool) => {
+          header.tools.map((tool, toolIndex) => {
             const statusLabel = t(`conversation.agentTrace.tool_${toolStatus(tool)}`);
             const duration = formatDurationMs(toolElapsedMs(tool));
             return (
-              <React.Fragment key={tool.tool_call_id}>
+              <React.Fragment key={`${tool.tool_call_id || 'anon'}-${toolIndex}`}>
                 <span className='session-logs-flow__arrow' aria-hidden='true'>
                   →
                 </span>

@@ -70,7 +70,10 @@ describe('AgentTraceInspector', () => {
     expect(inspector.includes('userTurnCount')).toBe(false);
     expect(inspector.includes('formatClock(entry.started_at_ms)')).toBe(true);
     expect(inspector.includes('assignTurnRounds')).toBe(true);
-    expect(inspector.includes('closeWorkspace')).toBe(true);
+    expect(inspector.includes('shouldCloseWorkspaceOnEscape')).toBe(true);
+    expect(inspector.includes('sessionLogsOverlayOpen')).toBe(true);
+    expect(inspector.includes('selectedTurnEnded')).toBe(true);
+    expect(inspector.includes("if (event.key === 'Escape') closeWorkspace()")).toBe(false);
     expect(inspector.includes("icon={<Close")).toBe(false);
     expect(inspector.includes('Sliding back to dialogue must not abort poll')).toBe(true);
     expect(inspector.includes('capabilityHeaderButtonStyle(OBSERVE_ACCENT)')).toBe(true);
@@ -102,6 +105,13 @@ describe('AgentTraceInspector', () => {
     expect(workflow.includes('conversation.agentTrace.modelCallLabel')).toBe(true);
     expect(workflow.includes('conversation.agentTrace.finalReply')).toBe(true);
     expect(workflow.includes('conversation.agentTrace.gap')).toBe(true);
+    expect(workflow.includes('gapSeq')).toBe(true);
+    expect(workflow.includes('seq=')).toBe(false);
+    expect(workflow.includes('from=')).toBe(false);
+    expect(workflow.includes('tool.tool_call_id || \'anon\'')).toBe(true);
+    expect(workflow.includes('requestTileTitle')).toBe(true);
+    expect(workflow.includes('requestTileMeta')).toBe(true);
+    expect(workflow.includes('responseTileCopy')).toBe(true);
     expect(workflow.includes('conversation.agentTrace.interrupted')).toBe(true);
     expect(workflow.includes("t('conversation.agentTrace.copyJson')")).toBe(false);
     expect(workflow.includes('copyTurn')).toBe(false);
@@ -173,6 +183,7 @@ describe('AgentTraceInspector', () => {
     expect(hook.includes('canonicalRequestFromPayload')).toBe(true);
     expect(hook.includes('Never invent omitted fields')).toBe(true);
     expect(hook.includes('AbortSignal')).toBe(true);
+    expect(hook.includes('if (status === 410) return true')).toBe(false);
   });
 
   test('refreshWorkspace reloads list turn and call with independent seqs', () => {
@@ -202,6 +213,8 @@ describe('AgentTraceInspector', () => {
     const refreshBody = inspector.slice(refreshStart, refreshEnd);
     expect(refreshBody.includes('callCacheRef.current.get(')).toBe(false);
     expect(refreshBody.includes('getSessionObservationCall')).toBe(true);
+    expect(refreshBody.includes('setEntries([])')).toBe(false);
+    expect(refreshBody.includes('setSelectedIdState(null)')).toBe(false);
     expect(inspector.includes("onViewChange('dialogue')")).toBe(true);
   });
 

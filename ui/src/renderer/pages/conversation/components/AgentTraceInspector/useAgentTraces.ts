@@ -84,11 +84,16 @@ export interface ProjectedRequestSummary {
   has_system: boolean;
   message_count: number;
   tool_definition_count: number;
+  system_omitted?: boolean;
+  messages_omitted?: boolean;
+  tools_omitted?: boolean;
 }
 
 export interface ProjectedResponseSummary {
   has_text: boolean;
   has_thinking: boolean;
+  text_omitted?: boolean;
+  thinking_omitted?: boolean;
   tool_use_count: number;
   elapsed_ms?: number | null;
   ttft_ms?: number | null;
@@ -192,9 +197,7 @@ export async function getSessionObservationCall(
 
 export function isObservationRetentionError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
-  const status = 'status' in error ? (error as { status?: unknown }).status : undefined;
   const body = 'body' in error ? (error as { body?: unknown }).body : undefined;
-  if (status === 410) return true;
   if (!body || typeof body !== 'object') return false;
   const record = body as Record<string, unknown>;
   return (

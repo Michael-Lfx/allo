@@ -825,6 +825,8 @@
     "interrupted": "中断",
     "gap": "缺口",
     "gapCount": "{{count}} 个缺口",
+    "gapSeq": "事件 {{seq}}",
+    "gapSeqRange": "事件 {{seq}} · {{from}}–{{to}}",
     "gapBanner": "观测缺失，不是没事发生。禁止用聊天气泡补全请求。",
     "request": "请求",
     "response": "响应",
