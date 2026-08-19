@@ -94,6 +94,9 @@ describe('AgentTraceInspector', () => {
     expect(inspector.includes('integrity')).toBe(true);
     expect(inspector.includes('interrupted')).toBe(true);
     expect(inspector.includes('writerHealth')).toBe(true);
+    expect(inspector.includes('sessionLog')).toBe(true);
+    expect(inspector.includes('coverageRetained')).toBe(true);
+    expect(inspector.includes("summary?.integrity === 'degraded'")).toBe(true);
     expect(inspector.includes('roundLabel')).toBe(true);
     expect(inspector.includes('modelCallCount')).toBe(true);
     expect(inspector.includes('msg=')).toBe(false);

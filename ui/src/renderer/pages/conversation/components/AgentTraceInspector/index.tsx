@@ -775,6 +775,15 @@ export const SessionLogWorkspace: React.FC = () => {
                   {health?.last_error ? ` · ${health.last_error}` : ''}
                 </div>
               ) : null}
+              {summary?.integrity === 'degraded' ? (
+                <div className='session-logs-health'>
+                  {t('conversation.agentTrace.sessionLog')}
+                  {' · '}
+                  {t('conversation.agentTrace.integrityDegraded')}
+                  {' · '}
+                  {t('conversation.agentTrace.coverageRetained')}
+                </div>
+              ) : null}
             </div>
             <div className='session-logs-nav__list'>
               {displayed.map((entry) => {

@@ -3,9 +3,9 @@
 > **文档状态：实施稿；U0–U5 已在 `feat/session-observation` 落地，现行语义以本文 + 源码为准**  
 > 日期：2026-08-19  
 > 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待、控制队满与 `try_enqueue` 对齐、§1 改为已落地/收口缺口。  
-> 分支：只改 `feat/session-observation`  
+> 分支：`feat/session-observation` 已合并；后续 follow-up 在 `feat/session-observation-followup`  
 > **作废：** 只做 Drawer 卡片的稿；功能打通但不写 IO 的稿；把执行失败写成 `integrity=degraded` 的稿；**control 优先消费 / 永久 tombstone 用于 Clear/Reset / 64KiB×256 神圣 / health 塞进 Session Summary / `turn/end` 等 50ms /「control 满时保证不丢 turn/end」。**  
-> **读者：** U0–U5 已完成。未完成项只看 **§1 本轮缺口** 与 **§9.1 收口**。  
+> **读者：** U0–U5 与 §9.1 已完成。合并后的现行语义以本文 + 源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准。  
 > **词汇**仍以 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 与提案第 7 节为准。本文补产品、投影与 writer 语义，不另起第三套领域。
 
 | | 是什么 |
@@ -223,7 +223,7 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
 4. 显式 `ObservationSession`。  
 5. **查询排序**只认 `event_seq`。`event_seq` = **writer 接受并持久化的全序**，不是纳秒级 happen-before。  
 6. 禁止无限定 `Run`。  
-7. 开发者模式门控读写。  
+7. 开发者模式只门控 HTTP 读取与支持包；采集始终写盘。  
 8. 观测/队列/磁盘失败不 `?` 打断 Agent。  
 9. 不扩大采集（one_shot / health / speech / ACP）。  
 10. 不做 replay / OTel / 导出 Sink。  
@@ -460,13 +460,9 @@ Refresh 双/三拉；new-format 才 poll；legacy 不 poll；退避；abort 旧�
 
 观测层 `NormalizedObservationUsage` 拷贝原始字段，不改公共 `TokenUsage`。`input_uncached` 仍等 provider 正规化。
 
-### 9.1 收口（本轮唯一未完成代码）
+### 9.1 收口（已落地）
 
-只改 `AgentTraceInspector/index.tsx` 与结构测试。不重开 writer / DualQueue / HTTP。
-
-1. `refreshWorkspace`：list + 当前 turn headers + 已展开 call；Refresh 与 poll 共用。  
-2. 独立 `listSeq` / `turnSeq` / `callSeq` + abort。  
-3. poll 不依赖整个 `entries`；`max_event_seq` 变化回到 1.5s 后不要立刻被 finally 再加成 3s。
+`AgentTraceInspector/index.tsx`：`refreshWorkspace` 共用 Refresh/poll；独立 `listSeq` / `turnSeq` / `callSeq` + abort；`max_event_seq` 变化把 poll 退回 1.5s，未变化才 `finally` 加退避。
 
 ---
 
@@ -546,5 +542,4 @@ fix(providers): make token usage buckets unambiguous
 
 ## 15. 授权
 
-U0–U5 已落地。未完成项只做 §9.1 收口。  
-合并后更新 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)：Workspace、status≠integrity、writer 命令、Call 懒加载、health/coverage（本轮不扩写那篇）。
+U0–U5 与 §9.1 已落地。合并后 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 已补 Workspace、status≠integrity、writer 命令、Call 懒加载、health/coverage。

@@ -9,7 +9,7 @@
 > 契约原文：[session-observation-workflow-proposal.zh.md](session-observation-workflow-proposal.zh.md)  
 > 现状说明：[agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)
 
-本文保留 S0–S8 怎么走完 JSONL 数据路径，**不要**再当未授权的实施入口。未完成项只看 workflow-ui-plan §1 / §9.1。
+本文保留 S0–S8 怎么走完 JSONL 数据路径，**不要**再当未授权的实施入口。现行语义看 workflow-ui-plan 与 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)。
 
 ---
 
