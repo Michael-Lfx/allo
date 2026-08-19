@@ -128,10 +128,10 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
       setCallDetail(null);
       setCallErrorKey(null);
       expandedCallIdRef.current = null;
+      setDetail(null);
     }
     if (nextSelected == null) {
       setSelectedId(null);
-      setDetail(null);
     } else {
       setSelectedId(nextSelected);
     }

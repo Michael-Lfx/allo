@@ -89,6 +89,11 @@ describe('AgentTraceInspector', () => {
     expect(inspector.includes('nextSelected !== previousSelected')).toBe(true);
     expect(inspector.includes('selectedChanged')).toBe(true);
     expect(inspector.includes('nextSelected && !selectedChanged')).toBe(true);
+    const applyStart = inspector.indexOf('const applyList = useCallback');
+    const applyEnd = inspector.indexOf('const abortWorkspaceFetches');
+    const applyBody = inspector.slice(applyStart, applyEnd);
+    expect(applyBody.includes('if (nextSelected == null || selectedChanged)')).toBe(true);
+    expect(applyBody.includes('setDetail(null)')).toBe(true);
     expect(inspector.includes("health.status === 'queue_dropped'")).toBe(false);
     expect(inspector.includes('callCacheRef.current.delete(')).toBe(true);
     expect(inspector.includes('setEntries([])')).toBe(true);
