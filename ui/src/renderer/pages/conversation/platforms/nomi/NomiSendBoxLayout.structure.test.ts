@@ -143,4 +143,34 @@ describe('Nomi sendbox control layout', () => {
       expect(source.includes('aria-label=')).toBe(true);
     }
   });
+
+  test('keeps the compact reasoning trigger icon at full size when a narrow sendbox expands on hover', () => {
+    const sendBoxCss = readSource(new URL('../../../../components/chat/SendBox/sendbox.css', import.meta.url));
+    const guidCss = readSource(new URL('../../../guid/index.module.css', import.meta.url));
+    const selectorCss = readSource(new URL('../../../../components/agent/ReasoningEffortSelector.module.css', import.meta.url));
+    const selectorSource = readSource(new URL('../../../../components/agent/ReasoningEffortSelector.tsx', import.meta.url));
+
+    expect(selectorSource.includes("classNames(styles.triggerIcon, 'shrink-0')")).toBe(true);
+    expect(selectorCss.includes('.compactTrigger > :global(.i-icon):first-child')).toBe(true);
+    expect(selectorCss.includes('.triggerIcon')).toBe(true);
+    expect(selectorCss.includes('flex: 0 0 auto')).toBe(true);
+    expect(selectorCss.includes('transform: translateY(2px)')).toBe(false);
+
+    expect(sendBoxCss.includes('.sendbox-responsive-reasoning-btn > .i-icon')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-reasoning-btn:hover')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label')).toBe(true);
+    expect(sendBoxCss).toContain(
+      '.sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label,\n    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label {\n      display: grid !important;',
+    );
+    expect(sendBoxCss).toContain(
+      '.sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:hover,\n    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:focus-visible {\n      overflow: visible !important;\n      flex: 0 0 auto !important;',
+    );
+
+    expect(guidCss).toContain(
+      '.actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label),\n    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label) {\n      display: grid !important;',
+    );
+    expect(guidCss).toContain(
+      '.actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover),\n    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible) {\n      overflow: visible !important;\n      flex: 0 0 auto !important;',
+    );
+  });
 });

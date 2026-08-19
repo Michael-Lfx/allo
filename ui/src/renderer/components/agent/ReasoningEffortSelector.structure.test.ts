@@ -21,6 +21,7 @@ describe('ReasoningEffortSelector structure', () => {
     expect(source.includes('aria-valuetext')).toBe(true);
     expect(source.includes('data-testid=\'reasoning-effort-compact-trigger\'')).toBe(true);
     expect(source.includes("className='reasoning-effort-popover'")).toBe(true);
+    expect(source.includes("classNames(styles.triggerIcon, 'shrink-0')")).toBe(true);
     expect(source.includes("classNames(styles.triggerLabelSlot, 'sendbox-responsive-label')")).toBe(true);
     expect(source.includes('styles.triggerLabelReserve')).toBe(true);
     expect(source.includes('styles.panelFooter')).toBe(false);
@@ -53,9 +54,10 @@ describe('ReasoningEffortSelector structure', () => {
     expect(css.includes('left: 12px')).toBe(true);
     expect(css.includes('right: 12px')).toBe(true);
     expect(css.includes('.arco-slider-road) {\n  background: transparent;')).toBe(true);
-    expect(css.includes('.compactTrigger > svg:first-child')).toBe(true);
+    expect(css.includes('.compactTrigger > :global(.i-icon):first-child')).toBe(true);
+    expect(css.includes('.triggerIcon')).toBe(true);
     expect(css.includes('margin-right: -2px')).toBe(true);
-    expect(css.includes('transform: translateY(2px)')).toBe(true);
+    expect(css.includes('transform: translateY(2px)')).toBe(false);
     expect(css.includes('.compactTrigger:active')).toBe(true);
     expect(css.includes('.arco-popover-content')).toBe(true);
     expect(css.includes('padding: 0 !important')).toBe(true);

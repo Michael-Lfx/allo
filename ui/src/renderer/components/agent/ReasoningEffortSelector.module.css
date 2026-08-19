@@ -18,10 +18,14 @@
   white-space: nowrap;
 }
 
+.staticValue > :global(.i-icon),
 .staticValue > svg {
-  display: block;
+  display: inline-flex;
   flex: 0 0 auto;
-  transform: translateY(2px);
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  overflow: visible;
 }
 
 .staticValue > span:last-child {
@@ -213,12 +217,26 @@
     color 180ms ease-out;
 }
 
+.triggerIcon,
+.compactTrigger > :global(.i-icon):first-child,
 .compactTrigger > svg:first-child {
   color: var(--effort-accent);
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  height: 14px;
+  line-height: 0;
+  margin-right: -2px;
+  overflow: visible;
+  width: 14px;
+}
+
+.compactTrigger > :global(.i-icon):first-child svg,
+.triggerIcon svg {
   display: block;
   flex: 0 0 auto;
-  margin-right: -2px;
-  transform: translateY(2px);
+  overflow: visible;
 }
 
 .compactTrigger:hover,
@@ -245,7 +263,7 @@
 
 .triggerLabelSlot {
   display: grid;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   grid-template-columns: minmax(0, 1fr);
   max-width: 64px;
   min-width: 0;

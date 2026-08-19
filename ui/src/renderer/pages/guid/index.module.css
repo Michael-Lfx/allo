@@ -1828,6 +1828,15 @@ button.guidResourceCard:focus-visible {
     gap: 0 !important;
     overflow: visible !important;
   }
+
+  .actionConfigGroup :global(.sendbox-responsive-reasoning-btn > .i-icon),
+  .actionConfigGroup :global(.sendbox-responsive-reasoning-btn > svg) {
+    flex: 0 0 auto !important;
+    height: 14px !important;
+    overflow: visible !important;
+    transform: none !important;
+    width: 14px !important;
+  }
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -1860,6 +1869,17 @@ button.guidResourceCard:focus-visible {
     .actionConfigGroup :global(.agent-mode-compact-pill:focus-visible .sendbox-responsive-label),
     .actionConfigGroup :global(.agent-mode-compact-pill:focus-visible .sendbox-responsive-chevron) {
       display: inline-flex !important;
+    }
+
+    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover),
+    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible) {
+      overflow: visible !important;
+      flex: 0 0 auto !important;
+    }
+
+    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label),
+    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label) {
+      display: grid !important;
     }
   }
 }

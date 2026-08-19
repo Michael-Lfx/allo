@@ -640,7 +640,13 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
           title={reasoningHint}
           data-testid='reasoning-effort-compact-trigger'
         >
-          <Lightning theme='filled' size='14' fill='currentColor' aria-hidden='true' />
+          <Lightning
+            className={classNames(styles.triggerIcon, 'shrink-0')}
+            theme='filled'
+            size='14'
+            fill='currentColor'
+            aria-hidden='true'
+          />
           <span className={classNames(styles.triggerLabelSlot, 'sendbox-responsive-label')} aria-hidden='true'>
             {normalizedLevels.map((level) => (
               <span key={level} className={styles.triggerLabelReserve}>
