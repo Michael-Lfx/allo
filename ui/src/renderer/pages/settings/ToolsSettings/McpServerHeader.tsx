@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import type { McpOAuthStatus } from '@/renderer/hooks/mcp/useMcpOAuth';
 import FeedbackButton from '@/renderer/components/base/FeedbackButton';
 import { iconColors } from '@/renderer/styles/colors';
+import { MCP_SERVER_TITLE_CLASS } from './mcpServerCollapse';
 
 interface McpServerHeaderProps {
   server: IMcpServer;
@@ -21,32 +22,35 @@ interface McpServerHeaderProps {
   onOAuthLogin?: (server: IMcpServer) => void;
 }
 
+const STATUS_ICON_SIZE = 16;
+const STATUS_ICON_SLOT_CLASS = 'inline-flex h-24px w-24px shrink-0 items-center justify-center';
+
 const getStatusIcon = (
   last_test_status?: IMcpServer['last_test_status'],
   oauthStatus?: McpOAuthStatus,
   isTestingConnection?: boolean
 ) => {
   if (isTestingConnection || last_test_status === 'testing' || oauthStatus?.isChecking) {
-    return <LoadingOne fill={iconColors.primary} className='h-[24px]' />;
+    return <LoadingOne size={STATUS_ICON_SIZE} fill={iconColors.primary} />;
   }
 
   if (last_test_status === 'error') {
-    return <CloseSmall fill={iconColors.danger} className='h-[24px]' />;
+    return <CloseSmall size={STATUS_ICON_SIZE} fill={iconColors.danger} />;
   }
 
   if (oauthStatus?.needsLogin) {
-    return <span className='text-orange-500 text-xl font-bold leading-none'>△</span>;
+    return <span className='text-orange-500 text-16px font-bold leading-none'>△</span>;
   }
 
   if (last_test_status === 'connected') {
-    return <Check fill={iconColors.success} className='h-[24px] items-center' />;
+    return <Check size={STATUS_ICON_SIZE} fill={iconColors.success} />;
   }
 
   if (oauthStatus?.isAuthenticated) {
-    return <Check fill={iconColors.success} className='h-[24px] items-center' />;
+    return <Check size={STATUS_ICON_SIZE} fill={iconColors.success} />;
   }
 
-  return <Info theme='outline' fill={iconColors.secondary} className='h-[24px]' />;
+  return <Info theme='outline' size={STATUS_ICON_SIZE} fill={iconColors.secondary} />;
 };
 
 const formatStatusTimestamp = (timestamp?: number): string | null => {
@@ -165,16 +169,16 @@ const McpServerHeader: React.FC<McpServerHeaderProps> = ({
   const isError = server.last_test_status === 'error';
 
   return (
-    <div className='flex items-center justify-between group'>
-      <div className='flex items-center gap-2'>
-        <span>{server.name}</span>
+    <div className='flex min-w-0 items-center justify-between gap-8px group'>
+      <div className='flex min-w-0 items-center gap-8px'>
+        <span className={MCP_SERVER_TITLE_CLASS}>{server.name}</span>
         {statusPopoverContent ? (
           <Popover content={statusPopoverContent} trigger='hover' position='top'>
-            <span className='flex items-center cursor-default'>{statusIcon}</span>
+            <span className={`${STATUS_ICON_SLOT_CLASS} cursor-default`}>{statusIcon}</span>
           </Popover>
         ) : (
           <Tooltip content={statusText} position='top'>
-            <span className='flex items-center cursor-default'>{statusIcon}</span>
+            <span className={`${STATUS_ICON_SLOT_CLASS} cursor-default`}>{statusIcon}</span>
           </Tooltip>
         )}
         {isError && <FeedbackButton />}
@@ -194,6 +198,7 @@ const McpServerHeader: React.FC<McpServerHeaderProps> = ({
         {!isReadOnly && !needsLogin && (
           <Button
             size='mini'
+            className='flowy-button-icon'
             icon={<Refresh size={'14'} />}
             title={t('settings.mcpTestConnection')}
             loading={isTestingConnection}
@@ -202,7 +207,7 @@ const McpServerHeader: React.FC<McpServerHeaderProps> = ({
         )}
       </div>
       {!isReadOnly && (
-        <div className='flex items-center gap-2 invisible group-hover:visible' onClick={(e) => e.stopPropagation()}>
+        <div className='flex items-center gap-8px invisible group-hover:visible' onClick={(e) => e.stopPropagation()}>
           {!server.builtin && (
             <Dropdown
               trigger='hover'
@@ -223,7 +228,7 @@ const McpServerHeader: React.FC<McpServerHeaderProps> = ({
                 </Menu>
               }
             >
-              <Button size='mini' icon={<SettingOne size={'14'} />} />
+              <Button size='mini' className='flowy-button-icon' icon={<SettingOne size={'14'} />} />
             </Dropdown>
           )}
         </div>

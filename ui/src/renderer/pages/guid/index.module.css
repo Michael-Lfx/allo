@@ -2365,6 +2365,17 @@ button.guidResourceCard:focus-visible {
   animation: agentSelectPop 0.4s ease-out forwards;
 }
 
+/* 首页右上角：会话创建前的知识库挂载草稿 */
+.guidCornerActions {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 /* 底部快捷按钮：基础间距 + 安全区 */
 .guidQuickActions {
   bottom: calc(32px + env(safe-area-inset-bottom, 0px));

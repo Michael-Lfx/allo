@@ -64,5 +64,11 @@ describe('market and preset-editor polish contracts', () => {
     expect(importer).not.toContain('presentation?:');
     expect(drawer).toContain('rgba(var(--warning-6),0.08)');
     expect(drawer).not.toContain('rgba(242,156,27');
+    // UnoCSS has no Tailwind border reset: undirected `border-solid` paints
+    // the other three sides at medium≈3px currentColor (the black boxes).
+    expect(drawer).not.toContain('border-t border-solid');
+    expect(drawer).toContain('border-t border-t-solid border-arco-2');
+    expect(importer).not.toContain('border-t border-solid');
+    expect(importer).toContain('border-t border-t-solid border-arco-2');
   });
 });

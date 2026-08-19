@@ -123,6 +123,7 @@ import type { NomiModelSelection } from './useNomiModelSelection';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import { catalogReasoningEffortForModel } from '@/renderer/utils/model/reasoningEffort';
 import { formatCreditRateMultiplier, catalogCreditRateForModel } from '@/renderer/utils/model/creditRate';
+import { catalogContextLimitForModel, resolveDisplayContextWindow } from '@/renderer/utils/model/contextWindow';
 
 const imageAttachmentSignature = (paths: string[]) =>
   Array.from(new Set(paths.filter(isImageAttachment))).sort().join('\u0000');
@@ -255,14 +256,25 @@ const NomiSendBox: React.FC<{
   const providerLabel = useModelSelectorProviderLabel();
   const { current_model } = modelSelection;
 
-  const reasoningEffortLevels = useMemo(() => {
-    if (!current_model?.id || !current_model.use_model) return [];
+  const liveCatalogProvider = useMemo(() => {
+    if (!current_model?.id) return current_model;
     // conversation.model snapshots often omit models_detail; resolve against
-    // the live provider catalog so catalog-owned effort levels stay visible.
-    const provider =
-      modelSelection.providers.find((entry) => entry.id === current_model.id) ?? current_model;
-    return catalogReasoningEffortForModel(provider, current_model.use_model);
+    // the live provider catalog so catalog-owned limits stay visible.
+    return modelSelection.providers.find((entry) => entry.id === current_model.id) ?? current_model;
   }, [current_model, modelSelection.providers]);
+
+  const reasoningEffortLevels = useMemo(() => {
+    if (!current_model?.use_model) return [];
+    return catalogReasoningEffortForModel(liveCatalogProvider, current_model.use_model);
+  }, [current_model, liveCatalogProvider]);
+
+  const displayContextWindow = useMemo(
+    () =>
+      resolveDisplayContextWindow(
+        catalogContextLimitForModel(liveCatalogProvider, current_model?.use_model)
+      ),
+    [liveCatalogProvider, current_model?.use_model]
+  );
 
   useEffect(() => {
     setCurrentReasoningEffort(reasoning_effort);
@@ -289,10 +301,7 @@ const NomiSendBox: React.FC<{
     getTurnStartGeneration,
     getTurnCompletionGeneration,
   } = turnActivity;
-  const hasContextUsage =
-    typeof tokenUsage?.context_window === 'number' &&
-    tokenUsage.context_window > 0 &&
-    typeof tokenUsage?.context_tokens === 'number';
+  const hasContextUsage = typeof tokenUsage?.context_tokens === 'number';
 
   const { atPath, uploadFile, setAtPath, setUploadFile, content, contentRevision, setContent } = useSendBoxDraft(conversation_id);
   const contentRevisionRef = useLatestRef(contentRevision);
@@ -1626,7 +1635,7 @@ const NomiSendBox: React.FC<{
               {hasContextUsage && (
                 <ContextUsageRing
                   used={tokenUsage?.context_tokens}
-                  max={tokenUsage?.context_window}
+                  max={displayContextWindow}
                   cacheReadTokens={tokenUsage?.cache_read_tokens}
                   breakdown={tokenUsage?.context_breakdown}
                 />

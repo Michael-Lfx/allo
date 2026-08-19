@@ -43,6 +43,28 @@ pub fn estimate_tokens_from_messages(messages: &[Message]) -> u64 {
     messages.iter().map(estimate_tokens_from_message).sum()
 }
 
+/// Estimate the tokens a provider request will actually consume: system
+/// prompt, tool definitions, transcript, and optional turn-tail extras.
+///
+/// Message-only estimates miss static overhead and can skip compaction
+/// until the real request overflows.
+pub fn estimate_tokens_from_request(
+    system_prompt: &str,
+    tools: &[ToolDef],
+    messages: &[Message],
+    turn_tail: Option<&str>,
+) -> u64 {
+    let mut total = estimate_tokens_from_text(system_prompt);
+    for tool in tools {
+        total = total.saturating_add(estimate_tokens_from_tool_def(tool));
+    }
+    total = total.saturating_add(estimate_tokens_from_messages(messages));
+    if let Some(tail) = turn_tail.filter(|text| !text.is_empty()) {
+        total = total.saturating_add(estimate_tokens_from_text(tail));
+    }
+    total
+}
+
 /// Estimate tokens for a single message.
 pub fn estimate_tokens_from_message(message: &Message) -> u64 {
     let mut total_chars: usize = 0;
@@ -213,5 +235,27 @@ mod tests {
 
         assert_eq!(effective, 100_000);
         assert!(effective > provider_reported);
+    }
+
+    #[test]
+    fn request_estimate_includes_system_tools_and_tail() {
+        let system = "s".repeat(400);
+        let tools = vec![ToolDef {
+            name: "Read".into(),
+            description: "d".repeat(300),
+            input_schema: json!({"type": "object"}),
+            deferred: false,
+        }];
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "m".repeat(400),
+            }],
+        )];
+        let tail = "t".repeat(400);
+        let message_only = estimate_tokens_from_messages(&messages);
+        let full = estimate_tokens_from_request(&system, &tools, &messages, Some(&tail));
+        assert_eq!(message_only, 100);
+        assert!(full > message_only + 200);
     }
 }

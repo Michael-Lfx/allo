@@ -12,10 +12,12 @@ pub enum CompactTrigger {
 
 /// Metadata stored in the compact boundary marker message.
 ///
-/// After an autocompact or manual compact, a system-role message is
+/// After an autocompact or manual compact, a User-role boundary message is
 /// inserted whose content carries this metadata serialized as JSON.
-/// It records *what happened* so that downstream code (and the model
-/// itself) can reason about the compaction.
+/// User role is a provider compatibility convention (many APIs reject a
+/// leading assistant/system transcript message). It records *what happened*
+/// so that downstream code (and the model itself) can reason about the
+/// compaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactMetadata {
     /// How this compaction was triggered.

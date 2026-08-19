@@ -4,6 +4,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ExtensionMcpServerContribution } from '@/renderer/hooks/mcp/extensionCatalog';
 import { iconColors } from '@/renderer/styles/colors';
+import { MCP_SERVER_COLLAPSE_CLASS, MCP_SERVER_TITLE_CLASS } from './mcpServerCollapse';
 
 interface ExtensionMcpServerItemProps {
   server: ExtensionMcpServerContribution;
@@ -24,15 +25,15 @@ const ExtensionMcpServerItem: React.FC<ExtensionMcpServerItemProps> = ({
     <Collapse
       activeKey={hasDescription && isCollapsed ? ['1'] : []}
       onChange={hasDescription ? onToggleCollapse : undefined}
-      className='mb-4 [&_div.arco-collapse-item-header-title]:flex-1'
+      className={MCP_SERVER_COLLAPSE_CLASS}
     >
       <Collapse.Item
         header={
-          <div className='flex items-center gap-2'>
-            <span>{server.name}</span>
+          <div className='flex min-w-0 items-center gap-8px'>
+            <span className={MCP_SERVER_TITLE_CLASS}>{server.name}</span>
             <Tooltip content={t('settings.mcpDisconnected')} position='top'>
-              <span className='flex items-center cursor-default'>
-                <Info theme='outline' fill={iconColors.secondary} className='h-[24px]' />
+              <span className='inline-flex h-24px w-24px shrink-0 items-center justify-center cursor-default'>
+                <Info theme='outline' size={16} fill={iconColors.secondary} />
               </span>
             </Tooltip>
           </div>

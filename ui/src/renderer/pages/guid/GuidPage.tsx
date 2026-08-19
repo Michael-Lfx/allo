@@ -46,6 +46,7 @@ import {
   savePreferredReasoningEffort,
 } from './hooks/agentSelectionUtils';
 import { consumeKnowledgeActivation } from '@/renderer/pages/knowledge/knowledgeActivation';
+import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { useGuidAgentSelection } from './hooks/useGuidAgentSelection';
 import { useGuidAdvancedConfig } from './hooks/useGuidAdvancedConfig';
 import { useMiniAppQuickStart } from '@/renderer/hooks/agent/useMiniAppQuickStart';
@@ -1063,6 +1064,12 @@ const GuidPage: React.FC = () => {
   return (
     <ConfigProvider getPopupContainer={() => guidContainerRef.current || document.body}>
       <div ref={guidContainerRef} className={styles.guidContainer}>
+        <div className={styles.guidCornerActions} data-testid='guid-knowledge-control'>
+          <KnowledgeControl
+            draft={{ value: advancedConfig.knowledge, onChange: advancedConfig.setKnowledge }}
+            applyNote={t('guid.advanced.applyNote')}
+          />
+        </div>
         <div className={styles.guidPrimaryStage}>
           <div className={styles.guidLayout}>
             <div className={styles.heroHeader}>

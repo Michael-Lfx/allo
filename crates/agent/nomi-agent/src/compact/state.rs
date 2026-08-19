@@ -114,6 +114,23 @@ impl CompactState {
             self.soft_compact_noticed = false;
         }
     }
+
+    /// Replace the watermark after compaction or a fresh request estimate.
+    /// Unlike `max(previous, estimate)`, this is allowed to drop.
+    pub fn set_watermark(&mut self, tokens: u64, config: &CompactConfig) {
+        self.last_input_tokens = tokens;
+        self.maybe_reset_soft_notice(config);
+    }
+
+    /// After a compact that actually rewrote history: enter stuck when the
+    /// new watermark is still at or above the autocompact trigger.
+    pub fn note_compact_outcome(&mut self, still_above_trigger: bool) {
+        if still_above_trigger {
+            self.record_consecutive_compact();
+        } else {
+            self.clear_compact_stall();
+        }
+    }
 }
 
 impl Default for CompactState {
@@ -257,5 +274,30 @@ mod tests {
         state.clear_compact_stall();
         assert!(!state.is_compact_stuck());
         assert_eq!(state.consecutive_compacts, 0);
+    }
+
+    #[test]
+    fn set_watermark_can_drop_and_resets_soft_notice() {
+        let config = CompactConfig {
+            context_window: 200_000,
+            ..Default::default()
+        };
+        let mut state = CompactState::new();
+        state.last_input_tokens = 100_000;
+        assert!(state.check_soft_compact(&config));
+        state.set_watermark(10_000, &config);
+        assert_eq!(state.last_input_tokens, 10_000);
+        assert!(!state.soft_compact_noticed);
+    }
+
+    #[test]
+    fn note_compact_outcome_enters_stuck_without_net_gain() {
+        let mut state = CompactState::new();
+        state.note_compact_outcome(true);
+        assert!(!state.is_compact_stuck());
+        state.note_compact_outcome(true);
+        assert!(state.is_compact_stuck());
+        state.note_compact_outcome(false);
+        assert!(!state.is_compact_stuck());
     }
 }

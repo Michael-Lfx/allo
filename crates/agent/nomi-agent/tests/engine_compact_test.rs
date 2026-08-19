@@ -15,12 +15,12 @@ use tokio::sync::mpsc;
 use nomi_agent::engine::{AgentEngine, AgentError};
 use nomi_agent::output::OutputSink;
 use nomi_agent::output::terminal::TerminalSink;
-use nomi_agent::session::SessionManager;
+use nomi_agent::session::{Session, SessionManager};
 use nomi_config::compact::CompactConfig;
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_tools::registry::ToolRegistry;
 use nomi_types::llm::{LlmEvent, LlmRequest};
-use nomi_types::message::{StopReason, TokenUsage};
+use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 use tempfile::tempdir;
 
 use common::test_config;
@@ -90,6 +90,58 @@ fn text_turn(text: &str, input_tokens: u64) -> Vec<LlmEvent> {
     ]
 }
 
+fn tool_turn(id: &str, input_tokens: u64) -> Vec<LlmEvent> {
+    vec![
+        LlmEvent::ToolUse {
+            id: id.to_string(),
+            name: "mock_tool".to_string(),
+            input: serde_json::json!({"id": id}),
+            extra: None,
+        },
+        LlmEvent::Done {
+            stop_reason: StopReason::ToolUse,
+            usage: TokenUsage {
+                input_tokens,
+                output_tokens: 100,
+                ..Default::default()
+            },
+        },
+    ]
+}
+
+fn bulky_resumed_session(pairs: usize, chars_each: usize) -> Session {
+    let blob = "x".repeat(chars_each);
+    let mut messages = Vec::with_capacity(pairs * 2);
+    for i in 0..pairs {
+        messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: format!("user-{i} {blob}"),
+            }],
+        ));
+        messages.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: format!("asst-{i} {blob}"),
+            }],
+        ));
+    }
+    let now = chrono::Utc::now();
+    Session {
+        id: "resume-smaller-window".into(),
+        created_at: now,
+        updated_at: now,
+        provider: "anthropic".into(),
+        model: "test-model".into(),
+        cwd: "/tmp".into(),
+        total_usage: TokenUsage::default(),
+        messages,
+        owner_token: None,
+        activated_deferred_tools: Vec::new(),
+        editable_turn: None,
+    }
+}
+
 /// Build events for a summary LLM call (used by autocompact internally).
 fn summary_turn(summary_text: &str) -> Vec<LlmEvent> {
     vec![
@@ -103,6 +155,82 @@ fn summary_turn(summary_text: &str) -> Vec<LlmEvent> {
             },
         },
     ]
+}
+
+// ── Pre-turn compact after switching to a smaller context window ───────────
+
+#[tokio::test]
+async fn resumed_turn_compacts_before_provider_when_occupancy_exceeds_new_threshold() {
+    // History is above the new model's autocompact threshold (16k) but below
+    // its emergency limit (19k). Mid-turn autocompact must still wait for
+    // EndTurn; the *first* provider pass of this send must compact first.
+    struct OrderProvider {
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for OrderProvider {
+        async fn stream(
+            &self,
+            request: &LlmRequest,
+        ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            let kind = if request.system.contains("compacting the earlier part") {
+                "compact"
+            } else {
+                "regular"
+            };
+            self.calls.lock().unwrap().push(kind);
+            let events = if kind == "compact" {
+                summary_turn("<summary>folded for smaller window</summary>")
+            } else {
+                text_turn("ok after compact", 1_000)
+            };
+            let (tx, rx) = mpsc::channel(64);
+            tokio::spawn(async move {
+                for event in events {
+                    let _ = tx.send(event).await;
+                }
+            });
+            Ok(rx)
+        }
+    }
+
+    let provider = Arc::new(OrderProvider {
+        calls: Mutex::new(Vec::new()),
+    });
+    let mut config = test_config();
+    config.compact = CompactConfig {
+        context_window: 20_000,
+        output_reserve: 2_000,
+        autocompact_buffer: 2_000,
+        emergency_buffer: 1_000,
+        ..CompactConfig::default()
+    };
+
+    let mut engine = AgentEngine::resume_with_provider(
+        provider.clone(),
+        config,
+        ToolRegistry::new(),
+        silent_output(),
+        bulky_resumed_session(20, 1_700),
+        std::env::temp_dir(),
+    );
+    let result = engine
+        .execute_turn("continue on the smaller model", "msg-switch")
+        .await
+        .expect("turn should succeed after pre-turn compact");
+
+    assert_eq!(result.text, "ok after compact");
+    let calls = provider.calls.lock().unwrap().clone();
+    assert_eq!(
+        calls.first().copied(),
+        Some("compact"),
+        "switching onto a smaller window must compact before the next model call, got {calls:?}"
+    );
+    assert!(
+        calls.iter().any(|kind| *kind == "regular"),
+        "the user turn must still reach the model after compact, got {calls:?}"
+    );
 }
 
 // ── TC-2.6-01: First turn does not trigger compaction ──────────────────────
@@ -203,36 +331,26 @@ async fn tc_2_6_03_emergency_returns_error() {
 
 #[tokio::test]
 async fn tc_2_6_04_autocompact_then_continue() {
-    // Turn 1: tool use, returns input_tokens=170k (above autocompact threshold 167k)
-    // Before turn 2: autocompact fires → LLM summary call → messages replaced
-    // Turn 2 (after compact): text response with low input_tokens
-    let turn1 = vec![
-        LlmEvent::ToolUse {
-            id: "t1".to_string(),
-            name: "mock_tool".to_string(),
-            input: serde_json::json!({}),
-            extra: None,
-        },
-        LlmEvent::Done {
-            stop_reason: StopReason::ToolUse,
-            usage: TokenUsage {
-                input_tokens: 170_000,
-                output_tokens: 100,
-                ..Default::default()
-            },
-        },
-    ];
+    // Turn 1: tool use, returns input_tokens=170k (above autocompact threshold
+    // 167k on a 200k window, below emergency 197k). The tool loop must not
+    // autocompact. After the final EndTurn, autocompact runs once.
+    // Enough tool turns that tail preservation still leaves a foldable middle.
     let compact_summary = summary_turn("<summary>Conversation summary</summary>");
-    let turn2_after_compact = text_turn("Continuing after compact", 10_000);
+    let end_text = text_turn("Continuing after compact", 10_000);
 
     let provider = Arc::new(CompactMockProvider::new(vec![
-        turn1,
+        tool_turn("t1", 170_000),
+        tool_turn("t2", 170_000),
+        tool_turn("t3", 170_000),
+        end_text,
         compact_summary,
-        turn2_after_compact,
     ]));
 
     let mut config = test_config();
-    config.compact = CompactConfig::default();
+    config.compact = CompactConfig {
+        context_window: 200_000,
+        ..CompactConfig::default()
+    };
 
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(common::MockTool::new(
@@ -255,9 +373,9 @@ async fn tc_2_6_04_autocompact_then_continue() {
         .expect("should succeed after compact");
 
     assert_eq!(result.text, "Continuing after compact");
-    assert_eq!(result.turns, 2);
-    // 3 calls: turn1 + compact summary + turn2
-    assert_eq!(provider.call_count(), 3);
+    assert_eq!(result.turns, 4);
+    // 3 tool passes + EndTurn + turn-end compact
+    assert_eq!(provider.call_count(), 5);
 }
 
 // ── TC-2.6-05: Session save includes compacted messages ────────────────────
@@ -266,33 +384,22 @@ async fn tc_2_6_04_autocompact_then_continue() {
 async fn tc_2_6_05_session_save_after_compact() {
     let dir = tempdir().expect("tempdir");
 
-    let turn1 = vec![
-        LlmEvent::ToolUse {
-            id: "t1".to_string(),
-            name: "mock_tool".to_string(),
-            input: serde_json::json!({}),
-            extra: None,
-        },
-        LlmEvent::Done {
-            stop_reason: StopReason::ToolUse,
-            usage: TokenUsage {
-                input_tokens: 170_000,
-                output_tokens: 100,
-                ..Default::default()
-            },
-        },
-    ];
     let compact_summary = summary_turn("<summary>Session summary</summary>");
-    let turn2 = text_turn("After compact", 10_000);
+    let turn_end = text_turn("After compact", 10_000);
 
     let provider = Arc::new(CompactMockProvider::new(vec![
-        turn1,
+        tool_turn("t1", 170_000),
+        tool_turn("t2", 170_000),
+        tool_turn("t3", 170_000),
+        turn_end,
         compact_summary,
-        turn2,
     ]));
 
     let mut config = test_config();
-    config.compact = CompactConfig::default();
+    config.compact = CompactConfig {
+        context_window: 200_000,
+        ..CompactConfig::default()
+    };
     config.session.enabled = true;
     config.session.directory = dir.path().to_string_lossy().into_owned();
 
@@ -485,7 +592,7 @@ async fn tc_2_6_02_micro_before_auto_execution_order() {
             &self,
             request: &LlmRequest,
         ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
-            let is_compact = request.tools.is_empty();
+            let is_compact = request.system.contains("compacting the earlier part");
 
             if is_compact {
                 // Capture messages that autocompact sends to the LLM
@@ -648,7 +755,7 @@ async fn tc_2_6_e2e_02_micro_and_auto_cooperative() {
             &self,
             request: &LlmRequest,
         ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
-            let is_compact = request.tools.is_empty();
+            let is_compact = request.system.contains("compacting the earlier part");
 
             if is_compact {
                 *self.compact_calls.lock().unwrap() += 1;
@@ -797,9 +904,8 @@ async fn tc_2_6_e2e_03_circuit_breaker_stops_retries() {
                 v
             };
 
-            // Compact summary calls have no tools defined and include the
-            // compact prompt in messages. We detect them by checking tools.is_empty().
-            let is_compact_call = request.tools.is_empty();
+            // Compact summary calls use the dedicated compact system prompt.
+            let is_compact_call = request.system.contains("compacting the earlier part");
 
             if is_compact_call {
                 return Err(ProviderError::Api {
@@ -879,4 +985,254 @@ async fn tc_2_6_e2e_03_circuit_breaker_stops_retries() {
     let result = engine.execute_turn("Work", "msg-1").await.expect("should succeed");
 
     assert_eq!(result.text, "Final");
+}
+
+#[tokio::test]
+async fn tool_loop_does_not_autocompact_below_emergency() {
+    struct CountingProvider {
+        regular: Mutex<usize>,
+        compact: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for CountingProvider {
+        async fn stream(
+            &self,
+            request: &LlmRequest,
+        ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            if request.system.contains("compacting the earlier part") {
+                *self.compact.lock().unwrap() += 1;
+                let events = summary_turn("<summary>end of turn</summary>");
+                let (tx, rx) = mpsc::channel(64);
+                tokio::spawn(async move {
+                    for e in events {
+                        let _ = tx.send(e).await;
+                    }
+                });
+                return Ok(rx);
+            }
+            let n = {
+                let mut c = self.regular.lock().unwrap();
+                let v = *c;
+                *c += 1;
+                v
+            };
+            let events = if n < 3 {
+                vec![
+                    LlmEvent::ToolUse {
+                        id: format!("t{n}"),
+                        name: "mock_tool".to_string(),
+                        input: serde_json::json!({"n": n}),
+                        extra: None,
+                    },
+                    LlmEvent::Done {
+                        stop_reason: StopReason::ToolUse,
+                        usage: TokenUsage {
+                            input_tokens: 170_000,
+                            output_tokens: 50,
+                            ..Default::default()
+                        },
+                    },
+                ]
+            } else {
+                text_turn("done", 170_000)
+            };
+            let (tx, rx) = mpsc::channel(64);
+            tokio::spawn(async move {
+                for e in events {
+                    let _ = tx.send(e).await;
+                }
+            });
+            Ok(rx)
+        }
+    }
+
+    let provider = Arc::new(CountingProvider {
+        regular: Mutex::new(0),
+        compact: Mutex::new(0),
+    });
+    let mut config = test_config();
+    config.compact = CompactConfig {
+        context_window: 200_000,
+        emergency_buffer: 3_000,
+        compactable_tools: vec!["mock_tool".into()],
+        ..Default::default()
+    };
+    config.max_turns = Some(20);
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(common::MockTool::new("mock_tool", "out", false)));
+    let mut engine = AgentEngine::new_with_provider(
+        provider.clone(),
+        config,
+        registry,
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    let result = engine.execute_turn("Go", "msg-1").await.expect("ok");
+    assert_eq!(result.text, "done");
+    assert_eq!(*provider.regular.lock().unwrap(), 4);
+    assert_eq!(*provider.compact.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn max_tokens_does_not_run_turn_end_compact() {
+    let provider = Arc::new(CompactMockProvider::new(vec![vec![
+        LlmEvent::TextDelta("partial".into()),
+        LlmEvent::Done {
+            stop_reason: StopReason::MaxTokens,
+            usage: TokenUsage {
+                input_tokens: 170_000,
+                output_tokens: 50,
+                ..Default::default()
+            },
+        },
+    ]]));
+    let mut config = test_config();
+    config.compact = CompactConfig {
+        context_window: 200_000,
+        ..Default::default()
+    };
+    let mut engine = AgentEngine::new_with_provider(
+        provider.clone(),
+        config,
+        ToolRegistry::new(),
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    let result = engine.execute_turn("Go", "msg-1").await.expect("ok");
+    assert_eq!(result.stop_reason, StopReason::MaxTokens);
+    assert_eq!(provider.call_count(), 1);
+}
+
+#[tokio::test]
+async fn overflow_before_content_compacts_and_retries_once() {
+    struct OverflowThenOk {
+        calls: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for OverflowThenOk {
+        async fn stream(
+            &self,
+            request: &LlmRequest,
+        ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            if request.system.contains("compacting the earlier part") {
+                let events = summary_turn("<summary>recovered</summary>");
+                let (tx, rx) = mpsc::channel(64);
+                tokio::spawn(async move {
+                    for e in events {
+                        let _ = tx.send(e).await;
+                    }
+                });
+                return Ok(rx);
+            }
+            let n = {
+                let mut c = self.calls.lock().unwrap();
+                let v = *c;
+                *c += 1;
+                v
+            };
+            if n == 0 {
+                return Err(ProviderError::PromptTooLong("prompt is too long".into()));
+            }
+            let events = text_turn("recovered", 1_000);
+            let (tx, rx) = mpsc::channel(64);
+            tokio::spawn(async move {
+                for e in events {
+                    let _ = tx.send(e).await;
+                }
+            });
+            Ok(rx)
+        }
+    }
+
+    let provider = Arc::new(OverflowThenOk {
+        calls: Mutex::new(0),
+    });
+    let mut config = test_config();
+    config.compact.context_window = 200_000;
+    let mut engine = AgentEngine::new_with_provider(
+        provider.clone(),
+        config,
+        ToolRegistry::new(),
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    let result = engine.execute_turn("Go", "msg-1").await.expect("retried");
+    assert_eq!(result.text, "recovered");
+    assert_eq!(*provider.calls.lock().unwrap(), 2);
+}
+
+#[tokio::test]
+async fn generic_400_does_not_retry() {
+    struct Generic400 {
+        calls: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for Generic400 {
+        async fn stream(
+            &self,
+            _request: &LlmRequest,
+        ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            *self.calls.lock().unwrap() += 1;
+            Err(ProviderError::Api {
+                status: 400,
+                message: "invalid_request_error: missing field".into(),
+            })
+        }
+    }
+
+    let provider = Arc::new(Generic400 {
+        calls: Mutex::new(0),
+    });
+    let mut engine = AgentEngine::new_with_provider(
+        provider.clone(),
+        test_config(),
+        ToolRegistry::new(),
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    let err = engine.execute_turn("Go", "msg-1").await.unwrap_err();
+    assert!(matches!(err, AgentError::Provider(_)));
+    assert_eq!(*provider.calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn partial_stream_overflow_does_not_retry() {
+    struct PartialOverflow {
+        calls: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for PartialOverflow {
+        async fn stream(
+            &self,
+            _request: &LlmRequest,
+        ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            *self.calls.lock().unwrap() += 1;
+            let (tx, rx) = mpsc::channel(8);
+            tokio::spawn(async move {
+                let _ = tx.send(LlmEvent::TextDelta("hello".into())).await;
+                let _ = tx
+                    .send(LlmEvent::Error("prompt is too long".into()))
+                    .await;
+            });
+            Ok(rx)
+        }
+    }
+
+    let provider = Arc::new(PartialOverflow {
+        calls: Mutex::new(0),
+    });
+    let mut engine = AgentEngine::new_with_provider(
+        provider.clone(),
+        test_config(),
+        ToolRegistry::new(),
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    let err = engine.execute_turn("Go", "msg-1").await.unwrap_err();
+    assert!(matches!(err, AgentError::ApiError(_)));
+    assert_eq!(*provider.calls.lock().unwrap(), 1);
 }

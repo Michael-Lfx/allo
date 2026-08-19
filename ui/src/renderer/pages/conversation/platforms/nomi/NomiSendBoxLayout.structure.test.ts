@@ -54,6 +54,9 @@ describe('Nomi sendbox control layout', () => {
     expect(contextRingSource.includes("data-testid='nomi-context-usage'")).toBe(false);
     expect(contextRingSource.includes('rd-999px b b-solid px-10px')).toBe(false);
     expect(source.includes('breakdown={tokenUsage?.context_breakdown}')).toBe(true);
+    expect(source.includes('catalogContextLimitForModel')).toBe(true);
+    expect(source.includes('resolveDisplayContextWindow')).toBe(true);
+    expect(source.includes('max={displayContextWindow}')).toBe(true);
   });
 
   test('does not render collaborator model or collaboration policy controls', () => {
