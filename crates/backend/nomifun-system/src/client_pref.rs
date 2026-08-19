@@ -23,14 +23,11 @@ const SYSTEM_RESERVED_PREFIXES: &[&str] = &["managedModel.", "agent.browserUse.d
 
 pub(crate) const DEVELOPER_MODE_PREF_KEY: &str = "system.developerMode";
 
-type DeveloperModeListener = Arc<dyn Fn(bool) + Send + Sync>;
-
 /// Business logic for client preferences (generic key-value store).
 #[derive(Clone)]
 pub struct ClientPrefService {
     repo: Arc<dyn IClientPreferenceRepository>,
     installation_store: Option<Arc<InstallationPreferenceStore>>,
-    developer_mode_listener: Arc<std::sync::Mutex<Option<DeveloperModeListener>>>,
 }
 
 impl ClientPrefService {
@@ -38,7 +35,6 @@ impl ClientPrefService {
         Self {
             repo,
             installation_store: None,
-            developer_mode_listener: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -49,17 +45,7 @@ impl ClientPrefService {
         Self {
             repo,
             installation_store: Some(Arc::new(InstallationPreferenceStore::new(data_dir))),
-            developer_mode_listener: Arc::new(std::sync::Mutex::new(None)),
         }
-    }
-
-    /// Notify when `system.developerMode` is written so observation recording
-    /// can start or stop without waiting for the next conversation send.
-    pub fn set_developer_mode_listener(&self, listener: DeveloperModeListener) {
-        *self
-            .developer_mode_listener
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(listener);
     }
 
     /// Persist the host OS UI language when this installation has never stored
@@ -110,13 +96,9 @@ impl ClientPrefService {
         let mut upserts: Vec<(String, String)> = Vec::new();
         let mut deletes: Vec<String> = Vec::new();
         let mut installation_updates: Vec<(String, serde_json::Value)> = Vec::new();
-        let mut developer_mode_update: Option<bool> = None;
 
         for (key, value) in req {
             validate_key(&key)?;
-            if key == DEVELOPER_MODE_PREF_KEY {
-                developer_mode_update = Some(!value.is_null() && preference_value_is_true(&value));
-            }
             if SYSTEM_RESERVED_PREFIXES
                 .iter()
                 .any(|prefix| key.starts_with(prefix))
@@ -182,17 +164,6 @@ impl ClientPrefService {
                     }
                 }
                 return Err(error);
-            }
-        }
-
-        if let Some(enabled) = developer_mode_update {
-            let listener = self
-                .developer_mode_listener
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            if let Some(listener) = listener {
-                listener(enabled);
             }
         }
 
@@ -534,24 +505,5 @@ mod tests {
         let svc = setup().await;
         assert_eq!(svc.ensure_os_language_default(Some("ja-JP")).await.unwrap(), "en-US");
         assert!(svc.get_preferences(None).await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn developer_mode_write_notifies_listener() {
-        let svc = setup().await;
-        let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = Arc::clone(&seen);
-        svc.set_developer_mode_listener(Arc::new(move |enabled| {
-            flag.store(enabled, std::sync::atomic::Ordering::SeqCst);
-        }));
-        let mut req = UpdateClientPreferencesRequest::new();
-        req.insert("system.developerMode".into(), json!(true));
-        svc.update_preferences(req).await.unwrap();
-        assert!(seen.load(std::sync::atomic::Ordering::SeqCst));
-
-        let mut off = UpdateClientPreferencesRequest::new();
-        off.insert("system.developerMode".into(), json!(null));
-        svc.update_preferences(off).await.unwrap();
-        assert!(!seen.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

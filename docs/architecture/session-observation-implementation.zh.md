@@ -95,10 +95,10 @@ stream_llm(provider, request, observer, call_kind, scope)
 | 根目录 | `{data_dir}/diagnostics/observation/` |
 | 分文件 | 按 `conversation_id`；无会话走 `process/` |
 | rotate | 单个 `events.jsonl` ≥ **48 MiB** → `events.{n}.jsonl` |
-| flush | 每条 append 后 `flush`（无内存队列，shutdown 自然落盘） |
+| flush | DualQueue writer：batch / ~75ms / Shutdown；热路径不每条 fsync。读路径 `flush_for_read`（约 500ms）后读盘 |
 | retention | **14 天**，list / persist 时做最简 GC |
 
-**采集门控：** 与今日 collector 相同——开发者模式关闭则不写盘；API 仍须服务端校验 developer mode。
+**采集门控：** 采集始终开启（会话发送即写盘）。开发者模式只门控 HTTP 读取与支持包附带 JSONL；API 仍须服务端校验 developer mode。
 
 ---
 
@@ -186,7 +186,7 @@ S5 优先在 engine 调用前后旁路 emit（started → 执行 → completed/f
 - `AgentEngine` 增加 optional `observation`；`new_with_provider` / 测试字面量补 `None`。
 - 仅替换主 loop 的 `provider.stream`。
 - `NomiAgentManager` 用 `ObservationRecorder::shared(data_dir)` 创建 session；`send_message` 前 `bind_ids`（`conversation_id` / `msg_id` / `root_turn_id` / `session_kind`）。
-- Hub 按 developer mode 开关 `recorder.set_enabled`。
+- Hub 只门控 HTTP 读 API，不调用 `recorder.set_enabled`（采集始终开启；按开发者模式开关写盘已作废）。
 
 **验收：** `cargo test -p nomi-agent`；一条带 observer 的单测能从 JSONL 读到 `llm/request` + `llm/response`。  
 **不做：** compact/judge/工具/UI。旧 collector 此步仍可暂时存在。
