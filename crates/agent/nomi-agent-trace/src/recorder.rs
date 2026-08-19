@@ -1,22 +1,28 @@
 //! JSONL observation writer under `{data_dir}/diagnostics/observation/`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{SecondsFormat, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::capture::capture_canonical_request;
+use crate::capture::capture_and_size_cap;
 use crate::event::{
     ids_from_payload, ObservationEvent, ObservationIds, EVENT_OBSERVATION_GAP,
-    OBSERVATION_SCHEMA_VERSION, PROCESS_BOUNDARY_ID,
+    EVENT_TURN_END, EVENT_TURN_START, OBSERVATION_SCHEMA_VERSION, PROCESS_BOUNDARY_ID,
 };
-use crate::project::{event_belongs_to_turn, project_event_refs};
+use crate::project::{
+    event_belongs_to_turn, project_event_refs, ObservationSummary, ObservationSummaryFold,
+};
 
 fn sanitize_path_segment(raw: &str) -> String {
     let filtered: String = raw
@@ -34,13 +40,45 @@ fn sanitize_path_segment(raw: &str) -> String {
 pub const OBSERVATION_DIR: &str = "diagnostics/observation";
 pub const ROTATE_BYTES: u64 = 48 * 1024 * 1024;
 pub const GC_MAX_AGE_DAYS: u64 = 14;
+pub const MAX_TOTAL_OBSERVATION_BYTES: u64 = 1024 * 1024 * 1024;
 /// Emit path only: skip a full directory walk when GC ran recently.
 const GC_INTERVAL_SECS: u64 = 60 * 60;
+const WRITER_FLUSH_INTERVAL: Duration = Duration::from_millis(75);
+const WRITER_FLUSH_BATCH: usize = 32;
+const WRITER_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+const BUFWRITER_CAPACITY: usize = 64 * 1024;
 const WRITER_IDLE: Duration = Duration::from_secs(10 * 60);
 const SEQ_IDLE: Duration = Duration::from_secs(10 * 60);
 const MAX_WRITERS: usize = 64;
 const MAX_SEQ_BOUNDARIES: usize = 4096;
-const EVENTS_FILE: &str = "events.jsonl";
+pub const EVENTS_FILE: &str = "events.jsonl";
+/// Ordinary event queue depth. 128 × 128 KiB ≈ 16 MiB.
+pub const MAX_QUEUE_EVENTS: usize = 128;
+pub const MAX_CONTROL_EVENTS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecorderHealthStatus {
+    Healthy,
+    QueueDropped,
+    StorageError,
+    WriterDisconnected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecorderHealth {
+    pub status: RecorderHealthStatus,
+    pub last_error: Option<String>,
+}
+
+impl Default for RecorderHealth {
+    fn default() -> Self {
+        Self {
+            status: RecorderHealthStatus::Healthy,
+            last_error: None,
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecorderError {
@@ -52,9 +90,170 @@ pub enum RecorderError {
     LockPoisoned,
 }
 
+/// Writer-thread command. `enqueue_order` is assigned at enqueue and never
+/// stored on the JSONL envelope.
+#[derive(Debug)]
+pub(crate) enum WriterCommand {
+    Event {
+        event_type: String,
+        ids: ObservationIds,
+        payload: Value,
+        generation: u64,
+    },
+    Flush {
+        ack: Option<Sender<()>>,
+    },
+    DeleteConversation {
+        conversation_id: String,
+        ack: Option<Sender<()>>,
+    },
+    ClearConversation {
+        conversation_id: String,
+        ack: Option<Sender<()>>,
+    },
+    ResetAll {
+        ack: Option<Sender<()>>,
+    },
+    Shutdown {
+        ack: Option<Sender<()>>,
+    },
+}
+
+impl WriterCommand {
+    fn is_control(&self) -> bool {
+        match self {
+            Self::Event { event_type, .. } => is_control_event_type(event_type),
+            Self::Flush { .. }
+            | Self::DeleteConversation { .. }
+            | Self::ClearConversation { .. }
+            | Self::ResetAll { .. }
+            | Self::Shutdown { .. } => true,
+        }
+    }
+
+    fn is_lifecycle(&self) -> bool {
+        !matches!(self, Self::Event { .. })
+    }
+
+    fn take_ack(&mut self) -> Option<Sender<()>> {
+        match self {
+            Self::Flush { ack }
+            | Self::DeleteConversation { ack, .. }
+            | Self::ClearConversation { ack, .. }
+            | Self::ResetAll { ack }
+            | Self::Shutdown { ack } => ack.take(),
+            Self::Event { .. } => None,
+        }
+    }
+}
+
+pub(crate) fn is_control_event_type(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        EVENT_OBSERVATION_GAP | EVENT_TURN_START | EVENT_TURN_END
+    ) || event_type.starts_with("turn/")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnqueueOutcome {
+    Queued,
+    DroppedNormal,
+    DroppedControl,
+}
+
+/// Dual bounded queues merged by `enqueue_order` (never control-first persist).
+pub(crate) struct DualQueue {
+    enqueue_order: AtomicU64,
+    normal: VecDeque<(u64, WriterCommand)>,
+    control: VecDeque<(u64, WriterCommand)>,
+    max_normal: usize,
+    max_control: usize,
+    dropped_normal: u64,
+}
+
+impl DualQueue {
+    fn new(max_normal: usize, max_control: usize) -> Self {
+        Self {
+            enqueue_order: AtomicU64::new(0),
+            normal: VecDeque::new(),
+            control: VecDeque::new(),
+            max_normal,
+            max_control,
+            dropped_normal: 0,
+        }
+    }
+
+    fn try_enqueue(&mut self, command: WriterCommand) -> EnqueueOutcome {
+        let order = self.enqueue_order.fetch_add(1, Ordering::Relaxed);
+        if command.is_lifecycle() {
+            self.control.push_back((order, command));
+            return EnqueueOutcome::Queued;
+        }
+        if command.is_control() {
+            if self.control.len() >= self.max_control {
+                if self.normal.pop_front().is_some() {
+                    self.dropped_normal += 1;
+                }
+                if self.control.len() >= self.max_control {
+                    return EnqueueOutcome::DroppedControl;
+                }
+            } else if self.normal.len() >= self.max_normal {
+                if self.normal.pop_front().is_some() {
+                    self.dropped_normal += 1;
+                }
+            }
+            self.control.push_back((order, command));
+            EnqueueOutcome::Queued
+        } else if self.normal.len() >= self.max_normal {
+            self.dropped_normal += 1;
+            EnqueueOutcome::DroppedNormal
+        } else {
+            self.normal.push_back((order, command));
+            EnqueueOutcome::Queued
+        }
+    }
+
+    fn dequeue_next(&mut self) -> Option<(u64, WriterCommand)> {
+        match (
+            self.normal.front().map(|(order, _)| *order),
+            self.control.front().map(|(order, _)| *order),
+        ) {
+            (Some(normal_order), Some(control_order)) if normal_order <= control_order => {
+                self.normal.pop_front()
+            }
+            (Some(_), Some(_)) => self.control.pop_front(),
+            (Some(_), None) => self.normal.pop_front(),
+            (None, Some(_)) => self.control.pop_front(),
+            (None, None) => None,
+        }
+    }
+
+    fn take_dropped_normal(&mut self) -> u64 {
+        let dropped = self.dropped_normal;
+        self.dropped_normal = 0;
+        dropped
+    }
+
+    fn drop_pending_for_conversation(&mut self, conversation_id: &str) {
+        let matches = |command: &WriterCommand| match command {
+            WriterCommand::Event { ids, .. } => {
+                ids.conversation_id.as_deref() == Some(conversation_id)
+            }
+            _ => false,
+        };
+        self.normal.retain(|(_, command)| !matches(command));
+        self.control.retain(|(_, command)| !matches(command));
+    }
+
+    fn drop_all_events(&mut self) {
+        self.normal.clear();
+        self.control.retain(|(_, command)| command.is_lifecycle());
+    }
+}
+
 struct ConversationWriter {
     dir: PathBuf,
-    file: File,
+    file: BufWriter<File>,
     current_size: u64,
     last_used: Instant,
 }
@@ -69,15 +268,78 @@ struct RecorderInner {
     writers: HashMap<String, ConversationWriter>,
 }
 
+#[cfg(test)]
+struct WriteGate {
+    open: Mutex<bool>,
+    cv: Condvar,
+}
+
+#[cfg(test)]
+impl WriteGate {
+    fn closed() -> Arc<Self> {
+        Arc::new(Self {
+            open: Mutex::new(false),
+            cv: Condvar::new(),
+        })
+    }
+
+    fn wait_if_closed(&self) {
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        while !*open {
+            open = self.cv.wait(open).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn release(&self) {
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        *open = true;
+        self.cv.notify_all();
+    }
+}
+
+struct LifecycleState {
+    tombstones: HashSet<String>,
+    generation: HashMap<String, u64>,
+}
+
+impl LifecycleState {
+    fn current_generation(&self, conversation_id: Option<&str>) -> u64 {
+        conversation_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .and_then(|id| self.generation.get(id).copied())
+            .unwrap_or(0)
+    }
+
+    fn is_tombstoned(&self, conversation_id: Option<&str>) -> bool {
+        conversation_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .is_some_and(|id| self.tombstones.contains(id))
+    }
+}
+
+struct WriterShared {
+    root: PathBuf,
+    rotate_bytes: u64,
+    queue: Mutex<DualQueue>,
+    cv: Condvar,
+    inner: Mutex<RecorderInner>,
+    health: Mutex<RecorderHealth>,
+    lifecycle: Mutex<LifecycleState>,
+    shutdown: AtomicBool,
+    last_gc_unix_secs: AtomicU64,
+    #[cfg(test)]
+    write_gate: Mutex<Option<Arc<WriteGate>>>,
+}
+
 /// Process-wide interned JSONL recorder. `shared(data_dir)` returns the same Arc
 /// for the same data directory (factory and Hub). Not a business context.
 pub struct ObservationRecorder {
     data_dir: PathBuf,
-    root: PathBuf,
-    rotate_bytes: u64,
+    shared: Arc<WriterShared>,
     enabled: AtomicBool,
-    last_gc_unix_secs: AtomicU64,
-    inner: Mutex<RecorderInner>,
+    writer: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl ObservationRecorder {
@@ -106,16 +368,44 @@ impl ObservationRecorder {
 
     fn create(data_dir: PathBuf, rotate_bytes: u64) -> Self {
         let root = data_dir.join("diagnostics").join("observation");
-        Self {
-            data_dir,
+        let shared = Arc::new(WriterShared {
             root,
             rotate_bytes,
-            enabled: AtomicBool::new(false),
-            last_gc_unix_secs: AtomicU64::new(0),
+            queue: Mutex::new(DualQueue::new(MAX_QUEUE_EVENTS, MAX_CONTROL_EVENTS)),
+            cv: Condvar::new(),
             inner: Mutex::new(RecorderInner {
                 seq_by_boundary: HashMap::new(),
                 writers: HashMap::new(),
             }),
+            health: Mutex::new(RecorderHealth::default()),
+            lifecycle: Mutex::new(LifecycleState {
+                tombstones: HashSet::new(),
+                generation: HashMap::new(),
+            }),
+            shutdown: AtomicBool::new(false),
+            last_gc_unix_secs: AtomicU64::new(0),
+            #[cfg(test)]
+            write_gate: Mutex::new(None),
+        });
+        let thread_shared = Arc::clone(&shared);
+        let handle = thread::Builder::new()
+            .name("observation-writer".into())
+            .spawn(move || {
+                let panicked = catch_unwind(AssertUnwindSafe(|| writer_loop(&thread_shared)));
+                if panicked.is_err() {
+                    set_health(
+                        &thread_shared,
+                        RecorderHealthStatus::WriterDisconnected,
+                        Some("observation writer panicked".into()),
+                    );
+                }
+            })
+            .expect("spawn observation writer");
+        Self {
+            data_dir,
+            shared,
+            enabled: AtomicBool::new(false),
+            writer: Mutex::new(Some(handle)),
         }
     }
 
@@ -124,7 +414,7 @@ impl ObservationRecorder {
     }
 
     pub fn root(&self) -> &Path {
-        &self.root
+        &self.shared.root
     }
 
     pub fn set_enabled(&self, enabled: bool) {
@@ -135,7 +425,16 @@ impl ObservationRecorder {
         self.enabled.load(Ordering::Relaxed)
     }
 
-    /// Persist one event after applying capture. No-op when disabled.
+    pub fn health(&self) -> RecorderHealth {
+        self.shared
+            .health
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    /// Queue one captured event. Never waits for disk. Returns `Ok(None)`
+    /// because `event_seq` is assigned after dequeue on the writer thread.
     pub fn emit(
         &self,
         event_type: &str,
@@ -145,24 +444,35 @@ impl ObservationRecorder {
         if !self.is_enabled() {
             return Ok(None);
         }
-        self.maybe_gc();
+        if self.shared.shutdown.load(Ordering::Relaxed) {
+            set_health(
+                &self.shared,
+                RecorderHealthStatus::WriterDisconnected,
+                Some("observation writer is shut down".into()),
+            );
+            return Ok(None);
+        }
         let payload = prepare_payload(ids, payload);
-        let boundary = ids_from_payload(&payload).boundary_id();
-        let now = Utc::now();
-        let mut inner = self.inner.lock().map_err(|_| RecorderError::LockPoisoned)?;
-        prune_idle_maps(&mut inner, Instant::now());
-        let event_seq = next_seq(&mut inner, &self.root, ids, &boundary)?;
-        let event = ObservationEvent {
-            schema_version: OBSERVATION_SCHEMA_VERSION,
-            event_type: event_type.to_owned(),
-            event_seq,
-            timestamp: now.to_rfc3339_opts(SecondsFormat::Millis, true),
-            timestamp_ms: u64::try_from(now.timestamp_millis()).unwrap_or(0),
-            payload,
+        let conversation_id = ids.conversation_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
+        let generation = {
+            let lifecycle = self
+                .shared
+                .lifecycle
+                .lock()
+                .map_err(|_| RecorderError::LockPoisoned)?;
+            if lifecycle.is_tombstoned(conversation_id) {
+                return Ok(None);
+            }
+            lifecycle.current_generation(conversation_id)
         };
-        write_event(&mut inner, &self.root, ids, &event, self.rotate_bytes)?;
-        prune_idle_maps(&mut inner, Instant::now());
-        Ok(Some(event))
+        let command = WriterCommand::Event {
+            event_type: event_type.to_owned(),
+            ids: ids.clone(),
+            payload,
+            generation,
+        };
+        let _ = self.try_send(command);
+        Ok(None)
     }
 
     pub fn emit_gap(
@@ -186,8 +496,8 @@ impl ObservationRecorder {
     }
 
     pub fn read_events(&self, conversation_id: Option<&str>) -> Result<Vec<ObservationEvent>, RecorderError> {
-        self.gc();
-        let dir = conversation_dir(&self.root, conversation_id);
+        self.flush_blocking()?;
+        let dir = conversation_dir(&self.shared.root, conversation_id);
         read_dir_events(&dir, None)
     }
 
@@ -196,8 +506,8 @@ impl ObservationRecorder {
         conversation_id: Option<&str>,
         root_turn_id: &str,
     ) -> Result<Vec<ObservationEvent>, RecorderError> {
-        self.gc();
-        let dir = conversation_dir(&self.root, conversation_id);
+        self.flush_blocking()?;
+        let dir = conversation_dir(&self.shared.root, conversation_id);
         read_dir_events_for_turn(&dir, root_turn_id)
     }
 
@@ -208,58 +518,197 @@ impl ObservationRecorder {
         conversation_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<ObservationEvent>, RecorderError> {
-        self.gc();
-        let dir = conversation_dir(&self.root, conversation_id);
+        self.flush_blocking()?;
+        let dir = conversation_dir(&self.shared.root, conversation_id);
         read_dir_events_latest_turns(&dir, limit.max(1))
     }
 
-    pub fn gc(&self) {
-        let ttl = Duration::from_secs(GC_MAX_AGE_DAYS * 24 * 60 * 60);
-        let cutoff = SystemTime::now().checked_sub(ttl).unwrap_or(SystemTime::UNIX_EPOCH);
-        gc_older_than(&self.root, cutoff);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
-        self.last_gc_unix_secs.store(now, Ordering::Relaxed);
-        if let Ok(mut inner) = self.inner.lock() {
-            prune_idle_maps(&mut inner, Instant::now());
-        }
+    /// Stream JSONL into a summary fold without retaining event payloads.
+    pub fn read_summary(
+        &self,
+        conversation_id: Option<&str>,
+    ) -> Result<ObservationSummary, RecorderError> {
+        self.flush_blocking()?;
+        let dir = conversation_dir(&self.shared.root, conversation_id);
+        fold_dir_summary(&dir)
     }
 
-    fn maybe_gc(&self) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
-        let prev = self.last_gc_unix_secs.load(Ordering::Relaxed);
-        if prev != 0 && now.saturating_sub(prev) < GC_INTERVAL_SECS {
+    /// Close the writer and delete `{root}/{sanitize(conversation_id)}/`.
+    ///
+    /// Used by conversation reset / clear / delete. Blank ids are ignored so
+    /// this never removes the process-level folder.
+    pub fn remove_conversation(&self, conversation_id: &str) -> Result<(), RecorderError> {
+        let trimmed = conversation_id.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let folder = folder_id(Some(trimmed));
+        if folder == PROCESS_BOUNDARY_ID {
+            return Ok(());
+        }
+        {
+            let mut lifecycle = self
+                .shared
+                .lifecycle
+                .lock()
+                .map_err(|_| RecorderError::LockPoisoned)?;
+            lifecycle.tombstones.insert(trimmed.to_owned());
+            let mut queue = self.shared.queue.lock().map_err(|_| RecorderError::LockPoisoned)?;
+            queue.drop_pending_for_conversation(trimmed);
+        }
+        let (tx, rx) = mpsc::channel();
+        self.try_send(WriterCommand::DeleteConversation {
+            conversation_id: trimmed.to_owned(),
+            ack: Some(tx),
+        })?;
+        wait_ack(rx)
+    }
+
+    /// Clear one conversation's observation files and bump generation so the
+    /// same id can keep recording. Not a permanent tombstone.
+    pub fn clear_conversation(&self, conversation_id: &str) -> Result<(), RecorderError> {
+        let trimmed = conversation_id.trim();
+        if trimmed.is_empty() || folder_id(Some(trimmed)) == PROCESS_BOUNDARY_ID {
+            return Ok(());
+        }
+        {
+            let mut lifecycle = self
+                .shared
+                .lifecycle
+                .lock()
+                .map_err(|_| RecorderError::LockPoisoned)?;
+            let next = lifecycle.current_generation(Some(trimmed)).saturating_add(1);
+            lifecycle.generation.insert(trimmed.to_owned(), next);
+            lifecycle.tombstones.remove(trimmed);
+            let mut queue = self.shared.queue.lock().map_err(|_| RecorderError::LockPoisoned)?;
+            queue.drop_pending_for_conversation(trimmed);
+        }
+        let (tx, rx) = mpsc::channel();
+        self.try_send(WriterCommand::ClearConversation {
+            conversation_id: trimmed.to_owned(),
+            ack: Some(tx),
+        })?;
+        wait_ack(rx)
+    }
+
+    /// Drop every pending event, wipe the observation root, and keep the writer.
+    pub fn reset_all(&self) -> Result<(), RecorderError> {
+        {
+            let mut lifecycle = self
+                .shared
+                .lifecycle
+                .lock()
+                .map_err(|_| RecorderError::LockPoisoned)?;
+            lifecycle.tombstones.clear();
+            lifecycle.generation.clear();
+            let mut queue = self.shared.queue.lock().map_err(|_| RecorderError::LockPoisoned)?;
+            queue.drop_all_events();
+        }
+        let (tx, rx) = mpsc::channel();
+        self.try_send(WriterCommand::ResetAll { ack: Some(tx) })?;
+        wait_ack(rx)
+    }
+
+    pub fn gc(&self) {
+        let _ = self.flush_blocking();
+    }
+
+    fn try_send(&self, command: WriterCommand) -> Result<EnqueueOutcome, RecorderError> {
+        let mut queue = self.shared.queue.lock().map_err(|_| RecorderError::LockPoisoned)?;
+        let outcome = queue.try_enqueue(command);
+        drop(queue);
+        self.shared.cv.notify_one();
+        if matches!(
+            outcome,
+            EnqueueOutcome::DroppedNormal | EnqueueOutcome::DroppedControl
+        ) {
+            set_health(
+                &self.shared,
+                RecorderHealthStatus::QueueDropped,
+                Some("observation writer queue overflow".into()),
+            );
+        }
+        Ok(outcome)
+    }
+
+    fn flush_blocking(&self) -> Result<(), RecorderError> {
+        if self.shared.shutdown.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let (tx, rx) = mpsc::channel();
+        self.try_send(WriterCommand::Flush { ack: Some(tx) })?;
+        wait_ack(rx)
+    }
+
+    fn shutdown_and_join(&self) {
+        #[cfg(test)]
+        if let Ok(gate) = self.shared.write_gate.lock() {
+            if let Some(gate) = gate.as_ref() {
+                gate.release();
+            }
+        }
+        if self.shared.shutdown.swap(true, Ordering::SeqCst) {
+            if let Ok(mut guard) = self.writer.lock() {
+                if let Some(handle) = guard.take() {
+                    let _ = handle.join();
+                }
+            }
             return;
         }
-        if self
-            .last_gc_unix_secs
-            .compare_exchange(prev, now, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            let ttl = Duration::from_secs(GC_MAX_AGE_DAYS * 24 * 60 * 60);
-            let cutoff = SystemTime::now()
-                .checked_sub(ttl)
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            gc_older_than(&self.root, cutoff);
-            if let Ok(mut inner) = self.inner.lock() {
-                prune_idle_maps(&mut inner, Instant::now());
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut queue) = self.shared.queue.lock() {
+            let _ = queue.try_enqueue(WriterCommand::Shutdown { ack: Some(tx) });
+        }
+        self.shared.cv.notify_one();
+        let _ = rx.recv_timeout(WRITER_ACK_TIMEOUT);
+        if let Ok(mut guard) = self.writer.lock() {
+            if let Some(handle) = guard.take() {
+                let _ = handle.join();
             }
         }
     }
 
     #[cfg(test)]
+    fn isolated_with_write_gate(data_dir: impl AsRef<Path>) -> (Arc<Self>, Arc<WriteGate>) {
+        let recorder = Self::isolated(data_dir);
+        let gate = WriteGate::closed();
+        *recorder
+            .shared
+            .write_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&gate));
+        (recorder, gate)
+    }
+
+    #[cfg(test)]
     fn gc_with_cutoff(&self, cutoff: SystemTime) {
-        gc_older_than(&self.root, cutoff);
+        let _ = self.flush_blocking();
+        gc_older_than(&self.shared.root, cutoff);
+    }
+
+    #[cfg(test)]
+    fn gc_quota_with_limit(&self, max_bytes: u64) {
+        let _ = self.flush_blocking();
+        let active: HashSet<PathBuf> = self
+            .shared
+            .inner
+            .lock()
+            .map(|inner| {
+                inner
+                    .writers
+                    .values()
+                    .map(|writer| writer.dir.join(EVENTS_FILE))
+                    .collect()
+            })
+            .unwrap_or_default();
+        gc_quota_except(&self.shared.root, &active, max_bytes);
     }
 
     #[cfg(test)]
     fn writer_count(&self) -> usize {
-        self.inner
+        let _ = self.flush_blocking();
+        self.shared
+            .inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .writers
@@ -268,7 +717,9 @@ impl ObservationRecorder {
 
     #[cfg(test)]
     fn seq_count(&self) -> usize {
-        self.inner
+        let _ = self.flush_blocking();
+        self.shared
+            .inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .seq_by_boundary
@@ -277,8 +728,19 @@ impl ObservationRecorder {
 
     #[cfg(test)]
     fn prune_idle_for_test(&self, idle: Duration) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = self.flush_blocking();
+        let mut inner = self
+            .shared
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         prune_idle_maps_with(&mut inner, Instant::now(), idle, idle, usize::MAX, usize::MAX);
+    }
+}
+
+impl Drop for ObservationRecorder {
+    fn drop(&mut self) {
+        self.shutdown_and_join();
     }
 }
 
@@ -300,6 +762,333 @@ fn normalize_data_dir(path: &Path) -> PathBuf {
     }
 }
 
+fn wait_ack(rx: mpsc::Receiver<()>) -> Result<(), RecorderError> {
+    match rx.recv_timeout(WRITER_ACK_TIMEOUT) {
+        Ok(()) => Ok(()),
+        Err(RecvTimeoutError::Timeout) => Err(RecorderError::Io(std::io::Error::other(
+            "observation writer ack timed out",
+        ))),
+        Err(RecvTimeoutError::Disconnected) => Err(RecorderError::Io(std::io::Error::other(
+            "observation writer disconnected",
+        ))),
+    }
+}
+
+fn set_health(shared: &WriterShared, status: RecorderHealthStatus, last_error: Option<String>) {
+    let Ok(mut health) = shared.health.lock() else {
+        return;
+    };
+    let rank = |status: RecorderHealthStatus| match status {
+        RecorderHealthStatus::Healthy => 0,
+        RecorderHealthStatus::QueueDropped => 1,
+        RecorderHealthStatus::StorageError => 2,
+        RecorderHealthStatus::WriterDisconnected => 3,
+    };
+    if rank(status) >= rank(health.status) {
+        health.status = status;
+        if last_error.is_some() {
+            health.last_error = last_error;
+        }
+    }
+}
+
+fn writer_loop(shared: &WriterShared) {
+    let mut unflushed = 0usize;
+    let mut last_flush = Instant::now();
+    loop {
+        let command = next_writer_command(shared);
+        match command {
+            Some((_, mut command)) => {
+                if matches!(command, WriterCommand::Shutdown { .. }) {
+                    drain_remaining_events(shared, &mut unflushed);
+                    let _ = flush_all_writers(shared);
+                    if let Some(ack) = command.take_ack() {
+                        let _ = ack.send(());
+                    }
+                    return;
+                }
+                if let Err(error) = handle_writer_command(shared, command, &mut unflushed) {
+                    set_health(
+                        shared,
+                        RecorderHealthStatus::StorageError,
+                        Some(error.to_string()),
+                    );
+                }
+                if unflushed >= WRITER_FLUSH_BATCH {
+                    if let Err(error) = flush_all_writers(shared) {
+                        set_health(
+                            shared,
+                            RecorderHealthStatus::StorageError,
+                            Some(error.to_string()),
+                        );
+                    } else {
+                        unflushed = 0;
+                        last_flush = Instant::now();
+                    }
+                }
+            }
+            None => {
+                if unflushed > 0 || last_flush.elapsed() >= WRITER_FLUSH_INTERVAL {
+                    if let Err(error) = flush_all_writers(shared) {
+                        set_health(
+                            shared,
+                            RecorderHealthStatus::StorageError,
+                            Some(error.to_string()),
+                        );
+                    } else {
+                        unflushed = 0;
+                        last_flush = Instant::now();
+                    }
+                }
+                maybe_gc_writer(shared);
+            }
+        }
+        write_overflow_gap(shared, &mut unflushed);
+    }
+}
+
+fn next_writer_command(shared: &WriterShared) -> Option<(u64, WriterCommand)> {
+    let Ok(mut queue) = shared.queue.lock() else {
+        return None;
+    };
+    loop {
+        if let Some(command) = queue.dequeue_next() {
+            return Some(command);
+        }
+        let (guard, timeout) = shared
+            .cv
+            .wait_timeout(queue, WRITER_FLUSH_INTERVAL)
+            .unwrap_or_else(|e| e.into_inner());
+        queue = guard;
+        if timeout.timed_out() {
+            return None;
+        }
+    }
+}
+
+fn drain_remaining_events(shared: &WriterShared, unflushed: &mut usize) {
+    loop {
+        let next = shared.queue.lock().ok().and_then(|mut queue| queue.dequeue_next());
+        let Some((_, command)) = next else {
+            return;
+        };
+        if matches!(command, WriterCommand::Shutdown { .. }) {
+            continue;
+        }
+        let _ = handle_writer_command(shared, command, unflushed);
+    }
+}
+
+fn handle_writer_command(
+    shared: &WriterShared,
+    command: WriterCommand,
+    unflushed: &mut usize,
+) -> Result<(), RecorderError> {
+    #[cfg(test)]
+    wait_write_gate(shared);
+
+    match command {
+        WriterCommand::Event {
+            event_type,
+            ids,
+            payload,
+            generation,
+        } => {
+            persist_event(shared, &event_type, &ids, payload, generation)?;
+            *unflushed += 1;
+        }
+        WriterCommand::Flush { ack } => {
+            flush_all_writers(shared)?;
+            *unflushed = 0;
+            if let Some(ack) = ack {
+                let _ = ack.send(());
+            }
+        }
+        WriterCommand::DeleteConversation {
+            conversation_id,
+            ack,
+        } => {
+            if let Ok(mut queue) = shared.queue.lock() {
+                queue.drop_pending_for_conversation(&conversation_id);
+            }
+            delete_conversation_dir(shared, &conversation_id)?;
+            flush_all_writers(shared)?;
+            *unflushed = 0;
+            if let Some(ack) = ack {
+                let _ = ack.send(());
+            }
+        }
+        WriterCommand::ClearConversation {
+            conversation_id,
+            ack,
+        } => {
+            delete_conversation_dir(shared, &conversation_id)?;
+            flush_all_writers(shared)?;
+            *unflushed = 0;
+            if let Some(ack) = ack {
+                let _ = ack.send(());
+            }
+        }
+        WriterCommand::ResetAll { ack } => {
+            reset_all_observations(shared)?;
+            *unflushed = 0;
+            if let Some(ack) = ack {
+                let _ = ack.send(());
+            }
+        }
+        WriterCommand::Shutdown { ack } => {
+            if let Some(ack) = ack {
+                let _ = ack.send(());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn wait_write_gate(shared: &WriterShared) {
+    let gate = shared
+        .write_gate
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some(gate) = gate {
+        gate.wait_if_closed();
+    }
+}
+
+fn persist_event(
+    shared: &WriterShared,
+    event_type: &str,
+    ids: &ObservationIds,
+    payload: Value,
+    generation: u64,
+) -> Result<(), RecorderError> {
+    let conversation_id = ids.conversation_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
+    {
+        let lifecycle = shared.lifecycle.lock().map_err(|_| RecorderError::LockPoisoned)?;
+        if lifecycle.is_tombstoned(conversation_id) {
+            return Ok(());
+        }
+        if lifecycle.current_generation(conversation_id) != generation {
+            return Ok(());
+        }
+    }
+    let boundary = ids_from_payload(&payload).boundary_id();
+    let now = Utc::now();
+    let mut inner = shared.inner.lock().map_err(|_| RecorderError::LockPoisoned)?;
+    prune_idle_maps(&mut inner, Instant::now());
+    let event_seq = next_seq(&mut inner, &shared.root, ids, &boundary)?;
+    let event = ObservationEvent {
+        schema_version: OBSERVATION_SCHEMA_VERSION,
+        event_type: event_type.to_owned(),
+        event_seq,
+        timestamp: now.to_rfc3339_opts(SecondsFormat::Millis, true),
+        timestamp_ms: u64::try_from(now.timestamp_millis()).unwrap_or(0),
+        payload,
+    };
+    write_event(&mut inner, &shared.root, ids, &event, shared.rotate_bytes)?;
+    prune_idle_maps(&mut inner, Instant::now());
+    Ok(())
+}
+
+fn write_overflow_gap(shared: &WriterShared, unflushed: &mut usize) {
+    let dropped = shared
+        .queue
+        .lock()
+        .ok()
+        .map(|mut queue| queue.take_dropped_normal())
+        .unwrap_or(0);
+    if dropped == 0 {
+        return;
+    }
+    let ids = ObservationIds::default();
+    let payload = serde_json::json!({
+        "ids": ids,
+        "reason": "writer_queue_overflow",
+        "lost_count": dropped,
+    });
+    if persist_event(shared, EVENT_OBSERVATION_GAP, &ids, payload, 0).is_ok() {
+        *unflushed += 1;
+    }
+}
+
+fn delete_conversation_dir(shared: &WriterShared, conversation_id: &str) -> Result<(), RecorderError> {
+    let folder = folder_id(Some(conversation_id));
+    if folder == PROCESS_BOUNDARY_ID {
+        return Ok(());
+    }
+    {
+        let mut inner = shared.inner.lock().map_err(|_| RecorderError::LockPoisoned)?;
+        inner.writers.remove(&folder);
+        inner.seq_by_boundary.remove(&folder);
+    }
+    let dir = conversation_dir(&shared.root, Some(conversation_id));
+    match fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn reset_all_observations(shared: &WriterShared) -> Result<(), RecorderError> {
+    {
+        let mut inner = shared.inner.lock().map_err(|_| RecorderError::LockPoisoned)?;
+        inner.writers.clear();
+        inner.seq_by_boundary.clear();
+    }
+    match fs::remove_dir_all(&shared.root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn flush_all_writers(shared: &WriterShared) -> Result<(), RecorderError> {
+    let mut inner = shared.inner.lock().map_err(|_| RecorderError::LockPoisoned)?;
+    for writer in inner.writers.values_mut() {
+        writer.file.flush()?;
+    }
+    Ok(())
+}
+
+fn maybe_gc_writer(shared: &WriterShared) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let prev = shared.last_gc_unix_secs.load(Ordering::Relaxed);
+    if prev != 0 && now.saturating_sub(prev) < GC_INTERVAL_SECS {
+        return;
+    }
+    if shared
+        .last_gc_unix_secs
+        .compare_exchange(prev, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        let ttl = Duration::from_secs(GC_MAX_AGE_DAYS * 24 * 60 * 60);
+        let cutoff = SystemTime::now()
+            .checked_sub(ttl)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let active: HashSet<PathBuf> = shared
+            .inner
+            .lock()
+            .map(|inner| {
+                inner
+                    .writers
+                    .values()
+                    .map(|writer| writer.dir.join(EVENTS_FILE))
+                    .collect()
+            })
+            .unwrap_or_default();
+        gc_older_than_except(&shared.root, cutoff, &active);
+        gc_quota_except(&shared.root, &active, MAX_TOTAL_OBSERVATION_BYTES);
+        if let Ok(mut inner) = shared.inner.lock() {
+            prune_idle_maps(&mut inner, Instant::now());
+        }
+    }
+}
+
 fn prepare_payload(ids: &ObservationIds, payload: Value) -> Value {
     let mut payload = match payload {
         Value::Object(map) => Value::Object(map),
@@ -312,7 +1101,7 @@ fn prepare_payload(ids: &ObservationIds, payload: Value) -> Value {
             }
         }
     }
-    capture_canonical_request(payload)
+    capture_and_size_cap(payload)
 }
 
 fn next_seq(
@@ -368,7 +1157,6 @@ fn write_event(
     let mut line = serde_json::to_vec(event)?;
     line.push(b'\n');
     writer.file.write_all(&line)?;
-    writer.file.flush()?;
     writer.current_size += line.len() as u64;
     if writer.current_size >= rotate_bytes {
         rotate_writer(writer, rotate_bytes)?;
@@ -383,7 +1171,7 @@ fn open_writer(dir: &Path) -> Result<ConversationWriter, RecorderError> {
     let current_size = file.metadata()?.len();
     Ok(ConversationWriter {
         dir: dir.to_path_buf(),
-        file,
+        file: BufWriter::with_capacity(BUFWRITER_CAPACITY, file),
         current_size,
         last_used: Instant::now(),
     })
@@ -443,14 +1231,22 @@ fn rotate_writer(writer: &mut ConversationWriter, _rotate_bytes: u64) -> Result<
     let current = writer.dir.join(EVENTS_FILE);
     let next = next_rotate_index(&writer.dir)?;
     let dest = writer.dir.join(format!("events.{next}.jsonl"));
-    // Close before rename (Windows).
-    writer.file = File::create(writer.dir.join(".rotate-placeholder"))?;
+    writer.file.flush()?;
+    let previous = std::mem::replace(
+        &mut writer.file,
+        BufWriter::with_capacity(
+            BUFWRITER_CAPACITY,
+            File::create(writer.dir.join(".rotate-placeholder"))?,
+        ),
+    );
+    drop(previous.into_inner().map_err(|error| error.into_error())?);
     if current.exists() {
         fs::rename(&current, &dest)?;
     }
     let _ = fs::remove_file(writer.dir.join(".rotate-placeholder"));
-    writer.file = OpenOptions::new().create(true).append(true).open(&current)?;
-    writer.current_size = writer.file.metadata()?.len();
+    let file = OpenOptions::new().create(true).append(true).open(&current)?;
+    writer.current_size = file.metadata()?.len();
+    writer.file = BufWriter::with_capacity(BUFWRITER_CAPACITY, file);
     Ok(())
 }
 
@@ -628,14 +1424,22 @@ fn read_jsonl_file(
     Ok(())
 }
 
+#[allow(dead_code)] // test helper; writer uses gc_older_than_except
 fn gc_older_than(root: &Path, cutoff: SystemTime) {
+    gc_older_than_except(root, cutoff, &HashSet::new());
+}
+
+fn gc_older_than_except(root: &Path, cutoff: SystemTime, skip: &HashSet<PathBuf>) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        if skip.contains(&path) {
+            continue;
+        }
         if path.is_dir() {
-            gc_dir_files(&path, cutoff);
+            gc_dir_files(&path, cutoff, skip);
             if dir_is_empty(&path) {
                 let _ = fs::remove_dir(&path);
             }
@@ -645,14 +1449,103 @@ fn gc_older_than(root: &Path, cutoff: SystemTime) {
     }
 }
 
-fn gc_dir_files(dir: &Path, cutoff: SystemTime) {
+fn gc_dir_files(dir: &Path, cutoff: SystemTime, skip: &HashSet<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        if skip.contains(&path) {
+            continue;
+        }
         if path.is_file() && file_mtime_is_old(&path, cutoff) {
             let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+fn fold_dir_summary(dir: &Path) -> Result<ObservationSummary, RecorderError> {
+    let mut fold = ObservationSummaryFold::default();
+    let (rotated, current) = list_event_files(dir)?;
+    for (_, path) in rotated {
+        fold_jsonl_file(&path, &mut fold)?;
+    }
+    if let Some(path) = current {
+        fold_jsonl_file(&path, &mut fold)?;
+    }
+    Ok(fold.finish())
+}
+
+fn fold_jsonl_file(path: &Path, fold: &mut ObservationSummaryFold) -> Result<(), RecorderError> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match crate::event::read_event(trimmed) {
+            Ok(event) => fold.observe(&event),
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "skipping corrupt observation line");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_observation_files(root: &Path) -> Vec<(SystemTime, u64, PathBuf)> {
+    let mut files = Vec::new();
+    let Ok(entries) = fs::read_dir(root) else {
+        return files;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Ok(children) = fs::read_dir(&path) {
+                for child in children.flatten() {
+                    let child_path = child.path();
+                    if child_path.is_file() {
+                        if let Some(meta) = file_size_mtime(&child_path) {
+                            files.push((meta.0, meta.1, child_path));
+                        }
+                    }
+                }
+            }
+        } else if path.is_file() {
+            if let Some(meta) = file_size_mtime(&path) {
+                files.push((meta.0, meta.1, path));
+            }
+        }
+    }
+    files
+}
+
+fn file_size_mtime(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+fn gc_quota_except(root: &Path, skip: &HashSet<PathBuf>, max_bytes: u64) {
+    let mut files = collect_observation_files(root);
+    let mut total: u64 = files.iter().map(|(_, size, _)| *size).sum();
+    if total <= max_bytes {
+        return;
+    }
+    files.sort_by_key(|(mtime, _, _)| *mtime);
+    for (_, size, path) in files {
+        if total <= max_bytes {
+            break;
+        }
+        if skip.contains(&path) {
+            continue;
+        }
+        if fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(size);
         }
     }
 }
@@ -673,6 +1566,7 @@ fn dir_is_empty(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::MAX_EVENT_BYTES;
     use crate::event::{EVENT_LLM_REQUEST, EVENT_LLM_RESPONSE};
     use serde_json::json;
     use std::sync::Arc;
@@ -683,6 +1577,13 @@ mod tests {
             root_turn_id: Some(turn.into()),
             msg_id: Some("m1".into()),
             ..ObservationIds::default()
+        }
+    }
+
+    fn ids_with_call(turn: &str, model_call: &str) -> ObservationIds {
+        ObservationIds {
+            model_call_id: Some(model_call.into()),
+            ..ids(turn)
         }
     }
 
@@ -759,6 +1660,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        recorder.flush_blocking().unwrap();
         let conv = recorder.root().join("conv-a");
         let rotated = fs::read_dir(&conv)
             .unwrap()
@@ -822,6 +1724,53 @@ mod tests {
         let future = SystemTime::now() + Duration::from_secs(60);
         recorder.gc_with_cutoff(future);
         assert!(recorder.read_events(Some("conv-a")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn quota_gc_skips_active_events_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t1"), json!({"keep": true}))
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        let conv = recorder.root().join("conv-a");
+        let active = conv.join(EVENTS_FILE);
+        let rotated = conv.join("events.1.jsonl");
+        fs::write(&rotated, "x".repeat(4096)).unwrap();
+        recorder.gc_quota_with_limit(512);
+        assert!(active.is_file(), "active segment must survive quota GC");
+        assert!(!rotated.exists(), "oldest non-active segment should be deleted");
+        assert!(!recorder.read_events(Some("conv-a")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn read_summary_does_not_require_project_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(
+                EVENT_TURN_START,
+                &ids("t1"),
+                json!({ "prompt_preview": "hi" }),
+            )
+            .unwrap();
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t1"), json!({}))
+            .unwrap();
+        recorder
+            .emit(
+                crate::event::EVENT_TURN_END,
+                &ids("t1"),
+                json!({ "status": "completed", "elapsed_ms": 9 }),
+            )
+            .unwrap();
+        let summary = recorder.read_summary(Some("conv-a")).unwrap();
+        assert_eq!(summary.turn_count, 1);
+        assert_eq!(summary.active_duration_ms, 9);
+        assert_eq!(summary.coverage, crate::COVERAGE_RETAINED_OBSERVATION_HISTORY);
     }
 
     #[test]
@@ -905,5 +1854,328 @@ mod tests {
         }
         assert!(recorder.writer_count() <= MAX_WRITERS);
         assert!(recorder.seq_count() <= MAX_SEQ_BOUNDARIES);
+    }
+
+    #[test]
+    fn remove_conversation_tombstones_and_rejects_later_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("turn-a"), json!({}))
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        let conv_dir = recorder.root().join("conv-a");
+        assert!(conv_dir.join(EVENTS_FILE).is_file());
+
+        recorder.remove_conversation("conv-a").unwrap();
+        assert!(!conv_dir.exists());
+        assert!(recorder.read_events(Some("conv-a")).unwrap().is_empty());
+
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("turn-b"), json!({}))
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        assert!(recorder.read_events(Some("conv-a")).unwrap().is_empty());
+        assert!(!conv_dir.exists());
+    }
+
+    #[test]
+    fn remove_conversation_ignores_blank_ids_and_process_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(
+                EVENT_LLM_REQUEST,
+                &ObservationIds::default(),
+                json!({}),
+            )
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        let process_dir = recorder.root().join(PROCESS_BOUNDARY_ID);
+        assert!(process_dir.join(EVENTS_FILE).is_file());
+
+        recorder.remove_conversation("").unwrap();
+        recorder.remove_conversation("   ").unwrap();
+        assert!(process_dir.join(EVENTS_FILE).is_file());
+        assert_eq!(recorder.read_events(None).unwrap().len(), 1);
+    }
+
+    fn queued_event(event_type: &str, turn: &str) -> WriterCommand {
+        WriterCommand::Event {
+            event_type: event_type.to_owned(),
+            ids: ids(turn),
+            payload: json!({ "ids": ids(turn) }),
+            generation: 0,
+        }
+    }
+
+    fn drain_types(queue: &mut DualQueue) -> Vec<String> {
+        let mut types = Vec::new();
+        while let Some((_, command)) = queue.dequeue_next() {
+            match command {
+                WriterCommand::Event { event_type, .. } => types.push(event_type),
+                other => types.push(format!("{other:?}")),
+            }
+        }
+        types
+    }
+
+    #[test]
+    fn enqueue_order_merge_persists_turn_end_after_prior_normal() {
+        let mut queue = DualQueue::new(MAX_QUEUE_EVENTS, MAX_CONTROL_EVENTS);
+        assert_eq!(
+            queue.try_enqueue(queued_event(EVENT_LLM_REQUEST, "t1")),
+            EnqueueOutcome::Queued
+        );
+        assert_eq!(
+            queue.try_enqueue(queued_event("turn/end", "t1")),
+            EnqueueOutcome::Queued
+        );
+        let first = queue.dequeue_next().expect("normal first");
+        let second = queue.dequeue_next().expect("turn/end second");
+        match &first.1 {
+            WriterCommand::Event { event_type, payload, .. } => {
+                assert_eq!(event_type, EVENT_LLM_REQUEST);
+                assert!(payload.get("enqueue_order").is_none());
+            }
+            other => panic!("expected llm/request, got {other:?}"),
+        }
+        match &second.1 {
+            WriterCommand::Event { event_type, payload, .. } => {
+                assert_eq!(event_type, "turn/end");
+                assert!(payload.get("enqueue_order").is_none());
+            }
+            other => panic!("expected turn/end, got {other:?}"),
+        }
+        assert!(first.0 < second.0);
+        let mut event_seq = 0_u64;
+        for command in [first.1, second.1] {
+            event_seq += 1;
+            if let WriterCommand::Event { event_type, .. } = command {
+                if event_seq == 1 {
+                    assert_eq!(event_type, EVENT_LLM_REQUEST);
+                } else {
+                    assert_eq!(event_type, "turn/end");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn control_enqueue_drops_normal_not_turn_end_when_normal_is_full() {
+        let mut queue = DualQueue::new(2, 2);
+        assert_eq!(
+            queue.try_enqueue(queued_event(EVENT_LLM_REQUEST, "a")),
+            EnqueueOutcome::Queued
+        );
+        assert_eq!(
+            queue.try_enqueue(queued_event(EVENT_LLM_RESPONSE, "a")),
+            EnqueueOutcome::Queued
+        );
+        assert_eq!(
+            queue.try_enqueue(queued_event(EVENT_LLM_REQUEST, "dropped")),
+            EnqueueOutcome::DroppedNormal
+        );
+        assert_eq!(
+            queue.try_enqueue(queued_event("turn/end", "a")),
+            EnqueueOutcome::Queued
+        );
+        let types = drain_types(&mut queue);
+        assert!(types.contains(&"turn/end".to_owned()));
+        assert!(!types.iter().any(|event_type| event_type == "dropped"));
+        assert_eq!(queue.dropped_normal, 2);
+    }
+
+    fn oversized_request_payload() -> Value {
+        let tools: Vec<Value> = (0..48)
+            .map(|index| {
+                json!({
+                    "name": format!("tool_{index}"),
+                    "description": "d".repeat(64),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "a": { "type": "string", "description": "x".repeat(900) },
+                            "b": { "type": "string", "description": "y".repeat(900) },
+                            "c": { "type": "string", "description": "z".repeat(900) },
+                        }
+                    }
+                })
+            })
+            .collect();
+        json!({
+            "call_kind": "agent_turn",
+            "request": {
+                "model": "coding-agent",
+                "system": "sys",
+                "messages": [{ "role": "user", "content": "hi" }],
+                "tools": tools
+            }
+        })
+    }
+
+    #[test]
+    fn event_size_limit_omit_enqueues_without_gap_or_degraded_integrity() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        let payload = oversized_request_payload();
+        let raw_len = serde_json::to_vec(&payload).unwrap().len();
+        assert!(
+            raw_len > MAX_EVENT_BYTES,
+            "fixture must exceed MAX_EVENT_BYTES, got {raw_len}"
+        );
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids_with_call("t-size", "mc-size"), payload)
+            .unwrap();
+        recorder
+            .emit(
+                EVENT_LLM_RESPONSE,
+                &ids_with_call("t-size", "mc-size"),
+                json!({ "text": "ok" }),
+            )
+            .unwrap();
+        let events = recorder.read_events(Some("conv-a")).unwrap();
+        assert!(events.iter().all(|event| event.event_type != EVENT_OBSERVATION_GAP));
+        let request = events
+            .iter()
+            .find(|event| event.event_type == EVENT_LLM_REQUEST)
+            .expect("llm/request");
+        let serialized = serde_json::to_vec(request).unwrap();
+        assert!(serialized.len() <= MAX_EVENT_BYTES + 2048);
+        let request_json = request.payload.to_string();
+        assert!(request_json.contains("event_size_limit"));
+        assert!(
+            request.payload.get("enqueue_order").is_none(),
+            "enqueue_order must not enter JSONL"
+        );
+        let turns = crate::project::project_turns(&events);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].integrity, crate::event::Integrity::Complete);
+    }
+
+    #[test]
+    fn emit_does_not_wait_when_writer_is_latched() {
+        let dir = tempfile::tempdir().unwrap();
+        let (recorder, gate) = ObservationRecorder::isolated_with_write_gate(dir.path());
+        recorder.set_enabled(true);
+        let started = Instant::now();
+        let written = recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t-latch"), json!({ "ok": true }))
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert!(written.is_none(), "emit must not return a persisted event");
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "producer must not wait for a blocked writer, elapsed={elapsed:?}"
+        );
+        assert_eq!(recorder.health().status, RecorderHealthStatus::Healthy);
+        gate.release();
+        let events = recorder.read_events(Some("conv-a")).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EVENT_LLM_REQUEST);
+        assert_eq!(events[0].event_seq, 1);
+    }
+
+    #[test]
+    fn shutdown_joins_writer_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t-stop"), json!({}))
+            .unwrap();
+        recorder.shutdown_and_join();
+        assert!(recorder.shared.shutdown.load(Ordering::SeqCst));
+        assert!(
+            recorder
+                .writer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pending_event_cannot_resurrect_deleted_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let (recorder, gate) = ObservationRecorder::isolated_with_write_gate(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(
+                EVENT_LLM_REQUEST,
+                &ObservationIds {
+                    conversation_id: Some("conv-blocker".into()),
+                    root_turn_id: Some("t-blocker".into()),
+                    ..ObservationIds::default()
+                },
+                json!({ "block": true }),
+            )
+            .unwrap();
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t-pending"), json!({ "pending": true }))
+            .unwrap();
+        let recorder_for_delete = Arc::clone(&recorder);
+        let delete = std::thread::spawn(move || recorder_for_delete.remove_conversation("conv-a"));
+        std::thread::sleep(Duration::from_millis(30));
+        gate.release();
+        delete.join().expect("delete thread").unwrap();
+        recorder.flush_blocking().unwrap();
+        assert!(!recorder.root().join("conv-a").exists());
+        assert!(recorder.read_events(Some("conv-a")).unwrap().is_empty());
+        let blocker = recorder.read_events(Some("conv-blocker")).unwrap();
+        assert_eq!(blocker.len(), 1);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t-after-delete"), json!({}))
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        assert!(recorder.read_events(Some("conv-a")).unwrap().is_empty());
+        assert!(!recorder.root().join("conv-a").exists());
+    }
+
+    #[test]
+    fn clear_conversation_allows_same_id_to_write_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("turn-old"), json!({ "old": true }))
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        assert_eq!(recorder.read_events(Some("conv-a")).unwrap().len(), 1);
+
+        recorder.clear_conversation("conv-a").unwrap();
+        assert!(recorder.read_events(Some("conv-a")).unwrap().is_empty());
+
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("turn-new"), json!({ "new": true }))
+            .unwrap();
+        let events = recorder.read_events(Some("conv-a")).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            ids_from_payload(&events[0].payload).root_turn_id.as_deref(),
+            Some("turn-new")
+        );
+    }
+
+    #[test]
+    fn reset_all_wipes_root_and_keeps_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("turn-a"), json!({}))
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        assert!(recorder.root().join("conv-a").exists());
+        recorder.reset_all().unwrap();
+        assert!(!recorder.root().exists());
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("turn-b"), json!({}))
+            .unwrap();
+        let events = recorder.read_events(Some("conv-a")).unwrap();
+        assert_eq!(events.len(), 1);
     }
 }

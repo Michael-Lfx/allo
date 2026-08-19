@@ -89,6 +89,16 @@ pub(crate) fn is_bulky_tool_arg_key(key: &str) -> bool {
     )
 }
 
+pub const OMITTED_REASON_EVENT_SIZE_LIMIT: &str = "event_size_limit";
+
+pub(crate) fn event_size_limit_placeholder(original_bytes: usize, captured_bytes: usize) -> Value {
+    serde_json::json!({
+        "omitted_reason": OMITTED_REASON_EVENT_SIZE_LIMIT,
+        "original_bytes": original_bytes,
+        "captured_bytes": captured_bytes,
+    })
+}
+
 pub(crate) fn bulky_placeholder(value: &Value) -> Value {
     let chars = match value {
         Value::String(s) => s.chars().count(),
@@ -206,5 +216,13 @@ mod tests {
         });
         let out = redact_json_value(&value);
         assert_eq!(out["content"][0]["text"], "hi");
+    }
+
+    #[test]
+    fn event_size_limit_placeholder_is_capture_metadata() {
+        let out = event_size_limit_placeholder(90_000, 0);
+        assert_eq!(out["omitted_reason"], OMITTED_REASON_EVENT_SIZE_LIMIT);
+        assert_eq!(out["original_bytes"], 90_000);
+        assert_eq!(out["captured_bytes"], 0);
     }
 }

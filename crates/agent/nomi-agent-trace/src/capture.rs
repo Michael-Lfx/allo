@@ -4,14 +4,167 @@ use base64::Engine;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::redact::{bulky_placeholder, is_sensitive_key, redact_preview, should_omit_bulky};
+use crate::redact::{
+    bulky_placeholder, event_size_limit_placeholder, is_sensitive_key, redact_preview,
+    should_omit_bulky, OMITTED_REASON_EVENT_SIZE_LIMIT,
+};
 
 pub const OMITTED_REASON_BINARY_PAYLOAD: &str = "binary_payload";
+/// Hard cap on one captured event after string/media rewrite. 128 KiB × 128 ≈ 16 MiB.
+pub const MAX_EVENT_BYTES: usize = 128 * 1024;
+
+/// Known large fields omitted first when the captured envelope exceeds [`MAX_EVENT_BYTES`].
+const SIZE_OMIT_PATHS: &[&[&str]] = &[
+    &["request", "tools"],
+    &["request", "messages"],
+    &["request", "system"],
+    &["tools"],
+    &["messages"],
+    &["system"],
+    &["text"],
+    &["thinking"],
+    &["arguments"],
+    &["result"],
+    &["response"],
+];
 
 /// Walk a canonical request (or any JSON payload): rewrite media to metadata,
 /// then redact secrets and truncate strings.
 pub fn capture_canonical_request(value: Value) -> Value {
     apply_capture(value)
+}
+
+/// Capture then enforce the single-event byte budget. Size-limit omit is
+/// capture policy (`event_size_limit`) and must not be treated as integrity loss.
+pub fn capture_and_size_cap(value: Value) -> Value {
+    apply_event_size_budget(capture_canonical_request(value))
+}
+
+pub fn apply_event_size_budget(value: Value) -> Value {
+    apply_event_size_budget_with(value, MAX_EVENT_BYTES)
+}
+
+pub(crate) fn apply_event_size_budget_with(mut value: Value, max_bytes: usize) -> Value {
+    let original_bytes = json_byte_len(&value);
+    if original_bytes <= max_bytes {
+        return value;
+    }
+    mark_capture_truncated(&mut value);
+    loop {
+        let current = json_byte_len(&value);
+        if current <= max_bytes {
+            return value;
+        }
+        let Some((path, field_bytes)) = largest_omit_candidate(&value) else {
+            return event_size_stub(value, original_bytes);
+        };
+        omit_at_path(&mut value, &path, field_bytes);
+        if json_byte_len(&value) >= current {
+            return event_size_stub(value, original_bytes);
+        }
+    }
+}
+
+fn json_byte_len(value: &Value) -> usize {
+    serde_json::to_vec(value).map(|bytes| bytes.len()).unwrap_or(0)
+}
+
+fn is_size_omitted(value: &Value) -> bool {
+    value.get("omitted_reason").and_then(Value::as_str) == Some(OMITTED_REASON_EVENT_SIZE_LIMIT)
+}
+
+fn largest_omit_candidate(value: &Value) -> Option<(Vec<String>, usize)> {
+    let mut best: Option<(Vec<String>, usize)> = None;
+    for path in SIZE_OMIT_PATHS {
+        let Some(field) = get_path(value, path) else {
+            continue;
+        };
+        if is_size_omitted(field) {
+            continue;
+        }
+        let field_bytes = json_byte_len(field);
+        if field_bytes == 0 {
+            continue;
+        }
+        let placeholder = event_size_limit_placeholder(field_bytes, 0);
+        if json_byte_len(&placeholder) >= field_bytes {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(_, size)| field_bytes > *size) {
+            best = Some((path.iter().map(|key| (*key).to_owned()).collect(), field_bytes));
+        }
+    }
+    best
+}
+
+fn get_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
+}
+
+fn omit_at_path(value: &mut Value, path: &[String], original_bytes: usize) {
+    let placeholder = event_size_limit_placeholder(original_bytes, 0);
+    if path.is_empty() {
+        *value = placeholder;
+        return;
+    }
+    let mut current = value;
+    for key in &path[..path.len() - 1] {
+        match current.get_mut(key) {
+            Some(next) => current = next,
+            None => return,
+        }
+    }
+    if let Some(obj) = current.as_object_mut() {
+        obj.insert(path[path.len() - 1].clone(), placeholder);
+    }
+}
+
+fn mark_capture_truncated(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    match obj.get("capture") {
+        Some(Value::Array(items))
+            if items.iter().any(|item| item.as_str() == Some("truncated")) => {}
+        Some(Value::Array(items)) => {
+            let mut items = items.clone();
+            items.push(Value::String("truncated".into()));
+            obj.insert("capture".into(), Value::Array(items));
+        }
+        Some(Value::String(flag)) if flag == "truncated" => {}
+        Some(other) => {
+            obj.insert(
+                "capture".into(),
+                serde_json::json!(["truncated", other]),
+            );
+        }
+        None => {
+            obj.insert("capture".into(), serde_json::json!(["truncated"]));
+        }
+    }
+}
+
+fn event_size_stub(value: Value, original_bytes: usize) -> Value {
+    let ids = value.get("ids").cloned().unwrap_or(Value::Null);
+    let stub = serde_json::json!({
+        "ids": ids,
+        "capture": ["truncated"],
+        "omitted_reason": OMITTED_REASON_EVENT_SIZE_LIMIT,
+        "original_bytes": original_bytes,
+        "captured_bytes": 0,
+    });
+    let captured_bytes = json_byte_len(&stub);
+    serde_json::json!({
+        "ids": ids,
+        "capture": ["truncated"],
+        "omitted_reason": OMITTED_REASON_EVENT_SIZE_LIMIT,
+        "original_bytes": original_bytes,
+        "captured_bytes": captured_bytes,
+    })
 }
 
 fn apply_capture(value: Value) -> Value {
@@ -154,5 +307,84 @@ mod tests {
         let out = capture_canonical_request(json!({ "note": long }));
         let note = out["note"].as_str().unwrap();
         assert!(note.contains("…(truncated)"));
+    }
+
+    fn tool_schema(description_chars: usize, property_count: usize) -> Value {
+        let mut properties = serde_json::Map::new();
+        for index in 0..property_count {
+            properties.insert(
+                format!("field_{index}"),
+                json!({
+                    "type": "string",
+                    "description": "x".repeat(description_chars),
+                }),
+            );
+        }
+        json!({
+            "type": "object",
+            "properties": Value::Object(properties),
+        })
+    }
+
+    fn canonical_request(tool_count: usize, description_chars: usize, property_count: usize) -> Value {
+        json!({
+            "model": "coding-agent",
+            "system": "sys",
+            "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }] }],
+            "tools": (0..tool_count)
+                .map(|index| json!({
+                    "name": format!("tool_{index}"),
+                    "description": "d".repeat(48),
+                    "input_schema": tool_schema(description_chars, property_count),
+                    "deferred": false
+                }))
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    fn serialized_len(value: &Value) -> usize {
+        serde_json::to_vec(value).unwrap().len()
+    }
+
+    #[test]
+    fn inventory_canonical_request_serialized_sizes() {
+        let small = capture_canonical_request(canonical_request(0, 0, 0));
+        let typical = capture_canonical_request(canonical_request(5, 40, 6));
+        let coding = capture_canonical_request(canonical_request(25, 160, 24));
+        let mut sizes = [serialized_len(&small), serialized_len(&typical), serialized_len(&coding)];
+        sizes.sort_unstable();
+        let p50 = sizes[1];
+        let max = sizes[2];
+        assert!(
+            max > 64 * 1024,
+            "coding-agent fixture P95/max must exceed 64 KiB so the default stays 128 KiB; p50={p50} max={max} sizes={sizes:?}"
+        );
+        assert_eq!(MAX_EVENT_BYTES, 128 * 1024);
+        assert!(p50 < MAX_EVENT_BYTES);
+    }
+
+    #[test]
+    fn event_size_limit_omits_largest_field_and_keeps_ids() {
+        let payload = json!({
+            "ids": { "conversation_id": "c1", "root_turn_id": "t1" },
+            "capture": ["redacted"],
+            "request": canonical_request(20, 120, 12)
+        });
+        let out = apply_event_size_budget_with(payload, 8 * 1024);
+        assert!(serialized_len(&out) <= 8 * 1024);
+        assert_eq!(out["ids"]["conversation_id"], "c1");
+        assert_eq!(out["request"]["tools"]["omitted_reason"], OMITTED_REASON_EVENT_SIZE_LIMIT);
+        assert!(out["request"]["tools"]["original_bytes"].as_u64().unwrap() > 0);
+        assert_eq!(out["request"]["tools"]["captured_bytes"], 0);
+        let capture = out["capture"].as_array().unwrap();
+        assert!(capture.iter().any(|item| item.as_str() == Some("truncated")));
+        assert!(!out.to_string().contains("input_schema"));
+    }
+
+    #[test]
+    fn event_size_limit_under_budget_is_unchanged() {
+        let payload = json!({ "request": { "model": "m", "messages": [] } });
+        let out = apply_event_size_budget(payload.clone());
+        assert_eq!(out, payload);
     }
 }

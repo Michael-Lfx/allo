@@ -16,6 +16,8 @@ pub const EVENT_TOOL_EXECUTION_COMPLETED: &str = "tool/execution_completed";
 pub const EVENT_TOOL_EXECUTION_FAILED: &str = "tool/execution_failed";
 pub const EVENT_TOOL_EXECUTION_CANCELLED: &str = "tool/execution_cancelled";
 pub const EVENT_OBSERVATION_GAP: &str = "observation/gap";
+pub const EVENT_TURN_START: &str = "turn/start";
+pub const EVENT_TURN_END: &str = "turn/end";
 
 /// Fallback `event_seq` boundary when no conversation / execution / turn is bound.
 pub const PROCESS_BOUNDARY_ID: &str = "process";
@@ -55,6 +57,19 @@ pub enum Capture {
 pub enum Integrity {
     Complete,
     Degraded,
+}
+
+/// What the agent did. Distinct from [`Integrity`] (whether the log is missing pieces).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Interrupted,
+    Truncated,
+    Unknown,
 }
 
 /// One omitted-field note. UI must not invent values for these fields.
@@ -305,6 +320,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Integrity::Degraded).unwrap(),
             json!("degraded")
+        );
+        assert_eq!(
+            serde_json::to_value(ExecutionStatus::Failed).unwrap(),
+            json!("failed")
         );
     }
 }
