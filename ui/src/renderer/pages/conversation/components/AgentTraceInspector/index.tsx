@@ -122,7 +122,8 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
     }
     const previousSelected = selectedIdRef.current;
     const nextSelected = resolveSelectedId(ordered, previousSelected);
-    if (nextSelected == null || nextSelected !== previousSelected) {
+    const selectedChanged = nextSelected !== previousSelected;
+    if (nextSelected == null || selectedChanged) {
       setExpandedCallId(null);
       setCallDetail(null);
       setCallErrorKey(null);
@@ -134,7 +135,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
     } else {
       setSelectedId(nextSelected);
     }
-    return nextSelected;
+    return { nextSelected, selectedChanged };
   }, []);
 
   const abortWorkspaceFetches = useCallback(() => {
@@ -161,10 +162,10 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
         if (signal.aborted || conversationRef.current !== conversationId || listSeq < listSeqRef.current) {
           return { seqChanged: false };
         }
-        const nextSelected = applyList(page);
+        const { nextSelected, selectedChanged } = applyList(page);
         const seqChanged = lastSeqRef.current !== seqBefore;
 
-        if (nextSelected) {
+        if (nextSelected && !selectedChanged) {
           const turnSeq = ++turnSeqRef.current;
           setDetailLoading(true);
           setDetailErrorKey(null);
@@ -219,6 +220,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
               }
               setCallDetail(null);
               if (isObservationRetentionError(err)) {
+                callCacheRef.current.delete(cacheKey);
                 setCallErrorKey('retentionRemoved');
               } else if (isBackendHttpError(err) && err.status === 403) {
                 setCallErrorKey('developerModeRequired');
@@ -266,6 +268,22 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
     callCacheRef.current.clear();
     setExpandedCallId(null);
     setCallDetail(null);
+    setEntries([]);
+    setSummary(null);
+    setHealth(null);
+    setSelectedId(null);
+    setDetail(null);
+    setErrorKey(null);
+    setDetailErrorKey(null);
+    setCallErrorKey(null);
+    setLoading(false);
+    setDetailLoading(false);
+    setCallLoading(false);
+    lastSeqRef.current = 0;
+    pollDelayRef.current = POLL_START_MS;
+    listSeqRef.current += 1;
+    turnSeqRef.current += 1;
+    callSeqRef.current += 1;
   }, [abortWorkspaceFetches, conversationId]);
 
   useEffect(() => {
@@ -350,6 +368,7 @@ export const AgentTraceInspector: React.FC<AgentTraceInspectorProps> = ({ conver
         }
         setCallDetail(null);
         if (isObservationRetentionError(err)) {
+          callCacheRef.current.delete(cacheKey);
           setCallErrorKey('retentionRemoved');
         } else if (isBackendHttpError(err) && err.status === 403) {
           setCallErrorKey('developerModeRequired');

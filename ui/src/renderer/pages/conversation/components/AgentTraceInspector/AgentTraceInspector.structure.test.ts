@@ -87,7 +87,11 @@ describe('AgentTraceInspector', () => {
       false
     );
     expect(inspector.includes('nextSelected !== previousSelected')).toBe(true);
+    expect(inspector.includes('selectedChanged')).toBe(true);
+    expect(inspector.includes('nextSelected && !selectedChanged')).toBe(true);
     expect(inspector.includes("health.status === 'queue_dropped'")).toBe(false);
+    expect(inspector.includes('callCacheRef.current.delete(')).toBe(true);
+    expect(inspector.includes('setEntries([])')).toBe(true);
     const refreshStart = inspector.indexOf('const refreshWorkspace = useCallback');
     const refreshEnd = inspector.indexOf('const closeWorkspace = useCallback');
     const refreshBody = inspector.slice(refreshStart, refreshEnd);
@@ -110,5 +114,8 @@ describe('AgentTraceInspector', () => {
     expect(cache.get('a')).toBeUndefined();
     expect(cache.get('b')?.model_call_id).toBe('b');
     expect(cache.get('c')?.model_call_id).toBe('c');
+    cache.delete('b');
+    expect(cache.get('b')).toBeUndefined();
+    expect(cache.size).toBe(1);
   });
 });
