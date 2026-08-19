@@ -35,6 +35,7 @@ import {
 } from './api';
 import type { PlanBody, SessionSummary } from './types';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
+import { parseVideoHomeMode } from './home/types';
 import type { VideoCreateDraft, VideoHomeMode } from './home/types';
 import {
   CLIP_DURATION_DEFAULT_SECS,
@@ -126,10 +127,7 @@ const VideoGenerationListPage: React.FC = () => {
   const isMobile = layout?.isMobile ?? false;
   const [message, messageHolder] = useArcoMessage();
 
-  const workMode: VideoHomeMode =
-    searchParams.get('mode') === 'creation' || searchParams.get('mode') === 'canvas'
-      ? 'creation'
-      : 'agent';
+  const workMode: VideoHomeMode = parseVideoHomeMode(searchParams.get('mode'));
 
   const [listTab, setListTab] = useState<ListTab>('tvShow');
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -181,7 +179,7 @@ const VideoGenerationListPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (workMode === 'agent' && listTab === 'recent') void refresh();
+    if (workMode !== 'creation' && listTab === 'recent') void refresh();
   }, [listTab, refresh, workMode]);
 
   useEffect(() => {
@@ -299,6 +297,7 @@ const VideoGenerationListPage: React.FC = () => {
     (mode: VideoHomeMode) => {
       const next = new URLSearchParams(searchParams);
       if (mode === 'creation') next.set('mode', 'creation');
+      else if (mode === 'action') next.set('mode', 'action');
       else next.delete('mode');
       setSearchParams(next, { replace: true });
     },

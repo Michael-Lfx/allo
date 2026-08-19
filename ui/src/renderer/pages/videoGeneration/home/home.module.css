@@ -677,6 +677,8 @@
 }
 
 .submitButton {
+  position: relative;
+  z-index: 2;
   display: grid;
   width: 40px;
   height: 40px;

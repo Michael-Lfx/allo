@@ -30,7 +30,7 @@ export function generationPreferencesSummary(
       ? `${modelTail.slice(0, 12)}…`
       : modelTail
     : labels.noModel;
-  if (workflow === 'action2video') {
+  if (mode === 'action' || workflow === 'action2video') {
     const summary = `${modelLabel} · ${value.resolution.toUpperCase()}`;
     return { summary, title: `video · ${summary}` };
   }

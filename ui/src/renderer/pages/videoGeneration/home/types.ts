@@ -3,7 +3,13 @@ import type { SeedanceAspectRatio } from '../aspectRatios';
 import type { VideoResolution } from '../videoModelCapabilities';
 import type { VimaxModelSelection } from '../components/ModelSelectors';
 
-export type VideoHomeMode = 'agent' | 'creation';
+export type VideoHomeMode = 'agent' | 'creation' | 'action';
+
+export function parseVideoHomeMode(raw: string | null | undefined): VideoHomeMode {
+  if (raw === 'creation' || raw === 'canvas') return 'creation';
+  if (raw === 'action') return 'action';
+  return 'agent';
+}
 export type GenerationMediaKind = 'image' | 'video';
 export type CreationSkillId = 'cinematic' | 'anime' | 'cyberpunk' | 'inkWash';
 

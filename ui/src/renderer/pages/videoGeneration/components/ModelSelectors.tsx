@@ -11,7 +11,6 @@ import type { IMediaModelOption } from '@/common/adapter/ipcBridge';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
-import { isMiniMaxH3VideoModel } from '../videoModelCapabilities';
 
 export interface VimaxModelSelection {
   llm_model: string;
@@ -43,21 +42,6 @@ export function pickDefaultVideoModel(videoModels: IMediaModelOption[]): string 
     return blob.includes(preferredKey);
   });
   return preferred?.id ?? videoModels[0]?.id;
-}
-
-/** MiniMax-H3 only — required for `reference_video` action imitation. */
-export function filterActionImitationVideoModels(
-  videoModels: IMediaModelOption[]
-): IMediaModelOption[] {
-  return videoModels.filter(
-    (model) => isMiniMaxH3VideoModel(model.id) || isMiniMaxH3VideoModel(model.name)
-  );
-}
-
-export function pickActionImitationVideoModel(
-  videoModels: IMediaModelOption[]
-): string | undefined {
-  return filterActionImitationVideoModels(videoModels)[0]?.id;
 }
 
 /** Keep only Seedream 5.0 Lite entries (match catalog `name`, fall back to id). */
@@ -127,13 +111,11 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
   }, [imageModels]);
 
   const videoOptions = useMemo(() => {
-    const source =
-      mode === 'action' ? filterActionImitationVideoModels(videoModels) : videoModels;
-    return source.map((m) => ({
+    return videoModels.map((m) => ({
       value: m.id,
       label: mediaModelLabel(m),
     }));
-  }, [mode, videoModels]);
+  }, [videoModels]);
 
   // Prefer first available model when session has none yet.
   useEffect(() => {
@@ -152,19 +134,13 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
       }
     }
     if (!value.video_model) {
-      const preferred =
-        mode === 'action'
-          ? pickActionImitationVideoModel(videoModels)
-          : pickDefaultVideoModel(videoModels);
+      const preferred = pickDefaultVideoModel(videoModels);
       if (preferred) patch.video_model = preferred;
     } else if (
       videoOptions.length > 0 &&
       !videoOptions.some((o) => o.value === value.video_model)
     ) {
-      const preferred =
-        mode === 'action'
-          ? pickActionImitationVideoModel(videoModels)
-          : pickDefaultVideoModel(videoModels);
+      const preferred = pickDefaultVideoModel(videoModels);
       if (preferred) patch.video_model = preferred;
     }
     if (Object.keys(patch).length > 0) {
@@ -270,19 +246,9 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
                 onChange({ ...value, video_model: (v as string) || '' })
               }
               options={videoOptions}
-              notFoundContent={
-                mediaLoading
-                  ? t('videoGeneration.workspace.models.empty', {
-                      defaultValue: '暂无可用模型',
-                    })
-                  : mode === 'action'
-                    ? t('videoGeneration.workspace.models.h3Empty', {
-                        defaultValue: '暂无 MiniMax-H3 视频模型',
-                      })
-                    : t('videoGeneration.workspace.models.empty', {
-                        defaultValue: '暂无可用模型',
-                      })
-              }
+              notFoundContent={t('videoGeneration.workspace.models.empty', {
+                defaultValue: '暂无可用模型',
+              })}
               {...selectPopupProps}
             />
           )}

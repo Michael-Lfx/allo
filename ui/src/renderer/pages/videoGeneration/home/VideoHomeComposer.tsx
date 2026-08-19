@@ -25,7 +25,6 @@ import {
 import {
   DEFAULT_VIDEO_FPS,
   DEFAULT_VIDEO_RESOLUTION,
-  isMiniMaxH3VideoModel,
   normalizeVideoFps,
   normalizeVideoResolution,
 } from '../videoModelCapabilities';
@@ -256,8 +255,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const composerRef = useRef<HTMLDivElement>(null);
   const characterInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
-  const isAction =
-    mode === 'agent' && isActionImitationWorkflow(draft.workflow);
+  const isAction = mode === 'action';
 
   const agentModes = useMemo<AgentModeDefinition[]>(
     () => [
@@ -280,13 +278,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         label: t('videoGeneration.create.modes.novel', { defaultValue: '小说文本' }),
         description: t('videoGeneration.create.modes.novelDesc', {
           defaultValue: '提炼长文情节并设计分镜',
-        }),
-      },
-      {
-        id: 'action2video',
-        label: t('videoGeneration.create.modes.action', { defaultValue: '动作模仿' }),
-        description: t('videoGeneration.create.modes.actionDesc', {
-          defaultValue: '角色图 + 参考视频，模仿动作成片',
         }),
       },
     ],
@@ -345,7 +336,37 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const creationModeLabel = t('videoGeneration.mode.creationLabel', {
     defaultValue: '创作模式',
   });
-  const modeLabel = mode === 'agent' ? agentModeLabel : creationModeLabel;
+  const actionModeLabel = t('videoGeneration.mode.actionLabel', {
+    defaultValue: '动作模仿',
+  });
+  const modeLabel =
+    mode === 'agent'
+      ? agentModeLabel
+      : mode === 'creation'
+        ? creationModeLabel
+        : actionModeLabel;
+
+  useEffect(() => {
+    setDraft((current) => {
+      if (mode === 'action') {
+        if (current.workflow === 'action2video') return current;
+        return {
+          ...current,
+          workflow: 'action2video',
+          verticalSkillIds: [],
+          preferences: { ...current.preferences, mediaKind: 'video' },
+        };
+      }
+      if (isActionImitationWorkflow(current.workflow)) {
+        return { ...current, workflow: 'idea2video' };
+      }
+      return current;
+    });
+    setSlashMenuOpen(false);
+    setSkillHubOpen(false);
+    setPreferencesOpen(false);
+    setUploadError(null);
+  }, [mode]);
 
   useEffect(() => {
     draftRef.current = draft;
@@ -397,7 +418,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     if (draft.preferences.models.llm_model) setModelMissing(false);
   }, [draft.preferences.models.llm_model, draft.preferences.models.video_model, isAction]);
 
-  const activeText = mode === 'agent' ? draft.sourceText : draft.creationPrompt;
+  const activeText = mode === 'creation' ? draft.creationPrompt : draft.sourceText;
   useEffect(() => {
     if (isAction) {
       if (!draft.actionCharacter || !draft.actionVideo || draftedTracked.current) return;
@@ -414,7 +435,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     trackFunnelEvent('task_drafted', {
       feature: 'video_generation',
       mode,
-      workflow: mode === 'agent' ? draft.workflow : draft.creationSkillId,
+      workflow: mode === 'creation' ? draft.creationSkillId : draft.workflow,
     });
   }, [
     activeText,
@@ -430,9 +451,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     creationSkills.find((skill) => skill.id === draft.creationSkillId) ??
     creationSkills[0];
   const selectedModeLabel =
-    mode === 'agent'
-      ? agentModes.find((item) => item.id === draft.workflow)?.label
-      : activeCreationSkill.label;
+    mode === 'creation'
+      ? activeCreationSkill.label
+      : agentModes.find((item) => item.id === draft.workflow)?.label;
   const verticalSkillLabel = t('videoGeneration.skills.mountButton', {
     defaultValue: 'Skill',
   });
@@ -550,9 +571,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
 
   const setActiveText = (value: string) => {
     setDraft((current) =>
-      mode === 'agent'
-        ? { ...current, sourceText: value }
-        : { ...current, creationPrompt: value }
+      mode === 'creation'
+        ? { ...current, creationPrompt: value }
+        : { ...current, sourceText: value }
     );
     setSlashMenuOpen(/(?:^|\s)\/$/.test(value));
   };
@@ -683,8 +704,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       (file) => !isSupportedImageFile(file) && !isSupportedTextFile(file)
     );
     if (images.length > 0) {
-      if (mode === 'agent') addAgentImages(images);
-      else addCanvasImages(images);
+      if (mode === 'creation') addCanvasImages(images);
+      else addAgentImages(images);
     }
     if (documents[0]) {
       try {
@@ -724,6 +745,15 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     }));
   };
 
+  const openPreferences = (open: boolean) => {
+    if (open) {
+      setModeMenuOpen(false);
+      setSlashMenuOpen(false);
+      setPrefsModuleReady(true);
+    }
+    setPreferencesOpen(open);
+  };
+
   const submit = () => {
     if (isAction) {
       if (!draft.actionCharacter?.file || !draft.actionVideo?.file) {
@@ -734,16 +764,16 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         );
         return;
       }
-      if (
-        !draft.preferences.models.video_model ||
-        !isMiniMaxH3VideoModel(draft.preferences.models.video_model)
-      ) {
+      if (!draft.preferences.models.video_model) {
         setModelMissing(true);
-        setPreferencesOpen(true);
+        openPreferences(true);
         return;
       }
+      openPreferences(false);
+      setModelMissing(false);
       onSubmitAgent({
         ...draft,
+        workflow: 'action2video',
         sourceText: '',
         creationPrompt: '',
         verticalSkillIds: [],
@@ -754,7 +784,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     if (!activeText.trim()) return;
     if (mode === 'agent' && !draft.preferences.models.llm_model) {
       setModelMissing(true);
-      setPreferencesOpen(true);
+      openPreferences(true);
       return;
     }
     if (
@@ -777,6 +807,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           ? activeCreationSkill.stylePrompt
           : draft.style,
     };
+    openPreferences(false);
+    setModelMissing(false);
     if (mode === 'agent') onSubmitAgent(normalized);
     else onSubmitCreation(normalized);
   };
@@ -799,6 +831,26 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           <small>
             {t('videoGeneration.mode.agentMenuDesc', {
               defaultValue: '自动规划分镜并渲染成片',
+            })}
+          </small>
+        </span>
+      </button>
+      <button
+        type='button'
+        className={`${styles.modeMenuItem} ${
+          mode === 'action' ? styles.modeMenuItemActive : ''
+        }`}
+        onClick={() => {
+          onModeChange('action');
+          setModeMenuOpen(false);
+        }}
+      >
+        <People theme='outline' size={18} />
+        <span>
+          <strong>{actionModeLabel}</strong>
+          <small>
+            {t('videoGeneration.mode.actionMenuDesc', {
+              defaultValue: '角色图 + 参考视频，模仿动作成片',
             })}
           </small>
         </span>
@@ -856,7 +908,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 <VideoOne key='idea' size={15} />,
                 <FileText key='script' size={15} />,
                 <BookOpen key='novel' size={15} />,
-                <People key='action' size={15} />,
               ]
             : null;
         const agentIndex =
@@ -912,14 +963,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     },
     isAction ? 'action2video' : undefined
   );
-  const openPreferences = (open: boolean) => {
-    if (open) {
-      setModeMenuOpen(false);
-      setSlashMenuOpen(false);
-      setPrefsModuleReady(true);
-    }
-    setPreferencesOpen(open);
-  };
   const prefsTrigger = (
     <button
       type='button'
@@ -956,17 +999,17 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           })}
         </h1>
         <p className={styles.heroHint}>
-          {mode === 'agent'
-            ? isAction
-              ? t('videoGeneration.create.homeHintAction', {
-                  defaultValue: '上传角色图和参考视频，让角色模仿动作生成成片。',
-                })
-              : t('videoGeneration.create.homeHintAgent', {
+          {mode === 'action'
+            ? t('videoGeneration.create.homeHintAction', {
+                defaultValue: '上传角色图和参考视频，让角色模仿动作生成成片。',
+              })
+            : mode === 'agent'
+              ? t('videoGeneration.create.homeHintAgent', {
                   defaultValue: '写下故事或想法，Flowy 帮你变成成片。',
                 })
-            : t('videoGeneration.create.homeHintCreation', {
-                defaultValue: '描述画面与镜头，在无限画布里自由编排生成。',
-              })}
+              : t('videoGeneration.create.homeHintCreation', {
+                  defaultValue: '描述画面与镜头，在无限画布里自由编排生成。',
+                })}
         </p>
       </div>
 
@@ -1266,7 +1309,13 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
               content={modeMenu}
             >
               <button type='button' className={`${styles.toolbarButton} ${styles.modeButton}`}>
-                {mode === 'agent' ? <RobotOne size={15} /> : <Platte size={15} />}
+                {mode === 'agent' ? (
+                  <RobotOne size={15} />
+                ) : mode === 'creation' ? (
+                  <Platte size={15} />
+                ) : (
+                  <People size={15} />
+                )}
                 <span>{modeLabel}</span>
                 <Down size={12} />
               </button>
@@ -1290,6 +1339,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             ) : (
               prefsTrigger
             )}
+            {mode !== 'action' ? (
             <Popover
               trigger='click'
               position='bl'
@@ -1327,7 +1377,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 <span className={styles.toolbarLabel}>{selectedModeLabel}</span>
               </button>
             </Popover>
-            {mode === 'agent' && !isAction ? (
+            ) : null}
+            {mode === 'agent' ? (
               <Popover
                 trigger='click'
                 position='bl'
@@ -1389,6 +1440,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           <button
             type='button'
             data-button-shape='circle'
+            data-video-home-submit=''
             className={styles.submitButton}
             disabled={
               loading ||
@@ -1420,7 +1472,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         </div>
       </div>
 
-      {mode === 'agent' && !isAction && draft.cameos.length > 0 ? (
+      {mode === 'agent' && draft.cameos.length > 0 ? (
         <div className={styles.cameoPanel}>
           <Suspense fallback={null}>
             <CameoCastEditor
