@@ -24,8 +24,19 @@ export const VIDEO_HOME_UPLOAD_ACCEPT = [
   '.docx',
 ].join(',');
 
+export const ACTION_CHARACTER_ACCEPT = 'image/png,image/jpeg,image/webp';
+export const ACTION_VIDEO_ACCEPT = 'video/mp4,video/webm,video/quicktime,.mp4,.webm,.avi,.mov,.m4v';
+export const ACTION_CHARACTER_MAX_BYTES = 10 * 1024 * 1024;
+export const ACTION_VIDEO_MAX_BYTES = 80 * 1024 * 1024;
+
 export function isSupportedImageFile(file: File): boolean {
   return /^image\/(png|jpeg|webp)$/i.test(file.type);
+}
+
+export function isSupportedVideoFile(file: File): boolean {
+  if (/^video\/(mp4|webm|quicktime|x-msvideo|x-m4v)$/i.test(file.type)) return true;
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+  return ['mp4', 'webm', 'avi', 'mov', 'm4v'].includes(extension);
 }
 
 export function isSupportedTextFile(file: File): boolean {

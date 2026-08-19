@@ -6,6 +6,7 @@ import {
   Down,
   FileText,
   MagicWand,
+  People,
   Pic,
   Platte,
   RobotOne,
@@ -24,20 +25,28 @@ import {
 import {
   DEFAULT_VIDEO_FPS,
   DEFAULT_VIDEO_RESOLUTION,
+  isMiniMaxH3VideoModel,
   normalizeVideoFps,
   normalizeVideoResolution,
 } from '../videoModelCapabilities';
 import { suggestCameoCharacterName } from '../cameoUtils';
 import type { CameoDraftItem, VerticalSkillSummary, VimaxWorkflow } from '../types';
+import { isActionImitationWorkflow } from '../workflowKind';
 import { BoldSendArrowIcon, SlantedDocIcon } from './ComposerIcons';
 import {
+  ACTION_CHARACTER_ACCEPT,
+  ACTION_CHARACTER_MAX_BYTES,
+  ACTION_VIDEO_ACCEPT,
+  ACTION_VIDEO_MAX_BYTES,
   displayFileStem,
   isSupportedImageFile,
   isSupportedTextFile,
+  isSupportedVideoFile,
   readUploadedTextFile,
   VIDEO_HOME_UPLOAD_ACCEPT,
 } from './documentUpload';
 import type {
+  ActionAssetDraft,
   AgentModeDefinition,
   CanvasReferenceDraft,
   CreationSkillDefinition,
@@ -116,6 +125,8 @@ function defaultDraft(): VideoCreateDraft {
     preferences: DEFAULT_PREFERENCES,
     cameos: [],
     canvasReferences: [],
+    actionCharacter: null,
+    actionVideo: null,
   };
 }
 
@@ -136,7 +147,9 @@ function loadDraft(): VideoCreateDraft {
       video_model: parsedPreferences.models?.video_model ?? legacyModels.video_model ?? '',
     };
     const workflow: VimaxWorkflow =
-      parsed.workflow === 'script2video' || parsed.workflow === 'novel2video'
+      parsed.workflow === 'script2video' ||
+      parsed.workflow === 'novel2video' ||
+      parsed.workflow === 'action2video'
         ? parsed.workflow
         : 'idea2video';
     const creationSkillId = CREATION_SKILL_IDS.includes(
@@ -190,6 +203,8 @@ function loadDraft(): VideoCreateDraft {
       // Files intentionally cannot survive reloads.
       cameos: [],
       canvasReferences: [],
+      actionCharacter: null,
+      actionVideo: null,
     };
   } catch {
     return fallback;
@@ -239,6 +254,10 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const [documentName, setDocumentName] = useState<string | null>(null);
   const draftRef = useRef(draft);
   const composerRef = useRef<HTMLDivElement>(null);
+  const characterInputRef = useRef<HTMLInputElement | null>(null);
+  const videoInputRef = useRef<HTMLInputElement | null>(null);
+  const isAction =
+    mode === 'agent' && isActionImitationWorkflow(draft.workflow);
 
   const agentModes = useMemo<AgentModeDefinition[]>(
     () => [
@@ -261,6 +280,13 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         label: t('videoGeneration.create.modes.novel', { defaultValue: '小说文本' }),
         description: t('videoGeneration.create.modes.novelDesc', {
           defaultValue: '提炼长文情节并设计分镜',
+        }),
+      },
+      {
+        id: 'action2video',
+        label: t('videoGeneration.create.modes.action', { defaultValue: '动作模仿' }),
+        description: t('videoGeneration.create.modes.actionDesc', {
+          defaultValue: '角色图 + 参考视频，模仿动作成片',
         }),
       },
     ],
@@ -334,6 +360,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             description,
           })),
           canvasReferences: [],
+          actionCharacter: null,
+          actionVideo: null,
           verticalSkillIds: draft.verticalSkillIds,
         })
       );
@@ -351,16 +379,36 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       for (const reference of current.canvasReferences) {
         URL.revokeObjectURL(reference.previewUrl);
       }
+      if (current.actionCharacter?.previewUrl) {
+        URL.revokeObjectURL(current.actionCharacter.previewUrl);
+      }
+      if (current.actionVideo?.previewUrl) {
+        URL.revokeObjectURL(current.actionVideo.previewUrl);
+      }
     },
     []
   );
 
   useEffect(() => {
+    if (isAction) {
+      if (draft.preferences.models.video_model) setModelMissing(false);
+      return;
+    }
     if (draft.preferences.models.llm_model) setModelMissing(false);
-  }, [draft.preferences.models.llm_model]);
+  }, [draft.preferences.models.llm_model, draft.preferences.models.video_model, isAction]);
 
   const activeText = mode === 'agent' ? draft.sourceText : draft.creationPrompt;
   useEffect(() => {
+    if (isAction) {
+      if (!draft.actionCharacter || !draft.actionVideo || draftedTracked.current) return;
+      draftedTracked.current = true;
+      trackFunnelEvent('task_drafted', {
+        feature: 'video_generation',
+        mode,
+        workflow: draft.workflow,
+      });
+      return;
+    }
     if (!activeText.trim() || draftedTracked.current) return;
     draftedTracked.current = true;
     trackFunnelEvent('task_drafted', {
@@ -368,7 +416,15 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       mode,
       workflow: mode === 'agent' ? draft.workflow : draft.creationSkillId,
     });
-  }, [activeText, draft.creationSkillId, draft.workflow, mode]);
+  }, [
+    activeText,
+    draft.actionCharacter,
+    draft.actionVideo,
+    draft.creationSkillId,
+    draft.workflow,
+    isAction,
+    mode,
+  ]);
 
   const activeCreationSkill =
     creationSkills.find((skill) => skill.id === draft.creationSkillId) ??
@@ -505,9 +561,41 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setDraft((current) => ({
       ...current,
       workflow,
-      verticalSkillIds: current.verticalSkillIds,
+      verticalSkillIds:
+        workflow === 'action2video' ? [] : current.verticalSkillIds,
+      preferences: {
+        ...current.preferences,
+        mediaKind: 'video',
+      },
     }));
     setSlashMenuOpen(false);
+    setUploadError(null);
+  };
+
+  const revokeActionDraft = (asset: ActionAssetDraft | null) => {
+    if (asset?.previewUrl) URL.revokeObjectURL(asset.previewUrl);
+  };
+
+  const setActionCharacter = (file: File | null) => {
+    setDraft((current) => {
+      revokeActionDraft(current.actionCharacter);
+      if (!file) return { ...current, actionCharacter: null };
+      return {
+        ...current,
+        actionCharacter: { file, previewUrl: URL.createObjectURL(file) },
+      };
+    });
+  };
+
+  const setActionVideo = (file: File | null) => {
+    setDraft((current) => {
+      revokeActionDraft(current.actionVideo);
+      if (!file) return { ...current, actionVideo: null };
+      return {
+        ...current,
+        actionVideo: { file, previewUrl: URL.createObjectURL(file) },
+      };
+    });
   };
 
   const selectCreationSkill = (creationSkillId: CreationSkillId) => {
@@ -552,6 +640,43 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const handleFiles = async (files: File[]) => {
     if (loading || files.length === 0) return;
     setUploadError(null);
+    if (isAction) {
+      const images = files.filter(isSupportedImageFile);
+      const videos = files.filter(isSupportedVideoFile);
+      const unsupported = files.filter(
+        (file) => !isSupportedImageFile(file) && !isSupportedVideoFile(file)
+      );
+      if (images[0]) {
+        if (images[0].size > ACTION_CHARACTER_MAX_BYTES) {
+          setUploadError(
+            t('videoGeneration.create.action.characterTooLarge', {
+              defaultValue: '角色图不能超过 10 MB。',
+            })
+          );
+        } else {
+          setActionCharacter(images[0]);
+        }
+      }
+      if (videos[0]) {
+        if (videos[0].size > ACTION_VIDEO_MAX_BYTES) {
+          setUploadError(
+            t('videoGeneration.create.action.videoTooLarge', {
+              defaultValue: '参考视频不能超过 80 MB。',
+            })
+          );
+        } else {
+          setActionVideo(videos[0]);
+        }
+      }
+      if (unsupported.length > 0) {
+        setUploadError(
+          t('videoGeneration.create.action.unsupported', {
+            defaultValue: '请上传 PNG / JPEG / WEBP 角色图，或 MP4 / WebM / MOV 参考视频。',
+          })
+        );
+      }
+      return;
+    }
     const images = files.filter(isSupportedImageFile);
     const documents = files.filter(isSupportedTextFile);
     const unsupported = files.filter(
@@ -600,6 +725,32 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   };
 
   const submit = () => {
+    if (isAction) {
+      if (!draft.actionCharacter?.file || !draft.actionVideo?.file) {
+        setUploadError(
+          t('videoGeneration.create.action.required', {
+            defaultValue: '请上传一张角色图和一个参考视频。',
+          })
+        );
+        return;
+      }
+      if (
+        !draft.preferences.models.video_model ||
+        !isMiniMaxH3VideoModel(draft.preferences.models.video_model)
+      ) {
+        setModelMissing(true);
+        setPreferencesOpen(true);
+        return;
+      }
+      onSubmitAgent({
+        ...draft,
+        sourceText: '',
+        creationPrompt: '',
+        verticalSkillIds: [],
+        preferences: { ...draft.preferences, mediaKind: 'video' },
+      });
+      return;
+    }
     if (!activeText.trim()) return;
     if (mode === 'agent' && !draft.preferences.models.llm_model) {
       setModelMissing(true);
@@ -705,6 +856,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 <VideoOne key='idea' size={15} />,
                 <FileText key='script' size={15} />,
                 <BookOpen key='novel' size={15} />,
+                <People key='action' size={15} />,
               ]
             : null;
         const agentIndex =
@@ -750,11 +902,16 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       ? draft.canvasReferences[0]?.previewUrl
       : draft.cameos[0]?.previewUrl;
 
-  const prefsSummary = generationPreferencesSummary(draft.preferences, mode, {
-    automatic: t('videoGeneration.create.preferences.automatic', { defaultValue: '自动' }),
-    smart: t('videoGeneration.create.preferences.smart', { defaultValue: '智能' }),
-    noModel: t('videoGeneration.create.preferences.noModelSelected', { defaultValue: '未选模型' }),
-  });
+  const prefsSummary = generationPreferencesSummary(
+    draft.preferences,
+    mode,
+    {
+      automatic: t('videoGeneration.create.preferences.automatic', { defaultValue: '自动' }),
+      smart: t('videoGeneration.create.preferences.smart', { defaultValue: '智能' }),
+      noModel: t('videoGeneration.create.preferences.noModelSelected', { defaultValue: '未选模型' }),
+    },
+    isAction ? 'action2video' : undefined
+  );
   const openPreferences = (open: boolean) => {
     if (open) {
       setModeMenuOpen(false);
@@ -800,9 +957,13 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         </h1>
         <p className={styles.heroHint}>
           {mode === 'agent'
-            ? t('videoGeneration.create.homeHintAgent', {
-                defaultValue: '写下故事或想法，Flowy 帮你变成成片。',
-              })
+            ? isAction
+              ? t('videoGeneration.create.homeHintAction', {
+                  defaultValue: '上传角色图和参考视频，让角色模仿动作生成成片。',
+                })
+              : t('videoGeneration.create.homeHintAgent', {
+                  defaultValue: '写下故事或想法，Flowy 帮你变成成片。',
+                })
             : t('videoGeneration.create.homeHintCreation', {
                 defaultValue: '描述画面与镜头，在无限画布里自由编排生成。',
               })}
@@ -818,6 +979,129 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           void handleFiles(Array.from(event.dataTransfer.files ?? []));
         }}
       >
+        {isAction ? (
+          <div className={styles.actionSlots}>
+            <button
+              type='button'
+              className={`${styles.actionSlot} ${
+                draft.actionCharacter ? styles.actionSlotFilled : ''
+              }`}
+              disabled={loading}
+              onClick={() => characterInputRef.current?.click()}
+              aria-label={t('videoGeneration.create.action.characterAria', {
+                defaultValue: '上传角色图（PNG / JPEG / WEBP）',
+              })}
+            >
+              {draft.actionCharacter ? (
+                <img
+                  src={draft.actionCharacter.previewUrl}
+                  alt=''
+                  className={styles.actionSlotPreview}
+                />
+              ) : (
+                <People theme='outline' size={22} />
+              )}
+              <span className={styles.actionSlotMeta}>
+                {t('videoGeneration.create.action.character', { defaultValue: '角色图' })}
+              </span>
+              {draft.actionCharacter ? (
+                <span
+                  role='button'
+                  tabIndex={0}
+                  className={styles.actionSlotClear}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setActionCharacter(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setActionCharacter(null);
+                    }
+                  }}
+                  aria-label={t('videoGeneration.create.action.removeCharacter', {
+                    defaultValue: '移除角色图',
+                  })}
+                >
+                  <CloseSmall size={12} />
+                </span>
+              ) : null}
+            </button>
+            <input
+              ref={characterInputRef}
+              type='file'
+              accept={ACTION_CHARACTER_ACCEPT}
+              hidden
+              disabled={loading}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void handleFiles([file]);
+                event.target.value = '';
+              }}
+            />
+            <button
+              type='button'
+              className={`${styles.actionSlot} ${
+                draft.actionVideo ? styles.actionSlotFilled : ''
+              }`}
+              disabled={loading}
+              onClick={() => videoInputRef.current?.click()}
+              aria-label={t('videoGeneration.create.action.videoAria', {
+                defaultValue: '上传参考视频（MP4 / WebM / MOV）',
+              })}
+            >
+              {draft.actionVideo ? (
+                <video
+                  src={draft.actionVideo.previewUrl}
+                  className={styles.actionSlotPreview}
+                  muted
+                  playsInline
+                />
+              ) : (
+                <VideoOne theme='outline' size={22} />
+              )}
+              <span className={styles.actionSlotMeta}>
+                {t('videoGeneration.create.action.video', { defaultValue: '参考视频' })}
+              </span>
+              {draft.actionVideo ? (
+                <span
+                  role='button'
+                  tabIndex={0}
+                  className={styles.actionSlotClear}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setActionVideo(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setActionVideo(null);
+                    }
+                  }}
+                  aria-label={t('videoGeneration.create.action.removeVideo', {
+                    defaultValue: '移除参考视频',
+                  })}
+                >
+                  <CloseSmall size={12} />
+                </span>
+              ) : null}
+            </button>
+            <input
+              ref={videoInputRef}
+              type='file'
+              accept={ACTION_VIDEO_ACCEPT}
+              hidden
+              disabled={loading}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void handleFiles([file]);
+                event.target.value = '';
+              }}
+            />
+          </div>
+        ) : (
         <div className={styles.composerMain}>
           <button
             type='button'
@@ -959,6 +1243,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             </div>
           </div>
         </div>
+        )}
 
         {uploadError ? <div className={styles.inlineError}>{uploadError}</div> : null}
 
@@ -999,6 +1284,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                     setDraft((current) => ({ ...current, preferences }))
                   }
                   onOpenModelHub={() => navigate('/models')}
+                  workflow={isAction ? 'action2video' : draft.workflow}
                 />
               </Suspense>
             ) : (
@@ -1041,7 +1327,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 <span className={styles.toolbarLabel}>{selectedModeLabel}</span>
               </button>
             </Popover>
-            {mode === 'agent' ? (
+            {mode === 'agent' && !isAction ? (
               <Popover
                 trigger='click'
                 position='bl'
@@ -1104,16 +1390,25 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             type='button'
             data-button-shape='circle'
             className={styles.submitButton}
-            disabled={loading || !activeText.trim()}
+            disabled={
+              loading ||
+              (isAction
+                ? !draft.actionCharacter?.file || !draft.actionVideo?.file
+                : !activeText.trim())
+            }
             onClick={submit}
             aria-label={
-              mode === 'agent'
-                ? t('videoGeneration.create.generateStoryboard', {
-                    defaultValue: '生成分镜',
+              isAction
+                ? t('videoGeneration.create.generateActionVideo', {
+                    defaultValue: '生成视频',
                   })
-                : t('videoGeneration.create.enterCanvas', {
-                    defaultValue: '进入画布',
-                  })
+                : mode === 'agent'
+                  ? t('videoGeneration.create.generateStoryboard', {
+                      defaultValue: '生成分镜',
+                    })
+                  : t('videoGeneration.create.enterCanvas', {
+                      defaultValue: '进入画布',
+                    })
             }
           >
             {loading ? (
@@ -1125,7 +1420,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         </div>
       </div>
 
-      {mode === 'agent' && draft.cameos.length > 0 ? (
+      {mode === 'agent' && !isAction && draft.cameos.length > 0 ? (
         <div className={styles.cameoPanel}>
           <Suspense fallback={null}>
             <CameoCastEditor

@@ -276,6 +276,12 @@ fn ffprobe_executable(ffmpeg: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("ffprobe"))
 }
 
+/// Probe a local video's duration in seconds (ffprobe, then ffmpeg `-i` fallback).
+pub async fn probe_media_duration_secs(path: &Path) -> Option<f64> {
+    let ffmpeg = ensure_ffmpeg_ready().await.ok()?;
+    probe_duration_secs(&ffmpeg, path).await
+}
+
 /// Probe container duration in seconds (ffprobe preferred; ffmpeg `-i` fallback).
 async fn probe_duration_secs(ffmpeg: &Path, input: &Path) -> Option<f64> {
     let ffprobe = ffprobe_executable(ffmpeg);

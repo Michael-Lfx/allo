@@ -11,6 +11,7 @@ interface StudioStageRailProps {
   stage?: string | null;
   hasStoryboard: boolean;
   hasFinalVideo: boolean;
+  variant?: 'film' | 'action';
 }
 
 export function studioStageIndex({
@@ -18,7 +19,13 @@ export function studioStageIndex({
   stage,
   hasStoryboard,
   hasFinalVideo,
+  variant = 'film',
 }: StudioStageRailProps): number {
+  if (variant === 'action') {
+    if (hasFinalVideo) return 2;
+    if (status === 'rendering') return 1;
+    return 0;
+  }
   if (hasFinalVideo) return 3;
   if (status === 'rendering') return 2;
   if (hasStoryboard || stage === 'planned') return 1;
@@ -30,15 +37,29 @@ const StudioStageRail: React.FC<StudioStageRailProps> = ({
   stage,
   hasStoryboard,
   hasFinalVideo,
+  variant = 'film',
 }) => {
   const { t } = useTranslation();
-  const activeIndex = studioStageIndex({ status, stage, hasStoryboard, hasFinalVideo });
-  const labels = [
-    t('videoGeneration.studio.stages.brief', { defaultValue: '创意' }),
-    t('videoGeneration.studio.stages.storyboard', { defaultValue: '分镜' }),
-    t('videoGeneration.studio.stages.render', { defaultValue: '渲染' }),
-    t('videoGeneration.studio.stages.film', { defaultValue: '成片' }),
-  ];
+  const activeIndex = studioStageIndex({
+    status,
+    stage,
+    hasStoryboard,
+    hasFinalVideo,
+    variant,
+  });
+  const labels =
+    variant === 'action'
+      ? [
+          t('videoGeneration.studio.stages.assets', { defaultValue: '素材' }),
+          t('videoGeneration.studio.stages.generate', { defaultValue: '生成' }),
+          t('videoGeneration.studio.stages.film', { defaultValue: '成片' }),
+        ]
+      : [
+          t('videoGeneration.studio.stages.brief', { defaultValue: '创意' }),
+          t('videoGeneration.studio.stages.storyboard', { defaultValue: '分镜' }),
+          t('videoGeneration.studio.stages.render', { defaultValue: '渲染' }),
+          t('videoGeneration.studio.stages.film', { defaultValue: '成片' }),
+        ];
 
   return (
     <nav

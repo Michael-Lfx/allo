@@ -14,7 +14,9 @@ use crate::domain::WorkflowKind;
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local;
 use crate::pipelines::{
-    Idea2VideoPipeline, Novel2VideoPipeline, PipelineBackends, Script2VideoPipeline,
+    model_supports_action_imitation, Action2VideoPipeline, Idea2VideoPipeline, Novel2VideoPipeline,
+    PipelineBackends,
+    Script2VideoPipeline,
 };
 use crate::progress::{RenderStatus, RunStatus};
 use crate::session::{
@@ -309,11 +311,66 @@ impl VimaxService {
         cameo::photo_abs_path(&working, photo_id)
     }
 
+    pub fn list_action_assets(&self, id: &str) -> VimaxResult<crate::session::ActionAssetsInfo> {
+        let record = self.index.get(id)?;
+        if !record.workflow.is_action_imitation() {
+            return Err(VimaxError::InvalidParams(
+                "session is not an action imitation project".into(),
+            ));
+        }
+        let work = self
+            .index
+            .working_dir(id)?
+            .join(record.workflow.artifact_root());
+        let root = self.index.working_dir(id)?;
+        let relativize = |abs: PathBuf| {
+            abs.strip_prefix(&root)
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| abs.to_string_lossy().replace('\\', "/"))
+        };
+        Ok(crate::session::ActionAssetsInfo {
+            character: crate::session::action_assets::character_abs(&work).map(relativize),
+            reference_video: crate::session::action_assets::reference_abs(&work).map(relativize),
+        })
+    }
+
+    pub async fn upload_action_assets(
+        self: &Arc<Self>,
+        id: &str,
+        character: Option<Vec<u8>>,
+        video: Option<Vec<u8>>,
+    ) -> VimaxResult<crate::session::ActionAssetsInfo> {
+        if character.is_none() && video.is_none() {
+            return Err(VimaxError::InvalidParams(
+                "upload a character image and/or a reference video".into(),
+            ));
+        }
+        self.ensure_cameo_mutable(id).await?;
+        let record = self.index.get(id)?;
+        if !record.workflow.is_action_imitation() {
+            return Err(VimaxError::InvalidParams(
+                "session is not an action imitation project".into(),
+            ));
+        }
+        let work = self
+            .index
+            .working_dir(id)?
+            .join(record.workflow.artifact_root());
+        tokio::fs::create_dir_all(&work).await?;
+        if let Some(bytes) = character {
+            crate::session::action_assets::save_character(&work, &bytes).await?;
+        }
+        if let Some(bytes) = video {
+            crate::session::action_assets::save_reference_video(&work, &bytes).await?;
+        }
+        self.list_action_assets(id)
+    }
+
     async fn ensure_cameo_mutable(&self, id: &str) -> VimaxResult<()> {
         let record = self.index.get(id)?;
         if matches!(record.status, RunStatus::Planning | RunStatus::Rendering) {
             return Err(VimaxError::InvalidParams(
-                "cannot modify cameo photos while the project is planning or rendering".into(),
+                "cannot modify session inputs while the project is planning or rendering".into(),
             ));
         }
         let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
@@ -321,7 +378,7 @@ impl VimaxService {
             && matches!(s.status, RunStatus::Planning | RunStatus::Rendering)
         {
             return Err(VimaxError::InvalidParams(
-                "cannot modify cameo photos while the project is planning or rendering".into(),
+                "cannot modify session inputs while the project is planning or rendering".into(),
             ));
         }
         Ok(())
@@ -875,6 +932,7 @@ impl VimaxService {
         } else {
             record
         };
+        ensure_action_imitation_video_model(&record)?;
 
         let backends = self.backends_for(&record, Some(token.clone())).await?;
         let work = self
@@ -939,6 +997,7 @@ impl VimaxService {
             WorkflowKind::Idea2Video | WorkflowKind::Novel2Video => {
                 crate::planning::enrich_requirement_for_film(&req_base, Some(target_secs))
             }
+            WorkflowKind::Action2Video => req_base,
         };
         // Persist so render / child scene dirs can allocate clip lengths.
         let _ = crate::session::write_text_artifact(
@@ -1026,6 +1085,16 @@ impl VimaxService {
                     .plan_text_artifacts(&idea_text, &req, &style_s, Some(progress))
                     .await?;
             }
+            WorkflowKind::Action2Video => {
+                let duration = Action2VideoPipeline::new(backends, work)
+                    .prepare(Some(progress))
+                    .await?;
+                if record.target_duration_secs != duration {
+                    let _ = self
+                        .index
+                        .update_fields(id, |r| r.target_duration_secs = duration);
+                }
+            }
         }
         {
             let mut map = self
@@ -1067,6 +1136,7 @@ impl VimaxService {
             return Err(VimaxError::Cancelled);
         }
         let mut record = self.index.get(id)?;
+        ensure_action_imitation_video_model(&record)?;
         let target_secs = crate::planning::normalize_target_duration_secs(
             if record.target_duration_secs > 0 {
                 Some(record.target_duration_secs)
@@ -1139,6 +1209,11 @@ impl VimaxService {
                     .render(&record.novel_text, &req, &style_s, Some(progress))
                     .await?
             }
+            WorkflowKind::Action2Video => {
+                Action2VideoPipeline::new(backends, work)
+                    .render(Some(progress))
+                    .await?
+            }
         };
 
         let work_root = self.index.working_dir(id)?;
@@ -1206,6 +1281,19 @@ impl VimaxService {
                 .replace('\\', "/"),
         )
     }
+}
+
+fn ensure_action_imitation_video_model(record: &SessionRecord) -> VimaxResult<()> {
+    if !record.workflow.is_action_imitation() {
+        return Ok(());
+    }
+    let model = record.video_model.trim();
+    if model.is_empty() || !model_supports_action_imitation(model) {
+        return Err(VimaxError::InvalidParams(
+            "action imitation requires a MiniMax-H3 video model".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn nonempty_opt(s: &str) -> Option<String> {

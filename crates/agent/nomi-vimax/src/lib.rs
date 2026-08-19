@@ -43,8 +43,8 @@ pub use progress::{ProgressCallback, ProgressEvent, RenderStatus, RunStatus};
 pub use revise::ReviseResult;
 pub use service::VimaxService;
 pub use session::{
-    ARCHIVE_EXTENSION, ArtifactNode, CameoManifest, CameoPhotoEntry, CameoUpdate, SessionIndex,
-    SessionRecord, SessionSummary,
+    ARCHIVE_EXTENSION, ActionAssetsInfo, ArtifactNode, CameoManifest, CameoPhotoEntry, CameoUpdate,
+    SessionIndex, SessionRecord, SessionSummary,
 };
 pub use skills::{
     pack_skill_dir, SkillCatalog, SkillId, SkillOverlay, SkillSource, SkillVisibility,

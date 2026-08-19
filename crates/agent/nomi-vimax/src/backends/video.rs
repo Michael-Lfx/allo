@@ -9,7 +9,8 @@ use tracing::info;
 
 use nomifun_cloud::{
     video_task_failure_message, is_minimax_h3_model, MODEL_CATEGORY_VIDEO, VideoContentImage,
-    VideoCreateParams, resolve_model_in_catalog, VideoTaskRecord,
+    VideoCreateParams, resolve_model_in_catalog, VideoTaskRecord, MINIMAX_H3_DURATION_MAX,
+    MINIMAX_H3_DURATION_MIN,
 };
 
 use super::{FlowyVimaxServices, VimaxVideo, map_model_err, map_server_err};
@@ -166,6 +167,7 @@ impl VimaxVideo for FlowyVideo {
         duration_secs: u32,
         out_path: &Path,
         last_frame_out: Option<&Path>,
+        ref_video: Option<&Path>,
     ) -> VimaxResult<()> {
         if self.is_cancelled() {
             return Err(VimaxError::Cancelled);
@@ -179,6 +181,12 @@ impl VimaxVideo for FlowyVideo {
         self.services.require_token().await?;
         let model = self.resolve_model().await?;
         let model_for_err = model.clone();
+        let is_h3 = is_minimax_h3_model(&model);
+        if ref_video.is_some() && !is_h3 {
+            return Err(VimaxError::InvalidParams(
+                "action imitation (reference_video) requires MiniMax-H3".into(),
+            ));
+        }
 
         // Upload frames to OSS first so the create-task JSON only carries short HTTPS URLs
         // (avoids base64-bloated bodies that break Flowy / Seedance).
@@ -262,24 +270,48 @@ impl VimaxVideo for FlowyVideo {
             }
         }
 
+        let mut reference_video_url = None;
+        if uses_frame_roles {
+            if ref_video.is_some() {
+                tracing::info!(
+                    "omitting reference_video: cannot mix with first/last_frame"
+                );
+                local_frame_notes.push("reference_video_omitted".into());
+            }
+        } else if let Some(path) = ref_video {
+            local_frame_notes.push(format!(
+                "reference_video←{}",
+                path.file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("?")
+            ));
+            reference_video_url = Some(
+                self.services
+                    .upload_video_public_url(path, "reference_video")
+                    .await?,
+            );
+        }
+
         let aspect = self.resolved_aspect();
         let resolution = Some(self.resolved_resolution(&model));
-        let is_h3 = is_minimax_h3_model(&model);
         // Seedance 2.0 / 2.0-fast I2V accepts [4, 15]; MiniMax-H3 accepts [4, 15].
-        // ViMax plans clips in [5, 15]. `default_duration` is only a fallback when
-        // callers omit duration — never a max cap.
-        let duration = duration_secs.clamp(
-            crate::planning::MIN_CLIP_DURATION_SECS,
-            crate::planning::MAX_CLIP_DURATION_SECS,
-        );
+        // ViMax film clips historically used [5, 15]; H3 action imitation uses the
+        // upstream 4–15 window so a 4s reference video is not padded.
+        let (min_d, max_d) = if is_h3 {
+            (MINIMAX_H3_DURATION_MIN, MINIMAX_H3_DURATION_MAX)
+        } else {
+            (
+                crate::planning::MIN_CLIP_DURATION_SECS,
+                crate::planning::MAX_CLIP_DURATION_SECS,
+            )
+        };
+        let duration = duration_secs.clamp(min_d, max_d);
         if duration != duration_secs {
             tracing::warn!(
                 requested = duration_secs,
                 clamped = duration,
                 model = %model,
-                "video duration clamped to [{}, {}]",
-                crate::planning::MIN_CLIP_DURATION_SECS,
-                crate::planning::MAX_CLIP_DURATION_SECS,
+                "video duration clamped to [{min_d}, {max_d}]",
             );
         }
         let want_last_frame = last_frame_out.is_some();
@@ -298,7 +330,7 @@ impl VimaxVideo for FlowyVideo {
             generate_audio: if is_h3 { None } else { Some(true) },
             return_last_frame: if is_h3 { None } else { Some(want_last_frame) },
             images,
-            reference_video_url: None,
+            reference_video_url,
             reference_audio_url: None,
         };
 
@@ -524,6 +556,10 @@ fn log_video_create_params(
         prompt_preview = %prompt_preview,
         image_count = params.images.len(),
         images = ?image_summaries,
+        reference_video = params
+            .reference_video_url
+            .as_deref()
+            .map(redact_media_url_for_log),
         local_frames = ?local_frame_notes,
         out = %out_path.display(),
         "video_generate API params"

@@ -21,14 +21,18 @@ import {
 } from '../durationBounds';
 import {
   filterAllowedImageModels,
+  filterActionImitationVideoModels,
+  pickActionImitationVideoModel,
   pickDefaultVideoModel,
 } from '../components/ModelSelectors';
 import {
+  isMiniMaxH3VideoModel,
   normalizeVideoFps,
   normalizeVideoResolution,
   videoModelCapabilities,
 } from '../videoModelCapabilities';
 import type { GenerationPreferences, VideoHomeMode } from './types';
+import type { VimaxWorkflow } from '../types';
 import { getScrollParents } from './scrollParents';
 import styles from './home.module.css';
 
@@ -54,6 +58,7 @@ interface GenerationPreferencesPopoverProps {
   onOpenChange: (open: boolean) => void;
   onChange: (next: GenerationPreferences) => void;
   onOpenModelHub: () => void;
+  workflow?: VimaxWorkflow;
 }
 
 type PanelPlacement = {
@@ -158,8 +163,10 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   onOpenChange,
   onChange,
   onOpenModelHub,
+  workflow,
 }) => {
   const { t } = useTranslation();
+  const isAction = workflow === 'action2video';
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const panelPosRef = useRef<PanelPlacement>({
@@ -173,11 +180,11 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
   // Defer catalog network until the panel opens — closed summary only needs
   // already-persisted preference ids / labels.
-  const llmModels = useGeneratorModels('text', { enabled: open });
+  const llmModels = useGeneratorModels('text', { enabled: open && !isAction });
   const { imageModels, videoModels, isLoading: mediaLoading } = useMediaModels({
     enabled: open,
   });
-  const mediaKind = value.mediaKind;
+  const mediaKind = isAction ? 'video' : value.mediaKind;
   const duration = durationBounds(mode);
 
   const automaticLabel = t('videoGeneration.create.preferences.automatic', {
@@ -209,28 +216,32 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     duration.max,
     duration.step
   );
-  const summary = value.automatic
-    ? automaticLabel
-    : mediaKind === 'image'
-      ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${shortModelLabel(
-          value.models.image_model,
-          noModelLabel
-        )}`
-      : mode === 'agent'
-        ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${durationSummarySecs}s · ${value.resolution.toUpperCase()}`
-        : `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()}`;
+  const summary = isAction
+    ? `${shortModelLabel(value.models.video_model, noModelLabel)} · ${value.resolution.toUpperCase()}`
+    : value.automatic
+      ? automaticLabel
+      : mediaKind === 'image'
+        ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${shortModelLabel(
+            value.models.image_model,
+            noModelLabel
+          )}`
+        : mode === 'agent'
+          ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${durationSummarySecs}s · ${value.resolution.toUpperCase()}`
+          : `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()}`;
 
-  const summaryTitle = value.automatic
-    ? automaticLabel
-    : `${mediaKind === 'image' ? imageLabel : videoLabel} · ${
-        value.smartAspect ? smartLabel : value.aspectRatio
-      } · ${
-        mediaKind === 'video'
-          ? mode === 'agent'
-            ? `${durationSummarySecs}s · ${value.resolution.toUpperCase()}`
-            : value.resolution.toUpperCase()
-          : shortModelLabel(value.models.image_model, noModelLabel)
-      }`;
+  const summaryTitle = isAction
+    ? summary
+    : value.automatic
+      ? automaticLabel
+      : `${mediaKind === 'image' ? imageLabel : videoLabel} · ${
+          value.smartAspect ? smartLabel : value.aspectRatio
+        } · ${
+          mediaKind === 'video'
+            ? mode === 'agent'
+              ? `${durationSummarySecs}s · ${value.resolution.toUpperCase()}`
+              : value.resolution.toUpperCase()
+            : shortModelLabel(value.models.image_model, noModelLabel)
+        }`;
 
   const llmOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -255,14 +266,13 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     [imageModels]
   );
 
-  const videoOptions = useMemo(
-    () =>
-      videoModels.map((model) => ({
-        value: model.id,
-        label: model.name.trim() || formatCloudModelLabel(model.id),
-      })),
-    [videoModels]
-  );
+  const videoOptions = useMemo(() => {
+    const source = isAction ? filterActionImitationVideoModels(videoModels) : videoModels;
+    return source.map((model) => ({
+      value: model.id,
+      label: model.name.trim() || formatCloudModelLabel(model.id),
+    }));
+  }, [isAction, videoModels]);
 
   const resolutionOptions = useMemo(
     () => videoModelCapabilities(value.models.video_model).resolutions,
@@ -410,27 +420,35 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
     const current = valueRef.current;
     const patch: Partial<GenerationPreferences['models']> = {};
-    if (!current.models.llm_model && llmOptions[0]) {
+    if (!isAction && !current.models.llm_model && llmOptions[0]) {
       patch.llm_model = llmOptions[0].value;
     }
-    if (!current.models.image_model && imageOptions[0]) {
+    if (!isAction && !current.models.image_model && imageOptions[0]) {
       patch.image_model = imageOptions[0].value;
     } else if (
+      !isAction &&
       current.models.image_model &&
       imageOptions.length > 0 &&
       !imageOptions.some((option) => option.value === current.models.image_model)
     ) {
       patch.image_model = imageOptions[0].value;
     }
+    const preferredVideo = isAction
+      ? pickActionImitationVideoModel(videoModels)
+      : pickDefaultVideoModel(videoModels);
     if (!current.models.video_model) {
-      const preferred = pickDefaultVideoModel(videoModels);
-      if (preferred) patch.video_model = preferred;
+      if (preferredVideo) patch.video_model = preferredVideo;
     } else if (
       videoOptions.length > 0 &&
       !videoOptions.some((option) => option.value === current.models.video_model)
     ) {
-      const preferred = pickDefaultVideoModel(videoModels);
-      if (preferred) patch.video_model = preferred;
+      if (preferredVideo) patch.video_model = preferredVideo;
+    } else if (
+      isAction &&
+      current.models.video_model &&
+      !isMiniMaxH3VideoModel(current.models.video_model)
+    ) {
+      if (preferredVideo) patch.video_model = preferredVideo;
     }
     if (Object.keys(patch).length === 0) return;
     onChange({ ...current, models: { ...current.models, ...patch } });
@@ -445,6 +463,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     value.models.llm_model,
     value.models.image_model,
     value.models.video_model,
+    isAction,
   ]);
 
   const setMediaKind = (kind: GenerationPreferences['mediaKind']) => {
@@ -495,6 +514,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                     defaultValue: '生成偏好',
                   })}
                 </div>
+                {isAction ? null : (
                 <label className={styles.autoToggle}>
                   <span>{automaticLabel}</span>
                   <Switch
@@ -504,8 +524,10 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                     onChange={(automatic) => onChange({ ...value, automatic })}
                   />
                 </label>
+                )}
               </div>
 
+            {isAction ? null : (
             <div
               className={styles.mediaKindTabs}
               role='tablist'
@@ -529,16 +551,18 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                 </button>
               ))}
             </div>
+            )}
 
-            {value.automatic ? (
+            {isAction || !value.automatic ? null : (
               <div className={styles.autoHint}>
                 {t('videoGeneration.create.preferences.automaticHint', {
                   defaultValue:
                     '已开启自动，比例与模型选项已锁定；提交时使用当前已选配置。',
                 })}
               </div>
-            ) : null}
+            )}
 
+            {isAction ? null : (
             <div
               className={`${styles.preferenceSection} ${
                 value.automatic ? styles.preferenceSectionMuted : ''
@@ -604,10 +628,11 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                 ))}
               </div>
             </div>
+            )}
 
             <div
               className={`${styles.preferenceSection} ${
-                value.automatic ? styles.preferenceSectionMuted : ''
+                value.automatic && !isAction ? styles.preferenceSectionMuted : ''
               }`}
             >
               <div className={styles.preferenceLabel}>
@@ -648,14 +673,22 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                   <>
                     <Select
                       allowClear={false}
-                      disabled={disabled || value.automatic || mediaLoading}
+                      disabled={disabled || (!isAction && value.automatic) || mediaLoading}
                       placeholder={t('videoGeneration.workspace.models.videoPlaceholder', {
                         defaultValue: '选择视频模型',
                       })}
                       value={safeVideoValue}
                       options={videoOptions}
                       loading={mediaLoading}
-                      notFoundContent={mediaLoading ? loadingLabel : emptyModelsLabel}
+                      notFoundContent={
+                        mediaLoading
+                          ? loadingLabel
+                          : isAction
+                            ? t('videoGeneration.workspace.models.h3Empty', {
+                                defaultValue: '暂无 MiniMax-H3 视频模型',
+                              })
+                            : emptyModelsLabel
+                      }
                       onChange={(next) => {
                         const video_model = String(next ?? '');
                         onChange({
@@ -690,12 +723,12 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                             type='button'
                             role='radio'
                             aria-checked={active}
-                            disabled={disabled || value.automatic}
+                            disabled={disabled || (!isAction && value.automatic)}
                             className={`${styles.resolutionPill} ${
                               active ? styles.resolutionPillActive : ''
                             }`}
                             onClick={() => {
-                              if (disabled || value.automatic || active) return;
+                              if (disabled || (!isAction && value.automatic) || active) return;
                               onChange({
                                 ...value,
                                 mediaKind: 'video',
@@ -714,7 +747,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
               </div>
             </div>
 
-            {mediaKind === 'video' ? (
+            {mediaKind === 'video' && !isAction ? (
               <div
                 className={`${styles.preferenceSection} ${
                   value.automatic ? styles.preferenceSectionMuted : ''
@@ -761,7 +794,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
               </div>
             ) : null}
 
-            {mode === 'agent' ? (
+            {mode === 'agent' && !isAction ? (
               <div
                 className={`${styles.preferenceSection} ${
                   value.automatic ? styles.preferenceSectionMuted : ''
@@ -801,9 +834,16 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
             {modelMissing ? (
               <div className={styles.modelWarning}>
                 <span>
-                  {t('videoGeneration.create.modelRequired', {
-                    defaultValue: '生成前需要可用的规划模型。',
-                  })}
+                  {t(
+                    isAction
+                      ? 'videoGeneration.create.modelRequiredAction'
+                      : 'videoGeneration.create.modelRequired',
+                    {
+                      defaultValue: isAction
+                        ? '生成前需要 MiniMax-H3 视频模型。'
+                        : '生成前需要可用的规划模型。',
+                    }
+                  )}
                 </span>
                 <Button type='text' size='mini' onClick={onOpenModelHub}>
                   {t('videoGeneration.create.configureModels', {

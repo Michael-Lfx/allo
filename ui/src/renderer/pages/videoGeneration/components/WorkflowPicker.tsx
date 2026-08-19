@@ -3,7 +3,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Modal, Input } from '@arco-design/web-react';
-import { VideoOne, FileText, BookOpen } from '@icon-park/react';
+import { VideoOne, FileText, BookOpen, People } from '@icon-park/react';
 import type { VimaxWorkflow } from '../types';
 
 const WORKFLOWS: {
@@ -37,6 +37,14 @@ const WORKFLOWS: {
     titleDefault: '小说成片',
     descKey: 'videoGeneration.workflow.novel2video.desc',
     descDefault: '从小说文本提炼剧情，规划并生成视频。',
+  },
+  {
+    id: 'action2video',
+    icon: <People theme='outline' size={22} fill='currentColor' />,
+    titleKey: 'videoGeneration.workflow.action2video.title',
+    titleDefault: '动作模仿',
+    descKey: 'videoGeneration.workflow.action2video.desc',
+    descDefault: '上传角色图和参考视频，让角色模仿动作生成成片。',
   },
 ];
 

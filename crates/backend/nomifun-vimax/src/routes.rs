@@ -25,6 +25,8 @@ use crate::state::VimaxRouterState;
 
 /// Cameo upload body limit (matches nomi-vimax `CAMEO_MAX_BYTES` + multipart overhead).
 const CAMEO_UPLOAD_BODY_LIMIT: usize = 11 * 1024 * 1024;
+/// Action-imitation character + reference video (80MB video + 10MB image + overhead).
+const ACTION_UPLOAD_BODY_LIMIT: usize = 92 * 1024 * 1024;
 /// Artifact binary replace body limit (matches nomi-vimax `MAX_BINARY_BYTES` + overhead).
 const ARTIFACT_UPLOAD_BODY_LIMIT: usize = 11 * 1024 * 1024;
 
@@ -33,6 +35,15 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
         .route("/api/vimax/sessions/{id}/cameos", post(upload_cameo))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(CAMEO_UPLOAD_BODY_LIMIT))
+        .with_state(state.clone());
+
+    let action_upload = Router::new()
+        .route(
+            "/api/vimax/sessions/{id}/action-assets",
+            post(upload_action_assets),
+        )
+        .layer(DefaultBodyLimit::disable())
+        .layer(RequestBodyLimitLayer::new(ACTION_UPLOAD_BODY_LIMIT))
         .with_state(state.clone());
 
     let artifact_upload = Router::new()
@@ -67,6 +78,10 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
             get(get_artifact_prompt).put(put_artifact_prompt),
         )
         .route("/api/vimax/sessions/{id}/cameos", get(list_cameos))
+        .route(
+            "/api/vimax/sessions/{id}/action-assets",
+            get(list_action_assets),
+        )
         .route(
             "/api/vimax/sessions/{id}/cameos/{cameo_id}",
             patch(update_cameo).delete(delete_cameo),
@@ -136,6 +151,7 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
         .route("/api/vimax/tv-show/{id}/import", post(import_tv_show))
         .with_state(state)
         .merge(cameo_upload)
+        .merge(action_upload)
         .merge(artifact_upload)
 }
 
@@ -701,6 +717,65 @@ async fn get_cameo_file(
         .header(header::CACHE_CONTROL, "private, max-age=60")
         .body(Body::from(bytes))
         .map_err(|e| AppError::Internal(e.to_string()))?)
+}
+
+async fn list_action_assets(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<nomi_vimax::ActionAssetsInfo>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.list_action_assets(&id)?)))
+}
+
+struct ActionUploadFields {
+    character: Option<Vec<u8>>,
+    video: Option<Vec<u8>>,
+}
+
+async fn extract_action_multipart(mut multipart: Multipart) -> Result<ActionUploadFields, AppError> {
+    let mut character = None;
+    let mut video = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "character" | "character_image" | "image" => {
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("read character field: {e}")))?;
+                character = Some(data.to_vec());
+            }
+            "video" | "reference_video" | "reference" => {
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("read video field: {e}")))?;
+                video = Some(data.to_vec());
+            }
+            _ => {
+                let _ = field.bytes().await;
+            }
+        }
+    }
+    Ok(ActionUploadFields { character, video })
+}
+
+async fn upload_action_assets(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    multipart: Multipart,
+) -> Result<Json<ApiResponse<nomi_vimax::ActionAssetsInfo>>, AppError> {
+    let fields = extract_action_multipart(multipart).await?;
+    let info = state
+        .service
+        .upload_action_assets(&id, fields.character, fields.video)
+        .await?;
+    Ok(Json(ApiResponse::ok(info)))
 }
 
 async fn publish_session_to_tv_show(

@@ -1624,6 +1624,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                 duration_secs,
                 &video_path,
                 Some(&video_last_frame_path),
+                None,
             )
             .await
         {
@@ -1656,6 +1657,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                         duration_secs,
                         &video_path,
                         Some(&video_last_frame_path),
+                        None,
                     )
                     .await
                 {
@@ -1724,6 +1726,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                         duration_secs,
                         &video_path,
                         Some(&video_last_frame_path),
+                        None,
                     )
                     .await
                 {
@@ -1759,6 +1762,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                                 duration_secs,
                                 &video_path,
                                 Some(&video_last_frame_path),
+                                None,
                             )
                             .await
                             .map_err(|t2v_err| {
@@ -1798,6 +1802,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                         duration_secs,
                         &video_path,
                         Some(&video_last_frame_path),
+                        None,
                     )
                     .await
                     .map_err(|t2v_err| {

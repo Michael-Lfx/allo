@@ -1,4 +1,5 @@
 import type { GenerationPreferences, VideoHomeMode } from './home/types';
+import type { VimaxWorkflow } from './types';
 import {
   CLIP_DURATION_MAX_SECS,
   CLIP_DURATION_MIN_SECS,
@@ -12,7 +13,8 @@ import {
 export function generationPreferencesSummary(
   value: GenerationPreferences,
   mode: VideoHomeMode,
-  labels: { automatic: string; smart: string; noModel: string }
+  labels: { automatic: string; smart: string; noModel: string },
+  workflow?: VimaxWorkflow
 ): { summary: string; title: string } {
   const durationSecs = clampDuration(
     value.targetDurationSecs,
@@ -28,6 +30,10 @@ export function generationPreferencesSummary(
       ? `${modelTail.slice(0, 12)}…`
       : modelTail
     : labels.noModel;
+  if (workflow === 'action2video') {
+    const summary = `${modelLabel} · ${value.resolution.toUpperCase()}`;
+    return { summary, title: `video · ${summary}` };
+  }
   const ratio = value.smartAspect ? labels.smart : value.aspectRatio;
   const media = value.mediaKind === 'image' ? modelLabel : value.resolution.toUpperCase();
   const summary = value.automatic

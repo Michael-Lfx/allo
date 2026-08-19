@@ -43,7 +43,7 @@ No text, watermark, or logo.";
 pub(crate) fn resolve_session_root(working_dir: &Path) -> PathBuf {
     let film = resolve_film_root(working_dir);
     let name = film.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    if matches!(name, "idea2video" | "script2video" | "novel2video") {
+    if matches!(name, "idea2video" | "script2video" | "novel2video" | "action2video") {
         film.parent().unwrap_or(film.as_path()).to_path_buf()
     } else {
         film

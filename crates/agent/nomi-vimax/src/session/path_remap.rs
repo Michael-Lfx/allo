@@ -185,7 +185,7 @@ pub fn remap_imported_working_paths(working_root: &Path) -> VimaxResult<usize> {
 
     // Candidate roots: session root + each film workflow subdir that exists.
     let mut root_bufs: Vec<PathBuf> = vec![working_root.to_path_buf()];
-    for name in ["idea2video", "script2video", "novel2video"] {
+    for name in ["idea2video", "script2video", "novel2video", "action2video"] {
         let sub = working_root.join(name);
         if sub.is_dir() {
             root_bufs.push(sub);

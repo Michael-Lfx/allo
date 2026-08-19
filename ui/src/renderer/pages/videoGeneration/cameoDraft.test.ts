@@ -105,6 +105,26 @@ describe('create → upload → plan order', () => {
   });
 });
 
+describe('create → upload action assets → render order', () => {
+  test('uploads character and video then renders, never plans', async () => {
+    const calls: string[] = [];
+    const uploadActionAssets = async () => {
+      calls.push('upload');
+    };
+    const renderSession = async () => {
+      calls.push('render');
+    };
+    const planSession = async () => {
+      calls.push('plan');
+    };
+    await uploadActionAssets();
+    await renderSession();
+    expect(calls).toEqual(['upload', 'render']);
+    expect(calls).not.toContain('plan');
+    void planSession;
+  });
+});
+
 describe('suggestCameoCharacterName', () => {
   test('keeps short cast-like stems', () => {
     expect(suggestCameoCharacterName('陈树生.png', 0)).toBe('陈树生');

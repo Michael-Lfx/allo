@@ -1,6 +1,6 @@
 {
   "title": "视频生成",
-  "subtitle": "从灵感、剧本或小说出发，规划产物并渲染成片。",
+  "subtitle": "从灵感、剧本、小说或动作模仿出发，规划产物并渲染成片。",
   "mode": {
     "agent": "Agent",
     "canvas": "Canvas",
@@ -110,12 +110,15 @@
     "homeHeroPrefix": "开启你的",
     "homeHeroSuffix": "，即刻造梦！",
     "homeHintAgent": "写下故事或想法，Flowy 帮你变成成片。",
+    "homeHintAction": "上传角色图和参考视频，让角色模仿动作生成成片。",
     "homeHintCreation": "描述画面与镜头，在无限画布里自由编排生成。",
     "advanced": "风格与模型",
     "generateStoryboard": "生成分镜",
+    "generateActionVideo": "生成视频",
     "enterCanvas": "进入画布",
     "customize": "自定义生成偏好",
     "modelRequired": "生成前需要可用的规划模型。",
+    "modelRequiredAction": "生成前需要 MiniMax-H3 视频模型。",
     "configureModels": "前往模型中心",
     "tryExample": "试试：",
     "skillsMenuTitle": "选择风格技能",
@@ -127,9 +130,11 @@
       "idea": "一个想法",
       "script": "完整剧本",
       "novel": "小说文本",
+      "action": "动作模仿",
       "ideaDesc": "从一句灵感扩写成完整影片",
       "scriptDesc": "按剧情结构自动拆解镜头",
-      "novelDesc": "提炼长文情节并设计分镜"
+      "novelDesc": "提炼长文情节并设计分镜",
+      "actionDesc": "角色图 + 参考视频，模仿动作成片"
     },
     "skills": {
       "cinematic": {
@@ -190,6 +195,18 @@
       "docxNoBody": "DOCX 中未找到正文内容。",
       "untitledAsset": "未命名素材"
     },
+    "action": {
+      "character": "角色图",
+      "video": "参考视频",
+      "characterAria": "上传角色图（PNG / JPEG / WEBP）",
+      "videoAria": "上传参考视频（MP4 / WebM / MOV）",
+      "removeCharacter": "移除角色图",
+      "removeVideo": "移除参考视频",
+      "required": "请上传一张角色图和一个参考视频。",
+      "characterTooLarge": "角色图不能超过 10 MB。",
+      "videoTooLarge": "参考视频不能超过 80 MB。",
+      "unsupported": "请上传 PNG / JPEG / WEBP 角色图，或 MP4 / WebM / MOV 参考视频。"
+    },
     "gallery": {
       "title": "最近画布",
       "subtitle": "继续编辑已有项目，或从一个空白画布开始。",
@@ -236,6 +253,10 @@
     "novel2video": {
       "title": "小说成片",
       "desc": "从小说文本提炼剧情，规划并生成视频。"
+    },
+    "action2video": {
+      "title": "动作模仿",
+      "desc": "上传角色图和参考视频，让角色模仿动作生成成片。"
     }
   },
   "status": {
@@ -305,7 +326,9 @@
     "cancelled": "已取消",
     "plan": "规划",
     "render": "渲染",
-    "revise": "修订"
+    "revise": "修订",
+    "action_prepare": "校验角色图与参考视频",
+    "action_generate": "让角色模仿参考动作"
   },
   "actions": {
     "createFailed": "创建失败",
@@ -322,7 +345,8 @@
     "openInCanvas": "打开到 Canvas",
     "openInCanvasOk": "已打开到 Canvas：{{shots}} 镜 · {{media}} 个媒体",
     "openInCanvasReused": "已打开该工程对应的 Canvas（未新建）",
-    "openInCanvasFailed": "打开到 Canvas 失败"
+    "openInCanvasFailed": "打开到 Canvas 失败",
+    "openInCanvasUnsupported": "动作模仿没有分镜，无法打开到 Canvas"
   },
   "workspace": {
     "back": "返回列表",
@@ -333,6 +357,9 @@
       "title": "已绑定角色参考图",
       "empty": "暂无 Cameo。可在创建时上传，删除后请重新规划以更新绑定。",
       "delete": "删除"
+    },
+    "action": {
+      "replaceHint": "点击上方区域可替换素材。时长跟随参考视频，画幅由模型自适应。"
     },
     "plan": "开始规划",
     "planContinue": "从断点继续规划",
@@ -431,6 +458,8 @@
       "video": "视频模型",
       "videoPlaceholder": "选择视频模型",
       "mediaRequired": "请先选择图片模型与视频模型",
+      "h3Required": "动作模仿需要选择 MiniMax-H3 视频模型",
+      "h3Empty": "暂无 MiniMax-H3 视频模型",
       "empty": "暂无可用模型",
       "noProviders": "请先在模型中心配置平台"
     },
@@ -493,10 +522,14 @@
       "brief": "创意",
       "storyboard": "分镜",
       "render": "渲染",
-      "film": "成片"
+      "film": "成片",
+      "assets": "素材",
+      "generate": "生成"
     },
     "briefTitle": "把故事交给 Flowy",
     "briefHint": "生成的是可修改分镜，不会直接开始高成本渲染。",
+    "actionTitle": "上传素材，生成成片",
+    "actionHint": "一张角色图 + 一段参考视频。无需提示词，时长跟随参考视频。",
     "briefAndModels": "创意简报与模型设置",
     "modelSettings": "模型设置",
     "filmReady": "成片已就绪",

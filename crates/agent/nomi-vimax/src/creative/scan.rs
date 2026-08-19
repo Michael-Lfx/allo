@@ -43,6 +43,11 @@ pub async fn scan_session_film(
         WorkflowKind::Script2Video => {
             vec![scan_scene_dir(working_dir, &film_dir, "main", "主场景").await?]
         }
+        WorkflowKind::Action2Video => {
+            return Err(VimaxError::InvalidParams(
+                "action imitation has no storyboard to open in Canvas".into(),
+            ));
+        }
         WorkflowKind::Idea2Video | WorkflowKind::Novel2Video => {
             scan_multi_scenes(working_dir, &film_dir).await?
         }
