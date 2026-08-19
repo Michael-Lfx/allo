@@ -14221,12 +14221,22 @@ impl ConversationService {
     fn drop_conversation_observations(&self, conversation_id: &str) {
         if let Some(hub) = self.current_agent_trace_hub() {
             hub.drop_conversation_observations(conversation_id);
+        } else {
+            warn!(
+                conversation_id,
+                "session observation hub is not attached; drop is a no-op"
+            );
         }
     }
 
     fn clear_conversation_observations(&self, conversation_id: &str) {
         if let Some(hub) = self.current_agent_trace_hub() {
             hub.clear_conversation_observations(conversation_id);
+        } else {
+            warn!(
+                conversation_id,
+                "session observation hub is not attached; clear is a no-op"
+            );
         }
     }
 

@@ -1993,6 +1993,7 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                 self.mcp_managers.clone(),
                 #[cfg(feature = "browser-use")]
                 self.browser_lane_binding.clone(),
+                self.observation.clone(),
             )?;
         }
         Ok(())
@@ -2331,6 +2332,7 @@ fn schedule_nomi_cancelled_terminal_after_process_fence(
     process_supervisor: Option<Arc<nomi_process_runtime::ProcessSupervisor>>,
     mcp_managers: Vec<Arc<McpManager>>,
     #[cfg(feature = "browser-use")] browser_lane_binding: Option<crate::BrowserLaneBinding>,
+    observation: Option<Arc<nomi_agent::ObservationSession>>,
 ) -> Result<(), AppError> {
     let terminalize = move || {
         backend_output_sink.cancel_active_tool_calls(
@@ -2343,6 +2345,14 @@ fn schedule_nomi_cancelled_terminal_after_process_fence(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        if let Some(session) = &observation {
+            session.emit_turn_end(
+                nomi_agent_trace::ExecutionStatus::Cancelled,
+                0,
+                Some("cancelled"),
+                None,
+            );
+        }
         let runtime_turn = active_turn
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -3604,6 +3614,42 @@ mod tests {
         guard.armed = false;
     }
 
+    #[test]
+    fn idle_kill_terminal_emits_observation_turn_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = Arc::new(nomi_agent_trace::ObservationRecorder::isolated(dir.path()));
+        recorder.set_enabled(true);
+        let session = nomi_agent::ObservationSession::new(Arc::clone(&recorder));
+        session.bind_ids(crate::ObservationIds {
+            conversation_id: Some("c-idle-obs".into()),
+            msg_id: Some("msg-idle".into()),
+            root_turn_id: Some("turn-idle".into()),
+            ..crate::ObservationIds::default()
+        });
+        let rt = AgentRuntimeState::new("c-idle-obs", "/w", 16);
+        let backend_output_sink = Arc::new(BackendOutputSink::new(rt.event_sender()));
+        schedule_nomi_cancelled_terminal_after_process_fence(
+            rt,
+            Arc::new(std::sync::Mutex::new(None)),
+            Arc::new(std::sync::Mutex::new(())),
+            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            backend_output_sink,
+            None,
+            Vec::new(),
+            #[cfg(feature = "browser-use")]
+            None,
+            Some(session),
+        )
+        .expect("idle-kill fence should run immediately without process owners");
+        let events = recorder.read_events(Some("c-idle-obs")).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == nomi_agent_trace::EVENT_TURN_END),
+            "idle-kill must persist turn/end, got {events:?}"
+        );
+    }
+
     #[cfg(feature = "browser-use")]
     #[tokio::test]
     async fn idle_kill_terminal_waits_for_browser_cleanup_proof() {
@@ -3625,6 +3671,7 @@ mod tests {
             None,
             Vec::new(),
             Some(binding),
+            None,
         )
         .expect("idle-kill fence should schedule");
 
@@ -3669,6 +3716,7 @@ mod tests {
             None,
             Vec::new(),
             Some(binding),
+            None,
         )
         .expect("idle-kill fence should schedule");
 

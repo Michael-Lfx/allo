@@ -181,30 +181,40 @@ impl AgentTraceHub {
         let call = self
             .with_read(move || {
                 let events = recorder.read_events_for_turn(Some(&conversation_id), &root_turn_id)?;
-                if project_turn_by_id(&events, &root_turn_id).is_none() {
+                let Some(turn) = project_turn_by_id(&events, &root_turn_id) else {
                     return Ok(None);
-                }
-                Ok(project_call_detail(&events, &root_turn_id, &model_call_id))
+                };
+                Ok(project_call_detail(&events, &root_turn_id, &model_call_id)
+                    .map(|detail| (turn.has_turn_end, detail)))
             })
             .await?;
-        match call {
-            Some(detail)
-                if detail.request.is_none()
-                    && detail.response.is_none()
-                    && detail.tools.iter().all(|tool| {
-                        tool.started.is_none()
-                            && tool.completed.is_none()
-                            && tool.failed.is_none()
-                            && tool.cancelled.is_none()
-                    }) =>
-            {
-                Err(TraceApiError::ObservationRetention)
-            }
-            Some(detail) => Ok(detail),
-            None => Err(TraceApiError::NotFound(format!(
-                "session observation call '{not_found_id}' not found"
-            ))),
+        resolve_session_observation_call(not_found_id, call)
+    }
+}
+
+fn call_payloads_missing(detail: &ProjectedModelCall) -> bool {
+    detail.request.is_none()
+        && detail.response.is_none()
+        && detail.tools.iter().all(|tool| {
+            tool.started.is_none()
+                && tool.completed.is_none()
+                && tool.failed.is_none()
+                && tool.cancelled.is_none()
+        })
+}
+
+fn resolve_session_observation_call(
+    model_call_id: String,
+    call: Option<(bool, ProjectedModelCall)>,
+) -> Result<ProjectedModelCall, TraceApiError> {
+    match call {
+        Some((turn_ended, detail)) if call_payloads_missing(&detail) && turn_ended => {
+            Err(TraceApiError::ObservationRetention)
         }
+        Some((_, detail)) => Ok(detail),
+        None => Err(TraceApiError::NotFound(format!(
+            "session observation call '{model_call_id}' not found"
+        ))),
     }
 }
 
@@ -279,6 +289,41 @@ mod tests {
         hub.drop_conversation_observations("conv-drop");
         assert!(recorder.read_events(Some("conv-drop")).unwrap().is_empty());
         assert!(!recorder.root().join("conv-drop").exists());
+    }
+
+    fn empty_call(model_call_id: &str) -> ProjectedModelCall {
+        ProjectedModelCall {
+            model_call_id: model_call_id.to_owned(),
+            call_kind: None,
+            observation_scope: None,
+            status: nomi_agent_trace::ExecutionStatus::Running,
+            integrity: nomi_agent_trace::Integrity::Complete,
+            interrupted: false,
+            started_at_ms: None,
+            ended_at_ms: None,
+            usage: None,
+            request: None,
+            response: None,
+            tools: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn empty_payload_is_retention_only_after_turn_end() {
+        let detail = empty_call("mc-empty");
+        assert!(call_payloads_missing(&detail));
+        let in_flight =
+            resolve_session_observation_call("mc-empty".into(), Some((false, detail.clone())));
+        assert!(in_flight.is_ok(), "running turn must return the empty body");
+        let ended = resolve_session_observation_call("mc-empty".into(), Some((true, detail)));
+        assert!(matches!(ended, Err(TraceApiError::ObservationRetention)));
+    }
+
+    #[test]
+    fn missing_call_on_ended_turn_is_not_found() {
+        let error = resolve_session_observation_call("mc-missing".into(), None)
+            .expect_err("unknown call after turn end is 404");
+        assert!(matches!(error, TraceApiError::NotFound(_)));
     }
 
     #[test]

@@ -169,6 +169,8 @@ pub(crate) struct DualQueue {
     max_normal: usize,
     max_control: usize,
     dropped_normal: u64,
+    flush_pending: bool,
+    extra_flush_acks: Vec<mpsc::Sender<()>>,
 }
 
 impl DualQueue {
@@ -180,10 +182,28 @@ impl DualQueue {
             max_normal,
             max_control,
             dropped_normal: 0,
+            flush_pending: false,
+            extra_flush_acks: Vec::new(),
         }
     }
 
+    fn take_extra_flush_acks(&mut self) -> Vec<mpsc::Sender<()>> {
+        std::mem::take(&mut self.extra_flush_acks)
+    }
+
     fn try_enqueue(&mut self, command: WriterCommand) -> EnqueueOutcome {
+        if let WriterCommand::Flush { ack } = command {
+            if self.flush_pending {
+                if let Some(ack) = ack {
+                    self.extra_flush_acks.push(ack);
+                }
+                return EnqueueOutcome::Queued;
+            }
+            self.flush_pending = true;
+            let order = self.enqueue_order.fetch_add(1, Ordering::Relaxed);
+            self.control.push_back((order, WriterCommand::Flush { ack }));
+            return EnqueueOutcome::Queued;
+        }
         let order = self.enqueue_order.fetch_add(1, Ordering::Relaxed);
         if command.is_lifecycle() {
             self.control.push_back((order, command));
@@ -214,7 +234,7 @@ impl DualQueue {
     }
 
     fn dequeue_next(&mut self) -> Option<(u64, WriterCommand)> {
-        match (
+        let next = match (
             self.normal.front().map(|(order, _)| *order),
             self.control.front().map(|(order, _)| *order),
         ) {
@@ -225,7 +245,11 @@ impl DualQueue {
             (Some(_), None) => self.normal.pop_front(),
             (None, Some(_)) => self.control.pop_front(),
             (None, None) => None,
+        };
+        if matches!(next.as_ref().map(|(_, command)| command), Some(WriterCommand::Flush { .. })) {
+            self.flush_pending = false;
         }
+        next
     }
 
     fn take_dropped_normal(&mut self) -> u64 {
@@ -792,6 +816,19 @@ fn set_health(shared: &WriterShared, status: RecorderHealthStatus, last_error: O
     }
 }
 
+fn recover_health_after_success(shared: &WriterShared) {
+    let Ok(mut health) = shared.health.lock() else {
+        return;
+    };
+    match health.status {
+        RecorderHealthStatus::QueueDropped | RecorderHealthStatus::StorageError => {
+            health.status = RecorderHealthStatus::Healthy;
+            health.last_error = None;
+        }
+        RecorderHealthStatus::Healthy | RecorderHealthStatus::WriterDisconnected => {}
+    }
+}
+
 fn writer_loop(shared: &WriterShared) {
     let mut unflushed = 0usize;
     let mut last_flush = Instant::now();
@@ -895,6 +932,7 @@ fn handle_writer_command(
             generation,
         } => {
             persist_event(shared, &event_type, &ids, payload, generation)?;
+            recover_health_after_success(shared);
             *unflushed += 1;
         }
         WriterCommand::Flush { ack } => {
@@ -902,6 +940,11 @@ fn handle_writer_command(
             *unflushed = 0;
             if let Some(ack) = ack {
                 let _ = ack.send(());
+            }
+            if let Ok(mut queue) = shared.queue.lock() {
+                for extra in queue.take_extra_flush_acks() {
+                    let _ = extra.send(());
+                }
             }
         }
         WriterCommand::DeleteConversation {
@@ -1950,17 +1993,37 @@ mod tests {
             other => panic!("expected turn/end, got {other:?}"),
         }
         assert!(first.0 < second.0);
-        let mut event_seq = 0_u64;
-        for command in [first.1, second.1] {
-            event_seq += 1;
-            if let WriterCommand::Event { event_type, .. } = command {
-                if event_seq == 1 {
-                    assert_eq!(event_type, EVENT_LLM_REQUEST);
-                } else {
-                    assert_eq!(event_type, "turn/end");
-                }
+    }
+
+    #[test]
+    fn second_flush_coalesces_into_pending_flush() {
+        let mut queue = DualQueue::new(8, 8);
+        let (tx1, rx1) = mpsc::channel();
+        let (tx2, rx2) = mpsc::channel();
+        assert_eq!(
+            queue.try_enqueue(WriterCommand::Flush { ack: Some(tx1) }),
+            EnqueueOutcome::Queued
+        );
+        assert_eq!(
+            queue.try_enqueue(WriterCommand::Flush { ack: Some(tx2) }),
+            EnqueueOutcome::Queued
+        );
+        let first = queue.dequeue_next().expect("one flush command");
+        assert!(
+            queue.dequeue_next().is_none(),
+            "a second Flush must merge into the pending ACK list"
+        );
+        match first.1 {
+            WriterCommand::Flush { ack: Some(ack) } => {
+                let _ = ack.send(());
             }
+            other => panic!("expected Flush, got {other:?}"),
         }
+        let extras = queue.take_extra_flush_acks();
+        assert_eq!(extras.len(), 1);
+        let _ = extras[0].send(());
+        assert!(rx1.try_recv().is_ok());
+        assert!(rx2.try_recv().is_ok());
     }
 
     #[test]
@@ -2077,6 +2140,25 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EVENT_LLM_REQUEST);
         assert_eq!(events[0].event_seq, 1);
+    }
+
+    #[test]
+    fn successful_persist_recovers_queue_dropped_health() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        set_health(
+            &recorder.shared,
+            RecorderHealthStatus::QueueDropped,
+            Some("observation writer queue overflow".into()),
+        );
+        assert_eq!(recorder.health().status, RecorderHealthStatus::QueueDropped);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t-recover"), json!({ "ok": true }))
+            .unwrap();
+        let _ = recorder.read_events(Some("conv-a")).unwrap();
+        assert_eq!(recorder.health().status, RecorderHealthStatus::Healthy);
+        assert_eq!(recorder.health().last_error, None);
     }
 
     #[test]
