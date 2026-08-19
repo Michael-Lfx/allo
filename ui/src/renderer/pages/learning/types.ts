@@ -183,6 +183,8 @@ export interface CalendarDayStats {
   review_day: number;
   reviewed_count: number;
   checkin_completed: boolean;
+  /** 当日到期卡片数（过期卡片并入当天，与复习队列同口径） */
+  due_count: number;
   completed_lessons: CalendarLessonRef[];
   created_courses: CalendarCourseRef[];
 }

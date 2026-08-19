@@ -329,7 +329,22 @@ const LearningPage: React.FC = () => {
                 onEditTags={(entry) => void openTagEditor('question', entry)}
               />
             </Tabs.TabPane>
-            <Tabs.TabPane key='jobs' title={t('learning.jobManagement')} destroyOnHide={false}>
+            <Tabs.TabPane
+              key='jobs'
+              title={
+                <span className='inline-flex items-center gap-6px'>
+                  {t('learning.jobManagement')}
+                  {courseJobs.hasActive && (
+                    <span
+                      role='img'
+                      aria-label={t('learning.jobsActiveHint')}
+                      className='size-6px rd-full bg-danger-6'
+                    />
+                  )}
+                </span>
+              }
+              destroyOnHide={false}
+            >
               <CourseJobTable
                 jobs={courseJobs.jobs}
                 loading={courseJobs.loading}

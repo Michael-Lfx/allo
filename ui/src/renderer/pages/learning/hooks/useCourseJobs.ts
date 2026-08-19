@@ -113,5 +113,5 @@ export function useCourseJobs({ t, setBusyId, onJobCompleted }: UseCourseJobsOpt
     [runAction]
   );
 
-  return { jobs, loading, cancelJob, resumeJob, retryJob, deleteJob };
+  return { jobs, loading, hasActive, cancelJob, resumeJob, retryJob, deleteJob };
 }

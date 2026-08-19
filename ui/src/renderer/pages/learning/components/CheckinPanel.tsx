@@ -20,13 +20,30 @@ function isLeapYear(year: number): boolean {
   return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
 }
 
-/** 单元格角标（打卡 / 课时 / 课程，最多 3 个） */
-function dayBadges(day: CalendarDayStats | undefined): string[] {
+/** 单元格角标：打卡完成 / 完成课时数 / 创建课程数（数字直显，最多 3 个）；
+ *  深色热力格（≥10 次复习）上自动转白字保证可读。 */
+function dayBadges(
+  day: CalendarDayStats | undefined,
+  onDark: boolean
+): { label: string; className: string }[] {
   if (!day) return [];
-  const badges: string[] = [];
-  if (day.checkin_completed) badges.push('✓');
-  if (day.completed_lessons.length > 0) badges.push('✅');
-  if (day.created_courses.length > 0) badges.push('📚');
+  const badges: { label: string; className: string }[] = [];
+  const primaryTone = onDark ? 'text-white' : 'text-[var(--color-primary-6)]';
+  if (day.checkin_completed) {
+    badges.push({
+      label: '✓',
+      className: onDark ? 'text-white' : 'text-[var(--color-success-6)]',
+    });
+  }
+  if (day.completed_lessons.length > 0) {
+    badges.push({ label: `📖${day.completed_lessons.length}`, className: primaryTone });
+  }
+  if (day.created_courses.length > 0) {
+    badges.push({
+      label: `📚${day.created_courses.length}`,
+      className: onDark ? 'text-white' : 'text-warning-6',
+    });
+  }
   return badges.slice(0, 3);
 }
 
@@ -34,6 +51,9 @@ function dayBadges(day: CalendarDayStats | undefined): string[] {
 function dayTooltip(day: CalendarDayStats | undefined, t: (key: string, opts?: Record<string, unknown>) => string): string {
   if (!day) return t('learning.checkinNoActivity');
   const parts: string[] = [];
+  if (day.due_count > 0) {
+    parts.push(t('learning.checkinTooltipDue', { count: day.due_count }));
+  }
   if (day.reviewed_count > 0) {
     parts.push(t('learning.checkinTooltipReviews', { count: day.reviewed_count }));
   }
@@ -176,6 +196,24 @@ export function CheckinPanel({
     setView('month');
   };
 
+  // 年视图月份标签：每列 16px（14px 格子 + 2px 间距），标签绝对定位在
+  // 月份第一天所在列，不受列宽限制，完整显示不裁切。
+  const monthStarts = useMemo(() => {
+    const starts: { month: number; columnIndex: number }[] = [];
+    heatColumns.forEach((column, columnIndex) => {
+      // 该列内任一天是某月 1 日即标记该列（1 号不一定在列首行）
+      for (const day of column) {
+        if (day === null) continue;
+        const date = new Date(cursorYear, 0, day);
+        if (date.getDate() === 1) {
+          starts.push({ month: date.getMonth() + 1, columnIndex });
+          break;
+        }
+      }
+    });
+    return starts;
+  }, [heatColumns, cursorYear]);
+
   const moveMonth = (delta: number) => {
     const nextMonth = cursorMonth + delta;
     if (nextMonth < 1) {
@@ -306,16 +344,29 @@ export function CheckinPanel({
                 const reviewDay = cursorYear * 10000 + cursorMonth * 100 + day;
                 const statsDay = dayMap.get(reviewDay);
                 const isToday = reviewDay === todayReviewDay;
+                const dayDue = statsDay?.due_count ?? 0;
+                // 深色热力格（≥10 次复习）上角标转白字，保证可读
+                const onDark = (statsDay?.reviewed_count ?? 0) >= 10;
                 return (
                   <Tooltip key={reviewDay} content={dayTooltip(statsDay, t)} position='top'>
                     <div
-                      className={`flex min-h-36px flex-col items-center justify-between rounded-4px px-2px py-1px ${
+                      className={`flex min-h-40px flex-col items-center justify-between rounded-4px px-2px py-1px ${
                         heatClass(statsDay?.reviewed_count ?? 0)
                       } ${isToday ? 'ring-1 ring-[var(--color-primary-6)]' : ''}`}
                     >
-                      <div className='flex gap-1px text-10px leading-12px'>
-                        {dayBadges(statsDay).map((badge, badgeIndex) => (
-                          <span key={badgeIndex}>{badge}</span>
+                      <div className='flex max-w-full flex-wrap items-center gap-3px'>
+                        {dayDue > 0 && (
+                          <span className='rounded-full bg-danger-6 px-6px text-11px font-medium leading-16px text-white'>
+                            {t('learning.checkinDueBadge', { count: dayDue })}
+                          </span>
+                        )}
+                        {dayBadges(statsDay, onDark).map((badge, badgeIndex) => (
+                          <span
+                            key={badgeIndex}
+                            className={`text-11px font-medium leading-16px ${badge.className}`}
+                          >
+                            {badge.label}
+                          </span>
                         ))}
                       </div>
                       <Text className='text-12px leading-16px'>{day}</Text>
@@ -325,8 +376,14 @@ export function CheckinPanel({
               })}
             </div>
             <div className='flex flex-wrap items-center gap-12px text-12px text-[var(--color-text-3)]'>
+              <span className='flex items-center gap-4px'>
+                <span className='rounded-full bg-danger-6 px-6px text-10px font-medium leading-14px text-white'>
+                  {t('learning.checkinDueBadge', { count: 3 })}
+                </span>
+                {t('learning.checkinLegendDue')}
+              </span>
               <span>✓ {t('learning.checkinLegendCheckin')}</span>
-              <span>✅ {t('learning.checkinLegendLessons')}</span>
+              <span>📖 {t('learning.checkinLegendLessons')}</span>
               <span>📚 {t('learning.checkinLegendCourses')}</span>
               <span>
                 {t('learning.checkinLegendIntensity')}
@@ -340,20 +397,22 @@ export function CheckinPanel({
           </div>
         ) : (
           <div className='flex flex-col gap-4px overflow-x-auto'>
-            <div className='flex w-max gap-2px'>
-              {heatColumns.map((column, columnIndex) => {
-                const firstDay = column.find((day) => day !== null);
-                const monthLabel =
-                  firstDay !== undefined && firstDay !== null
-                    ? new Date(cursorYear, 0, firstDay).getDate() === 1
-                      ? t('learning.checkinMonthLabel', { month: new Date(cursorYear, 0, firstDay).getMonth() + 1 })
-                      : ''
-                    : '';
-                return (
+            <div className='flex w-max flex-col gap-2px'>
+              {/* 月份标签独立绝对定位行：不参与列宽计算，标签从月首列起完整显示不裁切 */}
+              <div className='relative h-16px'>
+                {monthStarts.map(({ month, columnIndex }) => (
+                  <span
+                    key={month}
+                    className='absolute top-0 whitespace-nowrap text-10px font-medium leading-16px text-[var(--color-text-2)]'
+                    style={{ left: columnIndex * 16 }}
+                  >
+                    {t('learning.checkinMonthLabel', { month })}
+                  </span>
+                ))}
+              </div>
+              <div className='flex gap-2px'>
+                {heatColumns.map((column, columnIndex) => (
                   <div key={columnIndex} className='flex flex-col gap-2px'>
-                    <div className='flex h-14px items-center justify-center text-10px text-[var(--color-text-3)]'>
-                      {monthLabel}
-                    </div>
                     {column.map((day, rowIndex) => {
                       if (day === null) {
                         return <div key={`empty-${rowIndex}`} className='h-14px w-14px' />;
@@ -362,20 +421,30 @@ export function CheckinPanel({
                       const reviewDay =
                         date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
                       const statsDay = dayMap.get(reviewDay);
+                      // 深色热力格（≥10 次复习）上打勾转白字，保证可读
+                      const onDark = (statsDay?.reviewed_count ?? 0) >= 10;
                       return (
                         <Tooltip key={reviewDay} content={dayTooltip(statsDay, t)} position='top'>
                           <div
-                            className={`h-14px w-14px cursor-pointer rounded-2px ${heatClass(
+                            className={`flex h-14px w-14px cursor-pointer items-center justify-center rounded-2px ${heatClass(
                               statsDay?.reviewed_count ?? 0
                             )} ${statsDay?.checkin_completed ? 'ring-1 ring-[var(--color-success-6)]' : ''}`}
                             onClick={() => pickHeatDay(day)}
-                          />
+                          >
+                            {statsDay?.checkin_completed && (
+                              <span
+                                className={`text-10px font-medium leading-14px ${onDark ? 'text-white' : 'text-[var(--color-success-6)]'}`}
+                              >
+                                ✓
+                              </span>
+                            )}
+                          </div>
                         </Tooltip>
                       );
                     })}
                   </div>
-                );
-              })}
+                ))}
+              </div>
             </div>
             <div className='flex items-center gap-8px text-12px text-[var(--color-text-3)]'>
               <span>{t('learning.checkinLegendIntensity')}</span>

@@ -503,6 +503,9 @@ pub struct CalendarDayStats {
     pub review_day: i64,
     pub reviewed_count: i64,
     pub checkin_completed: bool,
+    /// Cards due on this review day; overdue cards roll into the current
+    /// day so the today cell matches the review banner's due queue.
+    pub due_count: i64,
     pub completed_lessons: Vec<CalendarLessonRef>,
     pub created_courses: Vec<CalendarCourseRef>,
 }

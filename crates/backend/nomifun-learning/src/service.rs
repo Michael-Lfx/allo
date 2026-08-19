@@ -3314,6 +3314,33 @@ impl LearningService {
         let current_review_day = review_day_number(now_ms(), tz_offset_minutes);
         let streak = self.streak_days(user_id, current_review_day).await?;
 
+        // Due cards bucketed by review day: a card due before the current
+        // review day rolls into today (matching the review banner's due
+        // queue); future days show cards scheduled to come due that day.
+        let mut due_counts: HashMap<i64, i64> = HashMap::new();
+        {
+            let rows = sqlx::query(
+                "SELECT r.due_at AS due_at FROM learning_review_items r \
+                 JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+                 WHERE e.user_id = ? AND r.due_at < ? \
+                 UNION ALL \
+                 SELECT q.due_at AS due_at FROM learning_custom_questions q \
+                 WHERE q.user_id = ? AND q.due_at < ?",
+            )
+            .bind(user_id.as_str())
+            .bind(range_end)
+            .bind(user_id.as_str())
+            .bind(range_end)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
+            for row in rows {
+                let due_at: i64 = row.try_get("due_at").map_err(internal)?;
+                let day = review_day_number(due_at, tz_offset_minutes).max(current_review_day);
+                *due_counts.entry(day).or_insert(0) += 1;
+            }
+        }
+
         // Zero-filled day range: every local calendar day of the request.
         let mut cursor = chrono::NaiveDate::from_ymd_opt(year, 1, 1)
             .ok_or_else(|| AppError::BadRequest("invalid year".into()))?;
@@ -3337,6 +3364,7 @@ impl LearningService {
                 review_day,
                 reviewed_count: reviewed.get(&review_day).copied().unwrap_or(0),
                 checkin_completed: checkins.contains(&review_day),
+                due_count: due_counts.get(&review_day).copied().unwrap_or(0),
                 completed_lessons: completed_lessons.remove(&review_day).unwrap_or_default(),
                 created_courses: created_courses.remove(&review_day).unwrap_or_default(),
             });
@@ -5812,6 +5840,35 @@ mod tests {
         .unwrap();
     }
 
+    /// Inserts a custom question due at an exact timestamp (for calendar
+    /// due-bucket tests).
+    async fn insert_custom_question_due_at(
+        service: &LearningService,
+        user_id: &UserId,
+        due_at: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO learning_custom_questions \
+             (custom_question_id, user_id, kind, prompt, config_json, concept_id, \
+              due_at, stability_days, difficulty, review_count, lapse_count, \
+              last_reviewed_at, created_at, updated_at) \
+             VALUES (?, ?, 'true_false', 'p', '{}', NULL, ?, 0, 5.0, 0, 0, NULL, ?, ?)",
+        )
+        .bind(LearningReviewItemId::new().into_string())
+        .bind(user_id.as_str())
+        .bind(due_at)
+        .bind(due_at)
+        .bind(due_at)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+
+    /// YYYYMMDD integer for a local calendar date (review_day format).
+    fn day_number(date: chrono::NaiveDate) -> i64 {
+        i64::from(date.year()) * 10_000 + i64::from(date.month()) * 100 + i64::from(date.day())
+    }
+
     async fn checkin_rows(service: &LearningService, user_id: &UserId) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM learning_checkins WHERE user_id = ?")
             .bind(user_id.as_str())
@@ -6057,6 +6114,71 @@ mod tests {
         let west = service.calendar_stats(&user_id, -300, 2026, Some(8)).await.unwrap();
         let west_day = west.days.iter().find(|d| d.review_day == 20260801).unwrap();
         assert_eq!(west_day.reviewed_count, 0);
+    }
+
+    #[tokio::test]
+    async fn calendar_buckets_due_count_by_review_day() {
+        let (service, user_id) = checkin_test_service().await;
+        let tz = SchedulerSettings::default().tz_offset_minutes;
+        let now = now_ms();
+        let today = review_day_number(now, tz);
+        let ymd = chrono::NaiveDate::from_ymd_opt(
+            (today / 10_000) as i32,
+            ((today / 100) % 100) as u32,
+            (today % 100) as u32,
+        )
+        .unwrap();
+        // 过期卡片（due 早于今天）滚入今天：与复习横幅到期队列同口径
+        insert_custom_question_due_at(&service, &user_id, now - 60_000).await;
+        // 明天 03:00 与后天 04:00（本地）到期的卡片分别归各自复习日
+        let tomorrow_ymd = ymd.succ();
+        let day_after_ymd = ymd.succ().succ();
+        let tomorrow_start = local_wall_clock_utc_ms(
+            tomorrow_ymd.year(),
+            tomorrow_ymd.month(),
+            tomorrow_ymd.day(),
+            2,
+            tz,
+        )
+        .unwrap();
+        let day_after_start = local_wall_clock_utc_ms(
+            day_after_ymd.year(),
+            day_after_ymd.month(),
+            day_after_ymd.day(),
+            2,
+            tz,
+        )
+        .unwrap();
+        insert_custom_question_due_at(&service, &user_id, tomorrow_start + 3_600_000).await;
+        insert_custom_question_due_at(&service, &user_id, day_after_start + 4_360_000).await;
+
+        let year = i64::from(ymd.year());
+        let stats = service
+            .calendar_stats(&user_id, tz, year, None)
+            .await
+            .unwrap();
+        let today_day = stats.days.iter().find(|d| d.review_day == today).unwrap();
+        assert_eq!(today_day.due_count, 1, "overdue cards roll into today");
+        for (label, expected) in [
+            ("tomorrow", day_number(tomorrow_ymd)),
+            ("day after", day_number(day_after_ymd)),
+        ] {
+            if let Some(d) = stats.days.iter().find(|d| d.review_day == expected) {
+                assert_eq!(d.due_count, 1, "{label} due must bucket to its review day");
+            }
+        }
+        assert!(
+            stats
+                .days
+                .iter()
+                .filter(|d| {
+                    d.review_day != today
+                        && d.review_day != day_number(tomorrow_ymd)
+                        && d.review_day != day_number(day_after_ymd)
+                })
+                .all(|d| d.due_count == 0),
+            "days without due cards must be zero"
+        );
     }
 
     #[tokio::test]
