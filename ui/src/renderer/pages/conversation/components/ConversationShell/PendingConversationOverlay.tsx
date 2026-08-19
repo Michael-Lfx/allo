@@ -57,18 +57,6 @@ const PendingConversationOverlay: React.FC = () => {
     backend: 'Flowy',
     defaultValue: 'Send message to {{backend}}...',
   });
-  const steps = [
-    t('conversation.pending.stepValidate', { defaultValue: '核对任务' }),
-    t('conversation.pending.stepCreate', { defaultValue: '创建会话' }),
-    t('conversation.pending.stepConfigure', { defaultValue: '准备工具' }),
-    t('conversation.pending.stepOpen', { defaultValue: '开始执行' }),
-  ];
-  const stageIndex = {
-    validating: 0,
-    creating: 1,
-    configuring: 2,
-    opening: 3,
-  }[pending.stage ?? 'validating'];
 
   return (
     <div
@@ -139,26 +127,10 @@ const PendingConversationOverlay: React.FC = () => {
                 styles.pendingAssistEnter
               )}
             >
-              <div className='min-w-0 w-full flex flex-col items-start gap-10px'>
+              <div className='min-w-0 w-full flex flex-col items-start'>
                 <div className='flex items-center gap-10px min-h-20px'>
                   <Spin size={16} />
                   <span className='text-t-secondary text-14px leading-none'>{caption}</span>
-                </div>
-                <div className={styles.pendingSteps} aria-hidden='true'>
-                  {steps.map((label, index) => (
-                    <React.Fragment key={label}>
-                      {index > 0 ? <span className={styles.pendingStepArrow}>→</span> : null}
-                      <span
-                        className={classNames(
-                          styles.pendingStep,
-                          index === stageIndex && styles.pendingStepActive,
-                          index < stageIndex && styles.pendingStepDone
-                        )}
-                      >
-                        {label}
-                      </span>
-                    </React.Fragment>
-                  ))}
                 </div>
               </div>
             </div>

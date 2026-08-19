@@ -7,6 +7,7 @@ import { ConversationProvider } from '@/renderer/hooks/context/ConversationConte
 import FlexFullContainer from '@renderer/components/layout/FlexFullContainer';
 import MessageList from '@renderer/pages/conversation/Messages/MessageList';
 import ConversationEmptyPrompt from '@renderer/pages/conversation/Messages/components/ConversationEmptyPrompt';
+import { usePendingConversation } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
 import TurnStatusRail from '@renderer/pages/conversation/Messages/components/TurnStatusRail';
 import GoalStatusNotice from '@/renderer/components/chat/GoalStatusNotice';
 import { ConversationArtifactProvider } from '@renderer/pages/conversation/Messages/artifacts';
@@ -74,10 +75,13 @@ const NomiChat: React.FC<{
     },
   });
   const updateLocalImage = LocalImageView.useUpdateLocalImage();
+  const { pending } = usePendingConversation();
   useEffect(() => {
     updateLocalImage({ root: workspace });
   }, [workspace]);
-  const resolvedEmptySlot = emptySlot ?? <ConversationEmptyPrompt workspace={workspace} />;
+  const resolvedEmptySlot = pending
+    ? undefined
+    : (emptySlot ?? <ConversationEmptyPrompt workspace={workspace} />);
   const resolvedIsProcessing = turnActivity.hasHydratedRunningState
     ? turnActivity.running
     : isProcessing === true || turnActivity.running;
