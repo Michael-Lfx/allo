@@ -1,6 +1,7 @@
 import { Clapperboard, FolderOpen, Image as ImageIcon, Layers3, Music2, Palette, PanelTop, Pencil, Type, UploadCloud, UserRound, Video } from "lucide-react";
 
-import { registerAddNodeMenuCommands, type AddNodeMenuCommand } from "@oc/lib/canvas/tool-registry";
+import { registerAddNodeMenuCommands } from "../tool-registry";
+import type { AddNodeMenuCommand } from "../tool-definition";
 
 export const addNodeMenuCommands: AddNodeMenuCommand[] = [
     // 项目级动作不占用节点网格，保证 8 个节点稳定保持四列两行。

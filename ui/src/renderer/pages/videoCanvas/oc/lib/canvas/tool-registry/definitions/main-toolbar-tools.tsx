@@ -1,6 +1,7 @@
 import { Eraser, FolderOpen, Hand, Palette, Plus, Redo2, Settings2, SquareDashedMousePointer, Trash2, Undo2, X } from "lucide-react";
 
-import { registerToolbarTools, type ToolDefinition } from "@oc/lib/canvas/tool-registry";
+import { registerToolbarTools } from "../tool-registry";
+import type { ToolDefinition } from "../tool-definition";
 
 export const mainToolbarTools: ToolDefinition[] = [
     {

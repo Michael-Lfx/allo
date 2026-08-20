@@ -6,29 +6,39 @@ import type { AddNodeMenuCommand, AddNodeMenuContext, ToolCategory, ToolContext,
 const registry = new Map<ToolbarId, ToolDefinition[]>();
 const addNodeMenuRegistry: AddNodeMenuCommand[] = [];
 
-/** 批量注册工具到指定工具栏 */
+/** 批量注册工具到指定工具栏（同 id 幂等覆盖，避免 HMR/重复导入叠出多份图标） */
 export function registerToolbarTools(tools: ToolDefinition[]) {
     for (const tool of tools) {
-        const list = registry.get(tool.toolbar) ?? [];
+        const previous = registry.get(tool.toolbar) ?? [];
+        const list = previous.filter((item) => item.id !== tool.id);
         list.push(tool);
         registry.set(tool.toolbar, list);
     }
 }
 
-/** 注册添加节点菜单命令 */
+/** 注册添加节点菜单命令（同 id 幂等覆盖） */
 export function registerAddNodeMenuCommands(commands: AddNodeMenuCommand[]) {
-    addNodeMenuRegistry.push(...commands);
+    for (const command of commands) {
+        for (let index = addNodeMenuRegistry.length - 1; index >= 0; index -= 1) {
+            if (addNodeMenuRegistry[index]?.id === command.id) addNodeMenuRegistry.splice(index, 1);
+        }
+        addNodeMenuRegistry.push(command);
+    }
 }
 
-/** 获取某工具栏全部已注册工具（按 defaultOrder 升序） */
+/** 获取某工具栏全部已注册工具（按 defaultOrder 升序；同 id 仅保留最后一次注册） */
 export function getToolbarTools(toolbar: ToolbarId): ToolDefinition[] {
     const tools = registry.get(toolbar) ?? [];
-    return [...tools].sort((a, b) => a.defaultOrder - b.defaultOrder);
+    const deduped = new Map<string, ToolDefinition>();
+    for (const tool of tools) deduped.set(tool.id, tool);
+    return [...deduped.values()].sort((a, b) => a.defaultOrder - b.defaultOrder);
 }
 
-/** 获取添加节点菜单全部命令（按 defaultOrder 升序） */
+/** 获取添加节点菜单全部命令（按 defaultOrder 升序；同 id 仅保留最后一次注册） */
 export function getAddNodeMenuCommands(): AddNodeMenuCommand[] {
-    return [...addNodeMenuRegistry].sort((a, b) => a.defaultOrder - b.defaultOrder);
+    const deduped = new Map<string, AddNodeMenuCommand>();
+    for (const command of addNodeMenuRegistry) deduped.set(command.id, command);
+    return [...deduped.values()].sort((a, b) => a.defaultOrder - b.defaultOrder);
 }
 
 /** 默认偏好：全部工具按 defaultOrder 排列，全部可见 */

@@ -1,6 +1,7 @@
 import { AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd, AlignHorizontalJustifyStart, AlignHorizontalSpaceAround, AlignHorizontalSpaceBetween, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, AlignVerticalSpaceAround, AlignVerticalSpaceBetween, Film, FolderTree, Grid3X3, LayoutTemplate, LoaderCircle, Workflow } from "lucide-react";
 
-import { registerToolbarTools, type ToolDefinition } from "@oc/lib/canvas/tool-registry";
+import { registerToolbarTools } from "../tool-registry";
+import type { ToolDefinition } from "../tool-definition";
 
 export const selectionToolbarTools: ToolDefinition[] = [
     // 对齐组

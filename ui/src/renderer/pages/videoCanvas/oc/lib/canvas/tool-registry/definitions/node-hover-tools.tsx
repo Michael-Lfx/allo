@@ -1,7 +1,8 @@
 import { Download, FolderPlus, GalleryHorizontalEnd, Image as ImageIcon, Info, LoaderCircle, Lock, Maximize2, MessageSquare, Minus, Music2, Plus, RefreshCw, Settings2, Trash2, Unlock, Upload, UserRound, Video } from "lucide-react";
 
 import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@oc/lib/generation-error";
-import { registerToolbarTools, type ToolContext, type ToolDefinition } from "@oc/lib/canvas/tool-registry";
+import { registerToolbarTools } from "../tool-registry";
+import type { ToolContext, ToolDefinition } from "../tool-definition";
 import { CanvasNodeType } from "@oc/types/canvas";
 
 // 节点状态判定辅助函数——从 ToolContext 派生
