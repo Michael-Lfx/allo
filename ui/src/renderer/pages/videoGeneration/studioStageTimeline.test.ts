@@ -14,6 +14,7 @@ const base = {
 describe('macroStageOf', () => {
   test('maps planning, storyboard, render and film stages', () => {
     expect(macroStageOf('write_script')).toBe('brief');
+    expect(macroStageOf('plan_scene')).toBe('storyboard');
     expect(macroStageOf('design_storyboard')).toBe('storyboard');
     expect(macroStageOf('character_portraits_start')).toBe('storyboard');
     expect(macroStageOf('video_poll')).toBe('render');
@@ -128,5 +129,26 @@ describe('buildStudioStageTimeline', () => {
 
     expect(segments.map((s) => s.state)).toEqual(['done', 'done', 'done', 'done']);
     expect(segments[3].durationMs).toBe(60_000);
+  });
+
+  test('re-entering planning after storyboard does not keep the brief phase live', () => {
+    const segments = buildStudioStageTimeline({
+      ...base,
+      status: 'planning',
+      stage: 'planning',
+      hasStoryboard: true,
+      nowMs: Date.parse('2026-08-18T01:10:00.000Z'),
+      events: [
+        { stage: 'develop_story', message: '', at: '2026-08-18T01:00:00.000Z' },
+        { stage: 'design_storyboard', message: '', at: '2026-08-18T01:01:00.000Z' },
+        { stage: 'planned', message: '', at: '2026-08-18T01:02:00.000Z' },
+        { stage: 'cancelled', message: '', at: '2026-08-18T01:03:00.000Z' },
+        { stage: 'planning', message: '', at: '2026-08-18T01:04:00.000Z' },
+      ],
+    });
+
+    expect(segments.map((s) => s.state)).toEqual(['done', 'active', 'pending', 'pending']);
+    expect(segments[0].live).toBe(false);
+    expect(segments[1].live).toBe(true);
   });
 });

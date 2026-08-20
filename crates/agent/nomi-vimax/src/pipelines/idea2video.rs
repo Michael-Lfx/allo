@@ -294,6 +294,13 @@ impl Idea2VideoPipeline {
 
         let mut set = tokio::task::JoinSet::new();
         let sem = Arc::new(tokio::sync::Semaphore::new(3));
+        let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        emit_pct(
+            &progress,
+            "plan_scene",
+            &format!("正在规划 0/{scene_count} 个场景文本产物"),
+            55.0,
+        );
         for (i, scene_script) in scenes.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
             let backends = self.backends.clone();
@@ -311,13 +318,8 @@ impl Idea2VideoPipeline {
                 _ => enrich_requirement_for_scene_model_decides(user_requirement, i, scene_count),
             };
             let permit = Arc::clone(&sem);
-            let pct = 55.0 + 40.0 * (i as f32 / scene_count as f32);
-            emit_pct(
-                &progress,
-                "plan_scene",
-                &format!("正在规划场景文本产物（{}/{scene_count}）", i + 1),
-                pct,
-            );
+            let progress = progress.clone();
+            let done = Arc::clone(&done);
             set.spawn(async move {
                 let _permit = permit
                     .acquire_owned()
@@ -333,6 +335,14 @@ impl Idea2VideoPipeline {
                 let s2v = Script2VideoPipeline::new(backends, scene_dir);
                 s2v.plan_text_artifacts(&scene_script, &scene_req, &style, None)
                     .await?;
+                let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let pct = 55.0 + 40.0 * (finished as f32 / scene_count as f32);
+                emit_pct(
+                    &progress,
+                    "plan_scene",
+                    &format!("正在规划场景文本产物（{finished}/{scene_count}）"),
+                    pct,
+                );
                 Ok::<_, crate::error::VimaxError>(())
             });
         }

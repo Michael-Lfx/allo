@@ -6,7 +6,7 @@ import type { TFunction } from 'i18next';
 import { Progress, Button, Tag, Spin } from '@arco-design/web-react';
 import type { SessionStatus } from '../types';
 import { isInsufficientCreditsError } from '../creditsError';
-import { eventElapsed, formatElapsedClock } from '../progressEventElapsed';
+import { eventElapsed, formatElapsedClock, coalesceProgressEvents } from '../progressEventElapsed';
 import { statusLabel, statusTagColor } from './SessionCard';
 import { stageLabel } from '../stageI18n';
 
@@ -46,10 +46,10 @@ function classifyFailure(
     };
   }
 
-  // Prefer the stage just before "failed" in the event log.
+  // Prefer the stage just before terminal markers in the event log.
   const beforeFail = [...(events ?? [])]
     .reverse()
-    .find((e) => e.stage && e.stage !== 'failed');
+    .find((e) => e.stage && e.stage !== 'failed' && e.stage !== 'cancelled' && e.stage !== 'interrupted');
   const stageKey = beforeFail?.stage || stage || '';
 
   const planningLlmStages = new Set([
@@ -184,11 +184,9 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
   const chronological = status?.events ?? [];
   const events = useMemo(() => {
     const list = status?.events ?? [];
-    const windowStart = Math.max(0, list.length - 12);
-    return list
-      .slice(windowStart)
-      .map((ev, i) => ({ ev, index: windowStart + i }))
-      .reverse();
+    const coalesced = coalesceProgressEvents(list);
+    const windowStart = Math.max(0, coalesced.length - 12);
+    return coalesced.slice(windowStart).reverse();
   }, [status?.events]);
   const busy = status?.status === 'planning' || status?.status === 'rendering';
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -283,6 +281,14 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
               ? t('videoGeneration.workspace.progress.working')
               : t('videoGeneration.workspace.progress.idleStep'))}
         </div>
+        {status.message &&
+        status.message.trim() &&
+        status.message.trim() !== currentStage &&
+        !/^(planning|rendering|cancelled|interrupted)$/i.test(status.message.trim()) ? (
+          <div className='text-12px leading-18px text-[var(--color-text-2)] mt-2px'>
+            {status.message.trim()}
+          </div>
+        ) : null}
         {status.stage === 'video_poll' && typeof pollReport === 'number' ? (
           <div className='text-12px leading-18px text-[var(--color-text-2)] mt-2px tabular-nums'>
             {t('videoGeneration.workspace.progress.pollWait', {
@@ -342,19 +348,20 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
             {t('videoGeneration.workspace.progress.log')}
           </div>
           <div className='max-h-160px overflow-y-auto rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-10px py-8px flex flex-col gap-6px'>
-            {events.map(({ ev, index }, idx) => {
+            {events.map(({ event: ev, index, count }) => {
               const label = stageLabel(ev.stage, t);
               const elapsed = eventElapsed(chronological, index, {
                 busy,
                 nowMs,
                 updatedAt: status.updated_at,
+                untilIndex: index + count,
               });
               const clock =
                 elapsed.secs == null ? '' : formatElapsedClock(elapsed.secs);
               // Never show backend Chinese messages in the activity log — stage label is enough.
               return (
                 <div
-                  key={`${ev.at}-${ev.stage}-${idx}`}
+                  key={`${ev.at}-${ev.stage}-${index}`}
                   className='flex gap-8px text-11px leading-16px items-baseline'
                 >
                   <span className='shrink-0 text-[var(--color-text-3)] tabular-nums'>

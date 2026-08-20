@@ -66,7 +66,6 @@ const BRIEF_STAGES = new Set([
   'event_rag',
   'extract_scenes',
   'merge_characters',
-  'plan_scene',
   'develop_story',
   'extract_characters',
   'write_script',
@@ -75,6 +74,7 @@ const BRIEF_STAGES = new Set([
 
 /** Shot design plus the reference assets produced while planning. */
 const STORYBOARD_STAGES = new Set([
+  'plan_scene',
   'design_storyboard',
   'decompose_shots',
   'construct_camera_tree',
@@ -214,6 +214,7 @@ function failureIndex(input: StudioStageTimelineInput, fallback: number): number
   const variant = input.variant ?? 'film';
   const events = [...(input.events ?? [])].reverse();
   for (const ev of events) {
+    if (ev.stage === 'failed' || ev.stage === 'cancelled' || ev.stage === 'interrupted') continue;
     const key = macroStageOf(ev.stage, variant);
     if (key) return stageIndex(key, variant);
   }
@@ -228,10 +229,10 @@ export function buildStudioStageTimeline(
   const variant = input.variant ?? 'film';
   const keys = studioStageKeys(variant);
   const busy = input.status === 'planning' || input.status === 'rendering';
+  const activeIndex = studioStageActiveIndex(input);
 
   const durations: Array<number | null> = keys.map(() => null);
   const startedAt: Array<number | null> = keys.map(() => null);
-  let liveIndex = -1;
 
   for (let i = 0; i < events.length; i++) {
     const key = macroStageOf(events[i].stage, variant);
@@ -249,9 +250,10 @@ export function buildStudioStageTimeline(
       if (end != null) break;
     }
     if (end == null) {
-      if (busy) {
+      if (busy && index === activeIndex) {
+        // Only the highest reached phase keeps a live clock. A resume that
+        // re-emits earlier stages (e.g. `planning`) must not make「创意」tick again.
         end = input.nowMs;
-        liveIndex = index;
       } else {
         end = parseEventMs(input.updatedAt ?? undefined);
       }
@@ -261,7 +263,6 @@ export function buildStudioStageTimeline(
     durations[index] = (durations[index] ?? 0) + Math.max(0, end - start);
   }
 
-  const activeIndex = studioStageActiveIndex(input);
   const failed = input.status === 'failed';
   const cancelled = input.status === 'cancelled' || input.status === 'interrupted';
   const terminalIndex =
@@ -294,7 +295,7 @@ export function buildStudioStageTimeline(
       state,
       durationMs: durations[index],
       startedAtMs: startedAt[index],
-      live: state === 'active' && (liveIndex === index || durations[index] == null),
+      live: state === 'active' && busy,
       weight: weights[index],
     };
   });
