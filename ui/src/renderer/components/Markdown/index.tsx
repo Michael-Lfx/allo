@@ -22,10 +22,11 @@ import { isLocalImageSource } from '@/common/utils/localPath';
 import CodeBlock from './CodeBlock';
 import ShadowView from './ShadowView';
 import type { MarkdownViewProps } from './markdownViewProps';
+import { remarkSafeBreaks } from './remarkSafeBreaks';
 
 export type { MarkdownViewProps } from './markdownViewProps';
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks];
+const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks, remarkSafeBreaks];
 
 const markdownUrlTransform: UrlTransform = (url, key, node) => {
   if (key === 'src' && node.tagName === 'img') {
