@@ -18,8 +18,8 @@ import { useTranslation } from 'react-i18next';
 import { Button, Empty, Popover, Spin, Tooltip } from '@arco-design/web-react';
 import { Bug, Info, Refresh, SortAmountDown, SortAmountUp } from '@icon-park/react';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
+import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import type { ConversationId } from '@/common/types/ids';
-import { useConfig } from '@/renderer/hooks/config/useConfig';
 import {
   capabilityHeaderButtonClass,
   capabilityHeaderButtonStyle,
@@ -154,7 +154,7 @@ export const SessionLogsRoot: React.FC<SessionLogsRootProps> = ({
   onViewChange,
   children,
 }) => {
-  const [developerMode] = useConfig('system.developerMode');
+  const { active: developerMode } = useDeveloperModeGate();
   const logsVisible = view === 'logs';
   const [activated, setActivated] = useState(false);
   const [loading, setLoading] = useState(false);

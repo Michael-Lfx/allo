@@ -6,6 +6,7 @@
 
 import { configService } from '@/common/config/configService';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
+import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import { SettingsRow } from '@/renderer/components/settings/SettingsPagePrimitives';
 import { Message, Switch } from '@arco-design/web-react';
 import React, { useState } from 'react';
@@ -15,8 +16,11 @@ import DeveloperModePasswordModal from './DeveloperModePasswordModal';
 const DeveloperModeSetting: React.FC = () => {
   const { t } = useTranslation();
   const [developerMode, setDeveloperMode] = useConfig('system.developerMode');
+  const { uiEnabled } = useDeveloperModeGate();
   const [passwordModalVisible, setPasswordModalVisible] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  if (!uiEnabled) return null;
 
   const enabled = developerMode === true;
 

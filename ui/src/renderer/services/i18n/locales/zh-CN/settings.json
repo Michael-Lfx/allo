@@ -1786,6 +1786,7 @@
     "passwordIncorrect": "密码不正确，请重试",
     "enableConfirm": "确认启用",
     "enabled": "开发者模式已启用",
+    "revealed": "已在系统设置中显示进入开发者模式",
     "enableFailed": "启用开发者模式失败，请重试",
     "disableFailed": "关闭开发者模式失败，请重试"
   }

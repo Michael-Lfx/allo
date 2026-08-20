@@ -32,3 +32,46 @@ const DEVELOPER_MODE_UNLOCK_PHRASE = 'whosyourdaddy';
 export function verifyDeveloperModePassword(input: string): boolean {
   return input.trim() === DEVELOPER_MODE_UNLOCK_PHRASE;
 }
+
+/** Vite-like env slice used to distinguish `bun run dev` from packaged builds. */
+export type DeveloperModeBuildEnv = {
+  DEV?: boolean;
+  PROD?: boolean;
+};
+
+/** Taps on Settings → About title required to reveal the developer-mode switch. */
+export const DEVELOPER_MODE_REVEAL_TAP_COUNT = 5;
+
+export function nextDeveloperModeRevealTap(currentTaps: number): {
+  taps: number;
+  justRevealed: boolean;
+} {
+  const taps = currentTaps + 1;
+  return {
+    taps,
+    justRevealed: taps === DEVELOPER_MODE_REVEAL_TAP_COUNT,
+  };
+}
+
+/**
+ * Official installers hide the unlock UI until About-title taps reveal it.
+ * Local `bun run dev` / `dev:web` keep the unlock UI.
+ */
+export function isDeveloperModeUiEnabled(
+  env: DeveloperModeBuildEnv = import.meta.env,
+  revealed = false
+): boolean {
+  return env.DEV === true || revealed === true;
+}
+
+/**
+ * Stored `system.developerMode` only unlocks gated surfaces in local dev builds
+ * or after the About-title reveal in production packages.
+ */
+export function isDeveloperModeActive(
+  pref: boolean | undefined,
+  env: DeveloperModeBuildEnv = import.meta.env,
+  revealed = false
+): boolean {
+  return isDeveloperModeUiEnabled(env, revealed) && pref === true;
+}

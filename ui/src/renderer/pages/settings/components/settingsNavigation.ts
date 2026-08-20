@@ -8,7 +8,7 @@ import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type IExtensionSettingsTab } from '@/common/adapter/ipcBridge';
 import { filterDeveloperGatedTabs } from '@/common/config/developerMode';
-import { useConfig } from '@/renderer/hooks/config/useConfig';
+import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import { useExtI18n } from '@/renderer/hooks/system/useExtI18n';
 import { useExtensionSettingsTabs } from '@/renderer/hooks/system/useExtensionSettingsTabs';
 import type { I18nKey } from '@/renderer/services/i18n';
@@ -185,7 +185,7 @@ export function useSettingsNavigation(): ReturnType<typeof useExtensionSettingsT
   groups: SettingsNavGroup[];
 } {
   const { t } = useTranslation();
-  const [developerMode] = useConfig('system.developerMode');
+  const { active: developerMode } = useDeveloperModeGate();
   const { resolveExtTabName } = useExtI18n();
   const extensionState = useExtensionSettingsTabs();
 
@@ -193,7 +193,7 @@ export function useSettingsNavigation(): ReturnType<typeof useExtensionSettingsT
     const visibleBuiltinIds = new Set(
       filterDeveloperGatedTabs(
         BUILTIN_NAVIGATION.map((item) => item.id),
-        developerMode === true
+        developerMode
       )
     );
     const builtinItems = BUILTIN_NAVIGATION.filter((item) => visibleBuiltinIds.has(item.id)).map(

@@ -38,4 +38,13 @@ describe('public contact links', () => {
     expect(updateModalSource.includes('openReleasePage')).toBe(false);
     expect(updateModalSource.includes('openProductWebsite')).toBe(false);
   });
+
+  test('five taps on the About title reveal the developer-mode switch in System settings', () => {
+    const aboutSource = readSource(new URL('./AboutModalContent.tsx', import.meta.url));
+    expect(aboutSource.includes("t('settings.about')")).toBe(true);
+    expect(aboutSource.includes('nextDeveloperModeRevealTap')).toBe(true);
+    expect(aboutSource.includes('handleAboutTitleClick')).toBe(true);
+    expect(aboutSource.includes('system.developerModeUiRevealed')).toBe(true);
+    expect(aboutSource.includes('DeveloperModeSetting')).toBe(false);
+  });
 });

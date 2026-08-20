@@ -18,7 +18,7 @@ import {
   Typography,
 } from '@arco-design/web-react';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
-import { useConfig } from '@/renderer/hooks/config/useConfig';
+import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import EvalModelSelector, { useEvalAutogenModel } from './EvalModelSelector';
 import { evalApi, type EvalCaseTraceView, type EvalCaseView, type EvalRunView, type EvalSuiteDescriptor } from './api';
 
@@ -50,7 +50,7 @@ function statusColor(status: string): string {
 
 const EvalPage: React.FC = () => {
   const { t } = useTranslation();
-  const [developerMode] = useConfig('system.developerMode');
+  const { active: developerMode } = useDeveloperModeGate();
   const evalModel = useEvalAutogenModel();
   const [suites, setSuites] = useState<EvalSuiteDescriptor[]>([]);
   const [suiteId, setSuiteId] = useState('office_tasks');

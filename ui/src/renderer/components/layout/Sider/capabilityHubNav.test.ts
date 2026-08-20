@@ -52,7 +52,7 @@ describe('capability hub navigation', () => {
     const evalEntrySource = readSource(new URL('./SiderNav/SiderEvalEntry.tsx', import.meta.url));
 
     expect(siderSource.includes('SiderEvalEntry')).toBe(true);
-    expect(siderSource.includes("useConfig('system.developerMode')")).toBe(true);
+    expect(siderSource.includes('useDeveloperModeGate')).toBe(true);
     expect(siderSource.includes('developerMode === true')).toBe(true);
     expect(siderSource.indexOf('<SiderLearningEntry')).toBeLessThan(siderSource.indexOf('<SiderEvalEntry'));
     expect(evalEntrySource.includes("t('eval.dev.tag')")).toBe(true);

@@ -5017,6 +5017,7 @@ export type I18nKey =
   | 'settings.developerMode.passwordModalDesc'
   | 'settings.developerMode.passwordModalTitle'
   | 'settings.developerMode.passwordPlaceholder'
+  | 'settings.developerMode.revealed'
   | 'settings.developerMode.sectionTitle'
   | 'settings.developerMode.title'
   | 'settings.dingtalk.agent'

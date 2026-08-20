@@ -1,8 +1,11 @@
 
-
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Message } from '@arco-design/web-react';
 import { httpGet } from '@/common/adapter/httpBridge';
+import { nextDeveloperModeRevealTap } from '@/common/config/developerMode';
+import { useConfig } from '@/renderer/hooks/config/useConfig';
+import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import {
   SettingsList,
   SettingsPageHeader,
@@ -19,6 +22,9 @@ const healthGet = httpGet<{ version?: string }>('/health');
 const AboutModalContent: React.FC = () => {
   const { t } = useTranslation();
   const [appVersion, setAppVersion] = useState('');
+  const [taps, setTaps] = useState(0);
+  const { uiEnabled } = useDeveloperModeGate();
+  const [, setRevealed] = useConfig('system.developerModeUiRevealed');
 
   useEffect(() => {
     let alive = true;
@@ -33,6 +39,20 @@ const AboutModalContent: React.FC = () => {
     };
   }, []);
 
+  const handleAboutTitleClick = () => {
+    if (uiEnabled) return;
+    const next = nextDeveloperModeRevealTap(taps);
+    setTaps(next.taps);
+    if (!next.justRevealed) return;
+    void setRevealed(true)
+      .then(() => {
+        Message.success(t('settings.developerMode.revealed'));
+      })
+      .catch(() => {
+        Message.error(t('settings.developerMode.enableFailed'));
+      });
+  };
+
   return (
     <div className='w-full space-y-24px pb-16px'>
       <SettingsPageHeader
@@ -42,7 +62,15 @@ const AboutModalContent: React.FC = () => {
       />
       <SettingsList aria-label={t('settings.about')}>
         <SettingsRow
-          label={t('settings.about')}
+          label={
+            <button
+              type='button'
+              className='m-0 appearance-none border-0 bg-transparent p-0 text-inherit font-inherit cursor-default select-none'
+              onClick={handleAboutTitleClick}
+            >
+              {t('settings.about')}
+            </button>
+          }
           description={t('settings.appDescription')}
           control={<span className='text-13px tabular-nums text-t-secondary'>v{appVersion || '—'}</span>}
         />

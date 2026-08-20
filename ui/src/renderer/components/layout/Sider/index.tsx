@@ -5,7 +5,7 @@ import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/s
 import { useAuth } from '@renderer/hooks/context/AuthContext';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
-import { useConfig } from '@/renderer/hooks/config/useConfig';
+import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import { blurActiveElement } from '@renderer/utils/ui/focus';
 import { isDesktopShell } from '@renderer/utils/platform';
 import { SERVER_MANAGED_MODELS } from '@/common/config/constants';
@@ -51,7 +51,7 @@ interface SiderProps {
  */
 const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const { t } = useTranslation();
-  const [developerMode] = useConfig('system.developerMode');
+  const { active: developerMode } = useDeveloperModeGate();
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const location = useLocation();

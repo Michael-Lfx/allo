@@ -18,7 +18,7 @@ describe('AgentTraceInspector', () => {
     const layout = readSource(new URL('../ChatLayout/index.tsx', import.meta.url));
     const layoutCss = readSource(new URL('../ChatLayout/chat-layout.css', import.meta.url));
 
-    expect(inspector.includes("useConfig('system.developerMode')")).toBe(true);
+    expect(inspector.includes('useDeveloperModeGate')).toBe(true);
     expect(inspector.includes('if (developerMode !== true)')).toBe(true);
     expect(inspector.includes('return null')).toBe(true);
     expect(inspector.includes('/api/debug/agent-traces')).toBe(false);

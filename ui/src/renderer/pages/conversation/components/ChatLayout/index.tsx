@@ -4,7 +4,7 @@ import { browserStorageKey } from '@/common/utils/browserStorageKey';
 import type { PresetInfo } from '@/renderer/hooks/agent/usePresetInfo';
 import appLogo from '@/renderer/assets/logo.svg';
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
-import { useConfig } from '@/renderer/hooks/config/useConfig';
+import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
 import ChatTitleEditor from '@/renderer/pages/conversation/components/ChatTitleEditor';
@@ -110,7 +110,7 @@ export interface ChatLayoutProps {
 const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
   const { t } = useTranslation();
   const { conversation_id, workspacePath, isTemporaryWorkspace } = props;
-  const [developerMode] = useConfig('system.developerMode');
+  const { active: developerMode } = useDeveloperModeGate();
   const [columnView, setColumnView] = useState<ConversationColumnView>('dialogue');
   const conversationViewKey = conversation_id ?? '';
   const conversationViewRef = useRef(conversationViewKey);

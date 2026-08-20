@@ -1,6 +1,7 @@
 import { ipcBridge } from '@/common';
 import type { IStartOnBootStatus } from '@/common/adapter/ipcBridge';
 import { configService } from '@/common/config/configService';
+import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import NomiSelect from '@/renderer/components/base/NomiSelect';
 import FeedbackButton from '@/renderer/components/base/FeedbackButton';
 import LanguageSwitcher from '@/renderer/components/settings/LanguageSwitcher';
@@ -30,6 +31,7 @@ import FactoryResetModal from './FactoryResetModal';
  */
 const SystemModalContent: React.FC = () => {
   const { t } = useTranslation();
+  const { uiEnabled } = useDeveloperModeGate();
   const [form] = Form.useForm();
   const [modalRaw, modalContextHolder] = Modal.useModal();
   const modal = modalRaw as Required<typeof modalRaw>;
@@ -396,9 +398,11 @@ const SystemModalContent: React.FC = () => {
         {error && <SettingsStatus tone='error' className='mt-8px'>{error} <FeedbackButton className='ml-6px' /></SettingsStatus>}
       </SettingsGroup>
 
-      <SettingsGroup title={t('settings.sectionDeveloper')}>
-        <SettingsList><DeveloperModeSetting /></SettingsList>
-      </SettingsGroup>
+      {uiEnabled && (
+        <SettingsGroup title={t('settings.sectionDeveloper')}>
+          <SettingsList><DeveloperModeSetting /></SettingsList>
+        </SettingsGroup>
+      )}
 
       <SettingsGroup title={t('settings.sectionDanger')}>
         <SettingsList>

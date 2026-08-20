@@ -12,7 +12,7 @@ describe('agent eval lab', () => {
     );
     const router = readSource(new URL('../../components/layout/Router.tsx', import.meta.url));
 
-    expect(page.includes("useConfig('system.developerMode')")).toBe(true);
+    expect(page.includes('useDeveloperModeGate')).toBe(true);
     expect(page.includes("Navigate to='/guid'")).toBe(true);
     expect(page.includes('/api/debug/agent-evals')).toBe(false);
     expect(page.includes("useState('office_tasks')")).toBe(true);
@@ -25,7 +25,7 @@ describe('agent eval lab', () => {
     expect(page.includes('workspace_label')).toBe(true);
     expect(page.includes('TraceView')).toBe(true);
     expect(sider.includes('SiderEvalEntry')).toBe(true);
-    expect(sider.includes("useConfig('system.developerMode')")).toBe(true);
+    expect(sider.includes('useDeveloperModeGate')).toBe(true);
     expect(sider.includes('developerMode === true')).toBe(true);
     expect(entry.includes("t('eval.dev.tag')")).toBe(true);
     expect(router.includes("path='/eval'")).toBe(true);

@@ -5,6 +5,7 @@ import { Button, Input, Message, Steps, Switch } from '@arco-design/web-react';
 import { Refresh } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import type { ICloudDeviceActivationStatus, ICloudServerSettings, ICloudWhoami } from '@/common/adapter/ipcBridge';
+import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import AuthField from '@renderer/components/auth/AuthField';
 import AuthCooldownHint from '@renderer/components/auth/AuthCooldownHint';
 import AuthPrimaryButton from '@renderer/components/auth/AuthPrimaryButton';
@@ -18,14 +19,13 @@ import {
   SettingsSection,
   SettingsRow,
 } from '@/renderer/components/settings/SettingsPagePrimitives';
-import { useConfig } from '@/renderer/hooks/config/useConfig';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
 import './CloudLoginSettings.css';
 import '@renderer/components/auth/auth.css';
 
 const CloudLoginSettings: React.FC = () => {
   const { t } = useTranslation();
-  const [developerMode] = useConfig('system.developerMode');
+  const { active: developerMode } = useDeveloperModeGate();
   const [serverSettings, setServerSettings] = useState<ICloudServerSettings | null>(null);
   const [savedServerSettings, setSavedServerSettings] = useState<ICloudServerSettings | null>(null);
   const [serverSettingsError, setServerSettingsError] = useState<string | null>(null);

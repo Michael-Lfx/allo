@@ -1785,6 +1785,7 @@
     "passwordIncorrect": "Incorrect password. Please try again.",
     "enableConfirm": "Enable",
     "enabled": "Developer mode enabled",
+    "revealed": "Developer mode is now visible in Settings → System",
     "enableFailed": "Failed to enable developer mode. Please try again.",
     "disableFailed": "Failed to disable developer mode. Please try again."
   }
