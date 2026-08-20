@@ -210,13 +210,38 @@ impl SessionIndex {
         let raw = std::fs::read_to_string(&path)?;
         match serde_json::from_str(&raw) {
             Ok(v) => Ok(v),
-            Err(_) => {
-                let backup = path.with_extension(format!(
-                    "json.corrupt-{}",
-                    chrono::Local::now().format("%Y%m%d-%H%M%S")
-                ));
-                let _ = std::fs::rename(&path, &backup);
-                Ok(SessionsFile::default())
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    path = %path.display(),
+                    "failed to parse vimax sessions.json; attempting per-record salvage"
+                );
+                match salvage_sessions_file(&raw) {
+                    Ok(file) if !file.sessions.is_empty() => {
+                        tracing::warn!(
+                            recovered = file.sessions.len(),
+                            "salvaged vimax session index after parse failure"
+                        );
+                        Ok(file)
+                    }
+                    Ok(_) | Err(_) => {
+                        let backup = path.with_extension(format!(
+                            "json.corrupt-{}",
+                            chrono::Local::now().format("%Y%m%d-%H%M%S")
+                        ));
+                        match std::fs::copy(&path, &backup) {
+                            Ok(_) => tracing::error!(
+                                backup = %backup.display(),
+                                "left original sessions.json in place; not resetting the index"
+                            ),
+                            Err(copy_err) => tracing::error!(
+                                error = %copy_err,
+                                "failed to backup unreadable sessions.json"
+                            ),
+                        }
+                        Err(e.into())
+                    }
+                }
             }
         }
     }
@@ -690,6 +715,36 @@ fn guess_mime(path: &Path) -> Option<String> {
     }
 }
 
+/// Recover whatever session records still deserialize after a full-file parse failure.
+fn salvage_sessions_file(raw: &str) -> Result<SessionsFile, serde_json::Error> {
+    let value: Value = serde_json::from_str(raw)?;
+    let mut file = SessionsFile::default();
+    if let Some(id) = value.get("active_session_id").and_then(|v| v.as_str()) {
+        file.active_session_id = id.to_string();
+    }
+    let Some(map) = value.get("sessions").and_then(|v| v.as_object()) else {
+        return Ok(file);
+    };
+    for (id, rec) in map {
+        match serde_json::from_value::<SessionRecord>(rec.clone()) {
+            Ok(mut record) => {
+                if record.session_id.is_empty() {
+                    record.session_id = id.clone();
+                }
+                file.sessions.insert(id.clone(), record);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    session_id = %id,
+                    error = %err,
+                    "skipping unreadable vimax session record"
+                );
+            }
+        }
+    }
+    Ok(file)
+}
+
 fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> VimaxResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -777,6 +832,60 @@ mod import_export_tests {
         assert_eq!(healed.stage, "video_clips_start");
         assert_eq!(healed.summary, INTERRUPTED_SUMMARY);
         assert_eq!(index.reconcile_orphaned_active_runs().unwrap(), 0);
+    }
+
+    #[test]
+    fn unknown_run_status_does_not_fail_deserialize() {
+        let status: RunStatus = serde_json::from_str("\"paused\"").unwrap();
+        assert_eq!(status, RunStatus::Idle);
+        let interrupted: RunStatus = serde_json::from_str("\"interrupted\"").unwrap();
+        assert_eq!(interrupted, RunStatus::Interrupted);
+    }
+
+    #[test]
+    fn load_salvages_readable_records_instead_of_resetting_index() {
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let keep = index
+            .create(WorkflowKind::Idea2Video, Some("Keep me".into()))
+            .unwrap();
+        let raw = serde_json::json!({
+            "active_session_id": keep.session_id,
+            "sessions": {
+                keep.session_id.clone(): serde_json::to_value(index.get(&keep.session_id).unwrap()).unwrap(),
+                "broken": {
+                    "id": "broken",
+                    "working_dir": ".working_dir/broken",
+                    "workflow": "not-a-real-workflow",
+                    "status": "succeeded"
+                }
+            }
+        });
+        std::fs::write(index.sessions_path(), serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+
+        let listed = index.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id, keep.session_id);
+        assert_eq!(listed[0].title, "Keep me");
+    }
+
+    #[test]
+    fn load_does_not_wipe_sessions_file_when_json_is_invalid() {
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let path = index.sessions_path();
+        std::fs::write(&path, "not-json{{{").unwrap();
+
+        let err = index.load().unwrap_err();
+        assert!(matches!(err, VimaxError::Json(_)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not-json{{{");
+        let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1);
     }
 
     #[test]
