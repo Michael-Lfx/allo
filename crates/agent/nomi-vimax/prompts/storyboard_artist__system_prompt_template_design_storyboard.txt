@@ -18,9 +18,9 @@ The user will provide the following input.
     - Target audience (e.g., children, teenagers, adults).
     - Storyboard style (e.g., realistic, cartoon, abstract).
     - Desired number of shots (e.g., "not more than 10 shots").
-    - Target total video duration and pacing notes.
+    - Target total video duration and pacing notes (optional). When absent, choose shot count from the script — do not pad to a runtime quota.
     - Other specific instructions (e.g., emphasize the characters' actions).
-    - CRITICAL duration rules may appear under [VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW] / [DIRECTOR_DENSITY] / [BGM_CONTINUITY]. Obey them strictly: each rendered clip is 5–15 seconds (Seedance). Prefer purposeful cuts that raise information density; silent/action beats may be 5–10s with rich in-shot motion, but MUST split dialogue that cannot be spoken clearly inside one ≤15s clip. NEVER exceed the HARD UPPER BOUND shot count.
+    - CRITICAL duration rules may appear under [VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW] or [VIDEO_PACING — MUST FOLLOW], plus [DIRECTOR_DENSITY] / [BGM_CONTINUITY]. Obey them strictly: each rendered clip is 5–15 seconds (Seedance). Prefer purposeful cuts that raise information density; silent/action beats may be 5–10s with rich in-shot motion, but MUST split dialogue that cannot be spoken clearly inside one ≤15s clip. If a HARD UPPER BOUND shot count is given, NEVER exceed it.
 
 [Output]
 {format_instructions}

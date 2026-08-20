@@ -152,17 +152,7 @@ pub fn three_view_image_prompt(identifier: &str, features: &str, style: &str) ->
     include_str!("../../prompts/character_portraits_generator__prompt_template_three_view.txt")
         .replace("{identifier}", identifier)
         .replace("{features}", &features)
-        .replace("{style}", &crate::planning::portrait_style_line_for_image(style))
-        .replace("{look_lock}", &crate::planning::production_look_lock(style))
-        .replace("{medium_lock}", &crate::planning::portrait_medium_lock_line(style))
-        .replace(
-            "{face_guidance}",
-            &crate::planning::portrait_face_clause_for_character(identifier, &features, style),
-        )
-        .replace(
-            "{age_lock}",
-            &crate::planning::child_style_lock_if_needed_for_style(identifier, &features, style),
-        )
+        .replace("{style}", &crate::planning::resolve_visual_style(style))
 }
 
 fn safe_file_stem(s: &str) -> String {
@@ -245,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn three_view_prompt_puts_features_first_and_locks_one_identity() {
+    fn three_view_prompt_matches_vimax_shape() {
         let prompt = include_str!(
             "../../prompts/character_portraits_generator__prompt_template_three_view.txt"
         )
@@ -254,45 +244,42 @@ mod tests {
             "{features}",
             "(static) red hanfu, black long hair; (dynamic) jade pendant",
         )
-        .replace("{style}", "cinematic film look")
-        .replace("{look_lock}", "PRODUCTION LOOK LOCK")
-        .replace("{medium_lock}", "live-action cinematic")
-        .replace("{face_guidance}", "Clean healthy skin")
-        .replace("{age_lock}", "");
+        .replace("{style}", "cinematic film look");
         let feat_pos = prompt.find("Features").expect("Features");
         let style_pos = prompt.find("Style:").expect("Style");
         assert!(feat_pos < style_pos);
         let lower = prompt.to_ascii_lowercase();
-        assert!(lower.contains("same person") || lower.contains("one character"));
-        assert!(lower.contains("three-panel") || lower.contains("three-view") || lower.contains("panels"));
+        assert!(lower.contains("pure white"));
+        assert!(lower.contains("16:9"));
+        assert!(lower.contains("front") && lower.contains("profile") && lower.contains("back"));
         assert!(prompt.contains("red hanfu"));
-        assert!(lower.contains("no dirt") || lower.contains("clean"));
-        assert!(lower.contains("same production look") || lower.contains("production look lock"));
-        assert!(!lower.contains("theme lock"));
+        assert!(prompt.contains("人物安全约束"));
+        assert!(prompt.contains("不得套用现实真人、明星长相"));
+        assert!(!prompt.contains("{look_lock}"));
+        assert!(!prompt.contains("{medium_lock}"));
+        assert!(!prompt.contains("{face_guidance}"));
+        assert!(!prompt.contains("{age_lock}"));
     }
 
     #[test]
-    fn three_view_prompt_shares_production_look_lock_with_world() {
+    fn three_view_prompt_does_not_stack_medium_bans() {
         let prompt = three_view_image_prompt(
             "李薇",
             "(static) red hanfu, black long hair; (dynamic) jade pendant",
             "cinematic film look",
         );
-        let look = crate::planning::production_look_lock("cinematic film look");
-        assert!(prompt.contains(&look));
-        assert!(!prompt.contains("{look_lock}"));
-        let lower = prompt.to_ascii_lowercase();
-        assert!(lower.contains("environment") || lower.contains("prop"));
-        assert!(prompt.contains("非真人") || prompt.contains("无明星") || prompt.contains("无真实人脸"));
-        assert!(
-            lower.contains("fictional")
-                || lower.contains("identity safety")
-                || prompt.contains("无明星样貌")
-        );
+        assert!(!prompt.contains("PRODUCTION LOOK LOCK"));
+        assert!(!prompt.contains("MEDIUM LOCK"));
+        assert!(!prompt.contains("CAST STYLE LOCK"));
+        assert!(!prompt.contains("Absolutely NOT anime"));
+        assert_eq!(prompt.matches("not anime").count(), 0);
+        assert_eq!(prompt.matches("禁止动漫").count(), 0);
+        assert!(prompt.contains("人物安全约束"));
+        assert!(prompt.contains("不得套用现实真人、明星长相"));
     }
 
     #[test]
-    fn child_three_view_prompt_includes_child_face_lock() {
+    fn child_three_view_prompt_stays_vimax_simple() {
         let ch = CharacterInScene {
             idx: 0,
             identifier_in_scene: "小明".into(),
@@ -302,8 +289,9 @@ mod tests {
             voice_profile: None,
         };
         let prompt = CharacterPortraitsGenerator::build_three_view_prompt(&ch, "cinematic film look");
-        let lower = prompt.to_ascii_lowercase();
-        assert!(lower.contains("child") || prompt.contains("儿童") || lower.contains("young"));
-        assert!(lower.contains("makeup") || lower.contains("dirt") || prompt.contains("妆"));
+        assert!(prompt.contains("8岁男孩"));
+        assert!(!prompt.contains("not anime/cartoon/chibi"));
+        assert!(!prompt.contains("CHILD FACE LOCK"));
+        assert!(prompt.contains("人物安全约束"));
     }
 }

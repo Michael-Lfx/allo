@@ -43,9 +43,6 @@ import {
   CLIP_DURATION_MIN_SECS,
   CLIP_DURATION_STEP_SECS,
   clampDuration,
-  DURATION_MAX_SECS,
-  DURATION_MIN_SECS,
-  DURATION_STEP_SECS,
 } from './durationBounds';
 import {
   clearVideoGenerationSessionMemory,
@@ -78,12 +75,6 @@ function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
     style: draft.style.trim() || undefined,
     vertical_skill_ids:
       draft.verticalSkillIds.length > 0 ? draft.verticalSkillIds : undefined,
-    target_duration_secs: clampDuration(
-      draft.preferences.targetDurationSecs,
-      DURATION_MIN_SECS,
-      DURATION_MAX_SECS,
-      DURATION_STEP_SECS
-    ),
     aspect_ratio: draft.preferences.aspectRatio,
     resolution: draft.preferences.resolution,
     fps: draft.preferences.fps,

@@ -15,8 +15,7 @@ use crate::error::{VimaxError, VimaxResult};
 use crate::media_local;
 use crate::pipelines::{
     model_supports_action_imitation, Action2VideoPipeline, Idea2VideoPipeline, Novel2VideoPipeline,
-    PipelineBackends,
-    Script2VideoPipeline,
+    PipelineBackends, ScriptFilmPipeline,
 };
 use crate::progress::{RenderStatus, RunStatus};
 use crate::session::{
@@ -940,13 +939,15 @@ impl VimaxService {
             .working_dir(id)?
             .join(record.workflow.artifact_root());
         tokio::fs::create_dir_all(&work).await?;
-        let target_secs = crate::planning::normalize_target_duration_secs(
-            if record.target_duration_secs > 0 {
-                Some(record.target_duration_secs)
-            } else {
-                target_duration_secs
-            },
-        );
+        let target_secs = if record.target_duration_secs > 0 {
+            Some(crate::planning::normalize_target_duration_secs(Some(
+                record.target_duration_secs,
+            )))
+        } else {
+            target_duration_secs
+                .filter(|&s| s > 0)
+                .map(|s| crate::planning::normalize_target_duration_secs(Some(s)))
+        };
         // Persist so render / cover / child scenes share the same Seedance ratio.
         let prev_aspect_path = work.join("aspect_ratio.txt");
         let prev_aspect = tokio::fs::read_to_string(&prev_aspect_path)
@@ -959,7 +960,7 @@ impl VimaxService {
             let cover = work.join(crate::agents::COVER_FILENAME);
             let _ = tokio::fs::remove_file(&cover).await;
         }
-        // Idea/Novel: film-level scene budget. Script2Video: whole target = one scene.
+        // Idea/Novel/Script: film-level enrich. Per-scene pacing is applied inside each pipeline.
         // Language lock uses the user's creative source so Chinese ideas stay Chinese in planning.
         let lang_sources = [
             record.idea.as_str(),
@@ -991,26 +992,26 @@ impl VimaxService {
             &lang_sources,
         );
         let req = match record.workflow {
-            WorkflowKind::Script2Video => {
-                crate::planning::enrich_requirement_for_planning(&req_base, Some(target_secs))
-            }
-            WorkflowKind::Idea2Video | WorkflowKind::Novel2Video => {
-                crate::planning::enrich_requirement_for_film(&req_base, Some(target_secs))
+            WorkflowKind::Script2Video
+            | WorkflowKind::Idea2Video
+            | WorkflowKind::Novel2Video => {
+                crate::planning::enrich_requirement_for_film(&req_base, target_secs)
             }
             WorkflowKind::Action2Video => req_base,
         };
-        // Persist so render / child scene dirs can allocate clip lengths.
-        let _ = crate::session::write_text_artifact(
-            &work.join("target_duration_secs.txt"),
-            &target_secs.to_string(),
-        )
-        .await;
-        // Keep session field aligned with the normalized budget used for planning.
-        if record.target_duration_secs != target_secs {
-            let _ = self
-                .index
-                .update_fields(id, |r| r.target_duration_secs = target_secs);
-            // Local copy used below stays consistent for logging / cover.
+        // Persist an explicit budget only. Agent mode omits duration so ViMax-style
+        // planning lets the model size the film from the story.
+        if let Some(target_secs) = target_secs {
+            let _ = crate::session::write_text_artifact(
+                &work.join("target_duration_secs.txt"),
+                &target_secs.to_string(),
+            )
+            .await;
+            if record.target_duration_secs != target_secs {
+                let _ = self
+                    .index
+                    .update_fields(id, |r| r.target_duration_secs = target_secs);
+            }
         }
         let style_s = crate::planning::resolve_visual_style(if skill_overlay.style.is_empty() {
             if record.style.is_empty() {
@@ -1064,7 +1065,7 @@ impl VimaxService {
                 if record.script.is_empty() {
                     let _ = self.index.update_fields(id, |r| r.script = script_text.clone());
                 }
-                Script2VideoPipeline::new(backends, work)
+                ScriptFilmPipeline::new(backends, work)
                     .plan_text_artifacts(&script_text, &req, &style_s, Some(progress))
                     .await?;
             }
@@ -1135,21 +1136,15 @@ impl VimaxService {
         if token.is_cancelled() {
             return Err(VimaxError::Cancelled);
         }
-        let mut record = self.index.get(id)?;
+        let record = self.index.get(id)?;
         ensure_action_imitation_video_model(&record)?;
-        let target_secs = crate::planning::normalize_target_duration_secs(
-            if record.target_duration_secs > 0 {
-                Some(record.target_duration_secs)
-            } else {
-                None
-            },
-        );
-        if record.target_duration_secs == 0 {
-            let _ = self
-                .index
-                .update_fields(id, |r| r.target_duration_secs = target_secs);
-            record.target_duration_secs = target_secs;
-        }
+        let target_secs = if record.target_duration_secs > 0 {
+            Some(crate::planning::normalize_target_duration_secs(Some(
+                record.target_duration_secs,
+            )))
+        } else {
+            None
+        };
         let backends = self.backends_for(&record, Some(token.clone())).await?;
         let session_root = self.index.working_dir(id)?;
         // Imported projects may still carry another machine's absolute registry paths.
@@ -1172,11 +1167,13 @@ impl VimaxService {
             }
         }
         let work = session_root.join(record.workflow.artifact_root());
-        let _ = crate::session::write_text_artifact(
-            &work.join("target_duration_secs.txt"),
-            &target_secs.to_string(),
-        )
-        .await;
+        if let Some(target_secs) = target_secs {
+            let _ = crate::session::write_text_artifact(
+                &work.join("target_duration_secs.txt"),
+                &target_secs.to_string(),
+            )
+            .await;
+        }
         let req = record.user_requirement.clone();
         let style_s = crate::planning::resolve_visual_style(if record.style.is_empty() {
             ""
@@ -1195,7 +1192,7 @@ impl VimaxService {
 
         let final_video = match record.workflow {
             WorkflowKind::Script2Video => {
-                Script2VideoPipeline::new(backends, work)
+                ScriptFilmPipeline::new(backends, work)
                     .render(&record.script, &req, &style_s, Some(progress))
                     .await?
             }
