@@ -127,7 +127,7 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     .await
     .expect("tables");
 
-    assert_eq!(tables.len(), 101);
+    assert_eq!(tables.len(), 100);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)

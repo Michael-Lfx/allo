@@ -68,7 +68,6 @@ pub use repository::cron::{
     UpdateCronJobParams,
 };
 pub use repository::mcp_server::{CreateMcpServerParams, UpdateMcpServerParams};
-pub use repository::miniapp::{CreateMiniAppParams, IMiniAppRepository, UpdateMiniAppParams};
 pub use repository::oauth_token::UpsertOAuthTokenParams;
 pub use repository::provider::{
     CreateProviderParams, FLOWY_CATALOG_CREDIT_RATE_PARAM, FLOWY_CATALOG_MAX_TOKENS_PARAM,
@@ -78,8 +77,6 @@ pub use repository::remote_agent::{CreateRemoteAgentParams, UpdateRemoteAgentPar
 pub use repository::ssh_host::{
     CreateSshHostParams, ISshHostRepository, UpdateSshHostParams,
 };
-pub use repository::SqliteMiniAppRepository;
-pub use models::{MiniAppDocumentRow, MiniAppRow};
 pub use repository::SqliteSshHostRepository;
 pub use models::SshHostRow;
 pub use repository::{

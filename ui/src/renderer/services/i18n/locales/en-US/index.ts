@@ -43,7 +43,6 @@ import evalLocale from './eval.json';
 import videoGeneration from './videoGeneration.json';
 import videoCanvas from './videoCanvas.json';
 import ssh from './ssh.json';
-import miniApps from './miniApps.json';
 import beautifulUiPreview from './beautifulUiPreview.json';
 import colorLab from './colorLab.json';
 import capabilityHubPreview from './capabilityHubPreview.json';
@@ -89,7 +88,6 @@ export default {
   videoGeneration,
   videoCanvas,
   ssh,
-  miniApps,
   beautifulUiPreview,
   colorLab,
   capabilityHubPreview,

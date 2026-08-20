@@ -314,7 +314,6 @@ export const PreviewProvider: React.FC<{
           if (type === 'diff') return 'Diff';
           if (type === 'code') return `${meta?.language || 'Code'}`;
           if (type === 'image') return 'Image'; // 图片预览默认标题 / Default title for image preview
-          if (type === 'miniapp') return 'MiniApp'; // 小程序预览默认标题 / Default title for mini-app preview
           return 'Preview';
         })();
 

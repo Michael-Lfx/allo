@@ -61,7 +61,6 @@ import { formatFileTargetPreview, splitToolReceiptTargets } from './processFileT
 import { useFirstWinMode } from '@/renderer/utils/onboarding/firstWinMode';
 import { FOLLOW_BOTTOM_THRESHOLD_PX, useAutoScroll } from './useAutoScroll';
 import { useAutoPreviewOfficeFiles } from '@/renderer/hooks/file/useAutoPreviewOfficeFiles';
-import { useAutoPreviewMiniApp } from '@/renderer/hooks/file/useAutoPreviewMiniApp';
 import SelectionReplyButton from './components/SelectionReplyButton';
 import ConversationQuestionLocator from '../components/ConversationTitleMinimap/ConversationQuestionLocator';
 import { normalizeDisplayIndex } from '../components/ConversationTitleMinimap/minimapUtils';
@@ -881,7 +880,6 @@ const MessageList: React.FC<{
   const [outcomeDismissed, setOutcomeDismissed] = useState(false);
   useKnowledgeWritebackEvents(conversationContext?.conversation_id);
   useAutoPreviewOfficeFiles(conversationContext);
-  useAutoPreviewMiniApp(conversationContext);
   const workspaceRoots = useMemo(
     () => (conversationContext?.workspace ? [conversationContext.workspace] : []),
     [conversationContext?.workspace]

@@ -14,10 +14,6 @@ import { useCallback, useState } from 'react';
 
 /**
  * Text types whose previews may be truncated when the file is huge.
- *
- * `miniapp` is deliberately NOT a member: a mini-app is executable HTML, and a
- * truncated app is a broken app (the iframe would render half a document). The
- * whole file is always read, whatever the size caps say.
  */
 const LARGE_TEXT_PREVIEW_TYPES = new Set<PreviewContentType>(['code', 'markdown', 'html', 'diff']);
 

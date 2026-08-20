@@ -19,7 +19,6 @@ mod hooks;
 mod id;
 mod idempotency;
 pub mod managed_free_model;
-pub mod miniapp_workspace;
 mod scoped_auth;
 mod pagination;
 pub mod paths;
@@ -72,7 +71,6 @@ pub use id::{
     LearningEnrollmentId, LearningLessonId, LearningModuleId, LearningReviewItemId,
     LearningTagId,
     McpServerId, MessageId,
-    MiniAppId,
     PersistedArtifactId, PresetId, PresetTagId, PreviewSnapshotId, ProviderId,
     RemoteAgentId, TerminalId, UUID_STRING_LEN,
     RequirementId, SshHostId, UserId, UuidV7Error, WebhookId,

@@ -43,7 +43,6 @@ nomifun-preset = { path = "crates/backend/nomifun-preset" }
 nomifun-secret = { path = "crates/backend/nomifun-secret" }
 nomifun-customer-service = { path = "crates/backend/nomifun-customer-service" }
 nomifun-workshop = { path = "crates/backend/nomifun-workshop" }
-nomifun-miniapp = { path = "crates/backend/nomifun-miniapp" }
 nomifun-creation = { path = "crates/backend/nomifun-creation" }
 nomifun-app = { path = "crates/backend/nomifun-app" }
 nomifun-cloud = { path = "crates/backend/nomifun-cloud" }

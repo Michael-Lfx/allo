@@ -17,7 +17,6 @@ mod idmm_intervention;
 mod knowledge;
 mod mcp_server;
 mod message;
-mod miniapp;
 mod oauth_token;
 mod provider;
 mod provider_connection;
@@ -68,7 +67,6 @@ pub use knowledge::{
 };
 pub use mcp_server::McpServerRow;
 pub use message::MessageRow;
-pub use miniapp::{MiniAppDocumentRow, MiniAppRow};
 pub use oauth_token::OAuthTokenRow;
 pub use provider::Provider;
 pub use provider_connection::{ProviderConnectionRow, UpsertProviderConnectionParams};

@@ -42,8 +42,6 @@ const EvalPage = React.lazy(() => import('@renderer/pages/eval'));
 const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
 const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
 const VideoCanvasProjectPage = React.lazy(() => import('@renderer/pages/videoCanvas/ProjectPage'));
-const MiniAppsListPage = React.lazy(() => import('@renderer/pages/miniApps'));
-const MiniAppRunnerPage = React.lazy(() => import('@renderer/pages/miniApps/RunnerPage'));
 const CompanionPage = React.lazy(() => import('@renderer/pages/companion'));
 const MemoryPanelPage = React.lazy(() => import('@renderer/pages/memoryPanel'));
 const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
@@ -357,9 +355,6 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
             element={withRouteFallback(VideoCanvasProjectPage)}
           />
           <Route path='/video-generation/:sessionId' element={withRouteFallback(VideoGenerationWorkspacePage)} />
-          {/* 小程序 (Mini-apps) — the solidified library and its full-page runner. */}
-          <Route path='/mini-apps' element={withRouteFallback(MiniAppsListPage)} />
-          <Route path='/mini-apps/:id' element={withRouteFallback(MiniAppRunnerPage)} />
         </Route>
         <Route
           path='*'
