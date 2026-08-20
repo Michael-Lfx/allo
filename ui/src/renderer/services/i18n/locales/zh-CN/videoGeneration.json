@@ -529,6 +529,14 @@
       "assets": "素材",
       "generate": "生成"
     },
+    "stageState": {
+      "pending": "待开始",
+      "active": "进行中",
+      "done": "已完成",
+      "failed": "失败",
+      "cancelled": "已取消"
+    },
+    "stageStartedAt": "开始于 {{time}}",
     "briefTitle": "把故事交给 Flowy",
     "briefHint": "生成的是可修改分镜，不会直接开始高成本渲染。",
     "actionTitle": "上传素材，生成成片",

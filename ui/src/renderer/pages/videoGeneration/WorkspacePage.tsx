@@ -1122,6 +1122,8 @@ const WorkspacePage: React.FC = () => {
           hasStoryboard={hasStoryboard}
           hasFinalVideo={Boolean(finalBlobUrl)}
           variant={isAction ? 'action' : 'film'}
+          events={runStatus?.events}
+          updatedAt={runStatus?.updated_at ?? null}
         />
 
         {artifacts.length > 0 ? (

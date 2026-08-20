@@ -1,9 +1,16 @@
-
-
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check } from '@icon-park/react';
-import type { VimaxRunStatus } from '../types';
+import { Check, Close } from '@icon-park/react';
+import { Spin } from '@arco-design/web-react';
+import type { SessionStatus, VimaxRunStatus } from '../types';
+import { formatElapsedClock } from '../progressEventElapsed';
+import {
+  buildStudioStageTimeline,
+  type StudioStageKey,
+  type StudioStageSegment,
+  type StudioStageState,
+  type StudioStageVariant,
+} from '../studioStageTimeline';
 import styles from '../index.module.css';
 
 interface StudioStageRailProps {
@@ -11,26 +18,66 @@ interface StudioStageRailProps {
   stage?: string | null;
   hasStoryboard: boolean;
   hasFinalVideo: boolean;
-  variant?: 'film' | 'action';
+  /** `action` = action-imitation runs, which use the 3-phase rail. */
+  variant?: StudioStageVariant;
+  /** Live progress events — drive per-phase duration and segment widths. */
+  events?: SessionStatus['events'];
+  updatedAt?: string | null;
 }
 
-export function studioStageIndex({
-  status,
-  stage,
-  hasStoryboard,
-  hasFinalVideo,
-  variant = 'film',
-}: StudioStageRailProps): number {
-  if (variant === 'action') {
-    if (hasFinalVideo) return 2;
-    if (status === 'rendering') return 1;
-    return 0;
-  }
-  if (hasFinalVideo) return 3;
-  if (status === 'rendering') return 2;
-  if (hasStoryboard || stage === 'planned') return 1;
-  return 0;
+const STAGE_LABEL_KEYS: Record<StudioStageKey, { key: string; fallback: string }> = {
+  brief: { key: 'videoGeneration.studio.stages.brief', fallback: '创意' },
+  storyboard: { key: 'videoGeneration.studio.stages.storyboard', fallback: '分镜' },
+  render: { key: 'videoGeneration.studio.stages.render', fallback: '渲染' },
+  film: { key: 'videoGeneration.studio.stages.film', fallback: '成片' },
+  assets: { key: 'videoGeneration.studio.stages.assets', fallback: '素材' },
+  generate: { key: 'videoGeneration.studio.stages.generate', fallback: '生成' },
+};
+
+const STATE_LABEL_KEYS: Record<StudioStageState, { key: string; fallback: string }> = {
+  pending: { key: 'videoGeneration.studio.stageState.pending', fallback: '待开始' },
+  active: { key: 'videoGeneration.studio.stageState.active', fallback: '进行中' },
+  done: { key: 'videoGeneration.studio.stageState.done', fallback: '已完成' },
+  failed: { key: 'videoGeneration.studio.stageState.failed', fallback: '失败' },
+  cancelled: { key: 'videoGeneration.studio.stageState.cancelled', fallback: '已取消' },
+};
+
+const STATE_CLASS: Record<StudioStageState, string> = {
+  pending: '',
+  active: styles.stageSegmentActive,
+  done: styles.stageSegmentDone,
+  failed: styles.stageSegmentFailed,
+  cancelled: styles.stageSegmentCancelled,
+};
+
+function formatClockTime(ms: number | null): string {
+  if (ms == null) return '';
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
+
+const StageMarker: React.FC<{ state: StudioStageState; index: number }> = ({ state, index }) => {
+  switch (state) {
+    case 'done':
+      return <Check theme='outline' size={12} strokeWidth={4} />;
+    case 'active':
+      return <Spin size={12} />;
+    case 'failed':
+    case 'cancelled':
+      return <Close theme='outline' size={12} strokeWidth={4} />;
+    case 'pending':
+      return <>{index + 1}</>;
+    default: {
+      const exhaustive: never = state;
+      return exhaustive;
+    }
+  }
+};
 
 const StudioStageRail: React.FC<StudioStageRailProps> = ({
   status,
@@ -38,52 +85,87 @@ const StudioStageRail: React.FC<StudioStageRailProps> = ({
   hasStoryboard,
   hasFinalVideo,
   variant = 'film',
+  events,
+  updatedAt,
 }) => {
   const { t } = useTranslation();
-  const activeIndex = studioStageIndex({
-    status,
-    stage,
-    hasStoryboard,
-    hasFinalVideo,
-    variant,
-  });
-  const labels =
-    variant === 'action'
-      ? [
-          t('videoGeneration.studio.stages.assets', { defaultValue: '素材' }),
-          t('videoGeneration.studio.stages.generate', { defaultValue: '生成' }),
-          t('videoGeneration.studio.stages.film', { defaultValue: '成片' }),
-        ]
-      : [
-          t('videoGeneration.studio.stages.brief', { defaultValue: '创意' }),
-          t('videoGeneration.studio.stages.storyboard', { defaultValue: '分镜' }),
-          t('videoGeneration.studio.stages.render', { defaultValue: '渲染' }),
-          t('videoGeneration.studio.stages.film', { defaultValue: '成片' }),
-        ];
+  const busy = status === 'planning' || status === 'rendering';
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!busy) return;
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [busy]);
+
+  const segments = useMemo(
+    () =>
+      buildStudioStageTimeline({
+        status,
+        stage,
+        events,
+        updatedAt,
+        nowMs,
+        hasStoryboard,
+        hasFinalVideo,
+        variant,
+      }),
+    [status, stage, events, updatedAt, nowMs, hasStoryboard, hasFinalVideo, variant]
+  );
 
   return (
     <nav
       className={styles.stageRail}
       aria-label={t('videoGeneration.studio.stageLabel', { defaultValue: '影片制作进度' })}
     >
-      {labels.map((label, index) => {
-        const done = index < activeIndex;
-        const current = index === activeIndex;
+      {segments.map((segment: StudioStageSegment, index) => {
+        const label = t(STAGE_LABEL_KEYS[segment.key].key, {
+          defaultValue: STAGE_LABEL_KEYS[segment.key].fallback,
+        });
+        const stateText = t(STATE_LABEL_KEYS[segment.state].key, {
+          defaultValue: STATE_LABEL_KEYS[segment.state].fallback,
+        });
+        const clock =
+          segment.durationMs == null
+            ? ''
+            : formatElapsedClock(Math.round(segment.durationMs / 1000));
+        const startedAt = formatClockTime(segment.startedAtMs);
+
         return (
           <div
-            key={label}
-            className={[
-              styles.stageItem,
-              done || current ? styles.stageItemActive : '',
-              done ? styles.stageItemDone : '',
-              current ? styles.stageItemCurrent : '',
-            ].join(' ')}
-            aria-current={current ? 'step' : undefined}
+            key={segment.key}
+            className={[styles.stageSegment, STATE_CLASS[segment.state]]
+              .filter(Boolean)
+              .join(' ')}
+            style={{ flexGrow: segment.weight }}
+            aria-current={segment.state === 'active' ? 'step' : undefined}
+            aria-label={[label, stateText, clock].filter(Boolean).join(' · ')}
+            title={
+              startedAt
+                ? t('videoGeneration.studio.stageStartedAt', {
+                    time: startedAt,
+                    defaultValue: '开始于 {{time}}',
+                  })
+                : undefined
+            }
           >
-            <span className={styles.stageDot}>
-              {done ? <Check theme='outline' size={12} strokeWidth={4} /> : index + 1}
-            </span>
-            <span className={styles.stageLabel}>{label}</span>
+            <div className={styles.stageSegmentHead}>
+              <span className={styles.stageDot}>
+                <StageMarker state={segment.state} index={index} />
+              </span>
+              <span className={styles.stageLabel}>{label}</span>
+              {clock ? (
+                <span
+                  className={styles.stageClock}
+                  aria-live={segment.live ? 'polite' : undefined}
+                >
+                  {clock}
+                </span>
+              ) : null}
+            </div>
+            <div className={styles.stageSegmentBar} />
+            <div className={styles.stageSegmentFoot}>{startedAt}</div>
           </div>
         );
       })}

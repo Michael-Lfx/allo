@@ -529,6 +529,14 @@
       "assets": "Assets",
       "generate": "Generate"
     },
+    "stageState": {
+      "pending": "Pending",
+      "active": "Running",
+      "done": "Done",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "stageStartedAt": "Started at {{time}}",
     "briefTitle": "Give Flowy your story",
     "briefHint": "This creates an editable storyboard before any expensive rendering starts.",
     "actionTitle": "Upload assets, generate the clip",

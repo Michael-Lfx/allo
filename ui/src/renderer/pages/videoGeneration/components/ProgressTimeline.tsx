@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Progress, Button, Tag, Spin } from '@arco-design/web-react';
-import type { SessionStatus, VimaxRunStatus } from '../types';
+import type { SessionStatus } from '../types';
 import { isInsufficientCreditsError } from '../creditsError';
 import { eventElapsed, formatElapsedClock } from '../progressEventElapsed';
 import { statusLabel, statusTagColor } from './SessionCard';
@@ -21,13 +21,6 @@ interface ProgressTimelineProps {
     video_model?: string;
   };
 }
-
-const STEPS: { key: VimaxRunStatus; labelKey: string }[] = [
-  { key: 'idle', labelKey: 'videoGeneration.status.idle' },
-  { key: 'planning', labelKey: 'videoGeneration.status.planning' },
-  { key: 'rendering', labelKey: 'videoGeneration.status.rendering' },
-  { key: 'succeeded', labelKey: 'videoGeneration.status.succeeded' },
-];
 
 type FailureKind = 'credits' | 'llm' | 'image' | 'video' | 'unknown';
 
@@ -181,23 +174,6 @@ function classifyFailure(
   };
 }
 
-function stepIndex(status: VimaxRunStatus | undefined, stage?: string | null): number {
-  if (stage === 'planned' && (status === 'idle' || status === 'succeeded')) return 1;
-  switch (status) {
-    case 'planning':
-      return 1;
-    case 'rendering':
-      return 2;
-    case 'succeeded':
-      return 3;
-    case 'failed':
-    case 'cancelled':
-      return -1;
-    default:
-      return stage === 'planned' ? 1 : 0;
-  }
-}
-
 const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
   status,
   onCancel,
@@ -262,7 +238,6 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
     );
   }
 
-  const active = stepIndex(status.status, status.stage);
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
   const currentStage = stageLabel(status.stage, t);
 
@@ -360,51 +335,6 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
           </details>
         </div>
       ) : null}
-
-      <div className='flex items-center gap-0 overflow-x-auto'>
-        {STEPS.map((step, i) => {
-          const done = active >= 0 && i <= active;
-          const current = active === i && busy;
-          const plannedDone =
-            step.key === 'planning' && status.stage === 'planned' && status.status === 'idle';
-          return (
-            <React.Fragment key={step.key}>
-              {i > 0 && (
-                <div
-                  className='h-1px flex-1 min-w-12px'
-                  style={{
-                    background:
-                      active >= 0 && i <= active
-                        ? 'rgb(var(--primary-6))'
-                        : 'var(--color-border-2)',
-                  }}
-                />
-              )}
-              <div className='flex flex-col items-center gap-4px shrink-0 px-4px'>
-                <span
-                  className={[
-                    'w-8px h-8px rounded-full',
-                    done || current || plannedDone
-                      ? 'bg-[rgb(var(--primary-6))]'
-                      : 'bg-[var(--color-fill-3)]',
-                    current ? 'ring-2 ring-[rgba(var(--primary-6),0.35)]' : '',
-                  ].join(' ')}
-                />
-                <span
-                  className={[
-                    'text-10px whitespace-nowrap',
-                    current || plannedDone
-                      ? 'text-[rgb(var(--primary-6))] font-600'
-                      : 'text-[var(--color-text-3)]',
-                  ].join(' ')}
-                >
-                  {t(step.labelKey)}
-                </span>
-              </div>
-            </React.Fragment>
-          );
-        })}
-      </div>
 
       {events.length > 0 ? (
         <div className='flex flex-col gap-4px'>

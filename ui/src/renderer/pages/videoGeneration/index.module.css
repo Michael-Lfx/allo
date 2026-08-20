@@ -285,38 +285,68 @@
 }
 
 .stageRail {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  padding: 10px 12px;
   border: 1px solid var(--color-border-2);
   border-radius: 14px;
   background: var(--color-bg-2);
 }
 
-.stageItem {
-  position: relative;
+.stageSegment {
   display: flex;
-  align-items: center;
-  gap: 8px;
   min-width: 0;
-  padding: 10px 12px;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 5px;
   color: var(--color-text-3);
   font-size: 12px;
+  transition: flex-grow 420ms ease;
 }
 
-.stageItem + .stageItem::before {
-  position: absolute;
-  top: 25%;
-  bottom: 25%;
-  left: 0;
-  width: 1px;
-  background: var(--color-border-2);
-  content: '';
+.stageSegmentHead {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.stageLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stageClock {
+  margin-left: auto;
+  flex: none;
+  font-feature-settings: 'tnum';
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stageSegmentBar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-fill-2);
+}
+
+.stageSegmentFoot {
+  min-height: 14px;
+  overflow: hidden;
+  color: var(--color-text-4);
+  font-feature-settings: 'tnum';
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stageDot {
   display: grid;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   flex: none;
   place-items: center;
   border-radius: 999px;
@@ -326,19 +356,65 @@
   font-weight: 700;
 }
 
-.stageItemActive {
+.stageSegmentDone,
+.stageSegmentActive {
   color: var(--color-text-1);
   font-weight: 600;
 }
 
-.stageItemActive .stageDot,
-.stageItemDone .stageDot {
+.stageSegmentDone .stageDot {
   color: white;
-  background: rgb(var(--primary-6));
+  background: rgb(var(--success-6));
 }
 
-.stageItemCurrent .stageDot {
-  box-shadow: 0 0 0 5px rgba(var(--primary-6), 0.12);
+.stageSegmentDone .stageSegmentBar {
+  background: rgb(var(--success-6));
+}
+
+.stageSegmentActive .stageDot {
+  background: rgba(var(--primary-6), 0.14);
+  box-shadow: 0 0 0 4px rgba(var(--primary-6), 0.1);
+  color: rgb(var(--primary-6));
+}
+
+.stageSegmentActive .stageClock {
+  color: rgb(var(--primary-6));
+}
+
+.stageSegmentActive .stageSegmentBar {
+  background: linear-gradient(
+    90deg,
+    rgb(var(--primary-6)) 0%,
+    rgba(var(--primary-6), 0.25) 100%
+  );
+}
+
+.stageSegmentFailed,
+.stageSegmentCancelled {
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+
+.stageSegmentFailed .stageDot {
+  color: white;
+  background: rgb(var(--danger-6));
+}
+
+.stageSegmentFailed .stageSegmentBar {
+  background: rgb(var(--danger-6));
+}
+
+.stageSegmentFailed .stageClock {
+  color: rgb(var(--danger-6));
+}
+
+.stageSegmentCancelled .stageDot {
+  color: white;
+  background: var(--color-text-4);
+}
+
+.stageSegmentCancelled .stageSegmentBar {
+  background: var(--color-text-4);
 }
 
 .studioPanel {
