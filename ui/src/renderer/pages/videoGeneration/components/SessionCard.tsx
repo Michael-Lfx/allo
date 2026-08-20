@@ -61,6 +61,7 @@ export function statusTagColor(status: VimaxRunStatus | null | undefined): strin
     case 'failed':
       return 'red';
     case 'cancelled':
+    case 'interrupted':
       return 'orangered';
     case 'idle':
     default:

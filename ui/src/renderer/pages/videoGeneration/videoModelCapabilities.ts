@@ -29,7 +29,11 @@ function modelBlob(model: string): string {
 
 export function isMiniMaxH3VideoModel(model: string): boolean {
   const b = modelBlob(model);
-  return b.includes('minimax-h3') || b.includes('minimaxh3');
+  return (
+    b.includes('minimax-h3') ||
+    b.includes('minimaxh3') ||
+    (b.includes('minimax') && b.includes('h3'))
+  );
 }
 
 function isSeedance(model: string): boolean {

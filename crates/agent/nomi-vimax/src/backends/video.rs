@@ -62,7 +62,7 @@ impl FlowyVideo {
                 }
             }),
             resolution: resolution.and_then(|s| {
-                let t = s.trim().to_ascii_lowercase();
+                let t = s.trim().to_string();
                 if t.is_empty() { None } else { Some(t) }
             }),
             progress,
@@ -90,7 +90,7 @@ impl FlowyVideo {
                     .video
                     .default_resolution
                     .trim()
-                    .to_ascii_lowercase()
+                    .to_string()
             });
         crate::video_quality::normalize_resolution_for_model(model, &raw)
     }

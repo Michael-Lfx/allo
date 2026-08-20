@@ -17,7 +17,7 @@ use crate::pipelines::{
     model_supports_action_imitation, Action2VideoPipeline, Idea2VideoPipeline, Novel2VideoPipeline,
     PipelineBackends, ScriptFilmPipeline,
 };
-use crate::progress::{RenderStatus, RunStatus};
+use crate::progress::{INTERRUPTED_SUMMARY, RenderStatus, RunStatus};
 use crate::session::{
     ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, SessionSummary,
     apply_status_to_record, cameo,
@@ -33,6 +33,26 @@ fn first_nonempty<'a>(candidates: impl IntoIterator<Item = Option<&'a str>>) -> 
         }
     }
     String::new()
+}
+
+/// Prefer `Interrupted` when shutdown already paused the session; else user cancel.
+fn mark_cancelled_or_interrupted(st: &mut RenderStatus, index: &SessionIndex, id: &str) {
+    let already_interrupted = index
+        .get(id)
+        .ok()
+        .is_some_and(|r| r.status == RunStatus::Interrupted)
+        || st.status == RunStatus::Interrupted;
+    if already_interrupted {
+        st.status = RunStatus::Interrupted;
+        if st.message.is_empty() {
+            st.message = INTERRUPTED_SUMMARY.into();
+        }
+        st.emit("interrupted", &st.message.clone(), None);
+    } else {
+        st.status = RunStatus::Cancelled;
+        st.message = "cancelled".into();
+        st.emit("cancelled", "cancelled", None);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -54,14 +74,87 @@ pub struct VimaxService {
 
 impl VimaxService {
     pub fn start(data_dir: &Path, flowy: Option<FlowyVimaxServices>) -> VimaxResult<Arc<Self>> {
+        let index = SessionIndex::open(data_dir)?;
+        match index.reconcile_orphaned_active_runs() {
+            Ok(n) if n > 0 => {
+                tracing::info!(
+                    count = n,
+                    "reconciled orphaned vimax runs left active after previous exit"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to reconcile orphaned vimax runs on start"
+                );
+            }
+        }
         Ok(Arc::new(Self {
             data_dir: data_dir.to_path_buf(),
-            index: SessionIndex::open(data_dir)?,
+            index,
             skills: SkillCatalog::open(data_dir)?,
             flowy: Mutex::new(flowy),
             statuses: StdMutex::new(HashMap::new()),
             cancels: Mutex::new(HashMap::new()),
         }))
+    }
+
+    /// Cancel in-flight jobs and persist interrupted state (app quit / crash path).
+    /// Preserves each session's pipeline `stage` so resume can pick plan vs render.
+    pub async fn interrupt_all(&self) -> usize {
+        use crate::progress::INTERRUPTED_SUMMARY;
+        use std::collections::HashSet;
+
+        let tokens: Vec<CancellationToken> = {
+            let mut map = self.cancels.lock().await;
+            map.drain().map(|(_, t)| t).collect()
+        };
+        for token in &tokens {
+            token.cancel();
+        }
+
+        let mut ids: HashSet<String> = HashSet::new();
+        {
+            let mut map = self
+                .statuses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for (id, st) in map.iter_mut() {
+                if !st.status.is_active() {
+                    continue;
+                }
+                st.status = RunStatus::Interrupted;
+                st.message = INTERRUPTED_SUMMARY.into();
+                st.error = None;
+                st.emit("interrupted", INTERRUPTED_SUMMARY, None);
+                ids.insert(id.clone());
+            }
+        }
+
+        if let Ok(sessions) = self.index.list() {
+            for record in sessions {
+                if record.status.is_active() {
+                    ids.insert(record.session_id);
+                }
+            }
+        }
+
+        for id in &ids {
+            let _ = self.index.update_fields(id, |r| {
+                r.status = RunStatus::Interrupted;
+                r.summary = INTERRUPTED_SUMMARY.into();
+            });
+        }
+
+        if !ids.is_empty() || !tokens.is_empty() {
+            tracing::info!(
+                cancelled_tokens = tokens.len(),
+                interrupted = ids.len(),
+                "interrupted active vimax runs for process shutdown"
+            );
+        }
+        ids.len()
     }
 
     /// Replace Flowy backends after login / config reload.
@@ -512,7 +605,8 @@ impl VimaxService {
                     r.video_model = v.trim().to_string();
                 }
                 if let Some(v) = &resolution {
-                    r.resolution = v.trim().to_ascii_lowercase();
+                    // Keep model-canonical casing (MiniMax-H3 uses `768P` / `2K`).
+                    r.resolution = v.trim().to_string();
                 }
                 if let Some(v) = fps {
                     r.fps = v;
@@ -727,9 +821,7 @@ impl VimaxService {
             match result {
                 Ok(()) => {
                     if token.is_cancelled() {
-                        st.status = RunStatus::Cancelled;
-                        st.message = "cancelled".into();
-                        st.emit("cancelled", "cancelled", None);
+                        mark_cancelled_or_interrupted(st, &self.index, id);
                     } else {
                         match kind {
                             JobKind::Plan => {
@@ -752,9 +844,7 @@ impl VimaxService {
                     }
                 }
                 Err(VimaxError::Cancelled) => {
-                    st.status = RunStatus::Cancelled;
-                    st.message = "cancelled".into();
-                    st.emit("cancelled", "cancelled", None);
+                    mark_cancelled_or_interrupted(st, &self.index, id);
                 }
                 Err(e) => {
                     let detail = e.to_string();
@@ -871,7 +961,8 @@ impl VimaxService {
                 r.aspect_ratio = crate::aspect::normalize_aspect_ratio(ar);
             }
             if let Some(res) = &resolution {
-                r.resolution = res.trim().to_ascii_lowercase();
+                // Keep model-canonical casing (MiniMax-H3 uses `768P` / `2K`).
+                r.resolution = res.trim().to_string();
             }
             if let Some(v) = fps {
                 r.fps = v;

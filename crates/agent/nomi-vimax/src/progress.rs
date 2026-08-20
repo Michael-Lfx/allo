@@ -19,6 +19,8 @@ pub enum RunStatus {
     Succeeded,
     Failed,
     Cancelled,
+    /// App quit / crash while a job was active — not running; user can resume.
+    Interrupted,
 }
 
 impl RunStatus {
@@ -30,9 +32,18 @@ impl RunStatus {
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
         }
     }
+
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Planning | Self::Rendering)
+    }
 }
+
+/// Persisted summary when a run is paused because the process exited.
+pub const INTERRUPTED_SUMMARY: &str = "应用已退出，任务已暂停。可从断点继续。";
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RenderStatus {

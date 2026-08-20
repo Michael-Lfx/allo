@@ -267,7 +267,8 @@
     "rendering": "渲染中",
     "succeeded": "已完成",
     "failed": "失败",
-    "cancelled": "已取消"
+    "cancelled": "已取消",
+    "interrupted": "已暂停"
   },
   "stages": {
     "planning": "准备规划",
