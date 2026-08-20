@@ -7,8 +7,8 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Button, Message, Spin, Tooltip } from '@arco-design/web-react';
-import { Copy, Down, Up } from '@icon-park/react';
+import { Button, Message, Modal, Spin, Tooltip } from '@arco-design/web-react';
+import { Copy, Down, FullScreen, Up } from '@icon-park/react';
 import { copyText } from '@renderer/utils/ui/clipboard';
 import { formatClock, formatDurationMs, turnToolCount } from './format';
 import {
@@ -29,7 +29,7 @@ import {
   type ProjectedTurn,
 } from './useAgentTraces';
 
-export type InspectStage = 'request' | 'response' | 'tool';
+export type InspectStage = 'request' | 'response' | 'tool' | 'final';
 
 export interface InspectTarget {
   modelCallId: string;
@@ -372,8 +372,92 @@ function inspectorTitle(
 ): string {
   if (stage === 'request') return t('conversation.agentTrace.inspectRequestTitle');
   if (stage === 'response') return t('conversation.agentTrace.inspectResponseTitle');
+  if (stage === 'final') return t('conversation.agentTrace.finalReply');
   return t('conversation.agentTrace.inspectToolTitle');
 }
+
+function visibleReplyText(payload: unknown): string | null {
+  const record = asRecord(payload);
+  if (!record) return null;
+  if (typeof record.text === 'string' && record.text.trim()) return record.text;
+  if (typeof record.thinking === 'string' && record.thinking.trim()) return record.thinking;
+  return null;
+}
+
+const FinalReplyCard: React.FC<{
+  title: string;
+  modelCallId: string;
+  inspectTarget: InspectTarget | null;
+  detail: ProjectedModelCall | null;
+  errorKey: ObservationWorkflowProps['callErrorKey'];
+  onInspect: (target: InspectTarget) => void;
+}> = ({ title, modelCallId, inspectTarget, detail, errorKey, onInspect }) => {
+  const { t } = useTranslation();
+  const [maximized, setMaximized] = useState(false);
+  const thisCall = detail?.model_call_id === modelCallId ? detail : null;
+  const errorForThisCall = inspectTarget?.modelCallId === modelCallId ? errorKey : null;
+  const pending = maximized && thisCall == null && errorForThisCall == null;
+
+  const open = () => {
+    setMaximized(true);
+    if (inspectTarget?.modelCallId !== modelCallId) {
+      onInspect({ modelCallId, stage: 'final' });
+    }
+  };
+
+  let body: React.ReactNode = null;
+  if (pending) {
+    body = (
+      <div className='flex justify-center py-16px'>
+        <Spin />
+      </div>
+    );
+  } else if (errorForThisCall) {
+    body = (
+      <div className='text-12px text-[var(--color-text-2)]'>
+        {t(`conversation.agentTrace.${errorForThisCall}`)}
+      </div>
+    );
+  } else {
+    const text = visibleReplyText(thisCall?.response);
+    body = (
+      <div className='session-logs-json-tree session-logs-json-tree--modal'>
+        <pre className='session-logs-json-tree__text'>
+          {text ?? t('conversation.agentTrace.noResponse')}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className='session-logs-flow__end'>
+      <div className='session-logs-flow__end-label'>
+        <span>{t('conversation.agentTrace.finalReply')}</span>
+        <Tooltip content={t('conversation.agentTrace.maximizeInspector')}>
+          <Button
+            type='text'
+            size='mini'
+            className='session-logs-json-tree__icon-btn session-logs-flow__end-maximize'
+            icon={<FullScreen theme='outline' size='12' strokeWidth={3} />}
+            onClick={open}
+            aria-label={t('conversation.agentTrace.maximizeInspector')}
+          />
+        </Tooltip>
+      </div>
+      <div className='session-logs-flow__end-title'>{title}</div>
+      <Modal
+        title={t('conversation.agentTrace.finalReply')}
+        visible={maximized}
+        onCancel={() => setMaximized(false)}
+        footer={null}
+        unmountOnExit
+        style={{ width: 'min(920px, 92vw)' }}
+      >
+        {body}
+      </Modal>
+    </div>
+  );
+};
 
 const CallInspector: React.FC<{
   stage: InspectStage;
@@ -384,6 +468,7 @@ const CallInspector: React.FC<{
   onCollapse: () => void;
 }> = ({ stage, toolCallId, detail, loading, errorKey, onCollapse }) => {
   const { t } = useTranslation();
+  if (stage === 'final') return null;
   let inner: React.ReactNode = null;
   if (loading && !detail) {
     inner = (
@@ -500,12 +585,14 @@ const ModelCallSection: React.FC<{
             <span className='session-logs-flow__arrow' aria-hidden='true'>
               →
             </span>
-            <div className='session-logs-flow__end'>
-              <div className='session-logs-flow__end-label'>
-                {t('conversation.agentTrace.finalReply')}
-              </div>
-              <div className='session-logs-flow__end-title'>{responseCopy.title}</div>
-            </div>
+            <FinalReplyCard
+              title={responseCopy.title}
+              modelCallId={header.model_call_id}
+              inspectTarget={inspectTarget}
+              detail={detail}
+              errorKey={errorKey}
+              onInspect={onInspect}
+            />
           </>
         ) : (
           header.tools.map((tool, toolIndex) => {
@@ -540,7 +627,7 @@ const ModelCallSection: React.FC<{
         )}
       </div>
 
-      {selected ? (
+      {selected && selected.stage !== 'final' ? (
         <CallInspector
           stage={selected.stage}
           toolCallId={selected.toolCallId}

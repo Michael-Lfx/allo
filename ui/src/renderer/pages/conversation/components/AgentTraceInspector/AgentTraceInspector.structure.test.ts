@@ -79,7 +79,11 @@ describe('AgentTraceInspector', () => {
     expect(inspector.includes('capabilityHeaderButtonStyle(OBSERVE_ACCENT)')).toBe(true);
     expect(inspector.includes("capabilityHeaderButtonStyle(ACCENT)")).toBe(false);
     expect(css.includes('.session-logs-nav__item.is-active')).toBe(true);
-    expect(css.includes('rgb(var(--primary-6)) 8%')).toBe(true);
+    expect(css.includes('rgb(var(--primary-6)) 8%')).toBe(false);
+    expect(css.includes('rgb(var(--primary-6)) 12%')).toBe(true);
+    expect(css.includes('rgb(var(--primary-6)) 16%')).toBe(true);
+    expect(css.includes('.session-logs-nav__item:not(:last-child):not(.is-active)')).toBe(true);
+    expect(/\.session-logs-nav__list\s*\{[^}]*gap: 8px/s.test(css)).toBe(true);
     expect(css.includes('container-name: session-logs')).toBe(true);
     expect(css.includes('session-logs-nav__list')).toBe(true);
     expect(css.includes('@container session-logs (max-width: 720px)')).toBe(true);
@@ -123,6 +127,9 @@ describe('AgentTraceInspector', () => {
     expect(workflow.includes('<Collapse')).toBe(false);
     expect(workflow.includes('copyable={false}')).toBe(true);
     expect(workflow.includes('session-logs-flow__end')).toBe(true);
+    expect(workflow.includes('session-logs-flow__end-maximize')).toBe(true);
+    expect(workflow.includes('maximizeInspector')).toBe(true);
+    expect(workflow.includes("stage: 'final'")).toBe(true);
     expect(workflow.includes('staticTile')).toBe(false);
     expect(workflow.includes('aria-expanded={selected}')).toBe(true);
     expect(workflow.includes('argument_preview')).toBe(true);
@@ -153,7 +160,29 @@ describe('AgentTraceInspector', () => {
     expect(css.includes('session-logs-json-tree__expander')).toBe(true);
     expect(css.includes('button.session-logs-tile:hover')).toBe(true);
     expect(css.includes('session-logs-flow__end')).toBe(true);
+    const flowArrow = css.match(/\.session-logs-flow__arrow\s*\{[^}]+\}/)?.[0] ?? '';
+    expect(flowArrow.includes('rgb(var(--primary-6))')).toBe(true);
+    expect(flowArrow.includes('color-text-')).toBe(false);
     expect(css.includes('height: 26px')).toBe(true);
+    expect(css.includes('flex-direction: column')).toBe(true);
+    expect(css.includes('appearance: none')).toBe(true);
+    const endLabel = css.match(/\.session-logs-flow__end-label\s*\{[^}]+\}/)?.[0] ?? '';
+    expect(endLabel.includes('color-fill-1')).toBe(true);
+    expect(endLabel.includes('color-fill-2')).toBe(false);
+    expect(endLabel.includes('color-text-2')).toBe(true);
+    const endTitle = css.match(/\.session-logs-flow__end-title\s*\{[^}]+\}/)?.[0] ?? '';
+    expect(endTitle.includes('color-text-1')).toBe(true);
+    expect(endTitle.includes('color-text-3')).toBe(false);
+    expect(css.includes('.session-logs-tile--request .session-logs-tile__head')).toBe(true);
+    expect(css.includes('.session-logs-tile--response .session-logs-tile__head')).toBe(true);
+    expect(css.includes('.session-logs-tile--tool .session-logs-tile__head')).toBe(true);
+    const workHeads = css.match(
+      /\.session-logs-tile--request \.session-logs-tile__head,\s*\.session-logs-tile--response \.session-logs-tile__head,\s*\.session-logs-tile--tool \.session-logs-tile__head\s*\{[^}]+\}/,
+    )?.[0] ?? '';
+    expect(workHeads.includes('rgb(var(--primary-6)) 28%')).toBe(true);
+    expect(workHeads.includes('rgb(var(--primary-6)) 14%')).toBe(false);
+    expect(workHeads.includes('color-fill-2')).toBe(false);
+    expect(workHeads.includes('color-fill-3')).toBe(false);
     expect(css.includes('.session-logs-json-tree:hover')).toBe(false);
   });
 

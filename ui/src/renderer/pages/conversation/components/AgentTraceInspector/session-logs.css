@@ -143,7 +143,7 @@
   padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
 }
 
 .session-logs-nav__item {
@@ -159,17 +159,21 @@
     border-color 120ms var(--ease-out-expo);
 }
 
+.session-logs-nav__item:not(:last-child):not(.is-active) {
+  border-bottom-color: color-mix(in srgb, var(--color-text-1) 10%, var(--color-border-2));
+}
+
 .session-logs-nav__item:hover {
   background: color-mix(in srgb, var(--color-fill-2) 70%, var(--color-bg-1));
 }
 
 .session-logs-nav__item.is-active {
-  background: color-mix(in srgb, rgb(var(--primary-6)) 8%, var(--color-bg-1));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 12%, var(--color-bg-1));
   border-color: color-mix(in srgb, rgb(var(--primary-6)) 28%, var(--color-border-2));
 }
 
 .session-logs-nav__item.is-active:hover {
-  background: color-mix(in srgb, rgb(var(--primary-6)) 11%, var(--color-bg-1));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 16%, var(--color-bg-1));
 }
 
 .session-logs-nav__item:focus-visible {
@@ -279,11 +283,19 @@
   padding-bottom: 4px;
 }
 
+.session-logs-flow__arrow {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 16px;
+  color: rgb(var(--primary-6));
+}
+
 .session-logs-flow__end {
   min-width: 148px;
   max-width: 220px;
   flex: 0 0 auto;
-  align-self: stretch;
   overflow: hidden;
   border: 1px solid var(--color-border-2);
   border-radius: 6px;
@@ -291,25 +303,46 @@
   cursor: default;
 }
 
+.session-logs-tile,
+.session-logs-flow__end {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  align-self: stretch;
+}
+
 .session-logs-flow__end-label {
   box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
   height: 26px;
-  padding: 5px 8px;
+  padding: 2px 4px 2px 8px;
   font-size: 11px;
   font-weight: 600;
   line-height: 16px;
-  color: var(--color-text-3);
-  background: color-mix(in srgb, var(--color-fill-2) 88%, var(--color-bg-1));
+  color: var(--color-text-2);
+  background: var(--color-fill-1);
   white-space: nowrap;
+}
+
+.session-logs-flow__end-label > span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.session-logs-flow__end-maximize {
+  flex-shrink: 0;
+}
+
 .session-logs-flow__end-title {
+  flex: 1;
   padding: 8px;
   font-size: 12px;
   line-height: 18px;
-  color: var(--color-text-2);
+  color: var(--color-text-1);
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -331,6 +364,7 @@
 }
 
 button.session-logs-tile {
+  appearance: none;
   cursor: pointer;
 }
 
@@ -355,26 +389,21 @@ button.session-logs-tile:hover {
   font-size: 11px;
   font-weight: 600;
   line-height: 16px;
-  color: var(--color-text-2);
-  background: color-mix(in srgb, var(--color-fill-2) 88%, var(--color-bg-1));
+  color: var(--color-text-1);
+  background: color-mix(in srgb, rgb(var(--primary-6)) 28%, var(--color-bg-1));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.session-logs-tile--request .session-logs-tile__head {
-  background: color-mix(in srgb, rgb(var(--primary-6)) 9%, var(--color-bg-1));
-}
-
-.session-logs-tile--response .session-logs-tile__head {
-  background: color-mix(in srgb, var(--color-fill-3) 55%, var(--color-bg-1));
-}
-
+.session-logs-tile--request .session-logs-tile__head,
+.session-logs-tile--response .session-logs-tile__head,
 .session-logs-tile--tool .session-logs-tile__head {
-  background: color-mix(in srgb, var(--color-fill-2) 92%, var(--color-bg-1));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 28%, var(--color-bg-1));
 }
 
 .session-logs-tile__body {
+  flex: 1;
   padding: 8px;
 }
 
@@ -392,7 +421,7 @@ button.session-logs-tile:hover {
   margin-top: 4px;
   font-size: 11px;
   line-height: 16px;
-  color: var(--color-text-3);
+  color: var(--color-text-2);
 }
 
 .session-logs-call {
@@ -414,7 +443,7 @@ button.session-logs-tile:hover {
   gap: 4px 12px;
   font-size: 11px;
   line-height: 16px;
-  color: var(--color-text-3);
+  color: var(--color-text-2);
   font-variant-numeric: tabular-nums;
 }
 
@@ -593,6 +622,10 @@ button.session-logs-tile:hover {
     min-width: 180px;
     max-width: 240px;
     flex: 0 0 auto;
+  }
+
+  .session-logs-nav__item:not(:last-child):not(.is-active) {
+    border-bottom-color: transparent;
   }
 
   .session-logs-inspector__grid {
