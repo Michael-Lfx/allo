@@ -16,34 +16,35 @@ import {
 } from '@/renderer/pages/conversation/components/AgentTraceInspector';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import { SummonHeaderBadge } from '@/renderer/pages/conversation/components/SummonPanel';
-import MobileWorkspaceOverlay from './MobileWorkspaceOverlay';
 import WorkspacePanelHeader from './WorkspacePanelHeader';
 import WorkspaceToolRail, {
   WORKSPACE_PANEL_META_EVENT,
+  WORKSPACE_OPEN_PREVIEW_TOOL_EVENT,
   dispatchWorkspacePanelTabEvent,
+  isWorkspacePanelEventForTarget,
   type WorkspacePanelMetaDetail,
+  type WorkspacePanelTabDetail,
   type WorkspaceToolRailCollaboration,
 } from './WorkspaceToolRail';
 import { useContainerWidth } from '@/renderer/hooks/ui/useContainerWidth';
-import { useLayoutConstraints } from '@/renderer/pages/conversation/hooks/useLayoutConstraints';
-import { usePreviewAutoCollapse } from '@/renderer/pages/conversation/hooks/usePreviewAutoCollapse';
 import { useTitleRename } from '@/renderer/pages/conversation/hooks/useTitleRename';
-import { useWorkspaceCollapse } from '@/renderer/pages/conversation/hooks/useWorkspaceCollapse';
 import { useWorkspacePanelTabs } from '@/renderer/pages/conversation/hooks/useWorkspacePanelTabs';
-import { PreviewPanel, PreviewProvider, usePreviewContext } from '@/renderer/pages/conversation/Preview';
-import { dispatchWorkspaceToggleEvent } from '@/renderer/utils/workspace/workspaceEvents';
-import classNames from 'classnames';
-import { isDesktopShell, isMacOS, isWindows } from '@/renderer/utils/platform';
 import {
-  DEFAULT_WORKSPACE_PANEL_PX,
-  MAX_WORKSPACE_PANEL_PX,
-  MIN_WORKSPACE_PANEL_PX,
-  WORKSPACE_HEADER_HEIGHT,
-  calcLayoutMetrics,
-} from '@/renderer/pages/conversation/utils/layoutCalc';
+  PreviewPanel,
+  PreviewProvider,
+  usePreviewContext,
+  type WorkspacePreviewTabDefinition,
+} from '@/renderer/pages/conversation/Preview';
+import { WORKSPACE_TOGGLE_EVENT, type WorkspaceToggleDetail } from '@/renderer/utils/workspace/workspaceEvents';
+import { ipcBridge } from '@/common';
+import type { ITerminalSession } from '@/common/adapter/ipcBridge';
+import { SHELL_SENTINEL } from '@/renderer/pages/terminal/launchPresets';
+import { inferPreviewTabKind } from '@/renderer/pages/conversation/Preview/previewTabKind';
+import classNames from 'classnames';
+import { calcLayoutMetrics } from '@/renderer/pages/conversation/utils/layoutCalc';
 import { CHAT_HEADER_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
-import { Layout as ArcoLayout } from '@arco-design/web-react';
-import React, { useEffect, useRef, useState } from 'react';
+import { Layout as ArcoLayout, Message } from '@arco-design/web-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { uuid } from '@/renderer/utils/common';
@@ -125,30 +126,13 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
   const workspaceTarget = conversation_id != null ? conversationTarget(conversation_id) : undefined;
   const { workspaceEnabled = true } = props;
   const layout = useLayoutContext();
-  // Desktop-shell mac/win runtime. MUST gate on `isDesktopShell()` first
-  // (matching Titlebar): the titlebar workspace toggle only exists in the
-  // desktop shell, so the in-panel toggle below must render for everyone else —
-  // including a Mac/Windows browser hitting the WebUI, where a bare UA check
-  // would wrongly hide BOTH toggle entry points.
-  const isDesktopRuntime = isDesktopShell();
-  const isMacRuntime = isDesktopRuntime && isMacOS();
-  const isWindowsRuntime = isDesktopRuntime && isWindows();
   const isDesktop = !layout?.isMobile;
   const isMobile = Boolean(layout?.isMobile);
 
   // Preview panel state
-  const { isOpen: isPreviewOpen } = usePreviewContext();
-
-  // --- Hook A: workspace collapse ---
-  const { rightSiderCollapsed, setRightSiderCollapsed, persistRightSiderCollapsed } = useWorkspaceCollapse({
-    workspaceEnabled,
-    isMobile,
-    conversation_id,
-    target: workspaceTarget,
-    isTemporaryWorkspace,
-    autoExpandOnFiles: false,
-  });
+  const { isOpen: isPreviewOpen, activeTab, openWorkspaceTab, openTerminalTab, tabs } = usePreviewContext();
   const { activeWorkspaceTab, setActiveWorkspaceTab } = useWorkspacePanelTabs(workspaceTarget);
+  const [creatingShell, setCreatingShell] = useState(false);
 
   const activeWorkspaceTitle =
     activeWorkspaceTab === 'files'
@@ -157,24 +141,98 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
         ? t('conversation.workspace.changes.tab')
         : props.workspaceExtraTabs?.find((tab) => tab.key === activeWorkspaceTab)?.title ?? props.siderTitle;
 
-  const selectWorkspaceTool = (tab: string) => {
-    const nextTab = tab as WorkspaceTab;
-    const clickingActivePanel = !rightSiderCollapsed && activeWorkspaceTab === nextTab;
-    if (props.workspaceCollaboration?.active) props.workspaceCollaboration.onClick();
-    setActiveWorkspaceTab(nextTab);
-    if (workspaceTarget) dispatchWorkspacePanelTabEvent(nextTab, workspaceTarget);
-    persistRightSiderCollapsed(clickingActivePanel);
-  };
+  const workspaceTabs = useMemo<WorkspacePreviewTabDefinition[]>(() => {
+    if (!workspaceEnabled) return [];
+    return [
+      { key: 'files', title: t('conversation.workspace.changes.filesTab') },
+      { key: 'changes', title: t('conversation.workspace.changes.tab') },
+      ...(props.workspaceExtraTabs
+        ?.filter((tab) => tab.key !== 'conversation-terminals')
+        .map((tab) => ({ key: tab.key, title: String(tab.title) })) ?? []),
+    ];
+  }, [props.workspaceExtraTabs, t, workspaceEnabled]);
+
+  const openShellPreview = useCallback(async () => {
+    const existing = tabs.find((tab) => inferPreviewTabKind(tab) === 'terminal' && tab.terminal_id);
+    if (existing?.terminal_id) {
+      openTerminalTab(
+        { terminal_id: existing.terminal_id, name: existing.title } as ITerminalSession,
+        { killOnClose: existing.killOnClose }
+      );
+      return;
+    }
+    if (!workspacePath) {
+      Message.warning(t('preview.terminalNeedsWorkspace'));
+      return;
+    }
+    if (creatingShell) return;
+    setCreatingShell(true);
+    try {
+      const session = await ipcBridge.terminal.create.invoke({
+        cwd: workspacePath,
+        command: SHELL_SENTINEL,
+        defer_spawn: true,
+      });
+      openTerminalTab(session, { killOnClose: true });
+    } catch (error) {
+      Message.error(error instanceof Error ? error.message : t('common.unknownError'));
+    } finally {
+      setCreatingShell(false);
+    }
+  }, [creatingShell, openTerminalTab, t, tabs, workspacePath]);
+
+  const activateWorkspaceTool = useCallback(
+    (tab: string) => {
+      const nextTab = tab as WorkspaceTab;
+      setActiveWorkspaceTab(nextTab);
+      if (nextTab === 'conversation-terminals') {
+        void openShellPreview();
+        return;
+      }
+      const definition = workspaceTabs.find((candidate) => candidate.key === nextTab);
+      if (definition) openWorkspaceTab(definition);
+    },
+    [openShellPreview, openWorkspaceTab, setActiveWorkspaceTab, workspaceTabs]
+  );
+
+  const selectWorkspaceTool = useCallback(
+    (tab: string) => {
+      if (workspaceTarget) dispatchWorkspacePanelTabEvent(tab as WorkspaceTab, workspaceTarget);
+      activateWorkspaceTool(tab);
+    },
+    [activateWorkspaceTool, workspaceTarget]
+  );
+
+  // Header / auto-open use a dedicated event so rail clicks (which already call
+  // selectWorkspaceTool) are not activated twice.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !workspaceTarget || !workspaceEnabled) return undefined;
+    const handleOpenPreviewTool = (event: Event) => {
+      const detail = (event as CustomEvent<WorkspacePanelTabDetail>).detail;
+      if (!isWorkspacePanelEventForTarget(detail?.target, workspaceTarget)) return;
+      selectWorkspaceTool(detail.tab);
+    };
+    window.addEventListener(WORKSPACE_OPEN_PREVIEW_TOOL_EVENT, handleOpenPreviewTool);
+    return () => window.removeEventListener(WORKSPACE_OPEN_PREVIEW_TOOL_EVENT, handleOpenPreviewTool);
+  }, [selectWorkspaceTool, workspaceEnabled, workspaceTarget]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !workspaceTarget || !workspaceEnabled) return undefined;
+    const handleWorkspaceToggle = (event: Event) => {
+      const target = (event as CustomEvent<WorkspaceToggleDetail>).detail?.target;
+      if (!target || target.kind !== workspaceTarget.kind || target.id !== workspaceTarget.id) return;
+      selectWorkspaceTool('files');
+    };
+    window.addEventListener(WORKSPACE_TOGGLE_EVENT, handleWorkspaceToggle);
+    return () => window.removeEventListener(WORKSPACE_TOGGLE_EVENT, handleWorkspaceToggle);
+  }, [selectWorkspaceTool, workspaceEnabled, workspaceTarget]);
 
   const workspaceCollaboration = props.workspaceCollaboration
     ? {
         ...props.workspaceCollaboration,
-        onClick: () => {
-          if (!props.workspaceCollaboration?.active) {
-            setRightSiderCollapsed(true);
-          }
-          props.workspaceCollaboration?.onClick();
-        },
+        active:
+          activeTab?.kind === 'workspace' && activeTab.workspaceTabKey === 'agent-execution',
+        onClick: () => selectWorkspaceTool('agent-execution'),
       }
     : undefined;
 
@@ -191,33 +249,21 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
       onRename: props.onRenameTitle,
     });
 
-  const {
-    splitRatio: workspaceWidthPxPref,
-    setSplitRatio: setWorkspaceWidthPxPref,
-    createDragHandle: createWorkspaceDragHandle,
-  } = useResizableSplit({
-    unit: 'px',
-    defaultWidth: DEFAULT_WORKSPACE_PANEL_PX,
-    minWidth: MIN_WORKSPACE_PANEL_PX,
-    maxWidth: MAX_WORKSPACE_PANEL_PX,
-    storageKey: 'chat-workspace-width-px',
-  });
-
-  // Pre-hook metrics: compute dynamic min/max for the chat-preview split hook
+  // The workspace is now a preview-tab surface, so the chat/preview split owns
+  // all horizontal layout. Keep the existing calculator for its safe bounds.
   const { dynamicChatMinRatio, dynamicChatMaxRatio } = calcLayoutMetrics({
     containerWidth,
-    workspaceWidthPx: workspaceWidthPxPref,
+    workspaceWidthPx: 0,
     chatSplitRatio: 60, // placeholder; only dynamicChatMinRatio/dynamicChatMaxRatio are used here
-    workspaceEnabled,
+    workspaceEnabled: false,
     isDesktop,
     isPreviewOpen,
-    rightSiderCollapsed,
+    rightSiderCollapsed: true,
     isMobile,
   });
 
   const {
     splitRatio: chatSplitRatio,
-    setSplitRatio: setChatSplitRatio,
     createDragHandle: createPreviewDragHandle,
   } = useResizableSplit({
     defaultWidth: 60,
@@ -226,43 +272,15 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
     storageKey: 'chat-preview-split-ratio',
   });
 
-  // Full metrics with real chatSplitRatio
-  const { chatFlex, workspaceWidthPx, titleAreaMaxWidth, mobileWorkspaceHandleRight } = calcLayoutMetrics({
+  const { chatFlex, titleAreaMaxWidth } = calcLayoutMetrics({
     containerWidth,
-    workspaceWidthPx: workspaceWidthPxPref,
+    workspaceWidthPx: 0,
     chatSplitRatio,
-    workspaceEnabled,
+    workspaceEnabled: false,
     isDesktop,
     isPreviewOpen,
-    rightSiderCollapsed,
+    rightSiderCollapsed: true,
     isMobile,
-  });
-
-  // --- Hook D: preview auto-collapse ---
-  usePreviewAutoCollapse({
-    isPreviewOpen,
-    isDesktop,
-    workspaceEnabled,
-    rightSiderCollapsed,
-    setRightSiderCollapsed,
-    siderCollapsed: layout?.siderCollapsed,
-    setSiderCollapsed: layout?.setSiderCollapsed,
-  });
-
-  // --- Hook E: layout constraints ---
-  useLayoutConstraints({
-    containerWidth,
-    workspaceEnabled,
-    isDesktop,
-    isPreviewOpen,
-    rightSiderCollapsed,
-    setRightSiderCollapsed,
-    workspaceWidthPx: workspaceWidthPxPref,
-    setWorkspaceWidthPx: setWorkspaceWidthPxPref,
-    chatSplitRatio,
-    setChatSplitRatio,
-    dynamicChatMinRatio,
-    dynamicChatMaxRatio,
   });
 
   const [mobileActionsSlot, setMobileActionsSlot] = useState<HTMLElement | null>(null);
@@ -299,6 +317,33 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
     window.addEventListener(WORKSPACE_PANEL_META_EVENT, handleWorkspaceMeta);
     return () => window.removeEventListener(WORKSPACE_PANEL_META_EVENT, handleWorkspaceMeta);
   }, [workspaceTarget?.id, workspaceTarget?.kind]);
+
+  const workspaceSider = useMemo(() => {
+    if (!workspaceEnabled) return undefined;
+    if (!React.isValidElement(props.sider)) return props.sider;
+    return React.cloneElement(
+      props.sider as React.ReactElement<{ extraTabs?: WorkspaceExtraTab[] }>,
+      { extraTabs: props.workspaceExtraTabs }
+    );
+  }, [props.sider, props.workspaceExtraTabs, workspaceEnabled]);
+
+  const isActiveWorkspaceTab =
+    activeTab?.kind === 'workspace' && activeTab.workspaceTabKey === activeWorkspaceTab;
+  const shellPreviewActive = activeTab?.kind === 'terminal';
+  const showToolRail = workspaceEnabled && isDesktop;
+  const workspaceHeader = activeWorkspaceTitle ? (
+    <WorkspacePanelHeader
+      showToggle={false}
+      collapsed={false}
+      onToggle={() => undefined}
+      workspacePath={workspacePath}
+      isTemporaryWorkspace={isTemporaryWorkspace}
+      conversation_id={conversation_id}
+      activeTab={activeWorkspaceTab}
+    >
+      {activeWorkspaceTitle}
+    </WorkspacePanelHeader>
+  ) : null;
 
   const desktopHeader = (
     <ArcoLayout.Header
@@ -390,170 +435,97 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
       }}
     >
       <div ref={containerRef} className='flex flex-1 relative w-full overflow-hidden'>
-        {/* Unified layout: single DOM structure prevents children unmount/remount on preview toggle */}
+        {/* Unified layout: single DOM structure prevents children unmount/remount on preview toggle.
+            Desktop: header lives in the chat column so the preview strip is flush with the top.
+            Mobile: column stack keeps the header visible when preview takes the remaining height. */}
         <div
-          className='flex flex-col min-w-0'
+          className={classNames('flex min-w-0 min-h-0', isMobile ? 'flex-col' : 'flex-row')}
           style={{
             flexGrow: 1,
             flexShrink: 1,
             flexBasis: 0,
           }}
         >
-          <div className='shrink-0 !bg-1'>{headerBlock}</div>
-          <div className='flex flex-1 min-h-0 relative'>
+          <div
+            className='flex flex-col min-w-0 min-h-0'
+            style={{
+              flexGrow: isPreviewOpen ? 0 : 1,
+              flexShrink: isDesktop ? 0 : isPreviewOpen ? 0 : 1,
+              flexBasis: isPreviewOpen && isDesktop ? `${chatFlex}%` : isDesktop ? 0 : 'auto',
+              minWidth: isDesktop ? '240px' : undefined,
+            }}
+          >
+            <div className='shrink-0 !bg-1'>{headerBlock}</div>
             {/* Chat area - always mounted, never unmounted on preview toggle */}
             <div
-              className='flex flex-col relative min-h-0'
+              className='flex flex-col relative min-h-0 flex-1'
               style={{
-                flexGrow: isPreviewOpen && isDesktop ? 0 : 1,
-                flexShrink: 0,
-                flexBasis: isPreviewOpen && isDesktop ? `${chatFlex}%` : 0,
                 display: isPreviewOpen && isMobile ? 'none' : 'flex',
-                minWidth: '240px',
-              }}
-              onClick={() => {
-                if (window.innerWidth < 768 && !rightSiderCollapsed) setRightSiderCollapsed(true);
               }}
             >
               {chatColumnBody}
             </div>
-            {/* Preview panel - conditionally rendered */}
-            {isPreviewOpen && (
+          </div>
+          <div
+              className={classNames(
+                'preview-panel flex flex-col relative min-w-0 overflow-visible',
+                isDesktop
+                  ? showToolRail
+                    ? 'mb-[12px] ml-[8px] rounded-bl-[15px]'
+                    : 'mb-[12px] mr-[12px] ml-[8px] rounded-b-[15px]'
+                  : 'm-[8px] rounded-[15px]'
+              )}
+              style={{
+                flexGrow: 1,
+                flexShrink: 1,
+                flexBasis: 0,
+                border: '1px solid var(--bg-3)',
+                borderRight: showToolRail ? 'none' : undefined,
+                minWidth: isDesktop ? '260px' : 0,
+                minHeight: 0,
+                maxWidth: isMobile ? 'calc(100% - 16px)' : undefined,
+                width: isMobile ? 'calc(100% - 16px)' : undefined,
+                boxSizing: 'border-box',
+                display: isPreviewOpen ? undefined : 'none',
+              }}
+            >
+              {isDesktop &&
+                createPreviewDragHandle({
+                  className: 'absolute top-0 bottom-0 z-30',
+                  style: { width: '20px', left: '-20px' },
+                  linePlacement: 'end',
+                  lineClassName: 'opacity-30 group-hover:opacity-100 group-active:opacity-100',
+                  lineStyle: { width: '2px' },
+                })}
               <div
                 className={classNames(
-                  'preview-panel flex flex-col relative overflow-visible rounded-[15px]',
-                  isDesktop ? 'mb-[12px] mr-[12px] ml-[8px]' : 'm-[8px]'
+                  'h-full w-full overflow-hidden',
+                  isDesktop
+                    ? showToolRail
+                      ? 'rounded-bl-[15px]'
+                      : 'rounded-b-[15px]'
+                    : 'rounded-[15px]'
                 )}
-                style={{
-                  flexGrow: 1,
-                  flexShrink: 1,
-                  flexBasis: 0,
-                  border: '1px solid var(--bg-3)',
-                  minWidth: isDesktop ? '260px' : 0,
-                  maxWidth: isMobile ? 'calc(100% - 16px)' : undefined,
-                  width: isMobile ? 'calc(100% - 16px)' : undefined,
-                  boxSizing: 'border-box',
-                }}
               >
-                {isDesktop &&
-                  createPreviewDragHandle({
-                    className: 'absolute top-0 bottom-0 z-30',
-                    style: { width: '20px', left: '-20px' },
-                    linePlacement: 'end',
-                    lineClassName: 'opacity-30 group-hover:opacity-100 group-active:opacity-100',
-                    lineStyle: { width: '2px' },
-                  })}
-                <div className='h-full w-full overflow-hidden rounded-[15px]'>
-                  <PreviewPanel />
-                </div>
+                <PreviewPanel
+                  workspaceContent={workspaceSider}
+                  workspaceTabs={workspaceTabs}
+                  renderWorkspaceHeader={() => workspaceHeader}
+                  onWorkspaceTabActivate={selectWorkspaceTool}
+                />
               </div>
-            )}
           </div>
         </div>
-        {workspaceEnabled && layout?.isMobile && rightSiderCollapsed && (
-          <button
-            type='button'
-            className='workspace-tool-rail-mobile-trigger'
-            onClick={() => {
-              persistRightSiderCollapsed(false);
-            }}
-            aria-label={t('conversation.workspace.expand', { defaultValue: '展开侧栏' })}
-          >
-            <span className='workspace-tool-rail-mobile-trigger__dot' />
-            <span className='workspace-tool-rail-mobile-trigger__dot' />
-            <span className='workspace-tool-rail-mobile-trigger__dot' />
-          </button>
-        )}
-        {workspaceEnabled && !layout?.isMobile && (
-          <div
-            className={classNames('!bg-1 relative chat-layout-right-sider layout-sider')}
-            style={{
-              flexGrow: 0,
-              flexShrink: 0,
-              flexBasis: rightSiderCollapsed ? '0px' : `${Math.round(workspaceWidthPx)}px`,
-              width: rightSiderCollapsed ? '0px' : `${Math.round(workspaceWidthPx)}px`,
-              minWidth: rightSiderCollapsed ? '0px' : `${MIN_WORKSPACE_PANEL_PX}px`,
-              overflow: 'hidden',
-              borderLeft: rightSiderCollapsed ? 'none' : '1px solid var(--bg-3)',
-            }}
-          >
-            {isDesktop &&
-              !rightSiderCollapsed &&
-              createWorkspaceDragHandle({ className: 'absolute left-0 top-0 bottom-0', style: {}, reverse: true })}
-            <WorkspacePanelHeader
-              showToggle={Boolean(props.selfContainedWorkspaceToggle) || (!isMacRuntime && !isWindowsRuntime)}
-              collapsed={rightSiderCollapsed}
-              onToggle={() => workspaceTarget && dispatchWorkspaceToggleEvent(workspaceTarget)}
-              togglePlacement={layout?.isMobile ? 'left' : 'right'}
-              workspacePath={workspacePath}
-              isTemporaryWorkspace={isTemporaryWorkspace}
-              conversation_id={conversation_id}
-              activeTab={activeWorkspaceTab}
-            >
-              {activeWorkspaceTitle}
-            </WorkspacePanelHeader>
-            <ArcoLayout.Content style={{ height: `calc(100% - ${WORKSPACE_HEADER_HEIGHT}px)` }}>
-              {props.sider}
-            </ArcoLayout.Content>
-          </div>
-        )}
         {workspaceEnabled && !layout?.isMobile && (
           <WorkspaceToolRail
             t={t}
             activeTab={activeWorkspaceTab}
-            expanded={!rightSiderCollapsed}
+            expanded={isActiveWorkspaceTab}
+            shellPreviewActive={shellPreviewActive}
             onSelect={selectWorkspaceTool}
             changeCount={workspaceChangeCount}
             extraTabs={props.workspaceExtraTabs}
             collaboration={workspaceCollaboration}
-            footer={
-              <button
-                type='button'
-                className='workspace-tool-rail__item workspace-tool-rail__item--collapse'
-                onClick={() => {
-                  if (rightSiderCollapsed && props.workspaceCollaboration?.active) {
-                    props.workspaceCollaboration.onClick();
-                  }
-                  persistRightSiderCollapsed(!rightSiderCollapsed);
-                }}
-                aria-label={
-                  rightSiderCollapsed
-                    ? t('conversation.workspace.expand', { defaultValue: '展开侧栏' })
-                    : t('conversation.workspace.collapse', { defaultValue: '收起侧栏' })
-                }
-              >
-                {rightSiderCollapsed ? <span>‹</span> : <span>›</span>}
-              </button>
-            }
-          />
-        )}
-
-        {/* Mobile workspace overlay: backdrop + fixed panel + floating collapse handle */}
-        {workspaceEnabled && layout?.isMobile && workspaceTarget && (
-          <MobileWorkspaceOverlay
-            rightSiderCollapsed={rightSiderCollapsed}
-            setRightSiderCollapsed={setRightSiderCollapsed}
-            workspaceWidthPx={workspaceWidthPx}
-            mobileWorkspaceHandleRight={mobileWorkspaceHandleRight}
-            siderTitle={props.siderTitle}
-            sider={props.sider}
-            workspacePath={workspacePath}
-            isTemporaryWorkspace={isTemporaryWorkspace}
-            conversation_id={conversation_id}
-            workspaceTarget={workspaceTarget}
-            activeTab={activeWorkspaceTab}
-            activeTitle={activeWorkspaceTitle}
-            toolRail={
-              <WorkspaceToolRail
-                t={t}
-                activeTab={activeWorkspaceTab}
-                expanded={!rightSiderCollapsed}
-                onSelect={selectWorkspaceTool}
-                changeCount={workspaceChangeCount}
-                extraTabs={props.workspaceExtraTabs}
-                collaboration={workspaceCollaboration}
-              />
-            }
           />
         )}
       </div>
@@ -598,6 +570,7 @@ const ChatLayout: React.FC<ChatLayoutProps> = (props) => {
       key={previewScope}
       persistNamespace={previewScope}
       subscribeGlobalOpen={true}
+      workspacePath={props.workspacePath}
     >
       <ChatLayoutInner {...props} />
     </PreviewProvider>

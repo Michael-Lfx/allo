@@ -22,19 +22,21 @@ describe('ChatLayout advanced controls', () => {
     expect(source.includes("<KnowledgeControl target={{ kind: 'conversation', id: conversation_id }} />")).toBe(true);
   });
 
-  test('does not let workspace file-tree events auto-expand the conversation right rail', () => {
+  test('opens workspace views in preview tabs instead of a separate right rail', () => {
     const source = readSource(new URL('./index.tsx', import.meta.url));
 
-    expect(source.includes('autoExpandOnFiles: false')).toBe(true);
+    expect(source.includes('openWorkspaceTab')).toBe(true);
+    expect(source.includes('workspaceContent={workspaceSider}')).toBe(true);
+    expect(source.includes("classNames('!bg-1 relative chat-layout-right-sider layout-sider')")).toBe(false);
+    expect(source.includes('MobileWorkspaceOverlay')).toBe(false);
+    expect(source.includes('onWorkspaceTabActivate={selectWorkspaceTool}')).toBe(true);
   });
 
-  test('keeps the workspace tool rail at the far right of the expanded panel', () => {
+  test('opens Shell via the former conversation-terminals rail entry', () => {
     const source = readSource(new URL('./index.tsx', import.meta.url));
-    const panelIndex = source.indexOf("className={classNames('!bg-1 relative chat-layout-right-sider layout-sider')}");
-    const railIndex = source.indexOf('<WorkspaceToolRail');
-
-    expect(panelIndex >= 0).toBe(true);
-    expect(railIndex >= 0).toBe(true);
-    expect(panelIndex < railIndex).toBe(true);
+    expect(source.includes("nextTab === 'conversation-terminals'")).toBe(true);
+    expect(source.includes('void openShellPreview()')).toBe(true);
+    expect(source.includes("tab.key !== 'conversation-terminals'")).toBe(true);
+    expect(source.includes('shellPreviewActive={shellPreviewActive}')).toBe(true);
   });
 });

@@ -34,21 +34,22 @@ export type WorkspaceFileIconKind =
   | 'video'
   | 'word';
 
-const iconProps = { theme: 'outline', size: 14, strokeWidth: 3, fill: 'currentColor' } as const;
-
-const FILE_ICON_NODE_BY_KIND: Record<WorkspaceFileIconKind, React.ReactNode> = {
-  archive: <FileZip {...iconProps} />,
-  audio: <FileMusic {...iconProps} />,
-  code: <FileCode {...iconProps} />,
-  excel: <FileExcel {...iconProps} />,
-  html: <WebPage {...iconProps} />,
-  image: <Pic {...iconProps} />,
-  markdown: <FileText {...iconProps} />,
-  pdf: <FilePdf {...iconProps} />,
-  presentation: <FilePpt {...iconProps} />,
-  text: <FileTxt {...iconProps} />,
-  video: <VideoTwo {...iconProps} />,
-  word: <FileWord {...iconProps} />,
+const FILE_ICON_BY_KIND: Record<
+  WorkspaceFileIconKind,
+  typeof FileCode
+> = {
+  archive: FileZip,
+  audio: FileMusic,
+  code: FileCode,
+  excel: FileExcel,
+  html: WebPage,
+  image: Pic,
+  markdown: FileText,
+  pdf: FilePdf,
+  presentation: FilePpt,
+  text: FileTxt,
+  video: VideoTwo,
+  word: FileWord,
 };
 
 export const getWorkspaceFileIconKind = (fileName: string): WorkspaceFileIconKind => {
@@ -79,12 +80,13 @@ export const getWorkspaceFileIconKind = (fileName: string): WorkspaceFileIconKin
   }
 };
 
-const WorkspaceFileIcon: React.FC<{ fileName: string }> = ({ fileName }) => {
+const WorkspaceFileIcon: React.FC<{ fileName: string; size?: number }> = ({ fileName, size = 14 }) => {
   const kind = getWorkspaceFileIconKind(fileName);
+  const Icon = FILE_ICON_BY_KIND[kind];
 
   return (
     <span className={`workspace-file-type-icon workspace-file-type-icon--${kind}`} aria-hidden='true'>
-      {FILE_ICON_NODE_BY_KIND[kind]}
+      <Icon theme='outline' size={size} strokeWidth={3} fill='currentColor' />
     </span>
   );
 };

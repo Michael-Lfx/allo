@@ -1,13 +1,7 @@
 import type { SessionTarget } from '@/common/types/ids';
 
 export const WORKSPACE_TOGGLE_EVENT = 'nomifun-workspace-toggle';
-export const WORKSPACE_STATE_EVENT = 'nomifun-workspace-state';
 export const WORKSPACE_HAS_FILES_EVENT = 'nomifun-workspace-has-files';
-
-export interface WorkspaceStateDetail {
-  target: SessionTarget;
-  collapsed: boolean;
-}
 
 export interface WorkspaceHasFilesDetail {
   target: SessionTarget;
@@ -32,13 +26,6 @@ export function dispatchWorkspaceToggleEvent(target: SessionTarget) {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(
     new CustomEvent<WorkspaceToggleDetail>(WORKSPACE_TOGGLE_EVENT, { detail: { target } })
-  );
-}
-
-export function dispatchWorkspaceStateEvent(target: SessionTarget, collapsed: boolean) {
-  if (typeof window === 'undefined') return;
-  window.dispatchEvent(
-    new CustomEvent<WorkspaceStateDetail>(WORKSPACE_STATE_EVENT, { detail: { target, collapsed } })
   );
 }
 

@@ -110,7 +110,7 @@ body {
   --sider-section-title-color: #777774;
 
   /* Terminal */
-  --terminal-surface-bg: #111111;
+  --terminal-surface-bg: var(--bg-1);
   --terminal-border: rgba(0, 0, 0, 0.12);
 
   /* Arco primary scale */
@@ -253,7 +253,7 @@ body {
   --sider-section-title-color: #969696;
 
   /* Terminal */
-  --terminal-surface-bg: #0f0f0f;
+  --terminal-surface-bg: var(--bg-1);
   --terminal-border: rgba(255, 255, 255, 0.1);
 
   /* Arco primary scale */

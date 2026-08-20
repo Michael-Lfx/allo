@@ -40,3 +40,46 @@ describe('preview persistence entity isolation', () => {
     expect(transcript.includes('persistNamespace={transcriptStorageKey}')).toBe(true);
   });
 });
+
+describe('preview mixed tab persistence', () => {
+  test('does not persist terminal, browser, or workspace tabs', () => {
+    const source = readSource(new URL('./PreviewContext.tsx', import.meta.url));
+
+    expect(source.includes("inferPreviewTabKind(tab) === 'file'")).toBe(true);
+    expect(source.includes('openTerminalTab')).toBe(true);
+    expect(source.includes('openBrowserTab')).toBe(true);
+    expect(source.includes('openWorkspaceTab')).toBe(true);
+    expect(source.includes('resolveActiveTabAfterClose')).toBe(true);
+    expect(source.includes('previousActiveTabIdRef')).toBe(true);
+    expect(source.includes("kind: 'workspace'")).toBe(true);
+    expect(source.includes('workspaceTabKey: definition.key')).toBe(true);
+    expect(source.includes('findWorkspacePreviewTab(prevTabs, definition.key)')).toBe(true);
+    expect(source.includes('upsertMixedPreviewTab')).toBe(true);
+    expect(source.includes('workspacePath?: string')).toBe(true);
+    expect(source.includes("const kind: PreviewTabKind = type === 'url' ? 'browser' : 'file'")).toBe(true);
+  });
+
+  test('conversation and terminal surfaces pass workspacePath into the preview provider', () => {
+    const chatLayout = readSource(new URL('../../components/ChatLayout/index.tsx', import.meta.url));
+    const terminal = readSource(new URL('../../../terminal/TerminalSessionPage.tsx', import.meta.url));
+
+    expect(chatLayout.includes('workspacePath={props.workspacePath}')).toBe(true);
+    expect(terminal.includes('workspacePath={session.cwd}')).toBe(true);
+  });
+
+  test('desktop preview is a full-height sibling of the header+chat stack', () => {
+    const chatLayout = readSource(new URL('../../components/ChatLayout/index.tsx', import.meta.url));
+
+    expect(chatLayout.includes("isMobile ? 'flex-col' : 'flex-row'")).toBe(true);
+    expect(chatLayout.includes('rounded-bl-[15px]')).toBe(true);
+    expect(chatLayout.includes("borderRight: showToolRail ? 'none' : undefined")).toBe(true);
+    expect(chatLayout.includes('{headerBlock}')).toBe(true);
+    expect(chatLayout.includes('{chatColumnBody}')).toBe(true);
+    const headerAt = chatLayout.indexOf('{headerBlock}');
+    const previewAt = chatLayout.indexOf('display: isPreviewOpen ? undefined : \'none\'');
+    expect(headerAt).toBeGreaterThan(-1);
+    expect(previewAt).toBeGreaterThan(headerAt);
+    expect(chatLayout.includes('openWorkspaceTab(definition)')).toBe(true);
+    expect(chatLayout.includes('onWorkspaceTabActivate={selectWorkspaceTool}')).toBe(true);
+  });
+});

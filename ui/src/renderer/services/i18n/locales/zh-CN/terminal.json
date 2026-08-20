@@ -4,7 +4,7 @@
   "untitled": "终端",
   "empty": "暂无终端",
   "conversationPanel": {
-    "tab": "会话终端",
+    "tab": "Shell",
     "summary": "共 {{total}} 个，{{running}} 个运行中",
     "empty": "当前会话暂无终端",
     "status": "状态",

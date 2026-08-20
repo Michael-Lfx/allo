@@ -95,8 +95,8 @@ body {
   --control-disabled-selected-bg: #9bc8f4;
   --control-focus-ring: rgba(35, 131, 226, 0.24);
 
-  /* Terminal — keep dark */
-  --terminal-surface-bg: #1e1e1e;
+  /* Terminal — follow --bg-1 */
+  --terminal-surface-bg: var(--bg-1);
   --terminal-border: #2f2f2f;
 
   /* ── B. Arco Design Tokens ── */
@@ -257,8 +257,8 @@ body {
   --control-disabled-selected-bg: #406b87;
   --control-focus-ring: rgba(82, 156, 202, 0.3);
 
-  /* Terminal — keep dark */
-  --terminal-surface-bg: #0d0d0d;
+  /* Terminal — follow --bg-1 */
+  --terminal-surface-bg: var(--bg-1);
   --terminal-border: #2f2f2f;
 
   /* ── B. Arco Design Tokens ── */
