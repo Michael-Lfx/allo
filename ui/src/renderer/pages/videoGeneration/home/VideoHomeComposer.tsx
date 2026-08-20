@@ -559,7 +559,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         })
       : draft.workflow === 'script2video'
         ? t('videoGeneration.create.composer.scriptPlaceholder', {
-            defaultValue: '粘贴剧本，Flowy 会自动拆成可编辑镜头…',
+            defaultValue:
+              '粘贴剧本；自动按集/场拆分，默认拍全集。需求可写「拍第N集」「前N场」',
           })
         : draft.workflow === 'novel2video'
           ? t('videoGeneration.create.composer.novelPlaceholder', {

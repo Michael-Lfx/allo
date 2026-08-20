@@ -21,6 +21,7 @@ import {
 } from '../durationBounds';
 import {
   filterAllowedImageModels,
+  pickDefaultLlmModel,
   pickDefaultVideoModel,
 } from '../components/ModelSelectors';
 import {
@@ -211,13 +212,6 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     defaultValue: '暂无可用模型',
   });
 
-  // Keep summary width stable; content still tracks the active media tab.
-  const durationSummarySecs = clampDuration(
-    value.targetDurationSecs,
-    duration.min,
-    duration.max,
-    duration.step
-  );
   const summary = isAction
     ? `${shortModelLabel(value.models.video_model, noModelLabel)} · ${value.resolution.toUpperCase()}`
     : value.automatic
@@ -227,9 +221,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
             value.models.image_model,
             noModelLabel
           )}`
-        : mode === 'agent'
-          ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${durationSummarySecs}s · ${value.resolution.toUpperCase()}`
-          : `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()}`;
+        : `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()}`;
 
   const summaryTitle = isAction
     ? summary
@@ -239,9 +231,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
           value.smartAspect ? smartLabel : value.aspectRatio
         } · ${
           mediaKind === 'video'
-            ? mode === 'agent'
-              ? `${durationSummarySecs}s · ${value.resolution.toUpperCase()}`
-              : value.resolution.toUpperCase()
+            ? value.resolution.toUpperCase()
             : shortModelLabel(value.models.image_model, noModelLabel)
         }`;
 
@@ -426,7 +416,16 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     const current = valueRef.current;
     const patch: Partial<GenerationPreferences['models']> = {};
     if (!isAction && !current.models.llm_model && llmOptions[0]) {
-      patch.llm_model = llmOptions[0].value;
+      patch.llm_model =
+        pickDefaultLlmModel(llmOptions.map((option) => option.value)) ?? llmOptions[0].value;
+    } else if (
+      !isAction &&
+      current.models.llm_model &&
+      llmOptions.length > 0 &&
+      !llmOptions.some((option) => option.value === current.models.llm_model)
+    ) {
+      patch.llm_model =
+        pickDefaultLlmModel(llmOptions.map((option) => option.value)) ?? llmOptions[0].value;
     }
     if (!isAction && !current.models.image_model && imageOptions[0]) {
       patch.image_model = imageOptions[0].value;
@@ -744,7 +743,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
               </div>
             </div>
 
-            {mediaKind === 'video' && !isAction ? (
+            {mediaKind === 'video' && mode === 'creation' ? (
               <div
                 className={`${styles.preferenceSection} ${
                   value.automatic ? styles.preferenceSectionMuted : ''

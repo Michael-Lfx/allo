@@ -21,6 +21,9 @@ export interface VimaxModelSelection {
 /** Preferred default video model when present in the Flowy catalog. */
 const PREFERRED_VIDEO_MODEL_NEEDLE = 'doubao-seedance-2-0-fast';
 
+/** Preferred planning LLM catalog name (match id or display label). */
+const PREFERRED_LLM_MODEL_NAME = 'Deepseek-v4-pro';
+
 /** Image catalog is restricted to Seedream 5.0 Lite by catalog `name`. */
 const ALLOWED_IMAGE_MODEL_NAME = 'Doubao-seedream-5-0-lite';
 
@@ -42,6 +45,17 @@ export function pickDefaultVideoModel(videoModels: IMediaModelOption[]): string 
     return blob.includes(preferredKey);
   });
   return preferred?.id ?? videoModels[0]?.id;
+}
+
+/** Prefer Deepseek-v4-pro by catalog name/id; otherwise the first chat model. */
+export function pickDefaultLlmModel(modelIds: string[]): string | undefined {
+  if (!modelIds.length) return undefined;
+  const preferredKey = normalizeModelKey(PREFERRED_LLM_MODEL_NAME);
+  const preferred = modelIds.find((id) => {
+    const blob = normalizeModelKey(`${id} ${formatCloudModelLabel(id)}`);
+    return blob.includes(preferredKey);
+  });
+  return preferred ?? modelIds[0];
 }
 
 /** Keep only Seedream 5.0 Lite entries (match catalog `name`, fall back to id). */
@@ -121,7 +135,10 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
   useEffect(() => {
     const patch: Partial<VimaxModelSelection> = {};
     if (mode !== 'action' && mode !== 'video' && mode !== 'image') {
-      if (!value.llm_model && llmOptions[0]) patch.llm_model = llmOptions[0].value;
+      if (!value.llm_model && llmOptions[0]) {
+        patch.llm_model =
+          pickDefaultLlmModel(llmOptions.map((o) => o.value)) ?? llmOptions[0].value;
+      }
     }
     if (mode !== 'action' && mode !== 'video') {
       if (!value.image_model && imageOptions[0]) patch.image_model = imageOptions[0].value;

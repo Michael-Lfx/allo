@@ -696,12 +696,107 @@ pub fn with_language_lock(base: &str, sources: &[&str]) -> String {
     }
 }
 
+/// True when the session has an explicit finished-film budget (legacy / API).
+pub fn has_explicit_duration_budget(target_secs: Option<u32>) -> bool {
+    target_secs.is_some_and(|s| s > 0)
+}
+
+fn film_pacing_model_decides_block() -> String {
+    format!(
+        "[VIDEO_PACING — MUST FOLLOW]\n\
+         - Do NOT target a fixed finished runtime. Let scene count and story length follow the idea \
+(ViMax-style: the model decides duration).\n\
+         - For a vague idea, prefer 1 scene and about 3–5 shots unless the user explicitly asks for a \
+longer film, more scenes, or more shots.\n\
+         - If USER_REQUIREMENT names a duration, scene count, or shot count, honor that instead.\n\
+         - Each rendered shot clip is {MIN_CLIP_DURATION_SECS}–{MAX_CLIP_DURATION_SECS}s (Seedance hard range).\n\
+         - Speech pacing guide (clear delivery, avoid rush/吞字): ~{SPEECH_CJK_CHARS_PER_SEC} Chinese chars/sec \
+or ~{SPEECH_EN_WORDS_PER_SEC} English words/sec; leave ~{SPEECH_LEAD_SECS}s before speech starts and \
+~{SPEECH_TAIL_SECS}s after the last word — then land on a visible reaction/action beat (no empty hold).\n\
+         [DIRECTOR_DENSITY — MUST FOLLOW]\n\
+         - Short-film information density: every shot must advance plot, relationship, OR a \
+distinct visual surprise. Forbid repeated establishing shots and filler pauses.\n\
+         - Write a mental beat sheet before prose: hook → escalation → turn → payoff. Each scene needs \
+at least one concrete conflict beat and one filmable visual motif that can recur.\n\
+         - Prefer show-don't-tell actions over long explanatory dialogue; keep spoken lines short and punchy.\n\
+         [MUSIC_ARC — MUST FOLLOW]\n\
+         - Plan one continuous underscore mood for the film (motif / tempo / intensity arc). \
+Adjacent shots must feel like one soundtrack, not a new track per cut."
+    )
+}
+
+fn scene_pacing_model_decides_block(scene_idx: usize, scene_count: usize) -> String {
+    let scene_num = scene_idx + 1;
+    let speak_window_max =
+        MAX_CLIP_DURATION_SECS.saturating_sub(SPEECH_LEAD_SECS + SPEECH_TAIL_SECS);
+    let max_cjk_chars = (speak_window_max as f32 * SPEECH_CJK_CHARS_PER_SEC).floor() as u32;
+    let max_en_words = (speak_window_max as f32 * SPEECH_EN_WORDS_PER_SEC).floor() as u32;
+    let cross_scene = if scene_idx > 0 && scene_count > 1 {
+        "         - CROSS-SCENE OPENING: This is NOT the first scene. The FIRST shot must open as a \
+match-cut from the previous scene's final shot ending state (carry cast identity / wardrobe / lighting mood \
+when story-consistent; camera or location may change for the new beat). The renderer feeds that ending frame \
+as continuity Image 1 — write the opening beat to continue from that still, not a cold establish.\n"
+            .to_string()
+    } else {
+        String::new()
+    };
+    format!(
+        "[VIDEO_PACING — MUST FOLLOW]\n\
+         - This is scene {scene_num}/{scene_count}. Shot count follows the scene script — do NOT pad or \
+truncate to hit a runtime quota.\n\
+         - Each shot clip is {MIN_CLIP_DURATION_SECS}–{MAX_CLIP_DURATION_SECS}s (Seedance).\n\
+         - Plan visual beats AND audio beats together: dialogue/SFX in audio_desc MUST finish inside the \
+same shot's duration — no unfinished lines, mid-sentence cuts, swallowed syllables (吞字), or \
+\"and then…\" requiring another clip.\n\
+         - EVERY shot MUST have a non-empty audio_desc (spoken lines and/or ambient SFX+BGM). Never leave audio_desc null.\n\
+         - Speech budget per shot: hard max ≲ {max_cjk_chars} Chinese chars / ≲ {max_en_words} English words \
+for a {MAX_CLIP_DURATION_SECS}s clip, after reserving ~{SPEECH_LEAD_SECS}s lead-in + ~{SPEECH_TAIL_SECS}s tail. \
+If a speech beat is longer, you MUST SPLIT into another shot (or shorten the line) — never cram past \
+the {MAX_CLIP_DURATION_SECS}s Seedance limit.\n\
+         - After the last spoken word, land on a clear reaction/action beat within ~{SPEECH_TAIL_SECS}s — \
+do NOT pad with empty static holds or \"磨叽\" waiting.\n\
+         - Prefer purposeful cuts that raise information density; silent/action beats may be 5–10s with \
+rich in-shot motion. For dialogue, prioritize clear pacing — pack reaction into the same framing only \
+when the spoken payload still fits the speech budget.\n\
+         - Reuse cam_idx whenever possible. Prefer in-shot motion when a cut adds no new information.\n\
+         - SHOT CONTINUITY: for every adjacent pair of shots in this scene, shot N+1 must open from \
+shot N's ending state so Seedance can match-cut (first frame of next = last frame of previous). \
+Camera/angle may change; cast identity, wardrobe, lighting mood, and set must carry over.\n\
+         {cross_scene}\
+         [DIRECTOR_DENSITY — MUST FOLLOW]\n\
+         - Each shot must change something the audience can see or hear (new info, new emotion, new action). \
+Ban back-to-back redundant wide establishes and repeated \"looks around slowly\" beats.\n\
+         - Aim for one strong visual event per shot (prop reveal, gesture, light shift, spatial change).\n\
+         [BGM_CONTINUITY — MUST FOLLOW]\n\
+         - All shots in THIS SCENE share ONE continuous underscore: same motif, tempo feel, instrumentation, \
+and volume intention. Write the same BGM phrase into every audio_desc (or a clear \"same underscore as prior shot\"). \
+Do NOT invent a new music style per shot — abrupt BGM changes between cuts are forbidden."
+    )
+}
+
+/// Scene-level pacing when the user did not set a finished-film duration.
+pub fn enrich_requirement_for_scene_model_decides(
+    user_requirement: &str,
+    scene_idx: usize,
+    scene_count: usize,
+) -> String {
+    let base = user_requirement.trim();
+    let base = strip_duration_constraint_blocks(base);
+    let base = with_language_lock(&base, &[&base, user_requirement]);
+    format!("{base}\n\n{}", scene_pacing_model_decides_block(scene_idx, scene_count))
+}
+
 /// Film-level constraints (develop story / write multi-scene script).
+///
+/// `None` / `0` means ViMax-style: the model decides length from the story.
 pub fn enrich_requirement_for_film(user_requirement: &str, target_secs: Option<u32>) -> String {
+    let base = with_language_lock(user_requirement, &[user_requirement]);
+    if !has_explicit_duration_budget(target_secs) {
+        return format!("{base}\n\n{}", film_pacing_model_decides_block());
+    }
     let target = normalize_target_duration_secs(target_secs);
     let (ideal_scenes, max_scenes) = suggested_scene_count(target);
     let per_scene = (target / ideal_scenes.max(1)).max(MIN_CLIP_DURATION_SECS);
-    let base = with_language_lock(user_requirement, &[user_requirement]);
     let block = format!(
         "[VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]\n\
          - Target finished film length ≈ {target} seconds TOTAL (hard planning budget).\n\
@@ -805,6 +900,9 @@ Do NOT invent a new music style per shot — abrupt BGM changes between cuts are
 
 /// Single-scene script2video (whole target = this scene).
 pub fn enrich_requirement_for_planning(user_requirement: &str, target_secs: Option<u32>) -> String {
+    if !has_explicit_duration_budget(target_secs) {
+        return enrich_requirement_for_scene_model_decides(user_requirement, 0, 1);
+    }
     let target = normalize_target_duration_secs(target_secs);
     enrich_requirement_for_scene(user_requirement, target, 0, 1, target)
 }
@@ -815,6 +913,7 @@ fn strip_duration_constraint_blocks(s: &str) -> String {
     for line in s.lines() {
         let t = line.trim();
         if t.starts_with("[VIDEO_DURATION_CONSTRAINTS")
+            || t.starts_with("[VIDEO_PACING")
             || t.starts_with("[OUTPUT_LANGUAGE")
             || t.starts_with("[DIRECTOR_DENSITY")
             || t.starts_with("[MUSIC_ARC")
@@ -1116,7 +1215,20 @@ pub fn allocate_clip_durations_for_content(
     needs: &[u32],
 ) -> Vec<u32> {
     if needs.is_empty() {
+        if !has_explicit_duration_budget(target_total) {
+            let mut durs = vec![MIN_CLIP_DURATION_SECS];
+            apply_shot_splice_tail_padding(&mut durs);
+            return durs;
+        }
         return allocate_clip_durations(target_total, 1);
+    }
+    if !has_explicit_duration_budget(target_total) {
+        let mut durs: Vec<u32> = needs
+            .iter()
+            .map(|&n| n.clamp(MIN_CLIP_DURATION_SECS, MAX_CLIP_DURATION_SECS))
+            .collect();
+        apply_shot_splice_tail_padding(&mut durs);
+        return durs;
     }
     let target = normalize_target_duration_secs(target_total);
     let (fit_budget, will_pad) = fit_budget_reserving_splice_padding(target, needs.len());
@@ -1437,7 +1549,7 @@ mod tests {
         assert!(s.contains("30"));
         assert!(s.contains("THIS SCENE budget"));
         assert!(s.contains("SHOT CONTINUITY"));
-        assert!(s.contains("Do NOT require continuity from the previous scene"));
+        assert!(s.contains("CROSS-SCENE OPENING"));
         assert!(s.contains("DIRECTOR_DENSITY"));
         assert!(s.contains("BGM_CONTINUITY"));
     }
@@ -1626,5 +1738,29 @@ eleven twelve thirteen fourteen";
         assert!(s.contains("DIRECTOR_DENSITY"));
         assert!(s.contains("MUSIC_ARC"));
         assert!(s.contains("45"));
+        assert!(s.contains("VIDEO_DURATION_CONSTRAINTS"));
+    }
+
+    #[test]
+    fn enrich_film_without_budget_lets_model_decide() {
+        let s = enrich_requirement_for_film("雨夜重逢", None);
+        assert!(s.contains("VIDEO_PACING"));
+        assert!(s.contains("3–5") || s.contains("3-5"));
+        assert!(!s.contains("hard planning budget"));
+        assert!(!s.contains("VIDEO_DURATION_CONSTRAINTS"));
+        let planning = enrich_requirement_for_planning("funny", None);
+        assert!(planning.contains("VIDEO_PACING"));
+        assert!(!planning.contains("THIS SCENE budget"));
+    }
+
+    #[test]
+    fn allocate_clip_durations_without_budget_follows_content() {
+        let needs = vec![6, 9, 7];
+        let durs = allocate_clip_durations_for_content(None, &needs);
+        assert_eq!(durs.len(), 3);
+        assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
+        for (d, n) in durs.iter().zip(needs.iter()) {
+            assert!(*d >= *n);
+        }
     }
 }

@@ -53,7 +53,6 @@ import type { ArtifactContent, ArtifactNode, SessionStatus, VimaxSession, VimaxW
 import ArtifactTree from './components/ArtifactTree';
 import ArtifactPreviewPanel from './components/ArtifactPreviewPanel';
 import AspectRatioPicker from './components/AspectRatioPicker';
-import DurationTimelineBar, { clampDuration } from './components/DurationTimelineBar';
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
 import ProgressTimeline from './components/ProgressTimeline';
 import VideoQualityPickers from './components/VideoQualityPickers';
@@ -117,7 +116,6 @@ const WorkspacePage: React.FC = () => {
   const [sourceText, setSourceText] = useState('');
   const [requirement, setRequirement] = useState('');
   const [style, setStyle] = useState(DEFAULT_VISUAL_STYLE_PROMPT);
-  const [targetDurationSecs, setTargetDurationSecs] = useState<number>(30);
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_SEEDANCE_ASPECT_RATIO);
   const [resolution, setResolution] = useState<VideoResolution>(DEFAULT_VIDEO_RESOLUTION);
   const [fps, setFps] = useState(DEFAULT_VIDEO_FPS);
@@ -160,7 +158,8 @@ const WorkspacePage: React.FC = () => {
     switch (sourceField) {
       case 'script':
         return t('videoGeneration.workspace.source.scriptPlaceholder', {
-          defaultValue: '粘贴完整剧本…',
+          defaultValue:
+            '粘贴完整剧本…默认拍全集；需求可写「拍第N集」「前N场」缩小范围',
         });
       case 'novel_text':
         return t('videoGeneration.workspace.source.novelPlaceholder', {
@@ -194,11 +193,6 @@ const WorkspacePage: React.FC = () => {
       setSourceText(s.idea || s.script || s.novel_text || launchDraft?.sourceText || '');
       setRequirement(s.user_requirement || launchDraft?.requirement || '');
       setStyle(s.style?.trim() || launchDraft?.style?.trim() || DEFAULT_VISUAL_STYLE_PROMPT);
-      setTargetDurationSecs(
-        typeof s.target_duration_secs === 'number' && s.target_duration_secs > 0
-          ? s.target_duration_secs
-          : launchDraft?.preferences.targetDurationSecs ?? 30
-      );
       setAspectRatio(
         normalizeSeedanceAspectRatio(
           s.aspect_ratio ||
@@ -487,7 +481,6 @@ const WorkspacePage: React.FC = () => {
           session?.vertical_skill_ids && session.vertical_skill_ids.length > 0
             ? session.vertical_skill_ids
             : undefined,
-        target_duration_secs: clampDuration(targetDurationSecs),
         aspect_ratio: aspectRatio,
         resolution,
         fps,
@@ -526,7 +519,6 @@ const WorkspacePage: React.FC = () => {
     sourceField,
     requirement,
     style,
-    targetDurationSecs,
     aspectRatio,
     resolution,
     fps,
@@ -1351,12 +1343,6 @@ const WorkspacePage: React.FC = () => {
               <WorkspaceCameoStrip sessionId={sessionId} disabled={busy} />
             ) : null}
             <div className={`mt-12px grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
-              <DurationTimelineBar
-                wide
-                value={targetDurationSecs}
-                disabled={busy}
-                onChange={setTargetDurationSecs}
-              />
               <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                 <span>
                   {t('videoGeneration.workspace.source.aspectLabel', {
@@ -1446,7 +1432,6 @@ const WorkspacePage: React.FC = () => {
                 disabled={busy}
               />
               <div className={`grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
-                <DurationTimelineBar wide value={targetDurationSecs} disabled />
                 <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
                   <span>
                     {t('videoGeneration.workspace.source.aspectLabel', {

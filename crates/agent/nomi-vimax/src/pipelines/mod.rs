@@ -4,11 +4,14 @@ mod action2video;
 mod cameo_bind;
 mod idea2video;
 mod novel2video;
+mod script_film;
+mod script_scene_split;
 mod script2video;
 
 pub use action2video::{model_supports_action_imitation, Action2VideoPipeline};
 pub use idea2video::Idea2VideoPipeline;
 pub use novel2video::Novel2VideoPipeline;
+pub use script_film::ScriptFilmPipeline;
 pub use script2video::{resolve_scene_tail_continuity, Script2VideoPipeline};
 
 use std::path::Path;

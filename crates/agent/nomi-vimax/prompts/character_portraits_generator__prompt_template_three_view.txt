@@ -1,19 +1,10 @@
-Character: <{identifier}>
-Features (FOLLOW EXACTLY — hair, face, body type, outfit colors and materials; do NOT substitute a generic costume): {features}
+Generate a full-body three-view turnaround of character {identifier} based on the following description, with a pure white background. Use a wide 16:9 landscape canvas, not a vertical portrait canvas. The character should be centered in each panel, occupying the middle of the frame with enough empty space. Standing with arms relaxed at sides. Natural expression.
+Features: {features}
 Style: {style}
-{look_lock}
-{medium_lock}
-{face_guidance}
-{age_lock}
+人物安全约束：仅限原创虚构角色，**不得套用现实真人、明星长相**。
 
-Generate ONE wide 16:9 three-panel character turnaround sheet of this SAME person (not three different people).
-Panels left → right on a single image:
-  1) FRONT — facing camera, arms relaxed, natural expression, full body head-to-toe
-  2) LEFT PROFILE — true profile facing left, full body head-to-toe
-  3) BACK — back to camera, face not visible, full body head-to-toe
-HARD IDENTITY LOCK: identical face, hair, body, wardrobe, and colors in all three panels. One character only.
-HARD LOOK LOCK: this sheet MUST share the SAME production look as the film's environment and prop bibles (one medium, one palette, one lighting language). Studio backdrop only — do not place the character in a story location.
-Clean white / light-gray studio backdrop. Thin vertical gaps between panels OK.
-Face must look clean and natural — no dirt, blemishes, intentional ugliness, or strange makeup unless Features explicitly require it.
-IDENTITY SAFETY: original fictional character design only — 无真实人脸信息，无明星样貌.
-Output a single three-view continuity plate.
+Output ONE wide 16:9 three-panel sheet of this SAME person (not three different people). Panels left → right:
+1) FRONT — gazing straight ahead, full body
+2) LEFT PROFILE — facing left, full body
+3) BACK — no facial features should be visible, full body
+Identical face, hair, body, and wardrobe in all three panels.

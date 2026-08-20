@@ -416,37 +416,37 @@ impl Script2VideoPipeline {
                 .await
         })
         .await?;
-        let budget = load_target_duration_secs(&self.working_dir)
-            .await
-            .unwrap_or(crate::planning::DEFAULT_TARGET_DURATION_SECS);
-        let max_shots = crate::planning::max_shots_for_budget(budget);
-        if enforce_max_shots(&mut storyboard, max_shots) {
-            tracing::warn!(
-                max_shots,
-                kept = storyboard.len(),
-                "truncated storyboard to respect duration budget"
-            );
-            write_json_artifact(&path, &storyboard).await?;
-            // Shot decompositions must be rebuilt for the truncated board.
-            let decomp = self.working_dir.join("shot_descriptions.json");
-            if decomp.exists() {
-                let _ = tokio::fs::remove_file(&decomp).await;
-            }
-            let cam = self.working_dir.join("camera_tree.json");
-            if cam.exists() {
-                let _ = tokio::fs::remove_file(&cam).await;
-            }
-            let keep: std::collections::HashSet<i32> =
-                storyboard.iter().map(|s| s.idx).collect();
-            let shots_root = self.working_dir.join("shots");
-            if shots_root.is_dir() {
-                if let Ok(mut entries) = tokio::fs::read_dir(&shots_root).await {
-                    while let Ok(Some(entry)) = entries.next_entry().await {
-                        let name = entry.file_name();
-                        let name = name.to_string_lossy();
-                        if let Ok(idx) = name.parse::<i32>() {
-                            if !keep.contains(&idx) {
-                                let _ = tokio::fs::remove_dir_all(entry.path()).await;
+        let budget = load_target_duration_secs(&self.working_dir).await;
+        if let Some(budget) = budget {
+            let max_shots = crate::planning::max_shots_for_budget(budget);
+            if enforce_max_shots(&mut storyboard, max_shots) {
+                tracing::warn!(
+                    max_shots,
+                    kept = storyboard.len(),
+                    "truncated storyboard to respect duration budget"
+                );
+                write_json_artifact(&path, &storyboard).await?;
+                // Shot decompositions must be rebuilt for the truncated board.
+                let decomp = self.working_dir.join("shot_descriptions.json");
+                if decomp.exists() {
+                    let _ = tokio::fs::remove_file(&decomp).await;
+                }
+                let cam = self.working_dir.join("camera_tree.json");
+                if cam.exists() {
+                    let _ = tokio::fs::remove_file(&cam).await;
+                }
+                let keep: std::collections::HashSet<i32> =
+                    storyboard.iter().map(|s| s.idx).collect();
+                let shots_root = self.working_dir.join("shots");
+                if shots_root.is_dir() {
+                    if let Ok(mut entries) = tokio::fs::read_dir(&shots_root).await {
+                        while let Ok(Some(entry)) = entries.next_entry().await {
+                            let name = entry.file_name();
+                            let name = name.to_string_lossy();
+                            if let Ok(idx) = name.parse::<i32>() {
+                                if !keep.contains(&idx) {
+                                    let _ = tokio::fs::remove_dir_all(entry.path()).await;
+                                }
                             }
                         }
                     }

@@ -244,16 +244,14 @@ impl Novel2VideoPipeline {
                     .and_then(|t| t.trim().parse::<u32>().ok())
                     .filter(|&n| n > 0)
                     .map(|n| crate::planning::normalize_target_duration_secs(Some(n)))
-                    .unwrap_or(crate::planning::DEFAULT_TARGET_DURATION_SECS)
             };
-            let event_budgets =
-                crate::planning::allocate_scene_budgets(film_total, event_count);
-            let event_budget = event_budgets
-                .get(event_i)
-                .copied()
-                .unwrap_or(crate::planning::DEFAULT_TARGET_DURATION_SECS);
             let scene_n = scenes.len().max(1);
-            let budgets = crate::planning::allocate_scene_budgets(event_budget, scene_n);
+            let event_count = event_count.max(1);
+            let budgets = film_total.map(|total| {
+                let event_budgets = crate::planning::allocate_scene_budgets(total, event_count);
+                let event_budget = event_budgets.get(event_i).copied().unwrap_or(total);
+                crate::planning::allocate_scene_budgets(event_budget, scene_n)
+            });
             for (si, scene) in scenes.iter().enumerate() {
                 emit_pct(
                     &progress,
@@ -271,22 +269,30 @@ impl Novel2VideoPipeline {
                     .join(format!("scene_{}", scene.index));
                 tokio::fs::create_dir_all(&scene_work).await?;
                 write_text_artifact(&scene_work.join("script.txt"), &scene.script).await?;
-                let budget = budgets
-                    .get(si)
-                    .copied()
-                    .unwrap_or(crate::planning::DEFAULT_TARGET_DURATION_SECS);
-                write_text_artifact(
-                    &scene_work.join("target_duration_secs.txt"),
-                    &budget.to_string(),
-                )
-                .await?;
-                let scene_req = crate::planning::enrich_requirement_for_scene(
-                    user_requirement,
-                    budget,
-                    si,
-                    scene_n,
-                    film_total,
-                );
+                let budget = budgets.as_ref().and_then(|b| b.get(si).copied());
+                if let Some(budget) = budget {
+                    write_text_artifact(
+                        &scene_work.join("target_duration_secs.txt"),
+                        &budget.to_string(),
+                    )
+                    .await?;
+                }
+                let scene_req = match (budget, film_total) {
+                    (Some(budget), Some(film_total)) => {
+                        crate::planning::enrich_requirement_for_scene(
+                            user_requirement,
+                            budget,
+                            si,
+                            scene_n,
+                            film_total,
+                        )
+                    }
+                    _ => crate::planning::enrich_requirement_for_scene_model_decides(
+                        user_requirement,
+                        si,
+                        scene_n,
+                    ),
+                };
                 let s2v = Script2VideoPipeline::new(self.backends.clone(), scene_work);
                 let _ = s2v
                     .plan_text_artifacts(&scene.script, &scene_req, style, progress.clone())
