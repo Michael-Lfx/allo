@@ -1,29 +1,49 @@
 
-
-import React from 'react';
+import React, { Suspense } from 'react';
 import { useLocation } from 'react-router-dom';
-import SystemModalContent from '@/renderer/components/settings/SettingsModal/contents/SystemModalContent';
-import AboutModalContent from '@/renderer/components/settings/SettingsModal/contents/AboutModalContent';
-import BrowserUseSettingsContent from '@/renderer/components/settings/SettingsModal/contents/BrowserUseSettingsContent';
-import ComputerUseSettingsContent from '@/renderer/components/settings/SettingsModal/contents/ComputerUseSettingsContent';
+import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
 import SettingsPageWrapper from './components/SettingsPageWrapper';
+
+const SystemModalContent = React.lazy(() => import('@/renderer/components/settings/SettingsModal/contents/SystemModalContent'));
+const AboutModalContent = React.lazy(() => import('@/renderer/components/settings/SettingsModal/contents/AboutModalContent'));
+const BrowserUseSettingsContent = React.lazy(() => import('@/renderer/components/settings/SettingsModal/contents/BrowserUseSettingsContent'));
+const ComputerUseSettingsContent = React.lazy(() => import('@/renderer/components/settings/SettingsModal/contents/ComputerUseSettingsContent'));
+
+type SystemSettingsRoute = 'system' | 'about' | 'browser-use' | 'computer-use';
+
+const resolveSystemSettingsRoute = (pathname: string): SystemSettingsRoute => {
+  if (pathname === '/settings/about') return 'about';
+  if (pathname === '/settings/browser-use') return 'browser-use';
+  if (pathname === '/settings/computer-use') return 'computer-use';
+  return 'system';
+};
+
+const SystemSettingsPanel: React.FC<{ route: SystemSettingsRoute }> = ({ route }) => {
+  switch (route) {
+    case 'about':
+      return <AboutModalContent />;
+    case 'browser-use':
+      return <BrowserUseSettingsContent />;
+    case 'computer-use':
+      return <ComputerUseSettingsContent />;
+    case 'system':
+      return <SystemModalContent />;
+    default: {
+      const exhaustive: never = route;
+      return exhaustive;
+    }
+  }
+};
 
 const SystemSettings: React.FC = () => {
   const location = useLocation();
-  const isAboutPage = location.pathname === '/settings/about';
-  const isBrowserUsePage = location.pathname === '/settings/browser-use';
-  const isComputerUsePage = location.pathname === '/settings/computer-use';
-
-  const content = (() => {
-    if (isAboutPage) return <AboutModalContent />;
-    if (isBrowserUsePage) return <BrowserUseSettingsContent />;
-    if (isComputerUsePage) return <ComputerUseSettingsContent />;
-    return <SystemModalContent />;
-  })();
+  const route = resolveSystemSettingsRoute(location.pathname);
 
   return (
-    <SettingsPageWrapper contentClassName={isAboutPage ? 'max-w-640px' : undefined}>
-      {content}
+    <SettingsPageWrapper contentClassName={route === 'about' ? 'max-w-640px' : undefined}>
+      <Suspense fallback={<RouteContentFallback />}>
+        <SystemSettingsPanel route={route} />
+      </Suspense>
     </SettingsPageWrapper>
   );
 };

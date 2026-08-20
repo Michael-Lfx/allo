@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 import { NOMIFUN_FREE_MODEL_PLATFORM } from '@/common/types/provider/managedModelService';
 import { resolveAutomaticImageAnalysisModel } from './ImageAnalysisModelContent';
@@ -42,5 +43,15 @@ describe('resolveAutomaticImageAnalysisModel', () => {
         group('free', ['mimo-v2.5-free'], NOMIFUN_FREE_MODEL_PLATFORM),
       ])
     ).toBeNull();
+  });
+});
+
+describe('ImageAnalysisModelContent catalog load contract', () => {
+  const source = readFileSync(new URL('./ImageAnalysisModelContent.tsx', import.meta.url), 'utf8');
+
+  test('threads autoRefreshCatalog to both catalog consumers', () => {
+    expect(source).toContain('autoRefreshCatalog?: boolean');
+    expect(source).toContain("useModelsForTask('chat', ['vision_input'], { autoRefreshCatalog })");
+    expect(source).toContain('autoRefreshCatalog={autoRefreshCatalog}');
   });
 });

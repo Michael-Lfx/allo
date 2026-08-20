@@ -326,7 +326,7 @@ const SystemModalContent: React.FC = () => {
           <SettingsRow
             label={t('settings.modelHub.imageAnalysis.title')}
             description={t('settings.modelHub.imageAnalysis.subtitle')}
-            control={<ImageAnalysisModelContent compact />}
+            control={<ImageAnalysisModelContent compact autoRefreshCatalog={false} />}
             controlLayout='field'
           />
           <SettingsRow

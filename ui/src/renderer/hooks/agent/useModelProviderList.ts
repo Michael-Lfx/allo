@@ -199,18 +199,20 @@ export const useProvidersQuery = (options?: { enabled?: boolean }) => {
  */
 export const useModelProviderList = (options?: {
   enabled?: boolean;
+  autoRefreshCatalog?: boolean;
 }): ModelProviderListResult => {
   const enabled = options?.enabled ?? true;
+  const autoRefreshCatalog = options?.autoRefreshCatalog ?? true;
   const { data: modelConfig, isLoading: isProvidersLoading } = useProvidersQuery({
     enabled,
   });
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !autoRefreshCatalog) return;
     void refreshProvidersCatalogIfStale().catch((error) => {
       console.warn('[providers] Automatic catalog refresh failed:', error);
     });
-  }, [enabled]);
+  }, [autoRefreshCatalog, enabled]);
 
   const configuredProviders = useMemo(() => {
     const list: IProvider[] = Array.isArray(modelConfig) ? modelConfig : [];

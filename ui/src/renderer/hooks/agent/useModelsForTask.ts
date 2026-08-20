@@ -87,11 +87,12 @@ export const buildTaskModelGroups = (
 export function useModelsForTask(
   task: ModelTask,
   requiredTraits?: ModelTrait[],
-  options?: { enabled?: boolean }
+  options?: { enabled?: boolean; autoRefreshCatalog?: boolean }
 ): ModelsForTaskResult {
   const enabled = options?.enabled ?? true;
   const { providers, isLoading: isProvidersLoading } = useModelProviderList({
     enabled,
+    autoRefreshCatalog: options?.autoRefreshCatalog,
   });
 
   const key = modelsForTaskKey(task, requiredTraits);

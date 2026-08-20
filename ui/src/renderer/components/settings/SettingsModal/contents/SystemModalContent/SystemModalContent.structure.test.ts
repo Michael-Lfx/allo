@@ -17,12 +17,18 @@ describe('system settings visual contract', () => {
     expect(source).not.toContain('<Collapse');
     expect(source).toContain('disabled={!notificationEnabled}');
     expect(source).toContain('settings.disabledByNotifications');
+    expect(source).toContain('isDeveloperModeUiEnabled()');
+    expect(source).toContain('{isDeveloperModeUiEnabled() && (');
   });
 
   test('restores local state and reports a localized failure when auto-save fails', () => {
     expect(source).toContain('configService.setLocal(key, previous)');
     expect(source).toContain("t('settings.preferenceSaveFailed')");
     expect(source).toContain('setSendKey(previous)');
+  });
+
+  test('does not sync the Flowy model catalog when the compact vision picker mounts', () => {
+    expect(source).toContain('<ImageAnalysisModelContent compact autoRefreshCatalog={false} />');
   });
 
   test('retains relocation, restart, retry, cancel, backup, and factory reset flows', () => {

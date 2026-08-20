@@ -37,6 +37,8 @@ export interface TaskModelSelectProps {
   placeholder?: string;
   disabled?: boolean;
   size?: 'mini' | 'small' | 'default' | 'large';
+  /** Skip the Flowy catalog sync on mount; still reads the local provider/resolve cache. */
+  autoRefreshCatalog?: boolean;
 }
 
 /**
@@ -55,9 +57,10 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
   placeholder,
   disabled,
   size = 'default',
+  autoRefreshCatalog,
 }) => {
   const { t } = useTranslation();
-  const { groups: catalogGroups, isLoading } = useModelsForTask(task, requiredTraits);
+  const { groups: catalogGroups, isLoading } = useModelsForTask(task, requiredTraits, { autoRefreshCatalog });
   const groups = useMemo(
     () =>
       excludePlatforms && excludePlatforms.length > 0

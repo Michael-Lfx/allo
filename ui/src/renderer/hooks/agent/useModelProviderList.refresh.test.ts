@@ -19,6 +19,12 @@ describe('useModelProviderList catalog refresh wiring', () => {
     expect(text.includes('void refreshProvidersCatalogIfStale().catch')).toBe(true);
   });
 
+  test('skips the Flowy catalog sync when autoRefreshCatalog is disabled', () => {
+    const text = source();
+    expect(text.includes('autoRefreshCatalog')).toBe(true);
+    expect(text.includes('if (!enabled || !autoRefreshCatalog) return')).toBe(true);
+  });
+
   test('refresh syncs Flowy catalog then replaces SWR without revalidate race', () => {
     const text = source();
 

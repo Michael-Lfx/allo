@@ -110,6 +110,12 @@ describe('useModelsForTask wiring (structure)', () => {
     expect(source.includes('modelsForTaskKey(task, requiredTraits)')).toBe(true);
   });
 
+  test('forwards autoRefreshCatalog so settings pickers can skip the Flowy catalog sync', () => {
+    expect(source.includes('autoRefreshCatalog')).toBe(true);
+    expect(source.includes('useModelProviderList({')).toBe(true);
+    expect(source.includes('autoRefreshCatalog: options?.autoRefreshCatalog')).toBe(true);
+  });
+
   test('joins provider metadata from useModelProviderList and stays unresolved after errors', () => {
     expect(source.includes("from './useModelProviderList'")).toBe(true);
     expect(source.includes('buildTaskModelGroups(data ?? [], providers)')).toBe(true);

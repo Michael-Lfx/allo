@@ -35,11 +35,14 @@ export const resolveAutomaticImageAnalysisModel = (
 };
 
 /** Global, independent vision-model preference for text-only Nomi sessions. */
-const ImageAnalysisModelContent: React.FC<{ compact?: boolean }> = ({ compact = false }) => {
+const ImageAnalysisModelContent: React.FC<{ compact?: boolean; autoRefreshCatalog?: boolean }> = ({
+  compact = false,
+  autoRefreshCatalog,
+}) => {
   const { t } = useTranslation();
   const [message, messageContext] = useArcoMessage();
   const [stored] = useConfig(STORAGE_KEY);
-  const { groups, isLoading } = useModelsForTask('chat', ['vision_input']);
+  const { groups, isLoading } = useModelsForTask('chat', ['vision_input'], { autoRefreshCatalog });
   const storedSelection = useMemo<TaskModelSelection | null>(() => {
     if (!stored?.provider_id || !stored.model) return null;
     return { providerId: stored.provider_id, model: stored.model };
@@ -85,6 +88,7 @@ const ImageAnalysisModelContent: React.FC<{ compact?: boolean }> = ({ compact = 
           value={selection}
           onSelect={(next) => void select(next)}
           placeholder={t('settings.modelHub.imageAnalysis.autoDefault')}
+          autoRefreshCatalog={autoRefreshCatalog}
         />
         {storedSelection && (
           <Button
