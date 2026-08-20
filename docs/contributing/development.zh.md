@@ -154,7 +154,8 @@ cargo run -p nomifun-app --bin nomicore -- doctor
 - macOS：`~/Library/Application Support/NomiFun`
 - Linux：`$XDG_DATA_HOME/NomiFun` 或 `~/.local/share/NomiFun`
 
-数据目录包含 SQLite、日志、Bun runtime cache、extension 数据和 agent 状态。
+数据目录包含 SQLite、日志、Bun runtime cache、extension 数据、agent 状态，以及
+`diagnostics/observation/` 下的会话观测 JSONL。
 后端启动时会先拿 `{data_dir}/server.lock` 独占锁，避免两个活跃后端同时写同一
 目录。
 
@@ -192,4 +193,5 @@ NOMIFUN_LOG_LEVEL='info,nomifun_mcp=trace' bun run serve:web
   阅读 [`data-and-identifier-standards.zh.md`](data-and-identifier-standards.zh.md)。
 - [`../architecture/backend-crates.md`](../architecture/backend-crates.md)
 - [`../architecture/frontend.md`](../architecture/frontend.md)
+- [`../architecture/agent-observability-and-eval.zh.md`](../architecture/agent-observability-and-eval.zh.md)（会话日志与 Agent Eval）
 - [`building-and-packaging.zh.md`](building-and-packaging.zh.md)

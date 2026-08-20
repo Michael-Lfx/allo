@@ -138,7 +138,8 @@ All hosts share the same unset default data directory:
 - Linux: `$XDG_DATA_HOME/NomiFun` or `~/.local/share/NomiFun`
 
 The data dir contains SQLite state, logs, Bun runtime cache, extension data,
-agent state, and other persistent local state. The backend takes an exclusive
+agent state, session observation JSONL under `diagnostics/observation/`, and
+other persistent local state. The backend takes an exclusive
 `server.lock` before opening the database, so two live backends cannot use the
 same data directory at the same time.
 
@@ -179,4 +180,5 @@ or pass `--log-level` to `nomicore` / `nomifun-web` directly. The value is a
   backup/restore contracts.
 - [`../architecture/backend-crates.md`](../architecture/backend-crates.md) for crate ownership.
 - [`../architecture/frontend.md`](../architecture/frontend.md) for routes and host adapters.
+- [`../architecture/agent-observability-and-eval.zh.md`](../architecture/agent-observability-and-eval.zh.md) for Session Logs and Agent Eval.
 - [`building-and-packaging.md`](building-and-packaging.md) for release artifacts.

@@ -18,6 +18,7 @@
 | 快速试用 | [getting-started/quick-start.zh.md](getting-started/quick-start.zh.md) |
 | 连接小智 ESP32 机器人 | [guides/xiaozhi-robot.zh.md](guides/xiaozhi-robot.zh.md) |
 | 理解当前架构 | [architecture/overview.zh.md](architecture/overview.zh.md) |
+| 查看会话日志 / Agent Eval | [architecture/agent-observability-and-eval.zh.md](architecture/agent-observability-and-eval.zh.md) |
 | 构建或打包项目 | [contributing/building-and-packaging.zh.md](contributing/building-and-packaging.zh.md) |
 | 查询参数、环境变量或 API 分组 | [reference/](reference/) |
 | 参与贡献 | [../CONTRIBUTING.zh-CN.md](../CONTRIBUTING.zh-CN.md)、[../CONTRIBUTING.md](../CONTRIBUTING.md) |
@@ -42,7 +43,7 @@ docs/
 
 当前顶层用户界面包括会话、终端、模型管理、设定、MCP、开放能力、
 需求/AutoWork、定时任务、伙伴、知识库，以及 feature-gated 的
-computer/browser 自动化能力。前端路由真相来源是
+computer/browser 自动化能力。开发者模式会在会话列提供会话日志，并打开 `/eval` 评测页。前端路由真相来源是
 `ui/src/renderer/components/layout/Router.tsx`。
 
 ## 文档范围

@@ -28,7 +28,7 @@ transition plan, not the product shape in this repository now.
 The current frontend route map lives in
 `ui/src/renderer/components/layout/Router.tsx`. Active top-level surfaces are:
 
-- `/guid` and `/conversation/:id`
+- `/guid` and `/conversation/:id` (developer mode can open Session Logs on the conversation column)
 - `/terminal-new` and `/terminal/:id`
 - `/models`
 - `/presets`, `/skills`
@@ -43,6 +43,7 @@ The current frontend route map lives in
 - `/nomi` and `/companion`
 - `/customer-service` and `/customer-service/:cs_agent_id`
 - `/knowledge` and `/knowledge/:id`
+- `/eval` (developer-mode Agent Eval lab)
 - `/assets`
 - `/workshop` and `/workshop/:id`
 - `/settings/system` and `/settings/execution-engines`, plus system

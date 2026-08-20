@@ -5,6 +5,8 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Session Logs reclaim disk with quota-only GC (about 1 GiB / 800 MiB, no age TTL) and show request `messages` / `tools` as scan lists by default.
+
 ## v1.0.3 - 2026-08-20
 
 - Workspace Files, Changes, Shell, and the collaboration canvas open as mixed tabs in the preview strip; closing a tab restores the previous view.

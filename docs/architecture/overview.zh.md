@@ -5,9 +5,10 @@ Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态
 本文档是这张地图的总图。配套文档分别深入介绍各个部分：
 
 - [`backend-crates.md`](backend-crates.zh.md) —— 36 个 `nomifun-*` crate。
-- [`agent-engine.md`](agent-engine.zh.md) —— 15 个 `nomi-*` crate（AI 引擎）。
+- [`agent-engine.md`](agent-engine.zh.md) —— `nomi-*` crate（AI 引擎，含会话日志用的 `nomi-agent-trace`）。
 - [`agent-execution.zh.md`](agent-execution.zh.md) —— 统一的持久化 AgentExecution 模型。
 - [`frontend.md`](frontend.zh.md) —— React SPA、适配层、路由。
+- [`agent-observability-and-eval.zh.md`](agent-observability-and-eval.zh.md) —— 会话日志（采集始终开启，开发者模式才读）与 Agent Eval。
 - [`communication.md`](communication.zh.md) —— HTTP / WebSocket / Tauri IPC / ACP / MCP。
 - [`data-and-storage.md`](data-and-storage.zh.md) —— SQLite、工作区、运行时。
 - [`id-system.md`](id-system.zh.md) —— v3 技术主键、业务 ID、内部技术行与逻辑关联契约。

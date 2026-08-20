@@ -10,9 +10,10 @@ custom protocol.
 This document is the map. The sibling documents drill into the parts:
 
 - [`backend-crates.md`](backend-crates.md) — the 36 `nomifun-*` backend crates.
-- [`agent-engine.md`](agent-engine.md) — the 15 `nomi-*` agent crates.
+- [`agent-engine.md`](agent-engine.md) — the `nomi-*` agent crates (including `nomi-agent-trace` for Session Logs).
 - [`agent-execution.zh.md`](agent-execution.zh.md) — the unified persistent AgentExecution model.
 - [`frontend.md`](frontend.md) — the React SPA, adapter layer, routing.
+- [`agent-observability-and-eval.zh.md`](agent-observability-and-eval.zh.md) — Session Logs (always-on capture, developer-mode reads) and Agent Eval.
 - [`communication.md`](communication.md) — HTTP / WebSocket / Tauri IPC / ACP / MCP.
 - [`data-and-storage.md`](data-and-storage.md) — SQLite, workspaces, runtimes.
 - [`id-system.md`](id-system.md) — the v3 technical-key, business-ID, internal-row, and

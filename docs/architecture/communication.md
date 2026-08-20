@@ -111,6 +111,7 @@ associated profile, model/persona choices, and scoped capabilities.
 | --- | --- |
 | Login/setup | HTTP `/api/auth/*` |
 | Conversation send | HTTP `/api/conversations/*` plus streamed `/ws` events |
+| Session Logs | HTTP `/api/debug/session-observations*` (developer mode); JSONL under `diagnostics/observation/` |
 | Persistent Agent collaboration | HTTP `/api/agent-executions/*`; invalidation/thinking over `/ws` |
 | Terminal input | HTTP terminal route; output over `/ws` |
 | Desktop keep-awake | Tauri command |

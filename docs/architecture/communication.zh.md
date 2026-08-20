@@ -174,6 +174,7 @@ profile、模型 / 人格选择与作用域能力。
 | --- | --- |
 | 登录 / 设置 | HTTP `/api/auth/*` |
 | 发送会话消息 | HTTP `/api/conversations/*`，流式事件走 `/ws` |
+| 会话日志 | HTTP `/api/debug/session-observations*`（开发者模式）；JSONL 在 `diagnostics/observation/` |
 | 持久化 Agent 协作 | HTTP `/api/agent-executions/*`，失效通知与瞬时思考流走 `/ws` |
 | 终端输入 / 输出 | 输入走 HTTP 终端路由，输出走 `/ws` |
 | 桌面 keep-awake | Tauri command |

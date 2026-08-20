@@ -19,6 +19,7 @@ implementation map for the current workspace, not an extraction plan.
 | `nomi-skills` | Skill discovery, frontmatter, loading, and skill-index support. |
 | `nomi-memory` | Memory storage and retrieval primitives. |
 | `nomi-agent` | Core engine loop, sessions, compaction glue, confirmations, output sinks, skill tool, requirement tools, and the crate-private embedded AgentExecution projection. |
+| `nomi-agent-trace` | Session observation JSONL: capture policy, DualQueue writer, quota GC (no age TTL), and turn/call projection. Current product behavior: [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md). |
 | `nomi-cli` | Standalone `nomi` CLI consumer of the engine. |
 | `nomi-computer` | Desktop computer-use tool implementation. |
 | `nomi-a11y` | Accessibility helpers for computer-use flows. |
@@ -58,7 +59,10 @@ computer-use crates to expose those capabilities as stdio/public tools.
 Flowy supports several runtime families:
 
 - **Nomi engine**: in-tree engine from `nomi-agent`, with providers, built-in
-  tools, skills, MCP, memory, browser, and computer-use support.
+  tools, skills, MCP, memory, browser, and computer-use support. Session
+  observation JSONL is recorded by `nomi-agent-trace` (always-on capture;
+  developer-mode HTTP reads). See
+  [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md).
 - **ACP-style CLI agents**: Claude Code, Codex, Gemini CLI, Qwen/OpenCode-style
   integrations, and related CLIs managed by `nomifun-ai-agent`.
 - **Remote/Open capability surfaces**: external agents connect through

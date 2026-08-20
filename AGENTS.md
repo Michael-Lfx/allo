@@ -18,7 +18,7 @@ web) and one React 19 SPA.
 | --- | --- |
 | `apps/web/` | Standalone `nomifun-web` server (API + SPA). |
 | `apps/desktop/` | Tauri desktop shell with embedded backend. |
-| `crates/agent/` | 15 `nomi-*` crates: the independent AI agent engine. No `nomifun-*` deps. |
+| `crates/agent/` | Independent AI agent engine (`nomi-*`; includes `nomi-agent-trace` for Session Logs). No `nomifun-*` deps. |
 | `crates/backend/` | 32 `nomifun-*` crates: HTTP/WS server, data, auth, features. |
 | `crates/shared/` | 2 cross-layer utility crates. Keep new shared crates rare. |
 | `ui/src/common/` | Cross-host code: API clients, types, adapters, utils. |
@@ -138,6 +138,7 @@ committer, co-author, or other credited contributor.
 - [docs/architecture/backend-crates.md](docs/architecture/backend-crates.md) — backend crate ownership
 - [docs/architecture/agent-engine.md](docs/architecture/agent-engine.md) — agent engine crates
 - [docs/architecture/frontend.md](docs/architecture/frontend.md) — React SPA routes and adapters
+- [docs/architecture/agent-observability-and-eval.zh.md](docs/architecture/agent-observability-and-eval.zh.md) — Session Logs and Agent Eval
 - [docs/contributing/development.md](docs/contributing/development.md) — dev loops, data dirs, CLI
 - [docs/contributing/building-and-packaging.md](docs/contributing/building-and-packaging.md) — release artifacts
 - [docs/reference/configuration.md](docs/reference/configuration.md) — env vars and config

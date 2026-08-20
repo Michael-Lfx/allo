@@ -56,13 +56,13 @@
 
 | Crate | 职责 |
 | --- | --- |
-| [`nomifun-ai-agent`](../../crates/backend/nomifun-ai-agent/) | **通往 `crates/agent/` 的唯一桥梁。** 构建 Agent runtime 工厂（ACP / Nomi / OpenClaw / Nanobot / Remote 等变体），由 `AgentRuntimeRegistry` 按 Conversation 缓存唯一的进程内 runtime handle，持久化 ACP 会话，广播 `AgentStreamEvent`，暴露 `agent_routes`（模型信息、能力、斜杠命令等）和 `remote_agent_routes`。再导出 `nomi_config`、`nomi_types` 和 `RequirementSink` 供其余后端使用。 |
+| [`nomifun-ai-agent`](../../crates/backend/nomifun-ai-agent/) | **通往 `crates/agent/` 的唯一桥梁。** 构建 Agent runtime 工厂（ACP / Nomi / OpenClaw / Nanobot / Remote 等变体），由 `AgentRuntimeRegistry` 按 Conversation 缓存唯一的进程内 runtime handle，持久化 ACP 会话，广播 `AgentStreamEvent`，暴露 `agent_routes`（模型信息、能力、斜杠命令等）和 `remote_agent_routes`。再导出 `nomi_config`、`nomi_types` 和 `RequirementSink` 供其余后端使用。持有 `AgentTraceHub`（会话日志读取）与 live Agent Eval（`/api/debug/agent-evals/*`）。 |
 
 ## 功能 crate（产品的主体）
 
 | Crate | 职责 |
 | --- | --- |
-| [`nomifun-conversation`](../../crates/backend/nomifun-conversation/) | 会话与消息 CRUD、send-message 路由、**流式中继**（将后端 agent token 投递到 `/ws`）、ACP 错误恢复、响应中间件（如 `/cron` 斜杠命令检测、`<think>` 剥离）、技能解析 / 快照、运行时状态持久化。 |
+| [`nomifun-conversation`](../../crates/backend/nomifun-conversation/) | 会话与消息 CRUD、send-message 路由、**流式中继**（将后端 agent token 投递到 `/ws`）、ACP 错误恢复、响应中间件（如 `/cron` 斜杠命令检测、`<think>` 剥离）、技能解析 / 快照、运行时状态持久化。挂载会话日志 HTTP（`routes_trace.rs` → `/api/debug/session-observations*`；已鉴权 + 开发者模式）。 |
 | [`nomifun-agent-execution`](../../crates/backend/nomifun-agent-execution/) | 持久化 Agent 协作：`AgentExecutionEngine` 门面统一负责规划、依赖调度、Attempt、恢复、决策、事件和显式 Conversation 关联；单 Agent 与多 Agent 共用同一聚合。详见[统一执行架构](agent-execution.zh.md)。 |
 | [`nomifun-mcp`](../../crates/backend/nomifun-mcp/) | MCP 服务器 CRUD、**OAuth 流程**、多 CLI 同步（`adapters/` 下的 `Claude`、`Codex`、`CodeBuddy`、`Gemini`、`Qwen`、`OpenCode`、`Nomi`、`Nomifun` 适配器）、连接测试、向会话注入 MCP 能力（含内置图像生成）。 |
 | [`nomifun-extension`](../../crates/backend/nomifun-extension/) | 扩展与技能枢纽：清单、依赖图、分类器、安装 / 启用 / 禁用，捆绑技能 + MCP 服务器 + 设定的扩展包。 |
@@ -91,7 +91,7 @@
 | [`nomifun-shell`](../../crates/backend/nomifun-shell/) | 操作系统外壳辅助：用系统应用打开文件，针对 Deepgram 或 OpenAI 的语音转文字，剪贴板 / 粘贴集成。 |
 | [`nomifun-file`](../../crates/backend/nomifun-file/) | 在会话工作目录下的沙箱化文件系统（`browse`、`path_safety`、`watch_service`、`snapshot_service`），zip 辅助。 |
 | [`nomifun-office`](../../crates/backend/nomifun-office/) | LibreOffice 转换 / 预览管线（Office 文档 → 预览）。 |
-| [`nomifun-system`](../../crates/backend/nomifun-system/) | LLM provider / 模型查询、应用级设置、sysinfo、应用版本检查 / 自更新框架。 |
+| [`nomifun-system`](../../crates/backend/nomifun-system/) | LLM provider / 模型查询、应用级设置、sysinfo、应用版本检查 / 自更新框架。开发者模式开启时，支持包 ZIP 会附带 `diagnostics/observation/` JSONL。 |
 
 ## 组合根：`nomifun-app`
 

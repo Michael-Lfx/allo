@@ -16,7 +16,7 @@ nomifun-tauri/
 │   ├── web/                      nomifun-web bin: standalone server (API + SPA)
 │   └── desktop/                  nomifun-desktop bin: Tauri shell (embedded backend)
 ├── crates/
-│   ├── agent/                    15 nomi-* crates — the AI agent engine
+│   ├── agent/                    nomi-* crates — the AI agent engine (includes nomi-agent-trace)
 │   ├── backend/                  29 nomifun-* crates — the HTTP/WS backend
 │   └── shared/                   2 genuine cross-layer crates
 ├── ui/                           React SPA (Vite + UnoCSS), the only Bun workspace
@@ -78,7 +78,7 @@ to a future independent repository.
 
 | Directory | Prefix | Count | Role | Future repo |
 | --- | --- | --- | --- | --- |
-| [`crates/agent/`](../../crates/agent) | `nomi-*` | 15 | AI agent engine. Self-contained — no dependency on any `nomifun-*` crate. | historical extraction target |
+| [`crates/agent/`](../../crates/agent) | `nomi-*` | see crate list | AI agent engine (includes `nomi-agent-trace` for Session Logs). Self-contained — no dependency on any `nomifun-*` crate. | historical extraction target |
 | [`crates/backend/`](../../crates/backend) | `nomifun-*` | 32 | HTTP/WS server, data layer, auth, sessions, cron, knowledge, terminal, companion, public gateway, ... | historical extraction target |
 | [`crates/shared/`](../../crates/shared) | mixed | 2 | Cross-layer utilities used by both sides. | shared |
 
@@ -105,7 +105,7 @@ When you add a new backend crate that needs an agent type:
 Why: this keeps the agent engine mostly independent and prevents feature crates
 from silently tying themselves to engine internals.
 
-## `crates/agent/` — 15 `nomi-*` crates (the AI agent engine)
+## `crates/agent/` — `nomi-*` crates (the AI agent engine)
 
 | Crate | One-line role |
 | --- | --- |
@@ -119,11 +119,14 @@ from silently tying themselves to engine internals.
 | [`nomi-skills`](../../crates/agent/nomi-skills) | Skills system: discovery, frontmatter, loader, executor, hooks, conditional / context modifiers, bundled. |
 | [`nomi-memory`](../../crates/agent/nomi-memory) | Long-term cross-session memory — preferences, feedback, project context, external references. |
 | [`nomi-agent`](../../crates/agent/nomi-agent) | Core engine: turn execution, bootstrap, commands, compaction, confirmation, delegation, output sinks. |
+| [`nomi-agent-trace`](../../crates/agent/nomi-agent-trace) | Session observation JSONL: capture, DualQueue writer, quota GC, turn/call projection. See [agent-observability-and-eval.zh.md](../architecture/agent-observability-and-eval.zh.md). |
 | [`nomi-cli`](../../crates/agent/nomi-cli) | Standalone `nomi` binary that drives the engine without a host process. |
 | [`nomi-computer`](../../crates/agent/nomi-computer) | Desktop computer-use tool implementation. |
 | [`nomi-a11y`](../../crates/agent/nomi-a11y) | Accessibility helpers used by computer-use flows. |
 | [`nomi-browser-engine`](../../crates/agent/nomi-browser-engine) | Self-hosted browser/CDP automation engine. |
 | [`nomi-browser`](../../crates/agent/nomi-browser) | Browser-use tool layer. |
+
+The `crates/agent/*` glob also contains other members (eval, vimax, media, …) that this historical engine table does not enumerate.
 
 ## `crates/backend/` — 29 `nomifun-*` crates (the backend)
 
@@ -140,9 +143,9 @@ from silently tying themselves to engine internals.
 | [`nomifun-file`](../../crates/backend/nomifun-file) | Filesystem operations: read/write, path safety, file watching, snapshots, zip. |
 | [`nomifun-office`](../../crates/backend/nomifun-office) | Office-document preview, format conversion, proxy, snapshot management. |
 | [`nomifun-shell`](../../crates/backend/nomifun-shell) | OS shell integration: opener, tool detection, speech-to-text. |
-| [`nomifun-ai-agent`](../../crates/backend/nomifun-ai-agent) | **The single bridge to `crates/agent/`.** Agent factory, runtime registry, runtime handles, and ACP session persistence; re-exports `nomi_config` / `nomi_types` / `RequirementSink`. |
+| [`nomifun-ai-agent`](../../crates/backend/nomifun-ai-agent) | **The single bridge to `crates/agent/`.** Agent factory, runtime registry, runtime handles, ACP session persistence, `AgentTraceHub`, and live Agent Eval; re-exports `nomi_config` / `nomi_types` / `RequirementSink`. |
 | [`nomifun-mcp`](../../crates/backend/nomifun-mcp) | MCP server config, multi-agent sync adapters, OAuth, connection testing. |
-| [`nomifun-conversation`](../../crates/backend/nomifun-conversation) | Conversation + message CRUD with streaming relay, ACP error recovery, response middleware. |
+| [`nomifun-conversation`](../../crates/backend/nomifun-conversation) | Conversation + message CRUD with streaming relay, ACP error recovery, response middleware, and Session Logs HTTP (`/api/debug/session-observations*`). |
 | [`nomifun-extension`](../../crates/backend/nomifun-extension) | Extension registry: manifest parsing, hub installer, skill scanning, lifecycle hooks. |
 | [`nomifun-channel`](../../crates/backend/nomifun-channel) | External channel integration: plugin system, pairing handshake, per-session messaging, formatter. |
 | [`nomifun-agent-execution`](../../crates/backend/nomifun-agent-execution) | Persistent single- and multi-Agent execution aggregate: participants, steps, attempts, scheduling, decisions, recovery, and events. |

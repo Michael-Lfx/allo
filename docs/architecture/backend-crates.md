@@ -74,13 +74,13 @@ identifiers remain opaque.
 
 | Crate | Responsibility |
 | --- | --- |
-| [`nomifun-ai-agent`](../../crates/backend/nomifun-ai-agent/) | **The single bridge to `crates/agent/`.** Builds Agent runtimes (ACP / Nomi / OpenClaw / Nanobot / Remote variants), while `AgentRuntimeRegistry` caches one process-local runtime handle per Conversation. It persists ACP sessions, broadcasts `AgentStreamEvent`, exposes `agent_routes` (model info, capabilities, slash commands, ...) and `remote_agent_routes`, and re-exports `nomi_config`, `nomi_types`, and `RequirementSink` for the rest of the backend. |
+| [`nomifun-ai-agent`](../../crates/backend/nomifun-ai-agent/) | **The single bridge to `crates/agent/`.** Builds Agent runtimes (ACP / Nomi / OpenClaw / Nanobot / Remote variants), while `AgentRuntimeRegistry` caches one process-local runtime handle per Conversation. It persists ACP sessions, broadcasts `AgentStreamEvent`, exposes `agent_routes` (model info, capabilities, slash commands, ...) and `remote_agent_routes`, and re-exports `nomi_config`, `nomi_types`, and `RequirementSink` for the rest of the backend. Owns `AgentTraceHub` (Session Logs reads) and live Agent Eval (`/api/debug/agent-evals/*`). |
 
 ## Feature crates (the bulk of the product)
 
 | Crate | Responsibility |
 | --- | --- |
-| [`nomifun-conversation`](../../crates/backend/nomifun-conversation/) | Conversation and message CRUD, send-message route, **streaming relay** that fans backend agent tokens onto `/ws`, ACP error recovery, response middleware (e.g. `/cron` slash-command detection, `<think>` stripping), skill resolver / snapshot, runtime-state persistence. |
+| [`nomifun-conversation`](../../crates/backend/nomifun-conversation/) | Conversation and message CRUD, send-message route, **streaming relay** that fans backend agent tokens onto `/ws`, ACP error recovery, response middleware (e.g. `/cron` slash-command detection, `<think>` stripping), skill resolver / snapshot, runtime-state persistence. Mounts Session Logs HTTP (`routes_trace.rs` → `/api/debug/session-observations*`; authenticated + developer mode). |
 | [`nomifun-agent-execution`](../../crates/backend/nomifun-agent-execution/) | Persistent Agent collaboration: the `AgentExecutionEngine` facade owns planning, dependency scheduling, Attempts, recovery, decisions, events, and explicit Conversation links. Single- and multi-Agent work use this same aggregate; see the [unified execution architecture](agent-execution.zh.md). |
 | [`nomifun-mcp`](../../crates/backend/nomifun-mcp/) | MCP server CRUD, **OAuth flow**, multi-CLI sync (`Claude`, `Codex`, `CodeBuddy`, `Gemini`, `Qwen`, `OpenCode`, `Nomi`, `Nomifun` adapters under `adapters/`), connection test, session injection of MCP capabilities (incl. built-in image-gen). |
 | [`nomifun-extension`](../../crates/backend/nomifun-extension/) | Extension and skill hub: manifests, dependency graph, classifier, install / enable / disable, packs that bundle skills + MCP servers + presets. |
@@ -109,7 +109,7 @@ identifiers remain opaque.
 | [`nomifun-shell`](../../crates/backend/nomifun-shell/) | OS shell helpers: open files in the system, speech-to-text against Deepgram or OpenAI, clipboard / paste integration. |
 | [`nomifun-file`](../../crates/backend/nomifun-file/) | Sandboxed filesystem under the conversation work dir (`browse`, `path_safety`, `watch_service`, `snapshot_service`), zip helpers. |
 | [`nomifun-office`](../../crates/backend/nomifun-office/) | LibreOffice convert/preview pipeline (Office documents → preview). |
-| [`nomifun-system`](../../crates/backend/nomifun-system/) | LLM provider / model lookup, app-level settings, sysinfo, app version-check / self-updater scaffold. |
+| [`nomifun-system`](../../crates/backend/nomifun-system/) | LLM provider / model lookup, app-level settings, sysinfo, app version-check / self-updater scaffold. Support-pack ZIP includes `diagnostics/observation/` JSONL when developer mode is on. |
 
 ## The composition root: `nomifun-app`
 

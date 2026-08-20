@@ -58,6 +58,8 @@ Each group is owned by a specific crate. The base path is the actual URL prefix 
 | Auth — login / setup / status / refresh | `/login`, `/logout`, `/api/auth/*`, `/api/ws-token`, `/qr-login` | mixed (login/setup/qr-login: public; rest: authenticated) | [`nomifun-auth/src/routes.rs`](../../crates/backend/nomifun-auth/src/routes.rs) |
 | Auth — local-only admin/internal | `/api/webui/*` | local mode only | same as above |
 | Conversations | `/api/conversations/*`, `/api/messages/search` | authenticated | [`nomifun-conversation/src/routes.rs`](../../crates/backend/nomifun-conversation/src/routes.rs), [`routes_aux.rs`](../../crates/backend/nomifun-conversation/src/routes_aux.rs) |
+| Session Logs | `/api/debug/session-observations*` | authenticated + developer mode | [`nomifun-conversation/src/routes_trace.rs`](../../crates/backend/nomifun-conversation/src/routes_trace.rs) |
+| Agent evals | `/api/debug/agent-evals/*` | authenticated + developer mode | [`nomifun-ai-agent/src/routes/eval.rs`](../../crates/backend/nomifun-ai-agent/src/routes/eval.rs) |
 | Agents (local CLI agents) | `/api/agents/*` | authenticated | [`nomifun-ai-agent/src/routes/agent.rs`](../../crates/backend/nomifun-ai-agent/src/routes/agent.rs) |
 | Remote agents | `/api/remote-agents/*` | authenticated | [`nomifun-ai-agent/src/routes/remote.rs`](../../crates/backend/nomifun-ai-agent/src/routes/remote.rs) |
 | Presets | `/api/presets/*` | authenticated | [`nomifun-preset/src/routes.rs`](../../crates/backend/nomifun-preset/src/routes.rs) |

@@ -1,13 +1,12 @@
 # Session Logs / 工作流观测：背景、对照与分阶段方案
 
 > **现行 UI 以 [session-observation-workflow-ui-plan.zh.md](session-observation-workflow-ui-plan.zh.md) 与 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准，文内 Drawer 已作废。**  
-> **文档状态：契约已冻结；开发步骤见实施文档，尚未授权改实现代码**  
+> **文档状态：契约考古；S1–S8 / U0–U5 已落地，配额 GC 与请求扫描列表随 PR #119 合入 `main`。不要把文内 S 步骤当成待办。**  
 > 撰写日期：2026-08-18  
 > 修订：同日吸收多轮 review；并确认**直接替换旧 Trace**（项目未发布，无双轨）  
 > **Baseline commit：** `fcf5c4e203da2b30a05444729ff8108aa9bd22d9`（`main`，Merge PR #106）  
-> **怎么做：** [session-observation-implementation.zh.md](session-observation-implementation.zh.md)  
-> 读者：契约与决策说明。实施前必须以源码复核本文引用的路径。  
-> 实施完成后：把稳定不变式 / 边界 / debug API 合并进 [Agent 可观测性与评测](agent-observability-and-eval.zh.md)。
+> **怎么做（历史）：** [session-observation-implementation.zh.md](session-observation-implementation.zh.md)  
+> 读者：契约与决策说明。现行产品语义以源码 + [Agent 可观测性与评测](agent-observability-and-eval.zh.md) 为准。
 
 本文回答四件事：
 
@@ -37,7 +36,7 @@
 2. **不要做什么**：不要把 nomi 底层改造成 Cordis；不要把 `dsh-plugin-agent-workflow` 装进 Flowy；不要把该插件的 TypeScript 类型当成存储 / API 契约；不要新造无限定词的 `Run` 领域。
 3. **已拍板（方案 B）**：对齐该插件的**信息与呈现**，Flowy 使用**自有观测 schema**。插件字段是清单，不是 wire 同构目标。
 4. **能做的范围**：M1 只承诺 **canonical `LlmRequest`**（`fidelity=canonical`），不是 HTTP body。ACP / 外部 CLI 为 `protocol_partial`。
-5. **建议顺序**：按 [实施文档](session-observation-implementation.zh.md) 的 S1–S8 逐步做。旧 Trace **删除替换**，不投影兼容。不要先做空壳 UI。本文**不授权改实现代码**。
+5. **落地顺序（历史）**：按 [实施文档](session-observation-implementation.zh.md) 的 S1–S8 已逐步做完。旧 Trace **删除替换**，不投影兼容。本文保留契约，不再授权新的实现改动。
 
 ---
 
@@ -396,10 +395,8 @@ canonical `LlmRequest.messages` **已经可能含 Image（base64 PNG）**（visu
 
 ---
 
-## 11. 下一步
+## 11. 落地状态
 
-1. 对照第 7 节与 [实施文档](session-observation-implementation.zh.md)。  
-2. 授权后从 **S1** 开始，一步一验收。  
-3. 本文在授权前 **不授权改实现代码**。
+S1–S8 与 U0–U5 已落地；配额 GC（无按天 TTL）与请求扫描列表随 PR #119 合入 `main`。现行语义以 [ui-plan](session-observation-workflow-ui-plan.zh.md) 与 [Agent 可观测性与评测](agent-observability-and-eval.zh.md) 为准。本文保留契约考古，不再当作待办。
 
 已钉死的实现常量见实施文档 §3：rotate 48 MiB、retention 1 GiB 高低水位、`event_seq` 归属 turn > execution > conversation > process。

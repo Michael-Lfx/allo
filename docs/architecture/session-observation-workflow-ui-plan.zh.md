@@ -1,11 +1,11 @@
 # Session Logs — 执行计划（U0–U5）
 
-> **文档状态：实施稿；U0–U5 已在 `feat/session-observation` 落地，现行语义以本文 + 源码为准**  
+> **文档状态：实施稿；U0–U5 已合入 `main`；配额 GC 与请求扫描列表随 PR #119 落地。现行语义以本文 + 源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准**  
 > 日期：2026-08-19  
-> 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待、控制队满与 `try_enqueue` 对齐、§1 改为已落地/收口缺口。  
-> 分支：现行语义以源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准  
+> 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待、控制队满与 `try_enqueue` 对齐、§1 改为已落地/收口缺口；U3 请求 `messages`/`tools` 默认扫描列表。  
+> 分支：现行语义以源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准；历史实施分支 `feat/session-observation` 仅作考古  
 > **作废：** 只做 Drawer 卡片的稿；功能打通但不写 IO 的稿；把执行失败写成 `integrity=degraded` 的稿；**control 优先消费 / 永久 tombstone 用于 Clear/Reset / 64KiB×256 神圣 / health 塞进 Session Summary / `turn/end` 等 50ms /「control 满时保证不丢 turn/end」。**  
-> **读者：** U0–U5 与 §9.1 已完成。合并后的现行语义以本文 + 源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准。  
+> **读者：** U0–U5、§9.1 与 PR #119 收口已完成。合并后的现行语义以本文 + 源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准。  
 > **词汇**仍以 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 与提案第 7 节为准。本文补产品、投影与 writer 语义，不另起第三套领域。
 
 | | 是什么 |
@@ -420,7 +420,7 @@ Poll **仅** `has turn/start && !turn/end` 的 new-format turn。
 
 ## 9. 阶段
 
-**U0–U5 已完成**（`feat/session-observation` 本地 commit）。下面保留验收清单，不再当实施顺序。
+**U0–U5 已完成**（合入 `main`；后续配额 GC 与扫描列表见 PR #119）。下面保留验收清单，不再当实施顺序。
 
 ### U0 — Writer + 正确性
 
@@ -452,7 +452,7 @@ Poll **仅** `has turn/start && !turn/end` 的 new-format turn。
 
 ### U3 — Call 工作流
 
-虚拟化 headers + **Call GET 懒正文** + 可收缩 object tree（`react-json-view-lite`）+ 合法 token 字段。点瓦片才拉正文，不默认双 JSON。
+虚拟化 headers + **Call GET 懒正文** + 请求 `messages`/`tools` 默认扫描列表（「原始」才是 `react-json-view-lite`）+ 合法 token 字段。点瓦片才拉正文，不默认双 JSON。
 
 ### U4 — Fresh度
 
@@ -523,7 +523,7 @@ fix(providers): make token usage buckets unambiguous
 ## 13. 实施纪律
 
 先读 `recorder.rs` `emit`/`remove_conversation`、`project.rs`、`observation.rs` `stream_llm`、`openai.rs` usage、`routes_trace.rs`、conversation `drop_conversation_observations`。  
-只改当前 U 文件。Git 人类作者，无 AI trailer。只推 `feat/session-observation`。
+只改当前任务文件。Git 人类作者，无 AI trailer。历史 U 步骤曾只推 `feat/session-observation`；现行文档与源码以 `main` 为准。
 
 ---
 

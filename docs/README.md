@@ -21,6 +21,7 @@ contributor standards.
 | Try the app quickly | [getting-started/quick-start.md](getting-started/quick-start.md) |
 | Connect a XiaoZhi ESP32 robot | [guides/xiaozhi-robot.md](guides/xiaozhi-robot.md) |
 | Understand the current architecture | [architecture/overview.md](architecture/overview.md) |
+| Inspect Session Logs / Agent Eval | [architecture/agent-observability-and-eval.zh.md](architecture/agent-observability-and-eval.zh.md) |
 | Build or package the project | [contributing/building-and-packaging.md](contributing/building-and-packaging.md) |
 | Look up flags, env vars, or API groups | [reference/](reference/) |
 | Contribute to the project | [../CONTRIBUTING.md](../CONTRIBUTING.md) |
@@ -47,7 +48,8 @@ docs/
 Current top-level user surfaces include conversations, terminals, model
 management, presets, MCP, open capabilities, requirements/AutoWork,
 scheduled tasks, companions, knowledge, and feature-gated computer/browser
-automation. The frontend source of truth is
+automation. Developer mode adds Session Logs on the conversation column and
+the `/eval` lab. The frontend source of truth is
 `ui/src/renderer/components/layout/Router.tsx`.
 
 ## Documentation scope
