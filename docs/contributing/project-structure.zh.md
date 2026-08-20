@@ -12,7 +12,7 @@ nomifun-tauri/
 │   ├── web/                      nomifun-web：独立 Web/API host
 │   └── desktop/                  nomifun-desktop：Tauri 桌面壳
 ├── crates/
-│   ├── agent/                    15 个 nomi-* crate，AI agent 引擎
+│   ├── agent/                    nomi-* crate，AI agent 引擎（含 nomi-agent-trace）
 │   ├── backend/                  29 个 nomifun-* crate，HTTP/WS 后端
 │   └── shared/                   2 个真正跨层共享 crate
 ├── ui/                           React SPA，Vite + UnoCSS，唯一 Bun workspace
@@ -48,7 +48,7 @@ binary 存在，用于诊断、stdio MCP bridge、公开能力调用和无头场
 
 | 目录 | 前缀 | 数量 | 职责 |
 | --- | --- | --- | --- |
-| [`crates/agent/`](../../crates/agent) | `nomi-*` | 15 | AI agent 引擎，尽量保持独立。 |
+| [`crates/agent/`](../../crates/agent) | `nomi-*` | 见 crate 表 | AI agent 引擎，尽量保持独立。含 `nomi-agent-trace`（会话日志）。 |
 | [`crates/backend/`](../../crates/backend) | `nomifun-*` | 32 | HTTP/WS 后端、数据层、认证、会话、cron、knowledge、terminal、companion、public gateway 等。 |
 | [`crates/shared/`](../../crates/shared) | mixed | 2 | 真正跨 agent/backend 使用的共享工具。 |
 

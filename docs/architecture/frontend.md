@@ -57,7 +57,8 @@ The source of truth is
 | `/login` | Login / first-run setup. |
 | `/companion` | Desktop companion window route; outside the normal protected app layout. |
 | `/guid` | Session start surface. |
-| `/conversation/:id` | Conversation runtime. |
+| `/conversation/:id` | Conversation runtime. Developer mode can slide the column to Session Logs (`AgentTraceInspector`): capture is always on; list/turn/call HTTP still requires developer mode. See [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md). |
+| `/eval` | Developer-mode Agent Eval lab. Sidebar `dev` badge; requires `system.developerMode`. |
 | `/terminal-new` | Terminal creation. |
 | `/terminal/:id` | Terminal runtime. |
 | `/models` | Model and agent management. |

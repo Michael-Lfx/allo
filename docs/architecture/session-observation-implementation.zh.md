@@ -1,11 +1,10 @@
 # Session Observation 开发文档与分步实施计划
 
 > **现行 UI 以 [session-observation-workflow-ui-plan.zh.md](session-observation-workflow-ui-plan.zh.md) 与 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准，文内 Drawer 已作废。**  
-> **文档状态：S0–S8 历史步骤；U0–U5 已在 `feat/session-observation` 落地**  
-> 日期：2026-08-19  
-> 分支：`feat/session-observation`  
-> **Baseline：** `fcf5c4e203da2b30a05444729ff8108aa9bd22d9`（`main`，Merge PR #106）  
-> **现行语义：** [session-observation-workflow-ui-plan.zh.md](session-observation-workflow-ui-plan.zh.md)（含控制队满、generation vs tombstone、收口缺口）  
+> **文档状态：S0–S8 历史步骤；U0–U5 与 PR #119 收口（配额 GC、请求扫描列表）已合入 `main`。不要把文内 S 步骤当成待办。**  
+> 日期：2026-08-20  
+> **Baseline：** `6c50755db`（`main`，Merge PR #119）  
+> **现行语义：** [session-observation-workflow-ui-plan.zh.md](session-observation-workflow-ui-plan.zh.md)（配额 GC、无按天 TTL、请求 messages/tools 扫描列表）  
 > 契约原文：[session-observation-workflow-proposal.zh.md](session-observation-workflow-proposal.zh.md)  
 > 现状说明：[agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)
 

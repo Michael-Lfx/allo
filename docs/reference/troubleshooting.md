@@ -179,6 +179,8 @@ The backend writes to **both** stdout and a daily-rolling file at `<log-dir>/nom
 - The rotating file under `<log-dir>` keeps history.
 - Crank up the level for the affected module: `--log-level info,nomifun_mcp=trace` for MCP issues, `info,nomifun_terminal=debug` for terminals, `info,nomifun_conversation=debug` for agent conversations.
 
+Session Logs (canonical LLM request/response/tool JSONL) live under `<data-dir>/diagnostics/observation/`. Capture is always on; the conversation-column inspector and `/api/debug/session-observations*` require developer mode. Disk reclaim is quota-only (about 1 GiB / 800 MiB, no age TTL). See [Session observation and eval](../architecture/agent-observability-and-eval.zh.md).
+
 ## When all else fails
 
 Read the source. Every route handler is in the `routes.rs` (or `routes/`) file of its owning crate; the assembly is in `crates/backend/nomifun-app/src/router/routes.rs`. The error messages thrown by handlers are the literal strings that appear in HTTP responses, so a quick `grep` for the exact message usually lands you on the offending check in seconds.

@@ -663,16 +663,22 @@ button.session-logs-tile:hover {
   min-height: 28px;
   padding: 6px 0;
   border-bottom: 1px solid color-mix(in srgb, var(--color-text-1) 10%, var(--color-border-2));
+  cursor: default;
+}
+
+.session-logs-scan__row:hover,
+.session-logs-scan__row:active {
+  cursor: default;
 }
 
 .session-logs-scan__row:last-child {
   border-bottom: 0;
 }
 
-.session-logs-scan__role,
-.session-logs-scan__name {
+.session-logs-scan__role {
   flex: 0 0 auto;
   max-width: 42%;
+  min-width: 0;
   font-size: 12px;
   line-height: 18px;
   color: var(--color-text-2);
@@ -681,24 +687,59 @@ button.session-logs-tile:hover {
   text-overflow: ellipsis;
 }
 
-.session-logs-scan__name {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-weight: 600;
-  color: var(--color-text-1);
+.session-logs-scan__lead {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
-.session-logs-scan__flag {
-  margin-left: 6px;
-  font-family: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--color-text-3);
+.session-logs-scan__hover {
+  flex: 0 0 14ch;
+  width: 14ch;
+  display: block;
+  overflow: hidden;
+  cursor: default;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
 }
 
 .session-logs-scan__preview-wrap {
   flex: 1 1 auto;
   min-width: 0;
   display: block;
+  overflow: hidden;
+  cursor: default;
+}
+
+.session-logs-scan__name {
+  display: block;
+  width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+
+.session-logs-scan__flag {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--color-text-3);
+  cursor: default;
+  pointer-events: none;
+}
+
+.session-logs-scan__flag * {
+  cursor: default;
+  pointer-events: none;
 }
 
 .session-logs-scan__preview {
@@ -710,6 +751,7 @@ button.session-logs-tile:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: default;
 }
 
 .session-logs-scan__tip {
@@ -720,6 +762,10 @@ button.session-logs-tile:hover {
   word-break: break-word;
   font-size: 12px;
   line-height: 18px;
+}
+
+.session-logs-scan__tip-line + .session-logs-scan__tip-line {
+  margin-top: 6px;
 }
 
 .session-logs-scan__empty {

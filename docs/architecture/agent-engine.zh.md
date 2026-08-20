@@ -18,6 +18,7 @@ Agent 引擎位于 [`crates/agent/`](../../crates/agent/)，后端主要通过
 | `nomi-skills` | Skill 发现、frontmatter、加载与 skill-index 支持。 |
 | `nomi-memory` | 记忆存储与检索原语。 |
 | `nomi-agent` | 核心 engine loop、session、压缩粘合、confirmations、output sinks、skill tool、requirement tools，以及 crate-private 的 embedded AgentExecution 投影。 |
+| `nomi-agent-trace` | 会话观测 JSONL：capture、DualQueue writer、配额 GC（无按天 TTL）、回合/调用投影。现行产品语义见 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)。 |
 | `nomi-cli` | 使用同一引擎的独立 `nomi` CLI。 |
 | `nomi-computer` | 桌面 computer-use 工具实现。 |
 | `nomi-a11y` | computer-use 流程使用的 accessibility helper。 |
@@ -51,7 +52,9 @@ Agent crates 不依赖 `nomifun-*` 后端 crate。常规的后端到 agent 集�
 Flowy 支持几类运行时：
 
 - **Nomi engine**：来自 `nomi-agent` 的仓内引擎，带 provider、内置工具、
-  skills、MCP、memory、browser 与 computer-use 支持。
+  skills、MCP、memory、browser 与 computer-use 支持。会话观测 JSONL 由
+  `nomi-agent-trace` 记录（采集始终开启，HTTP 读取要开发者模式）。详见
+  [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)。
 - **ACP-style CLI agents**：Claude Code、Codex、Gemini CLI、Qwen/OpenCode
   风格集成及相关 CLI，由 `nomifun-ai-agent` 管理。
 - **Remote/Open capability surfaces**：外部 agent 通过 companion-token 认证的

@@ -326,6 +326,8 @@ Dockerfile 已为 apt 与 Cargo 启用重试，并使用更小的 Rust slim 基�
   `info,nomifun_terminal=debug`，智能体会话用
   `info,nomifun_conversation=debug`。
 
+会话日志（canonical 请求/响应/工具 JSONL）在 `<data-dir>/diagnostics/observation/`。采集始终写盘；对话列检查器与 `/api/debug/session-observations*` 要开发者模式。磁盘只按配额回收（约 1 GiB / 800 MiB，无按天 TTL）。详见 [会话观测与评测](../architecture/agent-observability-and-eval.zh.md)。
+
 ## 当一切都不奏效
 
 读源码。每个路由 handler 都在其归属 crate 的 `routes.rs`（或

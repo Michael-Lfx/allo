@@ -73,6 +73,8 @@ Flowy 启动时进入三种鉴权策略之一：
 | 鉴权 —— 登录 / 设置 / 状态 / 刷新 | `/login`、`/logout`、`/api/auth/*`、`/api/ws-token`、`/qr-login` | 混合（登录/设置/qr-login：公共；其余：已鉴权） | [`nomifun-auth/src/routes.rs`](../../crates/backend/nomifun-auth/src/routes.rs) |
 | 鉴权 —— 仅本地 admin/internal | `/api/webui/*` | 仅本地模式 | 同上 |
 | 会话 | `/api/conversations/*`、`/api/messages/search` | 已鉴权 | [`nomifun-conversation/src/routes.rs`](../../crates/backend/nomifun-conversation/src/routes.rs)、[`routes_aux.rs`](../../crates/backend/nomifun-conversation/src/routes_aux.rs) |
+| 会话日志 | `/api/debug/session-observations*` | 已鉴权 + 开发者模式 | [`nomifun-conversation/src/routes_trace.rs`](../../crates/backend/nomifun-conversation/src/routes_trace.rs) |
+| Agent Eval | `/api/debug/agent-evals/*` | 已鉴权 + 开发者模式 | [`nomifun-ai-agent/src/routes/eval.rs`](../../crates/backend/nomifun-ai-agent/src/routes/eval.rs) |
 | 智能体（本地 CLI 智能体） | `/api/agents/*` | 已鉴权 | [`nomifun-ai-agent/src/routes/agent.rs`](../../crates/backend/nomifun-ai-agent/src/routes/agent.rs) |
 | 远程智能体 | `/api/remote-agents/*` | 已鉴权 | [`nomifun-ai-agent/src/routes/remote.rs`](../../crates/backend/nomifun-ai-agent/src/routes/remote.rs) |
 | 设定 | `/api/presets/*` | 已鉴权 | [`nomifun-preset/src/routes.rs`](../../crates/backend/nomifun-preset/src/routes.rs) |

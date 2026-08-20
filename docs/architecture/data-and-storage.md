@@ -26,6 +26,9 @@ Inside the data directory:
 ├── server.lock          exclusive server-lock address file (the lock lives on
 │                        the open OS handle; a leftover file is harmless)
 ├── logs/                tracing-appender file output (rotated daily)
+├── diagnostics/
+│   ├── observation/     session JSONL logs (quota GC; developer-mode HTTP reads)
+│   └── agent-evals/     live eval workspaces, run traces, and dataset cache
 ├── conversations/       per-conversation workspaces (see below)
 └── companion/                 companion file domain (shared memory hub + per-companion profiles, see below)
 ```

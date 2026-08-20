@@ -16,6 +16,7 @@ Current crates:
 | `nomi-skills` | Skill discovery, loading, and execution support. |
 | `nomi-memory` | Long-term project/user memory. |
 | `nomi-agent` | Core session engine, tool execution, and Agent delegation. |
+| `nomi-agent-trace` | Session observation JSONL (capture, DualQueue writer, quota GC, projection). |
 | `nomi-cli` | Standalone `nomi` CLI. |
 | `nomi-computer` | Desktop computer-use tool implementation. |
 | `nomi-a11y` | Accessibility helpers used by computer-use flows. |

@@ -25,6 +25,9 @@ NomiFun 把状态保存在三个地方：一个 SQLite 数据库（一切结构�
 ├── server.lock          exclusive server-lock address file (the lock lives on
 │                        the open OS handle; a leftover file is harmless)
 ├── logs/                tracing-appender file output (rotated daily)
+├── diagnostics/
+│   ├── observation/     会话观测 JSONL（配额 GC；HTTP 读取要开发者模式）
+│   └── agent-evals/     live 评测工作区、run traces、数据集缓存
 ├── conversations/       per-conversation workspaces (see below)
 └── companion/                 companion file domain (shared memory hub + per-companion profiles, see below)
 ```

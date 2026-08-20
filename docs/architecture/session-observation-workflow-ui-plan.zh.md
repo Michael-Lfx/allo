@@ -1,11 +1,11 @@
 # Session Logs — 执行计划（U0–U5）
 
-> **文档状态：实施稿；U0–U5 已在 `feat/session-observation` 落地，现行语义以本文 + 源码为准**  
+> **文档状态：实施稿；U0–U5 已合入 `main`；配额 GC 与请求扫描列表随 PR #119 落地。现行语义以本文 + 源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准**  
 > 日期：2026-08-19  
-> 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待、控制队满与 `try_enqueue` 对齐、§1 改为已落地/收口缺口。  
-> 分支：现行语义以源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准  
+> 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待、控制队满与 `try_enqueue` 对齐、§1 改为已落地/收口缺口；U3 请求 `messages`/`tools` 默认扫描列表。  
+> 分支：现行语义以源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准；历史实施分支 `feat/session-observation` 仅作考古  
 > **作废：** 只做 Drawer 卡片的稿；功能打通但不写 IO 的稿；把执行失败写成 `integrity=degraded` 的稿；**control 优先消费 / 永久 tombstone 用于 Clear/Reset / 64KiB×256 神圣 / health 塞进 Session Summary / `turn/end` 等 50ms /「control 满时保证不丢 turn/end」。**  
-> **读者：** U0–U5 与 §9.1 已完成。合并后的现行语义以本文 + 源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准。  
+> **读者：** U0–U5、§9.1 与 PR #119 收口已完成。合并后的现行语义以本文 + 源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准。  
 > **词汇**仍以 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 与提案第 7 节为准。本文补产品、投影与 writer 语义，不另起第三套领域。
 
 | | 是什么 |
@@ -260,7 +260,7 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
   左列顶：用户回合 / 模型 / 工具 / 有效时长 + 刷新 + 最新在上|最早在上
   写入器 health（进程活状态）与会话 integrity / coverage 次级
   Turn Navigator（窗口 ≤200；行上时钟；第 N 轮按时间升序编号）
-  Selected Turn：虚拟化 Call headers → 点瓦片才 GET 单 call 正文 → 可收缩 object tree
+  Selected Turn：虚拟化 Call headers → 点瓦片才 GET 单 call 正文 → 请求 messages/tools 默认扫描列表，原始才是 object tree
 ```
 
 ```text
@@ -271,7 +271,7 @@ Agent ──capture+size cap──► enqueue_order
         Writer 取两队首更小 enqueue_order，再分配 event_seq
         WriterCommand: Event | Flush | Delete | Clear | ResetAll | Shutdown
                  ▼
-        JSONL + rotate + age/quota GC（不删 active segment）
+        JSONL + rotate + quota GC（不删 active segment；无按天 TTL）
                  ▼
         spawn_blocking + semaphore
         streaming summary | turn headers | lazy call detail
@@ -387,7 +387,7 @@ Trigger: writer persist-idle ≥30s and last scan ≥1h; or estimated total ≥1
 - 回合行：第 N 轮（按 `started_at_ms` 升序编号，与显示倒正向无关）、预览、时钟、模型/工具次数、时长。默认最新在上。  
 - Call 行 `useVirtualizer`，overscan 3–5。宽屏横轴可横滚。窄对话列（`@container` ~720px，按列宽不是 window）左列改横向回合条，检查器单列。  
 - 点瓦片才 GET call detail，不自动展开第一张；关详情 unmount。瓦片 `aria-expanded`。工具瓦片 title 用 `argument_preview`，无则 name。`最终回复` 是不可点文案终点，不是瓦片。  
-- Call 检查器：对象/数组用 `react-json-view-lite`（根与 `messages`/`tools` 数组展开，元素默认收起）；`{` / `}` 必须能开合（punctuation 转发到 expander，禁止自写树）。`messages` / `tools` 默认扫描投影（role / 块类型 / 开头摘要，或工具名 + 描述），工具条「原始」才切回对象树；复制仍是 canonical JSON。短 string 与响应 reasoning/content 直接展示；omitted 原样。复制用图标，禁止每块「复制 JSON」文案。详情字段是 hairline Raised 面板，不是灰底 dump。  
+- Call 检查器：对象/数组用 `react-json-view-lite`（根与 `messages`/`tools` 数组展开，元素默认收起）；`{` / `}` 必须能开合（punctuation 转发到 expander，禁止自写树）。`messages` / `tools` 默认扫描投影（role / 块类型 / 开头摘要，或工具名 + 描述），工具条「原始」才切回对象树；复制仍是 canonical JSON。消息扫描默认最新在上，排序随 `model_call_id` 重置、不随 poll 数组变长重置；工具定义不排序。整段 `{ omitted_reason }` 显示已省略，`[]` 显示没有消息/没有工具，缺字段显示观测未记录；行上有预览时仍带 omitted 标记。短 string 与响应 reasoning/content 直接展示。系统提示、响应、工具执行不走扫描列表。放大弹层与 320px 面板各自渲染，禁止共用同一个 React 节点。复制用图标，禁止每块「复制 JSON」文案。详情字段是 hairline Raised 面板，不是灰底 dump。  
 - 缓存：summary + ≤200 turn headers + `MAX_CALL_DETAIL_CACHE=2` LRU。换会话 `clear()`。切回对话保持 poll 与 LRU。  
 - Token 芯片：U3 只显示原始 `input_tokens` / cache_read / cache_write / output。不画未命中，不发明 `input_uncached`。  
 - omitted 字段必须可见，不得显示成「观测未记录 / 加载失败」。不展示 `msg=` / `turn=` / `mc-xxxx`。  
@@ -420,7 +420,7 @@ Poll **仅** `has turn/start && !turn/end` 的 new-format turn。
 
 ## 9. 阶段
 
-**U0–U5 已完成**（`feat/session-observation` 本地 commit）。下面保留验收清单，不再当实施顺序。
+**U0–U5 已完成**（合入 `main`；后续配额 GC 与扫描列表见 PR #119）。下面保留验收清单，不再当实施顺序。
 
 ### U0 — Writer + 正确性
 
@@ -452,7 +452,7 @@ Poll **仅** `has turn/start && !turn/end` 的 new-format turn。
 
 ### U3 — Call 工作流
 
-虚拟化 headers + **Call GET 懒正文** + 可收缩 object tree（`react-json-view-lite`）+ 合法 token 字段。点瓦片才拉正文，不默认双 JSON。
+虚拟化 headers + **Call GET 懒正文** + 请求 `messages`/`tools` 默认扫描列表（「原始」才是 `react-json-view-lite`）+ 合法 token 字段。点瓦片才拉正文，不默认双 JSON。
 
 ### U4 — Fresh度
 
@@ -523,7 +523,7 @@ fix(providers): make token usage buckets unambiguous
 ## 13. 实施纪律
 
 先读 `recorder.rs` `emit`/`remove_conversation`、`project.rs`、`observation.rs` `stream_llm`、`openai.rs` usage、`routes_trace.rs`、conversation `drop_conversation_observations`。  
-只改当前 U 文件。Git 人类作者，无 AI trailer。只推 `feat/session-observation`。
+只改当前任务文件。Git 人类作者，无 AI trailer。历史 U 步骤曾只推 `feat/session-observation`；现行文档与源码以 `main` 为准。
 
 ---
 
