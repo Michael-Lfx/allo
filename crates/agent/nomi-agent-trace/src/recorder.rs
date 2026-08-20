@@ -1442,10 +1442,9 @@ fn maybe_gc_writer_inner(shared: &WriterShared) {
         last_event_elapsed_ms,
         gc_idle_threshold_ms(shared),
     );
-    let wrote_bytes = shared.bytes_written_since.load(Ordering::Relaxed);
-    if !shared.gc_estimate_ready.load(Ordering::Relaxed)
-        && (idle || wrote_bytes >= emergency_limit)
-    {
+    // Queue-empty gap only (not the persist path). Count files already on disk so
+    // emergency GC sees leftover size after a process restart.
+    if !shared.gc_estimate_ready.load(Ordering::Relaxed) {
         reconcile_gc_estimate(shared);
     }
     let now = unix_secs_now();
@@ -2414,6 +2413,30 @@ mod tests {
             "idle plus elapsed interval should run quota GC"
         );
         assert_ne!(recorder.last_gc_unix_secs(), 0);
+    }
+
+    #[test]
+    fn maybe_gc_emergency_counts_existing_files_before_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder.set_gc_quota_override(1_000, 800, 1_200);
+        let conv = recorder.root().join("conv-a");
+        fs::create_dir_all(&conv).unwrap();
+        let oldest = conv.join("events.1.jsonl");
+        let newer = conv.join("events.2.jsonl");
+        fs::write(&oldest, "o".repeat(800)).unwrap();
+        fs::write(&newer, "n".repeat(500)).unwrap();
+        let now = SystemTime::now();
+        set_mtime(&oldest, now - Duration::from_secs(30));
+        set_mtime(&newer, now - Duration::from_secs(10));
+        recorder.run_maybe_gc();
+        assert!(
+            !oldest.exists(),
+            "first writer gap must count leftover files so emergency GC can run"
+        );
+        assert_ne!(recorder.last_gc_unix_secs(), 0);
+        assert!(observation_total(recorder.root()) <= 800);
     }
 
     #[test]

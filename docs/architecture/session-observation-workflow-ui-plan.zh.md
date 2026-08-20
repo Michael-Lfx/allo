@@ -248,7 +248,7 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
 | P8 | 同时 ≤2–3 个 **call detail**；换会话 `clear()`。切回对话不清 LRU、不 abort poll。不接 `videoCanvas` QueryClient。 |
 | P9 | 禁止 mmap / 全历史 preload。 |
 | P10 | 单 event ≤ `MAX_EVENT_BYTES` 才入队。 |
-| P11 | 磁盘：14 天 **且** 高低水位（高 **1 GiB**，低 **800 MiB**）。写盘队列空闲 ≥30s 且距上次扫描 ≥1h 才扫盘；估算 ≥**1.2 GiB** 时下一个空档立刻收。先删 age>14d 的非 active segment，再按 mtime 删最老非 active 直到 ≤低水位；**禁止删当前 writer 打开的 `events.jsonl`。禁止在 Event persist 热路径扫盘。** |
+| P11 | 磁盘：14 天 **且** 高低水位（高 **1 GiB**，低 **800 MiB**）。写盘队列空闲 ≥30s 且距上次扫描 ≥1h 才扫盘；估算 ≥**1.2 GiB** 时下一个空档立刻收。writer 第一次队列空档只 reconcile 估算（计入盘上存量），不删文件；**禁止在 Event persist 热路径扫盘。** 先删 age>14d 的非 active segment，再按 mtime 删最老非 active 直到 ≤低水位；**禁止删当前 writer 打开的 `events.jsonl`。** |
 
 ---
 
@@ -371,7 +371,8 @@ Call GET 在 header 还在、segment 已 GC：返回 **410**，body `reason=obse
 
 ```text
 Retention = age 14d AND high/low watermark (1 GiB / 800 MiB)
-Trigger: writer queue idle ≥30s and last scan ≥1h; or estimated total ≥1.2 GiB on the next writer idle gap
+Estimate: first writer queue-empty gap reconciles on-disk size (includes leftover files after restart). Persist path does not walk.
+Trigger: writer persist-idle ≥30s and last scan ≥1h; or estimated total ≥1.2 GiB on the next writer idle gap
 1. 先删 age>14d 的非 active segment
 2. 再算总量；仍 >1 GiB 则按 mtime 删最老非 active segment，直到 ≤800 MiB
 禁止删当前 writer 打开的 events.jsonl
