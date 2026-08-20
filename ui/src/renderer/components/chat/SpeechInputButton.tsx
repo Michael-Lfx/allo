@@ -1,18 +1,13 @@
 
 
 import { Message, Button, Tooltip } from '@arco-design/web-react';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   useSpeechInput,
   type SpeechInputAvailability,
   type SpeechInputErrorCode,
 } from '@/renderer/hooks/system/useSpeechInput';
-import {
-  getSpeechToTextConfig,
-  SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT,
-} from '@/renderer/services/speechToTextConfig';
-import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
 
 type SpeechInputButtonProps = {
   disabled?: boolean;
@@ -99,9 +94,6 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
   onTranscript,
 }) => {
   const { t } = useTranslation();
-  const [isSpeechInputEnabled, setIsSpeechInputEnabled] = useState(false);
-  const [isConfigLoaded, setIsConfigLoaded] = useState(false);
-  const { data: providers } = useProvidersQuery();
   const {
     availability,
     clearError,
@@ -126,55 +118,6 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
     }
     return [0.08, 0.12, 0.1, 0.16, 0.09, 0.14];
   }, [recordingLevels]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const syncSpeechToTextEnabled = async () => {
-      const config = getSpeechToTextConfig();
-      const selectedCloudProvider = config.provider_id
-        ? providers?.find((provider) => provider.id === config.provider_id)
-        : undefined;
-      const referencedCloudModelIsReady = Boolean(
-        selectedCloudProvider &&
-          selectedCloudProvider.enabled !== false &&
-          selectedCloudProvider.api_key.trim() &&
-          config.model &&
-          selectedCloudProvider.models.includes(config.model) &&
-          selectedCloudProvider.model_enabled?.[config.model] !== false
-      );
-      const legacyCloudConfigIsReady = Boolean(
-        !config.provider_id &&
-          (config.provider === 'openai'
-            ? config.openai?.api_key.trim()
-            : config.provider === 'deepgram'
-              ? config.deepgram?.api_key.trim()
-              : false)
-      );
-      const speechEnabled = Boolean(
-        config.enabled &&
-          (referencedCloudModelIsReady || legacyCloudConfigIsReady)
-      );
-
-      if (cancelled) {
-        return;
-      }
-      setIsSpeechInputEnabled(speechEnabled);
-      setIsConfigLoaded(true);
-    };
-
-    const handleConfigChanged = () => {
-      void syncSpeechToTextEnabled();
-    };
-
-    void syncSpeechToTextEnabled();
-    window.addEventListener(SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT, handleConfigChanged);
-
-    return () => {
-      cancelled = true;
-      window.removeEventListener(SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT, handleConfigChanged);
-    };
-  }, [providers]);
 
   useEffect(() => {
     if (!errorCode) {
@@ -210,7 +153,7 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
     void startRecording();
   };
 
-  if (hidden || !isConfigLoaded || !isSpeechInputEnabled) {
+  if (hidden) {
     return null;
   }
 

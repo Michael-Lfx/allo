@@ -34,27 +34,16 @@ describe('speech input recording handling', () => {
     expect(hook.includes('convertRecordedAudioToWav')).toBe(false);
   });
 
-  test('uses the shared speech-to-text configuration event constant', () => {
+  test('does not hide the microphone behind speech-to-text settings', () => {
     const button = readSource(
       new URL('../../components/chat/SpeechInputButton.tsx', import.meta.url)
     );
 
-    expect(button.includes('SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT,')).toBe(true);
-    expect(button.includes("from '@/renderer/services/speechToTextConfig';")).toBe(true);
-    expect(
-      button.includes(
-        "const SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT = 'nomifun:speech-to-text-config-changed';"
-      )
-    ).toBe(false);
-  });
-
-  test('does not expose a stale cloud speech selection', () => {
-    const button = readSource(
-      new URL('../../components/chat/SpeechInputButton.tsx', import.meta.url)
-    );
-
-    expect(button.includes('selectedCloudProvider.models.includes(config.model)')).toBe(true);
-    expect(button.includes('selectedCloudProvider.model_enabled?.[config.model] !== false')).toBe(true);
+    expect(button.includes("from '@/renderer/services/speechToTextConfig';")).toBe(false);
+    expect(button.includes('getSpeechToTextConfig')).toBe(false);
+    expect(button.includes('isSpeechInputEnabled')).toBe(false);
+    expect(button.includes('useProvidersQuery')).toBe(false);
+    expect(button.includes('if (hidden)')).toBe(true);
   });
 
   test('does not opt the desktop multipart request into credentialed CORS', () => {

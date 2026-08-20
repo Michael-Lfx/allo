@@ -53,6 +53,15 @@ describe('ComposerSubmitCluster', () => {
     expect(source.includes('composer-autowork-btn')).toBe(true);
   });
 
+  test('shows the microphone from claw availability instead of local STT settings', () => {
+    const source = readSource(new URL('./ComposerSubmitCluster.tsx', import.meta.url));
+
+    expect(source.includes('useClawAsrAvailable')).toBe(true);
+    expect(source.includes('speechHidden')).toBe(true);
+    expect(source.includes('getSpeechToTextConfig')).toBe(false);
+    expect(source.includes('isSpeechInputEnabled')).toBe(false);
+  });
+
   test('keeps the rightmost circle slot stable when draft appears', () => {
     const source = readSource(new URL('./ComposerSubmitCluster.tsx', import.meta.url));
 
