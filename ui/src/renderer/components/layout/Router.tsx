@@ -44,10 +44,6 @@ const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/vi
 const VideoCanvasProjectPage = React.lazy(() => import('@renderer/pages/videoCanvas/ProjectPage'));
 const MiniAppsListPage = React.lazy(() => import('@renderer/pages/miniApps'));
 const MiniAppRunnerPage = React.lazy(() => import('@renderer/pages/miniApps/RunnerPage'));
-// TODO: workshop/assets stay deferred (no routes until explicitly published)
-// const WorkshopListPage = React.lazy(() => import('@renderer/pages/workshop'));
-// const WorkshopCanvasPage = React.lazy(() => import('@renderer/pages/workshop/CanvasPage'));
-// const AssetLibraryPage = React.lazy(() => import('@renderer/pages/assets'));
 const CompanionPage = React.lazy(() => import('@renderer/pages/companion'));
 const MemoryPanelPage = React.lazy(() => import('@renderer/pages/memoryPanel'));
 const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
@@ -361,12 +357,6 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
             element={withRouteFallback(VideoCanvasProjectPage)}
           />
           <Route path='/video-generation/:sessionId' element={withRouteFallback(VideoGenerationWorkspacePage)} />
-          {/* workshop/assets deferred — keep pages in tree but unrouted */}
-          {/*
-          <Route path='/assets' element={withRouteFallback(AssetLibraryPage)} />
-          <Route path='/workshop' element={withRouteFallback(WorkshopListPage)} />
-          <Route path='/workshop/:id' element={withRouteFallback(WorkshopCanvasPage)} />
-          */}
           {/* 小程序 (Mini-apps) — the solidified library and its full-page runner. */}
           <Route path='/mini-apps' element={withRouteFallback(MiniAppsListPage)} />
           <Route path='/mini-apps/:id' element={withRouteFallback(MiniAppRunnerPage)} />

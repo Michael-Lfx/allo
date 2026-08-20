@@ -4,26 +4,26 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/**
- * Resolve the models a generation card can pick, by mode — every mode reads the
- * authoritative catalog (`useModelsForTask` / `useCreationModels`, i.e.
- * `POST /api/model-profiles/resolve`; no name heuristics):
- *  - image → resolve(image_generation) ∪ resolve(image_edit)
- *  - video → resolve(video_generation)
- *  - text  → resolve(chat)
- *  - tts   → resolve(speech_synthesis)
- *
- * Grouped by provider and flattened, plus a `hasProviders` signal so the picker
- * can tell "no platforms configured" apart from "no matching models".
- */
-
 import { useMemo } from 'react';
 import { modelNamesOf } from '@/common/utils/providerModels';
 import { useProvidersQuery } from '@renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask, type TaskModelGroup } from '@renderer/hooks/agent/useModelsForTask';
-import { filterCreationModels, useCreationModels } from '@renderer/pages/modelHub/creationModels';
-import type { GenMode, ModelGroup, ModelOption } from './genTypes';
 import { useModelSelectorProviderLabel } from '@renderer/hooks/agent/useModelSelectorProviderLabel';
+import type { ProviderId } from '@/common/types/ids';
+
+export interface ModelOption {
+  providerId: ProviderId;
+  providerName: string;
+  platform: string;
+  model: string;
+}
+
+export interface ModelGroup {
+  providerId: ProviderId;
+  providerName: string;
+  platform: string;
+  models: ModelOption[];
+}
 
 export interface GeneratorModels {
   groups: ModelGroup[];
@@ -58,21 +58,15 @@ function flattenTaskGroups(
   return flat;
 }
 
+/** Chat-model catalog for video-generation LLM pickers. */
 export function useGeneratorModels(
-  mode: GenMode,
+  mode: 'text',
   options?: { enabled?: boolean }
 ): GeneratorModels {
   const enabled = options?.enabled ?? true;
   const { data: rawProviders } = useProvidersQuery({ enabled });
-  // 对话/语音合成模型来自统一 task catalog resolve（无名称启发式）。
   const { groups: chatGroups } = useModelsForTask('chat', undefined, {
     enabled: enabled && mode === 'text',
-  });
-  const { groups: ttsGroups } = useModelsForTask('speech_synthesis', undefined, {
-    enabled: enabled && mode === 'tts',
-  });
-  const { entries: creationEntries } = useCreationModels({
-    enabled: enabled && (mode === 'image' || mode === 'video'),
   });
   const providerLabel = useModelSelectorProviderLabel();
 
@@ -83,19 +77,7 @@ export function useGeneratorModels(
     const hasProviders =
       (rawProviders ?? []).some((p) => p.enabled !== false && modelNamesOf(p).length > 0) ||
       chatGroups.length > 0;
-
-    if (mode === 'text' || mode === 'tts') {
-      const flat = flattenTaskGroups(mode === 'text' ? chatGroups : ttsGroups, providerLabel);
-      return { groups: group(flat), flat, hasProviders };
-    }
-
-    const cap = mode === 'video' ? 'video_generation' : 'image_generation';
-    const flat: ModelOption[] = filterCreationModels(creationEntries, cap).map((e) => ({
-      providerId: e.providerId,
-      providerName: e.providerName,
-      platform: e.platform,
-      model: e.model,
-    }));
+    const flat = flattenTaskGroups(chatGroups, providerLabel);
     return { groups: group(flat), flat, hasProviders };
-  }, [enabled, mode, rawProviders, chatGroups, ttsGroups, creationEntries, providerLabel]);
+  }, [enabled, rawProviders, chatGroups, providerLabel]);
 }

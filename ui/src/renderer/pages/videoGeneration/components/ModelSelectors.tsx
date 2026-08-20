@@ -10,7 +10,7 @@ import { Select, Spin } from '@arco-design/web-react';
 import type { IMediaModelOption } from '@/common/adapter/ipcBridge';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
-import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
+import { useGeneratorModels } from '@renderer/pages/videoGeneration/useGeneratorModels';
 
 export interface VimaxModelSelection {
   llm_model: string;

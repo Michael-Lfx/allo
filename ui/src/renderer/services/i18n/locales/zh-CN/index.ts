@@ -29,17 +29,10 @@ import autowork from './autowork.json';
 import nomi from './nomi.json';
 import knowledge from './knowledge.json';
 import customerService from './customerService.json';
-import assetLibrary from './assetLibrary.json';
 import sessionList from './sessionList.json';
 import modelFailover from './modelFailover.json';
 import agentExecution from './agentExecution.json';
 import collaboration from './collaboration.json';
-import workshop from './workshop.json';
-import workshopCanvas from './workshopCanvas.json';
-import workshopAssets from './workshopAssets.json';
-import workshopEditor from './workshopEditor.json';
-import workshopGeneration from './workshopGeneration.json';
-import workshopAgent from './workshopAgent.json';
 import browser from './browser.json';
 import poi from './poi.json';
 import insights from './insights.json';
@@ -82,17 +75,10 @@ export default {
   nomi,
   knowledge,
   customerService,
-  assetLibrary,
   sessionList,
   modelFailover,
   agentExecution,
   collaboration,
-  workshop,
-  workshopCanvas,
-  workshopAssets,
-  workshopEditor,
-  workshopGeneration,
-  workshopAgent,
   browser,
   poi,
   insights,
