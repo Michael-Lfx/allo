@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { eventElapsed, formatElapsedClock } from './progressEventElapsed';
+import { coalesceProgressEvents, eventElapsed, formatElapsedClock } from './progressEventElapsed';
 
 describe('formatElapsedClock', () => {
   test('pads minutes and seconds', () => {
@@ -51,5 +51,38 @@ describe('eventElapsed', () => {
       secs: null,
       live: false,
     });
+  });
+
+  test('untilIndex spans a coalesced same-stage run', () => {
+    const spam = [
+      { stage: 'plan_scene', at: '2026-08-18T01:00:00.000Z' },
+      { stage: 'plan_scene', at: '2026-08-18T01:00:00.100Z' },
+      { stage: 'plan_scene', at: '2026-08-18T01:00:00.200Z' },
+      { stage: 'planned', at: '2026-08-18T01:02:00.000Z' },
+    ];
+    expect(
+      eventElapsed(spam, 0, {
+        busy: false,
+        nowMs: 0,
+        untilIndex: 3,
+      })
+    ).toEqual({ secs: 120, live: false });
+  });
+});
+
+describe('coalesceProgressEvents', () => {
+  test('collapses consecutive identical stages', () => {
+    const events = [
+      { stage: 'plan_scene', at: 'a' },
+      { stage: 'plan_scene', at: 'b' },
+      { stage: 'plan_scene', at: 'c' },
+      { stage: 'planned', at: 'd' },
+      { stage: 'plan_scene', at: 'e' },
+    ];
+    expect(coalesceProgressEvents(events)).toEqual([
+      { event: events[0], index: 0, count: 3 },
+      { event: events[3], index: 3, count: 1 },
+      { event: events[4], index: 4, count: 1 },
+    ]);
   });
 });

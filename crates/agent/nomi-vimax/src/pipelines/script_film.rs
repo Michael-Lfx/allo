@@ -308,6 +308,13 @@ impl ScriptFilmPipeline {
 
         let mut set = tokio::task::JoinSet::new();
         let sem = Arc::new(tokio::sync::Semaphore::new(3));
+        let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        emit_pct(
+            &progress,
+            "plan_scene",
+            &format!("正在规划 0/{scene_count} 个场次文本产物"),
+            40.0,
+        );
         for (i, scene_script) in bodies.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
             let backends = self.backends.clone();
@@ -326,17 +333,8 @@ impl ScriptFilmPipeline {
             };
             scene_req = format!("{scene_req}\n\n{scope}");
             let permit = Arc::clone(&sem);
-            let pct = 40.0 + 55.0 * (i as f32 / scene_count as f32);
-            let heading = selected
-                .get(i)
-                .map(|u| u.heading.as_str())
-                .unwrap_or("场次");
-            emit_pct(
-                &progress,
-                "plan_scene",
-                &format!("正在规划「{heading}」（{}/{scene_count}）", i + 1),
-                pct,
-            );
+            let progress = progress.clone();
+            let done = Arc::clone(&done);
             set.spawn(async move {
                 let _permit = permit
                     .acquire_owned()
@@ -352,6 +350,14 @@ impl ScriptFilmPipeline {
                 let s2v = Script2VideoPipeline::new(backends, scene_dir);
                 s2v.plan_text_artifacts(&scene_script, &scene_req, &style, None)
                     .await?;
+                let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let pct = 40.0 + 55.0 * (finished as f32 / scene_count as f32);
+                emit_pct(
+                    &progress,
+                    "plan_scene",
+                    &format!("正在规划场次文本产物（{finished}/{scene_count}）"),
+                    pct,
+                );
                 Ok::<_, crate::error::VimaxError>(())
             });
         }

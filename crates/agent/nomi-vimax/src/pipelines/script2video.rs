@@ -68,6 +68,20 @@ impl Script2VideoPipeline {
         write_text_artifact(&self.working_dir.join("script.txt"), script).await?;
         let style = crate::planning::resolve_visual_style(style);
         let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
+
+        // Resume/checkpoint fast path: multi-scene parents call this for every
+        // scene; skip the expensive portrait/world/storyboard path when all
+        // text artifacts are already on disk.
+        if self.plan_artifacts_complete().await {
+            emit_pct(
+                &progress,
+                "reuse_plan",
+                "场景规划产物已存在，跳过文本规划",
+                100.0,
+            );
+            return self.load_plan_artifacts().await;
+        }
+
         let plan_started = std::time::Instant::now();
 
         emit_pct(&progress, "extract_characters", "正在从剧本提取角色", 12.0);

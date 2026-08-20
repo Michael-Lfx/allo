@@ -92,7 +92,27 @@ impl RenderStatus {
     pub fn emit(&mut self, stage: &str, message: &str, metadata: Option<Value>) {
         self.stage = stage.to_string();
         self.message = message.to_string();
+        self.push_event(stage, message, metadata);
+    }
+
+    /// Append a terminal event (`cancelled` / `interrupted` / `failed`) without
+    /// overwriting the pipeline stage — resume needs the last working stage.
+    pub fn emit_terminal(&mut self, stage: &str, message: &str) {
+        self.message = message.to_string();
+        self.push_event(stage, message, None);
+    }
+
+    fn push_event(&mut self, stage: &str, message: &str, metadata: Option<Value>) {
         self.touch();
+        // Collapse consecutive identical stages (e.g. parallel plan_scene fan-out,
+        // video_poll heartbeats) so the activity log stays readable.
+        if let Some(last) = self.events.last_mut() {
+            if last.stage == stage {
+                last.message = message.to_string();
+                last.metadata = metadata;
+                return;
+            }
+        }
         self.events.push(ProgressEvent {
             stage: stage.to_string(),
             message: message.to_string(),
@@ -104,5 +124,35 @@ impl RenderStatus {
             let drain = self.events.len() - 200;
             self.events.drain(0..drain);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emit_collapses_consecutive_same_stage() {
+        let mut status = RenderStatus::default();
+        status.emit("plan_scene", "one", None);
+        status.emit("plan_scene", "two", Some(serde_json::json!({ "progress": 10 })));
+        status.emit("plan_scene", "three", None);
+        status.emit("planned", "done", None);
+
+        assert_eq!(status.events.len(), 2);
+        assert_eq!(status.events[0].stage, "plan_scene");
+        assert_eq!(status.events[0].message, "three");
+        assert_eq!(status.events[1].stage, "planned");
+    }
+
+    #[test]
+    fn emit_terminal_preserves_pipeline_stage() {
+        let mut status = RenderStatus::default();
+        status.emit("video_poll", "waiting", None);
+        status.emit_terminal("cancelled", "cancelled");
+
+        assert_eq!(status.stage, "video_poll");
+        assert_eq!(status.events.len(), 2);
+        assert_eq!(status.events[1].stage, "cancelled");
     }
 }

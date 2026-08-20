@@ -83,6 +83,7 @@ import {
   rememberVideoGenerationSession,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
+import { shouldContinueAsRender } from './continueMode';
 import styles from './index.module.css';
 
 const TextArea = Input.TextArea;
@@ -676,30 +677,14 @@ const WorkspacePage: React.FC = () => {
     }
   }, [sessionId, deleting, message, t, navigate]);
 
-  /** Prefer resume render when failure happened in a render-phase stage. */
+  /** Prefer resume render when failure/cancel happened in a render-phase stage. */
   const continueAsRender = useMemo(() => {
-    const events = runStatus?.events ?? [];
-    const beforeFail = [...events].reverse().find((e) => e.stage && e.stage !== 'failed');
-    const stage = beforeFail?.stage || runStatus?.stage || session?.stage || '';
-    const renderStages = new Set([
-      'render_start',
-      'rendering',
-      'render_scene',
-      'render_resume',
-      'render_scene_skip',
-      'reuse_plan',
-      'character_portraits_start',
-      'frames_start',
-      'frame_prompt_start',
-      'video_clips_start',
-      'concat_start',
-      'video_generate',
-      'image_generate',
-      'action_prepare',
-      'action_generate',
-    ]);
-    return renderStages.has(stage) || stage.startsWith('render_');
-  }, [runStatus, session?.stage]);
+    return shouldContinueAsRender({
+      events: runStatus?.events,
+      stage: runStatus?.stage,
+      sessionStage: session?.stage,
+    });
+  }, [runStatus?.events, runStatus?.stage, session?.stage]);
 
   const isFailed =
     (runStatus?.status ?? session?.status) === 'failed' ||
@@ -1509,6 +1494,7 @@ const WorkspacePage: React.FC = () => {
                 <Button
                   type='primary'
                   status='warning'
+                  size='large'
                   loading={planning || rendering}
                   onClick={() => void handleContinue()}
                 >

@@ -47,11 +47,11 @@ fn mark_cancelled_or_interrupted(st: &mut RenderStatus, index: &SessionIndex, id
         if st.message.is_empty() {
             st.message = INTERRUPTED_SUMMARY.into();
         }
-        st.emit("interrupted", &st.message.clone(), None);
+        st.emit_terminal("interrupted", &st.message.clone());
     } else {
         st.status = RunStatus::Cancelled;
         st.message = "cancelled".into();
-        st.emit("cancelled", "cancelled", None);
+        st.emit_terminal("cancelled", "cancelled");
     }
 }
 
@@ -127,7 +127,7 @@ impl VimaxService {
                 st.status = RunStatus::Interrupted;
                 st.message = INTERRUPTED_SUMMARY.into();
                 st.error = None;
-                st.emit("interrupted", INTERRUPTED_SUMMARY, None);
+                st.emit_terminal("interrupted", INTERRUPTED_SUMMARY);
                 ids.insert(id.clone());
             }
         }
@@ -302,11 +302,12 @@ impl VimaxService {
             let status = map.entry(id.to_string()).or_default();
             status.status = RunStatus::Cancelled;
             status.message = "cancelled".into();
-            status.emit("cancelled", "cancelled", None);
+            // Keep the last working pipeline stage so "continue from checkpoint"
+            // can resume plan vs render correctly.
+            status.emit_terminal("cancelled", "cancelled");
         }
         let _ = self.index.update_fields(id, |r| {
             r.status = RunStatus::Cancelled;
-            r.stage = "cancelled".into();
             r.summary = "cancelled".into();
         });
         Ok(())
@@ -860,8 +861,8 @@ impl VimaxService {
                     };
                     st.error = Some(composed.clone());
                     st.message = composed.clone();
-                    st.touch();
-                    st.emit("failed", &composed, None);
+                    // Keep prev_stage on `st.stage` for resume routing.
+                    st.emit_terminal("failed", &composed);
                 }
             }
             let _ = self.index.update_fields(id, |r| {

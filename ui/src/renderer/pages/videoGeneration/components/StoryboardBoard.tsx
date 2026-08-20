@@ -223,7 +223,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   }, [sessionId, storyboardPaths]);
 
   const scenes = useMemo(
-    () => buildStoryboardScenesFromStoryboards(artifacts, storyboardEntries).slice(0, 60),
+    () => buildStoryboardScenesFromStoryboards(artifacts, storyboardEntries),
     [artifacts, storyboardEntries]
   );
   const activeScene =
