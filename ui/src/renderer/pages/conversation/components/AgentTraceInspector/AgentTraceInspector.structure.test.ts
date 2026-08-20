@@ -57,14 +57,22 @@ describe('AgentTraceInspector', () => {
     expect(inspector.includes('oldestFirst')).toBe(true);
     expect(inspector.includes('SortAmountDown')).toBe(true);
     expect(inspector.includes('SortAmountUp')).toBe(true);
+    expect(inspector.includes('collapseRoundList')).toBe(true);
+    expect(inspector.includes('expandRoundList')).toBe(true);
+    expect(inspector.includes('navCollapsed')).toBe(true);
+    expect(inspector.includes('ExpandLeft')).toBe(true);
+    expect(css.includes('.session-logs-nav.is-collapsed')).toBe(true);
     expect(inspector.includes('Popover')).toBe(true);
     expect(inspector.includes('glossaryAria')).toBe(true);
     expect(inspector.includes('session-logs-glossary')).toBe(true);
+    expect(inspector.includes('session-logs-glossary__item')).toBe(true);
     expect(inspector.includes('metricTurnHint')).toBe(true);
     expect(inspector.includes('metricModelHint')).toBe(true);
     expect(inspector.includes('metricToolHint')).toBe(true);
     expect(inspector.includes('metricDurationHint')).toBe(true);
     expect(inspector.includes('integrityHint')).toBe(true);
+    expect(inspector.includes('glossaryNotes')).toBe(true);
+    expect(inspector.includes('notesHint')).toBe(true);
     expect(inspector.includes('session-logs-integrity')).toBe(false);
     expect(inspector.includes("hint={t('conversation.agentTrace.metricTurnHint')}")).toBe(false);
     expect(inspector.includes('userTurnCount')).toBe(false);
@@ -87,7 +95,8 @@ describe('AgentTraceInspector', () => {
     expect(css.includes('container-name: session-logs')).toBe(true);
     expect(css.includes('session-logs-nav__list')).toBe(true);
     expect(css.includes('@container session-logs (max-width: 720px)')).toBe(true);
-    expect(css.includes('padding: 12px 16px 14px')).toBe(true);
+    expect(css.includes('--session-logs-gutter: 16px')).toBe(true);
+    expect(css.includes('padding: 12px var(--session-logs-gutter)')).toBe(true);
     expect(css.includes('session-logs-order')).toBe(false);
   });
 
@@ -99,7 +108,7 @@ describe('AgentTraceInspector', () => {
     expect(inspector.includes('interrupted')).toBe(true);
     expect(inspector.includes('writerHealth')).toBe(true);
     expect(inspector.includes('sessionLog')).toBe(true);
-    expect(inspector.includes('coverageRetained')).toBe(true);
+    expect(inspector.includes('coverageRetained')).toBe(false);
     expect(inspector.includes("summary?.integrity === 'degraded'")).toBe(true);
     expect(inspector.includes('roundLabel')).toBe(true);
     expect(inspector.includes('modelCallCount')).toBe(true);
@@ -142,6 +151,22 @@ describe('AgentTraceInspector', () => {
     expect(workflow.includes('inspectSystemHint')).toBe(true);
     expect(workflow.includes('inspectReasoning')).toBe(true);
     expect(workflow.includes('inspectRequestTitle')).toBe(true);
+    const requestInspector = workflow.slice(
+      workflow.indexOf('function requestParamsFromBody'),
+      workflow.indexOf('function ResponseInspector'),
+    );
+    expect(requestInspector.includes('inspectRequestParams')).toBe(true);
+    expect(requestInspector.includes('max_tokens')).toBe(true);
+    expect(requestInspector.includes('temperature')).toBe(true);
+    expect(requestInspector.includes('reasoning_effort')).toBe(true);
+    expect(requestInspector.includes('thinking')).toBe(true);
+    expect(requestInspector.includes('startCollapsed')).toBe(false);
+    expect(requestInspector.includes('input_schema')).toBe(false);
+    expect(requestInspector.includes('与上次相同')).toBe(false);
+    const systemAt = requestInspector.indexOf("inspectSystem'");
+    const gridAt = requestInspector.indexOf("session-logs-inspector__grid");
+    expect(systemAt).toBeGreaterThan(gridAt);
+    expect(tree.includes('startCollapsed')).toBe(false);
     expect(workflow.includes("JsonBlock label={t('conversation.agentTrace.request')}")).toBe(false);
     expect(workflow.includes("JsonBlock label={t('conversation.agentTrace.response')}")).toBe(false);
     expect(tree.includes("from 'react-json-view-lite'")).toBe(true);
@@ -152,12 +177,18 @@ describe('AgentTraceInspector', () => {
     expect(tree.includes(':scope > [role="button"]')).toBe(true);
     expect(tree.includes('session-logs-json-tree__punct')).toBe(true);
     expect(tree.includes('session-logs-json-tree__expander')).toBe(true);
+    expect(tree.includes('session-logs-json-tree__expander--closed')).toBe(true);
+    expect(tree.includes('${defaultStyles.container}')).toBe(false);
+    expect(tree.includes("container: 'session-logs-json-tree__container'")).toBe(true);
     expect(tree.includes('session-logs-json-tree__collapsed')).toBe(true);
     expect(tree.includes('copyField')).toBe(true);
     expect(tree.includes('hint?: string')).toBe(true);
     const css = readSource(new URL('./session-logs.css', import.meta.url));
     expect(css.includes('border: 1px solid var(--color-border-2)')).toBe(true);
     expect(css.includes('session-logs-json-tree__expander')).toBe(true);
+    const jsonContainer = css.match(/^\.session-logs-json-tree__container\s*\{[^}]+\}/m)?.[0] ?? '';
+    expect(jsonContainer.includes('background: transparent')).toBe(true);
+    expect(jsonContainer.includes('color-text-1')).toBe(true);
     expect(css.includes('button.session-logs-tile:hover')).toBe(true);
     expect(css.includes('session-logs-flow__end')).toBe(true);
     const flowArrow = css.match(/\.session-logs-flow__arrow\s*\{[^}]+\}/)?.[0] ?? '';
@@ -184,6 +215,19 @@ describe('AgentTraceInspector', () => {
     expect(workHeads.includes('color-fill-2')).toBe(false);
     expect(workHeads.includes('color-fill-3')).toBe(false);
     expect(css.includes('.session-logs-json-tree:hover')).toBe(false);
+    expect(workflow.includes('session-logs-inspector-slot')).toBe(true);
+    expect(workflow.includes('useOpenTransition')).toBe(true);
+    expect(css.includes('scrollbar-gutter: stable')).toBe(true);
+    expect(css.includes('height: 320px')).toBe(true);
+    expect(css.includes('max-height: 320px')).toBe(false);
+    expect(css.includes('grid-template-rows: 0fr')).toBe(true);
+    expect(css.includes('@media (prefers-reduced-motion: reduce)')).toBe(true);
+    expect(css.includes('session-logs-request-params')).toBe(true);
+    expect(css.includes('session-logs-request-params__lead')).toBe(true);
+    expect(css.includes('display: contents')).toBe(true);
+    const jsonToolbar = css.match(/^\.session-logs-json-tree__toolbar\s*\{[^}]+\}/m)?.[0] ?? '';
+    expect(jsonToolbar.includes('rgb(var(--primary-6)) 12%')).toBe(true);
+    expect(jsonToolbar.includes('color-fill-2')).toBe(false);
   });
 
   test('fetch helpers target session-observations and do not rebuild chat messages', () => {

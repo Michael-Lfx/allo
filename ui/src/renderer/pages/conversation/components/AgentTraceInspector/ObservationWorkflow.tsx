@@ -4,13 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button, Message, Modal, Spin, Tooltip } from '@arco-design/web-react';
-import { Copy, Down, FullScreen, Up } from '@icon-park/react';
+import { Copy, Down, FullScreen, Info, Up } from '@icon-park/react';
 import { copyText } from '@renderer/utils/ui/clipboard';
-import { formatClock, formatDurationMs, turnToolCount } from './format';
+import { formatClock, formatDurationMs, formatJson, turnToolCount } from './format';
 import {
   gapSeqLabel,
   requestTileMeta,
@@ -235,6 +235,44 @@ function toolElapsedMs(tool: ProjectedToolExecution): number | null {
   return null;
 }
 
+const INSPECTOR_REVEAL_MS = 180;
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function useOpenTransition(active: boolean): { rendered: boolean; open: boolean } {
+  const [rendered, setRendered] = useState(active);
+  const [open, setOpen] = useState(active);
+
+  useEffect(() => {
+    if (active) {
+      setRendered(true);
+      if (prefersReducedMotion()) {
+        setOpen(true);
+        return;
+      }
+      let inner = 0;
+      const outer = window.requestAnimationFrame(() => {
+        inner = window.requestAnimationFrame(() => setOpen(true));
+      });
+      return () => {
+        window.cancelAnimationFrame(outer);
+        window.cancelAnimationFrame(inner);
+      };
+    }
+    setOpen(false);
+    if (prefersReducedMotion()) {
+      setRendered(false);
+      return;
+    }
+    const timeout = window.setTimeout(() => setRendered(false), INSPECTOR_REVEAL_MS);
+    return () => window.clearTimeout(timeout);
+  }, [active]);
+
+  return { rendered, open };
+}
+
 const StageTile: React.FC<{
   stage: 'request' | 'response' | 'tool';
   label: string;
@@ -264,6 +302,122 @@ const StageTile: React.FC<{
   </button>
 );
 
+function requestParamsFromBody(body: Record<string, unknown>): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  if (typeof body.model === 'string' && body.model.trim()) params.model = body.model;
+  if (typeof body.max_tokens === 'number') params.max_tokens = body.max_tokens;
+  if (typeof body.temperature === 'number') params.temperature = body.temperature;
+  if (typeof body.reasoning_effort === 'string' && body.reasoning_effort.trim()) {
+    params.reasoning_effort = body.reasoning_effort;
+  }
+  const thinking = asRecord(body.thinking);
+  if (thinking && typeof thinking.enabled === 'boolean') {
+    params.thinking = thinking;
+  }
+  return params;
+}
+
+function thinkingDisplay(
+  thinking: unknown,
+  t: (key: string) => string
+): string | null {
+  const record = asRecord(thinking);
+  if (!record || typeof record.enabled !== 'boolean') return null;
+  if (!record.enabled) return t('conversation.agentTrace.thinkingDisabled');
+  if (typeof record.budget_tokens === 'number') return String(record.budget_tokens);
+  return t('conversation.agentTrace.thinkingEnabled');
+}
+
+const RequestParamsStrip: React.FC<{ body: Record<string, unknown> }> = ({ body }) => {
+  const { t } = useTranslation();
+  const params = requestParamsFromBody(body);
+  const items: Array<{ key: string; label: string; value: string }> = [];
+  if (typeof params.model === 'string') {
+    items.push({
+      key: 'model',
+      label: t('conversation.agentTrace.paramModel'),
+      value: params.model,
+    });
+  }
+  if (typeof params.max_tokens === 'number') {
+    items.push({
+      key: 'max_tokens',
+      label: t('conversation.agentTrace.paramMaxTokens'),
+      value: String(params.max_tokens),
+    });
+  }
+  if (typeof params.temperature === 'number') {
+    items.push({
+      key: 'temperature',
+      label: t('conversation.agentTrace.paramTemperature'),
+      value: String(params.temperature),
+    });
+  }
+  if (typeof params.reasoning_effort === 'string') {
+    items.push({
+      key: 'reasoning_effort',
+      label: t('conversation.agentTrace.paramReasoningEffort'),
+      value: params.reasoning_effort,
+    });
+  }
+  const thinkingText = thinkingDisplay(params.thinking, t);
+  if (thinkingText != null) {
+    items.push({
+      key: 'thinking',
+      label: t('conversation.agentTrace.paramThinking'),
+      value: thinkingText,
+    });
+  }
+  if (items.length === 0) return null;
+
+  const hint = t('conversation.agentTrace.inspectRequestParamsHint');
+  const paramsLabel = t('conversation.agentTrace.inspectRequestParams');
+  const copyLabel = t('conversation.agentTrace.copyField', { label: paramsLabel });
+  const copyPayload = formatJson(params);
+
+  const onCopy = async () => {
+    try {
+      await copyText(copyPayload);
+      Message.success(t('conversation.agentTrace.copied'));
+    } catch {
+      Message.error(t('conversation.agentTrace.copyFailed'));
+    }
+  };
+
+  return (
+    <div className='session-logs-request-params'>
+      <div className='session-logs-request-params__lead'>
+        <span>{paramsLabel}</span>
+        <Tooltip content={hint}>
+          <button type='button' className='session-logs-info' aria-label={hint}>
+            <Info theme='outline' size='12' strokeWidth={3} />
+          </button>
+        </Tooltip>
+      </div>
+      <dl className='session-logs-request-params__list'>
+        {items.map((item, index) => (
+          <div key={item.key} className='session-logs-request-params__item'>
+            <dt>{item.label}</dt>
+            <dd>{item.value}</dd>
+            {index === items.length - 1 ? (
+              <Tooltip content={copyLabel}>
+                <Button
+                  type='text'
+                  size='mini'
+                  className='session-logs-json-tree__icon-btn session-logs-request-params__copy'
+                  icon={<Copy theme='outline' size='12' strokeWidth={3} />}
+                  onClick={() => void onCopy()}
+                  aria-label={copyLabel}
+                />
+              </Tooltip>
+            ) : null}
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+};
+
 function RequestInspector({ payload }: { payload: unknown }) {
   const { t } = useTranslation();
   const body = asRecord(canonicalRequestFromPayload(payload));
@@ -276,6 +430,7 @@ function RequestInspector({ payload }: { payload: unknown }) {
   }
   return (
     <>
+      <RequestParamsStrip body={body} />
       <div className='session-logs-inspector__grid'>
         <ObservationJsonTree
           label={t('conversation.agentTrace.inspectSystem')}
@@ -547,6 +702,11 @@ const ModelCallSection: React.FC<{
   const response = header.response_summary;
   const responseCopy = responseTileCopy(t, response);
   const selected = inspectTarget?.modelCallId === header.model_call_id ? inspectTarget : null;
+  const inspectActive = Boolean(selected && selected.stage !== 'final');
+  const lastInspectRef = useRef<InspectTarget | null>(selected);
+  if (inspectActive && selected) lastInspectRef.current = selected;
+  const reveal = useOpenTransition(inspectActive);
+  const panelTarget = inspectActive ? selected : lastInspectRef.current;
 
   return (
     <section className='session-logs-call'>
@@ -627,15 +787,23 @@ const ModelCallSection: React.FC<{
         )}
       </div>
 
-      {selected && selected.stage !== 'final' ? (
-        <CallInspector
-          stage={selected.stage}
-          toolCallId={selected.toolCallId}
-          detail={detail}
-          loading={loading}
-          errorKey={errorKey}
-          onCollapse={() => onInspect(selected)}
-        />
+      {reveal.rendered && panelTarget && panelTarget.stage !== 'final' ? (
+        <div
+          className={['session-logs-inspector-slot', reveal.open ? 'is-open' : '']
+            .filter(Boolean)
+            .join(' ')}
+        >
+          <div className='session-logs-inspector-slot__clip'>
+            <CallInspector
+              stage={panelTarget.stage}
+              toolCallId={panelTarget.toolCallId}
+              detail={detail}
+              loading={loading}
+              errorKey={errorKey}
+              onCollapse={() => onInspect(panelTarget)}
+            />
+          </div>
+        </div>
       ) : null}
     </section>
   );

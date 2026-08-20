@@ -15,7 +15,7 @@ import { formatJson } from './format';
 
 const treeStyle = {
   ...defaultStyles,
-  container: `${defaultStyles.container} session-logs-json-tree__container`,
+  container: 'session-logs-json-tree__container',
   label: 'session-logs-json-tree__label',
   clickableLabel: 'session-logs-json-tree__label session-logs-json-tree__label--click',
   nullValue: 'session-logs-json-tree__value',
@@ -25,9 +25,9 @@ const treeStyle = {
   numberValue: 'session-logs-json-tree__value',
   otherValue: 'session-logs-json-tree__value',
   punctuation: 'session-logs-json-tree__punct',
-  expandIcon: `${defaultStyles.expandIcon} session-logs-json-tree__expander`,
-  collapseIcon: `${defaultStyles.collapseIcon} session-logs-json-tree__expander`,
-  collapsedContent: `${defaultStyles.collapsedContent} session-logs-json-tree__collapsed`,
+  expandIcon: 'session-logs-json-tree__expander session-logs-json-tree__expander--closed',
+  collapseIcon: 'session-logs-json-tree__expander session-logs-json-tree__expander--open',
+  collapsedContent: 'session-logs-json-tree__collapsed',
 };
 
 /** Root and `messages`/`tools` arrays expand; array elements stay collapsed. */

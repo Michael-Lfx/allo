@@ -25,7 +25,7 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 12px;
 }
 
 .session-logs-metrics__item {
@@ -74,11 +74,15 @@
 }
 
 .session-logs-glossary {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   margin: 0;
   max-width: 280px;
+}
+
+.session-logs-glossary__item {
+  min-width: 0;
 }
 
 .session-logs-glossary dt {
@@ -86,14 +90,14 @@
   font-weight: 600;
   line-height: 16px;
   color: var(--color-text-2);
-  white-space: nowrap;
 }
 
 .session-logs-glossary dd {
-  margin: 0;
-  font-size: 11px;
-  line-height: 16px;
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--color-text-1);
+  white-space: pre-line;
 }
 
 .session-logs-health {
@@ -108,6 +112,7 @@
 }
 
 .session-logs-nav {
+  --session-logs-gutter: 16px;
   width: 260px;
   flex-shrink: 0;
   display: flex;
@@ -118,7 +123,7 @@
 
 .session-logs-nav__header {
   flex-shrink: 0;
-  padding: 12px 16px 14px;
+  padding: 12px var(--session-logs-gutter);
   border-bottom: 1px solid var(--color-border-1);
   background: var(--color-bg-1);
 }
@@ -136,11 +141,37 @@
   gap: 2px;
 }
 
+.session-logs-nav.is-collapsed {
+  width: 44px;
+}
+
+.session-logs-nav.is-collapsed .session-logs-nav__header {
+  padding: 8px 6px;
+  border-bottom: 0;
+}
+
+.session-logs-nav.is-collapsed .session-logs-nav__toolbar {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+.session-logs-nav.is-collapsed .session-logs-nav__toolbar-actions {
+  flex-direction: column;
+}
+
+.session-logs-nav.is-collapsed .session-logs-metrics,
+.session-logs-nav.is-collapsed .session-logs-health,
+.session-logs-nav.is-collapsed .session-logs-nav__list {
+  display: none;
+}
+
 .session-logs-nav__list {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px;
+  padding: 8px var(--session-logs-gutter) 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -148,7 +179,7 @@
 
 .session-logs-nav__item {
   width: 100%;
-  padding: 8px 10px;
+  padding: 8px 0;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
@@ -205,7 +236,10 @@
 }
 
 .session-logs-nav__counts {
-  margin-top: 4px;
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
   font-size: 11px;
   line-height: 16px;
   color: var(--color-text-3);
@@ -447,11 +481,36 @@ button.session-logs-tile:hover {
   font-variant-numeric: tabular-nums;
 }
 
+.session-logs-inspector-slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 180ms var(--ease-out-expo);
+}
+
+.session-logs-inspector-slot.is-open {
+  grid-template-rows: 1fr;
+}
+
+.session-logs-inspector-slot__clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
 .session-logs-inspector {
   margin-top: 10px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 180ms var(--ease-out-expo),
+    transform 180ms var(--ease-out-expo);
+}
+
+.session-logs-inspector-slot.is-open .session-logs-inspector {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .session-logs-inspector__head {
@@ -467,6 +526,68 @@ button.session-logs-tile:hover {
   color: var(--color-text-1);
 }
 
+.session-logs-request-params {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  min-width: 0;
+}
+
+.session-logs-request-params__lead {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--color-text-2);
+}
+
+.session-logs-request-params__lead .session-logs-info {
+  width: 16px;
+  height: 16px;
+}
+
+.session-logs-request-params__list {
+  display: contents;
+  margin: 0;
+}
+
+.session-logs-request-params__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.session-logs-request-params__item dt {
+  margin: 0;
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-text-2);
+  white-space: nowrap;
+}
+
+.session-logs-request-params__item dd {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-1);
+  word-break: break-all;
+}
+
+.session-logs-request-params__copy {
+  flex: 0 0 auto;
+}
+
 .session-logs-inspector__grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -475,6 +596,8 @@ button.session-logs-tile:hover {
 
 .session-logs-json-tree {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--color-border-2);
   border-radius: 8px;
@@ -487,8 +610,8 @@ button.session-logs-tile:hover {
   justify-content: space-between;
   gap: 8px;
   padding: 6px 8px 6px 10px;
-  background: color-mix(in srgb, var(--color-fill-2) 88%, var(--color-bg-1));
-  border-bottom: 1px solid var(--color-border-1);
+  background: color-mix(in srgb, rgb(var(--primary-6)) 12%, var(--color-bg-1));
+  border-bottom: 1px solid color-mix(in srgb, rgb(var(--primary-6)) 16%, var(--color-border-1));
 }
 
 .session-logs-json-tree__caption {
@@ -499,7 +622,7 @@ button.session-logs-tile:hover {
   font-size: 12px;
   font-weight: 600;
   line-height: 16px;
-  color: var(--color-text-2);
+  color: var(--color-text-1);
 }
 
 .session-logs-json-tree__caption .session-logs-info {
@@ -521,9 +644,27 @@ button.session-logs-tile:hover {
 }
 
 .session-logs-json-tree__body {
-  max-height: 320px;
+  box-sizing: border-box;
+  height: 320px;
   overflow: auto;
+  overflow-anchor: none;
   padding: 10px 12px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-3) 52%, transparent) transparent;
+}
+
+.session-logs-json-tree__body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.session-logs-json-tree__body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.session-logs-json-tree__body::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-text-3) 52%, transparent);
+  border-radius: 999px;
 }
 
 .session-logs-json-tree--modal {
@@ -535,6 +676,7 @@ button.session-logs-tile:hover {
 .session-logs-json-tree--modal .session-logs-json-tree__container {
   max-height: min(70vh, 640px);
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .session-logs-json-tree__text {
@@ -548,10 +690,13 @@ button.session-logs-tile:hover {
 }
 
 .session-logs-json-tree__container {
+  background: transparent;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
   line-height: 18px;
   color: var(--color-text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .session-logs-json-tree__label {
@@ -587,9 +732,20 @@ button.session-logs-tile:hover {
   min-height: 18px;
   margin-right: 4px;
   cursor: pointer;
+  user-select: none;
+  color: var(--color-text-2);
+}
+
+.session-logs-json-tree__expander--closed::after {
+  content: '\25B8';
+}
+
+.session-logs-json-tree__expander--open::after {
+  content: '\25BE';
 }
 
 .session-logs-json-tree__collapsed::after {
+  content: '...';
   font-size: 12px;
 }
 
@@ -607,6 +763,23 @@ button.session-logs-tile:hover {
     max-height: none;
     border-right: 0;
     border-bottom: 1px solid var(--color-border-2);
+  }
+
+  .session-logs-nav.is-collapsed {
+    width: 100%;
+  }
+
+  .session-logs-nav.is-collapsed .session-logs-nav__header {
+    padding: 8px var(--session-logs-gutter);
+  }
+
+  .session-logs-nav.is-collapsed .session-logs-nav__toolbar,
+  .session-logs-nav.is-collapsed .session-logs-nav__toolbar-actions {
+    flex-direction: row;
+  }
+
+  .session-logs-nav.is-collapsed .session-logs-nav__toolbar {
+    justify-content: space-between;
   }
 
   .session-logs-nav__list {
@@ -630,5 +803,17 @@ button.session-logs-tile:hover {
 
   .session-logs-inspector__grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-logs-inspector-slot,
+  .session-logs-inspector {
+    transition: none;
+  }
+
+  .session-logs-inspector {
+    opacity: 1;
+    transform: none;
   }
 }
