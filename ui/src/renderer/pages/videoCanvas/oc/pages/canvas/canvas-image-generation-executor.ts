@@ -183,7 +183,10 @@ export async function executeImageGeneration({
         setNodes((current) => current.map((node) => (node.id === nodeId && isConfigNode && node.metadata?.status === NODE_STATUS_LOADING ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined } } : node)));
         return;
     }
-    if (hasFailure) showError(hasSuccess ? "部分图片生成失败" : "全部图片生成失败");
+    if (hasFailure) {
+        const details = representativeFailure?.errorDetails?.trim();
+        showError(hasSuccess ? (details ? `部分图片生成失败：${details}` : "部分图片生成失败") : details || "全部图片生成失败");
+    }
     setNodes((current) =>
         current.map((node) =>
             node.id === nodeId && (isConfigNode || reuseSourceNode)
