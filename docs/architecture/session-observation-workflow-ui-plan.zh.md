@@ -248,7 +248,7 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
 | P8 | 同时 ≤2–3 个 **call detail**；换会话 `clear()`。切回对话不清 LRU、不 abort poll。不接 `videoCanvas` QueryClient。 |
 | P9 | 禁止 mmap / 全历史 preload。 |
 | P10 | 单 event ≤ `MAX_EVENT_BYTES` 才入队。 |
-| P11 | 磁盘：14 天 **且** `max_total_observation_bytes`（默认 **1 GiB**）。先删 age>14d 的非 active segment，再按 mtime 删最老非 active；**禁止删当前 writer 打开的 `events.jsonl`。** |
+| P11 | 磁盘：14 天 **且** 高低水位（高 **1 GiB**，低 **800 MiB**）。写盘队列空闲 ≥30s 且距上次扫描 ≥1h 才扫盘；估算 ≥**1.2 GiB** 时下一个空档立刻收。先删 age>14d 的非 active segment，再按 mtime 删最老非 active 直到 ≤低水位；**禁止删当前 writer 打开的 `events.jsonl`。禁止在 Event persist 热路径扫盘。** |
 
 ---
 
@@ -370,10 +370,12 @@ Call GET 在 header 还在、segment 已 GC：返回 **410**，body `reason=obse
 **所有 observation 文件 mutation 只在 writer 线程**（rotate、age GC、quota GC、delete）。Query 只读。
 
 ```text
-Retention = age 14d AND total ≤ 1 GiB
+Retention = age 14d AND high/low watermark (1 GiB / 800 MiB)
+Trigger: writer queue idle ≥30s and last scan ≥1h; or estimated total ≥1.2 GiB on the next writer idle gap
 1. 先删 age>14d 的非 active segment
-2. 再算总量；仍 >1 GiB 则按 mtime 删最老非 active segment，直到 ≤quota
+2. 再算总量；仍 >1 GiB 则按 mtime 删最老非 active segment，直到 ≤800 MiB
 禁止删当前 writer 打开的 events.jsonl
+禁止在 Event persist 热路径扫盘
 ```
 
 ---
@@ -513,7 +515,7 @@ fix(providers): make token usage buckets unambiguous
 | 删会话等 ACK 略慢 | 可接受（管理路径） |
 | 崩溃丢未 flush 尾 | 诊断数据，接受 |
 | 旧日志无 start/end | `unknown`，不 poll |
-| 1 GiB quota 砍历史 | UI `coverage` 说明 |
+| 1 GiB 高低水位回收较旧日志 | UI 注意事项说明收录范围 |
 | Call 多一次 RTT | 点开才发生 |
 
 ---
@@ -534,7 +536,7 @@ fix(providers): make token usage buckets unambiguous
 5. 双队列按 `enqueue_order` 合并写盘；control 只保容量、禁止 control-first persist；`turn/end` 零等待 —— 同意 / 不同意  
 6. U3 默认 Call 级懒加载，不整 Turn 下发正文 —— 同意 / 不同意  
 7. `RecorderHealth` 在 list **顶层**（不进 Session Summary）—— 同意 / 不同意  
-8. 14 天 **且** 1 GiB quota；不删 active segment；Call 410 `observation_retention`；Summary `coverage` —— 同意 / 不同意  
+8. 14 天 **且** 1 GiB/800 MiB 高低水位（紧急 1.2 GiB）；不删 active segment；Call 410 `observation_retention`；注意事项说明收录范围 —— 同意 / 不同意  
 9. legacy 不 poll；new-format 退避 poll —— 同意 / 不同意  
 10. 读路径 Semaphore(4) + 前端 abort —— 同意 / 不同意  
 

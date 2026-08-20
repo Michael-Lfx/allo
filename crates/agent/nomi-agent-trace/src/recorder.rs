@@ -73,7 +73,12 @@ pub const OBSERVATION_DIR: &str = "diagnostics/observation";
 pub const ROTATE_BYTES: u64 = 48 * 1024 * 1024;
 pub const GC_MAX_AGE_DAYS: u64 = 14;
 pub const MAX_TOTAL_OBSERVATION_BYTES: u64 = 1024 * 1024 * 1024;
-/// Emit path only: skip a full directory walk when GC ran recently.
+pub const GC_QUOTA_HIGH_BYTES: u64 = MAX_TOTAL_OBSERVATION_BYTES;
+pub const GC_QUOTA_LOW_BYTES: u64 = MAX_TOTAL_OBSERVATION_BYTES - 200 * 1024 * 1024;
+pub const GC_QUOTA_EMERGENCY_BYTES: u64 = MAX_TOTAL_OBSERVATION_BYTES + 200 * 1024 * 1024;
+/// Writer-queue idle before a normal age/quota scan.
+const GC_IDLE_SECS: u64 = 30;
+/// Skip a full directory walk when a normal GC ran recently.
 const GC_INTERVAL_SECS: u64 = 60 * 60;
 const WRITER_FLUSH_INTERVAL: Duration = Duration::from_millis(75);
 const WRITER_FLUSH_BATCH: usize = 32;
@@ -476,9 +481,20 @@ struct WriterShared {
     health: Mutex<RecorderHealth>,
     lifecycle: Mutex<LifecycleState>,
     shutdown: AtomicBool,
+    started: Instant,
+    last_event_elapsed_ms: AtomicU64,
     last_gc_unix_secs: AtomicU64,
+    last_reconciled_total: AtomicU64,
+    bytes_written_since: AtomicU64,
+    gc_estimate_ready: AtomicBool,
     #[cfg(test)]
     write_gate: Mutex<Option<Arc<WriteGate>>>,
+    #[cfg(test)]
+    suppress_background_gc: AtomicBool,
+    #[cfg(test)]
+    gc_quota_override: Mutex<Option<(u64, u64, u64)>>,
+    #[cfg(test)]
+    gc_idle_ms_override: Mutex<Option<u64>>,
 }
 
 /// Process-wide interned JSONL recorder. `shared(data_dir)` returns the same Arc
@@ -533,9 +549,20 @@ impl ObservationRecorder {
                 ended_root_turns: HashSet::new(),
             }),
             shutdown: AtomicBool::new(false),
+            started: Instant::now(),
+            last_event_elapsed_ms: AtomicU64::new(0),
             last_gc_unix_secs: AtomicU64::new(0),
+            last_reconciled_total: AtomicU64::new(0),
+            bytes_written_since: AtomicU64::new(0),
+            gc_estimate_ready: AtomicBool::new(false),
             #[cfg(test)]
             write_gate: Mutex::new(None),
+            #[cfg(test)]
+            suppress_background_gc: AtomicBool::new(true),
+            #[cfg(test)]
+            gc_quota_override: Mutex::new(None),
+            #[cfg(test)]
+            gc_idle_ms_override: Mutex::new(None),
         });
         let thread_shared = Arc::clone(&shared);
         let handle = thread::Builder::new()
@@ -873,6 +900,11 @@ impl ObservationRecorder {
 
     #[cfg(test)]
     fn gc_quota_with_limit(&self, max_bytes: u64) {
+        self.gc_quota_with_limits(max_bytes, max_bytes);
+    }
+
+    #[cfg(test)]
+    fn gc_quota_with_limits(&self, high_bytes: u64, low_bytes: u64) {
         let _ = self.flush_blocking();
         let active: HashSet<PathBuf> = self
             .shared
@@ -886,7 +918,41 @@ impl ObservationRecorder {
                     .collect()
             })
             .unwrap_or_default();
-        gc_quota_except(&self.shared.root, &active, max_bytes);
+        gc_quota_except(&self.shared.root, &active, high_bytes, low_bytes);
+    }
+
+    #[cfg(test)]
+    fn set_gc_quota_override(&self, high_bytes: u64, low_bytes: u64, emergency_bytes: u64) {
+        *self
+            .shared
+            .gc_quota_override
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((high_bytes, low_bytes, emergency_bytes));
+    }
+
+    #[cfg(test)]
+    fn set_gc_idle_ms(&self, idle_ms: u64) {
+        *self
+            .shared
+            .gc_idle_ms_override
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(idle_ms);
+    }
+
+    #[cfg(test)]
+    fn run_maybe_gc(&self) {
+        let _ = self.flush_blocking();
+        maybe_gc_writer_inner(&self.shared);
+    }
+
+    #[cfg(test)]
+    fn last_gc_unix_secs(&self) -> u64 {
+        self.shared.last_gc_unix_secs.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn reconciled_total(&self) -> u64 {
+        self.shared.last_reconciled_total.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -1125,6 +1191,7 @@ fn handle_writer_command(
             }
             delete_conversation_dir(shared, &conversation_id)?;
             flush_all_writers(shared)?;
+            reconcile_gc_estimate(shared);
             *unflushed = 0;
             if let Some(ack) = ack {
                 let _ = ack.send(());
@@ -1136,6 +1203,7 @@ fn handle_writer_command(
         } => {
             delete_conversation_dir(shared, &conversation_id)?;
             flush_all_writers(shared)?;
+            reconcile_gc_estimate(shared);
             *unflushed = 0;
             if let Some(ack) = ack {
                 let _ = ack.send(());
@@ -1143,6 +1211,7 @@ fn handle_writer_command(
         }
         WriterCommand::ResetAll { ack } => {
             reset_all_observations(shared)?;
+            reconcile_gc_estimate(shared);
             *unflushed = 0;
             if let Some(ack) = ack {
                 let _ = ack.send(());
@@ -1199,8 +1268,10 @@ fn persist_event(
         timestamp_ms: u64::try_from(now.timestamp_millis()).unwrap_or(0),
         payload,
     };
-    write_event(&mut inner, &shared.root, ids, &event, shared.rotate_bytes)?;
+    let written = write_event(&mut inner, &shared.root, ids, &event, shared.rotate_bytes)?;
     prune_idle_maps(&mut inner, Instant::now());
+    drop(inner);
+    note_persisted_bytes(shared, written);
     Ok(true)
 }
 
@@ -1275,40 +1346,148 @@ fn flush_all_writers(shared: &WriterShared) -> Result<(), RecorderError> {
     Ok(())
 }
 
-fn maybe_gc_writer(shared: &WriterShared) {
-    let now = SystemTime::now()
+fn gc_is_idle(started_elapsed_ms: u64, last_event_elapsed_ms: u64, idle_ms: u64) -> bool {
+    started_elapsed_ms.saturating_sub(last_event_elapsed_ms) >= idle_ms
+}
+
+fn gc_should_run(idle: bool, interval_elapsed: bool, emergency: bool) -> bool {
+    emergency || (idle && interval_elapsed)
+}
+
+fn note_persisted_bytes(shared: &WriterShared, bytes: u64) {
+    let elapsed = shared
+        .started
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    shared
+        .last_event_elapsed_ms
+        .store(elapsed.max(1), Ordering::Relaxed);
+    shared
+        .bytes_written_since
+        .fetch_add(bytes, Ordering::Relaxed);
+}
+
+fn gc_idle_threshold_ms(shared: &WriterShared) -> u64 {
+    #[cfg(test)]
+    {
+        if let Some(ms) = *shared
+            .gc_idle_ms_override
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+        {
+            return ms;
+        }
+    }
+    let _ = shared;
+    GC_IDLE_SECS.saturating_mul(1000)
+}
+
+fn gc_quota_limits(shared: &WriterShared) -> (u64, u64, u64) {
+    #[cfg(test)]
+    {
+        if let Some(limits) = *shared
+            .gc_quota_override
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+        {
+            return limits;
+        }
+    }
+    let _ = shared;
+    (
+        GC_QUOTA_HIGH_BYTES,
+        GC_QUOTA_LOW_BYTES,
+        GC_QUOTA_EMERGENCY_BYTES,
+    )
+}
+
+fn reconcile_gc_estimate(shared: &WriterShared) {
+    let total: u64 = collect_observation_files(&shared.root)
+        .iter()
+        .map(|(_, size, _)| *size)
+        .sum();
+    shared
+        .last_reconciled_total
+        .store(total, Ordering::Relaxed);
+    shared.bytes_written_since.store(0, Ordering::Relaxed);
+    shared.gc_estimate_ready.store(true, Ordering::Relaxed);
+}
+
+fn unix_secs_now() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+fn maybe_gc_writer(shared: &WriterShared) {
+    #[cfg(test)]
+    if shared.suppress_background_gc.load(Ordering::Relaxed) {
+        return;
+    }
+    maybe_gc_writer_inner(shared);
+}
+
+fn maybe_gc_writer_inner(shared: &WriterShared) {
+    let (high, low, emergency_limit) = gc_quota_limits(shared);
+    let started_elapsed_ms = shared
+        .started
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let last_event_elapsed_ms = shared.last_event_elapsed_ms.load(Ordering::Relaxed);
+    let idle = gc_is_idle(
+        started_elapsed_ms,
+        last_event_elapsed_ms,
+        gc_idle_threshold_ms(shared),
+    );
+    let wrote_bytes = shared.bytes_written_since.load(Ordering::Relaxed);
+    if !shared.gc_estimate_ready.load(Ordering::Relaxed)
+        && (idle || wrote_bytes >= emergency_limit)
+    {
+        reconcile_gc_estimate(shared);
+    }
+    let now = unix_secs_now();
     let prev = shared.last_gc_unix_secs.load(Ordering::Relaxed);
-    if prev != 0 && now.saturating_sub(prev) < GC_INTERVAL_SECS {
+    let interval_elapsed = prev == 0 || now.saturating_sub(prev) >= GC_INTERVAL_SECS;
+    let wrote_since = shared.bytes_written_since.load(Ordering::Relaxed) > 0;
+    let estimated = shared
+        .last_reconciled_total
+        .load(Ordering::Relaxed)
+        .saturating_add(shared.bytes_written_since.load(Ordering::Relaxed));
+    let emergency =
+        estimated >= emergency_limit && (interval_elapsed || wrote_since || prev == 0);
+    if !gc_should_run(idle, interval_elapsed, emergency) {
         return;
     }
     if shared
         .last_gc_unix_secs
         .compare_exchange(prev, now, Ordering::Relaxed, Ordering::Relaxed)
-        .is_ok()
+        .is_err()
     {
-        let ttl = Duration::from_secs(GC_MAX_AGE_DAYS * 24 * 60 * 60);
-        let cutoff = SystemTime::now()
-            .checked_sub(ttl)
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        let active: HashSet<PathBuf> = shared
-            .inner
-            .lock()
-            .map(|inner| {
-                inner
-                    .writers
-                    .values()
-                    .map(|writer| writer.dir.join(EVENTS_FILE))
-                    .collect()
-            })
-            .unwrap_or_default();
-        gc_older_than_except(&shared.root, cutoff, &active);
-        gc_quota_except(&shared.root, &active, MAX_TOTAL_OBSERVATION_BYTES);
-        if let Ok(mut inner) = shared.inner.lock() {
-            prune_idle_maps(&mut inner, Instant::now());
-        }
+        return;
+    }
+    let ttl = Duration::from_secs(GC_MAX_AGE_DAYS * 24 * 60 * 60);
+    let cutoff = SystemTime::now()
+        .checked_sub(ttl)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let active: HashSet<PathBuf> = shared
+        .inner
+        .lock()
+        .map(|inner| {
+            inner
+                .writers
+                .values()
+                .map(|writer| writer.dir.join(EVENTS_FILE))
+                .collect()
+        })
+        .unwrap_or_default();
+    gc_older_than_except(&shared.root, cutoff, &active);
+    gc_quota_except(&shared.root, &active, high, low);
+    reconcile_gc_estimate(shared);
+    if let Ok(mut inner) = shared.inner.lock() {
+        prune_idle_maps(&mut inner, Instant::now());
     }
 }
 
@@ -1400,7 +1579,7 @@ fn write_event(
     ids: &ObservationIds,
     event: &ObservationEvent,
     rotate_bytes: u64,
-) -> Result<(), RecorderError> {
+) -> Result<u64, RecorderError> {
     let folder = folder_id(ids.conversation_id.as_deref());
     if !inner.writers.contains_key(&folder) {
         let dir = conversation_dir(root, ids.conversation_id.as_deref());
@@ -1417,11 +1596,12 @@ fn write_event(
     let mut line = serde_json::to_vec(event)?;
     line.push(b'\n');
     writer.file.write_all(&line)?;
-    writer.current_size += line.len() as u64;
+    let written = line.len() as u64;
+    writer.current_size += written;
     if writer.current_size >= rotate_bytes {
         rotate_writer(writer, rotate_bytes)?;
     }
-    Ok(())
+    Ok(written)
 }
 
 fn open_writer(dir: &Path) -> Result<ConversationWriter, RecorderError> {
@@ -1770,7 +1950,7 @@ fn gc_older_than_except(root: &Path, cutoff: SystemTime, skip: &HashSet<PathBuf>
                 let _ = fs::remove_dir(&path);
             }
         } else if file_mtime_is_old(&path, cutoff) {
-            let _ = fs::remove_file(&path);
+            remove_observation_file(&path);
         }
     }
 }
@@ -1785,7 +1965,7 @@ fn gc_dir_files(dir: &Path, cutoff: SystemTime, skip: &HashSet<PathBuf>) {
             continue;
         }
         if path.is_file() && file_mtime_is_old(&path, cutoff) {
-            let _ = fs::remove_file(&path);
+            remove_observation_file(&path);
         }
     }
 }
@@ -1865,22 +2045,38 @@ fn file_size_mtime(path: &Path) -> Option<(SystemTime, u64)> {
     Some((meta.modified().ok()?, meta.len()))
 }
 
-fn gc_quota_except(root: &Path, skip: &HashSet<PathBuf>, max_bytes: u64) {
+fn gc_quota_except(root: &Path, skip: &HashSet<PathBuf>, high_bytes: u64, low_bytes: u64) {
     let mut files = collect_observation_files(root);
     let mut total: u64 = files.iter().map(|(_, size, _)| *size).sum();
-    if total <= max_bytes {
+    if total <= high_bytes {
         return;
     }
+    let target = low_bytes.min(high_bytes);
     files.sort_by_key(|(mtime, _, _)| *mtime);
     for (_, size, path) in files {
-        if total <= max_bytes {
+        if total <= target {
             break;
         }
         if skip.contains(&path) {
             continue;
         }
-        if fs::remove_file(&path).is_ok() {
+        if remove_observation_file(&path) {
             total = total.saturating_sub(size);
+        }
+    }
+}
+
+fn remove_observation_file(path: &Path) -> bool {
+    match fs::remove_file(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "observation GC could not remove a file"
+            );
+            false
         }
     }
 }
@@ -1908,8 +2104,12 @@ mod tests {
     use std::sync::Arc;
 
     fn ids(turn: &str) -> ObservationIds {
+        ids_in("conv-a", turn)
+    }
+
+    fn ids_in(conversation: &str, turn: &str) -> ObservationIds {
         ObservationIds {
-            conversation_id: Some("conv-a".into()),
+            conversation_id: Some(conversation.into()),
             root_turn_id: Some(turn.into()),
             msg_id: Some("m1".into()),
             ..ObservationIds::default()
@@ -2090,6 +2290,171 @@ mod tests {
         assert!(active.is_file(), "active segment must survive quota GC");
         assert!(!rotated.exists(), "oldest non-active segment should be deleted");
         assert!(!recorder.read_events(Some("conv-a")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn quota_constants_keep_200_mib_hysteresis() {
+        const MIB: u64 = 1024 * 1024;
+        assert_eq!(GC_QUOTA_HIGH_BYTES, MAX_TOTAL_OBSERVATION_BYTES);
+        assert_eq!(GC_QUOTA_LOW_BYTES, GC_QUOTA_HIGH_BYTES - 200 * MIB);
+        assert_eq!(GC_QUOTA_EMERGENCY_BYTES, GC_QUOTA_HIGH_BYTES + 200 * MIB);
+        assert_eq!(GC_IDLE_SECS, 30);
+    }
+
+    #[test]
+    fn gc_should_run_idle_interval_and_emergency() {
+        assert!(
+            !gc_should_run(false, false, false),
+            "recent writes without emergency must not scan"
+        );
+        assert!(
+            !gc_should_run(false, true, false),
+            "interval alone is not enough while writes are in flight"
+        );
+        assert!(!gc_should_run(true, false, false), "idle without interval waits");
+        assert!(gc_should_run(true, true, false), "idle plus interval scans");
+        assert!(
+            gc_should_run(false, false, true),
+            "emergency scans even right after a write"
+        );
+        assert!(gc_should_run(true, false, true));
+    }
+
+    #[test]
+    fn gc_is_idle_requires_quiet_window() {
+        assert!(!gc_is_idle(10_000, 9_000, 30_000));
+        assert!(gc_is_idle(40_000, 5_000, 30_000));
+        assert!(gc_is_idle(30_000, 0, 30_000));
+    }
+
+    fn observation_total(root: &Path) -> u64 {
+        collect_observation_files(root)
+            .iter()
+            .map(|(_, size, _)| *size)
+            .sum()
+    }
+
+    fn set_mtime(path: &Path, mtime: SystemTime) {
+        OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .expect("set mtime for quota ordering");
+    }
+
+    #[test]
+    fn quota_gc_below_high_keeps_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t1"), json!({"keep": true}))
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        let rotated = recorder.root().join("conv-a").join("events.1.jsonl");
+        fs::write(&rotated, "x".repeat(4096)).unwrap();
+        recorder.gc_quota_with_limits(10_000, 1_000);
+        assert!(rotated.is_file(), "files under the high watermark must stay");
+    }
+
+    #[test]
+    fn quota_gc_over_high_deletes_to_low_water() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t1"), json!({"keep": true}))
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        let conv = recorder.root().join("conv-a");
+        let oldest = conv.join("events.1.jsonl");
+        let middle = conv.join("events.2.jsonl");
+        let newest = conv.join("events.3.jsonl");
+        fs::write(&oldest, "o".repeat(500)).unwrap();
+        fs::write(&middle, "m".repeat(500)).unwrap();
+        fs::write(&newest, "n".repeat(500)).unwrap();
+        let now = SystemTime::now();
+        set_mtime(&oldest, now - Duration::from_secs(30));
+        set_mtime(&middle, now - Duration::from_secs(20));
+        set_mtime(&newest, now - Duration::from_secs(10));
+        recorder.gc_quota_with_limits(1_200, 900);
+        assert!(!oldest.exists(), "oldest non-active segment should be deleted");
+        assert!(!middle.exists(), "quota should keep deleting until the low watermark");
+        assert!(newest.is_file(), "newest rotated segment should survive the hysteresis pass");
+        assert!(
+            observation_total(recorder.root()) <= 900,
+            "quota GC must land at or below the low watermark, not just the high"
+        );
+    }
+
+    #[test]
+    fn maybe_gc_skips_recent_writes_until_idle_or_emergency() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder.set_gc_quota_override(1_000, 800, 5_000);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t1"), json!({"keep": true}))
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        let rotated = recorder.root().join("conv-a").join("events.1.jsonl");
+        fs::write(&rotated, "x".repeat(1_500)).unwrap();
+        recorder.run_maybe_gc();
+        assert!(
+            rotated.is_file(),
+            "must not trim to low water during a live write below the emergency watermark"
+        );
+        assert_eq!(recorder.last_gc_unix_secs(), 0);
+
+        recorder.set_gc_idle_ms(0);
+        recorder.run_maybe_gc();
+        assert!(
+            !rotated.exists(),
+            "idle plus elapsed interval should run quota GC"
+        );
+        assert_ne!(recorder.last_gc_unix_secs(), 0);
+    }
+
+    #[test]
+    fn maybe_gc_emergency_after_clear_does_not_wait_for_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = ObservationRecorder::isolated(dir.path());
+        recorder.set_enabled(true);
+        recorder.set_gc_quota_override(1_000, 800, 1_200);
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t1"), json!({"keep": true}))
+            .unwrap();
+        recorder
+            .emit(
+                EVENT_LLM_REQUEST,
+                &ids_in("conv-b", "t1"),
+                json!({"keep": true}),
+            )
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        let keep = recorder.root().join("conv-a").join("events.1.jsonl");
+        let oldest = recorder.root().join("conv-a").join("events.2.jsonl");
+        let other = recorder.root().join("conv-b").join("events.1.jsonl");
+        fs::write(&keep, "k".repeat(500)).unwrap();
+        fs::write(&oldest, "o".repeat(800)).unwrap();
+        fs::write(&other, "b".repeat(500)).unwrap();
+        let now = SystemTime::now();
+        set_mtime(&oldest, now - Duration::from_secs(30));
+        set_mtime(&keep, now - Duration::from_secs(10));
+        recorder.clear_conversation("conv-b").unwrap();
+        assert!(
+            recorder.reconciled_total() >= 1_200,
+            "clear must recount remaining files instead of zeroing the estimate"
+        );
+        recorder
+            .emit(EVENT_LLM_REQUEST, &ids("t2"), json!({"keep": true}))
+            .unwrap();
+        recorder.flush_blocking().unwrap();
+        recorder.run_maybe_gc();
+        assert!(!oldest.exists(), "emergency GC must run without a 30s idle");
+        assert_ne!(recorder.last_gc_unix_secs(), 0);
+        assert!(observation_total(recorder.root()) <= 800);
     }
 
     #[test]

@@ -96,7 +96,7 @@ stream_llm(provider, request, observer, call_kind, scope)
 | 分文件 | 按 `conversation_id`；无会话走 `process/` |
 | rotate | 单个 `events.jsonl` ≥ **48 MiB** → `events.{n}.jsonl` |
 | flush | DualQueue writer：batch / ~75ms / Shutdown；热路径不每条 fsync。读路径 `flush_for_read`（约 500ms）后读盘 |
-| retention | **14 天**，list / persist 时做最简 GC |
+| retention | **14 天** **且** 高低水位（高 **1 GiB** / 低 **800 MiB** / 紧急 **1.2 GiB**）。写盘空闲 ≥30s 才扫盘（紧急超标除外）；额度一次收到低水位，不削到刚好 1 GiB |
 
 **采集门控：** 采集始终开启（会话发送即写盘）。开发者模式只门控 HTTP 读取与支持包附带 JSONL；API 仍须服务端校验 developer mode。
 
@@ -172,7 +172,7 @@ S5 优先在 engine 调用前后旁路 emit（started → 执行 → completed/f
 **做：**
 
 - persist 前 capture：redact + truncate；Image/base64 → metadata（hash / mime / byte_length / `omitted_reason=binary_payload`）。
-- `ObservationRecorder`：按会话分文件、48 MiB rotate、flush、14 天 GC。
+- `ObservationRecorder`：按会话分文件、48 MiB rotate、flush、14 天 age GC **且** 1 GiB/800 MiB 高低水位（闲时扫盘，紧急 1.2 GiB）。
 - `project_turns`：按 `event_seq` 排序；缺 terminal → `interrupted` + `integrity=degraded`；`observation/gap` 降级该执行边界。
 
 **验收：** 媒体 fixture 不含 base64 实体；interrupted / gap 测试；rotate 单测。  
