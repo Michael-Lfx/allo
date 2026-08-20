@@ -402,4 +402,4 @@ canonical `LlmRequest.messages` **已经可能含 Image（base64 PNG）**（visu
 2. 授权后从 **S1** 开始，一步一验收。  
 3. 本文在授权前 **不授权改实现代码**。
 
-已钉死的实现常量见实施文档 §3：rotate 48 MiB、retention 14 天、`event_seq` 归属 turn > execution > conversation > process。
+已钉死的实现常量见实施文档 §3：rotate 48 MiB、retention 1 GiB 高低水位、`event_seq` 归属 turn > execution > conversation > process。

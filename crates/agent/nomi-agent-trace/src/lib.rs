@@ -34,7 +34,7 @@ pub use project::{
     COVERAGE_RETAINED_OBSERVATION_HISTORY,
 };
 pub use recorder::{
-    ObservationRecorder, RecorderError, RecorderHealth, RecorderHealthStatus, GC_MAX_AGE_DAYS,
+    ObservationRecorder, RecorderError, RecorderHealth, RecorderHealthStatus,
     GC_QUOTA_EMERGENCY_BYTES, GC_QUOTA_HIGH_BYTES, GC_QUOTA_LOW_BYTES, MAX_CONTROL_EVENTS,
     MAX_QUEUE_EVENTS, MAX_TOTAL_OBSERVATION_BYTES, OBSERVATION_DIR, ROTATE_BYTES,
 };

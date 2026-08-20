@@ -71,12 +71,11 @@ fn sanitize_path_segment(raw: &str) -> String {
 
 pub const OBSERVATION_DIR: &str = "diagnostics/observation";
 pub const ROTATE_BYTES: u64 = 48 * 1024 * 1024;
-pub const GC_MAX_AGE_DAYS: u64 = 14;
 pub const MAX_TOTAL_OBSERVATION_BYTES: u64 = 1024 * 1024 * 1024;
 pub const GC_QUOTA_HIGH_BYTES: u64 = MAX_TOTAL_OBSERVATION_BYTES;
 pub const GC_QUOTA_LOW_BYTES: u64 = MAX_TOTAL_OBSERVATION_BYTES - 200 * 1024 * 1024;
 pub const GC_QUOTA_EMERGENCY_BYTES: u64 = MAX_TOTAL_OBSERVATION_BYTES + 200 * 1024 * 1024;
-/// Writer-queue idle before a normal age/quota scan.
+/// Writer-queue idle before a normal quota scan.
 const GC_IDLE_SECS: u64 = 30;
 /// Skip a full directory walk when a normal GC ran recently.
 const GC_INTERVAL_SECS: u64 = 60 * 60;
@@ -893,12 +892,6 @@ impl ObservationRecorder {
     }
 
     #[cfg(test)]
-    fn gc_with_cutoff(&self, cutoff: SystemTime) {
-        let _ = self.flush_blocking();
-        gc_older_than(&self.shared.root, cutoff);
-    }
-
-    #[cfg(test)]
     fn gc_quota_with_limit(&self, max_bytes: u64) {
         self.gc_quota_with_limits(max_bytes, max_bytes);
     }
@@ -1467,10 +1460,6 @@ fn maybe_gc_writer_inner(shared: &WriterShared) {
     {
         return;
     }
-    let ttl = Duration::from_secs(GC_MAX_AGE_DAYS * 24 * 60 * 60);
-    let cutoff = SystemTime::now()
-        .checked_sub(ttl)
-        .unwrap_or(SystemTime::UNIX_EPOCH);
     let active: HashSet<PathBuf> = shared
         .inner
         .lock()
@@ -1482,7 +1471,6 @@ fn maybe_gc_writer_inner(shared: &WriterShared) {
                 .collect()
         })
         .unwrap_or_default();
-    gc_older_than_except(&shared.root, cutoff, &active);
     gc_quota_except(&shared.root, &active, high, low);
     reconcile_gc_estimate(shared);
     if let Ok(mut inner) = shared.inner.lock() {
@@ -1929,46 +1917,6 @@ fn read_jsonl_file(
     Ok(())
 }
 
-#[allow(dead_code)] // test helper; writer uses gc_older_than_except
-fn gc_older_than(root: &Path, cutoff: SystemTime) {
-    gc_older_than_except(root, cutoff, &HashSet::new());
-}
-
-fn gc_older_than_except(root: &Path, cutoff: SystemTime, skip: &HashSet<PathBuf>) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if skip.contains(&path) {
-            continue;
-        }
-        if path.is_dir() {
-            gc_dir_files(&path, cutoff, skip);
-            if dir_is_empty(&path) {
-                let _ = fs::remove_dir(&path);
-            }
-        } else if file_mtime_is_old(&path, cutoff) {
-            remove_observation_file(&path);
-        }
-    }
-}
-
-fn gc_dir_files(dir: &Path, cutoff: SystemTime, skip: &HashSet<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if skip.contains(&path) {
-            continue;
-        }
-        if path.is_file() && file_mtime_is_old(&path, cutoff) {
-            remove_observation_file(&path);
-        }
-    }
-}
-
 fn fold_dir_summary(dir: &Path) -> Result<ObservationSummary, RecorderError> {
     let mut fold = ObservationSummaryFold::default();
     let (rotated, current) = list_event_files(dir)?;
@@ -2080,18 +2028,6 @@ fn remove_observation_file(path: &Path) -> bool {
     }
 }
 
-fn file_mtime_is_old(path: &Path, cutoff: SystemTime) -> bool {
-    fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .map(|mtime| mtime <= cutoff)
-        .unwrap_or(false)
-}
-
-fn dir_is_empty(dir: &Path) -> bool {
-    fs::read_dir(dir)
-        .map(|mut entries| entries.next().is_none())
-        .unwrap_or(false)
-}
 
 #[cfg(test)]
 mod tests {
@@ -2257,19 +2193,6 @@ mod tests {
             ids_from_payload(&only_b[0].payload).root_turn_id.as_deref(),
             Some("turn-b")
         );
-    }
-
-    #[test]
-    fn gc_deletes_old_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let recorder = ObservationRecorder::isolated(dir.path());
-        recorder.set_enabled(true);
-        recorder
-            .emit(EVENT_LLM_REQUEST, &ids("t1"), json!({"keep": false}))
-            .unwrap();
-        let future = SystemTime::now() + Duration::from_secs(60);
-        recorder.gc_with_cutoff(future);
-        assert!(recorder.read_events(Some("conv-a")).unwrap().is_empty());
     }
 
     #[test]

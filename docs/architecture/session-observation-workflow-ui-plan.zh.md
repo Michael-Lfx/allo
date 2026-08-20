@@ -248,7 +248,7 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
 | P8 | 同时 ≤2–3 个 **call detail**；换会话 `clear()`。切回对话不清 LRU、不 abort poll。不接 `videoCanvas` QueryClient。 |
 | P9 | 禁止 mmap / 全历史 preload。 |
 | P10 | 单 event ≤ `MAX_EVENT_BYTES` 才入队。 |
-| P11 | 磁盘：14 天 **且** 高低水位（高 **1 GiB**，低 **800 MiB**）。写盘队列空闲 ≥30s 且距上次扫描 ≥1h 才扫盘；估算 ≥**1.2 GiB** 时下一个空档立刻收。writer 第一次队列空档只 reconcile 估算（计入盘上存量），不删文件；**禁止在 Event persist 热路径扫盘。** 先删 age>14d 的非 active segment，再按 mtime 删最老非 active 直到 ≤低水位；**禁止删当前 writer 打开的 `events.jsonl`。** |
+| P11 | 磁盘：高低水位（高 **1 GiB**，低 **800 MiB**）。写盘队列空闲 ≥30s 且距上次扫描 ≥1h 才扫盘；估算 ≥**1.2 GiB** 时下一个空档立刻收。writer 第一次队列空档只 reconcile 估算（计入盘上存量），不删文件；**禁止在 Event persist 热路径扫盘。** 按 mtime 删最老非 active 直到 ≤低水位；**禁止删当前 writer 打开的 `events.jsonl`。** |
 
 ---
 
@@ -367,14 +367,13 @@ Call GET 在 header 还在、segment 已 GC：返回 **410**，body `reason=obse
 
 ### 6.3 磁盘 quota
 
-**所有 observation 文件 mutation 只在 writer 线程**（rotate、age GC、quota GC、delete）。Query 只读。
+**所有 observation 文件 mutation 只在 writer 线程**（rotate、quota GC、delete）。Query 只读。
 
 ```text
-Retention = age 14d AND high/low watermark (1 GiB / 800 MiB)
+Retention = high/low watermark (1 GiB / 800 MiB)
 Estimate: first writer queue-empty gap reconciles on-disk size (includes leftover files after restart). Persist path does not walk.
 Trigger: writer persist-idle ≥30s and last scan ≥1h; or estimated total ≥1.2 GiB on the next writer idle gap
-1. 先删 age>14d 的非 active segment
-2. 再算总量；仍 >1 GiB 则按 mtime 删最老非 active segment，直到 ≤800 MiB
+按 mtime 删最老非 active segment，直到 ≤800 MiB
 禁止删当前 writer 打开的 events.jsonl
 禁止在 Event persist 热路径扫盘
 ```
@@ -537,7 +536,7 @@ fix(providers): make token usage buckets unambiguous
 5. 双队列按 `enqueue_order` 合并写盘；control 只保容量、禁止 control-first persist；`turn/end` 零等待 —— 同意 / 不同意  
 6. U3 默认 Call 级懒加载，不整 Turn 下发正文 —— 同意 / 不同意  
 7. `RecorderHealth` 在 list **顶层**（不进 Session Summary）—— 同意 / 不同意  
-8. 14 天 **且** 1 GiB/800 MiB 高低水位（紧急 1.2 GiB）；不删 active segment；Call 410 `observation_retention`；注意事项说明收录范围 —— 同意 / 不同意  
+8. 1 GiB/800 MiB 高低水位（紧急 1.2 GiB）；不删 active segment；Call 410 `observation_retention`；注意事项说明收录范围 —— 同意 / 不同意  
 9. legacy 不 poll；new-format 退避 poll —— 同意 / 不同意  
 10. 读路径 Semaphore(4) + 前端 abort —— 同意 / 不同意  
 

@@ -8,7 +8,7 @@ Nomi-owned 模型调用与工具执行写入 unlabeled JSONL 事件，落盘于�
 
 `{data_dir}/diagnostics/observation/{conversation_id}/events.jsonl`
 
-超过 48 MiB 旋转为 `events.{n}.jsonl`；GC 14 天。写入前执行 capture（truncated + redacted；媒体 metadata_only）。会话发送即写盘；`system.developerMode` 不控制采集。
+超过 48 MiB 旋转为 `events.{n}.jsonl`；磁盘按约 1 GiB 高低水位回收。写入前执行 capture（truncated + redacted；媒体 metadata_only）。会话发送即写盘；`system.developerMode` 不控制采集。
 
 读取与支持包附带 JSONL 受 **开发者模式** 门控：
 
