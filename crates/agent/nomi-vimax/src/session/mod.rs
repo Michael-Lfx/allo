@@ -174,6 +174,29 @@ impl SessionIndex {
         })
     }
 
+    /// Mark planning/rendering sessions as interrupted after a process restart.
+    /// Preserves `stage` so the UI can resume plan vs render from checkpoint.
+    pub fn reconcile_orphaned_active_runs(&self) -> VimaxResult<usize> {
+        use crate::progress::{INTERRUPTED_SUMMARY, RunStatus};
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut data = self.load()?;
+        let mut n = 0usize;
+        let now = chrono::Local::now().to_rfc3339();
+        for record in data.sessions.values_mut() {
+            if !record.status.is_active() {
+                continue;
+            }
+            record.status = RunStatus::Interrupted;
+            record.summary = INTERRUPTED_SUMMARY.to_string();
+            record.updated_at = now.clone();
+            n += 1;
+        }
+        if n > 0 {
+            self.save(&data)?;
+        }
+        Ok(n)
+    }
+
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }
@@ -731,8 +754,30 @@ pub fn meta_json(map: impl IntoIterator<Item = (&'static str, Value)>) -> Option
 mod import_export_tests {
     use super::*;
     use crate::domain::WorkflowKind;
-    use crate::progress::RunStatus;
+    use crate::progress::{INTERRUPTED_SUMMARY, RunStatus};
     use tempfile::tempdir;
+
+    #[test]
+    fn reconcile_orphaned_active_runs_preserves_stage() {
+        let dir = tempdir().unwrap();
+        let index = SessionIndex::open(dir.path()).unwrap();
+        let record = index.create(WorkflowKind::Script2Video, Some("t".into())).unwrap();
+        index
+            .update_fields(&record.session_id, |r| {
+                r.status = RunStatus::Rendering;
+                r.stage = "video_clips_start".into();
+                r.summary = "generating clip 3".into();
+            })
+            .unwrap();
+
+        let n = index.reconcile_orphaned_active_runs().unwrap();
+        assert_eq!(n, 1);
+        let healed = index.get(&record.session_id).unwrap();
+        assert_eq!(healed.status, RunStatus::Interrupted);
+        assert_eq!(healed.stage, "video_clips_start");
+        assert_eq!(healed.summary, INTERRUPTED_SUMMARY);
+        assert_eq!(index.reconcile_orphaned_active_runs().unwrap(), 0);
+    }
 
     #[test]
     fn list_summaries_omits_editing_payload_and_preserves_recent_order() {

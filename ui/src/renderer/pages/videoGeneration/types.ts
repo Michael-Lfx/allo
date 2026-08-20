@@ -10,7 +10,8 @@ export type VimaxRunStatus =
   | 'rendering'
   | 'succeeded'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'interrupted';
 
 /** List-row summary from `GET /api/vimax/sessions`. */
 export interface SessionSummary {

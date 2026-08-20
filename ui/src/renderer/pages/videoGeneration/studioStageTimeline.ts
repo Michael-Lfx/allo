@@ -263,7 +263,7 @@ export function buildStudioStageTimeline(
 
   const activeIndex = studioStageActiveIndex(input);
   const failed = input.status === 'failed';
-  const cancelled = input.status === 'cancelled';
+  const cancelled = input.status === 'cancelled' || input.status === 'interrupted';
   const terminalIndex =
     failed || cancelled ? failureIndex(input, Math.max(0, activeIndex)) : -1;
   const weights = assignWeights(durations);

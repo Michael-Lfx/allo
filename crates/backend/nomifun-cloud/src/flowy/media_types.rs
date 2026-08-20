@@ -172,7 +172,10 @@ pub fn is_minimax_h3_model(model: &str) -> bool {
         .trim()
         .to_ascii_lowercase()
         .replace(['_', '.', ' ', '/'], "-");
-    blob.contains("minimax-h3") || blob.contains("minimaxh3")
+    blob.contains("minimax-h3")
+        || blob.contains("minimaxh3")
+        // Catalog / gateway variants occasionally drop the hyphen.
+        || (blob.contains("minimax") && blob.contains("h3"))
 }
 
 /// MiniMax-H3 create API resolutions (`768P` | `2K`).

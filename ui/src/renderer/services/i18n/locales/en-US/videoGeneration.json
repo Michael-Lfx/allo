@@ -267,7 +267,8 @@
     "rendering": "Rendering",
     "succeeded": "Succeeded",
     "failed": "Failed",
-    "cancelled": "Cancelled"
+    "cancelled": "Cancelled",
+    "interrupted": "Paused"
   },
   "stages": {
     "planning": "Preparing plan",

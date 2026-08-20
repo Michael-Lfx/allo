@@ -293,6 +293,11 @@ impl VimaxApiService {
         self.inner.cancel(id).await.map_err(map_vimax_err)
     }
 
+    /// Pause all active video jobs for process shutdown (keeps checkpoints).
+    pub async fn interrupt_all(&self) -> usize {
+        self.inner.interrupt_all().await
+    }
+
     pub async fn delete_session(&self, id: &str) -> Result<(), AppError> {
         self.inner.delete_session(id).await.map_err(map_vimax_err)
     }

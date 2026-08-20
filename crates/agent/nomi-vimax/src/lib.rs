@@ -39,7 +39,9 @@ pub use artifact_edit::ImagePromptInfo;
 pub use backends::{FlowyChat, FlowyImage, FlowyVideo, FlowyVimaxServices, VimaxChat, VimaxImage, VimaxVideo};
 pub use domain::WorkflowKind;
 pub use error::{VimaxError, VimaxResult};
-pub use progress::{ProgressCallback, ProgressEvent, RenderStatus, RunStatus};
+pub use progress::{
+    INTERRUPTED_SUMMARY, ProgressCallback, ProgressEvent, RenderStatus, RunStatus,
+};
 pub use revise::ReviseResult;
 pub use service::VimaxService;
 pub use session::{

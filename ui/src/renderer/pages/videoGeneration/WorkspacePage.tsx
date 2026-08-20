@@ -231,6 +231,16 @@ const WorkspacePage: React.FC = () => {
     }
   }, [launchDraft, sessionId]);
 
+  // When the video model changes, remap Seedance `720p` → MiniMax-H3 `768P` (etc.).
+  useEffect(() => {
+    if (!models.video_model.trim()) return;
+    const nextRes = normalizeVideoResolution(models.video_model, resolution);
+    const nextFps = normalizeVideoFps(models.video_model, fps);
+    if (nextRes !== resolution) setResolution(nextRes);
+    if (nextFps !== fps) setFps(nextFps);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- clamp only on model change
+  }, [models.video_model]);
+
   const refreshArtifacts = useCallback(async () => {
     if (!sessionId) return;
     try {
@@ -482,8 +492,8 @@ const WorkspacePage: React.FC = () => {
             ? session.vertical_skill_ids
             : undefined,
         aspect_ratio: aspectRatio,
-        resolution,
-        fps,
+        resolution: normalizeVideoResolution(models.video_model, resolution),
+        fps: normalizeVideoFps(models.video_model, fps),
         llm_model: models.llm_model.trim() || undefined,
         image_model: models.image_model.trim() || undefined,
         video_model: models.video_model.trim() || undefined,
@@ -604,8 +614,8 @@ const WorkspacePage: React.FC = () => {
         llm_model: actionMode ? undefined : models.llm_model.trim() || undefined,
         image_model: actionMode ? undefined : models.image_model.trim() || undefined,
         video_model: models.video_model.trim() || undefined,
-        resolution,
-        fps,
+        resolution: normalizeVideoResolution(models.video_model, resolution),
+        fps: normalizeVideoFps(models.video_model, fps),
       });
       message.success(t('videoGeneration.workspace.renderStarted', { defaultValue: '已开始渲染' }));
       const st = await refreshStatus();
@@ -693,7 +703,8 @@ const WorkspacePage: React.FC = () => {
 
   const isFailed =
     (runStatus?.status ?? session?.status) === 'failed' ||
-    (runStatus?.status ?? session?.status) === 'cancelled';
+    (runStatus?.status ?? session?.status) === 'cancelled' ||
+    (runStatus?.status ?? session?.status) === 'interrupted';
 
   const handleContinue = useCallback(() => {
     if (isActionImitationWorkflow(session?.workflow) || continueAsRender) {

@@ -1142,6 +1142,30 @@ impl DesktopServer {
             robot.shutdown();
         }
 
+        // Pause video-generation jobs so restart does not show a false "running" state.
+        // Checkpoints on disk remain; the UI offers "从断点继续".
+        if let Some(vimax) = self
+            ._keep_alive
+            .services()
+            .map(|services| services.vimax_service.clone())
+        {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                vimax.interrupt_all(),
+            )
+            .await
+            {
+                Ok(n) => {
+                    if n > 0 {
+                        tracing::info!(interrupted = n, "vimax runs paused during desktop shutdown");
+                    }
+                }
+                Err(_) => errors.push(
+                    "vimax interrupt timed out after 3 seconds".to_owned(),
+                ),
+            }
+        }
+
         // Do not close the shared database after an earlier cleanup failure.
         // Terminal cleanup intentionally preserves durable rows on failure and
         // BrowserSessionHub retains Host authority for an explicit retry; closing
