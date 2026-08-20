@@ -16,7 +16,7 @@ import React, {
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { Button, Empty, Popover, Spin, Tooltip } from '@arco-design/web-react';
-import { Bug, Info, Refresh, SortAmountDown, SortAmountUp } from '@icon-park/react';
+import { Bug, ExpandLeft, ExpandRight, Info, Refresh, SortAmountDown, SortAmountUp } from '@icon-park/react';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import type { ConversationId } from '@/common/types/ids';
@@ -615,6 +615,7 @@ export const SessionLogWorkspace: React.FC = () => {
     refreshWorkspace,
   } = useSessionLogs();
   const [newestFirst, setNewestFirst] = useState(true);
+  const [navCollapsed, setNavCollapsed] = useState(false);
   const rounds = useMemo(() => assignTurnRounds(entries), [entries]);
   const displayed = useMemo(
     () => (newestFirst ? [...entries].reverse() : entries),
@@ -664,7 +665,7 @@ export const SessionLogWorkspace: React.FC = () => {
         </div>
       ) : (
         <div className='session-logs-body'>
-          <div className='session-logs-nav'>
+          <div className={classNames('session-logs-nav', navCollapsed && 'is-collapsed')}>
             <div className='session-logs-nav__header'>
               <div className='session-logs-nav__toolbar'>
                 <Popover
@@ -672,16 +673,30 @@ export const SessionLogWorkspace: React.FC = () => {
                   position='bl'
                   content={
                     <dl className='session-logs-glossary'>
-                      <dt>{t('conversation.agentTrace.metricTurn')}</dt>
-                      <dd>{t('conversation.agentTrace.metricTurnHint')}</dd>
-                      <dt>{t('conversation.agentTrace.metricModel')}</dt>
-                      <dd>{t('conversation.agentTrace.metricModelHint')}</dd>
-                      <dt>{t('conversation.agentTrace.metricTool')}</dt>
-                      <dd>{t('conversation.agentTrace.metricToolHint')}</dd>
-                      <dt>{t('conversation.agentTrace.metricDuration')}</dt>
-                      <dd>{t('conversation.agentTrace.metricDurationHint')}</dd>
-                      <dt>{t('conversation.agentTrace.glossaryIntegrity')}</dt>
-                      <dd>{t('conversation.agentTrace.integrityHint')}</dd>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.metricTurn')}</dt>
+                        <dd>{t('conversation.agentTrace.metricTurnHint')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.metricModel')}</dt>
+                        <dd>{t('conversation.agentTrace.metricModelHint')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.metricTool')}</dt>
+                        <dd>{t('conversation.agentTrace.metricToolHint')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.metricDuration')}</dt>
+                        <dd>{t('conversation.agentTrace.metricDurationHint')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.glossaryIntegrity')}</dt>
+                        <dd>{t('conversation.agentTrace.integrityHint')}</dd>
+                      </div>
+                      <div className='session-logs-glossary__item'>
+                        <dt>{t('conversation.agentTrace.glossaryNotes')}</dt>
+                        <dd>{t('conversation.agentTrace.notesHint')}</dd>
+                      </div>
                     </dl>
                   }
                 >
@@ -732,6 +747,36 @@ export const SessionLogWorkspace: React.FC = () => {
                       aria-label={t('conversation.agentTrace.refresh')}
                     />
                   </Tooltip>
+                  <span className='session-logs-nav__collapse'>
+                    <Tooltip
+                      content={
+                        navCollapsed
+                          ? t('conversation.agentTrace.expandRoundList')
+                          : t('conversation.agentTrace.collapseRoundList')
+                      }
+                    >
+                      <Button
+                        type='text'
+                        size='mini'
+                        className='session-logs-json-tree__icon-btn'
+                        icon={
+                          navCollapsed ? (
+                            <ExpandRight theme='outline' size='14' strokeWidth={3} />
+                          ) : (
+                            <ExpandLeft theme='outline' size='14' strokeWidth={3} />
+                          )
+                        }
+                        aria-expanded={!navCollapsed}
+                        aria-controls='session-logs-round-list'
+                        aria-label={
+                          navCollapsed
+                            ? t('conversation.agentTrace.expandRoundList')
+                            : t('conversation.agentTrace.collapseRoundList')
+                        }
+                        onClick={() => setNavCollapsed((value) => !value)}
+                      />
+                    </Tooltip>
+                  </span>
                 </div>
               </div>
               {summary ? (
@@ -775,8 +820,15 @@ export const SessionLogWorkspace: React.FC = () => {
                   {health?.last_error ? ` · ${health.last_error}` : ''}
                 </div>
               ) : null}
+              {summary?.integrity === 'degraded' ? (
+                <div className='session-logs-health'>
+                  {t('conversation.agentTrace.sessionLog')}
+                  {' · '}
+                  {t('conversation.agentTrace.integrityDegraded')}
+                </div>
+              ) : null}
             </div>
-            <div className='session-logs-nav__list'>
+            <div id='session-logs-round-list' className='session-logs-nav__list'>
               {displayed.map((entry) => {
                 const active = entry.root_turn_id === selectedId;
                 const round = rounds.get(entry.root_turn_id) ?? 0;
@@ -802,15 +854,18 @@ export const SessionLogWorkspace: React.FC = () => {
                       {entry.prompt_preview || t('conversation.agentTrace.previewMissing')}
                     </div>
                     <div className='session-logs-nav__counts'>
-                      {t('conversation.agentTrace.modelCallCount', {
-                        count: entry.model_calls.length,
-                      })}
-                      {' · '}
-                      {t('conversation.agentTrace.toolCallCount', { count: toolCount })}
-                      {elapsed ? ` · ${elapsed}` : ''}
-                      {entry.status
-                        ? ` · ${t(`conversation.agentTrace.status_${entry.status}`)}`
-                        : ''}
+                      <span>
+                        {t('conversation.agentTrace.modelCallCount', {
+                          count: entry.model_calls.length,
+                        })}
+                      </span>
+                      <span>
+                        {t('conversation.agentTrace.toolCallCount', { count: toolCount })}
+                      </span>
+                      {elapsed ? <span>{elapsed}</span> : null}
+                      {entry.status ? (
+                        <span>{t(`conversation.agentTrace.status_${entry.status}`)}</span>
+                      ) : null}
                     </div>
                     {entry.interrupted || entry.gap_count > 0 || entry.integrity === 'degraded' ? (
                       <div className='session-logs-nav__flags'>

@@ -31,13 +31,39 @@ const SIZE_OMIT_PATHS: &[&[&str]] = &[
 /// Walk a canonical request (or any JSON payload): rewrite media to metadata,
 /// then redact secrets and truncate strings.
 pub fn capture_canonical_request(value: Value) -> Value {
-    apply_capture(value)
+    capture_borrowed(&value)
+}
+
+/// Same capture rules as [`capture_canonical_request`], without taking ownership
+/// of the source tree. Large strings are truncated into a new tree; they are
+/// not cloned first.
+pub fn capture_borrowed(value: &Value) -> Value {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
+        Value::String(s) => Value::String(redact_preview(s)),
+        Value::Array(items) => Value::Array(items.iter().map(capture_borrowed).collect()),
+        Value::Object(map) => capture_borrowed_object(map),
+    }
 }
 
 /// Capture then enforce the single-event byte budget. Size-limit omit is
 /// capture policy (`event_size_limit`) and must not be treated as integrity loss.
 pub fn capture_and_size_cap(value: Value) -> Value {
-    apply_event_size_budget(capture_canonical_request(value))
+    let captured = capture_borrowed(&value);
+    drop(value);
+    apply_event_size_budget(captured)
+}
+
+/// Media stub that does **not** copy or hash payload bytes.
+///
+/// `byte_length` is the source string's UTF-8 byte length (e.g. base64 text),
+/// not decoded media bytes.
+pub fn omitted_binary_payload(mime: &str, byte_length: u64) -> Value {
+    serde_json::json!({
+        "mime": mime,
+        "byte_length": byte_length,
+        "omitted_reason": OMITTED_REASON_BINARY_PAYLOAD,
+    })
 }
 
 pub fn apply_event_size_budget(value: Value) -> Value {
@@ -167,53 +193,49 @@ fn event_size_stub(value: Value, original_bytes: usize) -> Value {
     })
 }
 
-fn apply_capture(value: Value) -> Value {
-    match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) => value,
-        Value::String(s) => Value::String(redact_preview(&s)),
-        Value::Array(items) => Value::Array(items.into_iter().map(apply_capture).collect()),
-        Value::Object(map) => apply_capture_object(map),
-    }
-}
-
-fn apply_capture_object(mut map: Map<String, Value>) -> Value {
-    if should_rewrite_media(&map) {
-        if let Some(Value::String(data)) = map.remove("data") {
-            map.insert("data".into(), media_metadata(&map, &data));
-        }
-    }
+fn capture_borrowed_object(map: &Map<String, Value>) -> Value {
+    let rewritten_data = if should_rewrite_media(map) {
+        map.get("data")
+            .and_then(Value::as_str)
+            .map(|data| media_metadata(map, data))
+    } else {
+        None
+    };
 
     let mut out = Map::new();
     for (key, value) in map {
-        if is_rewritten_media_metadata(&value) {
-            out.insert(key, value);
+        if key == "data" {
+            if let Some(meta) = rewritten_data.clone() {
+                out.insert(key.clone(), meta);
+                continue;
+            }
+        }
+        if is_rewritten_media_metadata(value) {
+            out.insert(key.clone(), value.clone());
             continue;
         }
-        if should_omit_bulky(&key, &value) {
-            out.insert(key, bulky_placeholder(&value));
+        if should_omit_bulky(key, value) {
+            out.insert(key.clone(), bulky_placeholder(value));
             continue;
         }
-        let captured = if is_sensitive_key(&key) {
+        let captured = if is_sensitive_key(key) {
             match value {
                 Value::String(_) => Value::String("[REDACTED_SECRET]".to_owned()),
-                other => apply_capture(other),
+                other => capture_borrowed(other),
             }
         } else {
-            apply_capture(value)
+            capture_borrowed(value)
         };
-        out.insert(key, captured);
+        out.insert(key.clone(), captured);
     }
     Value::Object(out)
 }
 
 fn should_rewrite_media(map: &Map<String, Value>) -> bool {
-    if matches!(map.get("data"), Some(Value::Object(inner)) if is_rewritten_media_metadata(&Value::Object(inner.clone())))
-    {
-        return false;
-    }
-    let has_string_data = matches!(map.get("data"), Some(Value::String(_)));
-    if !has_string_data {
-        return false;
+    match map.get("data") {
+        Some(data) if is_rewritten_media_metadata(data) => return false,
+        Some(Value::String(_)) => {}
+        _ => return false,
     }
     map.get("type").and_then(Value::as_str) == Some("image")
         || map.contains_key("media_type")
@@ -221,7 +243,6 @@ fn should_rewrite_media(map: &Map<String, Value>) -> bool {
 
 fn is_rewritten_media_metadata(value: &Value) -> bool {
     value.get("omitted_reason").and_then(Value::as_str) == Some(OMITTED_REASON_BINARY_PAYLOAD)
-        && value.get("sha256").is_some()
 }
 
 fn media_metadata(map: &Map<String, Value>, data: &str) -> Value {
@@ -292,6 +313,23 @@ mod tests {
     }
 
     #[test]
+    fn omitted_binary_payload_skips_hash_and_survives_capture() {
+        let blob = "A".repeat(64);
+        let stub = omitted_binary_payload("image/png", blob.len() as u64);
+        assert_eq!(stub["omitted_reason"], OMITTED_REASON_BINARY_PAYLOAD);
+        assert_eq!(stub["byte_length"], blob.len() as u64);
+        assert!(stub.get("sha256").is_none());
+        let wrapped = json!({
+            "type": "image",
+            "media_type": "image/png",
+            "data": stub.clone()
+        });
+        let out = capture_borrowed(&wrapped);
+        assert_eq!(out["data"], stub);
+        assert!(out["data"].get("sha256").is_none());
+    }
+
+    #[test]
     fn secrets_are_redacted_before_return() {
         let out = capture_canonical_request(json!({
             "api_key": "sk-ABCDEFGHIJ0123456789xyz",
@@ -307,6 +345,28 @@ mod tests {
         let out = capture_canonical_request(json!({ "note": long }));
         let note = out["note"].as_str().unwrap();
         assert!(note.contains("…(truncated)"));
+    }
+
+    #[test]
+    fn capture_borrowed_truncates_and_omits_bulky_without_mutating_source() {
+        let long = "x".repeat(MAX_PREVIEW_CHARS + 40);
+        let bulky = "y".repeat(10_000);
+        let value = json!({
+            "note": long,
+            "content": bulky,
+            "path": "a.py"
+        });
+        let out = capture_borrowed(&value);
+        let note = out["note"].as_str().unwrap();
+        assert!(note.contains("…(truncated)"));
+        assert_eq!(out["content"], "[10000 omitted]");
+        assert_eq!(out["path"], "a.py");
+        assert_eq!(
+            value["note"].as_str().unwrap().chars().count(),
+            MAX_PREVIEW_CHARS + 40
+        );
+        assert_eq!(value["content"].as_str().unwrap().len(), 10_000);
+        assert!(!out.to_string().contains(&"y".repeat(32)));
     }
 
     fn tool_schema(description_chars: usize, property_count: usize) -> Value {

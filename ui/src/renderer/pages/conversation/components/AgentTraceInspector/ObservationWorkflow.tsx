@@ -4,13 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Button, Message, Spin, Tooltip } from '@arco-design/web-react';
-import { Copy, Down, Up } from '@icon-park/react';
+import { Button, Message, Modal, Spin, Tooltip } from '@arco-design/web-react';
+import { Copy, Down, FullScreen, Up } from '@icon-park/react';
 import { copyText } from '@renderer/utils/ui/clipboard';
-import { formatClock, formatDurationMs, turnToolCount } from './format';
+import { formatClock, formatDurationMs, formatJson, turnToolCount } from './format';
 import {
   gapSeqLabel,
   requestTileMeta,
@@ -29,7 +29,7 @@ import {
   type ProjectedTurn,
 } from './useAgentTraces';
 
-export type InspectStage = 'request' | 'response' | 'tool';
+export type InspectStage = 'request' | 'response' | 'tool' | 'final';
 
 export interface InspectTarget {
   modelCallId: string;
@@ -235,6 +235,44 @@ function toolElapsedMs(tool: ProjectedToolExecution): number | null {
   return null;
 }
 
+const INSPECTOR_REVEAL_MS = 180;
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function useOpenTransition(active: boolean): { rendered: boolean; open: boolean } {
+  const [rendered, setRendered] = useState(active);
+  const [open, setOpen] = useState(active);
+
+  useEffect(() => {
+    if (active) {
+      setRendered(true);
+      if (prefersReducedMotion()) {
+        setOpen(true);
+        return;
+      }
+      let inner = 0;
+      const outer = window.requestAnimationFrame(() => {
+        inner = window.requestAnimationFrame(() => setOpen(true));
+      });
+      return () => {
+        window.cancelAnimationFrame(outer);
+        window.cancelAnimationFrame(inner);
+      };
+    }
+    setOpen(false);
+    if (prefersReducedMotion()) {
+      setRendered(false);
+      return;
+    }
+    const timeout = window.setTimeout(() => setRendered(false), INSPECTOR_REVEAL_MS);
+    return () => window.clearTimeout(timeout);
+  }, [active]);
+
+  return { rendered, open };
+}
+
 const StageTile: React.FC<{
   stage: 'request' | 'response' | 'tool';
   label: string;
@@ -264,7 +302,119 @@ const StageTile: React.FC<{
   </button>
 );
 
-function RequestInspector({ payload }: { payload: unknown }) {
+function requestParamsFromBody(body: Record<string, unknown>): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  if (typeof body.model === 'string' && body.model.trim()) params.model = body.model;
+  if (typeof body.max_tokens === 'number') params.max_tokens = body.max_tokens;
+  if (typeof body.temperature === 'number') params.temperature = body.temperature;
+  if (typeof body.reasoning_effort === 'string' && body.reasoning_effort.trim()) {
+    params.reasoning_effort = body.reasoning_effort;
+  }
+  const thinking = asRecord(body.thinking);
+  if (thinking && typeof thinking.enabled === 'boolean') {
+    params.thinking = thinking;
+  }
+  return params;
+}
+
+function thinkingDisplay(
+  thinking: unknown,
+  t: (key: string) => string
+): string | null {
+  const record = asRecord(thinking);
+  if (!record || typeof record.enabled !== 'boolean') return null;
+  if (!record.enabled) return t('conversation.agentTrace.thinkingDisabled');
+  if (typeof record.budget_tokens === 'number') return String(record.budget_tokens);
+  return t('conversation.agentTrace.thinkingEnabled');
+}
+
+const RequestParamsStrip: React.FC<{ body: Record<string, unknown> }> = ({ body }) => {
+  const { t } = useTranslation();
+  const params = requestParamsFromBody(body);
+  const items: Array<{ key: string; label: string; value: string }> = [];
+  if (typeof params.model === 'string') {
+    items.push({
+      key: 'model',
+      label: t('conversation.agentTrace.paramModel'),
+      value: params.model,
+    });
+  }
+  if (typeof params.max_tokens === 'number') {
+    items.push({
+      key: 'max_tokens',
+      label: t('conversation.agentTrace.paramMaxTokens'),
+      value: String(params.max_tokens),
+    });
+  }
+  if (typeof params.temperature === 'number') {
+    items.push({
+      key: 'temperature',
+      label: t('conversation.agentTrace.paramTemperature'),
+      value: String(params.temperature),
+    });
+  }
+  if (typeof params.reasoning_effort === 'string') {
+    items.push({
+      key: 'reasoning_effort',
+      label: t('conversation.agentTrace.paramReasoningEffort'),
+      value: params.reasoning_effort,
+    });
+  }
+  const thinkingText = thinkingDisplay(params.thinking, t);
+  if (thinkingText != null) {
+    items.push({
+      key: 'thinking',
+      label: t('conversation.agentTrace.paramThinking'),
+      value: thinkingText,
+    });
+  }
+  if (items.length === 0) return null;
+
+  const copyLabel = t('conversation.agentTrace.copyField', {
+    label: t('conversation.agentTrace.inspectRequestParams'),
+  });
+  const copyPayload = formatJson(params);
+
+  const onCopy = async () => {
+    try {
+      await copyText(copyPayload);
+      Message.success(t('conversation.agentTrace.copied'));
+    } catch {
+      Message.error(t('conversation.agentTrace.copyFailed'));
+    }
+  };
+
+  return (
+    <div className='session-logs-request-params'>
+      <dl className='session-logs-request-params__list'>
+        {items.map((item) => (
+          <div key={item.key} className='session-logs-request-params__item'>
+            <dt>{item.label}</dt>
+            <dd>{item.value}</dd>
+          </div>
+        ))}
+      </dl>
+      <Tooltip content={copyLabel}>
+        <Button
+          type='text'
+          size='mini'
+          className='session-logs-json-tree__icon-btn session-logs-request-params__copy'
+          icon={<Copy theme='outline' size='12' strokeWidth={3} />}
+          onClick={() => void onCopy()}
+          aria-label={copyLabel}
+        />
+      </Tooltip>
+    </div>
+  );
+};
+
+function RequestInspector({
+  payload,
+  resetKey,
+}: {
+  payload: unknown;
+  resetKey: string;
+}) {
   const { t } = useTranslation();
   const body = asRecord(canonicalRequestFromPayload(payload));
   if (!body) {
@@ -276,22 +426,28 @@ function RequestInspector({ payload }: { payload: unknown }) {
   }
   return (
     <>
+      <RequestParamsStrip body={body} />
       <div className='session-logs-inspector__grid'>
         <ObservationJsonTree
           label={t('conversation.agentTrace.inspectSystem')}
           hint={t('conversation.agentTrace.inspectSystemHint')}
           value={body.system ?? null}
           textValue={typeof body.system === 'string'}
+          resetKey={resetKey}
         />
         <ObservationJsonTree
           label={t('conversation.agentTrace.inspectMessages')}
           hint={t('conversation.agentTrace.inspectMessagesHint')}
           value={body.messages ?? null}
+          scan='messages'
+          resetKey={resetKey}
         />
         <ObservationJsonTree
           label={t('conversation.agentTrace.inspectToolDefs')}
           hint={t('conversation.agentTrace.inspectToolDefsHint')}
           value={body.tools ?? null}
+          scan='tools'
+          resetKey={resetKey}
         />
       </div>
       <OmittedNotes payload={payload} />
@@ -372,8 +528,92 @@ function inspectorTitle(
 ): string {
   if (stage === 'request') return t('conversation.agentTrace.inspectRequestTitle');
   if (stage === 'response') return t('conversation.agentTrace.inspectResponseTitle');
+  if (stage === 'final') return t('conversation.agentTrace.finalReply');
   return t('conversation.agentTrace.inspectToolTitle');
 }
+
+function visibleReplyText(payload: unknown): string | null {
+  const record = asRecord(payload);
+  if (!record) return null;
+  if (typeof record.text === 'string' && record.text.trim()) return record.text;
+  if (typeof record.thinking === 'string' && record.thinking.trim()) return record.thinking;
+  return null;
+}
+
+const FinalReplyCard: React.FC<{
+  title: string;
+  modelCallId: string;
+  inspectTarget: InspectTarget | null;
+  detail: ProjectedModelCall | null;
+  errorKey: ObservationWorkflowProps['callErrorKey'];
+  onInspect: (target: InspectTarget) => void;
+}> = ({ title, modelCallId, inspectTarget, detail, errorKey, onInspect }) => {
+  const { t } = useTranslation();
+  const [maximized, setMaximized] = useState(false);
+  const thisCall = detail?.model_call_id === modelCallId ? detail : null;
+  const errorForThisCall = inspectTarget?.modelCallId === modelCallId ? errorKey : null;
+  const pending = maximized && thisCall == null && errorForThisCall == null;
+
+  const open = () => {
+    setMaximized(true);
+    if (inspectTarget?.modelCallId !== modelCallId) {
+      onInspect({ modelCallId, stage: 'final' });
+    }
+  };
+
+  let body: React.ReactNode = null;
+  if (pending) {
+    body = (
+      <div className='flex justify-center py-16px'>
+        <Spin />
+      </div>
+    );
+  } else if (errorForThisCall) {
+    body = (
+      <div className='text-12px text-[var(--color-text-2)]'>
+        {t(`conversation.agentTrace.${errorForThisCall}`)}
+      </div>
+    );
+  } else {
+    const text = visibleReplyText(thisCall?.response);
+    body = (
+      <div className='session-logs-json-tree session-logs-json-tree--modal'>
+        <pre className='session-logs-json-tree__text'>
+          {text ?? t('conversation.agentTrace.noResponse')}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className='session-logs-flow__end'>
+      <div className='session-logs-flow__end-label'>
+        <span>{t('conversation.agentTrace.finalReply')}</span>
+        <Tooltip content={t('conversation.agentTrace.maximizeInspector')}>
+          <Button
+            type='text'
+            size='mini'
+            className='session-logs-json-tree__icon-btn session-logs-flow__end-maximize'
+            icon={<FullScreen theme='outline' size='12' strokeWidth={3} />}
+            onClick={open}
+            aria-label={t('conversation.agentTrace.maximizeInspector')}
+          />
+        </Tooltip>
+      </div>
+      <div className='session-logs-flow__end-title'>{title}</div>
+      <Modal
+        title={t('conversation.agentTrace.finalReply')}
+        visible={maximized}
+        onCancel={() => setMaximized(false)}
+        footer={null}
+        unmountOnExit
+        style={{ width: 'min(920px, 92vw)' }}
+      >
+        {body}
+      </Modal>
+    </div>
+  );
+};
 
 const CallInspector: React.FC<{
   stage: InspectStage;
@@ -384,6 +624,7 @@ const CallInspector: React.FC<{
   onCollapse: () => void;
 }> = ({ stage, toolCallId, detail, loading, errorKey, onCollapse }) => {
   const { t } = useTranslation();
+  if (stage === 'final') return null;
   let inner: React.ReactNode = null;
   if (loading && !detail) {
     inner = (
@@ -399,7 +640,7 @@ const CallInspector: React.FC<{
     );
   } else if (detail) {
     if (stage === 'request') {
-      inner = <RequestInspector payload={detail.request} />;
+      inner = <RequestInspector payload={detail.request} resetKey={detail.model_call_id} />;
     } else if (stage === 'response') {
       inner =
         detail.response == null ? (
@@ -462,6 +703,17 @@ const ModelCallSection: React.FC<{
   const response = header.response_summary;
   const responseCopy = responseTileCopy(t, response);
   const selected = inspectTarget?.modelCallId === header.model_call_id ? inspectTarget : null;
+  const inspectActive = Boolean(selected && selected.stage !== 'final');
+  const lastInspectRef = useRef<InspectTarget | null>(selected);
+  const lastDetailRef = useRef<ProjectedModelCall | null>(detail);
+  const lastErrorRef = useRef<ObservationWorkflowProps['callErrorKey']>(errorKey);
+  if (inspectActive && selected) lastInspectRef.current = selected;
+  if (detail) lastDetailRef.current = detail;
+  if (inspectActive) lastErrorRef.current = errorKey;
+  const reveal = useOpenTransition(inspectActive);
+  const panelTarget = inspectActive ? selected : lastInspectRef.current;
+  const panelDetail = inspectActive ? detail : lastDetailRef.current;
+  const panelError = inspectActive ? errorKey : lastErrorRef.current;
 
   return (
     <section className='session-logs-call'>
@@ -500,12 +752,14 @@ const ModelCallSection: React.FC<{
             <span className='session-logs-flow__arrow' aria-hidden='true'>
               →
             </span>
-            <div className='session-logs-flow__end'>
-              <div className='session-logs-flow__end-label'>
-                {t('conversation.agentTrace.finalReply')}
-              </div>
-              <div className='session-logs-flow__end-title'>{responseCopy.title}</div>
-            </div>
+            <FinalReplyCard
+              title={responseCopy.title}
+              modelCallId={header.model_call_id}
+              inspectTarget={inspectTarget}
+              detail={detail}
+              errorKey={errorKey}
+              onInspect={onInspect}
+            />
           </>
         ) : (
           header.tools.map((tool, toolIndex) => {
@@ -540,15 +794,23 @@ const ModelCallSection: React.FC<{
         )}
       </div>
 
-      {selected ? (
-        <CallInspector
-          stage={selected.stage}
-          toolCallId={selected.toolCallId}
-          detail={detail}
-          loading={loading}
-          errorKey={errorKey}
-          onCollapse={() => onInspect(selected)}
-        />
+      {reveal.rendered && panelTarget && panelTarget.stage !== 'final' ? (
+        <div
+          className={['session-logs-inspector-slot', reveal.open ? 'is-open' : '']
+            .filter(Boolean)
+            .join(' ')}
+        >
+          <div className='session-logs-inspector-slot__clip'>
+            <CallInspector
+              stage={panelTarget.stage}
+              toolCallId={panelTarget.toolCallId}
+              detail={panelDetail}
+              loading={inspectActive && loading}
+              errorKey={panelError}
+              onCollapse={() => onInspect(panelTarget)}
+            />
+          </div>
+        </div>
       ) : null}
     </section>
   );

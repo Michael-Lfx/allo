@@ -8,14 +8,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use nomi_agent_trace::{
-    redact_preview, ExecutionStatus, ObservationEvent, ObservationIds, ObservationRecorder,
-    ObservationScope, RecorderError, EVENT_LLM_REQUEST, EVENT_LLM_RESPONSE, EVENT_OBSERVATION_GAP,
-    EVENT_TOOL_EXECUTION_CANCELLED, EVENT_TOOL_EXECUTION_COMPLETED, EVENT_TOOL_EXECUTION_FAILED,
-    EVENT_TOOL_EXECUTION_STARTED, EVENT_TURN_END, EVENT_TURN_START, MAX_PREVIEW_CHARS,
+    capture_borrowed, omitted_binary_payload, redact_preview, ExecutionStatus, ObservationEvent,
+    ObservationIds, ObservationRecorder, ObservationScope, RecorderError, EVENT_LLM_REQUEST,
+    EVENT_LLM_RESPONSE, EVENT_OBSERVATION_GAP, EVENT_TOOL_EXECUTION_CANCELLED,
+    EVENT_TOOL_EXECUTION_COMPLETED, EVENT_TOOL_EXECUTION_FAILED, EVENT_TOOL_EXECUTION_STARTED,
+    EVENT_TURN_END, EVENT_TURN_START, MAX_PREVIEW_CHARS, OMITTED_REASON_INPUT_SCHEMA,
 };
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
-use nomi_types::message::StopReason;
+use nomi_types::message::{ContentBlock, Message, StopReason};
+use nomi_types::tool::{ToolDef, ToolImage};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
@@ -458,14 +460,9 @@ fn observe_with_model_call(
 pub(crate) fn llm_request_to_value(request: &LlmRequest) -> Value {
     json!({
         "model": request.model,
-        "system": request.system,
-        "messages": request.messages,
-        "tools": request.tools.iter().map(|tool| json!({
-            "name": tool.name,
-            "description": tool.description,
-            "input_schema": tool.input_schema,
-            "deferred": tool.deferred,
-        })).collect::<Vec<_>>(),
+        "system": redact_preview(&request.system),
+        "messages": request.messages.iter().map(observation_message).collect::<Vec<_>>(),
+        "tools": request.tools.iter().map(observation_tool).collect::<Vec<_>>(),
         "max_tokens": request.max_tokens,
         "thinking": match &request.thinking {
             Some(ThinkingConfig::Enabled { budget_tokens }) => json!({
@@ -477,6 +474,106 @@ pub(crate) fn llm_request_to_value(request: &LlmRequest) -> Value {
         },
         "reasoning_effort": request.reasoning_effort,
         "temperature": request.temperature,
+    })
+}
+
+fn observation_tool(tool: &ToolDef) -> Value {
+    json!({
+        "name": tool.name,
+        "description": redact_preview(&tool.description),
+        "input_schema": json!({
+            "omitted_reason": OMITTED_REASON_INPUT_SCHEMA,
+        }),
+        "deferred": tool.deferred,
+    })
+}
+
+fn observation_message(message: &Message) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("role".into(), json!(message.role));
+    object.insert(
+        "content".into(),
+        Value::Array(
+            message
+                .content
+                .iter()
+                .map(observation_content_block)
+                .collect(),
+        ),
+    );
+    if let Some(timestamp) = message.timestamp {
+        object.insert("timestamp".into(), json!(timestamp));
+    }
+    Value::Object(object)
+}
+
+fn observation_content_block(block: &ContentBlock) -> Value {
+    match block {
+        ContentBlock::Text { text } => json!({
+            "type": "text",
+            "text": redact_preview(text),
+        }),
+        ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            extra,
+        } => {
+            let mut object = json!({
+                "type": "tool_use",
+                "id": id,
+                "name": name,
+                "input": capture_borrowed(input),
+            });
+            if let Some(extra) = extra {
+                object["extra"] = capture_borrowed(extra);
+            }
+            object
+        }
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            images,
+        } => {
+            let mut object = json!({
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": redact_preview(content),
+                "is_error": is_error,
+            });
+            if !images.is_empty() {
+                object["images"] = Value::Array(
+                    images.iter().map(observation_tool_image).collect(),
+                );
+            }
+            object
+        }
+        ContentBlock::Thinking {
+            thinking,
+            signature,
+        } => {
+            let mut object = json!({
+                "type": "thinking",
+                "thinking": redact_preview(thinking),
+            });
+            if let Some(signature) = signature {
+                object["signature"] = Value::String(redact_preview(signature));
+            }
+            object
+        }
+        ContentBlock::Image { media_type, data } => json!({
+            "type": "image",
+            "media_type": media_type,
+            "data": omitted_binary_payload(media_type, data.len() as u64),
+        }),
+    }
+}
+
+fn observation_tool_image(image: &ToolImage) -> Value {
+    json!({
+        "media_type": image.media_type,
+        "data": omitted_binary_payload(&image.media_type, image.data.len() as u64),
     })
 }
 
@@ -516,6 +613,148 @@ mod tests {
             .await
             .ok();
             Ok(rx)
+        }
+    }
+
+    fn sample_request(
+        system: impl Into<String>,
+        messages: Vec<Message>,
+        tools: Vec<ToolDef>,
+    ) -> LlmRequest {
+        LlmRequest {
+            model: "test-model".into(),
+            system: system.into(),
+            messages,
+            tools,
+            max_tokens: 32,
+            thinking: None,
+            reasoning_effort: None,
+            temperature: None,
+        }
+    }
+
+    #[test]
+    fn llm_request_to_value_stubs_input_schema_without_cloning_body() {
+        let marker = "SCHEMA_MARKER_DO_NOT_COPY_9f3a";
+        let request = sample_request(
+            "sys",
+            vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "hi".into(),
+                }],
+            )],
+            vec![ToolDef {
+                name: "bash".into(),
+                description: "run a command".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "description": marker.repeat(64),
+                }),
+                deferred: false,
+            }],
+        );
+        let value = llm_request_to_value(&request);
+        let encoded = value.to_string();
+        assert!(
+            !encoded.contains(marker),
+            "observation copy must not clone schema body: {encoded}"
+        );
+        assert_eq!(value["tools"][0]["name"], "bash");
+        assert_eq!(
+            value["tools"][0]["input_schema"]["omitted_reason"],
+            OMITTED_REASON_INPUT_SCHEMA
+        );
+        assert!(
+            value["tools"][0]["input_schema"].get("captured_bytes").is_none(),
+            "schema elision must not pretend a size-budget omit ran"
+        );
+        assert!(
+            request.tools[0].input_schema.to_string().contains(marker),
+            "live request schema must stay intact"
+        );
+    }
+
+    #[test]
+    fn llm_request_to_value_truncates_system_and_tool_result_without_mutating_live() {
+        let long_system = "S".repeat(MAX_PREVIEW_CHARS + 50);
+        let long_result = "R".repeat(MAX_PREVIEW_CHARS + 80);
+        let request = sample_request(
+            long_system.clone(),
+            vec![
+                Message::new(
+                    Role::User,
+                    vec![ContentBlock::Text {
+                        text: "q".into(),
+                    }],
+                ),
+                Message::new(
+                    Role::User,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: long_result.clone(),
+                        is_error: false,
+                        images: Vec::new(),
+                    }],
+                ),
+            ],
+            Vec::new(),
+        );
+        let value = llm_request_to_value(&request);
+        let system = value["system"].as_str().expect("system");
+        assert!(system.contains("…(truncated)"));
+        assert!(system.chars().count() < request.system.chars().count());
+        assert_eq!(request.system, long_system);
+
+        let content = value["messages"][1]["content"][0]["content"]
+            .as_str()
+            .expect("tool result");
+        assert!(content.contains("…(truncated)"));
+        match &request.messages[1].content[0] {
+            ContentBlock::ToolResult { content, .. } => {
+                assert_eq!(content.as_str(), long_result);
+            }
+            other => panic!("expected tool result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn llm_request_to_value_omits_image_bytes() {
+        let blob = format!("IMAGE_MARKER_BASE64_{}", "A".repeat(5000));
+        let request = sample_request(
+            "sys",
+            vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data: blob.clone(),
+                }],
+            )],
+            Vec::new(),
+        );
+        let value = llm_request_to_value(&request);
+        let encoded = value.to_string();
+        assert!(
+            !encoded.contains("IMAGE_MARKER_BASE64_"),
+            "observation copy must not include image bytes: {encoded}"
+        );
+        assert_eq!(
+            value["messages"][0]["content"][0]["data"]["omitted_reason"],
+            nomi_agent_trace::OMITTED_REASON_BINARY_PAYLOAD
+        );
+        assert!(
+            value["messages"][0]["content"][0]["data"]
+                .get("sha256")
+                .is_none(),
+            "emit path must not invent a media digest"
+        );
+        assert_eq!(
+            value["messages"][0]["content"][0]["data"]["byte_length"],
+            blob.len() as u64
+        );
+        match &request.messages[0].content[0] {
+            ContentBlock::Image { data, .. } => assert_eq!(data.as_str(), blob),
+            other => panic!("expected image, got {other:?}"),
         }
     }
 

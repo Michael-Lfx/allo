@@ -3,9 +3,9 @@
 > **文档状态：实施稿；U0–U5 已在 `feat/session-observation` 落地，现行语义以本文 + 源码为准**  
 > 日期：2026-08-19  
 > 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待、控制队满与 `try_enqueue` 对齐、§1 改为已落地/收口缺口。  
-> 分支：只改 `feat/session-observation`  
+> 分支：现行语义以源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准  
 > **作废：** 只做 Drawer 卡片的稿；功能打通但不写 IO 的稿；把执行失败写成 `integrity=degraded` 的稿；**control 优先消费 / 永久 tombstone 用于 Clear/Reset / 64KiB×256 神圣 / health 塞进 Session Summary / `turn/end` 等 50ms /「control 满时保证不丢 turn/end」。**  
-> **读者：** U0–U5 已完成。未完成项只看 **§1 本轮缺口** 与 **§9.1 收口**。  
+> **读者：** U0–U5 与 §9.1 已完成。合并后的现行语义以本文 + 源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准。  
 > **词汇**仍以 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 与提案第 7 节为准。本文补产品、投影与 writer 语义，不另起第三套领域。
 
 | | 是什么 |
@@ -102,7 +102,7 @@ Shutdown                    // drain → flush → 退出线程
 
 ### 0.4 队列内存预算（不变式是 16 MiB，不是 64 KiB 神圣）
 
-**现状：** `MAX_PREVIEW_CHARS=2000` 只限制**每个字符串**，不限制整 event。`llm_request_to_value` 仍带全量 `tools[].input_schema`，coding agent 一条 request 很容易 >64 KiB。没有真实线上 P50/P95。
+**现状：** `MAX_PREVIEW_CHARS=2000` 限制每个字符串。`llm_request_to_value` 在入队前即 stub `tools[].input_schema`（`omitted_reason=input_schema_elided`，不 clone / 不 `to_vec` 测字节），并对 system / messages 预截断（inline media 不拷贝、不哈希；`byte_length` 为源字符串字节数）。`capture_and_size_cap` 仍是 128 KiB backstop。没有真实线上 P50/P95。
 
 **冻结：**
 
@@ -223,7 +223,7 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
 4. 显式 `ObservationSession`。  
 5. **查询排序**只认 `event_seq`。`event_seq` = **writer 接受并持久化的全序**，不是纳秒级 happen-before。  
 6. 禁止无限定 `Run`。  
-7. 开发者模式门控读写。  
+7. 开发者模式只门控 HTTP 读取与支持包；采集始终写盘。  
 8. 观测/队列/磁盘失败不 `?` 打断 Agent。  
 9. 不扩大采集（one_shot / health / speech / ACP）。  
 10. 不做 replay / OTel / 导出 Sink。  
@@ -248,7 +248,7 @@ Conversation host 在 bind 后 `set_observation_turn_end_deferred(true)`，failo
 | P8 | 同时 ≤2–3 个 **call detail**；换会话 `clear()`。切回对话不清 LRU、不 abort poll。不接 `videoCanvas` QueryClient。 |
 | P9 | 禁止 mmap / 全历史 preload。 |
 | P10 | 单 event ≤ `MAX_EVENT_BYTES` 才入队。 |
-| P11 | 磁盘：14 天 **且** `max_total_observation_bytes`（默认 **1 GiB**）。先删 age>14d 的非 active segment，再按 mtime 删最老非 active；**禁止删当前 writer 打开的 `events.jsonl`。** |
+| P11 | 磁盘：高低水位（高 **1 GiB**，低 **800 MiB**）。写盘队列空闲 ≥30s 且距上次扫描 ≥1h 才扫盘；估算 ≥**1.2 GiB** 时下一个空档立刻收。writer 第一次队列空档只 reconcile 估算（计入盘上存量），不删文件；**禁止在 Event persist 热路径扫盘。** 按 mtime 删最老非 active 直到 ≤低水位；**禁止删当前 writer 打开的 `events.jsonl`。** |
 
 ---
 
@@ -367,13 +367,15 @@ Call GET 在 header 还在、segment 已 GC：返回 **410**，body `reason=obse
 
 ### 6.3 磁盘 quota
 
-**所有 observation 文件 mutation 只在 writer 线程**（rotate、age GC、quota GC、delete）。Query 只读。
+**所有 observation 文件 mutation 只在 writer 线程**（rotate、quota GC、delete）。Query 只读。
 
 ```text
-Retention = age 14d AND total ≤ 1 GiB
-1. 先删 age>14d 的非 active segment
-2. 再算总量；仍 >1 GiB 则按 mtime 删最老非 active segment，直到 ≤quota
+Retention = high/low watermark (1 GiB / 800 MiB)
+Estimate: first writer queue-empty gap reconciles on-disk size (includes leftover files after restart). Persist path does not walk.
+Trigger: writer persist-idle ≥30s and last scan ≥1h; or estimated total ≥1.2 GiB on the next writer idle gap
+按 mtime 删最老非 active segment，直到 ≤800 MiB
 禁止删当前 writer 打开的 events.jsonl
+禁止在 Event persist 热路径扫盘
 ```
 
 ---
@@ -385,7 +387,7 @@ Retention = age 14d AND total ≤ 1 GiB
 - 回合行：第 N 轮（按 `started_at_ms` 升序编号，与显示倒正向无关）、预览、时钟、模型/工具次数、时长。默认最新在上。  
 - Call 行 `useVirtualizer`，overscan 3–5。宽屏横轴可横滚。窄对话列（`@container` ~720px，按列宽不是 window）左列改横向回合条，检查器单列。  
 - 点瓦片才 GET call detail，不自动展开第一张；关详情 unmount。瓦片 `aria-expanded`。工具瓦片 title 用 `argument_preview`，无则 name。`最终回复` 是不可点文案终点，不是瓦片。  
-- Call 检查器：对象/数组用 `react-json-view-lite`（根与 `messages`/`tools` 数组展开，元素默认收起）；`{` / `}` 必须能开合（punctuation 转发到 expander，禁止自写树）。短 string 与响应 reasoning/content 直接展示；omitted 原样。复制用图标，禁止每块「复制 JSON」文案。详情字段是 hairline Raised 面板，不是灰底 dump。  
+- Call 检查器：对象/数组用 `react-json-view-lite`（根与 `messages`/`tools` 数组展开，元素默认收起）；`{` / `}` 必须能开合（punctuation 转发到 expander，禁止自写树）。`messages` / `tools` 默认扫描投影（role / 块类型 / 开头摘要，或工具名 + 描述），工具条「原始」才切回对象树；复制仍是 canonical JSON。短 string 与响应 reasoning/content 直接展示；omitted 原样。复制用图标，禁止每块「复制 JSON」文案。详情字段是 hairline Raised 面板，不是灰底 dump。  
 - 缓存：summary + ≤200 turn headers + `MAX_CALL_DETAIL_CACHE=2` LRU。换会话 `clear()`。切回对话保持 poll 与 LRU。  
 - Token 芯片：U3 只显示原始 `input_tokens` / cache_read / cache_write / output。不画未命中，不发明 `input_uncached`。  
 - omitted 字段必须可见，不得显示成「观测未记录 / 加载失败」。不展示 `msg=` / `turn=` / `mc-xxxx`。  
@@ -460,13 +462,9 @@ Refresh 双/三拉；new-format 才 poll；legacy 不 poll；退避；abort 旧�
 
 观测层 `NormalizedObservationUsage` 拷贝原始字段，不改公共 `TokenUsage`。`input_uncached` 仍等 provider 正规化。
 
-### 9.1 收口（本轮唯一未完成代码）
+### 9.1 收口（已落地）
 
-只改 `AgentTraceInspector/index.tsx` 与结构测试。不重开 writer / DualQueue / HTTP。
-
-1. `refreshWorkspace`：list + 当前 turn headers + 已展开 call；Refresh 与 poll 共用。  
-2. 独立 `listSeq` / `turnSeq` / `callSeq` + abort。  
-3. poll 不依赖整个 `entries`；`max_event_seq` 变化回到 1.5s 后不要立刻被 finally 再加成 3s。
+`AgentTraceInspector/index.tsx`：`refreshWorkspace` 共用 Refresh/poll；独立 `listSeq` / `turnSeq` / `callSeq` + abort；`max_event_seq` 变化把 poll 退回 1.5s，未变化才 `finally` 加退避。
 
 ---
 
@@ -517,7 +515,7 @@ fix(providers): make token usage buckets unambiguous
 | 删会话等 ACK 略慢 | 可接受（管理路径） |
 | 崩溃丢未 flush 尾 | 诊断数据，接受 |
 | 旧日志无 start/end | `unknown`，不 poll |
-| 1 GiB quota 砍历史 | UI `coverage` 说明 |
+| 1 GiB 高低水位回收较旧日志 | UI 注意事项说明收录范围 |
 | Call 多一次 RTT | 点开才发生 |
 
 ---
@@ -538,7 +536,7 @@ fix(providers): make token usage buckets unambiguous
 5. 双队列按 `enqueue_order` 合并写盘；control 只保容量、禁止 control-first persist；`turn/end` 零等待 —— 同意 / 不同意  
 6. U3 默认 Call 级懒加载，不整 Turn 下发正文 —— 同意 / 不同意  
 7. `RecorderHealth` 在 list **顶层**（不进 Session Summary）—— 同意 / 不同意  
-8. 14 天 **且** 1 GiB quota；不删 active segment；Call 410 `observation_retention`；Summary `coverage` —— 同意 / 不同意  
+8. 1 GiB/800 MiB 高低水位（紧急 1.2 GiB）；不删 active segment；Call 410 `observation_retention`；注意事项说明收录范围 —— 同意 / 不同意  
 9. legacy 不 poll；new-format 退避 poll —— 同意 / 不同意  
 10. 读路径 Semaphore(4) + 前端 abort —— 同意 / 不同意  
 
@@ -546,5 +544,4 @@ fix(providers): make token usage buckets unambiguous
 
 ## 15. 授权
 
-U0–U5 已落地。未完成项只做 §9.1 收口。  
-合并后更新 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)：Workspace、status≠integrity、writer 命令、Call 懒加载、health/coverage（本轮不扩写那篇）。
+U0–U5 与 §9.1 已落地。合并后 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 已补 Workspace、status≠integrity、writer 命令、Call 懒加载、health/coverage。

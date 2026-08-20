@@ -8,24 +8,25 @@ Nomi-owned 模型调用与工具执行写入 unlabeled JSONL 事件，落盘于�
 
 `{data_dir}/diagnostics/observation/{conversation_id}/events.jsonl`
 
-超过 48 MiB 旋转为 `events.{n}.jsonl`；GC 14 天。写入前执行 capture（truncated + redacted；媒体 metadata_only）。会话发送即写盘；`system.developerMode` 不控制采集。
+超过 48 MiB 旋转为 `events.{n}.jsonl`；磁盘按约 1 GiB 高低水位回收。写入前执行 capture（truncated + redacted；媒体 metadata_only）。会话发送即写盘；`system.developerMode` 不控制采集。
 
 读取与支持包附带 JSONL 受 **开发者模式** 门控：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/debug/session-observations?conversation_id=` | 按会话投影回合列表（摘要，不含 request/response 全文；默认 50 条、最多 200 条） |
-| GET | `/api/debug/session-observations/turns/{root_turn_id}?conversation_id=` | 单个回合的 REQUEST → RESPONSE → tools |
+| GET | `/api/debug/session-observations?conversation_id=` | 按会话投影回合列表（摘要 + 顶层 `recorder_health`，不含 request/response 全文；默认 50 条、最多 200 条） |
+| GET | `/api/debug/session-observations/turns/{root_turn_id}?conversation_id=` | 单个回合的 REQUEST → RESPONSE → tools **headers**（无 canonical 正文） |
+| GET | `/api/debug/session-observations/turns/{root_turn_id}/calls/{model_call_id}?conversation_id=` | 点瓦片才拉的单次 call 正文 |
 
-实现：`nomi-agent-trace`（事件 / capture / JSONL / 投影）→ `nomifun-ai-agent::AgentTraceHub` → `nomifun-conversation::routes_trace`。采集走 `ObservationSession` + `stream_llm`，失败只 warn / `observation/gap`，不打断回合。
+实现：`nomi-agent-trace`（事件 / capture / DualQueue writer / 投影）→ `nomifun-ai-agent::AgentTraceHub` → `nomifun-conversation::routes_trace`。采集走 `ObservationSession` + `stream_llm`，失败只 warn / `observation/gap`，不打断回合。Delete/Clear/Reset/Shutdown 走 writer ACK；Clear 用 generation bump，Delete 才永久 tombstone。
 
-投影规则：只按 `event_seq` 排序。无对应 `llm/response` → 该 `model_call_id` 标 `interrupted`，执行边界 `integrity=degraded`。`observation/gap` 同样降级。禁止用聊天气泡拼 `messages[]`。
+投影规则：只按 `event_seq` 排序。`status` 是 Agent 做了什么，`integrity` 是日志缺不缺。工具失败且日志完整 → `status=failed` 且 `integrity=complete`。`integrity=degraded` 仅当：`observation/gap`、JSONL 损坏、或该 turn 已 `turn/end` 后仍缺 `llm/response` / 工具终态。进行中的 call 无 response 标 `interrupted`，不因此把整回合标 degraded。禁止用聊天气泡拼 `messages[]`。Summary 带 `coverage`（当前保留窗口，不是全历史）。
 
 ### UI
 
 会话页 `ChatLayout` 在开发者模式开启且存在 `conversation_id` 时，在能力按钮最左显示 **观测** pill（`aria-pressed`）。打开后对话列滑动到会话日志 pane（`AgentTraceInspector`），不是 Drawer：
 
-- 左列顶：会话四数 + 刷新 + 最新在上|最早在上；integrity / interrupted / gap 次级
+- 左列顶：会话四数 + 刷新 + 最新在上|最早在上；写入器 health 与会话 integrity / coverage 次级
 - 回合行带时钟；第 N 轮按时间升序编号
 - 右侧按模型调用展示 REQUEST → RESPONSE → tools；点瓦片才 Call GET
 - 详情为可收缩 object tree（`react-json-view-lite`）；切回对话不 abort poll、不清 LRU

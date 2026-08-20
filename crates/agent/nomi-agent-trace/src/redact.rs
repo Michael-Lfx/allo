@@ -91,6 +91,9 @@ pub(crate) fn is_bulky_tool_arg_key(key: &str) -> bool {
 
 pub const OMITTED_REASON_EVENT_SIZE_LIMIT: &str = "event_size_limit";
 
+/// Tool `input_schema` is never copied into the observation request payload.
+pub const OMITTED_REASON_INPUT_SCHEMA: &str = "input_schema_elided";
+
 pub(crate) fn event_size_limit_placeholder(original_bytes: usize, captured_bytes: usize) -> Value {
     serde_json::json!({
         "omitted_reason": OMITTED_REASON_EVENT_SIZE_LIMIT,
