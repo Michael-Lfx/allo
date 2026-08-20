@@ -73,6 +73,9 @@ pub struct EvalCaseView {
     pub artifact_count: u32,
     #[serde(default)]
     pub has_trace: bool,
+    /// Session Observation conversation id (one case == one eval session).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -111,6 +114,8 @@ pub struct EvalCaseTraceView {
     pub events: Vec<EvalTrajectoryEventView>,
     #[serde(default)]
     pub artifacts: Vec<EvalArtifactView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -158,4 +163,13 @@ pub struct EvalRunView {
     pub cases: Vec<EvalCaseView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_trace: Option<EvalCaseTraceView>,
+    /// Conversation id of the case currently running (live session binding).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_conversation_id: Option<String>,
+    /// Business-named parent workspace for this run (filesystem folder name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_label: Option<String>,
+    /// Absolute path of the parent run workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_path: Option<String>,
 }

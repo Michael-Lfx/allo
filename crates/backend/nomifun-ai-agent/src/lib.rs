@@ -70,7 +70,10 @@ pub enum ManagedExtractMode {
 pub use nomi_config;
 pub use nomi_types;
 
-pub use agent_eval::EvalLab;
+pub use agent_eval::{
+    eval_run_workspace_label, suite_business_label, EvalCaseTurnUsage, EvalLab, EvalSessionBridge,
+    OpenEvalCaseSession, RecordEvalCaseTurn,
+};
 pub use agent_trace::{
     AgentTraceHub, ObservationIds, ObservationRecorder, ProjectedTurn, SessionObservationList,
     TraceApiError, DEFAULT_SESSION_OBSERVATION_LIST_LIMIT, DEVELOPER_MODE_PREF_KEY,

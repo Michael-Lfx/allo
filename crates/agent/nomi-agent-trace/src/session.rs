@@ -48,6 +48,7 @@ pub fn classify_session_kind(
         "idmm" => "idmm",
         "agent_execution" | "agent-execution" | "agentexecution" => "agent_execution",
         "channel" => "channel",
+        "eval" | "agent_eval" | "agent-eval" => "eval",
         _ => "other",
     }
 }
@@ -94,6 +95,8 @@ mod tests {
             ("idmm", "idmm"),
             ("agent_execution", "agent_execution"),
             ("agent-execution", "agent_execution"),
+            ("eval", "eval"),
+            ("agent_eval", "eval"),
             ("weird_source", "other"),
         ] {
             assert_eq!(classify_session_kind(Some(origin), false, None), kind);

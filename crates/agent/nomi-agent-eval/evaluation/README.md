@@ -4,25 +4,24 @@ Live and offline evaluation for the **real** Nomi harness / runtime.
 
 Eval scores a pinned model plus `AgentEngine` (Office profile, or `CodingHarness` for coding suites). It is not a model leaderboard. CLI/library remain the source of truth; the desktop `/eval` page is a developer-mode lab console.
 
+Each live case is bound to **Session Observation**: one `conversation_id`, `session_kind=eval`, the same `ObservationRecorder` JSONL path as ordinary sessions. The conversation shell projects thinking / tool_call / text (plus token usage and billing turn id) so ChatLayout looks like a real user session.
+
 ## What counts as an agent eval
 
-HumanEval / MBPP are **unit-coding floors**: one function, empty workspace, hidden asserts. They do not exercise Read/Edit/Bash loops and are **not** harness KPIs.
-
-Faithful agent suites on this harness (no second agent loop, deterministic oracles):
+Marker-style Q&A and single-function unit floors are **not** harness KPIs. The live catalog only lists agent suites:
 
 | Suite | Source | Why it is (or is not) an agent task |
 | --- | --- | --- |
 | `office_tasks` | bundled [`corpus.office.json`](./corpus.office.json) | **Primary office-agent suite.** Memo, minutes, CSV budget, client email, in-place rewrite. Live harness uses the Office profile (Read/Write/Edit), not CodingHarness. |
+| `agent_workflows` | bundled [`corpus.agent_workflows.json`](./corpus.agent_workflows.json) | **Multi-step agent suite.** Multi-file briefing, debug+pytest, CSV→JSON pipeline, refactor+docs, constrained policy edit. Replaces marker Q&A floors. |
 | `aider_polyglot` | [Aider polyglot-benchmark](https://github.com/Aider-AI/polyglot-benchmark) Python / Exercism | **Primary coding-agent suite.** Stub + tests in the workspace; agent edits and may run pytest. Canonical `.meta/example.py` is stripped. Not an official Aider leaderboard score (that harness is Docker). Needs Python; pytest preferred, unittest fallback. |
-| `classeval` | [ClassEval](https://github.com/FudanSELab/ClassEval) | Class-level Python (skeleton in `solution.py`, **hidden** unittests). Harder than HumanEval; still closer to codegen than a GitHub issue. |
-| `session_dialogue` | bundled [`corpus.conversation.json`](./corpus.conversation.json) | Conversation-loop contracts |
-| `harness_control` | bundled [`corpus.harness_control.json`](./corpus.harness_control.json) | CodingHarness smoke (Write/Edit + `write_root`) |
-| `humaneval` | [OpenAI HumanEval](https://raw.githubusercontent.com/openai/human-eval/master/data/HumanEval.jsonl.gz) | Unit-coding floor only |
-| `mbpp` | [Google sanitized MBPP](https://raw.githubusercontent.com/google-research/google-research/master/mbpp/sanitized-mbpp.json) | Unit-coding floor only |
+| `classeval` | [ClassEval](https://github.com/FudanSELab/ClassEval) | Class-level Python (skeleton in `solution.py`, **hidden** unittests). Harder than HumanEval-style floors; still closer to codegen than a GitHub issue. |
+| `harness_control` | bundled [`corpus.harness_control.json`](./corpus.harness_control.json) | CodingHarness smoke (Write/Edit + `write_root`) — not a capability KPI |
+
+`session_dialogue` remains available only as the offline CLI demo corpus (`corpus.conversation.json`). It is **not** listed in the live lab catalog.
 
 Downloads cache under `{data_dir}/diagnostics/agent-evals/datasets/` (default limit 8, max 20).
-Pull tries GitHub raw first, then a jsDelivr CDN mirror when raw is unreachable. You do not need to
-pre-download datasets manually unless every mirror is blocked on your network.
+Pull tries GitHub raw first, then a jsDelivr CDN mirror when raw is unreachable.
 
 ### Not wired (and must not be faked)
 
@@ -40,8 +39,10 @@ These are the 2025–2026 coding-agent standards. They need Docker / extra tool 
 
 Live runs are assembled in `nomifun-ai-agent` (`LiveNomiHarness` + `EvalLab`), not in this crate, so `nomi-*` stays free of `nomifun-*`.
 
-- Workspace: `{data_dir}/diagnostics/agent-evals/workspaces/{run_id}/{case_id}/`
-- `session.enabled = false` — no user conversation rows
+- Workspace: run starts with a business-named parent dir `{data_dir}/diagnostics/agent-evals/workspaces/评测-{suiteLabel}-{timestamp}-{shortRunId}/`, cases under `{case_id}/`
+- `session.enabled = false` — no nomi session-file persistence; observation is wired explicitly
+- Conversation shell: `{case_id} · {category}` via `EvalSessionBridge` (idempotent `eval:{run_id}:{case_id}`); trajectory projected with `with_flowy_billing_turn_id`
+- Observation: `{data_dir}/diagnostics/observation/{conversation_id}/events.jsonl` (`session_kind=eval`)
 - Not registered in `AgentRuntimeRegistry`
 - `auto_approve = true`, `write_root` = eval workspace
 - MCP / browser / computer-use / web search / memory distill / MoA off
@@ -78,13 +79,13 @@ Live production-harness runs go through the desktop API (`/api/debug/agent-evals
 
 ## Evidence hygiene
 
-Each JSONL line stores `case_id`, `category`, `success`, scorer results, tokens, timing, and trajectory/artifact **counts**.
+Each JSONL line stores `case_id`, `category`, `success`, scorer results, tokens, timing, `conversation_id`, and trajectory/artifact **counts**.
 The full per-case trajectory and workspace artifacts are written beside JSONL as
 `{data_dir}/diagnostics/agent-evals/runs/{run_id}/traces/{case_id}.json` (relative paths only; prompts and tool IO redacted).
 Prompt text is sanitized with `nomi-redact` so `sk-…` secrets never land on disk.
 Workspace absolute paths are never serialized.
 
-The `/eval` page polls `GET /api/debug/agent-evals/runs/{id}` during a live run (`current_trace`) and loads a finished case via `GET …/cases/{case_id}/trace`.
+The `/eval` page polls `GET /api/debug/agent-evals/runs/{id}` during a live run (`current_trace` / `current_conversation_id`) and loads a finished case via `GET …/cases/{case_id}/trace` plus Session Observation via `GET …/cases/{case_id}/observation`.
 
 The offline `OfflineDemoHarness` 100% pass rate is self-referential and is not a KPI for the live agent.
 

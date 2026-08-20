@@ -11,10 +11,16 @@ use nomifun_api_types::{
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
 
+use crate::SessionObservationList;
 use crate::routes::state::AgentRouterState;
 
 #[derive(Debug, Deserialize)]
 struct PullEvalQuery {
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ObservationQuery {
     limit: Option<usize>,
 }
 
@@ -34,6 +40,10 @@ pub fn eval_routes(state: AgentRouterState) -> Router {
         .route(
             "/api/debug/agent-evals/runs/{run_id}/cases/{case_id}/trace",
             get(get_case_trace),
+        )
+        .route(
+            "/api/debug/agent-evals/runs/{run_id}/cases/{case_id}/observation",
+            get(get_case_observation),
         )
         .with_state(state)
 }
@@ -58,11 +68,16 @@ async fn pull_dataset(
 
 async fn start_run(
     State(state): State<AgentRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     body: Result<Json<StartEvalRunRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<EvalRunView>>, AppError> {
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    Ok(Json(ApiResponse::ok(state.eval_lab.start_run(req).await?)))
+    Ok(Json(ApiResponse::ok(
+        state
+            .eval_lab
+            .start_run(req, Some(user.id.to_string()))
+            .await?,
+    )))
 }
 
 async fn latest_run(
@@ -97,5 +112,19 @@ async fn get_case_trace(
 ) -> Result<Json<ApiResponse<EvalCaseTraceView>>, AppError> {
     Ok(Json(ApiResponse::ok(
         state.eval_lab.get_case_trace(&run_id, &case_id).await?,
+    )))
+}
+
+async fn get_case_observation(
+    State(state): State<AgentRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path((run_id, case_id)): Path<(String, String)>,
+    Query(query): Query<ObservationQuery>,
+) -> Result<Json<ApiResponse<SessionObservationList>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .eval_lab
+            .get_case_observation(&run_id, &case_id, query.limit)
+            .await?,
     )))
 }

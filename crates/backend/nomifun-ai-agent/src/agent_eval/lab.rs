@@ -20,7 +20,9 @@ use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
 use crate::agent_eval::live::{sanitize_case_dir, LiveEvalTrace, LiveNomiHarness};
+use crate::agent_eval::session_bridge::{eval_run_workspace_label, EvalSessionBridge};
 use crate::agent_trace::developer_mode_enabled;
+use crate::{AgentTraceHub, SessionObservationList};
 use crate::knowledge_completer::resolve_default_model;
 
 pub struct EvalLab {
@@ -29,6 +31,8 @@ pub struct EvalLab {
     provider_model_repo: Arc<dyn IProviderModelRepository>,
     encryption_key: [u8; 32],
     client_prefs: Arc<dyn IClientPreferenceRepository>,
+    session_bridge: Option<Arc<dyn EvalSessionBridge>>,
+    trace_hub: Option<Arc<AgentTraceHub>>,
     inner: AsyncMutex<LabInner>,
 }
 
@@ -54,12 +58,34 @@ impl EvalLab {
         encryption_key: [u8; 32],
         client_prefs: Arc<dyn IClientPreferenceRepository>,
     ) -> Self {
+        Self::with_session_binding(
+            data_dir,
+            provider_repo,
+            provider_model_repo,
+            encryption_key,
+            client_prefs,
+            None,
+            None,
+        )
+    }
+
+    pub fn with_session_binding(
+        data_dir: PathBuf,
+        provider_repo: Arc<dyn IProviderRepository>,
+        provider_model_repo: Arc<dyn IProviderModelRepository>,
+        encryption_key: [u8; 32],
+        client_prefs: Arc<dyn IClientPreferenceRepository>,
+        session_bridge: Option<Arc<dyn EvalSessionBridge>>,
+        trace_hub: Option<Arc<AgentTraceHub>>,
+    ) -> Self {
         Self {
             data_dir,
             provider_repo,
             provider_model_repo,
             encryption_key,
             client_prefs,
+            session_bridge,
+            trace_hub,
             inner: AsyncMutex::new(LabInner { active: None }),
         }
     }
@@ -100,7 +126,11 @@ impl EvalLab {
         })
     }
 
-    pub async fn start_run(&self, request: StartEvalRunRequest) -> Result<EvalRunView, AppError> {
+    pub async fn start_run(
+        &self,
+        request: StartEvalRunRequest,
+        user_id: Option<String>,
+    ) -> Result<EvalRunView, AppError> {
         self.require_developer_mode().await?;
         let suite = request.suite.trim().to_owned();
         if suite.is_empty() {
@@ -122,12 +152,14 @@ impl EvalLab {
         let runs_dir = self.runs_dir();
         fs::create_dir_all(&runs_dir)
             .map_err(|e| AppError::Internal(format!("eval runs dir: {e}")))?;
+        let workspace_label = eval_run_workspace_label(&suite, &run_id);
         let work_root = self
             .data_dir
             .join("diagnostics/agent-evals/workspaces")
-            .join(&run_id);
+            .join(&workspace_label);
         fs::create_dir_all(&work_root)
             .map_err(|e| AppError::Internal(format!("eval work root: {e}")))?;
+        let workspace_path = work_root.to_string_lossy().into_owned();
 
         let view = EvalRunView {
             run_id: run_id.clone(),
@@ -144,6 +176,9 @@ impl EvalLab {
             summary: None,
             cases: Vec::new(),
             current_trace: None,
+            current_conversation_id: None,
+            workspace_label: Some(workspace_label.clone()),
+            workspace_path: Some(workspace_path),
         };
         let snapshot = Arc::new(Mutex::new(view.clone()));
         let cancel = Arc::new(AtomicBool::new(false));
@@ -162,6 +197,7 @@ impl EvalLab {
         let provider_repo = self.provider_repo.clone();
         let provider_model_repo = self.provider_model_repo.clone();
         let encryption_key = self.encryption_key;
+        let session_bridge = self.session_bridge.clone();
         let output = runs_dir.join(format!("{run_id}.jsonl"));
         let summary_path = runs_dir.join(format!("{run_id}.summary.json"));
         let summary_path_for_fail = summary_path.clone();
@@ -180,12 +216,16 @@ impl EvalLab {
                 limit,
                 task_profile,
                 work_root,
+                run_workspace_label: workspace_label,
                 traces_dir,
                 output,
                 summary_path,
                 snapshot: snapshot.clone(),
                 cancel,
                 live_trace,
+                run_id,
+                user_id,
+                session_bridge,
             })
             .await;
             if let Err(error) = result {
@@ -275,6 +315,69 @@ impl EvalLab {
         let trace: EvalCaseTrace = serde_json::from_str(&text)
             .map_err(|e| AppError::Internal(format!("parse eval trace: {e}")))?;
         Ok(trace_view(trace))
+    }
+
+    /// Session Observation projection for one eval case (same hub as real sessions).
+    pub async fn get_case_observation(
+        &self,
+        run_id: &str,
+        case_id: &str,
+        limit: Option<usize>,
+    ) -> Result<SessionObservationList, AppError> {
+        self.require_developer_mode().await?;
+        let conversation_id = self.resolve_case_conversation_id(run_id, case_id).await?;
+        let hub = self.trace_hub.as_ref().ok_or_else(|| {
+            AppError::Internal("session observation hub is not configured for eval lab".into())
+        })?;
+        hub.list_session_observations(&conversation_id, limit.unwrap_or(50).clamp(1, 200))
+            .await
+            .map_err(|error| error.into_app_error())
+    }
+
+    async fn resolve_case_conversation_id(
+        &self,
+        run_id: &str,
+        case_id: &str,
+    ) -> Result<String, AppError> {
+        let live = {
+            let guard = self.inner.lock().await;
+            match &guard.active {
+                Some(active) if lock_snapshot(&active.snapshot).run_id == run_id => {
+                    Some(active.live_trace.clone())
+                }
+                _ => None,
+            }
+        };
+        if let Some(live) = live {
+            let copy = live.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(slot) = copy.filter(|trace| trace.case_id == case_id) {
+                return Ok(slot.conversation_id);
+            }
+        }
+        let path = traces_dir_for(&self.runs_dir(), run_id)
+            .join(format!("{}.json", sanitize_case_dir(case_id)));
+        if path.exists() {
+            let text = fs::read_to_string(&path)
+                .map_err(|e| AppError::Internal(format!("read eval trace: {e}")))?;
+            let trace: EvalCaseTrace = serde_json::from_str(&text)
+                .map_err(|e| AppError::Internal(format!("parse eval trace: {e}")))?;
+            if let Some(conversation_id) = trace.conversation_id.filter(|id| !id.trim().is_empty()) {
+                return Ok(conversation_id);
+            }
+        }
+        let cases = load_case_views(
+            &self.runs_dir().join(format!("{run_id}.jsonl")),
+            &traces_dir_for(&self.runs_dir(), run_id),
+        )?;
+        cases
+            .into_iter()
+            .find(|case| case.case_id == case_id)
+            .and_then(|case| case.conversation_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "eval case {run_id}/{case_id} has no conversation_id yet"
+                ))
+            })
     }
 
     pub async fn cancel(&self, run_id: &str) -> Result<EvalRunView, AppError> {
@@ -378,12 +481,16 @@ struct RunEvalJob {
     limit: Option<usize>,
     task_profile: Option<String>,
     work_root: PathBuf,
+    run_workspace_label: String,
     traces_dir: PathBuf,
     output: PathBuf,
     summary_path: PathBuf,
     snapshot: Arc<Mutex<EvalRunView>>,
     cancel: Arc<AtomicBool>,
     live_trace: Arc<Mutex<Option<LiveEvalTrace>>>,
+    run_id: String,
+    user_id: Option<String>,
+    session_bridge: Option<Arc<dyn EvalSessionBridge>>,
 }
 
 async fn run_eval_job(job: RunEvalJob) -> Result<(), AppError> {
@@ -401,15 +508,21 @@ async fn run_eval_job(job: RunEvalJob) -> Result<(), AppError> {
     }
 
     let harness = Arc::new(LiveNomiHarness {
+        data_dir: job.data_dir.clone(),
         provider_repo: job.provider_repo,
         provider_model_repo: job.provider_model_repo,
         encryption_key: job.encryption_key,
         work_root: job.work_root,
+        run_workspace_label: job.run_workspace_label,
         traces_dir: job.traces_dir.clone(),
         provider_id: job.provider_id.clone(),
         model: job.model.clone(),
         profile_override: job.task_profile.clone(),
         live_trace: job.live_trace,
+        run_id: job.run_id,
+        suite: job.suite.clone(),
+        user_id: job.user_id,
+        session_bridge: job.session_bridge,
     });
 
     let snapshot = job.snapshot.clone();
@@ -471,6 +584,7 @@ async fn run_eval_job(job: RunEvalJob) -> Result<(), AppError> {
         view.failed = report.failed;
         view.current_case_id = None;
         view.current_trace = None;
+        view.current_conversation_id = None;
         view.cases = cases;
         view.summary = Some(EvalSummaryView {
             total_cases: summary.total_cases,
@@ -504,6 +618,7 @@ fn persist_summary(path: &Path, view: &EvalRunView) -> Result<(), AppError> {
     }
     let mut persisted = view.clone();
     persisted.current_trace = None;
+    persisted.current_conversation_id = None;
     fs::write(
         path,
         serde_json::to_string_pretty(&persisted).map_err(|e| AppError::Internal(e.to_string()))?,
@@ -552,6 +667,7 @@ fn load_case_views(path: &Path, traces_dir: &Path) -> Result<Vec<EvalCaseView>, 
             trajectory_event_count: row.trajectory_event_count,
             artifact_count: row.artifact_count,
             has_trace,
+            conversation_id: row.conversation_id,
         });
     }
     Ok(cases)
@@ -576,12 +692,14 @@ fn attach_live_trace(view: &mut EvalRunView, live: &Mutex<Option<LiveEvalTrace>>
         .clone();
     if let Some(trace) = copy {
         let case_id = trace.case_id.clone();
+        view.current_conversation_id = Some(trace.conversation_id.clone());
         view.current_trace = Some(trace_view(trace.snapshot()));
         if view.current_case_id.is_none() {
             view.current_case_id = Some(case_id);
         }
     } else {
         view.current_trace = None;
+        view.current_conversation_id = None;
     }
 }
 
@@ -613,6 +731,7 @@ fn trace_view(trace: EvalCaseTrace) -> EvalCaseTraceView {
                 preview: artifact.preview,
             })
             .collect(),
+        conversation_id: trace.conversation_id,
     }
 }
 

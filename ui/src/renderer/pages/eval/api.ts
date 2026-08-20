@@ -46,6 +46,7 @@ export type EvalCaseTraceView = {
   assistant_text: string;
   events: EvalTrajectoryEventView[];
   artifacts: EvalArtifactView[];
+  conversation_id?: string | null;
 };
 
 export type EvalCaseView = {
@@ -65,6 +66,7 @@ export type EvalCaseView = {
   trajectory_event_count?: number;
   artifact_count?: number;
   has_trace?: boolean;
+  conversation_id?: string | null;
 };
 
 export type EvalCategoryView = {
@@ -101,6 +103,9 @@ export type EvalRunView = {
   summary?: EvalSummaryView | null;
   cases: EvalCaseView[];
   current_trace?: EvalCaseTraceView | null;
+  current_conversation_id?: string | null;
+  workspace_label?: string | null;
+  workspace_path?: string | null;
 };
 
 export type StartEvalRunRequest = {
@@ -135,4 +140,31 @@ export const evalApi = {
       undefined,
       { silentStatuses: [403, 404] }
     ),
+  getCaseObservation: (runId: string, caseId: string, limit?: number) => {
+    const query = limit != null ? `?limit=${limit}` : '';
+    return httpRequest<{
+      recorder_health: { status: string; last_error?: string | null };
+      summary: {
+        turn_count: number;
+        model_call_count: number;
+        tool_count: number;
+        active_duration_ms: number;
+        integrity: string;
+        coverage: string;
+        max_event_seq: number;
+      };
+      turns: Array<{
+        root_turn_id: string;
+        session_kind?: string | null;
+        status?: string | null;
+        integrity?: string | null;
+        model_calls?: unknown[];
+      }>;
+    }>(
+      'GET',
+      `${BASE}/runs/${encodeURIComponent(runId)}/cases/${encodeURIComponent(caseId)}/observation${query}`,
+      undefined,
+      { silentStatuses: [403, 404] }
+    );
+  },
 };

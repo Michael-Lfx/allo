@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "corpus_version": "2026-08-20-agent-workflows-v1",
+  "suite": "agent_workflows",
+  "cases": [
+    {
+      "id": "synthesize-briefing",
+      "category": "multi_file_office",
+      "task_profile": "office",
+      "timeout_secs": 240,
+      "prompt": "You are an office agent. The workspace has three source notes: sales.txt, risk.txt, and ops.txt.\n\nRead all three, then write briefing.md that:\n1. Starts with a one-line Summary\n2. Has sections ## Sales, ## Risk, ## Ops (in that order)\n3. Mentions the revenue figure 4.2M, the risk owner Mira, and the ship date Friday\n4. Ends with exactly BRIEFING_OK on its own last line\n\nDo not invent numbers that contradict the sources. Do not write test files.",
+      "enabled": true,
+      "budgets": { "max_turns": 16, "max_tokens": 65536 },
+      "workspace_files": {
+        "sales.txt": "Q3 pipeline update\nclosed: Northwind renewal\nrevenue run-rate now 4.2M\nnext focus: upsell analytics pack\n",
+        "risk.txt": "open risks\n1. invoice template drift — owner Mira — mitigate by Friday freeze\n2. banner ads delayed (accepted)\n",
+        "ops.txt": "ops notes\nship window: Friday if QA green\ndesks stay assigned during office move\n"
+      },
+      "scorers": [
+        { "type": "tool_called", "name": "Read" },
+        { "type": "file_exists", "path": "briefing.md" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "## Sales" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "## Risk" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "## Ops" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "4.2M" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "Mira" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "Friday" },
+        { "type": "file_contains", "path": "briefing.md", "marker": "BRIEFING_OK" }
+      ],
+      "notes": "Multi-source read → structured write. Primary office multi-hop KPI."
+    },
+    {
+      "id": "fix-failing-tests",
+      "category": "debug_loop",
+      "task_profile": "coding",
+      "timeout_secs": 300,
+      "prompt": "The workspace is a tiny Python package. `calculator.py` is buggy and `test_calculator.py` currently fails.\n\nFix `calculator.py` so that `python -m pytest -q` exits 0. Do not weaken or delete the tests. Do not rewrite the test file except if a typo blocks collection (prefer fixing production code).",
+      "enabled": true,
+      "budgets": { "max_turns": 20, "max_tokens": 65536 },
+      "workspace_files": {
+        "calculator.py": "def add(a, b):\n    \"\"\"Return the sum of a and b.\"\"\"\n    return a - b\n\n\ndef clamp(value, low, high):\n    \"\"\"Clamp value into [low, high].\"\"\"\n    if value < low:\n        return high\n    if value > high:\n        return low\n    return value\n",
+        "test_calculator.py": "from calculator import add, clamp\n\n\ndef test_add():\n    assert add(2, 3) == 5\n    assert add(-1, 1) == 0\n\n\ndef test_clamp():\n    assert clamp(5, 0, 10) == 5\n    assert clamp(-1, 0, 10) == 0\n    assert clamp(99, 0, 10) == 10\n"
+      },
+      "scorers": [
+        { "type": "tool_called", "name": "Read" },
+        { "type": "python_module", "args": ["-m", "pytest", "-q"] },
+        { "type": "file_contains", "path": "calculator.py", "marker": "return a + b" }
+      ],
+      "notes": "Read → edit → verify with pytest. Local coding-agent loop without Docker."
+    },
+    {
+      "id": "csv-to-json-pipeline",
+      "category": "data_transform",
+      "task_profile": "coding",
+      "timeout_secs": 240,
+      "prompt": "Transform inventory.csv into inventory.json.\n\nRules:\n- inventory.json must be a JSON array of objects with keys sku, name, qty (qty as integer)\n- Skip the header row\n- Preserve row order\n- After writing the file, ensure `python -c \"import json; json.load(open('inventory.json')); print('PIPELINE_OK')\"` would succeed conceptually (the file must be valid JSON)\n- Create a one-line DONE.txt containing exactly PIPELINE_OK\n\nUse tools; do not only paste the answer in chat.",
+      "enabled": true,
+      "budgets": { "max_turns": 16, "max_tokens": 65536 },
+      "workspace_files": {
+        "inventory.csv": "sku,name,qty\nA-1,Widget,3\nB-2,Gadget,10\nC-3,Doohickey,0\n"
+      },
+      "scorers": [
+        { "type": "tool_called", "name": "Read" },
+        { "type": "file_exists", "path": "inventory.json" },
+        { "type": "file_contains", "path": "inventory.json", "marker": "\"sku\"" },
+        { "type": "file_contains", "path": "inventory.json", "marker": "Widget" },
+        { "type": "file_contains", "path": "inventory.json", "marker": "Doohickey" },
+        { "type": "file_contains", "path": "DONE.txt", "marker": "PIPELINE_OK" },
+        {
+          "type": "python_module",
+          "args": [
+            "-c",
+            "import json; data=json.load(open('inventory.json')); assert isinstance(data, list) and len(data)==3; assert data[0]['sku']=='A-1' and data[0]['qty']==3"
+          ]
+        }
+      ],
+      "notes": "Multi-step data pipeline with structural oracle."
+    },
+    {
+      "id": "refactor-and-document",
+      "category": "repo_hygiene",
+      "task_profile": "coding",
+      "timeout_secs": 300,
+      "prompt": "The workspace has messy.py with duplicated logic and a README.md that is stale.\n\nTasks:\n1. Refactor messy.py so helpers live in helpers.py (import them from messy.py). Keep `run()` behavior identical.\n2. Update README.md Usage section to mention helpers.py\n3. Ensure `python -m pytest -q` passes\n4. Append REFACTOR_OK as the last line of README.md",
+      "enabled": true,
+      "budgets": { "max_turns": 22, "max_tokens": 65536 },
+      "workspace_files": {
+        "messy.py": "def _double(x):\n    return x * 2\n\n\ndef _label(n):\n    return f\"n={n}\"\n\n\ndef run(values):\n    out = []\n    for v in values:\n        out.append(_label(_double(v)))\n    return out\n",
+        "test_messy.py": "from messy import run\n\n\ndef test_run():\n    assert run([1, 2]) == [\"n=2\", \"n=4\"]\n",
+        "README.md": "# Tiny demo\n\n## Usage\n\nCall `messy.run` with a list of ints.\n"
+      },
+      "scorers": [
+        { "type": "file_exists", "path": "helpers.py" },
+        { "type": "file_contains", "path": "messy.py", "marker": "helpers" },
+        { "type": "file_contains", "path": "README.md", "marker": "helpers.py" },
+        { "type": "file_contains", "path": "README.md", "marker": "REFACTOR_OK" },
+        { "type": "python_module", "args": ["-m", "pytest", "-q"] }
+      ],
+      "notes": "Multi-file refactor + doc sync + test gate."
+    },
+    {
+      "id": "policy-safe-edit",
+      "category": "constrained_edit",
+      "task_profile": "office",
+      "timeout_secs": 180,
+      "prompt": "Edit policy.md in place.\n\nRequirements:\n- Keep the existing title line starting with '# '\n- Replace the body so it states that API keys must never be pasted into chat\n- Must include the phrase never paste secrets\n- Must NOT include the substring sk-\n- Last line must be exactly POLICY_OK\n- Do not create additional files",
+      "enabled": true,
+      "budgets": { "max_turns": 10, "max_tokens": 65536 },
+      "workspace_files": {
+        "policy.md": "# Secrets policy\n\nOld draft: engineers sometimes share sk-EXAMPLEKEY in tickets. Rewrite this.\n"
+      },
+      "scorers": [
+        { "type": "file_exists", "path": "policy.md" },
+        { "type": "file_contains", "path": "policy.md", "marker": "# " },
+        { "type": "file_contains", "path": "policy.md", "marker": "never paste secrets" },
+        { "type": "file_contains", "path": "policy.md", "marker": "POLICY_OK" },
+        {
+          "type": "command_exit_zero",
+          "command": "python -c \"t=open('policy.md',encoding='utf-8').read(); assert 'sk-' not in t; assert t.strip().endswith('POLICY_OK')\""
+        }
+      ],
+      "notes": "Constrained in-place edit with negative oracle (no secret markers)."
+    }
+  ]
+}

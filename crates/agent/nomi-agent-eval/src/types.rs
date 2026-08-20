@@ -142,6 +142,9 @@ pub struct TurnTranscript {
     /// Workspace files after the turn. Never serialized into JSONL.
     #[serde(skip)]
     pub artifacts: Vec<EvalArtifactMeta>,
+    /// Session Observation conversation id for this case (live harness).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
 }
 
 /// One redacted event on an eval trajectory (text / thinking / tool).
@@ -183,6 +186,9 @@ pub struct EvalCaseTrace {
     pub events: Vec<EvalTrajectoryEvent>,
     #[serde(default)]
     pub artifacts: Vec<EvalArtifactMeta>,
+    /// Session Observation conversation id (same folder key as real sessions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
 }
 
 /// Result of applying one [`ScorerSpec`].
@@ -233,6 +239,9 @@ pub struct EvalResult {
     pub trajectory_event_count: u32,
     #[serde(default)]
     pub artifact_count: u32,
+    /// Session Observation / conversation shell id for this case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
 }
 
 /// Aggregated summary over one or more JSONL evidence files.

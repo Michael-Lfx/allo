@@ -15,6 +15,7 @@ pub mod routes_aux;
 pub mod routes_trace;
 pub mod runtime_state;
 mod turn_gate;
+pub mod eval_session_bridge;
 pub mod service;
 mod service_ops;
 pub mod skill_resolver;
@@ -38,6 +39,7 @@ pub use execution_conversation_boundary::{
     ConversationExecutionProjection, ExecutionConversationBoundary, NoExecutionConversationBoundary,
     RepositoryExecutionConversationBoundary,
 };
+pub use eval_session_bridge::ConversationEvalSessionBridge;
 pub use routes::conversation_routes;
 pub use routes_aux::conversation_ops_routes;
 pub use routes_trace::conversation_trace_routes;

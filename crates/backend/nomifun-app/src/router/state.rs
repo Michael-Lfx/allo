@@ -599,6 +599,10 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
     conversation.service.with_supervision_hook(idmm_hook.clone());
     services.terminal_service.with_terminal_supervision_hook(idmm_hook);
     let execution_conversation = conversation.service.clone();
+    let eval_session_bridge = Arc::new(nomifun_conversation::ConversationEvalSessionBridge::new(
+        conversation.service.clone(),
+    )) as Arc<dyn nomifun_ai_agent::EvalSessionBridge>;
+    let eval_trace_hub = conversation.agent_trace_hub.clone();
     let system = build_system_state(services);
     if let Some(hub) = conversation.agent_trace_hub.clone() {
         let reset_hub = hub.clone();
@@ -616,7 +620,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         agent: AgentRouterState {
             agent_registry: services.agent_registry.clone(),
             service: agent_service,
-            eval_lab: Arc::new(EvalLab::new(
+            eval_lab: Arc::new(EvalLab::with_session_binding(
                 services.data_dir.clone(),
                 services.provider_repo.clone(),
                 services.provider_model_repo.clone(),
@@ -624,6 +628,8 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
                 Arc::new(SqliteClientPreferenceRepository::new(
                     services.database.pool().clone(),
                 )) as Arc<dyn nomifun_db::IClientPreferenceRepository>,
+                Some(eval_session_bridge),
+                eval_trace_hub,
             )),
         },
         connection_test: build_connection_test_state(),

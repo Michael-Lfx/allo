@@ -223,6 +223,7 @@ async fn run_manifest(
                     tool_error_count: transcript.tool_error_count,
                     trajectory_event_count: transcript.trajectory.len() as u32,
                     artifact_count: transcript.artifacts.len() as u32,
+                    conversation_id: transcript.conversation_id.clone(),
                 }
             }
             Err(err) => EvalResult {
@@ -253,6 +254,7 @@ async fn run_manifest(
                 tool_error_count: 0,
                 trajectory_event_count: 0,
                 artifact_count: 0,
+                conversation_id: None,
             },
         };
 

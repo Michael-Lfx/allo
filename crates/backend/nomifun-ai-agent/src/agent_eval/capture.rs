@@ -35,6 +35,7 @@ impl EvalCaptureSink {
             assistant_text,
             events,
             artifacts: Vec::new(),
+            conversation_id: None,
         }
     }
 }
