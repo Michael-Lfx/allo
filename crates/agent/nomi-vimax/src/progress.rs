@@ -12,8 +12,6 @@ pub type ProgressCallback = Arc<dyn Fn(&str, &str, Option<Value>) + Send + Sync>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
-    #[default]
-    Idle,
     Planning,
     Rendering,
     Succeeded,
@@ -21,6 +19,10 @@ pub enum RunStatus {
     Cancelled,
     /// App quit / crash while a job was active — not running; user can resume.
     Interrupted,
+    /// Also absorbs unknown persisted variants so one new status cannot fail the whole index.
+    #[default]
+    #[serde(other)]
+    Idle,
 }
 
 impl RunStatus {
