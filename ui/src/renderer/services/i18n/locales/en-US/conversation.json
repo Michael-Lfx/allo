@@ -881,6 +881,8 @@
     "inspectToolDefsHint": "Tool definitions sent to the model, not tool runs. Parameter schemas are not captured.",
     "inspectShowRaw": "Raw",
     "inspectShowScan": "Summary",
+    "scanEmptyMessages": "No messages",
+    "scanEmptyTools": "No tools",
     "role_user": "User",
     "role_assistant": "Assistant",
     "role_system": "System",

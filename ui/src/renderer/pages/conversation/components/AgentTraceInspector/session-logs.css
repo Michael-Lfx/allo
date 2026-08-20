@@ -722,6 +722,12 @@ button.session-logs-tile:hover {
   line-height: 18px;
 }
 
+.session-logs-scan__empty {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-text-3);
+}
+
 .session-logs-scan__omitted {
   font-size: 12px;
   line-height: 18px;

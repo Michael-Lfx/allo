@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { projectObservationScan } from './observationScan';
+import { joinOmittedMark, projectObservationScan } from './observationScan';
 
 describe('observationScan', () => {
   test('projects a user text message', () => {
@@ -129,6 +129,43 @@ describe('observationScan', () => {
     expect(result.rows[0]?.role).toBe('developer');
   });
 
+  test('treats an empty array as a scan list instead of omitted', () => {
+    expect(projectObservationScan([], 'messages')).toEqual({ kind: 'messages', rows: [] });
+    expect(projectObservationScan([], 'tools')).toEqual({ kind: 'tools', rows: [] });
+  });
+
+  test('adds image kind for tool_result screenshots without inventing pixels', () => {
+    const result = projectObservationScan(
+      [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'c1',
+              content: 'ok',
+              is_error: false,
+              images: [{ media_type: 'image/png', data: { omitted_reason: 'binary_payload' } }],
+            },
+          ],
+        },
+      ],
+      'messages'
+    );
+    expect(result.kind).toBe('messages');
+    if (result.kind !== 'messages') return;
+    expect(result.rows[0]?.kinds).toEqual(['tool_result', 'image']);
+    expect(result.rows[0]?.preview).toEqual({ kind: 'tool_result', text: 'ok', isError: false });
+    expect(result.rows[0]?.omittedReason).toBe('binary_payload');
+  });
+
+  test('joins omitted marks onto existing previews', () => {
+    expect(joinOmittedMark('图片 image/png', 'binary_payload', '已省略')).toBe(
+      '图片 image/png · 已省略 · binary_payload'
+    );
+    expect(joinOmittedMark('', 'event_size_limit', '已省略')).toBe('已省略 · event_size_limit');
+  });
+
   test('marks a whole messages payload omitted instead of an empty list', () => {
     expect(
       projectObservationScan(
@@ -161,6 +198,22 @@ describe('observationScan', () => {
         { index: 0, name: 'weather', description: 'Get weather\nMore detail that must not show', deferred: false },
         { index: 1, name: 'read_file', description: 'Read a file', deferred: true },
       ],
+    });
+  });
+
+  test('marks an omitted tool description instead of an empty string', () => {
+    const result = projectObservationScan(
+      [{ name: 'weather', description: { omitted_reason: 'event_size_limit' } }],
+      'tools'
+    );
+    expect(result.kind).toBe('tools');
+    if (result.kind !== 'tools') return;
+    expect(result.rows[0]).toEqual({
+      index: 0,
+      name: 'weather',
+      description: '',
+      deferred: false,
+      omittedReason: 'event_size_limit',
     });
   });
 

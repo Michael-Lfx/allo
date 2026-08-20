@@ -1213,6 +1213,8 @@ export type I18nKey =
   | 'conversation.agentTrace.role_tool'
   | 'conversation.agentTrace.role_user'
   | 'conversation.agentTrace.roundLabel'
+  | 'conversation.agentTrace.scanEmptyMessages'
+  | 'conversation.agentTrace.scanEmptyTools'
   | 'conversation.agentTrace.scanImage'
   | 'conversation.agentTrace.scanKindToolUse'
   | 'conversation.agentTrace.scanThinking'

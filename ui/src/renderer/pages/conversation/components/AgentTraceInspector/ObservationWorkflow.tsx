@@ -408,7 +408,13 @@ const RequestParamsStrip: React.FC<{ body: Record<string, unknown> }> = ({ body 
   );
 };
 
-function RequestInspector({ payload }: { payload: unknown }) {
+function RequestInspector({
+  payload,
+  resetKey,
+}: {
+  payload: unknown;
+  resetKey: string;
+}) {
   const { t } = useTranslation();
   const body = asRecord(canonicalRequestFromPayload(payload));
   if (!body) {
@@ -427,18 +433,21 @@ function RequestInspector({ payload }: { payload: unknown }) {
           hint={t('conversation.agentTrace.inspectSystemHint')}
           value={body.system ?? null}
           textValue={typeof body.system === 'string'}
+          resetKey={resetKey}
         />
         <ObservationJsonTree
           label={t('conversation.agentTrace.inspectMessages')}
           hint={t('conversation.agentTrace.inspectMessagesHint')}
           value={body.messages ?? null}
           scan='messages'
+          resetKey={resetKey}
         />
         <ObservationJsonTree
           label={t('conversation.agentTrace.inspectToolDefs')}
           hint={t('conversation.agentTrace.inspectToolDefsHint')}
           value={body.tools ?? null}
           scan='tools'
+          resetKey={resetKey}
         />
       </div>
       <OmittedNotes payload={payload} />
@@ -631,7 +640,7 @@ const CallInspector: React.FC<{
     );
   } else if (detail) {
     if (stage === 'request') {
-      inner = <RequestInspector payload={detail.request} />;
+      inner = <RequestInspector payload={detail.request} resetKey={detail.model_call_id} />;
     } else if (stage === 'response') {
       inner =
         detail.response == null ? (

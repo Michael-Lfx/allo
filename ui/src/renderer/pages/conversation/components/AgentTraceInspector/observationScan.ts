@@ -27,6 +27,7 @@ export type ToolDefScanRow = {
   name: string;
   description: string;
   deferred: boolean;
+  omittedReason?: string;
 };
 
 export type ObservationScanResult =
@@ -55,6 +56,30 @@ function stringField(value: unknown): { text?: string; omitted?: string } {
   const omitted = omittedReasonOf(value);
   if (omitted) return { omitted };
   return {};
+}
+
+export function joinOmittedMark(
+  text: string,
+  omittedReason: string | undefined,
+  omittedLabel: string
+): string {
+  const mark = omittedReason ? `${omittedLabel} · ${omittedReason}` : '';
+  return [text, mark].filter(Boolean).join(' · ');
+}
+
+function hasImages(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function omittedFromImages(images: unknown): string | undefined {
+  if (!Array.isArray(images)) return undefined;
+  for (const item of images) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const omitted = omittedReasonOf(record) ?? omittedReasonOf(record.data);
+    if (omitted) return omitted;
+  }
+  return undefined;
 }
 
 function kindPriority(kind: string): number {
@@ -86,8 +111,12 @@ function previewFromBlock(
   if (type === 'tool_result') {
     const field = stringField(block.content);
     const isError = block.is_error === true;
+    const imageOmitted = omittedFromImages(block.images);
     if (field.omitted) {
-      return { preview: { kind: 'tool_result', text: '', isError }, omitted: field.omitted };
+      return {
+        preview: { kind: 'tool_result', text: '', isError },
+        omitted: field.omitted ?? omitted ?? imageOmitted,
+      };
     }
     return {
       preview: {
@@ -95,7 +124,7 @@ function previewFromBlock(
         text: field.text ? field.text.trim() : '',
         isError,
       },
-      omitted,
+      omitted: omitted ?? imageOmitted,
     };
   }
   if (type === 'thinking') {
@@ -146,6 +175,9 @@ function scanMessageContent(content: unknown): Pick<
     if (!record) continue;
     const type = typeof record.type === 'string' ? record.type : '';
     if (type && !kinds.includes(type)) kinds.push(type);
+    if (type === 'tool_result' && hasImages(record.images) && !kinds.includes('image')) {
+      kinds.push('image');
+    }
     const scanned = previewFromBlock(record);
     if (!scanned) continue;
     if (scanned.omitted && !omittedReason) omittedReason = scanned.omitted;
@@ -183,12 +215,13 @@ function scanMessageRow(item: unknown, index: number): MessageScanRow {
 function scanToolRow(item: unknown, index: number): ToolDefScanRow {
   const record = asRecord(item);
   const name = typeof record?.name === 'string' ? record.name : '';
-  const description = typeof record?.description === 'string' ? record.description.trim() : '';
+  const field = stringField(record?.description);
   return {
     index,
     name,
-    description,
+    description: field.text ? field.text.trim() : '',
     deferred: record?.deferred === true,
+    omittedReason: field.omitted,
   };
 }
 

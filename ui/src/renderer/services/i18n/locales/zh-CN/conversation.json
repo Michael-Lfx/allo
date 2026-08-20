@@ -881,6 +881,8 @@
     "inspectToolDefsHint": "发给模型的工具定义，不是工具执行记录。参数 schema 未采集。",
     "inspectShowRaw": "原始",
     "inspectShowScan": "摘要",
+    "scanEmptyMessages": "没有消息",
+    "scanEmptyTools": "没有工具",
     "role_user": "用户",
     "role_assistant": "助手",
     "role_system": "系统",

@@ -190,8 +190,17 @@ describe('AgentTraceInspector', () => {
     expect(tree.includes('SortAmountDown')).toBe(true);
     expect(tree.includes('SortAmountUp')).toBe(true);
     expect(tree.includes("scan === 'messages'")).toBe(true);
+    expect(tree.includes('const renderBody')).toBe(true);
+    expect(tree.includes('{renderBody()}')).toBe(true);
+    expect(tree.includes('scanResetKey')).toBe(false);
+    expect(tree.includes('joinOmittedMark')).toBe(true);
+    expect(tree.includes('scanEmptyMessages')).toBe(true);
+    expect(tree.includes('scanEmptyTools')).toBe(true);
+    expect(tree.includes('if (value == null)')).toBe(true);
     expect(requestInspector.includes("scan='messages'")).toBe(true);
     expect(requestInspector.includes("scan='tools'")).toBe(true);
+    expect(requestInspector.includes('resetKey={resetKey}')).toBe(true);
+    expect(workflow.includes('resetKey={detail.model_call_id}')).toBe(true);
     const systemBlock = requestInspector.slice(
       requestInspector.indexOf('inspectSystem'),
       requestInspector.indexOf('inspectMessages'),
@@ -212,6 +221,7 @@ describe('AgentTraceInspector', () => {
     expect(css.includes('session-logs-json-tree__expander')).toBe(true);
     expect(css.includes('session-logs-scan__row')).toBe(true);
     expect(css.includes('session-logs-scan__tip')).toBe(true);
+    expect(css.includes('session-logs-scan__empty')).toBe(true);
     expect(tree.includes('getPopupContainer')).toBe(true);
     const jsonContainer = css.match(/^\.session-logs-json-tree__container\s*\{[^}]+\}/m)?.[0] ?? '';
     expect(jsonContainer.includes('background: transparent')).toBe(true);

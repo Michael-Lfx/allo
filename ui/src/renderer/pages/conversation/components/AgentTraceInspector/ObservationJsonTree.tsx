@@ -13,7 +13,7 @@ import 'react-json-view-lite/dist/index.css';
 import { copyText } from '@renderer/utils/ui/clipboard';
 import { formatJson } from './format';
 import {
-  omittedReasonOf,
+  joinOmittedMark,
   projectObservationScan,
   type MessagePreview,
   type MessageScanRow,
@@ -77,20 +77,6 @@ function asDisplayText(value: unknown): string | null {
   return null;
 }
 
-function scanResetKey(value: unknown, scan?: ObservationScanKind): string {
-  if (!scan) return '';
-  const omitted = omittedReasonOf(value);
-  if (omitted) return `o:${omitted}`;
-  if (!Array.isArray(value)) return 'u';
-  const first = value[0];
-  const record =
-    first != null && typeof first === 'object' && !Array.isArray(first)
-      ? (first as Record<string, unknown>)
-      : null;
-  const head = scan === 'messages' ? record?.role : record?.name;
-  return `${value.length}:${String(head ?? '')}`;
-}
-
 function kindLabel(kind: string, t: Translate): string {
   if (kind === 'text') return t('conversation.agentTrace.partText');
   if (kind === 'tool_use') return t('conversation.agentTrace.scanKindToolUse');
@@ -138,6 +124,13 @@ function roleLabel(role: string, t: Translate): string {
 
 const TreeBody: React.FC<{ value: unknown; forceText?: boolean }> = ({ value, forceText }) => {
   const { t } = useTranslation();
+  if (value == null) {
+    return (
+      <pre className='session-logs-json-tree__text'>
+        {t('conversation.agentTrace.previewMissing')}
+      </pre>
+    );
+  }
   const text = asDisplayText(value);
   if (forceText || text != null) {
     return (
@@ -211,10 +204,11 @@ const MessageScanList: React.FC<{ rows: MessageScanRow[]; newestFirst: boolean }
     <ol className='session-logs-scan'>
       {ordered.map((row) => {
         const preview =
-          formatMessagePreview(row, t) ||
-          (row.omittedReason
-            ? `${t('conversation.agentTrace.omittedField')} · ${row.omittedReason}`
-            : t('conversation.agentTrace.previewMissing'));
+          joinOmittedMark(
+            formatMessagePreview(row, t),
+            row.omittedReason,
+            t('conversation.agentTrace.omittedField')
+          ) || t('conversation.agentTrace.previewMissing');
         return (
           <li key={row.index} className='session-logs-scan__row'>
             <span className='session-logs-scan__role'>{roleLabel(row.role, t) || '-'}</span>
@@ -240,11 +234,29 @@ const ToolScanList: React.FC<{ rows: ToolDefScanRow[] }> = ({ rows }) => {
               </span>
             ) : null}
           </span>
-          <ScanPreview text={firstLine(row.description)} tip={row.description} />
+          <ScanPreview
+            text={joinOmittedMark(
+              firstLine(row.description),
+              row.omittedReason,
+              t('conversation.agentTrace.omittedField')
+            )}
+            tip={joinOmittedMark(
+              row.description,
+              row.omittedReason,
+              t('conversation.agentTrace.omittedField')
+            )}
+          />
         </li>
       ))}
     </ol>
   );
+};
+
+const EmptyScan: React.FC<{ labelKey: 'scanEmptyMessages' | 'scanEmptyTools' }> = ({
+  labelKey,
+}) => {
+  const { t } = useTranslation();
+  return <div className='session-logs-scan__empty'>{t(`conversation.agentTrace.${labelKey}`)}</div>;
 };
 
 const ScanBody: React.FC<{ result: ObservationScanResult; newestFirst: boolean }> = ({
@@ -253,9 +265,13 @@ const ScanBody: React.FC<{ result: ObservationScanResult; newestFirst: boolean }
 }) => {
   if (result.kind === 'omitted') return <OmittedScan reason={result.reason} />;
   if (result.kind === 'messages') {
+    if (result.rows.length === 0) return <EmptyScan labelKey='scanEmptyMessages' />;
     return <MessageScanList rows={result.rows} newestFirst={newestFirst} />;
   }
-  if (result.kind === 'tools') return <ToolScanList rows={result.rows} />;
+  if (result.kind === 'tools') {
+    if (result.rows.length === 0) return <EmptyScan labelKey='scanEmptyTools' />;
+    return <ToolScanList rows={result.rows} />;
+  }
   return null;
 };
 
@@ -266,6 +282,8 @@ export interface ObservationJsonTreeProps {
   /** Render strings and primitives as text even when wrapping objects exist. */
   textValue?: boolean;
   scan?: ObservationScanKind;
+  /** Call/tile identity. Poll updates must not pass a new key. */
+  resetKey?: string;
 }
 
 const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
@@ -274,6 +292,7 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
   hint,
   textValue = false,
   scan,
+  resetKey = '',
 }) => {
   const { t } = useTranslation();
   const [maximized, setMaximized] = useState(false);
@@ -286,7 +305,6 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
     [scan, value]
   );
   const canScan = scan != null && scanResult.kind !== 'unscannable';
-  const resetKey = scanResetKey(value, scan);
 
   useEffect(() => {
     setShowRaw(false);
@@ -307,7 +325,7 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
     ? t('conversation.agentTrace.newestFirst')
     : t('conversation.agentTrace.oldestFirst');
 
-  const body =
+  const renderBody = () =>
     canScan && !showRaw ? (
       <ScanBody result={scanResult} newestFirst={newestFirst} />
     ) : (
@@ -381,7 +399,7 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
           </Tooltip>
         </div>
       </div>
-      <div className='session-logs-json-tree__body'>{body}</div>
+      <div className='session-logs-json-tree__body'>{renderBody()}</div>
       <Modal
         title={label}
         visible={maximized}
@@ -390,7 +408,7 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
         unmountOnExit
         style={{ width: 'min(920px, 92vw)' }}
       >
-        <div className='session-logs-json-tree session-logs-json-tree--modal'>{body}</div>
+        <div className='session-logs-json-tree session-logs-json-tree--modal'>{renderBody()}</div>
       </Modal>
     </div>
   );
