@@ -5,6 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.0.3 - 2026-08-20
+
+- Workspace Files, Changes, Shell, and the collaboration canvas open as mixed tabs in the preview strip; closing a tab restores the previous view.
+- Vimax splits long scripts into scenes, resumes from the real checkpoint, and keeps recent projects when the session index is damaged.
+- Capability hubs use quieter Discover/Installed chrome. Scheduled tasks open faster on first visit.
+
 ## v1.0.2 - 2026-08-19
 
 - Session Logs replaces Agent Trace. Developer mode inspects conversations; closing it hides the inspector but recording continues.
