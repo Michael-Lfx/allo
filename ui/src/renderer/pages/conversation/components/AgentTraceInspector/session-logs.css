@@ -22,10 +22,11 @@
 }
 
 .session-logs-metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 20px;
+  margin-top: 8px;
 }
 
 .session-logs-metrics__item {
@@ -74,30 +75,34 @@
 }
 
 .session-logs-glossary {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: max-content minmax(8em, 1fr);
+  column-gap: 16px;
+  row-gap: 10px;
+  align-items: baseline;
   margin: 0;
-  max-width: 280px;
+  min-width: 240px;
+  max-width: 320px;
 }
 
 .session-logs-glossary__item {
-  min-width: 0;
+  display: contents;
 }
 
 .session-logs-glossary dt {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 16px;
+  line-height: 18px;
   color: var(--color-text-2);
+  white-space: nowrap;
 }
 
 .session-logs-glossary dd {
-  margin: 4px 0 0;
+  margin: 0;
+  min-width: 0;
   font-size: 12px;
   line-height: 18px;
   color: var(--color-text-1);
-  white-space: pre-line;
 }
 
 .session-logs-health {
@@ -123,7 +128,7 @@
 
 .session-logs-nav__header {
   flex-shrink: 0;
-  padding: 12px var(--session-logs-gutter);
+  padding: 8px var(--session-logs-gutter) 10px;
   border-bottom: 1px solid var(--color-border-1);
   background: var(--color-bg-1);
 }
@@ -135,10 +140,15 @@
   gap: 8px;
 }
 
+.session-logs-nav__toolbar .session-logs-info {
+  margin-left: -4px;
+}
+
 .session-logs-nav__toolbar-actions {
   display: flex;
   align-items: center;
   gap: 2px;
+  margin-right: -4px;
 }
 
 .session-logs-nav.is-collapsed {
@@ -148,6 +158,12 @@
 .session-logs-nav.is-collapsed .session-logs-nav__header {
   padding: 8px 6px;
   border-bottom: 0;
+}
+
+.session-logs-nav.is-collapsed .session-logs-nav__toolbar .session-logs-info,
+.session-logs-nav.is-collapsed .session-logs-nav__toolbar-actions {
+  margin-left: 0;
+  margin-right: 0;
 }
 
 .session-logs-nav.is-collapsed .session-logs-nav__toolbar {
@@ -171,27 +187,27 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px var(--session-logs-gutter) 12px;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
 }
 
 .session-logs-nav__item {
+  box-sizing: border-box;
   width: 100%;
-  padding: 8px 0;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  padding: 8px var(--session-logs-gutter);
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text-1) 10%, var(--color-border-2));
+  border-radius: 0;
   background: transparent;
   text-align: left;
   cursor: pointer;
-  transition:
-    background-color 120ms var(--ease-out-expo),
-    border-color 120ms var(--ease-out-expo);
+  transition: background-color 120ms var(--ease-out-expo);
 }
 
-.session-logs-nav__item:not(:last-child):not(.is-active) {
-  border-bottom-color: color-mix(in srgb, var(--color-text-1) 10%, var(--color-border-2));
+.session-logs-nav__item:last-child {
+  border-bottom: 0;
 }
 
 .session-logs-nav__item:hover {
@@ -200,7 +216,6 @@
 
 .session-logs-nav__item.is-active {
   background: color-mix(in srgb, rgb(var(--primary-6)) 12%, var(--color-bg-1));
-  border-color: color-mix(in srgb, rgb(var(--primary-6)) 28%, var(--color-border-2));
 }
 
 .session-logs-nav__item.is-active:hover {
@@ -534,23 +549,6 @@ button.session-logs-tile:hover {
   min-width: 0;
 }
 
-.session-logs-request-params__lead {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
-  min-width: 0;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 16px;
-  color: var(--color-text-2);
-}
-
-.session-logs-request-params__lead .session-logs-info {
-  width: 16px;
-  height: 16px;
-}
-
 .session-logs-request-params__list {
   display: contents;
   margin: 0;
@@ -768,7 +766,7 @@ button.session-logs-tile:hover {
   }
 
   .session-logs-nav.is-collapsed .session-logs-metrics {
-    display: grid;
+    display: flex;
   }
 
   .session-logs-nav.is-collapsed .session-logs-health {
@@ -790,16 +788,20 @@ button.session-logs-tile:hover {
     overflow-y: hidden;
     flex: 0 0 auto;
     gap: 8px;
+    padding: 8px var(--session-logs-gutter);
   }
 
   .session-logs-nav__item {
     min-width: 180px;
     max-width: 240px;
     flex: 0 0 auto;
+    padding: 8px 12px;
+    border: 1px solid var(--color-border-2);
+    border-radius: 8px;
   }
 
-  .session-logs-nav__item:not(:last-child):not(.is-active) {
-    border-bottom-color: transparent;
+  .session-logs-nav__item.is-active {
+    border-color: color-mix(in srgb, rgb(var(--primary-6)) 28%, var(--color-border-2));
   }
 
   .session-logs-inspector__grid {

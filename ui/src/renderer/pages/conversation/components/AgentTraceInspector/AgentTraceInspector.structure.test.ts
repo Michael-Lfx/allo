@@ -67,6 +67,8 @@ describe('AgentTraceInspector', () => {
     expect(inspector.includes('glossaryAria')).toBe(true);
     expect(inspector.includes('session-logs-glossary')).toBe(true);
     expect(inspector.includes('session-logs-glossary__item')).toBe(true);
+    expect(css.includes('grid-template-columns: max-content minmax(8em, 1fr)')).toBe(true);
+    expect(css.includes('display: contents')).toBe(true);
     expect(inspector.includes('metricTurnHint')).toBe(true);
     expect(inspector.includes('metricModelHint')).toBe(true);
     expect(inspector.includes('metricToolHint')).toBe(true);
@@ -91,13 +93,14 @@ describe('AgentTraceInspector', () => {
     expect(css.includes('rgb(var(--primary-6)) 8%')).toBe(false);
     expect(css.includes('rgb(var(--primary-6)) 12%')).toBe(true);
     expect(css.includes('rgb(var(--primary-6)) 16%')).toBe(true);
-    expect(css.includes('.session-logs-nav__item:not(:last-child):not(.is-active)')).toBe(true);
-    expect(/\.session-logs-nav__list\s*\{[^}]*gap: 8px/s.test(css)).toBe(true);
+    expect(css.includes('.session-logs-nav__item:not(:last-child):not(.is-active)')).toBe(false);
+    expect(/\.session-logs-nav__list\s*\{[^}]*gap: 0/s.test(css)).toBe(true);
     expect(css.includes('container-name: session-logs')).toBe(true);
     expect(css.includes('session-logs-nav__list')).toBe(true);
     expect(css.includes('@container session-logs (max-width: 720px)')).toBe(true);
     expect(css.includes('--session-logs-gutter: 16px')).toBe(true);
-    expect(css.includes('padding: 12px var(--session-logs-gutter)')).toBe(true);
+    expect(css.includes('padding: 8px var(--session-logs-gutter) 10px')).toBe(true);
+    expect(css.includes('padding: 8px var(--session-logs-gutter)')).toBe(true);
     expect(css.includes('session-logs-order')).toBe(false);
   });
 
@@ -157,6 +160,13 @@ describe('AgentTraceInspector', () => {
       workflow.indexOf('function ResponseInspector'),
     );
     expect(requestInspector.includes('inspectRequestParams')).toBe(true);
+    expect(requestInspector.includes('inspectRequestParamsHint')).toBe(false);
+    const paramsListAt = requestInspector.indexOf('session-logs-request-params__list');
+    const paramsCopyAt = requestInspector.indexOf('session-logs-request-params__copy');
+    expect(paramsListAt).toBeGreaterThan(-1);
+    expect(paramsCopyAt).toBeGreaterThan(paramsListAt);
+    expect(requestInspector.includes('session-logs-request-params__lead')).toBe(false);
+    expect(requestInspector.includes('session-logs-info')).toBe(false);
     expect(requestInspector.includes('max_tokens')).toBe(true);
     expect(requestInspector.includes('temperature')).toBe(true);
     expect(requestInspector.includes('reasoning_effort')).toBe(true);
@@ -220,7 +230,8 @@ describe('AgentTraceInspector', () => {
     expect(workflow.includes('useOpenTransition')).toBe(true);
     expect(workflow.includes('lastDetailRef')).toBe(true);
     expect(workflow.includes('panelDetail')).toBe(true);
-    expect(workflow.includes('session-logs-request-params__lead')).toBe(true);
+    expect(workflow.includes('session-logs-request-params__lead')).toBe(false);
+    expect(workflow.includes('session-logs-request-params__main')).toBe(false);
     expect(workflow.includes("items.map((item, index)")).toBe(false);
     expect(css.includes('scrollbar-gutter: stable')).toBe(true);
     expect(css.includes('::-webkit-scrollbar')).toBe(false);
@@ -230,7 +241,8 @@ describe('AgentTraceInspector', () => {
     expect(css.includes('grid-template-rows: 0fr')).toBe(true);
     expect(css.includes('@media (prefers-reduced-motion: reduce)')).toBe(true);
     expect(css.includes('session-logs-request-params')).toBe(true);
-    expect(css.includes('session-logs-request-params__lead')).toBe(true);
+    expect(css.includes('session-logs-request-params__lead')).toBe(false);
+    expect(css.includes('session-logs-request-params__main')).toBe(false);
     expect(css.includes('display: contents')).toBe(true);
     const jsonToolbar = css.match(/^\.session-logs-json-tree__toolbar\s*\{[^}]+\}/m)?.[0] ?? '';
     expect(jsonToolbar.includes('rgb(var(--primary-6)) 12%')).toBe(true);

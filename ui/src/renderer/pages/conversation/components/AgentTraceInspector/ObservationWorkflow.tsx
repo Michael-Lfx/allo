@@ -8,7 +8,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button, Message, Modal, Spin, Tooltip } from '@arco-design/web-react';
-import { Copy, Down, FullScreen, Info, Up } from '@icon-park/react';
+import { Copy, Down, FullScreen, Up } from '@icon-park/react';
 import { copyText } from '@renderer/utils/ui/clipboard';
 import { formatClock, formatDurationMs, formatJson, turnToolCount } from './format';
 import {
@@ -370,9 +370,9 @@ const RequestParamsStrip: React.FC<{ body: Record<string, unknown> }> = ({ body 
   }
   if (items.length === 0) return null;
 
-  const hint = t('conversation.agentTrace.inspectRequestParamsHint');
-  const paramsLabel = t('conversation.agentTrace.inspectRequestParams');
-  const copyLabel = t('conversation.agentTrace.copyField', { label: paramsLabel });
+  const copyLabel = t('conversation.agentTrace.copyField', {
+    label: t('conversation.agentTrace.inspectRequestParams'),
+  });
   const copyPayload = formatJson(params);
 
   const onCopy = async () => {
@@ -386,24 +386,6 @@ const RequestParamsStrip: React.FC<{ body: Record<string, unknown> }> = ({ body 
 
   return (
     <div className='session-logs-request-params'>
-      <div className='session-logs-request-params__lead'>
-        <span>{paramsLabel}</span>
-        <Tooltip content={hint}>
-          <button type='button' className='session-logs-info' aria-label={hint}>
-            <Info theme='outline' size='12' strokeWidth={3} />
-          </button>
-        </Tooltip>
-        <Tooltip content={copyLabel}>
-          <Button
-            type='text'
-            size='mini'
-            className='session-logs-json-tree__icon-btn session-logs-request-params__copy'
-            icon={<Copy theme='outline' size='12' strokeWidth={3} />}
-            onClick={() => void onCopy()}
-            aria-label={copyLabel}
-          />
-        </Tooltip>
-      </div>
       <dl className='session-logs-request-params__list'>
         {items.map((item) => (
           <div key={item.key} className='session-logs-request-params__item'>
@@ -412,6 +394,16 @@ const RequestParamsStrip: React.FC<{ body: Record<string, unknown> }> = ({ body 
           </div>
         ))}
       </dl>
+      <Tooltip content={copyLabel}>
+        <Button
+          type='text'
+          size='mini'
+          className='session-logs-json-tree__icon-btn session-logs-request-params__copy'
+          icon={<Copy theme='outline' size='12' strokeWidth={3} />}
+          onClick={() => void onCopy()}
+          aria-label={copyLabel}
+        />
+      </Tooltip>
     </div>
   );
 };

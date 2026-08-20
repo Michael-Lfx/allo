@@ -1154,7 +1154,6 @@ export type I18nKey =
   | 'conversation.agentTrace.inspectReasoning'
   | 'conversation.agentTrace.inspectReasoningHint'
   | 'conversation.agentTrace.inspectRequestParams'
-  | 'conversation.agentTrace.inspectRequestParamsHint'
   | 'conversation.agentTrace.inspectRequestTitle'
   | 'conversation.agentTrace.inspectResponseTitle'
   | 'conversation.agentTrace.inspectResult'
