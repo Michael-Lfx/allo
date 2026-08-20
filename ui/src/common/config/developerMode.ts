@@ -49,7 +49,10 @@ export function nextDeveloperModeRevealTap(currentTaps: number): {
   const taps = currentTaps + 1;
   return {
     taps,
-    justRevealed: taps === DEVELOPER_MODE_REVEAL_TAP_COUNT,
+    // `>=` so a failed persist that already advanced the counter can retry
+    // without reloading the page. Success still no-ops in the About handler
+    // once `uiEnabled` flips.
+    justRevealed: taps >= DEVELOPER_MODE_REVEAL_TAP_COUNT,
   };
 }
 

@@ -46,5 +46,6 @@ describe('public contact links', () => {
     expect(aboutSource.includes('handleAboutTitleClick')).toBe(true);
     expect(aboutSource.includes('system.developerModeUiRevealed')).toBe(true);
     expect(aboutSource.includes('DeveloperModeSetting')).toBe(false);
+    expect(aboutSource.includes('setTaps(DEVELOPER_MODE_REVEAL_TAP_COUNT - 1)')).toBe(true);
   });
 });

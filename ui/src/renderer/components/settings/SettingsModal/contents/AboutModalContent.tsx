@@ -3,7 +3,10 @@ import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Message } from '@arco-design/web-react';
 import { httpGet } from '@/common/adapter/httpBridge';
-import { nextDeveloperModeRevealTap } from '@/common/config/developerMode';
+import {
+  DEVELOPER_MODE_REVEAL_TAP_COUNT,
+  nextDeveloperModeRevealTap,
+} from '@/common/config/developerMode';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import {
@@ -49,6 +52,7 @@ const AboutModalContent: React.FC = () => {
         Message.success(t('settings.developerMode.revealed'));
       })
       .catch(() => {
+        setTaps(DEVELOPER_MODE_REVEAL_TAP_COUNT - 1);
         Message.error(t('settings.developerMode.enableFailed'));
       });
   };

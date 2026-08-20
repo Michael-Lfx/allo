@@ -59,7 +59,7 @@ describe('developerMode', () => {
     expect(nextDeveloperModeRevealTap(0)).toEqual({ taps: 1, justRevealed: false });
     expect(nextDeveloperModeRevealTap(3)).toEqual({ taps: 4, justRevealed: false });
     expect(nextDeveloperModeRevealTap(4)).toEqual({ taps: 5, justRevealed: true });
-    expect(nextDeveloperModeRevealTap(5)).toEqual({ taps: 6, justRevealed: false });
+    expect(nextDeveloperModeRevealTap(5)).toEqual({ taps: 6, justRevealed: true });
   });
 
   test('a revealed pref shows developer-mode UI in production packages', () => {
