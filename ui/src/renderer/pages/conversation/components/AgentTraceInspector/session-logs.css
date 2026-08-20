@@ -650,6 +650,118 @@ button.session-logs-tile:hover {
   scrollbar-gutter: stable;
 }
 
+.session-logs-scan {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.session-logs-scan__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 28px;
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text-1) 10%, var(--color-border-2));
+}
+
+.session-logs-scan__row:last-child {
+  border-bottom: 0;
+}
+
+.session-logs-scan__role,
+.session-logs-scan__name {
+  flex: 0 0 auto;
+  max-width: 42%;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-logs-scan__name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+
+.session-logs-scan__flag {
+  margin-left: 6px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-3);
+}
+
+.session-logs-scan__preview-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: block;
+}
+
+.session-logs-scan__preview {
+  display: block;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-logs-scan__tip {
+  max-width: 360px;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.session-logs-scan__omitted {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-text-2);
+}
+
+.session-logs-scan__omitted-title {
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+
+.session-logs-scan__mode {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0 6px;
+  height: 22px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+
+.session-logs-scan__mode:hover,
+.session-logs-scan__mode:focus-visible {
+  color: var(--color-text-1);
+}
+
+.session-logs-scan__mode[aria-pressed='true'] {
+  color: rgb(var(--primary-6));
+}
+
+.session-logs-json-tree--modal .session-logs-scan,
+.session-logs-json-tree--modal .session-logs-scan__omitted {
+  max-height: min(70vh, 640px);
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
 .session-logs-json-tree--modal {
   border: 0;
   border-radius: 0;

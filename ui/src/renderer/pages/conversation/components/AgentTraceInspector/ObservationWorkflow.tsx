@@ -432,11 +432,13 @@ function RequestInspector({ payload }: { payload: unknown }) {
           label={t('conversation.agentTrace.inspectMessages')}
           hint={t('conversation.agentTrace.inspectMessagesHint')}
           value={body.messages ?? null}
+          scan='messages'
         />
         <ObservationJsonTree
           label={t('conversation.agentTrace.inspectToolDefs')}
           hint={t('conversation.agentTrace.inspectToolDefsHint')}
           value={body.tools ?? null}
+          scan='tools'
         />
       </div>
       <OmittedNotes payload={payload} />

@@ -387,7 +387,7 @@ Trigger: writer persist-idle ≥30s and last scan ≥1h; or estimated total ≥1
 - 回合行：第 N 轮（按 `started_at_ms` 升序编号，与显示倒正向无关）、预览、时钟、模型/工具次数、时长。默认最新在上。  
 - Call 行 `useVirtualizer`，overscan 3–5。宽屏横轴可横滚。窄对话列（`@container` ~720px，按列宽不是 window）左列改横向回合条，检查器单列。  
 - 点瓦片才 GET call detail，不自动展开第一张；关详情 unmount。瓦片 `aria-expanded`。工具瓦片 title 用 `argument_preview`，无则 name。`最终回复` 是不可点文案终点，不是瓦片。  
-- Call 检查器：对象/数组用 `react-json-view-lite`（根与 `messages`/`tools` 数组展开，元素默认收起）；`{` / `}` 必须能开合（punctuation 转发到 expander，禁止自写树）。短 string 与响应 reasoning/content 直接展示；omitted 原样。复制用图标，禁止每块「复制 JSON」文案。详情字段是 hairline Raised 面板，不是灰底 dump。  
+- Call 检查器：对象/数组用 `react-json-view-lite`（根与 `messages`/`tools` 数组展开，元素默认收起）；`{` / `}` 必须能开合（punctuation 转发到 expander，禁止自写树）。`messages` / `tools` 默认扫描投影（role / 块类型 / 开头摘要，或工具名 + 描述），工具条「原始」才切回对象树；复制仍是 canonical JSON。短 string 与响应 reasoning/content 直接展示；omitted 原样。复制用图标，禁止每块「复制 JSON」文案。详情字段是 hairline Raised 面板，不是灰底 dump。  
 - 缓存：summary + ≤200 turn headers + `MAX_CALL_DETAIL_CACHE=2` LRU。换会话 `clear()`。切回对话保持 poll 与 LRU。  
 - Token 芯片：U3 只显示原始 `input_tokens` / cache_read / cache_write / output。不画未命中，不发明 `input_uncached`。  
 - omitted 字段必须可见，不得显示成「观测未记录 / 加载失败」。不展示 `msg=` / `turn=` / `mc-xxxx`。  

@@ -184,6 +184,19 @@ describe('AgentTraceInspector', () => {
     expect(tree.includes('shouldExpandObservationNode')).toBe(true);
     expect(tree.includes("field === 'messages'")).toBe(true);
     expect(tree.includes("field === 'tools'")).toBe(true);
+    expect(tree.includes('inspectShowRaw')).toBe(true);
+    expect(tree.includes('projectObservationScan')).toBe(true);
+    expect(tree.includes('newestFirst')).toBe(true);
+    expect(tree.includes('SortAmountDown')).toBe(true);
+    expect(tree.includes('SortAmountUp')).toBe(true);
+    expect(tree.includes("scan === 'messages'")).toBe(true);
+    expect(requestInspector.includes("scan='messages'")).toBe(true);
+    expect(requestInspector.includes("scan='tools'")).toBe(true);
+    const systemBlock = requestInspector.slice(
+      requestInspector.indexOf('inspectSystem'),
+      requestInspector.indexOf('inspectMessages'),
+    );
+    expect(systemBlock.includes('scan=')).toBe(false);
     expect(tree.includes('forwardPunctuationToggle')).toBe(true);
     expect(tree.includes(':scope > [role="button"]')).toBe(true);
     expect(tree.includes('session-logs-json-tree__punct')).toBe(true);
@@ -197,6 +210,9 @@ describe('AgentTraceInspector', () => {
     const css = readSource(new URL('./session-logs.css', import.meta.url));
     expect(css.includes('border: 1px solid var(--color-border-2)')).toBe(true);
     expect(css.includes('session-logs-json-tree__expander')).toBe(true);
+    expect(css.includes('session-logs-scan__row')).toBe(true);
+    expect(css.includes('session-logs-scan__tip')).toBe(true);
+    expect(tree.includes('getPopupContainer')).toBe(true);
     const jsonContainer = css.match(/^\.session-logs-json-tree__container\s*\{[^}]+\}/m)?.[0] ?? '';
     expect(jsonContainer.includes('background: transparent')).toBe(true);
     expect(jsonContainer.includes('color-text-1')).toBe(true);
