@@ -3,7 +3,7 @@
 > **文档状态：实施稿；U0–U5 已在 `feat/session-observation` 落地，现行语义以本文 + 源码为准**  
 > 日期：2026-08-19  
 > 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待、控制队满与 `try_enqueue` 对齐、§1 改为已落地/收口缺口。  
-> 分支：`feat/session-observation` 已合并；后续 follow-up 在 `feat/session-observation-followup`  
+> 分支：现行语义以源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准  
 > **作废：** 只做 Drawer 卡片的稿；功能打通但不写 IO 的稿；把执行失败写成 `integrity=degraded` 的稿；**control 优先消费 / 永久 tombstone 用于 Clear/Reset / 64KiB×256 神圣 / health 塞进 Session Summary / `turn/end` 等 50ms /「control 满时保证不丢 turn/end」。**  
 > **读者：** U0–U5 与 §9.1 已完成。合并后的现行语义以本文 + 源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准。  
 > **词汇**仍以 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 与提案第 7 节为准。本文补产品、投影与 writer 语义，不另起第三套领域。
@@ -102,7 +102,7 @@ Shutdown                    // drain → flush → 退出线程
 
 ### 0.4 队列内存预算（不变式是 16 MiB，不是 64 KiB 神圣）
 
-**现状：** `MAX_PREVIEW_CHARS=2000` 限制每个字符串。`llm_request_to_value` 在入队前即 stub `tools[].input_schema`（`omitted_reason=event_size_limit`，不 clone / 不 `to_vec` 测字节），并对 system / messages 预截断（inline media 不拷贝、不哈希）。`capture_and_size_cap` 仍是 128 KiB backstop。没有真实线上 P50/P95。
+**现状：** `MAX_PREVIEW_CHARS=2000` 限制每个字符串。`llm_request_to_value` 在入队前即 stub `tools[].input_schema`（`omitted_reason=input_schema_elided`，不 clone / 不 `to_vec` 测字节），并对 system / messages 预截断（inline media 不拷贝、不哈希；`byte_length` 为源字符串字节数）。`capture_and_size_cap` 仍是 128 KiB backstop。没有真实线上 P50/P95。
 
 **冻结：**
 

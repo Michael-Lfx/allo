@@ -49,15 +49,19 @@ pub fn capture_borrowed(value: &Value) -> Value {
 /// Capture then enforce the single-event byte budget. Size-limit omit is
 /// capture policy (`event_size_limit`) and must not be treated as integrity loss.
 pub fn capture_and_size_cap(value: Value) -> Value {
-    apply_event_size_budget(capture_borrowed(&value))
+    let captured = capture_borrowed(&value);
+    drop(value);
+    apply_event_size_budget(captured)
 }
 
 /// Media stub that does **not** copy or hash payload bytes.
+///
+/// `byte_length` is the source string's UTF-8 byte length (e.g. base64 text),
+/// not decoded media bytes.
 pub fn omitted_binary_payload(mime: &str, byte_length: u64) -> Value {
     serde_json::json!({
         "mime": mime,
         "byte_length": byte_length,
-        "sha256": "sha256:not_hashed",
         "omitted_reason": OMITTED_REASON_BINARY_PAYLOAD,
     })
 }
@@ -239,7 +243,6 @@ fn should_rewrite_media(map: &Map<String, Value>) -> bool {
 
 fn is_rewritten_media_metadata(value: &Value) -> bool {
     value.get("omitted_reason").and_then(Value::as_str) == Some(OMITTED_REASON_BINARY_PAYLOAD)
-        && value.get("sha256").is_some()
 }
 
 fn media_metadata(map: &Map<String, Value>, data: &str) -> Value {
@@ -307,6 +310,23 @@ mod tests {
         let twice = capture_canonical_request(once.clone());
         assert_eq!(once, twice);
         assert_eq!(twice["data"]["omitted_reason"], OMITTED_REASON_BINARY_PAYLOAD);
+    }
+
+    #[test]
+    fn omitted_binary_payload_skips_hash_and_survives_capture() {
+        let blob = "A".repeat(64);
+        let stub = omitted_binary_payload("image/png", blob.len() as u64);
+        assert_eq!(stub["omitted_reason"], OMITTED_REASON_BINARY_PAYLOAD);
+        assert_eq!(stub["byte_length"], blob.len() as u64);
+        assert!(stub.get("sha256").is_none());
+        let wrapped = json!({
+            "type": "image",
+            "media_type": "image/png",
+            "data": stub.clone()
+        });
+        let out = capture_borrowed(&wrapped);
+        assert_eq!(out["data"], stub);
+        assert!(out["data"].get("sha256").is_none());
     }
 
     #[test]

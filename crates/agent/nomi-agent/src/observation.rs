@@ -12,7 +12,7 @@ use nomi_agent_trace::{
     ObservationIds, ObservationRecorder, ObservationScope, RecorderError, EVENT_LLM_REQUEST,
     EVENT_LLM_RESPONSE, EVENT_OBSERVATION_GAP, EVENT_TOOL_EXECUTION_CANCELLED,
     EVENT_TOOL_EXECUTION_COMPLETED, EVENT_TOOL_EXECUTION_FAILED, EVENT_TOOL_EXECUTION_STARTED,
-    EVENT_TURN_END, EVENT_TURN_START, MAX_PREVIEW_CHARS, OMITTED_REASON_EVENT_SIZE_LIMIT,
+    EVENT_TURN_END, EVENT_TURN_START, MAX_PREVIEW_CHARS, OMITTED_REASON_INPUT_SCHEMA,
 };
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
@@ -482,8 +482,7 @@ fn observation_tool(tool: &ToolDef) -> Value {
         "name": tool.name,
         "description": redact_preview(&tool.description),
         "input_schema": json!({
-            "omitted_reason": OMITTED_REASON_EVENT_SIZE_LIMIT,
-            "captured_bytes": 0,
+            "omitted_reason": OMITTED_REASON_INPUT_SCHEMA,
         }),
         "deferred": tool.deferred,
     })
@@ -664,9 +663,12 @@ mod tests {
         assert_eq!(value["tools"][0]["name"], "bash");
         assert_eq!(
             value["tools"][0]["input_schema"]["omitted_reason"],
-            OMITTED_REASON_EVENT_SIZE_LIMIT
+            OMITTED_REASON_INPUT_SCHEMA
         );
-        assert_eq!(value["tools"][0]["input_schema"]["captured_bytes"], 0);
+        assert!(
+            value["tools"][0]["input_schema"].get("captured_bytes").is_none(),
+            "schema elision must not pretend a size-budget omit ran"
+        );
         assert!(
             request.tools[0].input_schema.to_string().contains(marker),
             "live request schema must stay intact"
@@ -739,6 +741,16 @@ mod tests {
         assert_eq!(
             value["messages"][0]["content"][0]["data"]["omitted_reason"],
             nomi_agent_trace::OMITTED_REASON_BINARY_PAYLOAD
+        );
+        assert!(
+            value["messages"][0]["content"][0]["data"]
+                .get("sha256")
+                .is_none(),
+            "emit path must not invent a media digest"
+        );
+        assert_eq!(
+            value["messages"][0]["content"][0]["data"]["byte_length"],
+            blob.len() as u64
         );
         match &request.messages[0].content[0] {
             ContentBlock::Image { data, .. } => assert_eq!(data.as_str(), blob),

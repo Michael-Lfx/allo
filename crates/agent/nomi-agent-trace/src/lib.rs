@@ -40,5 +40,6 @@ pub use recorder::{
 };
 pub use redact::{
     redact_preview, truncate_chars, MAX_PREVIEW_CHARS, OMITTED_REASON_EVENT_SIZE_LIMIT,
+    OMITTED_REASON_INPUT_SCHEMA,
 };
 pub use session::{classify_session_kind, is_session_dialogue};
