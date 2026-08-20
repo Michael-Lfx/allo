@@ -1,0 +1,53 @@
+{
+  "title": "Capability hub preview",
+  "subtitle": "A mock of Presets, Skills, MCP, and Plugins. Switch Now and Proposed. Nothing here is wired to real data.",
+  "now": "Now",
+  "proposed": "Proposed",
+  "light": "Light",
+  "dark": "Dark",
+  "discover": "Discover",
+  "installed": "Installed",
+  "myInstalled": "Installed",
+  "add": "Add",
+  "added": "Added",
+  "search": "Search {{hub}}",
+  "hint": "Proposed: two-row chrome, one accent, 12px cards. Now: the gray toolbar in production today.",
+  "tabs": {
+    "presets": "Presets",
+    "skills": "Skills",
+    "mcp": "MCP",
+    "plugins": "Plugins"
+  },
+  "cards": {
+    "1": {
+      "title": "Weekly report",
+      "body": "Pull overdue tasks and draft a one-page update.",
+      "tag": "Writing"
+    },
+    "2": {
+      "title": "SSH host check",
+      "body": "Probe the listed hosts and keep a short status note.",
+      "tag": "Ops"
+    },
+    "3": {
+      "title": "Inbox triage",
+      "body": "Group new requests by owner and open the first one.",
+      "tag": "Inbox"
+    },
+    "4": {
+      "title": "Local file search",
+      "body": "Find matching notes in the current workspace.",
+      "tag": "Files"
+    },
+    "5": {
+      "title": "Meeting recap",
+      "body": "Turn a transcript into decisions and next steps.",
+      "tag": "Notes"
+    },
+    "6": {
+      "title": "Release checklist",
+      "body": "Walk through the last-mile checks before a ship.",
+      "tag": "Ship"
+    }
+  }
+}

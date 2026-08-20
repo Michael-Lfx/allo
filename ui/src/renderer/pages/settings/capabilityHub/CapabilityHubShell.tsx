@@ -37,24 +37,30 @@ const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
 
   return (
     <CapabilityHubSearchContext.Provider value={{ searchQuery, setSearchQuery }}>
-      <HubPageShell hideHeader maxWidthClass='md:max-w-1200px' toolbar={
-        <CapabilityHubHeader
-          hub={hub}
-          view={view}
-          installedCount={installedCount}
-          searchQuery={searchQuery}
-          onSearchQueryChange={setSearchQuery}
-          onHubChange={(nextHub) => {
-            if (nextHub === hub) {
-              setView('market');
-              return;
-            }
-            goToHub(nextHub);
-          }}
-          onToggleInstalled={() => setView(view === 'installed' ? 'market' : 'installed')}
-          extraActions={extraActions}
-        />
-      }>
+      <HubPageShell
+        hideHeader
+        className='capability-hub-page md:!pt-20px md:!pb-28px'
+        maxWidthClass='md:max-w-1200px'
+        toolbarClassName='mb-8px'
+        toolbar={
+          <CapabilityHubHeader
+            hub={hub}
+            view={view}
+            installedCount={installedCount}
+            searchQuery={searchQuery}
+            onSearchQueryChange={setSearchQuery}
+            onHubChange={(nextHub) => {
+              if (nextHub === hub) {
+                setView('market');
+                return;
+              }
+              goToHub(nextHub);
+            }}
+            onToggleInstalled={() => setView(view === 'installed' ? 'market' : 'installed')}
+            extraActions={extraActions}
+          />
+        }
+      >
         {children}
       </HubPageShell>
     </CapabilityHubSearchContext.Provider>

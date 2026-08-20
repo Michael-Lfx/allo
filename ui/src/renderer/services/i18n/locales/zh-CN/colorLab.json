@@ -1,0 +1,84 @@
+{
+  "title": "色彩实验室",
+  "subtitle": "现在的产品壳是冷灰。下面四套方向只改颜色 token，布局不动。点选即可对比。",
+  "schemeLabel": "方向",
+  "mode": {
+    "light": "浅色",
+    "dark": "深色"
+  },
+  "compareLabel": "和现在对比",
+  "compareNow": "现在",
+  "compareCandidate": "候选",
+  "diagnosisTitle": "为什么会灰",
+  "diagnosisBody": "默认主题 Codex Neutral 把画布、侧栏和主按钮都做成同一套灰阶。品牌色 aou 也是灰蓝，而视觉系统里已经写好的青绿从未接到默认主题上。",
+  "applyHint": "这是原型。如果某一套方向对了，可以做成显示设置里的 CSS 主题，不必改布局。",
+  "tokensLabel": "色板",
+  "token": {
+    "canvas": "画布",
+    "rail": "侧栏",
+    "accent": "强调色",
+    "text": "文字"
+  },
+  "shell": {
+    "sessions": "会话",
+    "newChat": "新建",
+    "composer": "询问逾期任务",
+    "send": "发送",
+    "toolChip": "读取 requirements.json",
+    "approvalTitle": "编辑 src/tasks.ts",
+    "approvalBody": "按负责人归类逾期项，并打开第一条。",
+    "approve": "批准",
+    "skip": "跳过"
+  },
+  "nav": {
+    "chat": "会话",
+    "knowledge": "知识库",
+    "scheduled": "定时任务",
+    "settings": "设置"
+  },
+  "sessions": {
+    "1": {
+      "title": "工作区逾期任务",
+      "meta": "需求平台"
+    },
+    "2": {
+      "title": "SSH 主机探测",
+      "meta": "终端"
+    },
+    "3": {
+      "title": "周报草稿",
+      "meta": "写作"
+    }
+  },
+  "messages": {
+    "user": "把需求平台里逾期的任务列出来。",
+    "assistant": "有三条已经过期。我按负责人归好类，并打开了第一条。"
+  },
+  "schemes": {
+    "now": {
+      "name": "现在",
+      "pitch": "冷灰画布、灰侧栏、黑主按钮。当前默认。",
+      "fit": "对照基准。只有你想保持 IDE 式中性时才留下。"
+    },
+    "forest": {
+      "name": "森绿",
+      "pitch": "带绿的底、深色轨、青绿强调。视觉系统里已有这套色。",
+      "fit": "风险最低。把已经定义的 token 接到默认主题上。"
+    },
+    "cobalt": {
+      "name": "钴蓝",
+      "pitch": "暖纸底加明确的蓝操作色。还是现在的产品身份，只是不再灰。",
+      "fit": "最保守。最接近今天的蓝按钮。"
+    },
+    "inkTan": {
+      "name": "墨轨",
+      "pitch": "近黑侧栏对暖纸工作面。操作色用铁锈橙。",
+      "fit": "反差最大。四套里最不灰的一套。"
+    },
+    "olive": {
+      "name": "橄榄",
+      "pitch": "橄榄底加砖红操作色。比铁锈更收，比灰更有温度。",
+      "fit": "更有个性。如果森绿和钴蓝仍太像现在，看这一套。"
+    }
+  }
+}

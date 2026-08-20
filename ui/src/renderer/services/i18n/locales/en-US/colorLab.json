@@ -1,0 +1,84 @@
+{
+  "title": "Color lab",
+  "subtitle": "The default product shell is cool gray. These four directions only retune color tokens. Layout stays the same.",
+  "schemeLabel": "Direction",
+  "mode": {
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "compareLabel": "Compare with now",
+  "compareNow": "Now",
+  "compareCandidate": "Candidate",
+  "diagnosisTitle": "Why it reads gray",
+  "diagnosisBody": "The default Codex Neutral theme paints canvas, rail, and primary actions in the same gray scale. Brand aou is a muted blue-gray, and the teal already defined in the visual system never reaches the default theme.",
+  "applyHint": "This is a prototype. If one direction feels right, we can turn it into a Display Settings theme without changing layout.",
+  "tokensLabel": "Tokens",
+  "token": {
+    "canvas": "Canvas",
+    "rail": "Rail",
+    "accent": "Accent",
+    "text": "Text"
+  },
+  "shell": {
+    "sessions": "Sessions",
+    "newChat": "New",
+    "composer": "Ask about overdue tasks",
+    "send": "Send",
+    "toolChip": "Read requirements.json",
+    "approvalTitle": "Edit src/tasks.ts",
+    "approvalBody": "Group overdue items by owner and mark the first one open.",
+    "approve": "Approve",
+    "skip": "Skip"
+  },
+  "nav": {
+    "chat": "Chat",
+    "knowledge": "Knowledge",
+    "scheduled": "Scheduled",
+    "settings": "Settings"
+  },
+  "sessions": {
+    "1": {
+      "title": "Overdue workspace tasks",
+      "meta": "Requirements"
+    },
+    "2": {
+      "title": "SSH host probe",
+      "meta": "Terminal"
+    },
+    "3": {
+      "title": "Weekly report draft",
+      "meta": "Writing"
+    }
+  },
+  "messages": {
+    "user": "List overdue tasks in the requirements workspace.",
+    "assistant": "Three items are past due. I grouped them by owner and opened the first one."
+  },
+  "schemes": {
+    "now": {
+      "name": "Now",
+      "pitch": "Cool gray canvas, gray rail, black primary. The current default.",
+      "fit": "Baseline. Keep only if you want coding-IDE neutrality."
+    },
+    "forest": {
+      "name": "Forest",
+      "pitch": "Green-tinted surfaces, deep rail, teal accent already in the visual system.",
+      "fit": "Lowest risk. Finishes tokens the app already defines."
+    },
+    "cobalt": {
+      "name": "Cobalt",
+      "pitch": "Warm paper canvas with a clear blue action color. Same product identity, less gray.",
+      "fit": "Conservative. Closest to today's blue buttons."
+    },
+    "inkTan": {
+      "name": "Ink Tan",
+      "pitch": "Near-black rail against a warm paper work surface. Rust for actions.",
+      "fit": "Highest contrast. The least gray of the four."
+    },
+    "olive": {
+      "name": "Olive",
+      "pitch": "Olive-tinted surfaces with a brick action color. Quieter than rust, warmer than gray.",
+      "fit": "Distinctive. Use if Forest and Cobalt still feel too close to now."
+    }
+  }
+}

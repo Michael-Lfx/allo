@@ -280,13 +280,13 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
       ) : loading && items.length === 0 ? (
         <div
           aria-busy='true'
-          className='grid items-start gap-12px'
-          style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(270px, 100%), 1fr))' }}
+          className='grid items-start gap-16px'
+          style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))' }}
         >
           {Array.from({ length: 6 }, (_, index) => (
             <div
               key={index}
-              className='h-184px rounded-16px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-14px'
+              className='h-184px rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-18px'
             >
               <div className='h-34px w-full animate-pulse rounded-8px bg-[var(--color-fill-2)]' />
               <div className='mt-16px h-14px w-5/6 animate-pulse rounded bg-[var(--color-fill-2)]' />

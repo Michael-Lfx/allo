@@ -90,11 +90,11 @@ const MarketToolbar: React.FC<MarketToolbarProps> = ({
   }, [isMobile, sources]);
 
   return (
-    <div className='mb-20px flex flex-col gap-16px pt-20px' aria-labelledby={headingId}>
+    <div className='mb-16px flex flex-col gap-12px pt-4px' aria-labelledby={headingId}>
       <div ref={rowRef} className={`flex gap-12px ${isMobile ? 'flex-col' : 'items-start justify-between'}`}>
         <div ref={headingRef} className='min-w-0'>
           <h2 id={headingId} className='sr-only'>{title}</h2>
-          <p className='m-0 max-w-[680px] text-14px leading-relaxed text-t-secondary'>{description}</p>
+          <p className='m-0 max-w-[680px] text-13px leading-20px text-t-tertiary'>{description}</p>
         </div>
         <div ref={controlsRef} className={`relative flex min-w-0 flex-wrap items-center justify-end gap-10px ${isMobile ? 'w-full' : 'flex-shrink-0'}`}>
           <div ref={measureRef} aria-hidden='true' className='pointer-events-none absolute left-0 top-0 inline-flex invisible items-center gap-4px whitespace-nowrap rounded-12px border border-solid border-border-2 p-3px'>
@@ -109,9 +109,9 @@ const MarketToolbar: React.FC<MarketToolbarProps> = ({
               options={sources.map((source) => ({ value: source, label: `${marketSourceLabel(source)}${(sourceCounts[source] ?? 0) > 0 ? ` · ${sourceCounts[source]}` : ''}` }))}
             />
           ) : (
-            <div className='inline-flex max-w-full items-center gap-4px rounded-12px border border-solid border-border-2 bg-[var(--color-bg-2)] p-3px'>
+            <div className='inline-flex max-w-full items-center gap-4px rounded-12px bg-[var(--color-fill-2)] p-3px'>
               {sources.map((source) => (
-                <Button key={source} size='small' type={activeSource === source ? 'primary' : 'text'} data-testid={testId(`btn-{market}-source-${source}`)} className='!h-28px !rounded-9px !px-12px !text-12px !whitespace-nowrap' onClick={() => onSourceChange(source)}>
+                <Button key={source} size='small' type='text' data-testid={testId(`btn-{market}-source-${source}`)} className={`!h-28px !rounded-9px !px-12px !text-12px !whitespace-nowrap ${activeSource === source ? '!bg-[var(--color-bg-1)] !font-600 !text-t-primary' : '!text-t-secondary'}`} onClick={() => onSourceChange(source)}>
                   <span>{marketSourceLabel(source)}</span>
                   {(sourceCounts[source] ?? 0) > 0 && <span className='ml-4px text-10px font-normal opacity-65'>{sourceCounts[source]}</span>}
                 </Button>

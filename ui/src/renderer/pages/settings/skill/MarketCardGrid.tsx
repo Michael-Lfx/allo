@@ -9,8 +9,8 @@ type MarketCardGridProps = {
 const MarketCardGrid: React.FC<MarketCardGridProps> = ({ children, busy = false }) => (
   <div
     aria-busy={busy}
-    className='grid min-w-0 items-stretch gap-12px transition-opacity duration-120 motion-reduce:transition-none [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_200px]'
-    style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(270px, 100%), 1fr))' }}
+    className='grid min-w-0 items-stretch gap-16px transition-opacity duration-120 motion-reduce:transition-none [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_200px]'
+    style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))' }}
   >
     {children}
   </div>

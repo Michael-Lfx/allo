@@ -1,6 +1,6 @@
 /**
  * SkillCard — A grid item for the Skills Hub. Mirrors the PresetCard visual
- * language (rounded-16px bordered surface on bg-2, soft hover lift, fixed 2-line
+ * language (rounded-12px bordered surface on bg-2, quiet hover, fixed 2-line
  * description clamp, resolved tag-chip row capped at MAX_VISIBLE_TAGS + "+N", and
  * a hover-revealed action footer) but is tuned for skills:
  *   - a deterministic letter avatar (shared getAvatarColorClass), or a Lightning
@@ -125,11 +125,11 @@ const SkillCard: React.FC<SkillCardProps> = ({
         }
       }}
       className={[
-        'group relative flex flex-col rounded-16px border border-solid p-14px pb-42px cursor-pointer outline-none',
-        'transition-all duration-180',
+        'group relative flex flex-col rounded-12px border border-solid p-16px pb-42px cursor-pointer outline-none',
+        'transition-[background-color,border-color] duration-180',
         highlighted
-          ? 'border-[rgb(var(--primary-5))] bg-[var(--color-primary-light-1)] shadow-[0_0_0_3px_rgba(var(--primary-6),0.12)]'
-          : 'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:border-[var(--color-primary-light-4)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)]',
+          ? 'border-[rgb(var(--primary-5))] bg-[var(--color-primary-light-1)]'
+          : 'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:border-[var(--color-border-3)]',
       ].join(' ')}
     >
       {/* Header: avatar + name/badge */}

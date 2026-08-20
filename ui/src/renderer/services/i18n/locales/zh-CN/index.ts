@@ -52,6 +52,8 @@ import videoCanvas from './videoCanvas.json';
 import ssh from './ssh.json';
 import miniApps from './miniApps.json';
 import beautifulUiPreview from './beautifulUiPreview.json';
+import colorLab from './colorLab.json';
+import capabilityHubPreview from './capabilityHubPreview.json';
 
 export default {
   common,
@@ -103,4 +105,6 @@ export default {
   ssh,
   miniApps,
   beautifulUiPreview,
+  colorLab,
+  capabilityHubPreview,
 };

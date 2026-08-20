@@ -17,12 +17,12 @@ import { useTranslation } from 'react-i18next';
 /**
  * 卡片网格按「内容容器实际宽度」自动定列(auto-fill),而非视口断点 —— 设置内容
  * 面板被一级 rail + 二级 ContentSider 占去宽度,视口宽 ≠ 面板可用宽。设定卡片
- * 比 AgentCard 更厚(头像+名称+描述+标签+开关),取较宽的 232px 下限。
- * Card grids auto-fit columns to the actual container width (not viewport
+ * 比 AgentCard 更厚(头像+名称+描述+标签+开关),取较宽下限。
+ * Card grids auto-fill columns to the actual container width (not viewport
  * breakpoints): the settings pane is narrower than the viewport, so viewport
  * breakpoints over-column and clip cards on a narrow pane.
  */
-const CARD_GRID_COLS = 'repeat(auto-fit, minmax(min(270px, 100%), 1fr))';
+const CARD_GRID_COLS = 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))';
 
 type PresetListPanelProps = {
   presets: PresetListItem[];
@@ -192,7 +192,7 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
       />
 
       {filteredPresets.length > 0 ? (
-        <div className='grid gap-12px' style={{ gridTemplateColumns: CARD_GRID_COLS }}>
+        <div className='grid gap-16px' style={{ gridTemplateColumns: CARD_GRID_COLS }}>
           {filteredPresets.map((preset) => (
             <PresetCard
               key={preset.preset_id}

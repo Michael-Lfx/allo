@@ -10,7 +10,7 @@ describe('settings capability hubs responsive layout', () => {
     const market = read('./MarketSettingsPanel.tsx');
 
     for (const source of [skills, presets, market]) {
-      expect(source).toContain("minmax(min(270px, 100%), 1fr)");
+      expect(source).toContain("minmax(min(280px, 100%), 1fr)");
     }
     expect(skills).not.toContain("bg-fill-2 rounded-24px");
     expect(market).not.toContain("bg-fill-2 rounded-24px");

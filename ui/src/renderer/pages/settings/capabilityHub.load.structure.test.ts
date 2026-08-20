@@ -54,4 +54,18 @@ describe('capability hub load contracts', () => {
     expect(importMenu).not.toContain('useEffect');
     expect(panel).toContain('usePresetTags({ enabled: enableTagFilter })');
   });
+
+  test('capability hub chrome uses two-row discover and installed controls', () => {
+    const header = read('./capabilityHub/CapabilityHubHeader.tsx');
+    const shell = read('./capabilityHub/CapabilityHubShell.tsx');
+
+    expect(header).toContain('capability-hub-toolbar');
+    expect(header).toContain('capability-hub-segment');
+    expect(header).toContain("data-testid='capability-hub-installed'");
+    expect(header).toContain("data-testid='capability-hub-search'");
+    expect(header).toContain("settings.capabilityHub.discover");
+    expect(header).toContain("if (view === 'installed') onToggleInstalled()");
+    expect(header).toContain("if (view === 'market') onToggleInstalled()");
+    expect(shell).toContain("className='capability-hub-page md:!pt-20px md:!pb-28px'");
+  });
 });

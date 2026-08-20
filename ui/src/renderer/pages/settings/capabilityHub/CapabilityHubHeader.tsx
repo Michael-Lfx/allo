@@ -1,4 +1,3 @@
-import { Button } from '@arco-design/web-react';
 import { Puzzle, Robot, Search, Tool, ApplicationOne } from '@icon-park/react';
 import classNames from 'classnames';
 import React from 'react';
@@ -65,10 +64,6 @@ const CapabilityHubHeader: React.FC<CapabilityHubHeaderProps> = ({
   extraActions,
 }) => {
   const { t } = useTranslation();
-  const installedLabel =
-    hub === 'presets'
-      ? t('settings.capabilityHub.myPresets', { defaultValue: 'My Presets' })
-      : t('settings.capabilityHub.myInstalled', { defaultValue: 'Installed' });
 
   return (
     <div className='capability-hub-header' data-testid='capability-hub-header'>
@@ -93,35 +88,52 @@ const CapabilityHubHeader: React.FC<CapabilityHubHeaderProps> = ({
         })}
       </div>
 
-      <NomiInput
-        allowClear
-        height={32}
-        value={searchQuery}
-        onChange={onSearchQueryChange}
-        data-testid='capability-hub-search'
-        className='capability-hub-search'
-        placeholder={t(SEARCH_PLACEHOLDER_KEYS[hub], { defaultValue: SEARCH_PLACEHOLDER_DEFAULTS[hub] })}
-        prefix={<Search size={14} fill='currentColor' />}
-      />
+      <div className='capability-hub-toolbar'>
+        <NomiInput
+          allowClear
+          height={40}
+          value={searchQuery}
+          onChange={onSearchQueryChange}
+          data-testid='capability-hub-search'
+          className='capability-hub-search'
+          placeholder={t(SEARCH_PLACEHOLDER_KEYS[hub], { defaultValue: SEARCH_PLACEHOLDER_DEFAULTS[hub] })}
+          prefix={<Search size={16} fill='currentColor' />}
+        />
 
-      <div className='capability-hub-actions'>
-        <Button
-          size='small'
-          type='outline'
-          className={classNames('flowy-icon-text-btn capability-hub-action-btn', {
-            'capability-hub-action-btn--active': view === 'installed',
-          })}
-          data-testid='capability-hub-installed'
-          onClick={onToggleInstalled}
-        >
-          <span>{installedLabel}</span>
-          {typeof installedCount === 'number' && (
-            <span className='capability-hub-count' data-testid='capability-hub-installed-count'>
-              {installedCount}
-            </span>
-          )}
-        </Button>
-        {extraActions}
+        <div className='capability-hub-segment' role='group' aria-label={t('settings.capabilityHub.navLabel')}>
+          <button
+            type='button'
+            className={classNames('capability-hub-segment-btn', {
+              'capability-hub-segment-btn--active': view === 'market',
+            })}
+            aria-pressed={view === 'market'}
+            onClick={() => {
+              if (view === 'installed') onToggleInstalled();
+            }}
+          >
+            {t('settings.capabilityHub.discover', { defaultValue: 'Discover' })}
+          </button>
+          <button
+            type='button'
+            className={classNames('capability-hub-segment-btn', {
+              'capability-hub-segment-btn--active': view === 'installed',
+            })}
+            aria-pressed={view === 'installed'}
+            data-testid='capability-hub-installed'
+            onClick={() => {
+              if (view === 'market') onToggleInstalled();
+            }}
+          >
+            <span>{t('settings.capabilityHub.installed', { defaultValue: 'Installed' })}</span>
+            {typeof installedCount === 'number' && (
+              <span className='capability-hub-count' data-testid='capability-hub-installed-count'>
+                {installedCount}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {extraActions ? <div className='capability-hub-actions'>{extraActions}</div> : null}
       </div>
     </div>
   );

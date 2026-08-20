@@ -114,13 +114,13 @@ const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({
             </div>
           ) : (
             <div
-              className='grid gap-12px'
-              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))' }}
+              className='grid gap-16px'
+              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))' }}
             >
               {visibleExtensions.map((extension) => (
                 <div
                   key={extension.name}
-                  className='rounded-16px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-14px'
+                  className='rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-16px'
                 >
                   <div className='flex items-start justify-between gap-10px'>
                     <div className='min-w-0'>

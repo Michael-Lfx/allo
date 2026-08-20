@@ -17,6 +17,8 @@ interface HubPageShellProps {
   maxWidthClass?: string;
   /** Rendered between the header and the body (e.g. a segmented tab bar). */
   toolbar?: React.ReactNode;
+  /** Optional class for the toolbar wrapper so hub pages can tighten spacing. */
+  toolbarClassName?: string;
   /** Suppress the page-level title block when the body provides its own heading. */
   hideHeader?: boolean;
   children: React.ReactNode;
@@ -34,6 +36,7 @@ const HubPageShell: React.FC<HubPageShellProps> = ({
   className,
   maxWidthClass = 'md:max-w-1100px',
   toolbar,
+  toolbarClassName = 'mb-20px',
   hideHeader = false,
   children,
 }) => {
@@ -45,8 +48,8 @@ const HubPageShell: React.FC<HubPageShellProps> = ({
       <div
         className={classNames(
           'app-page-shell w-full min-h-0 flex-1 box-border overflow-y-auto',
-          className,
-          isMobile ? 'px-16px py-16px' : 'px-12px md:px-40px py-32px'
+          isMobile ? 'px-16px py-16px' : 'px-12px md:px-40px py-32px',
+          className
         )}
       >
         <div className={classNames('mx-auto w-full', maxWidthClass)}>
@@ -56,7 +59,7 @@ const HubPageShell: React.FC<HubPageShellProps> = ({
               {subtitle && <div className='mt-6px text-13px leading-18px text-t-tertiary'>{subtitle}</div>}
             </div>
           )}
-          {toolbar && <div className='mb-20px'>{toolbar}</div>}
+          {toolbar && <div className={toolbarClassName}>{toolbar}</div>}
           {children}
         </div>
       </div>

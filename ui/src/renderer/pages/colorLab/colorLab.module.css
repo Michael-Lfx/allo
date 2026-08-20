@@ -1,0 +1,494 @@
+.page {
+  /* html/body/#root are height-locked with overflow:hidden. This page has to
+     be its own scrollport or the scheme cards and mock shell get clipped. */
+  position: fixed;
+  inset: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--lab-canvas);
+  color: var(--lab-text);
+  font-family: var(--flowy-font-sans, 'Segoe UI', 'PingFang SC', sans-serif);
+}
+
+.inner {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.copy {
+  max-width: 62ch;
+}
+
+.title {
+  margin: 0 0 8px;
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.subtitle,
+.diagnosisBody,
+.applyHint,
+.tokenLabel,
+.sessionMeta,
+.assistant,
+.composerInput,
+.pitch,
+.fit {
+  margin: 0;
+  color: var(--lab-text-2);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.applyHint {
+  margin-top: 8px;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.modeBtn,
+.compareBtn,
+.approve,
+.skip,
+.send,
+.newChat {
+  border: 1px solid var(--lab-border);
+  background: var(--lab-raised);
+  color: var(--lab-text);
+  border-radius: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.modeBtn[aria-pressed='true'],
+.compareBtn[aria-pressed='true'] {
+  background: var(--lab-accent);
+  border-color: var(--lab-accent);
+  color: var(--lab-accent-fg);
+}
+
+.modeBtn:active,
+.compareBtn:active,
+.scheme:active,
+.navBtn:active,
+.send:active,
+.approve:active,
+.newChat:active {
+  transform: translateY(1px);
+}
+
+.schemes {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 20px;
+  padding: 0;
+  list-style: none;
+}
+
+.scheme {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--lab-border);
+  background: var(--lab-panel);
+  color: var(--lab-text);
+  border-radius: 12px;
+  padding: 12px;
+  cursor: pointer;
+}
+
+.scheme[aria-pressed='true'] {
+  border-color: var(--lab-accent);
+  box-shadow: 0 0 0 1px var(--lab-accent);
+}
+
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  height: 28px;
+}
+
+.swatch {
+  border-radius: 6px;
+}
+
+.schemeName {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pitch,
+.fit {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.fit {
+  color: var(--lab-text-3);
+}
+
+.diagnosis {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(220px, 0.8fr);
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.diagnosisTitle,
+.sectionTitle,
+.tokenLabel,
+.sessionTitle,
+.user,
+.approvalTitle {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lab-text);
+}
+
+.diagnosisTitle,
+.sectionTitle {
+  margin-bottom: 6px;
+  font-size: 16px;
+}
+
+.tokens {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.token {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tokenChip {
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--lab-border);
+}
+
+.stage {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.stageCompare {
+  grid-template-columns: 1fr 1fr;
+}
+
+.compareCaption {
+  margin: 0 0 8px;
+  color: var(--lab-text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.shell {
+  display: grid;
+  grid-template-rows: 36px minmax(520px, 64dvh);
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--lab-border);
+  border-radius: 12px;
+  background: var(--lab-canvas);
+  box-shadow: var(--lab-shadow);
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: var(--lab-titlebar);
+  color: var(--lab-rail-text);
+  font-size: 12px;
+}
+
+.dots {
+  display: flex;
+  gap: 5px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lab-rail-text) 35%, transparent);
+}
+
+.body {
+  display: grid;
+  grid-template-columns: 56px 220px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.rail,
+.sessions,
+.chat {
+  min-width: 0;
+  min-height: 0;
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 10px 8px;
+  background: var(--lab-rail);
+  color: var(--lab-rail-text);
+}
+
+.railGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.navBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--lab-rail-muted);
+  cursor: default;
+}
+
+.navBtn[aria-current='page'] {
+  background: var(--lab-rail-active);
+  color: var(--lab-rail-text);
+}
+
+.sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--lab-session);
+  border-right: 1px solid var(--lab-border);
+}
+
+.sessionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.newChat {
+  background: var(--lab-accent);
+  border-color: var(--lab-accent);
+  color: var(--lab-accent-fg);
+  min-height: 28px;
+  padding: 0 10px;
+}
+
+.sessionList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.session {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: transparent;
+}
+
+.session[data-active='true'] {
+  background: var(--lab-raised);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--lab-text) 8%, transparent);
+}
+
+.sessionTitle {
+  font-size: 13px;
+}
+
+.sessionMeta {
+  font-size: 11px;
+  color: var(--lab-text-3);
+}
+
+.chat {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  background: var(--lab-canvas);
+}
+
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding: 20px 20px 8px;
+}
+
+.user,
+.assistant {
+  max-width: 62ch;
+}
+
+.user {
+  align-self: flex-end;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--lab-user-bubble);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.toolChip,
+.approval {
+  max-width: 420px;
+  border: 1px solid var(--lab-border);
+  border-radius: 12px;
+  background: var(--lab-raised);
+}
+
+.toolChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--lab-text-2);
+}
+
+.toolDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--lab-accent);
+}
+
+.approval {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.approvalBody {
+  margin: 0;
+  color: var(--lab-text-2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.approvalActions {
+  display: flex;
+  gap: 8px;
+}
+
+.approve {
+  background: var(--lab-accent);
+  border-color: var(--lab-accent);
+  color: var(--lab-accent-fg);
+}
+
+.skip {
+  color: var(--lab-text-2);
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px 16px;
+}
+
+.composerInput {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--lab-border);
+  border-radius: 12px;
+  background: var(--lab-composer);
+  color: var(--lab-text-3);
+}
+
+.send {
+  background: var(--lab-accent);
+  border-color: var(--lab-accent);
+  color: var(--lab-accent-fg);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modeBtn:active,
+  .compareBtn:active,
+  .scheme:active,
+  .navBtn:active,
+  .send:active,
+  .approve:active,
+  .newChat:active {
+    transform: none;
+  }
+}
+
+@media (max-width: 1024px) {
+  .schemes,
+  .diagnosis,
+  .tokens,
+  .stageCompare {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  .inner {
+    padding: 16px 16px 32px;
+  }
+
+  .schemes,
+  .diagnosis,
+  .tokens,
+  .stageCompare,
+  .body {
+    grid-template-columns: 1fr;
+  }
+
+  .rail,
+  .sessions {
+    display: none;
+  }
+
+  .shell {
+    grid-template-rows: 36px minmax(420px, 70dvh);
+  }
+}

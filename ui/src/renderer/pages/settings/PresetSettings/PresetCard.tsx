@@ -72,7 +72,7 @@ const PresetCard: React.FC<PresetCardProps> = ({
         }
       }}
       className={[
-        'group relative flex flex-col rd-8px border border-solid p-14px cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-6),0.28)]',
+        'group relative flex flex-col rounded-12px border border-solid p-16px cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-6),0.28)]',
         'transition-[background-color,border-color,box-shadow] duration-180',
         highlighted
           ? 'border-primary-6 bg-[var(--color-primary-light-1)]'

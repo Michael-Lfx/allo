@@ -37,11 +37,11 @@ import { useSearchParams } from 'react-router-dom';
 /**
  * 卡片网格按「内容容器实际宽度」自动定列(auto-fill),而非视口断点 —— 设置内容
  * 面板被一级 rail + 二级 ContentSider 占去宽度。镜像 PresetListPanel 的常量。
- * Card grid auto-fits columns to the actual container width (not viewport
+ * Card grid auto-fills columns to the actual container width (not viewport
  * breakpoints); copied from PresetListPanel so both surfaces sit on the same
- * 232px lower bound.
+ * lower bound.
  */
-const CARD_GRID_COLS = 'repeat(auto-fit, minmax(min(270px, 100%), 1fr))';
+const CARD_GRID_COLS = 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))';
 const IMPORT_ACTION_BUTTON_CLASS =
   '!rounded-[100px] !h-34px !px-14px !text-t-primary flex items-center gap-6px';
 
@@ -371,7 +371,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
           {/* Single card grid for all skills */}
           {filteredSkills.length > 0 ? (
             <div
-              className='grid gap-12px [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_185px]'
+              className='grid gap-16px [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_185px]'
               style={{ gridTemplateColumns: CARD_GRID_COLS }}
             >
               {filteredSkills.map((skill) => (

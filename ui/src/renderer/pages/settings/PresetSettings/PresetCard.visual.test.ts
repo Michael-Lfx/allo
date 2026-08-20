@@ -11,7 +11,7 @@ const source = readFileSync(new URL('./PresetCard.tsx', import.meta.url), 'utf8'
 
 describe('PresetCard visual hierarchy', () => {
   test('uses a compact neutral management card surface', () => {
-    expect(source.includes("'group relative flex flex-col rd-8px border border-solid p-14px cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-6),0.28)]'")).toBe(true);
+    expect(source.includes("'group relative flex flex-col rounded-12px border border-solid p-16px cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-6),0.28)]'")).toBe(true);
     expect(source.includes('min-h-[214px]')).toBe(false);
     expect(source.includes("'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:border-[var(--color-border-3)]")).toBe(true);
     expect(source.includes('hover:shadow')).toBe(false);

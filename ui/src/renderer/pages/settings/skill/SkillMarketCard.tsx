@@ -50,22 +50,32 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
   }, [item.avatar]);
 
   const avatarSrc = item.avatar && !avatarBroken ? item.avatar : undefined;
+  const isCompleted = actionState === 'completed';
+  const isChecking = actionState === 'checking';
+  let actionText = actionLabel;
+  if (isChecking) {
+    actionText = t('common.loading', { defaultValue: '加载中' });
+  } else if (isCompleted) {
+    actionText = completedLabel ?? actionLabel;
+  } else if (busy) {
+    actionText = pendingLabel;
+  }
 
   return (
     <MarketCardShell testId={`skill-market-card-${testId}`}>
-      <header className='grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-10px'>
+      <header className='grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-12px'>
         <span
-          className='flex h-32px w-32px min-w-32px items-center justify-center overflow-hidden rounded-8px bg-[var(--color-fill-2)] text-12px font-semibold text-t-secondary'
+          className='flex h-40px w-40px min-w-40px items-center justify-center overflow-hidden rounded-10px bg-[var(--color-fill-2)] text-12px font-semibold text-t-secondary'
           aria-label={item.rank ? `${t('settings.market.rank', { defaultValue: '排名' })} ${item.rank}` : undefined}
         >
           {avatarSrc ? (
             <img
               src={avatarSrc}
               alt=''
-              width={32}
-              height={32}
+              width={40}
+              height={40}
               referrerPolicy='no-referrer'
-              className='h-32px w-32px object-contain'
+              className='h-40px w-40px object-contain'
               onError={() => setAvatarBroken(true)}
             />
           ) : item.rank ? (
@@ -76,7 +86,7 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
         </span>
         <div className='min-w-0 pt-2px'>
           <h3
-            className='m-0 overflow-hidden text-14px font-semibold leading-20px text-t-primary'
+            className='m-0 overflow-hidden text-15px font-semibold leading-22px text-t-primary'
             title={item.title}
             style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
           >
@@ -92,54 +102,34 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
             </div>
           )}
         </div>
-        <div className='flex shrink-0 items-center gap-4px'>
+        <Dropdown
+          trigger='click'
+          droplist={
+            <Menu>
+              <Menu.Item key='open-source' onClick={() => onOpenSource(item)}>
+                <LinkOne size={14} fill='currentColor' /> {t('settings.market.openSource', { defaultValue: '打开来源' })}
+              </Menu.Item>
+              <Menu.Item key='copy-command' onClick={() => onCopyInstallCommand(item)}>
+                {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
+              </Menu.Item>
+            </Menu>
+          }
+        >
           <Button
+            ref={moreButtonRef}
             size='mini'
-            type='primary'
-            data-testid={`btn-add-market-skill-${testId}`}
-            loading={busy || actionState === 'checking'}
-            disabled={disabled}
-            className='flowy-icon-text-btn !h-32px !min-w-88px !rounded-8px !px-10px !text-12px !whitespace-nowrap active:!scale-96 motion-reduce:active:!transform-none'
-            icon={
-              actionState === 'completed' ? (
-                <Check theme='outline' size={12} strokeWidth={3} fill='currentColor' />
-              ) : !busy && actionState !== 'checking' ? (
-                <Plus theme='outline' size={12} strokeWidth={3} fill='currentColor' />
-              ) : undefined
-            }
-            onClick={() => onAdd(item)}
-          >
-            {actionState === 'checking' ? t('common.loading', { defaultValue: '加载中' }) : actionState === 'completed' ? (completedLabel ?? actionLabel) : busy ? pendingLabel : actionLabel}
-          </Button>
-          <Dropdown
-            trigger='click'
-            droplist={
-              <Menu>
-                <Menu.Item key='open-source' onClick={() => onOpenSource(item)}>
-                  <LinkOne size={14} fill='currentColor' /> {t('settings.market.openSource', { defaultValue: '打开来源' })}
-                </Menu.Item>
-                <Menu.Item key='copy-command' onClick={() => onCopyInstallCommand(item)}>
-                  {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
-                </Menu.Item>
-              </Menu>
-            }
-          >
-            <Button
-              ref={moreButtonRef}
-              size='mini'
-              type='text'
-              aria-label={t('common.more', { defaultValue: '更多操作' })}
-              className='!h-32px !w-32px !rounded-8px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary active:!scale-96 motion-reduce:active:!transform-none'
-              icon={<More theme='outline' size={16} fill='currentColor' />}
-            />
-          </Dropdown>
-        </div>
+            type='text'
+            aria-label={t('common.more', { defaultValue: '更多操作' })}
+            className='!h-32px !w-32px !rounded-8px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary active:!scale-96 motion-reduce:active:!transform-none'
+            icon={<More theme='outline' size={16} fill='currentColor' />}
+          />
+        </Dropdown>
       </header>
 
-      {item.compactStats && <div className='mt-7px truncate text-11px text-t-tertiary'>{item.compactStats}</div>}
+      {item.compactStats && <div className='mt-8px truncate text-12px text-t-tertiary'>{item.compactStats}</div>}
 
       <p
-        className='mb-0 mt-10px overflow-hidden text-12px leading-18px text-t-secondary'
+        className='mb-0 mt-10px overflow-hidden text-13px leading-20px text-t-secondary'
         title={item.summary || undefined}
         style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
       >
@@ -147,29 +137,49 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
       </p>
 
       {item.visibleTags.length > 0 && (
-        <div className='mt-12px flex flex-wrap items-center gap-6px'>
+        <div className='mt-12px flex flex-wrap items-center gap-8px'>
           {item.visibleTags.slice(0, MAX_VISIBLE_TAGS).map((tag) => (
             <span
               key={tag}
-              className='inline-flex max-w-[156px] items-center truncate rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-2)] px-8px py-1px text-11px leading-16px text-t-secondary'
+              className='inline-flex max-w-[156px] items-center truncate text-12px leading-18px text-t-tertiary'
               title={tag}
             >
               {tag}
             </span>
           ))}
-          {item.overflowTagCount > 0 && <span className='text-11px text-t-tertiary'>+{item.overflowTagCount}</span>}
+          {item.overflowTagCount > 0 && <span className='text-12px text-t-tertiary'>+{item.overflowTagCount}</span>}
         </div>
       )}
 
       <footer className='mt-auto pt-10px'>
-        <Button
-          type='text'
-          size='mini'
-          className='!h-28px !self-start !rounded-6px !px-0 !text-12px !text-t-secondary hover:!text-t-primary'
-          onClick={(event) => onViewDetails(item, event.currentTarget as HTMLElement)}
-        >
-          {t('settings.market.viewDetails', { defaultValue: '查看详情' })}
-        </Button>
+        <div className='flex items-center justify-between gap-8px'>
+          <Button
+            type='text'
+            size='mini'
+            className='!h-32px !self-start !rounded-8px !px-0 !text-13px !text-t-tertiary hover:!text-t-primary'
+            onClick={(event) => onViewDetails(item, event.currentTarget as HTMLElement)}
+          >
+            {t('settings.market.viewDetails', { defaultValue: '查看详情' })}
+          </Button>
+          <Button
+            size='mini'
+            type={isCompleted ? 'outline' : 'primary'}
+            data-testid={`btn-add-market-skill-${testId}`}
+            loading={busy || isChecking}
+            disabled={disabled}
+            className='flowy-icon-text-btn !h-32px !min-w-88px !rounded-12px !px-12px !text-12px !whitespace-nowrap active:!scale-96 motion-reduce:active:!transform-none'
+            icon={
+              isCompleted ? (
+                <Check theme='outline' size={12} strokeWidth={3} fill='currentColor' />
+              ) : !busy && !isChecking ? (
+                <Plus theme='outline' size={12} strokeWidth={3} fill='currentColor' />
+              ) : undefined
+            }
+            onClick={() => onAdd(item)}
+          >
+            {actionText}
+          </Button>
+        </div>
       </footer>
     </MarketCardShell>
   );
