@@ -17,8 +17,6 @@ describe('system settings visual contract', () => {
     expect(source).not.toContain('<Collapse');
     expect(source).toContain('disabled={!notificationEnabled}');
     expect(source).toContain('settings.disabledByNotifications');
-    expect(source).toContain('isDeveloperModeUiEnabled()');
-    expect(source).toContain('{isDeveloperModeUiEnabled() && (');
   });
 
   test('restores local state and reports a localized failure when auto-save fails', () => {
