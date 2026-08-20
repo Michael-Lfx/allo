@@ -7,7 +7,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Modal, Message, Tooltip } from '@arco-design/web-react';
-import { Copy, FullScreen, Info, SortAmountDown, SortAmountUp } from '@icon-park/react';
+import { Copy, FullScreen, Hourglass, Info, SortAmountDown, SortAmountUp } from '@icon-park/react';
 import { JsonView, defaultStyles } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 import { copyText } from '@renderer/utils/ui/clipboard';
@@ -172,25 +172,50 @@ function firstLine(text: string): string {
   return (text.split(/\r?\n/, 1)[0] ?? '').trim();
 }
 
+function hintLines(hint: string): string[] {
+  return hint.split('\n').map((line) => line.trim()).filter(Boolean);
+}
+
+const HintTip: React.FC<{ hint: string }> = ({ hint }) => (
+  <div className='session-logs-scan__tip'>
+    {hintLines(hint).map((line) => (
+      <div key={line} className='session-logs-scan__tip-line'>
+        {line}
+      </div>
+    ))}
+  </div>
+);
+
+const ScanTip: React.FC<{
+  content: string;
+  className: string;
+  children: React.ReactNode;
+}> = ({ content, className, children }) => {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return <span className={className}>{children}</span>;
+  }
+  return (
+    <Tooltip
+      content={<div className='session-logs-scan__tip'>{trimmed}</div>}
+      position='top'
+      getPopupContainer={() => document.body}
+    >
+      <span className={className}>{children}</span>
+    </Tooltip>
+  );
+};
+
 const ScanPreview: React.FC<{ text: string; tip?: string }> = ({ text, tip }) => {
   const content = (tip ?? text).trim();
   const shown = text.trim();
   if (!shown && !content) {
     return <span className='session-logs-scan__preview' />;
   }
-  if (!content) {
-    return <span className='session-logs-scan__preview'>{shown}</span>;
-  }
   return (
-    <Tooltip
-      content={<div className='session-logs-scan__tip'>{content}</div>}
-      position='top'
-      getPopupContainer={() => document.body}
-    >
-      <span className='session-logs-scan__preview-wrap'>
-        <span className='session-logs-scan__preview'>{shown || content}</span>
-      </span>
-    </Tooltip>
+    <ScanTip content={content} className='session-logs-scan__preview-wrap'>
+      <span className='session-logs-scan__preview'>{shown || content}</span>
+    </ScanTip>
   );
 };
 
@@ -224,30 +249,39 @@ const ToolScanList: React.FC<{ rows: ToolDefScanRow[] }> = ({ rows }) => {
   const { t } = useTranslation();
   return (
     <ol className='session-logs-scan'>
-      {rows.map((row) => (
-        <li key={row.index} className='session-logs-scan__row'>
-          <span className='session-logs-scan__name'>
-            {row.name || t('conversation.agentTrace.previewMissing')}
-            {row.deferred ? (
-              <span className='session-logs-scan__flag'>
-                {t('conversation.agentTrace.toolDeferred')}
-              </span>
-            ) : null}
-          </span>
-          <ScanPreview
-            text={joinOmittedMark(
-              firstLine(row.description),
-              row.omittedReason,
-              t('conversation.agentTrace.omittedField')
-            )}
-            tip={joinOmittedMark(
-              row.description,
-              row.omittedReason,
-              t('conversation.agentTrace.omittedField')
-            )}
-          />
-        </li>
-      ))}
+      {rows.map((row) => {
+        const name = row.name || t('conversation.agentTrace.previewMissing');
+        return (
+          <li key={row.index} className='session-logs-scan__row'>
+            <span className='session-logs-scan__lead'>
+              <ScanTip content={row.name} className='session-logs-scan__hover'>
+                <span className='session-logs-scan__name'>{name}</span>
+              </ScanTip>
+              {row.deferred ? (
+                <span
+                  className='session-logs-scan__flag'
+                  role='img'
+                  aria-label={t('conversation.agentTrace.toolDeferred')}
+                >
+                  <Hourglass theme='outline' size='12' strokeWidth={3} />
+                </span>
+              ) : null}
+            </span>
+            <ScanPreview
+              text={joinOmittedMark(
+                firstLine(row.description),
+                row.omittedReason,
+                t('conversation.agentTrace.omittedField')
+              )}
+              tip={joinOmittedMark(
+                row.description,
+                row.omittedReason,
+                t('conversation.agentTrace.omittedField')
+              )}
+            />
+          </li>
+        );
+      })}
     </ol>
   );
 };
@@ -338,8 +372,15 @@ const ObservationJsonTree: React.FC<ObservationJsonTreeProps> = ({
         <div className='session-logs-json-tree__caption'>
           {label}
           {hint ? (
-            <Tooltip content={hint}>
-              <button type='button' className='session-logs-info' aria-label={hint}>
+            <Tooltip
+              content={<HintTip hint={hint} />}
+              getPopupContainer={() => document.body}
+            >
+              <button
+                type='button'
+                className='session-logs-info'
+                aria-label={hintLines(hint).join(' ')}
+              >
                 <Info theme='outline' size='12' strokeWidth={3} />
               </button>
             </Tooltip>

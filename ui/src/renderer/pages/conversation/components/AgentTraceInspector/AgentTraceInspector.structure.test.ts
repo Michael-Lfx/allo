@@ -153,6 +153,8 @@ describe('AgentTraceInspector', () => {
     expect(workflow.includes('retentionRemoved')).toBe(true);
     expect(workflow.includes('inspectSystem')).toBe(true);
     expect(workflow.includes('inspectSystemHint')).toBe(true);
+    expect(workflow.includes('inspectToolDefsHint')).toBe(true);
+    expect(workflow.includes('inspectToolDefsHourglassHint')).toBe(true);
     expect(workflow.includes('inspectReasoning')).toBe(true);
     expect(workflow.includes('inspectRequestTitle')).toBe(true);
     const requestInspector = workflow.slice(
@@ -222,6 +224,25 @@ describe('AgentTraceInspector', () => {
     expect(css.includes('session-logs-scan__row')).toBe(true);
     expect(css.includes('session-logs-scan__tip')).toBe(true);
     expect(css.includes('session-logs-scan__empty')).toBe(true);
+    expect(tree.includes('session-logs-scan__lead')).toBe(true);
+    expect(tree.includes('session-logs-scan__hover')).toBe(true);
+    expect(tree.includes('ScanTip')).toBe(true);
+    expect(tree.includes('content={row.name}')).toBe(true);
+    expect(tree.includes('toolDeferredHint')).toBe(false);
+    expect(tree.includes('<Hourglass')).toBe(true);
+    expect(tree.includes('<Attention')).toBe(false);
+    expect(tree.includes("t('conversation.agentTrace.toolDeferred')")).toBe(true);
+    expect(tree.includes('HintTip')).toBe(true);
+    expect(tree.includes('session-logs-scan__tip-line')).toBe(true);
+    const scanRow = css.match(/\.session-logs-scan__row\s*\{[^}]+\}/)?.[0] ?? '';
+    expect(scanRow.includes('cursor: default')).toBe(true);
+    expect(css.includes('.session-logs-scan__hover')).toBe(true);
+    expect(css.includes('.session-logs-scan__flag *')).toBe(true);
+    const scanFlag = css.match(/\.session-logs-scan__flag\s*\{[^}]+\}/)?.[0] ?? '';
+    expect(scanFlag.includes('cursor: default')).toBe(true);
+    expect(scanFlag.includes('pointer-events: none')).toBe(true);
+    expect(css.includes('width: 14ch')).toBe(true);
+    expect(css.includes('.session-logs-scan__preview-wrap')).toBe(true);
     expect(tree.includes('getPopupContainer')).toBe(true);
     const jsonContainer = css.match(/^\.session-logs-json-tree__container\s*\{[^}]+\}/m)?.[0] ?? '';
     expect(jsonContainer.includes('background: transparent')).toBe(true);

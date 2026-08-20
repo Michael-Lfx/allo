@@ -444,7 +444,7 @@ function RequestInspector({
         />
         <ObservationJsonTree
           label={t('conversation.agentTrace.inspectToolDefs')}
-          hint={t('conversation.agentTrace.inspectToolDefsHint')}
+          hint={`${t('conversation.agentTrace.inspectToolDefsHint')}\n${t('conversation.agentTrace.inspectToolDefsHourglassHint')}`}
           value={body.tools ?? null}
           scan='tools'
           resetKey={resetKey}
