@@ -6113,7 +6113,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
- "flate2",
  "nomi-agent-trace",
  "nomi-redact",
  "regex",

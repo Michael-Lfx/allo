@@ -24,6 +24,8 @@ const BUNDLED_SESSION_DIALOGUE: &str =
 const BUNDLED_HARNESS_CONTROL: &str =
     include_str!("../evaluation/corpus.harness_control.json");
 const BUNDLED_OFFICE_TASKS: &str = include_str!("../evaluation/corpus.office.json");
+const BUNDLED_AGENT_WORKFLOWS: &str =
+    include_str!("../evaluation/corpus.agent_workflows.json");
 
 /// Load a corpus manifest from disk and validate it.
 pub fn load_manifest(path: impl AsRef<Path>) -> Result<Manifest, CorpusError> {
@@ -34,9 +36,11 @@ pub fn load_manifest(path: impl AsRef<Path>) -> Result<Manifest, CorpusError> {
 /// Load a suite compiled into the binary.
 pub fn load_bundled_manifest(suite: &str) -> Result<Manifest, CorpusError> {
     let text = match suite.trim() {
+        // Offline demo only — not in the live lab catalog.
         "session_dialogue" => BUNDLED_SESSION_DIALOGUE,
         "harness_control" => BUNDLED_HARNESS_CONTROL,
         "office_tasks" => BUNDLED_OFFICE_TASKS,
+        "agent_workflows" => BUNDLED_AGENT_WORKFLOWS,
         other => {
             return Err(CorpusError::Invalid(format!(
                 "unknown bundled suite {other}"

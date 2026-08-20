@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Alert,
@@ -248,6 +248,11 @@ const EvalPage: React.FC = () => {
                   current: run.current_case_id ?? '—',
                 })}
               </Text>
+              {run.workspace_label && (
+                <Text type='secondary' title={run.workspace_path ?? undefined}>
+                  {t('eval.workspace')}: {run.workspace_label}
+                </Text>
+              )}
             </div>
             <Progress percent={progressPercent} />
             <div className='flex flex-wrap gap-x-32px gap-y-12px'>
@@ -359,6 +364,16 @@ const EvalPage: React.FC = () => {
                   width: 80,
                   render: (_: unknown, row: EvalCaseView) => row.artifact_count ?? '—',
                 },
+                {
+                  title: t('eval.col.session'),
+                  width: 120,
+                  render: (_: unknown, row: EvalCaseView) =>
+                    row.conversation_id ? (
+                      <Link to={`/conversation/${row.conversation_id}`}>{t('eval.openSession')}</Link>
+                    ) : (
+                      '—'
+                    ),
+                },
               ]}
             />
           </>
@@ -421,6 +436,8 @@ function CaseDetail({
 }) {
   const { t } = useTranslation();
   const [trace, setTrace] = useState<EvalCaseTraceView | null>(liveTrace ?? null);
+  const [observationSummary, setObservationSummary] = useState<string | null>(null);
+  const conversationId = row.conversation_id ?? liveTrace?.conversation_id ?? null;
 
   useEffect(() => {
     if (liveTrace) {
@@ -440,8 +457,37 @@ function CaseDetail({
     };
   }, [runId, row.case_id, liveTrace]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void evalApi
+      .getCaseObservation(runId, row.case_id, 20)
+      .then((page) => {
+        if (cancelled) return;
+        setObservationSummary(
+          `${page.summary.turn_count} turns · ${page.summary.model_call_count} model calls · ${page.summary.tool_count} tools · ${page.summary.integrity}`
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setObservationSummary(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runId, row.case_id, conversationId]);
+
   return (
     <div className='flex flex-col gap-12px py-8px'>
+      {conversationId && (
+        <div className='flex flex-wrap items-center gap-12px'>
+          <Text type='secondary'>{t('eval.sessionObservation')}</Text>
+          <Link to={`/conversation/${conversationId}`}>{t('eval.openSession')}</Link>
+          <Text type='secondary' className='font-mono text-12px'>
+            {conversationId}
+          </Text>
+          {observationSummary ? <Tag size='small'>{observationSummary}</Tag> : null}
+        </div>
+      )}
+      {!conversationId && <Text type='secondary'>{t('eval.observationEmpty')}</Text>}
       {row.prompt && (
         <Text type='secondary' className='whitespace-pre-wrap'>
           {row.prompt}

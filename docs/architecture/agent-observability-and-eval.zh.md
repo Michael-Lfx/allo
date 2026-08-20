@@ -42,14 +42,17 @@ Nomi-owned 模型调用与工具执行写入 unlabeled JSONL 事件，落盘于�
 | --- | --- | --- |
 | 语料 / scorer / JSONL | `nomi-agent-eval` | 确定性 oracle、resume、脱敏、数据集下载 |
 | Live solver | `nomifun-ai-agent::agent_eval` | `LiveNomiHarness` 走 `AgentBootstrap`（Office profile 或按需 `CodingHarness`） |
+| Session 绑定 | `EvalSessionBridge` + `ObservationSession` | 每条 case 一个 `conversation_id`；写 Observation；投影思考 / 工具 / 回复 + usage |
 | HTTP | `/api/debug/agent-evals/*` | 开发者模式；同时只允许一轮 |
-| UI | `/eval` | 侧栏 `dev` 徽章；仅 `system.developerMode === true` 可见 |
+| UI | `/eval` | 侧栏 `dev` 徽章；仅 `system.developerMode === true` 可见；可跳转到会话观测 |
 
 ### 隔离（不得影响真实用户 Agent）
 
-- 工作区：`{data_dir}/diagnostics/agent-evals/workspaces/{run_id}/{case_id}/`
-- `session.enabled = false`，不写用户会话表
+- 工作区：开跑时创建业务命名父目录 `{data_dir}/diagnostics/agent-evals/workspaces/评测-{套件业务名}-{时间戳}-{run短ID}/`，case 在其子目录 `{case_id}/`
+- `session.enabled = false`（不写 nomi session 文件）；观测通过显式 `ObservationSession` 写入
 - **不**注册 `AgentRuntimeRegistry`
+- 会话壳：`{case_id} · {category}`，`extra.origin=eval` / `extra.eval=true`，幂等键 `eval:{run_id}:{case_id}`；`extra.workspace` 绑定**父 run 工作区**（使 SessionList 出现独立业务工作区，而非「默认工作空间」）；轨迹投影为 thinking / tool_call / text，并写入 `last_token_usage`；`execute_turn` 包在 `with_flowy_billing_turn_id` 下以便积分芯片
+- Agent 执行 cwd / `write_root` 仍为 case 子目录；`convert.rs` 对 `eval` 会话按 companion 同类规则不标 `is_temporary_workspace`
 - `auto_approve = true`，`write_root` = eval workspace
 - 默认关闭 MCP、browser、computer-use、web search、memory distill、MoA、embedded AgentExecution
 - 证据 JSONL 不含 workspace 绝对路径；prompt 经 `nomi-redact` 脱敏
@@ -57,17 +60,15 @@ Nomi-owned 模型调用与工具执行写入 unlabeled JSONL 事件，落盘于�
 
 ### 套件
 
-评测对象是 **harness / runtime**，不是刷题排行榜。HumanEval / MBPP 只作函数级 floor，**不能**当作 agent KPI。
+评测对象是 **harness / runtime**，不是刷题排行榜。已移除 HumanEval / MBPP / 简单 marker Q&A 作为 live KPI。
 
 | Suite | 来源 |
 | --- | --- |
 | `office_tasks` | 捆绑办公语料（备忘录、纪要、CSV 预算、客户邮件、原地改稿；Office profile，**不是** CodingHarness） |
+| `agent_workflows` | 捆绑多步 agent 语料（多源简报、修测、CSV→JSON、重构+文档、约束编辑） |
 | `aider_polyglot` | [Aider polyglot](https://github.com/Aider-AI/polyglot-benchmark) Python（主 coding-agent 套件：读说明、改 stub、跑测试。去掉 `.meta/example.py`。非官方 Aider 分数） |
 | `classeval` | [ClassEval](https://github.com/FudanSELab/ClassEval)（类级 skeleton + 隐藏 unittest） |
-| `session_dialogue` | 捆绑语料（对话契约） |
 | `harness_control` | 捆绑 Write/Edit 冒烟 |
-| `humaneval` | OpenAI HumanEval（函数级 floor，非 agent eval） |
-| `mbpp` | Google sanitized MBPP（同上） |
 
 SWE-bench / Terminal-Bench / GAIA / τ-bench / OSWorld 需要 Docker 或评测隔离默认关闭的工具面，**不得**在无沙箱时宣称官方分数。
 
@@ -79,10 +80,11 @@ SWE-bench / Terminal-Bench / GAIA / τ-bench / OSWorld 需要 Docker 或评测�
 | --- | --- | --- |
 | GET | `/api/debug/agent-evals/suites` | 套件目录与缓存状态 |
 | POST | `/api/debug/agent-evals/datasets/{suite}/pull?limit=` | 下载并缓存 |
-| POST | `/api/debug/agent-evals/runs` | 启动 live 评测 |
+| POST | `/api/debug/agent-evals/runs` | 启动 live 评测（每条 case 绑定 session） |
 | GET | `/api/debug/agent-evals/runs` | 最近一轮（含进行中） |
-| GET | `/api/debug/agent-evals/runs/{id}` | 单轮快照（进行中含 `current_trace`） |
+| GET | `/api/debug/agent-evals/runs/{id}` | 单轮快照（进行中含 `current_trace` / `current_conversation_id`） |
 | GET | `/api/debug/agent-evals/runs/{id}/cases/{case_id}/trace` | 该用例完整 trajectory + 工作区产物（相对路径、脱敏） |
+| GET | `/api/debug/agent-evals/runs/{id}/cases/{case_id}/observation` | 与真实会话相同的 Session Observation 投影 |
 | POST | `/api/debug/agent-evals/runs/{id}/cancel` | 在 **case 边界** 取消 |
 
 取消当前正在跑的 case 会等到该 case 结束或超时。进行中再开一轮返回 409。
@@ -111,6 +113,6 @@ cargo run -p nomi-agent-eval --example agent_eval --features agent-eval -- \
 | 能力 | 面向 | 是否依赖 LLM |
 | --- | --- | --- |
 | Session Observation | 开发者调试真实回合的 canonical 请求 / 响应 / 工具 | 否（只读已落盘 JSONL） |
-| Agent Eval | 回归 / 准入真实 harness | 离线 demo 否；live lab 是 |
+| Agent Eval | 回归 / 准入真实 harness；每 case 复用 Observation 管道 | 离线 demo 否；live lab 是 |
 
-二者互补：Eval 保证行为契约，Observation 解释线上回合。
+二者互补且在 live lab 上已打通：Eval 保证行为契约，Observation 解释每一次 case 回合（`session_kind=eval`）。

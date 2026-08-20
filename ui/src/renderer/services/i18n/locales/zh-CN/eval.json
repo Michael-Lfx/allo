@@ -4,9 +4,10 @@
     "tag": "dev",
     "navTooltip": "Agent 评测实验室（开发者模式）"
   },
-  "subtitle": "用真实 harness 与 runtime 打分；每条 case 在隔离工作区执行，不会写入用户会话。",
-  "isolationNote": "每条 case 走生产 AgentEngine，工作区在 diagnostics/agent-evals 下。办公套件用 Office profile（Read/Write/Edit）；coding 套件才装 CodingHarness。MCP、浏览器、computer-use、联网搜索默认关闭。同时只允许跑一轮。办公 KPI 用 Office tasks；coding-agent KPI 用 Aider Polyglot / ClassEval，不要把 HumanEval 当 KPI。展开用例可查看完整 trajectory 与产物，评测进行中也会实时刷新。",
+  "subtitle": "用真实 harness / runtime 打分。每条 case 绑定一个 eval session，复用 Session Observation 观测链路。",
+  "isolationNote": "开始评测时会先创建有业务含义的父工作区（如「评测-办公任务-日期-短ID」），case 在其子目录中跑生产 AgentEngine，并写入与真实会话相同的 Observation JSONL（session_kind=eval）。会话壳会投影思考 / 工具调用 / 回复与 token 用量，打开会话时可看到过程轨与积分。办公 KPI 用 Office tasks；多步 agent KPI 用 Agent workflows；coding-agent KPI 用 Aider Polyglot / ClassEval。MCP、浏览器、computer-use、联网搜索默认关闭。同时只允许跑一轮。",
   "developerModeRequired": "请在 设置 → 系统 中打开开发者模式后再使用评测。",
+  "workspace": "工作区",
   "model": "模型",
   "suite": "套件",
   "limit": "条数上限",
@@ -18,6 +19,9 @@
   "progressLabel": "{{completed}} / {{planned}}  当前 {{current}}",
   "cases": "用例",
   "liveTrace": "当前用例轨迹",
+  "openSession": "打开会话",
+  "sessionObservation": "会话观测",
+  "observationEmpty": "暂无会话观测（case 尚未产生 conversation_id）",
   "pass": "通过",
   "fail": "失败",
   "form": {
@@ -56,7 +60,8 @@
     "scorer": "Scorer",
     "detail": "详情",
     "events": "轨迹",
-    "artifacts": "产物"
+    "artifacts": "产物",
+    "session": "会话"
   },
   "trace": {
     "title": "执行轨迹",

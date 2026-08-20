@@ -32,7 +32,10 @@ import { parseMessageFileMarker } from './messageFileMarker';
 import { confirmFirstValue } from '@/renderer/utils/analytics/productFunnel';
 import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
-import { peekTurnCredits } from '@/renderer/pages/conversation/platforms/nomi/fetchTurnCredits';
+import {
+  fetchAndPersistTurnCredits,
+  peekTurnCredits,
+} from '@/renderer/pages/conversation/platforms/nomi/fetchTurnCredits';
 import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
 import MessageCronBadge from './MessageCronBadge';
 import { getAgentLogo } from '@/renderer/utils/model/agentLogo';
@@ -410,6 +413,19 @@ const MessageText: React.FC<{
     };
   }, [conversationId, turnCreditKey]);
   const turnCredits = liveTurnCredits ?? persistedTurnCredits;
+  // Historical sessions (including eval shells) may lack live emit — backfill credits.
+  useEffect(() => {
+    if (isUserMessage || !conversationId || !turnCreditKey) return;
+    if (conversation?.type !== 'nomi') return;
+    if (turnCredits != null && (turnCredits.callCount > 0 || turnCredits.creditsConsumed > 0)) {
+      return;
+    }
+    void fetchAndPersistTurnCredits({
+      conversation_id: conversationId,
+      turn_id: turnCreditKey,
+      delayMs: 400,
+    });
+  }, [conversation?.type, conversationId, isUserMessage, turnCreditKey, turnCredits]);
   const { data: providerList } = useProvidersQuery({
     enabled: conversation?.type === 'nomi',
   });

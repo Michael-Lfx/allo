@@ -21,8 +21,8 @@ pub mod workspace;
 pub use corpus::{load_bundled_manifest, load_manifest, validate_manifest, CorpusError};
 pub use datasets::{
     cache_dir, is_download_cached, list_suites, load_suite_manifest, suite_descriptor, DatasetError,
-    SuiteDescriptor, SUITE_AIDER_POLYGLOT, SUITE_CLASSEVAL, SUITE_HARNESS_CONTROL, SUITE_HUMANEVAL,
-    SUITE_MBPP, SUITE_OFFICE_TASKS, SUITE_SESSION_DIALOGUE,
+    SuiteDescriptor, SUITE_AGENT_WORKFLOWS, SUITE_AIDER_POLYGLOT, SUITE_CLASSEVAL,
+    SUITE_HARNESS_CONTROL, SUITE_OFFICE_TASKS, SUITE_SESSION_DIALOGUE,
 };
 pub use harness::{ConversationEvalHarness, HarnessError, OfflineDemoHarness};
 pub use runner::{
@@ -46,7 +46,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn bundled_corpus_loads() {
+    fn bundled_offline_demo_corpus_loads() {
         let path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evaluation/corpus.conversation.json");
         let manifest = load_manifest(&path).expect("corpus should load");
@@ -75,5 +75,14 @@ mod tests {
             .iter()
             .all(|c| c.task_profile.as_deref() == Some("office")));
         assert!(manifest.cases.iter().any(|c| c.id == "memo-write"));
+    }
+
+    #[test]
+    fn bundled_agent_workflows_load() {
+        let manifest = load_bundled_manifest("agent_workflows").expect("agent_workflows");
+        assert_eq!(manifest.suite, "agent_workflows");
+        assert_eq!(manifest.cases.len(), 5);
+        assert!(manifest.cases.iter().any(|c| c.id == "fix-failing-tests"));
+        assert!(manifest.cases.iter().any(|c| c.id == "synthesize-briefing"));
     }
 }

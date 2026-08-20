@@ -19,7 +19,10 @@ describe('agent eval lab', () => {
     expect(page.includes('evalApi.startRun')).toBe(true);
     expect(page.includes('evalApi.cancelRun')).toBe(true);
     expect(page.includes('evalApi.getCaseTrace')).toBe(true);
+    expect(page.includes('evalApi.getCaseObservation')).toBe(true);
     expect(page.includes('current_trace')).toBe(true);
+    expect(page.includes('conversation_id')).toBe(true);
+    expect(page.includes('workspace_label')).toBe(true);
     expect(page.includes('TraceView')).toBe(true);
     expect(sider.includes('SiderEvalEntry')).toBe(true);
     expect(sider.includes("useConfig('system.developerMode')")).toBe(true);
@@ -37,6 +40,8 @@ describe('agent eval lab', () => {
     expect(api.includes('/pull')).toBe(true);
     expect(api.includes('/cases/')).toBe(true);
     expect(api.includes('/trace')).toBe(true);
+    expect(api.includes('/observation')).toBe(true);
     expect(api.includes('getCaseTrace')).toBe(true);
+    expect(api.includes('getCaseObservation')).toBe(true);
   });
 });

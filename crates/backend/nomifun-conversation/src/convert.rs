@@ -62,7 +62,12 @@ pub fn row_to_response_with_extra(
         // mark it non-temporary so the chat tab keeps the "open workspace folder"
         // affordance and doesn't mislabel a locked, browsable work path.
         let is_companion = extra.get("companion_session").and_then(|v| v.as_bool()).unwrap_or(false);
-        !is_companion && !ws.is_empty() && Path::new(ws).starts_with(data_dir)
+        // Eval run workspaces live under diagnostics/agent-evals but are
+        // deliberately named business folders that should appear as their own
+        // workpath group in the session list (not under 默认工作空间).
+        let is_eval = extra.get("eval").and_then(|v| v.as_bool()).unwrap_or(false)
+            || extra.get("origin").and_then(|v| v.as_str()) == Some("eval");
+        !is_companion && !is_eval && !ws.is_empty() && Path::new(ws).starts_with(data_dir)
     };
     if let Some(obj) = extra.as_object_mut() {
         obj.insert(
@@ -1087,6 +1092,22 @@ mod tests {
             Some("nomifun"),
             None,
             r#"{"companion_session":true,"workspace":"/srv/nomifun-data/companion/companions/companion_x/workspace"}"#,
+        );
+        let resp = row_to_response(row, Path::new("/srv/nomifun-data")).unwrap();
+        assert_eq!(resp.extra["is_temporary_workspace"], false);
+    }
+
+    #[test]
+    fn row_to_response_marks_eval_workspace_as_non_temporary() {
+        // Eval run folders live under diagnostics/agent-evals inside the data
+        // dir, but they are business-named workspaces that must surface as
+        // their own workpath group (not 默认工作空间).
+        let row = make_row(
+            "nomi",
+            "pending",
+            Some("nomifun"),
+            None,
+            r#"{"eval":true,"origin":"eval","workspace":"/srv/nomifun-data/diagnostics/agent-evals/workspaces/评测-办公任务-20260820-abc"}"#,
         );
         let resp = row_to_response(row, Path::new("/srv/nomifun-data")).unwrap();
         assert_eq!(resp.extra["is_temporary_workspace"], false);
