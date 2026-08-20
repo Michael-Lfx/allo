@@ -61,6 +61,7 @@ describe('AgentTraceInspector', () => {
     expect(inspector.includes('expandRoundList')).toBe(true);
     expect(inspector.includes('navCollapsed')).toBe(true);
     expect(inspector.includes('ExpandLeft')).toBe(true);
+    expect(inspector.includes('session-logs-nav__collapse')).toBe(true);
     expect(css.includes('.session-logs-nav.is-collapsed')).toBe(true);
     expect(inspector.includes('Popover')).toBe(true);
     expect(inspector.includes('glossaryAria')).toBe(true);
@@ -217,7 +218,13 @@ describe('AgentTraceInspector', () => {
     expect(css.includes('.session-logs-json-tree:hover')).toBe(false);
     expect(workflow.includes('session-logs-inspector-slot')).toBe(true);
     expect(workflow.includes('useOpenTransition')).toBe(true);
+    expect(workflow.includes('lastDetailRef')).toBe(true);
+    expect(workflow.includes('panelDetail')).toBe(true);
+    expect(workflow.includes('session-logs-request-params__lead')).toBe(true);
+    expect(workflow.includes("items.map((item, index)")).toBe(false);
     expect(css.includes('scrollbar-gutter: stable')).toBe(true);
+    expect(css.includes('::-webkit-scrollbar')).toBe(false);
+    expect(css.includes('scrollbar-color')).toBe(false);
     expect(css.includes('height: 320px')).toBe(true);
     expect(css.includes('max-height: 320px')).toBe(false);
     expect(css.includes('grid-template-rows: 0fr')).toBe(true);

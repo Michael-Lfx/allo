@@ -650,21 +650,6 @@ button.session-logs-tile:hover {
   overflow-anchor: none;
   padding: 10px 12px;
   scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-text-3) 52%, transparent) transparent;
-}
-
-.session-logs-json-tree__body::-webkit-scrollbar {
-  width: 8px;
-}
-
-.session-logs-json-tree__body::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.session-logs-json-tree__body::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--color-text-3) 52%, transparent);
-  border-radius: 999px;
 }
 
 .session-logs-json-tree--modal {
@@ -780,6 +765,22 @@ button.session-logs-tile:hover {
 
   .session-logs-nav.is-collapsed .session-logs-nav__toolbar {
     justify-content: space-between;
+  }
+
+  .session-logs-nav.is-collapsed .session-logs-metrics {
+    display: grid;
+  }
+
+  .session-logs-nav.is-collapsed .session-logs-health {
+    display: block;
+  }
+
+  .session-logs-nav.is-collapsed .session-logs-nav__list {
+    display: flex;
+  }
+
+  .session-logs-nav__collapse {
+    display: none;
   }
 
   .session-logs-nav__list {

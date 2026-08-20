@@ -393,24 +393,22 @@ const RequestParamsStrip: React.FC<{ body: Record<string, unknown> }> = ({ body 
             <Info theme='outline' size='12' strokeWidth={3} />
           </button>
         </Tooltip>
+        <Tooltip content={copyLabel}>
+          <Button
+            type='text'
+            size='mini'
+            className='session-logs-json-tree__icon-btn session-logs-request-params__copy'
+            icon={<Copy theme='outline' size='12' strokeWidth={3} />}
+            onClick={() => void onCopy()}
+            aria-label={copyLabel}
+          />
+        </Tooltip>
       </div>
       <dl className='session-logs-request-params__list'>
-        {items.map((item, index) => (
+        {items.map((item) => (
           <div key={item.key} className='session-logs-request-params__item'>
             <dt>{item.label}</dt>
             <dd>{item.value}</dd>
-            {index === items.length - 1 ? (
-              <Tooltip content={copyLabel}>
-                <Button
-                  type='text'
-                  size='mini'
-                  className='session-logs-json-tree__icon-btn session-logs-request-params__copy'
-                  icon={<Copy theme='outline' size='12' strokeWidth={3} />}
-                  onClick={() => void onCopy()}
-                  aria-label={copyLabel}
-                />
-              </Tooltip>
-            ) : null}
           </div>
         ))}
       </dl>
@@ -704,9 +702,15 @@ const ModelCallSection: React.FC<{
   const selected = inspectTarget?.modelCallId === header.model_call_id ? inspectTarget : null;
   const inspectActive = Boolean(selected && selected.stage !== 'final');
   const lastInspectRef = useRef<InspectTarget | null>(selected);
+  const lastDetailRef = useRef<ProjectedModelCall | null>(detail);
+  const lastErrorRef = useRef<ObservationWorkflowProps['callErrorKey']>(errorKey);
   if (inspectActive && selected) lastInspectRef.current = selected;
+  if (detail) lastDetailRef.current = detail;
+  if (inspectActive) lastErrorRef.current = errorKey;
   const reveal = useOpenTransition(inspectActive);
   const panelTarget = inspectActive ? selected : lastInspectRef.current;
+  const panelDetail = inspectActive ? detail : lastDetailRef.current;
+  const panelError = inspectActive ? errorKey : lastErrorRef.current;
 
   return (
     <section className='session-logs-call'>
@@ -797,9 +801,9 @@ const ModelCallSection: React.FC<{
             <CallInspector
               stage={panelTarget.stage}
               toolCallId={panelTarget.toolCallId}
-              detail={detail}
-              loading={loading}
-              errorKey={errorKey}
+              detail={panelDetail}
+              loading={inspectActive && loading}
+              errorKey={panelError}
               onCollapse={() => onInspect(panelTarget)}
             />
           </div>

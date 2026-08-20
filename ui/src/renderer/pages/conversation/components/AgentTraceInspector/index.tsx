@@ -747,34 +747,36 @@ export const SessionLogWorkspace: React.FC = () => {
                       aria-label={t('conversation.agentTrace.refresh')}
                     />
                   </Tooltip>
-                  <Tooltip
-                    content={
-                      navCollapsed
-                        ? t('conversation.agentTrace.expandRoundList')
-                        : t('conversation.agentTrace.collapseRoundList')
-                    }
-                  >
-                    <Button
-                      type='text'
-                      size='mini'
-                      className='session-logs-json-tree__icon-btn'
-                      icon={
-                        navCollapsed ? (
-                          <ExpandRight theme='outline' size='14' strokeWidth={3} />
-                        ) : (
-                          <ExpandLeft theme='outline' size='14' strokeWidth={3} />
-                        )
-                      }
-                      aria-expanded={!navCollapsed}
-                      aria-controls='session-logs-round-list'
-                      aria-label={
+                  <span className='session-logs-nav__collapse'>
+                    <Tooltip
+                      content={
                         navCollapsed
                           ? t('conversation.agentTrace.expandRoundList')
                           : t('conversation.agentTrace.collapseRoundList')
                       }
-                      onClick={() => setNavCollapsed((value) => !value)}
-                    />
-                  </Tooltip>
+                    >
+                      <Button
+                        type='text'
+                        size='mini'
+                        className='session-logs-json-tree__icon-btn'
+                        icon={
+                          navCollapsed ? (
+                            <ExpandRight theme='outline' size='14' strokeWidth={3} />
+                          ) : (
+                            <ExpandLeft theme='outline' size='14' strokeWidth={3} />
+                          )
+                        }
+                        aria-expanded={!navCollapsed}
+                        aria-controls='session-logs-round-list'
+                        aria-label={
+                          navCollapsed
+                            ? t('conversation.agentTrace.expandRoundList')
+                            : t('conversation.agentTrace.collapseRoundList')
+                        }
+                        onClick={() => setNavCollapsed((value) => !value)}
+                      />
+                    </Tooltip>
+                  </span>
                 </div>
               </div>
               {summary ? (
