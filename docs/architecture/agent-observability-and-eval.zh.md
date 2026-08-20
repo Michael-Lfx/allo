@@ -8,7 +8,7 @@ Nomi-owned 模型调用与工具执行写入 unlabeled JSONL 事件，落盘于�
 
 `{data_dir}/diagnostics/observation/{conversation_id}/events.jsonl`
 
-超过 48 MiB 旋转为 `events.{n}.jsonl`；磁盘按约 1 GiB 高低水位回收。写入前执行 capture（truncated + redacted；媒体 metadata_only）。会话发送即写盘；`system.developerMode` 不控制采集。
+超过 48 MiB 旋转为 `events.{n}.jsonl`；磁盘只按约 1 GiB / 800 MiB 高低水位回收（紧急 1.2 GiB），**没有按天 TTL**。写入前执行 capture（truncated + redacted；媒体 metadata_only）。会话发送即写盘；`system.developerMode` 不控制采集。
 
 读取与支持包附带 JSONL 受 **开发者模式** 门控：
 
@@ -29,7 +29,7 @@ Nomi-owned 模型调用与工具执行写入 unlabeled JSONL 事件，落盘于�
 - 左列顶：会话四数 + 刷新 + 最新在上|最早在上；写入器 health 与会话 integrity / coverage 次级
 - 回合行带时钟；第 N 轮按时间升序编号
 - 右侧按模型调用展示 REQUEST → RESPONSE → tools；点瓦片才 Call GET
-- 详情为可收缩 object tree（`react-json-view-lite`）；切回对话不 abort poll、不清 LRU
+- 请求 `messages` / `tools` 默认扫描列表（消息最新在上，「原始」才是 `react-json-view-lite`）；系统提示、响应、工具执行仍是文本/对象树；切回对话不 abort poll、不清 LRU
 
 未开启开发者模式时组件不渲染；API 在未开启时返回 403。
 
