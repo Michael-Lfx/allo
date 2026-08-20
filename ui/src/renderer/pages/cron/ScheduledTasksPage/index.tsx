@@ -1,7 +1,7 @@
 
 
 import classNames from 'classnames';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button, Switch, Message, Empty, Pagination, Spin, Tooltip, Input } from '@arco-design/web-react';
@@ -13,13 +13,18 @@ import type { ConversationId } from '@/common/types/ids';
 import { useKeepAwake } from '@renderer/hooks/ui/useKeepAwake';
 import { useConversationAgents } from '@renderer/pages/conversation/hooks/useConversationAgents';
 import CronStatusTag from './CronStatusTag';
-import CreateTaskDialog from './CreateTaskDialog';
 import { getJobAgentMeta } from './jobAgentMeta';
 import { shortSessionId } from '@renderer/utils/ui/shortId';
 import { filterCronJobsByQuery, filterCronJobsByStatus, type CronJobStatusFilter } from './cronJobSearch';
 import { parseScheduledConversationId } from './scheduledConversationId';
 import { DESKTOP_SCHEDULED_TASK_COLUMNS } from './scheduledTaskLayout';
 import ScheduledTaskActions from './ScheduledTaskActions';
+
+const CreateTaskDialog = React.lazy(() => import('./CreateTaskDialog'));
+
+const prefetchCreateTaskDialog = (): void => {
+  void import('./CreateTaskDialog');
+};
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -160,7 +165,13 @@ const ScheduledTasksPage: React.FC = () => {
             >
               {t('cron.scheduledTasks')}
             </h1>
-            <Button type='primary' shape='round' className='shrink-0' onClick={handleOpenCreateDialog}>
+            <Button
+              type='primary'
+              shape='round'
+              className='shrink-0'
+              onClick={handleOpenCreateDialog}
+              onPointerEnter={prefetchCreateTaskDialog}
+            >
               {t('cron.page.newTask')}
             </Button>
           </div>
@@ -373,12 +384,16 @@ const ScheduledTasksPage: React.FC = () => {
           </div>
         )}
 
-        <CreateTaskDialog
-          visible={createDialogVisible}
-          onClose={handleCloseCreateDialog}
-          initialSpecifiedConversationId={lockedCreateConversationId}
-          lockInitialTarget={lockedCreateConversationId != null}
-        />
+        {createDialogVisible ? (
+          <Suspense fallback={null}>
+            <CreateTaskDialog
+              visible={createDialogVisible}
+              onClose={handleCloseCreateDialog}
+              initialSpecifiedConversationId={lockedCreateConversationId}
+              lockInitialTarget={lockedCreateConversationId != null}
+            />
+          </Suspense>
+        ) : null}
       </div>
     </div>
   );

@@ -5,13 +5,39 @@ import type { ICronJob, ICronJobRun, IUpdateCronJobParams } from '@/common/adapt
 import {
   indexCronJobsByConversation,
   reconcileCronJobsForConversation,
-  upsertCronJobByConversation,
 } from './cronJobConversationMap';
 import { parseConversationId, type ConversationId, type CronJobId } from '@/common/types/ids';
 import { emitter } from '@/renderer/utils/emitter';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import useSWR, { type SWRConfiguration } from 'swr';
 import { repairCronJobTimeZones } from '@renderer/pages/cron/repairCronJobTimeZone';
 import { browserStorageGenerationKey } from '@/common/utils/browserStorageKey';
+
+/** One cache identity for every all-jobs consumer (task page, create dialog, session list). */
+export const ALL_CRON_JOBS_SWR_KEY = 'cron.jobs.all';
+
+export const ALL_CRON_JOBS_SWR_OPTIONS: SWRConfiguration<ICronJob[], Error> = {
+  revalidateIfStale: false,
+  revalidateOnFocus: false,
+  revalidateOnReconnect: false,
+  shouldRetryOnError: false,
+};
+
+export async function fetchAllCronJobs(): Promise<ICronJob[]> {
+  try {
+    const allJobs = await ipcBridge.cron.listJobs.invoke();
+    return repairCronJobTimeZones(allJobs || []);
+  } catch (err) {
+    console.error('[useAllCronJobs] Failed to fetch jobs:', err);
+    throw err;
+  }
+}
+
+const upsertCronJobInList = (jobs: ICronJob[], job: ICronJob): ICronJob[] =>
+  jobs.some((item) => item.cron_job_id === job.cron_job_id)
+    ? jobs.map((item) => (item.cron_job_id === job.cron_job_id ? job : item))
+    : [...jobs, job];
+
 
 const isJobErrorLike = (job: ICronJob): boolean => {
   return job.state.last_status === 'error' || job.state.last_status === 'missed';
@@ -179,60 +205,77 @@ export function useCronJobs(conversation_id?: ConversationId) {
 }
 
 /**
- * Hook for managing all cron jobs across all conversations
+ * Shared all-jobs snapshot. Session-list indicators and the scheduled-tasks
+ * page must read the same SWR key so navigating home → /scheduled does not
+ * refetch GET /api/cron/jobs.
  */
-export function useAllCronJobs() {
-  const [jobs, setJobs] = useState<ICronJob[]>([]);
-  const [loading, setLoading] = useState(true);
+function useAllCronJobsCache() {
+  const { data, isLoading, mutate } = useSWR<ICronJob[]>(
+    ALL_CRON_JOBS_SWR_KEY,
+    fetchAllCronJobs,
+    ALL_CRON_JOBS_SWR_OPTIONS
+  );
 
-  // Fetch all jobs
-  const fetchJobs = useCallback(async () => {
-    setLoading(true);
-    try {
-      const allJobs = await ipcBridge.cron.listJobs.invoke();
-      setJobs(await repairCronJobTimeZones(allJobs || []));
-    } catch (err) {
-      console.error('[useAllCronJobs] Failed to fetch jobs:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const refetch = useCallback(async () => {
+    await mutate();
+  }, [mutate]);
 
-  // Initial fetch
-  useEffect(() => {
-    void fetchJobs();
-  }, [fetchJobs]);
-
-  // Event handlers
   const eventHandlers = useMemo<CronJobEventHandlers>(
     () => ({
       onJobCreated: (job: ICronJob) => {
-        setJobs((prev) => (prev.some((j) => j.cron_job_id === job.cron_job_id) ? prev : [...prev, job]));
+        void mutate((current) => upsertCronJobInList(current ?? [], job), { revalidate: false });
       },
       onJobUpdated: (job: ICronJob) => {
-        setJobs((prev) => prev.map((j) => (j.cron_job_id === job.cron_job_id ? job : j)));
+        void mutate((current) => upsertCronJobInList(current ?? [], job), { revalidate: false });
       },
       onJobRemoved: ({ cron_job_id }: { cron_job_id: CronJobId }) => {
-        setJobs((prev) => prev.filter((j) => j.cron_job_id !== cron_job_id));
+        void mutate(
+          (current) => (current ?? []).filter((item) => item.cron_job_id !== cron_job_id),
+          { revalidate: false }
+        );
       },
     }),
-    []
+    [mutate]
   );
 
-  useCronJobSubscription(eventHandlers, fetchJobs);
+  useCronJobSubscription(eventHandlers, refetch);
 
-  // Actions with local state updates
-  const handleJobUpdated = useCallback((cron_job_id: CronJobId, job: ICronJob) => {
-    setJobs((prev) => prev.map((j) => (j.cron_job_id === cron_job_id ? job : j)));
-  }, []);
+  return {
+    jobs: data ?? [],
+    loading: isLoading,
+    mutate,
+    refetch,
+  };
+}
 
-  const handleJobDeleted = useCallback((cron_job_id: CronJobId) => {
-    setJobs((prev) => prev.filter((j) => j.cron_job_id !== cron_job_id));
-  }, []);
+/**
+ * Hook for managing all cron jobs across all conversations
+ */
+export function useAllCronJobs() {
+  const { jobs, loading, mutate, refetch } = useAllCronJobsCache();
+
+  const handleJobUpdated = useCallback(
+    (cron_job_id: CronJobId, job: ICronJob) => {
+      void mutate(
+        (current) => (current ?? []).map((item) => (item.cron_job_id === cron_job_id ? job : item)),
+        { revalidate: false }
+      );
+    },
+    [mutate]
+  );
+
+  const handleJobDeleted = useCallback(
+    (cron_job_id: CronJobId) => {
+      void mutate(
+        (current) => (current ?? []).filter((item) => item.cron_job_id !== cron_job_id),
+        { revalidate: false }
+      );
+    },
+    [mutate]
+  );
 
   const actions = useCronJobActions(handleJobUpdated, handleJobDeleted);
 
-  // Computed values
   const activeCount = useMemo(() => jobs.filter((j) => j.enabled).length, [jobs]);
   const hasError = useMemo(() => jobs.some(isJobErrorLike), [jobs]);
 
@@ -241,7 +284,7 @@ export function useAllCronJobs() {
     loading,
     activeCount,
     hasError,
-    refetch: fetchJobs,
+    refetch,
     ...actions,
   };
 }
@@ -251,8 +294,8 @@ export function useAllCronJobs() {
  * Used by ChatHistory to show indicators
  */
 export function useCronJobsMap() {
-  const [jobsMap, setJobsMap] = useState<Map<ConversationId, ICronJob[]>>(new Map());
-  const [loading, setLoading] = useState(true);
+  const { jobs, loading, refetch } = useAllCronJobsCache();
+  const jobsMap = useMemo(() => indexCronJobsByConversation(jobs), [jobs]);
   const unreadStorageKey = browserStorageGenerationKey('cron-unread');
   // Track conversations with unread cron executions (red dot indicator)
   const [unreadConversations, setUnreadConversations] = useState<Set<ConversationId>>(() => {
@@ -292,92 +335,46 @@ export function useCronJobsMap() {
     }
   }, [unreadConversations, unreadStorageKey]);
 
-  // Fetch all jobs and group by conversation
-  const fetchAllJobs = useCallback(async () => {
-    setLoading(true);
-    try {
-      const allJobs = await repairCronJobTimeZones(await ipcBridge.cron.listJobs.invoke());
-      const jobs = allJobs || [];
-      const map = indexCronJobsByConversation(jobs);
-
-      for (const job of jobs) {
-        // Initialize lastRunAtMap for detecting new executions
-        if (job.state.last_run_at_ms) {
-          lastRunAtMapRef.current.set(job.cron_job_id, job.state.last_run_at_ms);
-        }
+  useEffect(() => {
+    for (const job of jobs) {
+      if (job.state.last_run_at_ms && !lastRunAtMapRef.current.has(job.cron_job_id)) {
+        lastRunAtMapRef.current.set(job.cron_job_id, job.state.last_run_at_ms);
       }
-
-      setJobsMap(map);
-    } catch (err) {
-      console.error('[useCronJobsMap] Failed to fetch jobs:', err);
-    } finally {
-      setLoading(false);
     }
+  }, [jobs]);
+
+  // Unread dots and sidebar sort are map-only side effects. Job rows themselves
+  // come from the shared SWR snapshot (patched by useAllCronJobsCache).
+  useEffect(() => {
+    const unsubCreate = ipcBridge.cron.onJobCreated.on(() => {
+      console.log('[useCronJobsMap] onJobCreated, triggering chat.history.refresh');
+      emitter.emit('chat.history.refresh');
+    });
+    const unsubUpdate = ipcBridge.cron.onJobUpdated.on((job: ICronJob) => {
+      const convId = job.metadata.conversation_id;
+      const prevLastRunAt = lastRunAtMapRef.current.get(job.cron_job_id);
+      const newLastRunAt = job.state.last_run_at_ms;
+      if (convId && newLastRunAt && newLastRunAt !== prevLastRunAt) {
+        lastRunAtMapRef.current.set(job.cron_job_id, newLastRunAt);
+
+        if (activeConversationIdRef.current !== convId) {
+          setUnreadConversations((prev) => {
+            if (prev.has(convId)) return prev;
+            const next = new Set(prev);
+            next.add(convId);
+            return next;
+          });
+        }
+
+        emitter.emit('chat.history.refresh');
+      }
+    });
+    return () => {
+      unsubCreate();
+      unsubUpdate();
+    };
   }, []);
 
-  // Initial fetch
-  useEffect(() => {
-    void fetchAllJobs();
-  }, [fetchAllJobs]);
-
-  // Event handlers
-  const eventHandlers = useMemo<CronJobEventHandlers>(
-    () => ({
-      onJobCreated: (job: ICronJob) => {
-        const convId = job.metadata.conversation_id;
-        if (!convId) return;
-        setJobsMap((prev) => upsertCronJobByConversation(prev, job));
-        // Refresh conversation list to update sorting (modifyTime was updated)
-        console.log('[useCronJobsMap] onJobCreated, triggering chat.history.refresh');
-        emitter.emit('chat.history.refresh');
-      },
-      onJobUpdated: (job: ICronJob) => {
-        const convId = job.metadata.conversation_id;
-
-        // Check if this is a new execution (last_run_at_ms changed)
-        const prevLastRunAt = lastRunAtMapRef.current.get(job.cron_job_id);
-        const newLastRunAt = job.state.last_run_at_ms;
-        if (convId && newLastRunAt && newLastRunAt !== prevLastRunAt) {
-          lastRunAtMapRef.current.set(job.cron_job_id, newLastRunAt);
-
-          // Mark as unread only if user is not currently viewing this conversation
-          // Use ref to access the latest activeConversationId value
-          if (activeConversationIdRef.current !== convId) {
-            setUnreadConversations((prev) => {
-              if (prev.has(convId)) return prev;
-              const newSet = new Set(prev);
-              newSet.add(convId);
-              return newSet;
-            });
-          }
-
-          // Refresh conversation list to update sorting (modifyTime was updated after execution)
-          emitter.emit('chat.history.refresh');
-        }
-
-        setJobsMap((prev) => upsertCronJobByConversation(prev, job));
-      },
-      onJobRemoved: ({ cron_job_id }: { cron_job_id: CronJobId }) => {
-        setJobsMap((prev) => {
-          const newMap = new Map(prev);
-          for (const [convId, convJobs] of newMap.entries()) {
-            const filtered = convJobs.filter((j) => j.cron_job_id !== cron_job_id);
-            if (filtered.length === 0) {
-              newMap.delete(convId);
-            } else if (filtered.length !== convJobs.length) {
-              newMap.set(convId, filtered);
-            }
-          }
-          return newMap;
-        });
-      },
-    }),
-    []
-  );
-
-  useCronJobSubscription(eventHandlers, fetchAllJobs);
-
-  // Helper functions
   const hasJobsForConversation = useCallback(
     (conversation_id: ConversationId) => {
       return jobsMap.has(conversation_id) && jobsMap.get(conversation_id)!.length > 0;
@@ -399,13 +396,10 @@ export function useCronJobsMap() {
         return 'none';
       }
 
-      // Check if conversation has unread cron executions (highest priority for visual indicator)
       if (unreadConversations.has(conversation_id)) return 'unread';
 
-      // Check if any job has error
       if (convJobs.some(isJobErrorLike)) return 'error';
 
-      // Check if all jobs are paused
       if (convJobs.every((j) => !j.enabled)) return 'paused';
 
       return 'active';
@@ -413,26 +407,22 @@ export function useCronJobsMap() {
     [jobsMap, unreadConversations]
   );
 
-  // Mark a conversation as read (clear unread status)
   const markAsRead = useCallback((conversation_id: ConversationId) => {
     activeConversationIdRef.current = conversation_id;
     setUnreadConversations((prev) => {
       if (!prev.has(conversation_id)) {
         return prev;
       }
-      const newSet = new Set(prev);
-      newSet.delete(conversation_id);
-      return newSet;
+      const next = new Set(prev);
+      next.delete(conversation_id);
+      return next;
     });
   }, []);
 
-  // Update active conversation ref without triggering state update
-  // Use this to sync the ref when route changes (e.g., URL navigation)
   const setActiveConversation = useCallback((conversation_id: ConversationId) => {
     activeConversationIdRef.current = conversation_id;
   }, []);
 
-  // Check if a conversation has unread cron executions
   const hasUnread = useCallback(
     (conversation_id: ConversationId) => {
       return unreadConversations.has(conversation_id);
@@ -450,7 +440,7 @@ export function useCronJobsMap() {
       markAsRead,
       setActiveConversation,
       hasUnread,
-      refetch: fetchAllJobs,
+      refetch,
     }),
     [
       jobsMap,
@@ -461,7 +451,7 @@ export function useCronJobsMap() {
       markAsRead,
       setActiveConversation,
       hasUnread,
-      fetchAllJobs,
+      refetch,
     ]
   );
 }

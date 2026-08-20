@@ -1,6 +1,6 @@
 
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button, Message, Popconfirm, Spin, Empty } from '@arco-design/web-react';
@@ -11,7 +11,6 @@ import type { ICronJob, ICronJobRunStatus } from '@/common/adapter/ipcBridge';
 import type { TChatConversation } from '@/common/config/storage';
 import { useConversationAgents } from '@renderer/pages/conversation/hooks/useConversationAgents';
 import CronStatusTag from './CronStatusTag';
-import CreateTaskDialog from './CreateTaskDialog';
 import { getJobAgentMeta } from './jobAgentMeta';
 import { formatSchedule, formatNextRun } from '@renderer/pages/cron/cronUtils';
 import { useCronJobRuns } from '@renderer/pages/cron/useCronJobs';
@@ -25,6 +24,8 @@ import {
   persistCronRunNowDelivery,
   releaseCronRunNowDelivery,
 } from './cronRunNowDelivery';
+
+const CreateTaskDialog = React.lazy(() => import('./CreateTaskDialog'));
 
 const RUN_STATUS_CLASS_NAMES: Record<ICronJobRunStatus, string> = {
   ok: 'bg-success-light-1 text-success-6',
@@ -427,13 +428,17 @@ const TaskDetailPage: React.FC = () => {
         </div>
       </div>
 
-      <CreateTaskDialog
-        visible={editDialogVisible}
-        onClose={() => {
-          setEditDialogVisible(false);
-        }}
-        editJob={job ?? undefined}
-      />
+      {editDialogVisible ? (
+        <Suspense fallback={null}>
+          <CreateTaskDialog
+            visible={editDialogVisible}
+            onClose={() => {
+              setEditDialogVisible(false);
+            }}
+            editJob={job ?? undefined}
+          />
+        </Suspense>
+      ) : null}
     </div>
   );
 };

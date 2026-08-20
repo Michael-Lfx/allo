@@ -110,3 +110,10 @@ test('uses a desktop more menu without changing the mobile switch contract', () 
     pageSource.match(/className='shrink-0 md:hidden'[\s\S]*?<Switch[\s\S]*?handleToggleEnabled\(job\)/)?.[0] ?? '';
   expect(Boolean(mobileSwitchBlock)).toBe(true);
 });
+
+test('keeps the create dialog out of the list chunk until it is opened', () => {
+  expect(pageSource.includes("const CreateTaskDialog = React.lazy(() => import('./CreateTaskDialog'))")).toBe(true);
+  expect(pageSource.includes("import CreateTaskDialog from './CreateTaskDialog'")).toBe(false);
+  expect(pageSource.includes('{createDialogVisible ? (')).toBe(true);
+  expect(pageSource.includes('onPointerEnter={prefetchCreateTaskDialog}')).toBe(true);
+});

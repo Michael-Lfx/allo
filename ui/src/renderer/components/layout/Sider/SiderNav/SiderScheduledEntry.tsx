@@ -1,11 +1,12 @@
 
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
 import { AlarmClock } from '@icon-park/react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
+import { prefetchScheduledTasksPage } from '@renderer/pages/cron/prefetch';
 
 interface SiderScheduledEntryProps {
   isMobile: boolean;
@@ -24,6 +25,21 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
 }) => {
   const { t } = useTranslation();
 
+  useEffect(() => {
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      const idleId = idleWindow.requestIdleCallback(() => prefetchScheduledTasksPage(), {
+        timeout: 1800,
+      });
+      return () => idleWindow.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(() => prefetchScheduledTasksPage(), 250);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   if (collapsed) {
     return (
       <Tooltip {...siderTooltipProps} content={t('cron.scheduledTasks')} position='right'>
@@ -33,6 +49,7 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
             isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
           )}
           onClick={onClick}
+          onPointerEnter={() => prefetchScheduledTasksPage()}
           aria-current={isActive ? 'page' : undefined}
           data-sider-nav-entry
           data-active={isActive ? 'true' : 'false'}
@@ -58,6 +75,7 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
           isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
         )}
         onClick={onClick}
+        onPointerEnter={() => prefetchScheduledTasksPage()}
         aria-current={isActive ? 'page' : undefined}
         data-sider-nav-entry
         data-active={isActive ? 'true' : 'false'}
