@@ -21,12 +21,7 @@ type CanvasLeaferGraphicsLayerProps = {
     connections: CanvasConnection[];
     selectedNodeIds: Set<string>;
     scriptScrollTopById: Record<string, number>;
-    connectingParams: ConnectionHandle | null;
-    mouseWorld: Position;
-    connectionTargetNodeId: string | null;
-    connectionTargetAnchorRatio?: number;
     nodeById: Map<string, CanvasNodeData>;
-    selectionBox: SelectionBox | null;
     selectedNodeBounds: NodeBounds;
 };
 
@@ -34,6 +29,11 @@ type ResolvedLeaferProps = CanvasLeaferGraphicsLayerProps & {
     relatedConnectionIds: Set<string>;
     alignmentGuides: { vertical?: number; horizontal?: number };
     displayConnections: CanvasDisplayConnection[];
+    connectingParams: ConnectionHandle | null;
+    mouseWorld: Position;
+    connectionTargetNodeId: string | null;
+    connectionTargetAnchorRatio: number | undefined;
+    selectionBox: SelectionBox | null;
 };
 
 type LeaferScene = {
@@ -64,6 +64,11 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
     const hoveredNodeId = useCanvasInteractionStore((state) => state.hoveredNodeId);
     const dragPreview = useCanvasInteractionStore((state) => state.dragPreview);
     const alignmentGuides = useCanvasInteractionStore((state) => state.alignmentGuides);
+    const connectingParams = useCanvasInteractionStore((state) => state.connectingParams);
+    const mouseWorld = useCanvasInteractionStore((state) => state.mouseWorld);
+    const connectionTargetNodeId = useCanvasInteractionStore((state) => state.connectionTargetNodeId);
+    const connectionTargetAnchorRatio = useCanvasInteractionStore((state) => state.connectionTargetAnchorRatio);
+    const selectionBox = useCanvasInteractionStore((state) => state.selectionBox);
     const relatedHighlight = useMemo(
         () => canvasRelatedHighlight(canvasActiveNodeId(hoveredNodeId, props.selectedNodeIds), props.connections),
         [hoveredNodeId, props.connections, props.selectedNodeIds],
@@ -77,6 +82,11 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         displayConnections,
         relatedConnectionIds: relatedHighlight.connectionIds,
         alignmentGuides,
+        connectingParams,
+        mouseWorld,
+        connectionTargetNodeId,
+        connectionTargetAnchorRatio,
+        selectionBox,
     };
     const propsRef = useRef(resolvedProps);
     propsRef.current = resolvedProps;
@@ -154,7 +164,7 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const overlay = overlayRef.current;
         if (!overlay) return;
         syncOverlayContent(overlay, resolvedProps, viewportRef.current.k);
-    }, [props.connectingParams, props.connectionTargetAnchorRatio, props.connectionTargetNodeId, props.mouseWorld, props.nodeById, props.scriptScrollTopById, props.selectedNodeBounds, props.selectionBox, props.theme]);
+    }, [connectingParams, connectionTargetAnchorRatio, connectionTargetNodeId, mouseWorld, props.nodeById, props.scriptScrollTopById, props.selectedNodeBounds, selectionBox, props.theme]);
 
     useLayoutEffect(() => {
         const underlay = underlayRef.current;

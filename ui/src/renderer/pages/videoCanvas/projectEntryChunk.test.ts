@@ -23,4 +23,18 @@ describe("video canvas project entry chunk", () => {
         expect(page.includes("CanvasScriptNodeContent")).toBe(true);
         expect(page.includes('from "@oc/components/canvas/canvas-script-node"')).toBe(true);
     });
+
+    test("director hook factory import does not pull three", () => {
+        const directorHook = source("./oc/pages/canvas/use-canvas-director.ts");
+        expect(directorHook.includes('from "three"')).toBe(false);
+        expect(directorHook.includes("director-scene-create")).toBe(true);
+        expect(/from\s+["'][^"']*director-scene["']/.test(directorHook)).toBe(false);
+    });
+
+    test("live viewport marks low scale and CSS disables comet 3D", () => {
+        const liveViewport = source("./oc/lib/canvas/canvas-live-viewport.ts");
+        const css = source("./oc/styles/globals.css");
+        expect(liveViewport.includes("container.dataset.canvasLowScale = viewport.k < 0.32")).toBe(true);
+        expect(css.includes('[data-canvas-low-scale="true"] .aceternity-comet-card')).toBe(true);
+    });
 });

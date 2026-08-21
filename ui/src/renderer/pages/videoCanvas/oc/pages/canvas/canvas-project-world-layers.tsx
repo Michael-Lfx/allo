@@ -8,7 +8,7 @@ import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
 import { canvasActiveNodeId, canvasRelatedHighlight } from "@oc/lib/canvas/canvas-related-highlight";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
-import type { CanvasConnection, CanvasDisplayConnection, CanvasNodeData, ConnectionHandle, Position, SelectionBox } from "@oc/types/canvas";
+import type { CanvasConnection, CanvasDisplayConnection, CanvasNodeData, Position } from "@oc/types/canvas";
 
 type NodeBounds = { left: number; top: number; width: number; height: number; count: number } | null;
 
@@ -19,14 +19,10 @@ type CanvasProjectWorldLayersProps = {
     selectedConnectionId: string | null;
     connections: CanvasConnection[];
     scriptScrollTopById: Record<string, number>;
-    connectingParams: ConnectionHandle | null;
-    mouseWorld: Position;
-    connectionTargetNodeId: string | null;
     nodeById: Map<string, CanvasNodeData>;
     visibleNodes: CanvasNodeData[];
     frameChildrenById: Map<string, CanvasNodeData[]>;
     selectedNodeIds: Set<string>;
-    selectionBox: SelectionBox | null;
     batchChildCountById: Map<string, number>;
     collapsingBatchIds: Set<string>;
     openingBatchIds: Set<string>;
@@ -72,11 +68,20 @@ export function HideWhileNodeDragging({ children }: { children: ReactNode }) {
     return children;
 }
 
+export function HideWhileSelectionBox({ children }: { children: ReactNode }) {
+    const selectionBox = useCanvasInteractionStore((state) => state.selectionBox);
+    if (selectionBox) return null;
+    return children;
+}
+
 export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
     const hoveredNodeId = useCanvasInteractionStore((state) => state.hoveredNodeId);
     const dragPreview = useCanvasInteractionStore((state) => state.dragPreview);
     const frameDropTargetId = useCanvasInteractionStore((state) => state.frameDropTargetId);
     const isNodeDragging = useCanvasInteractionStore((state) => state.isNodeDragging);
+    const connectingParams = useCanvasInteractionStore((state) => state.connectingParams);
+    const connectionTargetNodeId = useCanvasInteractionStore((state) => state.connectionTargetNodeId);
+    const selectionBox = useCanvasInteractionStore((state) => state.selectionBox);
     const activeNodeId = canvasActiveNodeId(hoveredNodeId, props.selectedNodeIds);
     const relatedHighlight = useMemo(
         () => canvasRelatedHighlight(activeNodeId, props.connections),
@@ -134,8 +139,8 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
                         isSelected={props.selectedNodeIds.has(node.id)}
                         isRelated={relatedHighlight.nodeIds.has(node.id)}
                         isFocusRelated={activeNodeId === node.id}
-                        isConnectionTarget={props.connectionTargetNodeId === node.id}
-                        isConnecting={Boolean(props.connectingParams)}
+                        isConnectionTarget={connectionTargetNodeId === node.id}
+                        isConnecting={Boolean(connectingParams)}
                         batchCount={props.batchChildCountById.get(node.id) || 0}
                         batchExpanded={Boolean(node.metadata?.imageBatchExpanded)}
                         batchClosing={Boolean(node.metadata?.batchRootId && props.collapsingBatchIds.has(node.metadata.batchRootId))}
@@ -172,7 +177,7 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
                 ),
             )}
 
-            {props.selectedNodeBounds && !props.selectionBox && !isNodeDragging ? (
+            {props.selectedNodeBounds && !selectionBox && !isNodeDragging ? (
                 <div
                     ref={props.selectionBoundsElementRef}
                     className="pointer-events-none absolute z-[var(--z-panel-floating)] rounded-xl"

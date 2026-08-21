@@ -60,7 +60,7 @@ import { CanvasProjectContextMenu } from "./canvas-project-context-menu";
 import { CanvasProjectMediaDialogs } from "./canvas-project-media-dialogs";
 import { CanvasProjectSelectionToolbar } from "./canvas-project-selection-toolbar";
 import { CanvasProjectStatusDialogs } from "./canvas-project-status-dialogs";
-import { CanvasProjectWorldLayers, HideWhileNodeDragging } from "./canvas-project-world-layers";
+import { CanvasProjectWorldLayers, HideWhileNodeDragging, HideWhileSelectionBox } from "./canvas-project-world-layers";
 import { CanvasRefreshShell } from "./canvas-refresh-shell";
 import type { CanvasImageEmotionPayload } from "@oc/components/canvas/canvas-node-emotion-panel";
 import { removeCanvasDrawing } from "@oc/lib/canvas/canvas-drawing-storage";
@@ -593,7 +593,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         onNodesDeleted: handleNodesDeleted,
     });
 
-    const { cancelPendingConnectionCreate, closeConnectionCreateMenu, connectionTargetAnchorRatio, connectionTargetNodeId, connectingParams, createConnectedNode, handleConnectStart, mouseWorld, pendingConnectionCreate, setConnecting } =
+    const { cancelPendingConnectionCreate, closeConnectionCreateMenu, createConnectedNode, handleConnectStart, pendingConnectionCreate } =
         useCanvasConnectionController({
             projectId,
             defaultDrawingEngine,
@@ -643,7 +643,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         setDialogNodeId(null);
     }, []);
 
-    const { cancelSelectionBox, deselectCanvas, handleCanvasMouseDown, handleNodeMouseDown, nodeDraggingRef, selectionBoundsElementRef, selectionBox } = useCanvasSelectionController({
+    const { cancelSelectionBox, deselectCanvas, handleCanvasMouseDown, handleNodeMouseDown, nodeDraggingRef, selectionBoundsElementRef } = useCanvasSelectionController({
         containerRef,
         nodesRef,
         viewportRef,
@@ -1337,6 +1337,9 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const openCanvasNodeVersions = useCallback((node: CanvasNodeData) => setVersionCompareRootId(node.metadata?.versionOfNodeId || node.id), []);
     const viewCanvasNodeImage = useCallback((node: CanvasNodeData) => setPreviewNodeId(node.id), []);
     const editCanvasDirector = useCallback((node: CanvasNodeData) => openDirectorWorkbench(node.id), [openDirectorWorkbench]);
+    const handleReplaceMedia = useCallback((node: CanvasNodeData) => {
+        handleUploadRequest(node.id);
+    }, [handleUploadRequest]);
     const locateProjectStyleNode = useCallback(() => {
         const styleNode = nodesRef.current.find((node) => node.type === CanvasNodeType.Text && node.metadata?.workflowKind === "styleboard");
         if (!styleNode) {
@@ -1468,12 +1471,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                                         connections={connections}
                                         selectedNodeIds={selectedNodeIds}
                                         scriptScrollTopById={scriptScrollTopById}
-                                        connectingParams={connectingParams}
-                                        mouseWorld={mouseWorld}
-                                        connectionTargetNodeId={connectionTargetNodeId}
-                                        connectionTargetAnchorRatio={connectionTargetAnchorRatio}
                                         nodeById={nodeById}
-                                        selectionBox={selectionBox}
                                         selectedNodeBounds={selectedNodeBounds}
                                     />
                                 }
@@ -1496,14 +1494,10 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                                     selectedConnectionId={selectedConnectionId}
                                     connections={connections}
                                     scriptScrollTopById={scriptScrollTopById}
-                                    connectingParams={connectingParams}
-                                    mouseWorld={mouseWorld}
-                                    connectionTargetNodeId={connectionTargetNodeId}
                                     nodeById={nodeById}
                                     visibleNodes={visibleNodes}
                                     frameChildrenById={frameChildrenById}
                                     selectedNodeIds={selectedNodeIds}
-                                    selectionBox={selectionBox}
                                     batchChildCountById={batchChildCountById}
                                     collapsingBatchIds={collapsingBatchIds}
                                     openingBatchIds={openingBatchIds}
@@ -1534,7 +1528,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                                     onOpenTaskDetails={openCanvasNodeTaskDetails}
                                     onOpenVersions={openCanvasNodeVersions}
                                     onViewImage={viewCanvasNodeImage}
-                                    onReplaceMedia={(node) => handleUploadRequest(node.id)}
+                                    onReplaceMedia={handleReplaceMedia}
                                     onOpenTextEditor={openTextNodeEditor}
                                     onOpenDirector={editCanvasDirector}
                                     onOpenDrawing={openDrawingNode}
@@ -1656,10 +1650,12 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         </Suspense>
                     ) : null}
 
-                    {dialogNode && dialogNode.type !== CanvasNodeType.Script && dialogNode.type !== CanvasNodeType.Drawing && !selectionBox ? (
-                        <CanvasNodePanelOverlay node={dialogNode} viewport={viewport} containerRef={containerRef} panelWidth={624}>
-                            {renderCanvasNodePanel(dialogNode)}
-                        </CanvasNodePanelOverlay>
+                    {dialogNode && dialogNode.type !== CanvasNodeType.Script && dialogNode.type !== CanvasNodeType.Drawing ? (
+                        <HideWhileSelectionBox>
+                            <CanvasNodePanelOverlay node={dialogNode} viewport={viewport} containerRef={containerRef} panelWidth={624}>
+                                {renderCanvasNodePanel(dialogNode)}
+                            </CanvasNodePanelOverlay>
+                        </HideWhileSelectionBox>
                     ) : null}
 
                     {pendingConnectionCreate ? (
@@ -1674,20 +1670,22 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         />
                     ) : null}
 
-                    {selectedNodeBounds && !selectionBox ? (
+                    {selectedNodeBounds ? (
                         <HideWhileNodeDragging>
-                            <CanvasProjectSelectionToolbar
-                                anchorRef={selectionBoundsElementRef}
-                                containerRef={containerRef}
-                                count={selectedNodeBounds.count}
-                                selectedVideoCount={selectedVideoNodes.length}
-                                mergingVideos={Boolean(mergeVideoProgress)}
-                                onAlign={alignSelectedNodes}
-                                onArrange={arrangeSelectedNodes}
-                                onCreateStoryboard={createStoryboardGroup}
-                                onCreateReferenceGroup={createReferenceGroup}
-                                onMergeVideos={() => void mergeSelectedVideos()}
-                            />
+                            <HideWhileSelectionBox>
+                                <CanvasProjectSelectionToolbar
+                                    anchorRef={selectionBoundsElementRef}
+                                    containerRef={containerRef}
+                                    count={selectedNodeBounds.count}
+                                    selectedVideoCount={selectedVideoNodes.length}
+                                    mergingVideos={Boolean(mergeVideoProgress)}
+                                    onAlign={alignSelectedNodes}
+                                    onArrange={arrangeSelectedNodes}
+                                    onCreateStoryboard={createStoryboardGroup}
+                                    onCreateReferenceGroup={createReferenceGroup}
+                                    onMergeVideos={() => void mergeSelectedVideos()}
+                                />
+                            </HideWhileSelectionBox>
                         </HideWhileNodeDragging>
                     ) : null}
 

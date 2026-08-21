@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, type Dispatch, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject, type SetStateAction } from "react";
 
 import { applyCanvasSelectionPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { calculateNodeAlignment, createNodeAlignmentContext, isHiddenBatchChild, sameStringSet, type NodeAlignmentContext } from "@oc/lib/canvas/canvas-project-domain";
@@ -74,12 +74,12 @@ export function useCanvasSelectionController({
     const selectionBoxRef = useRef<SelectionBox | null>(null);
     const nodeDraggingRef = useRef(false);
     const dragRef = useRef<DragState>({ ...EMPTY_DRAG_STATE });
-    const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
 
     const setFrameDropTargetId = useCanvasInteractionStore((state) => state.setFrameDropTargetId);
     const setIsNodeDragging = useCanvasInteractionStore((state) => state.setIsNodeDragging);
     const setDragPreview = useCanvasInteractionStore((state) => state.setDragPreview);
     const setAlignmentGuides = useCanvasInteractionStore((state) => state.setAlignmentGuides);
+    const setSelectionBox = useCanvasInteractionStore((state) => state.setSelectionBox);
 
     const cancelSelectionBox = useCallback(() => {
         selectionBoxRef.current = null;
@@ -89,7 +89,7 @@ export function useCanvasSelectionController({
         if (selectionFrameRef.current) cancelAnimationFrame(selectionFrameRef.current);
         selectionFrameRef.current = null;
         setSelectionBox(null);
-    }, []);
+    }, [setSelectionBox]);
 
     const deselectCanvas = useCallback(() => {
         cancelPendingConnectionCreate();
@@ -335,6 +335,5 @@ export function useCanvasSelectionController({
         handleNodeMouseDown,
         nodeDraggingRef,
         selectionBoundsElementRef,
-        selectionBox,
     };
 }

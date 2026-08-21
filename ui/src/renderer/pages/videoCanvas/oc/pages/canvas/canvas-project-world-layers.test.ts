@@ -21,4 +21,17 @@ describe("canvas project world layers isolation", () => {
         expect(renderModel.includes("hoveredNodeId")).toBe(false);
         expect(renderModel.includes("relatedHighlight")).toBe(false);
     });
+
+    test("does not pass pointer-follow box-select or connection draft through the page", () => {
+        const page = source("./project.tsx");
+        expect(page.includes("connectingParams={connectingParams}")).toBe(false);
+        expect(page.includes("mouseWorld={mouseWorld}")).toBe(false);
+        expect(page.includes("selectionBox={selectionBox}")).toBe(false);
+        expect(page.includes("connectionTargetNodeId={connectionTargetNodeId}")).toBe(false);
+        expect(/\bselectionBox\b/.test(page)).toBe(false);
+        expect(/\bmouseWorld\b/.test(page)).toBe(false);
+        expect(page.includes("HideWhileSelectionBox")).toBe(true);
+        expect(page.includes("onReplaceMedia={handleReplaceMedia}")).toBe(true);
+        expect(page.includes("onReplaceMedia={(node) => handleUploadRequest(node.id)}")).toBe(false);
+    });
 });

@@ -5,7 +5,7 @@ import { nanoid } from "nanoid";
 import { imageMetadata, videoMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
 import { fitNodeSize } from "@oc/lib/canvas/canvas-node-size";
 import { createCanvasNode } from "@oc/lib/canvas/canvas-project-domain";
-import { createDirectorScene } from "@oc/lib/canvas/director/director-scene";
+import { createDirectorScene } from "@oc/lib/canvas/director/director-scene-create";
 import { uploadImage } from "@oc/services/image-storage";
 import { uploadMediaFile } from "@oc/services/file-storage";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata, type Position } from "@oc/types/canvas";

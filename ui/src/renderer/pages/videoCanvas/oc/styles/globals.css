@@ -4628,6 +4628,19 @@
         display: none;
     }
 
+    [data-canvas-low-scale="true"] .aceternity-comet-perspective,
+    [data-canvas-low-scale="true"] .aceternity-comet-perspective[data-comet-active="true"] {
+        perspective: none;
+        transform-style: flat;
+    }
+
+    [data-canvas-low-scale="true"] .aceternity-comet-card,
+    [data-canvas-low-scale="true"] .aceternity-comet-card[data-comet-active="true"] {
+        transform: none !important;
+        transform-style: flat !important;
+        will-change: auto !important;
+    }
+
     .canvas-world-layer {
         transform: translate(var(--canvas-live-x), var(--canvas-live-y)) scale(var(--canvas-live-scale-ratio));
         transform-origin: 0 0;
