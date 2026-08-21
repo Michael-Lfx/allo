@@ -10,9 +10,12 @@ import {
   CHAT_COMPOSER_WRAPPER_CLASSES,
   CHAT_CONTENT_COLUMN_CLASSES,
   CHAT_HEADER_CLASSES,
+  CHAT_HEADER_WITH_SUBTITLE_CLASSES,
+  getWorkspaceTitleSubtitle,
   CHAT_MESSAGE_ROW_METRICS_CLASSES,
   CHAT_SCROLL_AREA_CLASSES,
 } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
+import PathText from '@/renderer/components/base/PathText';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import appLogo from '@/renderer/assets/logo.svg';
 import { usePendingConversation } from './PendingConversationContext';
@@ -48,6 +51,7 @@ const PendingConversationOverlay: React.FC = () => {
   // The first user message is a preview only. The backend owns the formal
   // fallback title and writes it after the message is durable.
   const displayTitle = pending.title?.trim() || '';
+  const workspaceTitleSubtitle = getWorkspaceTitleSubtitle(pending.workspacePath, isMobile);
   // Mirrors NomiSendBox's placeholder contract. backend stays 'Flowy' (the
   // overlay renders before the destination, so the real agent_name isn't known
   // yet) — the common case matches exactly; a custom-named agent differs by one
@@ -75,15 +79,29 @@ const PendingConversationOverlay: React.FC = () => {
       <div className='flex-1 min-w-0 flex flex-col'>
         {/* Header replica (CHAT_HEADER_CLASSES): only explicit context is shown
             here; a normal message must never be mistaken for a formal title. */}
-        <div className={CHAT_HEADER_CLASSES}>
+        <div
+          className={classNames(
+            CHAT_HEADER_CLASSES,
+            workspaceTitleSubtitle && CHAT_HEADER_WITH_SUBTITLE_CLASSES,
+          )}
+        >
           <div className='flex items-center min-w-0'>
             <div className='shrink-0 flex items-center pl-8px'>
               <img src={appLogo} alt='Flowy' className='block h-16px w-16px object-contain' />
             </div>
-            <div className='min-w-0 flex-1 px-8px py-5px'>
+            <div className='min-w-0 flex-1 flex flex-col justify-center px-8px py-5px'>
               <span className='block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-16px font-bold text-t-primary'>
                 {displayTitle || ' '}
               </span>
+              {workspaceTitleSubtitle && (
+                <span
+                  data-testid='conversation-workspace-subtitle'
+                  title={workspaceTitleSubtitle}
+                  className='block min-w-0 overflow-hidden text-11px leading-14px text-t-secondary'
+                >
+                  <PathText path={workspaceTitleSubtitle} className='min-w-0' />
+                </span>
+              )}
             </div>
           </div>
         </div>

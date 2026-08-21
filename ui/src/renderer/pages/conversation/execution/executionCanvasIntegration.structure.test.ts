@@ -101,9 +101,14 @@ describe('conversation execution canvas integration', () => {
     const readOnlySource = readSource(new URL('./ReadOnlyConversationView.tsx', import.meta.url));
 
     expect(chatSource.match(/<ExecutionProvider conversation=\{conversation\}>/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(chatSource.includes('const workspaceTitlePathOf')).toBe(true);
+    expect(chatSource.includes('isTemporaryWorkspace === true ? undefined : workspace')).toBe(true);
     expect(companionSource.includes('<ExecutionConversationLayout')).toBe(false);
     expect(companionPanelSource.includes('renderInExecutionShell')).toBe(true);
     expect(companionPanelSource.includes('<ExecutionConversationLayout')).toBe(true);
+    expect(companionPanelSource.includes('title={conversation.name}')).toBe(true);
+    expect(companionPanelSource.includes('disableRename')).toBe(true);
+    expect(companionPanelSource.includes('workspaceTitleSubtitle')).toBe(false);
     expect(hookSource.includes("conversation?.type === 'nomi'")).toBe(false);
     expect(hookSource.includes('agentExecution.events.changed.on')).toBe(true);
     expect(hookSource.includes('getConversationOrNull(conversationId)')).toBe(true);

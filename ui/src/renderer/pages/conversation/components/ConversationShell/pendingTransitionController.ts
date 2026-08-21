@@ -12,6 +12,8 @@ export type PendingConversation = {
   input: string;
   /** The conversation's create-time name — shown in the header replica. */
   title?: string;
+  /** User-selected real workspace path shown in the header replica. */
+  workspacePath?: string;
   /** Attachment paths, if any — shown as a small count under the bubble. */
   files?: string[];
   /**

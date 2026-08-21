@@ -35,6 +35,19 @@ describe('useGuidSend pending preset guard', () => {
     expect(overlay.includes('setInterval')).toBe(false);
   });
 
+  test('carries the selected real workspace into the pending title header', () => {
+    const source = readSource(new URL('./useGuidSend.ts', import.meta.url));
+    const overlay = readSource(
+      new URL('../../conversation/components/ConversationShell/PendingConversationOverlay.tsx', import.meta.url)
+    );
+
+    expect(source.includes('workspacePath: dir.trim() || undefined')).toBe(true);
+    expect(overlay.includes('pending.workspacePath')).toBe(true);
+    expect(overlay.includes('getWorkspaceTitleSubtitle(pending.workspacePath, isMobile)')).toBe(true);
+    expect(overlay.includes('CHAT_HEADER_WITH_SUBTITLE_CLASSES')).toBe(true);
+    expect(overlay.includes('marqueeOnHover')).toBe(false);
+  });
+
   test('arms the reveal handshake only after navigation; aborts instantly on failure', () => {
     const source = readSource(new URL('./useGuidSend.ts', import.meta.url));
 

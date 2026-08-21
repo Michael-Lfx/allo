@@ -180,6 +180,17 @@ type NomiConversation = Extract<TChatConversation, { type: 'nomi' }>;
 const sshHostIdOf = (conversation: TChatConversation): SshHostId | undefined =>
   (conversation.extra as { ssh_host_id?: SshHostId } | undefined)?.ssh_host_id;
 
+/** Return only a user-visible workspace path; backend-owned temporary paths
+ * are intentionally kept out of the conversation title header. */
+const workspaceTitlePathOf = (conversation?: TChatConversation): string | undefined => {
+  const workspace = conversation?.extra?.workspace?.trim();
+  if (!workspace) return undefined;
+  const isTemporaryWorkspace = (
+    conversation?.extra as { is_temporary_workspace?: boolean } | undefined
+  )?.is_temporary_workspace;
+  return isTemporaryWorkspace === true ? undefined : workspace;
+};
+
 const NomiConversationLayout: React.FC<{
   conversation: NomiConversation;
   chatLayoutProps: Omit<ChatLayoutProps, 'children' | 'workspaceCollaboration' | 'workspaceExtraTabs'>;
@@ -409,6 +420,7 @@ const NomiConversationPanel: React.FC<{
     ),
     workspaceEnabled,
     workspacePath: conversation.extra?.workspace,
+    workspaceTitleSubtitle: workspaceTitlePathOf(conversation),
     isTemporaryWorkspace: (conversation.extra as { is_temporary_workspace?: boolean } | undefined)
       ?.is_temporary_workspace,
     backend: 'nomi' as const,
@@ -549,6 +561,7 @@ const ChatConversation: React.FC<{
           sider={<ChatSlider conversation={conversation} extraTabs={workspaceExtraTabs} />}
           workspaceEnabled={Boolean(conversation.extra?.workspace)}
           workspacePath={conversation.extra?.workspace}
+          workspaceTitleSubtitle={workspaceTitlePathOf(conversation)}
           isTemporaryWorkspace={
             (conversation.extra as { is_temporary_workspace?: boolean } | undefined)
               ?.is_temporary_workspace
@@ -589,27 +602,30 @@ const ChatConversation: React.FC<{
 
   // If preset snapshot info exists, use its logo/name. While loading, avoid
   // falling back prematurely; otherwise use the backend logo.
-  const chatLayoutProps = presetPresetInfo
-    ? {
-        preset: presetPresetInfo,
-      }
-    : isLoadingPreset
-      ? {} // Still loading custom agents; avoid showing the backend logo prematurely.
-      : {
-          backend:
-            conversation?.type === 'acp'
-              ? conversation?.extra?.backend
-              : // `nomi` conversations are handled by the early return above and can
-                // never reach this branch, so the chain starts at non-ACP types.
-                conversation?.type === 'openclaw-gateway'
-                  ? 'openclaw-gateway'
-                  : conversation?.type === 'nanobot'
-                    ? 'nanobot'
-                    : conversation?.type === 'remote'
-                      ? 'remote'
-                      : undefined,
-          agent_name: conversationAgentName,
-        };
+  const chatLayoutProps = {
+    ...(presetPresetInfo
+      ? {
+          preset: presetPresetInfo,
+        }
+      : isLoadingPreset
+        ? {} // Still loading custom agents; avoid showing the backend logo prematurely.
+        : {
+            backend:
+              conversation?.type === 'acp'
+                ? conversation?.extra?.backend
+                : // `nomi` conversations are handled by the early return above and can
+                  // never reach this branch, so the chain starts at non-ACP types.
+                  conversation?.type === 'openclaw-gateway'
+                    ? 'openclaw-gateway'
+                    : conversation?.type === 'nanobot'
+                      ? 'nanobot'
+                      : conversation?.type === 'remote'
+                        ? 'remote'
+                        : undefined,
+            agent_name: conversationAgentName,
+          }),
+    workspaceTitleSubtitle: workspaceTitlePathOf(conversation),
+  };
 
   const headerExtraNode = (
     <div className='flex items-center gap-8px'>

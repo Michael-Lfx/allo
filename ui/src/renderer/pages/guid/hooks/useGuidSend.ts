@@ -689,6 +689,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       // first user message is durable. Only explicit AutoWork entries have a
       // create-time name.
       title: planGuidEntry(input, autoWork).conversationName,
+      workspacePath: dir.trim() || undefined,
       files: files.length > 0 ? files : undefined,
       sendsInitialMessage: !isAutoWorkEntry(autoWork),
     });
