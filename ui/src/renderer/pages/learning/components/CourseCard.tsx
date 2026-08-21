@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Button, Card, Checkbox, Message, Modal, Progress, Tag, Typography } from '@arco-design/web-react';
+import { Button, Card, Checkbox, Modal, Progress, Tag, Typography } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';
 import type { CourseSummary } from '../types';

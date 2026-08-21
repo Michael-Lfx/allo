@@ -2,7 +2,8 @@
 
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Message, Modal, Spin } from '@arco-design/web-react';
+import { Button, Modal, Spin } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { IconDelete, IconEdit, IconPlus } from '@arco-design/web-react/icon';
 import { getBaseUrl, isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { IFigureMeta } from '@/common/adapter/ipcBridge';

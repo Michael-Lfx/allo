@@ -1,7 +1,8 @@
 
 
 import React, { useCallback, useMemo, useState } from 'react';
-import { Button, Message, Modal, Radio, Tooltip } from '@arco-design/web-react';
+import { Button, Modal, Radio, Tooltip } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { LinkCloud } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { ipcBridge } from '@/common';

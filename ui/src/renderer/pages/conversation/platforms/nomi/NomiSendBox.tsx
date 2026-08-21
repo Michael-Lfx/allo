@@ -111,7 +111,8 @@ import {
   shouldReplayEditResubmit,
   type EditResubmitRequestOutcome,
 } from './editResubmitRecovery';
-import { Alert, Button, Message, Tag } from '@arco-design/web-react';
+import { Alert, Button, Tag } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Brain, Shield } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';

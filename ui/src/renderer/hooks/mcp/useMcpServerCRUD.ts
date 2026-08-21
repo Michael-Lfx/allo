@@ -1,6 +1,6 @@
 import type { McpServerId } from '@/common/types/ids';
 import { useCallback } from 'react';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useTranslation } from 'react-i18next';
 import { mcpService } from '@/common/adapter/ipcBridge';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';

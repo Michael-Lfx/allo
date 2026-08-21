@@ -6,7 +6,8 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Modal, Message, Tooltip } from '@arco-design/web-react';
+import { Button, Modal, Tooltip } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Copy, FullScreen, Hourglass, Info, SortAmountDown, SortAmountUp } from '@icon-park/react';
 import { JsonView, defaultStyles } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';

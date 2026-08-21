@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Message, Modal, Trigger } from '@arco-design/web-react';
+import { Modal, Trigger } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { FileText, ImageFiles, Plus } from '@icon-park/react';
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';

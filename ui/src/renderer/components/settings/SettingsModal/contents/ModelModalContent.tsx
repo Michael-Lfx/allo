@@ -4,7 +4,8 @@ import { ipcBridge } from '@/common';
 import type { IProvider, ModelProfile, ModelTask, ModelTrait } from '@/common/config/storage';
 import type { ProviderModelResponse, UpdateProviderModelRequest } from '@/common/types/provider/providerModel';
 import type { ProviderId } from '@/common/types/ids';
-import { Button, Checkbox, Collapse, Divider, Input, Message, Modal, Popconfirm, Popover, Select, Switch, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Checkbox, Collapse, Divider, Input, Modal, Popconfirm, Popover, Select, Switch, Tag, Tooltip } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { Copy, DeleteFour, Info, Minus, Write, Heartbeat, Drag, TagOne } from '@icon-park/react';
 import {

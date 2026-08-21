@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Alert, Button, Empty, Input, Message, Modal, Spin, Tabs, Typography } from '@arco-design/web-react';
+import { Alert, Button, Empty, Input, Modal, Spin, Tabs, Typography } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { learningApi } from './api';
 import { CourseCard, CourseDeleteDialog } from './components/CourseCard';

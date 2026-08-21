@@ -6,7 +6,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Checkbox, Message, Popconfirm, Tag } from '@arco-design/web-react';
+import { Button, Checkbox, Popconfirm, Tag } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Plus } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import type { IChannelPluginStatus } from '@/common/types/channel/channel';

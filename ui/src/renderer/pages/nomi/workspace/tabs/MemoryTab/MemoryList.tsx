@@ -6,7 +6,8 @@
 
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message, Pagination, Spin } from '@arco-design/web-react';
+import { Pagination, Spin } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import BatchActionBar from '@/renderer/components/base/BatchActionBar';
 import type { ICompanionMemory } from '@/common/adapter/ipcBridge';
 import type { CompanionMemoryId } from '@/common/types/ids';

@@ -5,7 +5,8 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Empty, Message, Modal, Spin } from '@arco-design/web-react';
+import { Alert, Button, Empty, Modal, Spin } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { WebPage } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useSearchParams } from 'react-router-dom';

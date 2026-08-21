@@ -29,7 +29,6 @@ import {
   Empty,
   Input,
   Menu,
-  Message,
   Modal,
   Popover,
   Result,
@@ -39,6 +38,7 @@ import {
   Tag,
   Tree,
 } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import {
   Attention,
   Close,

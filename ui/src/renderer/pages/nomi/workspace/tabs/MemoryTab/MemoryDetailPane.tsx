@@ -6,7 +6,8 @@
 
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Input, Message, Switch } from '@arco-design/web-react';
+import { Input, Switch } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import type { ICompanionMemory } from '@/common/adapter/ipcBridge';
 import { NomiSettingList, NomiSettingRow } from '@/renderer/components/base/NomiSettingLayout';
 import { MEMORY_KIND_DOT, formatMemoryTime } from './constants';

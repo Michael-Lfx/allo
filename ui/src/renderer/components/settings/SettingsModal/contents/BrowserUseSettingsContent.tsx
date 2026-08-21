@@ -20,7 +20,8 @@ import {
   type IBrowserOverviewCapabilities,
 } from '@/common/browser/browserTypes';
 import { ipcBridge } from '@/common';
-import { Alert, Button, Collapse, InputNumber, Message, Modal, Radio, Switch } from '@arco-design/web-react';
+import { Alert, Button, Collapse, InputNumber, Modal, Radio, Switch } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Down, Right } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';

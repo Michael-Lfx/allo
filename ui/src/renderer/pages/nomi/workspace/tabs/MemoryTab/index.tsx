@@ -6,7 +6,8 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message, Modal } from '@arco-design/web-react';
+import { Modal } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import ContentAside from '@/renderer/components/layout/ContentAside';
 import NomiSelect from '@/renderer/components/base/NomiSelect';
 import { NomiSettingList, NomiSettingRow, NomiSettingSection } from '@/renderer/components/base/NomiSettingLayout';

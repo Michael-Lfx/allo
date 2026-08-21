@@ -14,7 +14,8 @@ describe('ReasoningEffortSelector structure', () => {
     const source = readSource(new URL('./ReasoningEffortSelector.tsx', import.meta.url));
     const css = readSource(new URL('./ReasoningEffortSelector.module.css', import.meta.url));
 
-    expect(source.includes("import { Message, Popover, Slider } from '@arco-design/web-react'")).toBe(true);
+    expect(source.includes("import { Popover, Slider } from '@arco-design/web-react'")).toBe(true);
+    expect(source.includes("import { AppMessage as Message } from '@/renderer/components/notifications';")).toBe(true);
     expect(source.includes('<Dropdown')).toBe(false);
     expect(source.includes('<Menu')).toBe(false);
     expect(source.includes('onAfterChange={onAfterChange}')).toBe(true);

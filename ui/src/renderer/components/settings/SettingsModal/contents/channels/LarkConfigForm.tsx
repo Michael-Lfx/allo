@@ -3,7 +3,8 @@
 import type { IChannelPluginStatus } from '@/common/types/channel/channel';
 import { channel } from '@/common/adapter/ipcBridge';
 import { openExternalUrl } from '@/renderer/utils/platform';
-import { Button, Input, Message, Tooltip } from '@arco-design/web-react';
+import { Button, Input, Tooltip } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Down } from '@icon-park/react';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';

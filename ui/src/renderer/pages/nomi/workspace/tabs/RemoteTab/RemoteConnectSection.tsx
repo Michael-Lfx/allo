@@ -24,7 +24,8 @@ import {
   statusIsUnbound,
   type ChannelConfigTarget,
 } from '@/renderer/components/channels/channelStatusSelection';
-import { Button, Message, Modal, Switch, Tag } from '@arco-design/web-react';
+import { Button, Modal, Switch, Tag } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChannelPluginId, CompanionId } from '@/common/types/ids';
 import { useTranslation } from 'react-i18next';

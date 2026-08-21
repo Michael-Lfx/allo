@@ -3,7 +3,7 @@
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { FileService, type FileMetadata } from '@/renderer/services/FileService';
 import { isDesktopShell } from '@/renderer/utils/platform';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { FolderOpen, FolderUpload, Paperclip } from '@icon-park/react';
 import React, { useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';

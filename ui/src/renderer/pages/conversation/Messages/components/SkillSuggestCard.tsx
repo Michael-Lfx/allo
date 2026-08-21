@@ -10,7 +10,7 @@ import { ipcBridge } from '@/common';
 import RecommendationCard from '@renderer/components/beautifulUi/recommendationCard/RecommendationCard';
 import { toneFromSuggestion } from '@renderer/components/beautifulUi/recommendationCard/recommendationCardModel';
 import { useUpdateConversationArtifactStatus } from '@renderer/pages/conversation/Messages/artifacts';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Down, Up } from '@icon-park/react';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';

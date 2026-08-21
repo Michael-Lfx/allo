@@ -2,7 +2,7 @@
 
 import { ipcBridge } from '@/common';
 import type { PreviewHistoryTarget, PreviewSnapshotInfo } from '@/common/types/office/preview';
-import { Message } from '@arco-design/web-react';
+import type { AppMessageInstance } from '@/renderer/components/notifications';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -94,13 +94,13 @@ interface UsePreviewHistoryReturn {
    * Message API 实例（用于显示提示信息）
    * Message API instance (for displaying notifications)
    */
-  messageApi: Required<ReturnType<typeof Message.useMessage>[0]>;
+  messageApi: AppMessageInstance;
 
   /**
    * Message Context Holder（需要渲染在组件中）
    * Message Context Holder (needs to be rendered in component)
    */
-  messageContextHolder: ReturnType<typeof Message.useMessage>[1];
+  messageContextHolder: null;
 }
 
 /**

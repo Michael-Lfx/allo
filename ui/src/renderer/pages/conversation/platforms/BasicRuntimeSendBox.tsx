@@ -51,7 +51,8 @@ import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage } from '@/renderer/utils/file/messageFiles';
 import { useBasicRuntimeTurnSurface } from '@/renderer/pages/conversation/platforms/BasicRuntimeTurnContext';
-import { Message, Tag } from '@arco-design/web-react';
+import { Tag } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 

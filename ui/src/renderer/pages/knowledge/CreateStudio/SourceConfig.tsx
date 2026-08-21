@@ -14,7 +14,8 @@
  */
 import React, { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Message, Switch, Tooltip } from '@arco-design/web-react';
+import { Button, Input, Switch, Tooltip } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Close, FolderOpen, Help, Info } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import { isDesktopShell } from '@renderer/utils/platform';

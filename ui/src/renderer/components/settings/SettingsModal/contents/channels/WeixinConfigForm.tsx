@@ -2,7 +2,8 @@
 
 import type { IChannelPairingRequest, IChannelPluginStatus, IChannelUser } from '@/common/types/channel/channel';
 import { channel } from '@/common/adapter/ipcBridge';
-import { Button, Empty, Message, Spin, Tooltip } from '@arco-design/web-react';
+import { Button, Empty, Spin, Tooltip } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { CheckOne, CloseOne, Copy, Delete, Refresh } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';

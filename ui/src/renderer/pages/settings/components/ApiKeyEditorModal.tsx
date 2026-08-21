@@ -1,4 +1,5 @@
-import { Button, Input, Message, Modal, Spin, Tooltip } from '@arco-design/web-react';
+import { Button, Input, Modal, Spin, Tooltip } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { CheckOne, CloseOne, Delete, Edit, Plus, DeleteFive, CheckSmall, Shield } from '@icon-park/react';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';

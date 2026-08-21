@@ -3,7 +3,8 @@
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
-import { Button, Message } from '@arco-design/web-react';
+import { Button } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useNavigate } from 'react-router-dom';
 import { useCanvasStore } from '@oc/stores/canvas/use-canvas-store';
 import { syncSessionFromCanvas } from '@renderer/pages/videoGeneration/api';

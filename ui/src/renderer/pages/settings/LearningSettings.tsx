@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, InputNumber, Message, Slider } from '@arco-design/web-react';
+import { Button, Input, InputNumber, Slider } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import {
   SettingsControlGroup,

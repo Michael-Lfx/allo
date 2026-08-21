@@ -7,7 +7,7 @@
 import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import type { IApiSshHost } from '@/common/adapter/ipcBridge';
 import { conversationTarget } from '@/common/types/ids';

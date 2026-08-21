@@ -7,7 +7,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import dayjs from 'dayjs';
-import { Button, Input, Message, Modal, Tag } from '@arco-design/web-react';
+import { Button, Input, Modal, Tag } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Robot } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import type { IApiRobot, IApiRobotPhase } from '@/common/adapter/ipcBridge';

@@ -7,7 +7,8 @@
 import classNames from 'classnames';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Message as ArcoMessage, Modal, Tooltip } from '@arco-design/web-react';
+import { Button, Modal, Tooltip } from '@arco-design/web-react';
+import { AppMessage as ArcoMessage } from '@/renderer/components/notifications';
 import { Down, FolderOpen, LinkOne, Message, Robot, Terminal, Unlink, User } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import type { IKnowledgeBinding, IKnowledgeConsumer, KnowledgeBindingKind } from '@/common/adapter/ipcBridge';

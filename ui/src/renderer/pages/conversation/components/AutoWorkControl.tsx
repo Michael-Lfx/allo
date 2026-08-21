@@ -3,7 +3,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { Button, Message, Popover, Select, Spin, Switch, Tooltip } from '@arco-design/web-react';
+import { Button, Popover, Select, Spin, Switch, Tooltip } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import type { SelectHandle } from '@arco-design/web-react/es/Select/interface';
 import { ListAdd, Robot } from '@icon-park/react';
 import classNames from 'classnames';

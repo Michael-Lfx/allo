@@ -2,7 +2,8 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Checkbox, Message, Tabs } from '@arco-design/web-react';
+import { Button, Checkbox, Tabs } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ApiApp, Terminal, WebPage } from '@icon-park/react';
 import CopyIconButton from '@/renderer/components/base/CopyIconButton';
 import HubPageShell from '@/renderer/components/layout/HubPageShell';

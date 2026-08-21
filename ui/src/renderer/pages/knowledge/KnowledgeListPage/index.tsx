@@ -20,12 +20,12 @@ import {
   Checkbox,
   Form,
   Input,
-  Message,
   Modal,
   Result,
   Spin,
   Typography,
 } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Search } from '@icon-park/react';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { isDesktopShell } from '@renderer/utils/platform';

@@ -2,7 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Message, Select } from '@arco-design/web-react';
+import { Button, Input, Select } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import { isHandledAuthExpiredHttpError } from '@/common/adapter/httpBridge';
 import type { IIdmmSettings } from '@/common/adapter/ipcBridge';

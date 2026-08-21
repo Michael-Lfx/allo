@@ -6,7 +6,8 @@
 
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Input, Message, Modal } from '@arco-design/web-react';
+import { Input, Modal } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import { CUSTOM_CHARACTER_ID, DEFAULT_CHARACTER_ID } from '@renderer/pages/companion/characters';
 import CharacterPicker from '../CharacterPicker';

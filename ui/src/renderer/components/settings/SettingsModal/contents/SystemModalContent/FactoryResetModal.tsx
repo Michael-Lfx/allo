@@ -2,7 +2,8 @@
 
 import { ipcBridge } from '@/common';
 import { configService } from '@/common/config/configService';
-import { Alert, Button, Input, Message, Modal } from '@arco-design/web-react';
+import { Alert, Button, Input, Modal } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 

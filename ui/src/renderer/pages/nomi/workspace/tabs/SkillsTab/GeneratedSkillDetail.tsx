@@ -6,7 +6,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Input, Message, Spin } from '@arco-design/web-react';
+import { Input, Spin } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Check, Close, Edit } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import type { CompanionId } from '@/common/types/ids';

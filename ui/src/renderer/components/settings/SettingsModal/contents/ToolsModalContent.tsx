@@ -1,7 +1,8 @@
 
 import type { IMcpServer } from '@/common/config/storage';
 import { getAgents } from '@/renderer/hooks/agent/useAgents';
-import { Message, Button, Dropdown, Menu, Modal } from '@arco-design/web-react';
+import { Button, Dropdown, Menu, Modal } from '@arco-design/web-react';
+import type { AppMessageInstance } from '@/renderer/components/notifications';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { Down, Plus } from '@icon-park/react';
 import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
@@ -16,7 +17,7 @@ import {
   type ExtensionMcpServerContribution,
 } from '@/renderer/hooks/mcp/extensionCatalog';
 
-type MessageInstance = Required<ReturnType<typeof Message.useMessage>[0]>;
+type MessageInstance = AppMessageInstance;
 
 export type McpInstalledPanelHandle = {
   openAdd: (mode: 'json' | 'oneclick') => void;

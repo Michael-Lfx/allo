@@ -1,6 +1,7 @@
 
 
-import { Button, Input, Message, Modal, Spin } from '@arco-design/web-react';
+import { Button, Input, Modal, Spin } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import {
   IconCheck,
   IconClose,

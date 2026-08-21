@@ -5,7 +5,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import type { InputNumberValueChangeReason } from '@arco-design/web-react/es/InputNumber/interface';
 import NomiInputNumber from '@/renderer/components/base/NomiInputNumber';
 

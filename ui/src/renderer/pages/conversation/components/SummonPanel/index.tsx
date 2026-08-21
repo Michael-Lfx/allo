@@ -22,7 +22,8 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Checkbox, Drawer, Empty, Input, Message, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Checkbox, Drawer, Empty, Input, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { EveryUser } from '@icon-park/react';
 import useSWR from 'swr';
 

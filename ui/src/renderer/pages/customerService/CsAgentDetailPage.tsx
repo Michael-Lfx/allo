@@ -14,7 +14,6 @@ import {
   Input,
   InputNumber,
   Menu,
-  Message,
   Modal,
   Popconfirm,
   Select,
@@ -23,6 +22,7 @@ import {
   Table,
   Tag,
 } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { DeleteOne, Down, EditOne, Left, More, Plus, PreviewOpen } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import type { ICsNote } from '@/common/adapter/ipcBridge';

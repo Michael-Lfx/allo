@@ -6,7 +6,8 @@
 
 import React, { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Message, Modal } from '@arco-design/web-react';
+import { Button, Modal } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Attention } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import { NomiSettingList, NomiSettingRow, NomiSettingSection } from '@/renderer/components/base/NomiSettingLayout';

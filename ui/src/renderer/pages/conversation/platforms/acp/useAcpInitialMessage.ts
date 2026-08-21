@@ -7,7 +7,7 @@ import type { TMessage } from '@/common/chat/chatLib';
 import { parseError, uuid } from '@/common/utils';
 import { emitter } from '@/renderer/utils/emitter';
 import { buildDisplayMessage } from '@/renderer/utils/file/messageFiles';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import {

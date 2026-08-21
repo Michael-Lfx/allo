@@ -3,7 +3,7 @@ import { ipcBridge } from '@/common';
 import type { GoalContractDto, GoalStatusResponse } from '@/common/adapter/ipcBridge';
 import type { GoalSlashInvocation } from '@/common/chat/slash/goalCommand';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useCallback, useEffect, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';

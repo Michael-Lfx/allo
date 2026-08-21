@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { parseKnowledgeBaseId } from '@/common/types/ids';

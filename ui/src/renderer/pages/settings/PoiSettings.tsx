@@ -5,7 +5,6 @@ import { useTranslation } from 'react-i18next';
 import {
   Button,
   InputNumber,
-  Message,
   Modal,
   Select,
   Spin,
@@ -13,6 +12,7 @@ import {
   Table,
   Tag,
 } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import { FLOWY_BUILTIN_PROVIDER_ID } from '@/common/config/constants';
 import type { IPoiSettings, IPoiStatusResponse, IPoiTopic } from '@/common/adapter/ipcBridge';

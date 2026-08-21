@@ -7,7 +7,8 @@
 import type { IChannelPairingRequest, IChannelUser } from '@/common/types/channel/channel';
 import type { ChannelUserId } from '@/common/types/ids';
 import { copyText } from '@/renderer/utils/ui/clipboard';
-import { Button, Empty, Message, Spin, Tooltip } from '@arco-design/web-react';
+import { Button, Empty, Spin, Tooltip } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { CheckOne, CloseOne, Copy, Delete, Refresh } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';

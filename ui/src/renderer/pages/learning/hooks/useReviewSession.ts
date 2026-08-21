@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { learningApi } from '../api';
 import { ORPHAN_COURSE_FILTER } from '../constants';
 import type { DueReview, ReviewAnswerResult, ReviewRating } from '../types';

@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import ContentSider, { useContentSiderCollapse } from '@renderer/components/layout/ContentSider';
 import { addRecentWorkspace } from '@renderer/components/workspace';
 import { useResizableSplit } from '@renderer/hooks/ui/useResizableSplit';

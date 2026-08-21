@@ -2,7 +2,7 @@
 
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import SendBox from '@renderer/components/chat/SendBox';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
 import { useAddEventListener } from '@/renderer/utils/emitter';

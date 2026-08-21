@@ -5,12 +5,12 @@ import { useTranslation } from 'react-i18next';
 import {
   Button,
   InputNumber,
-  Message,
   Select,
   Spin,
   Switch,
   Table,
 } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import type { IMediaSettings, IMediaWorkflowHistoryItem } from '@/common/adapter/ipcBridge';
 import CreditsRefreshButton from '@/renderer/components/base/CreditsRefreshButton';

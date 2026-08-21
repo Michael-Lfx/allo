@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { httpGet } from '@/common/adapter/httpBridge';
 import {
   DEVELOPER_MODE_REVEAL_TAP_COUNT,

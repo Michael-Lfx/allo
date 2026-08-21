@@ -1,6 +1,7 @@
 
 
-import { Button, Message } from '@arco-design/web-react';
+import { Button } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Copy } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useCallback } from 'react';

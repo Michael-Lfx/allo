@@ -2,7 +2,8 @@
 
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message, Modal } from '@arco-design/web-react';
+import { Modal } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { CheckOne, EditTwo, Plus } from '@icon-park/react';
 import classNames from 'classnames';
 import { ThemeSwitcher } from '@renderer/components/settings/ThemeSwitcher';

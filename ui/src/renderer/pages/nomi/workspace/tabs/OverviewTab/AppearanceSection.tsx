@@ -6,7 +6,8 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message, Progress, Switch } from '@arco-design/web-react';
+import { Progress, Switch } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Platte } from '@icon-park/react';
 import type { ICompanionProfile, ICompanionStatus } from '@/common/adapter/ipcBridge';
 import { NomiSettingList, NomiSettingRow, NomiSettingSection } from '@/renderer/components/base/NomiSettingLayout';

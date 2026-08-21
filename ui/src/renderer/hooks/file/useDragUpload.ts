@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import type { FileMetadata } from '@renderer/services/FileService';
 import { FileService } from '@renderer/services/FileService';
 import type { UploadSource } from '@renderer/hooks/file/useUploadState';

@@ -14,7 +14,8 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { Message, Modal } from '@arco-design/web-react';
+import { Modal } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useTranslation } from 'react-i18next';
 import { ipcBridge } from '@/common';
 import { isAuthExpiredHttpError } from '@/common/adapter/httpBridge';

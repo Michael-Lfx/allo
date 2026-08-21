@@ -7,7 +7,8 @@
 import type { IApiSshConfigScan, IApiSshHost } from '@/common/adapter/ipcBridge';
 import { ipcBridge } from '@/common';
 import { useCallback, useState } from 'react';
-import { Button, Form, Input, InputNumber, Message, Modal, Select } from '@arco-design/web-react';
+import { Button, Form, Input, InputNumber, Modal, Select } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import NomiModal from '@renderer/components/base/NomiModal';
 import { Certificate, Download, Edit, Fingerprint, Key, Lock, Plus, Server, Speed } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';

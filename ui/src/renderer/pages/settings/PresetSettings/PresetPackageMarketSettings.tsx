@@ -3,7 +3,7 @@ import type { ISkillMarketItem, ISkillMarketPackageResponse } from '@/common/ada
 import type { CreatePresetRequest, Preset } from '@/common/types/agent/presetTypes';
 import { parsePresetId, type PresetId } from '@/common/types/ids';
 import { resolveLocaleKey, uuidv7 } from '@/common/utils';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarketSettingsPanel from '@/renderer/pages/settings/MarketSettingsPanel';

@@ -1,6 +1,6 @@
 import type { ConversationId } from '@/common/types/ids';
 import { ipcBridge } from '@/common';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 

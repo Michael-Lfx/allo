@@ -3,7 +3,8 @@
 import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Button, Message, Popconfirm, Spin, Empty } from '@arco-design/web-react';
+import { Button, Popconfirm, Spin, Empty } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Left, Delete, Write, Attention, Robot, PlayOne, PauseOne } from '@icon-park/react';
 import classNames from 'classnames';
 import { ipcBridge } from '@/common';

@@ -2,7 +2,8 @@
 import React, { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Message, Spin } from '@arco-design/web-react';
+import { Spin } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { BookOne, Earth, FolderOpen, Plus, Upload } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import { isDesktopShell } from '@renderer/utils/platform';
