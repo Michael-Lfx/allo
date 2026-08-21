@@ -91,6 +91,12 @@ describe('WorkpathDrawer structure', () => {
     expect(source.includes('conversationCount={sessionCount}')).toBe(true);
     expect(source.includes('getPopupContainer={() => document.body}')).toBe(true);
     expect(source.includes('popupStyle: { padding: 0 }')).toBe(true);
+    expect(source.includes("pointerEvents: 'none'")).toBe(true);
+    // The row owns the hover actions, so the card's trigger starts inside the
+    // row and closes before the action slot: hovering + / more never opens
+    // the card, and the click-through popup can never swallow their events.
+    expect(source.indexOf('<Popover')).toBeGreaterThan(source.indexOf('group group-hover:pr-50px'));
+    expect(source.indexOf('</Popover>')).toBeLessThan(source.indexOf('{/* Hover ops:'));
     expect(cardSource.includes("t('sessionList.workpathConversationCount'")).toBe(true);
     expect(cardSource.includes('{workspacePath}')).toBe(true);
   });

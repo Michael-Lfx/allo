@@ -216,49 +216,52 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   return (
     <div className='workpath-drawer min-w-0'>
       {/* Drawer header */}
-      <Popover
-        trigger='hover'
-        position='right'
-        content={
-          <WorkpathHoverCard
-            displayName={displayName}
-            conversationCount={sessionCount}
-            workspacePath={isDefault ? undefined : node.key}
-          />
-        }
-        triggerProps={{ mouseEnterDelay: 400, popupStyle: { padding: 0 } }}
-        getPopupContainer={() => document.body}
-        style={{ maxWidth: 'calc(100vw - 24px)' }}
+      <div
+        className={classNames(
+          'relative flex items-center gap-8px pl-10px pr-8px cursor-pointer hover:bg-fill-2 rd-10px transition-colors min-w-0 group group-hover:pr-50px group-focus-within:pr-50px',
+          twoLineWorkpath ? 'h-42px py-4px' : 'h-34px'
+        )}
+        onClick={() => {
+          if (batchMode && !workpathSelectionState.disabled) {
+            onToggleBatchSelectionScope?.(workpathSelectionScope);
+            return;
+          }
+          toggleDrawer();
+        }}
       >
-        <div
-          className={classNames(
-            'relative flex items-center gap-8px pl-10px pr-8px cursor-pointer hover:bg-fill-2 rd-10px transition-colors min-w-0 group group-hover:pr-50px group-focus-within:pr-50px',
-            twoLineWorkpath ? 'h-42px py-4px' : 'h-34px'
-          )}
-          onClick={() => {
-            if (batchMode && !workpathSelectionState.disabled) {
-              onToggleBatchSelectionScope?.(workpathSelectionScope);
-              return;
-            }
-            toggleDrawer();
-          }}
+        {batchMode && (
+          <span
+            className='shrink-0 flex-center'
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
+          >
+            <Checkbox
+              checked={workpathSelectionState.checked}
+              indeterminate={workpathSelectionState.indeterminate}
+              disabled={workpathSelectionState.disabled}
+              className='session-batch-selection-checkbox'
+              onChange={() => onToggleBatchSelectionScope?.(workpathSelectionScope)}
+            />
+          </span>
+        )}
+        {/* The hover card is read-only context, so the popup never intercepts
+            pointer events on their way to the row actions, and it only opens
+            from the identity zone below. */}
+        <Popover
+          trigger='hover'
+          position='right'
+          content={
+            <WorkpathHoverCard
+              displayName={displayName}
+              conversationCount={sessionCount}
+              workspacePath={isDefault ? undefined : node.key}
+            />
+          }
+          triggerProps={{ mouseEnterDelay: 400, popupStyle: { padding: 0 } }}
+          getPopupContainer={() => document.body}
+          style={{ maxWidth: 'calc(100vw - 24px)', pointerEvents: 'none' }}
         >
-          {batchMode && (
-            <span
-              className='shrink-0 flex-center'
-              onClick={(e) => {
-                e.stopPropagation();
-              }}
-            >
-              <Checkbox
-                checked={workpathSelectionState.checked}
-                indeterminate={workpathSelectionState.indeterminate}
-                disabled={workpathSelectionState.disabled}
-                className='session-batch-selection-checkbox'
-                onChange={() => onToggleBatchSelectionScope?.(workpathSelectionScope)}
-              />
-            </span>
-          )}
           <div
             className='flex min-w-0 flex-1 items-center gap-8px'
             onPointerEnter={() => setWorkpathIdentityHovered(true)}
@@ -305,111 +308,111 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
               {branchBadge}
             </div>
           </div>
+        </Popover>
 
-          {/* Hover ops: keep the high-frequency create action visible and move
-              lower-frequency workpath actions behind the same more-menu pattern
-              used by conversation rows. */}
-          {!batchMode && (
+        {/* Hover ops: keep the high-frequency create action visible and move
+            lower-frequency workpath actions behind the same more-menu pattern
+            used by conversation rows. */}
+        {!batchMode && (
+          <span
+            className='absolute right-8px top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-4px opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
+            onClick={(e) => e.stopPropagation()}
+          >
             <span
-              className='absolute right-8px top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-4px opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
-              onClick={(e) => e.stopPropagation()}
-            >
-              <span
-                data-testid='workpath-create-interactive-btn'
-                role='button'
-                tabIndex={0}
-                aria-label={t('sessionList.newInteractive')}
-                className='flex-center cursor-pointer transition-colors text-t-tertiary hover:text-t-primary size-18px rd-4px sider-action-btn workpath-action-btn'
-                onClick={(e) => {
+              data-testid='workpath-create-interactive-btn'
+              role='button'
+              tabIndex={0}
+              aria-label={t('sessionList.newInteractive')}
+              className='flex-center cursor-pointer transition-colors text-t-tertiary hover:text-t-primary size-18px rd-4px sider-action-btn workpath-action-btn'
+              onClick={(e) => {
+                e.stopPropagation();
+                onCreateInteractive(node);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
                   e.stopPropagation();
                   onCreateInteractive(node);
-                }}
+                }
+              }}
+            >
+              <Plus theme='outline' size='14' fill='currentColor' className='block leading-none' />
+            </span>
+            <Dropdown
+              droplist={
+                <Menu
+                  onClickMenuItem={(key) => {
+                    if (key === 'copy') {
+                      copyText(node.key)
+                        .then(() => Message.success(t('common.copySuccess')))
+                        .catch(() => Message.error(t('common.copyFailed')));
+                      return;
+                    }
+                    if (key === 'pin') {
+                      ui.togglePinned(node.key);
+                      return;
+                    }
+                    if (key === 'remove' && onRemoveProjectWorkpath) {
+                      onRemoveProjectWorkpath(node);
+                    }
+                  }}
+                >
+                  {workpathMenuActionKeys.includes('copy') && (
+                    <Menu.Item key='copy'>
+                      <div className='flex items-center gap-8px'>
+                        <Copy theme='outline' size='14' />
+                        <span>{t('common.copyPath')}</span>
+                      </div>
+                    </Menu.Item>
+                  )}
+                  {workpathMenuActionKeys.includes('pin') && (
+                    <Menu.Item key='pin'>
+                      <div className='flex items-center gap-8px'>
+                        <Pushpin
+                          theme='outline'
+                          size='14'
+                          className={node.pinned ? 'text-aou-7' : 'text-t-secondary'}
+                        />
+                        <span>{node.pinned ? t('sessionList.unpinWorkpath') : t('sessionList.pinWorkpath')}</span>
+                      </div>
+                    </Menu.Item>
+                  )}
+                  {workpathMenuActionKeys.includes('remove') && onRemoveProjectWorkpath && (
+                    <Menu.Item key='remove'>
+                      <div className='flex items-center gap-8px text-[rgb(var(--warning-6))]'>
+                        <DeleteOne theme='outline' size='14' />
+                        <span>{t('sessionList.removeWorkpath')}</span>
+                      </div>
+                    </Menu.Item>
+                  )}
+                </Menu>
+              }
+              trigger='click'
+              position='br'
+              getPopupContainer={() => document.body}
+              unmountOnExit={false}
+            >
+              <span
+                data-testid='workpath-more-actions-btn'
+                role='button'
+                tabIndex={0}
+                aria-label={t('common.more')}
+                className='flex-center cursor-pointer transition-colors text-t-tertiary hover:text-t-primary size-20px rd-4px sider-action-btn workpath-action-btn'
+                onClick={(e) => e.stopPropagation()}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
                     e.stopPropagation();
-                    onCreateInteractive(node);
+                    e.currentTarget.click();
                   }
                 }}
               >
-                <Plus theme='outline' size='14' fill='currentColor' className='block leading-none' />
+                <MoreOne theme='outline' size='14' fill='currentColor' className='block leading-none' />
               </span>
-              <Dropdown
-                droplist={
-                  <Menu
-                    onClickMenuItem={(key) => {
-                      if (key === 'copy') {
-                        copyText(node.key)
-                          .then(() => Message.success(t('common.copySuccess')))
-                          .catch(() => Message.error(t('common.copyFailed')));
-                        return;
-                      }
-                      if (key === 'pin') {
-                        ui.togglePinned(node.key);
-                        return;
-                      }
-                      if (key === 'remove' && onRemoveProjectWorkpath) {
-                        onRemoveProjectWorkpath(node);
-                      }
-                    }}
-                  >
-                    {workpathMenuActionKeys.includes('copy') && (
-                      <Menu.Item key='copy'>
-                        <div className='flex items-center gap-8px'>
-                          <Copy theme='outline' size='14' />
-                          <span>{t('common.copyPath')}</span>
-                        </div>
-                      </Menu.Item>
-                    )}
-                    {workpathMenuActionKeys.includes('pin') && (
-                      <Menu.Item key='pin'>
-                        <div className='flex items-center gap-8px'>
-                          <Pushpin
-                            theme='outline'
-                            size='14'
-                            className={node.pinned ? 'text-aou-7' : 'text-t-secondary'}
-                          />
-                          <span>{node.pinned ? t('sessionList.unpinWorkpath') : t('sessionList.pinWorkpath')}</span>
-                        </div>
-                      </Menu.Item>
-                    )}
-                    {workpathMenuActionKeys.includes('remove') && onRemoveProjectWorkpath && (
-                      <Menu.Item key='remove'>
-                        <div className='flex items-center gap-8px text-[rgb(var(--warning-6))]'>
-                          <DeleteOne theme='outline' size='14' />
-                          <span>{t('sessionList.removeWorkpath')}</span>
-                        </div>
-                      </Menu.Item>
-                    )}
-                  </Menu>
-                }
-                trigger='click'
-                position='br'
-                getPopupContainer={() => document.body}
-                unmountOnExit={false}
-              >
-                <span
-                  data-testid='workpath-more-actions-btn'
-                  role='button'
-                  tabIndex={0}
-                  aria-label={t('common.more')}
-                  className='flex-center cursor-pointer transition-colors text-t-tertiary hover:text-t-primary size-20px rd-4px sider-action-btn workpath-action-btn'
-                  onClick={(e) => e.stopPropagation()}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      e.currentTarget.click();
-                    }
-                  }}
-                >
-                  <MoreOne theme='outline' size='14' fill='currentColor' className='block leading-none' />
-                </span>
-              </Dropdown>
-            </span>
-          )}
-        </div>
-      </Popover>
+            </Dropdown>
+          </span>
+        )}
+      </div>
 
       {/* Drawer content: workpaths expose interactive conversations directly. */}
       {expanded && (
