@@ -150,33 +150,97 @@ fn is_auto_title_eligible(current_name: &str, first_user_content: &str) -> bool 
     current_name.is_empty() || current_name == first_user_content.trim()
 }
 
+fn strip_ordered_list_marker(line: &str) -> &str {
+    let mut digits_end = 0;
+    for (index, character) in line.char_indices() {
+        if character.is_ascii_digit() {
+            digits_end = index + character.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if digits_end == 0 {
+        return line;
+    }
+
+    let Some(marker) = line[digits_end..].chars().next() else {
+        return line;
+    };
+    if !matches!(marker, '.' | ')') {
+        return line;
+    }
+
+    let remainder = &line[digits_end + marker.len_utf8()..];
+    if remainder
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_whitespace())
+    {
+        remainder.trim_start()
+    } else {
+        line
+    }
+}
+
+fn strip_title_prefix(line: &str) -> &str {
+    let mut stripped = line.trim_start();
+    loop {
+        let markdown_stripped = stripped
+            .trim_start_matches(|character: char| {
+                matches!(character, '#' | '>' | '*' | '+' | '-' | '.' | '`')
+            })
+            .trim_start();
+        if markdown_stripped != stripped {
+            stripped = markdown_stripped;
+            continue;
+        }
+
+        let ordered_list_stripped = strip_ordered_list_marker(stripped);
+        if ordered_list_stripped != stripped {
+            stripped = ordered_list_stripped;
+            continue;
+        }
+        break;
+    }
+    stripped
+}
+
+fn normalize_title_line(line: &str) -> Option<String> {
+    let mut normalized = String::new();
+    let mut previous_whitespace = false;
+    for character in line.chars() {
+        if character.is_whitespace() {
+            if !previous_whitespace {
+                normalized.push(' ');
+                previous_whitespace = true;
+            }
+        } else {
+            normalized.push(character);
+            previous_whitespace = false;
+        }
+    }
+
+    let title = clamp_title(normalized.trim());
+    (!title.is_empty()).then_some(title)
+}
+
 fn provisional_title(content: &str) -> Option<String> {
     let cleaned = strip_mem_citations(&strip_think_tags(content)).replace('\r', "");
-    cleaned.split('\n').map(str::trim).find_map(|line| {
-        if line.is_empty() || line.starts_with("```") {
-            return None;
-        }
-        let stripped = line.trim_start_matches(|c: char| {
-            matches!(c, '#' | '>' | '*' | '+' | '-' | '.' | '`' | ' ' | '\t' | '0'..='9')
-        });
+    let first_nonempty_line = cleaned
+        .split('\n')
+        .map(str::trim)
+        .find(|line| !line.is_empty());
 
-        let mut normalized = String::new();
-        let mut previous_whitespace = false;
-        for character in stripped.chars() {
-            if character.is_whitespace() {
-                if !previous_whitespace {
-                    normalized.push(' ');
-                    previous_whitespace = true;
-                }
-            } else {
-                normalized.push(character);
-                previous_whitespace = false;
+    cleaned
+        .split('\n')
+        .map(str::trim)
+        .find_map(|line| {
+            if line.is_empty() || line.starts_with("```") {
+                return None;
             }
-        }
-
-        let title = clamp_title(normalized.trim());
-        (!title.is_empty()).then_some(title)
-    })
+            normalize_title_line(strip_title_prefix(line))
+        })
+        .or_else(|| first_nonempty_line.and_then(normalize_title_line))
 }
 
 fn title_attempt_id(conversation_id: &str, user_message_id: &str) -> String {
