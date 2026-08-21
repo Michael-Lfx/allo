@@ -134,6 +134,7 @@ export interface ProjectedTurn {
   ended_at_ms?: number | null;
   elapsed_ms?: number | null;
   prompt_preview?: string | null;
+  prompt_preview_context_only?: boolean;
   max_event_seq?: number;
   has_turn_start?: boolean;
   has_turn_end?: boolean;

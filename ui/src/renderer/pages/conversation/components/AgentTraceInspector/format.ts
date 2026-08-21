@@ -53,6 +53,14 @@ export function turnToolCount(turn: { model_calls: Array<{ tools: unknown[] }> }
   return turn.model_calls.reduce((sum, call) => sum + call.tools.length, 0);
 }
 
+export function turnPromptPreview(
+  turn: { prompt_preview?: string | null; prompt_preview_context_only?: boolean },
+  missingLabel: string
+): string {
+  if (turn.prompt_preview_context_only) return '';
+  return turn.prompt_preview || missingLabel;
+}
+
 /** Round numbers follow `started_at_ms` ascending, independent of display order. */
 export function assignTurnRounds(
   entries: Array<{ root_turn_id: string; started_at_ms?: number | null }>

@@ -26,7 +26,13 @@ import {
 } from '../CapabilityHeaderButton';
 import { CallDetailLru, callCacheKey } from './callDetailCache';
 import ObservationWorkflow, { type InspectTarget } from './ObservationWorkflow';
-import { formatClock, formatDurationMs, assignTurnRounds, turnToolCount } from './format';
+import {
+  formatClock,
+  formatDurationMs,
+  assignTurnRounds,
+  turnPromptPreview,
+  turnToolCount,
+} from './format';
 import { sessionLogsOverlayOpen, shouldCloseWorkspaceOnEscape } from './scanCopy';
 import './session-logs.css';
 import {
@@ -851,7 +857,7 @@ export const SessionLogWorkspace: React.FC = () => {
                       ) : null}
                     </div>
                     <div className='session-logs-nav__prompt'>
-                      {entry.prompt_preview || t('conversation.agentTrace.previewMissing')}
+                      {turnPromptPreview(entry, t('conversation.agentTrace.previewMissing'))}
                     </div>
                     <div className='session-logs-nav__counts'>
                       <span>
