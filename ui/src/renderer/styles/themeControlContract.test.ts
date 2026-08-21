@@ -91,7 +91,7 @@ describe('theme control contract', () => {
       '.arco-card',
       '.arco-tabs-nav-tab-active',
       '.arco-tooltip-content',
-      '.arco-message-wrapper .arco-message',
+      '.flowy-notification-card',
       '.arco-skeleton-content .arco-skeleton-text-row',
     ]) {
       expect(controlCss.includes(marker)).toBe(true);

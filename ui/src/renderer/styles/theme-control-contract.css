@@ -492,15 +492,17 @@ body[arco-theme='dark'] .arco-switch-checked .arco-switch-text {
   border-radius: var(--flowy-radius-sm, 6px) !important;
 }
 
-.arco-message-wrapper .arco-message,
-.arco-notification-notice {
+/* Notifications render through the flowy stack (no Arco message left in the
+   renderer), so the preset contract targets the flowy card directly. The card
+   supplies its own radius/border defaults; here we only pin surface, hairline
+   and semantic border colors to the preset palette. */
+.flowy-notification-card {
   background-color: var(--flowy-surface-1, var(--color-bg-popup)) !important;
   border: var(--flowy-border-hairline, 1px) solid var(--flowy-border, var(--color-border-2)) !important;
   border-radius: var(--flowy-radius-md, 8px) !important;
 }
 
-.arco-message-error,
-.arco-notification-notice-error {
+.flowy-notification-card--error {
   border-color: color-mix(in srgb, var(--flowy-danger, #b91c1c) 45%, transparent) !important;
 }
 
