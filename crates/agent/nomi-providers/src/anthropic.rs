@@ -226,7 +226,7 @@ mod tests {
         );
         let mut request = minimal_request();
         request.temperature = Some(0.5);
-        let body = provider.build_request_body(&request, false);
+        let body = provider.build_request_body(&request, false).expect("body");
         assert_eq!(body["temperature"], 0.5);
     }
 
@@ -237,7 +237,7 @@ mod tests {
             "http://localhost",
             ProviderCompat::anthropic_defaults(),
         );
-        let body = provider.build_request_body(&minimal_request(), false);
+        let body = provider.build_request_body(&minimal_request(), false).expect("body");
         assert!(body.get("temperature").is_none());
     }
 }

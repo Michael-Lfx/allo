@@ -277,7 +277,13 @@ mod tests {
 
     #[test]
     fn description_exposes_one_execution_contract_and_capacity() {
-        for required in ["16", "parallel", "200", "4096", "execution_id/status/message"] {
+        for required in [
+            "16",
+            "parallel",
+            "200",
+            "session output limit",
+            "execution_id/status/message",
+        ] {
             assert!(DESCRIPTION.contains(required), "missing {required}: {DESCRIPTION}");
         }
         assert!(!DESCRIPTION.contains(&["local", "immediate"].join("_")));

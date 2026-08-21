@@ -23,6 +23,7 @@ pub mod tool_execution;
 pub mod output;
 pub mod plan;
 pub mod requirement_tools;
+pub mod round;
 pub mod session;
 pub mod skill_tool;
 pub mod ssh_backend;

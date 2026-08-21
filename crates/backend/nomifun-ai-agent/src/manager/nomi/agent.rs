@@ -379,26 +379,6 @@ fn terminalize_exact_nomi_turn(
     emitted
 }
 
-/// Cap on automatic continuation passes when a model response is truncated
-/// before the task is complete. This keeps the UX moving without letting a bad
-/// prompt or provider loop spend unbounded tokens.
-const MAX_TRUNCATION_AUTO_CONTINUES: usize = 2;
-
-fn truncation_continuation_prompt(attempt: usize, max_attempts: usize, reason: &str) -> String {
-    format!(
-        "[Automatic continuation {attempt}/{max_attempts}]\n\
-The previous pass reached {reason} before the user's request was fully delivered.\n\n\
-Recovery mode:\n\
-- Continue the same task from the last valid state. Do not restart unless necessary.\n\
-- If a file write or tool argument was interrupted, do not repeat the same oversized call.\n\
-- Do not call Write with a full large file in one call.\n\
-- First create a small complete deliverable that satisfies the user request end-to-end.\n\
-- Then improve it by using Bash, Edit, or Write to append or edit in chunks; keep each chunk small.\n\
-- For HTML/CSS/JS deliverables, prefer a concise valid file first, then add sections/styles incrementally.\n\
-- Before finalizing, verify the target file exists in the active workspace and briefly report what was created."
-    )
-}
-
 /// Prepend the one-shot knowledge prelude to the first user turn, if present.
 pub(crate) fn apply_knowledge_prelude(prelude: Option<String>, content: &str) -> String {
     match prelude {
@@ -1712,15 +1692,16 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             }
 
             // Each iteration runs one engine pass inside the same accepted
-            // Agent turn. Re-run only for steering race-tail interjections or
-            // bounded output truncation continuation.
+            // Agent turn. Re-run only for steering race-tail interjections; the
+            // engine owns output-truncation recovery, because only it can drop
+            // the truncated draft, re-push the original requirement, and carry a
+            // machine-built ledger forward without resetting its own loop guard.
             let mut run_content = Vec::with_capacity(1 + if supports_image { image_blocks.len() } else { 0 });
             run_content.push(ContentBlock::Text { text: content });
             if supports_image {
                 run_content.extend(image_blocks);
             }
             let mut race_tail_reruns = 0usize;
-            let mut truncation_auto_continues = 0usize;
             let result = loop {
                 let current_content = std::mem::take(&mut run_content);
                 // Cancellation has one fail-closed lifecycle: drop the in-flight
@@ -1784,42 +1765,6 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                         tracing::warn!(
                             conversation_id = %self.runtime.conversation_id(),
                             "Nomi steering race-tail cap reached; leftover belongs to this turn and will be discarded at terminal"
-                        );
-                    }
-                }
-                if let Ok(agent_result) = &r {
-                    // Only a token-length truncation can be continued safely. A
-                    // MaxTurns result means the model already consumed the full
-                    // per-pass request budget; starting a fresh pass resets the
-                    // engine's loop guard and used to multiply a deterministic
-                    // tool loop by the host continuation cap.
-                    if agent_result.stop_reason == nomi_types::message::StopReason::MaxTokens {
-                        let reason = "the output token limit";
-                        if truncation_auto_continues < MAX_TRUNCATION_AUTO_CONTINUES {
-                            truncation_auto_continues += 1;
-                            info!(
-                                conversation_id = %self.runtime.conversation_id(),
-                                attempt = truncation_auto_continues,
-                                max_attempts = MAX_TRUNCATION_AUTO_CONTINUES,
-                                stop_reason = ?agent_result.stop_reason,
-                                "Nomi turn truncated; auto-continuing before Finish"
-                            );
-                            self.backend_output_sink
-                                .truncate_active_tool_calls_for_auto_continue(reason);
-                            run_content = vec![ContentBlock::Text {
-                                text: truncation_continuation_prompt(
-                                    truncation_auto_continues,
-                                    MAX_TRUNCATION_AUTO_CONTINUES,
-                                    reason,
-                                ),
-                            }];
-                            continue;
-                        }
-                        tracing::warn!(
-                            conversation_id = %self.runtime.conversation_id(),
-                            attempts = truncation_auto_continues,
-                            stop_reason = ?agent_result.stop_reason,
-                            "Nomi truncation auto-continue cap reached; emitting final Finish"
                         );
                     }
                 }
@@ -1902,6 +1847,40 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                         runtime.emit_error_data_for_turn(turn, stream_error)
                     }).await.map_err(AgentSendError::from_app_error)?;
                     return Err(send_error);
+                }
+
+                // Observability for the one shape B1's restart could in
+                // principle launder into a false success: a turn that restarted
+                // after the ceiling, was cut off mid state-changing call, had
+                // such tools advertised, and still completed no state-changing
+                // effect — while its prose says otherwise. `EndTurn` with
+                // non-empty text is precisely what the receipt's stop-reason
+                // check cannot see.
+                //
+                // Recorded, NOT enforced. Turning this into a terminal failure
+                // would convert a completed turn into a hard error, and review
+                // found a real class it would misjudge: a fork-mode `Skill`
+                // delegate does genuine file and exec work while the tool itself
+                // is `Info`-categorised, so a turn whose deliverable arrived that
+                // way scores no state-changing effect. Enforcing it also skips
+                // the TurnCompleted metrics event and needs error-card i18n that
+                // does not exist yet. Adjudicating a completion claim belongs
+                // with the workstream that owns unbacked claims generally; B1's
+                // obligation is only to not manufacture the shape, and to make it
+                // measurable.
+                if agent_result.stop_reason == nomi_types::message::StopReason::EndTurn
+                    && agent_result.rounds > 1
+                    && agent_result.state_changing_tools_advertised
+                    && agent_result.cutoff_state_changing > 0
+                    && agent_result.effects_ok == 0
+                {
+                    tracing::warn!(
+                        conversation_id = %self.runtime.conversation_id(),
+                        elapsed_ms,
+                        rounds = agent_result.rounds,
+                        cutoff_state_changing = agent_result.cutoff_state_changing,
+                        "Nomi turn restarted after the output ceiling and completed no state-changing tool call"
+                    );
                 }
 
                 // Phase 3 observability: a per-turn metrics event the UI shows as
@@ -4192,7 +4171,7 @@ mod tests {
             api_key: Some("sk-test-key".into()),
             base_url: None,
             model: Some("claude-sonnet-4-20250514".into()),
-            output_ceiling: Some(4096),
+            max_tokens: Some(4096),
             max_turns: Some(10),
             system_prompt: None,
             profile: None,
@@ -4843,24 +4822,20 @@ mod tests {
             .all(|block| !matches!(block, ContentBlock::Image { .. })));
     }
 
+    /// The observed production shape: a long prose answer cut off at the output
+    /// ceiling, with no tool ever called. Restarting it would spend a second and
+    /// third full ceiling reproducing the same wall, which is exactly what the
+    /// deleted host-side auto-continue did (`output_tokens = 3 × 8192`). The
+    /// engine must decline, and the receipt must carry the truthful terminal.
     #[tokio::test]
-    async fn send_message_auto_continues_after_max_tokens_before_finish() {
-        let provider = Arc::new(ScriptedProvider::new(vec![
-            vec![
-                LlmEvent::TextDelta("partial".into()),
-                LlmEvent::Done {
-                    stop_reason: StopReason::MaxTokens,
-                    usage: Default::default(),
-                },
-            ],
-            vec![
-                LlmEvent::TextDelta(" done".into()),
-                LlmEvent::Done {
-                    stop_reason: StopReason::EndTurn,
-                    usage: Default::default(),
-                },
-            ],
-        ]));
+    async fn a_prose_only_truncation_is_not_restarted_and_finishes_as_max_tokens() {
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            LlmEvent::TextDelta("partial".into()),
+            LlmEvent::Done {
+                stop_reason: StopReason::MaxTokens,
+                usage: Default::default(),
+            },
+        ]]));
         let agent = make_agent_with_provider(provider.clone());
         let mut rx = agent.subscribe();
 
@@ -4877,20 +4852,27 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(provider.calls(), 2, "MaxTokens should trigger one continuation pass");
+        assert_eq!(
+            provider.calls(),
+            1,
+            "a truncation with no carry-forward evidence must not burn another ceiling"
+        );
 
         let mut completed_reasons = Vec::new();
         let mut finish_reason = None;
+        let mut streamed = String::new();
         while let Ok(event) = rx.try_recv() {
             match event {
+                AgentStreamEvent::Text(data) => streamed.push_str(&data.content),
                 AgentStreamEvent::TurnCompleted(data) => completed_reasons.push(data.stop_reason),
                 AgentStreamEvent::Finish(data) => finish_reason = data.stop_reason,
                 _ => {}
             }
         }
 
-        assert_eq!(completed_reasons, vec![Some(TurnStopReason::EndTurn)]);
-        assert_eq!(finish_reason, Some(TurnStopReason::EndTurn));
+        assert_eq!(streamed, "partial");
+        assert_eq!(completed_reasons, vec![Some(TurnStopReason::MaxTokens)]);
+        assert_eq!(finish_reason, Some(TurnStopReason::MaxTokens));
     }
 
     #[tokio::test]

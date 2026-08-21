@@ -3819,6 +3819,21 @@ impl StreamRelay {
             final_text_msg_id: None,
         };
         let cancelled = Self::is_cancelled_finish(event);
+        // A terminal whose stop reason proves the turn did not deliver is an
+        // INTERRUPTED response, exactly like an Error or a cancellation. The
+        // policy stated below for those two applies verbatim: a truncated draft
+        // is an unfinished thought, so its embedded cron directives must not be
+        // stripped and executed (the cron matcher is a prefix regex, so half a
+        // sentence can trip it), and it must not emit middleware continuations
+        // that mint a fresh turn and overwrite this turn's honest failure
+        // receipt. Only the `Error`/`cancelled` half of this predicate used to
+        // hold, which is how a turn cut off at its output ceiling could still
+        // drive a continuation whose success verdict replaced the truthful one.
+        let incomplete_finish = matches!(event, AgentStreamEvent::Finish(data)
+            if crate::relay_error_code::incomplete_stop_code(data.stop_reason).is_some());
+        let failed_terminal = matches!(event, AgentStreamEvent::Error(_))
+            || cancelled
+            || incomplete_finish;
         let status = if matches!(event, AgentStreamEvent::Error(_)) || cancelled {
             "error"
         } else {
@@ -3845,18 +3860,40 @@ impl StreamRelay {
                 );
                 return outcome;
             }
-            let processed = if cancelled {
-                // A cancelled partial response is data to preserve, never a
-                // completed instruction stream. In particular, do not execute
-                // embedded cron commands or produce continuation responses.
-                MiddlewareResult {
-                    message: text.to_owned(),
-                    display_message: None,
-                    system_responses: Vec::new(),
+            if failed_terminal {
+                // Error/cancelled/incomplete partial output is evidence of an
+                // interrupted response, not a completed instruction stream.
+                // Preserve the already-durable raw text row, but do not
+                // strip/execute embedded cron commands, emit continuations, or
+                // expose it as writeback material.
+                if suppress_error {
+                    outcome.suppressed_error = Some(event.clone());
                 }
-            } else {
-                self.process_final_text(text).await
-            };
+                if incomplete_finish {
+                    // An incomplete Finish differs from an Error terminal in one
+                    // way that matters downstream: its text is real prose the user
+                    // already read, not an aborted fragment. Carry it as
+                    // `final_text` so the receipt's `result_text` still explains
+                    // what happened — cron run history and the cross-conversation
+                    // delivery notice both render a human reason from
+                    // `result_error.or(result_text)`, and both columns would
+                    // otherwise be NULL for a truncated turn, degrading it to
+                    // "unknown error".
+                    //
+                    // Safe for every verdict that consumes it: `turn_succeeded`
+                    // is false regardless because `incomplete_stop_code` is
+                    // `Some`, `map_turn_failure` reports that code ahead of any
+                    // empty-text check, and the knowledge write-back is gated on
+                    // the same stop-reason predicate. `final_text_msg_id` stays
+                    // `None`, so nothing can target this text for a rewrite.
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        outcome.final_text = Some(trimmed.to_owned());
+                    }
+                }
+                return outcome;
+            }
+            let processed = self.process_final_text(text).await;
             let final_text = processed.message.trim().to_owned();
             let hidden = final_text.is_empty();
             if !hidden {
@@ -8096,6 +8133,67 @@ mod tests {
         let content: serde_json::Value = serde_json::from_str(update.content.as_deref().expect("updated content")).unwrap();
         assert_eq!(content["status"], "error");
         assert_eq!(content["output"], "The turn ended before this tool completed: max_tokens");
+    }
+
+    /// A turn the provider cut short at its output ceiling is an INTERRUPTED
+    /// response, so its half-written draft must not be treated as a completed
+    /// instruction stream. Two independent defects rode on that:
+    ///
+    /// 1. the cron matcher is a bare prefix regex with no closing tag, so half a
+    ///    sentence containing the token used to be stripped and EXECUTED;
+    /// 2. any middleware system response minted a fresh continuation turn, and
+    ///    `durable_completion` is reassigned unconditionally per iteration — so
+    ///    the continuation's success verdict replaced this turn's honest
+    ///    `output_truncated` receipt, restoring `result_ok = 1` with nothing on
+    ///    disk.
+    #[tokio::test]
+    async fn a_truncated_draft_never_runs_middleware_or_emits_a_continuation() {
+        use nomifun_ai_agent::protocol::events::TurnStopReason;
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus.clone(),
+            Some(Arc::new(MockCronService)),
+        );
+
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Text(TextEventData {
+            content: "Hello [CRON_LIST]".into(),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData {
+            stop_reason: Some(TurnStopReason::MaxTokens),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let outcome = relay.consume(rx).await;
+
+        assert!(
+            outcome.system_responses.is_empty(),
+            "a truncated draft must not drive a continuation turn: {:?}",
+            outcome.system_responses
+        );
+        // The prose IS carried as final_text, unstripped: cron run history and the
+        // cross-conversation delivery notice both render a human reason from
+        // `result_error.or(result_text)`, so dropping it would degrade a truncated
+        // turn to "unknown error".
+        assert_eq!(
+            outcome.final_text.as_deref(),
+            Some("Hello [CRON_LIST]"),
+            "the raw prose explains the failure and is never middleware-processed"
+        );
+        assert!(
+            outcome.final_text_msg_id.is_none(),
+            "incomplete text must not be a write-back target"
+        );
+        assert_eq!(outcome.stop_reason, Some(TurnStopReason::MaxTokens));
     }
 
     /// Production regression, session 01a0189e: a medium coding task streamed
