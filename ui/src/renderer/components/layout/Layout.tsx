@@ -175,8 +175,9 @@ const Layout: React.FC<{
       alive = false;
     };
   }, []);
-  // The titlebar workspace action opens the files workspace tab on conversation
-  // and terminal-session routes through the shared toggle event.
+  // The titlebar workspace toggle drives the right rail on the conversation and
+  // terminal session pages (both render a workspace rail via the shared
+  // useWorkspaceCollapse + WORKSPACE_TOGGLE_EVENT protocol).
   const workspaceAvailable =
     location.pathname.startsWith('/conversation/') ||
     location.pathname.startsWith('/terminal/');

@@ -1,8 +1,4 @@
-/**
- * @license
- * Copyright 2025-2026 NomiFun (nomifun.com)
- * SPDX-License-Identifier: Apache-2.0
- */
+
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { TAB_OVERFLOW_THRESHOLD } from '../constants';
@@ -25,37 +21,19 @@ export interface TabFadeState {
   right: boolean;
 }
 
-const maxScrollLeft = (container: HTMLDivElement) =>
-  Math.max(0, container.scrollWidth - container.clientWidth);
-
-const wheelDeltaPixels = (delta: number, deltaMode: number, lineHeight: number) => {
-  if (deltaMode === WheelEvent.DOM_DELTA_LINE) return delta * lineHeight;
-  if (deltaMode === WheelEvent.DOM_DELTA_PAGE) return delta * lineHeight * 16;
-  return delta;
-};
-
-type UseTabOverflowOptions = {
-  tabCount: number;
-  activeTabId: string | null;
-};
-
 /**
  * Tab 横向溢出检测 Hook
  * Hook for detecting tab horizontal overflow
  *
  * 用于显示左右渐变指示器，提示用户可以滚动查看更多 Tab
  * Used to display left/right gradient indicators to prompt users that more tabs can be scrolled
+ *
+ * @param deps - 依赖项数组，当这些值变化时会重新检测溢出状态 / Dependencies array, overflow state will be recalculated when these values change
+ * @returns 包含容器引用和渐变状态的对象 / Object containing container ref and fade state
  */
-export const useTabOverflow = ({ tabCount, activeTabId }: UseTabOverflowOptions) => {
-  const tabsContainerRef = useRef<HTMLDivElement | null>(null);
-  const prevTabCountRef = useRef(tabCount);
-  const [scrollerNode, setScrollerNode] = useState<HTMLDivElement | null>(null);
+export const useTabOverflow = (deps: unknown[] = []) => {
+  const tabsContainerRef = useRef<HTMLDivElement>(null);
   const [tabFadeState, setTabFadeState] = useState<TabFadeState>({ left: false, right: false });
-
-  const setTabsContainerRef = useCallback((node: HTMLDivElement | null) => {
-    tabsContainerRef.current = node;
-    setScrollerNode(node);
-  }, []);
 
   /**
    * 更新 Tab 溢出状态
@@ -85,86 +63,40 @@ export const useTabOverflow = ({ tabCount, activeTabId }: UseTabOverflowOptions)
     });
   }, []);
 
-  // New tabs append on the trailing edge next to the pinned +. Prefer clipping
-  // from the left so that edge (and the + outside the scroller) stay visible.
+  // 当依赖项变化时更新溢出状态
+  // Update overflow state when dependencies change
+  useEffect(() => {
+    updateTabOverflow();
+  }, [updateTabOverflow, ...deps]);
+
+  // 监听滚动、窗口大小变化和容器大小变化
+  // Listen to scroll, window resize, and container size changes
   useEffect(() => {
     const container = tabsContainerRef.current;
     if (!container) return;
 
-    const grew = tabCount > prevTabCountRef.current;
-    prevTabCountRef.current = tabCount;
-
-    const sync = () => {
-      if (grew) {
-        container.scrollLeft = maxScrollLeft(container);
-      } else if (activeTabId) {
-        const activeChip = container.querySelector<HTMLElement>('[aria-selected="true"]');
-        activeChip?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
-      }
-      updateTabOverflow();
-    };
-
-    sync();
-    const raf = requestAnimationFrame(sync);
-    return () => cancelAnimationFrame(raf);
-  }, [activeTabId, scrollerNode, tabCount, updateTabOverflow]);
-
-  // Attach after the scroller mounts (PreviewTabs is often not in the tree on the
-  // first PreviewPanel effect pass while the panel is closed).
-  useEffect(() => {
-    const container = scrollerNode;
-    if (!container) return;
-
     const handleScroll = () => updateTabOverflow();
-    const handleWheel = (event: WheelEvent) => {
-      const max = maxScrollLeft(container);
-      if (max <= 0) return;
-
-      const lineHeight = container.clientHeight || 28;
-      const deltaX = wheelDeltaPixels(event.deltaX, event.deltaMode, lineHeight);
-      const deltaY = wheelDeltaPixels(event.deltaY, event.deltaMode, lineHeight);
-      // Prefer explicit horizontal deltas; otherwise map vertical wheel to x-pan.
-      const delta = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : deltaY;
-      if (delta === 0) return;
-
-      const next = Math.min(max, Math.max(0, container.scrollLeft + delta));
-      if (next === container.scrollLeft) return;
-
-      event.preventDefault();
-      container.scrollLeft = next;
-      updateTabOverflow();
-    };
-
     container.addEventListener('scroll', handleScroll, { passive: true });
-    container.addEventListener('wheel', handleWheel, { passive: false });
     window.addEventListener('resize', updateTabOverflow);
 
+    // 使用 ResizeObserver 监听容器大小变化 / Use ResizeObserver to monitor container size changes
     let resizeObserver: ResizeObserver | null = null;
     if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(() => {
-        const max = maxScrollLeft(container);
-        if (container.scrollLeft > max) {
-          container.scrollLeft = max;
-        }
-        updateTabOverflow();
-      });
+      resizeObserver = new ResizeObserver(() => updateTabOverflow());
       resizeObserver.observe(container);
     }
 
-    updateTabOverflow();
-
     return () => {
       container.removeEventListener('scroll', handleScroll);
-      container.removeEventListener('wheel', handleWheel);
       window.removeEventListener('resize', updateTabOverflow);
       if (resizeObserver) {
         resizeObserver.disconnect();
       }
     };
-  }, [scrollerNode, updateTabOverflow]);
+  }, [updateTabOverflow]);
 
   return {
-    tabsContainerRef: setTabsContainerRef,
+    tabsContainerRef,
     tabFadeState,
   };
 };

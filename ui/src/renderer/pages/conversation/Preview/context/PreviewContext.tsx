@@ -1,21 +1,10 @@
 
 
 import { ipcBridge } from '@/common';
-import type { ITerminalSession } from '@/common/adapter/ipcBridge';
-import type { ConversationId, TerminalId } from '@/common/types/ids';
+import type { ConversationId } from '@/common/types/ids';
 import type { PreviewContentType } from '@/common/types/office/preview';
 import { emitter } from '@/renderer/utils/emitter';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { resolveActiveTabAfterClose } from '../previewTabCloseFallback';
-import {
-  inferPreviewTabKind,
-  type PreviewTabKind,
-  type WorkspacePreviewTabDefinition,
-} from '../previewTabKind';
-import { findWorkspacePreviewTab, upsertMixedPreviewTab } from '../previewTabUpsert';
-
-export type { PreviewTabKind };
-export type { WorkspacePreviewTabDefinition };
 
 /** DOM 片段数据结构 / DOM snippet data structure */
 export interface DomSnippet {
@@ -54,12 +43,6 @@ export interface PreviewTab {
   title: string; // Tab 标题
   isDirty?: boolean; // 是否有未保存的修改 / Whether there are unsaved changes
   originalContent?: string; // 原始内容，用于对比 / Original content for comparison
-  kind?: PreviewTabKind;
-  terminal_id?: TerminalId;
-  /** Stable key for a fixed workspace view such as files or changes. */
-  workspaceTabKey?: string;
-  /** When true, closing this tab kills and removes the backing PTY session. */
-  killOnClose?: boolean;
 }
 
 export interface PreviewContextValue {
@@ -71,15 +54,10 @@ export interface PreviewContextValue {
   // 获取当前激活的 tab / Get active tab
   activeTab: PreviewTab | null;
 
-  workspacePath?: string;
   // 预览面板操作 / Preview panel operations
   openPreview: (content: string, type: PreviewContentType, metadata?: PreviewMetadata) => void;
-  openTerminalTab: (session: ITerminalSession, options?: { killOnClose?: boolean }) => void;
-  openBrowserTab: (url: string) => boolean;
-  openWorkspaceTab: (definition: WorkspacePreviewTabDefinition) => void;
   closePreview: () => void;
-  /** Closes a tab. When the active tab is closed, returns the tab that became active (or null if none). */
-  closeTab: (tabId: string) => PreviewTab | null;
+  closeTab: (tabId: string) => void;
   switchTab: (tabId: string) => void;
   updateContent: (content: string) => void;
   saveContent: (tabId?: string) => Promise<boolean>; // 保存内容 / Save content
@@ -113,7 +91,6 @@ const PERSISTABLE_CONTENT_TYPES = new Set<PreviewContentType>(['markdown', 'html
 
 const sanitizeTabsForPersistence = (input: PreviewTab[]): PreviewTab[] => {
   return input
-    .filter((tab) => inferPreviewTabKind(tab) === 'file')
     .filter((tab) => PERSISTABLE_CONTENT_TYPES.has(tab.content_type))
     .filter((tab) => tab.content.length <= MAX_PERSISTED_TAB_CONTENT_LENGTH)
     .map((tab) => ({
@@ -121,17 +98,6 @@ const sanitizeTabsForPersistence = (input: PreviewTab[]): PreviewTab[] => {
       isDirty: false,
       originalContent: tab.content,
     }));
-};
-
-const disposeOwnedTerminal = (tab: PreviewTab) => {
-  if (inferPreviewTabKind(tab) !== 'terminal' || !tab.killOnClose || !tab.terminal_id) return;
-  const terminal_id = tab.terminal_id;
-  void ipcBridge.terminal.kill
-    .invoke({ terminal_id })
-    .catch(() => undefined)
-    .finally(() => {
-      void ipcBridge.terminal.remove.invoke({ terminal_id }).catch(() => undefined);
-    });
 };
 
 const parsePersistedTabs = (value: unknown): PreviewTab[] => {
@@ -148,7 +114,6 @@ const parsePersistedTabs = (value: unknown): PreviewTab[] => {
         typeof candidate.content_type === 'string'
       );
     })
-    .filter((tab) => inferPreviewTabKind(tab) === 'file')
     .filter((tab) => PERSISTABLE_CONTENT_TYPES.has(tab.content_type))
     .filter((tab) => tab.content.length <= MAX_PERSISTED_TAB_CONTENT_LENGTH)
     .map((tab) => ({
@@ -199,11 +164,7 @@ export const PreviewProvider: React.FC<{
    * multiple providers. Defaults to true to preserve existing behavior.
    */
   subscribeGlobalOpen?: boolean;
-  /**
-   * Workspace root used when the plus menu creates a shell tab or opens a file.
-   */
-  workspacePath?: string;
-}> = ({ children, persistNamespace, subscribeGlobalOpen = true, workspacePath }) => {
+}> = ({ children, persistNamespace, subscribeGlobalOpen = true }) => {
   // 从 localStorage 恢复初始状态 / Restore initial state from localStorage
   const persistedState = loadPersistedState(persistNamespace);
   const [isOpen, setIsOpen] = useState(persistedState.isOpen);
@@ -212,20 +173,6 @@ export const PreviewProvider: React.FC<{
   // const [sendBoxHandler, setSendBoxHandlerState] = useState<((text: string) => void) | null>(null);
   const sendBoxHandler = useRef<((text: string) => void) | null>(null);
   const [domSnippets, setDomSnippets] = useState<DomSnippet[]>([]);
-  /** Last focused tab before the current one — used when closing the active tab. */
-  const previousActiveTabIdRef = useRef<string | null>(null);
-  const activeTabIdRef = useRef<string | null>(activeTabId);
-  activeTabIdRef.current = activeTabId;
-
-  const activateTab = useCallback((nextTabId: string | null, options?: { recordHistory?: boolean }) => {
-    const current = activeTabIdRef.current;
-    const recordHistory = options?.recordHistory !== false;
-    if (recordHistory && current && nextTabId && current !== nextTabId) {
-      previousActiveTabIdRef.current = current;
-    }
-    activeTabIdRef.current = nextTabId;
-    setActiveTabId(nextTabId);
-  }, []);
 
   // 持久化 tabs 到 localStorage（仅保存小体积文本 tab）
   // Persist tabs to localStorage (only lightweight text tabs)
@@ -281,7 +228,6 @@ export const PreviewProvider: React.FC<{
 
       return (
         tabList.find((tab) => {
-          if (inferPreviewTabKind(tab) === 'terminal') return false;
           if (tab.content_type !== type) return false;
           const tabFileName = normalize(tab.metadata?.file_name);
           const tabTitle = normalize(tab.metadata?.title);
@@ -336,193 +282,105 @@ export const PreviewProvider: React.FC<{
   const openPreview = useCallback(
     (new_content: string, type: PreviewContentType, meta?: PreviewMetadata) => {
       let nextActiveTabId: string | null = null;
-      const kind: PreviewTabKind = type === 'url' ? 'browser' : 'file';
 
       setTabs((prevTabs) => {
+        // 如果同一个文件已经打开，则直接激活现有 tab，避免重复 / Focus existing tab when the same file is opened again
         const existingTab = findPreviewTabInList(prevTabs, type, new_content, meta);
-        const reusableFileTab =
-          !existingTab && kind === 'file'
-            ? prevTabs.find((tab) => inferPreviewTabKind(tab) === 'file')
-            : undefined;
+
+        if (existingTab) {
+          nextActiveTabId = existingTab.id;
+          return prevTabs.map((tab) => {
+            if (tab.id !== existingTab.id) return tab;
+
+            // 如果用户已编辑内容，则保留当前内容，仅更新元数据 / Keep edited content, only merge metadata
+            if (tab.isDirty) {
+              return meta ? { ...tab, metadata: { ...tab.metadata, ...meta } } : tab;
+            }
+
+            return {
+              ...tab,
+              content: new_content,
+              metadata: meta ? { ...tab.metadata, ...meta } : tab.metadata,
+              originalContent: new_content,
+            };
+          });
+        }
+
+        // Tab 标题：优先使用文件名，并从 title 中提取实际文件名
+        // Tab title: Prefer file_name and extract actual filename from title
         const fallbackTitle = (() => {
+          // 根据内容类型设置默认标题 / Set default title based on content type
           if (type === 'markdown') return 'Markdown';
           if (type === 'diff') return 'Diff';
           if (type === 'code') return `${meta?.language || 'Code'}`;
-          if (type === 'image') return 'Image';
-          if (type === 'url') return 'Browser';
+          if (type === 'image') return 'Image'; // 图片预览默认标题 / Default title for image preview
           return 'Preview';
         })();
-        const title = extractFileName(meta?.file_name) || extractFileName(meta?.title) || fallbackTitle;
-        const tabId =
-          existingTab?.id ??
-          reusableFileTab?.id ??
-          `${type}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
-        const keepDirtyContent = Boolean(existingTab?.isDirty);
-        const nextTab: PreviewTab = {
+        const title = extractFileName(meta?.file_name) || extractFileName(meta?.title) || fallbackTitle;
+
+        // 生成唯一 ID / Generate unique ID
+        const tabId = `${type}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+        const newTab: PreviewTab = {
           id: tabId,
-          content: keepDirtyContent ? existingTab?.content ?? new_content : new_content,
+          content: new_content,
           content_type: type,
-          kind,
-          metadata: meta ? { ...existingTab?.metadata, ...meta } : existingTab?.metadata,
-          title: keepDirtyContent ? existingTab?.title ?? title : title,
-          isDirty: keepDirtyContent,
-          originalContent: keepDirtyContent
-            ? existingTab?.originalContent ?? new_content
-            : new_content,
+          metadata: meta,
+          title,
+          isDirty: false,
+          originalContent: new_content, // 保存原始内容 / Save original content
         };
 
-        const nextTabs = upsertMixedPreviewTab(prevTabs, kind, existingTab ?? undefined, nextTab);
-        nextActiveTabId = nextTab.id;
-        return nextTabs;
+        nextActiveTabId = tabId;
+        return [...prevTabs, newTab];
       });
 
       if (nextActiveTabId) {
-        activateTab(nextActiveTabId);
+        setActiveTabId(nextActiveTabId);
       }
       setIsOpen(true);
     },
-    [activateTab, extractFileName, findPreviewTabInList]
+    [extractFileName, findPreviewTabInList]
   );
-
-  const openTerminalTab = useCallback((session: ITerminalSession, options?: { killOnClose?: boolean }) => {
-    let nextActiveTabId: string | null = null;
-    setTabs((prevTabs) => {
-      const existing = prevTabs.find(
-        (tab) => inferPreviewTabKind(tab) === 'terminal' && tab.terminal_id === session.terminal_id
-      );
-      if (existing) {
-        nextActiveTabId = existing.id;
-        return prevTabs;
-      }
-      const tabId = `terminal-${session.terminal_id}`;
-      nextActiveTabId = tabId;
-      const newTab: PreviewTab = {
-        id: tabId,
-        content: '',
-        content_type: 'code',
-        kind: 'terminal',
-        title: session.name || 'Terminal',
-        terminal_id: session.terminal_id,
-        killOnClose: options?.killOnClose ?? true,
-        isDirty: false,
-        originalContent: '',
-      };
-      return [...prevTabs, newTab];
-    });
-    if (nextActiveTabId) {
-      activateTab(nextActiveTabId);
-    }
-    setIsOpen(true);
-  }, [activateTab]);
-
-  const openBrowserTab = useCallback(
-    (rawUrl: string): boolean => {
-      const trimmed = rawUrl.trim();
-      if (!trimmed) return false;
-      const withProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(trimmed) ? trimmed : `https://${trimmed}`;
-      try {
-        const parsed = new URL(withProtocol);
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
-        openPreview(parsed.toString(), 'url', { title: parsed.hostname || parsed.href });
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    [openPreview]
-  );
-
-  const openWorkspaceTab = useCallback((definition: WorkspacePreviewTabDefinition) => {
-    let nextActiveTabId: string | null = null;
-    setTabs((prevTabs) => {
-      const existing = findWorkspacePreviewTab(prevTabs, definition.key);
-      const nextTab: PreviewTab = {
-        id: existing?.id ?? `workspace-${definition.key}`,
-        content: '',
-        content_type: 'code',
-        kind: 'workspace',
-        workspaceTabKey: definition.key,
-        title: definition.title,
-        isDirty: false,
-        originalContent: '',
-      };
-      nextActiveTabId = nextTab.id;
-      return upsertMixedPreviewTab(prevTabs, 'workspace', existing, nextTab);
-    });
-    if (nextActiveTabId) {
-      activateTab(nextActiveTabId);
-    }
-    setIsOpen(true);
-  }, [activateTab]);
-
-  const tabsRef = useRef<PreviewTab[]>(tabs);
-  tabsRef.current = tabs;
 
   const closePreview = useCallback(() => {
-    tabsRef.current.forEach(disposeOwnedTerminal);
     setIsOpen(false);
     setTabs([]);
-    previousActiveTabIdRef.current = null;
-    activateTab(null, { recordHistory: false });
+    setActiveTabId(null);
     setDomSnippets([]);
-  }, [activateTab]);
+  }, []);
 
   // Track last-known mtime per file path for external change detection
   const fileMtimeRef = useRef<Map<string, number>>(new Map());
 
   const closeTab = useCallback(
-    (tabId: string): PreviewTab | null => {
-      let nextActiveTab: PreviewTab | null | undefined = undefined;
-
+    (tabId: string) => {
       setTabs((prevTabs) => {
-        const closedIndex = prevTabs.findIndex((tab) => tab.id === tabId);
-        const tabToClose = closedIndex >= 0 ? prevTabs[closedIndex] : undefined;
-        if (tabToClose) {
-          disposeOwnedTerminal(tabToClose);
-          if (tabToClose.metadata?.file_path) {
-            fileMtimeRef.current.delete(tabToClose.metadata.file_path);
-          }
+        // Clean up mtime record for the closed tab
+        const tabToClose = prevTabs.find((tab) => tab.id === tabId);
+        if (tabToClose?.metadata?.file_path) {
+          fileMtimeRef.current.delete(tabToClose.metadata.file_path);
         }
 
         const newTabs = prevTabs.filter((tab) => tab.id !== tabId);
-        // Keep ref in sync so consecutive closeTab calls (close others / close all)
-        // see the latest list even before the next render.
-        tabsRef.current = newTabs;
 
-        if (previousActiveTabIdRef.current === tabId) {
-          previousActiveTabIdRef.current = null;
-        }
-
-        if (tabId === activeTabIdRef.current) {
-          const nextActiveTabId = resolveActiveTabAfterClose(
-            newTabs,
-            previousActiveTabIdRef.current
-          );
-          if (nextActiveTabId && nextActiveTabId === previousActiveTabIdRef.current) {
-            previousActiveTabIdRef.current = null;
+        // 如果关闭的是当前激活的 tab / If closing the active tab
+        if (tabId === activeTabId) {
+          if (newTabs.length > 0) {
+            // 切换到最后一个 tab / Switch to the last tab
+            setActiveTabId(newTabs[newTabs.length - 1].id);
+          } else {
+            // 没有 tab 了，关闭预览面板 / No more tabs, close preview panel
+            setIsOpen(false);
+            setActiveTabId(null);
           }
-          nextActiveTab = nextActiveTabId
-            ? (newTabs.find((tab) => tab.id === nextActiveTabId) ?? null)
-            : null;
-          // Preemptively sync so chained closes observe the post-close active id.
-          activeTabIdRef.current = nextActiveTabId;
         }
 
         return newTabs;
       });
-
-      if (nextActiveTab !== undefined) {
-        activateTab(nextActiveTab?.id ?? null, { recordHistory: false });
-        if (!nextActiveTab) {
-          setIsOpen(false);
-        }
-        return nextActiveTab;
-      }
-
-      return tabsRef.current.find((tab) => tab.id === activeTabIdRef.current) ?? null;
     },
-    [activateTab]
+    [activeTabId]
   );
 
   const closePreviewByIdentity = useCallback(
@@ -837,14 +695,10 @@ export const PreviewProvider: React.FC<{
       tabs,
       activeTabId,
       activeTab,
-      workspacePath,
       openPreview,
-      openTerminalTab,
-      openBrowserTab,
-      openWorkspaceTab,
       closePreview,
       closeTab,
-      switchTab: activateTab,
+      switchTab: setActiveTabId,
       updateContent,
       saveContent,
       findPreviewTab,
@@ -861,14 +715,10 @@ export const PreviewProvider: React.FC<{
     tabs,
     activeTabId,
     activeTab,
-    workspacePath,
     openPreview,
-    openTerminalTab,
-    openBrowserTab,
-    openWorkspaceTab,
     closePreview,
     closeTab,
-    activateTab,
+    setActiveTabId,
     updateContent,
     saveContent,
     findPreviewTab,

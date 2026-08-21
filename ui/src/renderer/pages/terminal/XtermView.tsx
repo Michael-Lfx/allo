@@ -10,7 +10,7 @@ import { ipcBridge } from '@/common';
 import type { TerminalId } from '@/common/types/ids';
 import { createStreamingDecoder, encodeStringToBase64 } from './terminalEncoding';
 import { bumpCtrlC, createCtrlCState, isCtrlC, type CtrlCState } from './ctrlCEscalation';
-import { resolveTerminalTheme, TERMINAL_TYPOGRAPHY } from './terminalTheme';
+import { TERMINAL_THEME, TERMINAL_TYPOGRAPHY } from './terminalTheme';
 import styles from './XtermView.module.css';
 
 /**
@@ -63,11 +63,6 @@ interface XtermViewProps {
    * not call the live PTY resize/input endpoints (which correctly return 404).
    */
   isRunning?: boolean;
-  /**
-   * Drop the card border/radius when the host already provides outer chrome
-   * (e.g. the conversation preview column).
-   */
-  embedded?: boolean;
   className?: string;
   apiRef?: React.MutableRefObject<XtermViewHandle | null>;
   /**
@@ -82,7 +77,6 @@ interface XtermViewProps {
 const XtermView: React.FC<XtermViewProps> = ({
   sessionId,
   isRunning = true,
-  embedded = false,
   className,
   apiRef,
   onEscalateShell,
@@ -109,7 +103,7 @@ const XtermView: React.FC<XtermViewProps> = ({
       scrollback: 10000,
       allowProposedApi: true,
       smoothScrollDuration: 0,
-      theme: resolveTerminalTheme(),
+      theme: TERMINAL_THEME,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -456,16 +450,6 @@ const XtermView: React.FC<XtermViewProps> = ({
     };
     document.addEventListener('visibilitychange', onVisibility);
 
-    const applyTheme = () => {
-      if (disposed) return;
-      term.options.theme = resolveTerminalTheme();
-    };
-    const themeObserver = new MutationObserver(applyTheme);
-    themeObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['data-theme', 'data-color-scheme'],
-    });
-
     return () => {
       disposed = true;
       const disposeError = new Error('Terminal view was disposed before queued input was written');
@@ -478,7 +462,6 @@ const XtermView: React.FC<XtermViewProps> = ({
       if (resizeRetryTimer) clearTimeout(resizeRetryTimer);
       container.removeEventListener('mousedown', focusTerminal);
       document.removeEventListener('visibilitychange', onVisibility);
-      themeObserver.disconnect();
       dataDisposable.dispose();
       unsubscribeOutput();
       unsubscribeReconnected();
@@ -489,13 +472,7 @@ const XtermView: React.FC<XtermViewProps> = ({
     };
   }, [sessionId, apiRef, isRunning]);
 
-  return (
-    <div
-      ref={containerRef}
-      className={`${styles.card} ${embedded ? styles.embedded : ''} ${className ?? ''}`}
-      style={{ overflow: 'hidden' }}
-    />
-  );
+  return <div ref={containerRef} className={`${styles.card} ${className ?? ''}`} style={{ overflow: 'hidden' }} />;
 };
 
 export default XtermView;

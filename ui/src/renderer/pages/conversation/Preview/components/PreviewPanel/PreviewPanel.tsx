@@ -7,7 +7,6 @@ import { PreviewToolbarExtrasProvider, type PreviewToolbarExtras } from '../../c
 import { usePreviewContext } from '../../context/PreviewContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { Input, Modal } from '@arco-design/web-react';
 import CodePreview from '../viewers/CodeViewer';
 import DiffPreview from '../viewers/DiffViewer';
 import ExcelPreview from '../viewers/ExcelViewer';
@@ -21,8 +20,6 @@ import OfficeDocPreview from '../viewers/OfficeDocViewer';
 import PptViewer from '../viewers/PptViewer';
 import TextEditor from '../editors/TextEditor';
 import URLViewer from '../viewers/URLViewer';
-import XtermView from '@/renderer/pages/terminal/XtermView';
-import { SHELL_SENTINEL } from '@/renderer/pages/terminal/launchPresets';
 import {
   PreviewTabs,
   PreviewToolbar,
@@ -33,13 +30,7 @@ import {
   type CloseTabConfirmState,
   type PreviewTab,
 } from '.';
-import type { PreviewTab as PreviewSessionTab } from '../../context/PreviewContext';
-import {
-  DEFAULT_SPLIT_RATIO,
-  FILE_TYPES_WITH_BUILTIN_OPEN,
-  MAX_SPLIT_WIDTH,
-  MIN_SPLIT_WIDTH,
-} from '../../constants';
+import { DEFAULT_SPLIT_RATIO, FILE_TYPES_WITH_BUILTIN_OPEN, MAX_SPLIT_WIDTH, MIN_SPLIT_WIDTH } from '../../constants';
 import {
   usePreviewHistory,
   usePreviewKeyboardShortcuts,
@@ -47,9 +38,6 @@ import {
   useTabOverflow,
   useThemeDetection,
 } from '../../hooks';
-import { inferPreviewTabKind, type WorkspacePreviewTabDefinition } from '../../previewTabKind';
-import { previewPathSegments } from '../../previewPathBreadcrumb';
-import type { PreviewContentType } from '@/common/types/office/preview';
 import { useTranslation } from 'react-i18next';
 import './preview.css';
 
@@ -60,43 +48,7 @@ import './preview.css';
  * 支持多 Tab 切换，每个 Tab 可以显示不同类型的内容
  * Supports multiple tabs, each tab can display different types of content
  */
-type PreviewPanelProps = {
-  /** Mounted once while the preview is open so workspace state survives tab switches. */
-  workspaceContent?: React.ReactNode;
-  workspaceTabs?: readonly WorkspacePreviewTabDefinition[];
-  renderWorkspaceHeader?: (workspaceTabKey: string) => React.ReactNode;
-  onWorkspaceTabActivate?: (workspaceTabKey: string) => void;
-};
-
-const WorkspaceTabHost: React.FC<{
-  visible: boolean;
-  workspaceTabKey?: string;
-  renderHeader?: (workspaceTabKey: string) => React.ReactNode;
-  children: React.ReactNode;
-}> = ({ visible, workspaceTabKey, renderHeader, children }) => (
-  <div
-    className='min-h-0 flex-1 flex-col overflow-hidden'
-    style={{ display: visible ? 'flex' : 'none' }}
-    aria-hidden={!visible}
-  >
-    {workspaceTabKey ? renderHeader?.(workspaceTabKey) : null}
-    <div className='min-h-0 flex-1 flex flex-col overflow-hidden'>{children}</div>
-  </div>
-);
-
-const EMPTY_PREVIEW_TAB: PreviewSessionTab = {
-  id: 'empty-preview-tab',
-  content: '',
-  content_type: 'code' as PreviewContentType,
-  title: '',
-};
-
-const PreviewPanel: React.FC<PreviewPanelProps> = ({
-  workspaceContent,
-  workspaceTabs,
-  renderWorkspaceHeader,
-  onWorkspaceTabActivate,
-}) => {
+const PreviewPanel: React.FC = () => {
   const { t } = useTranslation();
   const {
     isOpen,
@@ -108,10 +60,6 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
     closePreview,
     updateContent,
     saveContent,
-    openTerminalTab,
-    openBrowserTab,
-    openWorkspaceTab,
-    workspacePath,
   } = usePreviewContext();
   const layout = useLayoutContext();
 
@@ -127,9 +75,6 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
 
   // 右键菜单状态 / Context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ show: false, x: 0, y: 0, tabId: null });
-  const [urlModalVisible, setUrlModalVisible] = useState(false);
-  const [urlDraft, setUrlDraft] = useState('https://');
-  const [creatingTerminal, setCreatingTerminal] = useState(false);
 
   // 容器引用 / Container refs
   const editorContainerRef = useRef<HTMLDivElement>(null);
@@ -137,10 +82,7 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
 
   // 使用自定义 Hooks / Use custom hooks
   const currentTheme = useThemeDetection();
-  const { tabsContainerRef, tabFadeState } = useTabOverflow({
-    tabCount: tabs.length,
-    activeTabId,
-  });
+  const { tabsContainerRef, tabFadeState } = useTabOverflow([tabs, activeTabId]);
   const { handleEditorScroll, handlePreviewScroll } = useScrollSync({
     enabled: isSplitScreenEnabled,
     editorContainerRef,
@@ -205,25 +147,6 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
     [updateContent]
   );
 
-  const handleSwitchTab = useCallback(
-    (tabId: string) => {
-      const tab = tabs.find((candidate) => candidate.id === tabId);
-      if (tab && inferPreviewTabKind(tab) === 'workspace' && tab.workspaceTabKey) {
-        onWorkspaceTabActivate?.(tab.workspaceTabKey);
-      }
-      switchTab(tabId);
-    },
-    [onWorkspaceTabActivate, switchTab, tabs]
-  );
-
-  const handleOpenWorkspaceTab = useCallback(
-    (definition: WorkspacePreviewTabDefinition) => {
-      onWorkspaceTabActivate?.(definition.key);
-      openWorkspaceTab(definition);
-    },
-    [onWorkspaceTabActivate, openWorkspaceTab]
-  );
-
   // 处理退出编辑模式 / Handle exit edit mode
   const handleExitEdit = useCallback(() => {
     // 如果有未保存的修改，弹出确认对话框 / If there are unsaved changes, show confirmation dialog
@@ -247,19 +170,6 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
   }, []);
 
   // 处理关闭tab / Handle close tab
-  const syncWorkspaceAfterClose = useCallback(
-    (nextTab: PreviewSessionTab | null) => {
-      if (!nextTab || inferPreviewTabKind(nextTab) !== 'workspace' || !nextTab.workspaceTabKey) {
-        return;
-      }
-      // Keep the workspace sider / rail in sync with the restored preview tab.
-      // Without this, closing 协作任务 can leave the sider on agent-execution
-      // while the tab strip highlights a different workspace chip.
-      onWorkspaceTabActivate?.(nextTab.workspaceTabKey);
-    },
-    [onWorkspaceTabActivate]
-  );
-
   const handleCloseTab = useCallback(
     (tabId: string) => {
       const tab = tabs.find((t) => t.id === tabId);
@@ -268,10 +178,10 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
         setCloseTabConfirm({ show: true, tabId });
       } else {
         // 没有未保存的修改，直接关闭 / No unsaved changes, close directly
-        syncWorkspaceAfterClose(closeTab(tabId));
+        closeTab(tabId);
       }
     },
-    [tabs, closeTab, syncWorkspaceAfterClose]
+    [tabs, closeTab]
   );
 
   // 保存并关闭tab / Save and close tab
@@ -283,20 +193,20 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
       if (!success) {
         throw new Error(t('common.saveFailed'));
       }
-      syncWorkspaceAfterClose(closeTab(closeTabConfirm.tabId));
+      closeTab(closeTabConfirm.tabId);
       setCloseTabConfirm({ show: false, tabId: null });
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : t('common.unknownError');
       messageApi.error(`${t('common.saveFailed')}: ${errorMsg}`);
     }
-  }, [closeTabConfirm.tabId, saveContent, closeTab, syncWorkspaceAfterClose, messageApi, t]);
+  }, [closeTabConfirm.tabId, saveContent, closeTab, messageApi, t]);
 
   // 不保存直接关闭tab / Close tab without saving
   const handleCloseWithoutSave = useCallback(() => {
     if (!closeTabConfirm.tabId) return;
-    syncWorkspaceAfterClose(closeTab(closeTabConfirm.tabId));
+    closeTab(closeTabConfirm.tabId);
     setCloseTabConfirm({ show: false, tabId: null });
-  }, [closeTabConfirm.tabId, closeTab, syncWorkspaceAfterClose]);
+  }, [closeTabConfirm.tabId, closeTab]);
 
   // 取消关闭tab / Cancel close tab
   const handleCancelCloseTab = useCallback(() => {
@@ -322,14 +232,10 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
       if (currentIndex <= 0) return;
 
       const tabsToClose = tabs.slice(0, currentIndex);
-      let nextTab: PreviewSessionTab | null = null;
-      tabsToClose.forEach((tab) => {
-        nextTab = closeTab(tab.id);
-      });
-      syncWorkspaceAfterClose(nextTab);
+      tabsToClose.forEach((tab) => closeTab(tab.id));
       setContextMenu({ show: false, x: 0, y: 0, tabId: null });
     },
-    [tabs, closeTab, syncWorkspaceAfterClose]
+    [tabs, closeTab]
   );
 
   // 关闭右侧 tabs / Close tabs to the right
@@ -339,28 +245,20 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
       if (currentIndex < 0 || currentIndex >= tabs.length - 1) return;
 
       const tabsToClose = tabs.slice(currentIndex + 1);
-      let nextTab: PreviewSessionTab | null = null;
-      tabsToClose.forEach((tab) => {
-        nextTab = closeTab(tab.id);
-      });
-      syncWorkspaceAfterClose(nextTab);
+      tabsToClose.forEach((tab) => closeTab(tab.id));
       setContextMenu({ show: false, x: 0, y: 0, tabId: null });
     },
-    [tabs, closeTab, syncWorkspaceAfterClose]
+    [tabs, closeTab]
   );
 
   // 关闭其他 tabs / Close other tabs
   const handleCloseOthers = useCallback(
     (tabId: string) => {
       const tabsToClose = tabs.filter((t) => t.id !== tabId);
-      let nextTab: PreviewSessionTab | null = null;
-      tabsToClose.forEach((tab) => {
-        nextTab = closeTab(tab.id);
-      });
-      syncWorkspaceAfterClose(nextTab);
+      tabsToClose.forEach((tab) => closeTab(tab.id));
       setContextMenu({ show: false, x: 0, y: 0, tabId: null });
     },
-    [tabs, closeTab, syncWorkspaceAfterClose]
+    [tabs, closeTab]
   );
 
   // 关闭全部 tabs / Close all tabs
@@ -369,73 +267,10 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
     setContextMenu({ show: false, x: 0, y: 0, tabId: null });
   }, [tabs, closeTab]);
 
-  // File tabs are a singleton — jump to the workspace Files tab instead of a picker.
-  const handleAddFile = useCallback(() => {
-    const filesDefinition =
-      workspaceTabs?.find((tab) => tab.key === 'files') ??
-      ({
-        key: 'files',
-        title: t('conversation.workspace.changes.filesTab'),
-      } satisfies WorkspacePreviewTabDefinition);
-    handleOpenWorkspaceTab(filesDefinition);
-  }, [handleOpenWorkspaceTab, t, workspaceTabs]);
+  // 如果预览面板未打开，不渲染 / Don't render if preview panel is not open
+  if (!isOpen || !activeTab) return null;
 
-  const handleAddTerminal = useCallback(async () => {
-    if (!workspacePath) {
-      messageApi.warning(t('preview.terminalNeedsWorkspace'));
-      return;
-    }
-    if (creatingTerminal) return;
-    setCreatingTerminal(true);
-    try {
-      const session = await ipcBridge.terminal.create.invoke({
-        cwd: workspacePath,
-        command: SHELL_SENTINEL,
-        defer_spawn: true,
-      });
-      openTerminalTab(session, { killOnClose: true });
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : t('common.unknownError'));
-    } finally {
-      setCreatingTerminal(false);
-    }
-  }, [creatingTerminal, messageApi, openTerminalTab, t, workspacePath]);
-
-  const handleAddBrowser = useCallback(() => {
-    setUrlDraft('https://');
-    setUrlModalVisible(true);
-  }, []);
-
-  const handleConfirmUrl = useCallback(() => {
-    if (!openBrowserTab(urlDraft)) {
-      messageApi.error(t('preview.invalidUrl'));
-      return;
-    }
-    setUrlModalVisible(false);
-  }, [messageApi, openBrowserTab, t, urlDraft]);
-
-  const activeTabKind = activeTab ? inferPreviewTabKind(activeTab) : undefined;
-  const activeWorkspaceTabKey = activeTabKind === 'workspace' ? activeTab?.workspaceTabKey : undefined;
-  const isWorkspaceTab = isOpen && activeWorkspaceTabKey != null;
-  const resolvedActiveTab = activeTab ?? EMPTY_PREVIEW_TAB;
-  const workspaceHost = workspaceContent ? (
-    <WorkspaceTabHost
-      key='workspace-tab-host'
-      visible={isWorkspaceTab}
-      workspaceTabKey={activeWorkspaceTabKey}
-      renderHeader={renderWorkspaceHeader}
-    >
-      {workspaceContent}
-    </WorkspaceTabHost>
-  ) : null;
-
-  const { content, content_type, metadata } = resolvedActiveTab;
-  const pathSegments = (() => {
-    const fromPath = previewPathSegments(metadata?.file_path, metadata?.workspace ?? workspacePath);
-    if (fromPath.length > 0) return fromPath;
-    const fallback = metadata?.file_name || resolvedActiveTab.title;
-    return fallback ? [fallback] : [];
-  })();
+  const { content, content_type, metadata } = activeTab;
   const isMarkdown = content_type === 'markdown';
   const isHTML = content_type === 'html';
   const isEditable = metadata?.editable !== false; // 默认可编辑 / Default editable
@@ -565,14 +400,6 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
 
   // 渲染预览内容 / Render preview content
   const renderContent = () => {
-    if (inferPreviewTabKind(resolvedActiveTab) === 'terminal' && resolvedActiveTab.terminal_id) {
-      return (
-        <div className='flex-1 min-h-0 overflow-hidden'>
-          <XtermView sessionId={resolvedActiveTab.terminal_id} isRunning embedded />
-        </div>
-      );
-    }
-
     // Markdown 模式 / Markdown mode
     if (isMarkdown) {
       // 分屏模式：左右分割（编辑器 + 预览）/ Split-screen mode: Editor + Preview
@@ -811,24 +638,11 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
     id: tab.id,
     title: tab.title,
     isDirty: tab.isDirty,
-    kind: inferPreviewTabKind(tab),
-    workspaceTabKey: tab.workspaceTabKey,
-    fileName: tab.metadata?.file_name || tab.title,
   }));
-
-  // Keep the workspace host mounted before the first preview opens. Its tree and
-  // change snapshot must observe workspace activity even while no tab is visible.
-  if (!isOpen || !activeTab) {
-    return (
-      <PreviewToolbarExtrasProvider value={toolbarExtrasContextValue}>
-        <div className='h-full flex flex-col bg-1'>{workspaceHost}</div>
-      </PreviewToolbarExtrasProvider>
-    );
-  }
 
   return (
     <PreviewToolbarExtrasProvider value={toolbarExtrasContextValue}>
-      <div className='h-full flex flex-col bg-1'>
+      <div className='h-full flex flex-col bg-1 rounded-[16px]'>
         {messageContextHolder}
 
         {/* 确认对话框 / Confirmation modals */}
@@ -850,19 +664,14 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
           activeTabId={activeTabId}
           tabFadeState={tabFadeState}
           tabsContainerRef={tabsContainerRef}
-          onSwitchTab={handleSwitchTab}
+          onSwitchTab={switchTab}
           onCloseTab={handleCloseTab}
           onContextMenu={handleTabContextMenu}
           onClosePanel={closePreview}
-          onAddFile={handleAddFile}
-          onAddTerminal={() => void handleAddTerminal()}
-          onAddBrowser={handleAddBrowser}
-          workspaceTabs={workspaceTabs}
-          onOpenWorkspaceTab={handleOpenWorkspaceTab}
         />
 
         {/* 工具栏（URL 类型不显示工具栏，因为不需要下载/编辑等功能）/ Toolbar (hidden for URL type as it doesn't need download/edit features) */}
-        {!isWorkspaceTab && content_type !== 'url' && activeTabKind !== 'terminal' && (
+        {content_type !== 'url' && (
           <PreviewToolbar
             content_type={content_type}
             isMarkdown={isMarkdown}
@@ -872,7 +681,6 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
             viewMode={viewMode}
             isSplitScreenEnabled={isSplitScreenEnabled}
             file_name={metadata?.file_name || activeTab.title}
-            pathSegments={pathSegments}
             showOpenInSystemButton={showOpenInSystemButton}
             historyTarget={historyTarget}
             snapshotSaving={snapshotSaving}
@@ -900,15 +708,14 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
           />
         )}
 
-        {!isWorkspaceTab && metadata?.truncated && (
+        {metadata?.truncated && (
           <div className='sticky top-0 z-1 px-16px py-10px text-12px bg-warning-1 text-warning-7 border-b border-b-solid border-warning-3'>
             {t('preview.truncatedBanner')}
           </div>
         )}
 
-        {workspaceHost}
-
-        {!isWorkspaceTab && renderContent()}
+        {/* 预览内容 / Preview content */}
+        {renderContent()}
 
         {/* Tab 右键菜单 / Tab context menu */}
         {/* eslint-disable-next-line max-len */}
@@ -922,21 +729,6 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
           onCloseOthers={handleCloseOthers}
           onCloseAll={handleCloseAll}
         />
-
-        <Modal
-          visible={urlModalVisible}
-          title={t('preview.openUrlTitle')}
-          onOk={handleConfirmUrl}
-          onCancel={() => setUrlModalVisible(false)}
-          okText={t('preview.openUrlConfirm')}
-        >
-          <Input
-            value={urlDraft}
-            placeholder={t('preview.openUrlPlaceholder')}
-            onChange={setUrlDraft}
-            onPressEnter={handleConfirmUrl}
-          />
-        </Modal>
       </div>
     </PreviewToolbarExtrasProvider>
   );

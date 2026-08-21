@@ -36,10 +36,9 @@ export const ExecutionProvider: React.FC<{
   const returnToMain = useCallback(() => setProjectedPayload(null), []);
   const toggleCanvas = useCallback(() => setCanvasOpen((open) => !open), []);
 
-  // Prefer focusing the collaboration preview tab over auto-opening the legacy
-  // side canvas when an execution link appears.
   useEffect(() => {
     setProjectedPayload(null);
+    setCanvasOpen(Boolean(executionId));
   }, [executionId]);
 
   const value = useMemo<ExecutionContextValue>(

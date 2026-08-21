@@ -11,20 +11,19 @@ const source = readFileSync(new URL('./TerminalSessionPage.tsx', import.meta.url
 const xtermSource = readFileSync(new URL('./XtermView.tsx', import.meta.url), 'utf8');
 const sendBoxSource = readFileSync(new URL('./TerminalSendBox.tsx', import.meta.url), 'utf8');
 
-describe('TerminalSessionPage workspace tab wiring', () => {
-  test('opens fixed files and changes tabs instead of a separate workspace panel', () => {
-    expect(source.includes('openWorkspaceTab')).toBe(true);
-    expect(source.includes("{ key: 'files'")).toBe(true);
-    expect(source.includes("{ key: 'changes'")).toBe(true);
-    expect(source.includes('workspaceContent={<TerminalWorkspaceRail session={session} />}')).toBe(true);
-    expect(source.includes("className='!bg-1 relative layout-sider'")).toBe(false);
-    expect(source.includes('useWorkspaceCollapse')).toBe(false);
+describe('TerminalSessionPage workspace rail collapse wiring', () => {
+  test('keeps terminal file auto-expand scoped to the current terminal session', () => {
+    expect(source.includes('autoExpandOnFiles: true')).toBe(true);
+    expect(source.includes('target: workspaceTarget')).toBe(true);
   });
 
-  test('keeps the compact workspace tool rail as a tab-navigation entry point', () => {
-    expect(source.includes('<WorkspaceToolRail')).toBe(true);
-    expect(source.includes("activeTab?.kind === 'workspace'")).toBe(true);
-    expect(source.includes('onSelect={selectWorkspaceTool}')).toBe(true);
+  test('keeps the workspace tool rail at the far right of the expanded panel', () => {
+    const panelIndex = source.indexOf("className='!bg-1 relative layout-sider'");
+    const railIndex = source.indexOf('<WorkspaceToolRail');
+
+    expect(panelIndex >= 0).toBe(true);
+    expect(railIndex >= 0).toBe(true);
+    expect(panelIndex < railIndex).toBe(true);
   });
 
   test('remounts stateful terminal content when the route id changes', () => {

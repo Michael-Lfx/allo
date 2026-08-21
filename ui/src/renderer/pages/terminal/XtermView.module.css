@@ -1,4 +1,4 @@
-/* Card wrapper for the terminal — rounded, clipped, theme-following surface. */
+/* Card wrapper for the terminal — rounded, clipped, constant-dark surface. */
 .card {
   width: 100%;
   height: 100%;
@@ -6,12 +6,6 @@
   overflow: hidden;
   background-color: var(--terminal-surface-bg);
   border: 1px solid var(--terminal-border);
-}
-
-/* Flush fill when the host (preview column) already draws the outer chrome. */
-.embedded {
-  border: none;
-  border-radius: 0;
 }
 
 /* Internal padding for the terminal screen. FitAddon 0.10.0 reads the .xterm

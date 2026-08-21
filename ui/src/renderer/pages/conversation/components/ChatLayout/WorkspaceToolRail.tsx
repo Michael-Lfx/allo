@@ -14,8 +14,6 @@ import React from 'react';
 
 export const WORKSPACE_PANEL_TAB_EVENT = 'nomifun-workspace-panel-tab';
 export const WORKSPACE_PANEL_META_EVENT = 'nomifun-workspace-panel-meta';
-/** Open a workspace tool in the preview strip (header / auto-open). */
-export const WORKSPACE_OPEN_PREVIEW_TOOL_EVENT = 'nomifun-workspace-open-preview-tool';
 
 export interface WorkspacePanelTabDetail {
   tab: WorkspaceTab;
@@ -31,15 +29,6 @@ export function dispatchWorkspacePanelTabEvent(tab: WorkspaceTab, target: Sessio
   if (typeof window === 'undefined') return;
   window.dispatchEvent(
     new CustomEvent<WorkspacePanelTabDetail>(WORKSPACE_PANEL_TAB_EVENT, { detail: { tab, target } })
-  );
-}
-
-export function dispatchWorkspaceOpenPreviewTool(tab: WorkspaceTab, target: SessionTarget) {
-  if (typeof window === 'undefined') return;
-  window.dispatchEvent(
-    new CustomEvent<WorkspacePanelTabDetail>(WORKSPACE_OPEN_PREVIEW_TOOL_EVENT, {
-      detail: { tab, target },
-    })
   );
 }
 
@@ -68,8 +57,6 @@ type WorkspaceToolRailProps = {
   t: TFunction;
   activeTab: WorkspaceTab;
   expanded: boolean;
-  /** Highlight the Shell rail entry while a terminal preview tab is focused. */
-  shellPreviewActive?: boolean;
   onSelect: (tab: WorkspaceTab) => void;
   changeCount?: number;
   extraTabs?: WorkspaceExtraTab[];
@@ -108,7 +95,6 @@ const WorkspaceToolRail: React.FC<WorkspaceToolRailProps> = ({
   t,
   activeTab,
   expanded,
-  shellPreviewActive = false,
   onSelect,
   changeCount = 0,
   extraTabs,
@@ -135,20 +121,13 @@ const WorkspaceToolRail: React.FC<WorkspaceToolRailProps> = ({
     {extraTabs?.map((tab) => (
       <ToolRailItem
         key={tab.key}
-        active={
-          tab.key === 'conversation-terminals'
-            ? shellPreviewActive
-            : expanded && activeTab === tab.key
-        }
+        active={expanded && activeTab === tab.key}
         label={tab.title}
         icon={tab.icon ?? <ChartHistogram size={18} />}
-        statusColor={
-          tab.key === 'agent-execution' ? collaboration?.statusColor : undefined
-        }
         onClick={() => onSelect(tab.key)}
       />
     ))}
-    {collaboration?.available && !extraTabs?.some((tab) => tab.key === 'agent-execution') && (
+    {collaboration?.available && (
       <>
         <span className='workspace-tool-rail__divider' />
         <ToolRailItem

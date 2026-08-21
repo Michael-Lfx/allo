@@ -49,8 +49,8 @@ const workspaceTreeChevron = (
 /**
  * WorkspaceRailBody — 表面无关的工作区右栏「身体」
  *
- * Source-agnostic presentational body for the workspace view. It is fed a
- * pluggable {@link WorkspaceSource} and renders the active workspace view, toolbar, file tree,
+ * Source-agnostic presentational body for the workspace rail. It is fed a
+ * pluggable {@link WorkspaceSource} and renders the tab bar, toolbar, file tree,
  * changes tab, context menu, modals, and (only when the source provides an
  * `upload` adapter) the drag overlay + paste/upload affordances.
  *
@@ -288,7 +288,7 @@ const WorkspaceRailBody: React.FC<{ source: WorkspaceSource; messageApi?: Messag
     <>
       {shouldRenderLocalMessageContext && messageContext}
       <div
-        className='chat-workspace size-full min-h-0 flex-1 flex flex-col relative'
+        className='chat-workspace size-full flex flex-col relative'
         tabIndex={0}
         onFocus={uploadEnabled ? pasteHook.onFocusPaste : undefined}
         onClick={uploadEnabled ? pasteHook.onFocusPaste : undefined}

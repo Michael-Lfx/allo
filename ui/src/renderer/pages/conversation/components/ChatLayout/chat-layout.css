@@ -177,7 +177,7 @@
    discoverable even while the panel itself is closed. */
 .workspace-tool-rail {
   position: relative;
-  z-index: 0;
+  z-index: 12;
   flex: 0 0 32px;
   width: 32px;
   min-width: 32px;
@@ -190,6 +190,7 @@
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--bg-2) 78%, transparent), var(--bg-1) 38%),
     var(--bg-1);
+  box-shadow: -8px 0 22px color-mix(in srgb, #000 5%, transparent);
 }
 
 .workspace-tool-rail__item {
@@ -321,6 +322,9 @@
   box-shadow: -12px 0 28px color-mix(in srgb, #000 4%, transparent);
 }
 
+[data-theme='dark'] .workspace-tool-rail {
+  box-shadow: -8px 0 26px rgba(0, 0, 0, 0.16);
+}
 
 .workspace-tool-rail-mobile-trigger {
   position: absolute;

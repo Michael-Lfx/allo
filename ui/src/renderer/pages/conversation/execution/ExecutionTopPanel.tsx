@@ -41,7 +41,7 @@ function initialWidth(): number {
   return Math.min(DEFAULT_WIDTH, availableMaxWidth());
 }
 
-const ExecutionTopPanel: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
+const ExecutionTopPanel: React.FC = () => {
   const { t } = useTranslation();
   const [message, messageContext] = useArcoMessage();
   const execution = useExecution();
@@ -207,9 +207,7 @@ const ExecutionTopPanel: React.FC<{ embedded?: boolean }> = ({ embedded = false 
     [projectStep, setCanvasOpen],
   );
 
-  // Side-column mode stays gated by canvasOpen; the preview-tab host mounts this
-  // panel only while the collaboration tab is visible, so always render there.
-  if (!executionId || (!embedded && !canvasOpen)) return null;
+  if (!executionId || !canvasOpen) return null;
 
   const status = detail?.execution.status ?? '';
   const showControls = !isTerminalExecutionStatus(status);
@@ -225,35 +223,25 @@ const ExecutionTopPanel: React.FC<{ embedded?: boolean }> = ({ embedded = false 
   const maxPanelWidth = getAvailableMaxWidth();
 
   return (
-    <div
-      ref={panelRef}
-      className={
-        embedded
-          ? `${styles.panelEmbedded} size-full min-h-0 flex flex-col`
-          : `${styles.panel} shrink-0 flex flex-col`
-      }
-      style={embedded ? undefined : { width: Math.min(width, maxPanelWidth) }}
-    >
+    <div ref={panelRef} className={`${styles.panel} shrink-0 flex flex-col`} style={{ width: Math.min(width, maxPanelWidth) }}>
       {messageContext}
-      {!embedded && (
-        <div
-          className={styles.resizeHandle}
-          role='separator'
-          tabIndex={0}
-          aria-orientation='vertical'
-          aria-valuemin={MIN_WIDTH}
-          aria-valuemax={maxPanelWidth}
-          aria-valuenow={Math.min(width, maxPanelWidth)}
-          aria-label={t('agentExecution.panel.resize', {
-            defaultValue: '调整协作面板宽度',
-          })}
-          onPointerDown={onResizeStart}
-          onPointerMove={onResizeMove}
-          onPointerUp={onResizeEnd}
-          onPointerCancel={onResizeEnd}
-          onKeyDown={onResizeKeyDown}
-        />
-      )}
+      <div
+        className={styles.resizeHandle}
+        role='separator'
+        tabIndex={0}
+        aria-orientation='vertical'
+        aria-valuemin={MIN_WIDTH}
+        aria-valuemax={maxPanelWidth}
+        aria-valuenow={Math.min(width, maxPanelWidth)}
+        aria-label={t('agentExecution.panel.resize', {
+          defaultValue: '调整协作面板宽度',
+        })}
+        onPointerDown={onResizeStart}
+        onPointerMove={onResizeMove}
+        onPointerUp={onResizeEnd}
+        onPointerCancel={onResizeEnd}
+        onKeyDown={onResizeKeyDown}
+      />
 
       {(showControls || leadThinking.active) && (
         <div className={`${styles.header} flex flex-wrap items-center justify-end gap-x-10px gap-y-6px`}>

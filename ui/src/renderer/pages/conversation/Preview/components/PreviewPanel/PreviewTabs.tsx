@@ -1,18 +1,11 @@
+
+
 import { iconColors } from '@/renderer/styles/colors';
-import { Branch, Change, ChartHistogram, Close, FileText, FolderOpen, Plus, Terminal, WebPage } from '@icon-park/react';
-import { Dropdown, Menu } from '@arco-design/web-react';
+import { Close } from '@icon-park/react';
 import { IconShrink } from '@arco-design/web-react/icon';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import WorkspaceFileIcon from '@/renderer/pages/conversation/Workspace/components/WorkspaceFileIcon';
-import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import type { TabFadeState } from '../../hooks/useTabOverflow';
-import {
-  inferPreviewTabKind,
-  type PreviewTabKind,
-  type WorkspacePreviewTabDefinition,
-} from '../../previewTabKind';
-import './preview.css';
 
 /**
  * Tab 信息
@@ -35,17 +28,6 @@ export interface PreviewTab {
    * Whether there are unsaved changes
    */
   isDirty?: boolean;
-
-  /**
-   * Mixed editor-group kind. Defaults to file when omitted.
-   */
-  kind?: PreviewTabKind;
-  workspaceTabKey?: string;
-
-  /**
-   * Filename used for the file-type icon.
-   */
-  fileName?: string;
 }
 
 /**
@@ -75,7 +57,7 @@ interface PreviewTabsProps {
    * Tabs 容器引用
    * Tabs container ref
    */
-  tabsContainerRef: React.Ref<HTMLDivElement | null>;
+  tabsContainerRef: React.RefObject<HTMLDivElement | null>;
 
   /**
    * 切换 Tab 回调
@@ -100,47 +82,17 @@ interface PreviewTabsProps {
    * Close preview panel callback
    */
   onClosePanel?: () => void;
-
-  onAddFile?: () => void;
-  onAddTerminal?: () => void;
-  onAddBrowser?: () => void;
-  workspaceTabs?: readonly WorkspacePreviewTabDefinition[];
-  onOpenWorkspaceTab?: (definition: WorkspacePreviewTabDefinition) => void;
 }
 
-const TabKindIcon: React.FC<{ tab: PreviewTab }> = ({ tab }) => {
-  const kind = inferPreviewTabKind({ kind: tab.kind });
-  switch (kind) {
-    case 'terminal':
-      return <Terminal theme='outline' size={12} fill='currentColor' />;
-    case 'browser':
-      return <WebPage theme='outline' size={12} fill='currentColor' />;
-    case 'file':
-      return <WorkspaceFileIcon fileName={tab.fileName || tab.title} size={12} />;
-    case 'workspace':
-      switch (tab.workspaceTabKey) {
-        case 'files':
-          return <FolderOpen theme='outline' size={12} fill='currentColor' />;
-        case 'changes':
-          return <Change theme='outline' size={12} fill='currentColor' />;
-        case 'conversation-terminals':
-          return <Terminal theme='outline' size={12} fill='currentColor' />;
-        case 'nomi-session-metrics':
-          return <ChartHistogram theme='outline' size={12} fill='currentColor' />;
-        case 'agent-execution':
-          return <Branch theme='outline' size={12} fill='currentColor' />;
-        default:
-          return <FolderOpen theme='outline' size={12} fill='currentColor' />;
-      }
-    default: {
-      const _exhaustive: never = kind;
-      return _exhaustive;
-    }
-  }
-};
-
 /**
- * Compact Cursor-style mixed tab strip for the preview column.
+ * 预览面板 Tabs 栏组件
+ * Preview panel tabs bar component
+ *
+ * 显示多个 Tab，支持切换、关闭和右键菜单
+ * Displays multiple tabs, supports switching, closing, and context menu
+ *
+ * 包含左右渐变指示器，提示用户可以滚动查看更多 Tab
+ * Includes left/right gradient indicators to prompt users that more tabs can be scrolled
  */
 const PreviewTabs: React.FC<PreviewTabsProps> = ({
   tabs,
@@ -151,184 +103,83 @@ const PreviewTabs: React.FC<PreviewTabsProps> = ({
   onCloseTab,
   onContextMenu,
   onClosePanel,
-  onAddFile,
-  onAddTerminal,
-  onAddBrowser,
-  workspaceTabs,
-  onOpenWorkspaceTab,
 }) => {
   const { t } = useTranslation();
-  const layout = useLayoutContext();
   const { left: showLeftFade, right: showRightFade } = tabFadeState;
-  const showAddMenu = Boolean(onAddFile || onAddTerminal || onAddBrowser);
-  const showWorkspaceMenu = Boolean(layout?.isMobile && workspaceTabs?.length && onOpenWorkspaceTab);
-
-  const addTabMenu = showAddMenu ? (
-    <Dropdown
-      trigger='click'
-      position='bl'
-      droplist={
-        <Menu>
-          {onAddFile && (
-            <Menu.Item key='file' onClick={onAddFile}>
-              <span className='inline-flex items-center gap-6px'>
-                <FileText theme='outline' size={12} fill='currentColor' />
-                {t('preview.addFile')}
-              </span>
-            </Menu.Item>
-          )}
-          {onAddTerminal && (
-            <Menu.Item key='terminal' onClick={onAddTerminal}>
-              <span className='inline-flex items-center gap-6px'>
-                <Terminal theme='outline' size={12} fill='currentColor' />
-                {t('preview.addTerminal')}
-              </span>
-            </Menu.Item>
-          )}
-          {onAddBrowser && (
-            <Menu.Item key='browser' onClick={onAddBrowser}>
-              <span className='inline-flex items-center gap-6px'>
-                <WebPage theme='outline' size={12} fill='currentColor' />
-                {t('preview.addBrowser')}
-              </span>
-            </Menu.Item>
-          )}
-        </Menu>
-      }
-    >
-      <button
-        type='button'
-        className='flex items-center justify-center w-20px h-20px rd-4px flex-shrink-0 text-t-secondary hover:text-t-primary hover:bg-3 transition-colors border-none bg-transparent cursor-pointer p-0'
-        title={t('preview.addTab')}
-        aria-label={t('preview.addTab')}
-      >
-        <Plus theme='outline' size={12} fill='currentColor' />
-      </button>
-    </Dropdown>
-  ) : null;
 
   return (
-    <div className='preview-tabs'>
-      <div className='preview-tabs__row'>
-        <div className='preview-tabs__scroller-wrap'>
-          <div ref={tabsContainerRef} className='preview-tabs__scroller'>
-            {tabs.length > 0 ? (
-              tabs.map((tab) => {
-                const isActive = tab.id === activeTabId;
-                return (
-                  <div
-                    key={tab.id}
-                    role='tab'
-                    tabIndex={0}
-                    aria-selected={isActive}
-                    className={`group flex items-center gap-4px px-7px h-24px rd-6px cursor-pointer transition-colors flex-shrink-0 border-1px border-solid ${
-                      isActive
-                        ? 'bg-1 text-t-primary font-medium border-[var(--color-border-2)]'
-                        : 'text-t-secondary border-transparent hover:bg-3 hover:text-t-primary'
-                    }`}
-                    onClick={() => onSwitchTab(tab.id)}
-                    onContextMenu={(e) => onContextMenu(e, tab.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        onSwitchTab(tab.id);
-                      }
-                    }}
-                  >
-                    <span
-                      className={`flex items-center ${isActive ? 'text-t-primary' : 'text-t-tertiary group-hover:text-t-primary'}`}
-                    >
-                      <TabKindIcon tab={tab} />
-                    </span>
-                    <span className='text-12px whitespace-nowrap leading-none'>{tab.title}</span>
-                    <span className='relative flex items-center justify-center w-12px h-12px flex-shrink-0'>
-                      {tab.isDirty && (
-                        <span
-                          className='w-6px h-6px rd-full bg-primary group-hover:opacity-0 group-focus-within:opacity-0'
-                          title={t('preview.unsavedChangesTitle')}
-                        />
-                      )}
-                      <Close
-                        theme='outline'
-                        size='12'
-                        fill={iconColors.secondary}
-                        className={`absolute hover:fill-primary ${
-                          tab.isDirty
-                            ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
-                            : `opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 ${isActive ? '!opacity-100' : ''}`
-                        }`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onCloseTab(tab.id);
-                        }}
-                      />
-                    </span>
-                  </div>
-                );
-              })
-            ) : (
-              <div className='text-12px text-t-tertiary px-6px'>{t('preview.noTabs')}</div>
-            )}
-          </div>
-          {showLeftFade && (
-            <div
-              className='pointer-events-none absolute left-0 top-0 bottom-0 w-24px'
-              style={{
-                background: 'linear-gradient(90deg, var(--bg-2) 0%, transparent 100%)',
-              }}
-            />
-          )}
-          {showRightFade && (
-            <div
-              className='pointer-events-none absolute right-0 top-0 bottom-0 w-24px'
-              style={{
-                background: 'linear-gradient(270deg, var(--bg-2) 0%, transparent 100%)',
-              }}
-            />
+    <div
+      className='relative flex-shrink-0 bg-2'
+      style={{ minHeight: '36px', borderBottom: '1px solid var(--border-base)' }}
+    >
+      <div className='flex items-center h-36px w-full'>
+        {/* Tabs 滚动区域 / Tabs scroll area */}
+        <div ref={tabsContainerRef} className='flex items-center h-full flex-1 overflow-x-auto'>
+          {tabs.length > 0 ? (
+            tabs.map((tab) => (
+              <div
+                key={tab.id}
+                className={`flex items-center gap-6px px-10px h-full cursor-pointer transition-colors flex-shrink-0 ${tab.id === activeTabId ? 'bg-1 text-t-primary' : 'text-t-secondary hover:bg-3'}`}
+                onClick={() => onSwitchTab(tab.id)}
+                onContextMenu={(e) => onContextMenu(e, tab.id)}
+              >
+                <span className='text-12px whitespace-nowrap flex items-center gap-4px'>
+                  {tab.title}
+                  {/* 未保存指示器 / Unsaved indicator */}
+                  {tab.isDirty && (
+                    <span className='w-6px h-6px rd-full bg-primary' title={t('preview.unsavedChangesTitle')} />
+                  )}
+                </span>
+                <Close
+                  theme='outline'
+                  size='14'
+                  fill={iconColors.secondary}
+                  className='hover:fill-primary'
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCloseTab(tab.id);
+                  }}
+                />
+              </div>
+            ))
+          ) : (
+            <div className='text-12px text-t-tertiary px-10px'>{t('preview.noTabs')}</div>
           )}
         </div>
 
-        {addTabMenu ? <div className='preview-tabs__add'>{addTabMenu}</div> : null}
-
-        {showWorkspaceMenu && (
-          <Dropdown
-            trigger='click'
-            position='bl'
-            droplist={
-              <Menu>
-                {workspaceTabs?.map((tab) => (
-                  <Menu.Item key={tab.key} onClick={() => onOpenWorkspaceTab?.(tab)}>
-                    {tab.title}
-                  </Menu.Item>
-                ))}
-              </Menu>
-            }
-          >
-            <button
-              type='button'
-              className='flex items-center justify-center w-20px h-20px rd-4px flex-shrink-0 text-t-secondary hover:text-t-primary hover:bg-3 transition-colors border-none bg-transparent cursor-pointer p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary'
-              title={t('preview.workspaceViews')}
-              aria-label={t('preview.workspaceViews')}
-            >
-              <FolderOpen theme='outline' size={12} fill='currentColor' />
-            </button>
-          </Dropdown>
-        )}
-
+        {/* 收起面板按钮 / Collapse panel button */}
         {onClosePanel && (
-          <div className='preview-tabs__collapse'>
-            <button
-              type='button'
-              className='preview-tabs__collapse-btn'
+          <div className='flex items-center h-full px-10px flex-shrink-0 rounded-tr-[16px]'>
+            <div
+              className='flex items-center justify-center w-20px h-20px rd-4px cursor-pointer hover:bg-3 transition-colors'
               onClick={onClosePanel}
               title={t('preview.collapsePanel')}
-              aria-label={t('preview.collapsePanel')}
             >
-              <IconShrink style={{ fontSize: 12, color: iconColors.secondary }} />
-            </button>
+              <IconShrink style={{ fontSize: 14, color: iconColors.secondary }} />
+            </div>
           </div>
         )}
       </div>
+
+      {/* 左侧渐变指示器 / Left gradient indicator */}
+      {showLeftFade && (
+        <div
+          className='pointer-events-none absolute left-0 top-0 bottom-0 w-32px rounded-tl-[16px]'
+          style={{
+            background: 'linear-gradient(90deg, var(--bg-2) 0%, transparent 100%)',
+          }}
+        />
+      )}
+
+      {/* 右侧渐变指示器 / Right gradient indicator */}
+      {showRightFade && (
+        <div
+          className='pointer-events-none absolute right-0 top-0 bottom-0 w-32px rounded-tr-[16px]'
+          style={{
+            background: 'linear-gradient(270deg, var(--bg-2) 0%, transparent 100%)',
+          }}
+        />
+      )}
     </div>
   );
 };

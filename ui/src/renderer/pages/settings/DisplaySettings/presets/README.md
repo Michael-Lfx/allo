@@ -46,7 +46,7 @@ Arco 自带的 `body[arco-theme='dark']` 暗色切换就被压制了——暗色
 | 边框 | `--border-base` `--border-light` |
 | 语义 | `--success` `--warning` `--danger` `--info` |
 | 组件 | `--message-tips-bg` `--color-guid-agent-bar`(首页 Agent 条) `--sider-section-title-color`(侧栏分组标题，仅暗色需要) |
-| 终端 | `--terminal-surface-bg`(跟随 `--bg-1` / 系统深浅) `--terminal-border` |
+| 终端 | `--terminal-surface-bg`(保持深色，xterm 画布恒深) `--terminal-border` |
 
 ## B. Arco token（亮/暗各一份，必须在含 `body` 的选择器组里）
 

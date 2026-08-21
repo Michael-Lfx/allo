@@ -17,12 +17,6 @@
   background: var(--bg-1);
 }
 
-/* Preview-tab host: fill the column; the preview chrome already draws the frame. */
-.panelEmbedded {
-  position: relative;
-  background: var(--bg-1);
-}
-
 /* Left-edge drag handle — straddles the seam; widens/narrows the pane. A hairline
  * appears on hover/active so the affordance is discoverable without being noisy. */
 .resizeHandle {

@@ -74,12 +74,6 @@ interface PreviewToolbarProps {
   file_name?: string;
 
   /**
-   * Workspace-relative path segments for the Cursor-style breadcrumb
-   * (`.config > nextest.toml`). Falls back to `file_name` when omitted.
-   */
-  pathSegments?: string[];
-
-  /**
    * 是否显示"在系统中打开"按钮
    * Whether to show "Open in System" button
    */
@@ -187,7 +181,6 @@ const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
   viewMode,
   isSplitScreenEnabled,
   file_name,
-  pathSegments,
   showOpenInSystemButton,
   historyTarget,
   snapshotSaving,
@@ -211,8 +204,6 @@ const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
   const toolbarBtn = PREVIEW_TOOLBAR_BTN_CLASS;
   const toolbarBtnActive = PREVIEW_TOOLBAR_BTN_ACTIVE_CLASS;
   const toolbarIconSize = 12;
-  const breadcrumbSegments =
-    pathSegments && pathSegments.length > 0 ? pathSegments : file_name ? [file_name] : [];
 
   // Snapshot/history are offered only for the types the backend store accepts,
   // and only in the mode where the source text is on screen.
@@ -223,29 +214,8 @@ const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
   return (
     <div className='flex items-center justify-between h-32px px-10px bg-2 flex-shrink-0 border-b border-b-solid border-arco-1 overflow-x-auto'>
       <div className='flex items-center justify-between gap-8px w-full' style={{ minWidth: 'max-content' }}>
-        {/* 左侧：目录 > 文件面包屑，然后才是原文/预览。路径是主层级，不是次级文件名。 */}
+        {/* 左侧：Tabs（Markdown/HTML）+ 文件名 / Left: Tabs (Markdown/HTML) + Filename */}
         <div className='flex items-center h-full gap-8px'>
-          {breadcrumbSegments.length > 0 && (
-            <nav
-              aria-label={t('preview.pathLabel')}
-              className='flex items-center min-w-0 text-11px leading-none'
-            >
-              {breadcrumbSegments.map((segment, index) => (
-                <span key={`${index}-${segment}`} className='flex items-center min-w-0'>
-                  {index > 0 && (
-                    <span className='px-4px text-t-tertiary' aria-hidden='true'>
-                      {'>'}
-                    </span>
-                  )}
-                  <span
-                    className={`whitespace-nowrap ${index === breadcrumbSegments.length - 1 ? 'text-t-primary' : 'text-t-secondary'}`}
-                  >
-                    {segment}
-                  </span>
-                </span>
-              ))}
-            </nav>
-          )}
           {(isMarkdown || isHTML || isDiff) && (
             <>
               {/* 选中态下划线：曾写 `border-b-4 border-brand`，但 `border-b-4` 会被 UnoCSS

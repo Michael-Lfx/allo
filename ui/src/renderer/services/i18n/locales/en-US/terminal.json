@@ -4,7 +4,7 @@
   "untitled": "Terminal",
   "empty": "No terminals yet",
   "conversationPanel": {
-    "tab": "Shell",
+    "tab": "Conversation terminals",
     "summary": "{{total}} total, {{running}} running",
     "empty": "No terminals belong to this conversation",
     "status": "Status",

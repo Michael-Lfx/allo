@@ -42,8 +42,6 @@ describe('workspace tool rail dimensions', () => {
     expect(rail.includes('flex: 0 0 32px;')).toBe(true);
     expect(rail.includes('width: 32px;')).toBe(true);
     expect(rail.includes('min-width: 32px;')).toBe(true);
-    expect(rail.includes('z-index: 12;')).toBe(false);
-    expect(rail.includes('box-shadow:')).toBe(false);
     expect(item.includes('width: 28px;')).toBe(true);
     expect(item.includes('height: 28px;')).toBe(true);
     expect(item.includes('aspect-ratio: 1 / 1;')).toBe(true);
