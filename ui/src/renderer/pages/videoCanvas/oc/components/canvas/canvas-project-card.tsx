@@ -1,16 +1,19 @@
 import { Check, Clapperboard, Download, FileText, Frame, Image as ImageIcon, MoreHorizontal, Music2, Pencil, Settings2, Sparkles, Trash2, Video, X } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Dropdown, Input } from "antd";
+import { useTranslation } from "react-i18next";
 
 import { useCanvasStore, type CanvasProject } from "@oc/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@oc/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@oc/lib/canvas/canvas-export";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 import { resourceFileUrl, resourceIdFromStorageKey } from "@oc/services/api/resources";
 import { resolveBackendApiUrl } from "@oc/stores/use-config-store";
 import { cn } from "@oc/lib/utils";
 
 export function CanvasProjectCard({ project, projectName, variant = "library" }: { project: CanvasProject; projectName?: string; variant?: "library" | "recent" }) {
+    useTranslation();
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const renameProject = useCanvasStore((state) => state.renameProject);
@@ -44,8 +47,8 @@ export function CanvasProjectCard({ project, projectName, variant = "library" }:
                 >
                     <ProjectPreview project={project} />
                 </button>
-                {!compact ? <span className={`absolute left-2.5 top-2.5 grid size-6 place-items-center rounded-md border border-black/10 bg-white/90 shadow-sm backdrop-blur transition-opacity dark:border-white/10 dark:bg-stone-900/90 ${selected ? "opacity-100" : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"}`} onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selected} onChange={(event) => toggleSelected(project.id, event.target.checked)} className="app-canvas-project-checkbox size-3.5" aria-label={`选择 ${project.title}`} /></span> : null}
-                <span className="absolute bottom-2 right-2 rounded-md border border-white/15 bg-stone-950/80 px-1.5 py-0.5 text-[var(--fs-tiny)] font-medium text-white backdrop-blur-xl">{project.nodes.length} 节点</span>
+                {!compact ? <span className={`absolute left-2.5 top-2.5 grid size-6 place-items-center rounded-md border border-black/10 bg-white/90 shadow-sm backdrop-blur transition-opacity dark:border-white/10 dark:bg-stone-900/90 ${selected ? "opacity-100" : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"}`} onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selected} onChange={(event) => toggleSelected(project.id, event.target.checked)} className="app-canvas-project-checkbox size-3.5" aria-label={canvasT("videoCanvas.listCard.selectAria", "选择 {{title}}", { title: project.title })} /></span> : null}
+                <span className="absolute bottom-2 right-2 rounded-md border border-white/15 bg-stone-950/80 px-1.5 py-0.5 text-[var(--fs-tiny)] font-medium text-white backdrop-blur-xl">{canvasT("videoCanvas.listCard.nodeCount", "{{count}} 节点", { count: project.nodes.length })}</span>
             </div>
 
             <div className={cn("app-canvas-project-body", compact ? "px-1 pb-1 pt-2.5" : "px-3 py-2.5")}>
@@ -66,40 +69,41 @@ export function CanvasProjectCard({ project, projectName, variant = "library" }:
                 )}
                     {editing ? (
                         <div className="flex shrink-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
-                            <button type="button" className="grid size-7 place-items-center rounded-md hover:bg-black/5 dark:hover:bg-white/10" onClick={saveTitle} aria-label="保存名称"><Check className="size-3.5" /></button>
-                            <button type="button" className="grid size-7 place-items-center rounded-md hover:bg-black/5 dark:hover:bg-white/10" onClick={stopEditing} aria-label="取消重命名"><X className="size-3.5" /></button>
+                            <button type="button" className="grid size-7 place-items-center rounded-md hover:bg-black/5 dark:hover:bg-white/10" onClick={saveTitle} aria-label={canvasT("videoCanvas.listCard.saveName", "保存名称")}><Check className="size-3.5" /></button>
+                            <button type="button" className="grid size-7 place-items-center rounded-md hover:bg-black/5 dark:hover:bg-white/10" onClick={stopEditing} aria-label={canvasT("videoCanvas.listCard.cancelRename", "取消重命名")}><X className="size-3.5" /></button>
                         </div>
                     ) : (
                         <div className="flex shrink-0 items-center" onClick={(event) => event.stopPropagation()}>
-                            <button type="button" className="grid size-7 place-items-center rounded-md text-foreground/38 transition-colors hover:bg-foreground/[.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-white/10" onClick={() => startEditing(project.id, project.title)} aria-label={`重命名 ${project.title}`} title="重命名"><Pencil className="size-3.5" /></button>
+                            <button type="button" className="grid size-7 place-items-center rounded-md text-foreground/38 transition-colors hover:bg-foreground/[.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-white/10" onClick={() => startEditing(project.id, project.title)} aria-label={canvasT("videoCanvas.listCard.renameAria", "重命名 {{title}}", { title: project.title })} title={canvasT("videoCanvas.listCard.rename", "重命名")}><Pencil className="size-3.5" /></button>
                             <Dropdown
                                 trigger={["click"]}
                                 menu={{
                                     onClick: ({ domEvent }) => domEvent.stopPropagation(),
                                     items: [
-                                        { key: "export", icon: <Download className="size-3.5" />, label: "导出画布", onClick: () => void exportCanvasProjects([project], project.title || "影策画布") },
+                                        { key: "export", icon: <Download className="size-3.5" />, label: canvasT("videoCanvas.listCard.export", "导出画布"), onClick: () => void exportCanvasProjects([project], project.title || canvasT("videoCanvas.listCard.exportDefaultName", "影策画布")) },
                                         { type: "divider" },
-                                        { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: "删除", onClick: () => setDeleteIds([project.id]) },
+                                        { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: canvasT("videoCanvas.listCard.delete", "删除"), onClick: () => setDeleteIds([project.id]) },
                                     ],
                                 }}
                             >
-                                <button type="button" className="grid size-7 place-items-center rounded-md text-foreground/38 transition-colors hover:bg-foreground/[.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-white/10" aria-label={`${project.title} 画布操作`} title="更多操作"><MoreHorizontal className="size-4" /></button>
+                                <button type="button" className="grid size-7 place-items-center rounded-md text-foreground/38 transition-colors hover:bg-foreground/[.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-white/10" aria-label={canvasT("videoCanvas.listCard.moreAria", "{{title}} 画布操作", { title: project.title })} title={canvasT("videoCanvas.listCard.more", "更多操作")}><MoreHorizontal className="size-4" /></button>
                             </Dropdown>
                         </div>
                     )}
                 </div>
                 <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[var(--fs-label)] leading-4 text-foreground/52">
-                    <span className="truncate">{projectName || "自由画布"}</span>
+                    <span className="truncate">{projectName || canvasT("videoCanvas.listCard.freeCanvas", "自由画布")}</span>
                     <span className="shrink-0 text-foreground/28" aria-hidden="true">·</span>
-                    <span className="shrink-0 tabular-nums">{project.connections.length} 条连线</span>
+                    <span className="shrink-0 tabular-nums">{canvasT("videoCanvas.listCard.connectionCount", "{{count}} 条连线", { count: project.connections.length })}</span>
                 </div>
-                <p className="mt-1 text-[var(--fs-tiny)] leading-4 tabular-nums text-foreground/38">更新于 {formatProjectTime(project.updatedAt)}</p>
+                <p className="mt-1 text-[var(--fs-tiny)] leading-4 tabular-nums text-foreground/38">{canvasT("videoCanvas.listCard.updatedAt", "更新于 {{time}}", { time: formatProjectTime(project.updatedAt) })}</p>
             </div>
         </article>
     );
 }
 
 function ProjectPreview({ project }: { project: CanvasProject }) {
+    useTranslation();
     const mediaNodes = project.nodes
         .flatMap((node) => {
             if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video) return [];
@@ -112,13 +116,13 @@ function ProjectPreview({ project }: { project: CanvasProject }) {
         return (
             <div className="size-full bg-stone-900">
                 {node.type === CanvasNodeType.Video
-                    ? <div className="flex size-full items-center justify-center bg-stone-900 text-stone-300"><Video className="size-8" aria-label={node.title || "项目视频"} /></div>
-                    : <img src={url} alt={node.title || "项目图片"} loading="lazy" decoding="async" className="size-full min-h-0 object-cover" />}
+                    ? <div className="flex size-full items-center justify-center bg-stone-900 text-stone-300"><Video className="size-8" aria-label={node.title || canvasT("videoCanvas.listCard.projectVideo", "项目视频")} /></div>
+                    : <img src={url} alt={node.title || canvasT("videoCanvas.listCard.projectImage", "项目图片")} loading="lazy" decoding="async" className="size-full min-h-0 object-cover" />}
             </div>
         );
     }
     const nodes = project.nodes.slice(0, 8);
-    if (!nodes.length) return <div className="flex size-full items-center justify-center bg-stone-100 text-xs text-stone-400 dark:bg-stone-900 dark:text-stone-500">空白画布</div>;
+    if (!nodes.length) return <div className="flex size-full items-center justify-center bg-stone-100 text-xs text-stone-400 dark:bg-stone-900 dark:text-stone-500">{canvasT("videoCanvas.listCard.blankCanvas", "空白画布")}</div>;
     const previewNodes = buildNodePreviewLayout(nodes);
 
     return (
@@ -161,23 +165,23 @@ function buildNodePreviewLayout(nodes: CanvasNodeData[]) {
 function getNodePresentation(node: CanvasNodeData) {
     switch (node.type) {
         case CanvasNodeType.Text:
-            return { label: "文本", icon: <FileText className="size-3.5" /> };
+            return { label: canvasT("videoCanvas.node.text", "文本"), icon: <FileText className="size-3.5" /> };
         case CanvasNodeType.Script:
-            return { label: "分镜脚本", icon: <Clapperboard className="size-3.5" /> };
+            return { label: canvasT("videoCanvas.node.script", "分镜脚本"), icon: <Clapperboard className="size-3.5" /> };
         case CanvasNodeType.Image:
-            return { label: "图片", icon: <ImageIcon className="size-3.5" /> };
+            return { label: canvasT("videoCanvas.node.image", "图片"), icon: <ImageIcon className="size-3.5" /> };
         case CanvasNodeType.Video:
-            return { label: "视频", icon: <Video className="size-3.5" /> };
+            return { label: canvasT("videoCanvas.node.video", "视频"), icon: <Video className="size-3.5" /> };
         case CanvasNodeType.Audio:
-            return { label: "音频", icon: <Music2 className="size-3.5" /> };
+            return { label: canvasT("videoCanvas.node.audio", "音频"), icon: <Music2 className="size-3.5" /> };
         case CanvasNodeType.Drawing:
-            return { label: "绘图", icon: <Pencil className="size-3.5" /> };
+            return { label: canvasT("videoCanvas.node.drawing", "绘图"), icon: <Pencil className="size-3.5" /> };
         case CanvasNodeType.Frame:
-            return { label: "背板", icon: <Frame className="size-3.5" /> };
+            return { label: canvasT("videoCanvas.node.frame", "背板"), icon: <Frame className="size-3.5" /> };
         case CanvasNodeType.Config:
-            return { label: "生成配置", icon: <Settings2 className="size-3.5" /> };
+            return { label: canvasT("videoCanvas.node.config", "生成配置"), icon: <Settings2 className="size-3.5" /> };
         default:
-            return { label: "技能", icon: <Sparkles className="size-3.5" /> };
+            return { label: canvasT("videoCanvas.node.skill", "技能"), icon: <Sparkles className="size-3.5" /> };
     }
 }
 
@@ -186,5 +190,5 @@ function isPreviewUrl(value?: string) {
 }
 
 function formatProjectTime(value: string) {
-    return new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    return new Date(value).toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }

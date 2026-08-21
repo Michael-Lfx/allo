@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { App, Button, ColorPicker, Dropdown, Input, Modal, Popover, Tooltip } from "antd";
 import type { Editor, JSONContent } from "@tiptap/core";
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -27,6 +28,7 @@ import {
     X,
 } from "lucide-react";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { createCanvasRichTextExtensions, isSafeCanvasRichTextLink } from "@oc/lib/canvas/canvas-rich-text";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -40,6 +42,7 @@ type CanvasTextEditorModalProps = {
 };
 
 export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTextEditorModalProps) {
+    useTranslation();
     const { message, modal } = App.useApp();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [title, setTitle] = useState("");
@@ -47,12 +50,12 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
     const [saving, setSaving] = useState(false);
     const editor = useEditor({
         immediatelyRender: false,
-        extensions: createCanvasRichTextExtensions("输入文本内容…"),
+        extensions: createCanvasRichTextExtensions(canvasT("videoCanvas.textEditor.placeholder", "输入文本内容…")),
         content: emptyTextDocument(),
         editorProps: {
             attributes: {
                 class: "min-h-full px-8 py-7 text-[var(--fs-body-lg)] leading-7 outline-none sm:px-12 lg:px-16",
-                "aria-label": "文本节点富文本编辑区",
+                "aria-label": canvasT("videoCanvas.textEditor.editorAria", "文本节点富文本编辑区"),
             },
         },
         onUpdate: () => setDirty(true),
@@ -61,7 +64,7 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
     useEffect(() => {
         if (!open || !node || !editor) return;
         editor.commands.setContent((node.metadata?.richText as JSONContent | undefined) || plainTextDocument(node.metadata?.content || ""), { emitUpdate: false });
-        setTitle(node.title || "文本");
+        setTitle(node.title || canvasT("videoCanvas.textEditor.defaultTitle", "文本"));
         setDirty(false);
         setSaving(false);
         window.setTimeout(() => editor.commands.focus("start"), 0);
@@ -74,11 +77,11 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
         if (!node || !editor || saving) return;
         setSaving(true);
         try {
-            await onSave(node.id, title.trim() || "文本", editor.getText({ blockSeparator: "\n" }).trimEnd(), editor.getJSON() as Record<string, unknown>);
+            await onSave(node.id, title.trim() || canvasT("videoCanvas.textEditor.defaultTitle", "文本"), editor.getText({ blockSeparator: "\n" }).trimEnd(), editor.getJSON() as Record<string, unknown>);
             setDirty(false);
-            message.success("文本节点已保存");
+            message.success(canvasT("videoCanvas.textEditor.saved", "文本节点已保存"));
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "文本保存失败");
+            message.error(error instanceof Error ? error.message : canvasT("videoCanvas.textEditor.saveFailed", "文本保存失败"));
         } finally {
             setSaving(false);
         }
@@ -87,10 +90,10 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
     const close = () => {
         if (!dirty || saving) return onClose();
         modal.confirm({
-            title: "放弃未保存的修改？",
-            content: "关闭后，本次富文本编辑不会写回画布节点。",
-            okText: "放弃修改",
-            cancelText: "继续编辑",
+            title: canvasT("videoCanvas.textEditor.discardTitle", "放弃未保存的修改？"),
+            content: canvasT("videoCanvas.textEditor.discardBody", "关闭后，本次富文本编辑不会写回画布节点。"),
+            okText: canvasT("videoCanvas.textEditor.discardOk", "放弃修改"),
+            cancelText: canvasT("videoCanvas.textEditor.discardCancel", "继续编辑"),
             onOk: onClose,
         });
     };
@@ -126,14 +129,14 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
                         value={title}
                         onChange={(event) => { setTitle(event.target.value); setDirty(true); }}
                         className="!h-9 min-w-0 max-w-[360px] flex-1 !px-1 text-sm font-semibold"
-                        placeholder="文本节点标题"
-                        aria-label="文本节点标题"
+                        placeholder={canvasT("videoCanvas.textEditor.titlePlaceholder", "文本节点标题")}
+                        aria-label={canvasT("videoCanvas.textEditor.titleAria", "文本节点标题")}
                     />
-                    <span className="hidden shrink-0 text-[var(--fs-label)] sm:inline" style={{ color: theme.node.muted }}>{characterCount.toLocaleString("zh-CN")} 字 · {wordCount.toLocaleString("zh-CN")} 词</span>
-                    <span className="ml-auto hidden text-[var(--fs-label)] sm:inline" style={{ color: dirty ? theme.accent.primary : theme.node.muted }}>{dirty ? "有未保存修改" : "已保存"}</span>
-                    <Button size="small" type="primary" icon={<Save className="size-3.5" />} loading={saving} disabled={!dirty} onClick={() => void save()}>保存</Button>
-                    <Tooltip title="关闭">
-                        <Button size="small" type="text" icon={<X className="size-4" />} aria-label="关闭文本编辑器" onClick={close} />
+                    <span className="hidden shrink-0 text-[var(--fs-label)] sm:inline" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.textEditor.counts", "{{chars}} 字 · {{words}} 词", { chars: characterCount.toLocaleString(), words: wordCount.toLocaleString() })}</span>
+                    <span className="ml-auto hidden text-[var(--fs-label)] sm:inline" style={{ color: dirty ? theme.accent.primary : theme.node.muted }}>{dirty ? canvasT("videoCanvas.textEditor.dirty", "有未保存修改") : canvasT("videoCanvas.textEditor.clean", "已保存")}</span>
+                    <Button size="small" type="primary" icon={<Save className="size-3.5" />} loading={saving} disabled={!dirty} onClick={() => void save()}>{canvasT("videoCanvas.textEditor.save", "保存")}</Button>
+                    <Tooltip title={canvasT("videoCanvas.textEditor.close", "关闭")}>
+                        <Button size="small" type="text" icon={<X className="size-4" />} aria-label={canvasT("videoCanvas.textEditor.closeAria", "关闭文本编辑器")} onClick={close} />
                     </Tooltip>
                 </header>
 
@@ -148,8 +151,8 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
                 </div>
 
                 <footer className="flex h-8 shrink-0 items-center gap-3 border-t px-3 text-[var(--fs-tiny)]" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
-                    <span className="hidden sm:inline">支持标题、列表、引用、链接、代码和颜色格式</span>
-                    <span className="ml-auto">Ctrl/⌘S 保存</span>
+                    <span className="hidden sm:inline">{canvasT("videoCanvas.textEditor.formatHint", "支持标题、列表、引用、链接、代码和颜色格式")}</span>
+                    <span className="ml-auto">{canvasT("videoCanvas.textEditor.saveShortcut", "Ctrl/⌘S 保存")}</span>
                 </footer>
             </section>
         </Modal>
@@ -157,6 +160,7 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
 }
 
 function TextEditorToolbar({ editor }: { editor: Editor | null }) {
+    useTranslation();
     const { message } = App.useApp();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [, setToolbarVersion] = useState(0);
@@ -174,14 +178,18 @@ function TextEditorToolbar({ editor }: { editor: Editor | null }) {
         };
     }, [editor]);
 
-    const blockLabel = editor?.isActive("heading", { level: 1 }) ? "标题 1" : editor?.isActive("heading", { level: 2 }) ? "标题 2" : editor?.isActive("heading", { level: 3 }) ? "标题 3" : "正文";
+    const paragraph = canvasT("videoCanvas.textEditor.paragraph", "正文");
+    const heading1 = canvasT("videoCanvas.textEditor.heading1", "标题 1");
+    const heading2 = canvasT("videoCanvas.textEditor.heading2", "标题 2");
+    const heading3 = canvasT("videoCanvas.textEditor.heading3", "标题 3");
+    const blockLabel = editor?.isActive("heading", { level: 1 }) ? heading1 : editor?.isActive("heading", { level: 2 }) ? heading2 : editor?.isActive("heading", { level: 3 }) ? heading3 : paragraph;
     const alignment = editor?.isActive({ textAlign: "center" }) ? "center" : editor?.isActive({ textAlign: "right" }) ? "right" : editor?.isActive({ textAlign: "justify" }) ? "justify" : "left";
     const alignmentIcon = alignment === "center" ? <AlignCenter /> : alignment === "right" ? <AlignRight /> : alignment === "justify" ? <AlignJustify /> : <AlignLeft />;
     const applyLink = () => {
         const href = linkValue.trim();
         if (!editor) return;
         if (href && !isSafeCanvasRichTextLink(href)) {
-            message.error("链接仅支持 http、https、mailto 或 tel 协议");
+            message.error(canvasT("videoCanvas.textEditor.linkProtocolError", "链接仅支持 http、https、mailto 或 tel 协议"));
             return;
         }
         if (href) editor.chain().focus().extendMarkRange("link").setLink({ href }).run();
@@ -191,60 +199,60 @@ function TextEditorToolbar({ editor }: { editor: Editor | null }) {
 
     return (
         <div className="hide-scrollbar flex h-11 shrink-0 items-center gap-0.5 overflow-x-auto border-b px-2" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
-            <EditorToolButton label="撤销" onClick={() => editor?.chain().focus().undo().run()}><Undo2 /></EditorToolButton>
-            <EditorToolButton label="重做" onClick={() => editor?.chain().focus().redo().run()}><Redo2 /></EditorToolButton>
+            <EditorToolButton label={canvasT("videoCanvas.textEditor.undo", "撤销")} onClick={() => editor?.chain().focus().undo().run()}><Undo2 /></EditorToolButton>
+            <EditorToolButton label={canvasT("videoCanvas.textEditor.redo", "重做")} onClick={() => editor?.chain().focus().redo().run()}><Redo2 /></EditorToolButton>
             <ToolbarDivider />
             <Dropdown
                 trigger={["click"]}
                 menu={{
                     selectedKeys: [blockLabel],
-                    items: ["正文", "标题 1", "标题 2", "标题 3"].map((label) => ({ key: label, label })),
-                    onClick: ({ key }) => key === "正文" ? editor?.chain().focus().setParagraph().run() : editor?.chain().focus().toggleHeading({ level: Number(key.slice(-1)) as 1 | 2 | 3 }).run(),
+                    items: [paragraph, heading1, heading2, heading3].map((label) => ({ key: label, label })),
+                    onClick: ({ key }) => key === paragraph ? editor?.chain().focus().setParagraph().run() : editor?.chain().focus().toggleHeading({ level: Number(String(key).slice(-1)) as 1 | 2 | 3 }).run(),
                 }}
             >
-                <button type="button" className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="段落格式"><span>{blockLabel}</span><ChevronDown className="size-3" /></button>
+                <button type="button" className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label={canvasT("videoCanvas.textEditor.blockFormat", "段落格式")}><span>{blockLabel}</span><ChevronDown className="size-3" /></button>
             </Dropdown>
-            <EditorToolButton label="粗体" active={Boolean(editor?.isActive("bold"))} onClick={() => editor?.chain().focus().toggleBold().run()}><Bold /></EditorToolButton>
-            <EditorToolButton label="斜体" active={Boolean(editor?.isActive("italic"))} onClick={() => editor?.chain().focus().toggleItalic().run()}><Italic /></EditorToolButton>
-            <EditorToolButton label="下划线" active={Boolean(editor?.isActive("underline"))} onClick={() => editor?.chain().focus().toggleUnderline().run()}><Underline /></EditorToolButton>
-            <EditorToolButton label="删除线" active={Boolean(editor?.isActive("strike"))} onClick={() => editor?.chain().focus().toggleStrike().run()}><Strikethrough /></EditorToolButton>
+            <EditorToolButton label={canvasT("videoCanvas.textEditor.bold", "粗体")} active={Boolean(editor?.isActive("bold"))} onClick={() => editor?.chain().focus().toggleBold().run()}><Bold /></EditorToolButton>
+            <EditorToolButton label={canvasT("videoCanvas.textEditor.italic", "斜体")} active={Boolean(editor?.isActive("italic"))} onClick={() => editor?.chain().focus().toggleItalic().run()}><Italic /></EditorToolButton>
+            <EditorToolButton label={canvasT("videoCanvas.textEditor.underline", "下划线")} active={Boolean(editor?.isActive("underline"))} onClick={() => editor?.chain().focus().toggleUnderline().run()}><Underline /></EditorToolButton>
+            <EditorToolButton label={canvasT("videoCanvas.textEditor.strike", "删除线")} active={Boolean(editor?.isActive("strike"))} onClick={() => editor?.chain().focus().toggleStrike().run()}><Strikethrough /></EditorToolButton>
             <ToolbarDivider />
             <Dropdown
                 trigger={["click"]}
                 menu={{
                     selectedKeys: [alignment],
                     items: [
-                        { key: "left", icon: <AlignLeft className="size-3.5" />, label: "左对齐" },
-                        { key: "center", icon: <AlignCenter className="size-3.5" />, label: "居中" },
-                        { key: "right", icon: <AlignRight className="size-3.5" />, label: "右对齐" },
-                        { key: "justify", icon: <AlignJustify className="size-3.5" />, label: "两端对齐" },
+                        { key: "left", icon: <AlignLeft className="size-3.5" />, label: canvasT("videoCanvas.textEditor.alignLeft", "左对齐") },
+                        { key: "center", icon: <AlignCenter className="size-3.5" />, label: canvasT("videoCanvas.textEditor.alignCenter", "居中") },
+                        { key: "right", icon: <AlignRight className="size-3.5" />, label: canvasT("videoCanvas.textEditor.alignRight", "右对齐") },
+                        { key: "justify", icon: <AlignJustify className="size-3.5" />, label: canvasT("videoCanvas.textEditor.alignJustify", "两端对齐") },
                     ],
                     onClick: ({ key }) => editor?.chain().focus().setTextAlign(key).run(),
                 }}
             >
-                <button type="button" className="inline-flex size-8 shrink-0 items-center justify-center gap-0.5 rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="文字对齐"><span className="[&_svg]:size-3.5">{alignmentIcon}</span><ChevronDown className="size-2.5" /></button>
+                <button type="button" className="inline-flex size-8 shrink-0 items-center justify-center gap-0.5 rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label={canvasT("videoCanvas.textEditor.alignAria", "文字对齐")}><span className="[&_svg]:size-3.5">{alignmentIcon}</span><ChevronDown className="size-2.5" /></button>
             </Dropdown>
-            <EditorToolButton label="无序列表" active={Boolean(editor?.isActive("bulletList"))} onClick={() => editor?.chain().focus().toggleBulletList().run()}><List /></EditorToolButton>
-            <EditorToolButton label="有序列表" active={Boolean(editor?.isActive("orderedList"))} onClick={() => editor?.chain().focus().toggleOrderedList().run()}><ListOrdered /></EditorToolButton>
-            <EditorToolButton label="引用" active={Boolean(editor?.isActive("blockquote"))} onClick={() => editor?.chain().focus().toggleBlockquote().run()}><Quote /></EditorToolButton>
+            <EditorToolButton label={canvasT("videoCanvas.textEditor.bulletList", "无序列表")} active={Boolean(editor?.isActive("bulletList"))} onClick={() => editor?.chain().focus().toggleBulletList().run()}><List /></EditorToolButton>
+            <EditorToolButton label={canvasT("videoCanvas.textEditor.orderedList", "有序列表")} active={Boolean(editor?.isActive("orderedList"))} onClick={() => editor?.chain().focus().toggleOrderedList().run()}><ListOrdered /></EditorToolButton>
+            <EditorToolButton label={canvasT("videoCanvas.textEditor.blockquote", "引用")} active={Boolean(editor?.isActive("blockquote"))} onClick={() => editor?.chain().focus().toggleBlockquote().run()}><Quote /></EditorToolButton>
             <Popover
                 open={linkOpen}
                 onOpenChange={(next) => { setLinkOpen(next); if (next) setLinkValue(String(editor?.getAttributes("link").href || "")); }}
                 trigger="click"
                 placement="bottom"
-                content={<div className="flex w-72 gap-2"><Input size="small" value={linkValue} placeholder="https://example.com" onChange={(event) => setLinkValue(event.target.value)} onPressEnter={applyLink} /><Button size="small" type="primary" onClick={applyLink}>应用</Button></div>}
+                content={<div className="flex w-72 gap-2"><Input size="small" value={linkValue} placeholder="https://example.com" onChange={(event) => setLinkValue(event.target.value)} onPressEnter={applyLink} /><Button size="small" type="primary" onClick={applyLink}>{canvasT("videoCanvas.textEditor.apply", "应用")}</Button></div>}
             >
-                <span><EditorToolButton label="插入链接" active={Boolean(editor?.isActive("link"))} onClick={() => setLinkOpen(true)}><Link2 /></EditorToolButton></span>
+                <span><EditorToolButton label={canvasT("videoCanvas.textEditor.insertLink", "插入链接")} active={Boolean(editor?.isActive("link"))} onClick={() => setLinkOpen(true)}><Link2 /></EditorToolButton></span>
             </Popover>
             <ToolbarDivider />
-            <Tooltip title="文字颜色">
+            <Tooltip title={canvasT("videoCanvas.textEditor.textColor", "文字颜色")}>
                 <ColorPicker value={String(editor?.getAttributes("textStyle").color || theme.node.text)} onChangeComplete={(color) => editor?.chain().focus().setColor(color.toHexString()).run()}>
-                    <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md text-xs font-bold outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="文字颜色"><span className="border-b-2 px-0.5" style={{ borderColor: String(editor?.getAttributes("textStyle").color || theme.node.text) }}>A</span></button>
+                    <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md text-xs font-bold outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label={canvasT("videoCanvas.textEditor.textColor", "文字颜色")}><span className="border-b-2 px-0.5" style={{ borderColor: String(editor?.getAttributes("textStyle").color || theme.node.text) }}>A</span></button>
                 </ColorPicker>
             </Tooltip>
-            <Tooltip title="高亮颜色">
+            <Tooltip title={canvasT("videoCanvas.textEditor.highlightColor", "高亮颜色")}>
                 <ColorPicker value={String(editor?.getAttributes("highlight").color || "#fde68a")} onChangeComplete={(color) => editor?.chain().focus().toggleHighlight({ color: color.toHexString() }).run()}>
-                    <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="高亮颜色"><Highlighter className="size-3.5" /></button>
+                    <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label={canvasT("videoCanvas.textEditor.highlightColor", "高亮颜色")}><Highlighter className="size-3.5" /></button>
                 </ColorPicker>
             </Tooltip>
             <Dropdown
@@ -252,11 +260,11 @@ function TextEditorToolbar({ editor }: { editor: Editor | null }) {
                 placement="bottomRight"
                 menu={{
                     items: [
-                        { key: "code", icon: <Code2 className="size-3.5" />, label: "行内代码" },
-                        { key: "codeBlock", icon: <span className="text-[var(--fs-tiny)] font-bold">{"<>"}</span>, label: "代码块" },
-                        { key: "rule", icon: <Minus className="size-3.5" />, label: "插入分隔线" },
+                        { key: "code", icon: <Code2 className="size-3.5" />, label: canvasT("videoCanvas.textEditor.inlineCode", "行内代码") },
+                        { key: "codeBlock", icon: <span className="text-[var(--fs-tiny)] font-bold">{"<>"}</span>, label: canvasT("videoCanvas.textEditor.codeBlock", "代码块") },
+                        { key: "rule", icon: <Minus className="size-3.5" />, label: canvasT("videoCanvas.textEditor.insertRule", "插入分隔线") },
                         { type: "divider" },
-                        { key: "clear", icon: <Eraser className="size-3.5" />, label: "清除格式" },
+                        { key: "clear", icon: <Eraser className="size-3.5" />, label: canvasT("videoCanvas.textEditor.clearFormat", "清除格式") },
                     ],
                     onClick: ({ key }) => {
                         if (key === "code") editor?.chain().focus().toggleCode().run();
@@ -266,7 +274,7 @@ function TextEditorToolbar({ editor }: { editor: Editor | null }) {
                     },
                 }}
             >
-                <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="更多格式"><MoreHorizontal className="size-4" /></button>
+                <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label={canvasT("videoCanvas.textEditor.moreFormat", "更多格式")}><MoreHorizontal className="size-4" /></button>
             </Dropdown>
         </div>
     );

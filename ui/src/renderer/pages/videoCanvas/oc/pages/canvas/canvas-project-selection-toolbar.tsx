@@ -1,4 +1,5 @@
 import type { RefObject } from "react";
+import { useTranslation } from "react-i18next";
 
 import { CanvasSelectionToolbar } from "@oc/components/canvas/canvas-workspace-overlays";
 import { FloatingDock } from "@oc/components/ui/aceternity/floating-dock";
@@ -18,14 +19,16 @@ type CanvasProjectSelectionToolbarProps = {
     onArrange: (mode: "row" | "column" | "grid" | "flow") => void;
     onCreateStoryboard: () => void;
     onCreateReferenceGroup: () => void;
+    onBatchConnect: () => void;
     onMergeVideos: () => void;
 };
 
-export function CanvasProjectSelectionToolbar({ anchorRef, containerRef, count, selectedVideoCount, mergingVideos, onAlign, onArrange, onCreateStoryboard, onCreateReferenceGroup, onMergeVideos }: CanvasProjectSelectionToolbarProps) {
+export function CanvasProjectSelectionToolbar({ anchorRef, containerRef, count, selectedVideoCount, mergingVideos, onAlign, onArrange, onCreateStoryboard, onCreateReferenceGroup, onBatchConnect, onMergeVideos }: CanvasProjectSelectionToolbarProps) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
 
     const handlers = {
-        onAlign, onArrange, onCreateStoryboard, onCreateReferenceGroup, onMergeVideos,
+        onAlign, onArrange, onCreateStoryboard, onCreateReferenceGroup, onBatchConnect, onMergeVideos,
     } as Partial<ToolbarHandlers> as ToolbarHandlers;
 
     const ctx: ToolContext = {

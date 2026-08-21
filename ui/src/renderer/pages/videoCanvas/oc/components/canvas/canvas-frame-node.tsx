@@ -1,9 +1,11 @@
+import { useTranslation } from "react-i18next";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { ChevronDown, ChevronRight, Video } from "lucide-react";
 
 import { CometCard } from "@oc/components/ui/aceternity/comet-card";
 import { FRAME_HEADER_HEIGHT, FRAME_PADDING } from "@oc/lib/canvas/canvas-frame";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { readCanvasScaleFromElement } from "@oc/lib/canvas/canvas-live-viewport";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -40,6 +42,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     onHoverStart?: (nodeId: string) => void;
     onHoverEnd?: (nodeId: string) => void;
 }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const collapsed = Boolean(data.metadata?.frame?.collapsed);
     const [editing, setEditing] = useState(false);
@@ -62,7 +65,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     useEffect(() => setTitle(data.title), [data.title]);
 
     const commitTitle = () => {
-        const next = title.trim() || "未命名背板";
+        const next = title.trim() || canvasT("videoCanvas.frame.untitled", "未命名背板");
         setTitle(next);
         setEditing(false);
         onTitleChange(data.id, next);
@@ -175,7 +178,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                         type="button"
                         className="grid size-8 shrink-0 place-items-center rounded-md transition-colors hover:bg-black/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10"
                         style={{ outlineColor: theme.frame.activeStroke }}
-                        aria-label={collapsed ? "展开背板" : "折叠背板"}
+                        aria-label={collapsed ? canvasT("videoCanvas.menu.expandFrame", "展开背板") : canvasT("videoCanvas.menu.collapseFrame", "折叠背板")}
                         onMouseDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                             event.stopPropagation();
@@ -267,11 +270,11 @@ function FramePreview({ nodes, frame, theme }: { nodes: CanvasNodeData[]; frame:
                         {node.type === CanvasNodeType.Video && node.metadata?.content ? <video src={node.metadata.content} className="h-full w-full object-cover" muted playsInline preload="metadata" /> : null}
                         {node.type === CanvasNodeType.Video && !node.metadata?.content ? <Video className="m-auto size-4 h-full opacity-40" /> : null}
                         {node.type === CanvasNodeType.Text ? <div className="line-clamp-3 p-1 text-[var(--fs-nano)] leading-[9px]" style={{ color: theme.node.text }}>{node.metadata?.content || node.title}</div> : null}
-                        {node.type === CanvasNodeType.Script ? <div className="p-1 text-[var(--fs-nano)] leading-[9px]" style={{ color: theme.node.text }}>分镜脚本 · {node.metadata?.storyboard?.rows.length || 0} 镜</div> : null}
+                        {node.type === CanvasNodeType.Script ? <div className="p-1 text-[var(--fs-nano)] leading-[9px]" style={{ color: theme.node.text }}>{canvasT("videoCanvas.frame.scriptShots", "分镜脚本 · {{count}} 镜", { count: node.metadata?.storyboard?.rows.length || 0 })}</div> : null}
                     </div>
                 ))
             ) : (
-                <div className="grid h-full place-items-center text-[var(--fs-label)]" style={{ color: theme.node.faint }}>空背板</div>
+                <div className="grid h-full place-items-center text-[var(--fs-label)]" style={{ color: theme.node.faint }}>{canvasT("videoCanvas.frame.empty", "空背板")}</div>
             )}
         </div>
     );
@@ -285,7 +288,7 @@ function ResizeHandle({ corner, theme, onMouseDown }: { corner: ResizeCorner; th
     return (
         <button
             type="button"
-            aria-label="调整背板尺寸"
+            aria-label={canvasT("videoCanvas.frame.resizeAria", "调整背板尺寸")}
             className="pointer-events-auto absolute z-20 rounded-sm shadow-sm"
             style={{
                 top: fromTop ? "calc(-7px * var(--canvas-live-inverse-scale, 1))" : undefined,

@@ -1,15 +1,19 @@
+import { useTranslation } from "react-i18next";
 import { type ReactNode, useState } from "react";
 import { ConfigProvider, Switch } from "antd";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { type CanvasTheme } from "@oc/lib/canvas-theme";
 import { type AiConfig } from "@oc/stores/use-config-store";
 
-const qualityOptions = [
-    { value: "auto", label: "自动" },
-    { value: "high", label: "高" },
-    { value: "medium", label: "中" },
-    { value: "low", label: "低" },
-];
+function qualityOptions() {
+    return [
+        { value: "auto", label: canvasT("videoCanvas.settings.qualityAuto", "自动") },
+        { value: "high", label: canvasT("videoCanvas.settings.qualityHigh", "高") },
+        { value: "medium", label: canvasT("videoCanvas.settings.qualityMedium", "中") },
+        { value: "low", label: canvasT("videoCanvas.settings.qualityLow", "低") },
+    ];
+}
 const DIMENSION_STEP = 16;
 
 const aspectOptions = [
@@ -41,6 +45,7 @@ type ImageSettingsPanelProps = {
 };
 
 export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, showCount = true, className = "w-[304px] space-y-3 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 3 }: ImageSettingsPanelProps) {
+    useTranslation();
     const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
     const quality = config.quality || "auto";
     const transparentBackground = config.transparentBackground === "true";
@@ -70,11 +75,11 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     if (document.activeElement instanceof HTMLInputElement && event.currentTarget.contains(document.activeElement)) document.activeElement.blur();
                 }}
             >
-                {showTitle ? <div className="text-base font-semibold">图像设置</div> : null}
+                {showTitle ? <div className="text-base font-semibold">{canvasT("videoCanvas.settings.imageTitle", "图像设置")}</div> : null}
                 <div className="space-y-2">
-                    <SettingTitle color={theme.node.muted}>质量</SettingTitle>
+                    <SettingTitle color={theme.node.muted}>{canvasT("videoCanvas.settings.quality", "质量")}</SettingTitle>
                     <div className="grid grid-cols-4 gap-1.5">
-                        {qualityOptions.map((item) => (
+                        {qualityOptions().map((item) => (
                             <OptionPill key={item.value} selected={quality === item.value} theme={theme} onClick={() => onConfigChange("quality", item.value)}>
                                 {item.label}
                             </OptionPill>
@@ -83,12 +88,12 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 </div>
                 <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
-                        <SettingTitle color={theme.node.muted}>透明背景</SettingTitle>
+                        <SettingTitle color={theme.node.muted}>{canvasT("videoCanvas.settings.transparentBg", "透明背景")}</SettingTitle>
                         <div className="mt-1 text-[var(--fs-label)]" style={{ color: theme.node.muted }}>
-                            请求模型输出保留 Alpha 通道的 PNG
+                            {canvasT("videoCanvas.settings.transparentHint", "请求模型输出保留 Alpha 通道的 PNG")}
                         </div>
                     </div>
-                    <span title="是否支持透明背景由当前模型接口决定" onMouseDown={(event) => event.stopPropagation()}>
+                    <span title={canvasT("videoCanvas.settings.transparentSupportHint", "是否支持透明背景由当前模型接口决定")} onMouseDown={(event) => event.stopPropagation()}>
                         <Switch
                             size="small"
                             checked={transparentBackground}
@@ -98,12 +103,12 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 </div>
                 <div className="space-y-2">
                     <div className="flex items-center justify-between gap-3">
-                        <SettingTitle color={theme.node.muted}>尺寸</SettingTitle>
+                        <SettingTitle color={theme.node.muted}>{canvasT("videoCanvas.settings.size", "尺寸")}</SettingTitle>
                         <div className="flex items-center gap-2">
                             <span className="text-xs font-medium" style={{ color: theme.node.muted }}>
-                                16倍数对齐
+                                {canvasT("videoCanvas.settings.size16Hint", "16倍数对齐")}
                             </span>
-                            <span title="输入完成后自动向上补成 16 的倍数" onMouseDown={(event) => event.stopPropagation()}>
+                            <span title={canvasT("videoCanvas.settings.size16AutoHint", "输入完成后自动向上补成 16 的倍数")} onMouseDown={(event) => event.stopPropagation()}>
                                 <Switch size="small" checked={snapDimensionToStep} onChange={setSnapDimensionToStep} />
                             </span>
                         </div>
@@ -115,7 +120,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </div>
                 </div>
                 <div className="space-y-2">
-                    <SettingTitle color={theme.node.muted}>宽高比</SettingTitle>
+                    <SettingTitle color={theme.node.muted}>{canvasT("videoCanvas.settings.aspect", "宽高比")}</SettingTitle>
                     <div className="grid grid-cols-4 gap-1.5 min-[380px]:grid-cols-5">
                         {aspectOptions.map((item) => (
                             <button
@@ -134,7 +139,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 </div>
                 {showCount ? (
                     <div className="space-y-2">
-                        <SettingTitle color={theme.node.muted}>生成张数</SettingTitle>
+                        <SettingTitle color={theme.node.muted}>{canvasT("videoCanvas.settings.genCount", "生成张数")}</SettingTitle>
                         <div className="grid grid-cols-4 gap-1.5">
                             {Array.from({ length: quickCount }, (_, index) => index + 1).map((value) => (
                                 <OptionPill key={value} selected={count === value} theme={theme} onClick={() => onConfigChange("count", String(value))}>
@@ -164,7 +169,7 @@ export function ImageSettingsTheme({ theme, children }: { theme: CanvasTheme; ch
 }
 
 export function imageQualityLabel(value: string) {
-    return ({ auto: "自动", high: "高", medium: "中", low: "低" } as Record<string, string>)[value] || "默认";
+    return ({ auto: canvasT("videoCanvas.settings.qualityAuto", "自动"), high: canvasT("videoCanvas.settings.qualityHigh", "高"), medium: canvasT("videoCanvas.settings.qualityMedium", "中"), low: canvasT("videoCanvas.settings.qualityLow", "低") } as Record<string, string>)[value] || canvasT("videoCanvas.settings.qualityDefault", "默认");
 }
 
 export function imageSizeLabel(size: string) {
@@ -227,8 +232,8 @@ function CountInput({ value, quickCount, max, theme, onChange }: { value: number
                 type="number"
                 min={1}
                 max={max}
-                aria-label="自定义生成张数"
-                placeholder="输入"
+                aria-label={canvasT("videoCanvas.settings.customCountAria", "自定义生成张数")}
+                placeholder={canvasT("videoCanvas.settings.inputPlaceholder", "输入")}
                 className="min-w-0 flex-1 bg-transparent px-2 text-center outline-none placeholder:text-current placeholder:opacity-55 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 style={{ color: theme.node.text, WebkitTextFillColor: theme.node.text }}
                 defaultValue={value > quickCount ? value : ""}

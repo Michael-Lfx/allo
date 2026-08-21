@@ -1,8 +1,10 @@
 import { motion, useReducedMotion } from "motion/react";
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { ChevronRight, Clapperboard, Image as ImageIcon, List, Music2, Pencil, Video, WandSparkles, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { SpotlightSurface } from "@oc/components/ui/aceternity/spotlight-surface";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
@@ -13,9 +15,11 @@ export type PendingConnectionCreate = {
     connection: ConnectionHandle;
     position: Position;
     quick?: boolean;
+    batchSourceNodeIds?: string[];
 };
 
 export function CanvasSelectionToolbar({ anchorRef, containerRef, count, children }: { anchorRef: RefObject<HTMLDivElement | null>; containerRef: RefObject<HTMLDivElement | null>; count: number; children: ReactNode }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const reducedMotion = useReducedMotion();
     const toolbarRef = useRef<HTMLDivElement>(null);
@@ -79,7 +83,7 @@ export function CanvasSelectionToolbar({ anchorRef, containerRef, count, childre
             onPointerDown={(event) => event.stopPropagation()}
         >
             <motion.div initial={reducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.9, y: anchor.placement === "above" ? 8 : -8 }} animate={{ opacity: 1, scale: 1, y: 0 }} transition={aceternityMotion.spring.panel} className="flex items-center gap-2">
-                <span className="aceternity-floating-panel shrink-0 rounded-full border px-2.5 py-1.5 text-[var(--fs-tiny)] font-semibold tabular-nums backdrop-blur-2xl" style={{ background: theme.spatial.elevated, borderColor: theme.spatial.glowStrong, color: theme.accent.primary, boxShadow: `0 14px 36px ${theme.spatial.shadow}` }}>已选 {count}</span>
+                <span className="aceternity-floating-panel shrink-0 rounded-full border px-2.5 py-1.5 text-[var(--fs-tiny)] font-semibold tabular-nums backdrop-blur-2xl" style={{ background: theme.spatial.elevated, borderColor: theme.spatial.glowStrong, color: theme.accent.primary, boxShadow: `0 14px 36px ${theme.spatial.shadow}` }}>{canvasT("videoCanvas.selection.count", "已选 {{count}}", { count })}</span>
                 <div className="max-w-[min(560px,calc(100vw-90px))]">{children}</div>
             </motion.div>
         </div>
@@ -125,6 +129,7 @@ export function CanvasNodePanelOverlay({ node, viewport, containerRef, panelWidt
 }
 
 export function CanvasConnectionCreateMenu({ pending, viewport, viewportSize, containerRef, canCreateDrawing, onCreate, onClose }: { pending: PendingConnectionCreate; viewport: ViewportTransform; viewportSize: { width: number; height: number }; containerRef: RefObject<HTMLDivElement | null>; canCreateDrawing: boolean; onCreate: (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Script | CanvasNodeType.Video | CanvasNodeType.Audio | CanvasNodeType.Drawing) => void; onClose: () => void }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const reducedMotion = useReducedMotion();
     const menuRef = useRef<HTMLDivElement>(null);
@@ -165,17 +170,24 @@ export function CanvasConnectionCreateMenu({ pending, viewport, viewportSize, co
             <div className="mb-1.5 flex items-center justify-between gap-2 px-1 py-0.5">
                 <span className="flex min-w-0 items-center gap-2">
                     <span className="grid size-8 shrink-0 place-items-center rounded-[var(--dock-item-radius)] border opacity-75" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}><WandSparkles className="size-3.5" /></span>
-                    <span className="min-w-0"><span className="block truncate text-[var(--fs-label)] font-semibold">创建下一步</span><span className="mt-0.5 block truncate text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>引用当前节点</span></span>
+                    <span className="min-w-0">
+                        <span className="block truncate text-[var(--fs-label)] font-semibold">{canvasT("videoCanvas.connection.createNext", "创建下一步")}</span>
+                        <span className="mt-0.5 block truncate text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>
+                            {pending.batchSourceNodeIds?.length
+                                ? canvasT("videoCanvas.connection.refSelected", "引用已选 {{count}} 个节点", { count: pending.batchSourceNodeIds.length })
+                                : canvasT("videoCanvas.connection.refCurrent", "引用当前节点")}
+                        </span>
+                    </span>
                 </span>
-                <button type="button" className="grid size-6 shrink-0 place-items-center rounded-full border opacity-55 transition-opacity hover:opacity-100" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }} onClick={onClose} aria-label="关闭连线创建菜单"><X className="size-3" /></button>
+                <button type="button" className="grid size-6 shrink-0 place-items-center rounded-full border opacity-55 transition-opacity hover:opacity-100" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }} onClick={onClose} aria-label={canvasT("videoCanvas.selection.closeConnectionMenu", "关闭连线创建菜单")}><X className="size-3" /></button>
             </div>
             <div className="grid gap-1">
-                <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<List className="size-4" />} title="文本生成" onClick={() => onCreate(CanvasNodeType.Text)} />
-                <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<Clapperboard className="size-4" />} title="分镜脚本" onClick={() => onCreate(CanvasNodeType.Script)} />
-                <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<ImageIcon className="size-4" />} title="图片生成" onClick={() => onCreate(CanvasNodeType.Image)} />
-                {canCreateDrawing ? <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<Pencil className="size-4" />} title="绘图" onClick={() => onCreate(CanvasNodeType.Drawing)} /> : null}
-                <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<Video className="size-4" />} title="视频生成" onClick={() => onCreate(CanvasNodeType.Video)} />
-                <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<Music2 className="size-4" />} title="音频参考" onClick={() => onCreate(CanvasNodeType.Audio)} />
+                <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<List className="size-4" />} title={canvasT("videoCanvas.connection.textGen", "文本生成")} onClick={() => onCreate(CanvasNodeType.Text)} />
+                <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<Clapperboard className="size-4" />} title={canvasT("videoCanvas.connection.script", "分镜脚本")} onClick={() => onCreate(CanvasNodeType.Script)} />
+                <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<ImageIcon className="size-4" />} title={canvasT("videoCanvas.connection.imageGen", "图片生成")} onClick={() => onCreate(CanvasNodeType.Image)} />
+                {canCreateDrawing ? <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<Pencil className="size-4" />} title={canvasT("videoCanvas.connection.drawing", "绘图")} onClick={() => onCreate(CanvasNodeType.Drawing)} /> : null}
+                <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<Video className="size-4" />} title={canvasT("videoCanvas.connection.videoGen", "视频生成")} onClick={() => onCreate(CanvasNodeType.Video)} />
+                <ConnectionCreateOption motionEnabled={!reducedMotion} icon={<Music2 className="size-4" />} title={canvasT("videoCanvas.connection.audioRef", "音频参考")} onClick={() => onCreate(CanvasNodeType.Audio)} />
             </div>
         </SpotlightSurface>
     );

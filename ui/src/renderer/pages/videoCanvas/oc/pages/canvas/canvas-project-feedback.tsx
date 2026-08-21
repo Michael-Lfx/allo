@@ -1,8 +1,10 @@
+import { useTranslation } from "react-i18next";
 import { motion } from "motion/react";
 import { CheckCircle2, CloudUpload, Eye, LoaderCircle, RotateCcw, TriangleAlert, X } from "lucide-react";
 
 import type { GenerationTask } from "@oc/services/api/task-center";
 import type { MergeVideoProgress } from "@oc/lib/canvas/canvas-video-merge";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import type { CanvasAgentChange } from "./use-canvas-agent-operations";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
@@ -84,7 +86,8 @@ export function TaskDetailItem({ label, value }: { label: string; value: string 
 }
 
 export function CanvasMergeStatusToast({ progress, theme }: { progress: MergeVideoProgress; theme: CanvasTheme }) {
-    const detail = progress.phase === "loading" ? "加载视频工具" : progress.phase === "reading" ? "读取选中视频" : "正在编码合并成片";
+    useTranslation();
+    const detail = progress.phase === "loading" ? canvasT("videoCanvas.feedback.mergeLoading", "加载视频工具") : progress.phase === "reading" ? canvasT("videoCanvas.feedback.mergeReading", "读取选中视频") : canvasT("videoCanvas.feedback.mergeEncoding", "正在编码合并成片");
     const percent = Math.max(0, Math.min(100, Math.round(progress.progress)));
     return (
         <div
@@ -98,7 +101,7 @@ export function CanvasMergeStatusToast({ progress, theme }: { progress: MergeVid
                     <LoaderCircle className="size-4 animate-spin" />
                 </span>
                 <span className="min-w-0 flex-1">
-                    <span className="block truncate text-xs font-semibold">合并成片</span>
+                    <span className="block truncate text-xs font-semibold">{canvasT("videoCanvas.feedback.mergeTitle", "合并成片")}</span>
                     <span className="mt-0.5 block truncate text-[var(--fs-label)]" style={{ color: theme.node.muted }}>
                         {detail}
                     </span>
@@ -115,6 +118,7 @@ export function CanvasMergeStatusToast({ progress, theme }: { progress: MergeVid
 }
 
 export function CanvasAgentChangeToast({ change, theme, onView, onUndo, onClose }: { change: CanvasAgentChange; theme: CanvasTheme; onView: () => void; onUndo: () => void; onClose: () => void }) {
+    useTranslation();
     return (
         <div
             data-canvas-no-zoom
@@ -127,12 +131,12 @@ export function CanvasAgentChangeToast({ change, theme, onView, onUndo, onClose 
                     <span className="size-2 rounded-full bg-current" />
                 </span>
                 <span className="min-w-0 flex-1">
-                    <span className="block text-xs font-semibold">Agent 已写回画布</span>
+                    <span className="block text-xs font-semibold">{canvasT("videoCanvas.feedback.agentWroteBack", "Agent 已写回画布")}</span>
                     <span className="mt-0.5 block truncate text-[var(--fs-label)]" style={{ color: theme.node.muted }}>
-                        {change.summary} · 可撤销最近 {change.undoCount} 批
+                        {canvasT("videoCanvas.feedback.undoBatches", "{{summary}} · 可撤销最近 {{count}} 批", { summary: change.summary, count: change.undoCount })}
                     </span>
                 </span>
-                <button type="button" className="grid size-7 place-items-center rounded-md opacity-55 transition hover:opacity-100" onClick={onClose} aria-label="关闭">
+                <button type="button" className="grid size-7 place-items-center rounded-md opacity-55 transition hover:opacity-100" onClick={onClose} aria-label={canvasT("videoCanvas.feedback.close", "关闭")}>
                     <X className="size-3.5" />
                 </button>
             </div>
@@ -140,12 +144,12 @@ export function CanvasAgentChangeToast({ change, theme, onView, onUndo, onClose 
                 {change.nodeIds.length ? (
                     <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition hover:bg-black/5 dark:hover:bg-white/10" onClick={onView}>
                         <Eye className="size-3.5" />
-                        查看本次改动
+                        {canvasT("videoCanvas.feedback.viewChanges", "查看本次改动")}
                     </button>
                 ) : null}
                 <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition hover:bg-black/5 dark:hover:bg-white/10" onClick={onUndo}>
                     <RotateCcw className="size-3.5" />
-                    撤销本次操作
+                    {canvasT("videoCanvas.feedback.undoThis", "撤销本次操作")}
                 </button>
             </div>
         </div>
@@ -153,9 +157,9 @@ export function CanvasAgentChangeToast({ change, theme, onView, onUndo, onClose 
 }
 
 export function taskStatusText(status: GenerationTask["status"]) {
-    if (status === "queued") return "排队中";
-    if (status === "running") return "生成中";
-    if (status === "succeeded") return "任务完成";
-    if (status === "failed") return "任务失败";
-    return "任务已取消";
+    if (status === "queued") return canvasT("videoCanvas.feedback.statusQueued", "排队中");
+    if (status === "running") return canvasT("videoCanvas.feedback.statusRunning", "生成中");
+    if (status === "succeeded") return canvasT("videoCanvas.feedback.statusSucceeded", "任务完成");
+    if (status === "failed") return canvasT("videoCanvas.feedback.statusFailed", "任务失败");
+    return canvasT("videoCanvas.feedback.statusCancelled", "任务已取消");
 }

@@ -1,12 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { App, Button, Dropdown, Input, Modal, Segmented, Tag } from "antd";
 import { Ellipsis, Lock, Plus, Settings2, Unlock } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { canvasDockStyle } from "@oc/lib/canvas/canvas-aceternity-style";
 import { defaultToolbarPrefs, readToolbarPrefs, resolveToolbarTools, type ToolContext, type ToolbarHandlers } from "@oc/lib/canvas/tool-registry";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { canvasNodeAssetCategory } from "@oc/lib/canvas/canvas-node-asset";
+import { getNodeLabel } from "@oc/lib/canvas/node-registry";
 import { formatBytes, getDataUrlByteSize } from "@oc/lib/image-utils";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@oc/lib/generation-error";
 import { useCopyText } from "@oc/hooks/use-copy-text";
@@ -47,6 +50,8 @@ type CanvasNodeToolbarProps = {
     onRetry: (node: CanvasNodeData) => void;
     onToggleFreeResize: (node: CanvasNodeData) => void;
     onToggleLocked: (node: CanvasNodeData) => void;
+    onSubtitles: (node: CanvasNodeData) => void;
+    onTimeline: (node: CanvasNodeData) => void;
     onDelete: (node: CanvasNodeData) => void;
     workspaceMode?: CanvasWorkspaceMode;
 };
@@ -54,13 +59,13 @@ type CanvasNodeToolbarProps = {
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
 
 const assetCategoryOptions: Array<{ value: CanvasAssetCategory; label: string }> = [
-    { value: "character", label: "角色" },
-    { value: "environment", label: "场景" },
-    { value: "wardrobe", label: "服饰" },
-    { value: "prop", label: "道具" },
-    { value: "weapon", label: "武器" },
-    { value: "style", label: "画风" },
-    { value: "other", label: "其他" },
+    { value: "character", get label() { return canvasT("videoCanvas.menu.categoryCharacter", "角色"); } },
+    { value: "environment", get label() { return canvasT("videoCanvas.menu.categoryEnvironment", "场景"); } },
+    { value: "wardrobe", get label() { return canvasT("videoCanvas.menu.categoryWardrobe", "服饰"); } },
+    { value: "prop", get label() { return canvasT("videoCanvas.menu.categoryProp", "道具"); } },
+    { value: "weapon", get label() { return canvasT("videoCanvas.menu.categoryWeapon", "武器"); } },
+    { value: "style", get label() { return canvasT("videoCanvas.menu.categoryStyle", "画风"); } },
+    { value: "other", get label() { return canvasT("videoCanvas.menu.categoryOther", "其他"); } },
 ];
 
 type ToolbarTool = {
@@ -108,9 +113,12 @@ export function CanvasNodeToolbar({
     onRetry,
     onToggleFreeResize,
     onToggleLocked,
+    onSubtitles,
+    onTimeline,
     onDelete,
     workspaceMode = "professional",
 }: CanvasNodeToolbarProps) {
+    useTranslation();
     const [quickImageToolIds, setQuickImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
     const [draftImageToolIds, setDraftImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
     const [showDockLabels, setShowDockLabels] = useState(true);
@@ -216,10 +224,10 @@ export function CanvasNodeToolbar({
     const copyImagePrompt = (target: CanvasNodeData) => {
         const prompt = target.metadata?.prompt?.trim();
         if (!prompt) {
-            message.warning("暂无可复制的提示词");
+            message.warning(canvasT("videoCanvas.nodeUi.noPromptToCopy", "暂无可复制的提示词"));
             return;
         }
-        copyText(prompt, "提示词已复制");
+        copyText(prompt, canvasT("videoCanvas.nodeUi.promptCopied", "提示词已复制"));
     };
     const imageTools = buildImageToolbarTools(node, { onUpload, onToggleFreeResize, onAnnotate, onMaskEdit, onEmotion, onPortraitTexture, onCrop, onSplit, onUpscale, onSuperResolve, onAngle, onViewImage, onCopyPrompt: copyImagePrompt, onReversePrompt });
 
@@ -241,6 +249,7 @@ export function CanvasNodeToolbar({
         onNodeSplit: onSplit, onNodeUpscale: onUpscale, onNodeSuperResolve: onSuperResolve, onNodeAngle: onAngle, onNodeViewImage: onViewImage,
         onNodeExtractVideoLastFrame: onExtractVideoLastFrame, onNodeReversePrompt: onReversePrompt, onNodeToggleFreeResize: onToggleFreeResize,
         onNodeToggleLocked: onToggleLocked, onNodeCopyPrompt: copyImagePrompt,
+        onNodeSubtitles: onSubtitles, onNodeTimeline: onTimeline,
     } as Partial<ToolbarHandlers> as ToolbarHandlers;
 
     const nodeHoverCtx: ToolContext = {
@@ -286,7 +295,7 @@ export function CanvasNodeToolbar({
     const dockItems: FloatingDockEntry[] = [
         ...toolbarTools.map((tool) => ({ id: tool.id, label: tool.title, displayLabel: tool.label, icon: tool.icon, active: tool.active, danger: tool.danger, disabled: tool.disabled, onClick: () => tool.onClick() })),
         { kind: "separator", id: "node-state-separator" },
-        { id: "node-lock", label: node.metadata?.locked ? "解锁节点" : "锁定位置和尺寸", displayLabel: node.metadata?.locked ? "解锁" : "锁定", icon: node.metadata?.locked ? <Unlock className="size-3.5" /> : <Lock className="size-3.5" />, active: Boolean(node.metadata?.locked), onClick: () => onToggleLocked(node) },
+        { id: "node-lock", label: node.metadata?.locked ? canvasT("videoCanvas.toolbar.unlockLong", "解锁节点") : canvasT("videoCanvas.toolbar.lockLong", "锁定位置和尺寸"), displayLabel: node.metadata?.locked ? canvasT("videoCanvas.toolbar.unlock", "解锁") : canvasT("videoCanvas.toolbar.lock", "锁定"), icon: node.metadata?.locked ? <Unlock className="size-3.5" /> : <Lock className="size-3.5" />, active: Boolean(node.metadata?.locked), onClick: () => onToggleLocked(node) },
     ];
 
     const closeImageToolSettings = () => {
@@ -312,7 +321,7 @@ export function CanvasNodeToolbar({
         setDraftImageToolIds((current) => {
             const selected = new Set(current);
             if (visible && selected.size >= MAX_IMAGE_QUICK_TOOLS) {
-                message.warning(`最多固定 ${MAX_IMAGE_QUICK_TOOLS} 个快捷工具`);
+                message.warning(canvasT("videoCanvas.nodeUi.maxQuickTools", "最多固定 {{count}} 个快捷工具", { count: MAX_IMAGE_QUICK_TOOLS }));
                 return current;
             }
             if (visible) selected.add(id);
@@ -352,7 +361,7 @@ export function CanvasNodeToolbar({
                 onPointerDown={(event) => event.stopPropagation()}
             >
                 <div className={`aceternity-floating-dock thin-scrollbar relative flex max-w-full overflow-x-auto rounded-[var(--dock-radius)] border backdrop-blur-2xl ${showDockLabels ? "h-11 items-center px-2 py-1" : "h-10 items-end gap-1 px-1.5 pb-1"}`} style={showDockLabels ? labeledDockStyle : dockShellStyle}>
-                    {dockItems.length ? <FloatingDock embedded items={dockItems} size="compact" showLabels={showDockLabels} ariaLabel="节点快捷工具" className={`pointer-events-auto shrink-0 ${showDockLabels ? "" : "max-w-[min(calc(100vw-20px),400px)]"}`} style={embeddedDockStyle} /> : null}
+                    {dockItems.length ? <FloatingDock embedded items={dockItems} size="compact" showLabels={showDockLabels} ariaLabel={canvasT("videoCanvas.nodeUi.quickToolsAria", "节点快捷工具")} className={`pointer-events-auto shrink-0 ${showDockLabels ? "" : "max-w-[min(calc(100vw-20px),400px)]"}`} style={embeddedDockStyle} /> : null}
                     {hasImage && !simpleMode ? (
                         <Dropdown
                             open={imageToolMenuOpen}
@@ -363,7 +372,7 @@ export function CanvasNodeToolbar({
                                 items: [
                                     ...temporaryImageToolbarTools.map((tool) => ({ key: tool.id, icon: tool.icon, label: tool.label, danger: tool.danger, onClick: () => runTemporaryImageTool(tool) })),
                                     ...(temporaryImageToolbarTools.length ? [{ type: "divider" as const }] : []),
-                                    { key: "manage-image-quick-tools", icon: <Settings2 className="size-3.5" />, label: "管理快捷工具", onClick: openImageToolSettings },
+                                    { key: "manage-image-quick-tools", icon: <Settings2 className="size-3.5" />, label: canvasT("videoCanvas.nodeUi.manageQuickTools", "管理快捷工具"), onClick: openImageToolSettings },
                                 ],
                             }}
                         >
@@ -371,11 +380,11 @@ export function CanvasNodeToolbar({
                                 type="button"
                                 className={`aceternity-dock-command pointer-events-auto shrink-0 outline-none focus-visible:ring-2 ${showDockLabels ? "is-labeled inline-flex h-8 items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] px-2.5" : "grid size-8 place-items-center rounded-full"}`}
                                 style={{ color: theme.node.text, "--tw-ring-color": theme.accent.primary } as CSSProperties}
-                                aria-label="更多图片工具"
-                                title="更多图片工具"
+                                aria-label={canvasT("videoCanvas.nodeUi.moreImageTools", "更多图片工具")}
+                                title={canvasT("videoCanvas.nodeUi.moreImageTools", "更多图片工具")}
                             >
                                 <Ellipsis className="size-3.5" />
-                                {showDockLabels ? <span className="inline-flex h-4 items-center text-[var(--fs-label)] font-medium leading-none">更多</span> : null}
+                                {showDockLabels ? <span className="inline-flex h-4 items-center text-[var(--fs-label)] font-medium leading-none">{canvasT("videoCanvas.nodeUi.more", "更多")}</span> : null}
                             </button>
                         </Dropdown>
                     ) : null}
@@ -398,6 +407,7 @@ export function CanvasNodeToolbar({
 }
 
 export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, readOnly = false, onUnauthorized }: { node: CanvasNodeData | null; open: boolean; onClose: () => void; onMetadataChange?: (nodeId: string, metadata: Partial<CanvasNodeMetadata>) => void; readOnly?: boolean; onUnauthorized?: () => void }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [view, setView] = useState<"info" | "json">("info");
     const [assetTags, setAssetTags] = useState<string[]>([]);
@@ -405,7 +415,7 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
     const [assetCategory, setAssetCategory] = useState<CanvasAssetCategory>("other");
     const imageBytes = node?.type === CanvasNodeType.Image && node.metadata?.content ? getDataUrlByteSize(node.metadata.content) : 0;
     const batchCount = node?.type === CanvasNodeType.Image ? node.metadata?.batchChildIds?.length || 0 : 0;
-    const nodeTypeLabel = node?.type === CanvasNodeType.Text ? "文本" : node?.type === CanvasNodeType.Script ? "分镜脚本" : node?.type === CanvasNodeType.Skill ? "技能" : node?.type === CanvasNodeType.Image ? "图片" : node?.type === CanvasNodeType.Video ? "视频" : node?.type === CanvasNodeType.Audio ? "音频" : node?.type === CanvasNodeType.Drawing ? "绘图" : node?.type === CanvasNodeType.Frame ? "背板" : "生成配置";
+    const nodeTypeLabel = node ? getNodeLabel(node.type) : canvasT("videoCanvas.menu.fallbackNode", "节点");
     const json = useMemo(() => {
         if (!node) return "";
         return JSON.stringify(
@@ -461,7 +471,7 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
     const title = (
         <div className="flex items-center justify-between gap-4 pr-10">
             <div className="min-w-0">
-                <div className="text-[var(--fs-heading-lg)] font-semibold tracking-[-0.02em]">节点信息</div>
+                <div className="text-[var(--fs-heading-lg)] font-semibold tracking-[-0.02em]">{canvasT("videoCanvas.nodeUi.infoTitle", "节点信息")}</div>
                 {node ? <div className="mt-0.5 truncate text-xs opacity-45">{node.id}</div> : null}
             </div>
             <Segmented
@@ -469,7 +479,7 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
                 value={view}
                 onChange={(value) => setView(value as "info" | "json")}
                 options={[
-                    { label: "信息", value: "info" },
+                    { label: canvasT("videoCanvas.nodeUi.infoTab", "信息"), value: "info" },
                     { label: "JSON", value: "json" },
                 ]}
             />
@@ -493,38 +503,38 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
                         <div className="thin-scrollbar h-full space-y-4 overflow-auto pr-1">
                             <div className="grid gap-2 rounded-2xl border p-3" style={{ background: theme.node.fill, borderColor: theme.node.stroke }}>
                                 <div className="grid grid-cols-2 gap-2 max-sm:grid-cols-1">
-                                    <InfoRow label="类型" value={nodeTypeLabel} />
-                                    <InfoRow label="状态" value={node.metadata?.status || "idle"} />
-                                    <InfoRow label="尺寸" value={`${Math.round(node.width)} x ${Math.round(node.height)}`} />
-                                    <InfoRow label="位置" value={`${Math.round(node.position.x)}, ${Math.round(node.position.y)}`} />
-                                    {batchCount > 1 ? <InfoRow label="图片组" value={`${batchCount} 张`} /> : null}
-                                    {imageBytes ? <InfoRow label="图片大小" value={formatBytes(imageBytes)} /> : null}
+                                    <InfoRow label={canvasT("videoCanvas.nodeUi.infoType", "类型")} value={nodeTypeLabel} />
+                                    <InfoRow label={canvasT("videoCanvas.nodeUi.infoStatus", "状态")} value={node.metadata?.status || "idle"} />
+                                    <InfoRow label={canvasT("videoCanvas.nodeUi.infoSize", "尺寸")} value={`${Math.round(node.width)} x ${Math.round(node.height)}`} />
+                                    <InfoRow label={canvasT("videoCanvas.nodeUi.infoPosition", "位置")} value={`${Math.round(node.position.x)}, ${Math.round(node.position.y)}`} />
+                                    {batchCount > 1 ? <InfoRow label={canvasT("videoCanvas.nodeUi.infoImageGroup", "图片组")} value={canvasT("videoCanvas.nodeUi.infoImageCount", "{{count}} 张", { count: batchCount })} /> : null}
+                                    {imageBytes ? <InfoRow label={canvasT("videoCanvas.nodeUi.infoImageBytes", "图片大小")} value={formatBytes(imageBytes)} /> : null}
                                 </div>
                                 {node.type === CanvasNodeType.Image ? (
                                     <div className="border-t pt-3" style={{ borderColor: theme.toolbar.border }}>
-                                        <div className="mb-2 text-xs font-medium opacity-45">项目资产分类</div>
+                                        <div className="mb-2 text-xs font-medium opacity-45">{canvasT("videoCanvas.nodeUi.assetCategory", "项目资产分类")}</div>
                                         <div className="flex flex-wrap gap-1.5">
                                             {assetCategoryOptions.map((option) => {
                                                 const active = assetCategory === option.value;
                                                 return <button key={option.value} type="button" disabled={readOnly} onClick={() => saveAssetCategory(option.value)} className="h-7 rounded-md border px-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60" style={{ borderColor: active ? theme.accent.primary : theme.toolbar.border, background: active ? theme.accent.primarySoft : theme.toolbar.panel, color: active ? theme.accent.primary : theme.node.muted }}>{option.label}</button>;
                                             })}
                                         </div>
-                                        <div className="mt-2 text-[var(--fs-label)] leading-5 opacity-45">生成后会按此分类进入项目资产；角色、场景和画风工作流会自动预填。</div>
+                                        <div className="mt-2 text-[var(--fs-label)] leading-5 opacity-45">{canvasT("videoCanvas.nodeUi.assetCategoryHint", "生成后会按此分类进入项目资产；角色、场景和画风工作流会自动预填。")}</div>
                                     </div>
                                 ) : null}
                                 {node.metadata?.prompt ? (
                                     <div className="rounded-xl border px-3 py-2" style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}>
-                                        <div className="mb-1 text-xs font-medium opacity-45">提示词</div>
+                                        <div className="mb-1 text-xs font-medium opacity-45">{canvasT("videoCanvas.nodeUi.prompt", "提示词")}</div>
                                         <div className="whitespace-pre-wrap break-words leading-6">{node.metadata.prompt}</div>
                                     </div>
                                 ) : null}
                                 {node.type === CanvasNodeType.Skill && node.metadata?.skillSnapshot ? (
                                     <div className="rounded-xl border px-3 py-2" style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}>
-                                        <div className="mb-1 text-xs font-medium opacity-45">技能模板</div>
+                                        <div className="mb-1 text-xs font-medium opacity-45">{canvasT("videoCanvas.nodeUi.skillTemplate", "技能模板")}</div>
                                         <div className="whitespace-pre-wrap break-words leading-6">{node.metadata.skillSnapshot.template}</div>
                                         {node.metadata.skillSnapshot.outputContract ? (
                                             <>
-                                                <div className="mb-1 mt-3 text-xs font-medium opacity-45">输出约束</div>
+                                                <div className="mb-1 mt-3 text-xs font-medium opacity-45">{canvasT("videoCanvas.nodeUi.outputContract", "输出约束")}</div>
                                                 <div className="whitespace-pre-wrap break-words leading-6">{node.metadata.skillSnapshot.outputContract}</div>
                                             </>
                                         ) : null}
@@ -536,25 +546,25 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
                                 <div className="rounded-2xl border p-3" style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke }}>
                                     <div className="mb-2 flex items-center justify-between gap-3">
                                         <div>
-                                            <div className="text-sm font-semibold">资产标签</div>
-                                            <div className="mt-0.5 text-xs opacity-45">一条标签描述一个角色、环境、道具或镜头用途。</div>
+                                            <div className="text-sm font-semibold">{canvasT("videoCanvas.nodeUi.assetTags", "资产标签")}</div>
+                                            <div className="mt-0.5 text-xs opacity-45">{canvasT("videoCanvas.nodeUi.assetTagsHint", "一条标签描述一个角色、环境、道具或镜头用途。")}</div>
                                         </div>
-                                        <span className="shrink-0 text-xs opacity-45">{assetTags.length} 条</span>
+                                        <span className="shrink-0 text-xs opacity-45">{canvasT("videoCanvas.nodeUi.tagCount", "{{count}} 条", { count: assetTags.length })}</span>
                                     </div>
                                     {readOnly ? (
                                         <div className="mb-2 rounded-lg border px-3 py-2 text-xs opacity-55" style={{ borderColor: theme.toolbar.border }}>
-                                            分享画布为只读，标签无法编辑。
+                                            {canvasT("videoCanvas.nodeUi.tagsReadOnly", "分享画布为只读，标签无法编辑。")}
                                         </div>
                                     ) : (
                                         <div className="flex gap-2">
                                             <Input
                                                 value={assetTagInput}
-                                                placeholder="例如：角色: 张三"
+                                                placeholder={canvasT("videoCanvas.nodeUi.tagPlaceholder", "例如：角色: 张三")}
                                                 onChange={(event) => setAssetTagInput(event.target.value)}
                                                 onPressEnter={addAssetTag}
                                             />
                                             <Button type="primary" icon={<Plus className="size-4" />} disabled={!assetTagInput.trim()} onClick={addAssetTag}>
-                                                加入
+                                                {canvasT("videoCanvas.nodeUi.tagAdd", "加入")}
                                             </Button>
                                         </div>
                                     )}
@@ -566,7 +576,7 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
                                                 </Tag>
                                             ))
                                         ) : (
-                                            <span className="px-1 py-1 text-xs opacity-40">{readOnly ? "暂无标签" : "还没有标签，输入后点击“加入”或按 Enter。"}</span>
+                                            <span className="px-1 py-1 text-xs opacity-40">{readOnly ? canvasT("videoCanvas.nodeUi.noTags", "暂无标签") : canvasT("videoCanvas.nodeUi.noTagsHint", "还没有标签，输入后点击“加入”或按 Enter。")}</span>
                                         )}
                                     </div>
                                 </div>

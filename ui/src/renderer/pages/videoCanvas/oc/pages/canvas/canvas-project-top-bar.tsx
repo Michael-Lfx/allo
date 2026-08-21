@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, Bot, Clapperboard, Coins, Focus, FolderKanban, Gauge, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Settings2, Share2, Sparkles, Trash2, Undo2, Upload } from "lucide-react";
+import { ArrowLeft, Bot, Clapperboard, Coins, Focus, FolderKanban, Gauge, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Settings2, Sparkles, Trash2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Modal, Tooltip } from "antd";
+import { useTranslation } from "react-i18next";
 
 import { useWalletBalance } from "@oc/hooks/use-wallet-balance";
 import type { CanvasContextSummary } from "@oc/lib/canvas/canvas-context-summary";
 import type { CanvasShortDramaProgress } from "@oc/lib/canvas/canvas-short-drama";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
@@ -28,7 +30,6 @@ type CanvasTopBarProps = {
     onImportImage: () => void;
     onUndo: () => void;
     onRedo: () => void;
-    onShare: () => void;
     agentOpen: boolean;
     compactAgentStatus?: { connected: boolean; enabled: boolean; activity: string };
     onToggleAgent: () => void;
@@ -58,7 +59,6 @@ export function CanvasTopBar({
     onImportImage,
     onUndo,
     onRedo,
-    onShare,
     agentOpen,
     compactAgentStatus,
     onToggleAgent,
@@ -70,6 +70,7 @@ export function CanvasTopBar({
     onEnterFocusMode,
     shortDramaGuide,
 }: CanvasTopBarProps) {
+    const { i18n } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const navigate = useNavigate();
     const user = useUserStore((state) => state.user);
@@ -100,13 +101,13 @@ export function CanvasTopBar({
         <>
             <div className="pointer-events-none absolute left-0 right-0 top-0 z-[var(--z-toolbar)] flex h-[var(--canvas-topbar-h)] items-center justify-between px-[var(--canvas-inset-x)]">
                 <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-                    <Tooltip title="返回画布列表">
+                    <Tooltip title={canvasT("videoCanvas.chrome.backToList", "返回画布列表")}>
                         <button
                             type="button"
                             className="grid size-9 shrink-0 place-items-center rounded-full transition hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 dark:hover:bg-white/10"
                             style={{ color: theme.node.text, background: theme.spatial.elevated, boxShadow: "0 8px 24px rgba(15,23,42,.08)", "--tw-ring-color": theme.accent.primary } as CSSProperties}
                             onClick={goCanvasList}
-                            aria-label="返回画布列表"
+                            aria-label={canvasT("videoCanvas.chrome.backToList", "返回画布列表")}
                         >
                             <ArrowLeft className="size-4" />
                         </button>
@@ -115,30 +116,30 @@ export function CanvasTopBar({
                         trigger={["click"]}
                         menu={{
                             items: [
-                                { key: "projects", icon: <LayoutGrid className="size-4" />, label: "画布列表", onClick: goCanvasList },
+                                { key: "projects", icon: <LayoutGrid className="size-4" />, label: canvasT("videoCanvas.chrome.projectList", "画布列表"), onClick: goCanvasList },
                                 { type: "divider" },
-                                { key: "new", icon: <Plus className="size-4" />, label: "新建画布", onClick: onCreateProject },
-                                { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: "删除当前画布", onClick: onDeleteProject },
+                                { key: "new", icon: <Plus className="size-4" />, label: canvasT("videoCanvas.chrome.newCanvas", "新建画布"), onClick: onCreateProject },
+                                { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: canvasT("videoCanvas.chrome.deleteCanvas", "删除当前画布"), onClick: onDeleteProject },
                                 { type: "divider" },
-                                { key: "import", icon: <Upload className="size-4" />, label: "导入素材", onClick: onImportImage },
-                                { key: "search", icon: <Search className="size-4" />, label: <MenuLabel text="搜索节点" shortcut="⌘ K" />, onClick: onOpenSearch },
+                                { key: "import", icon: <Upload className="size-4" />, label: canvasT("videoCanvas.chrome.importMedia", "导入素材"), onClick: onImportImage },
+                                { key: "search", icon: <Search className="size-4" />, label: <MenuLabel text={canvasT("videoCanvas.chrome.searchNodes", "搜索节点")} shortcut="⌘ K" />, onClick: onOpenSearch },
                                 {
                                     key: "performance",
                                     icon: <Gauge className="size-4" />,
-                                    label: "媒体性能",
+                                    label: canvasT("videoCanvas.chrome.mediaPerformance", "媒体性能"),
                                     children: [
-                                        { key: "performance-auto", label: "自动性能", onClick: () => onMediaPerformanceModeChange("auto") },
-                                        { key: "performance-quality", label: "画质优先", onClick: () => onMediaPerformanceModeChange("quality") },
-                                        { key: "performance-fast", label: "性能优先", onClick: () => onMediaPerformanceModeChange("performance") },
+                                        { key: "performance-auto", label: canvasT("videoCanvas.chrome.perfAuto", "自动性能"), onClick: () => onMediaPerformanceModeChange("auto") },
+                                        { key: "performance-quality", label: canvasT("videoCanvas.chrome.perfQuality", "画质优先"), onClick: () => onMediaPerformanceModeChange("quality") },
+                                        { key: "performance-fast", label: canvasT("videoCanvas.chrome.perfPerformance", "性能优先"), onClick: () => onMediaPerformanceModeChange("performance") },
                                     ],
                                 },
                                 { type: "divider" },
-                                { key: "undo", disabled: !canUndo, icon: <Undo2 className="size-4" />, label: <MenuLabel text="撤销" shortcut="⌘ Z" />, onClick: onUndo },
-                                { key: "redo", disabled: !canRedo, icon: <Redo2 className="size-4" />, label: <MenuLabel text="重做" shortcut="⌘ ⇧ Z / ⌘ Y" />, onClick: onRedo },
+                                { key: "undo", disabled: !canUndo, icon: <Undo2 className="size-4" />, label: <MenuLabel text={canvasT("videoCanvas.chrome.undo", "撤销")} shortcut="⌘ Z" />, onClick: onUndo },
+                                { key: "redo", disabled: !canRedo, icon: <Redo2 className="size-4" />, label: <MenuLabel text={canvasT("videoCanvas.chrome.redo", "重做")} shortcut="⌘ ⇧ Z / ⌘ Y" />, onClick: onRedo },
                             ],
                         }}
                     >
-                        <button type="button" className="grid size-9 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" style={{ color: theme.node.text }} aria-label="打开画布菜单">
+                        <button type="button" className="grid size-9 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" style={{ color: theme.node.text }} aria-label={canvasT("videoCanvas.chrome.openMenu", "打开画布菜单")}>
                             <Menu className="size-5" />
                         </button>
                     </Dropdown>
@@ -157,7 +158,7 @@ export function CanvasTopBar({
                                 }}
                                 className="h-8 w-auto min-w-12 max-w-[min(280px,42vw)] appearance-none border-0 bg-transparent p-0 text-left text-base font-semibold tracking-normal outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
                                 style={{ color: theme.node.text, caretColor: theme.accent.primary, border: 0, boxShadow: "none", outline: "none" }}
-                                aria-label="画布名称"
+                                aria-label={canvasT("videoCanvas.chrome.canvasName", "画布名称")}
                             />
                         ) : (
                             <div className="flex min-w-0 items-center gap-0.5">
@@ -166,12 +167,12 @@ export function CanvasTopBar({
                                     className="max-w-[280px] truncate text-left text-base font-semibold tracking-normal transition-opacity hover:opacity-75"
                                     style={{ color: theme.node.text }}
                                     onClick={onStartTitleEditing}
-                                    title="点击修改画布名称"
+                                    title={canvasT("videoCanvas.chrome.renameHint", "点击修改画布名称")}
                                 >
                                     {title}
                                 </button>
-                                <Tooltip title="重命名画布">
-                                    <button type="button" className="grid size-7 shrink-0 place-items-center rounded-md opacity-60 transition hover:bg-black/5 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 dark:hover:bg-white/10" style={{ color: theme.node.text }} onClick={onStartTitleEditing} aria-label="重命名画布">
+                                <Tooltip title={canvasT("videoCanvas.chrome.rename", "重命名画布")}>
+                                    <button type="button" className="grid size-7 shrink-0 place-items-center rounded-md opacity-60 transition hover:bg-black/5 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 dark:hover:bg-white/10" style={{ color: theme.node.text }} onClick={onStartTitleEditing} aria-label={canvasT("videoCanvas.chrome.rename", "重命名画布")}>
                                         <Pencil className="size-3.5" />
                                     </button>
                                 </Tooltip>
@@ -184,10 +185,10 @@ export function CanvasTopBar({
                                     <span className="max-w-[120px] truncate">{projectContext.projectName}</span>
                                 </Link>
                                 <span aria-hidden>·</span>
-                                <button type="button" className="min-w-0 truncate hover:underline" onClick={onOpenSearch} title="搜索并定位章节或镜头">
-                                    {projectContext.chapterLabel || `${projectContext.nodeCount} 个节点`}
+                                <button type="button" className="min-w-0 truncate hover:underline" onClick={onOpenSearch} title={canvasT("videoCanvas.chrome.searchChapterShot", "搜索并定位章节或镜头")}>
+                                    {projectContext.chapterLabel || canvasT("videoCanvas.chrome.nodeCount", "{{count}} 个节点", { count: projectContext.nodeCount })}
                                     {projectContext.shotLabel ? ` · ${projectContext.shotLabel}` : ""}
-                                    {projectContext.selectedCount ? ` · 已选 ${projectContext.selectedCount}` : ""}
+                                    {projectContext.selectedCount ? canvasT("videoCanvas.chrome.selectedCount", " · 已选 {{count}}", { count: projectContext.selectedCount }) : ""}
                                 </button>
                             </div>
                         ) : null}
@@ -197,7 +198,7 @@ export function CanvasTopBar({
                 <CanvasWorkspaceModeSwitch mode={workspaceMode} onChange={onWorkspaceModeChange} />
 
                 <div className="pointer-events-auto flex items-center gap-1.5">
-                    <Button type="text" className="!hidden !h-10 !w-10 !min-w-10 !rounded-xl !p-0 lg:!inline-flex" style={{ color: theme.node.text }} icon={<Search className="size-4" />} onClick={onOpenSearch} aria-label="搜索画布节点" title="搜索画布节点" />
+                    <Button type="text" className="!hidden !h-10 !w-10 !min-w-10 !rounded-xl !p-0 lg:!inline-flex" style={{ color: theme.node.text }} icon={<Search className="size-4" />} onClick={onOpenSearch} aria-label={canvasT("videoCanvas.chrome.searchCanvasNodes", "搜索画布节点")} title={canvasT("videoCanvas.chrome.searchCanvasNodes", "搜索画布节点")} />
                     <Dropdown
                         trigger={["click"]}
                         menu={{
@@ -205,13 +206,13 @@ export function CanvasTopBar({
                             selectedKeys: [mediaPerformanceMode],
                             onClick: ({ key }) => onMediaPerformanceModeChange(key as CanvasMediaPerformanceMode),
                             items: [
-                                { key: "auto", label: "自动性能" },
-                                { key: "quality", label: "画质优先" },
-                                { key: "performance", label: "性能优先" },
+                                { key: "auto", label: canvasT("videoCanvas.chrome.perfAuto", "自动性能") },
+                                { key: "quality", label: canvasT("videoCanvas.chrome.perfQuality", "画质优先") },
+                                { key: "performance", label: canvasT("videoCanvas.chrome.perfPerformance", "性能优先") },
                             ],
                         }}
                     >
-                        <Button type="text" className="!hidden !h-10 !w-10 !min-w-10 !rounded-xl !p-0 lg:!inline-flex" style={{ color: theme.node.text }} icon={<Gauge className="size-4" />} aria-label="媒体性能模式" title="媒体性能模式" />
+                        <Button type="text" className="!hidden !h-10 !w-10 !min-w-10 !rounded-xl !p-0 lg:!inline-flex" style={{ color: theme.node.text }} icon={<Gauge className="size-4" />} aria-label={canvasT("videoCanvas.chrome.mediaPerformanceMode", "媒体性能模式")} title={canvasT("videoCanvas.chrome.mediaPerformanceMode", "媒体性能模式")} />
                     </Dropdown>
                     {compactAgentStatus ? <CompactAgentStatus status={compactAgentStatus} onClick={onToggleAgent} /> : null}
                     {user && creditsEnabled ? (
@@ -219,37 +220,36 @@ export function CanvasTopBar({
                             to="/wallet"
                             className="inline-flex h-9 min-w-[5.5rem] items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium tabular-nums transition hover:bg-black/5 dark:hover:bg-white/10"
                             style={{ color: theme.node.text }}
-                            title="查看积分明细"
+                            title={canvasT("videoCanvas.chrome.credits", "查看积分明细")}
                         >
                             {refreshing && availableMicrocredits === null ? <LoaderCircle className="size-3.5 animate-spin opacity-60" /> : <Coins className="size-3.5" />}
-                            <span>{availableMicrocredits === null ? "--" : (availableMicrocredits / 1_000_000).toLocaleString("zh-CN", { maximumFractionDigits: 3 })}</span>
+                            <span>{availableMicrocredits === null ? "--" : (availableMicrocredits / 1_000_000).toLocaleString(i18n.language, { maximumFractionDigits: 3 })}</span>
                         </Link>
                     ) : null}
-                    <Tooltip title="进入专注模式（⇧⌘F）">
+                    <Tooltip title={canvasT("videoCanvas.chrome.focusMode", "进入专注模式（⇧⌘F）")}>
                         <Button
                             type="text"
                             className="!h-10 !w-10 !min-w-10 !rounded-xl !p-0"
                             style={{ color: theme.node.text }}
                             icon={<Focus className="size-4" />}
                             onClick={onEnterFocusMode}
-                            aria-label="进入专注模式"
+                            aria-label={canvasT("videoCanvas.chrome.focusMode", "进入专注模式（⇧⌘F）")}
                         />
                     </Tooltip>
                     {shortDramaGuide ? (
-                        <Tooltip title={shortDramaGuide.collapsed ? "展开短剧流程" : "收起短剧流程"}>
+                        <Tooltip title={shortDramaGuide.collapsed ? canvasT("videoCanvas.chrome.shortDramaExpand", "展开短剧流程") : canvasT("videoCanvas.chrome.shortDramaCollapse", "收起短剧流程")}>
                             <Button
                                 type="text"
                                 className="!h-10 !rounded-xl !px-2.5 !font-medium"
                                 style={{ color: theme.node.text, background: shortDramaGuide.collapsed ? undefined : theme.toolbar.activeBg }}
                                 icon={<Clapperboard className="size-4" />}
                                 onClick={handleShortDramaGuideToggle}
-                                aria-label="短剧流程"
+                                aria-label={canvasT("videoCanvas.chrome.shortDrama", "短剧流程")}
                             >
                                 <span className="tabular-nums">{shortDramaGuide.progress.completedCount}/5</span>
                             </Button>
                         </Tooltip>
                     ) : null}
-                    <Button type="text" className="!h-10 !w-10 !min-w-10 !rounded-xl !p-0" style={{ color: theme.node.text }} icon={<Share2 className="size-4" />} onClick={onShare} aria-label="分享画布" title="分享画布" />
                     <span className="h-6 w-px" style={{ background: theme.toolbar.border }} />
                     <Button
                         type="text"
@@ -262,28 +262,28 @@ export function CanvasTopBar({
                     </Button>
                 </div>
             </div>
-            <Modal title="快捷键" open={shortcutsOpen} onCancel={() => setShortcutsOpen(false)} footer={null} centered>
+            <Modal title={canvasT("videoCanvas.chrome.shortcuts", "快捷键")} open={shortcutsOpen} onCancel={() => setShortcutsOpen(false)} footer={null} centered>
                 <div className="space-y-2 border-t pt-4 text-sm" style={{ borderColor: theme.node.stroke }}>
-                    <Shortcut keys={["空白处左键拖动", "空格 + 左键 / 中键"]} value="平移视图" />
-                    <Shortcut keys={["滚轮"]} value="缩放画布" />
-                    <Shortcut keys={["缩放滑杆"]} value="精确调整缩放" />
-                    <Shortcut keys={["Shift / Ctrl / Cmd + 左键拖动"]} value="框选多个节点" />
-                    <Shortcut keys={["工具栏「框选」", "左键拖动"]} value="框选多个节点，完成后自动回到「移动与选择」" />
-                    <Shortcut keys={["Shift / Ctrl / Cmd", "点击"]} value="追加选择节点" />
-                    <Shortcut keys={["Alt", "点击 / 框选"]} value="移除选择节点" />
-                    <Shortcut keys={["Ctrl / Cmd", "1 / 2 / 3"]} value="100% / 适应全部 / 适应选择" />
-                    <Shortcut keys={["?"]} value="打开快捷键" />
-                    <Shortcut keys={["Shift / Ctrl / Cmd", "F"]} value="进入 / 退出专注模式" />
-                    <Shortcut keys={["Ctrl / Cmd", "A"]} value="全选节点" />
-                    <Shortcut keys={["Ctrl / Cmd", "K"]} value="搜索并定位节点" />
-                    <Shortcut keys={["Ctrl / Cmd", "C / V"]} value="复制 / 粘贴节点，或粘贴剪切板文本/图片" />
-                    <Shortcut keys={["Ctrl / Cmd", "S"]} value="保存画布布局和位置" />
-                    <Shortcut keys={["Ctrl / Cmd", "Z"]} value="撤销" />
-                    <Shortcut keys={["Ctrl / Cmd", "Shift", "Z"]} value="重做" />
-                    <Shortcut keys={["Ctrl / Cmd", "Y"]} value="重做" />
-                    <Shortcut keys={["Delete / Backspace"]} value="删除选中" />
-                    <Shortcut keys={["Esc"]} value="取消选择并关闭浮层" />
-                    <Shortcut keys={["拖入图片/视频/音频"]} value="上传到画布" />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyPan", "空白处左键拖动"), canvasT("videoCanvas.shortcuts.keyPanAlt", "空格 + 左键 / 中键")]} value={canvasT("videoCanvas.shortcuts.pan", "平移视图")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyWheel", "滚轮")]} value={canvasT("videoCanvas.shortcuts.zoom", "缩放画布")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomSlider", "缩放滑杆")]} value={canvasT("videoCanvas.shortcuts.zoomPrecise", "精确调整缩放")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyBoxModifiers", "Shift / Ctrl / Cmd + 左键拖动")]} value={canvasT("videoCanvas.shortcuts.boxSelect", "框选多个节点")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyBoxTool", "工具栏「框选」"), canvasT("videoCanvas.shortcuts.keyDrag", "左键拖动")]} value={canvasT("videoCanvas.shortcuts.boxSelectTool", "框选多个节点，完成后自动回到「移动与选择」")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyModClick", "Shift / Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyClick", "点击")]} value={canvasT("videoCanvas.shortcuts.addSelect", "追加选择节点")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyAlt", "Alt"), canvasT("videoCanvas.shortcuts.keyClickBox", "点击 / 框选")]} value={canvasT("videoCanvas.shortcuts.removeSelect", "移除选择节点")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyZoomNums", "1 / 2 / 3")]} value={canvasT("videoCanvas.shortcuts.zoomPresets", "100% / 适应全部 / 适应选择")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyQuestion", "?")]} value={canvasT("videoCanvas.shortcuts.openShortcuts", "打开快捷键")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyFocus", "Shift / Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyF", "F")]} value={canvasT("videoCanvas.shortcuts.focusToggle", "进入 / 退出专注模式")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyA", "A")]} value={canvasT("videoCanvas.shortcuts.selectAll", "全选节点")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyK", "K")]} value={canvasT("videoCanvas.shortcuts.search", "搜索并定位节点")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyCV", "C / V")]} value={canvasT("videoCanvas.shortcuts.copyPaste", "复制 / 粘贴节点，或粘贴剪切板文本/图片")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyS", "S")]} value={canvasT("videoCanvas.shortcuts.save", "保存画布布局和位置")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyZ", "Z")]} value={canvasT("videoCanvas.shortcuts.undo", "撤销")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyShift", "Shift"), canvasT("videoCanvas.shortcuts.keyZ", "Z")]} value={canvasT("videoCanvas.shortcuts.redo", "重做")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyY", "Y")]} value={canvasT("videoCanvas.shortcuts.redo", "重做")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyDelete", "Delete / Backspace")]} value={canvasT("videoCanvas.shortcuts.delete", "删除选中")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyEsc", "Esc")]} value={canvasT("videoCanvas.shortcuts.escape", "取消选择并关闭浮层")} />
+                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyDrop", "拖入图片/视频/音频")]} value={canvasT("videoCanvas.shortcuts.dropMedia", "上传到画布")} />
                 </div>
             </Modal>
         </>
@@ -291,17 +291,18 @@ export function CanvasTopBar({
 }
 
 function CanvasWorkspaceModeSwitch({ mode, onChange }: { mode: CanvasWorkspaceMode; onChange: (mode: CanvasWorkspaceMode) => void }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const items = [
-        { key: "simple" as const, label: "简洁", icon: <Sparkles className="size-3.5" />, title: "简洁模式：保留核心创作路径" },
-        { key: "professional" as const, label: "专业", icon: <Settings2 className="size-3.5" />, title: "专业模式：完整节点与生成控制" },
+        { key: "simple" as const, label: canvasT("videoCanvas.chrome.modeSimple", "简洁"), icon: <Sparkles className="size-3.5" />, title: canvasT("videoCanvas.chrome.modeSimpleHint", "简洁模式：保留核心创作路径") },
+        { key: "professional" as const, label: canvasT("videoCanvas.chrome.modeProfessional", "专业"), icon: <Settings2 className="size-3.5" />, title: canvasT("videoCanvas.chrome.modeProfessionalHint", "专业模式：完整节点与生成控制") },
     ];
 
     return (
         <div
             className="pointer-events-auto absolute left-1/2 top-2 z-[var(--dock-z-popover)] -translate-x-1/2"
             role="group"
-            aria-label="画布工作模式"
+            aria-label={canvasT("videoCanvas.chrome.workspaceMode", "画布工作模式")}
         >
             <div
                 className="inline-flex h-9 items-center gap-0.5 rounded-full p-0.5 backdrop-blur-xl"
@@ -353,16 +354,21 @@ function MenuLabel({ text, shortcut }: { text: string; shortcut: string }) {
 }
 
 function canvasTitleInputSize(value: string) {
-    const visualLength = Array.from(value || "画布名称").reduce((length, character) => length + (character.codePointAt(0)! > 0xff ? 2 : 1), 0);
+    const visualLength = Array.from(value || canvasT("videoCanvas.chrome.canvasName", "画布名称")).reduce((length, character) => length + (character.codePointAt(0)! > 0xff ? 2 : 1), 0);
     return Math.min(30, Math.max(5, visualLength));
 }
 
 function CompactAgentStatus({ status, onClick }: { status: { connected: boolean; enabled: boolean; activity: string }; onClick: () => void }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const label = status.connected ? "已连接到本地 Codex" : status.enabled ? status.activity || "连接中" : "正在连接本地 Codex";
+    const label = status.connected
+        ? canvasT("videoCanvas.chrome.localCodexConnected", "已连接到本地 Codex")
+        : status.enabled
+            ? status.activity || canvasT("videoCanvas.chrome.localCodexBusy", "连接中")
+            : canvasT("videoCanvas.chrome.localCodexConnecting", "正在连接本地 Codex");
     const dotColor = status.connected ? "#22c55e" : status.enabled ? "#f59e0b" : theme.node.muted;
     return (
-        <button type="button" className="flex h-10 items-center gap-2 rounded-xl px-3 text-sm font-medium transition hover:opacity-85" style={{ background: theme.toolbar.panel, color: theme.node.text, boxShadow: "0 10px 30px rgba(28,25,23,.10)" }} onClick={onClick} title="打开本地 Codex 面板">
+        <button type="button" className="flex h-10 items-center gap-2 rounded-xl px-3 text-sm font-medium transition hover:opacity-85" style={{ background: theme.toolbar.panel, color: theme.node.text, boxShadow: "0 10px 30px rgba(28,25,23,.10)" }} onClick={onClick} title={canvasT("videoCanvas.chrome.openLocalCodex", "打开本地 Codex 面板")}>
             <span className="size-2 rounded-full" style={{ background: dotColor }} />
             <span className="max-w-[180px] truncate">{label}</span>
         </button>

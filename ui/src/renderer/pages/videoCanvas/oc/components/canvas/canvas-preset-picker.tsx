@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import { Input, Popover } from "antd";
 import { Search, WandSparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasGenerationMode } from "@oc/types/canvas";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
@@ -84,6 +86,7 @@ export function CanvasPresetPicker({
     compact?: boolean;
     dense?: boolean;
 }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [internalOpen, setInternalOpen] = useState(false);
     const [query, setQuery] = useState("");
@@ -100,7 +103,7 @@ export function CanvasPresetPicker({
                 {
                     id: `skill:${reference.skill.skill_id}`,
                     name: reference.skill.skill_name,
-                    description: reference.skill.description || reference.skill.instruction || "已加入技能",
+                    description: reference.skill.description || reference.skill.instruction || canvasT("videoCanvas.preset.skillJoined", "已加入技能"),
                     prompt: `@${reference.skill.skill_name} `,
                     modes: ["text", "image", "video", "audio"],
                     source: "skill",
@@ -120,7 +123,7 @@ export function CanvasPresetPicker({
                 allowClear
                 size="small"
                 prefix={<Search className="size-3.5" />}
-                placeholder="搜索预设或已加入技能"
+                placeholder={canvasT("videoCanvas.preset.searchPlaceholder", "搜索预设或已加入技能")}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
             />
@@ -143,7 +146,7 @@ export function CanvasPresetPicker({
                                 <span className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: theme.node.text }}>
                                     <span className="truncate">{preset.name}</span>
                                     <span className="shrink-0 text-[var(--fs-micro)] font-medium" style={{ color: theme.accent.primary }}>
-                                        {preset.source === "skill" ? "技能" : "预设"}
+                                        {preset.source === "skill" ? canvasT("videoCanvas.preset.badgeSkill", "技能") : canvasT("videoCanvas.preset.badgePreset", "预设")}
                                     </span>
                                 </span>
                                 <span className="mt-0.5 block truncate text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>
@@ -154,7 +157,7 @@ export function CanvasPresetPicker({
                     ))
                 ) : (
                     <div className="py-8 text-center text-xs" style={{ color: theme.node.muted }}>
-                        没有匹配的预设
+                        {canvasT("videoCanvas.preset.noMatch", "没有匹配的预设")}
                     </div>
                 )}
             </div>
@@ -175,12 +178,12 @@ export function CanvasPresetPicker({
                 type="button"
                 className={`canvas-preset-picker-trigger inline-flex shrink-0 items-center justify-center gap-1 rounded-lg transition hover:brightness-110 focus-visible:outline-none ${compact ? "size-6" : dense ? "h-6 px-1.5" : "h-7 px-2"}`}
                 style={{ background: theme.accent.primarySoft, color: theme.accent.primary }}
-                title="打开提示词预设"
-                aria-label="打开提示词预设"
+                title={canvasT("videoCanvas.preset.open", "打开提示词预设")}
+                aria-label={canvasT("videoCanvas.preset.open", "打开提示词预设")}
                 aria-expanded={actualOpen}
             >
                 <WandSparkles className={dense ? "size-3" : "size-3.5"} />
-                {compact ? null : <span className="text-[var(--fs-tiny)] font-semibold">预设</span>}
+                {compact ? null : <span className="text-[var(--fs-tiny)] font-semibold">{canvasT("videoCanvas.preset.label", "预设")}</span>}
             </button>
         </Popover>
     );
