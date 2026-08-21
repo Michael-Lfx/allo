@@ -77,6 +77,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route("/api/learning/reviews/{id}/answer", post(answer_review))
         .route("/api/learning/reviews/{id}/rate", post(rate_review))
         .route("/api/learning/reviews/{id}/skip", post(skip_review))
+        .route("/api/learning/reviews/{id}/archive", post(archive_review))
+        .route("/api/learning/reviews/{id}/unarchive", post(unarchive_review))
+        .route("/api/learning/reviews/{id}/mark-edit", post(mark_review_edit))
+        .route("/api/learning/reviews/{id}", get(review_question))
         .route("/api/learning/reviews/{id}", delete(delete_review_item))
         .route("/api/learning/questions", get(list_questions))
         .route(
@@ -93,7 +97,19 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         )
         .route(
             "/api/learning/custom-questions/{id}",
-            put(update_custom_question).delete(delete_custom_question),
+            put(update_custom_question).delete(delete_custom_question).get(custom_question),
+        )
+        .route(
+            "/api/learning/custom-questions/{id}/archive",
+            post(archive_custom),
+        )
+        .route(
+            "/api/learning/custom-questions/{id}/unarchive",
+            post(unarchive_custom),
+        )
+        .route(
+            "/api/learning/custom-questions/{id}/mark-edit",
+            post(mark_custom_edit),
         )
         .route(
             "/api/learning/custom-questions/{id}/tags",
@@ -545,6 +561,51 @@ async fn delete_review_item(
     Ok(Json(ApiResponse::ok(())))
 }
 
+async fn archive_review(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state.service.archive_review_item(&id, &user.id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn unarchive_review(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state.service.unarchive_review_item(&id, &user.id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn mark_review_edit(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<crate::models::MarkEditRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state
+        .service
+        .mark_review_edit_pending(&id, &user.id, request.note)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn review_question(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::QuestionEntry>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.review_question_entry(&id, &user.id).await?,
+    )))
+}
+
 async fn list_tags(
     State(state): State<LearningRouterState>,
 ) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
@@ -630,6 +691,60 @@ async fn delete_custom_question(
         .delete_custom_question(id.as_str(), &user.id)
         .await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+async fn archive_custom(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state
+        .service
+        .archive_custom_question(id.as_str(), &user.id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn unarchive_custom(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state
+        .service
+        .unarchive_custom_question(id.as_str(), &user.id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn mark_custom_edit(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<crate::models::MarkEditRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state
+        .service
+        .mark_custom_edit_pending(id.as_str(), &user.id, request.note)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn custom_question(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::QuestionEntry>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .custom_question_entry(id.as_str(), &user.id)
+            .await?,
+    )))
 }
 
 async fn answer_custom_review(

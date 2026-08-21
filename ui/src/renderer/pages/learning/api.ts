@@ -126,6 +126,28 @@ export const learningApi = {
     httpRequest<ReviewResult>('POST', `${reviewBase(source, id)}/skip`),
   deleteReviewItem: (id: string) =>
     httpRequest<void>('DELETE', `${BASE}/reviews/${encodeURIComponent(id)}`),
+  archiveReview: (id: string) =>
+    httpRequest<void>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/archive`),
+  unarchiveReview: (id: string) =>
+    httpRequest<void>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/unarchive`),
+  /** 标记课程复习卡为待编辑，note 选填，用于找回编辑思路 */
+  markReviewEditPending: (id: string, note: string) =>
+    httpRequest<void>('POST', `${BASE}/reviews/${encodeURIComponent(id)}/mark-edit`, { note }),
+  /** 课程复习卡完整信息（含答案），供刷卡界面编辑对话框加载 */
+  getReviewQuestion: (id: string) =>
+    httpRequest<QuestionEntry>('GET', `${BASE}/reviews/${encodeURIComponent(id)}`),
+  archiveCustomQuestion: (id: string) =>
+    httpRequest<void>('POST', `${BASE}/custom-questions/${encodeURIComponent(id)}/archive`),
+  unarchiveCustomQuestion: (id: string) =>
+    httpRequest<void>('POST', `${BASE}/custom-questions/${encodeURIComponent(id)}/unarchive`),
+  /** 标记自建题为待编辑，note 选填，用于找回编辑思路 */
+  markCustomEditPending: (id: string, note: string) =>
+    httpRequest<void>('POST', `${BASE}/custom-questions/${encodeURIComponent(id)}/mark-edit`, {
+      note,
+    }),
+  /** 自定义问题完整信息（含答案），供刷卡界面编辑对话框加载 */
+  getCustomQuestion: (id: string) =>
+    httpRequest<QuestionEntry>('GET', `${BASE}/custom-questions/${encodeURIComponent(id)}`),
   listQuestions: (params: { course_id?: string; state?: string; search?: string }) => {
     const query = new URLSearchParams();
     if (params.course_id) query.set('course_id', params.course_id);

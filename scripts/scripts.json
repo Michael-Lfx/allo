@@ -89,6 +89,7 @@
     "gen:i18n":      { "group": "gen",   "desc": "由 locale 重新生成 i18n 类型声明" },
     "clean":         { "group": "maint", "desc": "深度回收构建空间（debug 产物 + flycheck + 旧安装包）" },
     "seed:dev":      { "group": "maint", "desc": "用生产数据目录播种 dev 数据目录" },
+    "reset:dev":     { "group": "maint", "desc": "为 dev 数据目录写入显式 factory reset 请求（迁移校验失败无法启动时一键恢复，下次启动重建空数据集）" },
     "bump":          { "group": "maint", "desc": "统一改版本号：根 Cargo.toml(真源) + package.json + ui + Cargo.lock，可选 --tag 提交并打 tag" },
     "help":          { "group": "maint", "desc": "打印脚本目录（--check 校验登记 / --readme 生成 README 表）" }
   }

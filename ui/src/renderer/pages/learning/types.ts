@@ -2,7 +2,7 @@ export type ActivityKind = 'single_choice' | 'true_false' | 'reflection' | 'fill
 export type LessonStatus = 'not_started' | 'in_progress' | 'completed';
 export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
 export type ReviewSource = 'course' | 'custom';
-export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled';
+export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled' | 'archived';
 
 export interface GenerateCourseRequest {
   knowledge_base_id: string;
@@ -139,6 +139,9 @@ export interface DueReview {
   difficulty: number;
   review_count: number;
   lapse_count: number;
+  /** 已标记“待编辑”，刷卡时记录，不打断复习；描述用于找回思路 */
+  edit_pending: boolean;
+  edit_note: string | null;
 }
 
 export interface ReviewResult {
@@ -232,6 +235,9 @@ export interface QuestionEntry {
   last_reviewed_at: number | null;
   updated_at: number;
   tags: string[];
+  /** 已标记“待编辑”时的描述，用于找回编辑思路 */
+  edit_pending: boolean;
+  edit_note: string | null;
 }
 
 export interface UpdateQuestionRequest {

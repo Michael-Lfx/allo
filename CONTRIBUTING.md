@@ -179,6 +179,14 @@ legacy redirected routes as current navigation.
   mappers, aliases, or dual-read/dual-write behavior without an explicit
   architecture decision. Do not assume that an append-only migration is the
   correct answer for every schema change.
+- Migration files are immutable once any environment (including a local dev
+  database) has applied them: sqlx persists a SHA-384 checksum per version and
+  startup verifies the lineage before opening the database, so editing an
+  applied migration breaks startup with a lineage error. Change a schema by
+  appending the next numbered migration. If a local dev dataset is already
+  incompatible (e.g. after merging a branch that touched migrations), reset it
+  with `bun run reset:dev`; never rewrite `_sqlx_migrations` checksums to
+  bypass the check.
 - Technical row `id` values must stay inside repository/storage code and must
   not enter APIs, events, managed files, backup graphs, or cross-table
   references. Do not commit local data, `.tmp***` directories, dependency

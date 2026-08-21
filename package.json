@@ -54,6 +54,7 @@
     "build:clean": "bun scripts/prune-build.mjs --clean",
     "clean": "bun run build:clean",
     "seed:dev": "bun scripts/seed-dev-from-prod.mjs",
+    "reset:dev": "bun scripts/reset-dev-data.mjs",
     "bump": "bun scripts/bump-version.mjs",
     "help": "bun scripts/help.mjs"
   },
