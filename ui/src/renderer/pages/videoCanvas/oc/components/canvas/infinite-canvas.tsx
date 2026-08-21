@@ -370,6 +370,8 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
         <div
             ref={containerRef}
             className={`relative h-full w-full select-none overflow-hidden touch-none ${isPanning ? "cursor-grabbing" : boxSelectEnabled ? "cursor-crosshair" : "cursor-grab"}`}
+            data-canvas-hide-node-headers={viewport.k < 0.35 ? "true" : "false"}
+            data-canvas-low-scale={viewport.k < 0.32 ? "true" : "false"}
             style={{
                 background: theme.canvas.background,
                 overscrollBehavior: "none",

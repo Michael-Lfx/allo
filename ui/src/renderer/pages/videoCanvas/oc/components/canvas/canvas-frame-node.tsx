@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, Video } from "lucide-react";
 import { CometCard } from "@oc/components/ui/aceternity/comet-card";
 import { FRAME_HEADER_HEIGHT, FRAME_PADDING } from "@oc/lib/canvas/canvas-frame";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
+import { readCanvasScaleFromElement } from "@oc/lib/canvas/canvas-live-viewport";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type Position } from "@oc/types/canvas";
 
@@ -14,7 +15,6 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     data,
     dragOffset,
     childNodes,
-    scale,
     isSelected,
     isDropTarget,
     onMouseDown,
@@ -29,7 +29,6 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     data: CanvasNodeData;
     dragOffset?: Position;
     childNodes: CanvasNodeData[];
-    scale: number;
     isSelected: boolean;
     isDropTarget: boolean;
     onMouseDown: (event: ReactMouseEvent, nodeId: string) => void;
@@ -55,7 +54,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
         startWidth: 0,
         startHeight: 0,
         nodeId: data.id,
-        scale,
+        scale: 1,
         childBounds: null as { left: number; top: number; right: number; bottom: number } | null,
         onResize,
     });
@@ -131,7 +130,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
             startWidth: data.width,
             startHeight: data.height,
             nodeId: data.id,
-            scale,
+            scale: readCanvasScaleFromElement(event.currentTarget),
             childBounds,
             onResize,
         };
@@ -161,13 +160,13 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                 className="canvas-frame-shell overflow-hidden rounded-[var(--dock-radius)] border"
                 rotateDepth={2.4}
                 translateDepth={2}
-                disabled={Boolean(dragOffset) || !collapsed || editing || scale < 0.32}
+                disabled={Boolean(dragOffset) || !collapsed || editing}
                 glare={collapsed}
                 style={{
                     background: active ? theme.frame.activeFill : theme.frame.fill,
                     borderColor: active ? theme.frame.activeStroke : theme.frame.stroke,
-                    borderWidth: 1 / Math.max(scale, 0.05),
-                    boxShadow: isSelected ? `0 0 0 ${1 / Math.max(scale, 0.05)}px ${theme.frame.activeStroke}33, 0 24px 72px ${theme.spatial.shadow}` : `0 18px 54px ${theme.spatial.shadow}`,
+                    borderWidth: "calc(1px / var(--canvas-committed-scale, 1))",
+                    boxShadow: isSelected ? `0 0 0 calc(1px / var(--canvas-committed-scale, 1)) ${theme.frame.activeStroke}33, 0 24px 72px ${theme.spatial.shadow}` : `0 18px 54px ${theme.spatial.shadow}`,
                     transition: "background-color 120ms ease-out, border-color 120ms ease-out",
                 }}
             >
@@ -225,10 +224,10 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
             </CometCard>
             {!readOnly && !collapsed && isSelected && !data.metadata?.locked ? (
                 <>
-                    <ResizeHandle corner="top-left" scale={scale} theme={theme} onMouseDown={startResize} />
-                    <ResizeHandle corner="top-right" scale={scale} theme={theme} onMouseDown={startResize} />
-                    <ResizeHandle corner="bottom-left" scale={scale} theme={theme} onMouseDown={startResize} />
-                    <ResizeHandle corner="bottom-right" scale={scale} theme={theme} onMouseDown={startResize} />
+                    <ResizeHandle corner="top-left" theme={theme} onMouseDown={startResize} />
+                    <ResizeHandle corner="top-right" theme={theme} onMouseDown={startResize} />
+                    <ResizeHandle corner="bottom-left" theme={theme} onMouseDown={startResize} />
+                    <ResizeHandle corner="bottom-right" theme={theme} onMouseDown={startResize} />
                 </>
             ) : null}
         </div>
@@ -278,10 +277,7 @@ function FramePreview({ nodes, frame, theme }: { nodes: CanvasNodeData[]; frame:
     );
 }
 
-function ResizeHandle({ corner, scale, theme, onMouseDown }: { corner: ResizeCorner; scale: number; theme: CanvasTheme; onMouseDown: (event: ReactMouseEvent, corner: ResizeCorner) => void }) {
-    const inverseScale = 1 / Math.max(scale, 0.05);
-    const size = 14 * inverseScale;
-    const offset = -size / 2;
+function ResizeHandle({ corner, theme, onMouseDown }: { corner: ResizeCorner; theme: CanvasTheme; onMouseDown: (event: ReactMouseEvent, corner: ResizeCorner) => void }) {
     const fromTop = corner.includes("top");
     const fromLeft = corner.includes("left");
     const cursor = corner === "top-left" || corner === "bottom-right" ? "nwse-resize" : "nesw-resize";
@@ -292,15 +288,15 @@ function ResizeHandle({ corner, scale, theme, onMouseDown }: { corner: ResizeCor
             aria-label="调整背板尺寸"
             className="pointer-events-auto absolute z-20 rounded-sm shadow-sm"
             style={{
-                top: fromTop ? offset : undefined,
-                bottom: fromTop ? undefined : offset,
-                left: fromLeft ? offset : undefined,
-                right: fromLeft ? undefined : offset,
-                width: size,
-                height: size,
+                top: fromTop ? "calc(-7px * var(--canvas-live-inverse-scale, 1))" : undefined,
+                bottom: fromTop ? undefined : "calc(-7px * var(--canvas-live-inverse-scale, 1))",
+                left: fromLeft ? "calc(-7px * var(--canvas-live-inverse-scale, 1))" : undefined,
+                right: fromLeft ? undefined : "calc(-7px * var(--canvas-live-inverse-scale, 1))",
+                width: "calc(14px * var(--canvas-live-inverse-scale, 1))",
+                height: "calc(14px * var(--canvas-live-inverse-scale, 1))",
                 cursor,
                 background: theme.frame.activeStroke,
-                border: `${2 * inverseScale}px solid ${theme.canvas.background}`,
+                border: `calc(2px * var(--canvas-live-inverse-scale, 1)) solid ${theme.canvas.background}`,
             }}
             onMouseDown={(event) => onMouseDown(event, corner)}
         />

@@ -8,6 +8,7 @@ import { attachNodeToStoryboardRow, createCanvasNode, getConnectionTargetAnchor,
 import { createCanvasDrawingFromImage } from "@oc/lib/canvas/canvas-drawing-storage";
 import { isDrawingEngineAvailable, type CanvasDrawingEngine } from "@oc/lib/canvas/canvas-drawing-engine";
 import { isFrameNode, isNodeHiddenByCollapsedFrame } from "@oc/lib/canvas/canvas-frame";
+import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
 import { useUserStore } from "@oc/stores/use-user-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ConnectionHandle, type ContextMenuState, type Position, type ViewportTransform } from "@oc/types/canvas";
 
@@ -57,20 +58,19 @@ export function useCanvasConnectionController({
 }: UseCanvasConnectionControllerOptions) {
     const { message } = App.useApp();
     const tldrawLicenseKey = useUserStore((state) => state.drawingEngine.tldrawLicenseKey);
-    const [connectingParams, setConnectingParams] = useState<ConnectionHandle | null>(null);
-    const [connectionTargetNodeId, setConnectionTargetNodeId] = useState<string | null>(null);
-    const [connectionTargetAnchorRatio, setConnectionTargetAnchorRatio] = useState<number | undefined>();
     const [pendingConnectionCreate, setPendingConnectionCreate] = useState<PendingConnectionCreate | null>(null);
-    const [mouseWorld, setMouseWorld] = useState<Position>({ x: 0, y: 0 });
-    const connectingParamsRef = useRef(connectingParams);
+    const connectingParamsRef = useRef<ConnectionHandle | null>(null);
     const connectingPointerIdRef = useRef<number | null>(null);
     const connectingPointerStartRef = useRef<Position | null>(null);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
+    const setConnectingParams = useCanvasInteractionStore((state) => state.setConnectingParams);
+    const setMouseWorld = useCanvasInteractionStore((state) => state.setMouseWorld);
+    const setConnectionTargetNodeId = useCanvasInteractionStore((state) => state.setConnectionTargetNodeId);
+    const setConnectionTargetAnchorRatio = useCanvasInteractionStore((state) => state.setConnectionTargetAnchorRatio);
 
     useLayoutEffect(() => {
-        connectingParamsRef.current = connectingParams;
         pendingConnectionCreateRef.current = pendingConnectionCreate;
-    }, [connectingParams, pendingConnectionCreate]);
+    }, [pendingConnectionCreate]);
 
     const setConnecting = useCallback((next: ConnectionHandle | null) => {
         connectingParamsRef.current = next;
@@ -81,7 +81,7 @@ export function useCanvasConnectionController({
             setConnectionTargetNodeId(null);
             setConnectionTargetAnchorRatio(undefined);
         }
-    }, []);
+    }, [setConnectingParams, setConnectionTargetAnchorRatio, setConnectionTargetNodeId]);
 
     const closeConnectionCreateMenu = useCallback(() => {
         pendingConnectionCreateRef.current = null;
@@ -309,13 +309,8 @@ export function useCanvasConnectionController({
     return {
         cancelPendingConnectionCreate,
         closeConnectionCreateMenu,
-        connectionTargetNodeId,
-        connectionTargetAnchorRatio,
-        connectingParams,
         createConnectedNode,
         handleConnectStart,
-        mouseWorld,
         pendingConnectionCreate,
-        setConnecting,
     };
 }
