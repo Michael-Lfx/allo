@@ -99,12 +99,10 @@ pub fn map_agent_event(ev: &AgentStreamEvent) -> Option<SessionSignal> {
         AgentStreamEvent::Error(d) => Some(signal_from_agent_error(d)),
         // The stop_reason matters: a user cancel must NOT look like a clean
         // Done — policy needs to stand down (suppress nudges) rather than
-        // treat the very next signal as a recoverable stall.
-        AgentStreamEvent::Finish(d) => Some(if matches!(d.stop_reason, Some(TurnStopReason::Cancelled)) {
-            SessionSignal::Cancelled
-        } else {
-            SessionSignal::Done
-        }),
+        // treat the very next signal as a recoverable stall. A provider-
+        // truncated turn must not look clean either; `finish_signal` owns the
+        // whole mapping so this lane and the turn-end lane cannot disagree.
+        AgentStreamEvent::Finish(d) => Some(finish_signal(d.stop_reason, false)),
         AgentStreamEvent::Permission(v) => Some(SessionSignal::Decision(permission_decision_from_value(v))),
         AgentStreamEvent::AcpPermission(d) => Some(SessionSignal::Decision(permission_decision_from_acp(d))),
         // All other events are activity → reset idle.
@@ -279,16 +277,38 @@ fn conversation_is_routed(extra: &str, channel_chat_id: Option<&str>) -> bool {
 
 /// Decide the supervision signal for a chat-conversation turn-end (`Finish`).
 ///
-/// A user cancel stands the supervisor down. Every other clean `Finish` is
-/// absorbing: assistant prose, option-looking text, and open questions are all
-/// terminal output and cannot create a new `Decision` after the turn completed.
-/// Only live structured events (for example `AcpPermission`) may carry decision
-/// authority.
+/// A user cancel stands the supervisor down. A turn the provider cut short
+/// (output ceiling, per-turn request budget, refusal) did NOT accomplish its
+/// goal — the contract on `TurnStopReason` says so — so it must not present as
+/// `Done`. Reporting it as a retryable `AgentError` lets policy treat it as the
+/// recoverable non-completion it is, instead of absorbing it and standing down
+/// on work that never landed.
+///
+/// Every other clean `Finish` is absorbing: assistant prose, option-looking
+/// text, and open questions are all terminal output and cannot create a new
+/// `Decision` after the turn completed. Only live structured events (for
+/// example `AcpPermission`) may carry decision authority.
 fn finish_signal(stop_reason: Option<TurnStopReason>, cancelled_since_work: bool) -> SessionSignal {
     if matches!(stop_reason, Some(TurnStopReason::Cancelled)) || cancelled_since_work {
         return SessionSignal::Cancelled;
     }
-    SessionSignal::Done
+    match stop_reason {
+        Some(TurnStopReason::MaxTokens) => SessionSignal::AgentError {
+            retryable: Some(true),
+            message: "The turn stopped at the output token ceiling before it finished".to_owned(),
+        },
+        Some(TurnStopReason::MaxTurnRequests) => SessionSignal::AgentError {
+            retryable: Some(true),
+            message: "The turn exhausted its provider-request budget before it finished".to_owned(),
+        },
+        Some(TurnStopReason::Refusal) => SessionSignal::AgentError {
+            retryable: Some(false),
+            message: "The model refused the request".to_owned(),
+        },
+        Some(TurnStopReason::EndTurn) | Some(TurnStopReason::Cancelled) | None => {
+            SessionSignal::Done
+        }
+    }
 }
 
 /// On-arm recovery of a pending tool-permission CONFIRMATION (the agent is
@@ -1163,12 +1183,24 @@ mod tests {
             stop_reason: Some(TurnStopReason::Cancelled),
         });
         assert_eq!(map_agent_event(&ev), Some(SessionSignal::Cancelled));
-        // Every other stop_reason stays Done (the turn genuinely ended).
+        // A clean EndTurn stays Done.
         let ev = AgentStreamEvent::Finish(nomifun_ai_agent::FinishEventData {
             session_id: None,
             stop_reason: Some(TurnStopReason::EndTurn),
         });
         assert_eq!(map_agent_event(&ev), Some(SessionSignal::Done));
+        // Provider truncation is a recoverable non-completion, not Done.
+        let ev = AgentStreamEvent::Finish(nomifun_ai_agent::FinishEventData {
+            session_id: None,
+            stop_reason: Some(TurnStopReason::MaxTokens),
+        });
+        assert!(matches!(
+            map_agent_event(&ev),
+            Some(SessionSignal::AgentError {
+                retryable: Some(true),
+                ..
+            })
+        ));
     }
 
     #[test]
