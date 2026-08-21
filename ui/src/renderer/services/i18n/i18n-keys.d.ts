@@ -4326,6 +4326,16 @@ export type I18nKey =
   | 'nomi.tabs.skills'
   | 'nomi.tabs.suggestions'
   | 'nomi.title'
+  | 'notifications.close'
+  | 'notifications.collapse'
+  | 'notifications.level.error'
+  | 'notifications.level.info'
+  | 'notifications.level.loading'
+  | 'notifications.level.normal'
+  | 'notifications.level.success'
+  | 'notifications.level.warning'
+  | 'notifications.more'
+  | 'notifications.moreLabel'
   | 'poi.description'
   | 'poi.settings.autoExtractEnabled'
   | 'poi.settings.autoExtractHint'
@@ -9446,4 +9456,5 @@ export type I18nModule =
   | 'ssh'
   | 'beautifulUiPreview'
   | 'colorLab'
-  | 'capabilityHubPreview';
+  | 'capabilityHubPreview'
+  | 'notifications';

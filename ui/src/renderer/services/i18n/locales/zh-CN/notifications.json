@@ -1,0 +1,14 @@
+{
+  "more": "还有 {{count}} 条通知",
+  "moreLabel": "更多通知",
+  "collapse": "收起通知",
+  "close": "关闭通知",
+  "level": {
+    "normal": "提示",
+    "info": "信息",
+    "success": "成功",
+    "warning": "警告",
+    "error": "错误",
+    "loading": "加载中"
+  }
+}
