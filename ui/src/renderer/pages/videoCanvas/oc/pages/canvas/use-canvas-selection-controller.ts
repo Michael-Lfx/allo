@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type MouseEven
 import { applyCanvasSelectionPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { calculateNodeAlignment, createNodeAlignmentContext, isHiddenBatchChild, sameStringSet, type NodeAlignmentContext } from "@oc/lib/canvas/canvas-project-domain";
 import { applyFrameDrop, findFrameDropTarget, getFrameChildIds, isFrameNode, isNodeHiddenByCollapsedFrame } from "@oc/lib/canvas/canvas-frame";
+import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
 import type { CanvasNodeData, Position, SelectionBox, ViewportTransform } from "@oc/types/canvas";
 
 type UseCanvasSelectionControllerOptions = {
@@ -74,10 +75,11 @@ export function useCanvasSelectionController({
     const nodeDraggingRef = useRef(false);
     const dragRef = useRef<DragState>({ ...EMPTY_DRAG_STATE });
     const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
-    const [frameDropTargetId, setFrameDropTargetId] = useState<string | null>(null);
-    const [isNodeDragging, setIsNodeDragging] = useState(false);
-    const [dragPreview, setDragPreview] = useState<{ x: number; y: number; nodeIds: Set<string> } | null>(null);
-    const [alignmentGuides, setAlignmentGuides] = useState<{ vertical?: number; horizontal?: number }>({});
+
+    const setFrameDropTargetId = useCanvasInteractionStore((state) => state.setFrameDropTargetId);
+    const setIsNodeDragging = useCanvasInteractionStore((state) => state.setIsNodeDragging);
+    const setDragPreview = useCanvasInteractionStore((state) => state.setDragPreview);
+    const setAlignmentGuides = useCanvasInteractionStore((state) => state.setAlignmentGuides);
 
     const cancelSelectionBox = useCallback(() => {
         selectionBoxRef.current = null;
@@ -177,7 +179,7 @@ export function useCanvasSelectionController({
         lastFrameDropCheckRef.current = 0;
         setIsNodeDragging(true);
         setAlignmentGuides({});
-        setDragPreview({ x: 0, y: 0, nodeIds: new Set(initialSelectedNodes.map((item) => item.id)) });
+        setDragPreview({ x: 0, y: 0, nodeIds: initialSelectedNodes.map((item) => item.id) });
     }, [historyPausedRef, nodesRef, onNodeClick, onNodeInteractionStart, selectedNodeIdsRef, setSelectedConnectionId, setSelectedNodeIds]);
 
     const finishNodeDrag = useCallback((clientX?: number, clientY?: number) => {
@@ -327,14 +329,10 @@ export function useCanvasSelectionController({
     }, [finishNodeDrag, finishSelection, handleMouseMove, handlePointerMove]);
 
     return {
-        alignmentGuides,
         cancelSelectionBox,
         deselectCanvas,
-        dragPreview,
-        frameDropTargetId,
         handleCanvasMouseDown,
         handleNodeMouseDown,
-        isNodeDragging,
         nodeDraggingRef,
         selectionBoundsElementRef,
         selectionBox,

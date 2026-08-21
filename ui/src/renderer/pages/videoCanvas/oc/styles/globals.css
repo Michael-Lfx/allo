@@ -4624,6 +4624,10 @@
     }
 
     /* 静止期用最终倍率重新排版 DOM，避免 Windows Chromium 复用交互期的低分辨率合成纹理。 */
+    [data-canvas-hide-node-headers="true"] .canvas-node-external-header:not([data-editing="true"]) {
+        display: none;
+    }
+
     .canvas-world-layer {
         transform: translate(var(--canvas-live-x), var(--canvas-live-y)) scale(var(--canvas-live-scale-ratio));
         transform-origin: 0 0;

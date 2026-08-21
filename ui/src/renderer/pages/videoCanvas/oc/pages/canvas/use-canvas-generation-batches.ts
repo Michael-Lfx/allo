@@ -8,7 +8,7 @@ import { unchangedModeratedPrompt } from "@oc/lib/generation-error";
 import { cancelGenerationTask, listGenerationTasks } from "@oc/services/api/task-center";
 import { useConfigStore, useEffectiveConfig } from "@oc/stores/use-config-store";
 import { useUserStore } from "@oc/stores/use-user-store";
-import type { CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGenerationBatchMode, CanvasNodeData } from "@oc/types/canvas";
+import type { CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGenerationBatchItemStatus, CanvasGenerationBatchMode, CanvasNodeData } from "@oc/types/canvas";
 import { canScheduleCanvasGenerationBatches } from "@renderer/pages/videoCanvas/lib/modelCatalogReadiness";
 
 import type { CanvasNodeGenerationOptions } from "./use-canvas-generation-executor";
@@ -318,6 +318,8 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, modelCata
         });
     }, [message, modal, nodesRef, setNodes]);
 
+    const hasActiveGenerationBatches = nodesHaveWaitingOrRunningBatches(nodes);
+
     useEffect(() => {
         if (!projectLoaded) return;
         reconcileBatches();
@@ -326,12 +328,15 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, modelCata
     useEffect(() => {
         if (!projectLoaded) return;
         void scheduleWaitingItems();
+        // Idle canvases must not keep a 2s interval. Scan nodesRef so this
+        // matches the scheduler's live node list, not a stale closure.
+        if (!nodesHaveWaitingOrRunningBatches(nodesRef.current)) return;
         const timer = window.setInterval(() => {
             reconcileBatches();
             void scheduleWaitingItems();
         }, SCHEDULER_INTERVAL_MS);
         return () => window.clearInterval(timer);
-    }, [projectLoaded, reconcileBatches, scheduleWaitingItems]);
+    }, [hasActiveGenerationBatches, projectLoaded, reconcileBatches, scheduleWaitingItems, nodesRef]);
 
     return {
         cancelSubmittedBatchItem,
@@ -357,4 +362,30 @@ function withUpdatedItem(batch: CanvasGenerationBatch, itemId: string, patch: Pa
 
 function findBatch(nodes: CanvasNodeData[], sourceNodeId: string, batchId: string) {
     return nodes.find((node) => node.id === sourceNodeId)?.metadata?.generationBatches?.find((batch) => batch.id === batchId);
+}
+
+function isWaitingOrRunningBatchItem(status: CanvasGenerationBatchItemStatus) {
+    switch (status) {
+        case "waiting":
+        case "submitting":
+        case "queued":
+        case "running":
+            return true;
+        case "succeeded":
+        case "failed":
+        case "cancelled":
+            return false;
+        default: {
+            const exhaustive: never = status;
+            return exhaustive;
+        }
+    }
+}
+
+function nodesHaveWaitingOrRunningBatches(nodes: CanvasNodeData[]) {
+    return nodes.some((node) =>
+        (node.metadata?.generationBatches || []).some((batch) =>
+            batch.items.some((item) => isWaitingOrRunningBatchItem(item.status)),
+        ),
+    );
 }

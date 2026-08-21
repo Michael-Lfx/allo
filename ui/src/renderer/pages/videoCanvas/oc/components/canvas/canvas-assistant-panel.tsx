@@ -19,6 +19,7 @@ import { cinematicAgentSessionOpsJson, createCinematicAgentSession, isAgentSessi
 import { summarizeCanvasContext } from "@oc/lib/canvas/canvas-context-summary";
 import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentWorkingMessage, type CanvasAgentChatMessage, type CanvasAgentMode } from "./canvas-agent-chat-ui";
 import { AgentChatEmptyState, AgentPanelChrome } from "./canvas-agent-panel-chrome";
+import { CANVAS_AGENT_PANEL_MOTION_MS } from "./canvas-assistant-panel-motion";
 import { CanvasLocalAgentPanel } from "./canvas-local-agent-panel";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { CanvasNodeType, type CanvasAssistantMessage, type CanvasAssistantPendingBackendSession, type CanvasAssistantReference, type CanvasAssistantSession, type CanvasNodeData } from "@oc/types/canvas";
@@ -27,7 +28,6 @@ import { previewCanvasAgentOps, summarizeCanvasAgentOps, type CanvasAgentOp, typ
 import { canvasAgentPromptCacheKey } from "@oc/lib/openai-prompt-cache";
 import { resolveStoryboardGenerationContext } from "@oc/lib/canvas/canvas-storyboard-context";
 
-export const CANVAS_AGENT_PANEL_MOTION_MS = 500;
 const PANEL_MOTION_SECONDS = CANVAS_AGENT_PANEL_MOTION_MS / 1000;
 const ONLINE_AGENT_MAX_STEPS = 4;
 const ONLINE_AGENT_PROMPT =

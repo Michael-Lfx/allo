@@ -10,13 +10,14 @@ import { formatBytes } from "@oc/lib/image-utils";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@oc/lib/generation-error";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { resourceIdFromStorageKey } from "@oc/services/api/resources";
-import { cacheResourceObjectUrl, getCachedResourceObjectUrl } from "@oc/services/resource-blob-cache";
+import { cacheResourceObjectUrl, getCachedResourceObjectUrl, type ResourceCacheHint } from "@oc/services/resource-blob-cache";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { storyboardMinNodeHeight } from "./canvas-script-node";
 import { CanvasNodeType, type CanvasNodeData, type Position } from "@oc/types/canvas";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { loadCanvasDrawingPreview } from "@oc/lib/canvas/canvas-drawing-storage";
 import { MEDIA_NODE_MIN_SIZE } from "@oc/lib/canvas/canvas-node-size";
+import { readCanvasScaleFromElement } from "@oc/lib/canvas/canvas-live-viewport";
 
 const VideoPlayer = React.lazy(() =>
     import("@oc/components/video-player").then((mod) => ({ default: mod.VideoPlayer }))
@@ -28,7 +29,6 @@ type CanvasTheme = (typeof canvasThemes)[keyof typeof canvasThemes];
 type CanvasNodeProps = {
     data: CanvasNodeData;
     dragOffset?: Position;
-    scale: number;
     isSelected: boolean;
     isRelated: boolean;
     isFocusRelated: boolean;
@@ -95,7 +95,6 @@ type NodeContentRendererProps = {
 export const CanvasNode = React.memo(function CanvasNode({
     data,
     dragOffset,
-    scale,
     isSelected,
     isRelated,
     isFocusRelated,
@@ -154,7 +153,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     const scriptMinHeight = data.type === CanvasNodeType.Script ? storyboardMinNodeHeight(data.metadata?.storyboardComposerHeight) : null;
     const cometDepth = hasMediaContent ? 6.8 : data.type === CanvasNodeType.Script ? 2.8 : 4.6;
     const cometTranslate = hasMediaContent ? 6 : data.type === CanvasNodeType.Script ? 2.5 : 4;
-    const cometDisabled = reduceMediaEffects || Boolean(dragOffset) || isEditingContent || isEditingTitle || isGeneratingNode || scale < 0.32 || batchClosing || batchOpening;
+    const cometDisabled = reduceMediaEffects || Boolean(dragOffset) || isEditingContent || isEditingTitle || isGeneratingNode || batchClosing || batchOpening;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const resizeRef = useRef({
         isResizing: false,
@@ -167,6 +166,7 @@ export const CanvasNode = React.memo(function CanvasNode({
         startHeight: 0,
         keepRatio: false,
         ratio: 1,
+        scale: 1,
     });
 
     useEffect(() => {
@@ -208,8 +208,8 @@ export const CanvasNode = React.memo(function CanvasNode({
         (event: MouseEvent) => {
             if (!resizeRef.current.isResizing) return;
 
-            const dx = (event.clientX - resizeRef.current.startX) / scale;
-            const dy = (event.clientY - resizeRef.current.startY) / scale;
+            const dx = (event.clientX - resizeRef.current.startX) / resizeRef.current.scale;
+            const dy = (event.clientY - resizeRef.current.startY) / resizeRef.current.scale;
             const isMediaNode = data.type === CanvasNodeType.Image || data.type === CanvasNodeType.Video;
             const minWidth = data.type === CanvasNodeType.Script ? 800 : isMediaNode ? MEDIA_NODE_MIN_SIZE.width : 220;
             const minHeight = scriptMinHeight || (isMediaNode ? MEDIA_NODE_MIN_SIZE.height : 160);
@@ -243,7 +243,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 y: fromTop ? startBottom - height : resizeRef.current.startTop,
             });
         },
-        [data.id, data.type, onResize, scale, scriptMinHeight],
+        [data.id, data.type, onResize, scriptMinHeight],
     );
 
     const handleResizeUp = useCallback(() => {
@@ -266,6 +266,7 @@ export const CanvasNode = React.memo(function CanvasNode({
             startHeight: data.height,
             keepRatio: (data.type === CanvasNodeType.Image && !data.metadata?.freeResize) || data.type === CanvasNodeType.Video,
             ratio: (data.metadata?.naturalWidth || data.width) / (data.metadata?.naturalHeight || data.height || 1),
+            scale: readCanvasScaleFromElement(event.currentTarget),
         };
         window.addEventListener("mousemove", handleResizeMove);
         window.addEventListener("mouseup", handleResizeUp);
@@ -310,7 +311,6 @@ export const CanvasNode = React.memo(function CanvasNode({
         >
             <NodeExternalHeader
                 node={data}
-                scale={scale}
                 active={hovered || isSelected || isFocusRelated}
                 editable={!readOnly && !data.metadata?.locked && Boolean(onTitleChange)}
                 editing={isEditingTitle}
@@ -511,8 +511,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                 </> : null}
             </CometCard>
 
-            {!readOnly && data.type !== CanvasNodeType.Script ? <ConnectionSideRail side="left" scale={scale} visible={hovered} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
-            {!readOnly && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config ? <ConnectionSideRail side="right" scale={scale} visible={hovered} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
+            {!readOnly && data.type !== CanvasNodeType.Script ? <ConnectionSideRail side="left" visible={hovered} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
+            {!readOnly && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config ? <ConnectionSideRail side="right" visible={hovered} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
 
         </div>
     );
@@ -1032,9 +1032,16 @@ function DeferredMediaLoad({ icon, label, disabled, onClick }: { icon: ReactNode
     );
 }
 
+function nodeResourceCacheHint(mimeType?: string, bytes?: number): ResourceCacheHint | undefined {
+    if (!mimeType && bytes == null) return undefined;
+    return { mimeType, bytes };
+}
+
 function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
     const storageKey = node.metadata?.storageKey || "";
     const fallback = node.metadata?.content || "";
+    const mimeType = node.metadata?.mimeType;
+    const bytes = node.metadata?.bytes;
     const isRemoteResource = Boolean(resourceIdFromStorageKey(storageKey));
     const [url, setUrl] = useState(isRemoteResource ? "" : fallback);
     const [loading, setLoading] = useState(isRemoteResource && eager);
@@ -1048,7 +1055,8 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
         }
         setUrl("");
         setLoading(eager);
-        const resolve = eager ? cacheResourceObjectUrl(storageKey) : getCachedResourceObjectUrl(storageKey);
+        const hint = nodeResourceCacheHint(mimeType, bytes);
+        const resolve = eager ? cacheResourceObjectUrl(storageKey, hint) : getCachedResourceObjectUrl(storageKey, hint);
         void resolve
             .then((cached) => {
                 if (!cancelled) setUrl(cached || (eager ? fallback : ""));
@@ -1062,14 +1070,14 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
         return () => {
             cancelled = true;
         };
-    }, [eager, fallback, isRemoteResource, storageKey]);
+    }, [bytes, eager, fallback, isRemoteResource, mimeType, storageKey]);
 
     const load = useCallback(async () => {
         if (url) return url;
         if (!isRemoteResource) return fallback;
         setLoading(true);
         try {
-            const next = (await cacheResourceObjectUrl(storageKey)) || fallback;
+            const next = (await cacheResourceObjectUrl(storageKey, nodeResourceCacheHint(mimeType, bytes))) || fallback;
             setUrl(next);
             return next;
         } catch {
@@ -1078,7 +1086,7 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
         } finally {
             setLoading(false);
         }
-    }, [fallback, isRemoteResource, storageKey, url]);
+    }, [bytes, fallback, isRemoteResource, mimeType, storageKey, url]);
 
     return { url, loading, load };
 }
@@ -1168,11 +1176,8 @@ function ResizeHandle({ corner, onMouseDown }: { corner: ResizeCorner; onMouseDo
     return <div className={`absolute z-[var(--node-z-handle)] size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
 }
 
-const NODE_EXTERNAL_HEADER_MIN_SCALE = 0.35;
-
-function NodeExternalHeader({ node, scale, active, editable, editing, draft, theme, onDraftChange, onEdit, onCommit, onCancel }: {
+function NodeExternalHeader({ node, active, editable, editing, draft, theme, onDraftChange, onEdit, onCommit, onCancel }: {
     node: CanvasNodeData;
-    scale: number;
     active: boolean;
     editable: boolean;
     editing: boolean;
@@ -1184,15 +1189,13 @@ function NodeExternalHeader({ node, scale, active, editable, editing, draft, the
     onCancel: () => void;
 }) {
     // 标题保持屏幕尺寸只适用于近景；远景继续反向缩放会遮住节点和连线。
-    if (scale < NODE_EXTERNAL_HEADER_MIN_SCALE && !editing) return null;
-    const inverseScale = 1 / Math.max(scale, 0.05);
     const Icon = nodeTypeIcon(node.type);
-    const maxHeaderWidth = Math.min(240, node.width * scale);
 
     return (
         <div
             className="canvas-node-external-header absolute bottom-full left-0 z-[var(--node-z-overlay)] flex h-6 items-center gap-1 overflow-hidden"
-            style={{ maxWidth: maxHeaderWidth, color: active ? theme.node.text : theme.node.label, transform: `scale(var(--canvas-live-inverse-scale, ${inverseScale}))`, transformOrigin: "left bottom" }}
+            data-editing={editing ? "true" : "false"}
+            style={{ maxWidth: `min(240px, calc(${node.width}px * var(--canvas-committed-scale, 1)))`, color: active ? theme.node.text : theme.node.label, transform: "scale(var(--canvas-live-inverse-scale, 1))", transformOrigin: "left bottom" }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
         >
@@ -1274,10 +1277,9 @@ function NodeStatusBadge({ status }: { status: "loading" | "success" | "error" }
     );
 }
 
-function ConnectionSideRail({ side, scale, visible, theme, onPointerDown }: { side: "left" | "right"; scale: number; visible: boolean; theme: CanvasTheme; onPointerDown: (event: React.PointerEvent, anchorRatio: number) => void }) {
+function ConnectionSideRail({ side, visible, theme, onPointerDown }: { side: "left" | "right"; visible: boolean; theme: CanvasTheme; onPointerDown: (event: React.PointerEvent, anchorRatio: number) => void }) {
     const handleRef = useRef<HTMLSpanElement>(null);
     const anchorRatioRef = useRef(0.5);
-    const inverseScale = 1 / Math.max(scale, 0.05);
 
     const resetAnchor = useCallback(() => {
         anchorRatioRef.current = 0.5;
@@ -1302,7 +1304,7 @@ function ConnectionSideRail({ side, scale, visible, theme, onPointerDown }: { si
         <button
             type="button"
             className={`group absolute top-1/2 z-[var(--node-z-overlay)] touch-none -translate-y-1/2 outline-none transition-opacity duration-150 ${visible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
-            style={{ width: 56 * inverseScale, height: `min(100%, ${72 * inverseScale}px)`, ...(side === "left" ? { right: "100%" } : { left: "100%" }) }}
+            style={{ width: "calc(56px * var(--canvas-live-inverse-scale, 1))", height: "min(100%, calc(72px * var(--canvas-live-inverse-scale, 1)))", ...(side === "left" ? { right: "100%" } : { left: "100%" }) }}
             onPointerEnter={updateAnchor}
             onPointerMove={updateAnchor}
             onPointerLeave={resetAnchor}
@@ -1314,17 +1316,17 @@ function ConnectionSideRail({ side, scale, visible, theme, onPointerDown }: { si
                 className="absolute grid -translate-y-1/2 place-items-center rounded-full border transition-[background-color,box-shadow] duration-150 group-hover:brightness-125 group-focus-visible:brightness-125"
                 style={{
                     top: "50%",
-                    width: 18 * inverseScale,
-                    height: 18 * inverseScale,
-                    ...(side === "left" ? { right: 6 * inverseScale } : { left: 6 * inverseScale }),
-                    borderWidth: inverseScale,
+                    width: "calc(18px * var(--canvas-live-inverse-scale, 1))",
+                    height: "calc(18px * var(--canvas-live-inverse-scale, 1))",
+                    ...(side === "left" ? { right: "calc(6px * var(--canvas-live-inverse-scale, 1))" } : { left: "calc(6px * var(--canvas-live-inverse-scale, 1))" }),
+                    borderWidth: "calc(1px * var(--canvas-live-inverse-scale, 1))",
                     background: theme.spatial.elevated,
                     borderColor: theme.node.activeStroke,
                     color: theme.node.activeStroke,
                     boxShadow: `0 4px 12px ${theme.spatial.shadow}`,
                 }}
             >
-                <Plus style={{ width: 10 * inverseScale, height: 10 * inverseScale }} strokeWidth={2} />
+                <Plus className="size-[10px]" style={{ width: "calc(10px * var(--canvas-live-inverse-scale, 1))", height: "calc(10px * var(--canvas-live-inverse-scale, 1))" }} strokeWidth={2} />
             </span>
         </button>
     );
