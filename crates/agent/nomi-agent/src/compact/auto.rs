@@ -6,7 +6,7 @@
 //! summary.  A circuit breaker prevents runaway retries.
 
 use nomi_agent_trace::ObservationScope;
-use nomi_config::compact::CompactConfig;
+use nomi_config::compact::{CompactConfig, window_output_unit};
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_types::compact::{CompactMetadata, CompactTrigger};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
@@ -20,7 +20,7 @@ use crate::observation::ObservationSession;
 use super::estimate::estimate_tokens_from_messages;
 use super::prompt::{
     COMPACT_SYSTEM_PROMPT, build_compact_prompt, build_summary_content,
-    compact_max_output_tokens, format_compact_summary,
+    format_compact_summary,
 };
 use super::state::CompactState;
 
@@ -500,7 +500,7 @@ async fn summarize_with_retry(
 
     let mut ptl_attempts = 0u32;
     let mut retried_transient = false;
-    let max_tokens = compact_max_output_tokens(config.context_window);
+    let max_tokens = Some(window_output_unit(config.context_window));
 
     loop {
         let request = LlmRequest {

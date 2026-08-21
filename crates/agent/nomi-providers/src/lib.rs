@@ -34,6 +34,8 @@ pub trait LlmProvider: Send + Sync {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
+    #[error("Provider configuration error: {0}")]
+    Config(String),
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("API error {status}: {message}")]

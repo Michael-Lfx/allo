@@ -174,7 +174,6 @@ impl LocalAgentInvocationRunner {
     fn config_for_invocation(&self, invocation: &AgentInvocationInput) -> Config {
         let mut config = self.base_config.clone();
         config.max_turns = Some(invocation.max_turns);
-        config.max_tokens = invocation.max_tokens;
         if let Some(system_prompt) = invocation.system_prompt.clone() {
             config.system_prompt = Some(system_prompt);
         }
@@ -599,6 +598,7 @@ fn map_agent_invocation_outcome(
                 StopReason::MaxTurns => {
                     Some("exhausted its per-turn provider-request budget before finishing")
                 }
+                StopReason::Refusal => Some("was refused by the provider before finishing"),
                 StopReason::EndTurn | StopReason::ToolUse => None,
             };
             AgentInvocationOutput {
@@ -1033,7 +1033,7 @@ mod phase7_tests {
             api_key: "sk-test".into(),
             base_url: "http://localhost:0".into(),
             model: "gpt-test-model".into(),
-            max_tokens: 1024,
+            output_max_tokens: Some(1024),
             max_turns: Some(5),
             system_prompt: None,
             project_instructions: Default::default(),
@@ -1110,7 +1110,6 @@ mod phase7_tests {
             name: name.to_owned(),
             prompt: format!("task for {name}"),
             max_turns: 5,
-            max_tokens: 1024,
             system_prompt: None,
             model: None,
             effort: None,
@@ -1670,7 +1669,6 @@ mod phase7_tests {
             name: "test-agent".to_string(),
             prompt: "do the task".to_string(),
             max_turns: 5,
-            max_tokens: 1024,
             system_prompt: Some("you are helpful".to_string()),
             model: None,
             effort: None,

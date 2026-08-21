@@ -358,7 +358,7 @@ impl GoalJudgeClient for ProviderJudgeClient {
                 }],
             )],
             tools: vec![],
-            max_tokens: JUDGE_MAX_TOKENS,
+            max_tokens: Some(JUDGE_MAX_TOKENS),
             thinking: Some(ThinkingConfig::Disabled),
             reasoning_effort: None,
             temperature: Some(0.0),

@@ -16,11 +16,9 @@ use nomi_types::message::TokenUsage;
 use nomi_types::tool::{JsonSchema, ToolResult};
 
 const DEFAULT_AGENT_MAX_TURNS: usize = 200;
-const DEFAULT_AGENT_MAX_TOKENS: u32 = 4096;
-
 const DESCRIPTION: &str = concat!(
     "Start one embedded Agent Execution with strategy=parallel. It synchronously invokes ",
-    "1-16 Agents (200 turns and 4096 output tokens each) and returns the same ",
+    "1-16 Agents (200 turns each, inheriting the session output limit) and returns the same ",
     "execution_id/status/message receipt as a platform execution, plus terminal results. ",
     "Sibling progress is coordinated by the host without adding another model tool. ",
     "Use synthesize=true to add a read-only consolidation pass. Dependency DAGs and ",
@@ -101,7 +99,6 @@ impl Tool for LocalDelegateTool {
                         name: "synthesizer".to_owned(),
                         prompt: build_synthesis_prompt(&results),
                         max_turns: DEFAULT_AGENT_MAX_TURNS,
-                        max_tokens: DEFAULT_AGENT_MAX_TOKENS,
                         system_prompt: None,
                         model: None,
                         effort: None,
@@ -158,7 +155,6 @@ fn task_invocation(task: AgentDelegationTask) -> AgentInvocationInput {
         name,
         prompt: apply_agent_role_context(prompt, role.as_deref()),
         max_turns: DEFAULT_AGENT_MAX_TURNS,
-        max_tokens: DEFAULT_AGENT_MAX_TOKENS,
         system_prompt: None,
         model: None,
         effort: None,

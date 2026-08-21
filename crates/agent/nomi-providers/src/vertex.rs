@@ -63,7 +63,13 @@ impl VertexProvider {
         )
     }
 
-    fn build_request_body(&self, request: &LlmRequest) -> Value {
+    fn build_request_body(&self, request: &LlmRequest) -> Result<Value, ProviderError> {
+        let max_tokens = request.max_tokens.ok_or_else(|| {
+            ProviderError::Config(
+                "vertex.anthropic_messages requires an explicit output ceiling; pass --max-tokens (or set [default].max_tokens) in the CLI, or set Max output tokens on the desktop model"
+                    .into(),
+            )
+        })?;
         let system = if self.cache_enabled {
             json!([{
                 "type": "text",
@@ -76,7 +82,7 @@ impl VertexProvider {
 
         let mut body = json!({
             "anthropic_version": "vertex-2023-10-16",
-            "max_tokens": request.max_tokens,
+            "max_tokens": max_tokens,
             "system": system,
             "messages": anthropic_shared::build_messages(&request.messages, &self.compat),
             "stream": true
@@ -101,7 +107,7 @@ impl VertexProvider {
             body["temperature"] = json!(t);
         }
 
-        body
+        Ok(body)
     }
 
     async fn get_access_token(&self) -> Result<String, ProviderError> {
@@ -259,7 +265,7 @@ impl LlmProvider for VertexProvider {
         request: &LlmRequest,
     ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
         let url = self.build_url(&request.model);
-        let body = self.build_request_body(request);
+        let body = self.build_request_body(request)?;
 
         tracing::debug!(target: "nomi_providers", body = %serde_json::to_string_pretty(&body).unwrap_or_default(), "outgoing request");
 
@@ -392,7 +398,7 @@ mod tests {
                 vec![ContentBlock::Text { text: "hi".into() }],
             )],
             tools: vec![],
-            max_tokens: 16,
+            max_tokens: Some(16),
             thinking: None,
             reasoning_effort: None,
             temperature: None,
@@ -415,7 +421,7 @@ mod tests {
         let mut request = minimal_request();
         request.temperature = Some(0.5);
 
-        let body = provider.build_request_body(&request);
+        let body = provider.build_request_body(&request).unwrap();
 
         assert_eq!(body["temperature"], 0.5);
     }
@@ -425,7 +431,7 @@ mod tests {
         let provider = test_provider();
         let request = minimal_request();
 
-        let body = provider.build_request_body(&request);
+        let body = provider.build_request_body(&request).unwrap();
 
         assert!(body.get("temperature").is_none());
     }

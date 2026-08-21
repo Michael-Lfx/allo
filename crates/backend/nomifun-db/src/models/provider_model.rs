@@ -19,6 +19,7 @@ pub struct ProviderModelRow {
     pub connection_role: Option<String>,
     pub params: String,          // JSON object
     pub context_limit: Option<i64>,
+    pub output_limit: Option<i64>,
     pub description: Option<String>,
     pub source: String,          // "inferred" | "user"
     pub health: Option<String>,  // JSON ModelHealthStatus
@@ -38,6 +39,7 @@ pub struct NewProviderModel<'a> {
     pub protocol: Option<&'a str>,
     pub params: &'a str,
     pub context_limit: Option<i64>,
+    pub output_limit: Option<i64>,
     pub description: Option<&'a str>,
     pub source: &'a str,
     pub health: Option<&'a str>,
@@ -54,6 +56,7 @@ pub struct ProviderModelUpdate<'a> {
     pub connection_role: Option<Option<&'a str>>,
     pub params: Option<&'a str>,
     pub context_limit: Option<Option<i64>>,
+    pub output_limit: Option<Option<i64>>,
     pub description: Option<Option<&'a str>>,
     pub source: Option<&'a str>,
 }

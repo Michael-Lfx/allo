@@ -412,6 +412,7 @@ mod tests {
                     protocol: None,
                     params: "{}",
                     context_limit: None,
+                    output_limit: None,
                     description: None,
                     source: "inferred",
                     health: None,

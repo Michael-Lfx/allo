@@ -17002,6 +17002,7 @@ fn test_provider(id: &str, models: &[&str]) -> (Provider, Vec<nomifun_db::Provid
             connection_role: None,
             params: "{}".into(),
             context_limit: None,
+            output_limit: None,
             description: None,
             source: "inferred".into(),
             health: None,

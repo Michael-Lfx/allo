@@ -611,6 +611,7 @@ mod tests {
             connection_role: None,
             params: "###".into(),
             context_limit: None,
+            output_limit: None,
             description: None,
             source: "user".into(),
             health: None,

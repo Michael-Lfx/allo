@@ -8,4 +8,4 @@ import type { ModelTrait } from "./ModelTrait";
  * Nullable columns use double-Option: field absent = keep, `null` = clear,
  * value = set.
  */
-export type UpdateProviderModelRequest = { provider_id: string, model: string, enabled?: boolean, sort_order?: number, tasks?: Array<ModelTask>, traits?: Array<ModelTrait>, protocol?: string | null, connection_role?: string | null, params?: unknown, context_limit?: number | null, description?: string | null, };
+export type UpdateProviderModelRequest = { provider_id: string, model: string, enabled?: boolean, sort_order?: number, tasks?: Array<ModelTask>, traits?: Array<ModelTrait>, protocol?: string | null, connection_role?: string | null, params?: unknown, context_limit?: number | null, output_limit?: number | null, description?: string | null, };

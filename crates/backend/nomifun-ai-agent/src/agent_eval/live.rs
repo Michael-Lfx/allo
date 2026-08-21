@@ -372,6 +372,7 @@ fn stop_reason_label(reason: nomi_types::message::StopReason) -> String {
         nomi_types::message::StopReason::ToolUse => "tool_use".into(),
         nomi_types::message::StopReason::MaxTokens => "max_tokens".into(),
         nomi_types::message::StopReason::MaxTurns => "max_turns".into(),
+        nomi_types::message::StopReason::Refusal => "refusal".into(),
     }
 }
 

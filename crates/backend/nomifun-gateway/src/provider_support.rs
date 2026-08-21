@@ -347,6 +347,7 @@ mod tests {
             connection_role: None,
             params: "{}".into(),
             context_limit: None,
+            output_limit: None,
             description: None,
             source: "inferred".into(),
             health: None,

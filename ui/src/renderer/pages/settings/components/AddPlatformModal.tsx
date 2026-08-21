@@ -31,6 +31,7 @@ import {
 } from '@/renderer/utils/model/modelPlatforms';
 import type { DeepLinkAddProviderDetail } from '@/renderer/hooks/system/useDeepLink';
 import { ContextLimitSelect } from './ContextLimitSelect';
+import { OutputLimitInput } from './OutputLimitInput';
 import { MODEL_PROFILES_SWR_KEY } from '@renderer/hooks/agent/useModelProfiles';
 import { buildModelProfileUpsertRequest, MODEL_TASK_ORDER } from '@renderer/hooks/agent/modelProfileEditing';
 
@@ -441,6 +442,8 @@ const AddPlatformModal = ModalHOC<{
         const name = String(values.name ?? '').trim() || presetName;
         const contextLimit =
           typeof values.context_limit === 'number' && values.context_limit > 0 ? values.context_limit : undefined;
+        const outputLimit =
+          typeof values.output_limit === 'number' && values.output_limit > 0 ? values.output_limit : undefined;
         const providerPlatform = selectedPlatform?.platform ?? 'custom';
         const providerBaseUrl = isBedrock ? '' : values.base_url || selectedPlatform?.base_url || '';
         let normalizedApiKey = '';
@@ -506,6 +509,13 @@ const AddPlatformModal = ModalHOC<{
             await ipcBridge.modelProfile.upsert.invoke({
               ...buildModelProfileUpsertRequest(provider.id, values.model, tasks, [...selectedTraits]),
             });
+            if (outputLimit) {
+              await ipcBridge.providerModel.update.invoke({
+                provider_id: provider.id,
+                model: values.model,
+                output_limit: outputLimit,
+              });
+            }
             void mutateSWR(MODEL_PROFILES_SWR_KEY);
           } catch (error) {
             console.error('model profile upsert failed', error);
@@ -995,6 +1005,13 @@ const AddPlatformModal = ModalHOC<{
             label={t('settings.contextLimit', { defaultValue: '上下文窗口 (tokens)' })}
           >
             <ContextLimitSelect />
+          </Form.Item>
+
+          <Form.Item
+            field='output_limit'
+            label={t('settings.outputLimit', { defaultValue: '最大输出 tokens' })}
+          >
+            <OutputLimitInput />
           </Form.Item>
 
           {/* New API 协议选择 / New API Protocol Selection */}

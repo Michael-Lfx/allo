@@ -45,7 +45,7 @@ pub enum ExtractCoordinatorBinding {
 struct SessionExtractModel {
     provider: Arc<dyn LlmProvider>,
     model: String,
-    max_tokens: u32,
+    output_max_tokens: Option<u32>,
     observation: Option<Arc<crate::observation::ObservationSession>>,
 }
 
@@ -64,7 +64,7 @@ impl nomi_browser::extract::ExtractModel for SessionExtractModel {
                 vec![ContentBlock::Text { text: prompt.to_string() }],
             )],
             tools: Vec::new(),
-            max_tokens: self.max_tokens,
+            max_tokens: self.output_max_tokens,
             thinking: None,
             reasoning_effort: None,
             temperature: None,
@@ -107,7 +107,7 @@ impl nomi_browser::extract::ExtractModel for SessionExtractModel {
 struct SessionVisualLocator {
     provider: Arc<dyn LlmProvider>,
     model: String,
-    max_tokens: u32,
+    output_max_tokens: Option<u32>,
     observation: Option<Arc<crate::observation::ObservationSession>>,
 }
 
@@ -134,7 +134,7 @@ impl SessionVisualLocator {
                 ],
             )],
             tools: Vec::new(),
-            max_tokens: self.max_tokens,
+            max_tokens: self.output_max_tokens,
             thinking: None,
             reasoning_effort: None,
             temperature: None,
@@ -960,7 +960,7 @@ impl AgentBootstrap {
             let extract_model = Arc::new(SessionExtractModel {
                 provider: provider.clone(),
                 model: self.config.model.clone(),
-                max_tokens: self.config.max_tokens,
+                output_max_tokens: self.config.output_max_tokens,
                 observation: self.observation.clone(),
             });
             browser_tool = browser_tool.with_extract_model(extract_model);
@@ -974,7 +974,7 @@ impl AgentBootstrap {
                 let locator = Arc::new(SessionVisualLocator {
                     provider: provider.clone(),
                     model: self.config.model.clone(),
-                    max_tokens: self.config.max_tokens,
+                    output_max_tokens: self.config.output_max_tokens,
                     observation: self.observation.clone(),
                 });
                 browser_tool = browser_tool

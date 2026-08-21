@@ -685,6 +685,7 @@ async fn test_engine_tool_use_executes_and_continues() {
             usage: TokenUsage {
                 input_tokens: 80,
                 output_tokens: 30,
+                reasoning_tokens: 0,
                 cache_creation_tokens: 0,
                 cache_read_tokens: 0,
             },
@@ -697,6 +698,7 @@ async fn test_engine_tool_use_executes_and_continues() {
             usage: TokenUsage {
                 input_tokens: 100,
                 output_tokens: 50,
+                reasoning_tokens: 0,
                 cache_creation_tokens: 0,
                 cache_read_tokens: 0,
             },
@@ -923,6 +925,7 @@ async fn duplicate_tool_names_emit_distinct_tool_use_ids() {
             usage: TokenUsage {
                 input_tokens: 80,
                 output_tokens: 30,
+                reasoning_tokens: 0,
                 cache_creation_tokens: 0,
                 cache_read_tokens: 0,
             },
@@ -935,6 +938,7 @@ async fn duplicate_tool_names_emit_distinct_tool_use_ids() {
             usage: TokenUsage {
                 input_tokens: 100,
                 output_tokens: 50,
+                reasoning_tokens: 0,
                 cache_creation_tokens: 0,
                 cache_read_tokens: 0,
             },
@@ -991,6 +995,7 @@ async fn test_engine_max_tokens_handling() {
             usage: TokenUsage {
                 input_tokens: 200,
                 output_tokens: 100,
+                reasoning_tokens: 0,
                 cache_creation_tokens: 0,
                 cache_read_tokens: 0,
             },
@@ -1036,6 +1041,7 @@ async fn test_engine_message_accumulation() {
                 usage: TokenUsage {
                     input_tokens: 10,
                     output_tokens: 5,
+                    reasoning_tokens: 0,
                     cache_creation_tokens: 0,
                     cache_read_tokens: 0,
                 },
@@ -1048,6 +1054,7 @@ async fn test_engine_message_accumulation() {
                 usage: TokenUsage {
                     input_tokens: 10,
                     output_tokens: 5,
+                    reasoning_tokens: 0,
                     cache_creation_tokens: 0,
                     cache_read_tokens: 0,
                 },
@@ -1166,6 +1173,7 @@ async fn test_engine_token_usage_tracking() {
             usage: TokenUsage {
                 input_tokens: 80,
                 output_tokens: 30,
+                reasoning_tokens: 0,
                 cache_creation_tokens: 0,
                 cache_read_tokens: 0,
             },
@@ -1178,6 +1186,7 @@ async fn test_engine_token_usage_tracking() {
             usage: TokenUsage {
                 input_tokens: 100,
                 output_tokens: 50,
+                reasoning_tokens: 0,
                 cache_creation_tokens: 0,
                 cache_read_tokens: 0,
             },
@@ -1231,6 +1240,7 @@ async fn test_engine_max_turns_returns_ok() {
                 usage: TokenUsage {
                     input_tokens: 50,
                     output_tokens: 20,
+                    reasoning_tokens: 0,
                     cache_creation_tokens: 0,
                     cache_read_tokens: 0,
                 },

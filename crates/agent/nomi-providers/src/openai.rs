@@ -448,7 +448,9 @@ impl OpenAIProvider {
         if include_stream_usage {
             body["stream_options"] = json!({ "include_usage": true });
         }
-        body[max_tokens_field] = json!(request.max_tokens);
+        if let Some(limit) = request.max_tokens {
+            body[max_tokens_field] = json!(limit);
+        }
 
         if let Some(t) = request.temperature {
             body["temperature"] = json!(t);
@@ -670,6 +672,7 @@ struct StreamState {
     tool_calls: Vec<ToolCallAccumulator>,
     input_tokens: u64,
     output_tokens: u64,
+    reasoning_tokens: u64,
     /// Cache-read (prompt-cache hit) tokens reported by the provider, if any.
     /// Informational: surfaced into the Done event's usage so the cache-hit rate
     /// is observable for domestic OpenAI-compatible providers (DeepSeek/GLM/Qwen/…)
@@ -700,6 +703,7 @@ impl StreamState {
             tool_calls: Vec::new(),
             input_tokens: 0,
             output_tokens: 0,
+            reasoning_tokens: 0,
             cache_read_tokens: 0,
             pending_done: None,
             finish_reason: None,
@@ -751,7 +755,7 @@ impl StreamState {
         };
 
         let mut events = Vec::new();
-        if matches!(stop_reason, StopReason::MaxTokens) {
+        if matches!(stop_reason, StopReason::MaxTokens | StopReason::Refusal) {
             self.tool_calls.clear();
         } else if !self.tool_calls.is_empty() || matches!(stop_reason, StopReason::ToolUse) {
             if self.tool_calls.is_empty() {
@@ -775,6 +779,7 @@ impl StreamState {
             usage: TokenUsage {
                 input_tokens: self.input_tokens,
                 output_tokens: self.output_tokens,
+                reasoning_tokens: self.reasoning_tokens,
                 cache_creation_tokens: 0,
                 cache_read_tokens: self.cache_read_tokens,
             },
@@ -1434,6 +1439,18 @@ fn update_stream_usage(json: &Value, state: &mut StreamState) -> Result<(), Stri
     state.output_tokens =
         optional_usage_u64(usage, "completion_tokens")?.unwrap_or(state.output_tokens);
 
+    state.reasoning_tokens = match usage.get("completion_tokens_details") {
+        None | Some(Value::Null) => state.reasoning_tokens,
+        Some(Value::Object(details)) => optional_usage_u64(details, "reasoning_tokens")?
+            .unwrap_or(state.reasoning_tokens),
+        Some(_) => {
+            return Err(
+                "OpenAI-compatible provider returned non-object completion_tokens_details"
+                    .to_string(),
+            );
+        }
+    };
+
     let detail_cached = match usage.get("prompt_tokens_details") {
         None | Some(Value::Null) => 0,
         Some(Value::Object(details)) => {
@@ -1476,9 +1493,12 @@ fn provider_error_detail(error: &Value) -> String {
 fn normalize_finish_reason(reason: &str) -> Result<&'static str, String> {
     if reason.eq_ignore_ascii_case("stop")
         || reason.eq_ignore_ascii_case("end_turn")
-        || reason.eq_ignore_ascii_case("content_filter")
     {
         Ok("stop")
+    } else if reason.eq_ignore_ascii_case("content_filter")
+        || reason.eq_ignore_ascii_case("refusal")
+    {
+        Ok("refusal")
     } else if reason.eq_ignore_ascii_case("tool_calls")
         || reason.eq_ignore_ascii_case("function_call")
     {
@@ -1850,6 +1870,13 @@ fn parse_sse_chunk(data: &str, state: &mut StreamState, auto_tool_id: bool) -> V
                 state.tool_calls.clear();
                 state.pending_done = Some(LlmEvent::Done {
                     stop_reason: StopReason::MaxTokens,
+                    usage: TokenUsage::default(),
+                });
+            }
+            "refusal" => {
+                state.tool_calls.clear();
+                state.pending_done = Some(LlmEvent::Done {
+                    stop_reason: StopReason::Refusal,
                     usage: TokenUsage::default(),
                 });
             }
@@ -2938,7 +2965,7 @@ mod tests {
                 }],
             )],
             tools: vec![],
-            max_tokens: 16,
+            max_tokens: Some(16),
             thinking: None,
             reasoning_effort: None,
             temperature: None,
@@ -3112,7 +3139,7 @@ mod tests {
             system: String::new(),
             messages: vec![],
             tools: vec![],
-            max_tokens: 1024,
+            max_tokens: Some(1024),
             thinking: None,
             reasoning_effort: None,
             temperature: None,
@@ -3134,7 +3161,7 @@ mod tests {
             system: String::new(),
             messages: vec![],
             tools: vec![],
-            max_tokens: 2048,
+            max_tokens: Some(2048),
             thinking: None,
             reasoning_effort: None,
             temperature: None,

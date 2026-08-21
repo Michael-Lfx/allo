@@ -44,9 +44,9 @@ pub(crate) struct ResolvedProviderFields {
     pub compat_overrides: NomiCompatOverrides,
     pub bedrock_config: Option<nomi_config::config::BedrockConfig>,
     pub context_limit: Option<i64>,
-    /// Server-authoritative output limit from the Flowy cloud catalog. Only
-    /// populated for the built-in Flowy provider.
-    pub model_max_tokens: Option<u32>,
+    /// Declared output ceiling from `provider_models.output_limit`, with a
+    /// temporary dual-read of the legacy Flowy catalog params key.
+    pub output_limit: Option<u32>,
     /// Raw provider row platform name (the models.dev catalog key — NOT the
     /// mapped nomi provider name). Carried so callers can do further catalog
     /// lookups (e.g. MoA slot pricing) without reloading the row.
@@ -90,9 +90,12 @@ pub(crate) async fn resolve_provider_fields(
 
     let protocol = model_row.as_ref().and_then(|m| m.protocol.as_deref());
     let provider = map_nomi_provider(&row.platform, protocol);
-    let model_max_tokens = model_row
-        .as_ref()
-        .and_then(|model_row| flowy_catalog_max_tokens(provider_id, &model_row.params));
+    let output_limit = model_row.as_ref().and_then(|model_row| {
+        model_row
+            .output_limit
+            .and_then(|v| u32::try_from(v).ok().filter(|n| *n > 0))
+            .or_else(|| flowy_catalog_max_tokens(provider_id, &model_row.params))
+    });
     let catalog_reasoning_effort = model_row.as_ref().and_then(|model_row| {
         flowy_catalog_reasoning_effort(provider_id, &model_row.params)
     });
@@ -144,7 +147,7 @@ pub(crate) async fn resolve_provider_fields(
         compat_overrides,
         bedrock_config,
         context_limit: resolve_model_context_limit(user_context, catalog_context),
-        model_max_tokens,
+        output_limit,
         platform: row.platform.clone(),
     })
 }
@@ -506,7 +509,7 @@ pub async fn one_shot_completion_title(
         system: system.to_owned(),
         messages,
         tools: vec![],
-        max_tokens,
+        max_tokens: Some(max_tokens),
         thinking: Some(ThinkingConfig::Disabled),
         reasoning_effort: None,
         temperature: None,
@@ -533,7 +536,7 @@ pub async fn streaming_completion(
         system: system.to_owned(),
         messages,
         tools: vec![],
-        max_tokens,
+        max_tokens: Some(max_tokens),
         thinking: None,
         reasoning_effort: None,
         temperature: None,
@@ -561,7 +564,7 @@ pub async fn streaming_completion_no_thinking(
         system: system.to_owned(),
         messages,
         tools: vec![],
-        max_tokens,
+        max_tokens: Some(max_tokens),
         thinking: Some(ThinkingConfig::Disabled),
         reasoning_effort: None,
         temperature: None,
@@ -595,7 +598,7 @@ pub async fn streaming_completion_kinded(
         system: system.to_owned(),
         messages,
         tools: vec![],
-        max_tokens,
+        max_tokens: Some(max_tokens),
         thinking: None,
         reasoning_effort: None,
         temperature: None,
@@ -627,7 +630,7 @@ pub async fn streaming_completion_text_or_reasoning(
         system: system.to_owned(),
         messages,
         tools: vec![],
-        max_tokens,
+        max_tokens: Some(max_tokens),
         thinking: None,
         reasoning_effort: None,
         temperature: None,

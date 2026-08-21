@@ -53,13 +53,26 @@ use crate::types::{NomiResolvedConfig, SendMessageData, inject_loaded_skill_cont
 use super::image_attachments::load_image_blocks;
 use super::image_analyze::analyze_image_blocks;
 
-fn apply_provider_context_budget(config: &mut Config, context_limit: Option<u64>) {
+fn apply_provider_token_budget(
+    config: &mut Config,
+    context_limit: Option<u64>,
+    declared_output_limit: Option<u32>,
+) -> Result<(), AppError> {
     config.compact.context_window = nomi_config::compact::resolve_context_window(
         context_limit,
         config.compact.context_window,
     );
-    config.max_tokens =
-        nomi_config::compact::fit_context_budget(&mut config.compact, config.max_tokens);
+    // The capability is authoritative on the desktop path. In particular,
+    // None must erase a legacy ~/.nomi/config.toml value rather than revive it.
+    config.output_max_tokens =
+        nomi_config::compact::fit_context_budget(&mut config.compact, declared_output_limit);
+    if config.output_max_tokens.is_none() && config.provider.requires_output_ceiling() {
+        return Err(AppError::BadRequest(format!(
+            "the {} protocol requires an explicit output ceiling; set Max output tokens on the {} model in Settings -> Models",
+            config.provider_label, config.model
+        )));
+    }
+    Ok(())
 }
 
 struct TurnTeardownFence {
@@ -431,6 +444,7 @@ pub(crate) fn map_engine_stop_reason(
         StopReason::EndTurn | StopReason::ToolUse => TurnStopReason::EndTurn,
         StopReason::MaxTokens => TurnStopReason::MaxTokens,
         StopReason::MaxTurns => TurnStopReason::MaxTurnRequests,
+        StopReason::Refusal => TurnStopReason::Refusal,
     }
 }
 
@@ -784,7 +798,7 @@ impl NomiAgentManager {
             api_key: Some(config_extra.api_key.clone()),
             base_url: config_extra.base_url.clone(),
             model: Some(config_extra.model.clone()),
-            max_tokens: Some(config_extra.max_tokens),
+            max_tokens: None,
             max_turns: config_extra.max_turns,
             system_prompt: config_extra.system_prompt.clone(),
             profile: None,
@@ -828,7 +842,11 @@ impl NomiAgentManager {
         // Make the engine compact against the provider's declared context
         // window when set (else keep the resolved default). Same value the
         // context-usage gauge reports as the denominator.
-        apply_provider_context_budget(&mut config, config_extra.context_limit);
+        apply_provider_token_budget(
+            &mut config,
+            config_extra.context_limit,
+            config_extra.output_ceiling,
+        )?;
 
         if !config_extra.extra_mcp_servers.is_empty() {
             config.mcp.servers.extend(config_extra.extra_mcp_servers.clone());
@@ -3911,7 +3929,7 @@ mod tests {
             model: "claude-sonnet-4-20250514".into(),
             base_url: None,
             system_prompt: None,
-            max_tokens: 4096,
+            output_ceiling: Some(4096),
             max_turns: None,
             context_limit: None,
             compat_overrides: Default::default(),
@@ -4174,7 +4192,7 @@ mod tests {
             api_key: Some("sk-test-key".into()),
             base_url: None,
             model: Some("claude-sonnet-4-20250514".into()),
-            max_tokens: Some(4096),
+            output_ceiling: Some(4096),
             max_turns: Some(10),
             system_prompt: None,
             profile: None,
@@ -4187,17 +4205,38 @@ mod tests {
     }
 
     #[test]
-    fn provider_context_budget_is_applied_before_engine_bootstrap() {
+    fn declared_provider_token_budget_is_applied_before_engine_bootstrap() {
         let mut config = make_test_engine_config();
-        config.max_tokens = 8192;
 
-        apply_provider_context_budget(&mut config, Some(4096));
+        apply_provider_token_budget(&mut config, Some(4096), Some(8192)).unwrap();
 
         assert_eq!(config.compact.context_window, 4096);
-        assert_eq!(config.max_tokens, 1024);
+        assert_eq!(config.output_max_tokens, Some(1024));
         assert_eq!(config.compact.output_reserve, 1024);
         assert_eq!(config.compact.autocompact_buffer, 512);
         assert_eq!(config.compact.emergency_buffer, 256);
+    }
+
+    #[test]
+    fn absent_capability_ceiling_erases_desktop_local_config_for_optional_protocol() {
+        let mut config = make_test_engine_config();
+        config.provider = nomi_config::config::ProviderType::OpenAI;
+        config.output_max_tokens = Some(8192);
+
+        apply_provider_token_budget(&mut config, Some(200_000), None).unwrap();
+
+        assert_eq!(config.output_max_tokens, None);
+        assert_eq!(config.compact.output_reserve, 20_000);
+    }
+
+    #[test]
+    fn required_protocol_rejects_an_absent_capability_ceiling() {
+        let mut config = make_test_engine_config();
+
+        let error = apply_provider_token_budget(&mut config, Some(200_000), None)
+            .expect_err("Anthropic requires an explicit output ceiling");
+
+        assert!(error.to_string().contains("Max output tokens"));
     }
 
     fn make_agent_with_provider(provider: Arc<dyn LlmProvider>) -> NomiAgentManager {
@@ -6264,6 +6303,7 @@ mod turn_completed_mapping_tests {
         assert_eq!(map_engine_stop_reason(StopReason::MaxTokens), TurnStopReason::MaxTokens);
         // Per-turn request cap — likewise a truncated turn.
         assert_eq!(map_engine_stop_reason(StopReason::MaxTurns), TurnStopReason::MaxTurnRequests);
+        assert_eq!(map_engine_stop_reason(StopReason::Refusal), TurnStopReason::Refusal);
     }
 }
 

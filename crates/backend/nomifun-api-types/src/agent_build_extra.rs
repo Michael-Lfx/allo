@@ -340,8 +340,6 @@ pub struct NomiBuildExtra {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub preset_rules: Option<String>,
-    #[serde(default = "default_nomi_max_tokens")]
-    pub max_tokens: u32,
     #[serde(default)]
     pub max_turns: Option<usize>,
     /// Opt-in goal-driven continuation (see [`NomiGoalSpec`]).
@@ -470,9 +468,6 @@ pub struct NomiBuildExtra {
     pub coding_micro_keep_recent: Option<usize>,
 }
 
-fn default_nomi_max_tokens() -> u32 {
-    8192
-}
 
 fn default_delegation_policy() -> DelegationPolicy {
     DelegationPolicy::Automatic

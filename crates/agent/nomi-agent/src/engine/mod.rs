@@ -442,6 +442,7 @@ impl ToolEfficiencyStats {
                     StopReason::ToolUse => "tool_use",
                     StopReason::MaxTokens => "max_tokens",
                     StopReason::MaxTurns => "max_turns",
+                    StopReason::Refusal => "refusal",
                 },
                 "none",
                 result.turns,
@@ -519,7 +520,7 @@ pub struct AgentEngine {
     messages: Vec<Message>,
     system_prompt: String,
     model: String,
-    max_tokens: u32,
+    output_max_tokens: Option<u32>,
     max_turns: Option<usize>,
     total_usage: TokenUsage,
     thinking: Option<nomi_types::llm::ThinkingConfig>,
@@ -641,7 +642,7 @@ impl AgentEngine {
             messages: Vec::new(),
             system_prompt,
             model: config.model,
-            max_tokens: config.max_tokens,
+            output_max_tokens: config.output_max_tokens,
             max_turns: config.max_turns,
             total_usage: TokenUsage::default(),
             thinking: config.thinking,
@@ -726,7 +727,7 @@ impl AgentEngine {
             messages: session.messages.clone(),
             system_prompt,
             model: config.model.clone(),
-            max_tokens: config.max_tokens,
+            output_max_tokens: config.output_max_tokens,
             max_turns: config.max_turns,
             total_usage: session.total_usage.clone(),
             thinking: config.thinking,
@@ -1692,7 +1693,7 @@ impl AgentEngine {
                 system: system.clone(),
                 messages,
                 tools: tools.clone(),
-                max_tokens: self.max_tokens,
+                max_tokens: self.output_max_tokens,
                 thinking: self.thinking.clone(),
                 reasoning_effort: self.current_reasoning_effort.clone(),
                 temperature: None,
@@ -2047,8 +2048,9 @@ impl AgentEngine {
                 StopReason::ToolUse if tool_calls.is_empty() => Some(
                     "provider stream protocol violation: ToolUse Done contained no complete tool calls",
                 ),
-                StopReason::EndTurn | StopReason::MaxTokens if !tool_calls.is_empty() => Some(
-                    "provider stream protocol violation: EndTurn/MaxTokens Done contained tool calls",
+                StopReason::EndTurn | StopReason::MaxTokens | StopReason::Refusal
+                    if !tool_calls.is_empty() => Some(
+                    "provider stream protocol violation: EndTurn/MaxTokens/Refusal Done contained tool calls",
                 ),
                 StopReason::MaxTurns => Some(
                     "provider stream protocol violation: provider emitted engine-only MaxTurns Done",
@@ -2120,6 +2122,7 @@ impl AgentEngine {
 
             self.total_usage.input_tokens += turn_usage.input_tokens;
             self.total_usage.output_tokens += turn_usage.output_tokens;
+            self.total_usage.reasoning_tokens += turn_usage.reasoning_tokens;
             self.total_usage.cache_creation_tokens += turn_usage.cache_creation_tokens;
             self.total_usage.cache_read_tokens += turn_usage.cache_read_tokens;
 

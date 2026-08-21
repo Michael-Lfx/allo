@@ -73,10 +73,6 @@ fn persist_repaired_session(manager: &SessionManager, session: &Session) -> Resu
 
 /// The Flowy cloud catalog is authoritative when it provides a model output
 /// ceiling. All other providers (and uncataloged Flowy models) retain the
-/// session-level `extra.max_tokens` setting.
-fn resolve_nomi_max_tokens(catalog_max_tokens: Option<u32>, session_max_tokens: u32) -> u32 {
-    catalog_max_tokens.unwrap_or(session_max_tokens)
-}
 
 /// Keep a user-selected effort only when the active model advertises it.
 /// When the catalog lists levels but the session has no (valid) selection,
@@ -735,7 +731,7 @@ pub(super) async fn build(
             },
         };
 
-    let max_tokens = resolve_nomi_max_tokens(fields.model_max_tokens, overrides.max_tokens);
+    let output_ceiling = fields.output_limit;
     let reasoning_effort = resolve_session_reasoning_effort(
         overrides.reasoning_effort.as_deref(),
         fields.compat_overrides.effort_levels.as_deref(),
@@ -751,7 +747,7 @@ pub(super) async fn build(
         model: fields.model.clone(),
         base_url: fields.base_url,
         system_prompt: overrides.system_prompt,
-        max_tokens,
+        output_ceiling,
         max_turns: overrides.max_turns,
         context_limit: fields.context_limit.map(|v| v as u64),
         compat_overrides: fields.compat_overrides,
@@ -1929,16 +1925,6 @@ mod tests {
         assert!(!is_image_analysis_eligible_provider("nomifun-free-model"));
         assert!(is_image_analysis_eligible_provider("openai"));
         assert!(is_image_analysis_eligible_provider("minimax"));
-    }
-
-    #[test]
-    fn resolve_nomi_max_tokens_prefers_catalog_limit() {
-        assert_eq!(resolve_nomi_max_tokens(Some(4096), 8192), 4096);
-    }
-
-    #[test]
-    fn resolve_nomi_max_tokens_falls_back_to_session_extra() {
-        assert_eq!(resolve_nomi_max_tokens(None, 8192), 8192);
     }
 
     #[test]

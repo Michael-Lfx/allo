@@ -202,7 +202,7 @@ mod tests {
             name: name.to_owned(),
             prompt: prompt.to_owned(),
             max_turns: 1,
-            max_tokens: 1,
+            max_tokens: Some(1),
             system_prompt: None,
             model: None,
             effort: None,

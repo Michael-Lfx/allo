@@ -141,7 +141,7 @@ mod tests {
             api_key: "test-key".into(),
             base_url: String::new(),
             model: model.into(),
-            max_tokens: 1024,
+            output_max_tokens: Some(1024),
             max_turns: None,
             system_prompt: None,
             project_instructions: Default::default(),
