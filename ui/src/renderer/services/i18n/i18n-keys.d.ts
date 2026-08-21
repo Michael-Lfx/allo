@@ -6736,6 +6736,8 @@ export type I18nKey =
   | 'videoGeneration.create.preferences.planningModel'
   | 'videoGeneration.create.preferences.resolutionAria'
   | 'videoGeneration.create.preferences.smart'
+  | 'videoGeneration.create.preferences.specifyDuration'
+  | 'videoGeneration.create.preferences.specifyDurationOffHint'
   | 'videoGeneration.create.preferences.targetDuration'
   | 'videoGeneration.create.preferences.title'
   | 'videoGeneration.create.preferences.video'

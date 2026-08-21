@@ -70,17 +70,23 @@ const TvShowPanel = lazy(() => import('./components/TvShowPanel'));
 const SessionCard = lazy(() => import('./components/SessionCard'));
 
 function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
+  const prefs = draft.preferences;
   const common: PlanBody = {
     user_requirement: draft.requirement.trim() || undefined,
     style: draft.style.trim() || undefined,
     vertical_skill_ids:
       draft.verticalSkillIds.length > 0 ? draft.verticalSkillIds : undefined,
-    aspect_ratio: draft.preferences.aspectRatio,
-    resolution: draft.preferences.resolution,
-    fps: draft.preferences.fps,
-    llm_model: draft.preferences.models.llm_model,
-    image_model: draft.preferences.models.image_model || undefined,
-    video_model: draft.preferences.models.video_model || undefined,
+    aspect_ratio: prefs.aspectRatio,
+    resolution: prefs.resolution,
+    fps: prefs.fps,
+    llm_model: prefs.models.llm_model,
+    image_model: prefs.models.image_model || undefined,
+    video_model: prefs.models.video_model || undefined,
+    // Omit when unset so nomi-vimax planning sizes the film from the story.
+    target_duration_secs:
+      prefs.mediaKind === 'video' && prefs.specifyTargetDuration
+        ? clampDuration(prefs.targetDurationSecs)
+        : undefined,
   };
   switch (draft.workflow) {
     case 'idea2video':

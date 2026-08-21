@@ -349,7 +349,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     updatePanelPosition();
     const frame = window.requestAnimationFrame(() => updatePanelPosition());
     return () => window.cancelAnimationFrame(frame);
-  }, [open, mediaKind, value.automatic, mode, modelMissing]);
+  }, [open, mediaKind, value.automatic, value.specifyTargetDuration, mode, modelMissing]);
 
   useEffect(() => {
     if (!open) return;
@@ -750,13 +750,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                 }`}
               >
                 <div className={styles.preferenceLabel}>
-                  {mode === 'creation'
-                    ? t('videoGeneration.create.preferences.clipDuration', {
-                        defaultValue: '单段时长',
-                      })
-                    : t('videoGeneration.create.preferences.targetDuration', {
-                        defaultValue: '目标时长',
-                      })}
+                  {t('videoGeneration.create.preferences.clipDuration', {
+                    defaultValue: '单段时长',
+                  })}
                 </div>
                 <div className={styles.durationWrap}>
                   <DurationTimelineBar
@@ -787,6 +783,87 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                     }
                   />
                 </div>
+              </div>
+            ) : null}
+
+            {mediaKind === 'video' && mode === 'agent' && !isAction ? (
+              <div
+                className={`${styles.preferenceSection} ${
+                  value.automatic ? styles.preferenceSectionMuted : ''
+                }`}
+              >
+                <div className={styles.preferenceLabelRow}>
+                  <div className={styles.preferenceLabel}>
+                    {t('videoGeneration.create.preferences.targetDuration', {
+                      defaultValue: '目标时长',
+                    })}
+                  </div>
+                  <label className={styles.autoToggle}>
+                    <span>
+                      {t('videoGeneration.create.preferences.specifyDuration', {
+                        defaultValue: '指定时长',
+                      })}
+                    </span>
+                    <Switch
+                      size='small'
+                      checked={value.specifyTargetDuration}
+                      disabled={disabled || value.automatic}
+                      onChange={(specifyTargetDuration) =>
+                        onChange({
+                          ...value,
+                          mediaKind: 'video',
+                          specifyTargetDuration,
+                          // Keep last scrubbed value; clamp in case bounds drifted.
+                          targetDurationSecs: clampDuration(
+                            value.targetDurationSecs,
+                            duration.min,
+                            duration.max,
+                            duration.step
+                          ),
+                          automatic: false,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+                {value.specifyTargetDuration ? (
+                  <div className={styles.durationWrap}>
+                    <DurationTimelineBar
+                      value={clampDuration(
+                        value.targetDurationSecs,
+                        duration.min,
+                        duration.max,
+                        duration.step
+                      )}
+                      disabled={disabled || value.automatic}
+                      hideLabel
+                      min={duration.min}
+                      max={duration.max}
+                      step={duration.step}
+                      ticks={duration.ticks}
+                      onChange={(targetDurationSecs) =>
+                        onChange({
+                          ...value,
+                          mediaKind: 'video',
+                          specifyTargetDuration: true,
+                          targetDurationSecs: clampDuration(
+                            targetDurationSecs,
+                            duration.min,
+                            duration.max,
+                            duration.step
+                          ),
+                          automatic: false,
+                        })
+                      }
+                    />
+                  </div>
+                ) : (
+                  <div className={styles.autoHint}>
+                    {t('videoGeneration.create.preferences.specifyDurationOffHint', {
+                      defaultValue: '关闭时由 Agent 根据故事内容自主决定成片时长。',
+                    })}
+                  </div>
+                )}
               </div>
             ) : null}
 

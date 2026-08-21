@@ -1321,6 +1321,19 @@
   font-weight: 600;
 }
 
+.preferenceLabelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.preferenceLabelRow .preferenceLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .ratioGrid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
