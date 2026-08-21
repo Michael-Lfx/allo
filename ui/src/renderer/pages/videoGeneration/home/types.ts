@@ -33,7 +33,16 @@ export interface GenerationPreferences {
   aspectRatio: SeedanceAspectRatio;
   resolution: VideoResolution;
   fps: number;
+  /**
+   * Agent film length in seconds. Only sent when `specifyTargetDuration` is on;
+   * otherwise ViMax lets the model size the film from the story.
+   */
   targetDurationSecs: number;
+  /**
+   * Agent-only: when false (default), omit duration budget so planning decides.
+   * Creation mode always uses `targetDurationSecs` as clip length.
+   */
+  specifyTargetDuration: boolean;
   models: VimaxModelSelection;
 }
 

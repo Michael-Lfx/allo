@@ -173,6 +173,8 @@
       "resolutionAria": "Resolution",
       "targetDuration": "Target duration",
       "clipDuration": "Clip duration",
+      "specifyDuration": "Set duration",
+      "specifyDurationOffHint": "When off, the agent chooses film length from the story.",
       "planningModel": "Planning model",
       "loading": "Loading…",
       "noModelSelected": "No model selected"
