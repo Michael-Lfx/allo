@@ -57,11 +57,14 @@ describe('WorkpathDrawer structure', () => {
     expect(indicatorIndex).toBeLessThan(identityIndex);
     expect(indicatorIndex).toBeLessThan(hoverOpsIndex);
     expect(source.includes("t('sessionList.pinnedWorkpath')")).toBe(true);
-    expect(source.includes('bg-[rgb(var(--primary-6))]')).toBe(true);
+    expect(source.includes('bg-[rgb(var(--primary-6))]')).toBe(false);
     expect(source.includes('absolute -top-2px -right-2px')).toBe(true);
-    expect(source.includes('size-12px rd-full')).toBe(true);
-    expect(source.includes('border-2px border-solid border-[var(--color-bg-1)]')).toBe(true);
-    expect(source.includes('text-white')).toBe(true);
+    // Bare theme-adaptive accent glyph: no disc, no ring, no fixed white.
+    expect(source.includes("theme='filled'")).toBe(true);
+    expect(source.includes('text-[rgb(var(--primary-6))]')).toBe(true);
+    expect(source.includes('size-12px rd-full')).toBe(false);
+    expect(source.includes('border-2px border-solid border-[var(--color-bg-1)]')).toBe(false);
+    expect(source.includes('text-white')).toBe(false);
     expect(source.includes('size-10px rd-3px')).toBe(false);
     expect(source.includes("title={t('sessionList.pinnedWorkpath')}")).toBe(false);
     expect(source.includes('workpath-pinned-indicator')).toBe(false);

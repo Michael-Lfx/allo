@@ -280,9 +280,9 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
                   data-testid='workpath-pinned-badge'
                   role='img'
                   aria-label={t('sessionList.pinnedWorkpath')}
-                  className='absolute -top-2px -right-2px z-1 box-border size-12px rd-full flex-center border-2px border-solid border-[var(--color-bg-1)] bg-[rgb(var(--primary-6))] text-white pointer-events-none'
+                  className='absolute -top-2px -right-2px z-1 flex-center text-[rgb(var(--primary-6))] pointer-events-none'
                 >
-                  <Pushpin theme='outline' size='8' fill='currentColor' className='block' />
+                  <Pushpin theme='filled' size='10' fill='currentColor' className='block' />
                 </span>
               )}
             </span>
