@@ -417,6 +417,10 @@ pub struct DueReview {
     pub difficulty: f64,
     pub review_count: i64,
     pub lapse_count: i64,
+    /// Marked "edit me later" from the review session; the card keeps its
+    /// schedule untouched and a note (optional) records the intent.
+    pub edit_pending: bool,
+    pub edit_note: Option<String>,
 }
 
 /// Objective question attached to a due review. Never includes the stored
@@ -558,6 +562,10 @@ pub struct QuestionEntry {
     pub last_reviewed_at: Option<TimestampMs>,
     pub updated_at: TimestampMs,
     pub tags: Vec<String>,
+    /// Marked "edit me later" from the review session; the note (optional)
+    /// records what the learner intended to change.
+    pub edit_pending: bool,
+    pub edit_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -570,6 +578,14 @@ pub struct UpdateQuestionRequest {
     pub explanation: String,
     #[serde(default)]
     pub distractors: Vec<String>,
+}
+
+/// Marks a review card as "edit me later"; the note is optional and purely
+/// for the learner to recall the intended edit.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MarkEditRequest {
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// Learner-authored question. Objective kinds (single choice, true/false,

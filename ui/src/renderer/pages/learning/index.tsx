@@ -368,6 +368,14 @@ const LearningPage: React.FC = () => {
           onForget={reviewSession.forgetReview}
           onRate={reviewSession.rateReview}
           onSkip={reviewSession.skipReview}
+          onArchive={reviewSession.archiveReview}
+          onRemove={reviewSession.removeReview}
+          onMarkEdit={reviewSession.markEditPending}
+          onEdited={(updated) => {
+            reviewSession.setSessionQueue((prev) =>
+              prev.map((item) => (item.id === updated.id ? updated : item))
+            );
+          }}
           onClose={() => {
             reviewSession.setSessionOpen(false);
             // 会话结束时刷新列表与打卡状态，让角标与下次入队状态保持一致；

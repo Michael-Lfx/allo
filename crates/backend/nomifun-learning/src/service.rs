@@ -893,7 +893,8 @@ impl LearningService {
             // completed, so every row already represents a due-able card.
             sqlx::query_scalar(
                 "SELECT COUNT(*) FROM learning_review_items r \
-                 WHERE r.enrollment_id = ? AND r.due_at <= ?",
+                 WHERE r.enrollment_id = ? AND r.due_at <= ? AND r.archived_at IS NULL \
+                 AND r.edit_pending_at IS NULL",
             )
             .bind(enrollment_id.as_str())
             .bind(now_ms())
@@ -1892,14 +1893,15 @@ impl LearningService {
                      JOIN learning_concepts lc ON lc.concept_id = ac.concept_id \
                      WHERE ac.activity_id = r.activity_id \
                      ORDER BY ac.concept_id LIMIT 1) AS concept_title, \
-                    r.due_at, r.stability_days, r.difficulty, r.review_count, r.lapse_count \
+                    r.due_at, r.stability_days, r.difficulty, r.review_count, r.lapse_count, \
+                    r.edit_pending_at, r.edit_note \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
              LEFT JOIN learning_courses c ON c.course_id = e.course_id \
              JOIN learning_activities a ON a.activity_id = r.activity_id \
              JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \
-             WHERE e.user_id = ?";
+             WHERE e.user_id = ? AND r.archived_at IS NULL AND r.edit_pending_at IS NULL";
         // Course reviews: scoped by one or more courses (all queued, or due
         // only when requested) and/or by tag names attached to the question.
         // A pure orphan queue skips course reviews entirely.
@@ -1982,6 +1984,11 @@ impl LearningService {
                 difficulty: row.try_get("difficulty").map_err(internal)?,
                 review_count: row.try_get("review_count").map_err(internal)?,
                 lapse_count: row.try_get("lapse_count").map_err(internal)?,
+                edit_pending: row
+                    .try_get::<Option<i64>, _>("edit_pending_at")
+                    .map_err(internal)?
+                    .is_some(),
+                edit_note: row.try_get("edit_note").map_err(internal)?,
             });
         }
         // Learner-authored custom questions carry their own schedule and join
@@ -1991,9 +1998,10 @@ impl LearningService {
         if orphan || course_ids.is_empty() {
             let mut sql = String::from(
                 "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.due_at, \
-                        q.stability_days, q.difficulty, q.review_count, q.lapse_count \
+                        q.stability_days, q.difficulty, q.review_count, q.lapse_count, \
+                        q.edit_pending_at, q.edit_note \
                  FROM learning_custom_questions q \
-                 WHERE q.user_id = ? AND q.due_at <= ?",
+                 WHERE q.user_id = ? AND q.due_at <= ? AND q.archived_at IS NULL AND q.edit_pending_at IS NULL",
             );
             if !tags.is_empty() {
                 let placeholders = vec!["?"; tags.len()].join(", ");
@@ -2042,6 +2050,11 @@ impl LearningService {
                     difficulty: row.try_get("difficulty").map_err(internal)?,
                     review_count: row.try_get("review_count").map_err(internal)?,
                     lapse_count: row.try_get("lapse_count").map_err(internal)?,
+                    edit_pending: row
+                        .try_get::<Option<i64>, _>("edit_pending_at")
+                        .map_err(internal)?
+                        .is_some(),
+                    edit_note: row.try_get("edit_note").map_err(internal)?,
                 });
             }
         }
@@ -2078,7 +2091,8 @@ impl LearningService {
                            e.course_id, c.title AS course_title, \
                            p.status AS lesson_status, \
                            ri.review_item_id, ri.due_at, ri.stability_days, ri.difficulty, \
-                           ri.review_count, ri.lapse_count, ri.last_reviewed_at, ri.updated_at \
+                           ri.review_count, ri.lapse_count, ri.last_reviewed_at, ri.updated_at, \
+                           ri.archived_at, ri.edit_pending_at, ri.edit_note \
                     FROM learning_activities a \
                     JOIN learning_activity_concepts ac ON ac.activity_id = a.activity_id \
                     LEFT JOIN learning_concepts lc ON lc.concept_id = ac.concept_id \
@@ -2119,7 +2133,17 @@ impl LearningService {
                     .map_err(internal)?
                     .as_deref()
                     == Some("completed");
-            let entry_state = if review_item_id.is_none() || !lesson_completed {
+            let archived = row
+                .try_get::<Option<i64>, _>("archived_at")
+                .map_err(internal)?
+                .is_some();
+            let edit_pending = row
+                .try_get::<Option<i64>, _>("edit_pending_at")
+                .map_err(internal)?
+                .is_some();
+            let entry_state = if archived {
+                "archived"
+            } else if review_item_id.is_none() || !lesson_completed {
                 "unlearned"
             } else if review_count == 0 {
                 "new"
@@ -2128,8 +2152,16 @@ impl LearningService {
             } else {
                 "scheduled"
             };
-            if state.is_some_and(|value| value != entry_state) {
-                continue;
+            // "edit_pending" is a cross-cutting filter: keep any state as long
+            // as the card carries a pending edit intent.
+            if let Some(filter) = &state {
+                if *filter == "edit_pending" {
+                    if !edit_pending {
+                        continue;
+                    }
+                } else if *filter != entry_state {
+                    continue;
+                }
             }
             let kind_text: String = row.try_get("kind").map_err(internal)?;
             let prompt: String = row.try_get("prompt").map_err(internal)?;
@@ -2196,6 +2228,11 @@ impl LearningService {
                     .map_err(internal)?
                     .unwrap_or(0),
                 tags: Vec::new(),
+                edit_pending: row
+                    .try_get::<Option<i64>, _>("edit_pending_at")
+                    .map_err(internal)?
+                    .is_some(),
+                edit_note: row.try_get("edit_note").map_err(internal)?,
             });
         }
         if !course_ids_for_tags.is_empty() {
@@ -2215,7 +2252,8 @@ impl LearningService {
             let custom_rows = sqlx::query(
                 "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.concept_id, \
                         lc.title AS concept_title, q.due_at, q.stability_days, q.difficulty, \
-                        q.review_count, q.lapse_count, q.last_reviewed_at, q.updated_at \
+                        q.review_count, q.lapse_count, q.last_reviewed_at, q.updated_at, \
+                        q.archived_at, q.edit_pending_at, q.edit_note \
                  FROM learning_custom_questions q \
                  LEFT JOIN learning_concepts lc ON lc.concept_id = q.concept_id \
                  WHERE q.user_id = ? LIMIT 500",
@@ -2228,15 +2266,33 @@ impl LearningService {
             for row in custom_rows {
                 let review_count: i64 = row.try_get("review_count").map_err(internal)?;
                 let due_at: i64 = row.try_get("due_at").map_err(internal)?;
-                let entry_state = if review_count == 0 {
+                let archived = row
+                    .try_get::<Option<i64>, _>("archived_at")
+                    .map_err(internal)?
+                    .is_some();
+                let edit_pending = row
+                    .try_get::<Option<i64>, _>("edit_pending_at")
+                    .map_err(internal)?
+                    .is_some();
+                let entry_state = if archived {
+                    "archived"
+                } else if review_count == 0 {
                     "new"
                 } else if due_at <= now {
                     "due"
                 } else {
                     "scheduled"
                 };
-                if state.is_some_and(|value| value != entry_state) {
-                    continue;
+                // "edit_pending" is a cross-cutting filter: keep any state as
+                // long as the card carries a pending edit intent.
+                if let Some(filter) = &state {
+                    if *filter == "edit_pending" {
+                        if !edit_pending {
+                            continue;
+                        }
+                    } else if *filter != entry_state {
+                        continue;
+                    }
                 }
                 let kind_text: String = row.try_get("kind").map_err(internal)?;
                 let prompt: String = row.try_get("prompt").map_err(internal)?;
@@ -2289,6 +2345,11 @@ impl LearningService {
                     last_reviewed_at: row.try_get("last_reviewed_at").map_err(internal)?,
                     updated_at: row.try_get("updated_at").map_err(internal)?,
                     tags: Vec::new(),
+                    edit_pending: row
+                        .try_get::<Option<i64>, _>("edit_pending_at")
+                        .map_err(internal)?
+                        .is_some(),
+                    edit_note: row.try_get("edit_note").map_err(internal)?,
                 });
             }
             if !custom_ids_for_tags.is_empty() {
@@ -2361,6 +2422,18 @@ impl LearningService {
             .execute(&self.pool)
             .await
             .map_err(internal)?;
+        // Saving the edit means the pending intent is fulfilled: clear the
+        // "edit me later" flag on every review item behind this activity.
+        sqlx::query(
+            "UPDATE learning_review_items SET edit_pending_at = NULL, edit_note = NULL \
+             WHERE activity_id = ? \
+             AND enrollment_id IN (SELECT enrollment_id FROM learning_enrollments WHERE user_id = ?)",
+        )
+        .bind(activity_id.as_str())
+        .bind(user_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
         Ok(())
     }
 
@@ -2383,6 +2456,214 @@ impl LearningService {
             return Err(AppError::NotFound(format!("review item {review_id}")));
         }
         Ok(())
+    }
+
+    /// Archives a course review item: the FSRS data stays intact but the card
+    /// leaves the review queue and due counts until unarchived.
+    pub async fn archive_review_item(
+        &self,
+        review_id: &LearningReviewItemId,
+        user_id: &UserId,
+    ) -> Result<(), AppError> {
+        self.set_review_item_archived(review_id, user_id, true).await
+    }
+
+    /// Brings an archived course review item back into the queue. Its due
+    /// time is untouched, so a card archived while overdue resurfaces
+    /// immediately after unarchiving.
+    pub async fn unarchive_review_item(
+        &self,
+        review_id: &LearningReviewItemId,
+        user_id: &UserId,
+    ) -> Result<(), AppError> {
+        self.set_review_item_archived(review_id, user_id, false).await
+    }
+
+    async fn set_review_item_archived(
+        &self,
+        review_id: &LearningReviewItemId,
+        user_id: &UserId,
+        archived: bool,
+    ) -> Result<(), AppError> {
+        let now = now_ms();
+        let result = sqlx::query(
+            "UPDATE learning_review_items SET archived_at = ?, updated_at = ? \
+             WHERE review_item_id = ? \
+             AND enrollment_id IN (SELECT enrollment_id FROM learning_enrollments WHERE user_id = ?)",
+        )
+        .bind(if archived { Some(now) } else { None })
+        .bind(now)
+        .bind(review_id.as_str())
+        .bind(user_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!("review item {review_id}")));
+        }
+        Ok(())
+    }
+
+    /// Marks a course review card as "edit me later" with an optional note;
+    /// the schedule is untouched so the review flow is not interrupted.
+    /// A blank note is stored as NULL.
+    pub async fn mark_review_edit_pending(
+        &self,
+        review_id: &LearningReviewItemId,
+        user_id: &UserId,
+        note: Option<String>,
+    ) -> Result<(), AppError> {
+        let result = sqlx::query(
+            "UPDATE learning_review_items SET edit_pending_at = ?, edit_note = ?, updated_at = ? \
+             WHERE review_item_id = ? \
+             AND enrollment_id IN (SELECT enrollment_id FROM learning_enrollments WHERE user_id = ?)",
+        )
+        .bind(now_ms())
+        .bind(note.filter(|value| !value.trim().is_empty()))
+        .bind(now_ms())
+        .bind(review_id.as_str())
+        .bind(user_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!("review item {review_id}")));
+        }
+        Ok(())
+    }
+
+    /// Marks a learner-authored question as "edit me later"; see
+    /// `mark_review_edit_pending` for semantics.
+    pub async fn mark_custom_edit_pending(
+        &self,
+        question_id: &str,
+        user_id: &UserId,
+        note: Option<String>,
+    ) -> Result<(), AppError> {
+        let result = sqlx::query(
+            "UPDATE learning_custom_questions \
+             SET edit_pending_at = ?, edit_note = ?, updated_at = ? \
+             WHERE custom_question_id = ? AND user_id = ?",
+        )
+        .bind(now_ms())
+        .bind(note.filter(|value| !value.trim().is_empty()))
+        .bind(now_ms())
+        .bind(question_id)
+        .bind(user_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!("custom question {question_id}")));
+        }
+        Ok(())
+    }
+
+    /// Full question entry behind a course review item, including the stored
+    /// answer. Used to open the shared edit dialog from the review session;
+    /// mirrors the state computation of `question_entries`.
+    pub async fn review_question_entry(
+        &self,
+        review_id: &LearningReviewItemId,
+        user_id: &UserId,
+    ) -> Result<QuestionEntry, AppError> {
+        let row = sqlx::query(
+            "SELECT a.activity_id, a.kind, a.prompt, a.config_json, \
+                    e.course_id, c.title AS course_title, \
+                    (SELECT ac.concept_id FROM learning_activity_concepts ac \
+                     WHERE ac.activity_id = a.activity_id \
+                     ORDER BY ac.concept_id LIMIT 1) AS concept_id, \
+                    (SELECT lc.title FROM learning_activity_concepts ac \
+                     JOIN learning_concepts lc ON lc.concept_id = ac.concept_id \
+                     WHERE ac.activity_id = a.activity_id \
+                     ORDER BY ac.concept_id LIMIT 1) AS concept_title, \
+                    p.status AS lesson_status, \
+                    r.review_item_id, r.due_at, r.stability_days, r.difficulty, \
+                    r.review_count, r.lapse_count, r.last_reviewed_at, r.updated_at, r.archived_at, \
+                    r.edit_pending_at, r.edit_note \
+             FROM learning_review_items r \
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             LEFT JOIN learning_courses c ON c.course_id = e.course_id \
+             JOIN learning_activities a ON a.activity_id = r.activity_id \
+             LEFT JOIN learning_lesson_progress p \
+               ON p.lesson_id = a.lesson_id AND p.enrollment_id = e.enrollment_id \
+             WHERE r.review_item_id = ? AND e.user_id = ?",
+        )
+        .bind(review_id.as_str())
+        .bind(user_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("review item {review_id}")))?;
+        let kind_text: String = row.try_get("kind").map_err(internal)?;
+        let config: StoredActivityConfig = serde_json::from_str(
+            &row.try_get::<String, _>("config_json").map_err(internal)?,
+        )
+        .map_err(internal)?;
+        let review_item_id: String = row.try_get("review_item_id").map_err(internal)?;
+        let due_at: Option<i64> = row.try_get("due_at").map_err(internal)?;
+        let review_count: i64 = row.try_get("review_count").map_err(internal)?;
+        let lesson_completed = row
+            .try_get::<Option<String>, _>("lesson_status")
+            .map_err(internal)?
+            .as_deref()
+            == Some("completed");
+        let archived = row
+            .try_get::<Option<i64>, _>("archived_at")
+            .map_err(internal)?
+            .is_some();
+        let state = if archived {
+            "archived"
+        } else if !lesson_completed {
+            "unlearned"
+        } else if review_count == 0 {
+            "new"
+        } else if due_at.is_some_and(|value| value <= now_ms()) {
+            "due"
+        } else {
+            "scheduled"
+        };
+        let course_id: Option<String> = row.try_get("course_id").map_err(internal)?;
+        let concept_id: Option<String> = row.try_get("concept_id").map_err(internal)?;
+        Ok(QuestionEntry {
+            source: ReviewSource::Course,
+            question_id: row.try_get("activity_id").map_err(internal)?,
+            review_item_id: Some(parse_id(review_item_id)?),
+            state: state.to_string(),
+            course_id: match course_id {
+                Some(value) => Some(parse_id(value)?),
+                None => None,
+            },
+            course_title: row.try_get("course_title").map_err(internal)?,
+            concept_id: match concept_id {
+                Some(value) => Some(parse_id(value)?),
+                None => None,
+            },
+            concept_title: row.try_get("concept_title").map_err(internal)?,
+            question_kind: Some(
+                ActivityKind::try_from(kind_text.as_str())
+                    .map_err(|message| AppError::BadRequest(message))?,
+            ),
+            prompt: Some(row.try_get("prompt").map_err(internal)?),
+            options: config.options.clone(),
+            answer: Some(config.answer.clone()),
+            distractors: config.distractors.clone(),
+            explanation: Some(config.explanation.clone()),
+            due_at,
+            overdue: due_at.is_some_and(|value| value <= now_ms()),
+            stability_days: row.try_get("stability_days").map_err(internal)?,
+            difficulty: row.try_get("difficulty").map_err(internal)?,
+            review_count,
+            lapse_count: row.try_get("lapse_count").map_err(internal)?,
+            last_reviewed_at: row.try_get("last_reviewed_at").map_err(internal)?,
+            updated_at: row.try_get("updated_at").map_err(internal)?,
+            tags: Vec::new(),
+            edit_pending: row
+                .try_get::<Option<i64>, _>("edit_pending_at")
+                .map_err(internal)?
+                .is_some(),
+            edit_note: row.try_get("edit_note").map_err(internal)?,
+        })
     }
 
     /// Creates a learner-authored question with its own FSRS schedule. It is
@@ -2476,7 +2757,8 @@ impl LearningService {
             &request.distractors,
         )?;
         sqlx::query(
-            "UPDATE learning_custom_questions SET prompt = ?, config_json = ?, updated_at = ? \
+            "UPDATE learning_custom_questions SET prompt = ?, config_json = ?, \
+             edit_pending_at = NULL, edit_note = NULL, updated_at = ? \
              WHERE custom_question_id = ? AND user_id = ?",
         )
         .bind(prompt)
@@ -2520,6 +2802,133 @@ impl LearningService {
         }
         transaction.commit().await.map_err(internal)?;
         Ok(())
+    }
+
+    /// Archives a learner-authored question: the card leaves the review queue
+    /// and due counts but keeps its FSRS schedule and tag links until
+    /// unarchived.
+    pub async fn archive_custom_question(
+        &self,
+        question_id: &str,
+        user_id: &UserId,
+    ) -> Result<(), AppError> {
+        self.set_custom_question_archived(question_id, user_id, true)
+            .await
+    }
+
+    /// Brings an archived learner-authored question back into the queue.
+    pub async fn unarchive_custom_question(
+        &self,
+        question_id: &str,
+        user_id: &UserId,
+    ) -> Result<(), AppError> {
+        self.set_custom_question_archived(question_id, user_id, false)
+            .await
+    }
+
+    async fn set_custom_question_archived(
+        &self,
+        question_id: &str,
+        user_id: &UserId,
+        archived: bool,
+    ) -> Result<(), AppError> {
+        let now = now_ms();
+        let result = sqlx::query(
+            "UPDATE learning_custom_questions SET archived_at = ?, updated_at = ? \
+             WHERE custom_question_id = ? AND user_id = ?",
+        )
+        .bind(if archived { Some(now) } else { None })
+        .bind(now)
+        .bind(question_id)
+        .bind(user_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!("custom question {question_id}")));
+        }
+        Ok(())
+    }
+
+    /// Full entry of a learner-authored question, including the stored
+    /// answer. Used to open the shared edit dialog from the review session.
+    pub async fn custom_question_entry(
+        &self,
+        question_id: &str,
+        user_id: &UserId,
+    ) -> Result<QuestionEntry, AppError> {
+        let row = sqlx::query(
+            "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.concept_id, \
+                    lc.title AS concept_title, q.due_at, q.stability_days, q.difficulty, \
+                    q.review_count, q.lapse_count, q.last_reviewed_at, q.updated_at, \
+                    q.archived_at, q.edit_pending_at, q.edit_note \
+             FROM learning_custom_questions q \
+             LEFT JOIN learning_concepts lc ON lc.concept_id = q.concept_id \
+             WHERE q.custom_question_id = ? AND q.user_id = ?",
+        )
+        .bind(question_id)
+        .bind(user_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("custom question {question_id}")))?;
+        let kind_text: String = row.try_get("kind").map_err(internal)?;
+        let config: StoredActivityConfig = serde_json::from_str(
+            &row.try_get::<String, _>("config_json").map_err(internal)?,
+        )
+        .map_err(internal)?;
+        let due_at: i64 = row.try_get("due_at").map_err(internal)?;
+        let review_count: i64 = row.try_get("review_count").map_err(internal)?;
+        let archived = row
+            .try_get::<Option<i64>, _>("archived_at")
+            .map_err(internal)?
+            .is_some();
+        let state = if archived {
+            "archived"
+        } else if review_count == 0 {
+            "new"
+        } else if due_at <= now_ms() {
+            "due"
+        } else {
+            "scheduled"
+        };
+        let concept_id: Option<String> = row.try_get("concept_id").map_err(internal)?;
+        Ok(QuestionEntry {
+            source: ReviewSource::Custom,
+            question_id: row.try_get("custom_question_id").map_err(internal)?,
+            review_item_id: None,
+            state: state.to_string(),
+            course_id: None,
+            course_title: None,
+            concept_id: match concept_id {
+                Some(value) => Some(parse_id(value)?),
+                None => None,
+            },
+            concept_title: row.try_get("concept_title").map_err(internal)?,
+            question_kind: Some(
+                ActivityKind::try_from(kind_text.as_str())
+                    .map_err(|message| AppError::BadRequest(message))?,
+            ),
+            prompt: Some(row.try_get("prompt").map_err(internal)?),
+            options: config.options.clone(),
+            answer: Some(config.answer.clone()),
+            distractors: config.distractors.clone(),
+            explanation: Some(config.explanation.clone()),
+            due_at: Some(due_at),
+            overdue: due_at <= now_ms(),
+            stability_days: row.try_get("stability_days").map_err(internal)?,
+            difficulty: row.try_get("difficulty").map_err(internal)?,
+            review_count,
+            lapse_count: row.try_get("lapse_count").map_err(internal)?,
+            last_reviewed_at: row.try_get("last_reviewed_at").map_err(internal)?,
+            updated_at: row.try_get("updated_at").map_err(internal)?,
+            tags: Vec::new(),
+            edit_pending: row
+                .try_get::<Option<i64>, _>("edit_pending_at")
+                .map_err(internal)?
+                .is_some(),
+            edit_note: row.try_get("edit_note").map_err(internal)?,
+        })
     }
 
     /// Concepts offered in the custom question form: concepts of enrolled
@@ -3114,9 +3523,9 @@ impl LearningService {
             "SELECT \
                 (SELECT COUNT(*) FROM learning_review_items r \
                  JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
-                 WHERE e.user_id = ? AND r.due_at <= ?) \
+                 WHERE e.user_id = ? AND r.due_at <= ? AND r.archived_at IS NULL AND r.edit_pending_at IS NULL) \
               + (SELECT COUNT(*) FROM learning_custom_questions q \
-                 WHERE q.user_id = ? AND q.due_at <= ?)",
+                 WHERE q.user_id = ? AND q.due_at <= ? AND q.archived_at IS NULL AND q.edit_pending_at IS NULL)",
         )
         .bind(user_id.as_str())
         .bind(now)
@@ -3322,10 +3731,10 @@ impl LearningService {
             let rows = sqlx::query(
                 "SELECT r.due_at AS due_at FROM learning_review_items r \
                  JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
-                 WHERE e.user_id = ? AND r.due_at < ? \
+                 WHERE e.user_id = ? AND r.due_at < ? AND r.archived_at IS NULL AND r.edit_pending_at IS NULL \
                  UNION ALL \
                  SELECT q.due_at AS due_at FROM learning_custom_questions q \
-                 WHERE q.user_id = ? AND q.due_at < ?",
+                 WHERE q.user_id = ? AND q.due_at < ? AND q.archived_at IS NULL AND q.edit_pending_at IS NULL",
             )
             .bind(user_id.as_str())
             .bind(range_end)
