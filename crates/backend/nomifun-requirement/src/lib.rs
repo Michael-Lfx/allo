@@ -5,6 +5,7 @@ mod convert;
 pub mod events;
 pub mod hooks;
 pub mod mcp_server;
+pub mod fan_out;
 pub mod notifier;
 pub mod order_key;
 pub mod prompt;
@@ -15,6 +16,7 @@ pub mod state;
 
 pub use attachments::{AttachmentStore, PromptAttachment};
 pub use events::RequirementEventEmitter;
+pub use fan_out::FanOutCompletionNotifier;
 pub use hooks::IdmmHandle;
 pub use mcp_server::RequirementMcpServer;
 pub use notifier::CompletionNotifier;

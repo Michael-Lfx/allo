@@ -750,6 +750,12 @@
     "changedFiles": "修改 {{count}} 个文件",
     "toolsUsed": "{{count}} 个工具"
   },
+  "notify": {
+    "doneBody": "已完成",
+    "failedBody": "失败",
+    "stoppedBody": "已停止",
+    "fallbackTitle": "对话"
+  },
   "emptyPrompt": {
     "title": "从一个具体任务开始",
     "subtitle": "点击只填充输入框，由你决定何时发送。",

@@ -17,6 +17,7 @@ import { NavigationHistoryProvider } from '@renderer/hooks/context/NavigationHis
 import { WebuiServerProvider } from '@renderer/hooks/context/WebuiServerContext';
 import { useDeepLink } from '@renderer/hooks/system/useDeepLink';
 import { useNotificationClick } from '@renderer/hooks/system/useNotificationClick';
+import { useConversationDesktopNotify } from '@renderer/hooks/system/useConversationDesktopNotify';
 import { useAutoWorkDesktopNotify } from '@renderer/hooks/system/useAutoWorkDesktopNotify';
 import {
   reportNoUpdateAvailable,
@@ -156,6 +157,7 @@ const Layout: React.FC<{
   const { contextHolder: directorySelectionContextHolder } = useDirectorySelection();
   useDeepLink();
   useNotificationClick();
+  useConversationDesktopNotify();
   useAutoWorkDesktopNotify();
   const navigate = useNavigate();
   useConversationShortcuts({ navigate });

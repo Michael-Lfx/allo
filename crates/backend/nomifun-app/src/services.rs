@@ -1137,6 +1137,9 @@ pub struct AppServices {
     /// nomi native-tool sink). The router state attaches a `ConversationService`
     /// to a clone of this for AutoWork config persistence.
     pub requirement_service: Arc<nomifun_requirement::RequirementService>,
+    /// Late-bound OS/system toast sink. Empty until a desktop (or future web)
+    /// host attaches a platform notifier; webhooks are independent of this slot.
+    pub system_notifier_slot: Arc<nomifun_notify::SystemNotifierSlot>,
     /// Singleton terminal service: owns the live PTYs (one in-memory map). Shared
     /// so the AutoWork runner drives the SAME PTYs the terminal routes
     /// created (a fresh instance would have an empty live map).
@@ -1523,6 +1526,15 @@ impl std::error::Error for RetainedStartupCleanupError {
 }
 
 impl AppServices {
+    /// Attach a host-level system toast notifier (desktop Tauri, future web, …).
+    /// Safe to call after boot; no-ops replace any previous attachment.
+    pub fn attach_system_task_notifier(
+        &self,
+        notifier: Arc<dyn nomifun_notify::SystemTaskNotifier>,
+    ) {
+        self.system_notifier_slot.attach(notifier);
+    }
+
     /// Bind the process server-lock authority to these exact services.
     ///
     /// Both the configured data directory and SQLite's live `main` database
@@ -2207,22 +2219,32 @@ impl AppServices {
             authoritative_user_id.clone(),
         );
         // Completion notifier: on a requirement reaching a terminal state, notify
-        // its tag's bound webhook. Injected into the SINGLETON so it fires on BOTH
-        // completion paths — the Agent self-report sink AND the AutoWork runner's
-        // `finalize_if_needed` (both clone from this instance, propagating the
-        // notifier field). The repos share the same pool as `build_webhook_state`,
-        // so they read the same `webhooks` / `tag_settings` tables.
+        // its tag's bound webhook AND (when a host attaches) the OS system toast.
+        // Fan-out keeps RequirementService on a single fire point. Injected into
+        // the SINGLETON so it fires on BOTH completion paths — the Agent
+        // self-report sink AND the AutoWork runner's `finalize_if_needed` (both
+        // clone from this instance, propagating the notifier field). The repos
+        // share the same pool as `build_webhook_state`, so they read the same
+        // `webhooks` / `tag_settings` tables.
         let webhook_repo_for_notifier: Arc<dyn nomifun_db::IWebhookRepository> = Arc::new(
             nomifun_db::SqliteWebhookRepository::new(database.pool().clone()),
         );
         let tag_setting_repo_for_notifier: Arc<dyn nomifun_db::ITagSettingRepository> = Arc::new(
             nomifun_db::SqliteTagSettingRepository::new(database.pool().clone()),
         );
-        let completion_notifier = nomifun_webhook::CompletionNotifierImpl::new(
+        let webhook_notifier = nomifun_webhook::CompletionNotifierImpl::new(
             tag_setting_repo_for_notifier,
             webhook_repo_for_notifier,
             Arc::new(nomifun_webhook::DefaultWebhookSender::new()),
         )
+        .into_arc();
+        let system_notifier_slot = Arc::new(nomifun_notify::SystemNotifierSlot::new());
+        let system_notifier =
+            nomifun_notify::SystemCompletionNotifier::new(system_notifier_slot.clone()).into_arc();
+        let completion_notifier = nomifun_requirement::FanOutCompletionNotifier::new(vec![
+            webhook_notifier,
+            system_notifier,
+        ])
         .into_arc();
         let attachment_repo: Arc<dyn nomifun_db::IAttachmentRepository> = Arc::new(
             nomifun_db::SqliteAttachmentRepository::new(database.pool().clone()),
@@ -3077,6 +3099,7 @@ impl AppServices {
             conversation_repo,
             execution_conversation_boundary,
             requirement_service,
+            system_notifier_slot,
             terminal_service,
             ssh_pool,
             robot,

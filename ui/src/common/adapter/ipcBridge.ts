@@ -2730,6 +2730,8 @@ export type INotificationOptions = {
   body: string;
   icon?: string;
   conversation_id?: ConversationId;
+  /** `flowy://navigate?route=…` deep link opened when the toast is clicked. */
+  click_target?: string;
 };
 
 export const notification = {
@@ -2739,11 +2741,12 @@ export const notification = {
         title: opts.title,
         body: opts.body,
         icon: opts.icon,
+        click_target: opts.click_target,
       }),
     undefined
   ),
-  // DEGRADE_STUB: click→navigate needs a Rust notification-action listener that
-  // emits a Tauri event (see electron-removal-plan C2); inert until then.
+  // Click navigation is delivered via deep-link://received (see desktop
+  // system_notify + useDeepLink). This emitter stays for legacy callers.
   clicked: noopEmitter<{ conversation_id?: ConversationId }>(),
 };
 

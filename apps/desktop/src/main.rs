@@ -96,6 +96,9 @@ fn resolve_main_window_geometry(
 
 mod memory_panel_window;
 mod companion_pointer;
+mod system_notify;
+#[cfg(windows)]
+mod windows_aumid;
 mod updater_install_context;
 
 /// Build the webview initialization script. Injects the loopback backend port
@@ -2387,6 +2390,7 @@ fn complete_main_thread_setup(
     let handle = app.clone();
     let _ = app.deep_link().register_all();
     app.deep_link().on_open_url(move |event| {
+        show_main_window(&handle);
         let urls: Vec<String> = event.urls().iter().map(|u| u.to_string()).collect();
         let _ = handle.emit("deep-link://received", urls);
     });
@@ -2759,6 +2763,11 @@ fn main() -> std::process::ExitCode {
         ))
         .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
+            // Register AUMID before any toast can fire so Action Center brands
+            // notifications as Flowy instead of Windows PowerShell (dev + install).
+            #[cfg(windows)]
+            windows_aumid::register_for_toasts(app.handle());
+
             let app_handle = app.handle().clone();
             let coordinator = app.state::<Arc<ExitCoordinator>>().inner().clone();
 
@@ -2914,6 +2923,16 @@ fn main() -> std::process::ExitCode {
                                         "embedded backend completed startup after its registration was already closed"
                                     ));
                                 }
+
+                                // OS toasts for requirement terminal states. Attached
+                                // after the backend is registered so the slot in
+                                // AppServices is live; plugin was initialized above.
+                                server.attach_system_task_notifier(
+                                    system_notify::DesktopTauriNotifier::new(
+                                        setup_app_handle.clone(),
+                                    )
+                                    .into_arc(),
+                                );
 
                                 let setup_app = setup_app_handle.clone();
                                 let setup_server = server.clone();
@@ -3088,7 +3107,8 @@ fn main() -> std::process::ExitCode {
             webui_stop,
             set_keep_awake,
             set_tray_labels,
-            restart_application
+            restart_application,
+            system_notify::show_os_notification_cmd
         ])
         // Close-to-tray is now the DEFAULT (and only) close behavior. Closing the
         // main window (titlebar ×, OS close, Alt+F4) hides it to the tray instead

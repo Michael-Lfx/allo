@@ -7,6 +7,7 @@ name = "Flowy"
 version = "1.0.4"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "gtk",
  "junction",
@@ -28,10 +29,12 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "tauri-winrt-notification",
  "tempfile",
  "tokio",
  "tracing",
  "windows 0.61.3",
+ "winreg 0.55.0",
 ]
 
 [[package]]
@@ -6740,6 +6743,7 @@ dependencies = [
  "nomifun-media",
  "nomifun-model-invoke",
  "nomifun-net",
+ "nomifun-notify",
  "nomifun-office",
  "nomifun-poi",
  "nomifun-preset",
@@ -7407,6 +7411,17 @@ dependencies = [
  "reqwest 0.12.28",
  "tracing",
  "windows-registry 0.6.1",
+]
+
+[[package]]
+name = "nomifun-notify"
+version = "1.0.3"
+dependencies = [
+ "async-trait",
+ "nomifun-db",
+ "nomifun-requirement",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
