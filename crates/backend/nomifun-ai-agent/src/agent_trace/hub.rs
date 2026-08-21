@@ -3,11 +3,19 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use nomifun_api_types::{
+    ObservationSummaryDto, RecorderHealthDto, SessionObservationCallDto,
+    SessionObservationGapDto, SessionObservationListDto, SessionObservationRequestSummaryDto,
+    SessionObservationResponseSummaryDto, SessionObservationTokenUsageDto,
+    SessionObservationToolDto, SessionObservationTurnDto,
+};
 use nomifun_db::IClientPreferenceRepository;
 use nomi_agent_trace::{
     project_call_detail, project_turn_by_id, project_turns, strip_projected_turn_payloads,
-    ObservationRecorder, ObservationSummary, ProjectedModelCall, ProjectedTurn, RecorderError,
-    RecorderHealth,
+    ExecutionStatus, Integrity, ObservationRecorder, ObservationScope, ObservationSummary,
+    ProjectedGap, ProjectedModelCall, ProjectedRequestSummary, ProjectedResponseSummary,
+    ProjectedTokenUsage, ProjectedToolExecution, ProjectedTurn, RecorderError, RecorderHealth,
+    RecorderHealthStatus, ToolExecutionStatus,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -17,6 +25,199 @@ use super::prefs::developer_mode_enabled;
 pub const DEFAULT_SESSION_OBSERVATION_LIST_LIMIT: usize = 50;
 pub const MAX_SESSION_OBSERVATION_LIST_LIMIT: usize = 200;
 const OBSERVATION_READ_PERMITS: usize = 4;
+
+fn execution_status_string(value: ExecutionStatus) -> String {
+    match value {
+        ExecutionStatus::Running => "running",
+        ExecutionStatus::Completed => "completed",
+        ExecutionStatus::Failed => "failed",
+        ExecutionStatus::Cancelled => "cancelled",
+        ExecutionStatus::Interrupted => "interrupted",
+        ExecutionStatus::Truncated => "truncated",
+        ExecutionStatus::Unknown => "unknown",
+    }
+    .to_owned()
+}
+
+fn integrity_string(value: Integrity) -> String {
+    match value {
+        Integrity::Complete => "complete",
+        Integrity::Degraded => "degraded",
+    }
+    .to_owned()
+}
+
+fn observation_scope_string(value: ObservationScope) -> String {
+    match value {
+        ObservationScope::SessionWorkflow => "session_workflow",
+        ObservationScope::SessionAuxiliary => "session_auxiliary",
+        ObservationScope::ProcessDiagnostic => "process_diagnostic",
+    }
+    .to_owned()
+}
+
+fn tool_status_string(value: ToolExecutionStatus) -> String {
+    match value {
+        ToolExecutionStatus::Started => "started",
+        ToolExecutionStatus::Completed => "completed",
+        ToolExecutionStatus::Failed => "failed",
+        ToolExecutionStatus::Cancelled => "cancelled",
+    }
+    .to_owned()
+}
+
+fn recorder_health_status_string(value: RecorderHealthStatus) -> String {
+    match value {
+        RecorderHealthStatus::Healthy => "healthy",
+        RecorderHealthStatus::QueueDropped => "queue_dropped",
+        RecorderHealthStatus::StorageError => "storage_error",
+        RecorderHealthStatus::WriterDisconnected => "writer_disconnected",
+    }
+    .to_owned()
+}
+
+fn recorder_health_dto(value: RecorderHealth) -> RecorderHealthDto {
+    RecorderHealthDto {
+        status: recorder_health_status_string(value.status),
+        last_error: value.last_error,
+    }
+}
+
+fn observation_summary_dto(value: ObservationSummary) -> ObservationSummaryDto {
+    ObservationSummaryDto {
+        turn_count: value.turn_count,
+        model_call_count: value.model_call_count,
+        tool_count: value.tool_count,
+        active_duration_ms: value.active_duration_ms,
+        wall_span_ms: value.wall_span_ms,
+        integrity: integrity_string(value.integrity),
+        coverage: value.coverage,
+        max_event_seq: value.max_event_seq,
+    }
+}
+
+fn token_usage_dto(value: ProjectedTokenUsage) -> SessionObservationTokenUsageDto {
+    SessionObservationTokenUsageDto {
+        input_tokens: value.input_tokens,
+        output_tokens: value.output_tokens,
+        cache_read_tokens: value.cache_read_tokens,
+        cache_creation_tokens: value.cache_creation_tokens,
+    }
+}
+
+fn request_summary_dto(value: ProjectedRequestSummary) -> SessionObservationRequestSummaryDto {
+    SessionObservationRequestSummaryDto {
+        model: value.model,
+        has_system: value.has_system,
+        message_count: value.message_count,
+        tool_definition_count: value.tool_definition_count,
+        system_omitted: value.system_omitted,
+        messages_omitted: value.messages_omitted,
+        tools_omitted: value.tools_omitted,
+    }
+}
+
+fn response_summary_dto(value: ProjectedResponseSummary) -> SessionObservationResponseSummaryDto {
+    SessionObservationResponseSummaryDto {
+        has_text: value.has_text,
+        has_thinking: value.has_thinking,
+        text_omitted: value.text_omitted,
+        thinking_omitted: value.thinking_omitted,
+        tool_use_count: value.tool_use_count,
+        elapsed_ms: value.elapsed_ms,
+        ttft_ms: value.ttft_ms,
+        stop_reason: value.stop_reason,
+        text_preview: value.text_preview,
+    }
+}
+
+fn tool_dto(value: ProjectedToolExecution) -> SessionObservationToolDto {
+    SessionObservationToolDto {
+        tool_call_id: value.tool_call_id,
+        name: value.name,
+        started_at_ms: value.started_at_ms,
+        ended_at_ms: value.ended_at_ms,
+        status: tool_status_string(value.status),
+        argument_preview: value.argument_preview,
+        started: value.started,
+        completed: value.completed,
+        failed: value.failed,
+        cancelled: value.cancelled,
+    }
+}
+
+fn gap_dto(value: ProjectedGap) -> SessionObservationGapDto {
+    SessionObservationGapDto {
+        event_seq: value.event_seq,
+        reason: value.reason,
+        from_seq: value.from_seq,
+        to_seq: value.to_seq,
+    }
+}
+
+fn call_dto(value: ProjectedModelCall) -> SessionObservationCallDto {
+    SessionObservationCallDto {
+        model_call_id: value.model_call_id,
+        call_kind: value.call_kind,
+        observation_scope: value.observation_scope.map(observation_scope_string),
+        status: execution_status_string(value.status),
+        integrity: integrity_string(value.integrity),
+        interrupted: value.interrupted,
+        started_at_ms: value.started_at_ms,
+        ended_at_ms: value.ended_at_ms,
+        usage: value.usage.map(token_usage_dto),
+        request: value.request,
+        response: value.response,
+        request_summary: value.request_summary.map(request_summary_dto),
+        response_summary: value.response_summary.map(response_summary_dto),
+        tools: value.tools.into_iter().map(tool_dto).collect(),
+    }
+}
+
+fn turn_dto(value: ProjectedTurn) -> SessionObservationTurnDto {
+    SessionObservationTurnDto {
+        root_turn_id: value.root_turn_id,
+        conversation_id: value.conversation_id,
+        msg_id: value.msg_id,
+        session_kind: value.session_kind,
+        execution_id: value.execution_id,
+        step_id: value.step_id,
+        execution_attempt_id: value.execution_attempt_id,
+        status: execution_status_string(value.status),
+        integrity: integrity_string(value.integrity),
+        interrupted: value.interrupted,
+        started_at_ms: value.started_at_ms,
+        ended_at_ms: value.ended_at_ms,
+        elapsed_ms: value.elapsed_ms,
+        prompt_preview: value.prompt_preview,
+        prompt_preview_context_only: value.prompt_preview_context_only,
+        max_event_seq: value.max_event_seq,
+        has_turn_start: value.has_turn_start,
+        has_turn_end: value.has_turn_end,
+        gap_count: value.gap_count,
+        model_calls: value.model_calls.into_iter().map(call_dto).collect(),
+        gaps: value.gaps.into_iter().map(gap_dto).collect(),
+    }
+}
+
+/// Convert the agent-layer projection to the stable HTTP list contract.
+pub fn session_observation_list_dto(value: SessionObservationList) -> SessionObservationListDto {
+    SessionObservationListDto {
+        recorder_health: recorder_health_dto(value.recorder_health),
+        summary: observation_summary_dto(value.summary),
+        turns: value.turns.into_iter().map(turn_dto).collect(),
+    }
+}
+
+/// Convert the agent-layer turn projection to the stable HTTP contract.
+pub fn session_observation_turn_dto(value: ProjectedTurn) -> SessionObservationTurnDto {
+    turn_dto(value)
+}
+
+/// Convert the agent-layer model-call projection to the stable HTTP contract.
+pub fn session_observation_call_dto(value: ProjectedModelCall) -> SessionObservationCallDto {
+    call_dto(value)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionObservationList {
@@ -305,6 +506,56 @@ mod tests {
             response_summary: None,
             tools: Vec::new(),
         }
+    }
+
+    #[test]
+    fn session_observation_dto_mapping_preserves_wire_contract() {
+        let dto = session_observation_list_dto(SessionObservationList {
+            recorder_health: RecorderHealth {
+                status: RecorderHealthStatus::QueueDropped,
+                last_error: Some("overflow".into()),
+            },
+            summary: ObservationSummary {
+                turn_count: 1,
+                model_call_count: 1,
+                tool_count: 0,
+                active_duration_ms: 12,
+                wall_span_ms: Some(20),
+                integrity: Integrity::Degraded,
+                coverage: "retained_observation_history".into(),
+                max_event_seq: 4,
+            },
+            turns: vec![ProjectedTurn {
+                root_turn_id: "turn-1".into(),
+                conversation_id: Some("conv-1".into()),
+                msg_id: Some("msg-1".into()),
+                session_kind: None,
+                execution_id: None,
+                step_id: None,
+                execution_attempt_id: None,
+                status: ExecutionStatus::Interrupted,
+                integrity: Integrity::Degraded,
+                interrupted: true,
+                started_at_ms: Some(1),
+                ended_at_ms: Some(13),
+                elapsed_ms: Some(12),
+                prompt_preview: Some("66".into()),
+                prompt_preview_context_only: false,
+                max_event_seq: 4,
+                has_turn_start: true,
+                has_turn_end: true,
+                gap_count: 1,
+                model_calls: vec![empty_call("call-1")],
+                gaps: vec![],
+            }],
+        });
+        let json = serde_json::to_value(dto).expect("DTO should serialize");
+        assert_eq!(json["recorder_health"]["status"], "queue_dropped");
+        assert_eq!(json["summary"]["integrity"], "degraded");
+        assert_eq!(json["turns"][0]["status"], "interrupted");
+        assert_eq!(json["turns"][0]["prompt_preview"], "66");
+        assert_eq!(json["turns"][0]["prompt_preview_context_only"], false);
+        assert_eq!(json["turns"][0]["model_calls"][0]["status"], "running");
     }
 
     #[test]

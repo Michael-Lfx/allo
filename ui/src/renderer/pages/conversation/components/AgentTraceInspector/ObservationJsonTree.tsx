@@ -12,11 +12,11 @@ import { JsonView, defaultStyles } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 import { copyText } from '@renderer/utils/ui/clipboard';
 import { formatJson } from './format';
+import { MessageScanList, ScanPreview, ScanTip } from './ObservationMessageSummary';
 import {
   joinOmittedMark,
+  omittedReasonOf,
   projectObservationScan,
-  type MessagePreview,
-  type MessageScanRow,
   type ObservationScanKind,
   type ObservationScanResult,
   type ToolDefScanRow,
@@ -38,10 +38,6 @@ const treeStyle = {
   collapseIcon: 'session-logs-json-tree__expander session-logs-json-tree__expander--open',
   collapsedContent: 'session-logs-json-tree__collapsed',
 };
-
-type Translate = (key: string, options?: Record<string, unknown>) => string;
-
-const KNOWN_ROLES = new Set(['user', 'assistant', 'system', 'tool']);
 
 /** Root and `messages`/`tools` arrays expand; array elements stay collapsed. */
 export function shouldExpandObservationNode(
@@ -77,50 +73,19 @@ function asDisplayText(value: unknown): string | null {
   return null;
 }
 
-function kindLabel(kind: string, t: Translate): string {
-  if (kind === 'text') return t('conversation.agentTrace.partText');
-  if (kind === 'tool_use') return t('conversation.agentTrace.scanKindToolUse');
-  if (kind === 'tool_result') return t('conversation.agentTrace.scanToolResult');
-  if (kind === 'thinking') return t('conversation.agentTrace.scanThinking');
-  if (kind === 'image') return t('conversation.agentTrace.scanImage');
-  return kind;
-}
-
-function previewBody(preview: MessagePreview, t: Translate): string {
-  if (preview.kind === 'text') return preview.text;
-  if (preview.kind === 'tool_use') {
-    return t('conversation.agentTrace.scanToolUse', { name: preview.name });
-  }
-  if (preview.kind === 'tool_result') {
-    if (preview.isError) {
-      return preview.text
-        ? `${t('conversation.agentTrace.scanToolResultError')} · ${preview.text}`
-        : t('conversation.agentTrace.scanToolResultError');
-    }
-    return preview.text || t('conversation.agentTrace.scanToolResult');
-  }
-  if (preview.kind === 'thinking') {
-    return preview.text || t('conversation.agentTrace.scanThinking');
-  }
-  if (preview.kind === 'image') {
-    return preview.mediaType
-      ? `${t('conversation.agentTrace.scanImage')} ${preview.mediaType}`
-      : t('conversation.agentTrace.scanImage');
-  }
-  return '';
-}
-
-function formatMessagePreview(row: MessageScanRow, t: Translate): string {
-  const body = previewBody(row.preview, t);
-  if (row.kinds.length <= 1) return body;
-  const labels = row.kinds.map((kind) => kindLabel(kind, t)).filter(Boolean);
-  return [...labels, body].filter(Boolean).join(' · ');
-}
-
-function roleLabel(role: string, t: Translate): string {
-  if (KNOWN_ROLES.has(role)) return t(`conversation.agentTrace.role_${role}`);
-  return role;
-}
+const OmittedScan: React.FC<{ reason: string }> = ({ reason }) => {
+  const { t } = useTranslation();
+  return (
+    <div className='session-logs-scan__omitted'>
+      <div className='session-logs-scan__omitted-title'>
+        {t('conversation.agentTrace.omittedField')}
+      </div>
+      <div>
+        {t('conversation.agentTrace.omittedReason')}: {reason}
+      </div>
+    </div>
+  );
+};
 
 const TreeBody: React.FC<{ value: unknown; forceText?: boolean }> = ({ value, forceText }) => {
   const { t } = useTranslation();
@@ -131,6 +96,8 @@ const TreeBody: React.FC<{ value: unknown; forceText?: boolean }> = ({ value, fo
       </pre>
     );
   }
+  const omittedReason = omittedReasonOf(value);
+  if (omittedReason) return <OmittedScan reason={omittedReason} />;
   const text = asDisplayText(value);
   if (forceText || text != null) {
     return (
@@ -154,20 +121,6 @@ const TreeBody: React.FC<{ value: unknown; forceText?: boolean }> = ({ value, fo
   );
 };
 
-const OmittedScan: React.FC<{ reason: string }> = ({ reason }) => {
-  const { t } = useTranslation();
-  return (
-    <div className='session-logs-scan__omitted'>
-      <div className='session-logs-scan__omitted-title'>
-        {t('conversation.agentTrace.omittedField')}
-      </div>
-      <div>
-        {t('conversation.agentTrace.omittedReason')}: {reason}
-      </div>
-    </div>
-  );
-};
-
 function firstLine(text: string): string {
   return (text.split(/\r?\n/, 1)[0] ?? '').trim();
 }
@@ -185,65 +138,6 @@ const HintTip: React.FC<{ hint: string }> = ({ hint }) => (
     ))}
   </div>
 );
-
-const ScanTip: React.FC<{
-  content: string;
-  className: string;
-  children: React.ReactNode;
-}> = ({ content, className, children }) => {
-  const trimmed = content.trim();
-  if (!trimmed) {
-    return <span className={className}>{children}</span>;
-  }
-  return (
-    <Tooltip
-      content={<div className='session-logs-scan__tip'>{trimmed}</div>}
-      position='top'
-      getPopupContainer={() => document.body}
-    >
-      <span className={className}>{children}</span>
-    </Tooltip>
-  );
-};
-
-const ScanPreview: React.FC<{ text: string; tip?: string }> = ({ text, tip }) => {
-  const content = (tip ?? text).trim();
-  const shown = text.trim();
-  if (!shown && !content) {
-    return <span className='session-logs-scan__preview' />;
-  }
-  return (
-    <ScanTip content={content} className='session-logs-scan__preview-wrap'>
-      <span className='session-logs-scan__preview'>{shown || content}</span>
-    </ScanTip>
-  );
-};
-
-const MessageScanList: React.FC<{ rows: MessageScanRow[]; newestFirst: boolean }> = ({
-  rows,
-  newestFirst,
-}) => {
-  const { t } = useTranslation();
-  const ordered = newestFirst ? [...rows].reverse() : rows;
-  return (
-    <ol className='session-logs-scan'>
-      {ordered.map((row) => {
-        const preview =
-          joinOmittedMark(
-            formatMessagePreview(row, t),
-            row.omittedReason,
-            t('conversation.agentTrace.omittedField')
-          ) || t('conversation.agentTrace.previewMissing');
-        return (
-          <li key={row.index} className='session-logs-scan__row'>
-            <span className='session-logs-scan__role'>{roleLabel(row.role, t) || '-'}</span>
-            <ScanPreview text={preview} />
-          </li>
-        );
-      })}
-    </ol>
-  );
-};
 
 const ToolScanList: React.FC<{ rows: ToolDefScanRow[] }> = ({ rows }) => {
   const { t } = useTranslation();

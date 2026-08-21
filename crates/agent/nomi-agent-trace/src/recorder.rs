@@ -199,7 +199,9 @@ pub(crate) enum EnqueueOutcome {
     DroppedControl,
 }
 
-/// Dual bounded queues merged by `enqueue_order` (never control-first persist).
+/// Bounded observation-event queues merged by `enqueue_order` (never
+/// control-first persist). Lifecycle commands carry ACKs and intentionally
+/// use the separate lifecycle lane without the event cap.
 pub(crate) struct DualQueue {
     enqueue_order: AtomicU64,
     normal: VecDeque<(u64, WriterCommand)>,
@@ -285,6 +287,7 @@ impl DualQueue {
                     self.note_dropped_event(&dropped);
                 }
                 if self.control.len() >= self.max_control {
+                    self.note_dropped_event(&command);
                     return EnqueueOutcome::DroppedControl;
                 }
             } else if self.normal.len() >= self.max_normal {
@@ -2761,6 +2764,38 @@ mod tests {
         assert!(types.contains(&"turn/end".to_owned()));
         assert!(!types.iter().any(|event_type| event_type == "dropped"));
         assert_eq!(queue.dropped_normal, 2);
+    }
+
+    #[test]
+    fn control_events_are_bounded_when_control_cap_is_full() {
+        let mut queue = DualQueue::new(1, 1);
+        assert_eq!(
+            queue.try_enqueue(queued_event(EVENT_TURN_START, "a")),
+            EnqueueOutcome::Queued
+        );
+        assert_eq!(
+            queue.try_enqueue(queued_event(EVENT_TURN_END, "a")),
+            EnqueueOutcome::DroppedControl
+        );
+
+        let types = drain_types(&mut queue);
+        assert_eq!(types, vec![EVENT_TURN_START]);
+        assert_eq!(queue.dropped_normal, 1);
+    }
+
+    #[test]
+    fn control_event_uses_normal_capacity_before_dropping_itself() {
+        let mut queue = DualQueue::new(1, 1);
+        assert_eq!(
+            queue.try_enqueue(queued_event(EVENT_LLM_REQUEST, "a")),
+            EnqueueOutcome::Queued
+        );
+        assert_eq!(
+            queue.try_enqueue(queued_event(EVENT_TURN_START, "a")),
+            EnqueueOutcome::Queued
+        );
+        assert_eq!(queue.dropped_normal, 1);
+        assert_eq!(drain_types(&mut queue), vec![EVENT_TURN_START]);
     }
 
     fn oversized_request_payload() -> Value {

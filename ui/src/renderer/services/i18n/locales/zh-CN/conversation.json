@@ -890,6 +890,7 @@
     "inspectShowScan": "摘要",
     "scanEmptyMessages": "没有消息",
     "scanEmptyTools": "没有工具",
+    "scanContext": "上下文",
     "role_user": "用户",
     "role_assistant": "助手",
     "role_system": "系统",
