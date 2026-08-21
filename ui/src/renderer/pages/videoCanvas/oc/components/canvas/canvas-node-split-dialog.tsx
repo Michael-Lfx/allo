@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Button, InputNumber, Modal } from "antd";
 import { Grid2x2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { readImageMeta } from "@oc/lib/image-utils";
 import type { ImageSplitParams } from "@oc/lib/canvas/canvas-image-data";
 
@@ -11,6 +13,7 @@ const defaultParams: CanvasImageSplitParams = { rows: 2, columns: 2 };
 const maxGridSize = 12;
 
 export function CanvasNodeSplitDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (params: CanvasImageSplitParams) => void }) {
+    useTranslation();
     const [params, setParams] = useState(defaultParams);
     const [image, setImage] = useState<{ width: number; height: number } | null>(null);
     const total = params.rows * params.columns;
@@ -35,8 +38,8 @@ export function CanvasNodeSplitDialog({ dataUrl, open, onClose, onConfirm }: { d
         <Modal title={null} open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} width={780} centered destroyOnHidden>
             <div className="space-y-5">
                 <div>
-                    <h2 className="text-xl font-semibold">切分图片</h2>
-                    <p className="mt-1 text-sm opacity-60">生成 {total} 个图片子节点，并按原图网格排列到画布右侧</p>
+                    <h2 className="text-xl font-semibold">{canvasT("videoCanvas.dialog.splitTitle", "切分图片")}</h2>
+                    <p className="mt-1 text-sm opacity-60">{canvasT("videoCanvas.dialog.splitHint", "生成 {{total}} 个图片子节点，并按原图网格排列到画布右侧", { total })}</p>
                 </div>
                 <div className="grid gap-6 md:grid-cols-[minmax(260px,1fr)_280px]">
                     <div className="rounded-xl border p-4">
@@ -47,25 +50,25 @@ export function CanvasNodeSplitDialog({ dataUrl, open, onClose, onConfirm }: { d
                             </div>
                         </div>
                         <div className="mt-3 flex items-center justify-between text-sm">
-                            <span className="opacity-60">原图</span>
-                            <span className="font-semibold">{image ? `${image.width} x ${image.height} px` : "读取中"}</span>
+                            <span className="opacity-60">{canvasT("videoCanvas.dialog.splitSource", "原图")}</span>
+                            <span className="font-semibold">{image ? `${image.width} x ${image.height} px` : canvasT("videoCanvas.dialog.splitReading", "读取中")}</span>
                         </div>
                     </div>
                     <div className="space-y-5 py-2">
-                        <NumberField label="行数" value={params.rows} onChange={(value) => update("rows", value)} />
-                        <NumberField label="列数" value={params.columns} onChange={(value) => update("columns", value)} />
+                        <NumberField label={canvasT("videoCanvas.dialog.splitRows", "行数")} value={params.rows} onChange={(value) => update("rows", value)} />
+                        <NumberField label={canvasT("videoCanvas.dialog.splitCols", "列数")} value={params.columns} onChange={(value) => update("columns", value)} />
                         <div className="rounded-xl border px-4 py-3 text-sm">
                             <div className="flex items-center justify-between">
-                                <span className="opacity-60">子节点</span>
-                                <span className="font-semibold">{total} 个</span>
+                                <span className="opacity-60">{canvasT("videoCanvas.dialog.splitChildren", "子节点")}</span>
+                                <span className="font-semibold">{canvasT("videoCanvas.dialog.splitChildCount", "{{total}} 个", { total })}</span>
                             </div>
                             <div className="mt-2 flex items-center justify-between">
-                                <span className="opacity-60">单块约</span>
-                                <span className="font-semibold">{pieceSize ? `${pieceSize.width} x ${pieceSize.height}` : "未知"}</span>
+                                <span className="opacity-60">{canvasT("videoCanvas.dialog.splitPieceApprox", "单块约")}</span>
+                                <span className="font-semibold">{pieceSize ? `${pieceSize.width} x ${pieceSize.height}` : canvasT("videoCanvas.dialog.cropUnknown", "未知")}</span>
                             </div>
                         </div>
                         <Button type="primary" size="large" className="w-full" icon={<Grid2x2 className="size-4" />} onClick={() => onConfirm(params)}>
-                            生成子节点
+                            {canvasT("videoCanvas.dialog.splitGenerate", "生成子节点")}
                         </Button>
                     </div>
                 </div>

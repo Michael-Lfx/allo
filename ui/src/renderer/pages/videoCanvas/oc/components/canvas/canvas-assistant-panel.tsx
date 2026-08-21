@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useMemo, useRef, useState } from "react";
 import copyToClipboard from "copy-to-clipboard";
 import { Copy, History, MessageSquareText, Plus, ScrollText, Settings2, Trash2, X } from "lucide-react";
@@ -6,6 +7,7 @@ import { motion } from "motion/react";
 
 import { modelDisplayName, normalizeModelOptionValue, resolveModelChannel, resolveModelRequestConfig, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@oc/stores/use-config-store";
 import { ModelIcon } from "@oc/components/model-picker";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { nanoid } from "nanoid";
 import { requestToolResponse, type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall } from "@oc/services/api/image";
@@ -151,6 +153,7 @@ type CanvasAssistantPanelProps = {
 };
 
 export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, projectId, sessions, activeSessionId, onSelectNodeIds, onSessionsChange, onApplyOps, canUndoOps, undoOpsCount, onUndoOps, onPasteImage, agentMode, onAgentModeChange, autoConnectLocal, closing, onCollapse, cinematicEntry = false, onCinematicEntryConsumed, resizing = false }: CanvasAssistantPanelProps) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const user = useUserStore((state) => state.user);
     const effectiveConfig = useEffectiveConfig();
@@ -661,20 +664,20 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
                 value={view}
                 theme={theme}
                 items={[
-                    { value: "setup", label: "配置", icon: <Settings2 className="size-3.5" /> },
-                    { value: "chat", label: "对话", icon: <MessageSquareText className="size-3.5" /> },
-                    { value: "history", label: "历史", icon: <History className="size-3.5" />, count: historySessions.length },
-                    { value: "log", label: "记录", icon: <ScrollText className="size-3.5" />, count: onlineLogs.length },
+                    { value: "setup", label: canvasT("videoCanvas.agent.tabSetup", "配置"), icon: <Settings2 className="size-3.5" /> },
+                    { value: "chat", label: canvasT("videoCanvas.agent.tabChat", "对话"), icon: <MessageSquareText className="size-3.5" /> },
+                    { value: "history", label: canvasT("videoCanvas.agent.tabHistory", "历史"), icon: <History className="size-3.5" />, count: historySessions.length },
+                    { value: "log", label: canvasT("videoCanvas.agent.tabLog", "记录"), icon: <ScrollText className="size-3.5" />, count: onlineLogs.length },
                 ]}
                 onChange={setView}
                 right={
                     <>
                         {view === "history" ? (
-                            <Tooltip title="删除全部">
+                            <Tooltip title={canvasT("videoCanvas.agent.deleteAll", "删除全部")}>
                                 <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" style={iconButtonStyle} icon={<X className="size-4" />} disabled={!historySessions.length} onClick={() => setDeleteChatIds(historySessions.map((session) => session.id))} />
                             </Tooltip>
                         ) : null}
-                        <Tooltip title="新对话">
+                        <Tooltip title={canvasT("videoCanvas.agent.newChat", "新对话")}>
                             <Button
                                 type="text"
                                 shape="circle"
@@ -744,7 +747,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
                     <AgentChatComposer
                         prompt={prompt}
                         sending={agentBusy}
-                        placeholder={cinematicEntryActive ? "一句话描述题材、角色和核心冲突" : "描述你想让 Agent 如何操作画布"}
+                        placeholder={cinematicEntryActive ? canvasT("videoCanvas.agent.placeholderCinematic", "一句话描述题材、角色和核心冲突") : canvasT("videoCanvas.agent.placeholderChat", "描述你想让 Agent 如何操作画布")}
                         theme={theme}
                         onPromptChange={setPrompt}
                         onSubmit={cinematicEntryActive ? () => submitCinematicProject(prompt) : submit}
@@ -752,7 +755,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
                         left={
                             <>
                                 <AgentTextModelPicker config={effectiveConfig} value={effectiveConfig.textModel} onChange={(model) => updateConfig("textModel", model)} />
-                                {cinematicEntryActive ? <span className="ml-2 inline-flex h-6 items-center rounded-md px-2 text-[var(--fs-tiny)] font-medium" style={{ background: theme.spatial.surface, color: theme.node.muted }}>影视项目</span> : null}
+                                {cinematicEntryActive ? <span className="ml-2 inline-flex h-6 items-center rounded-md px-2 text-[var(--fs-tiny)] font-medium" style={{ background: theme.spatial.surface, color: theme.node.muted }}>{canvasT("videoCanvas.agent.cinematicBadge", "影视项目")}</span> : null}
                             </>
                         }
                     />
@@ -760,13 +763,13 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
             ) : null}
 
             <Modal
-                title="删除对话记录？"
+                title={canvasT("videoCanvas.agent.deleteConfirmTitle", "删除对话记录？")}
                 open={deleteChatIds.length > 0}
                 centered
                 onCancel={() => setDeleteChatIds([])}
                 footer={
                     <>
-                        <Button onClick={() => setDeleteChatIds([])}>取消</Button>
+                        <Button onClick={() => setDeleteChatIds([])}>{canvasT("videoCanvas.agent.cancel", "取消")}</Button>
                         <Button
                             danger
                             type="primary"
@@ -775,12 +778,12 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
                                 setDeleteChatIds([]);
                             }}
                         >
-                            删除
+                            {canvasT("videoCanvas.agent.delete", "删除")}
                         </Button>
                     </>
                 }
             >
-                <p className="text-sm opacity-60">将删除 {deleteChatIds.length} 条对话记录，此操作不可撤销。</p>
+                <p className="text-sm opacity-60">{canvasT("videoCanvas.agent.deleteConfirmBody", "将删除 {{count}} 条对话记录，此操作不可撤销。", { count: deleteChatIds.length })}</p>
             </Modal>
         </>
     );
@@ -850,15 +853,15 @@ function AgentTextModelPicker({ config, value, onChange }: { config: AiConfig; v
                 getPopupContainer={() => document.body}
                 classNames={{ popup: { root: "agent-text-model-select-dropdown" } }}
                 options={options.map((model) => ({ value: model, label: `${modelDisplayName(config, model)} ${resolveModelChannel(config, model).name}` }))}
-                notFoundContent={<span className="block py-2 text-center text-xs text-foreground/48">暂无文本模型</span>}
+                notFoundContent={<span className="block py-2 text-center text-xs text-foreground/48">{canvasT("videoCanvas.agent.noTextModels", "暂无文本模型")}</span>}
                 optionRender={(option) => {
                     const model = String(option.value);
                     return <span className="flex min-w-0 items-center gap-2"><ModelIcon config={config} model={model} /><span className="min-w-0 flex-1 truncate">{modelDisplayName(config, model)}</span><span className="shrink-0 text-xs opacity-55">{resolveModelChannel(config, model).name}</span></span>;
                 }}
-                labelRender={() => <span className="flex min-w-0 items-center gap-1.5"><ModelIcon config={config} model={current} /><span className="min-w-0 truncate">{current ? modelDisplayName(config, current) : "选择文本模型"}</span>{current ? <span className="shrink-0 opacity-55">{resolveModelChannel(config, current).name}</span> : null}</span>}
+                labelRender={() => <span className="flex min-w-0 items-center gap-1.5"><ModelIcon config={config} model={current} /><span className="min-w-0 truncate">{current ? modelDisplayName(config, current) : canvasT("videoCanvas.agent.selectTextModel", "选择文本模型")}</span>{current ? <span className="shrink-0 opacity-55">{resolveModelChannel(config, current).name}</span> : null}</span>}
                 onChange={onChange}
-                aria-label="选择 Agent 文本模型"
-                title={current ? `${modelDisplayName(config, current)} · ${resolveModelChannel(config, current).name}` : "选择文本模型"}
+                aria-label={canvasT("videoCanvas.agent.selectAgentModelAria", "选择 Agent 文本模型")}
+                title={current ? `${modelDisplayName(config, current)} · ${resolveModelChannel(config, current).name}` : canvasT("videoCanvas.agent.selectTextModel", "选择文本模型")}
             />
         </div>
     );
@@ -880,14 +883,14 @@ function AssistantHistory({
     return (
         <div className="space-y-3">
             <div className="text-sm" style={{ color: theme.node.muted }}>
-                {sessions.length ? `${sessions.length} 条历史` : "暂无历史"}
+                {sessions.length ? canvasT("videoCanvas.agent.historyCount", "{{count}} 条历史", { count: sessions.length }) : canvasT("videoCanvas.agent.noHistory", "暂无历史")}
             </div>
             {sessions.map((session) => (
                 <div key={session.id} className="rounded-md px-2.5 py-2 transition-colors" style={{ background: session.id === activeSession?.id ? theme.accent.primarySoft : "transparent", color: theme.node.text }}>
                     <div className="flex items-center gap-2">
                         <div className="min-w-0 flex-1">
                             <div className="flex min-w-0 items-center gap-1.5">
-                                {session.id === activeSession?.id ? <span className="shrink-0 text-[var(--fs-tiny)] font-medium" style={{ color: theme.node.text }}>当前</span> : null}
+                                {session.id === activeSession?.id ? <span className="shrink-0 text-[var(--fs-tiny)] font-medium" style={{ color: theme.node.text }}>{canvasT("videoCanvas.agent.current", "当前")}</span> : null}
                                 <div className="truncate text-sm font-medium leading-5">{session.title}</div>
                             </div>
                             <div className="truncate text-[var(--fs-label)] leading-4 opacity-65">{sessionPreview(session)}</div>
@@ -895,9 +898,9 @@ function AssistantHistory({
                         <div className="flex shrink-0 items-center gap-1">
                             <span className="text-[var(--fs-tiny)] opacity-55">{formatSessionTime(session.updatedAt || session.createdAt)}</span>
                             <Button size="small" className="!h-6 !px-2" onClick={() => onOpen(session.id)}>
-                                进入
+                                {canvasT("videoCanvas.agent.enter", "进入")}
                             </Button>
-                            <Tooltip title="删除记录">
+                            <Tooltip title={canvasT("videoCanvas.agent.deleteRecord", "删除记录")}>
                                 <Button size="small" danger type="text" className="!h-6 !w-6 !min-w-6" icon={<Trash2 className="size-3.5" />} onClick={() => onDelete(session.id)} />
                             </Tooltip>
                         </div>
@@ -906,7 +909,7 @@ function AssistantHistory({
             ))}
             {!sessions.length ? (
                 <div className="px-3 py-8 text-center text-sm" style={{ color: theme.node.muted }}>
-                    网站 Agent 的对话记录会显示在这里
+                    {canvasT("videoCanvas.agent.historyEmptyHint", "网站 Agent 的对话记录会显示在这里")}
                 </div>
             ) : null}
         </div>
@@ -918,21 +921,21 @@ function OnlineAgentSetupView({ theme, activeModel, onOpenConfig }: { theme: (ty
         <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto p-4">
             <div className="space-y-4">
                 <div>
-                    <div className="text-base font-semibold leading-6">连接配置</div>
+                    <div className="text-base font-semibold leading-6">{canvasT("videoCanvas.agent.setupTitle", "连接配置")}</div>
                     <div className="mt-1 text-xs leading-5" style={{ color: theme.node.muted }}>
-                        网站 Agent 直接使用当前网页配置的文本模型和 API。
+                        {canvasT("videoCanvas.agent.setupHint", "网站 Agent 直接使用当前网页配置的文本模型和 API。")}
                     </div>
                 </div>
                 <div className="rounded-md p-3" style={{ background: theme.spatial.surface }}>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
-                            <div className="text-sm font-medium leading-5">文本模型</div>
+                            <div className="text-sm font-medium leading-5">{canvasT("videoCanvas.agent.textModel", "文本模型")}</div>
                             <div className="mt-1 truncate text-xs leading-5" style={{ color: theme.node.muted }}>
-                                {activeModel || "未配置模型"}
+                                {activeModel || canvasT("videoCanvas.agent.noModelConfigured", "未配置模型")}
                             </div>
                         </div>
                         <Button className="!h-8 !px-3" type="primary" icon={<Settings2 className="size-4" />} onClick={onOpenConfig}>
-                            配置
+                            {canvasT("videoCanvas.agent.configure", "配置")}
                         </Button>
                     </div>
                 </div>
@@ -954,12 +957,12 @@ function OnlineAgentLogView({ logs, theme, context, onClear }: { logs: OnlineAge
     return (
         <div className="flex min-h-full flex-col gap-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-                <Segmented size="small" value={mode} onChange={(value) => setMode(value as "text" | "json")} options={[{ label: "排查日志", value: "text" }, { label: "原始 JSON", value: "json" }]} />
+                <Segmented size="small" value={mode} onChange={(value) => setMode(value as "text" | "json")} options={[{ label: canvasT("videoCanvas.agent.logDiagnose", "排查日志"), value: "text" }, { label: canvasT("videoCanvas.agent.logRawJson", "原始 JSON"), value: "json" }]} />
                 <div className="flex items-center gap-2">
-                    <span className="text-xs" style={{ color: theme.node.muted }}>{logs.length} 条</span>
-                    <Button size="small" icon={<Copy className="size-3.5" />} disabled={!logs.length} onClick={() => void copy()}>复制</Button>
-                    <Button size="small" disabled={!lastError} onClick={() => lastError && void copy(formatOnlineLogText([lastError], context))}>最近错误</Button>
-                    <Button size="small" danger type="text" icon={<Trash2 className="size-3.5" />} disabled={!logs.length} onClick={onClear}>清空</Button>
+                    <span className="text-xs" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.agent.logCount", "{{count}} 条", { count: logs.length })}</span>
+                    <Button size="small" icon={<Copy className="size-3.5" />} disabled={!logs.length} onClick={() => void copy()}>{canvasT("videoCanvas.agent.copy", "复制")}</Button>
+                    <Button size="small" disabled={!lastError} onClick={() => lastError && void copy(formatOnlineLogText([lastError], context))}>{canvasT("videoCanvas.agent.recentError", "最近错误")}</Button>
+                    <Button size="small" danger type="text" icon={<Trash2 className="size-3.5" />} disabled={!logs.length} onClick={onClear}>{canvasT("videoCanvas.agent.clear", "清空")}</Button>
                 </div>
             </div>
             <textarea
@@ -1005,7 +1008,7 @@ function AssistantReferenceChip({ item, label, onRemove }: { item: CanvasAssista
                     className="absolute -right-1 -top-1 grid size-4 place-items-center rounded-full border opacity-0 shadow-sm transition group-hover/chip:opacity-100"
                     style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke }}
                     onClick={onRemove}
-                    aria-label="移除引用"
+                    aria-label={canvasT("videoCanvas.agent.removeRef", "移除引用")}
                 >
                     <X className="size-3" />
                 </button>
@@ -1029,7 +1032,7 @@ function formatSessionTime(value?: string) {
 }
 
 function sessionPreview(session: CanvasAssistantSession) {
-    return session.messages.at(-1)?.text || `${session.messages.length} 条消息`;
+    return session.messages.at(-1)?.text || canvasT("videoCanvas.agent.messageCount", "{{count}} 条消息", { count: session.messages.length });
 }
 
 function objectDetail(value: unknown) {

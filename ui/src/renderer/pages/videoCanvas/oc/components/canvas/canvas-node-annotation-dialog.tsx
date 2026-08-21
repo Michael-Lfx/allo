@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Button, Modal, Slider, Tooltip } from "antd";
 import { Brush, Eraser, Redo2, RotateCcw, Save, Undo2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { imageToDataUrl } from "@oc/services/image-storage";
 
 type Point = { x: number; y: number };
@@ -15,6 +17,7 @@ export function CanvasNodeAnnotationDialog({ image, open, onClose, onConfirm }: 
     onClose: () => void;
     onConfirm: (dataUrl: string) => void;
 }) {
+    useTranslation();
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const sourceImageRef = useRef<HTMLImageElement | null>(null);
     const drawingRef = useRef<Stroke | null>(null);
@@ -104,28 +107,28 @@ export function CanvasNodeAnnotationDialog({ image, open, onClose, onConfirm }: 
         <Modal title={null} open={open} onCancel={onClose} footer={null} width="min(1120px, calc(100vw - 32px))" centered destroyOnHidden>
             <div className="flex flex-col gap-3">
                 <div className="flex flex-wrap items-center gap-2 rounded-lg border p-2" style={{ borderColor: "rgba(127,127,127,.22)" }}>
-                    <span className="px-1 text-sm font-semibold">标注</span>
+                    <span className="px-1 text-sm font-semibold">{canvasT("videoCanvas.dialog.annotation", "标注")}</span>
                     <span className="mx-1 h-6 w-px bg-current opacity-15" />
-                    <ToolButton title="画笔" active={mode === "brush"} onClick={() => setMode("brush")}><Brush className="size-4" /></ToolButton>
-                    <ToolButton title="橡皮" active={mode === "erase"} onClick={() => setMode("erase")}><Eraser className="size-4" /></ToolButton>
+                    <ToolButton title={canvasT("videoCanvas.dialog.annotationBrush", "画笔")} active={mode === "brush"} onClick={() => setMode("brush")}><Brush className="size-4" /></ToolButton>
+                    <ToolButton title={canvasT("videoCanvas.dialog.annotationErase", "橡皮")} active={mode === "erase"} onClick={() => setMode("erase")}><Eraser className="size-4" /></ToolButton>
                     <div className="flex items-center gap-1 px-1">
-                        {colors.map((item) => <button key={item} type="button" aria-label={`颜色 ${item}`} className="size-5 rounded-full border-2 transition" style={{ background: item, borderColor: color === item ? "currentColor" : "transparent", boxShadow: item === "#ffffff" ? "inset 0 0 0 1px rgba(0,0,0,.18)" : undefined }} onClick={() => { setColor(item); setMode("brush"); }} />)}
+                        {colors.map((item) => <button key={item} type="button" aria-label={canvasT("videoCanvas.dialog.annotationColor", "颜色 {{color}}", { color: item })} className="size-5 rounded-full border-2 transition" style={{ background: item, borderColor: color === item ? "currentColor" : "transparent", boxShadow: item === "#ffffff" ? "inset 0 0 0 1px rgba(0,0,0,.18)" : undefined }} onClick={() => { setColor(item); setMode("brush"); }} />)}
                     </div>
                     <div className="flex w-40 items-center gap-2 px-2"><Brush className="size-3.5 opacity-55" /><Slider className="m-0 flex-1" min={3} max={80} value={brushSize} onChange={setBrushSize} /></div>
                     <span className="mx-1 h-6 w-px bg-current opacity-15" />
-                    <ToolButton title="撤销" disabled={!strokes.length} onClick={undo}><Undo2 className="size-4" /></ToolButton>
-                    <ToolButton title="重做" disabled={!redoStrokes.length} onClick={redo}><Redo2 className="size-4" /></ToolButton>
-                    <ToolButton title="清空" disabled={!strokes.length} onClick={() => { setStrokes([]); setRedoStrokes([]); }}><RotateCcw className="size-4" /></ToolButton>
+                    <ToolButton title={canvasT("videoCanvas.dialog.annotationUndo", "撤销")} disabled={!strokes.length} onClick={undo}><Undo2 className="size-4" /></ToolButton>
+                    <ToolButton title={canvasT("videoCanvas.dialog.annotationRedo", "重做")} disabled={!redoStrokes.length} onClick={redo}><Redo2 className="size-4" /></ToolButton>
+                    <ToolButton title={canvasT("videoCanvas.dialog.annotationClear", "清空")} disabled={!strokes.length} onClick={() => { setStrokes([]); setRedoStrokes([]); }}><RotateCcw className="size-4" /></ToolButton>
                     <span className="min-w-0 flex-1" />
-                    <Button type="primary" icon={<Save className="size-4" />} disabled={!strokes.length} onClick={save}>保存为新节点</Button>
+                    <Button type="primary" icon={<Save className="size-4" />} disabled={!strokes.length} onClick={save}>{canvasT("videoCanvas.dialog.annotationSave", "保存为新节点")}</Button>
                 </div>
                 <div className="flex min-h-[360px] items-center justify-center overflow-hidden rounded-lg bg-black/5 dark:bg-white/[0.03]">
                     {source && size.width ? (
                         <div className="relative inline-block max-h-[72vh] max-w-full overflow-hidden">
-                            <img src={source} alt="待标注图片" className="block max-h-[72vh] max-w-full select-none object-contain" draggable={false} />
+                            <img src={source} alt={canvasT("videoCanvas.dialog.annotationAlt", "待标注图片")} className="block max-h-[72vh] max-w-full select-none object-contain" draggable={false} />
                             <canvas ref={canvasRef} width={size.width} height={size.height} className="absolute inset-0 h-full w-full cursor-crosshair touch-none" onPointerDown={startDraw} onPointerMove={moveDraw} onPointerUp={stopDraw} onPointerCancel={stopDraw} />
                         </div>
-                    ) : <span className="text-sm opacity-50">正在读取图片...</span>}
+                    ) : <span className="text-sm opacity-50">{canvasT("videoCanvas.dialog.annotationLoading", "正在读取图片...")}</span>}
                 </div>
             </div>
         </Modal>

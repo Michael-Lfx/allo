@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArrowUp, AtSign, Boxes, ChevronDown, FileText, ImageIcon, ImagePlus, Maximize2, Music2, Pencil, SlidersHorizontal, Square, UserRound, Video } from "lucide-react";
-import { Button, Modal, Tooltip } from "antd";
+import { Button, InputNumber, Modal, Tooltip } from "antd";
+import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@oc/components/model-picker";
 import { configuredModelMatchesCapability, defaultConfig, useEffectiveConfig, type AiConfig } from "@oc/stores/use-config-store";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { getNodeGenerationMode } from "@oc/lib/canvas/node-registry";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@oc/lib/video-generation-options";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -35,11 +38,12 @@ type CanvasNodePromptPanelProps = {
 type CanvasTheme = (typeof canvasThemes)[keyof typeof canvasThemes];
 
 export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, mentionReferences = [], onImageSettingsOpenChange, workspaceMode = "professional" }: CanvasNodePromptPanelProps) {
+    useTranslation();
     const globalConfig = useEffectiveConfig();
     const themeName = useThemeStore((state) => state.theme);
     const theme = canvasThemes[themeName];
     const simpleMode = workspaceMode === "simple";
-    const mode = defaultMode(node.type);
+    const mode = getNodeGenerationMode(node) ?? "image";
     const config = buildNodeConfig(globalConfig, node, mode);
     const hasTextContent = node.type === CanvasNodeType.Text && Boolean(node.metadata?.content?.trim());
     const hasImageContent = node.type === CanvasNodeType.Image && Boolean(node.metadata?.content);
@@ -135,14 +139,14 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     <span className="grid size-3.5 shrink-0 place-items-center" style={{ color: monochromeAccent }}>
                         <GenerationModeIcon mode={mode} />
                     </span>
-                    <span className="truncate text-[var(--fs-tiny)] font-medium">{modeDisplayName(mode)}创作</span>
+                    <span className="truncate text-[var(--fs-tiny)] font-medium">{canvasT("videoCanvas.prompt.creation", "{{mode}}创作", { mode: modeDisplayName(mode) })}</span>
                 </div>
             )}
             {!simpleMode ? <CanvasPresetPicker mode={mode} skillReferences={skillReferences} open={expanded ? expandedPresetOpen : presetOpen} onOpenChange={expanded ? setExpandedPresetOpen : setPresetOpen} onSelect={applyPreset} dense /> : null}
             <div className="ml-auto flex shrink-0 items-center justify-end gap-1">
-                {activeReferenceCount ? <ComposerPill theme={theme} borderColor={insetBorder} icon={<Boxes className="size-2.5" />} label={`已连接 ${activeReferenceCount} 个`} /> : null}
+                {activeReferenceCount ? <ComposerPill theme={theme} borderColor={insetBorder} icon={<Boxes className="size-2.5" />} label={canvasT("videoCanvas.prompt.connected", "已连接 {{count}} 个", { count: activeReferenceCount })} /> : null}
                 {!expanded && canExpandPrompt ? (
-                    <Tooltip title="放大编辑">
+                    <Tooltip title={canvasT("videoCanvas.toolbar.expandEdit", "放大编辑")}>
                         <button
                             type="button"
                             className={`grid size-6 shrink-0 place-items-center rounded-md transition hover:brightness-125 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 motion-reduce:hover:translate-y-0 ${darkSurface ? "hover:bg-white/[.06]" : "hover:bg-black/[.06]"}`}
@@ -173,7 +177,19 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     />
                 </div>
                 <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1">
-                    {mode === "image" ? (
+                    {mode === "text" ? (
+                        <Tooltip title={canvasT("videoCanvas.prompt.textCountHint", "文本生成份数（默认 1，可在生成配置中调整）")}>
+                            <InputNumber
+                                size="small"
+                                min={1}
+                                max={15}
+                                value={Math.max(1, Math.min(15, Math.floor(Math.abs(Number(node.metadata?.textCount) || 1))))}
+                                onChange={(value) => onConfigChange(node.id, { textCount: Math.max(1, Math.min(15, Math.floor(Math.abs(Number(value)) || 1))) })}
+                                aria-label={canvasT("videoCanvas.prompt.textCountHint", "文本生成份数（默认 1，可在生成配置中调整）")}
+                                className="!h-7 !w-14 [&_.ant-input-number-input]:!text-[var(--fs-tiny)]"
+                            />
+                        </Tooltip>
+                    ) : mode === "image" ? (
                         <CanvasImageSettingsPopover
                             config={config}
                             placement={expanded ? "topRight" : "topLeft"}
@@ -207,7 +223,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                             boxShadow: isSubmitDisabled ? "none" : `0 8px 20px ${theme.spatial.shadow}, inset 0 1px 0 rgba(255,255,255,.18)`,
                         }}
                         onClick={() => (isRunning ? onStop(node.id) : expanded ? submitExpandedPrompt() : submit())}
-                        aria-label={isRunning ? "停止生成" : "生成"}
+                        aria-label={isRunning ? canvasT("videoCanvas.config.stop", "停止") : canvasT("videoCanvas.config.generate", "生成")}
                     >
                         {isRunning ? <Square className="size-2.5 fill-current" /> : <ArrowUp className="size-3" />}
                     </Button>
@@ -254,7 +270,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                         aria-label={paramsExpanded ? "收起参数" : "展开参数"}
                     >
                         <SlidersHorizontal className="size-3" strokeWidth={1.8} />
-                        <span className="flex-1 text-left">参数</span>
+                        <span className="flex-1 text-left">{canvasT("videoCanvas.prompt.params", "参数")}</span>
                         <ChevronDown className={`size-3 transition-transform duration-200 ${paramsExpanded ? "rotate-180" : ""}`} strokeWidth={1.8} />
                     </button>
                     {paramsExpanded ? (
@@ -328,10 +344,10 @@ function GenerationModeIcon({ mode }: { mode: CanvasNodeGenerationMode }) {
 }
 
 function modeDisplayName(mode: CanvasNodeGenerationMode) {
-    if (mode === "image") return "图片";
-    if (mode === "video") return "视频";
-    if (mode === "audio") return "音频";
-    return "文本";
+    if (mode === "image") return canvasT("videoCanvas.prompt.modeImage", "图片");
+    if (mode === "video") return canvasT("videoCanvas.prompt.modeVideo", "视频");
+    if (mode === "audio") return canvasT("videoCanvas.prompt.modeAudio", "音频");
+    return canvasT("videoCanvas.prompt.modeText", "文本");
 }
 
 function ConnectedReferenceShelf({ references, theme, onInsert }: { references: CanvasResourceReference[]; theme: CanvasTheme; onInsert: (reference: CanvasResourceReference) => void }) {
@@ -376,10 +392,6 @@ function ReferenceThumbnail({ reference }: { reference: CanvasResourceReference 
     );
 }
 
-function defaultMode(type: CanvasNodeData["type"]): CanvasNodeGenerationMode {
-    return type === CanvasNodeType.Text || type === CanvasNodeType.Skill ? "text" : type === CanvasNodeType.Video ? "video" : type === CanvasNodeType.Audio ? "audio" : "image";
-}
-
 function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: CanvasNodeGenerationMode): AiConfig {
     const defaultModel = mode === "image" ? globalConfig.imageModel : mode === "video" ? globalConfig.videoModel : mode === "audio" ? globalConfig.audioModel : globalConfig.textModel;
     const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
@@ -404,10 +416,10 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
 }
 
 function promptPlaceholder(mode: CanvasNodeGenerationMode, hasImageContent: boolean, hasTextContent: boolean) {
-    if (mode === "video") return "描述要生成的视频内容";
-    if (mode === "audio") return "描述要生成的音频内容";
-    if (mode === "image") return hasImageContent ? "输入新提示词，重新生成当前图片" : "描述要生成的图片内容";
-    return hasTextContent ? "请输入你想要将本段文本修改成什么" : "请输入你想要生成的文本内容";
+    if (mode === "video") return canvasT("videoCanvas.prompt.placeholderVideo", "描述要生成的视频内容");
+    if (mode === "audio") return canvasT("videoCanvas.prompt.placeholderAudio", "描述要生成的音频内容");
+    if (mode === "image") return hasImageContent ? canvasT("videoCanvas.prompt.placeholderImageRegen", "输入新提示词，重新生成当前图片") : canvasT("videoCanvas.prompt.placeholderImage", "描述要生成的图片内容");
+    return hasTextContent ? canvasT("videoCanvas.prompt.placeholderTextEdit", "请输入你想要将本段文本修改成什么") : canvasT("videoCanvas.prompt.placeholderText", "请输入你想要生成的文本内容");
 }
 
 function videoConfigPatch(key: keyof AiConfig, value: string) {

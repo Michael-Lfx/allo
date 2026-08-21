@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 
 import type { CanvasNodeGenerationMode } from "@oc/components/canvas/canvas-node-prompt-panel";
 import { applyCanvasAgentOps, summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { getNodeGenerationMode } from "@oc/lib/canvas/node-registry";
 import type { CanvasConnection, CanvasNodeData, ContextMenuState, ViewportTransform } from "@oc/types/canvas";
 
 type UseCanvasAgentOperationsOptions = {
@@ -112,7 +113,7 @@ export function useCanvasAgentOperations({
             queueMicrotask(() => generationOps.forEach((op) => {
                 const target = nodesRef.current.find((node) => node.id === op.nodeId);
                 const prompt = op.prompt?.trim() ? op.prompt : target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "";
-                void generateNodeRef.current?.(op.nodeId, op.mode || target?.metadata?.generationMode || "image", prompt);
+                void generateNodeRef.current?.(op.nodeId, op.mode || (target && getNodeGenerationMode(target)) || target?.metadata?.generationMode || "image", prompt);
             }));
         }
         return { ...next, projectId, title: projectTitle, selectedNodeIds: nextSelectedNodeIds };

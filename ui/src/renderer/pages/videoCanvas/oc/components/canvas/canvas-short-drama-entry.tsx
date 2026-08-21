@@ -1,23 +1,26 @@
 import { Fragment, useState, type CSSProperties, type ReactNode } from "react";
 import { Dropdown } from "antd";
 import { AlignLeft, ArrowRight, Bot, Check, ChevronDown, ChevronUp, Clapperboard, FolderKanban, Images, MoreHorizontal, Palette, Pencil, Plus, Sparkles, Type, Upload, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { resolveCanvasStylePreset } from "@oc/components/canvas/canvas-style-picker-modal";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import type { CanvasShortDramaProgress, CanvasShortDramaStepId } from "@oc/lib/canvas/canvas-short-drama";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { CanvasNodeData } from "@oc/types/canvas";
 
 export function CanvasLinkedProjectEmptyState({ projectName, hasChapter, onAddFirstChapter, onOpenAssets, onAddText }: { projectName: string; hasChapter: boolean; onAddFirstChapter: () => void; onOpenAssets: () => void; onAddText: () => void }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center px-4 pb-16 pt-20">
             <div className="pointer-events-auto w-full max-w-[440px] rounded-lg border p-3 shadow-sm backdrop-blur" data-canvas-no-zoom style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}>
-                <div className="flex items-center gap-2.5"><span className="grid size-8 shrink-0 place-items-center rounded-md" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}><FolderKanban className="size-4" /></span><div className="min-w-0"><h2 className="truncate text-sm font-semibold">{projectName}</h2><p className="mt-0.5 text-[var(--fs-label)]" style={{ color: theme.node.muted }}>项目画布为空</p></div></div>
+                <div className="flex items-center gap-2.5"><span className="grid size-8 shrink-0 place-items-center rounded-md" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}><FolderKanban className="size-4" /></span><div className="min-w-0"><h2 className="truncate text-sm font-semibold">{projectName}</h2><p className="mt-0.5 text-[var(--fs-label)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.empty.projectEmpty", "项目画布为空")}</p></div></div>
                 <div className="mt-3 grid grid-cols-3 gap-1.5">
-                    <button type="button" disabled={!hasChapter} onClick={onAddFirstChapter} className="flex h-9 min-w-0 items-center justify-center gap-1 rounded-md border px-2 text-[var(--fs-label)] font-medium disabled:opacity-35" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Plus className="size-3.5 shrink-0" /><span className="truncate">添加首章</span></button>
-                    <button type="button" onClick={onOpenAssets} className="flex h-9 min-w-0 items-center justify-center gap-1 rounded-md border px-2 text-[var(--fs-label)] font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Images className="size-3.5 shrink-0" /><span className="truncate">项目资产</span></button>
-                    <button type="button" onClick={onAddText} className="flex h-9 min-w-0 items-center justify-center gap-1 rounded-md border px-2 text-[var(--fs-label)] font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Type className="size-3.5 shrink-0" /><span className="truncate">新建文本</span></button>
+                    <button type="button" disabled={!hasChapter} onClick={onAddFirstChapter} className="flex h-9 min-w-0 items-center justify-center gap-1 rounded-md border px-2 text-[var(--fs-label)] font-medium disabled:opacity-35" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Plus className="size-3.5 shrink-0" /><span className="truncate">{canvasT("videoCanvas.empty.addFirstChapter", "添加首章")}</span></button>
+                    <button type="button" onClick={onOpenAssets} className="flex h-9 min-w-0 items-center justify-center gap-1 rounded-md border px-2 text-[var(--fs-label)] font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Images className="size-3.5 shrink-0" /><span className="truncate">{canvasT("videoCanvas.empty.projectAssets", "项目资产")}</span></button>
+                    <button type="button" onClick={onAddText} className="flex h-9 min-w-0 items-center justify-center gap-1 rounded-md border px-2 text-[var(--fs-label)] font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Type className="size-3.5 shrink-0" /><span className="truncate">{canvasT("videoCanvas.empty.newText", "新建文本")}</span></button>
                 </div>
             </div>
         </div>
@@ -31,21 +34,22 @@ export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onUp
     onAddText: () => void;
     onAddScript: () => void;
 }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const focusStyle = { "--tw-ring-color": theme.accent.primary } as CSSProperties;
     return (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center px-4 pb-20 pt-24">
             <div className="pointer-events-auto w-full max-w-[760px]" data-canvas-no-zoom>
                 <div className="mb-4 text-center">
-                    <h2 className="text-lg font-semibold">从哪里开始？</h2>
-                    <p className="mt-1 text-sm" style={{ color: theme.node.muted }}>选择一条主路径，之后仍可随时切换。</p>
+                    <h2 className="text-lg font-semibold">{canvasT("videoCanvas.empty.whereToStart", "从哪里开始？")}</h2>
+                    <p className="mt-1 text-sm" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.empty.whereToStartHint", "选择一条主路径，之后仍可随时切换。")}</p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                     <PathCard
                         icon={<Clapperboard className="size-5" />}
-                        title="自己创作"
-                        description="搭好短剧骨架，再逐镜头编辑和生成。"
-                        action="创建短剧流水线"
+                        title={canvasT("videoCanvas.empty.createYourself", "自己创作")}
+                        description={canvasT("videoCanvas.empty.createYourselfDesc", "搭好短剧骨架，再逐镜头编辑和生成。")}
+                        action={canvasT("videoCanvas.empty.createPipeline", "创建短剧流水线")}
                         accent={theme.accent.primary}
                         theme={theme}
                         focusStyle={focusStyle}
@@ -53,9 +57,9 @@ export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onUp
                     />
                     <PathCard
                         icon={<Bot className="size-5" />}
-                        title="交给 Agent"
-                        description="用一句话描述题材、角色和核心冲突。"
-                        action="一句话生成影视项目"
+                        title={canvasT("videoCanvas.empty.handToAgent", "交给 Agent")}
+                        description={canvasT("videoCanvas.empty.handToAgentDesc", "用一句话描述题材、角色和核心冲突。")}
+                        action={canvasT("videoCanvas.empty.oneSentenceGenerate", "一句话生成影视项目")}
                         accent={theme.node.activeStroke}
                         theme={theme}
                         focusStyle={focusStyle}
@@ -67,14 +71,14 @@ export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onUp
                         trigger={["click"]}
                         menu={{
                             items: [
-                                { key: "upload", icon: <Upload className="size-4" />, label: "导入素材", onClick: onUpload },
-                                { key: "text", icon: <Type className="size-4" />, label: "新建文本", onClick: onAddText },
-                                { key: "storyboard", icon: <Clapperboard className="size-4" />, label: "新建空白分镜", onClick: onAddScript },
+                                { key: "upload", icon: <Upload className="size-4" />, label: canvasT("videoCanvas.chrome.importMedia", "导入素材"), onClick: onUpload },
+                                { key: "text", icon: <Type className="size-4" />, label: canvasT("videoCanvas.empty.newText", "新建文本"), onClick: onAddText },
+                                { key: "storyboard", icon: <Clapperboard className="size-4" />, label: canvasT("videoCanvas.empty.newBlankStoryboard", "新建空白分镜"), onClick: onAddScript },
                             ],
                         }}
                     >
                         <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ color: theme.node.muted, ...focusStyle }}>
-                            <MoreHorizontal className="size-4" />其他起点<ChevronDown className="size-3" />
+                            <MoreHorizontal className="size-4" />{canvasT("videoCanvas.empty.otherStarts", "其他起点")}<ChevronDown className="size-3" />
                         </button>
                     </Dropdown>
                 </div>
@@ -84,14 +88,15 @@ export function CanvasShortDramaEmptyState({ onCreatePipeline, onOpenAgent, onUp
 }
 
 export function CanvasFreeformEmptyState({ onUpload, onAddText }: { onUpload: () => void; onAddText: () => void }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center px-4 pb-20 pt-24">
             <div className="pointer-events-auto w-full max-w-[440px] rounded-lg border p-4 shadow-sm backdrop-blur" data-canvas-no-zoom style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}>
-                <div className="text-center"><h2 className="text-base font-semibold">从空白画布开始</h2><p className="mt-1 text-xs" style={{ color: theme.node.muted }}>添加文本或导入已有素材。</p></div>
+                <div className="text-center"><h2 className="text-base font-semibold">{canvasT("videoCanvas.empty.blankStart", "从空白画布开始")}</h2><p className="mt-1 text-xs" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.empty.blankStartHint", "添加文本或导入已有素材。")}</p></div>
                 <div className="mt-4 grid grid-cols-2 gap-2">
-                    <button type="button" onClick={onAddText} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border text-sm font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Type className="size-4" />新建文本</button>
-                    <button type="button" onClick={onUpload} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border text-sm font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Upload className="size-4" />导入素材</button>
+                    <button type="button" onClick={onAddText} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border text-sm font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Type className="size-4" />{canvasT("videoCanvas.empty.newText", "新建文本")}</button>
+                    <button type="button" onClick={onUpload} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border text-sm font-medium" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}><Upload className="size-4" />{canvasT("videoCanvas.chrome.importMedia", "导入素材")}</button>
                 </div>
             </div>
         </div>
@@ -127,6 +132,7 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
     onSkip: () => void;
     onStepClick: (stepId: CanvasShortDramaStepId) => void;
 }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     if (!progress.active || collapsed) return null;
     return (
@@ -167,7 +173,11 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
                                     className="whitespace-nowrap text-[var(--fs-caption)] font-semibold transition-colors duration-150 motion-reduce:transition-none"
                                     style={{ color: step.status === "current" ? theme.accent.primary : step.status === "completed" ? theme.node.text : theme.node.muted }}
                                 >
-                                    {step.label}
+                                    {step.id === "style" ? canvasT("videoCanvas.shortDrama.stepStyle", "选择画风")
+                                        : step.id === "story" ? canvasT("videoCanvas.shortDrama.stepStory", "输入故事")
+                                            : step.id === "storyboard" ? canvasT("videoCanvas.shortDrama.stepStoryboard", "生成分镜")
+                                                : step.id === "video" ? canvasT("videoCanvas.shortDrama.stepVideo", "生成视频")
+                                                    : canvasT("videoCanvas.shortDrama.stepFinal", "合并成片")}
                                 </span>
                             </button>
                         </Fragment>
@@ -175,8 +185,8 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
                 </div>
             </div>
             <span className="mx-1 h-4 w-px shrink-0" style={{ background: theme.toolbar.border }} />
-            {!progress.completed ? <button type="button" className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-[var(--fs-label)] outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ color: theme.node.muted, "--tw-ring-color": theme.accent.primary } as CSSProperties} onClick={onSkip}><X className="size-3" />跳过导引</button> : null}
-            <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ color: theme.node.muted, "--tw-ring-color": theme.accent.primary } as CSSProperties} onClick={onToggle} aria-label="折叠短剧流程"><ChevronUp className="size-3.5" /></button>
+            {!progress.completed ? <button type="button" className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-[var(--fs-label)] outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ color: theme.node.muted, "--tw-ring-color": theme.accent.primary } as CSSProperties} onClick={onSkip}><X className="size-3" />{canvasT("videoCanvas.empty.skipGuide", "跳过导引")}</button> : null}
+            <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ color: theme.node.muted, "--tw-ring-color": theme.accent.primary } as CSSProperties} onClick={onToggle} aria-label={canvasT("videoCanvas.empty.collapseGuide", "折叠短剧流程")}><ChevronUp className="size-3.5" /></button>
         </div>
     );
 }
@@ -186,21 +196,22 @@ export function CanvasStylePlaceholderNodeContent({ onChoose }: { onChoose: () =
 }
 
 export function CanvasStyleNodeContent({ node, onChoose }: { node?: CanvasNodeData; onChoose: () => void }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const preset = resolveCanvasStylePreset(node?.metadata?.stylePresetId);
     const hasStyle = Boolean(node?.metadata?.content);
     const title = preset?.title
         || (node?.title || "").replace(/^(?:项目)?画风\s*[·：:]?\s*/, "").trim()
-        || "未命名画风";
-    const description = preset?.description || node?.metadata?.workflowDescription || "已锁定项目级美术与影像基线，下游分镜与生成会引用此规范。";
+        || canvasT("videoCanvas.empty.unnamedStyle", "未命名画风");
+    const description = preset?.description || node?.metadata?.workflowDescription || canvasT("videoCanvas.empty.styleLockedDesc", "已锁定项目级美术与影像基线，下游分镜与生成会引用此规范。");
 
     if (!hasStyle) {
         return (
             <div className="flex h-full w-full flex-col items-center justify-center px-6 text-center" style={{ color: theme.node.text }}>
                 <span className="grid size-10 place-items-center rounded-md" style={{ background: `${theme.accent.primary}16`, color: theme.accent.primary }}><Palette className="size-5" /></span>
-                <div className="mt-3 text-sm font-semibold">项目画风</div>
-                <div className="mt-1 text-xs" style={{ color: theme.node.muted }}>待选择</div>
-                <button type="button" className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-medium outline-none transition hover:brightness-105 focus-visible:ring-2" style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke, "--tw-ring-color": theme.accent.primary } as CSSProperties} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onChoose(); }}><Sparkles className="size-3.5" />选择画风</button>
+                <div className="mt-3 text-sm font-semibold">{canvasT("videoCanvas.empty.projectStyle", "项目画风")}</div>
+                <div className="mt-1 text-xs" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.empty.pendingSelect", "待选择")}</div>
+                <button type="button" className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-medium outline-none transition hover:brightness-105 focus-visible:ring-2" style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke, "--tw-ring-color": theme.accent.primary } as CSSProperties} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onChoose(); }}><Sparkles className="size-3.5" />{canvasT("videoCanvas.empty.chooseStyle", "选择画风")}</button>
             </div>
         );
     }
@@ -219,7 +230,7 @@ export function CanvasStyleNodeContent({ node, onChoose }: { node?: CanvasNodeDa
                     onClick={(event) => { event.stopPropagation(); onChoose(); }}
                 >
                     <Palette className="size-3.5" />
-                    {node?.metadata?.locked ? "查看画风" : "更换画风"}
+                    {node?.metadata?.locked ? canvasT("videoCanvas.empty.viewStyle", "查看画风") : canvasT("videoCanvas.empty.changeStyle", "更换画风")}
                 </button>
             </div>
         </div>
@@ -250,15 +261,16 @@ function CanvasStyleCover({ imageUrl, accent, muted, stroke, panel }: { imageUrl
 
 
 export function CanvasStoryInputNodeContent({ node, onEdit }: { node: CanvasNodeData; onEdit: () => void }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const content = (node.metadata?.content || "").replace(/\s+/g, " ").trim();
     return (
         <div className="flex h-full w-full flex-col overflow-hidden p-4" style={{ color: theme.node.text }}>
             <div className="flex items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-2"><span className="grid size-8 shrink-0 place-items-center rounded-md" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}><AlignLeft className="size-4" /></span><span className="truncate text-sm font-semibold">故事梗概</span></div>
+                <div className="flex min-w-0 items-center gap-2"><span className="grid size-8 shrink-0 place-items-center rounded-md" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}><AlignLeft className="size-4" /></span><span className="truncate text-sm font-semibold">{canvasT("videoCanvas.empty.storyOutline", "故事梗概")}</span></div>
             </div>
-            <div className="mt-4 min-h-0 flex-1 overflow-hidden border-t pt-3 text-xs leading-6" style={{ borderColor: theme.node.stroke, color: content ? theme.node.muted : theme.node.placeholder }}>{content || "写下题材、角色、冲突和结局方向…"}</div>
-            <button type="button" className="mt-3 inline-flex h-8 w-fit items-center gap-1.5 rounded-md px-2 text-xs font-medium outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ color: theme.node.text, "--tw-ring-color": theme.accent.primary } as CSSProperties} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onEdit(); }}><Pencil className="size-3.5" />编辑故事</button>
+            <div className="mt-4 min-h-0 flex-1 overflow-hidden border-t pt-3 text-xs leading-6" style={{ borderColor: theme.node.stroke, color: content ? theme.node.muted : theme.node.placeholder }}>{content || canvasT("videoCanvas.empty.storyPlaceholder", "写下题材、角色、冲突和结局方向…")}</div>
+            <button type="button" className="mt-3 inline-flex h-8 w-fit items-center gap-1.5 rounded-md px-2 text-xs font-medium outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10" style={{ color: theme.node.text, "--tw-ring-color": theme.accent.primary } as CSSProperties} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onEdit(); }}><Pencil className="size-3.5" />{canvasT("videoCanvas.empty.editStory", "编辑故事")}</button>
         </div>
     );
 }
