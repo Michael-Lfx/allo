@@ -28,7 +28,6 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
     checked,
     selected,
     menuVisible,
-    dimIcon = false,
     showSessionAge = true,
   } = props;
   const layout = useLayoutContext();
@@ -81,8 +80,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
   const showAgeMeta = showSessionAge && !!ageLabel && !collapsed;
   const showDesktopTrailingMeta = !collapsed && !isMobile && (showAgeMeta || showUnreadDot);
   const showCompactUnreadDot = showUnreadDot && (collapsed || isMobile);
-  const showNestedPinnedBadge = dimIcon && !collapsed && !batchMode && isPinned;
-  const showHoverPinnedIcon = !dimIcon && !batchMode && isPinned && !isMobile && !isGenerating;
+  const showHoverPinnedIcon = !batchMode && isPinned && !isMobile && !isGenerating;
 
   const unreadDot = (
     <span
@@ -123,16 +121,6 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
           </span>
         )}
         {isGenerating && !batchMode && <Spin size={16} />}
-        {showNestedPinnedBadge && (
-          <Tooltip content={t('conversation.history.pinned')} mini>
-            <span
-              data-testid='conversation-pinned-badge'
-              role='img'
-              aria-label={t('conversation.history.pinned')}
-              className='absolute left-8px top-1/2 z-1 size-8px -translate-y-1/2 rd-3px bg-[rgb(var(--primary-6))] shadow-[0_0_0_2px_rgba(var(--primary-6),0.16)] pointer-events-none'
-            />
-          </Tooltip>
-        )}
         {showHoverPinnedIcon && (
           <span
             className='absolute left-18px top-1/2 z-1 -translate-y-1/2 text-t-secondary pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity'

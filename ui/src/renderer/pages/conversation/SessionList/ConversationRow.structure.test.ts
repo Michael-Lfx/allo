@@ -19,11 +19,14 @@ describe('ConversationRow structure', () => {
 
   test('gives conversation titles balanced left spacing', () => {
     expect(source.includes("!collapsed && 'pl-18px'")).toBe(true);
-    expect(source.includes('showNestedPinnedBadge')).toBe(true);
+    expect(source.includes('showNestedPinnedBadge')).toBe(false);
     expect(source.includes('showHoverPinnedIcon && \'group-hover:pl-22px\'')).toBe(true);
-    expect(source.includes("data-testid='conversation-pinned-badge'")).toBe(true);
-    expect(source.includes('bg-[rgb(var(--primary-6))]')).toBe(true);
-    expect(source.includes('size-8px -translate-y-1/2 rd-3px')).toBe(true);
+    expect(source.includes('const showHoverPinnedIcon = !batchMode && isPinned && !isMobile && !isGenerating;')).toBe(true);
+    expect(source.includes('!dimIcon && !batchMode && isPinned')).toBe(false);
+    expect(source.includes("data-testid='conversation-pinned-badge'")).toBe(false);
+    expect(source.includes('bg-[rgb(var(--primary-6))]')).toBe(false);
+    expect(source.includes('size-8px -translate-y-1/2 rd-3px')).toBe(false);
+    expect(source.includes('absolute left-18px top-1/2')).toBe(true);
     expect(source.includes("title={t('conversation.history.pinned')}")).toBe(false);
   });
 

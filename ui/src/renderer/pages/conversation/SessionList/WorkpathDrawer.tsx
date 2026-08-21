@@ -259,14 +259,6 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
               />
             </span>
           )}
-          {node.pinned && (
-            <span
-              data-testid='workpath-pinned-badge'
-              role='img'
-              aria-label={t('sessionList.pinnedWorkpath')}
-              className='absolute left-8px top-5px z-1 size-10px rd-3px bg-[rgb(var(--primary-6))] shadow-[0_0_0_2px_rgba(var(--primary-6),0.16)] pointer-events-none'
-            />
-          )}
           <div
             className='flex min-w-0 flex-1 items-center gap-8px'
             onPointerEnter={() => setWorkpathIdentityHovered(true)}
@@ -280,6 +272,16 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
               }}
             >
               {headerIcon}
+              {node.pinned && (
+                <span
+                  data-testid='workpath-pinned-badge'
+                  role='img'
+                  aria-label={t('sessionList.pinnedWorkpath')}
+                  className='absolute -top-2px -right-2px z-1 box-border size-12px rd-full flex-center border-2px border-solid border-[var(--color-bg-1)] bg-[rgb(var(--primary-6))] text-white pointer-events-none'
+                >
+                  <Pushpin theme='outline' size='8' fill='currentColor' className='block' />
+                </span>
+              )}
             </span>
 
             <div className='flex-1 min-w-0 flex items-center gap-6px overflow-hidden'>

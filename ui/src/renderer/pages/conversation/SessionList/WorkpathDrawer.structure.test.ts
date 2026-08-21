@@ -53,11 +53,16 @@ describe('WorkpathDrawer structure', () => {
     expect(indicatorIndex).toBeGreaterThan(-1);
     expect(headerIconIndex).toBeGreaterThan(-1);
     expect(identityIndex).toBeGreaterThan(headerIconIndex);
+    expect(indicatorIndex).toBeGreaterThan(headerIconIndex);
     expect(indicatorIndex).toBeLessThan(identityIndex);
     expect(indicatorIndex).toBeLessThan(hoverOpsIndex);
     expect(source.includes("t('sessionList.pinnedWorkpath')")).toBe(true);
     expect(source.includes('bg-[rgb(var(--primary-6))]')).toBe(true);
-    expect(source.includes('size-10px rd-3px')).toBe(true);
+    expect(source.includes('absolute -top-2px -right-2px')).toBe(true);
+    expect(source.includes('size-12px rd-full')).toBe(true);
+    expect(source.includes('border-2px border-solid border-[var(--color-bg-1)]')).toBe(true);
+    expect(source.includes('text-white')).toBe(true);
+    expect(source.includes('size-10px rd-3px')).toBe(false);
     expect(source.includes("title={t('sessionList.pinnedWorkpath')}")).toBe(false);
     expect(source.includes('workpath-pinned-indicator')).toBe(false);
     expect(source.includes('text-aou-1')).toBe(false);
