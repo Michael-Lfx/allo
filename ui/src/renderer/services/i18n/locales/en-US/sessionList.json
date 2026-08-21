@@ -41,6 +41,7 @@
   "createdDays": "{{count}}d",
   "pinWorkpath": "Pin workspace",
   "unpinWorkpath": "Unpin workspace",
+  "pinnedWorkpath": "Pinned workspace",
   "removeWorkpath": "Remove workspace",
   "removeWorkpathTitle": "Remove workspace",
   "removeWorkpathConfirm": "Remove \"{{path}}\" from the sidebar? Local files and existing sessions will not be deleted.",

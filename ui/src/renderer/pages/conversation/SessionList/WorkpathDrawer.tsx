@@ -1,15 +1,17 @@
 
 
-import { Checkbox, Popover, Tooltip } from '@arco-design/web-react';
-import { BookOne, BranchOne, DeleteOne, FolderClose, FolderOpen, Home, Plus, Pushpin } from '@icon-park/react';
+import { Checkbox, Dropdown, Menu, Message, Popover, Tooltip } from '@arco-design/web-react';
+import { BookOne, BranchOne, Copy, DeleteOne, FolderClose, FolderOpen, Home, MoreOne, Plus, Pushpin } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import CapabilityIcon, { CAPABILITY_COLORS } from '@/renderer/components/capability/CapabilityIcon';
-import CopyIconButton from '@/renderer/components/base/CopyIconButton';
+import MarqueeText from '@/renderer/components/base/MarqueeText';
 import PathText from '@/renderer/components/base/PathText';
+import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import WorkpathHoverCard from '@/renderer/pages/conversation/components/WorkpathHoverCard';
+import { copyText } from '@/renderer/utils/ui/clipboard';
 import type { ConversationId } from '@/common/types/ids';
 
 import type { WorkpathUiState } from './hooks/useWorkpathUiState';
@@ -32,6 +34,7 @@ import {
   formatWorkpathDisplay,
   type SidebarDisplayPreferences,
 } from './utils/sidebarDisplayPreferences';
+import { getWorkpathMenuActionKeys } from './utils/workpathMenuActions';
 import type { SessionEntry, WorkpathNode } from './utils/workpathTree';
 
 export interface WorkpathDrawerProps {
@@ -78,12 +81,19 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   const { t } = useTranslation();
   const syncedActiveDrawerRouteRef = useRef<string | null>(null);
   const [showAllConversations, setShowAllConversations] = useState(false);
+  const [workpathIdentityHovered, setWorkpathIdentityHovered] = useState(false);
+  const isMobile = useLayoutContext()?.isMobile ?? false;
 
   const isDefault = node.key === DEFAULT_WORKPATH_KEY;
   const displayName = isDefault ? t('sessionList.defaultWorkpath') : node.displayName;
   const workpathDisplay = isDefault ? null : formatWorkpathDisplay(node.key, node.displayName, displayPreferences.workpathNameMode);
   const twoLineWorkpath = workpathDisplay?.kind === 'twoLine';
   const sessionCount = node.interactive.length;
+  const workpathMenuActionKeys = getWorkpathMenuActionKeys({
+    isDefault,
+    isProjectWorkpath,
+    canRemoveProjectWorkpath: Boolean(onRemoveProjectWorkpath),
+  });
 
   const activeEntry =
     activeConversationId === null ? null : (node.interactive.find((entry) => entry.id === activeConversationId) ?? null);
@@ -139,27 +149,55 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   );
 
   const nameSpan = (
-    <span className='text-14px font-[500] truncate text-t-primary min-w-0'>{displayName}</span>
+    <MarqueeText
+      text={displayName}
+      trigger='hover'
+      disabled={batchMode || isMobile}
+      active={workpathIdentityHovered && !isMobile}
+      className='min-w-0 flex-1 text-14px font-[500] text-t-primary'
+    />
   );
   const renderWorkpathName = () => {
     if (isDefault || !workpathDisplay) return nameSpan;
     if (workpathDisplay.kind === 'compressed') {
       return (
-        <span className='inline-flex min-w-0'>
-          <PathText path={node.key} className='text-14px font-[500] text-t-primary' />
+        <span className='min-w-0 flex-1'>
+          <PathText
+            path={node.key}
+            className='text-14px font-[500] text-t-primary'
+            marqueeOnHover={!batchMode && !isMobile}
+            marqueeActive={workpathIdentityHovered && !isMobile}
+          />
         </span>
       );
     }
     if (workpathDisplay.kind === 'single') {
       return (
-        <span className='text-14px font-[500] truncate text-t-primary min-w-0'>{workpathDisplay.primary}</span>
+        <MarqueeText
+          text={workpathDisplay.primary}
+          trigger='hover'
+          disabled={batchMode || isMobile}
+          active={workpathIdentityHovered && !isMobile}
+          className='min-w-0 flex-1 text-14px font-[500] text-t-primary'
+        />
       );
     }
     return (
       <span className='min-w-0 flex-1 flex flex-col justify-center overflow-hidden gap-2px'>
-        <span className='text-13px font-[500] truncate text-t-primary leading-16px'>{workpathDisplay.primary}</span>
+        <MarqueeText
+          text={workpathDisplay.primary}
+          trigger='hover'
+          disabled={batchMode || isMobile}
+          active={workpathIdentityHovered && !isMobile}
+          className='min-w-0 text-13px font-[500] text-t-primary leading-16px'
+        />
         {workpathDisplay.secondary && (
-          <PathText path={workpathDisplay.secondary} className='text-11px font-[400] text-t-secondary leading-13px' />
+          <PathText
+            path={workpathDisplay.secondary}
+            className='text-11px font-[400] text-t-secondary leading-13px'
+            marqueeOnHover={!batchMode && !isMobile}
+            marqueeActive={workpathIdentityHovered && !isMobile}
+          />
         )}
       </span>
     );
@@ -194,7 +232,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
       >
         <div
           className={classNames(
-            'flex items-center gap-8px pl-10px pr-8px cursor-pointer hover:bg-fill-2 rd-10px transition-colors min-w-0 group',
+            'relative flex items-center gap-8px pl-10px pr-8px cursor-pointer hover:bg-fill-2 rd-10px transition-colors min-w-0 group group-hover:pr-50px group-focus-within:pr-50px',
             twoLineWorkpath ? 'h-42px py-4px' : 'h-34px'
           )}
           onClick={() => {
@@ -221,53 +259,59 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
               />
             </span>
           )}
-          <span
-            className='size-22px flex items-center justify-center shrink-0 text-t-primary'
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleDrawer();
-            }}
+          {node.pinned && (
+            <span
+              data-testid='workpath-pinned-badge'
+              role='img'
+              aria-label={t('sessionList.pinnedWorkpath')}
+              className='absolute left-8px top-5px z-1 size-10px rd-3px bg-[rgb(var(--primary-6))] shadow-[0_0_0_2px_rgba(var(--primary-6),0.16)] pointer-events-none'
+            />
+          )}
+          <div
+            className='flex min-w-0 flex-1 items-center gap-8px'
+            onPointerEnter={() => setWorkpathIdentityHovered(true)}
+            onPointerLeave={() => setWorkpathIdentityHovered(false)}
           >
-            {headerIcon}
-          </span>
+            <span
+              className='relative size-22px flex items-center justify-center shrink-0 text-t-primary'
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleDrawer();
+              }}
+            >
+              {headerIcon}
+            </span>
 
-          <div className='flex-1 min-w-0 flex items-center gap-6px overflow-hidden'>
-            {/* Workpath capability markers live with the identity text, not the
-                hover action slot, so they never disappear under create/pin ops. */}
-            {knowledgeLit && (
-              <span className='shrink-0 flex items-center'>
-                <CapabilityIcon
-                  icon={<BookOne theme='outline' size={13} fill='currentColor' />}
-                  color={CAPABILITY_COLORS.primary}
-                  title={t('knowledge.title')}
-                  size={13}
-                />
-              </span>
-            )}
+            <div className='flex-1 min-w-0 flex items-center gap-6px overflow-hidden'>
+              {/* Workpath capability markers live with the identity text, not the
+                  hover action slot, so they never disappear under create/pin ops. */}
+              {knowledgeLit && (
+                <span className='shrink-0 flex items-center'>
+                  <CapabilityIcon
+                    icon={<BookOne theme='outline' size={13} fill='currentColor' />}
+                    color={CAPABILITY_COLORS.primary}
+                    title={t('knowledge.title')}
+                    size={13}
+                  />
+                </span>
+              )}
 
-            {/* Default node shows its localized label; real workpaths follow the
-                user's display preference, with the complete path still available
-                from the tooltip, hover card, and copy op beside it. */}
-            {renderWorkpathName()}
-            {branchBadge}
+              {/* Default node shows its localized label; real workpaths follow the
+                  user's display preference, with the complete path still available
+                  from the tooltip, hover card, and copy op beside it. */}
+              {renderWorkpathName()}
+              {branchBadge}
+            </div>
           </div>
 
-          {/* Pinned dot indicator (rest state; hidden once hover ops appear) */}
-          {!batchMode && node.pinned && <span className='size-6px rd-full shrink-0 bg-aou-1 group-hover:hidden' />}
-
-          {/* Hover ops: copy path + direct interactive-session create + pin toggle. */}
+          {/* Hover ops: keep the high-frequency create action visible and move
+              lower-frequency workpath actions behind the same more-menu pattern
+              used by conversation rows. */}
           {!batchMode && (
             <span
-              className='hidden group-hover:flex shrink-0 items-center gap-6px'
+              className='absolute right-8px top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-4px opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
               onClick={(e) => e.stopPropagation()}
             >
-              {!isDefault && (
-                <CopyIconButton
-                  text={node.key}
-                  tooltip={t('common.copyPath')}
-                  className='shrink-0 size-18px sider-action-btn workpath-action-btn text-t-tertiary'
-                />
-              )}
               <span
                 data-testid='workpath-create-interactive-btn'
                 role='button'
@@ -288,53 +332,78 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
               >
                 <Plus theme='outline' size='14' fill='currentColor' className='block leading-none' />
               </span>
-              <Tooltip content={node.pinned ? t('sessionList.unpinWorkpath') : t('sessionList.pinWorkpath')} position='top'>
-                <span
-                  role='button'
-                  tabIndex={0}
-                  aria-label={node.pinned ? t('sessionList.unpinWorkpath') : t('sessionList.pinWorkpath')}
-                  className={classNames(
-                    'flex-center cursor-pointer transition-colors hover:text-t-primary size-18px rd-4px sider-action-btn workpath-action-btn',
-                    node.pinned ? 'text-aou-1' : 'text-t-tertiary'
-                  )}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    ui.togglePinned(node.key);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      ui.togglePinned(node.key);
-                    }
-                  }}
-                >
-                  <Pushpin theme='outline' size='14' fill='currentColor' className='block leading-none' />
-                </span>
-              </Tooltip>
-              {!isDefault && isProjectWorkpath && onRemoveProjectWorkpath && (
-                <Tooltip content={t('sessionList.removeWorkpath')} position='top'>
-                  <span
-                    role='button'
-                    tabIndex={0}
-                    aria-label={t('sessionList.removeWorkpath')}
-                    className='flex-center cursor-pointer transition-colors text-t-tertiary hover:text-t-primary size-20px rd-4px sider-action-btn workpath-action-btn'
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRemoveProjectWorkpath(node);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        e.stopPropagation();
+              <Dropdown
+                droplist={
+                  <Menu
+                    onClickMenuItem={(key) => {
+                      if (key === 'copy') {
+                        copyText(node.key)
+                          .then(() => Message.success(t('common.copySuccess')))
+                          .catch(() => Message.error(t('common.copyFailed')));
+                        return;
+                      }
+                      if (key === 'pin') {
+                        ui.togglePinned(node.key);
+                        return;
+                      }
+                      if (key === 'remove' && onRemoveProjectWorkpath) {
                         onRemoveProjectWorkpath(node);
                       }
                     }}
                   >
-                    <DeleteOne theme='outline' size='14' fill='currentColor' className='block leading-none' />
-                  </span>
-                </Tooltip>
-              )}
+                    {workpathMenuActionKeys.includes('copy') && (
+                      <Menu.Item key='copy'>
+                        <div className='flex items-center gap-8px'>
+                          <Copy theme='outline' size='14' />
+                          <span>{t('common.copyPath')}</span>
+                        </div>
+                      </Menu.Item>
+                    )}
+                    {workpathMenuActionKeys.includes('pin') && (
+                      <Menu.Item key='pin'>
+                        <div className='flex items-center gap-8px'>
+                          <Pushpin
+                            theme='outline'
+                            size='14'
+                            className={node.pinned ? 'text-aou-7' : 'text-t-secondary'}
+                          />
+                          <span>{node.pinned ? t('sessionList.unpinWorkpath') : t('sessionList.pinWorkpath')}</span>
+                        </div>
+                      </Menu.Item>
+                    )}
+                    {workpathMenuActionKeys.includes('remove') && onRemoveProjectWorkpath && (
+                      <Menu.Item key='remove'>
+                        <div className='flex items-center gap-8px text-[rgb(var(--warning-6))]'>
+                          <DeleteOne theme='outline' size='14' />
+                          <span>{t('sessionList.removeWorkpath')}</span>
+                        </div>
+                      </Menu.Item>
+                    )}
+                  </Menu>
+                }
+                trigger='click'
+                position='br'
+                getPopupContainer={() => document.body}
+                unmountOnExit={false}
+              >
+                <span
+                  data-testid='workpath-more-actions-btn'
+                  role='button'
+                  tabIndex={0}
+                  aria-label={t('common.more')}
+                  className='flex-center cursor-pointer transition-colors text-t-tertiary hover:text-t-primary size-20px rd-4px sider-action-btn workpath-action-btn'
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.currentTarget.click();
+                    }
+                  }}
+                >
+                  <MoreOne theme='outline' size='14' fill='currentColor' className='block leading-none' />
+                </span>
+              </Dropdown>
             </span>
           )}
         </div>

@@ -4482,6 +4482,7 @@ export type I18nKey =
   | 'sessionList.newInteractive'
   | 'sessionList.newTerminal'
   | 'sessionList.pinWorkpath'
+  | 'sessionList.pinnedWorkpath'
   | 'sessionList.removeWorkpath'
   | 'sessionList.removeWorkpathConfirm'
   | 'sessionList.removeWorkpathSuccess'

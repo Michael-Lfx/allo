@@ -6,14 +6,63 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 describe('WorkpathDrawer structure', () => {
-  test('keeps copy path in the hover action group instead of a standalone resting icon', () => {
+  test('keeps secondary workpath actions behind a compact more menu', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
     const hoverOpsIndex = source.indexOf('{/* Hover ops:');
-    const copyButtonIndex = source.indexOf('<CopyIconButton');
+    const moreButtonIndex = source.indexOf("data-testid='workpath-more-actions-btn'");
 
     expect(hoverOpsIndex).toBeGreaterThan(-1);
-    expect(copyButtonIndex).toBeGreaterThan(hoverOpsIndex);
+    expect(moreButtonIndex).toBeGreaterThan(hoverOpsIndex);
+    expect(source.includes('<Dropdown')).toBe(true);
+    expect(source.includes("trigger='click'")).toBe(true);
+    expect(source.includes('getWorkpathMenuActionKeys')).toBe(true);
+    expect(source.includes("<Menu.Item key='copy'>")).toBe(true);
+    expect(source.includes("<Menu.Item key='pin'>")).toBe(true);
+    expect(source.includes("<Menu.Item key='remove'>")).toBe(true);
+    expect(source.includes("data-testid='workpath-create-interactive-btn'")).toBe(true);
+    expect(source.includes('<CopyIconButton')).toBe(false);
     expect(source.includes('always visible (real workpaths only)')).toBe(false);
+  });
+
+  test('reveals workpath labels and paths without moving the action slot', () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
+
+    expect(source.includes("import MarqueeText from '@/renderer/components/base/MarqueeText';")).toBe(true);
+    expect(source.includes('<MarqueeText')).toBe(true);
+    expect(source.includes("trigger='hover'")).toBe(true);
+    expect(source.includes('useLayoutContext')).toBe(true);
+    expect(source.includes('disabled={batchMode || isMobile}')).toBe(true);
+    expect(source.includes('marqueeOnHover={!batchMode && !isMobile}')).toBe(true);
+    expect(source.includes('marqueeActive={workpathIdentityHovered && !isMobile}')).toBe(true);
+    expect(source.includes('onPointerEnter={() => setWorkpathIdentityHovered(true)}')).toBe(true);
+    expect(source.includes('onPointerLeave={() => setWorkpathIdentityHovered(false)}')).toBe(true);
+    expect(source.includes('absolute right-8px top-1/2')).toBe(true);
+    expect(source.includes('group-focus-within:opacity-100')).toBe(true);
+    expect(source.includes('group-focus-within:pointer-events-auto')).toBe(true);
+    expect(source.includes('hidden group-hover:flex shrink-0 items-center gap-4px')).toBe(false);
+    expect(source.includes("data-testid='workpath-more-actions-btn'")).toBe(true);
+  });
+
+  test('keeps a pinned workpath status visible outside the hover action slot', () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
+    const indicatorIndex = source.indexOf("data-testid='workpath-pinned-badge'");
+    const headerIconIndex = source.indexOf("className='relative size-22px flex items-center justify-center shrink-0 text-t-primary'");
+    const identityIndex = source.indexOf("className='flex-1 min-w-0 flex items-center gap-6px overflow-hidden'");
+    const hoverOpsIndex = source.indexOf('{/* Hover ops:');
+
+    expect(indicatorIndex).toBeGreaterThan(-1);
+    expect(headerIconIndex).toBeGreaterThan(-1);
+    expect(identityIndex).toBeGreaterThan(headerIconIndex);
+    expect(indicatorIndex).toBeLessThan(identityIndex);
+    expect(indicatorIndex).toBeLessThan(hoverOpsIndex);
+    expect(source.includes("t('sessionList.pinnedWorkpath')")).toBe(true);
+    expect(source.includes('bg-[rgb(var(--primary-6))]')).toBe(true);
+    expect(source.includes('size-10px rd-3px')).toBe(true);
+    expect(source.includes("title={t('sessionList.pinnedWorkpath')}")).toBe(false);
+    expect(source.includes('workpath-pinned-indicator')).toBe(false);
+    expect(source.includes('text-aou-1')).toBe(false);
+    expect(source.includes('group-hover:hidden')).toBe(false);
+    expect(source.includes("className='size-6px rd-full shrink-0 bg-aou-1")).toBe(false);
   });
 
   test('creates an interactive session directly from the workpath plus button', () => {
@@ -22,7 +71,6 @@ describe('WorkpathDrawer structure', () => {
     expect(source.includes("data-testid='workpath-create-interactive-btn'")).toBe(true);
     expect(source.includes("aria-label={t('sessionList.newInteractive')}")).toBe(true);
     expect(source.includes('onCreateInteractive(node);')).toBe(true);
-    expect(source.includes('<Dropdown')).toBe(false);
     expect(source.includes('createMenuVisible')).toBe(false);
   });
 
