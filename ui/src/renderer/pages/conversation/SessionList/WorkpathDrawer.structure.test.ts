@@ -58,7 +58,8 @@ describe('WorkpathDrawer structure', () => {
     expect(indicatorIndex).toBeLessThan(hoverOpsIndex);
     expect(source.includes("t('sessionList.pinnedWorkpath')")).toBe(true);
     expect(source.includes('bg-[rgb(var(--primary-6))]')).toBe(false);
-    expect(source.includes('absolute -top-2px -right-2px')).toBe(true);
+    // Clears the 16px folder glyph: the marker hangs off the icon's top-right corner.
+    expect(source.includes('absolute -top-4px -right-6px')).toBe(true);
     // Bare theme-adaptive accent glyph: no disc, no ring, no fixed white.
     expect(source.includes("theme='filled'")).toBe(true);
     expect(source.includes('text-[rgb(var(--primary-6))]')).toBe(true);
