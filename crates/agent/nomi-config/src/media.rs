@@ -253,7 +253,7 @@ mod tests {
         assert!(!super::flowy_media_exposed(&cfg));
         cfg.media.provider = "flowy".into();
         assert!(!super::flowy_media_exposed(&cfg));
-        cfg.server.base_url = "https://server.flowyaipc.cn/claw".into();
+        cfg.server.base_url = crate::DEFAULT_WECHAT_FLOWY_SERVER_BASE.into();
         assert!(super::flowy_media_exposed(&cfg));
     }
 

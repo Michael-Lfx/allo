@@ -163,7 +163,8 @@
     "logout": "Sign out",
     "loadingCredits": "Loading…",
     "creditsUnavailable": "—",
-    "refreshCredits": "Refresh balance"
+    "refreshCredits": "Refresh balance",
+    "openWebsite": "Open website"
   },
   "supportChat": {
     "title": "Contact support",

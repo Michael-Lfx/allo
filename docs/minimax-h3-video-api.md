@@ -20,7 +20,7 @@
 
 ## 2. 接口清单（与 Seedance 共用）
 
-业务 Base（生产）：`https://server.flowyaipc.cn/claw`  
+业务 Base（生产）：`https://server.flowyaipc.com/claw`  
 网关映射：`{业务根}/video/...` → 服务端 `/api/v1/video/...`
 
 | Method | 客户端路径 | 鉴权 | 说明 |
@@ -355,7 +355,7 @@ status ∈ {3,4,5,6} 终态
 ## 11. TypeScript 轮询示例（H3）
 
 ```typescript
-const BUSINESS_BASE = 'https://server.flowyaipc.cn/claw';
+const BUSINESS_BASE = 'https://server.flowyaipc.com/claw';
 
 function headers(token: string) {
   return {

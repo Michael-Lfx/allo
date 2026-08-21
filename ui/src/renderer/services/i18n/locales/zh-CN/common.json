@@ -163,7 +163,8 @@
     "logout": "退出登录",
     "loadingCredits": "加载中…",
     "creditsUnavailable": "—",
-    "refreshCredits": "刷新积分余额"
+    "refreshCredits": "刷新积分余额",
+    "openWebsite": "打开官网"
   },
   "supportChat": {
     "title": "联系客服",

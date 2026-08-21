@@ -9,6 +9,7 @@ mod agent_execution_template;
 mod auth;
 mod channel;
 mod cloud;
+mod cloud_billing;
 mod cloud_im;
 mod tv_show;
 mod vimax_skill_hub;
@@ -121,7 +122,12 @@ pub use cloud::{
     CloudLoginContinueRequest, CloudLoginFailedResponse, CloudLoginInput,
     CloudLoginPendingResponse, CloudLoginStartRequest, CloudLoginStartResponse,
     CloudLoginSuccessResponse, CloudServerSettingsResponse, CloudSyncModelsResponse,
-    CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
+    CloudWebsiteEntryResponse, CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
+};
+pub use cloud_billing::{
+    CloudBillingAirwallexSession, CloudBillingCoupon, CloudBillingCouponList,
+    CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingOrder,
+    CloudBillingPaymentChannel, CloudBillingPaymentInfo, CloudBillingPlan,
 };
 pub use cloud_im::{
     CloudImAttachmentPayload, CloudImConversation, CloudImLogUploadResponse, CloudImMessage,

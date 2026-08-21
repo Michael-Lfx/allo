@@ -11,6 +11,7 @@
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
+    "@airwallex/components-sdk": "1.28.3",
     "@arco-design/web-react": "^2.66.1",
     "@codemirror/commands": "6.10.3",
     "@codemirror/lang-css": "6.3.1",

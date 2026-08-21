@@ -298,19 +298,20 @@ impl HttpTransport {
 
 #[cfg(test)]
 mod tests {
+    use nomi_config::DEFAULT_WECHAT_FLOWY_SERVER_BASE;
     use super::*;
 
     #[test]
     fn resolve_url_joins_base_and_path() {
         let transport = HttpTransport {
             client: Client::new(),
-            base_url: "https://server.flowyaipc.cn/claw".to_string(),
+            base_url: DEFAULT_WECHAT_FLOWY_SERVER_BASE.to_string(),
             timeout: Duration::from_secs(30),
             user_agent: "test".to_string(),
         };
         assert_eq!(
             transport.resolve_url("/user/me"),
-            "https://server.flowyaipc.cn/claw/user/me"
+            format!("{DEFAULT_WECHAT_FLOWY_SERVER_BASE}/user/me")
         );
     }
 }

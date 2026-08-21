@@ -3,17 +3,20 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Query, State};
+use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, Query, State};
 use axum::routing::{get, post};
 use serde::Deserialize;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use nomifun_api_types::{
-    ApiResponse, CloudDeviceActivationRetryResponse, CloudDeviceActivationStatusResponse,
-    CloudImAttachmentPayload, CloudImConversation, CloudImLogUploadResponse, CloudImMessage,
-    CloudImMessageList, CloudImSendMessageRequest, CloudLoginContinueRequest,
-    CloudLoginStartRequest, CloudLoginStartResponse, CloudServerSettingsResponse,
-    CloudSyncModelsResponse, CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
+    ApiResponse, CloudBillingAirwallexSession, CloudBillingCouponList,
+    CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingOrder,
+    CloudBillingPaymentChannel, CloudBillingPlan, CloudDeviceActivationRetryResponse,
+    CloudDeviceActivationStatusResponse, CloudImAttachmentPayload, CloudImConversation,
+    CloudImLogUploadResponse, CloudImMessage, CloudImMessageList, CloudImSendMessageRequest,
+    CloudLoginContinueRequest, CloudLoginStartRequest, CloudLoginStartResponse,
+    CloudServerSettingsResponse, CloudSyncModelsResponse, CloudWebsiteEntryResponse,
+    CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
@@ -111,12 +114,23 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
     Router::new()
         .route("/api/cloud/settings", get(get_settings).patch(patch_settings))
         .route("/api/cloud/whoami", get(whoami))
+        .route("/api/cloud/website-entry", get(website_entry))
         .route("/api/cloud/device/status", get(device_activation_status))
         .route("/api/cloud/device/activate", post(retry_device_activation))
         .route("/api/cloud/login/start", post(login_start))
         .route("/api/cloud/login/continue", post(login_continue))
         .route("/api/cloud/logout", post(logout))
         .route("/api/cloud/sync-models", post(sync_models))
+        .route("/api/cloud/plans", get(list_billing_plans))
+        .route("/api/cloud/credit-packs", get(list_billing_credit_packs))
+        .route("/api/cloud/coupons", get(list_billing_coupons))
+        .route("/api/cloud/payment-channels", get(list_billing_payment_channels))
+        .route("/api/cloud/orders", post(create_billing_order))
+        .route("/api/cloud/orders/by-order-no", get(get_billing_order_by_no))
+        .route(
+            "/api/cloud/orders/{order_no}/airwallex/init",
+            post(init_billing_airwallex),
+        )
         .route("/api/cloud/im/conversation", get(get_im_conversation))
         .route(
             "/api/cloud/im/messages",
@@ -154,6 +168,179 @@ async fn whoami(
     Extension(_user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<CloudWhoamiResponse>>, AppError> {
     Ok(Json(ApiResponse::ok(state.service.whoami().await?)))
+}
+
+#[derive(Debug, Deserialize)]
+struct WebsiteEntryQuery {
+    language: Option<String>,
+}
+
+async fn website_entry(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<WebsiteEntryQuery>,
+) -> Result<Json<ApiResponse<CloudWebsiteEntryResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .website_entry(query.language.as_deref())
+            .await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BillingCouponsQuery {
+    item_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BillingPaymentChannelsQuery {
+    item_type: String,
+    item_id: i64,
+    plan_period: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BillingOrderByNoQuery {
+    order_no: String,
+}
+
+fn validate_billing_item_type(item_type: &str) -> Result<&str, AppError> {
+    match item_type.trim() {
+        "plan" | "pack" => Ok(item_type.trim()),
+        _ => Err(AppError::BadRequest(
+            "itemType must be plan or pack".into(),
+        )),
+    }
+}
+
+fn validate_order_no(order_no: &str) -> Result<&str, AppError> {
+    let trimmed = order_no.trim();
+    if trimmed.is_empty() || trimmed.len() > 64 {
+        return Err(AppError::BadRequest("orderNo is invalid".into()));
+    }
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err(AppError::BadRequest("orderNo is invalid".into()));
+    }
+    Ok(trimmed)
+}
+
+fn validate_create_order(
+    mut request: CloudBillingCreateOrderRequest,
+) -> Result<CloudBillingCreateOrderRequest, AppError> {
+    request.item_type = validate_billing_item_type(&request.item_type)?.to_string();
+    if request.item_id <= 0 {
+        return Err(AppError::BadRequest("itemId must be positive".into()));
+    }
+    let key = request.idempotency_key.trim();
+    if key.is_empty() || key.len() > 128 {
+        return Err(AppError::BadRequest("idempotencyKey is invalid".into()));
+    }
+    request.idempotency_key = key.to_string();
+    request.pay_channel = "airwallex".into();
+    if let Some(coupon_id) = request.coupon_id {
+        if coupon_id <= 0 {
+            return Err(AppError::BadRequest("couponId must be positive".into()));
+        }
+    }
+    if let Some(period) = request.plan_period.as_mut() {
+        let normalized = period.trim().to_uppercase();
+        if !matches!(normalized.as_str(), "MONTH" | "HALF_YEAR" | "YEAR") {
+            return Err(AppError::BadRequest("planPeriod is invalid".into()));
+        }
+        *period = normalized;
+    }
+    Ok(request)
+}
+
+async fn list_billing_plans(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<CloudBillingPlan>>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.list_billing_plans().await?)))
+}
+
+async fn list_billing_credit_packs(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<CloudBillingCreditPack>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_billing_credit_packs().await?,
+    )))
+}
+
+async fn list_billing_coupons(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<BillingCouponsQuery>,
+) -> Result<Json<ApiResponse<CloudBillingCouponList>>, AppError> {
+    let item_type = query
+        .item_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(item_type) = item_type {
+        validate_billing_item_type(item_type)?;
+    }
+    Ok(Json(ApiResponse::ok(
+        state.service.list_billing_coupons(item_type).await?,
+    )))
+}
+
+async fn list_billing_payment_channels(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<BillingPaymentChannelsQuery>,
+) -> Result<Json<ApiResponse<Vec<CloudBillingPaymentChannel>>>, AppError> {
+    let item_type = validate_billing_item_type(&query.item_type)?;
+    if query.item_id <= 0 {
+        return Err(AppError::BadRequest("itemId must be positive".into()));
+    }
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .list_billing_payment_channels(item_type, query.item_id, query.plan_period.as_deref())
+            .await?,
+    )))
+}
+
+async fn create_billing_order(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Json(request): Json<CloudBillingCreateOrderRequest>,
+) -> Result<Json<ApiResponse<CloudBillingOrder>>, AppError> {
+    let request = validate_create_order(request)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.create_billing_order(request).await?,
+    )))
+}
+
+async fn get_billing_order_by_no(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<BillingOrderByNoQuery>,
+) -> Result<Json<ApiResponse<CloudBillingOrder>>, AppError> {
+    let order_no = validate_order_no(&query.order_no)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.get_billing_order_by_no(order_no).await?,
+    )))
+}
+
+async fn init_billing_airwallex(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(order_no): Path<String>,
+) -> Result<Json<ApiResponse<CloudBillingAirwallexSession>>, AppError> {
+    let order_no = validate_order_no(&order_no)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.init_billing_airwallex(order_no).await?,
+    )))
 }
 
 async fn device_activation_status(

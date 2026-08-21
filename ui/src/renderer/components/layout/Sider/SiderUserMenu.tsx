@@ -10,7 +10,7 @@ import { Popover, Tooltip } from '@arco-design/web-react';
 import { Check, Logout, Message, Peoples, Right, Theme, Translate, User } from '@icon-park/react';
 import classNames from 'classnames';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
-import CreditsRefreshButton from '@/renderer/components/base/CreditsRefreshButton';
+import CreditsWebsiteButton from '@/renderer/components/base/CreditsWebsiteButton';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useSupportChat } from '@/renderer/features/supportChat/SupportChatProvider';
 import { changeLanguage, normalizeLanguageCode, supportedLanguages } from '@/renderer/services/i18n';
@@ -125,7 +125,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         <span className='flex items-center gap-4px'>
           <span className='font-600 text-t-primary tabular-nums'>{creditsText}</span>
           {authenticated && (
-            <CreditsRefreshButton size='xs' />
+            <CreditsWebsiteButton size='xs' />
           )}
         </span>
       </div>

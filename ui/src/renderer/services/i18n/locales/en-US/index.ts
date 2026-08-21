@@ -45,6 +45,7 @@ import poi from './poi.json';
 import insights from './insights.json';
 import media from './media.json';
 import cloudLogin from './cloudLogin.json';
+import billing from './billing.json';
 import learning from './learning.json';
 import evalLocale from './eval.json';
 import videoGeneration from './videoGeneration.json';
@@ -97,6 +98,7 @@ export default {
   insights,
   media,
   cloudLogin,
+  billing,
   learning,
   eval: evalLocale,
   videoGeneration,

@@ -1,0 +1,45 @@
+{
+  "title": "Billing",
+  "description": "Buy a plan or credit pack here. Card details stay with Airwallex.",
+  "openBilling": "Buy credits",
+  "loginRequired": "Sign in to your Flowy account before buying credits.",
+  "goCloudLogin": "Sign in",
+  "catalog": {
+    "plans": "Personal plans",
+    "packs": "Credit packs",
+    "periodMonth": "Monthly",
+    "periodHalfYear": "Half-year",
+    "periodYear": "Yearly",
+    "current": "Current",
+    "currentPlan": "Active plan",
+    "emptyPlans": "No USD plans are available for this channel.",
+    "emptyPacks": "No credit packs are available for your current plan.",
+    "loadError": "Could not load the catalog.",
+    "retry": "Retry",
+    "credits": "{{count}} credits",
+    "select": "Select"
+  },
+  "confirm": {
+    "title": "Confirm purchase",
+    "item": "Item",
+    "amount": "Amount",
+    "coupon": "Coupon",
+    "noCoupon": "No coupon",
+    "estimatedTotal": "Estimated total",
+    "back": "Back",
+    "pay": "Continue to payment",
+    "channelMissing": "Card payment is not available for this item."
+  },
+  "pay": {
+    "title": "Card payment",
+    "pending": "Waiting for payment confirmation.",
+    "initError": "Could not start card payment.",
+    "failed": "Payment did not complete.",
+    "retry": "Try again"
+  },
+  "success": {
+    "title": "Payment complete",
+    "description": "Your credit balance will update in a moment.",
+    "done": "Done"
+  }
+}

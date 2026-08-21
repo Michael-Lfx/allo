@@ -85,6 +85,7 @@ pub struct CloudWhoamiResponse {
 pub struct CloudServerSettingsResponse {
     pub enabled: bool,
     pub base_url: String,
+    pub website_url: String,
     pub channel: String,
     pub app: String,
 }
@@ -94,6 +95,7 @@ pub struct CloudServerSettingsResponse {
 pub struct UpdateCloudServerSettingsRequest {
     pub enabled: Option<bool>,
     pub base_url: Option<String>,
+    pub website_url: Option<String>,
     pub channel: Option<String>,
     pub app: Option<String>,
 }
@@ -112,6 +114,14 @@ pub struct CloudDeviceActivationStatusResponse {
 #[serde(rename_all = "camelCase")]
 pub struct CloudDeviceActivationRetryResponse {
     pub reported: bool,
+}
+
+/// Browser URL for the official website, with `token` + `language` query params
+/// matching FlowyClaw client SSO (`?token=&language=zh|en`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudWebsiteEntryResponse {
+    pub url: String,
 }
 
 /// Result of syncing the Flowy chat model catalog into the local builtin provider.
