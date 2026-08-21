@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { joinOmittedMark, projectObservationScan } from './observationScan';
+import { joinOmittedMark, omittedReasonOf, projectObservationScan } from './observationScan';
 
 describe('observationScan', () => {
   test('projects a user text message', () => {
@@ -24,6 +24,152 @@ describe('observationScan', () => {
         },
       ],
     });
+  });
+
+  test('keeps the real user text primary when context comes first', () => {
+    const result = projectObservationScan(
+      [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '[Context]\nCurrent date: 2026-08-21' },
+            { type: 'text', text: '66' },
+          ],
+        },
+      ],
+      'messages'
+    );
+    expect(result).toEqual({
+      kind: 'messages',
+      rows: [
+        {
+          index: 0,
+          role: 'user',
+          kinds: ['text'],
+          preview: { kind: 'text', text: '66' },
+          context: { text: 'Current date: 2026-08-21' },
+        },
+      ],
+    });
+  });
+
+  test('applies the same Context rule to scalar user content', () => {
+    const result = projectObservationScan(
+      [
+        { role: 'user', content: '[Context]\nCurrent date: 2026-08-21' },
+        { role: 'assistant', content: '[Context]\nliteral assistant text' },
+      ],
+      'messages',
+    );
+    expect(result).toEqual({
+      kind: 'messages',
+      rows: [
+        {
+          index: 0,
+          role: 'user',
+          kinds: [],
+          preview: { kind: 'empty' },
+          context: { text: 'Current date: 2026-08-21' },
+        },
+        {
+          index: 1,
+          role: 'assistant',
+          kinds: ['text'],
+          preview: { kind: 'text', text: '[Context]\nliteral assistant text' },
+        },
+      ],
+    });
+  });
+
+  test('keeps context metadata separate across multiple turns', () => {
+    const result = projectObservationScan(
+      [
+        { role: 'user', content: [{ type: 'text', text: '66' }] },
+        { role: 'assistant', content: [{ type: 'text', text: '收到' }] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '[Context]\nCurrent date: 2026-08-21' },
+            { type: 'text', text: '11' },
+          ],
+        },
+      ],
+      'messages'
+    );
+    expect(result.kind).toBe('messages');
+    if (result.kind !== 'messages') return;
+    expect(result.rows.map((row) => row.preview)).toEqual([
+      { kind: 'text', text: '66' },
+      { kind: 'text', text: '收到' },
+      { kind: 'text', text: '11' },
+    ]);
+    expect(result.rows[2]?.context).toEqual({ text: 'Current date: 2026-08-21' });
+  });
+
+  test('keeps a context-only message as an empty primary row', () => {
+    const result = projectObservationScan(
+      [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: '[Context]\nCurrent date: 2026-08-21' }],
+        },
+      ],
+      'messages'
+    );
+    expect(result.kind).toBe('messages');
+    if (result.kind !== 'messages') return;
+    expect(result.rows[0]?.kinds).toEqual([]);
+    expect(result.rows[0]?.preview).toEqual({ kind: 'empty' });
+    expect(result.rows[0]?.context).toEqual({ text: 'Current date: 2026-08-21' });
+  });
+
+  test('only treats a leading user context block as injected context', () => {
+    const result = projectObservationScan(
+      [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: '[Context]\nassistant literal' },
+            { type: 'text', text: 'assistant reply' },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'user text' },
+            { type: 'text', text: '[Context]\nuser literal' },
+          ],
+        },
+      ],
+      'messages'
+    );
+    expect(result.kind).toBe('messages');
+    if (result.kind !== 'messages') return;
+    expect(result.rows.map((row) => row.preview)).toEqual([
+      { kind: 'text', text: '[Context]\nassistant literal' },
+      { kind: 'text', text: 'user text' },
+    ]);
+    expect(result.rows.every((row) => row.context === undefined)).toBe(true);
+  });
+
+  test('keeps an unmarked omitted leading block out of the Context projection', () => {
+    const result = projectObservationScan(
+      [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: { omitted_reason: 'event_size_limit' } },
+            { type: 'text', text: '66' },
+          ],
+        },
+      ],
+      'messages',
+    );
+    expect(result.kind).toBe('messages');
+    if (result.kind !== 'messages') return;
+    expect(result.rows[0]?.context).toBeUndefined();
+    expect(result.rows[0]?.preview).toEqual({ kind: 'text', text: '66' });
+    expect(result.rows[0]?.omittedReason).toBe('event_size_limit');
   });
 
   test('projects an assistant tool_use without text', () => {
@@ -173,6 +319,12 @@ describe('observationScan', () => {
         'messages'
       )
     ).toEqual({ kind: 'omitted', reason: 'event_size_limit' });
+  });
+
+  test('keeps omitted response fields distinguishable from missing values', () => {
+    expect(omittedReasonOf({ omitted_reason: 'event_size_limit' })).toBe('event_size_limit');
+    expect(omittedReasonOf({ omitted_reason: 42 })).toBeUndefined();
+    expect(omittedReasonOf(null)).toBeUndefined();
   });
 
   test('projects tool names, full descriptions, and deferred', () => {

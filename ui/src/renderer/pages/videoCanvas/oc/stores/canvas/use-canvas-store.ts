@@ -6,6 +6,7 @@ import { localForageStorage } from "@oc/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@oc/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@oc/types/canvas";
 import type { DirectorScene } from "@oc/types/director";
+import type { TimelineProject } from "@oc/types/timeline";
 import {
     CANVAS_STORE_KEY,
     loadPersistedCanvasProjects,
@@ -30,6 +31,8 @@ export type CanvasProject = {
     showImageInfo: boolean;
     viewport: ViewportTransform;
     directorScenes: DirectorScene[];
+    /** 项目级时间线（client-doc）；无独立后端 API。 */
+    timeline?: TimelineProject;
     /** Agent materialization sidecar from server doc.json */
     alloCreative?: Record<string, unknown>;
 };
@@ -43,7 +46,7 @@ type CanvasStore = {
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes" | "alloCreative">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes" | "timeline" | "alloCreative">>) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };

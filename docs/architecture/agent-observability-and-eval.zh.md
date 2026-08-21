@@ -20,6 +20,8 @@ Nomi-owned 模型调用与工具执行写入 unlabeled JSONL 事件，落盘于�
 
 实现：`nomi-agent-trace`（事件 / capture / DualQueue writer / 投影）→ `nomifun-ai-agent::AgentTraceHub` → `nomifun-conversation::routes_trace`。采集走 `ObservationSession` + `stream_llm`，失败只 warn / `observation/gap`，不打断回合。Delete/Clear/Reset/Shutdown 走 writer ACK；Clear 用 generation bump，Delete 才永久 tombstone。
 
+HTTP 路由只输出 `nomifun-api-types` 中的 Session Observation DTO；Agent 层的投影结构不直接成为 HTTP 类型。投影缺少 `turn/start` 时，fallback 摘要同样跳过 user 消息首个 `[Context]` 文本块，继续选择真实用户文本。普通事件队列溢出会生成 gap；控制事件使用独立有界队列，满时先淘汰一条普通事件，仍无容量则记录控制事件丢失并生成 gap，避免无界内存增长。
+
 投影规则：只按 `event_seq` 排序。`status` 是 Agent 做了什么，`integrity` 是日志缺不缺。工具失败且日志完整 → `status=failed` 且 `integrity=complete`。`integrity=degraded` 仅当：`observation/gap`、JSONL 损坏、或该 turn 已 `turn/end` 后仍缺 `llm/response` / 工具终态。进行中的 call 无 response 标 `interrupted`，不因此把整回合标 degraded。禁止用聊天气泡拼 `messages[]`。Summary 带 `coverage`（当前保留窗口，不是全历史）。
 
 ### UI
@@ -30,6 +32,14 @@ Nomi-owned 模型调用与工具执行写入 unlabeled JSONL 事件，落盘于�
 - 回合行带时钟；第 N 轮按时间升序编号
 - 右侧按模型调用展示 REQUEST → RESPONSE → tools；点瓦片才 Call GET
 - 请求 `messages` / `tools` 默认扫描列表（消息最新在上，「原始」才是 `react-json-view-lite`）；系统提示、响应、工具执行仍是文本/对象树；切回对话不 abort poll、不清 LRU
+
+请求消息的「原始」与「摘要」是两种不同的展示投影：
+
+- 「原始」展示观测记录中的完整 `messages[]` 对象树；`[Context]`、`timestamp` 等原始字段保留，复制内容仍使用 canonical JSON。
+- 「摘要」按一条 `Message` 保留一行。`[Context]` 是 Agent turn-tail 注入的保留前缀，仅识别 `user` 消息的第一个文本块；消息包含真实文本和该 Context 文本块时，真实文本作为主预览。Context 不得替换真实消息。例如 `[Context] ...` + `66` 摘要显示为 `用户 66`，后续轮次的 `11` 也应显示为 `用户 11`，历史行仍保留 `66`。
+- Context 只作为悬浮诊断提示显示：`上下文 · Current date: 2026-08-21`。未悬浮时不显示 `[Context]`、`Current date`、「上下文」标签或额外的第二行。Context-only 消息仍保留，但不额外生成可见摘要行。
+
+以上规则属于前端 Trace 展示投影，不改变观测 JSON、`Message` 数据结构、会话持久化、Provider 请求序列化或 KV cache 行为。
 
 未开启开发者模式时组件不渲染；API 在未开启时返回 403。
 

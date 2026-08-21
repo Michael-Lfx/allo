@@ -47,6 +47,7 @@ mod serde_util;
 mod secret;
 mod shell;
 mod skill;
+mod session_observation;
 mod system;
 mod mcp_bridge;
 mod terminal;
@@ -284,6 +285,12 @@ pub use shell::{
     OpenAISpeechToTextConfig, OpenExternalRequest, OpenFileRequest, OpenFolderWithRequest,
     ShowItemInFolderRequest, SpeechToTextConfig, SpeechToTextProvider, SpeechToTextResult,
     TEXT_TO_SPEECH_PREFERENCE_KEY, TextToSpeechConfig, ToolType, TtsApiRequest,
+};
+pub use session_observation::{
+    ObservationSummaryDto, RecorderHealthDto, SessionObservationCallDto,
+    SessionObservationGapDto, SessionObservationListDto, SessionObservationRequestSummaryDto,
+    SessionObservationResponseSummaryDto, SessionObservationTokenUsageDto,
+    SessionObservationToolDto, SessionObservationTurnDto,
 };
 pub use skill::{
     AddExternalPathRequest, BuiltinAutoSkillResponse, ExportSkillRequest,

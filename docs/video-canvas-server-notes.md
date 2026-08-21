@@ -74,6 +74,20 @@ Canvas 模式（DEV）复用 **现有 flowy-cloud** 能力（与 Agent / nomi-vi
 
 ---
 
+## 文件夹 / 时间线 / 字幕（client-doc-first）
+
+**不新建后端路由**。全部落在现有不透明 `PUT /api/video-canvas/projects/{id}/doc` JSON 内（schema 仍为 `1`）。
+
+| 能力 | Doc 契约 | 前端入口 |
+|------|-----------|----------|
+| 文件夹 | `nodes[]` 中 `type: frame` + `metadata.folder: { style, theme?, createdAt, themeCover? }`；子节点靠 `parentId`。**勿写** `assetFolderId`（不接影策 `/asset-folders`） | 添加节点菜单「文件夹」→ `createFolder` |
+| 时间线 | 项目级 `doc.timeline?: TimelineProject`（`version: 2`, `tracks`, `clips`, `durationMs`） | 视频/音频悬停工具「时间线」 |
+| 字幕 | 视频节点 `metadata.subtitleEntries / subtitleHighlights? / subtitleStyle? / subtitleUpdatedAt?`；SRT 客户端解析 | 视频悬停工具「字幕」 |
+
+成片拼接仍走现有 `POST /media/concat`；时间线导出 wasm / 烧录字幕为后续增强，不要求新 API。
+
+---
+
 ## 前端入口
 
 - Agent：`/video-generation`

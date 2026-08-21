@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 import { CallDetailLru, MAX_CALL_DETAIL_CACHE } from './callDetailCache';
-import { assignTurnRounds, formatClock, formatDurationMs } from './format';
+import { assignTurnRounds, formatClock, formatDurationMs, turnPromptPreview } from './format';
 import type { ProjectedModelCall } from './useAgentTraces';
 
 const readSource = (url: URL) => readFileSync(url, 'utf8');
@@ -108,6 +108,9 @@ describe('AgentTraceInspector', () => {
     const inspector = readSource(new URL('./index.tsx', import.meta.url));
     const workflow = readSource(new URL('./ObservationWorkflow.tsx', import.meta.url));
     const tree = readSource(new URL('./ObservationJsonTree.tsx', import.meta.url));
+    const messageSummary = readSource(
+      new URL('./ObservationMessageSummary.tsx', import.meta.url),
+    );
     expect(inspector.includes('integrity')).toBe(true);
     expect(inspector.includes('interrupted')).toBe(true);
     expect(inspector.includes('writerHealth')).toBe(true);
@@ -188,6 +191,10 @@ describe('AgentTraceInspector', () => {
     expect(tree.includes("field === 'tools'")).toBe(true);
     expect(tree.includes('inspectShowRaw')).toBe(true);
     expect(tree.includes('projectObservationScan')).toBe(true);
+    expect(messageSummary.includes('tooltipText')).toBe(true);
+    expect(messageSummary.includes("t('conversation.agentTrace.scanContext')")).toBe(true);
+    expect(messageSummary.includes('tipFallback: !row.context || Boolean(primaryPreview)')).toBe(true);
+    expect(messageSummary.includes("row.context ? '' : t('conversation.agentTrace.previewMissing')")).toBe(true);
     expect(tree.includes('newestFirst')).toBe(true);
     expect(tree.includes('SortAmountDown')).toBe(true);
     expect(tree.includes('SortAmountUp')).toBe(true);
@@ -199,6 +206,8 @@ describe('AgentTraceInspector', () => {
     expect(tree.includes('scanEmptyMessages')).toBe(true);
     expect(tree.includes('scanEmptyTools')).toBe(true);
     expect(tree.includes('if (value == null)')).toBe(true);
+    expect(tree.includes('const omittedReason = omittedReasonOf(value)')).toBe(true);
+    expect(tree.includes('<OmittedScan reason={omittedReason} />')).toBe(true);
     expect(requestInspector.includes("scan='messages'")).toBe(true);
     expect(requestInspector.includes("scan='tools'")).toBe(true);
     expect(requestInspector.includes('resetKey={resetKey}')).toBe(true);
@@ -396,5 +405,16 @@ describe('AgentTraceInspector', () => {
     expect(rounds.get('a')).toBe(1);
     expect(rounds.get('b')).toBe(2);
     expect(rounds.get('c')).toBe(3);
+  });
+
+  test('Context-only turns stay blank in the outer navigation and header', () => {
+    expect(
+      turnPromptPreview(
+        { prompt_preview_context_only: true, prompt_preview: null },
+        'preview missing',
+      ),
+    ).toBe('');
+    expect(turnPromptPreview({ prompt_preview: '66' }, 'preview missing')).toBe('66');
+    expect(turnPromptPreview({}, 'preview missing')).toBe('preview missing');
   });
 });

@@ -1,10 +1,12 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { Compass, Focus, HelpCircle, Minus, Plus } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { FloatingDock, type FloatingDockEntry } from "@oc/components/ui/aceternity/floating-dock";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { canvasDockStyle } from "@oc/lib/canvas/canvas-aceternity-style";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -22,6 +24,7 @@ type CanvasZoomControlsProps = {
 const QUICK_ZOOM_LEVELS = [0.25, 0.5, 1, 2] as const;
 
 export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpen, onToggleMiniMap, onOpenShortcuts, containerRef }: CanvasZoomControlsProps) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const rootRef = useRef<HTMLDivElement>(null);
     const liveScaleRef = useRef(scale);
@@ -69,22 +72,33 @@ export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpe
     }
 
     const items: FloatingDockEntry[] = [
-        { id: "zoom-minimap", label: isMiniMapOpen ? "关闭小地图" : "打开小地图", icon: <Compass />, active: isMiniMapOpen, onClick: onToggleMiniMap },
-        { id: "zoom-fit", label: "适应全部内容", icon: <Focus />, onClick: onReset },
+        {
+            id: "zoom-minimap",
+            label: isMiniMapOpen ? canvasT("videoCanvas.zoom.closeMinimap", "关闭小地图") : canvasT("videoCanvas.zoom.openMinimap", "打开小地图"),
+            icon: <Compass />,
+            active: isMiniMapOpen,
+            onClick: onToggleMiniMap,
+        },
+        { id: "zoom-fit", label: canvasT("videoCanvas.zoom.fitAll", "适应全部内容"), icon: <Focus />, onClick: onReset },
         { kind: "separator", id: "zoom-separator" },
-        { id: "zoom-out", label: "缩小画布", icon: <Minus />, onClick: () => commitScale(liveScaleRef.current - 0.1) },
+        { id: "zoom-out", label: canvasT("videoCanvas.zoom.zoomOut", "缩小画布"), icon: <Minus />, onClick: () => commitScale(liveScaleRef.current - 0.1) },
         {
             id: "zoom-precision",
-            label: "精确缩放",
+            label: canvasT("videoCanvas.zoom.precision", "精确缩放"),
             wide: true,
             quiet: true,
-            icon: <span className="inline-flex h-full items-center justify-center whitespace-nowrap text-[var(--fs-caption)] font-semibold leading-none tabular-nums"><span ref={dockLabelRef}>{Math.round(scale * 100)}</span><span className="ml-px text-[var(--fs-micro)] font-medium leading-none opacity-50">%</span></span>,
+            icon: (
+                <span className="inline-flex h-full items-center justify-center whitespace-nowrap text-[var(--fs-caption)] font-semibold leading-none tabular-nums">
+                    <span ref={dockLabelRef}>{Math.round(scale * 100)}</span>
+                    <span className="ml-px text-[var(--fs-micro)] font-medium leading-none opacity-50">%</span>
+                </span>
+            ),
             active: precisionOpen,
             onClick: () => setPrecisionOpen((value) => !value),
         },
-        { id: "zoom-in", label: "放大画布", icon: <Plus />, onClick: () => commitScale(liveScaleRef.current + 0.1) },
+        { id: "zoom-in", label: canvasT("videoCanvas.zoom.zoomIn", "放大画布"), icon: <Plus />, onClick: () => commitScale(liveScaleRef.current + 0.1) },
         { kind: "separator", id: "help-separator" },
-        { id: "zoom-shortcuts", label: "画布快捷键", icon: <HelpCircle />, onClick: onOpenShortcuts },
+        { id: "zoom-shortcuts", label: canvasT("videoCanvas.zoom.shortcuts", "画布快捷键"), icon: <HelpCircle />, onClick: onOpenShortcuts },
     ];
 
     return (
@@ -102,8 +116,10 @@ export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpe
                         <div className="absolute inset-x-10 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${theme.spatial.glowStrong}, transparent)` }} />
                         <div className="flex items-center justify-between gap-3">
                             <span>
-                                <span className="block text-[var(--fs-tiny)] font-semibold">画布尺度</span>
-                                <span className="mt-0.5 block text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>精确控制视野密度</span>
+                                <span className="block text-[var(--fs-tiny)] font-semibold">{canvasT("videoCanvas.zoom.scaleTitle", "画布尺度")}</span>
+                                <span className="mt-0.5 block text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>
+                                    {canvasT("videoCanvas.zoom.scaleHint", "精确控制视野密度")}
+                                </span>
                             </span>
                             <span ref={panelLabelRef} className="rounded-full border px-2 py-0.5 text-[var(--fs-tiny)] font-semibold tabular-nums" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border, color: theme.accent.primary }}>
                                 {Math.round(scale * 100)}%
@@ -119,7 +135,7 @@ export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpe
                             className="aceternity-zoom-range mt-3 h-4 w-full"
                             style={{ accentColor: theme.accent.primary }}
                             onChange={(event) => commitScale(Number(event.target.value) / 100)}
-                            aria-label="精确缩放画布"
+                            aria-label={canvasT("videoCanvas.zoom.precisionAria", "精确缩放画布")}
                         />
                         <div className="mt-2.5 grid grid-cols-4 gap-1">
                             {QUICK_ZOOM_LEVELS.map((level) => (
@@ -141,7 +157,7 @@ export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpe
                 ) : null}
             </AnimatePresence>
 
-            <FloatingDock items={items} className="canvas-floating-dock" style={canvasDockStyle(theme)} ariaLabel="画布视图控制" />
+            <FloatingDock items={items} className="canvas-floating-dock" style={canvasDockStyle(theme)} ariaLabel={canvasT("videoCanvas.zoom.dockAria", "画布视图控制")} />
         </div>
     );
 }

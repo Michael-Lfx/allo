@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { App, Button, Dropdown, Input, Modal, Select } from "antd";
@@ -7,6 +8,7 @@ import { Download, FileUp, MoreHorizontal, Plus, Search, Trash2 } from "lucide-r
 import { CollectionGrid, ListToolbar, PageHeader, PaginationBar, WorkspacePage } from "@oc/components/layout/workspace-page";
 import { WorkspaceLoadingState, WorkspaceState } from "@oc/components/layout/workspace-state";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { readZip } from "@oc/lib/zip";
 import { setMediaBlob } from "@oc/services/file-storage";
 import { setImageBlob } from "@oc/services/image-storage";
@@ -20,6 +22,7 @@ import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow } from "@oc/se
 import { listProjects } from "@oc/services/api/projects";
 
 export default function CanvasPage() {
+    useTranslation();
     const { message } = App.useApp();
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
@@ -46,9 +49,15 @@ export default function CanvasPage() {
     const enterProject = (id: string) => {
         navigate(`/canvas/${id}${agentQuery}`);
     };
+    const defaultCanvasName = () => canvasT("videoCanvas.library.defaultName", "自由画布 {{n}}", { n: projects.length + 1 });
+    const warnLocalCreate = (syncError: unknown) => {
+        message.warning(syncError instanceof Error
+            ? canvasT("videoCanvas.library.syncWarnWithError", "画布已在本地创建，云端同步失败：{{message}}", { message: syncError.message })
+            : canvasT("videoCanvas.library.syncWarn", "画布已在本地创建，云端同步失败"));
+    };
     const createAndEnter = () => {
-        void createCanvasProjectWithRemoteSync(`自由画布 ${projects.length + 1}`).then(({ id, syncError }) => {
-            if (syncError) message.warning(syncError instanceof Error ? `画布已在本地创建，云端同步失败：${syncError.message}` : "画布已在本地创建，云端同步失败");
+        void createCanvasProjectWithRemoteSync(defaultCanvasName()).then(({ id, syncError }) => {
+            if (syncError) warnLocalCreate(syncError);
             enterProject(id);
         });
     };
@@ -67,10 +76,14 @@ export default function CanvasPage() {
         selectedIds.forEach((id) => updateProject(id, { projectId }));
         try {
             await saveRemoteUserDataNow();
-            message.success(projectId ? "已加入项目" : "已移出项目，画布仍保留");
+            message.success(projectId
+                ? canvasT("videoCanvas.library.joinedOk", "已加入项目")
+                : canvasT("videoCanvas.library.leftOk", "已移出项目，画布仍保留"));
             setAssociationOpen(false);
         } catch (error) {
-            message.error(error instanceof Error ? `画布关系保存失败：${error.message}` : "画布关系保存失败");
+            message.error(error instanceof Error
+                ? canvasT("videoCanvas.library.relationSaveFailedWithError", "画布关系保存失败：{{message}}", { message: error.message })
+                : canvasT("videoCanvas.library.relationSaveFailed", "画布关系保存失败"));
         }
     };
     const importCanvas = async (file?: File) => {
@@ -125,9 +138,9 @@ export default function CanvasPage() {
                     }, preview, render);
                 }));
             }));
-            message.success(`已导入 ${data.projects.length} 个画布`);
+            message.success(canvasT("videoCanvas.library.importedOk", "已导入 {{count}} 个画布", { count: data.projects.length }));
         } catch {
-            message.error("导入失败，请选择有效的画布压缩包");
+            message.error(canvasT("videoCanvas.library.importFailed", "导入失败，请选择有效的画布压缩包"));
         } finally {
             if (inputRef.current) inputRef.current.value = "";
         }
@@ -140,30 +153,32 @@ export default function CanvasPage() {
             enterProject(projects[0].id);
             return;
         }
-        void createCanvasProjectWithRemoteSync(`自由画布 ${projects.length + 1}`).then(({ id, syncError }) => {
-            if (syncError) message.warning(syncError instanceof Error ? `画布已在本地创建，云端同步失败：${syncError.message}` : "画布已在本地创建，云端同步失败");
+        void createCanvasProjectWithRemoteSync(defaultCanvasName()).then(({ id, syncError }) => {
+            if (syncError) warnLocalCreate(syncError);
             enterProject(id);
         });
     }, [hydrated, message, mode, projects]);
 
-    if (hydrated && (mode === "new" || mode === "recent")) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">正在打开画布...</main>;
+    if (hydrated && (mode === "new" || mode === "recent")) {
+        return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">{canvasT("videoCanvas.library.opening", "正在打开画布...")}</main>;
+    }
 
     return (
         <WorkspacePage grid className="canvas-library-page">
                 <PageHeader
                     icon="canvas"
-                    title="画布"
-                    description="管理自由创作空间和已加入项目的制作画布。"
-                    meta={<span className="text-xs tabular-nums text-foreground/45">{hydrated ? `${filteredProjects.length} 个` : "载入中"}</span>}
+                    title={canvasT("videoCanvas.library.title", "画布")}
+                    description={canvasT("videoCanvas.library.description", "管理自由创作空间和已加入项目的制作画布。")}
+                    meta={<span className="text-xs tabular-nums text-foreground/45">{hydrated ? canvasT("videoCanvas.library.count", "{{count}} 个", { count: filteredProjects.length }) : canvasT("videoCanvas.library.loadingMeta", "载入中")}</span>}
                     actions={(
                         <>
                         {projects.length ? (
-                                    <Dropdown menu={{ items: [{ key: "delete-all", danger: true, icon: <Trash2 className="size-3.5" />, label: "删除全部画布", onClick: () => setDeleteIds(projects.map((project) => project.id)) }] }} trigger={["click"]}>
-                                <Button className="!h-9 !w-9 !p-0" aria-label="更多画布操作" title="更多操作" icon={<MoreHorizontal className="size-4" />} />
+                                    <Dropdown menu={{ items: [{ key: "delete-all", danger: true, icon: <Trash2 className="size-3.5" />, label: canvasT("videoCanvas.library.deleteAll", "删除全部画布"), onClick: () => setDeleteIds(projects.map((project) => project.id)) }] }} trigger={["click"]}>
+                                <Button className="!h-9 !w-9 !p-0" aria-label={canvasT("videoCanvas.library.moreAria", "更多画布操作")} title={canvasT("videoCanvas.listCard.more", "更多操作")} icon={<MoreHorizontal className="size-4" />} />
                                     </Dropdown>
                                 ) : null}
-                        <Button className="!h-9 !px-3.5" disabled={!hydrated} icon={<FileUp className="size-3.5" />} onClick={() => inputRef.current?.click()}>导入</Button>
-                        <Button className="!h-9 !px-4" type="primary" disabled={!hydrated} icon={<Plus className="size-3.5" />} onClick={createAndEnter}>新建画布</Button>
+                        <Button className="!h-9 !px-3.5" disabled={!hydrated} icon={<FileUp className="size-3.5" />} onClick={() => inputRef.current?.click()}>{canvasT("videoCanvas.library.import", "导入")}</Button>
+                        <Button className="!h-9 !px-4" type="primary" disabled={!hydrated} icon={<Plus className="size-3.5" />} onClick={createAndEnter}>{canvasT("videoCanvas.list.create", "新建画布")}</Button>
                         </>
                     )}
                 />
@@ -171,44 +186,57 @@ export default function CanvasPage() {
                 <ListToolbar
                     className="canvas-library-toolbar"
                     active={Boolean(keyword || projectFilter !== "all" || sort !== "updated")}
-                    trailing={<span className="text-xs tabular-nums text-foreground/42">显示 {visibleProjects.length} / {filteredProjects.length}</span>}
+                    trailing={<span className="text-xs tabular-nums text-foreground/42">{canvasT("videoCanvas.library.showing", "显示 {{visible}} / {{total}}", { visible: visibleProjects.length, total: filteredProjects.length })}</span>}
                     onReset={() => { setKeyword(""); setProjectFilter("all"); setSort("updated"); setPage(1); }}
                 >
                     <div className="canvas-library-search min-w-[220px] flex-[1_1_420px]">
-                        <Input allowClear className="w-full" prefix={<Search className="size-4 text-foreground/40" />} value={keyword} placeholder="搜索画布" aria-label="搜索画布" onChange={(event) => { setKeyword(event.target.value); setPage(1); }} />
+                        <Input allowClear className="w-full" prefix={<Search className="size-4 text-foreground/40" />} value={keyword} placeholder={canvasT("videoCanvas.library.searchPlaceholder", "搜索画布")} aria-label={canvasT("videoCanvas.library.searchAria", "搜索画布")} onChange={(event) => { setKeyword(event.target.value); setPage(1); }} />
                     </div>
-                    <Select aria-label="按所属项目筛选" className="w-[168px]" value={projectFilter} onChange={(value) => { setProjectFilter(value); setPage(1); }} options={[{ label: "全部项目", value: "all" }, { label: "自由画布", value: "independent" }, ...(projectQuery.data?.projects || []).map(({ project }) => ({ label: project.name, value: project.id }))]} />
-                    <Select aria-label="画布排序" className="w-[136px]" value={sort} onChange={(value) => { setSort(value); setPage(1); }} options={[{ label: "最近更新", value: "updated" }, { label: "名称排序", value: "name" }, { label: "节点数量", value: "nodes" }]} />
+                    <Select aria-label={canvasT("videoCanvas.library.filterAria", "按所属项目筛选")} className="w-[168px]" value={projectFilter} onChange={(value) => { setProjectFilter(value); setPage(1); }} options={[{ label: canvasT("videoCanvas.library.filterAll", "全部项目"), value: "all" }, { label: canvasT("videoCanvas.listCard.freeCanvas", "自由画布"), value: "independent" }, ...(projectQuery.data?.projects || []).map(({ project }) => ({ label: project.name, value: project.id }))]} />
+                    <Select aria-label={canvasT("videoCanvas.library.sortAria", "画布排序")} className="w-[136px]" value={sort} onChange={(value) => { setSort(value); setPage(1); }} options={[{ label: canvasT("videoCanvas.library.sortUpdated", "最近更新"), value: "updated" }, { label: canvasT("videoCanvas.library.sortName", "名称排序"), value: "name" }, { label: canvasT("videoCanvas.library.sortNodes", "节点数量"), value: "nodes" }]} />
                 </ListToolbar>
 
                 {selectedIds.length ? (
                     <div className="app-canvas-selection-toolbar mt-2 flex min-h-10 flex-wrap items-center gap-2 rounded-md border px-3 py-1.5 text-xs">
-                        <strong className="mr-auto font-medium">已选 {selectedIds.length} 个画布</strong>
-                        <Button size="small" disabled={!hydrated || projectQuery.isLoading} onClick={() => { setAssociationProjectId(selectedProjects[0]?.projectId || ""); setAssociationOpen(true); }}>加入项目</Button>
-                        {selectedProjects.some((project) => project.projectId) ? <Button size="small" disabled={!hydrated} onClick={() => { setAssociationProjectId(""); void associateSelected(""); }}>移出项目</Button> : null}
-                        <Button size="small" disabled={!hydrated} icon={<Download className="size-3.5" />} onClick={() => void exportCanvasProjects(selectedProjects, `影策画布-${selectedIds.length}个画布`)}>导出</Button>
-                        <Button size="small" danger disabled={!hydrated} onClick={() => setDeleteIds(selectedIds)}>删除</Button>
+                        <strong className="mr-auto font-medium">{canvasT("videoCanvas.library.selectedCount", "已选 {{count}} 个画布", { count: selectedIds.length })}</strong>
+                        <Button size="small" disabled={!hydrated || projectQuery.isLoading} onClick={() => { setAssociationProjectId(selectedProjects[0]?.projectId || ""); setAssociationOpen(true); }}>{canvasT("videoCanvas.library.joinProject", "加入项目")}</Button>
+                        {selectedProjects.some((project) => project.projectId) ? <Button size="small" disabled={!hydrated} onClick={() => { setAssociationProjectId(""); void associateSelected(""); }}>{canvasT("videoCanvas.library.leaveProject", "移出项目")}</Button> : null}
+                        <Button size="small" disabled={!hydrated} icon={<Download className="size-3.5" />} onClick={() => void exportCanvasProjects(selectedProjects, canvasT("videoCanvas.library.exportName", "影策画布-{{count}}个画布", { count: selectedIds.length }))}>{canvasT("videoCanvas.library.export", "导出")}</Button>
+                        <Button size="small" danger disabled={!hydrated} onClick={() => setDeleteIds(selectedIds)}>{canvasT("videoCanvas.dialog.delete", "删除")}</Button>
                     </div>
                 ) : null}
 
                 {!hydrated ? (
-                    <WorkspaceLoadingState label="正在恢复画布" detail="读取本地缓存与账号同步状态" />
+                    <WorkspaceLoadingState label={canvasT("videoCanvas.library.restoring", "正在恢复画布")} detail={canvasT("videoCanvas.library.restoringDetail", "读取本地缓存与账号同步状态")} />
                 ) : visibleProjects.length ? (
                     <CollectionGrid className="canvas-library-grid">
                         {visibleProjects.map((project) => (
-                            <CanvasProjectCard key={project.id} project={project} projectName={project.projectId ? projectNames.get(project.projectId) || "未同步项目" : undefined} />
+                            <CanvasProjectCard key={project.id} project={project} projectName={project.projectId ? projectNames.get(project.projectId) || canvasT("videoCanvas.library.unsyncedProject", "未同步项目") : undefined} />
                         ))}
                     </CollectionGrid>
                 ) : (
-                    <WorkspaceState icon="canvas" title={keyword ? "没有匹配的画布" : "创建一张可继续生长的画布"} description={keyword ? "换一个画布名称或重置筛选条件。" : "把文本、图片、视频和 Agent 操作连接成可追踪的创作流程。"} action={!keyword ? <Button type="primary" icon={<Plus className="size-3.5" />} onClick={createAndEnter}>新建画布</Button> : undefined} />
+                    <WorkspaceState
+                        icon="canvas"
+                        title={keyword ? canvasT("videoCanvas.library.emptyMatchTitle", "没有匹配的画布") : canvasT("videoCanvas.library.emptyTitle", "创建一张可继续生长的画布")}
+                        description={keyword ? canvasT("videoCanvas.library.emptyMatchDesc", "换一个画布名称或重置筛选条件。") : canvasT("videoCanvas.library.emptyDesc", "把文本、图片、视频和 Agent 操作连接成可追踪的创作流程。")}
+                        action={!keyword ? <Button type="primary" icon={<Plus className="size-3.5" />} onClick={createAndEnter}>{canvasT("videoCanvas.list.create", "新建画布")}</Button> : undefined}
+                    />
                 )}
 
                 <PaginationBar current={page} pageSize={pageSize} total={filteredProjects.length} pageSizeOptions={[12, 24, 48]} onChange={(nextPage, nextPageSize) => { setPage(nextPageSize !== pageSize ? 1 : nextPage); setPageSize(nextPageSize); }} />
 
                 <input ref={inputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importCanvas(event.target.files?.[0])} />
-                <Modal title="加入项目" open={associationOpen} okText="保存关联" cancelText="取消" okButtonProps={{ disabled: !associationProjectId, loading: projectQuery.isFetching }} onCancel={() => setAssociationOpen(false)} onOk={() => void associateSelected()}>
-                    <p className="mb-3 text-sm text-foreground/60">选中的画布会保留原有节点和本地媒体，只增加项目关联。</p>
-                    <Select className="w-full" value={associationProjectId || undefined} placeholder="选择项目" options={(projectQuery.data?.projects || []).map((item) => ({ label: item.project.name, value: item.project.id }))} onChange={setAssociationProjectId} />
+                <Modal
+                    title={canvasT("videoCanvas.library.joinProject", "加入项目")}
+                    open={associationOpen}
+                    okText={canvasT("videoCanvas.library.associateOk", "保存关联")}
+                    cancelText={canvasT("videoCanvas.dialog.cancel", "取消")}
+                    okButtonProps={{ disabled: !associationProjectId, loading: projectQuery.isFetching }}
+                    onCancel={() => setAssociationOpen(false)}
+                    onOk={() => void associateSelected()}
+                >
+                    <p className="mb-3 text-sm text-foreground/60">{canvasT("videoCanvas.library.associateHint", "选中的画布会保留原有节点和本地媒体，只增加项目关联。")}</p>
+                    <Select className="w-full" value={associationProjectId || undefined} placeholder={canvasT("videoCanvas.library.selectProject", "选择项目")} options={(projectQuery.data?.projects || []).map((item) => ({ label: item.project.name, value: item.project.id }))} onChange={setAssociationProjectId} />
                 </Modal>
         </WorkspacePage>
     );

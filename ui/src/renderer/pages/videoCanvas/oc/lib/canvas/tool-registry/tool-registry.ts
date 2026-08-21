@@ -1,6 +1,6 @@
 import type { FloatingDockEntry } from "@oc/components/ui/aceternity/floating-dock";
 
-import type { AddNodeMenuCommand, AddNodeMenuContext, ToolCategory, ToolContext, ToolDefinition, ToolbarId, ToolbarPrefs } from "./tool-definition";
+import type { AddNodeMenuCommand, AddNodeMenuContext, ResolvedAddNodeMenuCommand, ToolCategory, ToolContext, ToolDefinition, ToolbarId, ToolbarPrefs } from "./tool-definition";
 
 /** 模块级注册表 */
 const registry = new Map<ToolbarId, ToolDefinition[]>();
@@ -76,9 +76,15 @@ export function resolveToolbarTools(toolbar: ToolbarId, ctx: ToolContext, prefs:
     });
 }
 
-/** 解析添加节点菜单命令——仅 applicable 过滤，不参与排序/显隐 */
-export function resolveAddNodeMenuCommands(ctx: AddNodeMenuContext): AddNodeMenuCommand[] {
-    return getAddNodeMenuCommands().filter((command) => !command.applicable || command.applicable(ctx));
+/** 解析添加节点菜单命令——applicable 过滤，并将 label/badge 解析为具体字符串 */
+export function resolveAddNodeMenuCommands(ctx: AddNodeMenuContext): ResolvedAddNodeMenuCommand[] {
+    return getAddNodeMenuCommands()
+        .filter((command) => !command.applicable || command.applicable(ctx))
+        .map((command) => ({
+            ...command,
+            label: typeof command.label === "function" ? command.label() : command.label,
+            badge: command.badge === undefined ? undefined : typeof command.badge === "function" ? command.badge() : command.badge,
+        }));
 }
 
 /**

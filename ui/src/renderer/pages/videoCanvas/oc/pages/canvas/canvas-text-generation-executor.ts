@@ -28,8 +28,7 @@ export async function executeTextGeneration({
 }: CanvasGenerationExecution) {
     let streamed = "";
     const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
-    const isDirectTextTarget = sourceNode?.type === CanvasNodeType.Text && !sourceNode.metadata?.content?.trim() && !editingTextNode;
-    const textCount = isConfigNode || (isDirectTextTarget && sourceNode?.metadata?.count) ? getGenerationCount(generationConfig.count) : 1;
+    const textCount = getGenerationCount(String(sourceNode?.metadata?.textCount ?? 1));
     const parentConfig = NODE_DEFAULT_SIZE[isConfigNode ? CanvasNodeType.Config : CanvasNodeType.Text];
     const textConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
     const parentPosition = sourceNode?.position || { x: 0, y: 0 };

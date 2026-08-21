@@ -1,10 +1,12 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Crosshair, FolderOpen, ImageIcon, Images, Music2, PanelLeftClose, Plus, Search, Video, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { FloatingDock, type FloatingDockEntry } from "@oc/components/ui/aceternity/floating-dock";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { canvasDockStyle } from "@oc/lib/canvas/canvas-aceternity-style";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@oc/lib/canvas/resource-storage-status";
 import { cn } from "@oc/lib/utils";
@@ -59,6 +61,7 @@ export function CanvasAssetTray({
     onFocusCanvasImage,
     onFocusCanvasMedia,
 }: CanvasAssetTrayProps) {
+    useTranslation();
     const libraryAssets = mediaAssets ?? assetImages ?? [];
     const canvasNodes = canvasMediaNodes ?? canvasImages ?? [];
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -157,7 +160,7 @@ export function CanvasAssetTray({
     const dockItems: FloatingDockEntry[] = [
         {
             id: "asset-tray-toggle",
-            label: open ? "收起素材空间" : `打开素材空间，共 ${(showLibrary ? libraryAssets.length : 0) + canvasNodes.length} 项`,
+            label: open ? canvasT("videoCanvas.asset.collapseTray", "收起素材空间") : canvasT("videoCanvas.asset.openTray", "打开素材空间，共 {{count}} 项", { count: (showLibrary ? libraryAssets.length : 0) + canvasNodes.length }),
             icon: (
                 <span className="relative">
                     <Images />
@@ -184,7 +187,7 @@ export function CanvasAssetTray({
                         style={{ background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text, height: safeTrayHeight, minHeight: Math.min(TRAY_MIN_HEIGHT, getMaxTrayHeight()), maxHeight: "calc(100vh - 6rem)", boxShadow: `0 32px 100px ${theme.spatial.shadow}` }}
                     >
                         <div className="absolute inset-x-10 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${theme.spatial.glowStrong}, transparent)` }} />
-                        <button type="button" className="absolute left-1/2 top-1 z-10 flex h-5 w-28 -translate-x-1/2 cursor-ns-resize items-center justify-center rounded-full opacity-35 transition-opacity hover:opacity-75" onPointerDown={startResize} aria-label="从顶部调整素材托盘高度" title="拖动调整高度">
+                        <button type="button" className="absolute left-1/2 top-1 z-10 flex h-5 w-28 -translate-x-1/2 cursor-ns-resize items-center justify-center rounded-full opacity-35 transition-opacity hover:opacity-75" onPointerDown={startResize} aria-label={canvasT("videoCanvas.asset.resizeTray", "从顶部调整素材托盘高度")} title={canvasT("videoCanvas.asset.dragResize", "拖动调整高度")}>
                             <span className="h-1 w-12 rounded-full bg-current" />
                         </button>
 
@@ -194,27 +197,27 @@ export function CanvasAssetTray({
                                     <FolderOpen className="size-3.5" />
                                 </span>
                                 <span className="min-w-0">
-                                    <span className="block text-xs font-semibold">素材空间</span>
+                                    <span className="block text-xs font-semibold">{canvasT("videoCanvas.asset.trayTitle", "素材空间")}</span>
                                     <span className="mt-0.5 block truncate text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>
-                                        拖入画布，或定位已使用的媒体
+                                        {canvasT("videoCanvas.asset.trayHint", "拖入画布，或定位已使用的媒体")}
                                     </span>
                                 </span>
                             </div>
-                            <motion.button type="button" whileHover={motionEnabled ? { rotate: -5, scale: 1.05 } : undefined} whileTap={motionEnabled ? { scale: 0.92 } : undefined} className="grid size-7 shrink-0 place-items-center rounded-full border outline-none focus-visible:ring-2" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border, color: theme.node.muted }} onClick={() => setOpen(false)} aria-label="收起素材空间">
+                            <motion.button type="button" whileHover={motionEnabled ? { rotate: -5, scale: 1.05 } : undefined} whileTap={motionEnabled ? { scale: 0.92 } : undefined} className="grid size-7 shrink-0 place-items-center rounded-full border outline-none focus-visible:ring-2" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border, color: theme.node.muted }} onClick={() => setOpen(false)} aria-label={canvasT("videoCanvas.asset.collapseTray", "收起素材空间")}>
                                 <PanelLeftClose className="size-3" />
                             </motion.button>
                         </div>
 
                         <div className={cn("relative grid gap-1 rounded-[var(--r-lg)] border p-0.5", showLibrary ? "grid-cols-2" : "grid-cols-1")} style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
-                            {showLibrary ? <TrayTabButton active={tab === "library"} label={`素材库 ${libraryAssets.length}`} theme={theme} onClick={() => setTab("library")} /> : null}
-                            <TrayTabButton active={tab === "canvas"} label={`当前画布 ${canvasNodes.length}`} theme={theme} onClick={() => setTab("canvas")} />
+                            {showLibrary ? <TrayTabButton active={tab === "library"} label={canvasT("videoCanvas.asset.tabLibrary", "素材库 {{count}}", { count: libraryAssets.length })} theme={theme} onClick={() => setTab("library")} /> : null}
+                            <TrayTabButton active={tab === "canvas"} label={canvasT("videoCanvas.asset.tabCanvas", "当前画布 {{count}}", { count: canvasNodes.length })} theme={theme} onClick={() => setTab("canvas")} />
                         </div>
 
                         <label className="mt-2 flex h-8 items-center gap-1.5 rounded-[11px] border px-2.5 focus-within:ring-2" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
                             <Search className="size-3.5 shrink-0" style={{ color: theme.node.muted }} />
-                            <input type="search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索图片 / 视频 / 音频…" className="min-w-0 flex-1 bg-transparent text-[var(--fs-tiny)] outline-none placeholder:opacity-55" aria-label="搜索素材" />
+                            <input type="search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={canvasT("videoCanvas.asset.searchPlaceholder", "搜索图片 / 视频 / 音频…")} className="min-w-0 flex-1 bg-transparent text-[var(--fs-tiny)] outline-none placeholder:opacity-55" aria-label={canvasT("videoCanvas.asset.searchAria", "搜索素材")} />
                             {keyword ? (
-                                <button type="button" className="grid size-6 shrink-0 place-items-center rounded-full opacity-55 hover:opacity-100" onClick={() => setKeyword("")} aria-label="清空搜索">
+                                <button type="button" className="grid size-6 shrink-0 place-items-center rounded-full opacity-55 hover:opacity-100" onClick={() => setKeyword("")} aria-label={canvasT("videoCanvas.asset.clearSearch", "清空搜索")}>
                                     <X className="size-3" />
                                 </button>
                             ) : null}
@@ -240,7 +243,7 @@ export function CanvasAssetTray({
                                         ))}
                                     </div>
                                 ) : (
-                                    <TrayEmpty text="没有匹配的素材" theme={theme} />
+                                    <TrayEmpty text={canvasT("videoCanvas.asset.noMatch", "没有匹配的素材")} theme={theme} />
                                 )
                             ) : filteredNodes.length ? (
                                 <div className="space-y-1.5">
@@ -259,21 +262,21 @@ export function CanvasAssetTray({
                                     ))}
                                 </div>
                             ) : (
-                                <TrayEmpty text="当前画布没有匹配媒体" theme={theme} />
+                                <TrayEmpty text={canvasT("videoCanvas.asset.noCanvasMatch", "当前画布没有匹配媒体")} theme={theme} />
                             )}
                         </div>
 
                         <div className="flex items-center justify-between gap-2 px-1 pt-2.5 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>
-                            <span className="min-w-0 truncate">{showLibrary && tab === "library" ? "点击插入 · 拖拽定位" : "点击回到节点"}</span>
+                            <span className="min-w-0 truncate">{showLibrary && tab === "library" ? canvasT("videoCanvas.asset.hintInsert", "点击插入 · 拖拽定位") : canvasT("videoCanvas.asset.hintLocate", "点击回到节点")}</span>
                             <span className="shrink-0 rounded-full border px-2 py-0.5 tabular-nums" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
-                                {activeItems.length} 项
+                                {canvasT("videoCanvas.asset.itemCount", "{{count}} 项", { count: activeItems.length })}
                             </span>
                         </div>
                     </motion.aside>
                 ) : null}
             </AnimatePresence>
 
-            <FloatingDock items={dockItems} className="canvas-floating-dock" style={canvasDockStyle(theme)} ariaLabel="素材空间" />
+            <FloatingDock items={dockItems} className="canvas-floating-dock" style={canvasDockStyle(theme)} ariaLabel={canvasT("videoCanvas.asset.trayTitle", "素材空间")} />
         </div>
     );
 }
@@ -312,6 +315,7 @@ function AssetTrayRow({
     onClick: () => void;
     onDragStart?: (event: DragEvent<HTMLElement>) => void;
 }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const location = resourceStorageLocation(storageKey);
     const KindIcon = kind === "video" ? Video : kind === "audio" ? Music2 : ImageIcon;
@@ -342,9 +346,9 @@ function AssetTrayRow({
             <span className="min-w-0 overflow-hidden">
                 <span className="block truncate text-[var(--fs-tiny)] font-semibold">{title}</span>
                 <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[var(--fs-micro)] opacity-45">
-                    <span className="shrink-0">{kind === "video" ? "视频" : kind === "audio" ? "音频" : "图片"}</span>
+                    <span className="shrink-0">{kind === "video" ? canvasT("videoCanvas.asset.kindVideo", "视频") : kind === "audio" ? canvasT("videoCanvas.asset.kindAudio", "音频") : canvasT("videoCanvas.asset.kindImage", "图片")}</span>
                     <span className="shrink-0">·</span>
-                    <span className="truncate">{active ? "当前已选择" : draggable ? "点击插入" : "点击定位"}</span>
+                    <span className="truncate">{active ? canvasT("videoCanvas.asset.selected", "当前已选择") : draggable ? canvasT("videoCanvas.asset.clickInsert", "点击插入") : canvasT("videoCanvas.asset.clickLocate", "点击定位")}</span>
                     {location === "oss" || location === "local" ? (
                         <span
                             className={cn(
@@ -386,8 +390,8 @@ function mediaAssetStorageKey(asset: CanvasTrayMediaAsset) {
 }
 
 function canvasMediaTitle(node: CanvasNodeData) {
-    if (node.type === CanvasNodeType.Image) return node.title || node.metadata?.prompt || "图片节点";
-    if (node.type === CanvasNodeType.Video) return node.title || node.metadata?.prompt || "视频节点";
-    if (node.type === CanvasNodeType.Audio) return node.title || "音频节点";
+    if (node.type === CanvasNodeType.Image) return node.title || node.metadata?.prompt || canvasT("videoCanvas.asset.imageNode", "图片节点");
+    if (node.type === CanvasNodeType.Video) return node.title || node.metadata?.prompt || canvasT("videoCanvas.asset.videoNode", "视频节点");
+    if (node.type === CanvasNodeType.Audio) return node.title || canvasT("videoCanvas.asset.audioNode", "音频节点");
     return node.title;
 }

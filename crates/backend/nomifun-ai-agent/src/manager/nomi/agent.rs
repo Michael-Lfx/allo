@@ -1690,7 +1690,10 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     data.source_message_id.as_deref(),
                     data.origin.as_deref(),
                 );
-                session.bind_ids_with_preview(ids, Some(content.as_str()));
+                // The turn preview is the user's original send. `content` is
+                // already enriched with knowledge, skills, and image-analysis
+                // context at this point; it is provider input, not UI copy.
+                session.bind_ids_with_preview(ids, Some(data.content.as_str()));
             }
 
             // Each iteration runs one engine pass inside the same accepted

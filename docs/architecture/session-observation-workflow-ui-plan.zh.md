@@ -317,8 +317,8 @@ Summary `active_duration_ms = Σ turn.elapsed_ms`。`wall_span_ms` 次要。禁�
 
 ### 5.4 preview
 
-1. `turn/start.prompt_preview`：conversation bind 时写入 **`current_send.content`**（本轮用户原文，truncated+redacted）。同一 `root_turn_id` 只发一次 start；agent 在 knowledge/skill 注入后的二次 bind **不得覆盖**。  
-2. 否则该 turn `event_seq` 最大的 `llm/request`，**从 messages 尾向前**最近 `role=user` 且含 Text，排除纯 ToolResult  
+1. `turn/start.prompt_preview`：conversation bind 时写入 **`current_send.content`**（本轮用户原文，truncated+redacted）。同一 `root_turn_id` 只发一次 start；agent 在 knowledge/skill 注入后的二次 bind **不得覆盖**。投影发现旧数据把首个 `[Context]` 注入块写成 preview 时，隐藏该 marker，并回退到请求中的真实用户文本。
+2. 否则该 turn `event_seq` 最大的 `llm/request`，**从 messages 尾向前**最近 `role=user` 且含 Text，排除纯 ToolResult，并跳过该 user 消息首个 `[Context]` 文本块
 3. 否则「观测未记录」  
 
 禁止首条 user，禁止气泡。
@@ -387,7 +387,7 @@ Trigger: writer persist-idle ≥30s and last scan ≥1h; or estimated total ≥1
 - 回合行：第 N 轮（按 `started_at_ms` 升序编号，与显示倒正向无关）、预览、时钟、模型/工具次数、时长。默认最新在上。  
 - Call 行 `useVirtualizer`，overscan 3–5。宽屏横轴可横滚。窄对话列（`@container` ~720px，按列宽不是 window）左列改横向回合条，检查器单列。  
 - 点瓦片才 GET call detail，不自动展开第一张；关详情 unmount。瓦片 `aria-expanded`。工具瓦片 title 用 `argument_preview`，无则 name。`最终回复` 是不可点文案终点，不是瓦片。  
-- Call 检查器：对象/数组用 `react-json-view-lite`（根与 `messages`/`tools` 数组展开，元素默认收起）；`{` / `}` 必须能开合（punctuation 转发到 expander，禁止自写树）。`messages` / `tools` 默认扫描投影（role / 块类型 / 开头摘要，或工具名 + 描述），工具条「原始」才切回对象树；复制仍是 canonical JSON。消息扫描默认最新在上，排序随 `model_call_id` 重置、不随 poll 数组变长重置；工具定义不排序。整段 `{ omitted_reason }` 显示已省略，`[]` 显示没有消息/没有工具，缺字段显示观测未记录；行上有预览时仍带 omitted 标记。短 string 与响应 reasoning/content 直接展示。系统提示、响应、工具执行不走扫描列表。放大弹层与 320px 面板各自渲染，禁止共用同一个 React 节点。复制用图标，禁止每块「复制 JSON」文案。详情字段是 hairline Raised 面板，不是灰底 dump。  
+- Call 检查器：对象/数组用 `react-json-view-lite`（根与 `messages`/`tools` 数组展开，元素默认收起）；`{` / `}` 必须能开合（punctuation 转发到 expander，禁止自写树）。`messages` / `tools` 默认扫描投影（role / 块类型 / 开头摘要，或工具名 + 描述），工具条「原始」才切回对象树；复制仍是 canonical JSON。消息扫描默认最新在上，排序随 `model_call_id` 重置、不随 poll 数组变长重置；工具定义不排序。`[Context]` 是保留前缀，仅识别 user 消息的第一个文本块，不参与主预览；真实用户文本优先显示。Context 仅通过 hover tooltip 显示 `上下文 · Current date: ...`，不增加摘要行；Context-only 消息保留且不显示为「观测未记录」。整段 `{ omitted_reason }` 显示已省略，`[]` 显示没有消息/没有工具，缺字段显示观测未记录；行上有预览时仍带 omitted 标记。短 string 与响应 reasoning/content 直接展示。系统提示、响应、工具执行不走扫描列表。放大弹层与 320px 面板各自渲染，禁止共用同一个 React 节点。复制用图标，禁止每块「复制 JSON」文案。详情字段是 hairline Raised 面板，不是灰底 dump。
 - 缓存：summary + ≤200 turn headers + `MAX_CALL_DETAIL_CACHE=2` LRU。换会话 `clear()`。切回对话保持 poll 与 LRU。  
 - Token 芯片：U3 只显示原始 `input_tokens` / cache_read / cache_write / output。不画未命中，不发明 `input_uncached`。  
 - omitted 字段必须可见，不得显示成「观测未记录 / 加载失败」。不展示 `msg=` / `turn=` / `mc-xxxx`。  
@@ -424,7 +424,7 @@ Poll **仅** `has turn/start && !turn/end` 的 new-format turn。
 
 ### U0 — Writer + 正确性
 
-双队列 `enqueue_order` 合并、128KiB×128 字节封顶、WriterCommand、Delete tombstone / Clear generation / ResetAll / Shutdown ACK、Health 顶层、投影 status/integrity 分离、Call 与 turn/end 解耦、时间字段、`Instant` 前移、consumer-drop、工厂重置登记（已有 diagnostics Retire）+ ResetAll 衔接。
+双队列 `enqueue_order` 合并、普通事件 128KiB×128 字节封顶、控制事件有界且溢出可观测、WriterCommand、Delete tombstone / Clear generation / ResetAll / Shutdown ACK、Health 顶层、投影 status/integrity 分离、Call 与 turn/end 解耦、时间字段、`Instant` 前移、consumer-drop、工厂重置登记（已有 diagnostics Retire）+ ResetAll 衔接。
 
 **DoD：** `cargo test -p nomi-agent-trace`
 

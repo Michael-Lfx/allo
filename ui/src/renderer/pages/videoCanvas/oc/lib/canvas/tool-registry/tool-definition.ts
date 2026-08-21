@@ -36,6 +36,7 @@ export type ToolbarHandlers = {
     onAddAudio: () => void;
     onAddScript: () => void;
     onAddFrame: () => void;
+    onAddFolder: () => void;
     onAddDrawing: () => void;
     onChooseStyle: () => void;
     onOpenDirector: () => void;
@@ -58,6 +59,7 @@ export type ToolbarHandlers = {
     onCreateStoryboard: () => void;
     onCreateReferenceGroup: () => void;
     onMergeVideos: () => void;
+    onBatchConnect: () => void;
     // 节点悬停工具栏——节点操作（均接收当前节点）
     onNodeInfo: (node: CanvasNodeData) => void;
     onNodeDelete: (node: CanvasNodeData) => void;
@@ -85,6 +87,8 @@ export type ToolbarHandlers = {
     onNodeToggleFreeResize: (node: CanvasNodeData) => void;
     onNodeToggleLocked: (node: CanvasNodeData) => void;
     onNodeCopyPrompt: (node: CanvasNodeData) => void;
+    onNodeSubtitles: (node: CanvasNodeData) => void;
+    onNodeTimeline: (node: CanvasNodeData) => void;
 };
 
 /** 工具运行时可见的上下文。工具定义通过纯函数读取状态 */
@@ -123,6 +127,7 @@ export type AddNodeMenuContext = {
         | "onAddAudio"
         | "onAddScript"
         | "onAddFrame"
+        | "onAddFolder"
         | "onAddDrawing"
         | "onChooseStyle"
         | "onOpenDirector"
@@ -160,13 +165,19 @@ export type ToolDefinition = {
 /** 添加节点菜单命令：项目级动作与真正的节点创建分开呈现。 */
 export type AddNodeMenuCommand = {
     id: string;
-    label: string;
+    label: string | (() => string);
     icon: ReactNode;
-    badge?: string;
+    badge?: string | (() => string);
     section: "node" | "project" | "resource";
     defaultOrder: number;
     applicable?: (ctx: AddNodeMenuContext) => boolean;
     run: (ctx: AddNodeMenuContext) => void;
+};
+
+/** resolveAddNodeMenuCommands 解析后的命令（label/badge 已是具体字符串） */
+export type ResolvedAddNodeMenuCommand = Omit<AddNodeMenuCommand, "label" | "badge"> & {
+    label: string;
+    badge?: string;
 };
 
 /** 用户偏好——排序与显隐 */

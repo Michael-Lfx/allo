@@ -172,6 +172,7 @@ function docToProject(projectId: string, title: string, doc: CanvasDocument): Ca
     showImageInfo: false,
     viewport: (doc.viewport || { x: 0, y: 0, k: 1 }) as ViewportTransform,
     directorScenes: [],
+    timeline: doc.timeline as CanvasProject['timeline'],
     alloCreative: doc.alloCreative,
   };
 }
@@ -199,6 +200,7 @@ export async function syncCanvasProjectToServer(projectId: string): Promise<void
     connections: project.connections as unknown as CanvasDocument['connections'],
     viewport: project.viewport as CanvasDocument['viewport'],
     backgroundMode: (project.backgroundMode as CanvasDocument['backgroundMode']) || 'dots',
+    ...(project.timeline ? { timeline: project.timeline as CanvasDocument['timeline'] } : {}),
     ...(project.alloCreative ? { alloCreative: project.alloCreative } : {}),
   };
   await putCanvasDoc(projectId, doc);

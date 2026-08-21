@@ -9,10 +9,12 @@ use axum::routing::get;
 use serde::Deserialize;
 use serde_json::json;
 
-use nomifun_api_types::ApiResponse;
+use nomifun_api_types::{
+    ApiResponse, SessionObservationCallDto, SessionObservationListDto, SessionObservationTurnDto,
+};
 use nomifun_ai_agent::{
-    SessionObservationList, DEFAULT_SESSION_OBSERVATION_LIST_LIMIT,
-    MAX_SESSION_OBSERVATION_LIST_LIMIT, TraceApiError,
+    session_observation_call_dto, session_observation_list_dto, session_observation_turn_dto,
+    DEFAULT_SESSION_OBSERVATION_LIST_LIMIT, MAX_SESSION_OBSERVATION_LIST_LIMIT, TraceApiError,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
@@ -81,7 +83,7 @@ async fn list_session_observations(
     State(state): State<ConversationRouterState>,
     Extension(user): Extension<CurrentUser>,
     Query(query): Query<SessionObservationQuery>,
-) -> Result<axum::Json<ApiResponse<SessionObservationList>>, AppError> {
+) -> Result<axum::Json<ApiResponse<SessionObservationListDto>>, AppError> {
     let hub = require_hub(&state)?;
     let conversation_id = query.conversation_id.trim();
     if conversation_id.is_empty() {
@@ -94,6 +96,7 @@ async fn list_session_observations(
         .list_session_observations(conversation_id, clamp_list_limit(query.limit))
         .await
         .map_err(|error| error.into_app_error())?;
+    let page = session_observation_list_dto(page);
     Ok(axum::Json(ApiResponse::ok(page)))
 }
 
@@ -102,7 +105,7 @@ async fn get_session_observation_turn(
     Extension(user): Extension<CurrentUser>,
     Path(root_turn_id): Path<String>,
     Query(query): Query<SessionObservationQuery>,
-) -> Result<axum::Json<ApiResponse<nomifun_ai_agent::ProjectedTurn>>, AppError> {
+) -> Result<axum::Json<ApiResponse<SessionObservationTurnDto>>, AppError> {
     let hub = require_hub(&state)?;
     let conversation_id = query.conversation_id.trim();
     if conversation_id.is_empty() {
@@ -120,6 +123,7 @@ async fn get_session_observation_turn(
                 "session observation turn '{root_turn_id}' not found"
             ))
         })?;
+    let turn = session_observation_turn_dto(turn);
     Ok(axum::Json(ApiResponse::ok(turn)))
 }
 
@@ -141,7 +145,10 @@ async fn get_session_observation_call(
         .get_session_observation_call(conversation_id, &root_turn_id, &model_call_id)
         .await
     {
-        Ok(detail) => Ok(axum::Json(ApiResponse::ok(detail)).into_response()),
+        Ok(detail) => {
+            let detail = session_observation_call_dto(detail);
+            Ok(axum::Json(ApiResponse::<SessionObservationCallDto>::ok(detail)).into_response())
+        }
         Err(TraceApiError::ObservationRetention) => Ok(observation_retention_response()),
         Err(error) => Err(error.into_app_error()),
     }
