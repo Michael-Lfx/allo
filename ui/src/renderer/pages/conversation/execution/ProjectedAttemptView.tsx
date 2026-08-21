@@ -26,7 +26,6 @@ import { canSteerExecutionAttempt } from './executionStatusMeta';
 
 type ProjectedAttemptViewProps = { payload: OpenStepPayload };
 type StepConfigDraft = Pick<TConfigureExecutionStep, 'model' | 'preset_prompt'>;
-const TOAST_CLASS = 'nomifun-message-passthrough';
 const TOAST_OK_MS = 1500;
 const TOAST_ERROR_MS = 2500;
 
@@ -151,7 +150,7 @@ const ProjectedAttemptView: React.FC<ProjectedAttemptViewProps> = ({ payload }) 
           defaultValue: '协作者已更新',
         }),
         duration: TOAST_OK_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
       projectReplacementStep(replacement);
       await refetch();
@@ -163,7 +162,7 @@ const ProjectedAttemptView: React.FC<ProjectedAttemptViewProps> = ({ payload }) 
           error: String(error),
         }),
         duration: TOAST_ERROR_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
     } finally {
       setReassigning(false);
@@ -223,7 +222,7 @@ const ProjectedAttemptView: React.FC<ProjectedAttemptViewProps> = ({ payload }) 
       message.success({
         content: t('agentExecution.retry.ok', { defaultValue: '任务已重试' }),
         duration: TOAST_OK_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
     } catch (error) {
       await refreshOnVersionConflict(error, refetch);
@@ -233,7 +232,7 @@ const ProjectedAttemptView: React.FC<ProjectedAttemptViewProps> = ({ payload }) 
           error: String(error),
         }),
         duration: TOAST_ERROR_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
     } finally {
       setRetrying(false);
@@ -258,7 +257,7 @@ const ProjectedAttemptView: React.FC<ProjectedAttemptViewProps> = ({ payload }) 
           defaultValue: '已采用当前结果',
         }),
         duration: TOAST_OK_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
     } catch (error) {
       await refreshOnVersionConflict(error, refetch);
@@ -268,7 +267,7 @@ const ProjectedAttemptView: React.FC<ProjectedAttemptViewProps> = ({ payload }) 
           error: String(error),
         }),
         duration: TOAST_ERROR_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
     } finally {
       setAdopting(false);
@@ -298,7 +297,7 @@ const ProjectedAttemptView: React.FC<ProjectedAttemptViewProps> = ({ payload }) 
           defaultValue: '决定已提交',
         }),
         duration: TOAST_OK_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
     } catch (error) {
       await refreshOnVersionConflict(error, refetch);
@@ -308,7 +307,7 @@ const ProjectedAttemptView: React.FC<ProjectedAttemptViewProps> = ({ payload }) 
           error: String(error),
         }),
         duration: TOAST_ERROR_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
     } finally {
       setAnswering(false);
@@ -334,14 +333,14 @@ const ProjectedAttemptView: React.FC<ProjectedAttemptViewProps> = ({ payload }) 
       message.success({
         content: t('agentExecution.steer.ok'),
         duration: TOAST_OK_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
     } catch (error) {
       await refreshOnVersionConflict(error, refetch);
       message.error({
         content: t('agentExecution.steer.error', { error: String(error) }),
         duration: TOAST_ERROR_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
     } finally {
       setSteering(false);

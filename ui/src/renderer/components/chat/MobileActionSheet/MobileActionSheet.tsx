@@ -4,6 +4,7 @@ import { Left, Right } from '@icon-park/react';
 import React, { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { useNotificationBlocker } from '@/renderer/components/notifications';
 import styles from './MobileActionSheet.module.css';
 import type { MobileActionSheetEntry, MobileActionSheetProps, MobileActionSheetSubMenu } from './types';
 
@@ -19,6 +20,7 @@ const MobileActionSheet: React.FC<MobileActionSheetProps> = ({ open, onClose, ti
   const [renderedSubKey, setRenderedSubKey] = useState<string | null>(null);
   const [subPhase, setSubPhase] = useState<'idle' | 'enter' | 'shown' | 'exit'>('idle');
   const [mounted, setMounted] = useState(false);
+  const notificationBlockerRef = useNotificationBlocker(mounted);
   // `visible` lags `mounted` by one paint so the sheet renders at
   // translateY(100%) first, then the next frame transitions to translateY(0).
   // Without this gap, applying .visible on first mount skips the slide-up
@@ -123,6 +125,7 @@ const MobileActionSheet: React.FC<MobileActionSheetProps> = ({ open, onClose, ti
     <Fragment>
       <div className={`${styles.mask} ${visible ? styles.visible : ''}`} onClick={onClose} />
       <div
+        ref={notificationBlockerRef}
         className={`${styles.sheet} ${visible ? styles.visible : ''}`}
         role='dialog'
         aria-modal='true'
