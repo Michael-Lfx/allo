@@ -5,7 +5,7 @@ import { Down, SettingTwo } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
-import { useGeneratorModels } from '@renderer/pages/videoGeneration/useGeneratorModels';
+import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
 import { SEEDANCE_ASPECT_RATIOS, type SeedanceAspectRatio } from '../aspectRatios';
 import DurationTimelineBar from '../components/DurationTimelineBar';
 import {

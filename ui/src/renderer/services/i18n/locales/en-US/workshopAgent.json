@@ -1,0 +1,8 @@
+{
+  "agent": {
+    "placeholder": "Canvas agent copy (implemented by M9)"
+  },
+  "applied": {
+    "ops": "Flowy updated the canvas ({{count}} operation(s))"
+  }
+}
