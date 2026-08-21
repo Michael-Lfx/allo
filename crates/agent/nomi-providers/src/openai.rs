@@ -3150,6 +3150,7 @@ mod tests {
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+            retain_provider_round: false,
         }
     }
 
@@ -3324,6 +3325,7 @@ mod tests {
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+            retain_provider_round: false,
         };
         let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
         assert_eq!(body["max_tokens"], 1024);
@@ -3346,6 +3348,7 @@ mod tests {
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+            retain_provider_round: false,
         };
         let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
         assert_eq!(body["max_completion_tokens"], 2048);

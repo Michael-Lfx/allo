@@ -1094,6 +1094,9 @@ pub trait OutputSink: Send + Sync {
     }
     /// Signal start of a new message stream
     fn emit_stream_start(&self, msg_id: &str);
+    /// Retract provisional output produced since the most recent stream-start
+    /// checkpoint before retrying the same logical turn.
+    fn emit_output_discarded(&self, msg_id: &str, restart_attempt: u32);
     /// Signal end of a message stream with usage stats
     fn emit_stream_end(
         &self,
@@ -1339,6 +1342,7 @@ mod tests {
             self.0.lock().unwrap().push((is_error, content.to_owned()));
         }
         fn emit_stream_start(&self, _msg_id: &str) {}
+        fn emit_output_discarded(&self, _msg_id: &str, _restart_attempt: u32) {}
         fn emit_stream_end(
             &self,
             _msg_id: &str,

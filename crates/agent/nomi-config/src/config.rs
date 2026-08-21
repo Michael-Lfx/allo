@@ -621,6 +621,7 @@ pub struct Config {
 pub enum ProviderType {
     Anthropic,
     OpenAI,
+    OpenAIResponses,
     Bedrock,
     Vertex,
 }
@@ -631,7 +632,35 @@ impl ProviderType {
     pub fn requires_output_ceiling(self) -> bool {
         match self {
             ProviderType::Anthropic | ProviderType::Bedrock | ProviderType::Vertex => true,
-            ProviderType::OpenAI => false,
+            ProviderType::OpenAI | ProviderType::OpenAIResponses => false,
+        }
+    }
+
+    fn default_base_url(self) -> &'static str {
+        match self {
+            ProviderType::Anthropic => "https://api.anthropic.com",
+            ProviderType::OpenAI | ProviderType::OpenAIResponses => "https://api.openai.com",
+            // Bedrock/Vertex URLs are constructed from region/project.
+            ProviderType::Bedrock | ProviderType::Vertex => "",
+        }
+    }
+
+    fn default_model(self) -> &'static str {
+        match self {
+            ProviderType::Anthropic => "claude-sonnet-4-20250514",
+            ProviderType::OpenAI | ProviderType::OpenAIResponses => "gpt-4o",
+            ProviderType::Bedrock => "anthropic.claude-sonnet-4-20250514-v1:0",
+            ProviderType::Vertex => "claude-sonnet-4@20250514",
+        }
+    }
+
+    fn compat_defaults(self) -> ProviderCompat {
+        match self {
+            ProviderType::Anthropic => ProviderCompat::anthropic_defaults(),
+            ProviderType::OpenAI => ProviderCompat::openai_defaults(),
+            ProviderType::OpenAIResponses => ProviderCompat::openai_responses_defaults(),
+            ProviderType::Bedrock => ProviderCompat::bedrock_defaults(),
+            ProviderType::Vertex => ProviderCompat::anthropic_defaults(),
         }
     }
 }
@@ -691,24 +720,14 @@ impl Config {
             .base_url
             .clone()
             .or_else(|| provider_config.base_url.clone())
-            .unwrap_or_else(|| match provider {
-                ProviderType::Anthropic => "https://api.anthropic.com".into(),
-                ProviderType::OpenAI => "https://api.openai.com".into(),
-                // Bedrock/Vertex URLs are constructed from region/project, not base_url
-                ProviderType::Bedrock | ProviderType::Vertex => String::new(),
-            });
+            .unwrap_or_else(|| provider.default_base_url().into());
 
         let model = cli
             .model
             .clone()
             .or(provider_config.model.clone())
             .or(merged.default.model.clone())
-            .unwrap_or_else(|| match provider {
-                ProviderType::Anthropic => "claude-sonnet-4-20250514".into(),
-                ProviderType::OpenAI => "gpt-4o".into(),
-                ProviderType::Bedrock => "anthropic.claude-sonnet-4-20250514-v1:0".into(),
-                ProviderType::Vertex => "claude-sonnet-4@20250514".into(),
-            });
+            .unwrap_or_else(|| provider.default_model().into());
 
         let output_max_tokens = cli.max_tokens.or(merged.default.max_tokens);
         let max_turns = cli.max_turns.or(merged.default.max_turns);
@@ -738,12 +757,7 @@ impl Config {
             .unwrap_or(matches!(provider, ProviderType::Anthropic));
 
         // Resolve compat: provider-type defaults + user overrides
-        let compat_defaults = match provider {
-            ProviderType::Anthropic => ProviderCompat::anthropic_defaults(),
-            ProviderType::OpenAI => ProviderCompat::openai_defaults(),
-            ProviderType::Bedrock => ProviderCompat::bedrock_defaults(),
-            ProviderType::Vertex => ProviderCompat::anthropic_defaults(),
-        };
+        let compat_defaults = provider.compat_defaults();
 
         let user_compat = provider_config.compat.clone().unwrap_or_default();
 
@@ -782,6 +796,7 @@ fn parse_builtin_provider(s: &str) -> Option<ProviderType> {
     match s {
         "anthropic" => Some(ProviderType::Anthropic),
         "openai" => Some(ProviderType::OpenAI),
+        "openai-responses" => Some(ProviderType::OpenAIResponses),
         "bedrock" => Some(ProviderType::Bedrock),
         "vertex" => Some(ProviderType::Vertex),
         _ => None,
@@ -818,7 +833,7 @@ fn resolve_provider_alias(
 
     let alias_config = providers.get(requested).cloned().ok_or_else(|| {
         anyhow::anyhow!(
-            "Unknown provider: '{}'. Expected a built-in provider (anthropic, openai, bedrock, vertex) \
+            "Unknown provider: '{}'. Expected a built-in provider (anthropic, openai, openai-responses, bedrock, vertex) \
              or a custom alias defined in [providers.{}].",
             requested,
             requested
@@ -828,7 +843,7 @@ fn resolve_provider_alias(
     let underlying = alias_config.provider.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "Provider alias '{}' requires a 'provider' field in [providers.{}] \
-             that maps to a built-in type (anthropic, openai, bedrock, vertex).",
+             that maps to a built-in type (anthropic, openai, openai-responses, bedrock, vertex).",
             requested,
             requested
         )
@@ -837,7 +852,7 @@ fn resolve_provider_alias(
     let provider_type = parse_builtin_provider(&underlying).ok_or_else(|| {
         anyhow::anyhow!(
             "Provider alias '{}' maps to '{}', which is not a built-in provider. \
-             Use one of: anthropic, openai, bedrock, vertex.",
+             Use one of: anthropic, openai, openai-responses, bedrock, vertex.",
             requested,
             underlying
         )
@@ -879,7 +894,7 @@ fn resolve_api_key(
                 return Ok(key);
             }
         }
-        ProviderType::OpenAI => {
+        ProviderType::OpenAI | ProviderType::OpenAIResponses => {
             if let Ok(key) = std::env::var("OPENAI_API_KEY") {
                 return Ok(key);
             }
@@ -1706,6 +1721,22 @@ mod tests {
     }
 
     #[test]
+    fn test_openai_responses_provider_contract() {
+        assert_eq!(
+            parse_builtin_provider("openai-responses"),
+            Some(ProviderType::OpenAIResponses)
+        );
+        assert_eq!(
+            ProviderType::OpenAIResponses.default_base_url(),
+            "https://api.openai.com"
+        );
+        let compat = ProviderType::OpenAIResponses.compat_defaults();
+        assert_eq!(compat.api_path(), "/v1/responses");
+        assert_eq!(compat.max_tokens_field.as_deref(), Some("max_output_tokens"));
+        assert!(!compat.chain_rounds());
+    }
+
+    #[test]
     fn test_provider_type_from_str_bedrock() {
         let result = parse_builtin_provider("bedrock");
         assert_eq!(result, Some(ProviderType::Bedrock));
@@ -1732,7 +1763,10 @@ mod tests {
         ] {
             assert!(provider.requires_output_ceiling(), "{provider:?}");
         }
-        for provider in [ProviderType::OpenAI] {
+        for provider in [
+            ProviderType::OpenAI,
+            ProviderType::OpenAIResponses,
+        ] {
             assert!(!provider.requires_output_ceiling(), "{provider:?}");
         }
     }
@@ -2571,6 +2605,7 @@ base_url = "https://my-service.example.com/api/openai"
         for (name, expected_type) in [
             ("anthropic", ProviderType::Anthropic),
             ("openai", ProviderType::OpenAI),
+            ("openai-responses", ProviderType::OpenAIResponses),
             ("bedrock", ProviderType::Bedrock),
             ("vertex", ProviderType::Vertex),
         ] {

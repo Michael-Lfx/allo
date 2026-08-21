@@ -12,7 +12,7 @@ use nomifun_ai_agent::protocol::events::{
 };
 use nomifun_ai_agent::types::{AgentRuntimeBuildOptions, SendMessageData};
 use nomifun_ai_agent::{
-    AgentRuntimeRegistry, AgentSendError, NomiSessionResetOutcome,
+    AgentRuntimeRegistry, AgentSendError, NomiSessionResetOutcome, TurnStopReason,
 };
 
 use crate::response_middleware::{CronCommandResult, CronCreateParams, CronUpdateParams, ICronService};
@@ -5763,6 +5763,7 @@ struct ScriptedAgent {
     event_tx: broadcast::Sender<AgentStreamEvent>,
     scripts: Mutex<VecDeque<Vec<AgentStreamEvent>>>,
     sent_contents: Mutex<Vec<String>>,
+    sent_files: Mutex<Vec<Vec<String>>>,
 }
 
 impl ScriptedAgent {
@@ -5775,6 +5776,7 @@ impl ScriptedAgent {
             event_tx,
             scripts: Mutex::new(VecDeque::from(scripts)),
             sent_contents: Mutex::new(vec![]),
+            sent_files: Mutex::new(vec![]),
         }
     }
 
@@ -5790,6 +5792,10 @@ impl ScriptedAgent {
 
     fn sent_contents(&self) -> Vec<String> {
         self.sent_contents.lock().unwrap().clone()
+    }
+
+    fn sent_files(&self) -> Vec<Vec<String>> {
+        self.sent_files.lock().unwrap().clone()
     }
 }
 
@@ -5824,6 +5830,7 @@ impl AgentRuntimeControl for ScriptedAgent {
     }
 
     async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
+        self.sent_files.lock().unwrap().push(data.files.clone());
         self.sent_contents.lock().unwrap().push(data.content);
         let script = self
             .scripts
@@ -7850,6 +7857,281 @@ async fn fresh_initial_delivery_is_exactly_once_and_replayable() {
     assert!(replay.completed);
     assert_eq!(replay.message_id, first.message_id);
     assert_eq!(registry.build_calls(), 1);
+}
+
+#[tokio::test]
+async fn truncated_continuation_replays_once_and_preserves_files_across_a_second_continuation() {
+    const FIRST_KEY: &str = "continue-truncated-first";
+    const SECOND_KEY: &str = "continue-truncated-second";
+    let database = init_database_memory().await.unwrap();
+    nomifun_db::sqlx::query(
+        "INSERT INTO providers (\
+            provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+            created_at, updated_at\
+         ) VALUES (?1, 'openai', 'test', 'https://example.invalid', \
+                   'encrypted', 1, 1, 1)",
+    )
+    .bind(PROVIDER_ID_1)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    nomifun_db::sqlx::query(
+        "INSERT INTO provider_models (\
+            provider_id, model, enabled, sort_order, tasks, traits, params, source, created_at, updated_at\
+         ) VALUES (?1, 'm1', 1, 0, '[]', '[]', '{}', 'inferred', 1, 1)",
+    )
+    .bind(PROVIDER_ID_1)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let runtime_registry_dyn: Arc<dyn AgentRuntimeRegistry> = runtime_registry.clone();
+    let service = ConversationService::new(
+        Arc::<str>::from(SQLITE_TEST_OWNER),
+        std::env::temp_dir(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry_dyn.clone(),
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let conversation = service
+        .create(
+            SQLITE_TEST_OWNER,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "extra": {
+                    "workspace": isolated_test_workspace("truncated-continuation-files")
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    nomifun_db::sqlx::query(
+        "UPDATE conversations SET status = 'finished' WHERE conversation_id = ? AND user_id = ?",
+    )
+    .bind(&conversation.conversation_id)
+    .bind(SQLITE_TEST_OWNER)
+    .execute(database.pool())
+    .await
+    .unwrap();
+
+    let image_path = "C:/workspace/reference.png";
+    let source_payload = json!({
+        "content": "",
+        "files": [image_path],
+        "inject_skills": ["must-not-replay"],
+        "hidden": false,
+        "origin": null,
+        "channel_platform": null,
+    })
+    .to_string();
+    let source_operation = format!(
+        "public-turn:v1:{}:{}:source-files-only",
+        SQLITE_TEST_OWNER, conversation.conversation_id
+    );
+    let source = repo
+        .claim_delivery_receipt_once(
+            SQLITE_TEST_OWNER,
+            &conversation.conversation_id,
+            &source_operation,
+            "turn",
+            &source_payload,
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: source.receipt.message_id.clone(),
+        conversation_id: conversation.conversation_id.clone(),
+        msg_id: Some(source.receipt.message_id.clone()),
+        r#type: "text".to_owned(),
+        content: json!({"content": ""}).to_string(),
+        position: Some("right".to_owned()),
+        status: Some("finish".to_owned()),
+        hidden: false,
+        created_at: now_ms(),
+    })
+    .await
+    .unwrap();
+    assert!(
+        repo.complete_delivery_receipt(
+            SQLITE_TEST_OWNER,
+            &conversation.conversation_id,
+            &source_operation,
+            false,
+            None,
+            Some("output ceiling"),
+            Some("output_truncated"),
+            Some(true),
+            now_ms(),
+        )
+        .await
+        .unwrap()
+    );
+
+    let scripted = Arc::new(ScriptedAgent::new(
+        &conversation.conversation_id,
+        vec![
+            vec![
+                AgentStreamEvent::Text(TextEventData {
+                    content: "discarded draft".to_owned(),
+                }),
+                AgentStreamEvent::Finish(FinishEventData {
+                    session_id: None,
+                    stop_reason: Some(TurnStopReason::MaxTokens),
+                }),
+            ],
+            vec![
+                AgentStreamEvent::Text(TextEventData {
+                    content: "verified completion".to_owned(),
+                }),
+                AgentStreamEvent::Finish(FinishEventData {
+                    session_id: None,
+                    stop_reason: Some(TurnStopReason::EndTurn),
+                }),
+            ],
+        ],
+    ));
+    runtime_registry.insert_agent(
+        &conversation.conversation_id,
+        AgentRuntimeHandle::Mock(scripted.clone()),
+    );
+
+    let first = service
+        .continue_truncated_turn_with_idempotency_key(
+            SQLITE_TEST_OWNER,
+            &conversation.conversation_id,
+            &source.receipt.message_id,
+            FIRST_KEY,
+            &runtime_registry_dyn,
+        )
+        .await
+        .unwrap();
+    assert!(!first.replayed);
+    let first_replay = service
+        .continue_truncated_turn_with_idempotency_key(
+            SQLITE_TEST_OWNER,
+            &conversation.conversation_id,
+            &source.receipt.message_id,
+            FIRST_KEY,
+            &runtime_registry_dyn,
+        )
+        .await
+        .unwrap();
+    assert!(first_replay.replayed);
+    assert_eq!(first_replay.message_id, first.message_id);
+    wait_for_turn_released(&service, &conversation.conversation_id).await;
+
+    let first_receipt = repo
+        .get_turn_delivery_receipt_by_message_id(
+            SQLITE_TEST_OWNER,
+            &conversation.conversation_id,
+            &first.message_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        first_receipt.result_error_code.as_deref(),
+        Some("output_truncated")
+    );
+    let first_payload: serde_json::Value =
+        serde_json::from_str(&first_receipt.request_payload).unwrap();
+    assert_eq!(first_payload["original_delivery"]["files"], json!([image_path]));
+    assert_eq!(first_payload["delivery"]["files"], json!([image_path]));
+    assert_eq!(first_payload["delivery"]["inject_skills"], json!([]));
+    assert_eq!(first_payload["delivery"]["hidden"], json!(true));
+
+    // This lightweight registry does not model production's exact-generation
+    // `release_runtime_turn`, so clear its completed turn's binding lease while
+    // retaining the cached scripted process for the next explicit turn.
+    runtime_registry
+        .workspace_bindings
+        .lock()
+        .unwrap()
+        .remove(&conversation.conversation_id);
+
+    let second = service
+        .continue_truncated_turn_with_idempotency_key(
+            SQLITE_TEST_OWNER,
+            &conversation.conversation_id,
+            &first.message_id,
+            SECOND_KEY,
+            &runtime_registry_dyn,
+        )
+        .await
+        .unwrap();
+    assert!(!second.replayed);
+    assert_ne!(second.message_id, first.message_id);
+    let second_receipt = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(receipt) = repo
+                .get_turn_delivery_receipt_by_message_id(
+                    SQLITE_TEST_OWNER,
+                    &conversation.conversation_id,
+                    &second.message_id,
+                )
+                .await
+                .unwrap()
+                && receipt.status == "completed"
+            {
+                break receipt;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the second continuation receipt should reach a durable terminal state");
+    wait_for_turn_released(&service, &conversation.conversation_id).await;
+    assert_eq!(second_receipt.result_error, None);
+    assert_eq!(second_receipt.result_error_code, None);
+    assert_eq!(second_receipt.result_ok, Some(true));
+    assert_eq!(
+        scripted.sent_files(),
+        vec![vec![image_path.to_owned()], vec![image_path.to_owned()]]
+    );
+    let sent_contents = scripted.sent_contents();
+    assert_eq!(sent_contents.len(), 2);
+    assert_eq!(sent_contents[0], sent_contents[1]);
+    assert_eq!(
+        sent_contents[0]
+            .matches("Continue the interrupted task")
+            .count(),
+        1,
+        "a second continuation must recover original_delivery instead of nesting the first recovery prompt"
+    );
+    for message_id in [&first.message_id, &second.message_id] {
+        let row = repo
+            .get_message(&conversation.conversation_id, message_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(row.hidden, "continuation user rows stay hidden");
+    }
+    let original = repo
+        .get_delivery_receipt(
+            SQLITE_TEST_OWNER,
+            &conversation.conversation_id,
+            &source_operation,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(original.result_ok, Some(false));
+    assert_eq!(
+        original.result_error_code.as_deref(),
+        Some("output_truncated")
+    );
+    assert_ne!(second_receipt.operation_id, first_receipt.operation_id);
+    assert_ne!(second_receipt.operation_id, original.operation_id);
 }
 
 #[tokio::test]

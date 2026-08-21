@@ -178,6 +178,12 @@ pub struct NomiCompatOverrides {
     pub supports_effort: Option<bool>,
     /// Allowed effort levels from the Flowy catalog (`extra.reasoning_effort`).
     pub effort_levels: Option<Vec<String>>,
+    /// Explicit opt-in for OpenAI Responses provider-side round retention.
+    /// Request builders still apply their own lifecycle gate.
+    pub chain_rounds: Option<bool>,
+    /// Provider-native request body fields after local Agent controls have
+    /// been removed. Typed serializer fields overwrite conflicts at send time.
+    pub extra_body: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// A separately resolved multimodal model used only to analyze image

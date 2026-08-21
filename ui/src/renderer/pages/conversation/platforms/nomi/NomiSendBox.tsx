@@ -1638,6 +1638,9 @@ const NomiSendBox: React.FC<{
                   max={displayContextWindow}
                   cacheReadTokens={tokenUsage?.cache_read_tokens}
                   breakdown={tokenUsage?.context_breakdown}
+                  inputTokens={tokenUsage?.input_tokens}
+                  outputTokens={tokenUsage?.output_tokens}
+                  reasoningTokens={tokenUsage?.reasoning_tokens}
                 />
               )}
               {reasoningEffortLevels.length > 0 && (

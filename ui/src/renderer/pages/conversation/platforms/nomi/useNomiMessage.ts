@@ -604,6 +604,14 @@ export const useNomiMessage = (
           }
           // Don't reset waitingResponse here - let tool completion flow handle it
           break;
+        case 'output_discarded':
+          // The backend follows this control frame with authoritative
+          // replace/hidden updates for the exact superseded segments. Do not
+          // clear the whole turn buffer here: a steering Start may have a
+          // valid pre-restart prefix that those exact replacements preserve.
+          dispatchTurnIfOpen({ type: 'activity' });
+          setThought({ subject: '', description: '' });
+          break;
         case 'turn_completed':
           {
             // Phase 3 observability: the engine emits one turn_completed per turn
@@ -615,6 +623,7 @@ export const useNomiMessage = (
                   elapsed_ms?: number;
                   input_tokens?: number;
                   output_tokens?: number;
+                  reasoning_tokens?: number;
                   cache_creation_tokens?: number;
                   cache_read_tokens?: number;
                   context_tokens?: number;
@@ -624,17 +633,25 @@ export const useNomiMessage = (
                 }
               | undefined;
             if (metrics && typeof metrics === 'object') {
-              const inputTokens = metrics.input_tokens || 0;
-              const outputTokens = metrics.output_tokens || 0;
+              const validTokenCount = (value: unknown): number | undefined =>
+                typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+              const inputTokens = validTokenCount(metrics.input_tokens);
+              const outputTokens = validTokenCount(metrics.output_tokens);
+              const reasoningTokens = validTokenCount(metrics.reasoning_tokens);
+              const cacheCreationTokens = validTokenCount(metrics.cache_creation_tokens);
+              const cacheReadTokens = validTokenCount(metrics.cache_read_tokens);
               const newTokenUsage: TokenUsageData = {
-                total_tokens: inputTokens + outputTokens,
-                input_tokens: metrics.input_tokens,
-                output_tokens: metrics.output_tokens,
-                cache_creation_tokens: metrics.cache_creation_tokens,
-                cache_read_tokens: metrics.cache_read_tokens,
-                elapsed_ms: metrics.elapsed_ms,
-                context_tokens: metrics.context_tokens,
-                context_window: metrics.context_window,
+                total_tokens: (inputTokens ?? 0) + (outputTokens ?? 0),
+                ...(inputTokens !== undefined ? { input_tokens: inputTokens } : {}),
+                ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
+                ...(reasoningTokens !== undefined ? { reasoning_tokens: reasoningTokens } : {}),
+                ...(cacheCreationTokens !== undefined ? { cache_creation_tokens: cacheCreationTokens } : {}),
+                ...(cacheReadTokens !== undefined ? { cache_read_tokens: cacheReadTokens } : {}),
+                ...(typeof metrics.elapsed_ms === 'number' && Number.isFinite(metrics.elapsed_ms)
+                  ? { elapsed_ms: metrics.elapsed_ms }
+                  : {}),
+                context_tokens: validTokenCount(metrics.context_tokens),
+                context_window: validTokenCount(metrics.context_window),
                 context_breakdown: metrics.context_breakdown,
                 moa: metrics.moa ?? null,
               };

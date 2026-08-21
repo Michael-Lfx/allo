@@ -631,6 +631,7 @@ mod tests {
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         }
     }
 
@@ -787,6 +788,7 @@ mod tests {
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         };
 
         let mut rx = stream_llm(
@@ -866,6 +868,7 @@ mod tests {
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         };
         let mut rx = stream_llm(
             &LongTextProvider,
@@ -945,6 +948,7 @@ mod tests {
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         };
         let release_done = std::sync::Arc::new(tokio::sync::Notify::new());
         let mut rx = stream_llm(
@@ -1005,6 +1009,7 @@ mod tests {
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         };
         let mut rx = stream_llm(
             &ScriptedProvider,

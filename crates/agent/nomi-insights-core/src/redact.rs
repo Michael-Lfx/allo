@@ -588,6 +588,7 @@ impl Redactor {
                 })
                 .collect(),
             timestamp: message.timestamp,
+            provider_round_id: message.provider_round_id.clone(),
         }
     }
 

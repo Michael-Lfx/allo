@@ -16,9 +16,9 @@ use tokio::sync::broadcast;
 use crate::artifact_store::{ArtifactKind, ArtifactStore, PersistedArtifact};
 use crate::protocol::events::{
     AgentStatusEventData, AgentStreamEvent, ErrorEventData, FinishEventData,
-    MoaProgressEventData, MoaReferenceEventData, PlanEventData, StartEventData, TextEventData,
-    ThinkingEventData, TipType, TipsEventData, ToolCallEventData, ToolCallRetryData,
-    ToolCallStatus,
+    MoaProgressEventData, MoaReferenceEventData, OutputDiscardedEventData, PlanEventData,
+    StartEventData, TextEventData, ThinkingEventData, TipType, TipsEventData, ToolCallEventData,
+    ToolCallRetryData, ToolCallStatus,
 };
 
 pub struct BackendOutputSink {
@@ -54,6 +54,10 @@ pub struct BackendOutputSink {
     /// Append target for per-message MoA trace records (JSONL). `None` (the
     /// default) = tracing off for this session, `emit_moa_trace` is a no-op.
     moa_trace_path: Option<PathBuf>,
+    /// Receipt-gated prose length at the most recent non-destructive Start.
+    /// Internal retries truncate to this exact boundary instead of erasing a
+    /// valid prefix retained across a host-steering pass.
+    held_text_checkpoint: Mutex<Option<usize>>,
 }
 
 #[derive(Debug, Clone)]
@@ -601,6 +605,7 @@ impl BackendOutputSink {
             tool_result_contexts: Mutex::new(HashMap::new()),
             artifact_delivery_turn: Mutex::new(ArtifactDeliveryTurn::default()),
             moa_trace_path: None,
+            held_text_checkpoint: Mutex::new(None),
         }
     }
 
@@ -1799,9 +1804,47 @@ impl OutputSink for BackendOutputSink {
             Ok(mut filter) => filter.reset(),
             Err(poisoned) => poisoned.into_inner().reset(),
         }
+        // Local artifact delivery does not hold provisional assistant prose in
+        // ArtifactDeliveryTurn; the checkpoint still marks a Start boundary so
+        // OutputDiscarded can clear draft UI without inventing C1 receipt-gated
+        // text retention.
+        *self
+            .held_text_checkpoint
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(0);
         let _ = self
             .event_tx
             .send(AgentStreamEvent::Start(StartEventData { session_id: None }));
+    }
+
+    fn emit_output_discarded(&self, _msg_id: &str, restart_attempt: u32) {
+        self.fail_active_tool_calls(
+            "The model output was discarded before the tool call reached a terminal state.",
+        );
+        self.turn_text
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        let checkpoint = *self
+            .held_text_checkpoint
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if checkpoint.is_none() {
+            let _ = self.event_tx.send(AgentStreamEvent::Error(
+                ErrorEventData::legacy(
+                    "The model discarded output without a stream-start checkpoint",
+                    None,
+                ),
+            ));
+            return;
+        }
+        *self
+            .held_text_checkpoint
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(0);
+        let _ = self.event_tx.send(AgentStreamEvent::OutputDiscarded(
+            OutputDiscardedEventData { restart_attempt },
+        ));
     }
 
     fn emit_stream_end(
@@ -2363,6 +2406,43 @@ mod tests {
             AgentStreamEvent::Start(_) => {}
             other => panic!("Expected Start, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn output_discard_clears_tool_survivors_and_emits_event() {
+        let (sink, mut rx) = make_sink();
+        sink.begin_artifact_delivery_turn();
+        sink.emit_stream_start("msg-1");
+        assert!(matches!(rx.try_recv().unwrap(), AgentStreamEvent::Start(_)));
+        sink.emit_text_delta("discard me", "msg-1");
+        assert!(matches!(rx.try_recv().unwrap(), AgentStreamEvent::Text(_)));
+        sink.turn_text.lock().unwrap().push_str("citation draft");
+        sink.emit_tool_call("running", "Read", "{}");
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            AgentStreamEvent::ToolCall(ToolCallEventData {
+                status: ToolCallStatus::Running,
+                ..
+            })
+        ));
+
+        sink.emit_output_discarded("msg-1", 2);
+
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            AgentStreamEvent::ToolCall(ToolCallEventData {
+                status: ToolCallStatus::Error,
+                ..
+            })
+        ));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            AgentStreamEvent::OutputDiscarded(OutputDiscardedEventData {
+                restart_attempt: 2,
+            })
+        ));
+        assert!(sink.active_tool_calls.lock().unwrap().is_empty());
+        assert!(sink.turn_text.lock().unwrap().is_empty());
     }
 
     #[test]

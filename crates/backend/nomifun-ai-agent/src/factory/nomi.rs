@@ -1478,6 +1478,14 @@ pub(crate) fn map_nomi_provider(platform: &str, protocol: Option<&str>) -> Strin
     if platform == "new-api" && protocol == Some("anthropic") {
         return "anthropic".to_owned();
     }
+    // Native OpenAI Responses API (previous_response_id chaining). Accept both
+    // the ModelInvoke-style id and the short nomi provider id.
+    if matches!(
+        protocol,
+        Some("openai.responses") | Some("openai-responses")
+    ) {
+        return "openai-responses".to_owned();
+    }
 
     platform_table::platform_chat_rule(platform).nomi_provider.to_owned()
 }
@@ -1501,6 +1509,22 @@ pub(crate) fn resolve_nomi_url_and_compat(
     is_full_url: bool,
 ) -> (Option<String>, NomiCompatOverrides) {
     let mut compat = NomiCompatOverrides::default();
+
+    if mapped_provider == "openai-responses" {
+        if is_full_url {
+            let trimmed = raw_base_url.trim_end_matches('/');
+            compat.api_path = Some(String::new());
+            compat.max_tokens_field = Some("max_output_tokens".to_owned());
+            return (Some(trimmed.to_owned()), compat);
+        }
+        let normalized = normalize_nomi_base_url(raw_base_url);
+        compat.api_path = Some("/v1/responses".to_owned());
+        compat.max_tokens_field = Some("max_output_tokens".to_owned());
+        return (
+            Some(normalized).filter(|u| !u.is_empty()),
+            compat,
+        );
+    }
 
     if is_full_url {
         let trimmed = raw_base_url.trim_end_matches('/');

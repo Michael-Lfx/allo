@@ -214,6 +214,7 @@ mod tests {
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         }
     }
 

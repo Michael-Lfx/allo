@@ -803,6 +803,10 @@ impl NomiAgentManager {
         if let Some(required) = config_extra.compat_overrides.require_reasoning_content {
             config.compat.require_reasoning_content = Some(required);
         }
+        if let Some(chain_rounds) = config_extra.compat_overrides.chain_rounds {
+            config.compat.chain_rounds = Some(chain_rounds);
+        }
+        config.compat.extra_body = config_extra.compat_overrides.extra_body;
         // 图片支持 override(主动剔除):工厂据 VisionUnsupportedRegistry 命中注入
         // Some(false),灌进 compat.supports_image → build_messages 发送时剔图。
         // None → 保持 Config::resolve 的默认(supports_image()==true),行为不变。
@@ -5591,7 +5595,8 @@ mod tests {
         assert!(continuation_text.contains("append or edit in chunks"));
         assert!(continuation_text.contains("verify the target file exists"));
 
-        let leaked_partial_call = std::iter::from_fn(|| rx.try_recv().ok()).any(|event| {
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let leaked_partial_call = events.iter().any(|event| {
             matches!(
                 event,
                 AgentStreamEvent::ToolCall(data) if data.call_id == "nomi-call-large-write"
@@ -5600,6 +5605,25 @@ mod tests {
         assert!(
             !leaked_partial_call,
             "an uncommitted partial tool call must never enter the frontend lifecycle"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    AgentStreamEvent::OutputDiscarded(data) => Some(data.restart_attempt),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![2],
+            "the retry must retract the first attempt without emitting a second Start"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentStreamEvent::Start(_)))
+                .count(),
+            1,
+            "an internal restart is not a new host stream"
         );
     }
 

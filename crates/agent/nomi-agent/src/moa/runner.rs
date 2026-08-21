@@ -164,6 +164,7 @@ impl MoaRunner {
                 thinking: None,
                 reasoning_effort: None,
                 temperature: slot.temperature,
+                retain_provider_round: false,
             };
             let semaphore = Arc::clone(&semaphore);
             join_set.spawn(async move {

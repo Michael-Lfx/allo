@@ -32,6 +32,7 @@ fn minimal_request() -> LlmRequest {
         thinking: None,
         reasoning_effort: None,
         temperature: None,
+        retain_provider_round: false,
     }
 }
 

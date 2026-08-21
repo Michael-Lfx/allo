@@ -362,6 +362,7 @@ impl GoalJudgeClient for ProviderJudgeClient {
             thinking: Some(ThinkingConfig::Disabled),
             reasoning_effort: None,
             temperature: Some(0.0),
+                retain_provider_round: false,
         };
 
         let collected = tokio::time::timeout(Duration::from_secs(JUDGE_TIMEOUT_SECS), async {

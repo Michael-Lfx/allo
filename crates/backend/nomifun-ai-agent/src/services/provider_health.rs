@@ -573,6 +573,10 @@ async fn build_probe_engine(config_extra: NomiResolvedConfig) -> Result<AgentEng
     if let Some(required) = config_extra.compat_overrides.require_reasoning_content {
         config.compat.require_reasoning_content = Some(required);
     }
+    // Health probes never consume a provider round id. Intentionally do not
+    // copy `chain_rounds`: Responses must send `store:false` for this one-shot
+    // diagnostic even when the selected Chat capability opted into chaining.
+    config.compat.extra_body = config_extra.compat_overrides.extra_body;
 
     let mut result = AgentBootstrap::new(config, workspace, sink)
         .install_embedded_agent_execution(config_extra.install_embedded_agent_execution)

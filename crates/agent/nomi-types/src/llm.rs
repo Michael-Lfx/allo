@@ -21,6 +21,11 @@ pub struct LlmRequest {
     /// explicitly configured advisory slots) omits the field from the provider
     /// request body, leaving the provider's own default in effect.
     pub temperature: Option<f32>,
+    /// Whether this request belongs to a durable agent round that may retain
+    /// provider-side state and consume the resulting round cursor. Providers
+    /// must still require their own explicit compatibility opt-in; this bit is
+    /// the per-request lifecycle half of that two-key decision.
+    pub retain_provider_round: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +78,10 @@ pub enum LlmEvent {
     ThinkingDelta(String),
     /// Opaque provider signature for the current thinking block.
     ThinkingSignature(String),
+    /// Opaque identity for this provider round. Emitted immediately before
+    /// `Done`, and only when the provider has proved that the completed round
+    /// is a legal parent for a later request.
+    ProviderRoundId(String),
     /// Response complete
     Done {
         stop_reason: StopReason,

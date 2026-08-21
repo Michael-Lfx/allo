@@ -402,7 +402,28 @@ mod tests {
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+            retain_provider_round: false,
         }
+    }
+
+    #[test]
+    fn vertex_rejects_an_omitted_output_ceiling_before_authentication() {
+        let provider = test_provider();
+        let request = LlmRequest {
+            model: "claude-test".into(),
+            system: "test".into(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: None,
+            thinking: None,
+            reasoning_effort: None,
+            temperature: None,
+            retain_provider_round: false,
+        };
+
+        let error = provider.build_request_body(&request).unwrap_err();
+        assert!(matches!(error, ProviderError::Config(message) if
+            message.contains("--max-tokens") && message.contains("desktop")));
     }
 
     fn test_provider() -> VertexProvider {

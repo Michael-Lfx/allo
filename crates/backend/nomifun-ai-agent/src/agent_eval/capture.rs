@@ -114,6 +114,7 @@ impl OutputSink for EvalCaptureSink {
         ToolMediaDelivery::Unmanaged
     }
     fn emit_stream_start(&self, _msg_id: &str) {}
+    fn emit_output_discarded(&self, _msg_id: &str, _restart_attempt: u32) {}
     fn emit_stream_end(
         &self,
         _msg_id: &str,
