@@ -1,24 +1,7 @@
 
-
 import type { ITheme } from '@xterm/xterm';
 
-/**
- * Constant-dark terminal theme. The terminal canvas is always dark — matching
- * VS Code / iTerm / Warp — regardless of the app's light/dark mode; the
- * surrounding card (header/border/background) follows the app theme via semantic
- * tokens (see `--terminal-surface-bg` / `--terminal-border`). Keeping the canvas
- * dark avoids the light-mode "dark box in a near-white page" clash and gives
- * TUIs (claude, vim) a stable, legible palette.
- *
- * Palette: One Dark–class, tuned for contrast on #1b1d23.
- */
-export const TERMINAL_THEME: ITheme = {
-  background: '#1b1d23',
-  foreground: '#d7dae0',
-  cursor: '#d7dae0',
-  cursorAccent: '#1b1d23',
-  selectionBackground: 'rgba(122,131,178,0.40)',
-  selectionForeground: '#ffffff',
+const DARK_ANSI: ITheme = {
   black: '#3f4451',
   red: '#e06c75',
   green: '#98c379',
@@ -36,6 +19,55 @@ export const TERMINAL_THEME: ITheme = {
   brightCyan: '#66c6d2',
   brightWhite: '#ffffff',
 };
+
+const LIGHT_ANSI: ITheme = {
+  black: '#1d2129',
+  red: '#c42b31',
+  green: '#0d7a3e',
+  yellow: '#9a6700',
+  blue: '#165dff',
+  magenta: '#7d4ead',
+  cyan: '#087990',
+  white: '#454d5f',
+  brightBlack: '#86909c',
+  brightRed: '#f53f3f',
+  brightGreen: '#00b42a',
+  brightYellow: '#ff7d00',
+  brightBlue: '#4080ff',
+  brightMagenta: '#c678dd',
+  brightCyan: '#0fc6c2',
+  brightWhite: '#1d2129',
+};
+
+function readCssColor(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+export function isDarkTerminalTheme(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.documentElement.getAttribute('data-theme') === 'dark';
+}
+
+/**
+ * xterm canvas theme that follows the app light/dark (and color-scheme) tokens.
+ * Background matches `--terminal-surface-bg` → `--bg-1`.
+ */
+export function resolveTerminalTheme(): ITheme {
+  const dark = isDarkTerminalTheme();
+  const background = readCssColor('--terminal-surface-bg', readCssColor('--bg-1', dark ? '#1a1a1a' : '#f9fafb'));
+  const foreground = readCssColor('--text-primary', dark ? '#ffffff' : '#000000');
+  return {
+    ...(dark ? DARK_ANSI : LIGHT_ANSI),
+    background,
+    foreground,
+    cursor: foreground,
+    cursorAccent: background,
+    selectionBackground: dark ? 'rgba(122,131,178,0.40)' : 'rgba(22,93,255,0.28)',
+    selectionForeground: dark ? '#ffffff' : '#000000',
+  };
+}
 
 /** Typography options applied to the xterm Terminal constructor. */
 export const TERMINAL_TYPOGRAPHY = {

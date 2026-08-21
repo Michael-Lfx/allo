@@ -38,3 +38,88 @@
     transform: translateY(0);
   }
 }
+
+/* Tab strip padding must live in CSS: Uno `pr-10px` is hijacked by the `10`
+   background token and does not emit padding-right. */
+.preview-tabs {
+  position: relative;
+  flex-shrink: 0;
+  height: 32px;
+  min-height: 32px;
+  overflow: hidden;
+  box-sizing: border-box;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border-base);
+}
+
+.preview-tabs__row {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0 8px 0 4px;
+  gap: 4px;
+}
+
+.preview-tabs__scroller-wrap {
+  position: relative;
+  /* Shrink-wrap to chips so + sits after the last tab; cap width so overflow
+     scrolls instead of pushing + off-screen. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - 48px);
+  height: 100%;
+}
+
+.preview-tabs__scroller {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: max-content;
+  max-width: 100%;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Hide the scrollbar chrome; wheel / trackpad still pan horizontally. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.preview-tabs__scroller::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.preview-tabs__add {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: 100%;
+}
+
+.preview-tabs__collapse {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: 100%;
+  margin-left: auto;
+}
+
+.preview-tabs__collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  background: var(--bg-2);
+}
+
+.preview-tabs__collapse-btn:hover {
+  background: var(--bg-3);
+}

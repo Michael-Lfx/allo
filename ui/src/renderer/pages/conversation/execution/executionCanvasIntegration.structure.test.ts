@@ -22,7 +22,8 @@ describe('conversation execution canvas integration', () => {
 
     expect(chatSource.includes('<ExecutionProvider')).toBe(true);
     expect(chatSource.includes('<ExecutionConversationLayout')).toBe(true);
-    expect(layoutSource.includes('<ExecutionTopPanel')).toBe(true);
+    expect(layoutSource.includes('<ExecutionTopPanel embedded')).toBe(true);
+    expect(layoutSource.includes('AGENT_EXECUTION_WORKSPACE_TAB')).toBe(true);
     expect(layoutSource.includes("className='flex-1 min-w-0 min-h-0 flex flex-col'")).toBe(true);
 
     expect(panelSource.includes("data-testid='execution-canvas-progress'")).toBe(true);
@@ -82,9 +83,12 @@ describe('conversation execution canvas integration', () => {
   test('keeps the collaboration panel recoverable and usable on compact layouts', () => {
     const layoutSource = readSource(new URL('./ExecutionConversationLayout.tsx', import.meta.url));
     const panelCss = readSource(new URL('./executionTopPanel.module.css', import.meta.url));
+    const panelSource = readSource(new URL('./ExecutionTopPanel.tsx', import.meta.url));
 
-    expect(layoutSource.includes('execution.toggleCanvas')).toBe(true);
+    expect(layoutSource.includes('dispatchWorkspaceOpenPreviewTool(AGENT_EXECUTION_WORKSPACE_TAB')).toBe(true);
     expect(layoutSource.includes("'agentExecution.panel.open'")).toBe(true);
+    expect(panelSource.includes('embedded')).toBe(true);
+    expect(panelCss.includes('.panelEmbedded')).toBe(true);
     expect(panelCss.includes('@media (max-width: 768px)')).toBe(true);
     expect(panelCss.includes('width: 100% !important')).toBe(true);
   });
