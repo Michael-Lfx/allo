@@ -14,9 +14,10 @@ import { parseSessionRoute } from '@/renderer/utils/routes/sessionRoute';
 import { scrollSidebarItemIntoView } from '@/renderer/utils/ui/scrollIntoView';
 import { cleanupSiderTooltips } from '@/renderer/utils/ui/siderTooltip';
 import { Input, Message, Modal } from '@arco-design/web-react';
-import { FolderOpen, Plus, Right } from '@icon-park/react';
+import { FolderOpen } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -30,6 +31,7 @@ import { capabilityKey, useSessionCapabilities } from './hooks/useSessionCapabil
 import { useWorkpathBranches } from './hooks/useWorkpathBranches';
 import type { ConversationRowProps } from './types';
 import WorkpathDrawer from './WorkpathDrawer';
+import WorkspaceSectionActions from './WorkspaceSectionActions';
 import { useWorkpathUiState } from './hooks/useWorkpathUiState';
 import { toggleBatchSelectionScope, type BatchSelectableScope, type BatchSelectionState } from './utils/batchSelectionScopes';
 import { DEFAULT_WORKPATH_KEY } from './utils/workpathKey';
@@ -54,6 +56,8 @@ export type WorkpathSessionListProps = {
   onBatchModeChange?: (value: boolean) => void;
   /** Primary sider mode: the outer sider owns the visible workspace heading. */
   embeddedInPrimarySider?: boolean;
+  /** DOM target for the primary sider's fixed workspace heading actions. */
+  workspaceActionsTarget?: HTMLElement | null;
 };
 
 /**
@@ -69,6 +73,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   displayPreferences = DEFAULT_SIDEBAR_DISPLAY_PREFERENCES,
   onBatchModeChange,
   embeddedInPrimarySider = false,
+  workspaceActionsTarget = null,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -372,6 +377,19 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
       handleOpenDropdown();
     }
   }, [dropdownOpen, handleOpenDropdown, handleCloseDropdown]);
+
+  const workspaceActions = (
+    <WorkspaceSectionActions
+      expanded={expanded}
+      dropdownOpen={dropdownOpen}
+      onToggleExpanded={() => setExpanded((value) => !value)}
+      onToggleDropdown={toggleDropdownOpen}
+      dropdownTriggerRef={dropdownTriggerRef}
+      expandLabel={t('sessionList.expandWorkspaces')}
+      collapseLabel={t('sessionList.collapseWorkspaces')}
+      addLabel={t('sessionList.addWorkspace')}
+    />
+  );
 
   /* ---------------------------------- row render ---------------------------------- */
 
@@ -722,6 +740,9 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   return (
     <>
       {modals}
+      {embeddedInPrimarySider && workspaceActionsTarget
+        ? createPortal(workspaceActions, workspaceActionsTarget)
+        : null}
       <div className={classNames('min-w-0', embeddedInPrimarySider ? 'flowy-embedded-workpath-list' : 'mt-10px')}>
         {/* 桌面伙伴专属工作空间分组（roster-driven，置于项目/工作路径之上）。仅交互式、
             不在此新建；可折叠（状态持久化于 useWorkpathUiState，默认展开）；
@@ -742,79 +763,17 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
           renderRow={renderSshRow}
         />
 
-        <div
-          data-testid='workpath-section-toolbar'
-          className={classNames(
-            'flex items-center justify-between',
-            embeddedInPrimarySider
-              ? 'flowy-embedded-workpath-toolbar'
-              : 'pl-10px pr-4px pb-6px'
-          )}
-        >
-          {/* Left text — click to fold/unfold the workpath list */}
-          <button
-            type='button'
-            aria-expanded={expanded}
-            aria-controls='flowy-workpath-tree'
-            aria-label={embeddedInPrimarySider ? t(expanded ? 'common.collapse' : 'common.expandMore') : undefined}
-            onClick={() => setExpanded((value) => !value)}
-            className={classNames(
-              'group flex items-center gap-2px min-w-0 select-none cursor-pointer b-none bg-transparent p-0 text-left text-t-secondary opacity-75 transition-opacity hover:text-t-primary hover:opacity-100 relative',
-              embeddedInPrimarySider && 'flowy-embedded-workpath-toggle'
-            )}
+        {!embeddedInPrimarySider && (
+          <div
+            data-testid='workpath-section-toolbar'
+            className='flowy-workpath-section-toolbar flex items-center justify-between pl-10px pr-4px pb-6px'
           >
-            {!embeddedInPrimarySider && (
-              <span className='sider-section-title text-13px font-[500] leading-none tracking-wide truncate min-w-0'>
-                {t('sessionList.workspaces')}
-              </span>
-            )}
-            {/* Arrow icon - shown on hover of the title button, rotates based on expanded state */}
-            {(embeddedInPrimarySider || !collapsed || dropdownOpen) && (
-              <div
-                className={classNames(
-                  'ml-1 shrink-0 transition-all duration-200 collapsed-hidden',
-                  embeddedInPrimarySider ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
-                  expanded && 'rotate-90'
-                )}
-                style={{
-                  transformOrigin: 'center center',
-                }}
-              >
-                <Right
-                  theme='outline'
-                  size='12'
-                  fill='currentColor'
-                  className='block leading-none'
-                />
-              </div>
-            )}
-          </button>
-          {/* Right plus button */}
-          <button
-            ref={dropdownTriggerRef}
-            type='button'
-            onClick={toggleDropdownOpen}
-            aria-label={t('common.add') || '添加'}
-            style={{
-              border: 'none',
-              outline: 'none',
-              background: 'transparent',
-              padding: 0,
-              margin: 0,
-            }}
-            className={`flowy-embedded-workpath-add h-22px px-8px flex items-center gap-4px select-none cursor-pointer rd-6px text-t-secondary hover:text-t-primary transition-all group ${
-              dropdownOpen
-                ? 'bg-fill-2'
-                : 'hover:bg-fill-2'
-            }`}>
-            <Plus
-              theme='outline'
-              size='13'
-              fill='currentColor'
-              className={`transition-transform duration-200 ${dropdownOpen ? 'rotate-45' : ''}`}
-            />
-          </button>
-        </div>
+            <span className='sider-section-title text-13px font-[500] leading-none tracking-wide truncate min-w-0'>
+              {t('sessionList.workspaces')}
+            </span>
+            {workspaceActions}
+          </div>
+        )}
 
         <div id='flowy-workpath-tree' aria-hidden={!expanded}>
           {expanded && tree.map((node) => (

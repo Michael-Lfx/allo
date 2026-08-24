@@ -10,7 +10,7 @@ describe('sidebar workspace dropdown layer', () => {
 
     expect(sessionList.includes('<WorkspacePickerPopover')).toBe(true);
     expect(sessionList.includes("t('common.filePicker.chooseDifferentFolder')")).toBe(true);
-    expect(sessionList.includes('createPortal(')).toBe(false);
+    expect(sessionList.includes('createPortal(workspaceActions, workspaceActionsTarget)')).toBe(true);
     expect(picker.includes('createPortal(')).toBe(true);
     expect(picker.includes('document.body')).toBe(true);
     expect(picker.includes("data-workspace-picker-popover='true'")).toBe(true);

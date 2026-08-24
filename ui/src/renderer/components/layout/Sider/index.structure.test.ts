@@ -17,9 +17,13 @@ describe('Primary sider structure', () => {
     expect(source.includes("aria-labelledby='flowy-workspaces-heading'")).toBe(true);
     expect(source.includes("id='flowy-workspaces-heading'")).toBe(true);
     expect(source.includes('embeddedInPrimarySider')).toBe(true);
+    expect(source.includes("data-testid='sider-workspace-actions-target'")).toBe(true);
+    expect(source.includes('workspaceActionsTarget={workspaceActionsTarget}')).toBe(true);
     const workspaceHeadingStart = source.indexOf("id='flowy-workspaces-heading'");
+    const workspaceActionsStart = source.indexOf("data-testid='sider-workspace-actions-target'");
     const scrollAreaStart = source.indexOf("data-testid='sider-workspaces-scroll-area'");
     expect(workspaceHeadingStart).toBeLessThan(scrollAreaStart);
+    expect(workspaceActionsStart).toBeLessThan(scrollAreaStart);
   });
 
   test('exposes a stable control target for the sidebar toggle', () => {

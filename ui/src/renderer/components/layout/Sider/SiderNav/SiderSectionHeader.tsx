@@ -14,6 +14,8 @@ interface SiderSectionHeaderProps {
   compact?: boolean;
   /** Additional layout or theme classes for a specific sidebar surface. */
   className?: string;
+  /** Optional controls rendered on the right side of the section heading. */
+  actions?: React.ReactNode;
   /**
    * Whether to draw the hairline rule in collapsed mode. Defaults to true.
    * Set false where an enclosing `border-t` already separates the region
@@ -37,6 +39,7 @@ const SiderSectionHeader: React.FC<SiderSectionHeaderProps> = ({
   collapsed,
   compact = false,
   className,
+  actions,
   collapsedRule = true,
 }) => {
   if (collapsed) {
@@ -51,12 +54,13 @@ const SiderSectionHeader: React.FC<SiderSectionHeaderProps> = ({
       aria-level={id ? 2 : undefined}
       className={classNames(
         compact
-          ? 'shrink-0 h-32px pl-7px pr-12px flex items-center text-12px font-[500] leading-none text-t-tertiary select-none'
+          ? 'shrink-0 h-32px pl-7px pr-12px flex items-center gap-8px text-12px font-[500] leading-none text-t-tertiary select-none'
           : 'shrink-0 mt-8px mb-2px px-12px h-22px flex items-center text-12px font-[500] leading-none text-t-tertiary select-none',
         className
       )}
     >
-      {label}
+      <span className='min-w-0 truncate'>{label}</span>
+      {actions && <span className='ml-auto shrink-0'>{actions}</span>}
     </div>
   );
 };

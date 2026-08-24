@@ -59,6 +59,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
   const { logout: cloudLogout, status: cloudStatus, whoami } = useCloudAuth();
   const [batchMode, setBatchMode] = useState(false);
+  const [workspaceActionsTarget, setWorkspaceActionsTarget] = useState<HTMLElement | null>(null);
   const siderRef = useRef<HTMLDivElement>(null);
   const { preferences: displayPreferences } = useSidebarDisplayPreferences();
   const isSettings = pathname.startsWith('/settings');
@@ -300,6 +301,12 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 collapsed={false}
                 compact
                 className={styles.workspaceSectionHeader}
+                actions={
+                  <span
+                    ref={setWorkspaceActionsTarget}
+                    data-testid='sider-workspace-actions-target'
+                  />
+                }
               />
               <div
                 data-testid='sider-workspaces-scroll-area'
@@ -311,6 +318,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                   batchMode={batchMode}
                   displayPreferences={displayPreferences}
                   onBatchModeChange={setBatchMode}
+                  workspaceActionsTarget={workspaceActionsTarget}
                   embeddedInPrimarySider
                 />
               </div>
