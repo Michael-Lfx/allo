@@ -26,7 +26,8 @@ import type { FileOrFolderItem } from '@/renderer/utils/file/fileTypes';
 import { filterWorkspaceMentionItems } from '@/renderer/utils/file/workspaceMentions';
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import { blurActiveElement, shouldBlockMobileInputFocus } from '@/renderer/utils/ui/focus';
-import { Button, Input, Message, Tag } from '@arco-design/web-react';
+import { Button, Input, Tag } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { Aiming, CloseSmall, Paperclip, Plus, Quote } from '@icon-park/react';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
@@ -2103,6 +2104,7 @@ const SendBox: React.FC<{
 
   return (
     <ComposerSurface
+      registerNotificationBlocker
       outerRef={dropzoneRef}
       panelRef={containerRef}
       dragHandlers={dragHandlers}

@@ -2,7 +2,8 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, InputNumber, Message, Modal, Spin, Switch } from '@arco-design/web-react';
+import { Button, InputNumber, Modal, Spin, Switch } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import type { IInsightsContributionStatus } from '@/common/adapter/ipcBridge';
 import {

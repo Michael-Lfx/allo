@@ -492,16 +492,14 @@ body[arco-theme='dark'] .arco-switch-checked .arco-switch-text {
   border-radius: var(--flowy-radius-sm, 6px) !important;
 }
 
-.arco-message-wrapper .arco-message,
-.arco-notification-notice {
-  background-color: var(--flowy-surface-1, var(--color-bg-popup)) !important;
-  border: var(--flowy-border-hairline, 1px) solid var(--flowy-border, var(--color-border-2)) !important;
+/* Notifications render through the flowy stack (no Arco message left in the
+   renderer), so the preset contract targets the flowy card directly. The card
+   owns its opaque surface, semantic tint and semantic border color; this
+   contract only supplies the shared hairline and radius. */
+.flowy-notification-card {
+  border-width: var(--flowy-border-hairline, 1px) !important;
+  border-style: solid !important;
   border-radius: var(--flowy-radius-md, 8px) !important;
-}
-
-.arco-message-error,
-.arco-notification-notice-error {
-  border-color: color-mix(in srgb, var(--flowy-danger, #b91c1c) 45%, transparent) !important;
 }
 
 .arco-skeleton-content .arco-skeleton-text-row,

@@ -112,7 +112,8 @@ describe('MessageText process action chrome', () => {
   });
 
   test('offers only same-key confirmation continuation while confirming an edit', () => {
-    expect(source.includes("import { Alert, Button, Message, Tooltip } from '@arco-design/web-react';")).toBe(true);
+    expect(source.includes("import { Alert, Button, Tooltip } from '@arco-design/web-react';")).toBe(true);
+    expect(source.includes("import { AppMessage as Message } from '@/renderer/components/notifications';")).toBe(true);
     expect(source.includes("editingState?.phase === 'confirming' && editingState.continueConfirmation")).toBe(true);
     expect(source.includes('editingState.continueConfirmation?.();')).toBe(true);
     expect(source.includes("t('conversation.editMessage.continueConfirmation')")).toBe(true);

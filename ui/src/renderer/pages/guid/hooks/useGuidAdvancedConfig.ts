@@ -4,7 +4,7 @@ import type { ConversationId } from '@/common/types/ids';
 import { ipcBridge } from '@/common';
 import type { IIdmmConfig, IKnowledgeBinding } from '@/common/adapter/ipcBridge';
 import type { TChatConversation } from '@/common/config/storage';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';

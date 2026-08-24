@@ -2,13 +2,13 @@ import {
   Button,
   Drawer,
   Input,
-  Message,
   Modal,
   Radio,
   Select,
   Tag,
   Typography,
 } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useEffect, useState } from 'react';
 import { IconPushpin } from '@arco-design/web-react/icon';
 import { useTranslation } from 'react-i18next';

@@ -2,7 +2,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Empty, Input, Message, Modal, Popconfirm, Spin, Tag } from '@arco-design/web-react';
+import { Button, Empty, Input, Modal, Popconfirm, Spin, Tag } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import type { ISecretListItem } from '@/common/adapter/ipcBridge';
 import type { useCompanion } from '../useNomi';

@@ -3,7 +3,8 @@
  * Resolution, validation and snapshot persistence are exclusively backend-owned.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { Button, Message } from '@arco-design/web-react';
+import { Button } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useTranslation } from 'react-i18next';
 import type { Preset, PresetReference, PresetTarget, ResolvedPresetSnapshot } from '@/common/types/agent/presetTypes';
 import NomiSelect from '@/renderer/components/base/NomiSelect';

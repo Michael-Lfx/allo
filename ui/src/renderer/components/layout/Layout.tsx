@@ -7,6 +7,7 @@ import type { ICssTheme } from '@/common/config/storage';
 import appLogo from '@renderer/assets/logo.svg';
 import PwaPullToRefresh from '@/renderer/components/layout/PwaPullToRefresh';
 import Titlebar from '@/renderer/components/layout/Titlebar';
+import NotificationHost from '@/renderer/components/notifications/NotificationHost';
 import { UPDATE_AVAILABLE_EVENT } from '@/renderer/components/layout/Titlebar/TitlebarUpdateButton';
 import { Layout as ArcoLayout } from '@arco-design/web-react';
 import classNames from 'classnames';
@@ -658,6 +659,7 @@ const Layout: React.FC<{
             </ArcoLayout.Content>
           </ArcoLayout>
         </div>
+        <NotificationHost />
         </WebuiServerProvider>
       </NavigationHistoryProvider>
     </LayoutContext.Provider>

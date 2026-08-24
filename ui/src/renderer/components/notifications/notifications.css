@@ -1,0 +1,383 @@
+.flowy-notification-host {
+  --flowy-notification-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --notification-brand: var(--primary, var(--flowy-accent, var(--color-primary-6)));
+  --notification-info: var(--info, var(--flowy-info, var(--color-primary-6)));
+  --notification-success: var(--success, var(--flowy-success, var(--color-success-6)));
+  --notification-warning: var(--warning, var(--flowy-warning, var(--color-warning-6)));
+  --notification-danger: var(--danger, var(--flowy-danger, var(--color-danger-6)));
+  --notification-base-surface: var(--flowy-surface-1, var(--color-bg-popup, var(--color-bg-2)));
+  position: fixed;
+  right: 24px;
+  bottom: calc(var(--flowy-notification-bottom-inset, 24px) + env(safe-area-inset-bottom, 0px));
+  z-index: 10001;
+  width: min(384px, calc(100vw - 48px));
+  isolation: isolate;
+  pointer-events: none;
+  color: var(--flowy-text-primary, var(--color-text-1));
+  font-family: var(--font-family, 'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Noto Sans SC', system-ui, sans-serif);
+}
+
+.flowy-notification-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.flowy-notification-stack__cards {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.flowy-notification-stack__cards--scrollable {
+  max-height: min(70dvh, calc(100dvh - var(--flowy-notification-bottom-inset, 24px) - 32px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 4px;
+  margin: -4px;
+}
+
+.flowy-notification-stack__counter,
+.flowy-notification-card {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--flowy-border-subtle, var(--color-border-2));
+  border-radius: var(--flowy-radius-panel, 12px);
+  background-color: var(--notification-base-surface);
+  background-image: none;
+  box-shadow: var(--flowy-shadow-raised, 0 8px 24px rgb(15 23 42 / 12%));
+}
+
+.flowy-notification-stack__counter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 12px;
+  color: var(--flowy-text-secondary, var(--color-text-2));
+  cursor: pointer;
+  pointer-events: auto;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  border-color: color-mix(
+    in srgb,
+    var(--notification-brand) 28%,
+    var(--flowy-border-subtle, var(--color-border-2))
+  );
+  background-color: var(--notification-base-surface);
+  background-color: color-mix(in srgb, var(--notification-base-surface) 92%, var(--notification-brand) 8%);
+  animation: flowy-notification-enter 180ms var(--flowy-notification-ease) both;
+  transition:
+    border-color 120ms var(--flowy-notification-ease),
+    background-color 120ms var(--flowy-notification-ease),
+    color 120ms var(--flowy-notification-ease),
+    transform 120ms var(--flowy-notification-ease);
+}
+
+.flowy-notification-stack__counter:hover {
+  border-color: color-mix(
+    in srgb,
+    var(--notification-brand) 44%,
+    var(--flowy-border-strong, var(--color-border-3))
+  );
+  background-color: var(--notification-base-surface);
+  background-color: color-mix(
+    in srgb,
+    var(--notification-base-surface) 88%,
+    var(--notification-brand) 12%
+  );
+  color: var(--flowy-text-primary, var(--color-text-1));
+}
+
+.flowy-notification-stack__counter:active {
+  transform: scale(0.985);
+}
+
+.flowy-notification-stack__counter:focus-visible,
+.flowy-notification__close:focus-visible {
+  outline: 2px solid var(--flowy-focus-ring, rgb(var(--primary-6), 0.5));
+  outline-offset: 2px;
+}
+
+.flowy-notification-stack__counter-text {
+  flex: 1;
+  text-align: left;
+}
+
+.flowy-notification-stack__counter-chevron {
+  display: inline-flex;
+  color: var(--flowy-text-tertiary, var(--color-text-3));
+  transition: transform 180ms var(--flowy-notification-ease);
+}
+
+.flowy-notification-stack[data-expanded='true'] .flowy-notification-stack__counter-chevron {
+  transform: rotate(180deg);
+}
+
+.flowy-notification-card {
+  --notification-accent: var(--flowy-border-subtle, var(--color-border-2));
+  --notification-border-strength: 32%;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 48px;
+  padding: 12px;
+  pointer-events: auto;
+  border-color: color-mix(
+    in srgb,
+    var(--notification-accent) var(--notification-border-strength),
+    var(--flowy-border-subtle, var(--color-border-2))
+  );
+  background-color: var(--notification-base-surface);
+  animation: flowy-notification-enter 180ms var(--flowy-notification-ease) both;
+  transition:
+    border-color 180ms var(--flowy-notification-ease),
+    background-color 180ms var(--flowy-notification-ease);
+}
+
+.flowy-notification-card--success {
+  --notification-accent: var(--notification-success);
+  background-color: color-mix(in srgb, var(--notification-base-surface) 96%, var(--notification-accent) 4%);
+}
+
+.flowy-notification-card--warning {
+  --notification-accent: var(--notification-warning);
+  background-color: color-mix(in srgb, var(--notification-base-surface) 96%, var(--notification-accent) 4%);
+}
+
+.flowy-notification-card--error {
+  --notification-accent: var(--notification-danger);
+  --notification-border-strength: 42%;
+  background-color: color-mix(in srgb, var(--notification-base-surface) 96%, var(--notification-accent) 4%);
+}
+
+.flowy-notification-card--loading {
+  --notification-accent: var(--notification-info);
+  background-color: color-mix(in srgb, var(--notification-base-surface) 96%, var(--notification-accent) 4%);
+}
+
+.flowy-notification-card--info {
+  --notification-accent: var(--notification-info);
+  background-color: color-mix(in srgb, var(--notification-base-surface) 96%, var(--notification-accent) 4%);
+}
+
+.flowy-notification-card--passthrough {
+  pointer-events: none;
+}
+
+.flowy-notification-card--exiting {
+  animation: flowy-notification-exit 120ms var(--flowy-notification-ease) both;
+  pointer-events: none;
+}
+
+.flowy-notification-card--collapsing {
+  animation: flowy-notification-collapse 120ms var(--flowy-notification-ease) both;
+  pointer-events: none;
+}
+
+@media (hover: hover) {
+  .flowy-notification-card:hover {
+    --notification-border-strength: 44%;
+  }
+
+  .flowy-notification-card--error:hover {
+    --notification-border-strength: 50%;
+  }
+
+  /* Rest-state calm: transient cards reveal their close button only when the
+     user hovers or tabs into the card. Persistent cards keep it visible. */
+  .flowy-notification-card:not(.flowy-notification-card--persistent) .flowy-notification__close {
+    opacity: 0;
+  }
+
+  .flowy-notification-card:not(.flowy-notification-card--persistent):hover .flowy-notification__close,
+  .flowy-notification-card:not(.flowy-notification-card--persistent):focus-within .flowy-notification__close {
+    opacity: 0.72;
+  }
+}
+
+.flowy-notification__icon {
+  display: inline-flex;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  color: var(--notification-info);
+  /* Revision-keyed remount replays this fade when a notification updates in
+     place (loading → success), keeping action and result visually connected. */
+  animation: flowy-notification-icon-in 120ms var(--flowy-notification-ease) both;
+  transition: color 120ms var(--flowy-notification-ease);
+}
+
+.flowy-notification-card--success .flowy-notification__icon {
+  color: var(--notification-success);
+}
+
+.flowy-notification-card--warning .flowy-notification__icon {
+  color: var(--notification-warning);
+}
+
+.flowy-notification-card--error .flowy-notification__icon {
+  color: var(--notification-danger);
+}
+
+.flowy-notification__loading-icon {
+  animation: flowy-notification-spin 900ms linear infinite;
+}
+
+.flowy-notification__body {
+  min-width: 0;
+  flex: 1;
+  font-size: 14px;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+}
+
+.flowy-notification__title {
+  margin-bottom: 2px;
+  color: var(--flowy-text-primary, var(--color-text-1));
+  font-weight: 600;
+}
+
+.flowy-notification__content {
+  color: var(--flowy-text-primary, var(--color-text-1));
+  white-space: pre-wrap;
+}
+
+.flowy-notification__action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.flowy-notification__close {
+  display: inline-flex;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: -4px -4px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--flowy-text-tertiary, var(--color-text-3));
+  cursor: pointer;
+  opacity: 0.72;
+  transition: opacity 120ms var(--flowy-notification-ease);
+}
+
+.flowy-notification__close:hover {
+  background: var(--flowy-surface-interactive, var(--color-fill-1));
+  color: var(--flowy-text-primary, var(--color-text-1));
+  opacity: 1;
+}
+
+.flowy-notification-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes flowy-notification-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes flowy-notification-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes flowy-notification-collapse {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes flowy-notification-icon-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes flowy-notification-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 720px) {
+  .flowy-notification-host {
+    right: 16px;
+    width: min(384px, calc(100vw - 32px));
+  }
+}
+
+[data-theme='dark'] .flowy-notification-card--success,
+[data-theme='dark'] .flowy-notification-card--warning,
+[data-theme='dark'] .flowy-notification-card--error,
+[data-theme='dark'] .flowy-notification-card--loading,
+[data-theme='dark'] .flowy-notification-card--info,
+body[arco-theme='dark'] .flowy-notification-card--success,
+body[arco-theme='dark'] .flowy-notification-card--warning,
+body[arco-theme='dark'] .flowy-notification-card--error,
+body[arco-theme='dark'] .flowy-notification-card--loading,
+body[arco-theme='dark'] .flowy-notification-card--info {
+  background-color: color-mix(in srgb, var(--notification-base-surface) 92%, var(--notification-accent) 8%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flowy-notification-card,
+  .flowy-notification-card--exiting,
+  .flowy-notification-card--collapsing,
+  .flowy-notification__loading-icon,
+  .flowy-notification__icon,
+  .flowy-notification-stack__counter {
+    animation: none;
+  }
+
+  .flowy-notification-card,
+  .flowy-notification__icon,
+  .flowy-notification__close,
+  .flowy-notification-stack__counter,
+  .flowy-notification-stack__counter-chevron {
+    transition: none;
+  }
+}

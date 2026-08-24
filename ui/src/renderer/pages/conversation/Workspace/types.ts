@@ -3,10 +3,10 @@ import type { ConversationId } from '@/common/types/ids';
 
 import type { IDirOrFile } from '@/common/adapter/ipcBridge';
 import type { SessionTarget } from '@/common/types/ids';
-import type { Message } from '@arco-design/web-react';
+import type { AppMessageInstance } from '@/renderer/components/notifications';
 import type { ReactNode } from 'react';
 
-export type MessageApi = Required<ReturnType<typeof Message.useMessage>[0]>;
+export type MessageApi = AppMessageInstance;
 
 /**
  * Workspace 组件的 Props 定义

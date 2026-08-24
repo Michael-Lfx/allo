@@ -13,7 +13,6 @@ import { useExecutionSafe } from './ExecutionContext';
 import { refreshOnVersionConflict } from './refreshOnVersionConflict';
 
 // Toasts stay click-through so they never block the banner action.
-const TOAST_CLASS = 'nomifun-message-passthrough';
 const TOAST_OK_MS = 1500;
 const TOAST_ERR_MS = 2500;
 
@@ -43,7 +42,7 @@ const PlanApprovalBanner: React.FC = () => {
           defaultValue: '已批准，开始协作',
         }),
         duration: TOAST_OK_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
       await execution?.refetch();
     } catch (e) {
@@ -54,7 +53,7 @@ const PlanApprovalBanner: React.FC = () => {
           error: String(e),
         }),
         duration: TOAST_ERR_MS,
-        className: TOAST_CLASS,
+        passthrough: true,
       });
     } finally {
       setApproving(false);

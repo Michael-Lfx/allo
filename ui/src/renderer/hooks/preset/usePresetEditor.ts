@@ -1,5 +1,5 @@
 import { ipcBridge } from '@/common';
-import type { Message } from '@arco-design/web-react';
+import type { AppMessageInstance } from '@/renderer/components/notifications';
 import type {
   CreatePresetRequest,
   ModelPreference,
@@ -42,7 +42,7 @@ type UsePresetEditorParams = {
   setActivePresetId: (id: PresetReference | null) => void;
   loadPresets: () => Promise<void>;
   refreshAgentDetection: () => Promise<void>;
-  message: Required<ReturnType<typeof Message.useMessage>[0]>;
+  message: AppMessageInstance;
 };
 
 const isBuiltinPreset = (preset: Preset | null | undefined): boolean => preset?.source === 'builtin';

@@ -7,7 +7,7 @@
 import type { IChannelPairingRequest, IChannelUser } from '@/common/types/channel/channel';
 import type { ChannelUserId } from '@/common/types/ids';
 import { channel } from '@/common/adapter/ipcBridge';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ChannelPlatform, ChannelTarget } from './channelTarget';

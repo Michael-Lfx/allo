@@ -6,7 +6,8 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Message } from '@arco-design/web-react';
+import { Button, Input } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { webui, type IApiRobotEndpoints } from '@/common/adapter/ipcBridge';

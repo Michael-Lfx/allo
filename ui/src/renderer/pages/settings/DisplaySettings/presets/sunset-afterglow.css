@@ -451,25 +451,7 @@ body {
     0 0 40px rgba(255, 106, 77, 0.06);
 }
 
-/* 点缀 6：Toast 消息条 —— 实底 + 暖金细边 + 暖调投影 */
-.arco-message {
-  background: #fff8f0;
-  border: 1px solid rgba(214, 120, 40, 0.16);
-  border-radius: 12px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 12px 34px rgba(96, 48, 16, 0.16);
-}
-
-[data-theme='dark'] .arco-message {
-  background: #241809;
-  border: 1px solid rgba(245, 178, 64, 0.16);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.07),
-    0 12px 34px rgba(8, 5, 2, 0.5);
-}
-
-/* 点缀 7：会话搜索弹窗取色（落日暖金系，沿用各容器的可读性红线） */
+/* 点缀 6：会话搜索弹窗取色（落日暖金系，沿用各容器的可读性红线） */
 .conversation-search-modal {
   --conversation-search-mask-bg: rgba(42, 18, 8, 0.2);
   --conversation-search-panel-bg: rgba(255, 248, 240, 0.97);

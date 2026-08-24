@@ -1,4 +1,5 @@
-import React, { type CSSProperties, type HTMLAttributes } from 'react';
+import React, { type CSSProperties, type HTMLAttributes, useMemo } from 'react';
+import { mergeRefs, useNotificationBlocker } from '@/renderer/components/notifications';
 import './composerSurface.css';
 
 export type ComposerSurfaceProps = {
@@ -8,6 +9,8 @@ export type ComposerSurfaceProps = {
   dragHandlersTarget?: 'outer' | 'panel';
   isOverlayOpen?: boolean;
   overflowTarget?: 'outer' | 'panel';
+  /** Register this surface only when it is a bottom-anchored obstruction. */
+  registerNotificationBlocker?: boolean;
   className?: string;
   panelClassName?: string;
   style?: CSSProperties;
@@ -26,6 +29,7 @@ const ComposerSurface: React.FC<ComposerSurfaceProps> = ({
   dragHandlersTarget = 'outer',
   isOverlayOpen = false,
   overflowTarget = 'outer',
+  registerNotificationBlocker = false,
   className,
   panelClassName,
   style,
@@ -35,6 +39,8 @@ const ComposerSurface: React.FC<ComposerSurfaceProps> = ({
   afterPanel,
   children,
 }) => {
+  const notificationBlockerRef = useNotificationBlocker(registerNotificationBlocker);
+  const composedOuterRef = useMemo(() => mergeRefs(notificationBlockerRef, outerRef), [notificationBlockerRef, outerRef]);
   const outerDragHandlers = dragHandlersTarget === 'outer' ? dragHandlers : undefined;
   const panelDragHandlers = dragHandlersTarget === 'panel' ? dragHandlers : undefined;
   const outerOverflowClass = overflowTarget === 'outer' ? (isOverlayOpen ? 'overflow-visible' : 'overflow-hidden') : 'overflow-visible';
@@ -42,7 +48,7 @@ const ComposerSurface: React.FC<ComposerSurfaceProps> = ({
 
   return (
     <div
-      ref={outerRef}
+      ref={composedOuterRef}
       className={`composer-surface relative flex flex-col ${outerOverflowClass} ${className ?? ''}`}
       style={style}
       {...outerDragHandlers}

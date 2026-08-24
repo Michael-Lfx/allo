@@ -2,7 +2,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Empty, Message, Pagination, Radio, Spin, Tag } from '@arco-design/web-react';
+import { Button, Empty, Pagination, Radio, Spin, Tag } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import type { ICompanionSuggestion } from '@/common/adapter/ipcBridge';
 

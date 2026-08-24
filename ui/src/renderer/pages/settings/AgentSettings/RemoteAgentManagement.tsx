@@ -10,7 +10,6 @@ import {
   Button,
   Form,
   Input,
-  Message,
   Modal,
   Select,
   Spin,
@@ -18,6 +17,7 @@ import {
   Tag,
   Typography,
 } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import NomiModal from '@/renderer/components/base/NomiModal';
 import { Attention, Edit, Plus, ReduceOne, Robot, Speed } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';

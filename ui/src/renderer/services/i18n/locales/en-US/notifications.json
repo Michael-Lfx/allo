@@ -1,0 +1,13 @@
+{
+  "more": "{{count}} more notifications",
+  "collapse": "Collapse notifications",
+  "close": "Close notification",
+  "level": {
+    "normal": "Notice",
+    "info": "Info",
+    "success": "Success",
+    "warning": "Warning",
+    "error": "Error",
+    "loading": "Loading"
+  }
+}

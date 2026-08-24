@@ -6,7 +6,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Attention } from '@icon-park/react';
 import type { ProviderId } from '@/common/types/ids';
 import NomiSelect from '@/renderer/components/base/NomiSelect';

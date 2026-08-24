@@ -7,7 +7,8 @@
 import classNames from 'classnames';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message, Switch } from '@arco-design/web-react';
+import { Switch } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { CheckOne } from '@icon-park/react';
 import { NomiSettingList, NomiSettingRow, NomiSettingSection } from '@/renderer/components/base/NomiSettingLayout';
 import NumberSetting from './NumberSetting';

@@ -2,7 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Button, Input, Message, Radio, Select } from '@arco-design/web-react';
+import { Button, Input, Radio, Select } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useTranslation } from 'react-i18next';
 import { ipcBridge } from '@/common';
 import type { IIdmmConfig, IKnowledgeBase } from '@/common/adapter/ipcBridge';

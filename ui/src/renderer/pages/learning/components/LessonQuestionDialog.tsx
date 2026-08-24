@@ -2,13 +2,13 @@ import {
   Alert,
   Button,
   Input,
-  Message,
   Modal,
   Radio,
   Select,
   Tabs,
   Typography,
 } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';

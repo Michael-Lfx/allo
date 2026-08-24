@@ -3,7 +3,8 @@
 import type { IChannelPluginStatus } from '@/common/types/channel/channel';
 import { channel } from '@/common/adapter/ipcBridge';
 import { findEnabledChannelStatus, buildEnablePluginRequest } from '@/renderer/components/channels/channelStatusSelection';
-import { Button, Input, Message } from '@arco-design/web-react';
+import { Button, Input } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AuthorizedUserList, PendingPairingList } from './ChannelPairingLists';

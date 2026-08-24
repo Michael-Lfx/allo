@@ -4,7 +4,7 @@ import type { ImageCounter } from '@/renderer/services/PasteService';
 import { PasteService } from '@/renderer/services/PasteService';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { uuid } from '@renderer/utils/common';
 import type { ConversationId } from '@/common/types/ids';
 

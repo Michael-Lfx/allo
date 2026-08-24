@@ -16,7 +16,8 @@ import {
   reasoningEffortProgress,
   reasoningEffortSliderViewModel,
 } from '@/renderer/utils/model/reasoningEffort';
-import { Message, Popover, Slider } from '@arco-design/web-react';
+import { Popover, Slider } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Down, Lightning } from '@icon-park/react';
 import classNames from 'classnames';
 import React, {

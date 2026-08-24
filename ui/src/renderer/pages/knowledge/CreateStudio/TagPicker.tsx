@@ -10,7 +10,8 @@
  */
 import React, { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message, Spin } from '@arco-design/web-react';
+import { Spin } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { CheckOne } from '@icon-park/react';
 import type { IKnowledgeTag } from '@/common/adapter/ipcBridge';
 

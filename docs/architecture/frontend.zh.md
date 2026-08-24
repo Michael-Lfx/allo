@@ -114,6 +114,51 @@ export function getBaseUrl(): string {
 - **React Context** 承载不属于 SWR 的应用形态状态：认证（`AuthProvider`）、主题（`ThemeProvider`）、反馈 toast（`FeedbackProvider`）、文件预览（`PreviewProvider`），以及对话历史列表（`ConversationHistoryProvider`）。
 - **`configService`**（`ui/src/common/config/configService.ts`）缓存后端设置；[`main.tsx`](../../ui/src/renderer/main.tsx) 中的入口点会在 i18n / theme 代码加载前启动 `configService.initialize()`，因此这些子系统在首次渲染时读到的是权威设置。
 
+## 应用内通知
+
+渲染进程通知由独立模块
+[`ui/src/renderer/components/notifications`](../../ui/src/renderer/components/notifications/) 负责。
+[`NotificationHost`](../../ui/src/renderer/components/notifications/NotificationHost.tsx)
+只在 `Layout` 中挂载一次，并 Portal 到 `document.body`。模块级 store 会在 Host
+挂载前缓存早期通知；它不修改后端数据，也不接管原生系统通知、权限或权限请求。
+
+运行时 Arco `Message` / `Notification` 统一通过 `AppMessage`、
+`AppNotification` 门面调用。`useArcoMessage` 的每个实例拥有独立 scope 和
+`maxCount` 策略，静态调用使用共享 scope。新代码应使用稳定的
+`appNotifications.show()` 门面，它返回带有 `dismiss()` 和 `update()` 的 handle；
+Arco 形状的门面仅用于兼容迁移。同一 scope 内重复的活动 `id` 会原地更新。
+返回的 `handle.update()` 是部分更新：未传入的 `title`、`icon`、`action`、
+`onClose`、`announce` 等可选字段保持不变，明确传入的值才会替换原值。
+
+通知固定在右下角：桌面端距边 24px，窄屏距边 16px，并叠加安全区。收起态最多
+展示 3 张临时通知，最新通知位于底部；计数控制器显示因收起而隐藏的活动临时通知数量，文案为“还有 N 条通知”。
+`duration: 0` 的持久通知始终保留；持久通知超过临时通知上限时，卡片区域改为有界滚动。
+计数卡展开全部活动/退出中的通知，最新通知仍在底部；点击外部或在通知区域按 Escape
+会收起，若收起前焦点在通知区域，Escape 会将焦点恢复到计数按钮。
+
+通知在悬浮、获得焦点或展开期间暂停计时。只有会话页的 `SendBox` 和已打开的
+`MobileActionSheet` 注册真实 DOM 避让元素。居中的 `/guid` 首页
+`GuidInputCard` 不注册为底部遮挡物，通知会继续贴近视口右下角，不会被抬到首页输入卡顶部。
+共享的 `ComposerSurface` 默认不注册通知避让，只有底部固定的调用方可以显式开启。
+`ResizeObserver`、窗口/Visual Viewport 缩放、后代滚动和操作面板过渡状态会更新已注册
+避让元素的位置。只有关闭按钮、调用方提供的操作按钮和计数控制可交互。
+`passthrough` 通知保持点击穿透。独立的 polite/assertive live region 负责播报通知内容，
+普通通知进入按创建时间排序的队列；相同 revision 去重，待播报的更新只保留最新版本，
+轮到播报前已关闭的通知会被移除；错误通知进入 assertive 通道，优先打断当前正在展示的
+polite 播报，但 assertive 通知自身仍按创建时间排序；展开历史不会重复播报。
+入场、收起和堆叠位移只使用透明度/位移动画：空间 FLIP 位移为 240ms，入场 180ms、退出
+120ms，并支持 reduced-motion。通知主色来自当前主题的 `--primary`，成功、警告、错误和信息
+分别使用主题语义色，并通过低强度 tint 表达，不使用渐变或模糊。通知卡片和计数控制器统一以
+不透明的 `--flowy-surface-1` 作为混色底，带透明度的主题 popup token 不得作为通知覆盖面，避免
+页面内容穿透。
+
+通知模块行为和语言包的核心契约由以下测试覆盖：
+
+```text
+bun test --cwd ui src/renderer/components/notifications
+bun test --cwd ui src/renderer/services/i18n/notificationsLocales.test.ts
+```
+
 ## 主题
 
 Arco 的 `ConfigProvider` 在根处包裹应用，主色为 `primaryColor: '#4E5969'`，并按语言提供 locale（`enUS`、`zhCN`、`zhTW`、`jaJP`、`koKR` —— 韩语包用英语日历 / datepicker 字段做了补丁，因为 Arco 的 `koKR` 缺这些）。主题（`light`、`dark`、品牌变体）以纯 CSS 文件叠在 `ui/src/renderer/styles/themes/index.css` 中，通过 `ThemeProvider` 切换。

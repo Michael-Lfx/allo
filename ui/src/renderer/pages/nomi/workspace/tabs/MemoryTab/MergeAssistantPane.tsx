@@ -6,7 +6,8 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Checkbox, Input, Message, Spin } from '@arco-design/web-react';
+import { Checkbox, Input, Spin } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import NomiSelect from '@/renderer/components/base/NomiSelect';
 import type { ICompanionMemoryKind, ICompanionMemoryMergeGroup } from '@/common/adapter/ipcBridge';

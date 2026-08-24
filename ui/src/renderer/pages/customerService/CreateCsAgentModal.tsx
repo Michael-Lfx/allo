@@ -6,7 +6,8 @@
 
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Form, Input, InputNumber, Message, Modal, Select } from '@arco-design/web-react';
+import { Form, Input, InputNumber, Modal, Select } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useModelsForTask } from '@renderer/hooks/agent/useModelsForTask';
 import { useKnowledgeBaseOptions } from './useKnowledgeBaseOptions';
 import type { ICsAgent, ICsAgentPatch } from '@/common/adapter/ipcBridge';

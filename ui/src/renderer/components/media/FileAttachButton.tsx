@@ -1,7 +1,8 @@
 
 
 import type { IConversationMcpStatus, IConversationMcpStatusKind } from '@/common/config/storage';
-import { Button, Message, Trigger } from '@arco-design/web-react';
+import { Button, Trigger } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { FolderOpen, Paperclip, Plus, Right, Shield } from '@icon-park/react';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { isDesktopShell } from '@/renderer/utils/platform';

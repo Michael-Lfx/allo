@@ -3,7 +3,7 @@
  * 1. Delete pending skill confirmation
  * 2. Remove custom skill from preset confirmation
  */
-import type { Message } from '@arco-design/web-react';
+import type { AppMessageInstance } from '@/renderer/components/notifications';
 import type { PendingSkill } from './types';
 import {
   pendingSkillSelectionId,
@@ -28,7 +28,7 @@ type SkillConfirmModalsProps = {
   selectedSkills: string[];
   setSelectedSkills: (v: string[]) => void;
 
-  message: Required<ReturnType<typeof Message.useMessage>[0]>;
+  message: AppMessageInstance;
 };
 
 const SkillConfirmModals: React.FC<SkillConfirmModalsProps> = ({

@@ -7,7 +7,8 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Message, Modal, Spin } from '@arco-design/web-react';
+import { Modal, Spin } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { AddOne, Left, Pic } from '@icon-park/react';
 import classNames from 'classnames';
 import { ipcBridge } from '@/common';

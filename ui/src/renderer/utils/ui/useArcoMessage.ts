@@ -1,5 +1,9 @@
-import { useRef } from 'react';
-import { Message } from '@arco-design/web-react';
+import {
+  AppMessage,
+  type AppMessageInstance,
+  type AppMessageUseMessageConfig,
+  type AppMessageUseMessageReturn,
+} from '@/renderer/components/notifications';
 
 /**
  * arco-design (2.66.x) types the object returned by `Message.useMessage()` with
@@ -19,25 +23,10 @@ import { Message } from '@arco-design/web-react';
  * for the component lifetime so all of its messages share one stacked
  * container, while `[message]` dependencies remain safe.
  */
-type UseMessageReturn = ReturnType<typeof Message.useMessage>;
-
-export type ArcoMessageInstance = Required<UseMessageReturn[0]>;
+export type ArcoMessageInstance = AppMessageInstance;
 
 export function useArcoMessage(
-  config?: Parameters<typeof Message.useMessage>[0]
-): [ArcoMessageInstance, UseMessageReturn[1]] {
-  const [message, holder] = Message.useMessage(config);
-  // Keep the original API because it owns this hook instance's message registry.
-  const latest = useRef(message);
-  // Build the stable façade exactly once and keep returning the same reference.
-  const stable = useRef<ArcoMessageInstance | null>(null);
-  if (stable.current === null) {
-    stable.current = new Proxy({} as ArcoMessageInstance, {
-      get(_target, prop, receiver) {
-        const value = Reflect.get(latest.current as object, prop, receiver);
-        return typeof value === 'function' ? value.bind(latest.current) : value;
-      },
-    });
-  }
-  return [stable.current, holder];
+  config?: AppMessageUseMessageConfig,
+): AppMessageUseMessageReturn {
+  return AppMessage.useMessage(config);
 }

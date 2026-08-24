@@ -5,7 +5,7 @@
  */
 
 import { createElement, useCallback, useEffect, useState } from 'react';
-import { Message, Notification } from '@arco-design/web-react';
+import { AppMessage as Message, AppNotification as Notification } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type {

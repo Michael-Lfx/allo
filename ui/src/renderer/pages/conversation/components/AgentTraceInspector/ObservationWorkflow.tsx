@@ -7,7 +7,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Button, Message, Modal, Spin, Tooltip } from '@arco-design/web-react';
+import { Button, Modal, Spin, Tooltip } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Copy, Down, FullScreen, Up } from '@icon-park/react';
 import { copyText } from '@renderer/utils/ui/clipboard';
 import { formatClock, formatDurationMs, formatJson, turnPromptPreview, turnToolCount } from './format';

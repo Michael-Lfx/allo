@@ -2,7 +2,8 @@
 
 import type { IChannelPluginStatus } from '@/common/types/channel/channel';
 import { channel } from '@/common/adapter/ipcBridge';
-import { Button, Input, Message } from '@arco-design/web-react';
+import { Button, Input } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { buildEnablePluginRequest, findEnabledChannelStatus } from '@/renderer/components/channels/channelStatusSelection';

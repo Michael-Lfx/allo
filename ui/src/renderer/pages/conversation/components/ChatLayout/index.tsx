@@ -42,18 +42,13 @@ import type { ITerminalSession } from '@/common/adapter/ipcBridge';
 import { SHELL_SENTINEL } from '@/renderer/pages/terminal/launchPresets';
 import { inferPreviewTabKind } from '@/renderer/pages/conversation/Preview/previewTabKind';
 import classNames from 'classnames';
-import {
-  DEFAULT_WORKSPACE_PANEL_PX,
-  MAX_WORKSPACE_PANEL_PX,
-  MIN_WORKSPACE_PANEL_PX,
-  WORKSPACE_HEADER_HEIGHT,
-  calcLayoutMetrics,
-} from '@/renderer/pages/conversation/utils/layoutCalc';
+import { calcLayoutMetrics } from '@/renderer/pages/conversation/utils/layoutCalc';
 import {
   CHAT_HEADER_CLASSES,
   CHAT_HEADER_WITH_SUBTITLE_CLASSES,
 } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
-import { Layout as ArcoLayout, Message } from '@arco-design/web-react';
+import { Layout as ArcoLayout } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';

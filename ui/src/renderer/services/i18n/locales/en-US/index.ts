@@ -54,6 +54,7 @@ import ssh from './ssh.json';
 import beautifulUiPreview from './beautifulUiPreview.json';
 import colorLab from './colorLab.json';
 import capabilityHubPreview from './capabilityHubPreview.json';
+import notifications from './notifications.json';
 
 export default {
   common,
@@ -107,4 +108,5 @@ export default {
   beautifulUiPreview,
   colorLab,
   capabilityHubPreview,
+  notifications,
 };

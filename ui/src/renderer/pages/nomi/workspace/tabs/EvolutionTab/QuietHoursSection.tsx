@@ -6,7 +6,8 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Message, TimePicker } from '@arco-design/web-react';
+import { TimePicker } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { NomiSettingList, NomiSettingRow, NomiSettingSection } from '@/renderer/components/base/NomiSettingLayout';
 import type { ICompanionProfile } from '@/common/adapter/ipcBridge';
 import type { CompanionHandle } from '../../types';

@@ -3,7 +3,8 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
-import { Form, Input, Select, Message, TimePicker, Radio, Switch } from '@arco-design/web-react';
+import { Form, Input, Select, TimePicker, Radio, Switch } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Robot } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import NomiModal from '@renderer/components/base/NomiModal';

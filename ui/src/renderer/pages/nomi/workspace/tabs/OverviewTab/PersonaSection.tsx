@@ -6,7 +6,8 @@
 
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Message, Modal } from '@arco-design/web-react';
+import { Button, Input, Modal } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import type { ICompanionProfile, ICustomPersona } from '@/common/adapter/ipcBridge';
 import { NomiSettingList, NomiSettingRow, NomiSettingSection } from '@/renderer/components/base/NomiSettingLayout';

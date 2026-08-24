@@ -92,6 +92,71 @@ navigation does not introduce another product object.
 - Realtime events arrive through a singleton WebSocket and are demuxed by event
   name.
 
+## In-App Notifications
+
+Renderer notifications are owned by the standalone module at
+[`ui/src/renderer/components/notifications`](../../ui/src/renderer/components/notifications/).
+[`NotificationHost`](../../ui/src/renderer/components/notifications/NotificationHost.tsx)
+is mounted once by `Layout` and portals the stack to `document.body`. The module
+store keeps early notifications until the host is mounted; it does not touch
+backend data, native OS notifications, or notification permissions.
+
+Runtime Arco `Message` / `Notification` calls use the `AppMessage` and
+`AppNotification` facades. `useArcoMessage` keeps each hook instance in its own
+scope, including its `maxCount` policy, while static calls use the shared scope.
+New code should use the stable `appNotifications.show()` facade, which returns
+a handle with `dismiss()` and `update()`; the Arco-shaped facades remain for
+compatibility migration only.
+Within a scope, a repeated `id` updates the active record in place. A returned
+`handle.update()` is a patch: omitted optional fields such as `title`, `icon`,
+`action`, `onClose`, and `announce` are preserved, while explicitly supplied
+values replace them.
+
+The host is a fixed bottom-right stack: 24px from the desktop edges, 16px on
+narrow screens, plus the safe-area inset. Collapsed mode shows up to three
+transient notifications, with the newest at the bottom. The counter control
+shows `N more notifications` only for active transient records hidden by the
+collapsed limit; `duration: 0`
+records remain visible and switch the cards area to bounded scrolling when they
+exceed the transient limit. The counter expands the full active/exiting list,
+keeps the newest cards at the bottom, and collapses on outside click or Escape.
+Escape returns focus to the disclosure button when the notification region had
+focus.
+
+Timers pause while the stack is hovered, focused, or expanded. Only the
+conversation `SendBox` and an open `MobileActionSheet` register real blocker
+elements. The centered `/guid` `GuidInputCard` intentionally does not register as
+a bottom obstruction, so home notifications remain anchored to the viewport
+bottom instead of being lifted to the top of the centered composer. The shared
+`ComposerSurface` defaults to no notification registration; callers must opt in
+only for bottom-anchored surfaces. `ResizeObserver`, window/visual-viewport
+resize, descendant scroll, and sheet transition updates keep registered blocker
+positions current. Cards do not handle clicks themselves;
+close buttons, supplied actions, and the disclosure control are the only
+interactive surfaces. `passthrough` cards remain pointer-transparent. Separate
+polite and assertive live regions announce notification content without
+re-announcing expansion history. Polite announcements use a creation-ordered
+queue; pending updates replace older revisions and notices closed before their
+turn are removed. Assertive errors take priority over a currently displayed
+polite announcement, while assertive announcements retain their own creation
+order. Enter/exit motion uses opacity/transform; stack FLIP movement follows
+the 240ms spatial-transition token, with 180ms entry, a short collapse fade,
+120ms exit, and reduced-motion overrides. Notification surfaces resolve their
+brand color from the active theme's `--primary` token and semantic states from
+`--success`, `--warning`, `--danger`, and `--info`, with restrained tinting
+instead of gradients or blur. Cards and the disclosure counter always mix
+against the opaque `--flowy-surface-1` base; alpha-bearing theme popup tokens
+must not be used as the notification cover surface, so page content cannot
+bleed through.
+
+The behavior contract is covered by the focused suite under the notification
+module and the locale bundle test:
+
+```text
+bun test --cwd ui src/renderer/components/notifications
+bun test --cwd ui src/renderer/services/i18n/notificationsLocales.test.ts
+```
+
 ## Desktop Conversation Streaming Presentation
 
 The desktop conversation surface separates an active assistant reply into a

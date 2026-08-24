@@ -12,7 +12,8 @@ import {
   toAppliedCollaborationTemplate,
   type AppliedCollaborationTemplate,
 } from '@/renderer/components/collaboration/collaborationTemplateModel';
-import { Button, Empty, Input, Message, Popconfirm, Spin } from '@arco-design/web-react';
+import { Button, Empty, Input, Popconfirm, Spin } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Delete, FolderOpen, Save } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';

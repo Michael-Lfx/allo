@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { learningApi } from '../api';
 import type { CourseJobView } from '../types';
 import { errorMessage, type Translate } from '../utils';

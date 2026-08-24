@@ -1,7 +1,8 @@
 
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Progress, Message } from '@arco-design/web-react';
+import { Button, Progress } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { CheckOne, Download, FolderOpen, Refresh, CloseOne, Install } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import NomiModal from '@/renderer/components/base/NomiModal';

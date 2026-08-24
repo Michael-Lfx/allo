@@ -31,7 +31,8 @@ import TwitchConfigForm from '@/renderer/components/settings/SettingsModal/conte
 import TelegramConfigForm from '@/renderer/components/settings/SettingsModal/contents/channels/TelegramConfigForm';
 import WecomConfigForm from '@/renderer/components/settings/SettingsModal/contents/channels/WecomConfigForm';
 import WeixinConfigForm from '@/renderer/components/settings/SettingsModal/contents/channels/WeixinConfigForm';
-import { Message, Switch } from '@arco-design/web-react';
+import { Switch } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { buildEnablePluginRequest, findEnabledChannelStatus } from './channelStatusSelection';
