@@ -1,5 +1,5 @@
 /**
- * Dev-oriented timing for the Guid → conversation transition. No telemetry:
+ * Dev-oriented timing for the Guid → conversation transition.
  * durations are only written to console.debug so the send → reveal latency
  * budget can be inspected while iterating locally.
  *

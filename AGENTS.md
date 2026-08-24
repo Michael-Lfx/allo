@@ -99,7 +99,6 @@ Ask first before touching these:
   must go through i18n (`zh-CN` and `en-US`). Theme work must pass
   `bun run check:theme`.
 - HTTP DTOs belong in `nomifun-api-types`.
-- No telemetry, cloud dependencies, or background data transfer.
 - Commit messages: Conventional Commits style (`feat:`, `fix:`, `docs:`, etc.).
 
 ## Git Attribution Must Identify a Human

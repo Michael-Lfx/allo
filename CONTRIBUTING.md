@@ -152,7 +152,6 @@ legacy redirected routes as current navigation.
 - Add comments only when they explain non-obvious intent, invariants, or
   integration constraints.
 - Update docs beside behavior changes; stale docs are a bug.
-- Do not introduce telemetry, cloud dependencies, or background data transfer
   that violates the local-first promise.
 
 ### Rust And Backend

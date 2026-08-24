@@ -57,8 +57,6 @@ What NomiFun itself does over the network:
 - Extension marketplace (`/api/hub/*`) — only if you actively use it.
 - Whatever your configured agents and providers do — typically API calls to LLM providers.
 
-There is no telemetry pipeline, no analytics SDK, no `SENTRY_DSN` integration in the binary. The backend does not phone home on its own.
-
 ## What about extensions and skills — what runs them?
 
 Extensions (themes, presets, channel plugins, settings tabs) are loaded by `nomifun-extension` from the data directory. Skills are bundles of prompts/instructions resolved into the agent's context per-conversation. Both are local files under your data dir; the marketplace flow simply downloads them into that directory.
