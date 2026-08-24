@@ -47,9 +47,9 @@ const WorkspaceSectionActions: React.FC<WorkspaceSectionActionsProps> = ({
           className='flowy-workspace-section-action'
         >
           {expanded ? (
-            <FoldUpOne theme='outline' size='15' fill='currentColor' />
+            <FoldUpOne theme='outline' size='12' fill='currentColor' />
           ) : (
-            <ExpandDownOne theme='outline' size='15' fill='currentColor' />
+            <ExpandDownOne theme='outline' size='12' fill='currentColor' />
           )}
         </button>
       </InstantHoverTooltip>
@@ -64,7 +64,7 @@ const WorkspaceSectionActions: React.FC<WorkspaceSectionActionsProps> = ({
           onClick={onToggleDropdown}
           className={classNames('flowy-workspace-section-action', dropdownOpen && 'is-active')}
         >
-          <FolderPlus theme='outline' size='15' fill='currentColor' />
+          <FolderPlus theme='outline' size='12' fill='currentColor' />
         </button>
       </InstantHoverTooltip>
     </div>

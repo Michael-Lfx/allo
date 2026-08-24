@@ -42,9 +42,12 @@ describe('workpath section toolbar structure', () => {
     expect(actions.includes('ExpandDownOne')).toBe(true);
     expect(actions.includes('FoldUpOne')).toBe(true);
     expect(actions.includes('FolderPlus')).toBe(true);
+    expect(actions.includes("size='12'" )).toBe(true);
     expect(actions.includes('aria-haspopup=\'dialog\'')).toBe(true);
     expect(actions.includes("aria-controls='flowy-workpath-tree'")).toBe(true);
     expect(actions.includes('InstantHoverTooltip')).toBe(true);
+    expect(readLocalSource('../../../styles/layout.css')).toContain('width: 20px;');
+    expect(readLocalSource('../../../styles/layout.css')).toContain('height: 20px;');
     expect(source.includes("data-testid='workpath-create-project-btn'")).toBe(false);
     expect(source.includes("data-testid='workpath-batch-select-btn'")).toBe(false);
   });

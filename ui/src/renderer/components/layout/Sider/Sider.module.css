@@ -128,6 +128,8 @@
 
 .workspaceSectionHeader {
   position: static;
+  width: 100%;
+  box-sizing: border-box;
   flex-shrink: 0;
   background: transparent;
   border-bottom: 1px solid var(--flowy-sider-divider);

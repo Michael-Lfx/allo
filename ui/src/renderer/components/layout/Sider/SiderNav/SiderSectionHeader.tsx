@@ -54,7 +54,7 @@ const SiderSectionHeader: React.FC<SiderSectionHeaderProps> = ({
       aria-level={id ? 2 : undefined}
       className={classNames(
         compact
-          ? 'shrink-0 h-32px pl-7px pr-12px flex items-center gap-8px text-12px font-[500] leading-none text-t-tertiary select-none'
+          ? 'shrink-0 h-32px pl-7px pr-4px flex items-center gap-8px text-12px font-[500] leading-none text-t-tertiary select-none'
           : 'shrink-0 mt-8px mb-2px px-12px h-22px flex items-center text-12px font-[500] leading-none text-t-tertiary select-none',
         className
       )}
