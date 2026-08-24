@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { ipcBridge } from '@/common';
 import type { ICloudWhoami } from '@/common/adapter/ipcBridge';
-import { isAuthExpiredHttpError, isBackendHttpError } from '@/common/adapter/httpBridge';
+import { isBackendHttpError, isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { configService } from '@/common/config/configService';
 import { getBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
 import {
@@ -79,13 +79,6 @@ const accountIdForProfile = (profile: ICloudWhoami): string =>
   profile.userId || profile.email || profile.username || 'authenticated-account';
 
 const normalizeError = (error: unknown): Error => (error instanceof Error ? error : new Error(String(error)));
-
-const isInvalidCloudSessionError = (error: unknown): boolean => {
-  if (!isBackendHttpError(error)) return false;
-  if (error.status === 401 || isAuthExpiredHttpError(error)) return true;
-  const text = `${error.code} ${error.backendMessage} ${error.message}`.toLowerCase();
-  return /session|token|credential/.test(text) && /(invalid|expired|missing|revoked)/.test(text);
-};
 
 const offlineReasonForError = (error: unknown): 'network' | 'server_error' => {
   if (isBackendHttpError(error) && (error.status === 403 || error.status >= 500)) return 'server_error';

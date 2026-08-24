@@ -524,41 +524,7 @@ fn require_im_access_token(token: Option<String>) -> Result<String, AppError> {
 }
 
 fn map_im_client_error(err: ServerClientError) -> AppError {
-    match err {
-        ServerClientError::AuthRequired(msg) => AppError::Unauthorized(msg),
-        ServerClientError::MissingBaseUrl => {
-            AppError::BadRequest("server base_url not configured".into())
-        }
-        ServerClientError::Disabled => AppError::BadRequest("server client disabled".into()),
-        ServerClientError::NotConfigured(msg) => AppError::BadRequest(msg),
-        ServerClientError::Api { code, msg } if code == 401 || code == 403 => {
-            AppError::Unauthorized(msg)
-        }
-        ServerClientError::Api { code, msg } if code == 400 => AppError::BadRequest(msg),
-        ServerClientError::Server {
-            status: 401 | 403,
-            body,
-            ..
-        } => AppError::Unauthorized(truncate_diag(&body)),
-        ServerClientError::Server {
-            status: 400,
-            body,
-            ..
-        } => AppError::BadRequest(truncate_diag(&body)),
-        other => AppError::BadGateway(truncate_diag(&other.to_string())),
-    }
-}
-
-fn truncate_diag(message: &str) -> String {
-    const MAX: usize = 500;
-    let trimmed = message.trim();
-    if trimmed.chars().count() <= MAX {
-        trimmed.to_string()
-    } else {
-        let mut out: String = trimmed.chars().take(MAX).collect();
-        out.push('…');
-        out
-    }
+    err.into_app_error()
 }
 
 #[cfg(test)]

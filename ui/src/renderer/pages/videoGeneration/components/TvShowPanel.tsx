@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Button, Drawer, Result, Spin } from '@arco-design/web-react';
 import { Download, Like, Search, VideoOne } from '@icon-park/react';
 import SegmentedTabs, { type SegmentedTabItem } from '@renderer/components/base/SegmentedTabs';
+import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import {
@@ -31,7 +32,7 @@ interface TvShowPanelProps {
 const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { status: cloudStatus } = useCloudAuth();
+  const { status: cloudStatus, logout } = useCloudAuth();
   const [message, messageHolder] = useArcoMessage();
 
   const [scope, setScope] = useState<TvShowScope>('plaza');
@@ -60,6 +61,15 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     },
   ];
 
+  const consumeExpiredCloudSession = useCallback(
+    async (error: unknown): Promise<boolean> => {
+      if (!isInvalidCloudSessionError(error)) return false;
+      await logout();
+      return true;
+    },
+    [logout]
+  );
+
   const refresh = useCallback(async () => {
     if (!enabled) return;
     if (cloudStatus !== 'authenticated') {
@@ -86,11 +96,12 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
       setError(null);
     } catch (e) {
       console.error('[videoGeneration] TV Show list failed', e);
+      if (await consumeExpiredCloudSession(e)) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [cloudStatus, enabled, keyword, scope]);
+  }, [cloudStatus, consumeExpiredCloudSession, enabled, keyword, scope]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -116,6 +127,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
         const full = await getTvShowDetail(video.id);
         setDetail(full);
       } catch (e) {
+        if (await consumeExpiredCloudSession(e)) return;
         message.error(
           `${t('videoGeneration.tvShow.detail.loadFailed', { defaultValue: '加载详情失败' })}: ${
             e instanceof Error ? e.message : String(e)
@@ -125,7 +137,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
         setDetailLoading(false);
       }
     },
-    [message, t]
+    [consumeExpiredCloudSession, message, t]
   );
 
   const handleToggleLike = useCallback(
@@ -147,6 +159,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
             : prev
         );
       } catch (e) {
+        if (await consumeExpiredCloudSession(e)) return;
         message.error(
           `${t('videoGeneration.tvShow.actions.likeFailed', { defaultValue: '点赞失败' })}: ${
             e instanceof Error ? e.message : String(e)
@@ -156,7 +169,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
         setLikingId(null);
       }
     },
-    [likingId, message, t]
+    [consumeExpiredCloudSession, likingId, message, t]
   );
 
   const handleDelete = useCallback(
@@ -171,6 +184,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
           t('videoGeneration.tvShow.actions.deleteOk', { defaultValue: '已删除发布' })
         );
       } catch (e) {
+        if (await consumeExpiredCloudSession(e)) return;
         message.error(
           `${t('videoGeneration.tvShow.actions.deleteFailed', { defaultValue: '删除失败' })}: ${
             e instanceof Error ? e.message : String(e)
@@ -180,7 +194,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
         setDeletingId(null);
       }
     },
-    [deletingId, detail?.id, message, t]
+    [consumeExpiredCloudSession, deletingId, detail?.id, message, t]
   );
 
   const handleImport = useCallback(async () => {
@@ -194,6 +208,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
       setDetail(null);
       navigate(`/video-generation/${imported.id}`);
     } catch (e) {
+      if (await consumeExpiredCloudSession(e)) return;
       message.error(
         `${t('videoGeneration.tvShow.actions.importFailed', { defaultValue: '导入失败' })}: ${
           e instanceof Error ? e.message : String(e)
@@ -202,7 +217,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     } finally {
       setImporting(false);
     }
-  }, [detail, importing, message, navigate, t]);
+  }, [consumeExpiredCloudSession, detail, importing, message, navigate, t]);
 
   // Fetch only while visible; keep rendering so a hidden parent can still
   // reserve layout height and avoid scroll jumps on tab switches.

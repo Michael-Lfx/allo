@@ -83,19 +83,7 @@ pub async fn proxy_chat_completions(
 }
 
 fn map_cloud_err(err: ServerClientError) -> AppError {
-    match err {
-        ServerClientError::AuthRequired(msg) => AppError::Unauthorized(msg),
-        ServerClientError::MissingBaseUrl => {
-            AppError::BadRequest("server base_url not configured".into())
-        }
-        ServerClientError::Disabled => AppError::BadRequest("server client disabled".into()),
-        ServerClientError::NotConfigured(msg) => AppError::BadRequest(msg),
-        ServerClientError::Api { code, msg } if code == 401 || code == 403 => {
-            AppError::Unauthorized(msg)
-        }
-        ServerClientError::Api { code, msg } if code == 400 => AppError::BadRequest(msg),
-        other => AppError::BadGateway(truncate(&other.to_string(), 500)),
-    }
+    err.into_app_error()
 }
 
 fn truncate(message: &str, max: usize) -> String {

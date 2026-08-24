@@ -219,7 +219,9 @@ export class BackendHttpError extends Error {
       backendMessage = safeBody;
     }
     const authExpired = isAuthExpiredResponse(status, body);
-    const authExpiredHandled = authExpired && isWebUiBrowserMode();
+    // 400 is used by some cloud proxies when a Flowy token is stale. Treat it as
+    // an expired credential for callers, but do not kick the WebUI local login.
+    const authExpiredHandled = authExpired && status !== 400 && isWebUiBrowserMode();
     super(
       authExpired
         ? `Backend ${method} ${safePath} failed (${status}): authentication expired`
@@ -263,20 +265,55 @@ function bodyStringField(body: unknown, key: 'code' | 'error'): string {
   return typeof value === 'string' ? value : '';
 }
 
-function isAuthExpiredResponse(status: number, body: unknown): boolean {
-  if (status !== 403) return false;
-  const code = bodyStringField(body, 'code');
-  const error = bodyStringField(body, 'error').toLowerCase();
-  if (code !== 'FORBIDDEN') return false;
-  return (
+function expectedAuthExpiredCode(status: number): string | null {
+  switch (status) {
+    case 400:
+      return 'BAD_REQUEST';
+    case 401:
+      return 'UNAUTHORIZED';
+    case 403:
+      return 'FORBIDDEN';
+    default:
+      return null;
+  }
+}
+
+function isTokenAuthFailureMessage(error: string, status: number): boolean {
+  if (
     error.includes('invalid or expired token') ||
     error.includes('authentication required') ||
-    error.includes('user not found')
-  );
+    error.includes('cloud login required') ||
+    error.includes('not logged in')
+  ) {
+    return true;
+  }
+  if (status === 400) return false;
+  return error.includes('user not found');
+}
+
+function isAuthExpiredResponse(status: number, body: unknown): boolean {
+  const expectedCode = expectedAuthExpiredCode(status);
+  if (!expectedCode) return false;
+  const code = bodyStringField(body, 'code');
+  const error = bodyStringField(body, 'error').toLowerCase();
+  if (code && code !== expectedCode) return false;
+  return isTokenAuthFailureMessage(error, status);
 }
 
 export function isAuthExpiredHttpError(error: unknown): boolean {
   return isBackendHttpError(error) && (error.authExpired === true || isAuthExpiredResponse(error.status, error.body));
+}
+
+/** True when a local API call failed because the Flowy cloud session is missing or stale. */
+export function isInvalidCloudSessionError(error: unknown): boolean {
+  if (!isBackendHttpError(error)) return false;
+  if (error.status === 401 || isAuthExpiredHttpError(error)) return true;
+  if (error.status !== 400 && error.status !== 403) return false;
+  const text = `${error.code} ${error.backendMessage} ${error.message}`.toLowerCase();
+  return (
+    /session|token|credential|authentication/.test(text) &&
+    /(invalid|expired|missing|revoked|required)/.test(text)
+  );
 }
 
 export function isHandledAuthExpiredHttpError(error: unknown): boolean {
@@ -611,7 +648,7 @@ export async function httpRequest<T>(
       }
 
       const authExpired = isAuthExpiredResponse(response.status, errorBody);
-      if (authExpired) {
+      if (authExpired && response.status !== 400) {
         handleHttpAuthExpired();
       }
       if (authExpired) {

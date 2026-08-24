@@ -10,9 +10,11 @@ import {
   AUTH_EXPIRED_EVENT,
   httpPost,
   httpRequest,
+  BackendHttpError,
   isAuthExpiredHttpError,
   isBackendHttpError,
   isHandledAuthExpiredHttpError,
+  isInvalidCloudSessionError,
   redactSensitiveText,
   wsEmitter,
   wsMappedEmitter,
@@ -359,6 +361,89 @@ describe('httpRequest client deadline + network-failure diagnosis', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(location.hash).toBe('/login');
       expect(emitted.includes(AUTH_EXPIRED_EVENT)).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+      restoreBrowserGlobals();
+    }
+  });
+
+  test('400/401/403 invalid-or-expired-token responses are cloud-session failures', () => {
+    const cases: Array<{ status: number; code: string; error: string }> = [
+      {
+        status: 400,
+        code: 'BAD_REQUEST',
+        error: 'Bad request: authentication required: Invalid or expired token',
+      },
+      {
+        status: 401,
+        code: 'UNAUTHORIZED',
+        error: 'Unauthorized: Invalid or expired token',
+      },
+      {
+        status: 403,
+        code: 'FORBIDDEN',
+        error: 'Forbidden: Invalid or expired token',
+      },
+    ];
+    for (const { status, code, error } of cases) {
+      const caught = new BackendHttpError({
+        method: 'GET',
+        path: '/api/vimax/tv-show/list',
+        status,
+        body: { success: false, error, code },
+      });
+      expect(isAuthExpiredHttpError(caught)).toBe(true);
+      expect(isInvalidCloudSessionError(caught)).toBe(true);
+    }
+  });
+
+  test('400 validation errors are not treated as expired tokens', () => {
+    const caught = new BackendHttpError({
+      method: 'GET',
+      path: '/api/vimax/tv-show/list',
+      status: 400,
+      body: { success: false, error: 'Bad request: page must be positive', code: 'BAD_REQUEST' },
+    });
+    expect(isAuthExpiredHttpError(caught)).toBe(false);
+    expect(isInvalidCloudSessionError(caught)).toBe(false);
+  });
+
+  test('webui 400 expired cloud token does not redirect to local login', async () => {
+    const emitted: string[] = [];
+    const location = { pathname: '/video-generation', hash: '' };
+    installBrowserGlobals({
+      location: location as Location,
+      dispatchEvent: ((event: Event) => {
+        emitted.push(event.type);
+        return true;
+      }) as Window['dispatchEvent'],
+    });
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            success: false,
+            error: 'Bad request: authentication required: Invalid or expired token',
+            code: 'BAD_REQUEST',
+          }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } }
+        )
+      )) as unknown as typeof fetch;
+
+    try {
+      let caught: unknown;
+      try {
+        await httpRequest('GET', '/api/vimax/tv-show/list');
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(isAuthExpiredHttpError(caught)).toBe(true);
+      expect(isInvalidCloudSessionError(caught)).toBe(true);
+      expect(isHandledAuthExpiredHttpError(caught)).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(location.hash).toBe('');
+      expect(emitted.includes(AUTH_EXPIRED_EVENT)).toBe(false);
     } finally {
       globalThis.fetch = realFetch;
       restoreBrowserGlobals();

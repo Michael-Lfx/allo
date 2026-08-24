@@ -13,6 +13,7 @@ import { CheckSmall, Plus, Upload } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
+import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import { isDesktopShell } from '@renderer/utils/platform';
@@ -84,7 +85,7 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { status: cloudStatus } = useCloudAuth();
+  const { status: cloudStatus, logout } = useCloudAuth();
   const [message, messageHolder] = useArcoMessage();
   const [tab, setTab] = useState<MenuTab>('all');
   const [loading, setLoading] = useState(false);
@@ -96,6 +97,13 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const cloudReady = cloudStatus === 'authenticated';
+
+  const handleCloudAuthError = async (error: unknown): Promise<boolean> => {
+    if (!isInvalidCloudSessionError(error)) return false;
+    await logout();
+    navigate('/cloud-login');
+    return true;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -159,9 +167,9 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
           setCloudPlaza([]);
         }
       } catch (error) {
-        if (!cancelled) {
-          message.error(error instanceof Error ? error.message : String(error));
-        }
+        if (cancelled) return;
+        if (await handleCloudAuthError(error)) return;
+        message.error(error instanceof Error ? error.message : String(error));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -280,6 +288,7 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
       setTab('user');
       refresh();
     } catch (error) {
+      if (await handleCloudAuthError(error)) return;
       message.error(error instanceof Error ? error.message : String(error));
     } finally {
       setBusyId(null);
@@ -333,6 +342,7 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
         onChangeSelected([...selectedIds, skill.id]);
       }
     } catch (error) {
+      if (await handleCloudAuthError(error)) return;
       message.error(error instanceof Error ? error.message : String(error));
     } finally {
       setBusyId(null);

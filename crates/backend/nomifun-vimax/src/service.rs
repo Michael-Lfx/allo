@@ -1195,23 +1195,5 @@ fn map_vimax_err(e: nomi_vimax::VimaxError) -> AppError {
 }
 
 fn map_cloud_err(err: nomifun_cloud::ServerClientError) -> AppError {
-    let msg = err.to_string();
-    let lower = msg.to_ascii_lowercase();
-    if lower.contains("unauthorized")
-        || lower.contains("401")
-        || lower.contains("not authenticated")
-        || lower.contains("jwt")
-    {
-        return AppError::Unauthorized(msg);
-    }
-    if lower.contains("403") || lower.contains("forbidden") {
-        return AppError::Forbidden(msg);
-    }
-    if lower.contains("404") || lower.contains("not_found") || lower.contains("not found") {
-        return AppError::NotFound(msg);
-    }
-    if lower.contains("400") || lower.contains("invalid") {
-        return AppError::BadRequest(msg);
-    }
-    AppError::Internal(msg)
+    err.into_app_error()
 }
