@@ -12,7 +12,6 @@ import {
   MoreOne,
   Plus,
   Pushpin,
-  Right,
 } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useRef, useState } from 'react';
@@ -72,8 +71,8 @@ export interface WorkpathDrawerProps {
 }
 
 /**
- * First-level workpath drawer: header row (expand arrow + folder/home icon +
- * display name + conversation-count badge + hover ops) and, when expanded,
+ * First-level workpath drawer: header row (folder/home icon + display name +
+ * conversation-count badge + hover ops) and, when expanded,
  * directly renders its interactive conversation rows.
  * Collapse interaction follows the WorkspaceCollapse paradigm (conditional
  * render, h-34px header, hover bg, trailing ops revealed on hover).
@@ -250,7 +249,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
       <div
         data-testid='workpath-toggle-row'
         className={classNames(
-          'flowy-workpath-drawer-header relative flex items-center gap-8px pl-10px pr-56px rd-10px min-w-0 group',
+          'flowy-workpath-drawer-header relative flex items-center gap-6px pl-10px pr-56px rd-6px min-w-0 group',
           twoLineWorkpath ? 'flowy-workpath-header-two-line h-42px py-4px' : 'h-34px'
         )}
       >
@@ -302,13 +301,6 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             onPointerEnter={() => setWorkpathIdentityHovered(true)}
             onPointerLeave={() => setWorkpathIdentityHovered(false)}
           >
-            <span
-              className='workpath-disclosure-caret size-12px shrink-0 flex items-center justify-center text-t-tertiary'
-              style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
-              aria-hidden='true'
-            >
-              <Right theme='outline' size='11' strokeWidth={3} fill='currentColor' />
-            </span>
             <span
               className='relative size-22px flex items-center justify-center shrink-0 text-t-primary'
             >

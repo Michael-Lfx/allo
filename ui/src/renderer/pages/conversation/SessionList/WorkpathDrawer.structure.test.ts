@@ -128,17 +128,21 @@ describe('WorkpathDrawer structure', () => {
     expect(sessionListSource.includes('onCreateTerminal={handleCreateTerminal}')).toBe(false);
   });
 
-  test('uses a semantic workpath disclosure control and a stable content id', () => {
+  test('uses folder icons as the expansion cue without a separate caret', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
 
     expect(source.includes("data-testid='workpath-toggle-row'")).toBe(true);
     expect(source.includes('flowy-workpath-drawer-header')).toBe(true);
+    expect(source.includes('gap-6px pl-10px pr-56px')).toBe(true);
     expect(source.includes('pr-56px')).toBe(true);
     expect(source.includes('group-hover:pr-50px')).toBe(false);
     expect(source.includes("type='button'\n            aria-expanded={batchMode ? undefined : expanded}")).toBe(true);
     expect(source.includes('aria-controls={batchMode ? undefined : controlsId}')).toBe(true);
     expect(source.includes('workpathKey(node.key)')).toBe(true);
-    expect(source.includes('workpath-disclosure-caret')).toBe(true);
+    expect(source.includes('FolderOpen')).toBe(true);
+    expect(source.includes('FolderClose')).toBe(true);
+    expect(source.includes('workpath-disclosure-caret')).toBe(false);
+    expect(source.includes('<Right')).toBe(false);
     expect(source.includes('flowy-disclosure-content')).toBe(true);
     expect(source.includes('overflowMotion.shouldRender')).toBe(true);
     expect(source.includes("aria-hidden={overflowMotion.phase === 'exiting'}")).toBe(true);

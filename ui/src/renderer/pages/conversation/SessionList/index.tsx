@@ -759,7 +759,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
             aria-label={embeddedInPrimarySider ? t(expanded ? 'common.collapse' : 'common.expandMore') : undefined}
             onClick={() => setExpanded((value) => !value)}
             className={classNames(
-              'group flex items-center gap-2px min-w-0 select-none cursor-pointer b-none bg-transparent p-0 text-left opacity-75 transition-opacity hover:opacity-100 relative',
+              'group flex items-center gap-2px min-w-0 select-none cursor-pointer b-none bg-transparent p-0 text-left text-t-secondary opacity-75 transition-opacity hover:text-t-primary hover:opacity-100 relative',
               embeddedInPrimarySider && 'flowy-embedded-workpath-toggle'
             )}
           >
@@ -802,7 +802,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
               padding: 0,
               margin: 0,
             }}
-            className={`h-22px px-8px flex items-center gap-4px select-none cursor-pointer rd-6px transition-all group ${
+            className={`flowy-embedded-workpath-add h-22px px-8px flex items-center gap-4px select-none cursor-pointer rd-6px text-t-secondary hover:text-t-primary transition-all group ${
               dropdownOpen
                 ? 'bg-fill-2'
                 : 'hover:bg-fill-2'

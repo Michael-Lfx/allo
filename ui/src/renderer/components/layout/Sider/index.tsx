@@ -289,22 +289,22 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
           </div>
           {/* 项目/工作路径树 — 独立滚动，一级菜单保持固定 */}
           {!collapsed && (
-            <div
-              data-testid='sider-workspaces-scroll-area'
-              className={`${styles.scrollArea} flex-1 min-h-0 overflow-y-auto overflow-x-hidden pt-0 pb-8px`}
+            <section
+              data-testid='sider-workspaces-section'
+              aria-labelledby='flowy-workspaces-heading'
+              className={styles.workspaceSection}
             >
-              <section
-                data-testid='sider-workspaces-section'
-                aria-labelledby='flowy-workspaces-heading'
-                className={styles.workspaceSection}
+              <SiderSectionHeader
+                id='flowy-workspaces-heading'
+                label={t('common.titlebar.sections.workspaces')}
+                collapsed={false}
+                compact
+                className={styles.workspaceSectionHeader}
+              />
+              <div
+                data-testid='sider-workspaces-scroll-area'
+                className={`${styles.scrollArea} flex-1 min-h-0 overflow-y-auto overflow-x-hidden pt-0 pb-8px`}
               >
-                <SiderSectionHeader
-                  id='flowy-workspaces-heading'
-                  label={t('common.titlebar.sections.workspaces')}
-                  collapsed={false}
-                  compact
-                  className={styles.workspaceSectionHeader}
-                />
                 <WorkpathSessionList
                   collapsed={false}
                   tooltipEnabled={false}
@@ -313,8 +313,8 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                   onBatchModeChange={setBatchMode}
                   embeddedInPrimarySider
                 />
-              </section>
-            </div>
+              </div>
+            </section>
           )}
         </div>
       )}

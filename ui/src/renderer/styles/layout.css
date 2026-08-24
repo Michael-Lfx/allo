@@ -57,11 +57,6 @@
   transition: transform var(--flowy-motion-base) var(--flowy-ease-move);
 }
 
-.workpath-disclosure-caret {
-  transform-origin: center;
-  transition: transform var(--flowy-motion-base) var(--flowy-ease-move);
-}
-
 .flowy-workpath-drawer-header {
   transition: background-color var(--flowy-motion-fast) var(--flowy-ease-enter);
 }
@@ -103,6 +98,10 @@
   padding-inline-start: var(--flowy-workpath-child-inset);
 }
 
+.flowy-embedded-workpath-list {
+  padding-block-start: 8px;
+}
+
 .flowy-companion-session-overflow {
   padding-inline-start: 42px;
 }
@@ -118,6 +117,24 @@
   height: 22px;
   align-items: center;
   justify-content: center;
+}
+
+.flowy-embedded-workpath-toggle,
+.flowy-embedded-workpath-add {
+  color: var(--flowy-text-secondary, var(--color-text-2));
+}
+
+.flowy-embedded-workpath-toggle:hover,
+.flowy-embedded-workpath-toggle:focus-visible,
+.flowy-embedded-workpath-add:hover,
+.flowy-embedded-workpath-add:focus-visible {
+  color: var(--flowy-text-primary, var(--color-text-1));
+}
+
+.flowy-embedded-workpath-toggle:focus-visible,
+.flowy-embedded-workpath-add:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: -2px;
 }
 
 .session-overflow-button:hover {
@@ -379,7 +396,6 @@
   .chat-history__placeholder,
   .chat-history__section,
   .sidebar-toggle-icon__caret,
-  .workpath-disclosure-caret,
   .session-overflow-button,
   .flowy-disclosure-content > * {
     transition: none;

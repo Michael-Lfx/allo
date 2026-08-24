@@ -22,8 +22,16 @@ describe('CompanionSessionGroup structure', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'CompanionSessionGroup.tsx'), 'utf8');
     const workpathDrawer = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
     const sessionList = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'index.tsx'), 'utf8');
+    const layoutCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../../styles/layout.css'), 'utf8');
 
     expect(sessionList).toContain('flowy-embedded-workpath-toolbar');
+    expect(sessionList).toContain("'flowy-embedded-workpath-list'");
+    expect(layoutCss).toContain('.flowy-embedded-workpath-list {');
+    expect(layoutCss).toContain('padding-block-start: 8px;');
+    expect(sessionList).toContain('flowy-embedded-workpath-toggle');
+    expect(sessionList).toContain('flowy-embedded-workpath-add');
+    expect(layoutCss).toContain('color: var(--flowy-text-secondary, var(--color-text-2));');
+    expect(layoutCss).toContain('color: var(--flowy-text-primary, var(--color-text-1));');
     expect(sessionList).toContain("'pl-10px pr-4px pb-6px'");
     expect(source).toContain("className='pl-10px pr-4px pb-6px flex items-center justify-between gap-8px min-w-0'");
     expect(source).toContain("className='sider-section-title appearance-none border-none bg-transparent p-0 text-13px font-[500] leading-none tracking-wide truncate shrink-0 opacity-75 transition-opacity hover:opacity-100 cursor-pointer'");

@@ -10,7 +10,7 @@ interface SiderSectionHeaderProps {
   id?: string;
   /** Icon-only rail mode: show a hairline rule instead of the text label. */
   collapsed: boolean;
-  /** Compact variant used by the sticky workspace section heading. */
+  /** Compact variant used by the workspace section heading. */
   compact?: boolean;
   /** Additional layout or theme classes for a specific sidebar surface. */
   className?: string;
@@ -51,7 +51,7 @@ const SiderSectionHeader: React.FC<SiderSectionHeaderProps> = ({
       aria-level={id ? 2 : undefined}
       className={classNames(
         compact
-          ? 'shrink-0 h-32px px-12px flex items-center text-12px font-[500] leading-none text-t-tertiary select-none'
+          ? 'shrink-0 h-32px pl-7px pr-12px flex items-center text-12px font-[500] leading-none text-t-tertiary select-none'
           : 'shrink-0 mt-8px mb-2px px-12px h-22px flex items-center text-12px font-[500] leading-none text-t-tertiary select-none',
         className
       )}

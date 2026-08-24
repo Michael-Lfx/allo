@@ -98,40 +98,51 @@
    fixed top nav and the scrollable list stay on the same vertical center line.
    Mimics macOS native overlay scrollbars. */
 .scrollArea {
-  --flowy-workspace-heading-height: 32px;
-  --flowy-workspace-section-height: var(--flowy-workspace-heading-height);
   --flowy-workpath-header-height: 42px;
+  --flowy-sider-sticky-base: color-mix(in srgb, var(--flowy-panel) 88%, var(--flowy-canvas) 12%);
+  --flowy-sider-sticky-surface: color-mix(
+    in srgb,
+    var(--flowy-sider-sticky-base) 96%,
+    rgb(var(--primary-6)) 4%
+  );
+  --flowy-sider-sticky-hover-surface: color-mix(
+    in srgb,
+    var(--flowy-sider-sticky-surface) 84%,
+    var(--flowy-text-primary) 16%
+  );
+  --flowy-sider-divider: color-mix(in srgb, var(--flowy-text-primary) 22%, var(--flowy-panel));
   container-name: flowy-sider;
   container-type: inline-size;
-  scroll-padding-block-start: calc(
-    var(--flowy-workspace-section-height) + var(--flowy-workpath-header-height) + 8px
-  );
+  scroll-padding-block-start: calc(var(--flowy-workpath-header-height) + 8px);
   scrollbar-width: none; /* Firefox */
 }
 
 .workspaceSection {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
   padding-inline: 5px 8px;
 }
 
 .workspaceSectionHeader {
-  position: sticky;
-  top: 0;
-  z-index: 4;
-  background: var(--flowy-panel);
-  border-bottom: 1px solid var(--flowy-border-subtle);
+  position: static;
+  flex-shrink: 0;
+  background: transparent;
+  border-bottom: 1px solid var(--flowy-sider-divider);
 }
 
 .scrollArea :global(.flowy-workpath-drawer-header) {
   position: sticky;
-  top: var(--flowy-workspace-section-height);
+  top: 0;
   z-index: 3;
-  background: var(--flowy-panel);
-  border-bottom: 1px solid var(--flowy-border-subtle);
+  background: var(--flowy-sider-sticky-surface);
+  border-bottom: 1px solid var(--flowy-sider-divider);
 }
 
 .scrollArea :global(.flowy-workpath-drawer-header:hover) {
-  background: var(--flowy-interactive-hover);
+  background: var(--flowy-sider-sticky-hover-surface);
 }
 
 @container flowy-sider (max-width: 200px) {
