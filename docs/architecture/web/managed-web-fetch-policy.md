@@ -1,7 +1,7 @@
 # Local-first Managed Extract Policy
 
 Date: 2026-08-02
-Last updated: 2026-08-04
+Last updated: 2026-08-24（元数据维护，未重写结论；核对基准 commit `d791691c6`）
 
 This policy governs the private Parallel `web_fetch` fallback behind the
 existing `web_extract` tool. Desktop now starts in the evidence-backed profile

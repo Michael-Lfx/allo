@@ -1,5 +1,11 @@
 # Agent 执行架构
 
+> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6` ·
+> 文档性质：现行领域契约（`AgentExecution` 为唯一协作聚合，受
+> `scripts/check-agent-vocabulary.mjs` 强制）。硬上限常量（16 模型 / 64
+> Participant / 128 Step / 64 并行 / 委派深度 4）已与
+> `nomifun-common::agent_execution` 逐一核对一致。
+
 ## 1. 结论与设计目标
 
 NomiFun 的执行域只保留一套词汇：

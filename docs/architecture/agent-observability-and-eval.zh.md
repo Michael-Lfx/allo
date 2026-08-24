@@ -1,5 +1,9 @@
 # Agent 可观测性与评测
 
+> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6` ·
+> 文档性质：现行行为文档（`nomi-agent-trace` 采集/回收语义、
+> `nomi-agent-eval` 套件与 HTTP 面已抽查核对）。
+
 本文说明 Flowy / allo 中 **Session Observation（开发者模式）** 与 **Agent Eval（真实 harness / runtime）** 的职责边界与用法。契约细节见 [session-observation-workflow-proposal.zh.md](session-observation-workflow-proposal.zh.md) 第 7 节。
 
 ## Session Observation（Developer Mode）

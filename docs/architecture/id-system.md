@@ -1,5 +1,7 @@
 # Identifier System
 
+> **Last maintained:** 2026-08-24 · Fact-checked against commit `d791691c6`
+
 This document is the canonical v3 identifier architecture contract for
 NomiFun. It applies to product database tables, Rust domain models,
 HTTP/WebSocket/MCP payloads, runtime registries, managed files, backups, and
@@ -32,14 +34,15 @@ They are not interchangeable.
 2. An entity that needs a stable product locator across databases, devices,
    files, APIs, events, or managed stores has a separately named, bare UUIDv7
    business field such as `user_id`, `conversation_id`, `message_id`,
-   `mcp_server_id`, `webhook_id`, `credential_id`, or `creation_task_id`.
+   `mcp_server_id`, `webhook_id`, or `creation_task_id`.
 3. A relation, singleton, cache, or event row that is never addressed outside
    its owning persistence subsystem uses only its integer `id`. It does not
    receive a UUID merely for uniformity, and that `id` never becomes a product
    wire locator.
 4. Relationships are logical references maintained by repositories and
    services. The product schema contains no physical foreign keys,
-   `REFERENCES` clauses, triggers, or database cascades.
+   `REFERENCES` clauses, or database cascades; triggers are limited to the
+   registered guard-trigger allowlist.
 5. v3 is a new dataset lineage. Historical datasets are reset as a whole; rows
    and old identifier formats are not migrated into v3.
 
@@ -144,9 +147,11 @@ backup identity.
 Entities that are addressed by a product API, runtime registry, managed file,
 backup graph, or another managed store use a named UUIDv7 business field even
 when their lifecycle is installation-local. In the current v3 baseline this
-includes MCP servers, webhooks, connector credentials, creation tasks,
+includes MCP servers, webhooks, creation tasks,
 conversation artifacts, and IDMM interventions. Their table `id` remains only
-the technical primary key.
+the technical primary key. (The former `connector_credentials` table was
+dropped by migration `026_drop_connector_credentials.sql`; no
+`credential_id` business ID exists anymore.)
 
 No product wire contract introduces an integer business ID or generic `id`
 alias. If a future internal-only subsystem needs an integer handle, it must
@@ -161,11 +166,16 @@ not contain:
 ```text
 FOREIGN KEY
 REFERENCES
-CREATE TRIGGER
+CREATE TRIGGER        (except registered guard triggers in TRIGGER_CONTRACTS)
 ON DELETE CASCADE
 ON UPDATE CASCADE
 *_row_id
 ```
+
+Guard triggers are integrity sentinels only (`RAISE(ABORT)` on identity
+mutation or forbidden deletion); they never own relationships or perform
+cascades, and `validate_no_triggers` rejects any trigger outside the
+allowlist.
 
 A relationship stores exactly one reference:
 
@@ -268,8 +278,10 @@ At every boundary:
 - invalid values fail rather than becoming `0`, an empty string, or another
   ID kind;
 - an absent optional business ID in JSON is represented by an omitted field;
-  explicit `null`, retired aliases, and wrong JSON types violate the data
-  contract;
+  explicit `null` and wrong JSON types violate the data contract. Two retired
+  provider aliases (`flowy-cloud`, `google-auth-gemini`) are deliberately still
+  accepted by `ProviderId::parse` at the boundary and normalized to reserved
+  UUIDv7 constants rather than rejected;
 - routes, DTOs, caches, events, and filesystem manifests use the same business
   or external field type as the domain model; a technical `id` is never the
   portable value at those boundaries.

@@ -1,5 +1,6 @@
 # Session Observation 开发文档与分步实施计划
 
+> **最后维护：** 2026-08-24（元数据复核，未重写结论；核对基准 commit `d791691c6`）  
 > **现行 UI 以 [session-observation-workflow-ui-plan.zh.md](session-observation-workflow-ui-plan.zh.md) 与 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准，文内 Drawer 已作废。**  
 > **文档状态：S0–S8 历史步骤；U0–U5 与 PR #119 收口（配额 GC、请求扫描列表）已合入 `main`。不要把文内 S 步骤当成待办。**  
 > 日期：2026-08-20  

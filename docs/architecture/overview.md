@@ -1,5 +1,7 @@
 # Architecture Overview
 
+> **Last maintained:** 2026-08-24 · Fact-checked against commit `d791691c6`
+
 Flowy is built around a single principle: **one Rust backend, two host modes,
 one frontend**. Whether you launch the desktop product **Flowy** or self-host the
 web server, the same `axum` HTTP/WS server (`nomifun-app`, binary `nomicore`)
@@ -9,7 +11,7 @@ custom protocol.
 
 This document is the map. The sibling documents drill into the parts:
 
-- [`backend-crates.md`](backend-crates.md) — the 36 `nomifun-*` backend crates.
+- [`backend-crates.md`](backend-crates.md) — the 44 `nomifun-*` backend crates.
 - [`agent-engine.md`](agent-engine.md) — the `nomi-*` agent crates (including `nomi-agent-trace` for Session Logs).
 - [`agent-execution.zh.md`](agent-execution.zh.md) — the unified persistent AgentExecution model.
 - [`frontend.md`](frontend.md) — the React SPA, adapter layer, routing.
@@ -31,7 +33,7 @@ This document is the map. The sibling documents drill into the parts:
                           HTTP/REST│        WebSocket│  /ws
                                    │                 │
    ┌───────────────── desktop ─────┴────┐  ┌─────── web ───────┴──────┐
-   │ apps/desktop  (nomifun-desktop)    │  │ apps/web  (nomifun-web)  │
+   │ apps/desktop  (Flowy package)      │  │ apps/web  (nomifun-web)  │
    │  Tauri 2 shell · WebView2/WKWebKit │  │ standalone axum server   │
    │  ─ thread "nomifun-backend"        │  │  serves /api  +  /ws     │
    │    └ tokio · nomifun_app embedded  │  │  + ServeDir(ui/dist) SPA │
@@ -52,10 +54,11 @@ This document is the map. The sibling documents drill into the parts:
                           │                       │
                           ▼                       ▼
               ┌─────────────────────┐   ┌─────────────────────┐
-              │  nomifun-* (34)     │   │  nomi-* (15)         │
-              │  backend crates     │◀─▶│  agent engine crates │
-              │  data, auth, MCP,   │   │  via the SEAM:       │
-              │  conversation, etc. │   │  nomifun-ai-agent     │
+              │  nomifun-* (44)     │◀─▶│  nomi-* (23)         │
+              │  backend crates     │   │  + flowy-web         │
+              │  data, auth, MCP,   │   │  agent engine crates │
+              │  conversation, etc. │   │  via the SEAM:       │
+              │                     │   │  nomifun-ai-agent    │
               └─────────────────────┘   └─────────────────────┘
                           │
                           ├─▶ SQLite (sqlx)         see data-and-storage.md
@@ -107,29 +110,33 @@ on disk, not just in package names:
 
 | Folder | Purpose | Crate prefix | Count |
 | --- | --- | --- | --- |
-| `crates/agent/` | AI engine — providers, tools, sessions, MCP, skills, computer/browser use | `nomi-*` | 15 |
-| `crates/backend/` | The HTTP/WS server, data, auth, features, public capability gateway | `nomifun-*` | 34 |
-| `crates/shared/` | Cross-layer utilities used by both groups | mixed | 3 |
+| `crates/agent/` | AI engine — providers, tools, sessions, MCP, skills, computer/browser use | `nomi-*` (+ `flowy-web`) | 24 |
+| `crates/backend/` | The HTTP/WS server, data, auth, features, public capability gateway | `nomifun-*` | 44 |
+| `crates/shared/` | Cross-layer utilities used by both groups | mixed | 5 |
 
-The agent group is **self-contained** — no `nomi-*` crate references any
-`nomifun-*` crate, the workspace root, or frameworks like Tauri / sqlx / axum.
+The agent group is **largely self-contained** — most `nomi-*` crates reference
+no `nomifun-*` crate, the workspace root, or frameworks like Tauri / sqlx /
+axum. A small explicit set of agent crates does depend on backend utility
+crates: `nomi-agent` and `nomi-config` on `nomifun-common`; `nomi-media` and
+`nomi-vimax` on `nomifun-cloud`; the browser stack (`nomi-browser`,
+`nomi-browser-engine`) on `nomifun-browser-platform` / `nomifun-secret`.
 The reverse direction normally goes through `nomifun-ai-agent`, which re-exports
 `nomi_config`, `nomi_types`, and `RequirementSink` for backend consumers.
 `nomifun-app` and `nomifun-gateway` have feature-gated direct dependencies for
-browser/computer bridge surfaces; those are documented exceptions, not the
-default pattern.
+browser/computer bridge surfaces; a few feature crates (e.g. `nomifun-robot`)
+also bind `nomi-*` directly — new exceptions must come with a documented reason.
 
 ## What lives where
 
 ```
 nomifun-tauri/
 ├─ apps/
-│   ├─ desktop/   nomifun-desktop  (Tauri 2 shell, this is "Flowy" the product)
+│   ├─ desktop/   Flowy package (Tauri 2 shell, this is "Flowy" the product)
 │   └─ web/       nomifun-web      (standalone server: /api + SPA on one port)
 ├─ crates/
-│   ├─ agent/     15 nomi-* crates  → see agent-engine.md
-│   ├─ backend/   34 nomifun-* crates → see backend-crates.md
-│   └─ shared/    3 shared crates
+│   ├─ agent/     24 crates (23 nomi-* + flowy-web) → see agent-engine.md
+│   ├─ backend/   44 nomifun-* crates → see backend-crates.md
+│   └─ shared/    5 shared crates
 ├─ ui/            React 19 + Vite 6 + Arco + UnoCSS  → see frontend.md
 └─ docs/
     ├─ architecture/   (this folder)
@@ -148,16 +155,16 @@ nomifun-tauri/
 
 ## Hosts at a glance
 
-| Aspect | Desktop (`nomifun-desktop`) | Web (`nomifun-web`) |
+| Aspect | Desktop (`Flowy` package, `apps/desktop`) | Web (`nomifun-web`) |
 | --- | --- | --- |
-| Binary | `nomifun-desktop` (Tauri shell) | `nomifun-web` (axum server) |
+| Binary | `Flowy` (Tauri shell; package name is `Flowy`, not `nomifun-desktop`) | `nomifun-web` (axum server) |
 | Backend | embedded in-process (own thread + tokio runtime) | embedded in-process |
 | Auth mode | `TrustLocalToken`: the desktop webview receives a per-boot secret and sends it as `x-nomi-local-trust` | required by default; opt-out via `--insecure-no-auth` |
 | Port | a free localhost port chosen at boot (`bind 127.0.0.1:0`) | `127.0.0.1:8787` (configurable via `--host`/`--port`) |
 | Backend port reaches the SPA via | initialization script `window.__backendPort = <p>` | same-origin (`/api` and `/ws` served on the same port as the SPA) |
 | Static SPA | bundled into the Tauri app (`tauri.conf.json` distDir) | served by `tower_http::services::ServeDir` from `ui/dist` |
 | OS-shell features | window controls, deep-link, updater, autostart, dialog, notification, single-instance | none — browser is the host |
-| Tauri commands | update check, companion-window sync, WebUI LAN status/start/stop, keep-awake, tray labels | not applicable |
+| Tauri commands | updater (check/download/install), restart, companion-window sync + local pointer, WebUI LAN status/start/stop, keep-awake, tray labels, OS notifications, memory panel, completion toast | not applicable |
 
 The desktop also has an optional LAN WebUI listener controlled by Tauri commands
 (`webui_start`, `webui_stop`, `webui_get_status`). That listener is separate

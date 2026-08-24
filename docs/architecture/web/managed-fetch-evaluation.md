@@ -1,7 +1,7 @@
 # Managed Fetch Evaluation Maintenance Contract
 
 Date: 2026-08-03
-Last updated: 2026-08-04
+Last updated: 2026-08-24（元数据维护，未重写结论；核对基准 commit `d791691c6`）
 
 This document is the durable maintenance contract for the opt-in
 `fetch-eval` evaluation capability. It describes how evidence is produced and

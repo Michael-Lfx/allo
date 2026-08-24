@@ -1,5 +1,7 @@
 # 前端
 
+> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6`
+
 前端是位于 [`ui/`](../../ui/) 的一个 React 19 SPA。两个宿主 —— Tauri 桌面外壳与 `nomifun-web` —— 都加载同一份 Vite 构建产物（`ui/dist`）。渲染进程从不使用 Electron IPC；在两个宿主中它都通过普通的 HTTP 与 WebSocket 与后端通信。
 
 ## 技术栈
@@ -16,7 +18,7 @@
 | i18n | `i18next` + `react-i18next`，语言包 `zh-CN`、`en-US` |
 | 编辑器 | Monaco（设置、代码预览）、CodeMirror（更轻量的输入） |
 | Markdown | `react-markdown` + `remark-gfm` + KaTeX + mermaid |
-| 终端 | `xterm.js`（含 `xterm-addon-fit`、`xterm-addon-web-links`） |
+| 终端 | `xterm.js`（含 `@xterm/addon-fit`、`@xterm/addon-web-links`、`@xterm/addon-webgl`） |
 | Service worker | Web 宿主注册了 PWA service worker（参见 [`registerPwa.ts`](../../ui/src/renderer/services/registerPwa.ts)）；Tauri 外壳显式跳过它 |
 
 ## 三层结构：`common/`、`platform/`、`renderer/`
@@ -26,33 +28,31 @@
 ```
 ui/src/
 ├── common/      shared library code (no React)
-│   ├── adapter/   the bridge factory: HTTP + WS + Tauri shim
-│   ├── api/       typed API surfaces built on the bridge
-│   ├── chat/      chat library helpers (rendering hooks, types)
-│   ├── config/    constants, configService (settings cache)
-│   ├── platform/  platform-detection helpers
-│   ├── types/     TypeScript mirrors of nomifun-api-types DTOs
-│   ├── update/    self-update flow helpers
-│   ├── utils/     shared utilities (date, hash, ...)
+│   ├── adapter/            the bridge factory: HTTP + WS + Tauri shim
+│   │                       （httpBridge / ipcBridge / tauriShell / tauriRuntime / browser）
+│   ├── browser/            browser-use 相关共享逻辑
+│   ├── chat/               chat library helpers (rendering hooks, types)
+│   ├── config/             constants, configService (settings cache), i18n-config
+│   ├── protocolBindings/   协议绑定辅助
+│   ├── types/              TypeScript mirrors of nomifun-api-types DTOs
+│   ├── update/             self-update flow helpers
+│   ├── utils/              shared utilities (date, hash, ...)
 │   └── index.ts
-├── platform/    runtime substrate
-│   ├── bridge event hub (the legacy "buildProvider/buildEmitter" API)
-│   ├── logger
-│   ├── storage
-│   └── theme
-├── renderer/    the React app
-│   ├── pages/         feature pages (conversation, terminal, settings, ...)
-│   ├── components/    reusable UI components and layout
-│   ├── hooks/         hooks and React Contexts (Auth, Theme, Feedback, ...)
-│   ├── services/      i18n, FileService, PasteService, SpeechToTextService, registerPwa
-│   ├── styles/        Arco overrides and theme variables
-│   ├── utils/         renderer-specific utilities
-│   ├── main.tsx       entry point (createRoot)
-│   └── index.html
-└── shims/       small interop shims pulled in by Vite
+├── platform/    runtime substrate（仅两件事）
+│   ├── bridge event hub（pub/sub + RPC 的 host 桥）
+│   └── theme tokens
+└── renderer/    the React app
+    ├── pages/         feature pages (conversation, terminal, settings, ...)
+    ├── features/      feature-scoped modules
+    ├── components/    reusable UI components and layout
+    ├── hooks/         hooks and React Contexts (Auth, Theme, Feedback, ...)
+    ├── services/      i18n, FileService, PasteService, SpeechToTextService, registerPwa
+    ├── styles/        Arco overrides and theme variables
+    ├── utils/         renderer-specific utilities
+    └── main.tsx       entry point (createRoot)
 ```
 
-这种划分是有意设计的：`common/` 不知道 DOM 或 React 的存在；`platform/` 是接好桥事件中心与 logger 的小型基板；`renderer/` 才是真正的应用。这让桥接逻辑可以脱离 React 进行测试，并且如果将来出现第二个客户端目标，可以共享 `common/`。
+这种划分是有意设计的：`common/` 不知道 DOM 或 React 的存在；`platform/` 只承载宿主桥与主题 token 这一小块基板；`renderer/` 才是真正的应用。这让桥接逻辑可以脱离 React 进行测试，并且如果将来出现第二个客户端目标，可以共享 `common/`。
 
 ## 适配层（桥接层）
 
@@ -63,7 +63,7 @@ ui/src/
 | 适配文件 | 传输 | 用途 |
 | --- | --- | --- |
 | [`httpBridge.ts`](../../ui/src/common/adapter/httpBridge.ts) | HTTP `fetch` + 单例 WebSocket | 默认 —— 所有 `/api/*` 与 `/ws` 流量。 |
-| [`tauriShell.ts`](../../ui/src/common/adapter/tauriShell.ts) | Tauri JS API 与插件（`@tauri-apps/api`、`tauri-plugin-*`） | 仅用于操作系统外壳：窗口控制、对话框、OS 路径、开机启动、通知、深链接、自更新。由 `isTauri()` 守护。 |
+| [`tauriShell.ts`](../../ui/src/common/adapter/tauriShell.ts) | Tauri JS API 与插件（`@tauri-apps/api`、`tauri-plugin-*`） | 仅用于操作系统外壳：窗口控制、对话框、OS 路径、开机启动、通知、深链接、自更新。由 `isTauriRuntime()`（定义于 [`tauriRuntime.ts`](../../ui/src/common/adapter/tauriRuntime.ts)）守护。 |
 | [`browser.ts`](../../ui/src/common/adapter/browser.ts) | 进入 platform 事件中心的旧版 WebSocket 桥接 | 把 `platform/` 的 `bridge.emit` 调用接到同一个 `/ws` 端点，并处理 auth 过期重定向。 |
 
 复合体 —— 由 [`ipcBridge.ts`](../../ui/src/common/adapter/ipcBridge.ts) 导出 —— 才是应用其余部分引入的对象。在渲染进程看来，每次操作都长得一样，无论它最终走的是 HTTP、WS 还是 Tauri-IPC。
@@ -104,14 +104,14 @@ export function getBaseUrl(): string {
 1. Tauri 外壳通过 `tauri://` / `file://` 协议加载 SPA；`BrowserRouter` 在该协议下经历的页面重新加载（如深链接或应用内导航）后无法保留状态。
 2. Web 宿主通过 `tower_http::services::ServeDir` 提供 SPA，并启用 `append_index_html_on_directories(true)`。Hash 路由意味着浏览器访问的任何路径都返回 `index.html`，由 SPA 完成其余工作 —— 静态服务器无需自定义 catch-all。
 
-路由表的顶层条目涵盖会话运行时（`/guid`、`/conversation/:id`）、模型（`/models`）、设定（`/presets`）、技能（`/skills`）、MCP（`/mcp`）、开放能力（`/open-capabilities`）、终端（`/terminal-new`、`/terminal/:id`）、需求/AutoWork（`/requirements/*`、`/autowork` redirect）、定时任务（`/scheduled`、`/scheduled/:job_id`）、桌面伙伴（`/nomi` 配置页、`/companion` 桌面窗口）、知识库（`/knowledge`、`/knowledge/:id`）、开发者模式评测（`/eval`）以及认证（`/login`）。旧 settings 路径只作为重定向保留。Agent 协作不建立独立路由或单独页面；AgentExecution 投影直接显示在所属 Conversation 内，避免导航层再产生一个产品对象。开发者模式开启时，会话列可滑到会话日志（`AgentTraceInspector`）：采集始终写盘，List/Turn/Call HTTP 仍要开发者模式。详见 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)。
+路由表的顶层条目涵盖会话运行时（`/guid`、`/conversation/:id`）、模型（`/models`）、设定（`/presets`）、技能（`/skills`）、MCP（`/mcp`）、开放能力（`/open-capabilities`）、终端（`/terminal-new`、`/terminal/:id`）、需求/AutoWork（`/requirements/*`、`/autowork` redirect）、定时任务（`/scheduled`、`/scheduled/:cron_job_id`）、桌面伙伴（`/nomi` 配置页、`/companion` 桌面窗口）、知识库（`/knowledge`、`/knowledge/:id`）、开发者模式评测（`/eval`）、云登录（`/cloud-login`）、浏览器管理（`/browser`）、客服域（`/customer-service*`）、学习引擎（`/learn`、`/learn/:id`）、视频生成与 Canvas 模式（`/video-generation*`）、计费（`/billing`），以及认证（`/login`）。旧 settings 路径只作为重定向保留。Agent 协作不建立独立路由或单独页面；AgentExecution 投影直接显示在所属 Conversation 内，避免导航层再产生一个产品对象。开发者模式开启时，会话列可滑到会话日志（`AgentTraceInspector`）：采集始终写盘，List/Turn/Call HTTP 仍要开发者模式。详见 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)。
 
 页面通过 `React.lazy` 加载，使用 `<AppLoader>` 作为 fallback，使初始包保持精简。
 
 ## 状态与数据
 
 - **SWR** 是主要的数据层。约定是任何列表或详情视图都声明一个 SWR key 字符串及一个 fetcher；HTTP 响应到达后变更操作会调用 `mutate(key)`。`ipcBridge.*.invoke` 的返回值直接喂给 SWR。
-- **React Context** 承载不属于 SWR 的应用形态状态：认证（`AuthProvider`）、主题（`ThemeProvider`）、反馈 toast（`FeedbackProvider`）、文件预览（`PreviewProvider`），以及对话历史列表（`ConversationHistoryProvider`）。
+- **React Context** 承载不属于 SWR 的应用形态状态：认证（`AuthProvider`）、主题（`ThemeProvider`）、反馈 toast（`FeedbackProvider`）、文件预览（`PreviewProvider`，位于 `pages/conversation/Preview/context/PreviewContext.tsx`），以及对话历史列表（`ConversationHistoryProvider`）。
 - **`configService`**（`ui/src/common/config/configService.ts`）缓存后端设置；[`main.tsx`](../../ui/src/renderer/main.tsx) 中的入口点会在 i18n / theme 代码加载前启动 `configService.initialize()`，因此这些子系统在首次渲染时读到的是权威设置。
 
 ## 应用内通知
@@ -161,13 +161,13 @@ bun test --cwd ui src/renderer/services/i18n/notificationsLocales.test.ts
 
 ## 主题
 
-Arco 的 `ConfigProvider` 在根处包裹应用，主色为 `primaryColor: '#4E5969'`，并按语言提供 locale（`enUS`、`zhCN`、`zhTW`、`jaJP`、`koKR` —— 韩语包用英语日历 / datepicker 字段做了补丁，因为 Arco 的 `koKR` 缺这些）。主题（`light`、`dark`、品牌变体）以纯 CSS 文件叠在 `ui/src/renderer/styles/themes/index.css` 中，通过 `ThemeProvider` 切换。
+Arco 的 `ConfigProvider` 在根处包裹应用，主色为 `primaryColor: '#4E5969'`，并按语言提供 locale（仅 `zhCN`、`enUS` 两种，见 `main.tsx` 的 `arcoLocales` map）。主题（`light`、`dark`、品牌变体）以纯 CSS 文件叠在 `ui/src/renderer/styles/themes/index.css` 中，通过 `ThemeProvider` 切换。
 
-UnoCSS 与 Arco 并行提供 utility 类 —— 其配置位于仓库根目录的 `uno.config.ts`。Arco 的自定义覆盖位于 `ui/src/renderer/styles/arco-override.css`。
+UnoCSS 与 Arco 并行提供 utility 类 —— 其配置位于 [`ui/uno.config.ts`](../../ui/uno.config.ts)。Arco 的自定义覆盖位于 `ui/src/renderer/styles/arco-override.css`。
 
 ## 国际化
 
-[`ui/src/renderer/services/i18n`](../../ui/src/renderer/services/) 用上述五种语言初始化 `i18next`。字符串按功能组织，解析后的语言通过 `main.tsx` 中的 `arcoLocales` map 流入 Arco。切换语言无需重新加载 —— i18next 与 Arco 都会按新语言重新计算。
+[`ui/src/renderer/services/i18n`](../../ui/src/renderer/services/) 用 `zh-CN` 与 `en-US` 两种语言初始化 `i18next`（语言清单见 [`ui/src/common/config/i18n-config.json`](../../ui/src/common/config/i18n-config.json)）。字符串按功能组织，解析后的语言通过 `main.tsx` 中的 `arcoLocales` map 流入 Arco。切换语言无需重新加载 —— i18next 与 Arco 都会按新语言重新计算。
 
 ## 桌面端对话流式呈现
 
@@ -200,6 +200,6 @@ Markdown 在 Shadow DOM 中渲染，因此消息排版和代码控件具有明�
 
 ## 一点平台特定的 UX
 
-桌面外壳在 Windows / Linux 上是**无边框**的（[`ui/src/renderer/components/layout/Titlebar/`](../../ui/src/renderer/components/layout/Titlebar/) 中的 React 标题栏通过 `@tauri-apps/api/window` 绘制最小化 / 最大化 / 关闭按钮）；macOS 通过 `TitleBarStyle::Overlay` 保留原生交通灯按钮。同一份 SPA 在浏览器中会隐藏标题栏，让浏览器外框处理它。区别在运行时通过 `isTauri()`（定义于 `tauriShell.ts`）来检测。
+桌面外壳在 Windows / Linux 上是**无边框**的（[`ui/src/renderer/components/layout/Titlebar/`](../../ui/src/renderer/components/layout/Titlebar/) 中的 React 标题栏通过 `@tauri-apps/api/window` 绘制最小化 / 最大化 / 关闭按钮）；macOS 通过 `TitleBarStyle::Overlay` 保留原生交通灯按钮。同一份 SPA 在浏览器中会隐藏标题栏，让浏览器外框处理它。区别在运行时通过 `isTauriRuntime()`（定义于 `common/adapter/tauriRuntime.ts`）来检测。
 
 Windows/Linux 标题栏的空白菜单列与工具栏列属于原生拖拽平面，按钮、窗口控制和 Tooltip 锚点属于显式 `no-drag` 交互岛；公共 `InstantHoverTooltip` 通过 Portal 与 Floating UI 的 `flip`/`shift` 保证视口边界内显示。实现与验证边界见 [`顶部栏拖拽与 Tooltip 修复记录`](../superpowers/audits/2026-08-13-topbar-drag-tooltip-fix.md)。

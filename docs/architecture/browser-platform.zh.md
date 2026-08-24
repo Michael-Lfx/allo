@@ -1,5 +1,11 @@
 # 浏览器平台架构
 
+> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6` ·
+> 已核对：`BrowserSessionHub` 契约、`BrowserHostFactory`、管理路由、错误码、
+> agent 工具与设置迁移均与 `nomifun-browser-platform` 及
+> `nomi-browser` / `nomi-browser-engine` 一致。注：代码中的宿主类型实际名为
+> `BrowserHostDriver` / `ManagedBrowserHost`，而非 `BrowserHost`。
+
 本文说明 NomiFun 内置浏览器的生产架构、信任边界、并发模型和运维接口。浏览器平台的执行单位是 Browser Lane，而不是 Agent 会话或单个 Chromium 进程。`/browser` 仍是状态与生命周期管理页面；它可以管理安装级 Primary 显示默认值，也可以改变已有 running Primary Lane 所属 Host 的当前可见性，但不是页面渲染或控制表面。
 
 > **2026-07-27 取代性说明：**新安装的全局默认值为 `headless`，普通 Primary 工作因此以 Chromium `--headless=new` 运行，不创建操作系统浏览器窗口。安装 owner 可实时把该默认值改为 `external`；对 Lane 显式“前台打开”只是一次性改变当前 Host 的可见性，不会改写默认值。两条路径都不会恢复早期的内嵌 preview、Viewer、用户接管或页面输入能力。

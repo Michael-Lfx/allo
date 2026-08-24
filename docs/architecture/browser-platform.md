@@ -1,5 +1,11 @@
 # Browser Platform Architecture
 
+> **Last maintained:** 2026-08-24 · Fact-checked against commit `d791691c6` ·
+> Verified: `BrowserSessionHub` contract, `BrowserHostFactory`, management routes,
+> error codes, agent tools, and settings migration all match `nomifun-browser-platform`
+> and `nomi-browser`/`nomi-browser-engine`. Note: the conceptual "host" type is
+> spelled `BrowserHostDriver` / `ManagedBrowserHost` in code, not `BrowserHost`.
+
 NomiFun's browser platform is an Agent-oriented managed Chromium service. Its
 execution and scheduling unit is a **Browser Lane**, not an Agent session or a
 Chromium process. The `/browser` page remains a status and lifecycle management

@@ -1,6 +1,9 @@
 # Agent Engine
 
-The agent engine lives under [`crates/agent/`](../../crates/agent/) and is
+> **Last maintained:** 2026-08-24 · Fact-checked against commit `d791691c6`
+
+The agent engine lives under [`crates/agent/`](../../crates/agent/) (24 crates:
+23 `nomi-*` plus `flowy-web`) and is
 consumed by the backend primarily through
 [`nomifun-ai-agent`](../../crates/backend/nomifun-ai-agent/). This page is an
 implementation map for the current workspace, not an extraction plan.
@@ -20,11 +23,19 @@ implementation map for the current workspace, not an extraction plan.
 | `nomi-memory` | Memory storage and retrieval primitives. |
 | `nomi-agent` | Core engine loop, sessions, compaction glue, confirmations, output sinks, skill tool, requirement tools, and the crate-private embedded AgentExecution projection. |
 | `nomi-agent-trace` | Session observation JSONL: capture policy, DualQueue writer, quota GC (no age TTL), and turn/call projection. Current product behavior: [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md). |
+| `nomi-agent-eval` | Deterministic, feature-gated agent conversation evaluation harness. |
 | `nomi-cli` | Standalone `nomi` CLI consumer of the engine. |
 | `nomi-computer` | Desktop computer-use tool implementation. |
 | `nomi-a11y` | Accessibility helpers for computer-use flows. |
 | `nomi-browser-engine` | Self-hosted browser/CDP automation engine. |
 | `nomi-browser` | Browser-use tool facade. |
+| `flowy-web` | Managed web-search/web-extract tool crate: keyless search and extraction with pluggable providers (consumed by `nomifun-ai-agent`). |
+| `nomi-coding` | Coding-session harness: completion policy, prompts, progress/verify gates, todo continuation, compaction preferences. |
+| `nomi-auxiliary` | Minimal auxiliary LLM client types for side tasks (POI labeling, resolution labeling). |
+| `nomi-insights-core` | De-identified insights contribution pipeline and POI sanitization helpers. |
+| `nomi-media` | Flowy-backed media generation and multi-step workflow coordination. |
+| `nomi-vimax` | ViMax video-generation pipelines. |
+| `nomi-poi` | Local user-interest (POI) topic store. |
 
 `nomi_delegate` has one request and receipt contract in `nomi-types`:
 `ParallelDelegationRequest`, `AgentExecutionReceipt`, and
@@ -49,10 +60,16 @@ affected result. Parent raw-shell hooks are intentionally not inherited: they
 were an authority bypass for read-only and synthesis Agents. Any future child
 hook support must run through the same process capability and effect boundary.
 
-The agent crates do not depend on `nomifun-*` backend crates. Backend-to-agent
-integration normally flows through `nomifun-ai-agent`; feature-gated bridge
-surfaces in `nomifun-app` and `nomifun-gateway` directly depend on browser and
-computer-use crates to expose those capabilities as stdio/public tools.
+The agent group is **largely independent** of the backend, but not fully:
+`nomi-agent` and `nomi-config` depend on `nomifun-common`; `nomi-media` and
+`nomi-vimax` on `nomifun-cloud`; and the browser stack (`nomi-browser`,
+`nomi-browser-engine`) on `nomifun-browser-platform` / `nomifun-secret`.
+Backend-to-agent integration normally flows through `nomifun-ai-agent`;
+feature-gated bridge surfaces in `nomifun-app` and `nomifun-gateway` directly
+depend on browser and computer-use crates to expose those capabilities as
+stdio/public tools, and domain feature crates (`nomifun-canvas`, `nomifun-media`,
+`nomifun-vimax`, `nomifun-poi`, `nomifun-insights`, `nomifun-companion`,
+`nomifun-robot`, `nomifun-cloud`) bind their matching `nomi-*` engines directly.
 
 ## Runtime Families
 
@@ -63,8 +80,10 @@ Flowy supports several runtime families:
   observation JSONL is recorded by `nomi-agent-trace` (always-on capture;
   developer-mode HTTP reads). See
   [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md).
-- **ACP-style CLI agents**: Claude Code, Codex, Gemini CLI, Qwen/OpenCode-style
-  integrations, and related CLIs managed by `nomifun-ai-agent`.
+- **ACP-style CLI agents**: Claude Code and Codex have first-class assembler
+  support; OpenCode gets error-format compatibility; other CLIs spawn through a
+  generic registry-resolved command (`acp.rs` → `meta.resolved_command`). All
+  are managed by `nomifun-ai-agent`.
 - **Remote/Open capability surfaces**: external agents connect through
   companion-token authenticated `/mcp`, `/mcp-agent`, or `/v1` fronts.
 

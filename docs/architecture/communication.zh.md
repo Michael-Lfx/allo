@@ -1,5 +1,7 @@
 # 通信
 
+> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6`
+
 Flowy 的各个进程 —— SPA、嵌入式后端、agent CLI 与 MCP 服务器 —— 通过五条彼此独立的通道相互对话。它们的职责互不重叠，挑选合适通道的规则在客户端的适配层（`ui/src/common/adapter/`）以及服务端的路由与服务 crate 中得到了固化。
 
 ## 五条通道
@@ -9,7 +11,7 @@ Flowy 的各个进程 —— SPA、嵌入式后端、agent CLI 与 MCP 服务器
 | HTTP REST | UI ↔ 后端 | 所有请求/响应操作：CRUD、命令调用、文件操作 | `http://127.0.0.1:<port>/api/*` |
 | WebSocket | 后端 → UI（终端输入 / 心跳时反向） | 流式 agent token、终端输出、广播事件、会话产物 | `/ws` |
 | Tauri IPC | 仅 UI → 桌面外壳 | 浏览器没有等价物的操作系统外壳特性 | `@tauri-apps/api` 与 Tauri 插件 |
-| ACP（stdio） | 后端 ↔ agent CLI 子进程 | 一段会话的全部 agent 流量，发往 Claude / Codex / Gemini / Qwen / OpenCode 风格的运行时 | 通过 stdin/stdout 的换行分隔 JSON |
+| ACP（stdio） | 后端 ↔ agent CLI 子进程 | 一段会话的全部 agent 流量，发往 ACP 兼容运行时（Claude / Codex 第一方支持，OpenCode 错误格式兼容，其他 CLI 走通用 registry 解析命令） | 通过 stdin/stdout 的换行分隔 JSON |
 | MCP（stdio 或 HTTP） | 后端 ↔ MCP 服务器，agent CLI ↔ MCP 服务器 | 工具调用、资源读取、提示词 | 派生进程或本地 HTTP |
 
 ## HTTP REST
@@ -27,7 +29,7 @@ const sendMessage  = httpPost<SendMessageResponse, SendMessageRequest>(p => `/ap
 - 请求体上限 —— `nomifun_common::constants::BODY_LIMIT`。
 - CSRF cookie 名 —— `nomifun-csrf-token`。
 - CSRF header 名 —— `x-csrf-token`。
-- 默认端口（`nomifun-web`） —— `8787`。
+- 默认端口（`nomifun-web`） —— `8787`；嵌入式 `nomicore` 的默认端口是 `25808`（桌面外壳实际选取空闲端口）。
 - 默认 host —— `127.0.0.1`。
 
 ### CSRF 双提交
@@ -39,7 +41,7 @@ Web 宿主默认以认证模式运行后端。两个 cookie 在认证中扮演�
 | 会话 JWT | 登录时由 `nomifun-auth` 设置 | 每次认证请求由 `auth_middleware` 读取 | 是 |
 | CSRF token（`nomifun-csrf-token`） | 由 `csrf_middleware` 设置（首次缺失时签发） | 浏览器的 `document.cookie`，再由 SPA 回显到 `x-csrf-token` | 否 —— SPA 必须能读到 |
 
-CSRF 中间件（[`crates/backend/nomifun-auth/src/csrf.rs`](../../crates/backend/nomifun-auth/src/csrf.rs)）守护 POST / PUT / PATCH / DELETE 请求；安全方法绕过校验。三个豁免路径 —— `/login`、`/api/auth/qr-login`、`/api/auth/setup` —— 会跳过检查，因为它们正用于引导会话本身。桌面外壳使用 `TrustLocalToken`：WebView 呈递本地信任 secret，远程/其他本机客户端仍需正常认证或走 WebUI 登录。`--local` 仅是独立 `nomicore`/开发 Web host 的无鉴权模式。
+CSRF 中间件（[`crates/backend/nomifun-auth/src/csrf.rs`](../../crates/backend/nomifun-auth/src/csrf.rs)）守护 POST / PUT / PATCH / DELETE 请求；安全方法绕过校验。四个豁免路径 —— `/login`、`/logout`、`/api/auth/qr-login`、`/api/auth/setup` —— 会跳过检查，因为它们正用于引导或结束会话本身；本地信任（TrustLocalToken）请求则整体跳过校验。桌面外壳使用 `TrustLocalToken`：WebView 呈递本地信任 secret，远程/其他本机客户端仍需正常认证或走 WebUI 登录。`--local` 仅是独立 `nomicore`/开发 Web host 的无鉴权模式。
 
 ### 响应包装
 
@@ -52,14 +54,14 @@ CSRF 中间件（[`crates/backend/nomifun-auth/src/csrf.rs`](../../crates/backen
 | 事件类别 | 何时发送 | 来源 crate |
 | --- | --- | --- |
 | `message.stream` | 模型按块发出 token 时 | `nomifun-conversation::stream_relay` |
-| `conversation.artifact` | 工具产生了产物（文件 / 图像 / 预览） | `nomifun-conversation::routes_aux` |
+| `conversation.artifact` | 工具产生了产物（文件 / 图像 / 预览） | `nomifun-conversation::service`（cron executor 同样会发） |
 | `terminal.output` | PTY 产生输出 | `nomifun-terminal` |
 | 审批请求 / 响应 | 工具调用需要用户批准 | `nomifun-conversation`（经接缝） |
 | `agentExecution.changed` / `agentExecution.leadThinking` | 持久化 Agent 协作状态与发起 Agent 的瞬时思考流 | `nomifun-agent-execution` |
 | `auth-expired` / 关闭 1008 | 会话 JWT 中途失效 | `nomifun-realtime` |
 | 心跳（`ping` / `pong`） | 连接保活 | `nomifun-realtime` |
 
-升级由 `nomifun_realtime::ws_upgrade_handler`（[`crates/backend/nomifun-realtime/src/handler.rs`](../../crates/backend/nomifun-realtime/src/handler.rs)）处理，它校验通过 cookie 或 `Sec-WebSocket-Protocol` header 携带的 JWT（header 的取值会被原样回显以使握手正确完成）。认证失败时它会发送 `auth-expired` 消息并以 1008 关闭；SPA 同时监听这两个信号（参见 [`browser.ts`](../../ui/src/common/adapter/browser.ts)），并在任一路径上重定向到 `/login`。
+升级由 `nomifun_realtime::ws_upgrade_handler`（[`crates/backend/nomifun-realtime/src/handler.rs`](../../crates/backend/nomifun-realtime/src/handler.rs)）处理，它校验通过 cookie、`Authorization: Bearer` 或 `Sec-WebSocket-Protocol` header 携带的 JWT（header 的取值会被原样回显以使握手正确完成）。认证失败时它会发送 `auth-expired` 消息并以 1008 关闭；SPA 同时监听这两个信号（参见 [`browser.ts`](../../ui/src/common/adapter/browser.ts)），并在任一路径上重定向到 `/login`。
 
 `httpBridge.ts` 中的 SPA WebSocket 逻辑是单例的：每个页面生命周期一个连接、指数退避重连（封顶 30s）、按 JSON 形状（`{ name, data }`）解复用并把事件分发到通过 `wsEmitter(name)` 注册的监听器。两个事件名与 HTTP 路径列表被显式维护，用以**抑制 agent 流式或 PTY 活跃时的嘈杂控制台日志**：
 
@@ -72,39 +74,36 @@ const NOISY_HTTP_FRAGMENTS = ['/input', '/resize'];
 
 ## Tauri IPC —— 仅操作系统外壳
 
-Tauri 外壳采用**反向 IPC**：是 SPA 调用操作系统外壳，绝不反过来。[`apps/desktop/src/main.rs`](../../apps/desktop/src/main.rs) 中注册的 Tauri 命令包括：
+Tauri 外壳采用**反向 IPC**：是 SPA 调用操作系统外壳，绝不反过来。[`apps/desktop/src/main.rs`](../../apps/desktop/src/main.rs) 的 `generate_handler!` 中注册的 Tauri 命令（权威列表以源码为准）包括：
 
-```rust
-.invoke_handler(tauri::generate_handler![
-    install_update,
-    sync_companion_windows,
-    webui_get_status,
-    webui_start,
-    webui_stop,
-    set_keep_awake,
-    set_tray_labels
-])
-```
+- updater：`install_update`、`download_update`、`update_package_status`
+- `restart_application`
+- companion 窗口：`sync_companion_windows`、`get_companion_local_pointer`
+- WebUI LAN 监听：`webui_get_status`、`webui_start`、`webui_stop`
+- `set_keep_awake`、`set_tray_labels`
+- OS 通知：`show_os_notification_cmd` 及完成 toast 命令
+- 记忆面板命令（支撑 `nomi-memory-panel` 页面）
+- updater 上下文辅助：`get_updater_install_context`
 
-其余一切都通过 Tauri 已发布的 JS API —— `@tauri-apps/api` 与 `tauri-plugin-*` crate。SPA 的 `tauriShell.ts` 用 `isTauri()` 守护每个操作，使同一份代码路径在浏览器中变为空操作：
+其余一切都通过 Tauri 已发布的 JS API —— `@tauri-apps/api` 与 `tauri-plugin-*` crate。SPA 的 `tauriShell.ts` 用 `isTauriRuntime()`（定义于 `tauriRuntime.ts`）守护每个操作，使同一份代码路径在浏览器中变为空操作：
 
 | 操作 | 插件 |
 | --- | --- |
 | 窗口最小化 / 最大化 / 关闭、isMaximized 监听 | `@tauri-apps/api/window` |
 | 打开原生对话框 | `tauri-plugin-dialog` |
 | 发送通知 | `tauri-plugin-notification` |
-| 进程重启 | `tauri-plugin-process` |
+| 进程重启 | 自定义命令 `restart_application`（updater 流程内部才使用 `tauri-plugin-process` 的 relaunch） |
 | 开机自启 | `tauri-plugin-autostart` |
 | 深链接 `open-url` 事件 | `tauri-plugin-deep-link` |
 | 单实例锁 | `tauri-plugin-single-instance` |
-| 自更新检查（唯一的 Rust 命令） | `tauri-plugin-updater` |
+| 自更新 | `tauri-plugin-updater` + 自定义命令（检查/下载/安装拆分） |
 | OS 路径查询（`home`、`downloads`、`desktop`） | `@tauri-apps/api/path` |
 
-少数操作没有 Tauri 等价物，已在浏览器中被有意**桩化**（Chrome DevTools Protocol、GPU 恢复、渲染进程日志通道、关闭至托盘）。这些操作在 `tauriShell.ts` 中标记为 `DEGRADE_STUB`，留给未来的 Tauri 移植。
+少数操作没有 Tauri 等价物，已在浏览器中被有意**桩化**（Chrome DevTools Protocol、GPU 恢复、渲染进程日志通道）。这些操作在 `tauriShell.ts` 中标记为 `DEGRADE_STUB`。注意：关闭至托盘不再是桩 —— Rust 侧已把 close-to-tray 实现为默认且唯一的关闭行为，只剩渲染层的开关项仍为 stub。
 
 ## ACP —— 通过 stdio 的 agent 运行时
 
-若干 CLI Agent —— Claude Code、Codex、Gemini CLI、Qwen、OpenCode —— 都实现了 **Agent Connection Protocol（ACP）**：在子进程 stdin/stdout 上承载 JSON 消息流。Flowy 通过 PATH 上预置的 `bun` 运行时派生这些子进程。接缝 crate `nomifun-ai-agent` 持有 Agent 工厂和 `AgentRuntimeRegistry`；后者按 Conversation 缓存唯一的进程内 runtime handle。按 Agent 划分的元数据（握手响应、可用模型、取消路径）通过 `IAgentMetadataRepository` 存储于 SQLite。
+若干 CLI Agent —— Claude Code、Codex（第一方 assembler 支持）、OpenCode（错误格式兼容）等 —— 实现了 **Agent Connection Protocol（ACP）**：在子进程 stdin/stdout 上承载 JSON 消息流。Flowy 通过 PATH 上预置的 `bun` 运行时派生这些子进程。接缝 crate `nomifun-ai-agent` 持有 Agent 工厂和 `AgentRuntimeRegistry`；后者按 Conversation 缓存唯一的进程内 runtime handle。按 Agent 划分的元数据（握手响应、可用模型、取消路径）通过 `IAgentMetadataRepository` 存储于 SQLite。
 
 进程内的流量如下：
 

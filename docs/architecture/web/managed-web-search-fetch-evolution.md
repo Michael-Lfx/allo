@@ -1,6 +1,7 @@
 # Managed Web Search & Fetch Evolution
 
 Date: 2026-07-31
+最后维护：2026-08-24（元数据维护，未重写结论；核对基准 commit `d791691c6`）
 
 这份文档是 Flowy `web_search` / `web_extract` 功能演变的权威索引和避坑记录。
 以后涉及 Search Provider、MCP Fetch、本地 Extract、Host 组合、预算、隐私或

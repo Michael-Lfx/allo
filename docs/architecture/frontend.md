@@ -1,5 +1,7 @@
 # Frontend
 
+> **Last maintained:** 2026-08-24 · Fact-checked against commit `d791691c6`
+
 The frontend is a single React 19 SPA in [`ui/`](../../ui/). The Tauri desktop
 shell and the `nomifun-web` host load the same Vite build from `ui/dist`; the
 renderer talks to the backend through HTTP and WebSocket, with a small Tauri
@@ -23,13 +25,16 @@ adapter only for desktop shell operations.
 ```text
 ui/src/
 ├── common/       bridge/API/types/util code shared across hosts
-├── platform/     small substrate for storage/logger/theme/runtime bridge
+│   ├── adapter/  httpBridge, ipcBridge, tauriShell, tauriRuntime, browser
+│   ├── browser/, chat/, config/, protocolBindings/, types/, update/, utils/
+├── platform/     tiny host bridge (pub/sub + RPC) and theme tokens
 └── renderer/     React app: pages, layout, hooks, services, styles
 ```
 
 The renderer imports the composite bridge from
 `ui/src/common/adapter/ipcBridge.ts`. Most product operations are HTTP calls.
-Tauri-specific operations are guarded behind `isTauri()` and implemented in the
+Tauri-specific operations are guarded behind `isTauriRuntime()` (defined in
+`common/adapter/tauriRuntime.ts`) and implemented in the
 adapter layer rather than scattered through pages.
 
 ## Backend URL And Trust
@@ -67,11 +72,22 @@ The source of truth is
 | `/mcp` | MCP server management. |
 | `/plugins` | Plugin market and installed extensions. |
 | `/open-capabilities` | Remote/public capability exposure. |
-| `/scheduled`, `/scheduled/:job_id` | Scheduled tasks. |
+| `/scheduled`, `/scheduled/:cron_job_id` | Scheduled tasks. |
 | `/requirements`, `/requirements/extensions`, `/requirements/sources` | Requirements Platform, AutoWork, notification/source extensions. |
 | `/nomi` | Companion configuration. |
 | `/knowledge`, `/knowledge/:id` | Knowledge base list/detail. |
 | `/settings/system` and related settings subroutes | System settings page and sub-sections. |
+| `/cloud-login` | Flowy cloud login flow. |
+| `/browser` | Browser-use management surface. |
+| `/customer-service`, `/customer-service/:cs_agent_id` | Customer-service agents. |
+| `/learn`, `/learn/:id` | Learning engine pages (backed by `nomifun-learning`). |
+| `/video-generation`, `/video-generation/canvas`, `/video-generation/:sessionId` | Video generation + Canvas mode (`nomifun-vimax` / `nomifun-canvas`). |
+| `/billing` | Billing / Airwallex surface. |
+| `/completion-toast`, `/nomi-memory-panel` | Desktop helper surfaces rendered in dedicated windows. |
+| `/test/*` (`beautiful-ui`, `color-lab`, `capability-hub`, `components`, `commercial-slice`) | Internal UI test/preview routes. |
+
+Unrouted page directories (`workshop`, `workspaces`, `assets`) exist under
+`ui/src/renderer/pages/` but are intentionally not registered in the router yet.
 
 Legacy settings paths such as `/settings/model`, `/settings/agent`,
 `/settings/capabilities`, `/settings/skills-hub`, `/settings/tools`,

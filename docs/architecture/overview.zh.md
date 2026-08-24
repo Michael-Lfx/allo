@@ -1,10 +1,12 @@
 # 架构总览
 
+> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6`
+
 Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态、一份前端**。无论你启动桌面产品 **Flowy**，还是自托管 Web 服务器，同一个 `axum` HTTP/WS 服务器（`nomifun-app`，二进制 `nomicore`）都在宿主进程中执行。`ui/` 下的 React 19 SPA 是唯一客户端，它始终通过普通的 HTTP 与 WebSocket 通信 —— 没有 Electron preload，也没有 Tauri 自定义协议。
 
 本文档是这张地图的总图。配套文档分别深入介绍各个部分：
 
-- [`backend-crates.md`](backend-crates.zh.md) —— 36 个 `nomifun-*` crate。
+- [`backend-crates.md`](backend-crates.zh.md) —— 44 个 `nomifun-*` crate。
 - [`agent-engine.md`](agent-engine.zh.md) —— `nomi-*` crate（AI 引擎，含会话日志用的 `nomi-agent-trace`）。
 - [`agent-execution.zh.md`](agent-execution.zh.md) —— 统一的持久化 AgentExecution 模型。
 - [`frontend.md`](frontend.zh.md) —— React SPA、适配层、路由。
@@ -25,7 +27,7 @@ Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态
                           HTTP/REST│        WebSocket│  /ws
                                    │                 │
    ┌───────────────── desktop ─────┴────┐  ┌─────── web ───────┴──────┐
-   │ apps/desktop  (nomifun-desktop)    │  │ apps/web  (nomifun-web)  │
+   │ apps/desktop  (Flowy package)      │  │ apps/web  (nomifun-web)  │
    │  Tauri 2 shell · WebView2/WKWebKit │  │ standalone axum server   │
    │  ─ thread "nomifun-backend"        │  │  serves /api  +  /ws     │
    │    └ tokio · nomifun_app embedded  │  │  + ServeDir(ui/dist) SPA │
@@ -41,16 +43,17 @@ Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态
                         │  nomifun-app  (binary nomicore)     │
                         │  composition root · axum router     │
                         │  bootstrap → data layer → services  │
-                        │  /api · /ws · Routes from 34 crates │
-                        └─────────────────────────────────────┘
-                          │                       │
-                          ▼                       ▼
-              ┌─────────────────────┐   ┌─────────────────────┐
-              │  nomifun-* (34)     │   │  nomi-* (15)         │
-              │  backend crates     │◀─▶│  agent engine crates │
-              │  data, auth, MCP,   │   │  via the SEAM:       │
-              │  conversation, etc. │   │  nomifun-ai-agent     │
-              └─────────────────────┘   └─────────────────────┘
+                         │ /api · /ws · Routes from 44 crates │
+                         └─────────────────────────────────────┘
+                           │                       │
+                           ▼                       ▼
+               ┌─────────────────────┐   ┌─────────────────────┐
+               │  nomifun-* (44)     │◀─▶│  nomi-* (23)         │
+               │  backend crates     │   │  + flowy-web         │
+               │  data, auth, MCP,   │   │  agent engine crates │
+               │  conversation, etc. │   │  via the SEAM:       │
+               │                     │   │  nomifun-ai-agent    │
+               └─────────────────────┘   └─────────────────────┘
                           │
                           ├─▶ SQLite (sqlx)         see data-and-storage.md
                           ├─▶ ACP agent CLIs         see agent-engine.md
@@ -97,23 +100,23 @@ Cargo 工作区（根 [`Cargo.toml`](../../Cargo.toml)，`resolver = "3"`，`edi
 
 | 目录 | 用途 | Crate 前缀 | 数量 |
 | --- | --- | --- | --- |
-| `crates/agent/` | AI 引擎 —— providers、tools、sessions、MCP、skills、browser/computer-use | `nomi-*` | 15 |
-| `crates/backend/` | HTTP/WS 服务器、数据、认证、各项功能 | `nomifun-*` | 34 |
-| `crates/shared/` | 真正跨层共享工具 | mixed | 3 |
+| `crates/agent/` | AI 引擎 —— providers、tools、sessions、MCP、skills、browser/computer-use | `nomi-*`（+ `flowy-web`） | 24 |
+| `crates/backend/` | HTTP/WS 服务器、数据、认证、各项功能 | `nomifun-*` | 44 |
+| `crates/shared/` | 真正跨层共享工具 | mixed | 5 |
 
-agent 分组是**基本自包含的** —— `nomi-*` crate 不引用 `nomifun-*` crate、工作区根目录或 Tauri / sqlx / axum 等后端框架。反向依赖默认通过 `nomifun-ai-agent` 这条接缝汇集，它再导出 `nomi_config`、`nomi_types` 和 `RequirementSink`。当前 `nomifun-app` 与 `nomifun-gateway` 为 browser/computer-use bridge 存在 feature-gated 直接依赖例外；新增例外必须有明确 feature gate 和文档说明。
+agent 分组**大体自包含** —— 绝大多数 `nomi-*` crate 不引用 `nomifun-*` crate、工作区根目录或 Tauri / sqlx / axum 等后端框架。存在一小撮明确的例外：`nomi-agent` 与 `nomi-config` 依赖 `nomifun-common`；`nomi-media` 与 `nomi-vimax` 依赖 `nomifun-cloud`；浏览器栈（`nomi-browser`、`nomi-browser-engine`）依赖 `nomifun-browser-platform` / `nomifun-secret`。反向依赖默认通过 `nomifun-ai-agent` 这条接缝汇集，它再导出 `nomi_config`、`nomi_types` 和 `RequirementSink`。当前 `nomifun-app` 与 `nomifun-gateway` 为 browser/computer-use bridge 存在 feature-gated 直接依赖例外，个别功能型 crate（如 `nomifun-robot`）也直接绑定 `nomi-*`；新增例外必须有明确 feature gate 和文档说明。
 
 ## 各部分的位置
 
 ```
 nomifun-tauri/
 ├─ apps/
-│   ├─ desktop/   nomifun-desktop  (Tauri 2 shell, this is "Flowy" the product)
+│   ├─ desktop/   Flowy 包        (Tauri 2 shell, this is "Flowy" the product)
 │   └─ web/       nomifun-web      (standalone server: /api + SPA on one port)
 ├─ crates/
-│   ├─ agent/     15 nomi-*  crates  → see agent-engine.md
-│   ├─ backend/   34 nomifun-* crates → see backend-crates.md
-│   └─ shared/    3 shared crates
+│   ├─ agent/     24 crates (23 nomi-* + flowy-web) → see agent-engine.md
+│   ├─ backend/   44 nomifun-* crates → see backend-crates.md
+│   └─ shared/    5 shared crates
 ├─ ui/            React 19 + Vite 6 + Arco + UnoCSS  → see frontend.md
 └─ docs/
     ├─ architecture/   (this folder)
@@ -127,9 +130,9 @@ nomifun-tauri/
 
 ## 宿主一览
 
-| 维度 | 桌面（`nomifun-desktop`） | Web（`nomifun-web`） |
+| 维度 | 桌面（`Flowy` 包，`apps/desktop`） | Web（`nomifun-web`） |
 | --- | --- | --- |
-| 二进制 | `nomifun-desktop`（Tauri 外壳） | `nomifun-web`（axum 服务器） |
+| 二进制 | `Flowy`（Tauri 外壳；包名为 `Flowy`，而非 `nomifun-desktop`） | `nomifun-web`（axum 服务器） |
 | 后端 | 进程内嵌入（独立线程 + tokio runtime） | 进程内嵌入 |
 | 认证模式 | `TrustLocalToken`：仅信任带本次启动 secret 的 WebView 请求 | 默认要求认证；可通过 `--insecure-no-auth` 关闭 |
 | 端口 | 启动时选取的空闲 localhost 端口（`bind 127.0.0.1:0`） | `127.0.0.1:8787`（可通过 `--host`/`--port` 配置） |

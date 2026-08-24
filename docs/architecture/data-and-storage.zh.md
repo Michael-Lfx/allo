@@ -1,5 +1,7 @@
 # 数据与存储
 
+> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6`
+
 数据库和 ID 改动还必须遵守仓库级
 [数据与标识符规范](../contributing/data-and-identifier-standards.zh.md)。
 本文主要描述存储行为；可执行 schema 与逻辑关联 registry 仍是实现层面的
@@ -14,15 +16,19 @@ NomiFun 把状态保存在三个地方：一个 SQLite 数据库（一切结构�
 
 | 宿主 | 默认路径 | 覆盖方式 |
 | --- | --- | --- |
-| 桌面（`nomifun-desktop`） | 按用户的应用数据目录：Windows 上的 `%LOCALAPPDATA%\NomiFun`，macOS 上的 `~/Library/Application Support/NomiFun`，Linux 上的 `$XDG_DATA_HOME/NomiFun`（通常为 `~/.local/share/NomiFun`）。设置了 `NOMIFUN_DATA_DIR` 时，该值**就是**数据根（按字面值，不追加 `/Nomi`）。当前目录或旧根目录中的 pre-v3 数据集会整体退役；其中的产品行不会搬入 v3。 | 环境变量 `NOMIFUN_DATA_DIR` |
-| Web（`nomifun-web`）与 `nomicore` bin | 与桌面外壳**完全相同**的按用户目录 —— `%LOCALAPPDATA%\NomiFun` / `~/Library/Application Support/NomiFun` / `$XDG_DATA_HOME/NomiFun`（旧的相对 `./data` 默认值已删除）。设置了 `NOMIFUN_DATA_DIR` 时取**字面值**（不追加 `/Nomi`），因此 Docker `/data`、systemd `/var/lib/nomifun` 部署不受影响。 | 命令行 `--data-dir` 或环境变量 `NOMIFUN_DATA_DIR` |
+| 桌面（`Flowy` 包） | 按用户的应用数据目录、厂商目录 `Flowy` 之下：Windows 上的 `%LOCALAPPDATA%\Flowy\Nomi`，macOS 上的 `~/Library/Application Support/Flowy/Nomi`，Linux 上的 `$XDG_DATA_HOME/Flowy/Nomi`（通常为 `~/.local/share/Flowy/Nomi`）。设置了 `NOMIFUN_DATA_DIR`（别名 `FLOWY_DATA_DIR`）时，该值**就是**数据根（按字面值，不追加 `/Nomi`）。当前目录或旧根目录中的 pre-v3 数据集会整体退役；其中的产品行不会搬入 v3。 | 环境变量 `NOMIFUN_DATA_DIR` / `FLOWY_DATA_DIR` |
+| Web（`nomifun-web`）与 `nomicore` bin | 与桌面外壳**完全相同**的按用户目录 —— `%LOCALAPPDATA%\Flowy\Nomi` / `~/Library/Application Support/Flowy/Nomi` / `$XDG_DATA_HOME/Flowy/Nomi`（旧的相对 `./data` 默认值已删除）。设置了 `NOMIFUN_DATA_DIR` 时取**字面值**（不追加 `/Nomi`），因此 Docker `/data`、systemd `/var/lib/nomifun` 部署不受影响。 | 命令行 `--data-dir` 或环境变量 `NOMIFUN_DATA_DIR` |
+
+此外，`nomifun-common::storage_paths` 的路径解析辅助还会识别 `FLOWY_HOME` /
+`NOMIFUN_HOME`。
 
 数据目录内部：
 
 ```
 <data_dir>/
-├── nomifun-backend.db   SQLite database (sqlx)
-├── server.lock          exclusive server-lock address file (the lock lives on
+├── flowy-backend.db       SQLite database (sqlx)；遗留的 nomifun-backend.db
+│                          打开时自动改名
+├── server.lock            exclusive server-lock address file (the lock lives on
 │                        the open OS handle; a leftover file is harmless)
 ├── logs/                tracing-appender file output (rotated daily)
 ├── diagnostics/
@@ -32,11 +38,11 @@ NomiFun 把状态保存在三个地方：一个 SQLite 数据库（一切结构�
 └── companion/                 companion file domain (shared memory hub + per-companion profiles, see below)
 ```
 
-三个宿主的缺省默认值都经由同一个共享辅助函数解析：[`nomifun_app::cli::default_data_dir()`](../../crates/backend/nomifun-app/src/cli.rs) —— `dirs::data_local_dir()/NomiFun<channel-suffix>`（按用户的 application-data 位置）。stable 使用 `NomiFun`，非 stable channel 使用 `NomiFun-dev`、`NomiFun-beta` 等**同级目录**——channel 目录永远不嵌套在 stable 根之内；仅当操作系统报告不出用户目录时才极端回退到系统临时目录（`<system temp>/nomifun-data<channel-suffix>`，如 dev 为 `nomifun-data-dev`）。环境变量语义在所有宿主上统一：包括桌面外壳在内（见 [`apps/desktop/src/main.rs`](../../apps/desktop/src/main.rs)），`NOMIFUN_DATA_DIR` 都按**字面值**作为最终数据根（外壳不再追加 `"Nomi"`；clap `env` 绑定与 `nomicore` 共享——它以前不读这个变量）。位于 `NomiFun/Nomi<suffix>` 的遗留数据集会在升级后首次启动时由一次性自动迁移搬入 `NomiFun<suffix>`（抗崩溃、中断后下次启动续跑；旧应用实例仍在运行时推迟到下次启动），数据库中持久化的绝对路径会在搬迁后一次性改写。Windows 上展示或持久化的路径不再带 `\\?\` 扩展长度前缀。v3 不会把 `<system temp>/nomifun-data` 或其他旧根目录中的产品数据复制到 active dataset；检测到历史受管数据集时，reset 状态机会将其完整移动到 retired/quarantine 位置，然后创建全新的 v3 数据集，不改写历史数据库路径。
+三个宿主的缺省默认值都经由同一个共享辅助函数解析：[`nomifun_app::cli::default_data_dir()`](../../crates/backend/nomifun-app/src/cli.rs) —— `dirs::data_local_dir()/Flowy/Nomi<channel-suffix>`（按用户 application-data 位置、厂商目录 `Flowy` 之下）。stable 使用 `Nomi`，非 stable channel 使用 `Nomi-dev`、`Nomi-beta` 等**同级目录**——channel 目录永远不嵌套在 stable 根之内；仅当操作系统报告不出用户目录时才极端回退到系统临时目录（`<system temp>/nomifun-data<channel-suffix>`，如 dev 为 `nomifun-data-dev`）。环境变量语义在所有宿主上统一：包括桌面外壳在内（见 [`apps/desktop/src/main.rs`](../../apps/desktop/src/main.rs)），`NOMIFUN_DATA_DIR` / `FLOWY_DATA_DIR` 都按**字面值**作为最终数据根（外壳不再追加 `"Nomi"`；clap `env` 绑定与 `nomicore` 共享——它以前不读这个变量）。品牌迁移前的旧布局（`<app-data>/NomiFun/Nomi<suffix>`）中的遗留数据集会在升级后首次启动时由一次性自动迁移搬入 Flowy 布局（`Flowy/Nomi<suffix>`）（抗崩溃、中断后下次启动续跑；旧应用实例仍在运行时推迟到下次启动），数据库中持久化的绝对路径会在搬迁后一次性改写；遗留的 `nomifun-backend.db` 文件在打开时会改名为 `flowy-backend.db`。Windows 上展示或持久化的路径不再带 `\\?\` 扩展长度前缀。v3 不会把 `<system temp>/nomifun-data` 或其他旧根目录中的产品数据复制到 active dataset；检测到历史受管数据集时，reset 状态机会将其完整移动到 retired/quarantine 位置，然后创建全新的 v3 数据集，不改写历史数据库路径。
 
 ### 每个 channel 一个目录、一份状态
 
-同一 build channel 的宿主共用一个默认值是有意为之。已安装桌面应用与生产形态的 `bun run serve:web` 使用 stable 的 `NomiFun`；`bun run dev`、`dev:web` 与 `build:fast` 使用同级的 `NomiFun-dev`。这样既保留每个 channel 内的一份状态，也避免关闭鉴权或实验性的开发循环触碰已安装应用的状态。需要把 stable 快照带入开发环境时可运行 `bun run seed:dev`；需要显式选择目录时则使用 `NOMIFUN_DATA_DIR` 或 `--data-dir`。
+同一 build channel 的宿主共用一个默认值是有意为之。已安装桌面应用与生产形态的 `bun run serve:web` 使用 stable 的 `Flowy\Nomi`；`bun run dev`、`dev:web` 与 `build:fast` 使用同级的 `Nomi-dev`。这样既保留每个 channel 内的一份状态，也避免关闭鉴权或实验性的开发循环触碰已安装应用的状态。需要把 stable 快照带入开发环境时可运行 `bun run seed:dev`；需要显式选择目录时则使用 `NOMIFUN_DATA_DIR` 或 `--data-dir`。
 
 让这种共享变得安全的是**排他服务器锁**：启动时（`bootstrap::init_environment`，早于数据库打开）后端对 `{data_dir}/server.lock` 取 OS 级排他 advisory 锁（`fs2`：Unix 上 `flock`，Windows 上 `LockFileEx`）。进程退出*或崩溃*时锁由 OS 释放，因此残留的 `server.lock` 文件无害，不需要任何过期启发式。同一目录上的第二个后端会快速失败，错误信息点名持有者（pid + exe）并给出两条出路：关掉另一个实例，或让这一个指向自己的独立目录。桌面外壳现在会把后端启动失败弹成原生错误对话框并退出（以前是静默白屏）。`nomicore doctor` 与 `mcp-*` stdio 子命令不受该锁影响（`doctor` 设计上就允许与运行中的服务器并存）。
 
@@ -69,7 +75,7 @@ IDMM Intervention。
 - `init_database` —— 打开或初始化 v3 baseline 数据库。
 - `init_database_memory` —— 测试用的内存版本。
 
-该 crate 暴露约 20 对仓储 **trait + Sqlite 实现**。下面是非穷尽列表（完整列表见 `lib.rs` 中的 `pub use repository::{...}` 块）：
+该 crate 暴露 33 对仓储 **trait + Sqlite 实现**。下面是非穷尽列表（完整列表见 `lib.rs` 中的 `pub use repository::{...}` 块——未列出的还包括 `IKnowledgeRepository`、`IGoalRepository`、`ISshHostRepository`、`IAttachmentRepository`、`ICompanionTokenRepository`、`IAgentExecutionTemplateRepository` 等）：
 
 | Trait | Sqlite 实现 | 存储 |
 | --- | --- | --- |
@@ -96,8 +102,11 @@ IDMM Intervention。
 
 ### v3 baseline 与数据集 reset
 
-内嵌 SQL 定义的是全新、空数据库的 v3 baseline。`init_database` 可以记录并
-校验该 baseline，但不会把 pre-v3 产品行转换为 v3 行。
+内嵌 SQL 定义的是全新、空数据库的 v3 baseline。baseline 之后的 schema
+演进通过 [`crates/backend/nomifun-db/migrations/`](../../crates/backend/nomifun-db/migrations/)
+下 45 个 append-only 编号迁移完成，由 `sqlx::migrate!()` 在每次启动时应用；
+迁移序列必须以 `001_v3_baseline.sql` 开头。`init_database` 可以记录并
+校验该 baseline，但绝不会把 pre-v3 产品行转换为 v3 行。
 
 打开 SQLite 之前，bootstrap 会检查数据集契约和 generation。不存在数据集时
 初始化 v3；检测到历史或不兼容数据集时整体退役并创建新的空 v3 数据集。
@@ -107,8 +116,9 @@ IDMM Intervention。
 
 - 每张产品表都有 `id INTEGER PRIMARY KEY AUTOINCREMENT`；
 - 稳定业务 ID 是裸标准 UUIDv7；
-- schema 没有物理 `FOREIGN KEY`、`REFERENCES`、trigger、数据库 cascade 或
-  `*_row_id`；
+- schema 没有物理 `FOREIGN KEY`、`REFERENCES`、cascade 或
+  `*_row_id`；trigger 仅限登记在 `TRIGGER_CONTRACTS` 白名单内的守卫触发器
+  （只通过 `RAISE(ABORT)` 强制身份不可变 / 禁删除 / 准入规则）；
 - 每个逻辑关联都有必需索引和 registry 登记。
 
 ### 定时任务所有权
@@ -186,7 +196,7 @@ reset 流程，不要将其与普通工作目录切换混用。
 - [`nomifun-file::watch_service`](../../crates/backend/nomifun-file/src/watch_service.rs) 借助 `notify` 把文件系统变更通过 WS 反馈给 SPA。
 - [`nomifun-file::snapshot_service`](../../crates/backend/nomifun-file/src/snapshot_service/) 记录工具编辑前后的快照以便审计。
 
-仓库通过 `nomifun_common::error::workspace_path_has_edge_whitespace_segment` 强制额外约束：工作区路径的任何目录名不得以空白字符开头或结尾（或整段全为空白）——这类名称会破坏 Win32 路径往返，且在任何 UI 中都无法分辨。目录名内部含空格则完全支持：macOS 默认的用户级数据目录（`~/Library/Application Support/NomiFun`）本身就含空格，而所有子进程管道（`Command::current_dir`、PTY cwd、ACP 会话 JSON）均以独立参数传递工作区路径，对空格安全。
+仓库通过 `nomifun_common::error::workspace_path_has_edge_whitespace_segment` 强制额外约束：工作区路径的任何目录名不得以空白字符开头或结尾（或整段全为空白）——这类名称会破坏 Win32 路径往返，且在任何 UI 中都无法分辨。目录名内部含空格则完全支持：macOS 默认的用户级数据目录（`~/Library/Application Support/Flowy/Nomi`）本身就含空格，而所有子进程管道（`Command::current_dir`、PTY cwd、ACP 会话 JSON）均以独立参数传递工作区路径，对空格安全。
 
 ### 知识库挂载（`.nomi/knowledge/`）
 
@@ -220,13 +230,13 @@ NomiFun 自带其 `bun` 运行时（1.3.13），使 MCP 服务器与工具子进
 
 | 步骤 | 发生了什么 |
 | --- | --- |
-| 编译期 | 目标 OS/arch 的 bun 二进制经过 **zstd 压缩** 并通过 `include_dir!` 内嵌进 `nomifun-runtime`。 |
+| 编译期 | 目标 OS/arch 的 bun 二进制经 zstd 压缩为单一 blob（`bun.blob.zst`），由 `build.rs` 通过 `include_bytes!` 内嵌进 `nomifun-runtime`。内嵌由 `NOMIFUN_EMBED_BUN=1`（CI）门控；dev 构建只产出 stub。 |
 | 首次运行 | `nomifun_runtime::init(&data_dir)` 把二进制解压到 **`<data_dir>/runtime/`** 子树（详见下文运行时缓存说明）。 |
 | 启动 | `enhance_process_path()` 把 bun 的 bin 目录前置到进程 `PATH`，**且早于任何 tokio 线程被构建**（顺序在两个宿主的 `main.rs` 中都得到强制）。 |
 | 派生 | `nomi_process_runtime::ChildProcessBuilder` 继承启动期合并后的 `PATH`，使 `npx`、`bun` 与其他 JS 工具能正确解析。 |
 | 清理 | `nomi_process_runtime::ProcessSupervisor` 或 `kill_process_tree` 统一持有并回收 Agent / MCP 子进程树。 |
 
-运行时缓存锚定在后端的 `data_dir` 上：[`nomifun_runtime::init(&data_dir)`](../../crates/backend/nomifun-runtime/src/cache.rs) 把 `<data_dir>/runtime` 记为缓存根，因此在桌面上 bun 二进制会解压到 `<data_dir>/runtime/bun-<version>-<sha12>/` —— 即 Windows 上默认的 `%LOCALAPPDATA%\NomiFun\runtime\bun-…\`（macOS/Linux 为对应的按用户 app-data 位置），或设置了 env var 时的 `$NOMIFUN_DATA_DIR/runtime/bun-…/`。当 `init` 未被调用时（`mcp-*` 子命令、单元测试、`build.rs`），缓存通过 `dirs::cache_dir()` 回退到平台缓存目录：Windows 上的 `%LOCALAPPDATA%\nomifun\runtime\`、macOS 上的 `~/Library/Caches/nomifun/runtime/`、Linux 上的 `$XDG_CACHE_HOME/nomifun/runtime/`（或 `~/.cache/nomifun/runtime/`）。
+运行时缓存锚定在后端的 `data_dir` 上：[`nomifun_runtime::init(&data_dir)`](../../crates/backend/nomifun-runtime/src/cache.rs) 把 `<data_dir>/runtime` 记为缓存根，因此在桌面上 bun 二进制会解压到 `<data_dir>/runtime/bun-<version>-<sha12>/` —— 即 Windows 上默认的 `%LOCALAPPDATA%\Flowy\Nomi\runtime\bun-…\`（macOS/Linux 为对应的按用户 app-data 位置），或设置了 env var 时的 `$NOMIFUN_DATA_DIR/runtime/bun-…/`。当 `init` 未被调用时（`mcp-*` 子命令、单元测试、`build.rs`），缓存通过 `dirs::cache_dir()` 回退到平台缓存目录：Windows 上的 `%LOCALAPPDATA%\Flowy\runtime\`、macOS 上的 `~/Library/Caches/Flowy/runtime/`、Linux 上的 `$XDG_CACHE_HOME/Flowy/runtime/`（或 `~/.cache/Flowy/runtime/`）。
 
 ## 日志
 
@@ -259,8 +269,8 @@ NomiFun 自带其 `bun` 运行时（1.3.13），使 MCP 服务器与工具子进
 
 - **数据库** —— 使用 SQLite Backup API 或在数据库连接上执行
   `VACUUM INTO` 创建一致快照。不要直接复制
-  `nomifun-backend.db`：WAL 数据可能仍在
-  `nomifun-backend.db-wal` 中，裸复制可能得到不完整数据库。
+  `flowy-backend.db`：WAL 数据可能仍在
+  `flowy-backend.db-wal` 中，裸复制可能得到不完整数据库。
 - **备份清单** —— 记录 v3 schema、storage-generation/dataset ID、创建时间
   以及每个文件的校验和。Restore 保留稳定业务 UUIDv7；技术 `id` 在目标
   数据集中重新分配，关系从 registry 登记的业务键、自然键、JSON 和

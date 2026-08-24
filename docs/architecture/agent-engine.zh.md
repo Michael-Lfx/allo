@@ -1,6 +1,9 @@
 # Agent 引擎
 
-Agent 引擎位于 [`crates/agent/`](../../crates/agent/)，后端主要通过
+> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6`
+
+Agent 引擎位于 [`crates/agent/`](../../crates/agent/)（24 个 crate：23 个
+`nomi-*` 加 `flowy-web`），后端主要通过
 [`nomifun-ai-agent`](../../crates/backend/nomifun-ai-agent/) 消费它。本页是
 当前 workspace 的实现地图，不再是抽离独立仓库的计划。
 
@@ -19,11 +22,19 @@ Agent 引擎位于 [`crates/agent/`](../../crates/agent/)，后端主要通过
 | `nomi-memory` | 记忆存储与检索原语。 |
 | `nomi-agent` | 核心 engine loop、session、压缩粘合、confirmations、output sinks、skill tool、requirement tools，以及 crate-private 的 embedded AgentExecution 投影。 |
 | `nomi-agent-trace` | 会话观测 JSONL：capture、DualQueue writer、配额 GC（无按天 TTL）、回合/调用投影。现行产品语义见 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)。 |
+| `nomi-agent-eval` | 确定性、feature-gated 的 agent 会话评测 harness。 |
 | `nomi-cli` | 使用同一引擎的独立 `nomi` CLI。 |
 | `nomi-computer` | 桌面 computer-use 工具实现。 |
 | `nomi-a11y` | computer-use 流程使用的 accessibility helper。 |
 | `nomi-browser-engine` | 自托管 browser/CDP 自动化引擎。 |
 | `nomi-browser` | Browser-use 工具 facade。 |
+| `flowy-web` | 托管式 web_search / web_extract 工具 crate：免密钥、可插拔 provider（由 `nomifun-ai-agent` 消费）。 |
+| `nomi-coding` | 编码会话 harness：完成策略、提示词、进度/验证门、todo 续跑与压缩偏好。 |
+| `nomi-auxiliary` | 旁路小任务（POI 标注、消解标注）的最小辅助 LLM 客户端类型。 |
+| `nomi-insights-core` | 去标识化的洞察贡献管线与 POI 清洗辅助。 |
+| `nomi-media` | Flowy 后端的媒体生成与多步工作流协调。 |
+| `nomi-vimax` | ViMax 视频生成管线。 |
+| `nomi-poi` | 本地用户兴趣（POI）话题存储。 |
 
 `nomi_delegate` 在 `nomi-types` 中只有一套请求和回执契约：
 `ParallelDelegationRequest`、`AgentExecutionReceipt` 与 `AgentExecutionStatus`。
@@ -42,10 +53,15 @@ embedded 多 Agent 工作由宿主维护私有 progress ledger，并通过 `Cont
 hook，因为它会绕过 read-only 与 synthesis 的权限边界；未来若恢复，必须经过相同的进程
 capability 与 effect 判定。
 
-Agent crates 不依赖 `nomifun-*` 后端 crate。常规的后端到 agent 集成通过
-`nomifun-ai-agent` 进入；`nomifun-app` 与 `nomifun-gateway` 中 feature-gated
-的桥接面会直接依赖 browser/computer-use crate，以便把这些能力暴露为 stdio
-或公开工具。
+Agent 分组对后端**大体独立，但并非完全**：`nomi-agent` 与 `nomi-config` 依赖
+`nomifun-common`；`nomi-media` 与 `nomi-vimax` 依赖 `nomifun-cloud`；浏览器栈
+（`nomi-browser`、`nomi-browser-engine`）依赖 `nomifun-browser-platform` /
+`nomifun-secret`。常规的后端到 agent 集成通过 `nomifun-ai-agent` 进入；
+`nomifun-app` 与 `nomifun-gateway` 中 feature-gated 的桥接面会直接依赖
+browser/computer-use crate 以便把这些能力暴露为 stdio 或公开工具；媒体域功能
+crate（`nomifun-canvas`、`nomifun-media`、`nomifun-vimax`、`nomifun-poi`、
+`nomifun-insights`、`nomifun-companion`、`nomifun-robot`、`nomifun-cloud`）
+则直接绑定各自匹配的 `nomi-*` 引擎。
 
 ## Runtime Families
 
@@ -55,8 +71,9 @@ Flowy 支持几类运行时：
   skills、MCP、memory、browser 与 computer-use 支持。会话观测 JSONL 由
   `nomi-agent-trace` 记录（采集始终开启，HTTP 读取要开发者模式）。详见
   [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md)。
-- **ACP-style CLI agents**：Claude Code、Codex、Gemini CLI、Qwen/OpenCode
-  风格集成及相关 CLI，由 `nomifun-ai-agent` 管理。
+- **ACP-style CLI agents**：Claude Code 与 Codex 有第一方 assembler 支持，
+  OpenCode 有错误格式兼容；其他 CLI 通过通用的 registry 解析命令启动
+  （`acp.rs` → `meta.resolved_command`）。均由 `nomifun-ai-agent` 管理。
 - **Remote/Open capability surfaces**：外部 agent 通过 companion-token 认证的
   `/mcp`、`/mcp-agent` 或 `/v1` 入口连接。
 

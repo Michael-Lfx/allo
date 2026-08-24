@@ -1,7 +1,7 @@
 # Managed Fetch Provider Maintenance Guide
 
 Date: 2026-08-02
-Last updated: 2026-08-04
+Last updated: 2026-08-24（元数据维护，未重写结论；核对基准 commit `d791691c6`）
 
 This guide describes the seams that must remain stable when the managed fetch
 provider changes. The Desktop host selects only `ManagedExtractMode`; it never

@@ -1,5 +1,7 @@
 # Web Search & Fetch Architecture
 
+> **最后维护：** 2026-08-24（元数据维护；本子目录为托管式 Web 搜索/抓取的演进与决策记录，结论以各文标注日期为准）· 核对基准：commit `d791691c6`
+
 This is the entry point for Flowy's `web_search` / `web_extract` architecture.
 Read this first when working on Search providers, MCP Fetch, local extraction,
 host composition, privacy, budgets, or lifecycle.

@@ -1,5 +1,6 @@
 # Session Logs / 工作流观测：背景、对照与分阶段方案
 
+> **最后维护：** 2026-08-24（元数据复核，未重写结论；核对基准 commit `d791691c6`）  
 > **现行 UI 以 [session-observation-workflow-ui-plan.zh.md](session-observation-workflow-ui-plan.zh.md) 与 [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准，文内 Drawer 已作废。**  
 > **文档状态：契约考古；S1–S8 / U0–U5 已落地，配额 GC 与请求扫描列表随 PR #119 合入 `main`。不要把文内 S 步骤当成待办。**  
 > 撰写日期：2026-08-18  

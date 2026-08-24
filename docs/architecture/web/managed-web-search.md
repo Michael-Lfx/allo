@@ -1,5 +1,7 @@
 # Managed Web Search
 
+> **最后维护：** 2026-08-24（元数据维护，未重写结论；核对基准 commit `d791691c6`）
+>
 > Full evolution record and lessons:
 > [managed-web-search-fetch-evolution.md](managed-web-search-fetch-evolution.md).
 

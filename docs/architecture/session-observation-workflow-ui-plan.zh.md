@@ -1,5 +1,6 @@
 # Session Logs — 执行计划（U0–U5）
 
+> **最后维护：** 2026-08-24（元数据复核，未重写结论；核对基准 commit `d791691c6`）  
 > **文档状态：实施稿；U0–U5 已合入 `main`；配额 GC 与请求扫描列表随 PR #119 落地。现行语义以本文 + 源码 + [agent-observability-and-eval.zh.md](agent-observability-and-eval.zh.md) 为准**  
 > 日期：2026-08-19  
 > 修订：enqueue_order 合并写盘（禁止 control-first persist）、Delete tombstone vs Clear/Reset generation、16MiB 预算默认 128KiB×128、`recorder_health` 在 list 顶层、quota 不删 active segment、Call 410 `observation_retention`、`turn/end` 零等待、控制队满与 `try_enqueue` 对齐、§1 改为已落地/收口缺口；U3 请求 `messages`/`tools` 默认扫描列表。  

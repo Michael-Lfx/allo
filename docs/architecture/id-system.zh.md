@@ -1,5 +1,7 @@
 # ID 体系
 
+> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6`
+
 本文是 NomiFun v3 ID 体系的架构权威契约，适用于产品数据库表、Rust 领域模型、
 HTTP/WebSocket/MCP 协议、运行时注册表、受管文件、备份与导入。面向贡献者的
 强制执行规范见
@@ -28,13 +30,13 @@ v3 明确区分五类概念：
 
 2. 需要跨数据库、跨设备、跨文件、API、事件或受管 store 稳定定位的实体，
    增加 `user_id`、`conversation_id`、`message_id`、`mcp_server_id`、
-   `webhook_id`、`credential_id`、`creation_task_id` 等具名裸 UUIDv7
+   `webhook_id`、`creation_task_id` 等具名裸 UUIDv7
    业务字段。
 3. 从不离开所属持久化子系统的关系、单例、缓存和事件行只使用整数 `id`
    作为内部技术身份，不为形式统一而额外生成 UUID，也不把该值升级为产品
    wire locator。
 4. 表间关系由 Repository/Service 维护为逻辑外键；产品 schema 不包含物理
-   外键、`REFERENCES`、trigger 或数据库级联。
+   外键、`REFERENCES` 或数据库级联；trigger 仅限登记的守卫触发器白名单。
 5. v3 是新的数据集代际。历史数据集整体重置，不迁移旧行和旧 ID 格式。
 
 ## 技术主键
@@ -130,8 +132,10 @@ Suggestion、Learn Run、Session Window、Collected Event、Skill 与 Skill Patt
 
 凡是由产品 API、运行时注册表、受管文件、备份或其他 side-store 定位的实体，
 即使生命周期只在本安装内，也使用具名裸 UUIDv7 业务字段。当前 v3 baseline
-包括 `mcp_server_id`、`webhook_id`、`credential_id`、`creation_task_id`、
+包括 `mcp_server_id`、`webhook_id`、`creation_task_id`、
 `conversation_artifact_id` 和 `intervention_id`；表内 `id` 仍然只是技术主键。
+（原 `connector_credentials` 表已由迁移 `026_drop_connector_credentials.sql`
+删除，不再存在 `credential_id` 业务 ID。）
 
 当前产品 wire 契约不引入整数业务 ID，也不引入通用 `id` alias。未来若内部
 子系统确实需要整数 handle，必须限制在该子系统内部，不能越过产品边界。
@@ -143,11 +147,15 @@ v3 全面移除产品 schema 中的物理外键。DDL 不得出现：
 ```text
 FOREIGN KEY
 REFERENCES
-CREATE TRIGGER
+CREATE TRIGGER        （TRIGGER_CONTRACTS 白名单内的守卫触发器除外）
 ON DELETE CASCADE
 ON UPDATE CASCADE
 *_row_id
 ```
+
+守卫触发器只做完整性哨兵（对身份篡改或禁止删除 `RAISE(ABORT)`），
+不承载关系、不执行级联；`validate_no_triggers` 会拒绝白名单之外的任何
+trigger。
 
 一条关系只保存一个引用字段：
 
@@ -239,8 +247,10 @@ Skill 名、Extension slug、模型名、URL、locale、tag 和 singleton key �
 - 技术行 ID 留在 repository/storage 实现内部；
 - 外部 ID 是显式类型的不透明值；
 - 非法值直接失败，不得变成 `0`、空字符串或另一类 ID；
-- JSON 中的可选业务 ID 缺省时必须省略字段；显式 `null`、旧字段别名和错误
-  JSON 类型均为数据契约违规；
+- JSON 中的可选业务 ID 缺省时必须省略字段；显式 `null` 和错误
+  JSON 类型均为数据契约违规。两个退役的 provider 别名
+  （`flowy-cloud`、`google-auth-gemini`）在边界上被 `ProviderId::parse`
+  有意接受并归一化为保留 UUIDv7 常量，而非直接拒绝；
 - Route、DTO、缓存、事件和文件 manifest 与领域模型使用相同的业务或外部
   字段类型；技术 `id` 绝不是这些边界上的可移植值。
 

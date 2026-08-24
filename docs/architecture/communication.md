@@ -1,5 +1,7 @@
 # Communication
 
+> **Last maintained:** 2026-08-24 · Fact-checked against commit `d791691c6`
+
 Flowy has several transport surfaces. They deliberately serve different
 callers and security models.
 
@@ -49,18 +51,21 @@ over HTTP; no parallel execution-event family exists.
 
 ## Tauri IPC
 
-Rust commands currently registered by the desktop shell include:
+Rust commands currently registered by the desktop shell include (see
+`generate_handler!` in `apps/desktop/src/main.rs` for the authoritative list):
 
-- `install_update`
-- `sync_companion_windows`
-- `webui_get_status`
-- `webui_start`
-- `webui_stop`
-- `set_keep_awake`
-- `set_tray_labels`
+- updater: `install_update`, `download_update`, `update_package_status`
+- `restart_application`
+- companion windows: `sync_companion_windows`, `get_companion_local_pointer`
+- WebUI LAN listener: `webui_get_status`, `webui_start`, `webui_stop`
+- `set_keep_awake`, `set_tray_labels`
+- OS notifications: `show_os_notification_cmd` plus completion-toast commands
+- memory panel commands (`nomi-memory-panel` page support)
+- updater context helpers: `get_updater_install_context`
 
 The renderer also uses Tauri JS APIs/plugins for window, dialog, notification,
-process, autostart, deep-link, updater, and path operations where appropriate.
+autostart, deep-link, and path operations where appropriate; renderer-side
+restart goes through the custom `restart_application` command.
 
 ## MCP And Agent Bridges
 

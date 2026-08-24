@@ -1,9 +1,12 @@
 # Backend Crates
 
-The 43 `nomifun-*` crates under [`crates/backend/`](../../crates/backend/) form
+> **Last maintained:** 2026-08-24 · Fact-checked against commit `d791691c6`
+
+The 44 `nomifun-*` crates under [`crates/backend/`](../../crates/backend/) form
 the HTTP/WS server. Together they compile into the `nomifun-app` library crate
 and, via `nomifun-app/src/main.rs`, the **`nomicore`** binary. The two app hosts
-(`nomifun-desktop` and `nomifun-web`) link `nomifun-app` directly and call
+(the desktop shell package `Flowy` under `apps/desktop`, and `nomifun-web`)
+link `nomifun-app` directly and call
 `run_embedded_server` or compose `create_router` themselves.
 
 The grouping below mirrors how the crates depend on each other in the workspace
@@ -21,12 +24,15 @@ that need agent concepts should consume them through
 There are deliberate, feature-gated direct-dependency exceptions:
 
 - [`nomifun-app`](../../crates/backend/nomifun-app/) depends on optional
-  `nomi-computer`, `nomi-browser`, `nomi-config`, `nomi-tools`, and
-  `nomi-types` for the `mcp-computer-stdio` and `mcp-browser-stdio` bridge
-  subcommands.
+  `nomi-computer`, `nomi-browser`, `nomi-browser-engine`, `nomi-config`,
+  `nomi-tools`, and `nomi-types` for the `mcp-computer-stdio` and
+  `mcp-browser-stdio` bridge subcommands.
 - [`nomifun-gateway`](../../crates/backend/nomifun-gateway/) depends on optional
   `nomi-browser`, `nomi-computer`, `nomi-config`, `nomi-tools`, and
   `nomi-types` for the platform Gateway browser/computer registries.
+- [`nomifun-robot`](../../crates/backend/nomifun-robot/) binds `nomi-config`,
+  `nomi-providers`, and `nomi-types` unconditionally: the LAN robot gateway
+  speaks the provider protocol directly without a Conversation runtime.
 
 Do not add another direct `nomi-*` dependency without documenting why it cannot
 go through the normal seam or one of those bridge surfaces.
@@ -98,6 +104,14 @@ identifiers remain opaque.
 | [`nomifun-customer-service`](../../crates/backend/nomifun-customer-service/) | Standalone customer-service domain for serving strangers over IM channels. Shares no concepts with the companion/conversation system: dialogues are the domain's own aggregate and replies come from a disposable one-shot engine session with a fixed read-only tool registry. |
 | [`nomifun-public`](../../crates/backend/nomifun-public/) | Companion-token authenticated public front doors: `/mcp`, `/mcp-agent`, and `/v1`. |
 | [`nomifun-secret`](../../crates/backend/nomifun-secret/) | Per-companion browser-use secret storage and credential lookup. |
+| [`nomifun-cloud`](../../crates/backend/nomifun-cloud/) | Remote LLM server client: Flowy cloud login plus an OpenAI-compatible inference gateway client used by cloud-backed features. Also the shared backend dependency of `nomi-media` / `nomi-vimax`. |
+| [`nomifun-canvas`](../../crates/backend/nomifun-canvas/) | Video-generation Canvas mode HTTP surface (`/api/video-canvas/*`), built on `nomi-vimax` pipelines. |
+| [`nomifun-vimax`](../../crates/backend/nomifun-vimax/) | ViMax video generation HTTP surface (`/api/vimax/*`). |
+| [`nomifun-media`](../../crates/backend/nomifun-media/) | Media settings, credits, and workflow-history HTTP surface (delegates engine work to `nomi-media`). |
+| [`nomifun-learning`](../../crates/backend/nomifun-learning/) | Domain-neutral learning engine over knowledge bases (`/learn` pages are its frontend). |
+| [`nomifun-poi`](../../crates/backend/nomifun-poi/) | Local user-interest (POI) topic management API (engine in `nomi-poi`). |
+| [`nomifun-insights`](../../crates/backend/nomifun-insights/) | HTTP surface for insights contribution management (engine in `nomi-insights-core`). |
+| [`nomifun-robot`](../../crates/backend/nomifun-robot/) | Robot gateway for LAN xiaozhi-firmware robots acting as a companion embodiment; documented direct-`nomi-*` exception above. |
 
 ## Infrastructure features
 
@@ -110,6 +124,8 @@ identifiers remain opaque.
 | [`nomifun-file`](../../crates/backend/nomifun-file/) | Sandboxed filesystem under the conversation work dir (`browse`, `path_safety`, `watch_service`, `snapshot_service`), zip helpers. |
 | [`nomifun-office`](../../crates/backend/nomifun-office/) | LibreOffice convert/preview pipeline (Office documents → preview). |
 | [`nomifun-system`](../../crates/backend/nomifun-system/) | LLM provider / model lookup, app-level settings, sysinfo, app version-check / self-updater scaffold. Support-pack ZIP includes `diagnostics/observation/` JSONL when developer mode is on. |
+| [`nomifun-notify`](../../crates/backend/nomifun-notify/) | OS/host notifications when requirements complete (implements `nomifun-requirement`'s `CompletionNotifier`). |
+| [`nomifun-ssh`](../../crates/backend/nomifun-ssh/) | SSH remote-session backend: saved hosts, connection pool, routes. Transport is isolated in the shared `flowy-ssh` crate under `crates/shared/`. |
 
 ## The composition root: `nomifun-app`
 
@@ -136,4 +152,7 @@ rg -l 'nomi-[a-z-]+\\s*=' crates/backend/*/Cargo.toml
 ```
 
 Expect the primary seam (`nomifun-ai-agent`) plus the feature-gated bridge
-exceptions described above.
+exceptions described above (`nomifun-app`, `nomifun-gateway`, `nomifun-robot`),
+plus the media-domain crates (`nomifun-canvas`, `nomifun-media`, `nomifun-vimax`,
+`nomifun-poi`, `nomifun-insights`, `nomifun-companion`) that consume
+domain-specific `nomi-*` engines directly.

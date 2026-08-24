@@ -1,6 +1,8 @@
 # 后端 Crates
 
-[`crates/backend/`](../../crates/backend/) 下的 43 个 `nomifun-*` crate 共同构成 HTTP/WS 服务器。它们一起编译进 `nomifun-app` 库 crate，并通过 `nomifun-app/src/main.rs` 生成 **`nomicore`** 二进制。两个宿主应用（`nomifun-desktop` 与 `nomifun-web`）直接链接 `nomifun-app`，并自行调用 `run_embedded_server` 或组合 `create_router`。
+> **最后维护：** 2026-08-24 · 核对基准：commit `d791691c6`
+
+[`crates/backend/`](../../crates/backend/) 下的 44 个 `nomifun-*` crate 共同构成 HTTP/WS 服务器。它们一起编译进 `nomifun-app` 库 crate，并通过 `nomifun-app/src/main.rs` 生成 **`nomicore`** 二进制。两个宿主应用（`apps/desktop` 下包名为 `Flowy` 的桌面外壳，与 `nomifun-web`）直接链接 `nomifun-app`，并自行调用 `run_embedded_server` 或组合 `create_router`。
 
 下方分组反映了 crate 在工作区清单（[`Cargo.toml`](../../Cargo.toml)）中相互依赖的方式。这并非严格的分层 DAG —— 部分功能 crate 之间存在依赖 —— 但它提供了一张与请求穿越服务器的路径相吻合的认知地图。
 
@@ -10,8 +12,9 @@
 
 存在有意为之、由 feature 控制的直接依赖例外：
 
-- [`nomifun-app`](../../crates/backend/nomifun-app/) 为 `mcp-computer-stdio` 与 `mcp-browser-stdio` 桥接子命令，可选依赖 `nomi-computer`、`nomi-browser`、`nomi-config`、`nomi-tools`、`nomi-types`。
+- [`nomifun-app`](../../crates/backend/nomifun-app/) 为 `mcp-computer-stdio` 与 `mcp-browser-stdio` 桥接子命令，可选依赖 `nomi-computer`、`nomi-browser`、`nomi-browser-engine`、`nomi-config`、`nomi-tools`、`nomi-types`。
 - [`nomifun-gateway`](../../crates/backend/nomifun-gateway/) 为平台 Gateway 的 browser/computer 注册表，可选依赖 `nomi-browser`、`nomi-computer`、`nomi-config`、`nomi-tools`、`nomi-types`。
+- [`nomifun-robot`](../../crates/backend/nomifun-robot/) 无条件直接依赖 `nomi-config`、`nomi-providers`、`nomi-types`：LAN 机器人网关需要不经 Conversation runtime 直接说 provider 协议。
 
 不要在未说明“为何无法走正常接缝或上述桥接面”的情况下，新增其他直接的 `nomi-*` 依赖。
 
@@ -41,7 +44,7 @@
 | --- | --- |
 | [`nomifun-common`](../../crates/backend/nomifun-common/) | `AppError`、错误链、各类枚举（`AgentType`、`ConversationStatus`、`MessageType`、`McpServerStatus` 等）、稳定业务 ID 的裸 UUIDv7 生成/校验、数据集 reset 辅助、AES-GCM `encrypt_string` / `decrypt_string`、`TimestampMs`、分页辅助、`constants::DEFAULT_HOST/DEFAULT_PORT/BODY_LIMIT/CSRF_*`。 |
 | [`nomifun-api-types`](../../crates/backend/nomifun-api-types/) | 每个 HTTP 请求 / 响应 DTO，`WebSocketMessage` 信封，ACP / Nomi / OpenClaw / Remote 等扩展。前端 TypeScript 类型镜像该 crate。 |
-| [`nomifun-db`](../../crates/backend/nomifun-db/) | 通过 `sqlx` 操作 v3 SQLite baseline，维护 schema contract 与逻辑关联 registry，并为用户、会话、MCP、需求、cron、ACP 会话、设定、终端会话、伙伴令牌、知识库、渠道、连接器凭据、IDMM 介入、远程 agent、webhook 等提供仓储 trait 与 Sqlite 实现。持有 `Database` 句柄并负责 v3 baseline 初始化。 |
+| [`nomifun-db`](../../crates/backend/nomifun-db/) | 通过 `sqlx` 操作 v3 SQLite baseline（45 个 append-only 迁移），维护 schema contract 与逻辑关联 registry，并为用户、会话、MCP、需求、cron、ACP 会话、设定、终端会话、伙伴令牌、知识库、渠道、IDMM 介入、远程 agent、webhook 等提供仓储 trait 与 Sqlite 实现。持有 `Database` 句柄并负责 v3 baseline 初始化。 |
 | [`nomifun-realtime`](../../crates/backend/nomifun-realtime/) | `WebSocketManager`、`BroadcastEventBus`，带 token 校验的 `/ws` 升级处理器，消息路由 trait，心跳计时，每连接缓冲常量。 |
 | [`nomifun-runtime`](../../crates/backend/nomifun-runtime/) | 内嵌 Bun 的解压、缓存、命令发现与启动期 `PATH` 增强。子进程所有权统一属于 shared 层的 `nomi-process-runtime`。 |
 | [`nomifun-assets`](../../crates/backend/nomifun-assets/) | 随服务器一同发布的内嵌静态资源（`include_dir!`）。 |
@@ -80,6 +83,14 @@
 | [`nomifun-customer-service`](../../crates/backend/nomifun-customer-service/) | 客服独立域：面向 IM 渠道陌生人的独立服务域，与伙伴 / 会话体系不共享概念——对话是本域自己的聚合，回复由一次性引擎会话产出，工具注册表固定为只读三件套。 |
 | [`nomifun-public`](../../crates/backend/nomifun-public/) | 由伙伴令牌鉴权的公开对外入口：`/mcp`、`/mcp-agent` 与 `/v1`。 |
 | [`nomifun-secret`](../../crates/backend/nomifun-secret/) | 按伙伴的 browser-use 密钥存储与凭据查询。 |
+| [`nomifun-cloud`](../../crates/backend/nomifun-cloud/) | 远程 LLM 服务器客户端：Flowy 云登录 + OpenAI 兼容推理网关客户端，供云端能力使用；同时是 `nomi-media` / `nomi-vimax` 共享的后端依赖。 |
+| [`nomifun-canvas`](../../crates/backend/nomifun-canvas/) | 视频生成 Canvas 模式 HTTP 面（`/api/video-canvas/*`），构建在 `nomi-vimax` 管线之上。 |
+| [`nomifun-vimax`](../../crates/backend/nomifun-vimax/) | ViMax 视频生成 HTTP 面（`/api/vimax/*`）。 |
+| [`nomifun-media`](../../crates/backend/nomifun-media/) | 媒体设置、积分与工作流历史的 HTTP 面（引擎工作委托给 `nomi-media`）。 |
+| [`nomifun-learning`](../../crates/backend/nomifun-learning/) | 面向知识库的领域无关学习引擎（前端 `/learn` 页面即它的界面）。 |
+| [`nomifun-poi`](../../crates/backend/nomifun-poi/) | 本地用户兴趣（POI）话题管理 API（引擎在 `nomi-poi`）。 |
+| [`nomifun-insights`](../../crates/backend/nomifun-insights/) | 洞察贡献管理的 HTTP 面（引擎在 `nomi-insights-core`）。 |
+| [`nomifun-robot`](../../crates/backend/nomifun-robot/) | LAN 小智固件机器人网关，作为伙伴的实体化身；即上文记录的直接 `nomi-*` 依赖例外。 |
 
 ## 基础设施特性
 
@@ -92,6 +103,8 @@
 | [`nomifun-file`](../../crates/backend/nomifun-file/) | 在会话工作目录下的沙箱化文件系统（`browse`、`path_safety`、`watch_service`、`snapshot_service`），zip 辅助。 |
 | [`nomifun-office`](../../crates/backend/nomifun-office/) | LibreOffice 转换 / 预览管线（Office 文档 → 预览）。 |
 | [`nomifun-system`](../../crates/backend/nomifun-system/) | LLM provider / 模型查询、应用级设置、sysinfo、应用版本检查 / 自更新框架。开发者模式开启时，支持包 ZIP 会附带 `diagnostics/observation/` JSONL。 |
+| [`nomifun-notify`](../../crates/backend/nomifun-notify/) | 需求完成时的操作系统 / 宿主通知（实现 `nomifun-requirement` 的 `CompletionNotifier`）。 |
+| [`nomifun-ssh`](../../crates/backend/nomifun-ssh/) | SSH 远程会话后端：已保存主机、连接池、路由。传输层隔离在 shared 层的 `flowy-ssh` crate。 |
 
 ## 组合根：`nomifun-app`
 
@@ -115,4 +128,4 @@
 rg -l 'nomi-[a-z-]+\s*=' crates/backend/*/Cargo.toml
 ```
 
-预期会看到主接缝（`nomifun-ai-agent`）以及上文描述的、由 feature 控制的桥接例外。
+预期会看到主接缝（`nomifun-ai-agent`）、上文描述的由 feature 控制的桥接例外（`nomifun-app`、`nomifun-gateway`、`nomifun-robot`），以及直接消费领域 `nomi-*` 引擎的媒体域 crate（`nomifun-canvas`、`nomifun-media`、`nomifun-vimax`、`nomifun-poi`、`nomifun-insights`、`nomifun-companion`）。

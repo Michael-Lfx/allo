@@ -1,5 +1,7 @@
 # Data and Storage
 
+> **Last maintained:** 2026-08-24 · Fact-checked against commit `d791691c6`
+
 Database and identifier changes must also follow the repository-wide
 [Data and Identifier Standards](../contributing/data-and-identifier-standards.md).
 This page describes storage behavior; the executable schema and
@@ -15,15 +17,19 @@ what lives where, how it's named, and how it's protected.
 
 | Host | Default path | Override |
 | --- | --- | --- |
-| Desktop (`nomifun-desktop`) | Per-user app data: `%LOCALAPPDATA%\NomiFun` on Windows, `~/Library/Application Support/NomiFun` on macOS, `$XDG_DATA_HOME/NomiFun` (usually `~/.local/share/NomiFun`) on Linux. With `NOMIFUN_DATA_DIR` set, that value **is** the data root (taken literally, no `/Nomi` suffix). A pre-v3 dataset at this or an older root is retired as a complete dataset; its product rows are not relocated into v3. | env `NOMIFUN_DATA_DIR` |
-| Web (`nomifun-web`) and the `nomicore` bin | The **same** per-user directory as the desktop shell — `%LOCALAPPDATA%\NomiFun` / `~/Library/Application Support/NomiFun` / `$XDG_DATA_HOME/NomiFun` (the old `./data`-relative default is gone). With `NOMIFUN_DATA_DIR` set, the value is taken **literally** (no `/Nomi` suffix), so Docker `/data` and systemd `/var/lib/nomifun` deployments are unaffected. | flag `--data-dir` or env `NOMIFUN_DATA_DIR` |
+| Desktop (`Flowy` package) | Per-user app data under the vendor dir `Flowy`: `%LOCALAPPDATA%\Flowy\Nomi` on Windows, `~/Library/Application Support/Flowy/Nomi` on macOS, `$XDG_DATA_HOME/Flowy/Nomi` (usually `~/.local/share/Flowy/Nomi`) on Linux. With `NOMIFUN_DATA_DIR` (alias `FLOWY_DATA_DIR`) set, that value **is** the data root (taken literally, no `/Nomi` suffix). A pre-v3 dataset at this or an older root is retired as a complete dataset; its product rows are not relocated into v3. | env `NOMIFUN_DATA_DIR` / `FLOWY_DATA_DIR` |
+| Web (`nomifun-web`) and the `nomicore` bin | The **same** per-user directory as the desktop shell — `%LOCALAPPDATA%\Flowy\Nomi` / `~/Library/Application Support/Flowy/Nomi` / `$XDG_DATA_HOME/Flowy/Nomi` (the old `./data`-relative default is gone). With `NOMIFUN_DATA_DIR` set, the value is taken **literally** (no `/Nomi` suffix), so Docker `/data` and systemd `/var/lib/nomifun` deployments are unaffected. | flag `--data-dir` or env `NOMIFUN_DATA_DIR` |
+
+`FLOWY_HOME` / `NOMIFUN_HOME` are additionally honored by
+`nomifun-common::storage_paths` for path resolution helpers.
 
 Inside the data directory:
 
 ```
 <data_dir>/
-├── nomifun-backend.db   SQLite database (sqlx)
-├── server.lock          exclusive server-lock address file (the lock lives on
+├── flowy-backend.db       SQLite database (sqlx); a legacy nomifun-backend.db
+│                          is auto-renamed on open
+├── server.lock            exclusive server-lock address file (the lock lives on
 │                        the open OS handle; a leftover file is harmless)
 ├── logs/                tracing-appender file output (rotated daily)
 ├── diagnostics/
@@ -35,22 +41,24 @@ Inside the data directory:
 
 All three hosts resolve the unset default through one shared helper,
 [`nomifun_app::cli::default_data_dir()`](../../crates/backend/nomifun-app/src/cli.rs):
-`dirs::data_local_dir()/NomiFun<channel-suffix>` (the per-user
-application-data location). Stable uses `NomiFun`; non-stable channels use
-siblings such as `NomiFun-dev` and `NomiFun-beta` — channel dirs are never
-nested inside the stable root. The system temp dir
+`dirs::data_local_dir()/Flowy/Nomi<channel-suffix>` (the per-user
+application-data location under the `Flowy` vendor dir). Stable uses `Nomi`;
+non-stable channels use siblings such as `Nomi-dev` and `Nomi-beta` — channel
+dirs are never nested inside the stable root. The system temp dir
 (`<system temp>/nomifun-data<channel-suffix>`) is only an extreme
 fallback when the OS reports no user dir. Env semantics are uniform:
 every host — the desktop shell included (see
 [`apps/desktop/src/main.rs`](../../apps/desktop/src/main.rs)) — takes the
-`NOMIFUN_DATA_DIR` value literally as the final data root (the shell no
-longer appends `Nomi`; the clap `env` binding is shared with `nomicore`,
-which previously ignored the variable). A legacy dataset at
-`NomiFun/Nomi<suffix>` is moved into `NomiFun<suffix>` by a one-shot
+`NOMIFUN_DATA_DIR` / `FLOWY_DATA_DIR` value literally as the final data root
+(the shell no longer appends `Nomi`; the clap `env` binding is shared with
+`nomicore`, which previously ignored the variable). A legacy dataset at
+the pre-rebrand layout (`<app-data>/NomiFun/Nomi<suffix>`) is moved into the
+Flowy layout (`Flowy/Nomi<suffix>`) by a one-shot
 automatic migration on the first boot after upgrading (crash-safe,
 resume-on-next-boot; deferred to the next launch if the old app instance
 is still running), and absolute paths persisted in the database are
-rewritten once after the move. Paths shown or persisted on Windows no
+rewritten once after the move. A legacy `nomifun-backend.db` file is renamed
+to `flowy-backend.db` when opened. Paths shown or persisted on Windows no
 longer carry the `\\?\` extended-length prefix.
 The v3 contract does not copy a pre-existing product dataset from
 `<system temp>/nomifun-data` or any other legacy root into the active
@@ -62,8 +70,8 @@ creates a new v3 dataset rather than rewriting historical database paths.
 
 Sharing one default among hosts built for the same channel is deliberate.
 The installed desktop app and production-style `bun run serve:web` use stable
-state under `NomiFun`; `bun run dev`, `dev:web`, and `build:fast` use dev state
-under the `NomiFun-dev` sibling. This keeps unauthenticated and experimental
+state under `Flowy\Nomi`; `bun run dev`, `dev:web`, and `build:fast` use dev state
+under the `Nomi-dev` sibling. This keeps unauthenticated and experimental
 development
 loops away from installed-app state while preserving one state per channel.
 Use `bun run seed:dev` to copy a stable snapshot into dev, or use
@@ -115,8 +123,11 @@ conversation artifacts, and IDMM interventions.
 - `init_database` — opens or initializes the v3 baseline database.
 - `init_database_memory` — in-memory variant used by tests.
 
-The crate exposes ~20 repository **trait + Sqlite-impl** pairs. A non-exhaustive
-list (see the `pub use repository::{...}` block in `lib.rs` for all of them):
+The crate exposes 33 repository **trait + Sqlite-impl** pairs. A non-exhaustive
+list (see the `pub use repository::{...}` block in `lib.rs` for all of them —
+unlisted traits include `IKnowledgeRepository`, `IGoalRepository`,
+`ISshHostRepository`, `IAttachmentRepository`, `ICompanionTokenRepository`,
+`IAgentExecutionTemplateRepository`, and more):
 
 | Trait | Sqlite implementation | Stores |
 | --- | --- | --- |
@@ -151,8 +162,12 @@ bootstrap/schema maintenance remains the documented exception.
 ### v3 baseline and dataset reset
 
 The embedded SQL defines the clean v3 baseline for a new, empty database.
-`init_database` may record and verify that baseline, but it does not transform
-pre-v3 product rows into v3 rows.
+Schema evolution after the baseline happens through 45 append-only numbered
+migrations under
+[`crates/backend/nomifun-db/migrations/`](../../crates/backend/nomifun-db/migrations/)
+applied by `sqlx::migrate!()` on every boot; the lineage must begin with
+`001_v3_baseline.sql`. `init_database` may record and verify that baseline,
+but it never transforms pre-v3 product rows into v3 rows.
 
 Before SQLite is opened, bootstrap checks the dataset contract and generation.
 An absent dataset is initialized as v3. An incompatible or historical dataset
@@ -164,8 +179,10 @@ The baseline contract is checked at runtime:
 
 - every product table has `id INTEGER PRIMARY KEY AUTOINCREMENT`;
 - stable business-ID columns contain bare canonical UUIDv7 strings;
-- the schema has no physical `FOREIGN KEY`, `REFERENCES`, trigger, database
-  cascade, or `*_row_id`;
+- the schema has no physical `FOREIGN KEY`, `REFERENCES`, cascade, or
+  `*_row_id`; triggers are restricted to a registered guard-trigger allowlist
+  (`TRIGGER_CONTRACTS`) that only enforces identity-immutability / no-delete /
+  admission rules via `RAISE(ABORT)`;
 - every logical reference has its required index and registry entry.
 
 ### Scheduled-task ownership
@@ -269,7 +286,7 @@ directory name in a workspace path may begin or end with whitespace (or
 consist entirely of whitespace). Such names break Win32 path round-tripping
 and are visually indistinguishable in any UI. Interior whitespace is fully
 supported — the default per-user data dir on macOS
-(`~/Library/Application Support/NomiFun`) contains a space, and every
+(`~/Library/Application Support/Flowy/Nomi`) contains a space, and every
 process-spawn pipeline passes the workspace as a discrete argument
 (`Command::current_dir`, PTY cwd, ACP session JSON), which is
 whitespace-safe.
@@ -323,7 +340,7 @@ subprocesses do not require a system Node.js install:
 
 | Step | What happens |
 | --- | --- |
-| Build time | The bun binary for the target OS/arch is **zstd-compressed** and embedded into `nomifun-runtime` via `include_dir!`. |
+| Build time | The bun binary for the target OS/arch is zstd-compressed into a single blob (`bun.blob.zst`) by `build.rs` and embedded into `nomifun-runtime` via `include_bytes!`. Embedding is gated behind `NOMIFUN_EMBED_BUN=1` (CI); dev builds emit a stub. |
 | First run | `nomifun_runtime::init(&data_dir)` extracts the binary into a **`<data_dir>/runtime/`** subtree (see the runtime-cache details below). |
 | Boot | `enhance_process_path()` prepends the bun bin dir to the process `PATH` **before any tokio thread is built** (the order is enforced in both host `main.rs` files). |
 | Spawn | `nomi_process_runtime::ChildProcessBuilder` inherits the boot-time merged `PATH`, so `npx`, `bun`, and other JS tools resolve correctly. |
@@ -333,13 +350,13 @@ The runtime cache is anchored to the backend's `data_dir`:
 [`nomifun_runtime::init(&data_dir)`](../../crates/backend/nomifun-runtime/src/cache.rs)
 records `<data_dir>/runtime` as the cache root, so on the desktop the bun
 binary extracts under `<data_dir>/runtime/bun-<version>-<sha12>/` —
-i.e. `%LOCALAPPDATA%\NomiFun\runtime\bun-…\` by default on Windows
+i.e. `%LOCALAPPDATA%\Flowy\Nomi\runtime\bun-…\` by default on Windows
 (the per-user app-data equivalents on macOS/Linux), or
 `$NOMIFUN_DATA_DIR/runtime/bun-…/` when the env var is set. When
 `init` has not been called (the `mcp-*` subcommands, unit tests, `build.rs`)
 the cache falls back to the platform cache dir via `dirs::cache_dir()`:
-`%LOCALAPPDATA%\nomifun\runtime\` on Windows, `~/Library/Caches/nomifun/runtime/`
-on macOS, `$XDG_CACHE_HOME/nomifun/runtime/` (or `~/.cache/nomifun/runtime/`)
+`%LOCALAPPDATA%\Flowy\runtime\` on Windows, `~/Library/Caches/Flowy/runtime/`
+on macOS, `$XDG_CACHE_HOME/Flowy/runtime/` (or `~/.cache/Flowy/runtime/`)
 on Linux.
 
 ## Logs
@@ -385,8 +402,8 @@ non-loopback bind address.
 
 - **Database** — create a consistent SQLite snapshot with the SQLite Backup API
   or `VACUUM INTO` while the database is open. Do **not** copy
-  `nomifun-backend.db` directly: WAL data may still be in
-  `nomifun-backend.db-wal`, and a raw file copy can be incomplete.
+  `flowy-backend.db` directly: WAL data may still be in
+  `flowy-backend.db-wal`, and a raw file copy can be incomplete.
 - **Bundle manifest** — record the v3 schema, storage-generation/dataset ID,
   creation time, and checksums for every included file. Restore preserves
   stable business UUIDv7 values; technical `id` values are rebuilt in the
