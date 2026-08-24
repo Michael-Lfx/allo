@@ -7,7 +7,7 @@ import { buildGenerationConfig, isGenerationCanceled, supportsVideoReferenceAudi
 import { isGenerationTaskCapacityError } from "@oc/lib/canvas/canvas-generation-batch";
 import { buildPortraitTexturePrompt } from "@oc/lib/canvas/canvas-portrait-texture";
 import { expandSkillMentions } from "@oc/lib/canvas/canvas-skill-mentions";
-import { generationErrorMessage, generationFailureMetadata } from "@oc/lib/generation-error";
+import { generationErrorMessage, generationFailureMetadata, localizeGenerationErrorText } from "@oc/lib/generation-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import type { Skill } from "@oc/services/api/skills";
 import type { GenerationTask } from "@oc/services/api/task-center";
@@ -139,7 +139,7 @@ export function useCanvasGenerationExecutor({
                 }
                 finishGenerationRequest(nodeId, controller);
                 setRunningNodeId(null);
-                if (!controller.signal.aborted) message.error(errorDetails);
+                if (!controller.signal.aborted) message.error(localizeGenerationErrorText(errorDetails));
                 return;
             }
 
@@ -234,7 +234,7 @@ export function useCanvasGenerationExecutor({
                     }));
                     return;
                 }
-                message.error(failure.errorDetails);
+                message.error(localizeGenerationErrorText(failure.errorDetails));
                 setNodes((current) => current.map((node) => (node.id === nodeId || pendingNodeIds.includes(node.id) ? (node.id === nodeId && !markSourceStatus ? node : { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, ...failure } }) : node)));
             } finally {
                 finishGenerationRequest(nodeId, controller);

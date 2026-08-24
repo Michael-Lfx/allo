@@ -1,3 +1,5 @@
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+
 export const CONTENT_MODERATION_ERROR_CODE = "sensitive_words_detected";
 
 export const CONTENT_MODERATION_MESSAGE = "内容审核未通过，本次平台积分未扣除或已退还。请修改提示词后重新生成。";
@@ -6,6 +8,28 @@ export const REFERENCE_IMAGE_MODERATION_MESSAGE = "参考图未通过内容审�
 
 const DEFAULT_GENERATION_ERROR_MESSAGE = "生成失败，请稍后重试。";
 const NETWORK_ERROR_MESSAGE = "网络异常。";
+
+// errorDetails 是持久化状态并参与重试门控（isContentModerationError 精确匹配正典串），
+// 因此写入侧必须保持中文正典原文；仅渲染 / Toast 边界经此映射为当前语言。
+const GENERATION_ERROR_DISPLAY_KEYS: ReadonlyArray<readonly [string, string]> = [
+    ["videoCanvas.genError.moderation", CONTENT_MODERATION_MESSAGE],
+    ["videoCanvas.genError.copyright", COPYRIGHT_RESTRICTION_MESSAGE],
+    ["videoCanvas.genError.referenceModeration", REFERENCE_IMAGE_MODERATION_MESSAGE],
+    ["videoCanvas.genError.network", NETWORK_ERROR_MESSAGE],
+    ["videoCanvas.genError.busy", "服务当前繁忙，请稍后重试。"],
+    ["videoCanvas.genError.authFailed", "生成服务鉴权失败，请检查渠道配置。"],
+    ["videoCanvas.genError.urlUnavailable", "生成服务地址不可用，请检查渠道配置。"],
+    ["videoCanvas.genError.failed", DEFAULT_GENERATION_ERROR_MESSAGE],
+];
+
+export function localizeGenerationErrorText(text: string | undefined | null): string {
+    const raw = text ?? "";
+    if (!raw) return "";
+    for (const [key, canonical] of GENERATION_ERROR_DISPLAY_KEYS) {
+        if (raw === canonical) return canvasT(key, canonical);
+    }
+    return raw;
+}
 
 export type GenerationFailureMetadata = {
     errorDetails: string;

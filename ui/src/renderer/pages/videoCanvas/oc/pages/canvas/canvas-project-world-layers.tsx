@@ -1,5 +1,6 @@
 import React, { useMemo, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { Link2 } from "lucide-react";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 
 import { ConnectionPath } from "@oc/components/canvas/canvas-connections";
 import { CanvasFrameNode } from "@oc/components/canvas/canvas-frame-node";
@@ -223,12 +224,12 @@ function BatchConnectionHandle({ count, active, onPointerDown }: { count: number
             data-canvas-no-zoom
             className="pointer-events-auto absolute grid -translate-y-1/2 translate-x-1/2 place-items-center rounded-full border shadow-md transition hover:scale-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
             style={buttonStyle}
-            title={`批量连接 ${count} 个节点`}
-            aria-label={`批量连接 ${count} 个节点`}
+            title={canvasT("videoCanvas.worldLayers.batchConnectTitle", "批量连接 {{count}} 个节点", { count })}
+            aria-label={canvasT("videoCanvas.worldLayers.batchConnectAria", "批量连接 {{count}} 个节点", { count })}
             onPointerDown={onPointerDown}
         >
             <Link2 style={{ width: "calc(14px * var(--canvas-live-inverse-scale, 1))", height: "calc(14px * var(--canvas-live-inverse-scale, 1))" }} strokeWidth={2} />
-            <span className="sr-only">连接 {count} 个节点</span>
+            <span className="sr-only">{canvasT("videoCanvas.worldLayers.batchConnectSr", "连接 {{count}} 个节点", { count })}</span>
         </button>
     );
 }

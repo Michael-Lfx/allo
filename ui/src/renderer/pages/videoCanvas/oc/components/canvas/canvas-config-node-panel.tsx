@@ -117,7 +117,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 <InputChip label={canvasT("videoCanvas.config.refAudio", "参考音频")} value={canvasT("videoCanvas.config.countUnit", "{{count}} 个", { count: inputSummary.audioCount })} style={chipStyle} />
                 <button type="button" className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border px-2 text-[var(--fs-label)]" style={chipStyle} onMouseDown={(event) => event.stopPropagation()} onClick={onComposerToggle}>
                     {simpleMode ? <MessageSquare className="size-3.5" /> : <Settings2 className="size-3.5" />}
-                    {simpleMode ? "编辑生成内容" : "组装提示词"}
+                    {simpleMode ? canvasT("videoCanvas.config.editContent", "编辑生成内容") : canvasT("videoCanvas.config.assemblePrompt", "组装提示词")}
                 </button>
             </div>
 

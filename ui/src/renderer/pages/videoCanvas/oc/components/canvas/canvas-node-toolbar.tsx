@@ -11,7 +11,7 @@ import { subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewp
 import { canvasNodeAssetCategory } from "@oc/lib/canvas/canvas-node-asset";
 import { getNodeLabel } from "@oc/lib/canvas/node-registry";
 import { formatBytes, getDataUrlByteSize } from "@oc/lib/image-utils";
-import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@oc/lib/generation-error";
+import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError, localizeGenerationErrorText } from "@oc/lib/generation-error";
 import { useCopyText } from "@oc/hooks/use-copy-text";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { FloatingDock, type FloatingDockEntry } from "@oc/components/ui/aceternity/floating-dock";
@@ -584,7 +584,7 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
 
                             {node.metadata?.errorDetails ? (
                                 <div className="rounded-2xl border p-3 text-red-500" style={{ borderColor: theme.node.stroke }}>
-                                    {generationErrorMessage(node.metadata.errorDetails)}
+                                    {localizeGenerationErrorText(generationErrorMessage(node.metadata.errorDetails))}
                                 </div>
                             ) : null}
                         </div>

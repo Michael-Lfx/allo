@@ -3,6 +3,8 @@ import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as Reac
 import { createPortal } from "react-dom";
 import { LoaderCircle, ScanFace, SquareDashedMousePointer, X } from "lucide-react";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+
 import { CanvasNodeEmotionPanel, type CanvasEmotionCharacter, type CanvasImageEmotionPayload } from "@oc/components/canvas/canvas-node-emotion-panel";
 import { SpotlightSurface } from "@oc/components/ui/aceternity/spotlight-surface";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
@@ -52,12 +54,12 @@ export function CanvasEmotionWorkspace({ node, viewport, containerRef, onClose, 
                     return;
                 }
                 setStatus("error");
-                setError("未识别到清晰人脸，请手动框选");
+                setError(canvasT("videoCanvas.emotion.detectFailed", "未识别到清晰人脸，请手动框选"));
             })
             .catch((reason) => {
                 if (reason instanceof DOMException && reason.name === "AbortError") return;
                 setStatus("error");
-                setError(reason instanceof Error ? `${reason.message}，请手动框选` : "人脸识别失败，请手动框选");
+                setError(reason instanceof Error ? canvasT("videoCanvas.emotion.detectFailedReason", "{{reason}}，请手动框选", { reason: reason.message }) : canvasT("videoCanvas.emotion.detectFailedGeneric", "人脸识别失败，请手动框选"));
             });
         return () => controller.abort();
     }, [dataUrl]);
@@ -104,7 +106,7 @@ export function CanvasEmotionWorkspace({ node, viewport, containerRef, onClose, 
             });
         } catch (reason) {
             setStatus("editing");
-            setError(reason instanceof Error ? reason.message : "生成前处理失败");
+            setError(reason instanceof Error ? reason.message : canvasT("videoCanvas.emotion.preprocessFailed", "生成前处理失败"));
         }
     };
 
@@ -284,7 +286,7 @@ function FaceSelectionOverlay({
                     <motion.button
                         key={face.id}
                         type="button"
-                        aria-label={selected ? `选择${selected.name}` : "选择此人脸"}
+                        aria-label={selected ? canvasT("videoCanvas.emotion.faceSelectNamedAria", "选择{{name}}", { name: selected.name }) : canvasT("videoCanvas.emotion.faceSelectAria", "选择此人脸")}
                         className={`absolute rounded-[var(--r-md)] border-2 ${interactive ? "pointer-events-auto" : "pointer-events-none"}`}
                         style={{
                             left: `${(face.x / imageWidth) * 100}%`,
@@ -354,7 +356,7 @@ function SelectionToolbar({
     const toolbarRef = useRef<HTMLDivElement>(null);
     useScreenAnchor(toolbarRef, node, viewport, containerRef, (next, container) => toolbarScreenRect(node, next, container, toolbarRef.current));
     if (status === "editing" || status === "generating") return null;
-    const label = status === "detecting" ? "正在识别人脸" : status === "manual" ? "拖动鼠标框选需要调节的人脸" : status === "selecting" ? `识别到 ${faceCount} 张人脸，请选择人物` : error || "请选择人物";
+    const label = status === "detecting" ? canvasT("videoCanvas.emotion.statusDetecting", "正在识别人脸") : status === "manual" ? canvasT("videoCanvas.emotion.statusManual", "拖动鼠标框选需要调节的人脸") : status === "selecting" ? canvasT("videoCanvas.emotion.statusSelecting", "识别到 {{count}} 张人脸，请选择人物", { count: faceCount }) : error || canvasT("videoCanvas.emotion.statusFallback", "请选择人物");
     return (
         <SpotlightSurface
             ref={toolbarRef}
@@ -368,7 +370,7 @@ function SelectionToolbar({
             onPointerDown={(event) => event.stopPropagation()}
         >
             <div className="flex size-full items-center">
-                <button type="button" aria-label="关闭情绪调节" className="grid size-8 shrink-0 place-items-center rounded-full hover:bg-black/5 dark:hover:bg-white/10" onClick={onClose}>
+                <button type="button" aria-label={canvasT("videoCanvas.emotion.closeAria", "关闭情绪调节")} className="grid size-8 shrink-0 place-items-center rounded-full hover:bg-black/5 dark:hover:bg-white/10" onClick={onClose}>
                     <X className="size-4" />
                 </button>
                 <span className="mx-2 h-5 w-px" style={{ background: theme.toolbar.border }} />
@@ -383,7 +385,7 @@ function SelectionToolbar({
                         onClick={onManualSelect}
                     >
                         <SquareDashedMousePointer className="size-3.5" />
-                        手动框选
+                        {canvasT("videoCanvas.emotion.manualButton", "手动框选")}
                     </button>
                 ) : null}
             </div>

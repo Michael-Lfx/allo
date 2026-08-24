@@ -111,7 +111,9 @@
     "localCodexConnected": "Connected to local Codex",
     "localCodexConnecting": "Connecting to local Codex",
     "localCodexBusy": "Connecting…",
-    "openLocalCodex": "Open local Codex panel"
+    "openLocalCodex": "Open local Codex panel",
+    "refreshLoading": "Loading canvas…",
+    "backToProject": "Back to project: {{name}}"
   },
   "shortcuts": {
     "pan": "Pan viewport",
@@ -294,7 +296,8 @@
     "opCamera": "Camera move",
     "opStyle": "Style transfer",
     "opAudioToVideo": "Audio to video",
-    "opCompare": "Compare"
+    "opCompare": "Compare",
+    "editContent": "Edit generation content"
   },
   "prompt": {
     "creation": "{{mode}} creation",
@@ -1564,5 +1567,68 @@
     "stepStoryboard": "Storyboard",
     "stepVideo": "Generate video",
     "stepFinal": "Merge final cut"
+  },
+  "genError": {
+    "moderation": "Content moderation failed. Credits were not charged or have been refunded. Please revise the prompt and generate again.",
+    "copyright": "The prompt may involve copyright-restricted content and failed moderation. Please revise the prompt and generate again.",
+    "referenceModeration": "Reference image failed moderation (it may contain real-person portraits). Replace the reference image or adjust the prompt and retry.",
+    "network": "Network error.",
+    "busy": "The service is busy. Please try again later.",
+    "authFailed": "Generation service authentication failed. Check the channel configuration.",
+    "urlUnavailable": "Generation service endpoint is unavailable. Check the channel configuration.",
+    "failed": "Generation failed. Please try again later."
+  },
+  "emotion": {
+    "detectFailed": "No clear face detected. Select one manually.",
+    "detectFailedReason": "{{reason}}. Select a face manually.",
+    "detectFailedGeneric": "Face detection failed. Select a face manually.",
+    "preprocessFailed": "Pre-generation processing failed.",
+    "faceSelectNamedAria": "Select {{name}}",
+    "faceSelectAria": "Select this face",
+    "statusDetecting": "Detecting faces",
+    "statusManual": "Drag to box-select the face to adjust",
+    "statusSelecting": "Found {{count}} faces. Pick a character",
+    "statusFallback": "Pick a character",
+    "closeAria": "Close emotion controls",
+    "manualButton": "Manual select"
+  },
+  "worldLayers": {
+    "batchConnectTitle": "Batch-connect {{count}} nodes",
+    "batchConnectAria": "Batch-connect {{count}} nodes",
+    "batchConnectSr": "Connect {{count}} nodes"
+  },
+  "scriptEditor": {
+    "colNarrativeIntent": "Narrative intent",
+    "colViewerPov": "Viewer POV",
+    "colBlocking": "Blocking",
+    "colEmotion": "Emotion",
+    "colLighting": "Lighting & atmosphere",
+    "colSfx": "Sound effects",
+    "colCamera": "Camera design",
+    "colMotion": "Camera movement",
+    "colTimeBeats": "Timing beats",
+    "colImagePrompt": "Image prompt",
+    "colVideoPrompt": "Video motion prompt",
+    "colContinuity": "Continuity out",
+    "colNegative": "Negative prompt",
+    "shotSizePlaceholder": "Select shot size",
+    "shotSizeClose": "Close-up",
+    "shotSizeNear": "Medium close",
+    "shotSizeMedium": "Medium shot",
+    "shotSizeFull": "Full shot",
+    "shotSizeFar": "Long shot",
+    "fillTemplate": "Fill in {{label}}",
+    "actions": "Actions",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "duplicate": "Duplicate",
+    "remove": "Delete",
+    "modalTitle": "Storyboard",
+    "searchPlaceholder": "Filter visuals, dialogue or prompts",
+    "addShot": "Add shot",
+    "genKeyframes": "Generate keyframes",
+    "genStoryboards": "Generate storyboard images",
+    "confirmKeyframeGen": "Confirm keyframes & generate",
+    "genVideos": "Generate videos"
   }
 }

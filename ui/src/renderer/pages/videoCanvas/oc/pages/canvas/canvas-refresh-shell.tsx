@@ -1,3 +1,5 @@
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+
 export function CanvasRefreshShell() {
     return (
         <main className="relative h-full min-h-0 overflow-hidden bg-background text-foreground" role="status" aria-live="polite" aria-busy="true">
@@ -11,7 +13,7 @@ export function CanvasRefreshShell() {
 
             <div className="absolute inset-0 z-[var(--z-toolbar)] grid place-items-center">
                 <div className="rounded-xl border px-4 py-3 text-sm text-foreground/70 shadow-lg backdrop-blur" style={{ background: "var(--background)", borderColor: "var(--border)" }}>
-                    正在加载画布…
+                    {canvasT("videoCanvas.chrome.refreshLoading", "正在加载画布…")}
                 </div>
             </div>
 

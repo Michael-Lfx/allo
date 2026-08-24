@@ -8,10 +8,10 @@ import { canvasThemes } from "@oc/lib/canvas-theme";
 import { CometCard } from "@oc/components/ui/aceternity/comet-card";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@oc/lib/canvas/resource-storage-status";
 import { formatBytes } from "@oc/lib/image-utils";
-import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@oc/lib/generation-error";
-import { useThemeStore } from "@oc/stores/use-theme-store";
+import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError, localizeGenerationErrorText } from "@oc/lib/generation-error";
 import { resourceIdFromStorageKey } from "@oc/services/api/resources";
 import { cacheResourceObjectUrl, getCachedResourceObjectUrl, type ResourceCacheHint } from "@oc/services/resource-blob-cache";
+import { useThemeStore } from "@oc/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { storyboardMinNodeHeight } from "./canvas-script-node";
 import { CanvasNodeType, type CanvasNodeData, type Position } from "@oc/types/canvas";
@@ -668,7 +668,7 @@ function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "
     const moderationFailure = node.metadata?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(node.metadata?.errorDetails);
     return (
         <div className="flex max-w-[260px] flex-col items-center gap-3 px-5 text-center">
-            <div className="text-xs leading-5" style={{ color: theme.accent.danger }}>{generationErrorMessage(node.metadata?.errorDetails)}</div>
+            <div className="text-xs leading-5" style={{ color: theme.accent.danger }}>{localizeGenerationErrorText(generationErrorMessage(node.metadata?.errorDetails))}</div>
             {moderationFailure ? (
                 <div className="rounded-md border px-3 py-2 text-[var(--fs-label)] leading-4" style={{ background: theme.node.fill, borderColor: theme.toolbar.border, color: theme.node.muted }}>
                     {canvasT("videoCanvas.nodeUi.retryHint", "修改节点提示词后，可重新点击生成。")}

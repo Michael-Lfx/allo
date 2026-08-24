@@ -111,7 +111,9 @@
     "localCodexConnected": "已连接到本地 Codex",
     "localCodexConnecting": "正在连接本地 Codex",
     "localCodexBusy": "连接中",
-    "openLocalCodex": "打开本地 Codex 面板"
+    "openLocalCodex": "打开本地 Codex 面板",
+    "refreshLoading": "正在加载画布…",
+    "backToProject": "返回项目：{{name}}"
   },
   "shortcuts": {
     "pan": "平移视图",
@@ -294,7 +296,8 @@
     "opCamera": "运镜调整",
     "opStyle": "风格迁移",
     "opAudioToVideo": "音频生视频",
-    "opCompare": "版本对比"
+    "opCompare": "版本对比",
+    "editContent": "编辑生成内容"
   },
   "prompt": {
     "creation": "{{mode}}创作",
@@ -1564,5 +1567,68 @@
     "stepStoryboard": "生成分镜",
     "stepVideo": "生成视频",
     "stepFinal": "合并成片"
+  },
+  "genError": {
+    "moderation": "内容审核未通过，本次平台积分未扣除或已退还。请修改提示词后重新生成。",
+    "copyright": "提示词可能涉及版权受限内容，内容审核未通过。请修改提示词后重新生成。",
+    "referenceModeration": "参考图未通过内容审核（可能含真人肖像等）。请更换参考图或调整提示词后重试。",
+    "network": "网络异常。",
+    "busy": "服务当前繁忙，请稍后重试。",
+    "authFailed": "生成服务鉴权失败，请检查渠道配置。",
+    "urlUnavailable": "生成服务地址不可用，请检查渠道配置。",
+    "failed": "生成失败，请稍后重试。"
+  },
+  "emotion": {
+    "detectFailed": "未识别到清晰人脸，请手动框选",
+    "detectFailedReason": "{{reason}}，请手动框选",
+    "detectFailedGeneric": "人脸识别失败，请手动框选",
+    "preprocessFailed": "生成前处理失败",
+    "faceSelectNamedAria": "选择{{name}}",
+    "faceSelectAria": "选择此人脸",
+    "statusDetecting": "正在识别人脸",
+    "statusManual": "拖动鼠标框选需要调节的人脸",
+    "statusSelecting": "识别到 {{count}} 张人脸，请选择人物",
+    "statusFallback": "请选择人物",
+    "closeAria": "关闭情绪调节",
+    "manualButton": "手动框选"
+  },
+  "worldLayers": {
+    "batchConnectTitle": "批量连接 {{count}} 个节点",
+    "batchConnectAria": "批量连接 {{count}} 个节点",
+    "batchConnectSr": "连接 {{count}} 个节点"
+  },
+  "scriptEditor": {
+    "colNarrativeIntent": "镜头意图",
+    "colViewerPov": "观众视点",
+    "colBlocking": "表演调度",
+    "colEmotion": "情绪",
+    "colLighting": "光影氛围",
+    "colSfx": "音效",
+    "colCamera": "镜头设计",
+    "colMotion": "运镜",
+    "colTimeBeats": "时间节拍",
+    "colImagePrompt": "图片提示词",
+    "colVideoPrompt": "视频提示词",
+    "colContinuity": "连续性出口",
+    "colNegative": "负面要求",
+    "shotSizePlaceholder": "选择景别",
+    "shotSizeClose": "特写",
+    "shotSizeNear": "近景",
+    "shotSizeMedium": "中景",
+    "shotSizeFull": "全景",
+    "shotSizeFar": "远景",
+    "fillTemplate": "填写{{label}}",
+    "actions": "操作",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "duplicate": "复制",
+    "remove": "删除",
+    "modalTitle": "分镜脚本",
+    "searchPlaceholder": "筛选画面、台词或提示词",
+    "addShot": "新增镜头",
+    "genKeyframes": "生成首帧",
+    "genStoryboards": "生成分镜图",
+    "confirmKeyframeGen": "确认首帧并生成",
+    "genVideos": "生成视频"
   }
 }

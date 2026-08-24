@@ -24,7 +24,7 @@ import { compositeEmotionImage, emotionGenerationSize } from "@oc/lib/canvas/can
 import { DEFAULT_PORTRAIT_TEXTURE_SETTINGS, buildPortraitTexturePrompt } from "@oc/lib/canvas/canvas-portrait-texture";
 import { captureVideoLastFrame } from "@oc/lib/canvas/canvas-video-frame";
 import { mergeVideos, type MergeVideoProgress } from "@oc/lib/canvas/canvas-video-merge";
-import { generationErrorMessage } from "@oc/lib/generation-error";
+import { generationErrorMessage, localizeGenerationErrorText } from "@oc/lib/generation-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { storeGeneratedVideo } from "@oc/services/api/video";
 import { getMediaBlob } from "@oc/services/file-storage";
@@ -166,7 +166,7 @@ export function useCanvasMediaTools({
         } catch (error) {
             if (isGenerationCanceled(error)) return;
             const details = generationErrorMessage(error);
-            message.error(details);
+            message.error(localizeGenerationErrorText(details));
             setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item));
         } finally {
             finishGenerationRequest(childId, controller);
@@ -360,7 +360,7 @@ export function useCanvasMediaTools({
         } catch (error) {
             if (isGenerationCanceled(error)) return;
             const details = generationErrorMessage(error);
-            message.error(details);
+            message.error(localizeGenerationErrorText(details));
             setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item));
         } finally {
             finishGenerationRequest(childId, controller);
@@ -466,7 +466,7 @@ export function useCanvasMediaTools({
         } catch (error) {
             if (isGenerationCanceled(error)) return;
             const details = generationErrorMessage(error);
-            message.error(details);
+            message.error(localizeGenerationErrorText(details));
             setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item));
         } finally { finishGenerationRequest(childId, controller); setRunningNodeId(null); }
     }, [bindGenerationTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, projectId, setConnections, setDialogNodeId, setNodes, setRunningNodeId, setSelectedConnectionId, setSelectedNodeIds, startGenerationRequest]);
