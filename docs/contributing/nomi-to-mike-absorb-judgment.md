@@ -490,6 +490,9 @@
 | `34de3b229` SkillHub 专家包安装 | **已吸收（适配）** → `4c6b456eb` | Rust：detail 端点 + slug 冲突检测 + 错误映射；UI 市场卡片保留 mike redesign，仅合入错误分类/i18n |
 | `939320710` i18n 漏翻 | **跳过** | FreeModels 无 stale 探针 UI；`partialTitle` 在 mike TurnDeliverablesCard 未使用。整包会强塞 nomi 健康态 UI |
 | `aa3071217` / `b6e61cbcd` 测试竞态 | **已吸收（适配）** → `9b0ffff95` + `176597525` | robot：补 `await_frame`（源 commit 依赖 `b6e61cbcd`）；bootstrap：`env_guard`；**丢弃** nomi 独有 `WorkDirChange` 测试；断言改用 `config.database_path()`（mike 已迁 `flowy-backend.db`）；顺带吸 ssh `expand_tilde` `/` join + `system_version_e2e` credentials 契约 |
+| `57c23eab7` provider 文案 | **已吸收（适配）** | mike 已无 header「添加模型」pill；移植：`AddPlatformModal` 标题、`noConfiguredProviders`、删除供应商确认/aria；新增 i18n key |
+| `c80555cef` factory-reset registry | **部分已在 mike** | `browser-secrets` 已在 `MANAGED_DATASET_ROOTS`；v1 tripwire 因 mike 双族 `flowy/nomifun` DB_FAMILY 与冻结 v1 表不对齐，**未**盲移植 |
+| `cd403baa2`/`12fd8b9fe` dead-css 门禁 | **本轮未吸** | nomi tip 脚本无 BASELINE；当前树大量违规（含 videoCanvas），接入 `check` 会红。待单独清扫或 ratchet |
 | `4a2eacfd4` channels group access | **未做** | 体积过大（channel/plugins 上千行），留待单独分支 |
 
 验证：
@@ -501,6 +504,7 @@
 - `cargo test -p nomifun-robot`：`the_stop_never_overtakes*` / `a_full_turn*` → pass
 - `cargo test -p nomifun-ssh --test ssh_config_import` → 17 pass
 - `cargo test -p nomifun-app --lib bootstrap::environment` → 18 pass
+- `bun run check:i18n` → pass；`modelProviderDuplicate` → 4 pass
 
 
 ## 8. 后续任务建议
