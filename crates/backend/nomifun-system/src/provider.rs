@@ -297,6 +297,7 @@ impl ProviderService {
                 connection_role: Some(row.connection_role.as_deref()),
                 params: Some(&row.params),
                 context_limit: Some(row.context_limit),
+                output_limit: None,
                 description: Some(row.description.as_deref()),
                 source: Some(&row.source),
             };
@@ -315,6 +316,7 @@ impl ProviderService {
                                 protocol: row.protocol.as_deref(),
                                 params: &row.params,
                                 context_limit: row.context_limit,
+                                output_limit: None,
                                 description: row.description.as_deref(),
                                 source: &row.source,
                                 health: None,
@@ -1748,6 +1750,7 @@ mod tests {
                     protocol: None,
                     params: "{}",
                     context_limit: Some(8_192),
+                    output_limit: None,
                     description: Some("row only"),
                     source: "user",
                     health: None,

@@ -92,6 +92,7 @@ async fn seed_model(pool: &nomifun_db::SqlitePool, provider_id: &str, model: &st
             protocol: None,
             params: "{}",
             context_limit: None,
+            output_limit: None,
             description: None,
             source: "user",
             health: None,

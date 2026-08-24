@@ -37,6 +37,9 @@ pub struct ProviderModelResponse {
     #[ts(optional, type = "number")]
     pub context_limit: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub output_limit: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub description: Option<String>,
     #[serde(default)]
@@ -93,6 +96,9 @@ pub struct CreateProviderModelRequest {
     #[serde(default)]
     #[ts(optional, type = "number")]
     pub context_limit: Option<i64>,
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub output_limit: Option<i64>,
     #[serde(default)]
     #[ts(optional)]
     pub description: Option<String>,
@@ -164,6 +170,13 @@ pub struct UpdateProviderModelRequest {
         deserialize_with = "crate::serde_util::deserialize_double_option",
         skip_serializing_if = "Option::is_none"
     )]
+    #[ts(optional, type = "number | null")]
+    pub output_limit: Option<Option<i64>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional)]
     pub description: Option<Option<String>>,
 }
@@ -200,6 +213,7 @@ mod tests {
             connection_role: None,
             params: serde_json::Value::Null,
             context_limit: None,
+            output_limit: None,
             description: None,
             source: ProfileSource::Inferred,
             health: None,
@@ -226,6 +240,7 @@ mod tests {
             "protocol",
             "connection_role",
             "context_limit",
+            "output_limit",
             "description",
             "health",
             "health_checked_at",
@@ -243,6 +258,7 @@ mod tests {
             connection_role: Some("primary".into()),
             params: json!({"temperature": 0.7}),
             context_limit: Some(128_000),
+            output_limit: None,
             description: Some("general model".into()),
             source: ProfileSource::User,
             health: Some(ModelHealthStatus {

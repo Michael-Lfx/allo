@@ -51,9 +51,9 @@ fn insert_query<'q>(
     sqlx::query(
         "INSERT INTO provider_models \
             (provider_id, model, enabled, sort_order, tasks, traits, protocol, \
-             params, context_limit, description, source, health, health_checked_at, \
+             params, context_limit, output_limit, description, source, health, health_checked_at, \
              created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?) \
          ON CONFLICT(provider_id, model) DO NOTHING",
     )
     .bind(provider_id)
@@ -65,6 +65,7 @@ fn insert_query<'q>(
     .bind(row.protocol)
     .bind(row.params)
     .bind(row.context_limit)
+    .bind(row.output_limit)
     .bind(row.description)
     .bind(row.source)
     .bind(row.health)
@@ -196,6 +197,10 @@ impl IProviderModelRepository for SqliteProviderModelRepository {
             set_parts.push("context_limit = ?");
             binds.push(BindValue::OptI64(v));
         }
+        if let Some(v) = update.output_limit {
+            set_parts.push("output_limit = ?");
+            binds.push(BindValue::OptI64(v));
+        }
         if let Some(v) = update.description {
             set_parts.push("description = ?");
             binds.push(BindValue::OptStr(v.map(String::from)));
@@ -309,6 +314,7 @@ mod tests {
                     protocol: None,
                     params: "{}",
                     context_limit: None,
+                    output_limit: None,
                     description: None,
                     source: "user",
                     health: None,
@@ -349,6 +355,7 @@ mod tests {
                 "gpt-image-1",
                 &ProviderModelUpdate {
                     context_limit: Some(Some(4096)),
+                    output_limit: None,
                     description: Some(Some("img")),
                     ..Default::default()
                 },

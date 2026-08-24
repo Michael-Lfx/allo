@@ -10,4 +10,4 @@ import type { ModelTrait } from "./ModelTrait";
  * `source = inferred`; a non-empty `tasks` is an explicit user profile
  * (`source = user`).
  */
-export type CreateProviderModelRequest = { provider_id: string, model: string, enabled?: boolean, tasks?: Array<ModelTask>, traits?: Array<ModelTrait>, protocol?: string, connection_role?: string, params?: unknown, context_limit?: number, description?: string, sort_order?: number, };
+export type CreateProviderModelRequest = { provider_id: string, model: string, enabled?: boolean, tasks?: Array<ModelTask>, traits?: Array<ModelTrait>, protocol?: string, connection_role?: string, params?: unknown, context_limit?: number, output_limit?: number, description?: string, sort_order?: number, };

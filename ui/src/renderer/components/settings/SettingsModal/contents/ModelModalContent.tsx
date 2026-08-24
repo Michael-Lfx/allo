@@ -44,6 +44,7 @@ import { useModelProfiles } from '@/renderer/hooks/agent/useModelProfiles';
 import { useContainerWidth } from '@/renderer/hooks/ui/useContainerWidth';
 import { consumePendingDeepLink } from '@/renderer/hooks/system/useDeepLink';
 import { ContextLimitSelect, formatContextLimit } from '@/renderer/pages/settings/components/ContextLimitSelect';
+import { OutputLimitInput } from '@/renderer/pages/settings/components/OutputLimitInput';
 import { isManagedModelProvider } from '@/common/types/provider/managedModelService';
 import { reorderById, reorderStrings } from './modelProviderOrdering';
 import {
@@ -138,6 +139,7 @@ const applyRowPatch = (row: ProviderModelResponse, patch: ModelRowPatch): Provid
   ...(patch.connection_role !== undefined ? { connection_role: patch.connection_role ?? undefined } : {}),
   ...(patch.params !== undefined ? { params: patch.params } : {}),
   ...(patch.context_limit !== undefined ? { context_limit: patch.context_limit ?? undefined } : {}),
+  ...(patch.output_limit !== undefined ? { output_limit: patch.output_limit ?? undefined } : {}),
   ...(patch.description !== undefined ? { description: patch.description ?? undefined } : {}),
 });
 
@@ -263,6 +265,68 @@ const ModelContextLimitEditor: React.FC<{
       }
     >
       <Tooltip content={t('settings.editModelContextLimit', { defaultValue: '编辑模型上下文窗口' })}>
+        <Button
+          size='mini'
+          className={`model-provider-action-btn !h-24px !min-w-44px shrink-0 px-6px text-11px ${value ? 'text-[rgb(var(--primary-6))] hover:text-[rgb(var(--primary-5))]' : 'text-t-secondary hover:text-t-primary'}`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {label}
+        </Button>
+      </Tooltip>
+    </Popover>
+  );
+};
+
+/**
+ * Per-model max-output-tokens editor. Blank means omit the ceiling where the
+ * protocol allows provider defaults.
+ */
+const ModelOutputLimitEditor: React.FC<{
+  value?: number;
+  onSave: (value?: number) => void;
+}> = ({ value, onSave }) => {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<number | undefined>(value);
+
+  const handleVisibleChange = (visible: boolean) => {
+    if (visible) setDraft(value);
+    setOpen(visible);
+  };
+
+  const handleSave = () => {
+    onSave(draft);
+    setOpen(false);
+  };
+
+  const label = value
+    ? String(value)
+    : t('settings.outputLimitProviderDefault', { defaultValue: 'Provider default' });
+
+  return (
+    <Popover
+      trigger='click'
+      position='bl'
+      popupVisible={open}
+      onVisibleChange={handleVisibleChange}
+      content={
+        <div className='flex flex-col gap-8px w-240px' onClick={(e) => e.stopPropagation()}>
+          <div className='text-12px text-t-secondary'>
+            {t('settings.outputLimit', { defaultValue: 'Max output tokens' })}
+          </div>
+          <OutputLimitInput value={draft} onChange={setDraft} />
+          <div className='flex items-center justify-end gap-8px'>
+            <Button size='mini' onClick={() => setOpen(false)}>
+              {t('common.cancel', { defaultValue: '取消' })}
+            </Button>
+            <Button size='mini' type='primary' onClick={handleSave}>
+              {t('common.save', { defaultValue: '保存' })}
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <Tooltip content={t('settings.outputLimit', { defaultValue: 'Max output tokens' })}>
         <Button
           size='mini'
           className={`model-provider-action-btn !h-24px !min-w-44px shrink-0 px-6px text-11px ${value ? 'text-[rgb(var(--primary-6))] hover:text-[rgb(var(--primary-5))]' : 'text-t-secondary hover:text-t-primary'}`}
@@ -1157,6 +1221,15 @@ const ModelModalContent: React.FC = () => {
                                   onSave={(value) => {
                                     void updateModelRow(platform, model, {
                                       context_limit: value && value > 0 ? value : null,
+                                    });
+                                  }}
+                                />
+
+                                <ModelOutputLimitEditor
+                                  value={row.output_limit}
+                                  onSave={(value) => {
+                                    void updateModelRow(platform, model, {
+                                      output_limit: value && value > 0 ? value : null,
                                     });
                                   }}
                                 />

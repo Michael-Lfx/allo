@@ -28,10 +28,11 @@ fn minimal_request() -> LlmRequest {
             }],
         )],
         tools: vec![],
-        max_tokens: 1024,
+        max_tokens: Some(1024),
         thinking: None,
         reasoning_effort: None,
         temperature: None,
+        retain_provider_round: false,
     }
 }
 

@@ -17,7 +17,7 @@ fn minimal_config() -> Config {
         api_key: "sk-test".into(),
         base_url: "http://localhost:0".into(),
         model: "gpt-test-model".into(),
-        max_tokens: 1024,
+        output_max_tokens: Some(1024),
         max_turns: Some(5),
         system_prompt: None,
         project_instructions: Default::default(),

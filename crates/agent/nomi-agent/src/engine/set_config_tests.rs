@@ -68,6 +68,7 @@ impl OutputSink for ArtifactIdentityOutput {
         }
     }
     fn emit_stream_start(&self, _: &str) {}
+    fn emit_output_discarded(&self, _: &str, _: u32) {}
     fn emit_stream_end(&self, _: &str, _: usize, _: u64, _: u64, _: u64, _: u64) {}
     fn emit_error(&self, _: &str) {}
     fn emit_info(&self, _: &str) {}
@@ -95,6 +96,7 @@ impl OutputSink for ToolLifecycleRecordingOutput {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
     fn emit_stream_start(&self, _: &str) {}
+    fn emit_output_discarded(&self, _: &str, _: u32) {}
     fn emit_stream_end(&self, _: &str, _: usize, _: u64, _: u64, _: u64, _: u64) {}
     fn emit_error(&self, _: &str) {}
     fn emit_info(&self, _: &str) {}
@@ -957,7 +959,7 @@ fn make_engine(model: &str) -> super::AgentEngine {
         messages: vec![],
         system_prompt: String::new(),
         model: model.to_string(),
-        max_tokens: 4096,
+        output_max_tokens: Some(4096),
         max_turns: Some(10),
         total_usage: Default::default(),
         thinking: None,

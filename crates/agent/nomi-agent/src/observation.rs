@@ -583,6 +583,7 @@ fn stop_reason_name(reason: StopReason) -> &'static str {
         StopReason::ToolUse => "tool_use",
         StopReason::MaxTokens => "max_tokens",
         StopReason::MaxTurns => "max_turns",
+        StopReason::Refusal => "refusal",
     }
 }
 
@@ -626,10 +627,11 @@ mod tests {
             system: system.into(),
             messages,
             tools,
-            max_tokens: 32,
+            max_tokens: Some(32),
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         }
     }
 
@@ -782,10 +784,11 @@ mod tests {
                 }],
             )],
             tools: Vec::new(),
-            max_tokens: 32,
+            max_tokens: Some(32),
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         };
 
         let mut rx = stream_llm(
@@ -861,10 +864,11 @@ mod tests {
                 }],
             )],
             tools: Vec::new(),
-            max_tokens: 32,
+            max_tokens: Some(32),
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         };
         let mut rx = stream_llm(
             &LongTextProvider,
@@ -940,10 +944,11 @@ mod tests {
                 }],
             )],
             tools: Vec::new(),
-            max_tokens: 32,
+            max_tokens: Some(32),
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         };
         let release_done = std::sync::Arc::new(tokio::sync::Notify::new());
         let mut rx = stream_llm(
@@ -1000,10 +1005,11 @@ mod tests {
                 }],
             )],
             tools: Vec::new(),
-            max_tokens: 16,
+            max_tokens: Some(16),
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         };
         let mut rx = stream_llm(
             &ScriptedProvider,

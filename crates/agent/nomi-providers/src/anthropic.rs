@@ -57,7 +57,13 @@ impl AnthropicProvider {
         Ok(headers)
     }
 
-    fn build_request_body(&self, request: &LlmRequest, sanitize_tool_schemas: bool) -> Value {
+    fn build_request_body(&self, request: &LlmRequest, sanitize_tool_schemas: bool) -> Result<Value, ProviderError> {
+        let max_tokens = request.max_tokens.ok_or_else(|| {
+            ProviderError::Config(
+                "anthropic.messages requires an explicit output ceiling; pass --max-tokens (or set [default].max_tokens) in the CLI, or set Max output tokens on the desktop model"
+                    .into(),
+            )
+        })?;
         // Build system prompt with optional cache_control
         let system = if self.cache_enabled {
             json!([{
@@ -71,7 +77,7 @@ impl AnthropicProvider {
 
         let mut body = json!({
             "model": request.model,
-            "max_tokens": request.max_tokens,
+            "max_tokens": max_tokens,
             "system": system,
             "messages": anthropic_shared::build_messages(&request.messages, &self.compat),
             "stream": true
@@ -104,7 +110,7 @@ impl AnthropicProvider {
             body["temperature"] = json!(t);
         }
 
-        body
+        Ok(body)
     }
 
     async fn send_initial_with_key_rotation(
@@ -135,7 +141,7 @@ impl LlmProvider for AnthropicProvider {
         let url = format!("{}/v1/messages", self.base_url);
         let client = crate::http_client();
         let sanitize_tool_schemas = self.should_sanitize_tool_schemas();
-        let mut body = self.build_request_body(request, sanitize_tool_schemas);
+        let mut body = self.build_request_body(request, sanitize_tool_schemas)?;
 
         tracing::debug!(target: "nomi_providers", body = %serde_json::to_string_pretty(&body).unwrap_or_default(), "outgoing request");
 
@@ -158,7 +164,7 @@ impl LlmProvider for AnthropicProvider {
                     status,
                     "provider rejected tool schemas; retrying with Bedrock-compatible schema roots"
                 );
-                body = self.build_request_body(request, true);
+                body = self.build_request_body(request, true)?;
                 let (response, headers) = self
                     .send_initial_with_key_rotation(&client, &url, &body)
                     .await?;
@@ -204,10 +210,11 @@ mod tests {
                 }],
             )],
             tools: vec![],
-            max_tokens: 1024,
+            max_tokens: Some(1024),
             thinking: None,
             reasoning_effort: None,
             temperature: None,
+                retain_provider_round: false,
         }
     }
 
@@ -220,7 +227,7 @@ mod tests {
         );
         let mut request = minimal_request();
         request.temperature = Some(0.5);
-        let body = provider.build_request_body(&request, false);
+        let body = provider.build_request_body(&request, false).expect("body");
         assert_eq!(body["temperature"], 0.5);
     }
 
@@ -231,7 +238,7 @@ mod tests {
             "http://localhost",
             ProviderCompat::anthropic_defaults(),
         );
-        let body = provider.build_request_body(&minimal_request(), false);
+        let body = provider.build_request_body(&minimal_request(), false).expect("body");
         assert!(body.get("temperature").is_none());
     }
 }

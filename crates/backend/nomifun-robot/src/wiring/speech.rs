@@ -298,10 +298,11 @@ async fn one_shot_vision(
             ],
         )],
         tools: vec![],
-        max_tokens: VISION_MAX_TOKENS,
+        max_tokens: Some(VISION_MAX_TOKENS),
         temperature: None,
         thinking: None,
         reasoning_effort: None,
+        retain_provider_round: false,
     };
 
     // Anthropic-platform rows speak the anthropic wire shape; everything else in

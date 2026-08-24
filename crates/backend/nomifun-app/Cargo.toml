@@ -117,6 +117,10 @@ name = "message_e2e"
 path = "tests/message_e2e.rs"
 
 [[test]]
+name = "truncation_recovery_e2e"
+path = "tests/truncation_recovery_e2e.rs"
+
+[[test]]
 name = "auth_e2e"
 path = "tests/auth_e2e.rs"
 

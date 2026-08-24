@@ -8,4 +8,4 @@ import type { ProfileSource } from "./ProfileSource";
  * One authoritative per-model catalog entry, projected from a
  * `provider_models` row. Identity is `(provider_id, model)`.
  */
-export type ProviderModelResponse = { provider_id: string, model: string, enabled: boolean, sort_order: number, tasks: Array<ModelTask>, traits: Array<ModelTrait>, protocol?: string, connection_role?: string, params: unknown, context_limit?: number, description?: string, source: ProfileSource, health?: ModelHealthStatus, health_checked_at?: number, created_at: number, updated_at: number, };
+export type ProviderModelResponse = { provider_id: string, model: string, enabled: boolean, sort_order: number, tasks: Array<ModelTask>, traits: Array<ModelTrait>, protocol?: string, connection_role?: string, params: unknown, context_limit?: number, output_limit?: number, description?: string, source: ProfileSource, health?: ModelHealthStatus, health_checked_at?: number, created_at: number, updated_at: number, };

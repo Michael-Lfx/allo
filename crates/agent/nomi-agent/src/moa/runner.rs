@@ -160,10 +160,11 @@ impl MoaRunner {
                 system: REFERENCE_SYSTEM_PROMPT.to_string(),
                 messages: trim_view_to_window(view.clone(), slot.context_window_tokens),
                 tools: Vec::new(),
-                max_tokens: slot.max_tokens.unwrap_or(state.config.reference_max_tokens),
+                max_tokens: Some(slot.max_tokens.unwrap_or(state.config.reference_max_tokens)),
                 thinking: None,
                 reasoning_effort: None,
                 temperature: slot.temperature,
+                retain_provider_round: false,
             };
             let semaphore = Arc::clone(&semaphore);
             join_set.spawn(async move {
@@ -379,7 +380,7 @@ mod tests {
             api_key: "test-key".into(),
             base_url: String::new(),
             model: model.into(),
-            max_tokens: 1024,
+            output_max_tokens: Some(1024),
             max_turns: None,
             system_prompt: None,
             project_instructions: Default::default(),

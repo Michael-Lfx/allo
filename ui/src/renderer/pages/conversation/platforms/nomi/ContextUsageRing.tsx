@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import {
   buildContextBreakdownViewModel,
   formatContextTokenAbbrev,
+  formatTokenCount,
   type ContextBreakdownSegment,
   type ContextUsageCategory,
 } from './turnMetrics';
@@ -16,6 +17,9 @@ export type ContextUsageRingProps = {
   max?: number;
   cacheReadTokens?: number;
   breakdown?: ContextBreakdownData | null;
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
 };
 
 const CATEGORY_LABEL_KEYS: Record<ContextUsageCategory, string> = {
@@ -84,7 +88,15 @@ function hasSummarizedProps(props?: SummarizedConversationProperties | null): bo
 
 /** Icon-only context gauge shown beside the active model. The ring carries the
  * compact status; click opens a Cursor-style context usage breakdown. */
-export function ContextUsageRing({ used, max, cacheReadTokens, breakdown }: ContextUsageRingProps) {
+export function ContextUsageRing({
+  used,
+  max,
+  cacheReadTokens,
+  breakdown,
+  inputTokens,
+  outputTokens,
+  reasoningTokens,
+}: ContextUsageRingProps) {
   const { t } = useTranslation();
   const [visible, setVisible] = useState(false);
   const [summarizedOpen, setSummarizedOpen] = useState(false);
@@ -233,6 +245,34 @@ export function ContextUsageRing({ used, max, cacheReadTokens, breakdown }: Cont
           );
         })}
       </div>
+      {(inputTokens != null || outputTokens != null || reasoningTokens != null) && (
+        <div className='mt-8px pt-6px b-t b-t-solid b-t-[var(--color-border-2)] text-12px leading-18px text-t-secondary tabular-nums'>
+          {inputTokens != null && (
+            <div>
+              {t('conversation.contextUsage.inputLine', {
+                tokens: formatTokenCount(inputTokens),
+                defaultValue: 'Input: {{tokens}}',
+              })}
+            </div>
+          )}
+          {outputTokens != null && (
+            <div>
+              {t('conversation.contextUsage.outputLine', {
+                tokens: formatTokenCount(outputTokens),
+                defaultValue: 'Output: {{tokens}}',
+              })}
+            </div>
+          )}
+          {reasoningTokens != null && (
+            <div>
+              {t('conversation.contextUsage.reasoningLine', {
+                tokens: formatTokenCount(reasoningTokens),
+                defaultValue: 'Reasoning: {{tokens}} (included in output)',
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 

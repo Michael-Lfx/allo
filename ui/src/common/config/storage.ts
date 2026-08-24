@@ -119,8 +119,10 @@ export interface TokenUsageData {
   total_tokens: number;
   /** Cumulative input tokens reported by the Nomi session usage payload. */
   input_tokens?: number;
-  /** Cumulative output tokens reported by the Nomi session usage payload. */
+  /** Cumulative output tokens reported by the Nomi session usage payload. Includes provider-accounted reasoning when applicable. */
   output_tokens?: number;
+  /** Provider-reported reasoning subset/detail. Never added to total_tokens a second time. */
+  reasoning_tokens?: number;
   /** Tokens written into the provider prompt cache. */
   cache_creation_tokens?: number;
   /** Tokens read back from the provider prompt cache. */

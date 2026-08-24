@@ -28,6 +28,19 @@ fn source_from_str(s: &str) -> ProfileSource {
     }
 }
 
+fn validate_positive_token_limit(field: &str, value: Option<i64>) -> Result<(), AppError> {
+    if value.is_some_and(|value| value <= 0) {
+        return Err(AppError::BadRequest(format!(
+            "{field} must be greater than zero"
+        )));
+    }
+    Ok(())
+}
+
+fn protocol_requires_output_ceiling(protocol: Option<&str>) -> bool {
+    matches!(protocol, Some("anthropic" | "bedrock" | "vertex"))
+}
+
 /// CRUD over the row-level model catalog (`/api/provider-models`).
 ///
 /// Since migration 016 dropped the legacy per-model `providers` columns, the
@@ -140,6 +153,13 @@ impl ProviderModelService {
         if let Some(role) = req.connection_role.as_deref() {
             crate::provider_connection::validate_role(role)?;
         }
+        validate_positive_token_limit("context_limit", req.context_limit)?;
+        validate_positive_token_limit("output_limit", req.output_limit)?;
+        if protocol_requires_output_ceiling(req.protocol.as_deref()) && req.output_limit.is_none() {
+            return Err(AppError::BadRequest(
+                "protocol requires output_limit (Max output tokens)".into(),
+            ));
+        }
         let provider = self
             .provider_repo
             .find_by_id(&provider_id)
@@ -186,6 +206,7 @@ impl ProviderModelService {
                     protocol: req.protocol.as_deref(),
                     params: &params_json,
                     context_limit: req.context_limit,
+                    output_limit: req.output_limit,
                     description: req.description.as_deref(),
                     source,
                     health: None,
@@ -233,6 +254,12 @@ impl ProviderModelService {
         if let Some(Some(role)) = req.connection_role.as_ref() {
             crate::provider_connection::validate_role(role)?;
         }
+        if let Some(context_limit) = req.context_limit {
+            validate_positive_token_limit("context_limit", context_limit)?;
+        }
+        if let Some(output_limit) = req.output_limit {
+            validate_positive_token_limit("output_limit", output_limit)?;
+        }
 
         let tasks_json = req
             .tasks
@@ -268,6 +295,7 @@ impl ProviderModelService {
             connection_role: req.connection_role.as_ref().map(|v| v.as_deref()),
             params: params_json.as_deref(),
             context_limit: req.context_limit,
+            output_limit: req.output_limit,
             description: req.description.as_ref().map(|v| v.as_deref()),
             source: (req.tasks.is_some() || req.traits.is_some()).then_some("user"),
         };
@@ -367,6 +395,7 @@ pub(crate) fn row_to_model_response(row: ProviderModelRow) -> Result<ProviderMod
         connection_role: row.connection_role,
         params,
         context_limit: row.context_limit,
+        output_limit: row.output_limit,
         description: row.description,
         source: source_from_str(&row.source),
         health,
@@ -395,6 +424,7 @@ mod tests {
             connection_role: None,
             params: r#"{"temperature":0.5}"#.into(),
             context_limit: Some(128000),
+            output_limit: None,
             description: Some("desc".into()),
             source: "user".into(),
             health: Some(r#"{"status":"healthy","latency":320}"#.into()),
@@ -499,6 +529,7 @@ mod tests {
             connection_role: None,
             params: None,
             context_limit: None,
+            output_limit: None,
             description: None,
             sort_order: None,
         }
@@ -516,6 +547,7 @@ mod tests {
             connection_role: None,
             params: None,
             context_limit: None,
+            output_limit: None,
             description: None,
         }
     }
@@ -546,6 +578,7 @@ mod tests {
                 tasks: vec![ModelTask::ImageGeneration],
                 traits: vec![],
                 context_limit: Some(64_000),
+                output_limit: None,
                 description: Some("img".into()),
                 protocol: Some("openai".into()),
                 connection_role: Some("primary".into()),

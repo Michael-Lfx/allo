@@ -17,6 +17,7 @@ import {
   getSupportedTasksForPlatform,
 } from '@/renderer/utils/model/modelPlatforms';
 import { ContextLimitSelect } from './ContextLimitSelect';
+import { OutputLimitInput } from './OutputLimitInput';
 
 const AddModelModal = ModalHOC<{ data?: IProvider; onSubmit: (model: IProvider) => void }>(
   ({ modalProps, data, onSubmit, modalCtrl }) => {
@@ -25,6 +26,7 @@ const AddModelModal = ModalHOC<{ data?: IProvider; onSubmit: (model: IProvider) 
     const [model, setModel] = useState('');
     const [modelProtocol, setModelProtocol] = useState<string>('openai');
     const [contextLimit, setContextLimit] = useState<number | undefined>();
+    const [outputLimit, setOutputLimit] = useState<number | undefined>();
     const [selectedTask, setSelectedTask] = useState<ModelTask | undefined>();
     const [discoveredTasks, setDiscoveredTasks] = useState<ModelTask[]>([]);
     const [discoveredTraits, setDiscoveredTraits] = useState<ModelTrait[]>([]);
@@ -59,6 +61,7 @@ const AddModelModal = ModalHOC<{ data?: IProvider; onSubmit: (model: IProvider) 
         setModel('');
         setModelProtocol('openai');
         setContextLimit(undefined);
+        setOutputLimit(undefined);
         setSelectedTask(undefined);
         setDiscoveredTasks([]);
         setDiscoveredTraits([]);
@@ -102,6 +105,13 @@ const AddModelModal = ModalHOC<{ data?: IProvider; onSubmit: (model: IProvider) 
         await ipcBridge.modelProfile.upsert.invoke({
           ...buildModelProfileUpsertRequest(data.id, model, profileTasks, [...selectedTraits]),
         });
+        if (outputLimit && outputLimit > 0) {
+          await ipcBridge.providerModel.update.invoke({
+            provider_id: data.id,
+            model,
+            output_limit: outputLimit,
+          });
+        }
         void mutateSWR(MODEL_PROFILES_SWR_KEY);
       } catch (e) {
         console.error('model profile upsert failed', e);
@@ -110,6 +120,7 @@ const AddModelModal = ModalHOC<{ data?: IProvider; onSubmit: (model: IProvider) 
       modalCtrl.close();
     }, [
       contextLimit,
+      outputLimit,
       data,
       existingModels,
       model,
@@ -191,6 +202,13 @@ const AddModelModal = ModalHOC<{ data?: IProvider; onSubmit: (model: IProvider) 
               {t('settings.contextLimit', { defaultValue: '上下文窗口 (tokens)' })}
             </div>
             <ContextLimitSelect value={contextLimit} onChange={setContextLimit} />
+          </div>
+
+          <div className='space-y-8px'>
+            <div className='text-13px font-500 text-t-secondary'>
+              {t('settings.outputLimit', { defaultValue: '最大输出 tokens' })}
+            </div>
+            <OutputLimitInput value={outputLimit} onChange={setOutputLimit} />
           </div>
 
           {/* Chat input traits are initialized from model discovery and remain user-adjustable. */}

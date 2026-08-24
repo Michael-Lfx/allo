@@ -417,12 +417,8 @@ const fromApiSendMessageResult = (result: ISendMessageResult): ISendMessageResul
   result_ok: result.result_ok ?? null,
   result_text: result.result_text ?? null,
   result_error: result.result_error ?? null,
-  ...(result.result_error_code !== undefined
-    ? { result_error_code: result.result_error_code ?? null }
-    : {}),
-  ...(result.result_error_retryable !== undefined
-    ? { result_error_retryable: result.result_error_retryable ?? null }
-    : {}),
+  result_error_code: result.result_error_code ?? null,
+  result_error_retryable: result.result_error_retryable ?? null,
 });
 
 const requireConversationIdempotencyKey = (value: unknown): string => {
@@ -792,6 +788,23 @@ export const conversation = {
         { idempotencyKey, timeoutMs: EDIT_RESUBMIT_STATE_TIMEOUT_MS }
       );
       return fromApiEditResubmitObservation(result);
+    },
+  },
+  continueTruncated: {
+    provider: () => {},
+    invoke: async (p: {
+      conversation_id: ConversationId;
+      source_message_id: MessageId;
+      idempotency_key: string;
+    }): Promise<ISendMessageResult> => {
+      const idempotencyKey = requireConversationIdempotencyKey(p.idempotency_key);
+      const result = await httpRequest<ISendMessageResult>(
+        'POST',
+        `/api/conversations/${p.conversation_id}/messages/${p.source_message_id}/continue-truncated`,
+        undefined,
+        { idempotencyKey }
+      );
+      return fromApiSendMessageResult(result);
     },
   },
   getSlashCommands: httpGet<
@@ -3308,8 +3321,8 @@ export interface ISendMessageResult {
   result_ok: boolean | null;
   result_text: string | null;
   result_error: string | null;
-  result_error_code?: string | null;
-  result_error_retryable?: boolean | null;
+  result_error_code: string | null;
+  result_error_retryable: boolean | null;
 }
 
 export type EditResubmitReceiptState = 'missing' | 'accepted' | 'completed';

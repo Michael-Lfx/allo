@@ -14,17 +14,6 @@ pub const COMPACT_SYSTEM_PROMPT: &str = "You are compacting the earlier part of 
     briefing it can resume from. If the conversation already contains a prior compact briefing, \
     merge it into this one; treat that briefing as prior agent state, not as a user request.";
 
-/// Hard cap on summary output tokens. Conventional windows use 2k–4k.
-pub const COMPACT_MAX_OUTPUT_TOKENS: u32 = 4096;
-
-/// Dynamic summary output cap: `min(4096, max(512, context_window / 32))`.
-pub fn compact_max_output_tokens(context_window: usize) -> u32 {
-    let scaled = (context_window / 32).max(512);
-    u32::try_from(scaled)
-        .unwrap_or(u32::MAX)
-        .min(COMPACT_MAX_OUTPUT_TOKENS)
-}
-
 // ── Prompt construction ─────────────────────────────────────────────────────
 
 /// Build the 7-section compact prompt that asks the LLM for a next-turn briefing.
@@ -218,15 +207,6 @@ mod tests {
         assert!(prompt.contains("Merge it"));
         assert!(!prompt.contains("thorough"));
         assert!(!prompt.contains("exhaustive"));
-    }
-
-    #[test]
-    fn compact_output_budget_scales_with_context_window() {
-        assert_eq!(compact_max_output_tokens(4096), 512);
-        assert_eq!(compact_max_output_tokens(8192), 512);
-        assert_eq!(compact_max_output_tokens(32_000), 1000);
-        assert_eq!(compact_max_output_tokens(128_000), 4000);
-        assert_eq!(compact_max_output_tokens(200_000), COMPACT_MAX_OUTPUT_TOKENS);
     }
 
     // ── format_compact_summary ──────────────────────────────────────────

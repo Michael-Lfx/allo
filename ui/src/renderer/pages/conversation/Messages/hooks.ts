@@ -26,6 +26,7 @@ import {
   normalizeToolGroupContent,
   normalizeWireAgentMessageMetadata,
   normalizeAgentStreamError,
+  normalizeTruncatedTurnRecovery,
   preferTextMessageVersion,
   transformKnowledgeWritebackEvent,
 } from '@/common/chat/chatLib';
@@ -294,6 +295,21 @@ function composeMessageWithIndex(message: TMessage | undefined, list: TMessage[]
     if (existingIdx !== undefined && existingIdx < list.length) {
       const existingMsg = list[existingIdx];
       if (existingMsg.type === 'text') {
+        // An authoritative replacement targets its exact durable segment even
+        // when tool/thinking rows were appended afterwards. This is also how
+        // output-discard rollback hides a superseded draft without creating a
+        // second blank row at the tail.
+        if (message.content.replace === true) {
+          const newList = list.slice();
+          newList[existingIdx] = {
+            ...existingMsg,
+            ...message,
+            id: existingMsg.id,
+            created_at: existingMsg.created_at ?? message.created_at,
+            content: mergeTextMessageContent(existingMsg.content, message.content),
+          };
+          return newList;
+        }
         const existingIsWritebackOnly =
           existingMsg.position === 'left' &&
           existingMsg.content.content.length === 0 &&
@@ -323,6 +339,9 @@ function composeMessageWithIndex(message: TMessage | undefined, list: TMessage[]
       const newList = list.slice();
       newList[newList.length - 1] = {
         ...last,
+        ...message,
+        id: last.id,
+        created_at: last.created_at ?? message.created_at,
         content: mergeTextMessageContent(last.content, message.content),
       };
       return newList;
@@ -725,6 +744,7 @@ const normalizeDbTipsMessage = (msg: TMessage): TMessage => {
         classifyPersistedSendFailure(parsed, parsed.content) ??
         normalizeAgentStreamError({ ...parsed, message: parsed.content }))
       : undefined;
+  const recovery = normalizeTruncatedTurnRecovery(parsed.recovery);
 
   return {
     ...msg,
@@ -733,6 +753,7 @@ const normalizeDbTipsMessage = (msg: TMessage): TMessage => {
       content: parsed.content,
       type: tipType,
       ...(structuredError ? { error: structuredError } : {}),
+      ...(recovery ? { recovery } : {}),
     },
   } as IMessageTips;
 };
