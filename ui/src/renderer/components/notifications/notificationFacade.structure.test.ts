@@ -73,6 +73,7 @@ describe('notification facade source contracts', () => {
     expect(host.includes('getCollapsedRecords(records)')).toBe(true);
     expect(host.includes('displayedRecords = expanded ? sortByCreatedAt(activeRecords)')).toBe(false);
     expect(host.includes('duration: 240')).toBe(true);
+    expect(host.includes('window.requestAnimationFrame(() => counterRef.current?.focus())')).toBe(true);
 
     const model = readSource('./notificationStackModel.ts');
     expect(model.includes('export const getCollapsedRecords')).toBe(true);

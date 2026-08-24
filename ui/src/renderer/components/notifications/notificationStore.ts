@@ -24,6 +24,11 @@ type Timer = ReturnType<typeof setTimeout>;
 
 const isFiniteDuration = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
+const hasNotificationField = <K extends keyof AppNotificationInput>(
+  input: Partial<AppNotificationInput>,
+  key: K,
+): boolean => Object.prototype.hasOwnProperty.call(input, key);
+
 class NotificationStore {
   private records: StoredNotification[] = [];
   private snapshot: readonly StoredNotification[] = [];
@@ -187,22 +192,26 @@ class NotificationStore {
     record: StoredNotification,
     input: AppNotificationInput,
     scope: ScopeState,
-    preserveDuration: boolean,
+    preserveExistingFields: boolean,
   ): void {
     this.clearTimer(record.key);
     const level = input.level ?? record.level;
-    const duration = preserveDuration && input.duration === undefined ? record.duration : this.resolveDuration(input.duration, scope.duration);
+    const duration =
+      preserveExistingFields && input.duration === undefined ? record.duration : this.resolveDuration(input.duration, scope.duration);
     record.level = level;
     record.content = input.content;
-    record.title = input.title;
     record.duration = duration;
     record.remainingMs = duration;
     record.closable = input.closable ?? record.closable;
-    record.showIcon = input.showIcon ?? (level !== 'normal');
-    record.icon = input.icon;
-    record.action = input.action;
-    record.onClose = input.onClose;
-    record.announce = input.announce;
+    record.showIcon =
+      preserveExistingFields && !hasNotificationField(input, 'showIcon')
+        ? record.showIcon
+        : (input.showIcon ?? (level !== 'normal'));
+    if (!preserveExistingFields || hasNotificationField(input, 'title')) record.title = input.title;
+    if (!preserveExistingFields || hasNotificationField(input, 'icon')) record.icon = input.icon;
+    if (!preserveExistingFields || hasNotificationField(input, 'action')) record.action = input.action;
+    if (!preserveExistingFields || hasNotificationField(input, 'onClose')) record.onClose = input.onClose;
+    if (!preserveExistingFields || hasNotificationField(input, 'announce')) record.announce = input.announce;
     record.passthrough = input.passthrough ?? record.passthrough;
     record.revision += 1;
     this.startTimer(record);

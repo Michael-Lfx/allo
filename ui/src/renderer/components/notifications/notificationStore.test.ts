@@ -98,6 +98,59 @@ describe('notificationStore', () => {
     }
   });
 
+  test('handle.update preserves omitted rich fields and replaces explicitly provided fields', async () => {
+    const scope = notificationStore.createScope();
+    const originalClose = () => {};
+    const replacementClose = () => {};
+    try {
+      const handle = scope.show({
+        content: 'working',
+        title: 'Working',
+        icon: 'spinner',
+        action: 'Cancel',
+        onClose: originalClose,
+        announce: 'working',
+        closable: true,
+        showIcon: true,
+        passthrough: true,
+        duration: 0,
+      });
+
+      handle.update({ content: 'done', level: 'success' });
+      let [record] = activeOf(scope);
+      expect(record.content).toBe('done');
+      expect(record.title).toBe('Working');
+      expect(record.icon).toBe('spinner');
+      expect(record.action).toBe('Cancel');
+      expect(record.onClose).toBe(originalClose);
+      expect(record.announce).toBe('working');
+      expect(record.showIcon).toBe(true);
+      expect(record.passthrough).toBe(true);
+      expect(record.duration).toBe(0);
+
+      handle.update({
+        title: null,
+        icon: null,
+        action: null,
+        onClose: replacementClose,
+        announce: 'done',
+        showIcon: false,
+        passthrough: false,
+      });
+      [record] = activeOf(scope);
+      expect(record.title).toBeNull();
+      expect(record.icon).toBeNull();
+      expect(record.action).toBeNull();
+      expect(record.onClose).toBe(replacementClose);
+      expect(record.announce).toBe('done');
+      expect(record.showIcon).toBe(false);
+      expect(record.passthrough).toBe(false);
+    } finally {
+      scope.dispose();
+      await wait(NOTIFICATION_EXIT_DURATION + 50);
+    }
+  });
+
   test('maxCount evicts the oldest active record of the scope', async () => {
     const scope = notificationStore.createScope({ maxCount: 2 });
     try {

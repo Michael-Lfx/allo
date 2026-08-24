@@ -16,6 +16,7 @@ const NotificationHost: React.FC = () => {
   const [politeMessage, setPoliteMessage] = useState('');
   const [assertiveMessage, setAssertiveMessage] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
+  const counterRef = useRef<HTMLButtonElement>(null);
   const cardsScrollRef = useRef<HTMLDivElement>(null);
   const announcedRef = useRef(new Map<string, number>());
   const revealedRef = useRef(new Set<string>());
@@ -140,8 +141,10 @@ const NotificationHost: React.FC = () => {
   };
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape' && rootRef.current?.contains(document.activeElement)) {
+      event.preventDefault();
       event.stopPropagation();
       setExpanded(false);
+      window.requestAnimationFrame(() => counterRef.current?.focus());
     }
   };
 
@@ -166,6 +169,7 @@ const NotificationHost: React.FC = () => {
       onBlurCapture={handleBlurCapture}
       onKeyDown={handleKeyDown}
       rootRef={rootRef}
+      counterRef={counterRef}
       cardsScrollRef={cardsScrollRef}
       setCardRef={(key, node) => {
         if (node) cardRefs.current.set(key, node);

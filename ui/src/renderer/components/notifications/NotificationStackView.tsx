@@ -32,6 +32,7 @@ export type NotificationStackViewProps = {
   onBlurCapture: React.FocusEventHandler<HTMLDivElement>;
   onKeyDown: React.KeyboardEventHandler<HTMLDivElement>;
   rootRef?: React.Ref<HTMLDivElement>;
+  counterRef?: React.Ref<HTMLButtonElement>;
   cardsScrollRef?: React.Ref<HTMLDivElement>;
   setCardRef?: (key: string, node: HTMLDivElement | null) => void;
 };
@@ -54,6 +55,7 @@ const NotificationStackView: React.FC<NotificationStackViewProps> = ({
   onBlurCapture,
   onKeyDown,
   rootRef,
+  counterRef,
   cardsScrollRef,
   setCardRef,
 }) => {
@@ -77,6 +79,7 @@ const NotificationStackView: React.FC<NotificationStackViewProps> = ({
         {(expanded || hiddenCount > 0) && (
           <button
             type='button'
+            ref={counterRef}
             className='flowy-notification-stack__counter'
             aria-expanded={expanded}
             aria-controls={NOTIFICATION_STACK_ID}

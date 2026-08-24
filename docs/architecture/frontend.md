@@ -92,6 +92,52 @@ navigation does not introduce another product object.
 - Realtime events arrive through a singleton WebSocket and are demuxed by event
   name.
 
+## In-App Notifications
+
+Renderer notifications are owned by the standalone module at
+[`ui/src/renderer/components/notifications`](../../ui/src/renderer/components/notifications/).
+[`NotificationHost`](../../ui/src/renderer/components/notifications/NotificationHost.tsx)
+is mounted once by `Layout` and portals the stack to `document.body`. The module
+store keeps early notifications until the host is mounted; it does not touch
+backend data, native OS notifications, or notification permissions.
+
+Runtime Arco `Message` / `Notification` calls use the `AppMessage` and
+`AppNotification` facades. `useArcoMessage` keeps each hook instance in its own
+scope, including its `maxCount` policy, while static calls use the shared scope.
+Within a scope, a repeated `id` updates the active record in place. A returned
+`handle.update()` is a patch: omitted optional fields such as `title`, `icon`,
+`action`, `onClose`, and `announce` are preserved, while explicitly supplied
+values replace them.
+
+The host is a fixed bottom-right stack: 24px from the desktop edges, 16px on
+narrow screens, plus the safe-area inset. Collapsed mode shows up to three
+transient notifications, with the newest at the bottom. The counter pill counts
+only active transient records hidden by the collapsed limit; `duration: 0`
+records remain visible and switch the cards area to bounded scrolling when they
+exceed the transient limit. The counter expands the full active/exiting list,
+keeps the newest cards at the bottom, and collapses on outside click or Escape.
+Escape returns focus to the disclosure button when the notification region had
+focus.
+
+Timers pause while the stack is hovered, focused, or expanded. `ComposerSurface`
+and `MobileActionSheet` register real blocker elements so `ResizeObserver`,
+window/visual-viewport resize, and sheet transition updates lift the stack above
+the composer or mobile action panel. Cards do not handle clicks themselves;
+close buttons, supplied actions, and the disclosure control are the only
+interactive surfaces. `passthrough` cards remain pointer-transparent. Separate
+polite and assertive live regions announce notification content without
+re-announcing expansion history. Enter/exit motion uses opacity/transform;
+stack FLIP movement follows the 240ms spatial-transition token, with 180ms entry,
+120ms exit, and reduced-motion overrides.
+
+The behavior contract is covered by the focused suite under the notification
+module and the locale bundle test:
+
+```text
+bun test --cwd ui src/renderer/components/notifications
+bun test --cwd ui src/renderer/services/i18n/notificationsLocales.test.ts
+```
+
 ## Desktop Conversation Streaming Presentation
 
 The desktop conversation surface separates an active assistant reply into a

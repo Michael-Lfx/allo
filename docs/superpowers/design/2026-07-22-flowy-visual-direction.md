@@ -20,5 +20,5 @@
 ## Token 落点
 
 - `ui/src/renderer/styles/flowy-visual-system.css` — 字阶、4/8 间距、圆角、表面、强调/状态色（浅/深语义一致）
-- `ui/src/renderer/styles/theme-control-contract.css` — Button/Input/Select/Card/Tabs/Tooltip/Toast/Skeleton 状态
+- `ui/src/renderer/styles/theme-control-contract.css` — Button/Input/Select/Card/Tabs/Tooltip/应用内通知堆叠/Skeleton 状态
 - 密度：`--flowy-density-rail|session|content-pad|workspace`
