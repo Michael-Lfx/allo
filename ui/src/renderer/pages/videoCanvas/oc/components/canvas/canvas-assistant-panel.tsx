@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import copyToClipboard from "copy-to-clipboard";
 import { Copy, History, MessageSquareText, Plus, ScrollText, Settings2, Trash2, X } from "lucide-react";
 import { Button, Modal, Segmented, Select, Tooltip } from "antd";
@@ -20,6 +20,7 @@ import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { cinematicAgentSessionOpsJson, createCinematicAgentSession, isAgentSessionPollingAbort, resumeCinematicAgentSession } from "@oc/lib/canvas/canvas-agent-session";
 import { summarizeCanvasContext } from "@oc/lib/canvas/canvas-context-summary";
 import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentWorkingMessage, type CanvasAgentChatMessage, type CanvasAgentMode } from "./canvas-agent-chat-ui";
+import { compactCanvasAgentSnapshot as compactSnapshot } from "@oc/lib/canvas/canvas-agent-snapshot-compact";
 import { AgentChatEmptyState, AgentPanelChrome } from "./canvas-agent-panel-chrome";
 import { CANVAS_AGENT_PANEL_MOTION_MS } from "./canvas-assistant-panel-motion";
 import { CanvasLocalAgentPanel } from "./canvas-local-agent-panel";
@@ -590,6 +591,21 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
         if (session) upsertMessage(session.id, { id: messageId, role: "tool", title: "已拒绝执行", text: "工具调用已取消", detail: { ...objectDetail(session.messages.find((item) => item.id === messageId)?.detail), status: "rejected" } });
     };
 
+    // 稳定回调身份：配合 memo(AgentChatMessage) 避免任一状态变化重渲全部历史消息。
+    const rejectOnlineToolRef = useRef(rejectOnlineTool);
+    const approveOnlineToolRef = useRef(approveOnlineTool);
+    useEffect(() => {
+        rejectOnlineToolRef.current = rejectOnlineTool;
+        approveOnlineToolRef.current = approveOnlineTool;
+    });
+    const stableRejectOnlineTool = useCallback((id: string) => rejectOnlineToolRef.current(id), []);
+    const stableApproveOnlineTool = useCallback((id: string) => approveOnlineToolRef.current(id), []);
+    // 映射结果按 messages 身份缓存；chat 项引用稳定后，流式只重渲变化的那条。
+    const chatMessagePairs = useMemo(
+        () => messages.map((message) => ({ chat: assistantMessageToChatMessage(message), message })),
+        [messages],
+    );
+
     const undoLastOnlineBatch = () => {
         const restored = onUndoOps();
         if (!restored) return;
@@ -711,11 +727,11 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
                         />
                     ) : view === "log" ? (
                         <OnlineAgentLogView logs={onlineLogs} theme={theme} context={{ model: activeModel, running: agentBusy, confirmTools, messages: messages.length, nodes: snapshot.nodes.length, connections: snapshot.connections.length }} onClear={() => setOnlineLogs([])} />
-                    ) : messages.length ? (
+                    ) : chatMessagePairs.length ? (
                         <>
-                            {messages.map((message) => (
-                                <div key={message.id} className="space-y-2">
-                                    <AgentChatMessage item={assistantMessageToChatMessage(message)} theme={theme} user={user} onRejectTool={rejectOnlineTool} onApproveTool={approveOnlineTool} />
+                            {chatMessagePairs.map(({ chat, message }) => (
+                                <div key={chat.id} className="space-y-2">
+                                    <AgentChatMessage item={chat} theme={theme} user={user} onRejectTool={stableRejectOnlineTool} onApproveTool={stableApproveOnlineTool} />
                                     {message.references?.length ? <MessageReferences message={message} /> : null}
                                 </div>
                             ))}
@@ -1455,46 +1471,6 @@ async function buildToolAgentMessages(snapshot: CanvasAgentSnapshot, history: Ca
     ];
 }
 
-function compactSnapshot(snapshot: CanvasAgentSnapshot) {
-    return {
-        title: snapshot.title,
-        viewport: snapshot.viewport,
-        selectedNodeIds: snapshot.selectedNodeIds,
-        nodes: snapshot.nodes.map((node) => ({
-            id: node.id,
-            type: node.type,
-            title: node.title,
-            position: node.position,
-            width: node.width,
-            height: node.height,
-            metadata: compactMetadata(node.metadata || {}),
-        })),
-        connections: snapshot.connections,
-    };
-}
-
-function compactMetadata(metadata: CanvasNodeData["metadata"]) {
-    return {
-        content: String(metadata?.content || "").slice(0, 500),
-        prompt: String(metadata?.prompt || metadata?.composerContent || "").slice(0, 500),
-        status: metadata?.status,
-        skillName: metadata?.skillSnapshot?.name,
-        skillVersion: metadata?.skillSnapshot?.version,
-        generationMode: metadata?.generationMode,
-        model: metadata?.model,
-        size: metadata?.size,
-        assetTags: metadata?.assetTags,
-        workflowKind: metadata?.workflowKind,
-        workflowTitle: metadata?.workflowTitle,
-        workflowDescription: metadata?.workflowDescription,
-        characterName: metadata?.characterName,
-        characterAssetId: metadata?.characterAssetId,
-        characterVersionId: metadata?.characterVersionId,
-        chapterId: metadata?.chapterId,
-        chapterTitle: metadata?.chapterTitle,
-        shotIndex: metadata?.shotIndex,
-    };
-}
 
 function backendAgentProviderConfig(config: ReturnType<typeof resolveModelRequestConfig>) {
     return {

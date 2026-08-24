@@ -52,7 +52,33 @@ export type UserOSSSettingInput = Pick<
 
 const resourceCache = new Map<string, RemoteResource>();
 const resourceRequests = new Map<string, Promise<RemoteResource>>();
-const missingResourceIds = new Set<string>();
+const missingResourceIds = new Map<string, number>();
+// 只有确认不存在（404/410）才记负缓存；网络抖动、5xx、鉴权失败等瞬时错误不记账，允许尽快重试。
+const MISSING_RESOURCE_TTL_MS = 5 * 60_000;
+
+class ResourceProbeStatusError extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`resource probe failed with status ${status}`);
+    this.status = status;
+  }
+}
+
+function rememberMissingResource(cacheKey: string, error: unknown) {
+  if (!(error instanceof ResourceProbeStatusError)) return;
+  if (error.status !== 404 && error.status !== 410) return;
+  missingResourceIds.set(cacheKey, Date.now() + MISSING_RESOURCE_TTL_MS);
+}
+
+function isMissingResourceCached(cacheKey: string): boolean {
+  const expiresAt = missingResourceIds.get(cacheKey);
+  if (expiresAt === undefined) return false;
+  if (Date.now() >= expiresAt) {
+    missingResourceIds.delete(cacheKey);
+    return false;
+  }
+  return true;
+}
 
 export function resourceStorageKey(id: string) {
   return `resource:${id}`;
@@ -211,7 +237,7 @@ export function getResource(id: string, hint?: ResourceLookupHint): Promise<Remo
   const cacheKey = resourceCacheKey(id);
   const cached = resourceCache.get(cacheKey);
   if (cached) return Promise.resolve(cached);
-  if (missingResourceIds.has(cacheKey)) return Promise.reject(new Error('resource missing'));
+  if (isMissingResourceCached(cacheKey)) return Promise.reject(new Error('resource missing'));
   if (hasResourceLookupHint(hint)) {
     const resource = resourceFromLookupHint(id, hint);
     resourceCache.set(cacheKey, resource);
@@ -231,12 +257,12 @@ export function getResource(id: string, hint?: ResourceLookupHint): Promise<Remo
         size = Number(head.headers.get('content-length') || 0);
       } else {
         const get = await fetch(publicUrl, mediaFetchInit('GET'));
-        if (!get.ok) throw new Error('not found');
+        if (!get.ok) throw new ResourceProbeStatusError(get.status);
         mimeType = normalizeResourceMimeType(get.headers.get('content-type') || mimeType);
         size = Number(get.headers.get('content-length') || 0);
       }
-    } catch {
-      missingResourceIds.add(cacheKey);
+    } catch (error) {
+      rememberMissingResource(cacheKey, error);
       throw new Error('resource missing');
     }
     const resource: RemoteResource = {

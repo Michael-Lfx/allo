@@ -447,7 +447,12 @@ function consumeResponseStreamBlock(block: string, state: ResponseStreamState, o
         .join("\n")
         .trim();
     if (!data || data === "[DONE]") return;
-    const event = JSON.parse(data) as Record<string, unknown>;
+    let event: Record<string, unknown>;
+    try {
+        event = JSON.parse(data) as Record<string, unknown>;
+    } catch {
+        return;
+    }
     const type = stringValue(event.type);
     const errorMessage = responseErrorMessage(event);
     if (errorMessage) state.error = errorMessage;
@@ -522,7 +527,12 @@ function consumeChatCompletionStreamBlock(block: string, state: ChatCompletionSt
         .join("\n")
         .trim();
     if (!data || data === "[DONE]") return;
-    const event = JSON.parse(data) as Record<string, unknown>;
+    let event: Record<string, unknown>;
+    try {
+        event = JSON.parse(data) as Record<string, unknown>;
+    } catch {
+        return;
+    }
     const errorMessage = responseErrorMessage(event);
     if (errorMessage) state.error = errorMessage;
     const choices = Array.isArray(event.choices) ? event.choices : [];
@@ -727,7 +737,13 @@ function consumeGeminiStreamBlock(block: string, state: GeminiStreamState, onDel
         .join("\n")
         .trim();
     if (!data || data === "[DONE]") return;
-    const result = parseGeminiToolResponse(JSON.parse(data) as GeminiPayload);
+    let payload: GeminiPayload;
+    try {
+        payload = JSON.parse(data) as GeminiPayload;
+    } catch {
+        return;
+    }
+    const result = parseGeminiToolResponse(payload);
     if (result.content) {
         state.text += result.content;
         onDelta?.(state.text);

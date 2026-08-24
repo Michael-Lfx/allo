@@ -185,6 +185,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
 }) => {
   const { t } = useTranslation();
   const storyboardPaths = useMemo(() => findStoryboardPaths(artifacts), [artifacts]);
+  const storyboardPathSignature = storyboardPaths.join('|');
   const [storyboardEntries, setStoryboardEntries] = useState<
     Array<{ path: string; shots: StoryboardShot[] }>
   >([]);
@@ -220,7 +221,9 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, storyboardPaths]);
+    // 轮询期间 artifacts 数组每 ~4s 换新身份；以稳定签名为依赖，路径集合未变就不重拉全部分镜。
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- effect 体读取的 storyboardPaths 内容由上方签名完全决定
+  }, [sessionId, storyboardPathSignature]);
 
   const scenes = useMemo(
     () => buildStoryboardScenesFromStoryboards(artifacts, storyboardEntries),

@@ -7,7 +7,6 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { CometCard } from "@oc/components/ui/aceternity/comet-card";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@oc/lib/canvas/resource-storage-status";
-import { canvasRichTextHTML } from "@oc/lib/canvas/canvas-rich-text";
 import { formatBytes } from "@oc/lib/image-utils";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@oc/lib/generation-error";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -23,6 +22,10 @@ import { readCanvasScaleFromElement } from "@oc/lib/canvas/canvas-live-viewport"
 
 const VideoPlayer = React.lazy(() =>
     import("@oc/components/video-player").then((mod) => ({ default: mod.VideoPlayer }))
+);
+
+const CanvasRichTextView = React.lazy(() =>
+    import("@oc/components/canvas/canvas-rich-text-view").then((mod) => ({ default: mod.default }))
 );
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -700,7 +703,6 @@ function UnknownNodeContent({ theme }: Pick<NodeContentRendererProps, "theme">) 
 function TextContent({ node, theme, isEditingContent, textareaRef, mentionReferences, onContentChange, onStopEditing }: NodeContentRendererProps) {
     const fontSize = node.metadata?.fontSize || 14;
     const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.65)}px`, color: theme.node.text, boxSizing: "border-box" } as React.CSSProperties;
-    const richTextHTML = useMemo(() => canvasRichTextHTML(node.metadata?.richText), [node.metadata?.richText]);
 
     return (
         <div className="flex h-full w-full flex-col overflow-hidden pt-10">
@@ -721,13 +723,15 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                     onPointerDown={(event) => event.stopPropagation()}
                     onWheel={(event) => event.stopPropagation()}
                 />
-            ) : richTextHTML ? (
-                <div
-                    className="thin-scrollbar block h-full w-full overflow-y-auto break-words bg-transparent px-4 pb-4 font-mono [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:opacity-70 [&_code]:rounded [&_code]:bg-black/6 [&_code]:px-1 dark:[&_code]:bg-white/8 [&_h1]:my-2 [&_h1]:text-[1.55em] [&_h1]:font-semibold [&_h2]:my-2 [&_h2]:text-[1.3em] [&_h2]:font-semibold [&_h3]:my-1.5 [&_h3]:text-[1.12em] [&_h3]:font-semibold [&_hr]:my-3 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-black/90 [&_pre]:p-2 [&_pre]:text-white [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
-                    style={textStyle}
-                    onWheel={(event) => event.stopPropagation()}
-                    dangerouslySetInnerHTML={{ __html: richTextHTML }}
-                />
+            ) : node.metadata?.richText ? (
+                <React.Suspense fallback={null}>
+                    <CanvasRichTextView
+                        richText={node.metadata.richText}
+                        className="thin-scrollbar block h-full w-full overflow-y-auto break-words bg-transparent px-4 pb-4 font-mono [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:opacity-70 [&_code]:rounded [&_code]:bg-black/6 [&_code]:px-1 dark:[&_code]:bg-white/8 [&_h1]:my-2 [&_h1]:text-[1.55em] [&_h1]:font-semibold [&_h2]:my-2 [&_h2]:text-[1.3em] [&_h2]:font-semibold [&_h3]:my-1.5 [&_h3]:text-[1.12em] [&_h3]:font-semibold [&_hr]:my-3 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-black/90 [&_pre]:p-2 [&_pre]:text-white [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
+                        style={textStyle}
+                        onWheel={(event) => event.stopPropagation()}
+                    />
+                </React.Suspense>
             ) : (
                 <div
                     className="thin-scrollbar block h-full w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-4 pt-0 pb-4 font-mono"

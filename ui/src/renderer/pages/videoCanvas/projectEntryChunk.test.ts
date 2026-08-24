@@ -24,6 +24,12 @@ describe("video canvas project entry chunk", () => {
         expect(page.includes('from "@oc/components/canvas/canvas-script-node"')).toBe(true);
     });
 
+    test("canvas node renders rich text via lazy view (no static tiptap)", () => {
+        const nodeSource = source("./oc/components/canvas/canvas-node.tsx");
+        expect(nodeSource.includes("canvasRichTextHTML")).toBe(false);
+        expect(nodeSource.includes('import("@oc/components/canvas/canvas-rich-text-view")')).toBe(true);
+    });
+
     test("director hook factory import does not pull three", () => {
         const directorHook = source("./oc/pages/canvas/use-canvas-director.ts");
         expect(directorHook.includes('from "three"')).toBe(false);

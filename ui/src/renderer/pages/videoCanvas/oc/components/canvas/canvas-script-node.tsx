@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Button, Input, InputNumber, Popover, Segmented, Select, Tooltip } from "antd";
 import { Clapperboard, Expand, Grid3X3, Image as ImageIcon, ListTree, Merge, Minus, Plus, RefreshCw, Send, Square, Trash2, Video, X } from "lucide-react";
 
@@ -75,7 +75,12 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
     const simpleMode = workspaceMode === "simple";
     const rows = node.metadata?.storyboard?.rows || [];
     const [prompt, setPrompt] = useState(node.metadata?.composerContent || "");
-    const [scrollTop, setScrollTop] = useState(0);
+    // 滚动热路径：scrollTop 只进 ref，端口位置由 rAF 里直改 DOM transform，
+    // 不再以滚动频率触发本组件与 WorldLayers 的 React 重渲；store 写入同样合帧。
+    const scrollTopRef = useRef(0);
+    const portsInnerRef = useRef<HTMLDivElement | null>(null);
+    const scrollFrameRef = useRef<number | null>(null);
+    const notifiedScrollRef = useRef(0);
     const composerHeightChangeRef = useRef(onComposerHeightChange);
     const reportedComposerHeightRef = useRef<number | null>(null);
     const composerHeight = node.metadata?.storyboardComposerHeight || STORYBOARD_COMPOSER_MIN_HEIGHT;
@@ -105,6 +110,9 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
         if (reportedComposerHeightRef.current === composerHeight) return;
         reportedComposerHeightRef.current = composerHeight;
         composerHeightChangeRef.current(composerHeight);
+    }, []);
+    useEffect(() => () => {
+        if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
     }, []);
 
     return (
@@ -149,7 +157,19 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
                 aria-label={canvasT("videoCanvas.script.shotListAria", "分镜镜头列表")}
                 className="storyboard-scrollbar min-h-0 flex-1 overflow-y-scroll overflow-x-hidden outline-none focus-visible:ring-1 focus-visible:ring-inset"
                 style={{ "--tw-ring-color": theme.node.muted } as CSSProperties}
-                onScroll={(event) => { const next = event.currentTarget.scrollTop; setScrollTop(next); onScrollTopChange(next); }}
+                onScroll={(event) => {
+                    const next = event.currentTarget.scrollTop;
+                    scrollTopRef.current = next;
+                    if (scrollFrameRef.current !== null) return;
+                    scrollFrameRef.current = requestAnimationFrame(() => {
+                        scrollFrameRef.current = null;
+                        if (portsInnerRef.current) portsInnerRef.current.style.transform = `translateY(${-scrollTopRef.current}px)`;
+                        if (notifiedScrollRef.current !== scrollTopRef.current) {
+                            notifiedScrollRef.current = scrollTopRef.current;
+                            onScrollTopChange(scrollTopRef.current);
+                        }
+                    });
+                }}
                 onWheel={(event) => event.stopPropagation()}
             >
                 {rows.length ? rows.map((row) => (
@@ -251,16 +271,19 @@ export function CanvasScriptNodeContent({ node, batch, pipeline, mentionReferenc
                 </div>
                 <RowHandle side="left" top={composerHeight / 2} tone="idle" theme={theme} title={canvasT("videoCanvas.script.connectContext", "连接文本节点作为项目设定")} onPointerDown={(event) => onConnectStart(event, "context", "target")} />
             </div>
-            {rows.map((row, index) => {
-                const top = STORYBOARD_HEADER_HEIGHT + index * STORYBOARD_ROW_HEIGHT + STORYBOARD_ROW_HEIGHT / 2 - scrollTop;
-                if (top < STORYBOARD_HEADER_HEIGHT + 4 || top > STORYBOARD_HEADER_HEIGHT + tableHeight - 4) return null;
-                return (
-                    <div key={`ports-${row.id}`}>
-                        <RowHandle side="left" top={top} tone={batchItemTone(batchItemByRowId.get(row.id)) || row.status} theme={theme} onPointerDown={(event) => onConnectStart(event, row.id, "target")} />
-                        <RowHandle side="right" top={top} tone={batchItemTone(batchItemByRowId.get(row.id)) || row.status} theme={theme} onPointerDown={(event) => onConnectStart(event, row.id, "source")} />
-                    </div>
-                );
-            })}
+            <div className="absolute inset-x-0 overflow-hidden" style={{ top: STORYBOARD_HEADER_HEIGHT, height: tableHeight - STORYBOARD_HEADER_HEIGHT }}>
+                <div ref={portsInnerRef} className="absolute inset-x-0 top-0 will-change-transform">
+                    {rows.map((row, index) => {
+                        const top = index * STORYBOARD_ROW_HEIGHT + STORYBOARD_ROW_HEIGHT / 2;
+                        return (
+                            <div key={`ports-${row.id}`}>
+                                <RowHandle side="left" top={top} tone={batchItemTone(batchItemByRowId.get(row.id)) || row.status} theme={theme} onPointerDown={(event) => onConnectStart(event, row.id, "target")} />
+                                <RowHandle side="right" top={top} tone={batchItemTone(batchItemByRowId.get(row.id)) || row.status} theme={theme} onPointerDown={(event) => onConnectStart(event, row.id, "source")} />
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
         </div>
     );
 }

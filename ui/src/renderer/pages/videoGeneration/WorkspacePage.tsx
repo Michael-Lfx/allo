@@ -25,6 +25,7 @@ import {
 } from '@arco-design/web-react';
 import { ArrowLeft, Delete, Export, Eyes, FolderOpen, Play, Refresh, Share, VideoOne, Cube } from '@icon-park/react';
 import { ipcBridge } from '@/common';
+import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
@@ -108,7 +109,7 @@ const WorkspacePage: React.FC = () => {
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const [message, messageHolder] = useArcoMessage();
-  const { status: cloudStatus } = useCloudAuth();
+  const { status: cloudStatus, logout } = useCloudAuth();
 
   const [session, setSession] = useState<VimaxSession | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -144,6 +145,19 @@ const WorkspacePage: React.FC = () => {
   const [artifactsPanelOpen, setArtifactsPanelOpen] = useState(true);
   const [finalBlobUrl, setFinalBlobUrl] = useState<string | null>(null);
   const [coverBlobUrl, setCoverBlobUrl] = useState<string | null>(null);
+
+  // 卸载兜底：替换/取消路径各自 revoke，但 SPA 内离开页面不会卸载文档，
+  // 不补这一步的话每次进出已完成工作台都泄漏成片/封面/预览的 blob。
+  const heldBlobUrlsRef = useRef<{ final: string | null; cover: string | null; preview: string | null }>({ final: null, cover: null, preview: null });
+  useEffect(
+    () => () => {
+      const held = heldBlobUrlsRef.current;
+      for (const url of [held.final, held.cover, held.preview]) {
+        if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
+      }
+    },
+    [],
+  );
 
   const [previewEpoch, setPreviewEpoch] = useState(0);
   const storyboardVisibleTracked = useRef(false);
@@ -374,6 +388,7 @@ const WorkspacePage: React.FC = () => {
         if (prev?.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url);
         return null;
       });
+      heldBlobUrlsRef.current.preview = null;
       return;
     }
     let cancelled = false;
@@ -388,12 +403,17 @@ const WorkspacePage: React.FC = () => {
           if (prev?.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url);
           return content;
         });
+        heldBlobUrlsRef.current.preview = content.url ?? null;
       })
       .catch((e) => {
         if (!cancelled) {
-          setPreview({
-            kind: 'text',
-            text: e instanceof Error ? e.message : String(e),
+          setPreview((prev) => {
+            if (prev?.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url);
+            heldBlobUrlsRef.current.preview = null;
+            return {
+              kind: 'text',
+              text: e instanceof Error ? e.message : String(e),
+            };
           });
         }
       })
@@ -413,6 +433,7 @@ const WorkspacePage: React.FC = () => {
         if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
         return null;
       });
+      heldBlobUrlsRef.current.final = null;
       return;
     }
     let cancelled = false;
@@ -426,6 +447,7 @@ const WorkspacePage: React.FC = () => {
           if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
           return url;
         });
+        heldBlobUrlsRef.current.final = url;
       })
       .catch((e) => {
         console.warn('[videoGeneration] final video load failed', e);
@@ -443,6 +465,7 @@ const WorkspacePage: React.FC = () => {
         if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
         return null;
       });
+      heldBlobUrlsRef.current.cover = null;
       return;
     }
     let cancelled = false;
@@ -456,6 +479,7 @@ const WorkspacePage: React.FC = () => {
           if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
           return url;
         });
+        heldBlobUrlsRef.current.cover = url;
       })
       .catch((e) => {
         console.warn('[videoGeneration] cover load failed', e);
@@ -819,6 +843,11 @@ const WorkspacePage: React.FC = () => {
         })
       );
     } catch (e) {
+      if (isInvalidCloudSessionError(e)) {
+        await logout();
+        navigate('/cloud-login');
+        return;
+      }
       message.error(
         `${t('videoGeneration.tvShow.publish.failed', { defaultValue: '发布失败' })}: ${
           e instanceof Error ? e.message : String(e)
@@ -829,6 +858,7 @@ const WorkspacePage: React.FC = () => {
     }
   }, [
     cloudStatus,
+    logout,
     message,
     navigate,
     planning,

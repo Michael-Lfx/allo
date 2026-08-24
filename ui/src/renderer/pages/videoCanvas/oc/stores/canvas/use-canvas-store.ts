@@ -56,6 +56,9 @@ let lastPersistedProjects: CanvasProject[] | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
 let queuedPersistName = CANVAS_STORE_KEY;
 let queuedPersistValue: PersistedCanvasProjects<CanvasProject> | null = null;
+// 所有落盘经此链串行执行：单次 IndexedDB 写入可能超过防抖窗口，
+// 不串行的话后到的 flush 会先落盘，慢的旧 payload 随后把 blob 和索引写回旧值。
+let persistChain: Promise<void> = Promise.resolve();
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
@@ -74,26 +77,41 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
             saveTimer = null;
-            void flushQueuedCanvasPersist();
+            void enqueuePersistFlush();
         }, 400);
     },
     removeItem: (name) => removePersistedCanvasProjects(localForageStorage, name, lastPersistedProjects),
 };
 
-async function flushQueuedCanvasPersist() {
+function runQueuedPersistFlush() {
     const payload = queuedPersistValue;
     queuedPersistValue = null;
     if (!payload) return;
-    await writeSplitCanvasProjects(localForageStorage, queuedPersistName, payload, lastPersistedProjects);
-    lastPersistedProjects = payload.state.projects;
+    return writeSplitCanvasProjects(localForageStorage, queuedPersistName, payload, lastPersistedProjects).then(() => {
+        lastPersistedProjects = payload.state.projects;
+    });
+}
+
+function enqueuePersistFlush(): Promise<void> {
+    const run = persistChain.then(runQueuedPersistFlush, runQueuedPersistFlush);
+    persistChain = run.then(
+        () => undefined,
+        () => undefined,
+    );
+    return run;
 }
 
 export async function flushCanvasStorePersistence() {
-    if (saveTimer) {
-        clearTimeout(saveTimer);
-        saveTimer = null;
+    // 强刷语义：等所有在途写完成后把队列排空再返回；
+    // 排空期间若又有新写入入队则继续，保证返回时磁盘已是最新状态。
+    for (;;) {
+        if (saveTimer) {
+            clearTimeout(saveTimer);
+            saveTimer = null;
+        }
+        await enqueuePersistFlush();
+        if (!queuedPersistValue && !saveTimer) return;
     }
-    await flushQueuedCanvasPersist();
 }
 
 export const useCanvasStore = create<CanvasStore>()(

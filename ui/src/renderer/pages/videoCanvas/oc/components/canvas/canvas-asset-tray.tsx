@@ -1,5 +1,6 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Crosshair, FolderOpen, ImageIcon, Images, Music2, PanelLeftClose, Plus, Search, Video, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -17,7 +18,12 @@ import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 export const CANVAS_IMAGE_ASSET_DND_TYPE = "application/x-infinite-canvas-image-asset";
 export const CANVAS_MEDIA_ASSET_DND_TYPE = "application/x-infinite-canvas-media-asset";
 
+
 export type CanvasTrayMediaAsset = ImageAsset | VideoAsset | AudioAsset;
+
+type TrayRow =
+    | { kind: "asset"; key: string; asset: CanvasTrayMediaAsset }
+    | { kind: "node"; key: string; node: CanvasNodeData };
 
 type TrayTab = "library" | "canvas";
 
@@ -81,9 +87,24 @@ export function CanvasAssetTray({
         () => canvasNodes.filter((node) => !query || canvasMediaTitle(node).toLowerCase().includes(query)),
         [canvasNodes, query],
     );
-    const activeItems = showLibrary && tab === "library" ? filteredAssets : filteredNodes;
-    const safeTrayHeight = clampTrayHeight(trayHeight);
+    // 统一行模型 + 窗口化：素材库过百时不再一次性解码全部原图（行高 48 + 间距 6）。
+    const isLibraryTab = showLibrary && tab === "library";
+    const trayRows = useMemo<TrayRow[]>(
+        () =>
+            isLibraryTab
+                ? filteredAssets.map((asset) => ({ kind: "asset" as const, key: asset.id, asset }))
+                : filteredNodes.map((node) => ({ kind: "node" as const, key: node.id, node })),
+        [filteredAssets, filteredNodes, isLibraryTab],
+    );
+    const trayListRef = useRef<HTMLDivElement>(null);
+    const trayRowVirtualizer = useVirtualizer({
+        count: trayRows.length,
+        getScrollElement: () => trayListRef.current,
+        estimateSize: () => 54,
+        overscan: 8,
+    });
     const motionEnabled = !reducedMotion;
+    const safeTrayHeight = clampTrayHeight(trayHeight);
 
     const insertAsset = (asset: CanvasTrayMediaAsset) => {
         if (asset.kind === "image" && onInsertAssetImage) {
@@ -223,53 +244,51 @@ export function CanvasAssetTray({
                             ) : null}
                         </label>
 
-                        <div className="hover-scrollbar mt-2.5 min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-                            {showLibrary && tab === "library" ? (
-                                filteredAssets.length ? (
-                                    <div className="space-y-1.5">
-                                        {filteredAssets.map((asset) => (
-                                            <AssetTrayRow
-                                                key={asset.id}
-                                                title={asset.title}
-                                                kind={asset.kind}
-                                                previewUrl={mediaAssetPreviewUrl(asset)}
-                                                storageKey={mediaAssetStorageKey(asset)}
-                                                draggable
-                                                motionEnabled={motionEnabled}
-                                                onDragStart={(event) => startAssetDrag(event, asset)}
-                                                onClick={() => insertAsset(asset)}
-                                                icon={<Plus className="size-3.5" />}
-                                            />
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <TrayEmpty text={canvasT("videoCanvas.asset.noMatch", "没有匹配的素材")} theme={theme} />
-                                )
-                            ) : filteredNodes.length ? (
-                                <div className="space-y-1.5">
-                                    {filteredNodes.map((node) => (
-                                        <AssetTrayRow
-                                            key={node.id}
-                                            title={canvasMediaTitle(node)}
-                                            kind={node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"}
-                                            previewUrl={node.metadata?.content || ""}
-                                            storageKey={node.metadata?.storageKey}
-                                            active={activeNodeId === node.id}
-                                            motionEnabled={motionEnabled}
-                                            onClick={() => focusNode(node.id)}
-                                            icon={<Crosshair className="size-3.5" />}
-                                        />
-                                    ))}
+                        <div ref={trayListRef} className="hover-scrollbar mt-2.5 min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+                            {trayRows.length ? (
+                                <div className="relative w-full" style={{ height: trayRowVirtualizer.getTotalSize() }}>
+                                    {trayRowVirtualizer.getVirtualItems().map((virtualItem) => {
+                                        const row = trayRows[virtualItem.index];
+                                        if (!row) return null;
+                                        return (
+                                            <div key={row.key} className="absolute inset-x-0" style={{ top: virtualItem.start }}>
+                                                {row.kind === "asset" ? (
+                                                    <AssetTrayRow
+                                                        title={row.asset.title}
+                                                        kind={row.asset.kind}
+                                                        previewUrl={mediaAssetPreviewUrl(row.asset)}
+                                                        storageKey={mediaAssetStorageKey(row.asset)}
+                                                        draggable
+                                                        motionEnabled={motionEnabled}
+                                                        onDragStart={(event) => startAssetDrag(event, row.asset)}
+                                                        onClick={() => insertAsset(row.asset)}
+                                                        icon={<Plus className="size-3.5" />}
+                                                    />
+                                                ) : (
+                                                    <AssetTrayRow
+                                                        title={canvasMediaTitle(row.node)}
+                                                        kind={row.node.type === CanvasNodeType.Video ? "video" : row.node.type === CanvasNodeType.Audio ? "audio" : "image"}
+                                                        previewUrl={row.node.metadata?.content || ""}
+                                                        storageKey={row.node.metadata?.storageKey}
+                                                        active={activeNodeId === row.node.id}
+                                                        motionEnabled={motionEnabled}
+                                                        onClick={() => focusNode(row.node.id)}
+                                                        icon={<Crosshair className="size-3.5" />}
+                                                    />
+                                                )}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             ) : (
-                                <TrayEmpty text={canvasT("videoCanvas.asset.noCanvasMatch", "当前画布没有匹配媒体")} theme={theme} />
+                                <TrayEmpty text={isLibraryTab ? canvasT("videoCanvas.asset.noMatch", "没有匹配的素材") : canvasT("videoCanvas.asset.noCanvasMatch", "当前画布没有匹配媒体")} theme={theme} />
                             )}
                         </div>
 
                         <div className="flex items-center justify-between gap-2 px-1 pt-2.5 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>
                             <span className="min-w-0 truncate">{showLibrary && tab === "library" ? canvasT("videoCanvas.asset.hintInsert", "点击插入 · 拖拽定位") : canvasT("videoCanvas.asset.hintLocate", "点击回到节点")}</span>
                             <span className="shrink-0 rounded-full border px-2 py-0.5 tabular-nums" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
-                                {canvasT("videoCanvas.asset.itemCount", "{{count}} 项", { count: activeItems.length })}
+                                {canvasT("videoCanvas.asset.itemCount", "{{count}} 项", { count: trayRows.length })}
                             </span>
                         </div>
                     </motion.aside>
@@ -338,7 +357,7 @@ function AssetTrayRow({
                 {showPreview && kind === "video" ? (
                     <video src={previewUrl} muted playsInline preload="metadata" className="size-full object-cover" draggable={false} onError={() => setPreviewFailed(true)} />
                 ) : showPreview && kind === "image" ? (
-                    <img src={previewUrl} alt="" width={36} height={36} className="size-full object-cover" draggable={false} onError={() => setPreviewFailed(true)} />
+                    <img src={previewUrl} alt="" width={36} height={36} loading="lazy" decoding="async" className="size-full object-cover" draggable={false} onError={() => setPreviewFailed(true)} />
                 ) : (
                     <KindIcon className="size-3.5 opacity-55" />
                 )}

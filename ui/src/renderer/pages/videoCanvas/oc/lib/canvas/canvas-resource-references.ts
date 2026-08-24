@@ -36,6 +36,16 @@ export function buildNodeMentionReferences(node: CanvasNodeData, nodes: CanvasNo
     return labelResourceNodes(getMentionResourceNodes(node.id, nodes, connections), true);
 }
 
+/**
+ * 引用数组的结构签名：内容未变时允许调用方复用旧数组身份，
+ * 避免每次语义变化都让全部节点的 props 失去 React.memo 资格。
+ */
+export function canvasResourceReferencesSignature(references: CanvasResourceReference[]) {
+    return references
+        .map((reference) => [reference.id, reference.kind, reference.label, reference.title, reference.previewUrl ?? "", reference.storageKey ?? "", reference.text ?? "", reference.active ? "1" : "0", reference.sourceType ?? "", reference.skill?.skill_id ?? reference.skill?.skill_name ?? ""].join("|"))
+        .join("\n");
+}
+
 export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
     const configInputs = getConnectedConfigResourceNodes(nodeId, nodes, connections);
     if (configInputs.length) return configInputs;

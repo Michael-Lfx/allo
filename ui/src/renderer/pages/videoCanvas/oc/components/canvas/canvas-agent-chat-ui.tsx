@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, Tooltip } from "antd";
 import { ArrowUp, CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, UserRound, Wrench, X, XCircle } from "lucide-react";
 
@@ -23,7 +23,7 @@ export type CanvasAgentChatMessage = {
 const WORKING_TEXT_KEY = "videoCanvas.agent.working";
 const WORKING_TEXT_DEFAULT = "正在推演...";
 
-export function AgentChatMessage({
+export const AgentChatMessage = memo(function AgentChatMessage({
     item, theme, user, onRejectTool, onApproveTool }: { item: CanvasAgentChatMessage; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; user: LocalUser | null; onRejectTool?: (id: string) => void; onApproveTool?: (id: string) => void }) {
     useTranslation();
     const isUser = item.role === "user";
@@ -59,7 +59,7 @@ export function AgentChatMessage({
             {isUser ? <AgentUserAvatar user={user} theme={theme} /> : null}
         </div>
     );
-}
+});
 
 export function AgentPendingToolCard({ summary, detail, theme, onReject, onApprove }: { summary: string; detail?: unknown; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onReject?: () => void; onApprove?: () => void }) {
     useTranslation();
@@ -126,11 +126,15 @@ function agentImpactFromDetail(detail: unknown) {
     } satisfies CanvasAgentOperationImpact;
 }
 
+// 序列化结果按 detail 对象身份缓存：流式期间列表反复重渲时不再对大快照重复 stringify。
+const agentDetailTextCache = new WeakMap<object, string>();
+
 export function AgentToolCard({ title, text, detail, theme }: { title: string; text: string; detail?: unknown; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
     useTranslation();
+    const [detailOpen, setDetailOpen] = useState(false);
     const state = toolCardState(title, text, detail);
     return (
-        <details className="min-w-0 flex-1 rounded-md px-3 py-3 text-left" style={{ background: theme.spatial.surface, color: theme.node.text }}>
+        <details className="min-w-0 flex-1 rounded-md px-3 py-3 text-left" style={{ background: theme.spatial.surface, color: theme.node.text }} onToggle={(event) => setDetailOpen((event.target as HTMLDetailsElement).open)}>
             <summary className="cursor-pointer list-none">
                 <div className="flex items-start gap-3">
                     <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md" style={{ color: state.color, background: state.softBg }}>
@@ -150,7 +154,8 @@ export function AgentToolCard({ title, text, detail, theme }: { title: string; t
                     </div>
                 </div>
             </summary>
-            {detail ? <AgentDetailBlock detail={detail} theme={theme} /> : null}
+            {/* 折叠时不挂载 <pre>，避免对完整工具结果（可能含压缩快照）反复 JSON.stringify */}
+            {detail && detailOpen ? <AgentDetailBlock detail={detail} theme={theme} /> : null}
         </details>
     );
 }
@@ -293,9 +298,17 @@ export function AgentPanelTabs<T extends string>({ value, items, theme, right, o
 }
 
 function AgentDetailBlock({ detail, theme }: { detail: unknown; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+    const detailText = useMemo(() => {
+        if (!detail || typeof detail !== "object") return JSON.stringify(detail, null, 2);
+        const cached = agentDetailTextCache.get(detail);
+        if (cached !== undefined) return cached;
+        const text = JSON.stringify(detail, null, 2);
+        agentDetailTextCache.set(detail, text);
+        return text;
+    }, [detail]);
     return (
         <pre className="thin-scrollbar mt-3 max-h-64 overflow-auto rounded-md p-3 text-[var(--fs-label)] leading-4" style={{ background: theme.toolbar.panel, color: theme.node.muted }}>
-            {JSON.stringify(detail, null, 2)}
+            {detailText}
         </pre>
     );
 }

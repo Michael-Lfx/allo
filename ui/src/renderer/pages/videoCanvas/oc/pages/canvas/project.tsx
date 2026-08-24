@@ -1212,8 +1212,13 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, runningNodeId, skillMentionReferences, workspaceMode],
     );
 
+    // 回调身份恒定：易变依赖经 ref 桶读取（渲染期同步赋值，子组件渲染时必读到最新提交值）。
+    // 否则任一依赖变化都会让所有可见节点的 renderNodeContent prop 换新身份、整体击穿 CanvasNode.memo。
+    const nodeContentInputsRef = useRef({ addScriptRow, cancelSubmittedBatchItem, configInputsById, confirmStopGeneration, createAndGenerateScriptVideos, createScriptActionBoards, createScriptImageNodes, createScriptVideoNodes, directorScenes: currentProject?.directorScenes, generateScriptImages, generateScriptRows, generateScriptVideos, handleConfigNodeChange, handleConnectStart, handleGenerateNode, handleNodeResize, mentionReferencesByNodeId, mergeVideosByIds, openDirectorWorkbench, openStoryInput, removeScriptRow, retryFailedBatchItems, runningNodeId, stopRemainingBatchItems, updateScriptRow, workspaceMode });
+    nodeContentInputsRef.current = { addScriptRow, cancelSubmittedBatchItem, configInputsById, confirmStopGeneration, createAndGenerateScriptVideos, createScriptActionBoards, createScriptImageNodes, createScriptVideoNodes, directorScenes: currentProject?.directorScenes, generateScriptImages, generateScriptRows, generateScriptVideos, handleConfigNodeChange, handleConnectStart, handleGenerateNode, handleNodeResize, mentionReferencesByNodeId, mergeVideosByIds, openDirectorWorkbench, openStoryInput, removeScriptRow, retryFailedBatchItems, runningNodeId, stopRemainingBatchItems, updateScriptRow, workspaceMode };
     const renderCanvasNodeContent = useCallback(
         (contentNode: CanvasNodeData) => {
+            const { addScriptRow, cancelSubmittedBatchItem, configInputsById, confirmStopGeneration, createAndGenerateScriptVideos, createScriptActionBoards, createScriptImageNodes, createScriptVideoNodes, directorScenes, generateScriptImages, generateScriptVideos, handleConfigNodeChange, handleConnectStart, handleGenerateNode, handleNodeResize, mentionReferencesByNodeId, mergeVideosByIds, openDirectorWorkbench, openStoryInput, removeScriptRow, retryFailedBatchItems, runningNodeId, stopRemainingBatchItems, updateScriptRow, workspaceMode } = nodeContentInputsRef.current;
             if (contentNode.metadata?.workflowKind === "character" && contentNode.metadata.characterAssetId) {
                 return <CanvasCharacterReferenceNodeContent node={contentNode} />;
             }
@@ -1268,7 +1273,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                 return (
                     <CanvasDirectorNodePanel
                         node={contentNode}
-                        scene={currentProject?.directorScenes?.find((scene) => scene.id === contentNode.metadata?.directorSceneId) || null}
+                        scene={directorScenes?.find((scene) => scene.id === contentNode.metadata?.directorSceneId) || null}
                         previewUrl={nodesRef.current.find((item) => item.id === contentNode.metadata?.directorPreviewNodeId)?.metadata?.content}
                         professional={workspaceMode === "professional"}
                         onOpen={() => openDirectorWorkbench(contentNode.id)}
@@ -1291,34 +1296,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                 />
             );
         },
-        [
-            addScriptRow,
-            cancelSubmittedBatchItem,
-            configInputsById,
-            confirmStopGeneration,
-            createAndGenerateScriptVideos,
-            createScriptActionBoards,
-            createScriptImageNodes,
-            createScriptVideoNodes,
-            currentProject?.directorScenes,
-            generateScriptImages,
-            generateScriptRows,
-            generateScriptVideos,
-            handleConfigNodeChange,
-            handleConnectStart,
-            handleGenerateNode,
-            handleNodeResize,
-            mentionReferencesByNodeId,
-            mergeVideosByIds,
-            openDirectorWorkbench,
-            openStoryInput,
-            removeScriptRow,
-            retryFailedBatchItems,
-            runningNodeId,
-            stopRemainingBatchItems,
-            updateScriptRow,
-            workspaceMode,
-        ],
+        [],
     );
 
     const handleCanvasNodeHoverStart = useCallback(

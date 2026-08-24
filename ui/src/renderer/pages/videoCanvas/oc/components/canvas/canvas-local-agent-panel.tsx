@@ -15,6 +15,7 @@ import { useCanvasAgentStore, type AgentAttachment, type AgentChatItem, type Age
 import { previewCanvasAgentOps, summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
 import { isProjectAgentReadTool, isProjectAgentToolName, runProjectAgentTool } from "@oc/services/api/project-agent-tools";
 import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentPendingToolCard, AgentWorkingMessage, type CanvasAgentChatAttachment } from "./canvas-agent-chat-ui";
+import { compactCanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-snapshot-compact";
 import { AgentChatEmptyState } from "./canvas-agent-panel-chrome";
 
 const PANEL_MOTION_SECONDS = 0.5;
@@ -67,6 +68,9 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
     const attachmentUrlsRef = useRef(new Set<string>());
     const clientIdRef = useRef(createClientId());
     const endpoint = useMemo(() => url.trim().replace(/\/$/, ""), [url]);
+    // 映射结果按 messages 数组身份缓存：配合 memo(AgentChatMessage)，
+    // 流式更新只重渲实际变化的那条消息，而不是整张聊天列表。
+    const chatMessages = useMemo(() => messages.map(agentMessageToChatMessage), [messages]);
     const urlAgentAutoConnect = searchParams.has("agentUrl") && searchParams.has("agentToken");
     const loadThreads = useCallback(async () => {
         const projectId = snapshotRef.current.projectId;
@@ -269,8 +273,10 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
             await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, result });
             if (payload.name === "canvas_apply_ops") void postState(endpoint, token, clientIdRef.current, result as CanvasAgentSnapshot);
             setAgentState({ activity: canvasT(`${LA}.activityToolDone`, "工具完成"), waiting: true });
-            addEventLog(canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), result, result);
-            addMessage({ role: "tool", title: canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), text: payload.name === "canvas_apply_ops" ? summarizeCanvasAgentOps((input.ops || []) as CanvasAgentOp[]) || canvasT(`${LA}.canvasOp`, "画布操作") : canvasT(`${LA}.completed`, "已完成"), detail: { requestId: payload.requestId, name: payload.name, input, result } });
+            // 事件日志与聊天记录只留压缩快照；完整结果仅经 postToolResult/postState 发给 Agent。
+            const loggedResult = projectToolName ? result : compactCanvasAgentSnapshot(result as CanvasAgentSnapshot);
+            addEventLog(canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), loggedResult, loggedResult);
+            addMessage({ role: "tool", title: canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), text: payload.name === "canvas_apply_ops" ? summarizeCanvasAgentOps((input.ops || []) as CanvasAgentOp[]) || canvasT(`${LA}.canvasOp`, "画布操作") : canvasT(`${LA}.completed`, "已完成"), detail: { requestId: payload.requestId, name: payload.name, input, result: loggedResult } });
         } catch (error) {
             const message = error instanceof Error ? error.message : canvasT(`${LA}.errorCanvasOpFailed`, "画布操作失败");
             setAgentState({ activity: canvasT(`${LA}.activityToolFailed`, "工具失败"), waiting: false });
@@ -300,7 +306,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
         const restored = onUndoOps();
         if (!restored) return;
         setAgentState({ activity: canvasT(`${LA}.activityUndone`, "已撤销") });
-        addMessage({ role: "tool", title: canvasT(`${LA}.undoneBatch`, "已撤销 Agent 批次"), text: canvasT(`${LA}.undoneText`, "已恢复到本次写回前的画布状态"), detail: restored });
+        addMessage({ role: "tool", title: canvasT(`${LA}.undoneBatch`, "已撤销 Agent 批次"), text: canvasT(`${LA}.undoneText`, "已恢复到本次写回前的画布状态"), detail: compactCanvasAgentSnapshot(restored) });
         if (connected) void postState(endpoint, token, clientIdRef.current, restored);
     };
 
@@ -553,8 +559,8 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
                 <>
                     <div ref={listRef} className="thin-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
                         {!messages.length && !pendingTool && !waiting ? <AgentChatEmptyState theme={theme} nodeCount={snapshot.nodes.length} onSelect={(prompt) => setAgentState({ prompt })} /> : null}
-                        {messages.map((item) => (
-                            <AgentChatMessage key={item.id} item={agentMessageToChatMessage(item)} theme={theme} user={user} />
+                        {chatMessages.map((item) => (
+                            <AgentChatMessage key={item.id} item={item} theme={theme} user={user} />
                         ))}
                         {pendingTool ? <AgentPendingToolCard summary={summarizeCanvasAgentOps(pendingTool.input?.ops || []) || toolName(pendingTool.name)} detail={{ requestId: pendingTool.requestId, name: pendingTool.name, input: pendingTool.input, impact: previewCanvasAgentOps(pendingTool.input?.ops || [], snapshot) }} theme={theme} onReject={rejectPendingTool} onApprove={approvePendingTool} /> : null}
                         {waiting && !pendingTool ? <AgentWorkingMessage theme={theme} /> : null}

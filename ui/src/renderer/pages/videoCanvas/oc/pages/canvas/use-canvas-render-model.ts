@@ -5,7 +5,7 @@ import { canvasCullViewRect, filterDisplayConnections } from "@oc/lib/canvas/can
 import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
 import { shouldReduceCanvasMediaEffects } from "@oc/lib/canvas/canvas-performance-mode";
 import { sameNodeSemanticData } from "@oc/lib/canvas/canvas-project-domain";
-import { buildCanvasResourceReferences, buildNodeMentionReferences } from "@oc/lib/canvas/canvas-resource-references";
+import { buildCanvasResourceReferences, buildNodeMentionReferences, canvasResourceReferencesSignature, type CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { buildSkillMentionReferences } from "@oc/lib/canvas/canvas-skill-mentions";
 import type { Skill } from "@oc/services/api/skills";
 import type { Asset, AudioAsset, ImageAsset, VideoAsset } from "@oc/stores/use-asset-store";
@@ -250,10 +250,22 @@ export function useCanvasRenderModel({
     const canvasResourceReferences = useMemo(() => buildCanvasResourceReferences(semanticNodes, connections, dialogNodeId || activeNodeId), [activeNodeId, connections, dialogNodeId, semanticNodes]);
     const resourceReferenceByNodeId = useMemo(() => new Map(canvasResourceReferences.map((reference) => [reference.nodeId, reference])), [canvasResourceReferences]);
     const skillMentionReferences = useMemo(() => buildSkillMentionReferences(addedSkills), [addedSkills]);
+    // 逐节点复用数组身份：内容签名未变的节点继续拿到同一个数组，
+    // 防止任一编辑让全部可见 CanvasNode 的 mentionReferences 失去 memo 资格。
+    const mentionReferencesCacheRef = useRef<{ arrays: Map<string, CanvasResourceReference[]>; signatures: Map<string, string> }>({ arrays: new Map(), signatures: new Map() });
     const mentionReferencesByNodeId = useMemo(() => {
-        const map = new Map<string, ReturnType<typeof buildNodeMentionReferences>>();
-        semanticNodes.forEach((node) => map.set(node.id, [...buildNodeMentionReferences(node, semanticNodes, connections), ...skillMentionReferences]));
-        return map;
+        const cache = mentionReferencesCacheRef.current;
+        const arrays = new Map<string, CanvasResourceReference[]>();
+        const signatures = new Map<string, string>();
+        semanticNodes.forEach((node) => {
+            const built = [...buildNodeMentionReferences(node, semanticNodes, connections), ...skillMentionReferences];
+            const signature = canvasResourceReferencesSignature(built);
+            const prior = cache.signatures.get(node.id) === signature ? cache.arrays.get(node.id) : undefined;
+            arrays.set(node.id, prior ?? built);
+            signatures.set(node.id, signature);
+        });
+        mentionReferencesCacheRef.current = { arrays, signatures };
+        return arrays;
     }, [connections, semanticNodes, skillMentionReferences]);
 
     return {
