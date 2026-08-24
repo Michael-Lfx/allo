@@ -82,6 +82,23 @@ pub struct GenerateLessonRequest {
     pub model: Option<String>,
 }
 
+/// A lesson figure that failed to render, sent back for AI repair. `language`
+/// is the fence language (`svg` or `jsxgraph`), `error` the renderer error
+/// message, `code` the original figure source.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepairFigureRequest {
+    pub language: String,
+    pub code: String,
+    pub error: String,
+}
+
+/// Corrected figure body returned by the repair call, rendered in place of
+/// the broken one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairFigureResponse {
+    pub code: String,
+}
+
 /// Optional model preference for retrying a failed course-generation job.
 /// Both fields are sent together (or neither); when provided the job's
 /// request snapshot is re-pointed at the chosen model before the retry

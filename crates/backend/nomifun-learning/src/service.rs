@@ -998,6 +998,50 @@ impl LearningService {
         })
     }
 
+    /// Repair a lesson figure that failed to render: the broken source and
+    /// the renderer error go to the course completer, and the corrected
+    /// figure body comes back for in-place re-rendering. Stateless — nothing
+    /// is persisted.
+    pub async fn repair_figure(
+        &self,
+        request: &crate::models::RepairFigureRequest,
+    ) -> Result<crate::models::RepairFigureResponse, AppError> {
+        const MAX_CODE_CHARS: usize = 100_000;
+        const MAX_ERROR_CHARS: usize = 2_000;
+        let language = request.language.trim();
+        if language != "svg" && language != "jsxgraph" {
+            return Err(AppError::UnprocessableEntity(format!(
+                "unsupported figure language '{language}'"
+            )));
+        }
+        if request.code.trim().is_empty() {
+            return Err(AppError::UnprocessableEntity("figure code is empty".into()));
+        }
+        if request.code.chars().count() > MAX_CODE_CHARS {
+            return Err(AppError::UnprocessableEntity("figure code is too long to repair".into()));
+        }
+        let error: String = request.error.chars().take(MAX_ERROR_CHARS).collect();
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict("knowledge-backed course generation is not configured".into())
+            })?;
+        let code = crate::generation::repair_figure(completer.as_ref(), None, language, &request.code, &error)
+            .await
+            .map_err(|error| {
+                AppError::UnprocessableEntity(format!("figure repair failed: {error}"))
+            })?;
+        if code.trim().is_empty() {
+            return Err(AppError::UnprocessableEntity(
+                "figure repair returned an empty figure".into(),
+            ));
+        }
+        Ok(crate::models::RepairFigureResponse { code })
+    }
+
     /// Generate the study document and activities for one on-demand lesson and
     /// persist them, returning the updated lesson view. Idempotent: a lesson
     /// that already has content returns its current view unchanged.
