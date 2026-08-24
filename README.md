@@ -1,5 +1,3 @@
-<a name="top"></a>
-
 <div align="center">
 
 <a href="https://www.nomifun.com">
@@ -576,44 +574,11 @@ Source availability and licensing details remain in [`LICENSE`](LICENSE). Produc
 
 ---
 
-## 🔗 Friendly links
-
-Projects and products we appreciate:
-
-| Product | What it does |
-|---|---|
-| [Saytive](http://saytive.ai/) | **Be Creative, Be Saytive.** A voice input method for creative workers, using strong models and thoughtful product design to sense your work context and deliver fast, accurate, scene-aware transcription. |
-| [Fast](https://fast.saien.pro) | **Search, one tap away.** Type, click, and jump straight to search results across RED, Douyin, Meituan, and dozens of mainstream apps. No feed distraction, just search. |
-| [AionUi](https://github.com/iOfficeAI/AionUi) | AionUi ships with a complete AI agent engine. Unlike tools that require separate CLI-agent installs, AionUi works the moment you install it. |
-
----
-
 ## 📬 Contact & community
 
 We'd love to hear from you. The fastest way to reach us is GitHub; the social channels below are all official.
 
-| Channel | Where |
-|---|---|
-| 🌐 **Website** | [www.nomifun.com](https://www.nomifun.com) |
-| 🐙 **GitHub** | [nomifun/nomifun-tauri](https://github.com/nomifun/nomifun-tauri) · [Issues](https://github.com/nomifun/nomifun-tauri/issues) · [Releases](https://github.com/nomifun/nomifun-tauri/releases) |
-| ✉️ **Email** | `hello@nomifun.com` <sub>(provisional — being finalized)</sub> |
-| 📕 **小红书 / RED** | [Flowy](https://xhslink.com/m/4x6ti8n6cA1) |
-| 📺 **Bilibili** | [Flowy](https://b23.tv/0UhgKDh) · [demo video](https://www.bilibili.com/video/BV1kwKZ6UE5X/) |
-| 🎵 **抖音 / Douyin** | [Flowy](https://v.douyin.com/MDT5QVdYaJk/) |
-| ▶️ **YouTube** | [@Flowy-o2y](https://www.youtube.com/@Flowy-o2y) · [demo video](https://youtu.be/AsEToBDFR9s) |
-| 𝕏 **X (Twitter)** | [@colir0](https://x.com/colir0) |
-| 🎬 **TikTok** | [@colir0luo](https://www.tiktok.com/@colir0luo) |
-
 **Join the chat groups** — scan to join:
-
-<div align="center">
-<table>
-  <tr>
-    <td align="center"><img src="docs/images/contact/wechat-group-qr.jpg" alt="WeChat group QR" width="220"><br/><sub><b>WeChat group / 微信群</b></sub></td>
-    <td align="center"><img src="docs/images/contact/qq-group-qr.png" alt="QQ group QR" width="220"><br/><sub><b>QQ group / QQ 群</b></sub></td>
-  </tr>
-</table>
-</div>
 
 ---
 
