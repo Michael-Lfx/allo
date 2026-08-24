@@ -235,7 +235,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
     const appendMessage = (sessionId: string, message: CanvasAssistantMessage) => {
         updateSession(sessionId, (session) => ({
             ...session,
-            title: session.messages.length ? session.title : message.text.slice(0, 18) || "新对话",
+            title: session.messages.length ? session.title : message.text.slice(0, 18) || canvasT("videoCanvas.agent.newChatFallback", "新对话"),
             messages: [...session.messages, message],
             updatedAt: new Date().toISOString(),
         }));
@@ -247,7 +247,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
             const exists = session.messages.some((item) => item.id === message.id);
             return {
                 ...session,
-                title: session.messages.length ? session.title : message.text.slice(0, 18) || "新对话",
+                title: session.messages.length ? session.title : message.text.slice(0, 18) || canvasT("videoCanvas.agent.newChatFallback", "新对话"),
                 messages: exists ? session.messages.map((item) => (item.id === message.id ? { ...item, ...message } : item)) : [...session.messages, message],
                 updatedAt: new Date().toISOString(),
             };
@@ -269,8 +269,8 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
             messages: upsertAssistantMessage(session.messages, {
                 id: pending.messageId,
                 role: "assistant",
-                title: "影视项目生成中",
-                text: "后端影视 Agent 正在处理。即使页面刷新，也会在重新进入画布后继续等待结果。",
+                title: canvasT("videoCanvas.agent.cinePendingTitle", "影视项目生成中"),
+                text: canvasT("videoCanvas.agent.cinePendingText", "后端影视 Agent 正在处理。即使页面刷新，也会在重新进入画布后继续等待结果。"),
                 detail: { kind: "cinematic", backendSessionId, status: "pending", startedAt },
             }),
             updatedAt: startedAt,
@@ -282,15 +282,15 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
             const pending = session.pendingBackendSession;
             if (pending?.id !== backendSessionId) return session;
             const completedAt = new Date().toISOString();
-            const summary = summarizeCanvasAgentOps(ops) || "影视项目已写回当前画布。";
+            const summary = summarizeCanvasAgentOps(ops) || canvasT("videoCanvas.agent.cineWrittenSummary", "影视项目已写回当前画布。");
             return {
                 ...session,
                 pendingBackendSession: undefined,
                 messages: upsertAssistantMessage(session.messages, {
                     id: pending.messageId,
                     role: "assistant",
-                    title: recovered ? "影视项目已恢复并写回" : "影视项目已写回",
-                    text: recovered ? `页面重新连接后已恢复后台结果：${summary}` : summary,
+                    title: recovered ? canvasT("videoCanvas.agent.cineRecoveredTitle", "影视项目已恢复并写回") : canvasT("videoCanvas.agent.cineWrittenTitle", "影视项目已写回"),
+                    text: recovered ? canvasT("videoCanvas.agent.cineRecoveredText", "页面重新连接后已恢复后台结果：{{summary}}", { summary }) : summary,
                     detail: { kind: "cinematic", backendSessionId, status: "completed", recovered, completedAt },
                 }),
                 updatedAt: completedAt,
@@ -303,14 +303,14 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
             const pending = session.pendingBackendSession;
             if (pending?.id !== backendSessionId) return session;
             const failedAt = new Date().toISOString();
-            const text = error instanceof Error ? error.message : "影视项目生成失败";
+            const text = error instanceof Error ? error.message : canvasT("videoCanvas.agent.cineFailed", "影视项目生成失败");
             return {
                 ...session,
                 pendingBackendSession: undefined,
                 messages: upsertAssistantMessage(session.messages, {
                     id: pending.messageId,
                     role: "error",
-                    title: "影视项目生成失败",
+                    title: canvasT("videoCanvas.agent.cineFailed", "影视项目生成失败"),
                     text,
                     detail: { kind: "cinematic", backendSessionId, status: "failed", failedAt },
                 }),
@@ -343,7 +343,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
                         cinematicSessionControllersRef.current.delete(requestKey);
                         cinematicSessionControllersRef.current.set(backendSessionId, controller);
                         setPendingCinematicSession(sessionId, backendSessionId);
-                        addOnlineLog("后端影视 Agent 会话已创建", { backendSessionId });
+                        addOnlineLog(canvasT("videoCanvas.agent.logCineSessionCreated", "后端影视 Agent 会话已创建"), { backendSessionId });
                         onCreated?.(backendSessionId);
                     },
                 },
@@ -405,7 +405,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
         const userMessage: CanvasAssistantMessage = { id: nanoid(), role: "user", text, references: refs };
         const assistantId = nanoid();
         appendMessage(session.id, userMessage);
-        addOnlineLog("发送请求", { text, selectedNodeIds: snapshotRef.current.selectedNodeIds, nodeCount: snapshotRef.current.nodes.length, connectionCount: snapshotRef.current.connections.length });
+        addOnlineLog(canvasT("videoCanvas.agent.logSendRequest", "发送请求"), { text, selectedNodeIds: snapshotRef.current.selectedNodeIds, nodeCount: snapshotRef.current.nodes.length, connectionCount: snapshotRef.current.connections.length });
         setPrompt("");
         setIsRunning(true);
         void runOnlineAgentStep(session.id, assistantId, history, userMessage, { step: 1 });
@@ -416,33 +416,33 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
         try {
             setIsRunning(true);
             const messages = await buildToolAgentMessages(snapshotRef.current, history, userMessage);
-            addOnlineLog(`Agent Tool Loop ${loop.step} 开始`, { toolChoice: "required" });
+            addOnlineLog(canvasT("videoCanvas.agent.logLoopStart", "Agent Tool Loop {{step}} 开始", { step: loop.step }), { toolChoice: "required" });
             let streamed = "";
             const result = await requestToolResponse({ ...requestConfig, systemPrompt: "" }, messages, ONLINE_AGENT_TOOLS, "required", (text) => {
                 streamed = text;
                 if (text.trim()) upsertMessage(sessionId, { id: assistantId, role: "assistant", text });
             }, { promptCacheKey: canvasAgentPromptCacheKey(sessionId) });
-            addOnlineLog("模型工具回复", result);
+            addOnlineLog(canvasT("videoCanvas.agent.logModelToolReply", "模型工具回复"), result);
             if (result.toolCalls.length) {
                 const writableCalls = result.toolCalls.filter(isWritableToolCall);
                 if (confirmTools && writableCalls.length) {
-                    upsertMessage(sessionId, { id: assistantId, role: "assistant", text: result.content || streamed || "准备执行工具，等待确认。" });
+                    upsertMessage(sessionId, { id: assistantId, role: "assistant", text: result.content || streamed || canvasT("videoCanvas.agent.preparingWaitConfirm", "准备执行工具，等待确认。") });
                     const toolMessageId = nanoid();
                     pendingToolContextRef.current.set(toolMessageId, { messages, toolCalls: result.toolCalls, assistantId, step: loop.step });
-                    const toolMessage: CanvasAssistantMessage = { id: toolMessageId, role: "tool", title: "确认工具调用", text: summarizeToolCalls(result.toolCalls), detail: { status: "pending", step: loop.step, toolCalls: result.toolCalls, impact: previewOnlineToolCalls(result.toolCalls, snapshotRef.current, effectiveConfig) } };
+                    const toolMessage: CanvasAssistantMessage = { id: toolMessageId, role: "tool", title: canvasT("videoCanvas.agent.toolConfirmTitle", "确认工具调用"), text: summarizeToolCalls(result.toolCalls), detail: { status: "pending", step: loop.step, toolCalls: result.toolCalls, impact: previewOnlineToolCalls(result.toolCalls, snapshotRef.current, effectiveConfig) } };
                     appendMessage(sessionId, toolMessage);
-                    addOnlineLog("等待用户确认", result.toolCalls);
+                    addOnlineLog(canvasT("videoCanvas.agent.logAwaitConfirm", "等待用户确认"), result.toolCalls);
                     return;
                 }
                 await continueOnlineToolLoop(sessionId, assistantId, messages, result, loop.step);
             } else {
-                if (!result.content.trim()) throw new Error("模型没有返回工具调用，画布操作未执行。");
-                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: result.content || streamed || "没有返回内容。" });
-                addOnlineLog(`Agent Tool Loop ${loop.step} 结束`, { reply: result.content });
+                if (!result.content.trim()) throw new Error(canvasT("videoCanvas.agent.errNoToolCall", "模型没有返回工具调用，画布操作未执行。"));
+                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: result.content || streamed || canvasT("videoCanvas.agent.noContent", "没有返回内容。") });
+                addOnlineLog(canvasT("videoCanvas.agent.logLoopEnd", "Agent Tool Loop {{step}} 结束", { step: loop.step }), { reply: result.content });
             }
         } catch (error) {
-            addOnlineLog("请求失败", error instanceof Error ? error.message : error);
-            appendMessage(sessionId, { id: nanoid(), role: "error", title: "操作失败", text: error instanceof Error ? error.message : "操作失败" });
+            addOnlineLog(canvasT("videoCanvas.agent.logRequestFailed", "请求失败"), error instanceof Error ? error.message : error);
+            appendMessage(sessionId, { id: nanoid(), role: "error", title: canvasT("videoCanvas.agent.opFailed", "操作失败"), text: error instanceof Error ? error.message : canvasT("videoCanvas.agent.opFailed", "操作失败") });
         } finally {
             setIsRunning(false);
         }
@@ -450,11 +450,11 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
 
     const continueOnlineToolLoop = async (sessionId: string, assistantId: string, messages: ResponseInputMessage[], result: { content: string; toolCalls: ResponseToolCall[] }, step: number) => {
         const toolResults = await executeOnlineToolCalls(sessionId, result.toolCalls);
-        addOnlineLog("工具执行结果", toolResults);
+        addOnlineLog(canvasT("videoCanvas.agent.logToolResults", "工具执行结果"), toolResults);
         appendMessage(sessionId, {
             id: nanoid(),
             role: "tool",
-            title: "工具自动执行完成",
+            title: canvasT("videoCanvas.agent.autoDoneTitle", "工具自动执行完成"),
             text: toolResults.map((item) => toolResultText(item.result)).join("\n"),
             detail: { status: "completed", step, toolCalls: result.toolCalls, results: toolResults },
         });
@@ -468,8 +468,8 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
             ...toolResults.map((item) => ({ role: "tool" as const, tool_call_id: item.toolCallId, content: JSON.stringify(item.result) })),
         ];
         if (step >= ONLINE_AGENT_MAX_STEPS) {
-            upsertMessage(sessionId, { id: assistantId, role: "assistant", text: toolResults.map((item) => toolResultText(item.result)).join("\n") || "工具已执行。" });
-            addOnlineLog("Agent Tool Loop 达到步数上限", { maxSteps: ONLINE_AGENT_MAX_STEPS });
+            upsertMessage(sessionId, { id: assistantId, role: "assistant", text: toolResults.map((item) => toolResultText(item.result)).join("\n") || canvasT("videoCanvas.agent.toolsExecutedDone", "工具已执行。") });
+            addOnlineLog(canvasT("videoCanvas.agent.logLoopMax", "Agent Tool Loop 达到步数上限"), { maxSteps: ONLINE_AGENT_MAX_STEPS });
             return;
         }
         const requestConfig = { ...effectiveConfig, model: effectiveConfig.textModel || effectiveConfig.model };
@@ -478,21 +478,21 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
             streamed = text;
             if (text.trim()) upsertMessage(sessionId, { id: assistantId, role: "assistant", text });
         }, { promptCacheKey: canvasAgentPromptCacheKey(sessionId) });
-        addOnlineLog(`Agent Tool Loop ${step + 1} 回复`, next);
+        addOnlineLog(canvasT("videoCanvas.agent.logLoopReply", "Agent Tool Loop {{step}} 回复", { step: step + 1 }), next);
         if (next.toolCalls.length) {
             const writableCalls = next.toolCalls.filter(isWritableToolCall);
             if (confirmTools && writableCalls.length) {
-                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: next.content || streamed || "准备执行工具，等待确认。" });
+                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: next.content || streamed || canvasT("videoCanvas.agent.preparingWaitConfirm", "准备执行工具，等待确认。") });
                 const toolMessageId = nanoid();
                 pendingToolContextRef.current.set(toolMessageId, { messages: nextMessages, toolCalls: next.toolCalls, assistantId, step: step + 1 });
-                appendMessage(sessionId, { id: toolMessageId, role: "tool", title: "确认工具调用", text: summarizeToolCalls(next.toolCalls), detail: { status: "pending", step: step + 1, toolCalls: next.toolCalls, impact: previewOnlineToolCalls(next.toolCalls, snapshotRef.current, effectiveConfig) } });
-                addOnlineLog("等待用户确认", next.toolCalls);
+                appendMessage(sessionId, { id: toolMessageId, role: "tool", title: canvasT("videoCanvas.agent.toolConfirmTitle", "确认工具调用"), text: summarizeToolCalls(next.toolCalls), detail: { status: "pending", step: step + 1, toolCalls: next.toolCalls, impact: previewOnlineToolCalls(next.toolCalls, snapshotRef.current, effectiveConfig) } });
+                addOnlineLog(canvasT("videoCanvas.agent.logAwaitConfirm", "等待用户确认"), next.toolCalls);
                 return;
             }
             await continueOnlineToolLoop(sessionId, assistantId, nextMessages, next, step + 1);
             return;
         }
-        upsertMessage(sessionId, { id: assistantId, role: "assistant", text: next.content || streamed || toolResults.map((item) => toolResultText(item.result)).join("\n") || "工具已执行。" });
+        upsertMessage(sessionId, { id: assistantId, role: "assistant", text: next.content || streamed || toolResults.map((item) => toolResultText(item.result)).join("\n") || canvasT("videoCanvas.agent.toolsExecutedDone", "工具已执行。") });
     };
 
     const executeOps = (ops: CanvasAgentOp[]) => {
@@ -513,7 +513,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
             if (name === "canvas_export_snapshot") return { ok: true, message: describeCanvasSnapshot(current), data: compactSnapshot(current) };
             if (name === "canvas_get_selection") {
                 const ids = new Set(current.selectedNodeIds || []);
-                return { ok: true, message: `当前选中 ${ids.size} 个节点。`, data: { nodes: compactSnapshot({ ...current, nodes: current.nodes.filter((node) => ids.has(node.id)) }).nodes } };
+                return { ok: true, message: canvasT("videoCanvas.agent.selectedNodesCount", "当前选中 {{count}} 个节点。", { count: ids.size }), data: { nodes: compactSnapshot({ ...current, nodes: current.nodes.filter((node) => ids.has(node.id)) }).nodes } };
             }
             if (name === "canvas_create_cinematic_session") {
                 return {
@@ -523,10 +523,10 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
             }
             const ops = onlineToolToOps(name, args, current, effectiveConfig);
             const result = executeOps(ops);
-            return { ok: result.changed, message: result.changed ? summarizeCanvasAgentOps(ops) || "画布操作已执行。" : result.noopReason, data: result };
+            return { ok: result.changed, message: result.changed ? summarizeCanvasAgentOps(ops) || canvasT("videoCanvas.agent.opsAppliedDone", "画布操作已执行。") : result.noopReason, data: result };
         } catch (error) {
             if (isAgentSessionPollingAbort(error)) throw error;
-            return { ok: false, message: error instanceof Error ? error.message : "工具执行失败" };
+            return { ok: false, message: error instanceof Error ? error.message : canvasT("videoCanvas.agent.toolExecFailed", "工具执行失败") };
         }
     };
 
@@ -536,7 +536,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
             return { toolCallId: toolCall.id, name: toolCall.function.name, result };
         } catch (error) {
             if (isAgentSessionPollingAbort(error)) throw error;
-            return { toolCallId: toolCall.id, name: toolCall.function.name, result: { ok: false, message: error instanceof Error ? error.message : "工具参数错误" } };
+            return { toolCallId: toolCall.id, name: toolCall.function.name, result: { ok: false, message: error instanceof Error ? error.message : canvasT("videoCanvas.agent.toolParamError", "工具参数错误") } };
         }
     };
 
@@ -545,7 +545,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
         let stopped = false;
         for (const toolCall of toolCalls) {
             if (stopped) {
-                results.push({ toolCallId: toolCall.id, name: toolCall.function.name, result: { ok: false, message: "前一个工具调用失败，未继续执行。" } });
+                results.push({ toolCallId: toolCall.id, name: toolCall.function.name, result: { ok: false, message: canvasT("videoCanvas.agent.prevFailedSkip", "前一个工具调用失败，未继续执行。") } });
                 continue;
             }
             const result = await executeOnlineToolCall(sessionId, toolCall);
@@ -562,23 +562,23 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
         const toolCalls = pendingContext?.toolCalls || toolCallsFromDetail(detail);
         const previousMessages = pendingContext?.messages || [];
         const session = safeSessions.find((session) => session.messages.some((item) => item.id === messageId));
-        addOnlineLog("批准工具", { messageId, toolCalls });
+        addOnlineLog(canvasT("videoCanvas.agent.approveTool", "批准工具"), { messageId, toolCalls });
         const assistantId = pendingContext?.assistantId || "";
         if (!session) return;
         if (!toolCalls.length || !previousMessages.length || !assistantId) {
-            upsertMessage(session.id, { id: messageId, role: "tool", title: "工具执行失败", text: "工具上下文不完整，无法执行。", detail: { ...detail, status: "failed" } });
+            upsertMessage(session.id, { id: messageId, role: "tool", title: canvasT("videoCanvas.agent.toolExecFailed", "工具执行失败"), text: canvasT("videoCanvas.agent.contextIncomplete", "工具上下文不完整，无法执行。"), detail: { ...detail, status: "failed" } });
             return;
         }
         try {
             setIsRunning(true);
             const results = await executeOnlineToolCalls(session.id, toolCalls);
-            addOnlineLog("工具执行结果", results);
-            upsertMessage(session.id, { id: messageId, role: "tool", title: "工具执行完成", text: results.map((item) => toolResultText(item.result)).join("\n"), detail: { ...detail, results, status: "completed" } });
+            addOnlineLog(canvasT("videoCanvas.agent.logToolResults", "工具执行结果"), results);
+            upsertMessage(session.id, { id: messageId, role: "tool", title: canvasT("videoCanvas.agent.toolExecComplete", "工具执行完成"), text: results.map((item) => toolResultText(item.result)).join("\n"), detail: { ...detail, results, status: "completed" } });
             pendingToolContextRef.current.delete(messageId);
             await continueOnlineToolLoopAfterResults(session.id, assistantId, previousMessages, toolCalls, results, pendingContext?.step || Number(detail.step) || 1);
         } catch (error) {
-            addOnlineLog("工具续跑失败", error instanceof Error ? error.message : error);
-            appendMessage(session.id, { id: nanoid(), role: "error", title: "操作失败", text: error instanceof Error ? error.message : "操作失败" });
+            addOnlineLog(canvasT("videoCanvas.agent.continueRunFailed", "工具续跑失败"), error instanceof Error ? error.message : error);
+            appendMessage(session.id, { id: nanoid(), role: "error", title: canvasT("videoCanvas.agent.opFailed", "操作失败"), text: error instanceof Error ? error.message : canvasT("videoCanvas.agent.opFailed", "操作失败") });
         } finally {
             setIsRunning(false);
         }
@@ -586,9 +586,9 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
 
     const rejectOnlineTool = (messageId: string) => {
         const session = safeSessions.find((session) => session.messages.some((item) => item.id === messageId));
-        addOnlineLog("拒绝工具", { messageId });
+        addOnlineLog(canvasT("videoCanvas.agent.rejectTool", "拒绝工具"), { messageId });
         pendingToolContextRef.current.delete(messageId);
-        if (session) upsertMessage(session.id, { id: messageId, role: "tool", title: "已拒绝执行", text: "工具调用已取消", detail: { ...objectDetail(session.messages.find((item) => item.id === messageId)?.detail), status: "rejected" } });
+        if (session) upsertMessage(session.id, { id: messageId, role: "tool", title: canvasT("videoCanvas.agent.rejectedTitle", "已拒绝执行"), text: canvasT("videoCanvas.agent.rejectedText", "工具调用已取消"), detail: { ...objectDetail(session.messages.find((item) => item.id === messageId)?.detail), status: "rejected" } });
     };
 
     // 稳定回调身份：配合 memo(AgentChatMessage) 避免任一状态变化重渲全部历史消息。
@@ -610,7 +610,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
         const restored = onUndoOps();
         if (!restored) return;
         snapshotRef.current = restored;
-        if (activeSession) appendMessage(activeSession.id, { id: nanoid(), role: "tool", title: "已撤销 Agent 批次", text: "已恢复到本次写回前的画布状态", detail: { status: "completed", remainingUndoCount: Math.max(0, undoOpsCount - 1) } });
+        if (activeSession) appendMessage(activeSession.id, { id: nanoid(), role: "tool", title: canvasT("videoCanvas.agent.undoneTitle", "已撤销 Agent 批次"), text: canvasT("videoCanvas.agent.undoneText", "已恢复到本次写回前的画布状态"), detail: { status: "completed", remainingUndoCount: Math.max(0, undoOpsCount - 1) } });
     };
 
     const submit = async () => {
@@ -640,17 +640,17 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, project
         const controller = new AbortController();
         cinematicSessionControllersRef.current.set(pending.id, controller);
         setIsRunning(true);
-        addOnlineLog("恢复后端影视 Agent 会话", { backendSessionId: pending.id });
+        addOnlineLog(canvasT("videoCanvas.agent.cineResumeLog", "恢复后端影视 Agent 会话"), { backendSessionId: pending.id });
         try {
             const detail = await resumeCinematicAgentSession(pending.id, { signal: controller.signal });
             const ops = requireOps(JSON.parse(cinematicAgentSessionOpsJson(detail)));
             executeOps(ops);
             completeCinematicSession(sessionId, pending.id, ops, true);
-            addOnlineLog("后端影视 Agent 会话恢复完成", { backendSessionId: pending.id });
+            addOnlineLog(canvasT("videoCanvas.agent.cineResumeDoneLog", "后端影视 Agent 会话恢复完成"), { backendSessionId: pending.id });
         } catch (error) {
             if (!isAgentSessionPollingAbort(error)) {
                 failCinematicSession(sessionId, pending.id, error);
-                addOnlineLog("后端影视 Agent 会话恢复失败", error instanceof Error ? error.message : error);
+                addOnlineLog(canvasT("videoCanvas.agent.cineResumeFailLog", "后端影视 Agent 会话恢复失败"), error instanceof Error ? error.message : error);
             }
         } finally {
             if (cinematicSessionControllersRef.current.get(pending.id) === controller) cinematicSessionControllersRef.current.delete(pending.id);
@@ -964,7 +964,7 @@ function OnlineAgentLogView({ logs, theme, context, onClear }: { logs: OnlineAge
     const [mode, setMode] = useState<"text" | "json">("text");
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const content = mode === "text" ? formatOnlineLogText(logs, context) : formatOnlineLogJson(logs, context);
-    const lastError = [...logs].reverse().find((item) => /错误|失败|error/i.test(`${item.title}\n${stringifyLog(item.data)}`));
+    const lastError = [...logs].reverse().find((item) => /错误|失败|error|failed/i.test(`${item.title}\n${stringifyLog(item.data)}`));
     const copy = async (value = content) => {
         if (await copyToClipboard(value)) return;
         textareaRef.current?.focus();
@@ -1248,35 +1248,35 @@ function previewOnlineToolCalls(calls: ResponseToolCall[], snapshot: CanvasAgent
     return {
         ...impact,
         operationCount: impact.operationCount + deferredCinematicCount,
-        items: [...impact.items, "启动影视 Agent，会话完成后将剧本、分镜和生成节点写回当前画布"].slice(0, 8),
-        warning: [impact.warning, "影视 Agent 的具体写回范围将在后端完成拆解后确定。"].filter(Boolean).join(" "),
+        items: [...impact.items, canvasT("videoCanvas.agent.impactCinematicItem", "启动影视 Agent，会话完成后将剧本、分镜和生成节点写回当前画布")].slice(0, 8),
+        warning: [impact.warning, canvasT("videoCanvas.agent.impactCinematicWarning", "影视 Agent 的具体写回范围将在后端完成拆解后确定。")].filter(Boolean).join(" "),
     };
 }
 
 function toolCallLabel(name: string) {
-    if (name === "canvas_apply_ops") return "画布操作";
-    if (name === "canvas_get_state") return "读取画布";
-    if (name === "canvas_get_selection") return "读取选区";
-    if (name === "canvas_export_snapshot") return "导出快照";
-    if (name === "canvas_create_cinematic_session") return "创建影视项目";
-    if (name === "canvas_create_node") return "创建节点";
-    if (name === "canvas_create_text_node") return "创建文本";
-    if (name === "canvas_create_text_nodes") return "批量创建文本";
-    if (name === "canvas_create_image_prompt_flow") return "创建生图流程";
-    if (name === "canvas_create_generation_flow") return "创建生成流程";
-    if (name === "canvas_generate_text") return "生成文本";
-    if (name === "canvas_generate_image") return "生成图片";
-    if (name === "canvas_generate_video") return "生成视频";
-    if (name === "canvas_generate_audio") return "生成音频";
-    if (name === "canvas_update_node") return "更新节点";
-    if (name === "canvas_update_node_text") return "更新文本";
-    if (name === "canvas_move_nodes") return "移动节点";
-    if (name === "canvas_resize_node") return "调整节点尺寸";
-    if (name === "canvas_delete_nodes") return "删除节点";
-    if (name === "canvas_connect_nodes") return "连接节点";
-    if (name === "canvas_select_nodes") return "选择节点";
-    if (name === "canvas_set_viewport") return "调整视口";
-    if (name === "canvas_run_generation") return "触发生成";
+    if (name === "canvas_apply_ops") return canvasT("videoCanvas.agent.tlApplyOps", "画布操作");
+    if (name === "canvas_get_state") return canvasT("videoCanvas.agent.tlGetState", "读取画布");
+    if (name === "canvas_get_selection") return canvasT("videoCanvas.agent.tlGetSelection", "读取选区");
+    if (name === "canvas_export_snapshot") return canvasT("videoCanvas.agent.tlExportSnapshot", "导出快照");
+    if (name === "canvas_create_cinematic_session") return canvasT("videoCanvas.agent.tlCreateCinematic", "创建影视项目");
+    if (name === "canvas_create_node") return canvasT("videoCanvas.agent.tlCreateNode", "创建节点");
+    if (name === "canvas_create_text_node") return canvasT("videoCanvas.agent.tlCreateTextNode", "创建文本");
+    if (name === "canvas_create_text_nodes") return canvasT("videoCanvas.agent.tlCreateTextNodes", "批量创建文本");
+    if (name === "canvas_create_image_prompt_flow") return canvasT("videoCanvas.agent.tlImagePromptFlow", "创建生图流程");
+    if (name === "canvas_create_generation_flow") return canvasT("videoCanvas.agent.tlCreateGenerationFlow", "创建生成流程");
+    if (name === "canvas_generate_text") return canvasT("videoCanvas.agent.tlGenText", "生成文本");
+    if (name === "canvas_generate_image") return canvasT("videoCanvas.agent.tlGenImage", "生成图片");
+    if (name === "canvas_generate_video") return canvasT("videoCanvas.agent.tlGenVideo", "生成视频");
+    if (name === "canvas_generate_audio") return canvasT("videoCanvas.agent.tlGenAudio", "生成音频");
+    if (name === "canvas_update_node") return canvasT("videoCanvas.agent.tlUpdateNode", "更新节点");
+    if (name === "canvas_update_node_text") return canvasT("videoCanvas.agent.tlUpdateNodeText", "更新文本");
+    if (name === "canvas_move_nodes") return canvasT("videoCanvas.agent.tlMoveNodes", "移动节点");
+    if (name === "canvas_resize_node") return canvasT("videoCanvas.agent.tlResizeNode", "调整节点尺寸");
+    if (name === "canvas_delete_nodes") return canvasT("videoCanvas.agent.tlDeleteNodes", "删除节点");
+    if (name === "canvas_connect_nodes") return canvasT("videoCanvas.agent.tlConnectNodes", "连接节点");
+    if (name === "canvas_select_nodes") return canvasT("videoCanvas.agent.tlSelectNodes", "选择节点");
+    if (name === "canvas_set_viewport") return canvasT("videoCanvas.agent.tlSetViewport", "调整视口");
+    if (name === "canvas_run_generation") return canvasT("videoCanvas.agent.tlRunGeneration", "触发生成");
     return name;
 }
 
@@ -1376,10 +1376,10 @@ function generationMode(value: unknown): "text" | "image" | "video" | "audio" {
 }
 
 function generationTitle(mode: "text" | "image" | "video" | "audio") {
-    if (mode === "text") return "文本生成";
-    if (mode === "video") return "视频生成";
-    if (mode === "audio") return "音频生成";
-    return "图片生成";
+    if (mode === "text") return canvasT("videoCanvas.agent.genModeText", "文本生成");
+    if (mode === "video") return canvasT("videoCanvas.agent.genModeVideo", "视频生成");
+    if (mode === "audio") return canvasT("videoCanvas.agent.genModeAudio", "音频生成");
+    return canvasT("videoCanvas.agent.genModeImage", "图片生成");
 }
 
 function defaultGenerationModel(config: AiConfig, mode: "text" | "image" | "video" | "audio") {
@@ -1407,7 +1407,7 @@ function snapshotSignature(snapshot: CanvasAgentSnapshot) {
 }
 
 function explainNoop(ops: CanvasAgentOp[], snapshot: CanvasAgentSnapshot) {
-    if (!ops.length) return "模型没有返回可执行的画布操作。";
+    if (!ops.length) return canvasT("videoCanvas.agent.noopNone", "模型没有返回可执行的画布操作。");
     const nodeIds = new Set(snapshot.nodes.map((node) => node.id));
     const connectionIds = new Set(snapshot.connections.map((conn) => conn.id));
     const deleteConnectionOps = ops.filter((op): op is Extract<CanvasAgentOp, { type: "delete_connections" }> => op.type === "delete_connections");
@@ -1416,18 +1416,18 @@ function explainNoop(ops: CanvasAgentOp[], snapshot: CanvasAgentSnapshot) {
     const updateOps = ops.filter((op): op is Extract<CanvasAgentOp, { type: "update_node" }> => op.type === "update_node");
     const selectOps = ops.filter((op): op is Extract<CanvasAgentOp, { type: "select_nodes" }> => op.type === "select_nodes");
     const generationOps = ops.filter((op): op is Extract<CanvasAgentOp, { type: "run_generation" }> => op.type === "run_generation");
-    if (deleteConnectionOps.length && !snapshot.connections.length) return "画布当前没有连线可删除。";
+    if (deleteConnectionOps.length && !snapshot.connections.length) return canvasT("videoCanvas.agent.noopNoConnectionsDelete", "画布当前没有连线可删除。");
     if (deleteConnectionOps.length && deleteConnectionOps.every((op) => !op.all && [...(op.ids || []), ...(op.id ? [op.id] : [])].every((id) => !connectionIds.has(id)))) return "没有找到要删除的连线。";
-    if (connectOps.length && connectOps.every((op) => snapshot.connections.some((conn) => conn.fromNodeId === op.fromNodeId && conn.toNodeId === op.toNodeId))) return "这些节点已经存在对应连线，无需重复连接。";
-    if (connectOps.length && connectOps.every((op) => !nodeIds.has(op.fromNodeId) || !nodeIds.has(op.toNodeId))) return "没有找到要连接的节点。";
-    if (deleteNodeOps.length && deleteNodeOps.every((op) => op.nodeType === CanvasNodeType.Config) && !snapshot.nodes.some((node) => node.type === CanvasNodeType.Config)) return "画布当前没有生成配置节点可删除。";
-    if (deleteNodeOps.length && deleteNodeOps.every((op) => [...(op.ids || []), ...(op.id ? [op.id] : [])].every((id) => !nodeIds.has(id)))) return "没有找到要删除的节点。";
-    if (updateOps.length && updateOps.every((op) => !nodeIds.has(op.id))) return "没有找到要更新的节点。";
-    if (selectOps.length && selectOps.every((op) => !(op.ids || []).some((id) => nodeIds.has(id)))) return "没有找到要选择的节点。";
-    if (generationOps.length && generationOps.every((op) => !nodeIds.has(op.nodeId))) return "没有找到要触发生成的节点。";
-    if (ops.every((op) => op.type === "set_viewport")) return "视图已经是目标状态。";
-    if (selectOps.length && selectOps.every((op) => JSON.stringify(op.ids || []) === JSON.stringify(snapshot.selectedNodeIds))) return "选区已经是目标状态。";
-    return "工具已执行，但画布状态没有变化；请在日志 tab 查看工具参数和执行前后状态。";
+    if (connectOps.length && connectOps.every((op) => snapshot.connections.some((conn) => conn.fromNodeId === op.fromNodeId && conn.toNodeId === op.toNodeId))) return canvasT("videoCanvas.agent.noopConnectionsExist", "这些节点已经存在对应连线，无需重复连接。");
+    if (connectOps.length && connectOps.every((op) => !nodeIds.has(op.fromNodeId) || !nodeIds.has(op.toNodeId))) return canvasT("videoCanvas.agent.noopNodesMissingConnect", "没有找到要连接的节点。");
+    if (deleteNodeOps.length && deleteNodeOps.every((op) => op.nodeType === CanvasNodeType.Config) && !snapshot.nodes.some((node) => node.type === CanvasNodeType.Config)) return canvasT("videoCanvas.agent.noopConfigMissingDelete", "画布当前没有生成配置节点可删除。");
+    if (deleteNodeOps.length && deleteNodeOps.every((op) => [...(op.ids || []), ...(op.id ? [op.id] : [])].every((id) => !nodeIds.has(id)))) return canvasT("videoCanvas.agent.noopNodesMissingDelete", "没有找到要删除的节点。");
+    if (updateOps.length && updateOps.every((op) => !nodeIds.has(op.id))) return canvasT("videoCanvas.agent.noopNodesMissingUpdate", "没有找到要更新的节点。");
+    if (selectOps.length && selectOps.every((op) => !(op.ids || []).some((id) => nodeIds.has(id)))) return canvasT("videoCanvas.agent.noopNodesMissingSelect", "没有找到要选择的节点。");
+    if (generationOps.length && generationOps.every((op) => !nodeIds.has(op.nodeId))) return canvasT("videoCanvas.agent.noopNodesMissingGenerate", "没有找到要触发生成的节点。");
+    if (ops.every((op) => op.type === "set_viewport")) return canvasT("videoCanvas.agent.noopViewportAlready", "视图已经是目标状态。");
+    if (selectOps.length && selectOps.every((op) => JSON.stringify(op.ids || []) === JSON.stringify(snapshot.selectedNodeIds))) return canvasT("videoCanvas.agent.noopSelectionAlready", "选区已经是目标状态。");
+    return canvasT("videoCanvas.agent.noopExecutedNoChange", "工具已执行，但画布状态没有变化；请在日志 tab 查看工具参数和执行前后状态。");
 }
 
 function nodeToReference(node: CanvasNodeData): CanvasAssistantReference | null {
@@ -1507,5 +1507,5 @@ function upsertAssistantMessage(messages: CanvasAssistantMessage[], message: Can
 
 function createSession(): CanvasAssistantSession {
     const now = new Date().toISOString();
-    return { id: nanoid(), title: "新对话", messages: [], createdAt: now, updatedAt: now };
+    return { id: nanoid(), title: canvasT("videoCanvas.agent.newChatFallback", "新对话"), messages: [], createdAt: now, updatedAt: now };
 }
