@@ -77,6 +77,10 @@ describe('notification facade source contracts', () => {
     expect(host.includes('displayedRecords = expanded ? sortByCreatedAt(activeRecords)')).toBe(false);
     expect(host.includes('duration: 240')).toBe(true);
     expect(host.includes('window.requestAnimationFrame(() => counterRef.current?.focus())')).toBe(true);
+    expect(host.includes("resumeInteraction('notification-pointer')")).toBe(true);
+    expect(host.includes("resumeInteraction('notification-focus')")).toBe(true);
+    expect(host.includes("has('assertive')")).toBe(true);
+    expect(host.includes("take('assertive')")).toBe(true);
 
     const model = readSource('./notificationStackModel.ts');
     expect(model.includes('export const getCollapsedRecords')).toBe(true);
@@ -136,7 +140,9 @@ describe('notification facade source contracts', () => {
   test('the theme contract does not override notification semantic surfaces', () => {
     const themeContract = readSource('../../styles/theme-control-contract.css');
     expect(themeContract.includes('.flowy-notification-card {\n  background-color:')).toBe(false);
-    expect(themeContract.includes('.flowy-notification-card--error')).toBe(true);
+    expect(themeContract.includes('border-width: var(--flowy-border-hairline, 1px) !important;')).toBe(true);
+    expect(themeContract.includes('border-style: solid !important;')).toBe(true);
+    expect(themeContract.includes('.flowy-notification-card--error')).toBe(false);
   });
 
   test('built-in theme presets do not retain old Arco notification selectors', () => {

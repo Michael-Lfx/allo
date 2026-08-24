@@ -130,10 +130,11 @@ the composer or mobile action panel. Cards do not handle clicks themselves;
 close buttons, supplied actions, and the disclosure control are the only
 interactive surfaces. `passthrough` cards remain pointer-transparent. Separate
 polite and assertive live regions announce notification content without
-re-announcing expansion history. New announcements use one creation-ordered
-queue and are routed to the level-specific live region, deduplicated by
-notification revision; pending updates replace older revisions and notices
-closed before their turn are removed. Enter/exit motion uses opacity/transform; stack FLIP movement follows
+re-announcing expansion history. Polite announcements use a creation-ordered
+queue; pending updates replace older revisions and notices closed before their
+turn are removed. Assertive errors take priority over a currently displayed
+polite announcement, while assertive announcements retain their own creation
+order. Enter/exit motion uses opacity/transform; stack FLIP movement follows
 the 240ms spatial-transition token, with 180ms entry, a short collapse fade,
 120ms exit, and reduced-motion overrides. Notification surfaces resolve their
 brand color from the active theme's `--primary` token and semantic states from

@@ -210,6 +210,19 @@ describe('notificationStore', () => {
     }
   });
 
+  test('ignores a resume for a reason that was not paused', async () => {
+    const scope = notificationStore.createScope();
+    try {
+      scope.show({ content: 'timed', duration: 180 });
+      await wait(120);
+      notificationStore.resumeInteraction('unknown-pause');
+      await wait(100);
+      expect(activeOf(scope)).toHaveLength(0);
+    } finally {
+      scope.dispose();
+    }
+  });
+
   test('scope dispose clears its records without firing their onClose twice', async () => {
     const scope = notificationStore.createScope();
     let closed = 0;

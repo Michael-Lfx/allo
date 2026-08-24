@@ -80,8 +80,8 @@ class NotificationStore {
   };
 
   resumeInteraction = (reason: string): void => {
-    this.pauseReasons.delete(reason);
-    if (this.pauseReasons.size === 0) this.resumeTimers();
+    const wasPaused = this.pauseReasons.delete(reason);
+    if (wasPaused && this.pauseReasons.size === 0) this.resumeTimers();
   };
 
   show = (scope: ScopeState, input: AppNotificationInput): NotificationHandle => {

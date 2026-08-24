@@ -49,6 +49,17 @@ describe('NotificationAnnouncementQueue', () => {
     expect(queue.take()).toMatchObject({ channel: 'polite', message: '提示' });
   });
 
+  test('can prioritize an assertive announcement without disturbing the polite queue', () => {
+    const queue = new NotificationAnnouncementQueue();
+    queue.enqueue(announcement({ key: 'info', channel: 'polite', createdAt: 1, message: '普通提示' }));
+    queue.enqueue(announcement({ key: 'error', channel: 'assertive', createdAt: 2, message: '紧急错误' }));
+
+    expect(queue.has('assertive')).toBe(true);
+    expect(queue.take('assertive')).toMatchObject({ channel: 'assertive', message: '紧急错误' });
+    expect(queue.has('assertive')).toBe(false);
+    expect(queue.take()).toMatchObject({ channel: 'polite', message: '普通提示' });
+  });
+
   test('removes announcements that are no longer active', () => {
     const queue = new NotificationAnnouncementQueue();
     queue.enqueue(announcement({ key: 'stale' }));

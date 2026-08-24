@@ -141,9 +141,35 @@ const NotificationHost: React.FC = () => {
     return () => notificationStore.resumeInteraction('notification-expanded');
   }, [expanded]);
 
+  useEffect(
+    () => () => {
+      // Layout can unmount while the pointer or focus is still inside the
+      // portal. Clear those reasons so a future host does not inherit a
+      // permanently paused timer state.
+      notificationStore.resumeInteraction('notification-pointer');
+      notificationStore.resumeInteraction('notification-focus');
+    },
+    [],
+  );
+
   flushAnnouncementRef.current = () => {
-    if (activeAnnouncementRef.current) return;
-    const next = announcementQueueRef.current.take();
+    const active = activeAnnouncementRef.current;
+    if (active) {
+      // Errors use the assertive channel and must not wait behind a polite
+      // announcement that is still being displayed. Ordinary updates keep
+      // the current announcement uninterrupted.
+      if (active.channel !== 'polite' || !announcementQueueRef.current.has('assertive')) return;
+      if (announcementTimerRef.current !== null) {
+        window.clearTimeout(announcementTimerRef.current);
+        announcementTimerRef.current = null;
+      }
+      activeAnnouncementRef.current = null;
+      setPoliteMessage('');
+    }
+
+    // Prefer the oldest urgent announcement, then preserve creation order for
+    // the remaining announcements.
+    const next = announcementQueueRef.current.take('assertive') ?? announcementQueueRef.current.take();
     if (!next) return;
 
     activeAnnouncementRef.current = next;
