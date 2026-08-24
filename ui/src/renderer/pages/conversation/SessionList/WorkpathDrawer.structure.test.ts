@@ -20,6 +20,9 @@ describe('WorkpathDrawer structure', () => {
     expect(source.includes("<Menu.Item key='pin'>")).toBe(true);
     expect(source.includes("<Menu.Item key='remove'>")).toBe(true);
     expect(source.includes("data-testid='workpath-create-interactive-btn'")).toBe(true);
+    expect(source.includes("<button\n              type='button'\n              data-testid='workpath-create-interactive-btn'" )).toBe(true);
+    expect(source.includes("<button\n                type='button'\n                data-testid='workpath-more-actions-btn'" )).toBe(true);
+    expect(source.includes("role='button'\n              tabIndex={0}")).toBe(false);
     expect(source.includes('<CopyIconButton')).toBe(false);
     expect(source.includes('always visible (real workpaths only)')).toBe(false);
   });
@@ -112,7 +115,7 @@ describe('WorkpathDrawer structure', () => {
     const conversationSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'ConversationRow.tsx'), 'utf8');
 
     expect(source.includes('flowy-workpath-drawer-header')).toBe(true);
-    expect(source.includes('hasInteractiveContent && \'gap-2px pt-2px\'')).toBe(true);
+    expect(source.includes('hasInteractiveContent && drawerMotion.shouldRender && \'gap-2px pt-2px\'')).toBe(true);
     expect(conversationSource.includes("'hover:bg-fill-2': !batchMode && !selected")).toBe(true);
   });
 
@@ -138,14 +141,21 @@ describe('WorkpathDrawer structure', () => {
     expect(source.includes('group-hover:pr-50px')).toBe(false);
     expect(source.includes("type='button'\n            aria-expanded={batchMode ? undefined : expanded}")).toBe(true);
     expect(source.includes('aria-controls={batchMode ? undefined : controlsId}')).toBe(true);
-    expect(source.includes('workpathKey(node.key)')).toBe(true);
+    expect(source.includes('getWorkpathDisclosureIds')).toBe(true);
+    expect(source.includes('const overflowControlsId = disclosureIds.overflowId')).toBe(true);
     expect(source.includes('FolderOpen')).toBe(true);
     expect(source.includes('FolderClose')).toBe(true);
     expect(source.includes('workpath-disclosure-caret')).toBe(false);
     expect(source.includes('<Right')).toBe(false);
     expect(source.includes('flowy-disclosure-content')).toBe(true);
+    expect(source.includes('id={controlsId}')).toBe(true);
+    expect(source.includes("aria-hidden={!drawerMotion.shouldRender || drawerMotion.phase === 'exiting'}")).toBe(true);
     expect(source.includes('overflowMotion.shouldRender')).toBe(true);
-    expect(source.includes("aria-hidden={overflowMotion.phase === 'exiting'}")).toBe(true);
+    expect(source.includes("aria-hidden={overflowMotion.phase === 'closed' || overflowMotion.phase === 'exiting'}")).toBe(true);
+    expect(source.includes('overflowInteractiveEntries.length > 0')).toBe(true);
+    expect(source.includes('overflowMotion.shouldRender && overflowInteractiveEntries.map')).toBe(true);
+    expect(source.includes('id={overflowControlsId}')).toBe(true);
+    expect(source.includes('controlsId={overflowControlsId}')).toBe(true);
     expect(source.includes('flowy-workpath-header-two-line')).toBe(true);
     expect(source.includes('flowy-workpath-secondary')).toBe(true);
     expect(source.includes("className='flowy-workpath-session-overflow'")).toBe(true);

@@ -11,6 +11,8 @@ describe('MarqueeText structure', () => {
     expect(componentSource.includes('observer.observe(viewport)')).toBe(true);
     expect(componentSource.includes('observer.observe(measure)')).toBe(true);
     expect(componentSource.includes('active ||')).toBe(true);
+    expect(componentSource.includes('const shouldMeasure = triggerActive && !disabled && !reducedMotion;')).toBe(true);
+    expect(componentSource.includes('{shouldMeasure && (')).toBe(true);
     expect(componentSource.includes('}, [overflowDistance, stopPlayback, text]);')).toBe(true);
   });
 

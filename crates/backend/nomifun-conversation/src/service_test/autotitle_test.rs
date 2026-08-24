@@ -294,6 +294,10 @@ async fn empty_title_result_keeps_message_fallbacks() {
         ("2026 年计划", "2026 年计划"),
         ("123abc", "123abc"),
         ("1. 修复标题问题", "修复标题问题"),
+        (".NET 迁移", ".NET 迁移"),
+        ("-1 编号", "-1 编号"),
+        ("../docs", "../docs"),
+        ("`literal`", "`literal`"),
         ("```", "```"),
     ];
 

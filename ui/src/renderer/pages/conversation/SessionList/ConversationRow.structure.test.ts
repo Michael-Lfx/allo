@@ -20,7 +20,9 @@ describe('ConversationRow structure', () => {
   test('gives conversation titles balanced left spacing', () => {
     expect(source.includes("!collapsed && 'pl-18px'")).toBe(true);
     expect(source.includes('showNestedPinnedBadge')).toBe(false);
-    expect(source.includes('showHoverPinnedIcon && \'group-hover:pl-22px\'')).toBe(true);
+    expect(source.includes("showHoverPinnedIcon && <span className='w-22px shrink-0' aria-hidden='true' />")).toBe(true);
+    expect(source.includes('transition-[padding]')).toBe(false);
+    expect(source.includes('group-hover:pl-22px')).toBe(false);
     expect(source.includes('const showHoverPinnedIcon = !batchMode && isPinned && !isMobile && !isGenerating;')).toBe(true);
     expect(source.includes('!dimIcon && !batchMode && isPinned')).toBe(false);
     expect(source.includes("data-testid='conversation-pinned-badge'")).toBe(false);

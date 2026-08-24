@@ -130,6 +130,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             <Pushpin theme='outline' size='14' />
           </span>
         )}
+        {showHoverPinnedIcon && <span className='w-22px shrink-0' aria-hidden='true' />}
         {/* Capability markers are session identity, so they sit before the text and
             stay visible while hover-only actions appear on the right. */}
         {!batchMode && !collapsed && capabilityItems.length > 0 && (
@@ -138,10 +139,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
         {/* Name owns the flexible middle; age is a fixed right-aligned marker so
             rows scan cleanly without metadata hugging the title. */}
         <FlexFullContainer
-          className={classNames(
-            'h-24px min-w-0 flex-1 collapsed-hidden transition-[padding]',
-            showHoverPinnedIcon && 'group-hover:pl-22px'
-          )}
+          className='h-24px min-w-0 flex-1 collapsed-hidden'
           containerClassName='flex items-center'
         >
           <MarqueeText

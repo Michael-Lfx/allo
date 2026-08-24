@@ -182,15 +182,45 @@ fn strip_ordered_list_marker(line: &str) -> &str {
     }
 }
 
+fn strip_markdown_prefix(line: &str) -> Option<&str> {
+    let line = line.trim_start();
+
+    let mut heading_end = 0;
+    for (index, character) in line.char_indices() {
+        if character == '#' {
+            heading_end = index + character.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if heading_end > 0 {
+        let remainder = &line[heading_end..];
+        if remainder
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_whitespace())
+        {
+            return Some(remainder.trim_start());
+        }
+    }
+
+    let marker = line.chars().next()?;
+    if !matches!(marker, '>' | '*' | '+' | '-') {
+        return None;
+    }
+
+    let remainder = &line[marker.len_utf8()..];
+    remainder
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_whitespace())
+        .then(|| remainder.trim_start())
+}
+
 fn strip_title_prefix(line: &str) -> &str {
     let mut stripped = line.trim_start();
     loop {
-        let markdown_stripped = stripped
-            .trim_start_matches(|character: char| {
-                matches!(character, '#' | '>' | '*' | '+' | '-' | '.' | '`')
-            })
-            .trim_start();
-        if markdown_stripped != stripped {
+        if let Some(markdown_stripped) = strip_markdown_prefix(stripped) {
             stripped = markdown_stripped;
             continue;
         }

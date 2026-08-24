@@ -12,7 +12,7 @@ import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
 import { Message, Tooltip } from '@arco-design/web-react';
 import { Attention, Robot } from '@icon-park/react';
 import classNames from 'classnames';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import useSWR from 'swr';
@@ -24,6 +24,7 @@ import {
 import { useConversationListSync } from './hooks/useConversationListSync';
 import { useDisclosureMotion } from './hooks/useDisclosureMotion';
 import SessionOverflowButton from './SessionOverflowButton';
+import { getCompanionDisclosureIds } from './utils/disclosureIds';
 
 interface Props {
   /** Active conversation id parsed from the `/conversation/:id` route, for row highlight. */
@@ -65,6 +66,10 @@ const CompanionSessionGroup: React.FC<Props> = ({
   const [showAllCompanions, setShowAllCompanions] = useState(false);
   const [groupToggleKey, setGroupToggleKey] = useState(0);
   const [overflowToggleKey, setOverflowToggleKey] = useState(0);
+  const instanceId = useId();
+  const disclosureIds = getCompanionDisclosureIds(instanceId);
+  const controlsId = disclosureIds.sessionsId;
+  const overflowControlsId = disclosureIds.overflowId;
   const groupMotion = useDisclosureMotion(expanded, groupToggleKey);
 
   const handleGroupToggle = () => {
@@ -325,7 +330,7 @@ const CompanionSessionGroup: React.FC<Props> = ({
           <button
             type='button'
             aria-expanded={expanded}
-            aria-controls='flowy-companion-sessions'
+            aria-controls={controlsId}
             className='sider-section-title appearance-none border-none bg-transparent p-0 text-13px font-[500] leading-none tracking-wide truncate shrink-0 opacity-75 transition-opacity hover:opacity-100 cursor-pointer'
             onClick={handleGroupToggle}
           >
@@ -351,34 +356,38 @@ const CompanionSessionGroup: React.FC<Props> = ({
         <span className='text-12px text-t-tertiary leading-none shrink-0'>{companions.length}</span>
       </div>
 
-      {groupMotion.shouldRender && (
-        <div
-          id='flowy-companion-sessions'
-          aria-hidden={groupMotion.phase === 'exiting'}
-          data-disclosure-phase={groupMotion.phase}
-          className='flowy-disclosure-content flex flex-col gap-2px'
-        >
-          {baseCompanions.map(renderCompanion)}
-          {overflowMotion.shouldRender && overflowCompanions.length > 0 && (
-            <div
-              aria-hidden={overflowMotion.phase === 'exiting'}
-              data-disclosure-phase={overflowMotion.phase}
-              className='flowy-disclosure-content flex flex-col'
-            >
-              {overflowCompanions.map(renderCompanion)}
-            </div>
-          )}
-          {visibleCompanions.hasOverflow && !forceShowActiveCompanion && (
-            <SessionOverflowButton
-              expanded={showAllCompanions}
-              hiddenCount={companionOverflowCount}
-              controlsId='flowy-companion-sessions'
-              onToggle={toggleOverflow}
-              className='flowy-companion-session-overflow'
-            />
-          )}
-        </div>
-      )}
+      <div
+        id={controlsId}
+        aria-hidden={!groupMotion.shouldRender || groupMotion.phase === 'exiting'}
+        data-disclosure-phase={groupMotion.phase}
+        className='flowy-disclosure-content flex flex-col gap-2px'
+      >
+        {groupMotion.shouldRender && (
+          <>
+            {baseCompanions.map(renderCompanion)}
+            {overflowCompanions.length > 0 && (
+              <div
+                id={overflowControlsId}
+                data-testid='companion-overflow-sessions'
+                aria-hidden={overflowMotion.phase === 'closed' || overflowMotion.phase === 'exiting'}
+                data-disclosure-phase={overflowMotion.phase}
+                className='flowy-disclosure-content flex flex-col'
+              >
+                {overflowMotion.shouldRender && overflowCompanions.map(renderCompanion)}
+              </div>
+            )}
+            {visibleCompanions.hasOverflow && !forceShowActiveCompanion && (
+              <SessionOverflowButton
+                expanded={showAllCompanions}
+                hiddenCount={companionOverflowCount}
+                controlsId={overflowControlsId}
+                onToggle={toggleOverflow}
+                className='flowy-companion-session-overflow'
+              />
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 };

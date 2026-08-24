@@ -12,10 +12,18 @@ describe('CompanionSessionGroup structure', () => {
     expect(source.includes('getVisibleCompanionEntries')).toBe(true);
     expect(source.includes('showAllCompanions')).toBe(true);
     expect(source.includes('<SessionOverflowButton')).toBe(true);
-    expect(source.includes("controlsId='flowy-companion-sessions'")).toBe(true);
+    expect(source.includes('getCompanionDisclosureIds')).toBe(true);
+    expect(source.includes('aria-controls={controlsId}')).toBe(true);
+    expect(source.includes('const overflowControlsId = disclosureIds.overflowId')).toBe(true);
     expect(source.includes('aria-expanded={expanded}')).toBe(true);
+    expect(source.includes('id={controlsId}')).toBe(true);
+    expect(source.includes("aria-hidden={!groupMotion.shouldRender || groupMotion.phase === 'exiting'}")).toBe(true);
     expect(source.includes('overflowMotion.shouldRender')).toBe(true);
-    expect(source.includes("aria-hidden={overflowMotion.phase === 'exiting'}")).toBe(true);
+    expect(source.includes("aria-hidden={overflowMotion.phase === 'closed' || overflowMotion.phase === 'exiting'}")).toBe(true);
+    expect(source.includes('overflowCompanions.length > 0')).toBe(true);
+    expect(source.includes('overflowMotion.shouldRender && overflowCompanions.map(renderCompanion)')).toBe(true);
+    expect(source.includes('id={overflowControlsId}')).toBe(true);
+    expect(source.includes('controlsId={overflowControlsId}')).toBe(true);
   });
 
   test('aligns the companion group with the workspace list', () => {

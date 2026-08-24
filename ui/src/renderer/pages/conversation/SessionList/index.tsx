@@ -28,7 +28,6 @@ import { useBatchSelection } from './hooks/useBatchSelection';
 import { useConversationActions } from './hooks/useConversationActions';
 import { useExport } from './hooks/useExport';
 import { capabilityKey, useSessionCapabilities } from './hooks/useSessionCapabilities';
-import { useWorkpathBranches } from './hooks/useWorkpathBranches';
 import type { ConversationRowProps } from './types';
 import WorkpathDrawer from './WorkpathDrawer';
 import WorkspaceSectionActions from './WorkspaceSectionActions';
@@ -112,11 +111,6 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   );
 
   const projectWorkpathKeys = useMemo(() => new Set(emptyProjectWorkpaths), [emptyProjectWorkpaths]);
-  const branchWorkpaths = useMemo(
-    () => tree.filter((node) => node.key !== DEFAULT_WORKPATH_KEY).map((node) => node.key),
-    [tree]
-  );
-  const workpathBranches = useWorkpathBranches(branchWorkpaths, displayPreferences.showGitBranch && !collapsed);
 
   // Active session from the route — used for row selected state and drawer expansion.
   const activeRoute = useMemo(() => parseSessionRoute(pathname), [pathname]);
@@ -790,7 +784,6 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
               onToggleBatchSelectionScope={handleToggleBatchSelectionScope}
               renderEntry={renderEntry}
               displayPreferences={displayPreferences}
-              gitBranch={workpathBranches.get(node.key)}
             />
           ))}
         </div>

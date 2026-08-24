@@ -157,6 +157,9 @@ const MarqueeText: React.FC<MarqueeTextProps> = ({
     setOverflowDistance((previous) => (previous === nextDistance ? previous : nextDistance));
   }, []);
 
+  const triggerActive = active || (trigger === 'hover' ? isHovered : isHovered || isFocused);
+  const shouldMeasure = triggerActive && !disabled && !reducedMotion;
+
   useEffect(() => {
     mountedRef.current = true;
     setReducedMotion(getReducedMotionPreference());
@@ -169,6 +172,11 @@ const MarqueeText: React.FC<MarqueeTextProps> = ({
   }, []);
 
   useEffect(() => {
+    if (!shouldMeasure) {
+      setOverflowDistance(0);
+      return undefined;
+    }
+
     measureOverflow();
     const viewport = viewportRef.current;
     const measure = measureRef.current;
@@ -183,7 +191,7 @@ const MarqueeText: React.FC<MarqueeTextProps> = ({
 
     window.addEventListener('resize', measureOverflow);
     return () => window.removeEventListener('resize', measureOverflow);
-  }, [measureOverflow, text]);
+  }, [measureOverflow, shouldMeasure, text]);
 
   // A new string or measured viewport width invalidates the current travel
   // distance. Stop the old cycle before the playback effect schedules a fresh
@@ -192,7 +200,6 @@ const MarqueeText: React.FC<MarqueeTextProps> = ({
     stopPlayback();
   }, [overflowDistance, stopPlayback, text]);
 
-  const triggerActive = active || (trigger === 'hover' ? isHovered : isHovered || isFocused);
   const canPlay = triggerActive && overflowDistance > 0 && !disabled && !reducedMotion;
 
   useEffect(() => {
@@ -268,9 +275,11 @@ const MarqueeText: React.FC<MarqueeTextProps> = ({
           {text}
         </span>
       )}
-      <span ref={measureRef} className={styles.measure} aria-hidden='true'>
-        {text}
-      </span>
+      {shouldMeasure && (
+        <span ref={measureRef} className={styles.measure} aria-hidden='true'>
+          {text}
+        </span>
+      )}
       <span className='sr-only'>{text}</span>
     </span>
   );

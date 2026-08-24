@@ -14,7 +14,7 @@ import {
   Pushpin,
 } from '@icon-park/react';
 import classNames from 'classnames';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import CapabilityIcon, { CAPABILITY_COLORS } from '@/renderer/components/capability/CapabilityIcon';
@@ -27,6 +27,7 @@ import type { ConversationId } from '@/common/types/ids';
 
 import type { WorkpathUiState } from './hooks/useWorkpathUiState';
 import { useDisclosureMotion } from './hooks/useDisclosureMotion';
+import { useWorkpathBranch } from './hooks/useWorkpathBranches';
 import { useWorkpathKnowledgeLit } from './hooks/useWorkpathKnowledge';
 import SessionOverflowButton from './SessionOverflowButton';
 import {
@@ -35,7 +36,7 @@ import {
   type BatchSelectableScope,
   type BatchSelectionState,
 } from './utils/batchSelectionScopes';
-import { DEFAULT_WORKPATH_KEY, workpathKey } from './utils/workpathKey';
+import { DEFAULT_WORKPATH_KEY } from './utils/workpathKey';
 import {
   getVisibleWorkpathEntries,
   getWorkpathEntryDisplayIndex,
@@ -48,6 +49,7 @@ import {
   type SidebarDisplayPreferences,
 } from './utils/sidebarDisplayPreferences';
 import { getWorkpathMenuActionKeys } from './utils/workpathMenuActions';
+import { getWorkpathDisclosureIds } from './utils/disclosureIds';
 import type { SessionEntry, WorkpathNode } from './utils/workpathTree';
 
 export interface WorkpathDrawerProps {
@@ -67,7 +69,6 @@ export interface WorkpathDrawerProps {
   onToggleBatchSelectionScope?: (scope: BatchSelectableScope) => void;
   renderEntry: (entry: SessionEntry) => React.ReactNode;
   displayPreferences?: SidebarDisplayPreferences;
-  gitBranch?: string | null;
 }
 
 /**
@@ -89,7 +90,6 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   onToggleBatchSelectionScope,
   renderEntry,
   displayPreferences = DEFAULT_SIDEBAR_DISPLAY_PREFERENCES,
-  gitBranch,
 }) => {
   const { t } = useTranslation();
   const syncedActiveDrawerRouteRef = useRef<string | null>(null);
@@ -100,7 +100,14 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   const isMobile = useLayoutContext()?.isMobile ?? false;
 
   const isDefault = node.key === DEFAULT_WORKPATH_KEY;
-  const controlsId = `flowy-workpath-${workpathKey(node.key).replace(/[^a-zA-Z0-9_-]/g, '_')}-sessions`;
+  const instanceId = useId();
+  const { branch: gitBranch, workpathRef } = useWorkpathBranch(
+    node.key,
+    displayPreferences.showGitBranch && !isDefault
+  );
+  const disclosureIds = getWorkpathDisclosureIds(node.key, instanceId);
+  const controlsId = disclosureIds.sessionsId;
+  const overflowControlsId = disclosureIds.overflowId;
   const displayName = isDefault ? t('sessionList.defaultWorkpath') : node.displayName;
   const workpathDisplay = isDefault ? null : formatWorkpathDisplay(node.key, node.displayName, displayPreferences.workpathNameMode);
   const twoLineWorkpath = workpathDisplay?.kind === 'twoLine';
@@ -244,7 +251,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     ) : null;
 
   return (
-    <div className='workpath-drawer min-w-0'>
+    <div ref={workpathRef} className='workpath-drawer min-w-0'>
       {/* Drawer header */}
       <div
         data-testid='workpath-toggle-row'
@@ -348,26 +355,18 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
             className='absolute right-8px top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-4px opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
             onClick={(e) => e.stopPropagation()}
           >
-            <span
+            <button
+              type='button'
               data-testid='workpath-create-interactive-btn'
-              role='button'
-              tabIndex={0}
               aria-label={t('sessionList.newInteractive')}
-              className='flex-center cursor-pointer transition-colors text-t-tertiary hover:text-t-primary size-18px rd-4px sider-action-btn workpath-action-btn'
+              className='flex-center cursor-pointer appearance-none border-none bg-transparent p-0 transition-colors text-t-tertiary hover:text-t-primary size-18px rd-4px sider-action-btn workpath-action-btn'
               onClick={(e) => {
                 e.stopPropagation();
                 onCreateInteractive(node);
               }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onCreateInteractive(node);
-                }
-              }}
             >
               <Plus theme='outline' size='14' fill='currentColor' className='block leading-none' />
-            </span>
+            </button>
             <Dropdown
               droplist={
                 <Menu
@@ -422,62 +421,58 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
               getPopupContainer={() => document.body}
               unmountOnExit={false}
             >
-              <span
+              <button
+                type='button'
                 data-testid='workpath-more-actions-btn'
-                role='button'
-                tabIndex={0}
                 aria-label={t('common.more')}
-                className='flex-center cursor-pointer transition-colors text-t-tertiary hover:text-t-primary size-20px rd-4px sider-action-btn workpath-action-btn'
+                className='flex-center cursor-pointer appearance-none border-none bg-transparent p-0 transition-colors text-t-tertiary hover:text-t-primary size-20px rd-4px sider-action-btn workpath-action-btn'
                 onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.currentTarget.click();
-                  }
-                }}
               >
                 <MoreOne theme='outline' size='14' fill='currentColor' className='block leading-none' />
-              </span>
+              </button>
             </Dropdown>
           </span>
         )}
       </div>
 
       {/* Drawer content: workpaths expose interactive conversations directly. */}
-      {drawerMotion.shouldRender && (
-        <div
-          id={controlsId}
-          data-testid='workpath-conversation-list'
-          aria-hidden={drawerMotion.phase === 'exiting'}
-          data-disclosure-phase={drawerMotion.phase}
-          className={classNames(
-            'workpath-drawer-content flowy-disclosure-content min-w-0 flex flex-col',
-            'flowy-workpath-session-list',
-            hasInteractiveContent && 'gap-2px pt-2px'
-          )}
-        >
-          {baseInteractiveEntries.map((entry) => renderEntry(entry))}
-          {overflowMotion.shouldRender && overflowInteractiveEntries.length > 0 && (
-            <div
-              aria-hidden={overflowMotion.phase === 'exiting'}
-              data-disclosure-phase={overflowMotion.phase}
-              className='flowy-disclosure-content flex flex-col'
-            >
-              {overflowInteractiveEntries.map((entry) => renderEntry(entry))}
-            </div>
-          )}
-          {visibleEntries.kindMeta.interactive.hasOverflow && !forceShowAllForActiveConversation && (
-            <SessionOverflowButton
-              expanded={showAllConversations}
-              hiddenCount={interactiveOverflowCount}
-              controlsId={controlsId}
-              onToggle={toggleOverflow}
-              className='flowy-workpath-session-overflow'
-            />
-          )}
-        </div>
-      )}
+      <div
+        id={controlsId}
+        data-testid='workpath-conversation-list'
+        aria-hidden={!drawerMotion.shouldRender || drawerMotion.phase === 'exiting'}
+        data-disclosure-phase={drawerMotion.phase}
+        className={classNames(
+          'workpath-drawer-content flowy-disclosure-content min-w-0 flex flex-col',
+          'flowy-workpath-session-list',
+          hasInteractiveContent && drawerMotion.shouldRender && 'gap-2px pt-2px'
+        )}
+      >
+        {drawerMotion.shouldRender && (
+          <>
+            {baseInteractiveEntries.map((entry) => renderEntry(entry))}
+            {overflowInteractiveEntries.length > 0 && (
+              <div
+                id={overflowControlsId}
+                data-testid='workpath-overflow-conversations'
+                aria-hidden={overflowMotion.phase === 'closed' || overflowMotion.phase === 'exiting'}
+                data-disclosure-phase={overflowMotion.phase}
+                className='flowy-disclosure-content flex flex-col'
+              >
+                {overflowMotion.shouldRender && overflowInteractiveEntries.map((entry) => renderEntry(entry))}
+              </div>
+            )}
+            {visibleEntries.kindMeta.interactive.hasOverflow && !forceShowAllForActiveConversation && (
+              <SessionOverflowButton
+                expanded={showAllConversations}
+                hiddenCount={interactiveOverflowCount}
+                controlsId={overflowControlsId}
+                onToggle={toggleOverflow}
+                className='flowy-workpath-session-overflow'
+              />
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 };
