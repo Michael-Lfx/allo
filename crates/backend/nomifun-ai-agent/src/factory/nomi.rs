@@ -1679,6 +1679,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 url: None,
                 headers: None,
                 deferred: Some(false),
+                request_timeout_secs: None,
             })
         }
         "http" | "streamable_http" => {
@@ -1704,6 +1705,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 url: Some(url.to_owned()),
                 headers: Some(headers),
                 deferred: Some(false),
+                request_timeout_secs: None,
             })
         }
         "sse" => {
@@ -1729,6 +1731,7 @@ fn row_to_mcp_server_config(row: &McpServerRow) -> Result<McpServerConfig, Strin
                 url: Some(url.to_owned()),
                 headers: Some(headers),
                 deferred: Some(false),
+                request_timeout_secs: None,
             })
         }
         other => Err(format!("unsupported transport_type: {other}")),
@@ -1751,6 +1754,7 @@ fn session_server_to_mcp_server_config(
                 url: None,
                 headers: None,
                 deferred: Some(false),
+                request_timeout_secs: None,
             })
         }
         SessionMcpTransport::Http { url, headers } => {
@@ -1765,6 +1769,7 @@ fn session_server_to_mcp_server_config(
                 url: Some(url.clone()),
                 headers: Some(headers.clone()),
                 deferred: Some(false),
+                request_timeout_secs: None,
             })
         }
         SessionMcpTransport::Sse { url, headers } => {
@@ -1779,6 +1784,7 @@ fn session_server_to_mcp_server_config(
                 url: Some(url.clone()),
                 headers: Some(headers.clone()),
                 deferred: Some(false),
+                request_timeout_secs: None,
             })
         }
         SessionMcpTransport::StreamableHttp { url, headers } => {
@@ -1793,6 +1799,7 @@ fn session_server_to_mcp_server_config(
                 url: Some(url.clone()),
                 headers: Some(headers.clone()),
                 deferred: Some(false),
+                request_timeout_secs: None,
             })
         }
     }
@@ -1922,6 +1929,7 @@ fn gateway_mcp_to_config(
         url: None,
         headers: None,
         deferred: Some(true),
+        request_timeout_secs: None,
     };
 
     Some((
@@ -2550,6 +2558,7 @@ mod tests {
                 url: None,
                 headers: None,
                 deferred: Some(false),
+                request_timeout_secs: None,
             },
         )]);
 

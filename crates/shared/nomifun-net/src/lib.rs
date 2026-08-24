@@ -1,4 +1,5 @@
 pub mod proxy;
+pub mod secret_redaction;
 
 pub fn http_client() -> reqwest::Client {
     proxy::apply_detected_proxy(reqwest::Client::builder())

@@ -76,11 +76,20 @@ pub use tools::video::{VideoGenerateBackend, VideoGenerateHandler, VideoGenerate
 
 use async_trait::async_trait;
 use serde_json::Value;
+use std::time::Duration;
 
 use nomi_config::hooks::HooksConfig;
 use nomi_protocol::events::ToolCategory;
 use nomi_types::skill_types::ContextModifier;
 use nomi_types::tool::{JsonSchema, ToolResult};
+
+/// Safety-net wall-clock budget for a tool invocation.
+///
+/// Tools with a more specific protocol/process deadline should override
+/// [`Tool::execution_timeout`].  The finite default is intentionally longer
+/// than the normal shell/MCP budgets, while ensuring a newly added custom
+/// tool cannot park an Agent turn forever.
+pub const DEFAULT_TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Truncate a string to at most `max_bytes`, snapping to a char boundary.
 pub fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
@@ -207,6 +216,16 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool
     async fn execute(&self, input: Value) -> ToolResult;
+
+    /// Maximum wall-clock time for one invocation, including host-side hooks.
+    ///
+    /// This is an engine safety net, not a replacement for a tool's own
+    /// cancellation/cleanup protocol.  Tools that expose a tighter,
+    /// user-controlled deadline may override it to keep the outer Agent
+    /// boundary aligned with that contract.
+    fn execution_timeout(&self, _input: &Value) -> Duration {
+        DEFAULT_TOOL_EXECUTION_TIMEOUT
+    }
 
     /// Execute with engine-owned invocation identity.
     ///

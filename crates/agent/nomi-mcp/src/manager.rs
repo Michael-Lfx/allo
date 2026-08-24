@@ -52,6 +52,15 @@ struct McpServer {
     tools: Vec<McpToolDef>,
     /// Whether the server declared resources capability in its initialize response
     supports_resources: bool,
+    /// Hard wall-clock deadline for every request sent to this server.
+    request_timeout: Duration,
+    /// Serialize one complete request + timeout cleanup transaction.
+    ///
+    /// Stateful transports such as stdio cannot let a second request enter
+    /// between cancellation of the first request future and `abort_request`;
+    /// otherwise the second request could consume a late response belonging to
+    /// the timed-out call.
+    request_gate: tokio::sync::Mutex<()>,
 }
 
 /// Manages connections to multiple MCP servers
@@ -79,6 +88,13 @@ pub type TestMcpServerWithTools<'a> = (
 /// any Conversation that injects that server — indefinitely, with no error
 /// surfaced to the user.
 const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// A coding-tool call may need to run a formatter, test suite, or a short
+/// repository search. Ninety seconds is long enough for that common path but
+/// still turns a lost MCP response into an actionable tool error rather than a
+/// permanently running Agent turn. Individual servers can raise this bound.
+const MCP_DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+const MCP_MIN_REQUEST_TIMEOUT_SECS: u64 = 1;
+const MCP_MAX_REQUEST_TIMEOUT_SECS: u64 = 600;
 const MCP_MAX_RESOURCE_URI_LEN: usize = 4096;
 const MCP_MAX_DATA_RESOURCE_URI_LEN: usize = (20 * 1024 * 1024 * 4 / 3) + 1024;
 const MCP_MAX_RESOURCE_NAME_LEN: usize = 512;
@@ -93,6 +109,18 @@ fn is_valid_uri_scheme(scheme: &str) -> bool {
         byte.is_ascii_alphabetic()
             || (index > 0 && (byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'.')))
     })
+}
+
+fn request_timeout_for(config: &McpServerConfig) -> Result<Duration, McpError> {
+    match config.request_timeout_secs {
+        None => Ok(MCP_DEFAULT_REQUEST_TIMEOUT),
+        Some(seconds @ MCP_MIN_REQUEST_TIMEOUT_SECS..=MCP_MAX_REQUEST_TIMEOUT_SECS) => {
+            Ok(Duration::from_secs(seconds))
+        }
+        Some(seconds) => Err(McpError::InitFailed(format!(
+            "MCP request_timeout_secs must be between {MCP_MIN_REQUEST_TIMEOUT_SECS} and {MCP_MAX_REQUEST_TIMEOUT_SECS}, got {seconds}"
+        ))),
+    }
 }
 
 /// Validate an MCP resource locator before it can enter tool output/history.
@@ -202,6 +230,7 @@ impl McpManager {
         cleanup_registry: Arc<ConnectionCleanupRegistry>,
     ) -> Result<McpServer, McpError> {
         let empty_map = HashMap::new();
+        let request_timeout = request_timeout_for(config)?;
 
         // 1. Create transport
         let transport: Box<dyn McpTransport> = match config.transport {
@@ -251,7 +280,7 @@ impl McpManager {
             })?),
         );
 
-        let init_response = transport.request(&init_req).await?;
+        let init_response = Self::request_with_timeout(&*transport, request_timeout, &init_req).await?;
         let init_result: InitializeResult = serde_json::from_value(
             init_response
                 .result
@@ -273,7 +302,7 @@ impl McpManager {
 
         // 4. List tools
         let list_req = JsonRpcRequest::new(2, "tools/list", None);
-        let list_response = transport.request(&list_req).await?;
+        let list_response = Self::request_with_timeout(&*transport, request_timeout, &list_req).await?;
         let tools_result: ToolsListResult = serde_json::from_value(
             list_response
                 .result
@@ -286,7 +315,39 @@ impl McpManager {
             transport,
             tools: tools_result.tools,
             supports_resources,
+            request_timeout,
+            request_gate: tokio::sync::Mutex::new(()),
         })
+    }
+
+    async fn request_with_timeout(
+        transport: &dyn McpTransport,
+        request_timeout: Duration,
+        request: &JsonRpcRequest,
+    ) -> Result<super::protocol::JsonRpcResponse, McpError> {
+        match tokio::time::timeout(request_timeout, transport.request(request)).await {
+            Ok(result) => result,
+            Err(_) => {
+                // The transport request future has been cancelled. Give
+                // stateful transports a chance to remove response correlation
+                // state or retire a poisoned stdio pipe before the caller
+                // receives the deterministic timeout error.
+                if let Err(error) = transport.abort_request().await {
+                    tracing::warn!(target: "nomi_mcp", error = %error, "MCP request timed out and transport cleanup failed");
+                }
+                Err(McpError::RequestTimeout {
+                    timeout_ms: request_timeout.as_millis() as u64,
+                })
+            }
+        }
+    }
+
+    async fn request_server(
+        server: &McpServer,
+        request: &JsonRpcRequest,
+    ) -> Result<super::protocol::JsonRpcResponse, McpError> {
+        let _request = server.request_gate.lock().await;
+        Self::request_with_timeout(&*server.transport, server.request_timeout, request).await
     }
 
     /// Get all discovered tools with their server names
@@ -355,7 +416,7 @@ impl McpManager {
             request = request.with_execution_operation_id(context.operation_id());
         }
 
-        let response = server.transport.request(&request).await?;
+        let response = Self::request_server(server, &request).await?;
 
         let result_value = response
             .result
@@ -518,7 +579,7 @@ impl McpManager {
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = JsonRpcRequest::new(id, "resources/list", None);
-        let response = server.transport.request(&request).await?;
+        let response = Self::request_server(server, &request).await?;
 
         let result_value = response
             .result
@@ -539,7 +600,7 @@ impl McpManager {
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = JsonRpcRequest::new(id, "resources/read", Some(json!({ "uri": uri })));
-        let response = server.transport.request(&request).await?;
+        let response = Self::request_server(server, &request).await?;
 
         let result_value = response
             .result
@@ -594,6 +655,8 @@ impl McpManager {
                     transport,
                     tools: vec![],
                     supports_resources,
+                    request_timeout: MCP_DEFAULT_REQUEST_TIMEOUT,
+                    request_gate: tokio::sync::Mutex::new(()),
                 },
             );
         }
@@ -618,6 +681,36 @@ impl McpManager {
                     transport,
                     tools,
                     supports_resources,
+                    request_timeout: MCP_DEFAULT_REQUEST_TIMEOUT,
+                    request_gate: tokio::sync::Mutex::new(()),
+                },
+            );
+        }
+        Self {
+            servers,
+            stdio_cleanup_registries: Vec::new(),
+            next_id: AtomicU64::new(10),
+        }
+    }
+
+    /// Test-only constructor that also controls the request deadline for
+    /// no-response transport coverage.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_for_test_with_request_timeout(
+        entries: Vec<(&str, bool, Box<dyn super::transport::McpTransport>)>,
+        request_timeout: Duration,
+    ) -> Self {
+        let mut servers = HashMap::new();
+        for (name, supports_resources, transport) in entries {
+            servers.insert(
+                name.to_string(),
+                McpServer {
+                    name: name.to_string(),
+                    transport,
+                    tools: vec![],
+                    supports_resources,
+                    request_timeout,
+                    request_gate: tokio::sync::Mutex::new(()),
                 },
             );
         }
@@ -639,7 +732,57 @@ mod tests {
     use crate::protocol::JsonRpcResponse;
     use async_trait::async_trait;
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
     use std::sync::{Arc, Mutex};
+
+    struct NeverRespondsTransport {
+        aborted: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl McpTransport for NeverRespondsTransport {
+        async fn request(&self, _req: &JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
+            std::future::pending().await
+        }
+
+        async fn abort_request(&self) -> Result<(), McpError> {
+            self.aborted.store(true, AtomicOrdering::Release);
+            Ok(())
+        }
+
+        async fn notify(&self, _req: &JsonRpcRequest) -> Result<(), McpError> {
+            Ok(())
+        }
+
+        async fn close(&self) -> Result<(), McpError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_no_response_transport_returns_a_bounded_tool_error_and_is_aborted() {
+        let aborted = Arc::new(AtomicBool::new(false));
+        let manager = McpManager::new_for_test_with_request_timeout(
+            vec![(
+                "silent",
+                false,
+                Box::new(NeverRespondsTransport {
+                    aborted: Arc::clone(&aborted),
+                }),
+            )],
+            Duration::from_millis(50),
+        );
+
+        let started = tokio::time::Instant::now();
+        let error = manager
+            .call_tool("silent", "never_returns", json!({}))
+            .await
+            .expect_err("an unanswered MCP tool must not leave the Agent turn running");
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(matches!(error, McpError::RequestTimeout { timeout_ms: 50 }));
+        assert!(aborted.load(AtomicOrdering::Acquire));
+    }
 
     // -----------------------------------------------------------------------
     // MockTransport: returns pre-configured JSON-RPC responses

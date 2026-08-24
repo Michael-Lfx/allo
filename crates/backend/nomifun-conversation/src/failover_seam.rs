@@ -267,9 +267,8 @@ impl ConversationService {
         // 队列耗尽 / 无可用候选 → None(调用方回落到原始错误)。
         let picked = next_failover_model(&config.queue, &failed, tried, &providers, &model_rows)?;
 
-        // 写 conversation.model(origin 标记:非用户编辑)。这正是 spec §5.5 锚定的
-        // 「改模型 + 终止 runtime → 下次 send 重建」形状,只是这里立刻重建。
-        // 同时这会改掉 IDMM 默认 bypass 模型(可接受:换走的正是那个故障模型)。
+        // 写 conversation.model 必须等旧 runtime 精确退出后才提交。
+        // 否则 teardown 失败或取消会留下“DB 是新模型、进程仍是旧模型”的半提交。
         let model_json = match serde_json::to_string(&picked) {
             Ok(json) => json,
             Err(e) => {
@@ -288,20 +287,6 @@ impl ConversationService {
                 return None;
             }
         };
-        let update = ConversationRowUpdate {
-            model: Some(Some(model_json)),
-            execution_model_pool: Some(execution_model_pool),
-            execution_template_id: Some(None),
-            updated_at: Some(now_ms()),
-            ..Default::default()
-        };
-        if let Err(e) = self.conversation_repo().update(conv_id, &update).await {
-            warn!(error = %ErrorChain(&e), conversation_id, "Failover aborted: failed to persist new model");
-            return None;
-        }
-        if cancellation.is_cancelled() {
-            return None;
-        }
 
         if config.stamp_unhealthy {
             self.stamp_model_unhealthy(&failed).await;
@@ -317,7 +302,7 @@ impl ConversationService {
             next_provider = %picked.provider_id,
             next_model = %picked.model,
             reason = ?AgentKillReason::ConfigurationChanged,
-            "Model failover: switching model and rebuilding task"
+            "Model failover: awaiting old runtime teardown before committing model switch"
         );
 
         // kill_and_wait,镜像 evict_acp_task_after_terminal_error(acp_error_recovery.rs):
@@ -333,6 +318,44 @@ impl ConversationService {
             "model failover",
         )
         .await;
+        if cancellation.is_cancelled() {
+            return None;
+        }
+
+        // Revalidate the durable authority after the potentially long teardown.
+        let current = match self.conversation_repo().get(conv_id).await {
+            Ok(Some(current)) => current,
+            Ok(None) => {
+                warn!(conversation_id, "Failover aborted: conversation vanished after runtime teardown");
+                return None;
+            }
+            Err(error) => {
+                warn!(error = %ErrorChain(&error), conversation_id, "Failover aborted: failed to revalidate configuration after runtime teardown");
+                return None;
+            }
+        };
+        if current.model != row.model
+            || current.execution_model_pool != row.execution_model_pool
+            || current.execution_template_id != row.execution_template_id
+        {
+            warn!(
+                conversation_id,
+                "Failover aborted: durable model authority changed while old runtime was tearing down"
+            );
+            return None;
+        }
+
+        let update = ConversationRowUpdate {
+            model: Some(Some(model_json)),
+            execution_model_pool: Some(execution_model_pool),
+            execution_template_id: Some(None),
+            updated_at: Some(now_ms()),
+            ..Default::default()
+        };
+        if let Err(e) = self.conversation_repo().update(conv_id, &update).await {
+            warn!(error = %ErrorChain(&e), conversation_id, "Failover aborted: failed to persist new model after runtime teardown");
+            return None;
+        }
         if cancellation.is_cancelled() {
             return None;
         }

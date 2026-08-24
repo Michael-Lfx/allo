@@ -408,6 +408,7 @@ mod tests {
                 url: None,
                 headers: None,
                 deferred: None,
+                request_timeout_secs: None,
             },
         );
         isolate_eval_config(&mut config, dir.path(), Some(6));
