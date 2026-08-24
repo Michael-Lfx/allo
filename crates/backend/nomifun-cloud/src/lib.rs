@@ -22,6 +22,7 @@ pub mod session;
 pub mod telemetry;
 pub mod token_store;
 pub mod transport;
+pub mod website;
 
 pub use activation::{DeviceActivation, DeviceActivationStatus};
 pub use config_defaults::{
@@ -52,6 +53,7 @@ pub use http_routes::{CloudRouterState, cloud_routes};
 pub use http_service::CloudService;
 pub use telemetry::start_cloud_telemetry;
 pub use transport::HttpTransport;
+pub use website::{build_website_entry_url, website_language};
 
 #[cfg(test)]
 mod tests {

@@ -236,6 +236,7 @@ nomifun-extension.workspace = true
 nomifun-channel.workspace = true
 nomifun-cron.workspace = true
 nomifun-requirement.workspace = true
+nomifun-notify.workspace = true
 nomifun-idmm.workspace = true
 nomifun-knowledge.workspace = true
 nomifun-learning.workspace = true

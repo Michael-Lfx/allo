@@ -75,6 +75,7 @@ const CloudLoginSettings: React.FC = () => {
       const saved = await ipcBridge.cloud.updateSettings.invoke({
         enabled: serverSettings.enabled,
         baseUrl: serverSettings.baseUrl,
+        websiteUrl: serverSettings.websiteUrl,
         channel: serverSettings.channel,
         app: serverSettings.app,
       });
@@ -322,6 +323,10 @@ const CloudLoginSettings: React.FC = () => {
               <SettingsRow
                 label={t('cloudLogin.settings.baseUrl')}
                 control={<Input value={serverSettings.baseUrl} onChange={(value) => setServerSettings({ ...serverSettings, baseUrl: value })} />}
+              />
+              <SettingsRow
+                label={t('cloudLogin.settings.websiteUrl')}
+                control={<Input value={serverSettings.websiteUrl} onChange={(value) => setServerSettings({ ...serverSettings, websiteUrl: value })} />}
               />
               <SettingsRow
                 label={t('cloudLogin.settings.channel')}

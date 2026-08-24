@@ -96,6 +96,100 @@ fn migration_file_versions_are_unique() {
     );
 }
 
+/// Published migration files must not be modified after release. If a migration
+/// file that was included in a tagged release is later changed, production users
+/// upgrading from that release will encounter checksum mismatches and fail to
+/// start (the database probe rejects the mismatch, then auto-retires the
+/// dataset on first failure, then reports `Conflict` on second — effectively
+/// losing all user data). This guard compares every `.sql` file in the
+/// migrations directory against the most recent git tag and fails if any
+/// previously-published file has been modified. New files (not present in the
+/// tag) are allowed.
+#[test]
+fn published_migrations_are_immutable() {
+    // Find the most recent tag.
+    let tag = match std::process::Command::new("git")
+        .args(["describe", "--tags", "--abbrev=0"])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let trimmed = stdout.trim();
+            if trimmed.is_empty() {
+                return; // No tags exist yet; nothing to compare against.
+            }
+            trimmed.to_string()
+        }
+        _ => return, // git not available or not in a git repo; skip.
+    };
+
+    let migrations_path = "crates/backend/nomifun-db/migrations";
+
+    // Find the git repository root (tests run in the crate directory, not the
+    // project root).
+    let repo_root = match std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            std::path::PathBuf::from(root)
+        }
+        _ => return,
+    };
+
+    // List all .sql files in the migrations directory at the tagged commit.
+    // Run git from the repo root so paths are relative to the repo root.
+    let tag_files_output = match std::process::Command::new("git")
+        .current_dir(&repo_root)
+        .args(["ls-tree", "-r", "--name-only", &tag, "--", migrations_path])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return, // Tag does not contain migrations directory; skip.
+    };
+
+    let migrations_prefix = "crates/backend/nomifun-db/migrations/";
+    let tag_files: Vec<String> = String::from_utf8_lossy(&tag_files_output.stdout)
+        .lines()
+        .filter(|line| line.starts_with(migrations_prefix) && line.ends_with(".sql"))
+        .map(|line| line.to_string())
+        .collect();
+
+    if tag_files.is_empty() {
+        return; // No migration files in the tag; nothing to check.
+    }
+
+    // Compare each file's content at the tag vs. current working directory.
+    let mut modified_files = Vec::new();
+    for file in &tag_files {
+        // file is a path relative to repo root, e.g.
+        // "crates/backend/nomifun-db/migrations/040_learning_on_demand_courses.sql"
+        let full_path = repo_root.join(file);
+
+        let tag_content = std::process::Command::new("git")
+            .args(["show", &format!("{}:{}", tag, file)])
+            .output()
+            .ok()
+            .and_then(|o| if o.status.success() { Some(o.stdout) } else { None });
+
+        let current_content = std::fs::read(&full_path).ok();
+
+        if tag_content != current_content {
+            modified_files.push(file.clone());
+        }
+    }
+
+    assert!(
+        modified_files.is_empty(),
+        "Published migration files were modified since tag {}. \
+         Migration files must be immutable after release to prevent production \
+         upgrade failures. Modified files:\n{}",
+        tag,
+        modified_files.join("\n")
+    );
+}
+
 async fn owner_id(pool: &sqlx::SqlitePool) -> String {
     sqlx::query_scalar(
         "SELECT owner_user_id FROM installation_identity \

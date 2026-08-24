@@ -17,6 +17,7 @@ import { NavigationHistoryProvider } from '@renderer/hooks/context/NavigationHis
 import { WebuiServerProvider } from '@renderer/hooks/context/WebuiServerContext';
 import { useDeepLink } from '@renderer/hooks/system/useDeepLink';
 import { useNotificationClick } from '@renderer/hooks/system/useNotificationClick';
+import { useConversationDesktopNotify } from '@renderer/hooks/system/useConversationDesktopNotify';
 import { useAutoWorkDesktopNotify } from '@renderer/hooks/system/useAutoWorkDesktopNotify';
 import {
   reportNoUpdateAvailable,
@@ -140,6 +141,7 @@ const Layout: React.FC<{
   const { contextHolder: directorySelectionContextHolder } = useDirectorySelection();
   useDeepLink();
   useNotificationClick();
+  useConversationDesktopNotify();
   useAutoWorkDesktopNotify();
   const navigate = useNavigate();
   useConversationShortcuts({ navigate });
@@ -159,9 +161,8 @@ const Layout: React.FC<{
       alive = false;
     };
   }, []);
-  // The titlebar workspace toggle drives the right rail on the conversation and
-  // terminal session pages (both render a workspace rail via the shared
-  // useWorkspaceCollapse + WORKSPACE_TOGGLE_EVENT protocol).
+  // The titlebar workspace action opens the files workspace tab on conversation
+  // and terminal-session routes through the shared toggle event.
   const workspaceAvailable =
     location.pathname.startsWith('/conversation/') ||
     location.pathname.startsWith('/terminal/');

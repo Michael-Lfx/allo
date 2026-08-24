@@ -1,5 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import {
+  ARCHIVE_STABLE_DAYS,
+  ARCHIVE_STABLE_REVIEW_COUNT,
   QUESTION_COLUMNS_STORAGE_KEY,
   QUESTION_SELECTABLE_COLUMNS,
   REVIEW_FILTERS_STORAGE_KEY,
@@ -25,6 +27,9 @@ export function questionStateMeta(
   entry: QuestionEntry,
   t: (key: string) => string
 ): { label: string; color: string } {
+  if (entry.state === 'archived') {
+    return { label: t('learning.questionStateArchived'), color: 'gray' };
+  }
   if (entry.state === 'unlearned') {
     return { label: t('learning.questionStateUnlearned'), color: 'gray' };
   }
@@ -35,6 +40,20 @@ export function questionStateMeta(
     return { label: t('learning.questionStateDue'), color: 'red' };
   }
   return { label: t('learning.questionStateScheduled'), color: 'green' };
+}
+
+/**
+ * 归档前判断"学习算法数据是否达标"：复习次数与记忆稳定性任一低于阈值即
+ * 视为未达标。达标规则集中在常量中，刷卡界面与问题管理共用。
+ */
+export function isReviewUnderdeveloped(review: {
+  review_count: number;
+  stability_days: number;
+}): boolean {
+  return (
+    review.review_count < ARCHIVE_STABLE_REVIEW_COUNT ||
+    review.stability_days < ARCHIVE_STABLE_DAYS
+  );
 }
 
 /** 按原文位置区间截取内容；无区间时返回全文 */

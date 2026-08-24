@@ -83,6 +83,7 @@ const DEFAULT_PREFERENCES: GenerationPreferences = {
   resolution: DEFAULT_VIDEO_RESOLUTION,
   fps: DEFAULT_VIDEO_FPS,
   targetDurationSecs: 30,
+  specifyTargetDuration: false,
   models: EMPTY_MODELS,
 };
 
@@ -197,6 +198,7 @@ function loadDraft(): VideoCreateDraft {
             : typeof parsed.targetDurationSecs === 'number'
               ? parsed.targetDurationSecs
               : 30,
+        specifyTargetDuration: parsedPreferences.specifyTargetDuration === true,
         models,
       },
       // Files intentionally cannot survive reloads.

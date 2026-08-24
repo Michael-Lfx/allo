@@ -3,10 +3,11 @@ import { App } from "antd";
 import copyToClipboard from "copy-to-clipboard";
 import { nanoid } from "nanoid";
 
-import { FRAME_HEADER_HEIGHT, getFrameChildIds, getFrameChildren, isFrameNode } from "@oc/lib/canvas/canvas-frame";
+import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, FRAME_HEADER_HEIGHT, getFrameChildIds, getFrameChildren, isFrameNode } from "@oc/lib/canvas/canvas-frame";
 import { alignCanvasNodes, layoutCanvasFlow, layoutCanvasNodes, nextCanvasVersionLabel, type CanvasAlignmentMode } from "@oc/lib/canvas/canvas-layout";
 import { createCanvasNode, removeCanvasNodes } from "@oc/lib/canvas/canvas-project-domain";
 import { isolateCopiedNodeMetadata } from "@oc/lib/canvas/canvas-node-copy";
+import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ContextMenuState, type Position } from "@oc/types/canvas";
 import { cloneCanvasDrawing } from "@oc/lib/canvas/canvas-drawing-storage";
 import { isDrawingEngineAvailable, type CanvasDrawingEngine } from "@oc/lib/canvas/canvas-drawing-engine";
@@ -131,6 +132,27 @@ export function useCanvasNodeOperations({
         selectNodes(new Set([node.id]));
         if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Script && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Frame && type !== CanvasNodeType.Drawing) setDialogNodeId(node.id);
     }, [commitNodes, defaultDrawingEngine, getCanvasCenter, message, nodesRef, selectNodes, setDialogNodeId, tldrawLicenseKey]);
+
+    const createFolder = useCallback((position?: Position) => {
+        const folder = createCanvasNode(CanvasNodeType.Frame, position || getCanvasCenter(), {
+            frame: {
+                collapsed: true,
+                expandedWidth: NODE_DEFAULT_SIZE[CanvasNodeType.Frame].width,
+                expandedHeight: NODE_DEFAULT_SIZE[CanvasNodeType.Frame].height,
+            },
+            folder: {
+                style: "glass",
+                theme: "aurora",
+                createdAt: new Date().toISOString(),
+            },
+        });
+        folder.title = "我的文件";
+        folder.width = FOLDER_COLLAPSED_WIDTH;
+        folder.height = FOLDER_COLLAPSED_HEIGHT;
+        commitNodes([...nodesRef.current, folder]);
+        selectNodes(new Set([folder.id]));
+        message.success("文件夹已创建，可拖入任意非容器节点");
+    }, [commitNodes, getCanvasCenter, message, nodesRef, selectNodes]);
 
     const arrangeSelectedNodes = useCallback((mode: "row" | "column" | "grid" | "flow") => {
         const selected = nodesRef.current.filter((node) => selectedNodeIdsRef.current.has(node.id) && !node.metadata?.locked && !isFrameNode(node));
@@ -464,6 +486,7 @@ export function useCanvasNodeOperations({
         arrangeSelectedNodes,
         copyNodesToClipboard,
         copySelectedNodes,
+        createFolder,
         createNode,
         createReferenceGroup,
         createStoryboardGroup,

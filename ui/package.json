@@ -1,7 +1,7 @@
 {
   "name": "@nomifun-tauri/ui",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,6 +11,7 @@
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
+    "@airwallex/components-sdk": "1.28.3",
     "@arco-design/web-react": "^2.66.1",
     "@codemirror/commands": "6.10.3",
     "@codemirror/lang-css": "6.3.1",
@@ -31,6 +32,7 @@
     "@lezer/common": "1.5.2",
     "@mediapipe/tasks-vision": "^1.0.1",
     "@monaco-editor/react": "^4.7.0",
+    "@napi-rs/canvas": "^0.1.100",
     "@react-three/drei": "^10.7.8",
     "@react-three/fiber": "^9.7.0",
     "@tailwindcss/vite": "^4.3.3",
@@ -60,6 +62,7 @@
     "@xyflow/react": "^12.11.1",
     "antd": "^6.5.3",
     "axios": "^1.19.0",
+    "class-variance-authority": "^0.7.1",
     "classnames": "^2.5.1",
     "clsx": "^2.1.1",
     "copy-to-clipboard": "^4.0.2",
@@ -95,6 +98,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "remend": "^1.0.1",
+    "shadcn": "^4.13.1",
     "swr": "^2.3.6",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.3",

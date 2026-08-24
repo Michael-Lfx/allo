@@ -68,7 +68,7 @@ X-Flowy-Turn-Id: <turnId>
 
 ```http
 POST /claw/v1/chat/completions HTTP/1.1
-Host: server.flowyaipc.cn
+Host: server.flowyaipc.com
 Authorization: Bearer <jwt-or-api-key>
 Content-Type: application/json
 X-Flowy-Turn-Id: 550e8400-e29b-41d4-a716-446655440000
@@ -247,7 +247,7 @@ impl TurnContext {
 
 async fn fetch_turn_credits(
     http: &Client,
-    business_base: &str, // e.g. https://server.flowyaipc.cn/claw
+    business_base: &str, // e.g. https://server.flowyaipc.com/claw
     jwt: &str,
     turn_id: &str,
 ) -> Result<TurnCreditUsage, Box<dyn std::error::Error>> {

@@ -300,13 +300,15 @@ fn wechat_http_client() -> Result<Client, ServerClientError> {
 
 #[cfg(test)]
 mod tests {
+    use nomi_config::DEFAULT_WECHAT_FLOWY_SERVER_BASE;
+
     use super::*;
 
     #[test]
     fn build_redirect_uri_matches_flowy_spec() {
         assert_eq!(
-            build_wechat_redirect_uri("https://server.flowyaipc.cn/claw"),
-            "https://server.flowyaipc.cn/claw/auth/third/callback?platform=WECHAT"
+            build_wechat_redirect_uri(DEFAULT_WECHAT_FLOWY_SERVER_BASE),
+            format!("{DEFAULT_WECHAT_FLOWY_SERVER_BASE}/auth/third/callback?platform=WECHAT")
         );
     }
 
@@ -314,7 +316,7 @@ mod tests {
     fn qrconnect_url_matches_wxlogin_sdk() {
         let url = build_qrconnect_page_url(
             "wxc7a38fe55e162569",
-            "https://server.flowyaipc.cn/claw/auth/third/callback?platform=WECHAT",
+            &format!("{DEFAULT_WECHAT_FLOWY_SERVER_BASE}/auth/third/callback?platform=WECHAT"),
             "abc",
         );
         assert!(url.contains("appid=wxc7a38fe55e162569"));
@@ -394,8 +396,10 @@ mod tests {
 
     #[test]
     fn poll_redirect_with_code_authorizes() {
-        let body = r"window.wx_errcode=405;window.wx_redirecturl='https://server.flowyaipc.cn/claw/auth/third/callback?platform=WECHAT&code=XYZ&state=abc';";
-        let result = parse_wechat_poll_response(body);
+        let body = format!(
+            "window.wx_errcode=405;window.wx_redirecturl='{DEFAULT_WECHAT_FLOWY_SERVER_BASE}/auth/third/callback?platform=WECHAT&code=XYZ&state=abc';"
+        );
+        let result = parse_wechat_poll_response(&body);
         assert_eq!(
             result.status,
             WeChatPollStatus::Authorized { code: "XYZ".into() }
@@ -404,9 +408,11 @@ mod tests {
 
     #[test]
     fn extract_code_from_redirect() {
-        let redirect = "https://server.flowyaipc.cn/claw/auth/third/callback?platform=WECHAT&code=ABC123&state=xyz";
+        let redirect = format!(
+            "{DEFAULT_WECHAT_FLOWY_SERVER_BASE}/auth/third/callback?platform=WECHAT&code=ABC123&state=xyz"
+        );
         assert_eq!(
-            extract_query_param(redirect, "code").as_deref(),
+            extract_query_param(&redirect, "code").as_deref(),
             Some("ABC123")
         );
     }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { CANVAS_AGENT_PANEL_MOTION_MS } from "@oc/components/canvas/canvas-assistant-panel";
+import { CANVAS_AGENT_PANEL_MOTION_MS } from "@oc/components/canvas/canvas-assistant-panel-motion";
 import type { CanvasAgentMode } from "@oc/components/canvas/canvas-agent-chat-ui";
 
 export function useCanvasAssistantVisibility() {

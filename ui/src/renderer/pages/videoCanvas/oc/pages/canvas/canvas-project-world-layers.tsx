@@ -1,35 +1,30 @@
-import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from "react";
+import React, { useMemo, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { Link2 } from "lucide-react";
 
 import { ConnectionPath } from "@oc/components/canvas/canvas-connections";
 import { CanvasFrameNode } from "@oc/components/canvas/canvas-frame-node";
 import { CanvasNode } from "@oc/components/canvas/canvas-node";
-import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
+import type { CanvasBatchConnectionPreview } from "@oc/lib/canvas/canvas-batch-connection";
+import { applyDragPreviewToDisplayConnections } from "@oc/lib/canvas/canvas-connection-draw-list";
 import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
-import type { CanvasDisplayConnection, CanvasNodeData, ConnectionHandle, Position, SelectionBox } from "@oc/types/canvas";
+import { canvasActiveNodeId, canvasRelatedHighlight } from "@oc/lib/canvas/canvas-related-highlight";
+import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
+import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
+import type { CanvasConnection, CanvasDisplayConnection, CanvasNodeData, Position } from "@oc/types/canvas";
 
-type DragPreview = { x: number; y: number; nodeIds: Set<string> } | null;
 type NodeBounds = { left: number; top: number; width: number; height: number; count: number } | null;
 
 type CanvasProjectWorldLayersProps = {
     projectId: string;
-    viewportScale: number;
     connectionLayerBounds: { left: number; top: number; width: number; height: number };
     displayConnections: CanvasDisplayConnection[];
     selectedConnectionId: string | null;
-    relatedConnectionIds: Set<string>;
+    connections: CanvasConnection[];
     scriptScrollTopById: Record<string, number>;
-    connectingParams: ConnectionHandle | null;
-    mouseWorld: Position;
-    connectionTargetNodeId: string | null;
     nodeById: Map<string, CanvasNodeData>;
     visibleNodes: CanvasNodeData[];
     frameChildrenById: Map<string, CanvasNodeData[]>;
-    dragPreview: DragPreview;
     selectedNodeIds: Set<string>;
-    frameDropTargetId: string | null;
-    relatedNodeIds: Set<string>;
-    activeNodeId: string | null;
-    selectionBox: SelectionBox | null;
     batchChildCountById: Map<string, number>;
     collapsingBatchIds: Set<string>;
     openingBatchIds: Set<string>;
@@ -40,7 +35,8 @@ type CanvasProjectWorldLayersProps = {
     mentionReferencesByNodeId: Map<string, CanvasResourceReference[]>;
     mediaEffectsDisabledNodeId?: string | null;
     selectedNodeBounds: NodeBounds;
-    isNodeDragging: boolean;
+    batchSourceNodeIds: string[];
+    batchConnectionPreview: CanvasBatchConnectionPreview | null;
     selectionBoundsElementRef: RefObject<HTMLDivElement | null>;
     renderCanvasNodeContent: (node: CanvasNodeData) => ReactNode;
     onConnectionSelect: (connectionId: string) => void;
@@ -65,13 +61,43 @@ type CanvasProjectWorldLayersProps = {
     onOpenTextEditor: (node: CanvasNodeData) => void;
     onOpenDirector: (node: CanvasNodeData) => void;
     onOpenDrawing: (node: CanvasNodeData) => void;
+    onStartBatchConnection: (event: ReactPointerEvent, sourceNodeIds: string[]) => void;
 };
 
 const EMPTY_RESOURCE_REFERENCES: CanvasResourceReference[] = [];
 const EMPTY_CANVAS_NODES: CanvasNodeData[] = [];
 
-export function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
-    const { viewportScale } = props;
+export function HideWhileNodeDragging({ children }: { children: ReactNode }) {
+    const isNodeDragging = useCanvasInteractionStore((state) => state.isNodeDragging);
+    if (isNodeDragging) return null;
+    return children;
+}
+
+export function HideWhileSelectionBox({ children }: { children: ReactNode }) {
+    const selectionBox = useCanvasInteractionStore((state) => state.selectionBox);
+    if (selectionBox) return null;
+    return children;
+}
+
+export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
+    const hoveredNodeId = useCanvasInteractionStore((state) => state.hoveredNodeId);
+    const dragPreview = useCanvasInteractionStore((state) => state.dragPreview);
+    const frameDropTargetId = useCanvasInteractionStore((state) => state.frameDropTargetId);
+    const isNodeDragging = useCanvasInteractionStore((state) => state.isNodeDragging);
+    const connectingParams = useCanvasInteractionStore((state) => state.connectingParams);
+    const connectionTargetNodeId = useCanvasInteractionStore((state) => state.connectionTargetNodeId);
+    const selectionBox = useCanvasInteractionStore((state) => state.selectionBox);
+    const activeNodeId = canvasActiveNodeId(hoveredNodeId, props.selectedNodeIds);
+    const relatedHighlight = useMemo(
+        () => canvasRelatedHighlight(activeNodeId, props.connections),
+        [activeNodeId, props.connections],
+    );
+    const dragNodeIds = useMemo(() => new Set(dragPreview?.nodeIds ?? []), [dragPreview]);
+    const displayConnections = useMemo(
+        () => applyDragPreviewToDisplayConnections(props.displayConnections, dragPreview),
+        [dragPreview, props.displayConnections],
+    );
+
     return (
         <>
             <svg
@@ -79,7 +105,7 @@ export function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
                 viewBox={`${props.connectionLayerBounds.left} ${props.connectionLayerBounds.top} ${props.connectionLayerBounds.width} ${props.connectionLayerBounds.height}`}
                 style={{ left: props.connectionLayerBounds.left, top: props.connectionLayerBounds.top, width: props.connectionLayerBounds.width, height: props.connectionLayerBounds.height, pointerEvents: "none", zIndex: 0 }}
             >
-                {props.displayConnections.map(({ connection, from, to }) => (
+                {displayConnections.map(({ connection, from, to }) => (
                     <ConnectionPath
                         key={connection.id}
                         connection={connection}
@@ -87,7 +113,7 @@ export function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
                         to={to}
                         fromScrollTop={props.scriptScrollTopById[from.id] || 0}
                         toScrollTop={props.scriptScrollTopById[to.id] || 0}
-                        active={props.selectedConnectionId === connection.id || props.relatedConnectionIds.has(connection.id)}
+                        active={props.selectedConnectionId === connection.id || relatedHighlight.connectionIds.has(connection.id)}
                         visualMode="hover-only"
                         onSelect={() => props.onConnectionSelect(connection.id)}
                         onContextMenu={(event) => props.onConnectionContextMenu(event, connection.id)}
@@ -100,11 +126,10 @@ export function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
                     <CanvasFrameNode
                         key={node.id}
                         data={node}
-                        dragOffset={props.dragPreview?.nodeIds.has(node.id) ? props.dragPreview : undefined}
+                        dragOffset={dragNodeIds.has(node.id) && dragPreview ? dragPreview : undefined}
                         childNodes={props.frameChildrenById.get(node.id) || EMPTY_CANVAS_NODES}
-                        scale={viewportScale}
                         isSelected={props.selectedNodeIds.has(node.id)}
-                        isDropTarget={props.frameDropTargetId === node.id}
+                        isDropTarget={frameDropTargetId === node.id}
                         onMouseDown={props.onNodeMouseDown}
                         onResize={props.onNodeResize}
                         onToggleCollapsed={props.onToggleFrame}
@@ -115,13 +140,13 @@ export function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
                     <CanvasNode
                         key={node.id}
                         data={node}
-                        dragOffset={props.dragPreview?.nodeIds.has(node.id) ? props.dragPreview : undefined}
-                        scale={viewportScale}
+                        dragOffset={dragNodeIds.has(node.id) && dragPreview ? dragPreview : undefined}
                         isSelected={props.selectedNodeIds.has(node.id)}
-                        isRelated={props.relatedNodeIds.has(node.id)}
-                        isFocusRelated={props.activeNodeId === node.id}
-                        isConnectionTarget={props.connectionTargetNodeId === node.id}
-                        isConnecting={Boolean(props.connectingParams)}
+                        isRelated={relatedHighlight.nodeIds.has(node.id)}
+                        isFocusRelated={activeNodeId === node.id}
+                        isConnectionTarget={connectionTargetNodeId === node.id || props.batchConnectionPreview?.targetNodeId === node.id}
+                        isConnecting={Boolean(connectingParams)}
+                        forceInputVisible={Boolean(props.batchConnectionPreview)}
                         batchCount={props.batchChildCountById.get(node.id) || 0}
                         batchExpanded={Boolean(node.metadata?.imageBatchExpanded)}
                         batchClosing={Boolean(node.metadata?.batchRootId && props.collapsingBatchIds.has(node.metadata.batchRootId))}
@@ -130,7 +155,7 @@ export function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
                         batchPrimary={Boolean(node.metadata?.batchRootId && props.nodeById.get(node.metadata.batchRootId)?.metadata?.primaryImageId === node.id)}
                         batchMotion={props.batchMotionById.get(node.id)}
                         showImageInfo={props.showImageInfo}
-                        reduceMediaEffects={props.reduceMediaEffects || props.isNodeDragging || props.mediaEffectsDisabledNodeId === node.id}
+                        reduceMediaEffects={props.reduceMediaEffects || isNodeDragging || props.mediaEffectsDisabledNodeId === node.id}
                         resourceLabel={props.resourceReferenceByNodeId.get(node.id)}
                         mentionReferences={props.mentionReferencesByNodeId.get(node.id) || EMPTY_RESOURCE_REFERENCES}
                         renderNodeContent={props.renderCanvasNodeContent}
@@ -158,18 +183,52 @@ export function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
                 ),
             )}
 
-            {props.selectedNodeBounds && !props.selectionBox && !props.isNodeDragging ? (
+            {props.selectedNodeBounds && !selectionBox && !isNodeDragging ? (
                 <div
                     ref={props.selectionBoundsElementRef}
                     className="pointer-events-none absolute z-[var(--z-panel-floating)] rounded-xl"
                     style={{
-                        left: props.selectedNodeBounds.left - 12 / viewportScale,
-                        top: props.selectedNodeBounds.top - 12 / viewportScale,
-                        width: props.selectedNodeBounds.width + 24 / viewportScale,
-                        height: props.selectedNodeBounds.height + 24 / viewportScale,
+                        left: `calc(${props.selectedNodeBounds.left}px - 12px / var(--canvas-committed-scale, 1))`,
+                        top: `calc(${props.selectedNodeBounds.top}px - 12px / var(--canvas-committed-scale, 1))`,
+                        width: `calc(${props.selectedNodeBounds.width}px + 24px / var(--canvas-committed-scale, 1))`,
+                        height: `calc(${props.selectedNodeBounds.height}px + 24px / var(--canvas-committed-scale, 1))`,
                     }}
-                />
+                >
+                    {props.batchSourceNodeIds.length > 0 ? (
+                        <BatchConnectionHandle
+                            count={props.batchSourceNodeIds.length}
+                            active={Boolean(props.batchConnectionPreview)}
+                            onPointerDown={(event) => props.onStartBatchConnection(event, props.batchSourceNodeIds)}
+                        />
+                    ) : null}
+                </div>
             ) : null}
         </>
+    );
+});
+
+function BatchConnectionHandle({ count, active, onPointerDown }: { count: number; active: boolean; onPointerDown: (event: ReactPointerEvent) => void }) {
+    const buttonStyle: CSSProperties = {
+        right: "calc(-18px * var(--canvas-live-inverse-scale, 1))",
+        top: "50%",
+        width: "calc(30px * var(--canvas-live-inverse-scale, 1))",
+        height: "calc(30px * var(--canvas-live-inverse-scale, 1))",
+        background: active ? "var(--workspace-accent)" : "var(--workspace-surface-strong)",
+        borderColor: active ? "var(--workspace-accent)" : "var(--workspace-border)",
+        color: active ? "var(--workspace-accent-foreground)" : "var(--foreground)",
+    };
+    return (
+        <button
+            type="button"
+            data-canvas-no-zoom
+            className="pointer-events-auto absolute grid -translate-y-1/2 translate-x-1/2 place-items-center rounded-full border shadow-md transition hover:scale-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+            style={buttonStyle}
+            title={`批量连接 ${count} 个节点`}
+            aria-label={`批量连接 ${count} 个节点`}
+            onPointerDown={onPointerDown}
+        >
+            <Link2 style={{ width: "calc(14px * var(--canvas-live-inverse-scale, 1))", height: "calc(14px * var(--canvas-live-inverse-scale, 1))" }} strokeWidth={2} />
+            <span className="sr-only">连接 {count} 个节点</span>
+        </button>
     );
 }

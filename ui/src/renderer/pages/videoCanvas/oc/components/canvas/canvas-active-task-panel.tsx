@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { ChevronDown, ChevronUp, Clock3, Coins, ListTodo, LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -5,12 +6,14 @@ import { useEffect, useState } from "react";
 import { formatCredits } from "@oc/constant/credits";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { formatTaskKind, statusLabel } from "@oc/lib/generation-task-display";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import type { GenerationTask } from "@oc/services/api/task-center";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
 
 export function CanvasActiveTaskPanel({ tasks, align = "right" }: { tasks: GenerationTask[]; align?: "left" | "right" }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
     const reducedMotion = useReducedMotion();
@@ -48,7 +51,7 @@ export function CanvasActiveTaskPanel({ tasks, align = "right" }: { tasks: Gener
                         layout
                         className="pointer-events-auto overflow-hidden rounded-[var(--panel-radius)] border backdrop-blur-2xl"
                         style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text, boxShadow: `0 24px 72px ${theme.spatial.shadow}` }}
-                        aria-label="当前画布生成任务"
+                        aria-label={canvasT("videoCanvas.tasks.panelAria", "当前画布生成任务")}
                     >
                         <motion.button
                             type="button"
@@ -63,8 +66,8 @@ export function CanvasActiveTaskPanel({ tasks, align = "right" }: { tasks: Gener
                                     <ListTodo className="size-4" />
                                 </span>
                                 <span className="min-w-0">
-                                    <span className="block text-sm font-semibold leading-5">生成任务</span>
-                                    <span className="block truncate text-[var(--fs-label)]" style={{ color: theme.node.muted }} aria-live="polite">当前画布 · {tasks.length} 个进行中</span>
+                                    <span className="block text-sm font-semibold leading-5">{canvasT("videoCanvas.tasks.title", "生成任务")}</span>
+                                    <span className="block truncate text-[var(--fs-label)]" style={{ color: theme.node.muted }} aria-live="polite">{canvasT("videoCanvas.tasks.inProgress", "当前画布 · {{count}} 个进行中", { count: tasks.length })}</span>
                                 </span>
                             </span>
                             <span className="flex shrink-0 items-center gap-2" style={{ color: theme.accent.primary }}>
@@ -110,8 +113,8 @@ function ActiveTaskCard({ task, now, theme, expanded, onToggle, reducedMotion, c
     const progress = typeof task.progress === "number" ? Math.max(0, Math.min(100, Math.round(task.progress))) : task.status === "queued" ? 0 : undefined;
     const startedAt = task.startedAt || task.createdAt;
     const elapsedMs = Math.max(0, now - parseTime(startedAt));
-    const durationLabel = `${task.status === "queued" ? "已等待" : "已运行"} ${formatDuration(elapsedMs)}`;
-    const billingLabel = task.billing ? `冻结 ${formatCredits(task.billing.amountMicrocredits)} 积分` : "未计费";
+    const durationLabel = `${task.status === "queued" ? canvasT("videoCanvas.tasks.waited", "已等待") : canvasT("videoCanvas.tasks.ran", "已运行")} ${formatDuration(elapsedMs)}`;
+    const billingLabel = task.billing ? canvasT("videoCanvas.tasks.frozenCredits", "冻结 {{amount}} 积分", { amount: formatCredits(task.billing.amountMicrocredits) }) : canvasT("videoCanvas.tasks.unbilled", "未计费");
     const statusTone = task.status === "running" ? theme.accent.primary : theme.node.muted;
     const transition = reducedMotion ? { duration: 0 } : aceternityMotion.spring.panel;
 
@@ -191,7 +194,7 @@ function ActiveTaskCard({ task, now, theme, expanded, onToggle, reducedMotion, c
                         style={{ borderColor: theme.toolbar.border, color: theme.node.muted }}
                     >
                         <div className="flex items-center justify-between gap-2">
-                            <span>当前阶段</span>
+                            <span>{canvasT("videoCanvas.tasks.currentStage", "当前阶段")}</span>
                             <span className="max-w-[200px] truncate text-right" style={{ color: theme.node.text }}>{task.stage || statusLabel[task.status]}</span>
                         </div>
                     </motion.div>

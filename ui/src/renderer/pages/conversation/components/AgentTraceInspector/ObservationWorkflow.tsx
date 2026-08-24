@@ -10,7 +10,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button, Message, Modal, Spin, Tooltip } from '@arco-design/web-react';
 import { Copy, Down, FullScreen, Up } from '@icon-park/react';
 import { copyText } from '@renderer/utils/ui/clipboard';
-import { formatClock, formatDurationMs, formatJson, turnToolCount } from './format';
+import { formatClock, formatDurationMs, formatJson, turnPromptPreview, turnToolCount } from './format';
 import {
   gapSeqLabel,
   requestTileMeta,
@@ -849,7 +849,7 @@ const ObservationWorkflow: React.FC<ObservationWorkflowProps> = ({
     <div className='flex flex-col min-h-0 h-full'>
       <div className='px-12px pt-10px pb-8px shrink-0 border-b border-solid border-[var(--color-border-1)]'>
         <div className='text-13px font-600 text-[var(--color-text-1)] leading-20px'>
-          {turn.prompt_preview || t('conversation.agentTrace.previewMissing')}
+          {turnPromptPreview(turn, t('conversation.agentTrace.previewMissing'))}
         </div>
         <div className='session-logs-turn-meta'>
           {started ? <span>{started}</span> : null}

@@ -1,0 +1,13 @@
+[package]
+name = "nomifun-notify"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nomifun-db.workspace = true
+nomifun-requirement.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

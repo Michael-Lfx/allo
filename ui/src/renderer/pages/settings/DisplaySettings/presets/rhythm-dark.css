@@ -164,8 +164,8 @@ body {
   --color-guid-agent-bar: #ffe8ed;
   --sider-section-title-color: #6b6b73;
 
-  /* Terminal - 终端（画布恒深） */
-  --terminal-surface-bg: #0f0f12;
+  /* Terminal - 终端（跟随 --bg-1） */
+  --terminal-surface-bg: var(--bg-1);
   --terminal-border: rgba(0, 0, 0, 0.12);
 }
 
@@ -304,8 +304,8 @@ body {
   --color-guid-agent-bar: #2b0e17;
   --sider-section-title-color: #8f8f96;
 
-  /* Terminal - 终端（画布恒深） */
-  --terminal-surface-bg: #0f0f12;
+  /* Terminal - 终端（跟随 --bg-1） */
+  --terminal-surface-bg: var(--bg-1);
   --terminal-border: rgba(255, 255, 255, 0.1);
 }
 

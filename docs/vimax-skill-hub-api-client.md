@@ -61,7 +61,7 @@
 
 | 环境   | 客户端业务根（示例）                         | 服务端           |
 | ---- | ---------------------------------- | ------------- |
-| 生产国内 | `https://server.flowyaipc.cn/claw` | `/api/v1/...` |
+| 生产国内 | `https://server.flowyaipc.com/claw` | `/api/v1/...` |
 
 
 示例：`POST {业务根}/vimax/skills/publish` ↔ `POST /api/v1/vimax/skills/publish`。

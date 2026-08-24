@@ -1,0 +1,45 @@
+{
+  "title": "购买",
+  "description": "在此购买套餐或积分包。银行卡信息只经过空中云汇。",
+  "openBilling": "购买积分",
+  "loginRequired": "请先登录 Flowy 账号再购买积分。",
+  "goCloudLogin": "去登录",
+  "catalog": {
+    "plans": "个人套餐",
+    "packs": "积分包",
+    "periodMonth": "月付",
+    "periodHalfYear": "半年",
+    "periodYear": "年付",
+    "current": "当前套餐",
+    "currentPlan": "当前套餐",
+    "emptyPlans": "当前渠道没有可用的美元套餐。",
+    "emptyPacks": "当前套餐没有可购买的积分包。",
+    "loadError": "目录加载失败。",
+    "retry": "重试",
+    "credits": "{{count}} 积分",
+    "select": "选择"
+  },
+  "confirm": {
+    "title": "确认订单",
+    "item": "商品",
+    "amount": "金额",
+    "coupon": "优惠券",
+    "noCoupon": "不使用优惠券",
+    "estimatedTotal": "预估合计",
+    "back": "返回",
+    "pay": "去支付",
+    "channelMissing": "该商品暂不支持银行卡支付。"
+  },
+  "pay": {
+    "title": "银行卡支付",
+    "pending": "正在确认支付结果。",
+    "initError": "无法开始银行卡支付。",
+    "failed": "支付未完成。",
+    "retry": "重试"
+  },
+  "success": {
+    "title": "支付成功",
+    "description": "积分余额稍后会更新。",
+    "done": "完成"
+  }
+}

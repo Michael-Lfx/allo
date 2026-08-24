@@ -36,7 +36,10 @@ export const consumePendingDeepLink = (): DeepLinkAddProviderDetail | null => {
  * Allowed route patterns for the navigate deep link action.
  * Only routes matching these patterns are permitted.
  */
-const ALLOWED_NAVIGATE_PATTERNS = [/^\/conversation\/[^/]+$/];
+const ALLOWED_NAVIGATE_PATTERNS = [
+  /^\/conversation\/[^/?#]+$/,
+  /^\/requirements(?:\?.*)?$/,
+];
 
 /**
  * Hook to listen for flowy:// (legacy nomifun://) deep link events from main process.
@@ -89,7 +92,8 @@ export const useDeepLink = () => {
           return;
         }
 
-        const isAllowed = ALLOWED_NAVIGATE_PATTERNS.some((pattern) => pattern.test(route));
+        const pathOnly = route.split(/[?#]/, 1)[0] ?? route;
+        const isAllowed = ALLOWED_NAVIGATE_PATTERNS.some((pattern) => pattern.test(route) || pattern.test(pathOnly));
         if (!isAllowed) {
           console.warn(`[DeepLink] navigate blocked: route "${route}" not in whitelist`);
           return;

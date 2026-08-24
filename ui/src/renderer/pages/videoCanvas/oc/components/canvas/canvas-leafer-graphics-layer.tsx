@@ -1,11 +1,15 @@
-import { useLayoutEffect, useRef, type RefObject } from "react";
+import { useLayoutEffect, useMemo, useRef, type RefObject } from "react";
 import { Group, Leafer, Path, Rect } from "leafer-ui";
 
 import { activeConnectionPath, canvasConnectionPath } from "@oc/components/canvas/canvas-connections";
+import type { CanvasBatchConnectionPreview } from "@oc/lib/canvas/canvas-batch-connection";
+import { applyDragPreviewToDisplayConnections, diffConnectionDrawList } from "@oc/lib/canvas/canvas-connection-draw-list";
 import { subscribeCanvasGraphicsViewportPreview, subscribeCanvasSelectionPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { calculateCanvasPreviewTransform, sameCanvasViewport, shouldRebaseCanvasRaster } from "@oc/lib/canvas/canvas-leafer-viewport";
+import { canvasActiveNodeId, canvasRelatedHighlight } from "@oc/lib/canvas/canvas-related-highlight";
+import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
 import type { CanvasTheme } from "@oc/lib/canvas-theme";
-import type { CanvasDisplayConnection, CanvasNodeData, ConnectionHandle, Position, SelectionBox, ViewportTransform } from "@oc/types/canvas";
+import type { CanvasConnection, CanvasDisplayConnection, CanvasNodeData, ConnectionHandle, Position, SelectionBox, ViewportTransform } from "@oc/types/canvas";
 
 type NodeBounds = { left: number; top: number; width: number; height: number; count: number } | null;
 
@@ -15,16 +19,23 @@ type CanvasLeaferGraphicsLayerProps = {
     theme: CanvasTheme;
     displayConnections: CanvasDisplayConnection[];
     selectedConnectionId: string | null;
-    relatedConnectionIds: Set<string>;
+    connections: CanvasConnection[];
+    selectedNodeIds: Set<string>;
     scriptScrollTopById: Record<string, number>;
+    nodeById: Map<string, CanvasNodeData>;
+    selectedNodeBounds: NodeBounds;
+    batchConnectionPreview: CanvasBatchConnectionPreview | null;
+};
+
+type ResolvedLeaferProps = CanvasLeaferGraphicsLayerProps & {
+    relatedConnectionIds: Set<string>;
+    alignmentGuides: { vertical?: number; horizontal?: number };
+    displayConnections: CanvasDisplayConnection[];
     connectingParams: ConnectionHandle | null;
     mouseWorld: Position;
     connectionTargetNodeId: string | null;
-    connectionTargetAnchorRatio?: number;
-    nodeById: Map<string, CanvasNodeData>;
+    connectionTargetAnchorRatio: number | undefined;
     selectionBox: SelectionBox | null;
-    selectedNodeBounds: NodeBounds;
-    alignmentGuides: { vertical?: number; horizontal?: number };
 };
 
 type LeaferScene = {
@@ -42,6 +53,7 @@ type OverlayScene = LeaferScene & {
     selectionBounds: Rect;
     guides: Path;
     draft: Path;
+    batchDrafts: Group;
 };
 
 export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps) {
@@ -49,10 +61,38 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
     const overlayHostRef = useRef<HTMLDivElement>(null);
     const underlayRef = useRef<UnderlayScene | null>(null);
     const overlayRef = useRef<OverlayScene | null>(null);
+    const connectionPathsRef = useRef(new Map<string, Path>());
     const viewportRef = useRef(props.viewport);
     const rasterViewportRef = useRef(props.viewport);
-    const propsRef = useRef(props);
-    propsRef.current = props;
+    const hoveredNodeId = useCanvasInteractionStore((state) => state.hoveredNodeId);
+    const dragPreview = useCanvasInteractionStore((state) => state.dragPreview);
+    const alignmentGuides = useCanvasInteractionStore((state) => state.alignmentGuides);
+    const connectingParams = useCanvasInteractionStore((state) => state.connectingParams);
+    const mouseWorld = useCanvasInteractionStore((state) => state.mouseWorld);
+    const connectionTargetNodeId = useCanvasInteractionStore((state) => state.connectionTargetNodeId);
+    const connectionTargetAnchorRatio = useCanvasInteractionStore((state) => state.connectionTargetAnchorRatio);
+    const selectionBox = useCanvasInteractionStore((state) => state.selectionBox);
+    const relatedHighlight = useMemo(
+        () => canvasRelatedHighlight(canvasActiveNodeId(hoveredNodeId, props.selectedNodeIds), props.connections),
+        [hoveredNodeId, props.connections, props.selectedNodeIds],
+    );
+    const displayConnections = useMemo(
+        () => applyDragPreviewToDisplayConnections(props.displayConnections, dragPreview),
+        [dragPreview, props.displayConnections],
+    );
+    const resolvedProps: ResolvedLeaferProps = {
+        ...props,
+        displayConnections,
+        relatedConnectionIds: relatedHighlight.connectionIds,
+        alignmentGuides,
+        connectingParams,
+        mouseWorld,
+        connectionTargetNodeId,
+        connectionTargetAnchorRatio,
+        selectionBox,
+    };
+    const propsRef = useRef(resolvedProps);
+    propsRef.current = resolvedProps;
 
     useLayoutEffect(() => {
         const underlayHost = underlayHostRef.current;
@@ -102,12 +142,14 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
             syncSelection(overlay.selection, selection, propsRef.current.theme);
         });
         resize();
+        syncConnectionPaths(underlay, propsRef.current, connectionPathsRef.current);
 
         return () => {
             unsubscribe();
             unsubscribeSelection();
             resizeObserver.disconnect();
             window.removeEventListener("resize", resize);
+            connectionPathsRef.current.clear();
             underlay.leafer.destroy(true);
             overlay.leafer.destroy(true);
             underlayRef.current = null;
@@ -118,14 +160,14 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
     useLayoutEffect(() => {
         const underlay = underlayRef.current;
         if (!underlay) return;
-        rebuildConnections(underlay, props);
-    }, [props.displayConnections, props.relatedConnectionIds, props.scriptScrollTopById, props.selectedConnectionId, props.theme]);
+        syncConnectionPaths(underlay, resolvedProps, connectionPathsRef.current);
+    }, [displayConnections, props.scriptScrollTopById, props.selectedConnectionId, props.theme, relatedHighlight.connectionIds]);
 
     useLayoutEffect(() => {
         const overlay = overlayRef.current;
         if (!overlay) return;
-        syncOverlayContent(overlay, props, viewportRef.current.k);
-    }, [props.connectingParams, props.connectionTargetAnchorRatio, props.connectionTargetNodeId, props.mouseWorld, props.nodeById, props.scriptScrollTopById, props.selectedNodeBounds, props.selectionBox, props.theme]);
+        syncOverlayContent(overlay, resolvedProps, viewportRef.current.k);
+    }, [connectingParams, connectionTargetAnchorRatio, connectionTargetNodeId, mouseWorld, props.batchConnectionPreview, props.nodeById, props.scriptScrollTopById, props.selectedNodeBounds, selectionBox, props.theme]);
 
     useLayoutEffect(() => {
         const underlay = underlayRef.current;
@@ -136,7 +178,7 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const rect = container.getBoundingClientRect();
         const hadPreview = hasScenePreview(underlay, overlay);
         if (hadPreview || !sameCanvasViewport(props.viewport, rasterViewportRef.current)) {
-            syncViewport(props.viewport, rect.width, rect.height, underlay, overlay, props);
+            syncViewport(props.viewport, rect.width, rect.height, underlay, overlay, resolvedProps);
         }
         rasterViewportRef.current = props.viewport;
         // 新视口先同步到真实 DPR backing store，再撤销交互期的合成变换，避免出现跳帧。
@@ -150,11 +192,11 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const container = props.containerRef.current;
         if (!underlay || !overlay || !container) return;
         const rect = container.getBoundingClientRect();
-        syncViewport(rasterViewportRef.current, rect.width, rect.height, underlay, overlay, props);
+        syncViewport(rasterViewportRef.current, rect.width, rect.height, underlay, overlay, resolvedProps);
         if (isViewportPreview(container, viewportRef.current, rasterViewportRef.current)) {
             applyScenePreview(viewportRef.current, rasterViewportRef.current, underlay, overlay);
         }
-    }, [props.alignmentGuides, props.containerRef, props.theme]);
+    }, [alignmentGuides, props.containerRef, props.theme]);
 
     return (
         <>
@@ -180,32 +222,83 @@ function createOverlayScene(host: HTMLDivElement): OverlayScene {
     const selectionBounds = new Rect({ visible: false, hittable: false, fill: "transparent" });
     const guides = new Path({ visible: false, hittable: false });
     const draft = new Path({ visible: false, hittable: false });
+    const batchDrafts = new Group({ visible: false, hittable: false });
     world.add(selection);
     world.add(selectionBounds);
     world.add(guides);
     world.add(draft);
+    world.add(batchDrafts);
     leafer.add(world);
-    return { leafer, world, host, selection, selectionBounds, guides, draft };
+    return { leafer, world, host, selection, selectionBounds, guides, draft, batchDrafts };
 }
 
-function rebuildConnections(scene: UnderlayScene, props: CanvasLeaferGraphicsLayerProps) {
-    scene.connections.removeAll(true);
-    props.displayConnections.forEach(({ connection, from, to }) => {
-        const emphasized = props.selectedConnectionId === connection.id || props.relatedConnectionIds.has(connection.id);
+type ConnectionPathAppearance = {
+    pathD: string;
+    emphasized: boolean;
+    stroke: string;
+    strokeWidth: number;
+    opacity: number;
+};
+
+const connectionPathAppearance = new WeakMap<Path, ConnectionPathAppearance>();
+
+function connectionAppearance(item: CanvasDisplayConnection, props: ResolvedLeaferProps): ConnectionPathAppearance {
+    const emphasized = props.selectedConnectionId === item.connection.id || props.relatedConnectionIds.has(item.connection.id);
+    return {
+        pathD: canvasConnectionPath(item.connection, item.from, item.to, props.scriptScrollTopById[item.from.id] || 0, props.scriptScrollTopById[item.to.id] || 0).pathD,
+        emphasized,
+        stroke: emphasized ? props.theme.accent.primary : props.theme.node.muted,
+        strokeWidth: emphasized ? 1.6 : 1,
+        opacity: emphasized ? 0.52 : 0.24,
+    };
+}
+
+function sameConnectionAppearance(previous: ConnectionPathAppearance | undefined, next: ConnectionPathAppearance) {
+    return previous !== undefined && previous.pathD === next.pathD && previous.emphasized === next.emphasized && previous.stroke === next.stroke;
+}
+
+function syncConnectionPaths(scene: UnderlayScene, props: ResolvedLeaferProps, paths: Map<string, Path>) {
+    const { add, keep, remove } = diffConnectionDrawList(new Set(paths.keys()), props.displayConnections);
+
+    for (const id of remove) {
+        const path = paths.get(id);
+        if (!path) continue;
+        path.destroy();
+        paths.delete(id);
+    }
+
+    for (const item of add) {
+        const appearance = connectionAppearance(item, props);
         const path = new Path({
-            path: canvasConnectionPath(connection, from, to, props.scriptScrollTopById[from.id] || 0, props.scriptScrollTopById[to.id] || 0).pathD,
-            stroke: emphasized ? props.theme.accent.primary : props.theme.node.muted,
-            strokeWidth: emphasized ? 1.6 : 1,
+            path: appearance.pathD,
+            stroke: appearance.stroke,
+            strokeWidth: appearance.strokeWidth,
             strokeScaleFixed: true,
             strokeCap: "round",
-            opacity: emphasized ? 0.52 : 0.24,
+            opacity: appearance.opacity,
             hittable: false,
         });
         scene.connections.add(path);
-    });
+        paths.set(item.connection.id, path);
+        connectionPathAppearance.set(path, appearance);
+    }
+
+    for (const item of keep) {
+        const path = paths.get(item.connection.id);
+        if (!path) continue;
+        const appearance = connectionAppearance(item, props);
+        if (sameConnectionAppearance(connectionPathAppearance.get(path), appearance)) continue;
+        path.set({
+            path: appearance.pathD,
+            stroke: appearance.stroke,
+            strokeWidth: appearance.strokeWidth,
+            opacity: appearance.opacity,
+        });
+        connectionPathAppearance.set(path, appearance);
+    }
 }
 
-function syncOverlayContent(scene: OverlayScene, props: CanvasLeaferGraphicsLayerProps, viewportScale: number) {
+function syncOverlayContent(scene: OverlayScene, props: ResolvedLeaferProps, viewportScale: number) {
     const selection = props.selectionBox;
     scene.selection.visible = Boolean(selection);
     if (selection) {
@@ -236,6 +329,28 @@ function syncOverlayContent(scene: OverlayScene, props: CanvasLeaferGraphicsLaye
             opacity: 0.72,
         });
     }
+
+    for (const child of [...scene.batchDrafts.children]) child.destroy();
+    const batch = props.batchConnectionPreview;
+    scene.batchDrafts.visible = Boolean(batch);
+    if (!batch) return;
+    const target = batch.targetNodeId ? props.nodeById.get(batch.targetNodeId) : undefined;
+    const stroke = batch.status === "invalid" ? props.theme.accent.danger : batch.status === "partial" ? props.theme.node.activeStroke : props.theme.accent.primary;
+    batch.sourceNodeIds.forEach((sourceNodeId) => {
+        const source = props.nodeById.get(sourceNodeId);
+        if (!source) return;
+        const handle: ConnectionHandle = { nodeId: source.id, handleType: "source" };
+        scene.batchDrafts.add(new Path({
+            path: activeConnectionPath(source, handle, batch.mouseWorld, target, props.scriptScrollTopById[source.id] || 0, batch.targetAnchorRatio),
+            stroke,
+            strokeWidth: 1.4,
+            strokeScaleFixed: true,
+            strokeCap: "round",
+            dashPattern: [8, 8],
+            opacity: 0.72,
+            hittable: false,
+        }));
+    });
 }
 
 function syncSelection(rect: Rect, selection: SelectionBox, theme: CanvasTheme) {
@@ -249,7 +364,7 @@ function syncSelection(rect: Rect, selection: SelectionBox, theme: CanvasTheme) 
     });
 }
 
-function syncViewport(viewport: ViewportTransform, width: number, height: number, underlay: UnderlayScene, overlay: OverlayScene, props: CanvasLeaferGraphicsLayerProps) {
+function syncViewport(viewport: ViewportTransform, width: number, height: number, underlay: UnderlayScene, overlay: OverlayScene, props: ResolvedLeaferProps) {
     const scale = Math.max(viewport.k, 0.05);
     for (const scene of [underlay, overlay]) scene.world.set({ x: viewport.x, y: viewport.y, scaleX: scale, scaleY: scale });
 

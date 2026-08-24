@@ -45,6 +45,17 @@ import { getBrowserStorageGeneration, setBrowserStorageGeneration } from '@/comm
 configService.initialize().catch((err) => {
   console.error('Failed to initialize config:', err);
 });
+// 学习模块按本地时区划分复习日（02:00 日界线）；启动时上报一次当前偏移。
+// JS API 符号与后端约定相反（东八区 getTimezoneOffset() = -480，后端期望 +480），
+// 必须取反后再写，否则复习日分桶会整体错位一天。
+void configService
+  .whenReady()
+  .then(() =>
+    configService.set('learning.tzOffsetMinutes', -new Date().getTimezoneOffset())
+  )
+  .catch(() => {
+    // 未登录/离线时设置不可用属预期，静默即可；后端对缺失偏好有回退逻辑
+  });
 
 // i18n
 import './services/i18n';

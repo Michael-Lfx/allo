@@ -750,6 +750,12 @@
     "changedFiles": "Changed {{count}} files",
     "toolsUsed": "{{count}} tools"
   },
+  "notify": {
+    "doneBody": "Done",
+    "failedBody": "Failed",
+    "stoppedBody": "Stopped",
+    "fallbackTitle": "Conversation"
+  },
   "emptyPrompt": {
     "title": "Start with something concrete",
     "subtitle": "These fill the composer only — you decide when to send.",
@@ -884,6 +890,7 @@
     "inspectShowScan": "Summary",
     "scanEmptyMessages": "No messages",
     "scanEmptyTools": "No tools",
+    "scanContext": "Context",
     "role_user": "User",
     "role_assistant": "Assistant",
     "role_system": "System",

@@ -2,7 +2,7 @@ export type ActivityKind = 'single_choice' | 'true_false' | 'reflection' | 'fill
 export type LessonStatus = 'not_started' | 'in_progress' | 'completed';
 export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
 export type ReviewSource = 'course' | 'custom';
-export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled';
+export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled' | 'archived';
 
 export interface GenerateCourseRequest {
   knowledge_base_id: string;
@@ -139,6 +139,9 @@ export interface DueReview {
   difficulty: number;
   review_count: number;
   lapse_count: number;
+  /** 已标记“待编辑”，刷卡时记录，不打断复习；描述用于找回思路 */
+  edit_pending: boolean;
+  edit_note: string | null;
 }
 
 export interface ReviewResult {
@@ -148,6 +151,56 @@ export interface ReviewResult {
   difficulty: number;
   review_count: number;
   lapse_count: number;
+}
+
+/** 当日打卡快照（对齐后端 CheckinStatus）：复习日、目标、进度与锁定状态 */
+export interface CheckinStatus {
+  /** 本地复习日 YYYYMMDD（02:00 日界线） */
+  review_day: number;
+  /** 每日复习目标（0 = 仅清空队列） */
+  goal: number;
+  /** 本复习日已提交的复习数 */
+  reviewed_count: number;
+  /** 当前到期卡片数（课程 + 自定义） */
+  due_count: number;
+  /** 当日是否已锁定为完成 */
+  completed: boolean;
+  /** 完成锁定时刻（UTC 毫秒），未完成时为 null */
+  locked_at: number | null;
+}
+
+/** 复习日内完成的课时（日历明细） */
+export interface CalendarLessonRef {
+  lesson_id: string;
+  title: string;
+}
+
+/** 复习日内创建的课程（日历明细） */
+export interface CalendarCourseRef {
+  course_id: string;
+  title: string;
+}
+
+/** 请求范围内的一个复习日，无活动时后端补零 */
+export interface CalendarDayStats {
+  review_day: number;
+  reviewed_count: number;
+  checkin_completed: boolean;
+  /** 当日到期卡片数（过期卡片并入当天，与复习队列同口径） */
+  due_count: number;
+  completed_lessons: CalendarLessonRef[];
+  created_courses: CalendarCourseRef[];
+}
+
+/** 日历聚合响应：月视图或年视图 + 当前 streak */
+export interface CalendarStats {
+  year: number;
+  /** 1..=12 为月视图，null 为年视图 */
+  month: number | null;
+  tz_offset: number;
+  /** 以当前复习日为终点的连续打卡天数；今日未完成时为 0 */
+  streak: number;
+  days: CalendarDayStats[];
 }
 
 export interface ReviewAnswerResult {
@@ -182,6 +235,9 @@ export interface QuestionEntry {
   last_reviewed_at: number | null;
   updated_at: number;
   tags: string[];
+  /** 已标记“待编辑”时的描述，用于找回编辑思路 */
+  edit_pending: boolean;
+  edit_note: string | null;
 }
 
 export interface UpdateQuestionRequest {

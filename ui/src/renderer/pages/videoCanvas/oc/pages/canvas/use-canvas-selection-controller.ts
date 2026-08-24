@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, type Dispatch, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject, type SetStateAction } from "react";
 
 import { applyCanvasSelectionPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { calculateNodeAlignment, createNodeAlignmentContext, isHiddenBatchChild, sameStringSet, type NodeAlignmentContext } from "@oc/lib/canvas/canvas-project-domain";
 import { applyFrameDrop, findFrameDropTarget, getFrameChildIds, isFrameNode, isNodeHiddenByCollapsedFrame } from "@oc/lib/canvas/canvas-frame";
+import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
 import type { CanvasNodeData, Position, SelectionBox, ViewportTransform } from "@oc/types/canvas";
 
 type UseCanvasSelectionControllerOptions = {
@@ -19,6 +20,7 @@ type UseCanvasSelectionControllerOptions = {
     onCanvasSelectionStart: () => void;
     onNodeInteractionStart: (selectionModifier: boolean) => void;
     onNodeClick: (node: CanvasNodeData) => void;
+    onBatchConnectionTarget?: (event: ReactMouseEvent, nodeId: string) => boolean;
     onDeselect: () => void;
     onSelectionBoxEnd?: () => void;
 };
@@ -57,6 +59,7 @@ export function useCanvasSelectionController({
     onCanvasSelectionStart,
     onNodeInteractionStart,
     onNodeClick,
+    onBatchConnectionTarget,
     onDeselect,
     onSelectionBoxEnd,
 }: UseCanvasSelectionControllerOptions) {
@@ -73,11 +76,12 @@ export function useCanvasSelectionController({
     const selectionBoxRef = useRef<SelectionBox | null>(null);
     const nodeDraggingRef = useRef(false);
     const dragRef = useRef<DragState>({ ...EMPTY_DRAG_STATE });
-    const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
-    const [frameDropTargetId, setFrameDropTargetId] = useState<string | null>(null);
-    const [isNodeDragging, setIsNodeDragging] = useState(false);
-    const [dragPreview, setDragPreview] = useState<{ x: number; y: number; nodeIds: Set<string> } | null>(null);
-    const [alignmentGuides, setAlignmentGuides] = useState<{ vertical?: number; horizontal?: number }>({});
+
+    const setFrameDropTargetId = useCanvasInteractionStore((state) => state.setFrameDropTargetId);
+    const setIsNodeDragging = useCanvasInteractionStore((state) => state.setIsNodeDragging);
+    const setDragPreview = useCanvasInteractionStore((state) => state.setDragPreview);
+    const setAlignmentGuides = useCanvasInteractionStore((state) => state.setAlignmentGuides);
+    const setSelectionBox = useCanvasInteractionStore((state) => state.setSelectionBox);
 
     const cancelSelectionBox = useCallback(() => {
         selectionBoxRef.current = null;
@@ -87,7 +91,7 @@ export function useCanvasSelectionController({
         if (selectionFrameRef.current) cancelAnimationFrame(selectionFrameRef.current);
         selectionFrameRef.current = null;
         setSelectionBox(null);
-    }, []);
+    }, [setSelectionBox]);
 
     const deselectCanvas = useCallback(() => {
         cancelPendingConnectionCreate();
@@ -126,6 +130,7 @@ export function useCanvasSelectionController({
     const handleNodeMouseDown = useCallback((event: ReactMouseEvent, nodeId: string) => {
         event.stopPropagation();
         if (event.button !== 0) return;
+        if (onBatchConnectionTarget?.(event, nodeId)) return;
         setSelectedConnectionId(null);
         const currentNodes = nodesRef.current;
         const nextSelected = new Set(selectedNodeIdsRef.current);
@@ -177,8 +182,8 @@ export function useCanvasSelectionController({
         lastFrameDropCheckRef.current = 0;
         setIsNodeDragging(true);
         setAlignmentGuides({});
-        setDragPreview({ x: 0, y: 0, nodeIds: new Set(initialSelectedNodes.map((item) => item.id)) });
-    }, [historyPausedRef, nodesRef, onNodeClick, onNodeInteractionStart, selectedNodeIdsRef, setSelectedConnectionId, setSelectedNodeIds]);
+        setDragPreview({ x: 0, y: 0, nodeIds: initialSelectedNodes.map((item) => item.id) });
+    }, [historyPausedRef, nodesRef, onBatchConnectionTarget, onNodeClick, onNodeInteractionStart, selectedNodeIdsRef, setSelectedConnectionId, setSelectedNodeIds]);
 
     const finishNodeDrag = useCallback((clientX?: number, clientY?: number) => {
         if (dragFrameRef.current) {
@@ -327,16 +332,11 @@ export function useCanvasSelectionController({
     }, [finishNodeDrag, finishSelection, handleMouseMove, handlePointerMove]);
 
     return {
-        alignmentGuides,
         cancelSelectionBox,
         deselectCanvas,
-        dragPreview,
-        frameDropTargetId,
         handleCanvasMouseDown,
         handleNodeMouseDown,
-        isNodeDragging,
         nodeDraggingRef,
         selectionBoundsElementRef,
-        selectionBox,
     };
 }

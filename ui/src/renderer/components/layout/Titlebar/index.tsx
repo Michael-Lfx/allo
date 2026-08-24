@@ -1,21 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import classNames from 'classnames';
-import { ArrowCircleLeft, ArrowLeft, ArrowRight, ExpandLeft, ExpandRight } from '@icon-park/react';
+import { ArrowCircleLeft, ArrowLeft, ArrowRight, ExpandRight } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { ipcBridge } from '@/common';
-import {
-  isSameSessionTarget,
-  type SessionTarget,
-} from '@/common/types/ids';
+import { type SessionTarget } from '@/common/types/ids';
 import InstantHoverTooltip, { type InstantHoverTooltipProps } from '@renderer/components/base/InstantHoverTooltip';
 import MobileConversationBrand from './MobileConversationBrand';
 import TitlebarUpdateButton from './TitlebarUpdateButton';
 import { useTitlebarContextTitle } from './useTitlebarContextTitle';
 import WindowControls from '../WindowControls';
-import { WORKSPACE_STATE_EVENT, dispatchWorkspaceToggleEvent } from '@renderer/utils/workspace/workspaceEvents';
-import type { WorkspaceStateDetail } from '@renderer/utils/workspace/workspaceEvents';
+import { dispatchWorkspaceToggleEvent } from '@renderer/utils/workspace/workspaceEvents';
 
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useNavigationHistory } from '@/renderer/hooks/context/NavigationHistoryContext';
@@ -79,8 +75,6 @@ const HomeIcon: React.FC<{ size?: number; strokeWidth?: number }> = ({ size = 18
 
 const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   const { t } = useTranslation();
-  const [workspaceCollapsed, setWorkspaceCollapsed] = useState(true);
-
   const [mobileCenterOffset, setMobileCenterOffset] = useState(0);
   const layout = useLayoutContext();
   const navigationHistory = useNavigationHistory();
@@ -95,29 +89,6 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   }, [location.pathname]);
   const { title: contextTitle, activeConversationId, conversation } = useTitlebarContextTitle(location.pathname);
 
-  // 监听工作空间折叠状态，保持按钮图标一致 / Sync workspace collapsed state for toggle button
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return undefined;
-    }
-    const handler = (event: Event) => {
-      const customEvent = event as CustomEvent<WorkspaceStateDetail>;
-      if (
-        activeWorkspaceTarget &&
-        customEvent.detail?.target &&
-        isSameSessionTarget(customEvent.detail.target, activeWorkspaceTarget) &&
-        typeof customEvent.detail.collapsed === 'boolean'
-      ) {
-        setWorkspaceCollapsed(customEvent.detail.collapsed);
-      }
-    };
-    window.addEventListener(WORKSPACE_STATE_EVENT, handler as EventListener);
-    return () => {
-      window.removeEventListener(WORKSPACE_STATE_EVENT, handler as EventListener);
-    };
-  }, [activeWorkspaceTarget]);
-
-
   const isDesktopRuntime = isDesktopShell();
   const isMacRuntime = isDesktopRuntime && isMacOS();
   // Windows/Linux 显示自定义窗口按钮。
@@ -126,9 +97,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   // single toggle. Mobile keeps the titlebar entry because the rail is hidden.
   const showWorkspaceButton = workspaceAvailable && Boolean(layout?.isMobile);
 
-  const workspaceTooltip = workspaceCollapsed
-    ? t('common.expandMore', { defaultValue: 'Expand workspace' })
-    : t('common.collapse', { defaultValue: 'Collapse workspace' });
+  const workspaceTooltip = t('preview.openWorkspace', { defaultValue: 'Open workspace' });
   const backToChatTooltip = t('common.back', { defaultValue: 'Back to Chat' });
   const isSettingsRoute = location.pathname.startsWith('/settings');
   const iconSize = 18;
@@ -401,11 +370,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
             tooltip: workspaceTooltip,
             className: classNames('app-titlebar__button', layout?.isMobile && 'app-titlebar__button--mobile'),
             onClick: handleWorkspaceToggle,
-            children: workspaceCollapsed ? (
-              <ExpandRight theme='outline' size={iconSize} fill='currentColor' />
-            ) : (
-              <ExpandLeft theme='outline' size={iconSize} fill='currentColor' />
-            ),
+            children: <ExpandRight theme='outline' size={iconSize} fill='currentColor' />,
           })
         )}
         {showWindowControls && <WindowControls />}

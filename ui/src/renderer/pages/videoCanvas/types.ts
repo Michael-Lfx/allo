@@ -98,6 +98,17 @@ export type CanvasDocument = {
   connections: CanvasConnection[];
   viewport: ViewportTransform;
   backgroundMode: 'lines' | 'blank' | 'grid';
+  /**
+   * 项目级时间线（client-doc-first）。
+   * 无独立 `/timeline` 路由；随 PUT `/projects/{id}/doc` 持久化。
+   */
+  timeline?: {
+    version: 2;
+    tracks: Array<{ id: string; kind: string; label: string; order: number; locked?: boolean }>;
+    clips: Array<Record<string, unknown>>;
+    durationMs: number;
+    updatedAt?: string;
+  };
   /** High-fidelity Agent→Canvas sidecar (camera tree, voice bible, write-back). */
   alloCreative?: Record<string, unknown>;
 };

@@ -13,7 +13,8 @@ import { QuestionManager } from './components/QuestionManager';
 import { ReviewBanner } from './components/ReviewBanner';
 import { ReviewSessionModal } from './components/ReviewSession';
 import { TagEditorModal } from './components/TagEditorModal';
-import { EMPTY_PACK, ORPHAN_COURSE_FILTER, REVIEW_FILTERS_STORAGE_KEY } from './constants';
+import { EMPTY_PACK, ORPHAN_COURSE_FILTER, REVIEW_BANNER_EXPANDED_KEY, REVIEW_FILTERS_STORAGE_KEY } from './constants';
+import { useCheckinStatus } from './hooks/useCheckinStatus';
 import { useCourseCreation } from './hooks/useCourseCreation';
 import { useCourseJobs } from './hooks/useCourseJobs';
 import { useCourseLearning } from './hooks/useCourseLearning';
@@ -46,6 +47,11 @@ const LearningPage: React.FC = () => {
   // 初始值从 localStorage 恢复，下次打开学习页时沿用上次的选择。
   const [reviewCourseFilter, setReviewCourseFilter] = useState<string[]>(() => loadStoredReviewFilters().courses);
   const [reviewTagFilter, setReviewTagFilter] = useState<string[]>(() => loadStoredReviewFilters().tags);
+  // 打卡统计面板展开状态：默认展开，切换后持久化到 localStorage
+  const [bannerExpanded, setBannerExpanded] = useState(
+    () => localStorage.getItem(REVIEW_BANNER_EXPANDED_KEY) !== '0'
+  );
+  const checkin = useCheckinStatus();
   const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   const [diagnosticLimit] = useConfig('learning.diagnosticLimit');
   // 学习页统一的 AI 模型偏好：反思题评分、课程生成、任务重试均使用该选择
@@ -106,6 +112,11 @@ const LearningPage: React.FC = () => {
       JSON.stringify({ courses: reviewCourseFilter, tags: reviewTagFilter })
     );
   }, [reviewCourseFilter, reviewTagFilter]);
+
+  // 打卡面板展开状态持久化，下次打开学习页沿用
+  useEffect(() => {
+    localStorage.setItem(REVIEW_BANNER_EXPANDED_KEY, bannerExpanded ? '1' : '0');
+  }, [bannerExpanded]);
 
   // 各功能域：课程学习（报名/诊断/进度/作答）、复习会话、创建课程
   const courseLearning = useCourseLearning({
@@ -288,8 +299,12 @@ const LearningPage: React.FC = () => {
           reviewCourseFilter={reviewCourseFilter}
           reviewTagFilter={reviewTagFilter}
           busy={busyId === 'review-session'}
+          checkin={checkin.status}
+          expanded={bannerExpanded}
+          celebrateToken={checkin.celebrateToken}
           onCourseFilterChange={setReviewCourseFilter}
           onTagFilterChange={setReviewTagFilter}
+          onExpandedChange={setBannerExpanded}
           onStart={() => void reviewSession.startReviewSession()}
         />
 
@@ -314,7 +329,22 @@ const LearningPage: React.FC = () => {
                 onEditTags={(entry) => void openTagEditor('question', entry)}
               />
             </Tabs.TabPane>
-            <Tabs.TabPane key='jobs' title={t('learning.jobManagement')} destroyOnHide={false}>
+            <Tabs.TabPane
+              key='jobs'
+              title={
+                <span className='inline-flex items-center gap-6px'>
+                  {t('learning.jobManagement')}
+                  {courseJobs.hasActive && (
+                    <span
+                      role='img'
+                      aria-label={t('learning.jobsActiveHint')}
+                      className='size-6px rd-full bg-danger-6'
+                    />
+                  )}
+                </span>
+              }
+              destroyOnHide={false}
+            >
               <CourseJobTable
                 jobs={courseJobs.jobs}
                 loading={courseJobs.loading}
@@ -338,10 +368,20 @@ const LearningPage: React.FC = () => {
           onForget={reviewSession.forgetReview}
           onRate={reviewSession.rateReview}
           onSkip={reviewSession.skipReview}
+          onArchive={reviewSession.archiveReview}
+          onRemove={reviewSession.removeReview}
+          onMarkEdit={reviewSession.markEditPending}
+          onEdited={(updated) => {
+            reviewSession.setSessionQueue((prev) =>
+              prev.map((item) => (item.id === updated.id ? updated : item))
+            );
+          }}
           onClose={() => {
             reviewSession.setSessionOpen(false);
-            // 会话结束时刷新列表，让角标与下次入队状态保持一致
+            // 会话结束时刷新列表与打卡状态，让角标与下次入队状态保持一致；
+            // 若本次复习恰好达成今日目标，会触发完成仪式高亮
             void load();
+            void checkin.refreshAfterSession();
           }}
         />
         {deletingCourse !== null && (

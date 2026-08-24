@@ -13,6 +13,7 @@ import {
   Tooltip,
   Typography,
 } from '@arco-design/web-react';
+import { IconPushpin } from '@arco-design/web-react/icon';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';
@@ -21,6 +22,7 @@ import type { CourseSummary, QuestionEntry } from '../types';
 import {
   errorMessage,
   formatReviewTime,
+  isReviewUnderdeveloped,
   loadVisibleQuestionColumns,
   questionStateMeta,
 } from '../utils';
@@ -110,6 +112,51 @@ export function QuestionManager({
       },
     });
   };
+  // 手动归档：学习数据未达标时追问；达标直接归档（与刷卡界面同规则）
+  const archiveEntry = (entry: QuestionEntry) => {
+    const run = async () => {
+      try {
+        if (entry.source === 'custom') {
+          await learningApi.archiveCustomQuestion(entry.question_id);
+        } else if (entry.review_item_id !== null) {
+          await learningApi.archiveReview(entry.review_item_id);
+        }
+        Message.success(t('learning.reviewArchived'));
+        await load();
+        onMutated();
+      } catch (actionError) {
+        Message.error(errorMessage(t, actionError));
+      }
+    };
+    if (isReviewUnderdeveloped(entry)) {
+      Modal.confirm({
+        title: t('learning.reviewArchiveConfirmTitle'),
+        content: t('learning.reviewArchiveConfirmHint', {
+          count: entry.review_count,
+          days: entry.stability_days.toFixed(1),
+        }),
+        okText: t('learning.reviewArchiveConfirmOk'),
+        okButtonProps: { status: 'warning' },
+        onOk: () => run(),
+      });
+    } else {
+      void run();
+    }
+  };
+  const restoreEntry = async (entry: QuestionEntry) => {
+    try {
+      if (entry.source === 'custom') {
+        await learningApi.unarchiveCustomQuestion(entry.question_id);
+      } else if (entry.review_item_id !== null) {
+        await learningApi.unarchiveReview(entry.review_item_id);
+      }
+      Message.success(t('learning.reviewUnarchived'));
+      await load();
+      onMutated();
+    } catch (actionError) {
+      Message.error(errorMessage(t, actionError));
+    }
+  };
   const promptColumn = {
     title: t('learning.questionPrompt'),
     render: (_value: unknown, entry: QuestionEntry) => {
@@ -124,7 +171,7 @@ export function QuestionManager({
   const sourceColumn = {
     title: t('learning.questionSource'),
     dataIndex: 'source',
-    width: 220,
+    width: 140,
     render: (_value: unknown, entry: QuestionEntry) =>
       entry.source === 'custom' ? (
         <Tag color='purple'>{t('learning.questionCustomSource')}</Tag>
@@ -140,35 +187,50 @@ export function QuestionManager({
   const stateColumn = {
     title: t('learning.questionState'),
     dataIndex: 'state',
-    width: 130,
+    width: 120,
     render: (_value: unknown, entry: QuestionEntry) => {
       const state = questionStateMeta(entry, t);
       const hint =
-        entry.state === 'unlearned'
-          ? t('learning.questionStateUnlearnedHint')
-          : entry.state === 'new'
-            ? t('learning.questionStateNewHint')
-            : entry.state === 'due'
-              ? t('learning.questionStateDueHint')
-              : t('learning.questionStateScheduledHint');
+        entry.state === 'archived'
+          ? t('learning.questionStateArchivedHint')
+          : entry.state === 'unlearned'
+            ? t('learning.questionStateUnlearnedHint')
+            : entry.state === 'new'
+              ? t('learning.questionStateNewHint')
+              : entry.state === 'due'
+                ? t('learning.questionStateDueHint')
+                : t('learning.questionStateScheduledHint');
       return (
-        <Tooltip content={hint} position='tl'>
-          <Tag color={state.color}>{state.label}</Tag>
-        </Tooltip>
+        <div className='flex items-center gap-4px'>
+          <Tooltip content={hint} position='tl'>
+            <Tag color={state.color}>{state.label}</Tag>
+          </Tooltip>
+          {entry.edit_pending && (
+            <Tooltip
+              content={entry.edit_note ?? t('learning.reviewEditPendingLabel')}
+              position='tl'
+            >
+              <Tag color='orange' size='small'>
+                <IconPushpin className='mr-2px' />
+                {t('learning.reviewEditPendingLabel')}
+              </Tag>
+            </Tooltip>
+          )}
+        </div>
       );
     },
   };
   const dueColumn = {
     title: t('learning.questionDueAt'),
     dataIndex: 'due_at',
-    width: 170,
+    width: 160,
     sorter: (a: QuestionEntry, b: QuestionEntry) => (a.due_at ?? 0) - (b.due_at ?? 0),
     render: (value: number | null) => formatReviewTime(value),
   };
   const tagsColumn = {
     title: t('learning.questionTags'),
     dataIndex: 'tags',
-    width: 200,
+    width: 140,
     render: (_value: unknown, entry: QuestionEntry) => (
       <div
         className='flex flex-wrap items-center gap-4px'
@@ -193,7 +255,7 @@ export function QuestionManager({
   };
   const actionsColumn = {
     title: t('learning.questionActions'),
-    width: 130,
+    width: 160,
     render: (_value: unknown, entry: QuestionEntry) => (
       <div className='flex gap-6px'>
         <Button
@@ -206,6 +268,30 @@ export function QuestionManager({
         >
           {t('learning.questionEdit')}
         </Button>
+        {entry.state === 'archived' ? (
+          <Button
+            size='mini'
+            type='text'
+            onClick={(event) => {
+              event.stopPropagation();
+              void restoreEntry(entry);
+            }}
+          >
+            {t('learning.reviewRestore')}
+          </Button>
+        ) : (
+          <Button
+            size='mini'
+            type='text'
+            disabled={entry.source === 'course' && entry.review_item_id === null}
+            onClick={(event) => {
+              event.stopPropagation();
+              archiveEntry(entry);
+            }}
+          >
+            {t('learning.reviewArchive')}
+          </Button>
+        )}
         <Button
           size='mini'
           type='text'
@@ -256,6 +342,8 @@ export function QuestionManager({
           <Select.Option value='new'>{t('learning.questionStateNew')}</Select.Option>
           <Select.Option value='due'>{t('learning.questionStateDue')}</Select.Option>
           <Select.Option value='scheduled'>{t('learning.questionStateScheduled')}</Select.Option>
+          <Select.Option value='archived'>{t('learning.questionStateArchived')}</Select.Option>
+          <Select.Option value='edit_pending'>{t('learning.questionStateEditPending')}</Select.Option>
         </Select>
         <Input.Search
           className='w-240px'

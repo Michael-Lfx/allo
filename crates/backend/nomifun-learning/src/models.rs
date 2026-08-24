@@ -417,6 +417,10 @@ pub struct DueReview {
     pub difficulty: f64,
     pub review_count: i64,
     pub lapse_count: i64,
+    /// Marked "edit me later" from the review session; the card keeps its
+    /// schedule untouched and a note (optional) records the intent.
+    pub edit_pending: bool,
+    pub edit_note: Option<String>,
 }
 
 /// Objective question attached to a due review. Never includes the stored
@@ -462,6 +466,69 @@ pub struct ReviewResult {
     pub lapse_count: i64,
 }
 
+/// Daily check-in snapshot for the current review day: goal, progress and
+/// due count, with the completion flag derived from a locking snapshot
+/// persisted in `learning_checkins`.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckinStatus {
+    /// Local review day as YYYYMMDD.
+    pub review_day: i64,
+    /// Daily review goal snapshot (0 = clear-the-queue only).
+    pub goal: i64,
+    /// Reviews already submitted this review day.
+    pub reviewed_count: i64,
+    /// Cards currently due (`due_at <= now`), course + custom.
+    pub due_count: i64,
+    /// Whether the day is locked as completed (either condition met).
+    pub completed: bool,
+    /// Lock moment in UTC milliseconds when completed, else null.
+    pub locked_at: Option<i64>,
+}
+
+/// One lesson completed on a review day (calendar aggregation detail).
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarLessonRef {
+    pub lesson_id: String,
+    pub title: String,
+}
+
+/// One course created on a review day (calendar aggregation detail).
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarCourseRef {
+    pub course_id: String,
+    pub title: String,
+}
+
+/// One review day inside the requested calendar range, zero-filled when the
+/// user had no activity. `review_day` is the local YYYYMMDD of the review day
+/// (02:00 rollover), matching check-in and streak semantics.
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarDayStats {
+    pub review_day: i64,
+    pub reviewed_count: i64,
+    pub checkin_completed: bool,
+    /// Cards due on this review day; overdue cards roll into the current
+    /// day so the today cell matches the review banner's due queue.
+    pub due_count: i64,
+    pub completed_lessons: Vec<CalendarLessonRef>,
+    pub created_courses: Vec<CalendarCourseRef>,
+}
+
+/// Calendar aggregation for the learning page: review-day bucketed activity
+/// (review counts, check-in completion, completed lessons and created
+/// courses) plus the current streak.
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarStats {
+    pub year: i64,
+    /// 1..=12 for the month view, null for the year view.
+    pub month: Option<i64>,
+    pub tz_offset: i32,
+    /// Consecutive completed check-in days ending at the current review day;
+    /// 0 when today is not yet completed.
+    pub streak: i64,
+    pub days: Vec<CalendarDayStats>,
+}
+
 /// One row of the question management table. Course questions come from
 /// objective activities linked to concepts (review item optional: items
 /// only exist after the lesson is completed); custom questions are
@@ -495,6 +562,10 @@ pub struct QuestionEntry {
     pub last_reviewed_at: Option<TimestampMs>,
     pub updated_at: TimestampMs,
     pub tags: Vec<String>,
+    /// Marked "edit me later" from the review session; the note (optional)
+    /// records what the learner intended to change.
+    pub edit_pending: bool,
+    pub edit_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -507,6 +578,14 @@ pub struct UpdateQuestionRequest {
     pub explanation: String,
     #[serde(default)]
     pub distractors: Vec<String>,
+}
+
+/// Marks a review card as "edit me later"; the note is optional and purely
+/// for the learner to recall the intended edit.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MarkEditRequest {
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// Learner-authored question. Objective kinds (single choice, true/false,

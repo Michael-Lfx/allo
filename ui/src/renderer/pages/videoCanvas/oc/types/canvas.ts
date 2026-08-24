@@ -1,4 +1,5 @@
 import type { PortraitTextureSettings } from "@oc/lib/canvas/canvas-portrait-texture";
+import type { SrtEntry, SubtitleHighlight, SubtitleStyle } from "@oc/types/timeline";
 
 export type Position = {
     x: number;
@@ -37,6 +38,8 @@ export type CanvasGenerationBatchItemStatus = "waiting" | "submitting" | "queued
 export type CanvasImageGenerationType = "generation" | "edit";
 export type CanvasWorkflowKind = "free" | "script" | "story_input" | "character" | "scene" | "storyboard" | "shot" | "final" | "styleboard" | "reference_set" | "reference_video" | "action_board";
 export type CanvasVideoEditOperation = "text_to_video" | "image_to_video" | "extend" | "inpaint" | "replace_element" | "camera_motion" | "style_transfer" | "audio_to_video" | "compare_versions" | "concat";
+export type CanvasFolderStyle = "glass" | "stacked" | "midnight" | "paper" | "cinema" | "compact";
+export type CanvasFolderTheme = "aurora" | "obsidian" | "ember" | "pearl";
 export type CanvasSkillCategory = "writing" | "storyboard" | "image" | "video" | "utility";
 export type CanvasSkillOutputMode = "text" | "json" | "image_prompt" | "workflow";
 export type StoryboardColumn = "shotNumber" | "durationSeconds" | "plotDescription" | "dialogue" | "narrativeIntent" | "viewerPOV" | "performanceBlocking" | "shotSize" | "emotion" | "lightingAndAtmosphere" | "audioEffects" | "camera" | "motion" | "timeBeats" | "imageGenerationPrompt" | "videoMotionPrompt" | "continuityOut" | "negativePrompt";
@@ -141,6 +144,8 @@ export type CanvasNodeMetadata = {
     quality?: string;
     transparentBackground?: string;
     count?: number;
+    /** Text generation copy count (decoupled from image batch count). */
+    textCount?: number;
     seconds?: string;
     vquality?: string;
     generateAudio?: string;
@@ -156,6 +161,7 @@ export type CanvasNodeMetadata = {
     isBatchRoot?: boolean;
     batchRootId?: string;
     batchChildIds?: string[];
+    batchFailedCount?: number;
     batchUsesReferenceImages?: boolean;
     primaryImageId?: string;
     imageBatchExpanded?: boolean;
@@ -170,6 +176,8 @@ export type CanvasNodeMetadata = {
     workflowTitle?: string;
     workflowDescription?: string;
     stylePresetId?: string;
+    styleProfileJson?: string;
+    styleExecutionPlan?: import("@oc/lib/canvas/style-profile").StyleExecutionPlan;
     chapterId?: string;
     chapterTitle?: string;
     shotIndex?: number;
@@ -225,6 +233,10 @@ export type CanvasNodeMetadata = {
     directorDepthNodeId?: string;
     directorNormalNodeId?: string;
     directorClayVideoNodeId?: string;
+    subtitleEntries?: SrtEntry[];
+    subtitleHighlights?: SubtitleHighlight[];
+    subtitleStyle?: SubtitleStyle;
+    subtitleUpdatedAt?: string;
     skillId?: string;
     skillVersion?: number;
     skillSnapshot?: CanvasSkillSnapshot;
@@ -238,6 +250,16 @@ export type CanvasNodeMetadata = {
         collapsed: boolean;
         expandedWidth: number;
         expandedHeight: number;
+    };
+    folder?: {
+        style: CanvasFolderStyle;
+        theme?: CanvasFolderTheme;
+        createdAt: string;
+        /** 自定义主题封面；目录内容永远从 childNodes 读取。 */
+        themeCover?: string;
+        /** MVP 不写：不接影策 /asset-folders。 */
+        assetFolderId?: string;
+        projectId?: string;
     };
     drawingId?: string;
     drawingEngine?: "tldraw" | "excalidraw";

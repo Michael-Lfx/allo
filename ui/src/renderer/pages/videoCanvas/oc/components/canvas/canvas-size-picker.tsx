@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Select } from "antd";
+import { useTranslation } from "react-i18next";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { cn } from "@oc/lib/utils";
 
 const sizeOptions = ["auto", "1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"];
@@ -12,6 +14,7 @@ type CanvasSizePickerProps = {
 };
 
 export function CanvasSizePicker({ value, className, onChange }: CanvasSizePickerProps) {
+    useTranslation();
     const rootRef = useRef<HTMLDivElement>(null);
     const [open, setOpen] = useState(false);
     const [search, setSearch] = useState("");
@@ -42,7 +45,7 @@ export function CanvasSizePicker({ value, className, onChange }: CanvasSizePicke
                 className={cn("canvas-compact-control canvas-control-select h-full w-full")}
                 value={value || undefined}
                 searchValue={search}
-                placeholder="比例"
+                placeholder={canvasT("videoCanvas.dialog.sizeRatio", "比例")}
                 options={options}
                 popupMatchSelectWidth={false}
                 popupRender={(menu) => (

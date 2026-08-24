@@ -1,7 +1,9 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Check, ChevronDown, Coins, Cpu } from "lucide-react";
 import { Popover } from "antd";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { modelCapabilityConfigFor, videoDurationOptions } from "@oc/lib/model-capabilities";
 import { cn } from "@oc/lib/utils";
@@ -22,7 +24,9 @@ type ModelPickerProps = {
     variant?: "default" | "creation";
 };
 
-export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder = "选择模型", onMissingConfig, showSelectedPrice = true, variant = "default" }: ModelPickerProps) {
+export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder, onMissingConfig, showSelectedPrice = true, variant = "default" }: ModelPickerProps) {
+    useTranslation();
+    const resolvedPlaceholder = placeholder ?? canvasT("videoCanvas.model.placeholder", "选择模型");
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
     const pickerId = useId();
     // 双保险：即使 store merge 写出非法 theme，这里也兜底到 dark，避免 "reading 'node'" 崩溃
@@ -41,14 +45,14 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
         const channelGroups = config.channels
             .map((channel) => ({
                 key: channel.id,
-                label: channel.name || "未命名渠道",
-                scope: channel.scope === "system" ? "系统渠道" : "自定义渠道",
+                label: channel.name || canvasT("videoCanvas.model.unnamedChannel", "未命名渠道"),
+                scope: channel.scope === "system" ? canvasT("videoCanvas.model.systemChannel", "系统渠道") : canvasT("videoCanvas.model.customChannel", "自定义渠道"),
                 models: options.filter((model) => resolveModelChannel(config, model).id === channel.id),
             }))
             .filter((group) => group.models.length);
         const groupedModels = new Set(channelGroups.flatMap((group) => group.models));
         const ungroupedModels = options.filter((model) => !groupedModels.has(model));
-        return ungroupedModels.length ? [...channelGroups, { key: "ungrouped", label: "其他模型", scope: "未指定渠道", models: ungroupedModels }] : channelGroups;
+        return ungroupedModels.length ? [...channelGroups, { key: "ungrouped", label: canvasT("videoCanvas.model.otherModels", "其他模型"), scope: canvasT("videoCanvas.model.unspecifiedChannel", "未指定渠道"), models: ungroupedModels }] : channelGroups;
     }, [config, options]);
     const current = value || "";
     const currentPrice = modelMenuPrice(config, current);
@@ -115,14 +119,14 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
             className={cn("canvas-model-picker-menu max-w-[calc(100vw-24px)]", creationVariant ? "creation-model-picker-menu w-[360px]" : "w-[var(--panel-width-compact)]")}
             style={{ background: theme.node.panel, color: theme.node.text }}
             role="listbox"
-            aria-label={placeholder}
+            aria-label={resolvedPlaceholder}
             onKeyDown={handleMenuKeyDown}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
         >
             {creationVariant ? (
                 <div className="creation-model-picker-heading">
-                    <span>选择模型</span>
+                    <span>{canvasT("videoCanvas.model.selectModel", "选择模型")}</span>
                     {current ? <strong>{modelDisplayName(config, current)}</strong> : null}
                 </div>
             ) : null}
@@ -189,15 +193,15 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                     className={cn("canvas-composer-model-picker", fullWidth ? "w-full" : "min-w-36 max-w-full", className)}
                     aria-haspopup="listbox"
                     aria-expanded={open}
-                    aria-label={placeholder}
-                    title={current ? modelOptionLabel(config, current) : placeholder}
+                    aria-label={resolvedPlaceholder}
+                    title={current ? modelOptionLabel(config, current) : resolvedPlaceholder}
                     onKeyDown={handleTriggerKeyDown}
                 >
                     <span className="canvas-model-picker-label flex min-w-0 items-center gap-1.5">
                         <span className="canvas-model-picker-trigger-icon" style={{ background: theme.toolbar.itemHover }}>
                             <ModelIcon config={config} model={current} />
                         </span>
-                        <span className="min-w-0 flex-1 truncate">{current ? (creationVariant ? modelDisplayName(config, current) : modelOptionLabel(config, current)) : placeholder}</span>
+                        <span className="min-w-0 flex-1 truncate">{current ? (creationVariant ? modelDisplayName(config, current) : modelOptionLabel(config, current)) : resolvedPlaceholder}</span>
                     </span>
                     <ChevronDown className={cn("canvas-model-picker-chevron", open && "is-open")} aria-hidden="true" />
                 </button>
@@ -207,9 +211,9 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
 }
 
 function emptyModelLabel(config: AiConfig, capability?: ModelCapability) {
-    const label = capability === "image" ? "生图" : capability === "video" ? "视频" : capability === "text" ? "文本" : capability === "audio" ? "音频" : "";
-    if (capability && config.models.length) return `当前渠道没有匹配的${label}模型`;
-    return config.models.length ? `暂无匹配的${label}模型` : "请先到配置里添加渠道和模型";
+    const label = capability === "image" ? canvasT("videoCanvas.model.capImage", "生图") : capability === "video" ? canvasT("videoCanvas.model.capVideo", "视频") : capability === "text" ? canvasT("videoCanvas.model.capText", "文本") : capability === "audio" ? canvasT("videoCanvas.model.capAudio", "音频") : "";
+    if (capability && config.models.length) return canvasT("videoCanvas.model.noMatchInChannel", "当前渠道没有匹配的{{label}}模型", { label });
+    return config.models.length ? canvasT("videoCanvas.model.noMatch", "暂无匹配的{{label}}模型", { label }) : canvasT("videoCanvas.model.addChannelFirst", "请先到配置里添加渠道和模型");
 }
 
 function ModelLabel({
@@ -250,19 +254,19 @@ function formatDurationSummary(profile: NonNullable<ReturnType<typeof modelCapab
     return `${profile.duration.min || values[0]}-${profile.duration.max || values[values.length - 1]}s`;
 }
 
-function modelMenuPrice(config: AiConfig, model: string): { value: number; unit: "次" | "秒" } | null | undefined {
+function modelMenuPrice(config: AiConfig, model: string): { value: number; unit: string } | null | undefined {
     if (!model) return undefined;
     const channel = resolveModelChannel(config, model);
     const cost = channel.modelCosts?.find((item) => item.model === modelOptionName(model));
     if (!cost) return channel.scope === "system" ? null : undefined;
-    return { value: cost.unitPriceMicrocredits / 1_000_000, unit: cost.billingMode === "per_second" ? "秒" : "次" };
+    return { value: cost.unitPriceMicrocredits / 1_000_000, unit: cost.billingMode === "per_second" ? canvasT("videoCanvas.model.unitSecond", "秒") : canvasT("videoCanvas.model.unitTime", "次") };
 }
 
-function ModelPrice({ price, compact = false }: { price: { value: number; unit: "次" | "秒" } | null | undefined; compact?: boolean }) {
+function ModelPrice({ price, compact = false }: { price: { value: number; unit: string } | null | undefined; compact?: boolean }) {
     if (price === undefined) return null;
-    if (price === null) return compact ? null : <span className="shrink-0 text-[var(--fs-tiny)] text-foreground/40">未配置</span>;
+    if (price === null) return compact ? null : <span className="shrink-0 text-[var(--fs-tiny)] text-foreground/40">{canvasT("videoCanvas.model.unpriced", "未配置")}</span>;
     return (
-        <span className="inline-flex shrink-0 items-center gap-0.5 text-[var(--fs-tiny)] font-bold tabular-nums text-amber-600 dark:text-amber-300" title={`每${price.unit}消耗 ${price.value.toLocaleString("zh-CN", { maximumFractionDigits: 6 })} 积分`}>
+        <span className="inline-flex shrink-0 items-center gap-0.5 text-[var(--fs-tiny)] font-bold tabular-nums text-amber-600 dark:text-amber-300" title={canvasT("videoCanvas.model.priceTitle", "每{{unit}}消耗 {{value}} 积分", { unit: price.unit, value: price.value.toLocaleString("zh-CN", { maximumFractionDigits: 6 }) })}>
             <Coins className="size-3" />
             {price.value.toLocaleString("zh-CN", { maximumFractionDigits: compact ? 3 : 6 })}/{price.unit}
         </span>

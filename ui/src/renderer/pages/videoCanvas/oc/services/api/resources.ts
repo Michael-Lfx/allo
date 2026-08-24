@@ -154,6 +154,8 @@ export async function importResourceFromUrl(
 function mediaFetchInit(method: 'GET' | 'HEAD' = 'GET'): RequestInit {
   // Public media is auth-exempt, but desktop still benefits from local-trust.
   // Never use credentials:'include' — backend CORS uses `*` which rejects credentialed cross-origin.
+  // Blob GET stays no-store: uploadCanvasMedia mints a new media_id, but we have not
+  // proven every write path is immutable, so HTTP cache must not reuse GET bodies.
   return {
     method,
     headers: buildBackendAuthHeaders(method),
@@ -162,11 +164,60 @@ function mediaFetchInit(method: 'GET' | 'HEAD' = 'GET'): RequestInit {
   };
 }
 
-export function getResource(id: string): Promise<RemoteResource> {
+export type ResourceLookupHint = {
+  mimeType?: string;
+  bytes?: number;
+};
+
+export function normalizeResourceMimeType(mimeType?: string) {
+  return (mimeType || 'application/octet-stream').split(';', 1)[0].trim() || 'application/octet-stream';
+}
+
+export function hasResourceLookupHint(hint?: ResourceLookupHint): hint is ResourceLookupHint {
+  if (!hint) return false;
+  if (hint.mimeType && hint.mimeType.trim()) return true;
+  return typeof hint.bytes === 'number' && Number.isFinite(hint.bytes) && hint.bytes >= 0;
+}
+
+function kindFromMime(mimeType: string): RemoteResource['kind'] {
+  if (mimeType.startsWith('video/')) return 'video';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  if (mimeType.startsWith('image/')) return 'image';
+  return 'file';
+}
+
+function resourceFromLookupHint(id: string, hint: ResourceLookupHint): RemoteResource {
+  const mimeType = normalizeResourceMimeType(hint.mimeType);
+  const size = typeof hint.bytes === 'number' && Number.isFinite(hint.bytes) ? hint.bytes : 0;
+  const now = new Date().toISOString();
+  return {
+    id,
+    userId: getActiveUserScope(),
+    kind: kindFromMime(mimeType),
+    status: 'ready',
+    provider: 'allo',
+    endpoint: '',
+    bucket: '',
+    objectKey: id,
+    publicUrl: canvasMediaUrl(id),
+    mimeType,
+    size,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function getResource(id: string, hint?: ResourceLookupHint): Promise<RemoteResource> {
   const cacheKey = resourceCacheKey(id);
   const cached = resourceCache.get(cacheKey);
   if (cached) return Promise.resolve(cached);
   if (missingResourceIds.has(cacheKey)) return Promise.reject(new Error('resource missing'));
+  if (hasResourceLookupHint(hint)) {
+    const resource = resourceFromLookupHint(id, hint);
+    resourceCache.set(cacheKey, resource);
+    missingResourceIds.delete(cacheKey);
+    return Promise.resolve(resource);
+  }
   const pending = resourceRequests.get(cacheKey);
   if (pending) return pending;
   const publicUrl = canvasMediaUrl(id);
@@ -176,12 +227,12 @@ export function getResource(id: string): Promise<RemoteResource> {
     try {
       const head = await fetch(publicUrl, mediaFetchInit('HEAD'));
       if (head.ok) {
-        mimeType = head.headers.get('content-type') || mimeType;
+        mimeType = normalizeResourceMimeType(head.headers.get('content-type') || mimeType);
         size = Number(head.headers.get('content-length') || 0);
       } else {
         const get = await fetch(publicUrl, mediaFetchInit('GET'));
         if (!get.ok) throw new Error('not found');
-        mimeType = get.headers.get('content-type') || mimeType;
+        mimeType = normalizeResourceMimeType(get.headers.get('content-type') || mimeType);
         size = Number(get.headers.get('content-length') || 0);
       }
     } catch {
@@ -191,13 +242,7 @@ export function getResource(id: string): Promise<RemoteResource> {
     const resource: RemoteResource = {
       id,
       userId: getActiveUserScope(),
-      kind: mimeType.startsWith('video/')
-        ? 'video'
-        : mimeType.startsWith('audio/')
-          ? 'audio'
-          : mimeType.startsWith('image/')
-            ? 'image'
-            : 'file',
+      kind: kindFromMime(mimeType),
       status: 'ready',
       provider: 'allo',
       endpoint: '',

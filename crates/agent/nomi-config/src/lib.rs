@@ -38,7 +38,9 @@ pub use media::{
     VideoGenSettings, flowy_media_exposed, flowy_media_exposed_from_disk,
 };
 pub use server::{
-    DEFAULT_SERVER_LLM_MODEL, DEFAULT_WECHAT_FLOWY_SERVER_BASE, ServerAuthConfig, ServerConfig,
-    ServerLlmConfig, ServerLoginMethod, default_wechat_app_id_for_channel,
-    is_valid_wechat_open_app_id,
+    CURRENT_FLOWY_SERVER_HOST, DEFAULT_FLOWY_WEBSITE_URL, DEFAULT_SERVER_LLM_MODEL,
+    DEFAULT_WECHAT_FLOWY_SERVER_BASE, FLOWY_DOMAIN, FLOWY_SERVER_HOST, FLOWY_WEBSITE_HOST,
+    LEGACY_FLOWY_DOMAIN, LEGACY_FLOWY_SERVER_HOST, LEGACY_WECHAT_FLOWY_SERVER_BASE,
+    ServerAuthConfig, ServerConfig, ServerLlmConfig, ServerLoginMethod,
+    default_wechat_app_id_for_channel, is_valid_wechat_open_app_id,
 };

@@ -5,6 +5,16 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.0.5 - 2026-08-21
+
+- Buy a USD personal plan or credit pack in the app with Airwallex. The credits + button opens checkout; card details stay with the payment provider.
+- Desktop notifications fire when a conversation turn or requirement finishes. Click the toast to jump back into Flowy.
+- Video canvas adds follow-up tools (batch connect, folders, timeline, and subtitles) and full zh-CN / en-US UI.
+- Vimax Agent video can optionally set a 5–300s film duration; when the switch is off, planning still chooses length from the story.
+- Session Logs keep the original user-message preview in summaries.
+
+## v1.0.4 - 2026-08-20
+
 - Session Logs reclaim disk with quota-only GC (about 1 GiB / 800 MiB, no age TTL) and show request `messages` / `tools` as scan lists by default.
 
 ## v1.0.3 - 2026-08-20

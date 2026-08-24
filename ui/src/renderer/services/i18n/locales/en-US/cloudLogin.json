@@ -63,6 +63,7 @@
     "title": "Server connection",
     "enabled": "Enable Flowy server",
     "baseUrl": "Server base URL",
+    "websiteUrl": "Website URL",
     "channel": "Channel",
     "app": "App ID",
     "saved": "Cloud settings saved"

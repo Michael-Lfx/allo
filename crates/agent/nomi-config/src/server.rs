@@ -2,8 +2,33 @@
 
 use serde::{Deserialize, Serialize};
 
-/// FlowyClaw `resolveWeChatFlowyServerBase()` — WeChat OAuth always uses the domestic API root.
-pub const DEFAULT_WECHAT_FLOWY_SERVER_BASE: &str = "https://server.flowyaipc.cn/claw";
+/// Production TLD. Change this one literal to retarget every Flowy request host.
+macro_rules! flowy_domain {
+    () => {
+        "flowyaipc.com"
+    };
+}
+macro_rules! legacy_flowy_domain {
+    () => {
+        "flowyaipc.cn"
+    };
+}
+
+pub const FLOWY_DOMAIN: &str = flowy_domain!();
+pub const LEGACY_FLOWY_DOMAIN: &str = legacy_flowy_domain!();
+
+pub const FLOWY_SERVER_HOST: &str = concat!("server.", flowy_domain!());
+pub const FLOWY_WEBSITE_HOST: &str = concat!("www.", flowy_domain!());
+pub const LEGACY_FLOWY_SERVER_HOST: &str = concat!("server.", legacy_flowy_domain!());
+
+pub const DEFAULT_WECHAT_FLOWY_SERVER_BASE: &str =
+    concat!("https://server.", flowy_domain!(), "/claw");
+pub const DEFAULT_FLOWY_WEBSITE_URL: &str = concat!("https://www.", flowy_domain!());
+pub const LEGACY_WECHAT_FLOWY_SERVER_BASE: &str =
+    concat!("https://server.", legacy_flowy_domain!(), "/claw");
+
+/// Backward-compatible alias of [`FLOWY_SERVER_HOST`].
+pub const CURRENT_FLOWY_SERVER_HOST: &str = FLOWY_SERVER_HOST;
 
 /// Built-in default when `server.llm.default_model` is empty (see docs/new-client-api-llm-chat.md).
 pub const DEFAULT_SERVER_LLM_MODEL: &str = "AIPC-glm-4.7";
@@ -33,9 +58,13 @@ pub struct ServerConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Flowy API root, e.g. `https://server.flowyaipc.cn/claw`.
+    /// Flowy API root. Empty uses [`DEFAULT_WECHAT_FLOWY_SERVER_BASE`].
     #[serde(default)]
     pub base_url: String,
+
+    /// Official website root. Empty uses [`DEFAULT_FLOWY_WEBSITE_URL`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub website_url: String,
 
     /// WeChat OAuth / MP API root; defaults to `base_url` when empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -65,6 +94,7 @@ impl Default for ServerConfig {
         Self {
             enabled: false,
             base_url: String::new(),
+            website_url: String::new(),
             wechat_base_url: String::new(),
             channel: default_channel(),
             app: default_app(),
@@ -87,6 +117,16 @@ impl ServerConfig {
 
     pub fn api_ready(&self) -> bool {
         !self.base_url.trim().is_empty()
+    }
+
+    /// Official website root without a trailing slash.
+    pub fn effective_website_url(&self) -> String {
+        let trimmed = self.website_url.trim().trim_end_matches('/');
+        if trimmed.is_empty() {
+            DEFAULT_FLOWY_WEBSITE_URL.to_string()
+        } else {
+            trimmed.to_string()
+        }
     }
 
     pub fn effective_llm_base_url(&self) -> String {
@@ -117,6 +157,23 @@ impl ServerConfig {
             trimmed.to_string()
         }
     }
+
+    /// Rewrite persisted [`LEGACY_FLOWY_SERVER_HOST`] to [`FLOWY_SERVER_HOST`].
+    /// Returns true when anything changed.
+    pub fn rewrite_legacy_cn_hosts(&mut self) -> bool {
+        let mut changed = false;
+        changed |= rewrite_legacy_flowy_server_host(&mut self.base_url);
+        changed |= rewrite_legacy_flowy_server_host(&mut self.wechat_base_url);
+        changed
+    }
+}
+
+fn rewrite_legacy_flowy_server_host(url: &mut String) -> bool {
+    if !url.contains(LEGACY_FLOWY_SERVER_HOST) {
+        return false;
+    }
+    *url = url.replace(LEGACY_FLOWY_SERVER_HOST, FLOWY_SERVER_HOST);
+    true
 }
 
 /// WeChat Open Platform website app id (`wx` + 16 hex chars).
@@ -245,6 +302,44 @@ mod tests {
     }
 
     #[test]
+    fn effective_website_url_uses_builtin_when_empty() {
+        let cfg = ServerConfig::default();
+        assert_eq!(cfg.effective_website_url(), DEFAULT_FLOWY_WEBSITE_URL);
+    }
+
+    #[test]
+    fn effective_website_url_honors_override_and_strips_slash() {
+        let cfg = ServerConfig {
+            website_url: "https://example.test/".into(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.effective_website_url(), "https://example.test");
+    }
+
+    #[test]
+    fn rewrite_legacy_cn_hosts_updates_base_and_wechat_urls() {
+        let mut cfg = ServerConfig {
+            base_url: LEGACY_WECHAT_FLOWY_SERVER_BASE.into(),
+            wechat_base_url: LEGACY_WECHAT_FLOWY_SERVER_BASE.into(),
+            ..Default::default()
+        };
+        assert!(cfg.rewrite_legacy_cn_hosts());
+        assert_eq!(cfg.base_url, DEFAULT_WECHAT_FLOWY_SERVER_BASE);
+        assert_eq!(cfg.wechat_base_url, DEFAULT_WECHAT_FLOWY_SERVER_BASE);
+        assert!(!cfg.rewrite_legacy_cn_hosts());
+    }
+
+    #[test]
+    fn rewrite_legacy_cn_hosts_leaves_custom_hosts_alone() {
+        let mut cfg = ServerConfig {
+            base_url: "https://test.flowyaipc.cn/claw".into(),
+            ..Default::default()
+        };
+        assert!(!cfg.rewrite_legacy_cn_hosts());
+        assert_eq!(cfg.base_url, "https://test.flowyaipc.cn/claw");
+    }
+
+    #[test]
     fn wechat_base_defaults_domestic_when_unset() {
         let cfg = ServerConfig {
             base_url: "https://test.example/claw".into(),
@@ -330,16 +425,28 @@ mod tests {
 
     #[test]
     fn server_config_yaml_roundtrip() {
-        let yaml = r#"
+        let yaml = format!(
+            r#"
 enabled: true
-base_url: https://server.flowyaipc.cn/claw
+base_url: {DEFAULT_WECHAT_FLOWY_SERVER_BASE}
 channel: flowy
 app: flowymes
 auth:
   preferred_method: email_otp
-"#;
-        let cfg: ServerConfig = serde_yaml::from_str(yaml).expect("parse");
+"#
+        );
+        let cfg: ServerConfig = serde_yaml::from_str(&yaml).expect("parse");
         assert!(cfg.enabled);
         assert_eq!(cfg.auth.preferred_method, ServerLoginMethod::EmailOtp);
+    }
+
+    #[test]
+    fn production_hosts_are_derived_from_flowy_domain() {
+        assert!(FLOWY_SERVER_HOST.ends_with(FLOWY_DOMAIN));
+        assert!(FLOWY_WEBSITE_HOST.ends_with(FLOWY_DOMAIN));
+        assert!(DEFAULT_WECHAT_FLOWY_SERVER_BASE.contains(FLOWY_SERVER_HOST));
+        assert!(DEFAULT_FLOWY_WEBSITE_URL.contains(FLOWY_WEBSITE_HOST));
+        assert!(LEGACY_FLOWY_SERVER_HOST.ends_with(LEGACY_FLOWY_DOMAIN));
+        assert_eq!(CURRENT_FLOWY_SERVER_HOST, FLOWY_SERVER_HOST);
     }
 }

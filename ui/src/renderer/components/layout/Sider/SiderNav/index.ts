@@ -1,4 +1,5 @@
 export { default as ConversationSiderActions } from './ConversationSiderActions';
+export { default as SiderAssetLibraryEntry } from './SiderAssetLibraryEntry';
 export { default as SiderBrowserEntry } from './SiderBrowserEntry';
 export { default as SiderConfigGroup } from './SiderConfigGroup';
 export { default as SiderPresetEntry } from './SiderPresetEntry';
@@ -16,5 +17,6 @@ export { default as SiderRequirementsEntry } from './SiderRequirementsEntry';
 export { default as SiderScheduledEntry } from './SiderScheduledEntry';
 export { default as SiderSearchEntry } from './SiderSearchEntry';
 export { default as SiderSectionHeader } from './SiderSectionHeader';
+export { default as SiderWorkshopEntry } from './SiderWorkshopEntry';
 export { default as SiderVideoGenerationGroup } from './SiderVideoGenerationGroup';
 export { default as SiderWorkspacesEntry } from './SiderWorkspacesEntry';

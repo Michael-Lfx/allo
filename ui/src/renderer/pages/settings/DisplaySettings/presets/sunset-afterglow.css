@@ -135,8 +135,8 @@ body {
   --color-guid-agent-bar: #fdebd5;
   --sider-section-title-color: #946238;
 
-  /* ---- A. 终端 Terminal（画布恒深，取暗色暖渊底） ---- */
-  --terminal-surface-bg: #1a1208;
+  /* ---- A. 终端 Terminal（跟随 --bg-1，取暗色暖渊底） ---- */
+  --terminal-surface-bg: var(--bg-1);
   --terminal-border: rgba(58, 29, 14, 0.16);
 
   /* ---- B. Arco 主色阶 primary-1..7（RGB 三元组，浅 → 深，6 = 主色基色 #bb3614） ---- */
@@ -276,8 +276,8 @@ body {
   --color-guid-agent-bar: rgba(243, 178, 64, 0.12);
   --sider-section-title-color: #b39468;
 
-  /* ---- A. 终端 Terminal（画布恒深） ---- */
-  --terminal-surface-bg: #120c05;
+  /* ---- A. 终端 Terminal（跟随 --bg-1） ---- */
+  --terminal-surface-bg: var(--bg-1);
   --terminal-border: rgba(255, 255, 255, 0.08);
 
   /* ---- B. Arco 主色阶 primary-1..7（RGB 三元组，暗模式反转：深 → 浅；6 = 按钮基色朱砂，7 = 金亮强调） ---- */

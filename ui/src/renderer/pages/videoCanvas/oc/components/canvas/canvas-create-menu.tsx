@@ -1,7 +1,9 @@
 import { motion, useReducedMotion } from "motion/react";
 import type { CSSProperties, ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { cn } from "@oc/lib/utils";
 import { useThemeStore } from "@oc/stores/use-theme-store";
@@ -16,6 +18,7 @@ export type CanvasCreateCommand = {
 };
 
 export function CanvasCreateMenu({ commands }: { commands: CanvasCreateCommand[] }) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const projectCommands = commands.filter((command) => command.section === "project");
     const nodeCommands = commands.filter((command) => command.section === "node");
@@ -24,7 +27,7 @@ export function CanvasCreateMenu({ commands }: { commands: CanvasCreateCommand[]
     return (
         <div>
             <header className="flex min-h-7 items-center justify-between gap-2 border-b pb-2" style={{ borderColor: theme.toolbar.border }}>
-                <h2 className="font-semibold leading-none" style={{ fontSize: "var(--fs-caption)" }}>添加节点</h2>
+                <h2 className="font-semibold leading-none" style={{ fontSize: "var(--fs-caption)" }}>{canvasT("videoCanvas.menu.addNode", "添加节点")}</h2>
                 {projectCommands.map((command) => (
                     <button
                         key={command.id}
@@ -41,10 +44,10 @@ export function CanvasCreateMenu({ commands }: { commands: CanvasCreateCommand[]
                 ))}
             </header>
 
-            <MenuSection title="创作节点" color={theme.node.muted} />
+            <MenuSection title={canvasT("videoCanvas.menu.createNodes", "创作节点")} color={theme.node.muted} />
             <CanvasCreateCommandGrid commands={nodeCommands} variant="node" />
 
-            <MenuSection title="导入资源" color={theme.node.muted} spaced />
+            <MenuSection title={canvasT("videoCanvas.menu.importResources", "导入资源")} color={theme.node.muted} spaced />
             <CanvasCreateCommandGrid commands={resourceCommands} variant="resource" />
         </div>
     );

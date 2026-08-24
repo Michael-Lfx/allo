@@ -34,6 +34,8 @@ describe('desktop companion user-menu entry', () => {
     expect(languageIndex).toBeGreaterThan(companionIndex);
     expect(userMenuSource.includes('onOpenCompanion')).toBe(true);
     expect(userMenuSource.includes('Peoples')).toBe(true);
+    expect(userMenuSource.includes('CreditsWebsiteButton')).toBe(true);
+    expect(userMenuSource.includes('CreditsRefreshButton')).toBe(false);
   });
 
   test('keeps the existing /nomi navigation path and removes the rail tab', () => {

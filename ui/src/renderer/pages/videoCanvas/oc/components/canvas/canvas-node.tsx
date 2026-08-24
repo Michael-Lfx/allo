@@ -1,7 +1,9 @@
+import { useTranslation } from "react-i18next";
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Clock3, FileText, Image as ImageIcon, LoaderCircle, Lock, Maximize2, Music2, Pencil, Play, Plus, RefreshCw, Replace, Settings2, Square, Star, Type, Video } from "lucide-react";
 
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { CometCard } from "@oc/components/ui/aceternity/comet-card";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@oc/lib/canvas/resource-storage-status";
@@ -10,13 +12,14 @@ import { formatBytes } from "@oc/lib/image-utils";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@oc/lib/generation-error";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { resourceIdFromStorageKey } from "@oc/services/api/resources";
-import { cacheResourceObjectUrl, getCachedResourceObjectUrl } from "@oc/services/resource-blob-cache";
+import { cacheResourceObjectUrl, getCachedResourceObjectUrl, type ResourceCacheHint } from "@oc/services/resource-blob-cache";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { storyboardMinNodeHeight } from "./canvas-script-node";
 import { CanvasNodeType, type CanvasNodeData, type Position } from "@oc/types/canvas";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { loadCanvasDrawingPreview } from "@oc/lib/canvas/canvas-drawing-storage";
-import { MEDIA_NODE_MIN_SIZE } from "@oc/lib/canvas/canvas-node-size";
+import { getNodeMinSize, shouldKeepAspectRatio } from "@oc/lib/canvas/node-registry";
+import { readCanvasScaleFromElement } from "@oc/lib/canvas/canvas-live-viewport";
 
 const VideoPlayer = React.lazy(() =>
     import("@oc/components/video-player").then((mod) => ({ default: mod.VideoPlayer }))
@@ -28,12 +31,12 @@ type CanvasTheme = (typeof canvasThemes)[keyof typeof canvasThemes];
 type CanvasNodeProps = {
     data: CanvasNodeData;
     dragOffset?: Position;
-    scale: number;
     isSelected: boolean;
     isRelated: boolean;
     isFocusRelated: boolean;
     isConnectionTarget: boolean;
     isConnecting: boolean;
+    forceInputVisible?: boolean;
     showImageInfo: boolean;
     reduceMediaEffects?: boolean;
     readOnly?: boolean;
@@ -95,11 +98,11 @@ type NodeContentRendererProps = {
 export const CanvasNode = React.memo(function CanvasNode({
     data,
     dragOffset,
-    scale,
     isSelected,
     isRelated,
     isFocusRelated,
     isConnectionTarget,
+    forceInputVisible = false,
     showImageInfo,
     reduceMediaEffects = false,
     readOnly = false,
@@ -134,6 +137,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onOpenDrawing,
     onContextMenu,
 }: CanvasNodeProps) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [hovered, setHovered] = useState(false);
     const [isEditingContent, setIsEditingContent] = useState(false);
@@ -154,7 +158,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     const scriptMinHeight = data.type === CanvasNodeType.Script ? storyboardMinNodeHeight(data.metadata?.storyboardComposerHeight) : null;
     const cometDepth = hasMediaContent ? 6.8 : data.type === CanvasNodeType.Script ? 2.8 : 4.6;
     const cometTranslate = hasMediaContent ? 6 : data.type === CanvasNodeType.Script ? 2.5 : 4;
-    const cometDisabled = reduceMediaEffects || Boolean(dragOffset) || isEditingContent || isEditingTitle || isGeneratingNode || scale < 0.32 || batchClosing || batchOpening;
+    const cometDisabled = reduceMediaEffects || Boolean(dragOffset) || isEditingContent || isEditingTitle || isGeneratingNode || batchClosing || batchOpening;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const resizeRef = useRef({
         isResizing: false,
@@ -167,6 +171,7 @@ export const CanvasNode = React.memo(function CanvasNode({
         startHeight: 0,
         keepRatio: false,
         ratio: 1,
+        scale: 1,
     });
 
     useEffect(() => {
@@ -208,11 +213,11 @@ export const CanvasNode = React.memo(function CanvasNode({
         (event: MouseEvent) => {
             if (!resizeRef.current.isResizing) return;
 
-            const dx = (event.clientX - resizeRef.current.startX) / scale;
-            const dy = (event.clientY - resizeRef.current.startY) / scale;
-            const isMediaNode = data.type === CanvasNodeType.Image || data.type === CanvasNodeType.Video;
-            const minWidth = data.type === CanvasNodeType.Script ? 800 : isMediaNode ? MEDIA_NODE_MIN_SIZE.width : 220;
-            const minHeight = scriptMinHeight || (isMediaNode ? MEDIA_NODE_MIN_SIZE.height : 160);
+            const dx = (event.clientX - resizeRef.current.startX) / resizeRef.current.scale;
+            const dy = (event.clientY - resizeRef.current.startY) / resizeRef.current.scale;
+            const minSize = getNodeMinSize(data.type);
+            const minWidth = minSize.width;
+            const minHeight = scriptMinHeight || minSize.height;
             const startRight = resizeRef.current.startLeft + resizeRef.current.startWidth;
             const startBottom = resizeRef.current.startTop + resizeRef.current.startHeight;
             const fromLeft = resizeRef.current.corner.includes("left");
@@ -243,7 +248,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 y: fromTop ? startBottom - height : resizeRef.current.startTop,
             });
         },
-        [data.id, data.type, onResize, scale, scriptMinHeight],
+        [data.id, data.type, onResize, scriptMinHeight],
     );
 
     const handleResizeUp = useCallback(() => {
@@ -264,8 +269,9 @@ export const CanvasNode = React.memo(function CanvasNode({
             startTop: data.position.y,
             startWidth: data.width,
             startHeight: data.height,
-            keepRatio: (data.type === CanvasNodeType.Image && !data.metadata?.freeResize) || data.type === CanvasNodeType.Video,
+            keepRatio: shouldKeepAspectRatio(data),
             ratio: (data.metadata?.naturalWidth || data.width) / (data.metadata?.naturalHeight || data.height || 1),
+            scale: readCanvasScaleFromElement(event.currentTarget),
         };
         window.addEventListener("mousemove", handleResizeMove);
         window.addEventListener("mouseup", handleResizeUp);
@@ -310,7 +316,6 @@ export const CanvasNode = React.memo(function CanvasNode({
         >
             <NodeExternalHeader
                 node={data}
-                scale={scale}
                 active={hovered || isSelected || isFocusRelated}
                 editable={!readOnly && !data.metadata?.locked && Boolean(onTitleChange)}
                 editing={isEditingTitle}
@@ -439,10 +444,10 @@ export const CanvasNode = React.memo(function CanvasNode({
                             className="inline-flex h-9 items-center gap-2 rounded-full border px-4 text-xs font-semibold shadow-lg backdrop-blur-xl transition hover:-translate-y-0.5 hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 motion-reduce:hover:translate-y-0"
                             style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text, outlineColor: theme.accent.primary }}
                             onClick={(event) => { event.stopPropagation(); onReplaceMedia?.(data); }}
-                            aria-label="替换媒体"
+                            aria-label={canvasT("videoCanvas.nodeUi.replaceMedia", "替换媒体")}
                         >
                             <Replace className="size-3.5" />
-                            替换
+                            {canvasT("videoCanvas.nodeUi.replace", "替换")}
                         </button>
                     </div>
                 ) : null}
@@ -458,10 +463,10 @@ export const CanvasNode = React.memo(function CanvasNode({
                             className="inline-flex h-9 items-center gap-2 rounded-full border px-4 text-xs font-semibold shadow-lg backdrop-blur-xl transition hover:-translate-y-0.5 hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 motion-reduce:hover:translate-y-0"
                             style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text, outlineColor: theme.accent.primary }}
                             onClick={(event) => { event.stopPropagation(); onOpenTextEditor?.(data); }}
-                            aria-label="放大编辑文本"
+                            aria-label={canvasT("videoCanvas.nodeUi.expandEditText", "放大编辑文本")}
                         >
                             <Maximize2 className="size-3.5" />
-                            放大编辑
+                            {canvasT("videoCanvas.menu.expandEdit", "放大编辑")}
                         </button>
                     </div>
                 ) : null}
@@ -477,8 +482,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                             boxShadow: data.metadata.versionPrimary ? "0 0 0 2px " + theme.accent.primarySoft : "var(--shadow-sm)",
                             outlineColor: theme.accent.primary,
                         }}
-                        title={data.metadata.versionLabel + (data.metadata.versionPrimary ? " · 主版本" : "") + "，点击查看版本对比"}
-                        aria-label={data.metadata.versionLabel + (data.metadata.versionPrimary ? "，主版本" : "") + "，查看版本对比"}
+                        title={data.metadata.versionLabel + (data.metadata.versionPrimary ? " · " + canvasT("videoCanvas.nodeUi.primaryVersion", "主版本") : "") + canvasT("videoCanvas.nodeUi.versionCompare", "，点击查看版本对比")}
+                        aria-label={data.metadata.versionLabel + (data.metadata.versionPrimary ? "，" + canvasT("videoCanvas.nodeUi.primaryVersion", "主版本") : "") + canvasT("videoCanvas.nodeUi.versionCompareAria", "，查看版本对比")}
                         onMouseDown={(event) => event.stopPropagation()}
                         onClick={(event) => { event.stopPropagation(); onOpenVersions?.(data); }}
                     >
@@ -511,8 +516,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                 </> : null}
             </CometCard>
 
-            {!readOnly && data.type !== CanvasNodeType.Script ? <ConnectionSideRail side="left" scale={scale} visible={hovered} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
-            {!readOnly && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config ? <ConnectionSideRail side="right" scale={scale} visible={hovered} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
+            {!readOnly && data.type !== CanvasNodeType.Script ? <ConnectionSideRail side="left" visible={hovered || forceInputVisible} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
+            {!readOnly && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config ? <ConnectionSideRail side="right" visible={hovered} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
 
         </div>
     );
@@ -576,7 +581,7 @@ function DrawingContent({ node, theme, drawingProjectId }: NodeContentRendererPr
     return (
         <div className="relative h-full w-full overflow-hidden" style={{ background: theme.node.panel, color: theme.node.text }}>
             {previewUrl ? (
-                <img src={previewUrl} alt="绘图预览" className="absolute inset-0 h-full w-full object-cover" draggable={false} />
+                <img src={previewUrl} alt={canvasT("videoCanvas.nodeUi.drawingPreview", "绘图预览")} className="absolute inset-0 h-full w-full object-cover" draggable={false} />
             ) : (
                 <div className="absolute inset-0 grid place-items-center" style={{ backgroundImage: `radial-gradient(circle, ${theme.node.stroke} 1px, transparent 1px)`, backgroundSize: "18px 18px" }}>
                     <span className="grid size-12 place-items-center rounded-xl border" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.muted }}>
@@ -586,8 +591,8 @@ function DrawingContent({ node, theme, drawingProjectId }: NodeContentRendererPr
             )}
             <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-3 px-4 pb-3 pt-12" style={{ background: `linear-gradient(to top, ${theme.node.fill}, ${theme.node.fill}e6 55%, transparent)` }}>
                 <div className="min-w-0">
-                    <div className="truncate text-xs font-semibold" title={node.title || "绘图"}>{node.title || "绘图"}</div>
-                    <div className="mt-0.5 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{shapeCount} 个图形 · {pageCount} 个页面</div>
+                    <div className="truncate text-xs font-semibold" title={node.title || canvasT("videoCanvas.node.drawing", "绘图")}>{node.title || canvasT("videoCanvas.node.drawing", "绘图")}</div>
+                    <div className="mt-0.5 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.nodeUi.shapesPages", "{{shapes}} 个图形 · {{pages}} 个页面", { shapes: shapeCount, pages: pageCount })}</div>
                 </div>
                 <Pencil className="size-3.5 shrink-0" style={{ color: theme.accent.primary }} />
             </div>
@@ -603,7 +608,7 @@ function LoadingContent({ node, theme, onCancelTask, onOpenTaskDetails }: Pick<N
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-5 text-center" style={{ color: theme.node.activeStroke }}>
             <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />
-            <span className="text-[var(--fs-tiny)] font-semibold">{node.metadata?.taskStage || (taskId ? "任务处理中" : "正在创建任务")}</span>
+            <span className="text-[var(--fs-tiny)] font-semibold">{node.metadata?.taskStage || (taskId ? canvasT("videoCanvas.nodeUi.taskProcessing", "任务处理中") : canvasT("videoCanvas.nodeUi.creatingTask", "正在创建任务"))}</span>
             {taskId ? (
                 <div className="flex w-full max-w-[210px] flex-col items-center gap-1.5">
                     <div className="max-w-full truncate text-[var(--fs-label)] font-medium" style={{ color: theme.node.text }}>
@@ -619,8 +624,8 @@ function LoadingContent({ node, theme, onCancelTask, onOpenTaskDetails }: Pick<N
                         <Clock3 className="mr-1 inline size-3" />{elapsed} · {shortTaskId(taskId)}
                     </div>
                     <div className="mt-0.5 flex items-center gap-1.5">
-                        <button type="button" className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[var(--fs-tiny)] font-medium transition hover:brightness-110" style={{ background: theme.toolbar.itemHover, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenTaskDetails?.(node); }}><FileText className="size-3" />详情</button>
-                        <button type="button" className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[var(--fs-tiny)] font-medium transition hover:brightness-110" style={{ background: `${theme.accent.danger}16`, color: theme.accent.danger }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCancelTask?.(node); }}><Square className="size-2.5 fill-current" />取消</button>
+                        <button type="button" className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[var(--fs-tiny)] font-medium transition hover:brightness-110" style={{ background: theme.toolbar.itemHover, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenTaskDetails?.(node); }}><FileText className="size-3" />{canvasT("videoCanvas.nodeUi.details", "详情")}</button>
+                        <button type="button" className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[var(--fs-tiny)] font-medium transition hover:brightness-110" style={{ background: `${theme.accent.danger}16`, color: theme.accent.danger }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCancelTask?.(node); }}><Square className="size-2.5 fill-current" />{canvasT("videoCanvas.nodeUi.cancel", "取消")}</button>
                     </div>
                 </div>
             ) : null}
@@ -635,20 +640,20 @@ function useTaskElapsed(createdAt?: string) {
         const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
         return () => window.clearInterval(timer);
     }, [createdAt]);
-    if (!createdAt) return "刚刚";
+    if (!createdAt) return canvasT("videoCanvas.nodeUi.justNow", "刚刚");
     const seconds = Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000));
-    if (seconds < 60) return `${seconds}秒`;
+    if (seconds < 60) return canvasT("videoCanvas.nodeUi.seconds", "{{n}}秒", { n: seconds });
     const minutes = Math.floor(seconds / 60);
-    return minutes < 60 ? `${minutes}分${seconds % 60}秒` : `${Math.floor(minutes / 60)}时${minutes % 60}分`;
+    return minutes < 60 ? canvasT("videoCanvas.nodeUi.minutesSeconds", "{{m}}分{{s}}秒", { m: minutes, s: seconds % 60 }) : canvasT("videoCanvas.nodeUi.hoursMinutes", "{{h}}时{{m}}分", { h: Math.floor(minutes / 60), m: minutes % 60 });
 }
 
 function taskStatusLabel(status?: string) {
-    if (status === "queued") return "排队中";
-    if (status === "running") return "生成中";
-    if (status === "succeeded") return "任务已完成";
-    if (status === "failed") return "任务失败";
-    if (status === "cancelled") return "任务已取消";
-    return status ? "未知任务状态" : "等待任务状态";
+    if (status === "queued") return canvasT("videoCanvas.nodeUi.queued", "排队中");
+    if (status === "running") return canvasT("videoCanvas.nodeUi.generating", "生成中");
+    if (status === "succeeded") return canvasT("videoCanvas.nodeUi.taskSucceeded", "任务已完成");
+    if (status === "failed") return canvasT("videoCanvas.nodeUi.taskFailed", "任务失败");
+    if (status === "cancelled") return canvasT("videoCanvas.nodeUi.taskCancelled", "任务已取消");
+    return status ? canvasT("videoCanvas.nodeUi.unknownTaskStatus", "未知任务状态") : canvasT("videoCanvas.nodeUi.waitingTaskStatus", "等待任务状态");
 }
 
 function shortTaskId(id: string) {
@@ -663,7 +668,7 @@ function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "
             <div className="text-xs leading-5" style={{ color: theme.accent.danger }}>{generationErrorMessage(node.metadata?.errorDetails)}</div>
             {moderationFailure ? (
                 <div className="rounded-md border px-3 py-2 text-[var(--fs-label)] leading-4" style={{ background: theme.node.fill, borderColor: theme.toolbar.border, color: theme.node.muted }}>
-                    修改节点提示词后，可重新点击生成。
+                    {canvasT("videoCanvas.nodeUi.retryHint", "修改节点提示词后，可重新点击生成。")}
                 </div>
             ) : (
                 <button
@@ -677,7 +682,7 @@ function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "
                     onMouseDown={(event) => event.stopPropagation()}
                 >
                     <RefreshCw className="size-3.5" />
-                    重试
+                    {canvasT("videoCanvas.nodeUi.retry", "重试")}
                 </button>
             )}
         </div>
@@ -687,7 +692,7 @@ function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "
 function UnknownNodeContent({ theme }: Pick<NodeContentRendererProps, "theme">) {
     return (
         <div className="flex h-full w-full items-center justify-center text-sm" style={{ color: theme.node.placeholder }}>
-            未知节点
+            {canvasT("videoCanvas.nodeUi.unknownNode", "未知节点")}
         </div>
     );
 }
@@ -729,7 +734,7 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                     style={textStyle}
                     onWheel={(event) => event.stopPropagation()}
                 >
-                    {node.metadata?.content || <span style={{ color: theme.node.placeholder }}>双击编辑文字</span>}
+                    {node.metadata?.content || <span style={{ color: theme.node.placeholder }}>{canvasT("videoCanvas.nodeUi.doubleClickEdit", "双击编辑文字")}</span>}
                 </div>
             )}
         </div>
@@ -750,7 +755,7 @@ function SkillContent({ node, theme }: NodeContentRendererProps) {
                             <BookOpenCheck className="size-4" />
                         </span>
                         <div className="min-w-0">
-                            <div className="truncate text-sm font-semibold" title={skill?.name || node.title || "技能"}>{skill?.name || node.title || "技能"}</div>
+                            <div className="truncate text-sm font-semibold" title={skill?.name || node.title || canvasT("videoCanvas.node.skill", "技能")}>{skill?.name || node.title || canvasT("videoCanvas.node.skill", "技能")}</div>
                             <div className="mt-0.5 flex items-center gap-1.5 text-[var(--fs-label)]" style={{ color: theme.node.muted }}>
                                 <span>{skillCategoryLabel(skill?.category)}</span>
                                 <span>·</span>
@@ -770,8 +775,8 @@ function SkillContent({ node, theme }: NodeContentRendererProps) {
             {skill?.description ? <div className="mt-3 line-clamp-2 text-xs leading-5" style={{ color: theme.node.muted }}>{skill.description}</div> : null}
 
             <div className="thin-scrollbar mt-3 min-h-0 flex-1 overflow-hidden rounded-xl border px-3 py-2 text-xs leading-5" style={{ borderColor: theme.node.stroke, background: theme.node.panel, color: theme.node.text }}>
-                <div className="mb-1 font-semibold opacity-55">模板</div>
-                <div className="line-clamp-4 whitespace-pre-wrap break-words">{template || "未配置技能模板"}</div>
+                <div className="mb-1 font-semibold opacity-55">{canvasT("videoCanvas.nodeUi.template", "模板")}</div>
+                <div className="line-clamp-4 whitespace-pre-wrap break-words">{template || canvasT("videoCanvas.nodeUi.noSkillTemplate", "未配置技能模板")}</div>
             </div>
 
             <div className="mt-3 flex flex-wrap gap-1.5">
@@ -779,25 +784,25 @@ function SkillContent({ node, theme }: NodeContentRendererProps) {
                     <span key={tag} className="rounded-md border px-1.5 py-0.5 text-[var(--fs-tiny)]" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
                         {tag}
                     </span>
-                )) : <span className="text-[var(--fs-label)]" style={{ color: theme.node.muted }}>连接到图片、视频、音频或文本节点后生效</span>}
+                )) : <span className="text-[var(--fs-label)]" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.nodeUi.skillConnectHint", "连接到图片、视频、音频或文本节点后生效")}</span>}
             </div>
         </div>
     );
 }
 
 function skillCategoryLabel(category?: string) {
-    if (category === "writing") return "剧情";
-    if (category === "storyboard") return "分镜";
-    if (category === "image") return "生图";
-    if (category === "video") return "视频";
-    return "通用";
+    if (category === "writing") return canvasT("videoCanvas.nodeUi.skillCatWriting", "剧情");
+    if (category === "storyboard") return canvasT("videoCanvas.nodeUi.skillCatStoryboard", "分镜");
+    if (category === "image") return canvasT("videoCanvas.nodeUi.skillCatImage", "生图");
+    if (category === "video") return canvasT("videoCanvas.nodeUi.skillCatVideo", "视频");
+    return canvasT("videoCanvas.nodeUi.skillCatGeneral", "通用");
 }
 
 function skillOutputModeLabel(mode?: string) {
     if (mode === "json") return "JSON";
-    if (mode === "image_prompt") return "生图提示词";
-    if (mode === "workflow") return "工作流";
-    return "文本";
+    if (mode === "image_prompt") return canvasT("videoCanvas.nodeUi.skillModeImagePrompt", "生图提示词");
+    if (mode === "workflow") return canvasT("videoCanvas.nodeUi.skillModeWorkflow", "工作流");
+    return canvasT("videoCanvas.nodeUi.skillModeText", "文本");
 }
 
 function ResourceLabelBadge({ reference, theme }: { reference: CanvasResourceReference; theme: CanvasTheme }) {
@@ -819,12 +824,12 @@ function ResourceStorageBadge({ storageKey, active, theme }: { storageKey?: stri
 }
 
 function NodeLockBadge({ theme }: { theme: CanvasTheme }) {
-    return <span className="pointer-events-none grid size-7 shrink-0 place-items-center rounded-md border backdrop-blur" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.muted }} title="节点已锁定"><Lock className="size-3.5" /></span>;
+    return <span className="pointer-events-none grid size-7 shrink-0 place-items-center rounded-md border backdrop-blur" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.muted }} title={canvasT("videoCanvas.nodeUi.locked", "节点已锁定")}><Lock className="size-3.5" /></span>;
 }
 
 function BatchToggleBadge({ count, expanded, theme, onToggle }: { count: number; expanded: boolean; theme: CanvasTheme; onToggle: () => void }) {
     return (
-        <button type="button" className="canvas-node-tool-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[var(--fs-tiny)] font-semibold backdrop-blur-md" style={{ background: `${theme.toolbar.panel}d9`, borderColor: `${theme.toolbar.border}cc`, color: theme.node.text }} aria-label={expanded ? "图片组已展开" : "图片组已收起"} onClick={(event) => { event.stopPropagation(); onToggle(); }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+        <button type="button" className="canvas-node-tool-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[var(--fs-tiny)] font-semibold backdrop-blur-md" style={{ background: `${theme.toolbar.panel}d9`, borderColor: `${theme.toolbar.border}cc`, color: theme.node.text }} aria-label={expanded ? canvasT("videoCanvas.nodeUi.imageGroupExpanded", "图片组已展开") : canvasT("videoCanvas.nodeUi.imageGroupCollapsed", "图片组已收起")} onClick={(event) => { event.stopPropagation(); onToggle(); }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
             <span className="leading-none" style={{ color: theme.accent.primary }}>{count}</span>
             <ChevronRight className={`size-3 opacity-55 transition-transform ${expanded ? "rotate-90" : ""}`} />
         </button>
@@ -833,9 +838,9 @@ function BatchToggleBadge({ count, expanded, theme, onToggle }: { count: number;
 
 function BatchPrimaryBadge({ visible, selected, theme, onSelect }: { visible: boolean; selected: boolean; theme: CanvasTheme; onSelect: () => void }) {
     return (
-        <button type="button" className={`canvas-node-tool-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[var(--fs-tiny)] font-medium backdrop-blur-md transition-opacity ${visible ? "opacity-100" : "pointer-events-none opacity-0"}`} style={{ background: theme.toolbar.panel, borderColor: selected ? theme.accent.primary : theme.toolbar.border, color: selected ? theme.accent.primary : theme.node.text }} aria-label={selected ? "当前主图" : "设置为主图"} aria-pressed={selected} onClick={(event) => { event.stopPropagation(); onSelect(); }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+        <button type="button" className={`canvas-node-tool-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[var(--fs-tiny)] font-medium backdrop-blur-md transition-opacity ${visible ? "opacity-100" : "pointer-events-none opacity-0"}`} style={{ background: theme.toolbar.panel, borderColor: selected ? theme.accent.primary : theme.toolbar.border, color: selected ? theme.accent.primary : theme.node.text }} aria-label={selected ? canvasT("videoCanvas.nodeUi.currentPrimary", "当前主图") : canvasT("videoCanvas.nodeUi.setPrimary", "设置为主图")} aria-pressed={selected} onClick={(event) => { event.stopPropagation(); onSelect(); }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
             <Star className={`size-3 ${selected ? "fill-current" : ""}`} style={{ color: theme.accent.primary }} />
-            {selected ? "当前主图" : "主图"}
+            {selected ? canvasT("videoCanvas.nodeUi.currentPrimary", "当前主图") : canvasT("videoCanvas.nodeUi.primaryShort", "主图")}
         </button>
     );
 }
@@ -898,9 +903,9 @@ function EmptyImageContent({ node, theme, isBatchRoot, batchCount, batchExpanded
             {isCharacterReference ? (
                 <div className="max-w-[80%] text-center">
                     <div className="truncate text-xs font-medium" title={node.metadata?.characterName || node.title} style={{ color: theme.node.muted }}>{node.metadata?.characterName || node.title}</div>
-                    <div className="mt-1 text-[var(--fs-tiny)] tracking-[0.12em] opacity-50">多视角参考 · 待生成</div>
+                    <div className="mt-1 text-[var(--fs-tiny)] tracking-[0.12em] opacity-50">{canvasT("videoCanvas.nodeUi.multiViewPending", "多视角参考 · 待生成")}</div>
                 </div>
-            ) : <span className="text-[var(--fs-tiny)] tracking-[0.18em] opacity-50">空图片节点</span>}
+            ) : <span className="text-[var(--fs-tiny)] tracking-[0.18em] opacity-50">{canvasT("videoCanvas.nodeUi.emptyImage", "空图片节点")}</span>}
         </div>
     );
     if (isBatchRoot)
@@ -919,11 +924,11 @@ function VideoNodeContent({ node, theme, reduceMediaEffects }: NodeContentRender
         return (
             <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.placeholder }}>
                 <Video className="size-7 opacity-35" />
-                <span className="text-sm">空视频节点</span>
+                <span className="text-sm">{canvasT("videoCanvas.nodeUi.emptyVideo", "空视频节点")}</span>
             </div>
         );
     if (!url) {
-        return <DeferredMediaLoad icon={loading ? <LoaderCircle className="size-5 animate-spin" /> : <Play className="size-5 fill-current" />} label={loading ? "正在缓存视频" : "加载并缓存视频"} disabled={loading} onClick={() => { playWhenReadyRef.current = true; void load(); }} />;
+        return <DeferredMediaLoad icon={loading ? <LoaderCircle className="size-5 animate-spin" /> : <Play className="size-5 fill-current" />} label={loading ? canvasT("videoCanvas.nodeUi.cachingVideo", "正在缓存视频") : canvasT("videoCanvas.nodeUi.loadCacheVideo", "加载并缓存视频")} disabled={loading} onClick={() => { playWhenReadyRef.current = true; void load(); }} />;
     }
     return (
         <Suspense
@@ -936,7 +941,7 @@ function VideoNodeContent({ node, theme, reduceMediaEffects }: NodeContentRender
             <VideoPlayer
                 src={url}
                 mimeType={node.metadata?.mimeType}
-                title={node.title || "视频"}
+                title={node.title || canvasT("videoCanvas.node.video", "视频")}
                 preload={reduceMediaEffects ? "none" : "metadata"}
                 autoPlay={playWhenReadyRef.current}
                 onCanPlay={() => {
@@ -964,17 +969,17 @@ function AudioNodeContent({ node, theme }: NodeContentRendererProps) {
         return (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2" style={{ color: theme.node.placeholder }}>
                 <Music2 className="size-7 opacity-35" />
-                <span className="text-sm">空音频节点</span>
+                <span className="text-sm">{canvasT("videoCanvas.nodeUi.emptyAudio", "空音频节点")}</span>
             </div>
         );
     if (!url) {
-        return <DeferredMediaLoad icon={loading ? <LoaderCircle className="size-5 animate-spin" /> : <Play className="size-5 fill-current" />} label={loading ? "正在缓存音频" : "加载并缓存音频"} disabled={loading} onClick={() => { playWhenReadyRef.current = true; void load(); }} />;
+        return <DeferredMediaLoad icon={loading ? <LoaderCircle className="size-5 animate-spin" /> : <Play className="size-5 fill-current" />} label={loading ? canvasT("videoCanvas.nodeUi.cachingAudio", "正在缓存音频") : canvasT("videoCanvas.nodeUi.loadCacheAudio", "加载并缓存音频")} disabled={loading} onClick={() => { playWhenReadyRef.current = true; void load(); }} />;
     }
     return (
         <div className="flex h-full w-full flex-col justify-center gap-3 px-4" style={{ background: theme.node.fill, color: theme.node.text }}>
             <div className="flex min-w-0 items-center gap-2 text-sm opacity-70">
                 <Music2 className="size-4 shrink-0" />
-                <span className="min-w-0 truncate" title={node.title || "音频"}>{node.title || "音频"}</span>
+                <span className="min-w-0 truncate" title={node.title || canvasT("videoCanvas.node.audio", "音频")}>{node.title || canvasT("videoCanvas.node.audio", "音频")}</span>
             </div>
             <audio ref={audioRef} src={url} controls preload="metadata" className="w-full" data-canvas-no-zoom />
         </div>
@@ -1032,9 +1037,16 @@ function DeferredMediaLoad({ icon, label, disabled, onClick }: { icon: ReactNode
     );
 }
 
+function nodeResourceCacheHint(mimeType?: string, bytes?: number): ResourceCacheHint | undefined {
+    if (!mimeType && bytes == null) return undefined;
+    return { mimeType, bytes };
+}
+
 function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
     const storageKey = node.metadata?.storageKey || "";
     const fallback = node.metadata?.content || "";
+    const mimeType = node.metadata?.mimeType;
+    const bytes = node.metadata?.bytes;
     const isRemoteResource = Boolean(resourceIdFromStorageKey(storageKey));
     const [url, setUrl] = useState(isRemoteResource ? "" : fallback);
     const [loading, setLoading] = useState(isRemoteResource && eager);
@@ -1048,7 +1060,8 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
         }
         setUrl("");
         setLoading(eager);
-        const resolve = eager ? cacheResourceObjectUrl(storageKey) : getCachedResourceObjectUrl(storageKey);
+        const hint = nodeResourceCacheHint(mimeType, bytes);
+        const resolve = eager ? cacheResourceObjectUrl(storageKey, hint) : getCachedResourceObjectUrl(storageKey, hint);
         void resolve
             .then((cached) => {
                 if (!cancelled) setUrl(cached || (eager ? fallback : ""));
@@ -1062,14 +1075,14 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
         return () => {
             cancelled = true;
         };
-    }, [eager, fallback, isRemoteResource, storageKey]);
+    }, [bytes, eager, fallback, isRemoteResource, mimeType, storageKey]);
 
     const load = useCallback(async () => {
         if (url) return url;
         if (!isRemoteResource) return fallback;
         setLoading(true);
         try {
-            const next = (await cacheResourceObjectUrl(storageKey)) || fallback;
+            const next = (await cacheResourceObjectUrl(storageKey, nodeResourceCacheHint(mimeType, bytes))) || fallback;
             setUrl(next);
             return next;
         } catch {
@@ -1078,7 +1091,7 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
         } finally {
             setLoading(false);
         }
-    }, [fallback, isRemoteResource, storageKey, url]);
+    }, [bytes, fallback, isRemoteResource, mimeType, storageKey, url]);
 
     return { url, loading, load };
 }
@@ -1168,11 +1181,8 @@ function ResizeHandle({ corner, onMouseDown }: { corner: ResizeCorner; onMouseDo
     return <div className={`absolute z-[var(--node-z-handle)] size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
 }
 
-const NODE_EXTERNAL_HEADER_MIN_SCALE = 0.35;
-
-function NodeExternalHeader({ node, scale, active, editable, editing, draft, theme, onDraftChange, onEdit, onCommit, onCancel }: {
+function NodeExternalHeader({ node, active, editable, editing, draft, theme, onDraftChange, onEdit, onCommit, onCancel }: {
     node: CanvasNodeData;
-    scale: number;
     active: boolean;
     editable: boolean;
     editing: boolean;
@@ -1184,15 +1194,13 @@ function NodeExternalHeader({ node, scale, active, editable, editing, draft, the
     onCancel: () => void;
 }) {
     // 标题保持屏幕尺寸只适用于近景；远景继续反向缩放会遮住节点和连线。
-    if (scale < NODE_EXTERNAL_HEADER_MIN_SCALE && !editing) return null;
-    const inverseScale = 1 / Math.max(scale, 0.05);
     const Icon = nodeTypeIcon(node.type);
-    const maxHeaderWidth = Math.min(240, node.width * scale);
 
     return (
         <div
             className="canvas-node-external-header absolute bottom-full left-0 z-[var(--node-z-overlay)] flex h-6 items-center gap-1 overflow-hidden"
-            style={{ maxWidth: maxHeaderWidth, color: active ? theme.node.text : theme.node.label, transform: `scale(var(--canvas-live-inverse-scale, ${inverseScale}))`, transformOrigin: "left bottom" }}
+            data-editing={editing ? "true" : "false"}
+            style={{ maxWidth: `min(240px, calc(${node.width}px * var(--canvas-committed-scale, 1)))`, color: active ? theme.node.text : theme.node.label, transform: "scale(var(--canvas-live-inverse-scale, 1))", transformOrigin: "left bottom" }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
         >
@@ -1210,10 +1218,10 @@ function NodeExternalHeader({ node, scale, active, editable, editing, draft, the
                         if (event.key === "Enter") event.currentTarget.blur();
                         if (event.key === "Escape") onCancel();
                     }}
-                    aria-label="节点名称"
+                    aria-label={canvasT("videoCanvas.nodeUi.nodeName", "节点名称")}
                 />
             ) : editable ? (
-                <button type="button" className="group flex min-w-0 flex-1 items-center gap-1 rounded px-0.5 text-xs font-medium outline-none transition-opacity hover:opacity-100 focus-visible:ring-1" style={{ opacity: active ? 1 : 0.78, "--tw-ring-color": theme.node.activeStroke } as React.CSSProperties} onClick={onEdit} aria-label={`编辑节点名称：${node.title}`}>
+                <button type="button" className="group flex min-w-0 flex-1 items-center gap-1 rounded px-0.5 text-xs font-medium outline-none transition-opacity hover:opacity-100 focus-visible:ring-1" style={{ opacity: active ? 1 : 0.78, "--tw-ring-color": theme.node.activeStroke } as React.CSSProperties} onClick={onEdit} aria-label={canvasT("videoCanvas.nodeUi.editNodeName", "编辑节点名称：{{title}}", { title: node.title })}>
                     <span className="min-w-0 flex-1 truncate" title={node.title}>{node.title}</span>
                     <Pencil className="size-2.5 shrink-0 opacity-55 transition-opacity group-hover:opacity-100" />
                 </button>
@@ -1242,10 +1250,10 @@ function NodeStatusBadge({ status }: { status: "loading" | "success" | "error" }
             <div
                 className="pointer-events-none absolute left-2 top-2 z-20 flex items-center gap-1 rounded-full px-2 py-0.5 backdrop-blur-sm"
                 style={{ background: "color-mix(in oklch, var(--status-loading) 20%, transparent)", color: "var(--status-loading)" }}
-                aria-label="生成中"
+                aria-label={canvasT("videoCanvas.nodeUi.badgeGenerating", "生成中")}
             >
                 <span className="size-1.5 animate-pulse rounded-full" style={{ background: "var(--status-loading)" }} />
-                <span className="text-[var(--fs-micro)] font-medium leading-none">生成中</span>
+                <span className="text-[var(--fs-micro)] font-medium leading-none">{canvasT("videoCanvas.nodeUi.badgeGenerating", "生成中")}</span>
             </div>
         );
     }
@@ -1254,10 +1262,10 @@ function NodeStatusBadge({ status }: { status: "loading" | "success" | "error" }
             <div
                 className="pointer-events-none absolute left-2 top-2 z-20 flex items-center gap-1 rounded-full px-2 py-0.5 backdrop-blur-sm"
                 style={{ background: "color-mix(in oklch, var(--status-error) 20%, transparent)", color: "var(--status-error)" }}
-                aria-label="生成失败"
+                aria-label={canvasT("videoCanvas.nodeUi.badgeFailedAria", "生成失败")}
             >
                 <AlertCircle className="size-3" strokeWidth={2} />
-                <span className="text-[var(--fs-micro)] font-medium leading-none">失败</span>
+                <span className="text-[var(--fs-micro)] font-medium leading-none">{canvasT("videoCanvas.nodeUi.badgeFailed", "失败")}</span>
             </div>
         );
     }
@@ -1266,18 +1274,17 @@ function NodeStatusBadge({ status }: { status: "loading" | "success" | "error" }
         <div
             className="pointer-events-none absolute left-2 top-2 z-20 flex items-center gap-1 rounded-full px-2 py-0.5 backdrop-blur-sm"
             style={{ background: "color-mix(in oklch, var(--status-success) 20%, transparent)", color: "var(--status-success)", animation: "canvas-status-success-fade 2s ease-out forwards" }}
-            aria-label="生成完成"
+            aria-label={canvasT("videoCanvas.nodeUi.badgeDoneAria", "生成完成")}
         >
             <CheckCircle2 className="size-3" strokeWidth={2} />
-            <span className="text-[var(--fs-micro)] font-medium leading-none">完成</span>
+            <span className="text-[var(--fs-micro)] font-medium leading-none">{canvasT("videoCanvas.nodeUi.badgeDone", "完成")}</span>
         </div>
     );
 }
 
-function ConnectionSideRail({ side, scale, visible, theme, onPointerDown }: { side: "left" | "right"; scale: number; visible: boolean; theme: CanvasTheme; onPointerDown: (event: React.PointerEvent, anchorRatio: number) => void }) {
+function ConnectionSideRail({ side, visible, theme, onPointerDown }: { side: "left" | "right"; visible: boolean; theme: CanvasTheme; onPointerDown: (event: React.PointerEvent, anchorRatio: number) => void }) {
     const handleRef = useRef<HTMLSpanElement>(null);
     const anchorRatioRef = useRef(0.5);
-    const inverseScale = 1 / Math.max(scale, 0.05);
 
     const resetAnchor = useCallback(() => {
         anchorRatioRef.current = 0.5;
@@ -1302,29 +1309,29 @@ function ConnectionSideRail({ side, scale, visible, theme, onPointerDown }: { si
         <button
             type="button"
             className={`group absolute top-1/2 z-[var(--node-z-overlay)] touch-none -translate-y-1/2 outline-none transition-opacity duration-150 ${visible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
-            style={{ width: 56 * inverseScale, height: `min(100%, ${72 * inverseScale}px)`, ...(side === "left" ? { right: "100%" } : { left: "100%" }) }}
+            style={{ width: "calc(56px * var(--canvas-live-inverse-scale, 1))", height: "min(100%, calc(72px * var(--canvas-live-inverse-scale, 1)))", ...(side === "left" ? { right: "100%" } : { left: "100%" }) }}
             onPointerEnter={updateAnchor}
             onPointerMove={updateAnchor}
             onPointerLeave={resetAnchor}
             onPointerDown={(event) => onPointerDown(event, anchorRatioRef.current)}
-            aria-label={`${side === "left" ? "输入" : "输出"}连接点，单击创建节点或拖动连线`}
+            aria-label={`${side === "left" ? canvasT("videoCanvas.nodeUi.handleInput", "输入") : canvasT("videoCanvas.nodeUi.handleOutput", "输出")}${canvasT("videoCanvas.nodeUi.handleHint", "连接点，单击创建节点或拖动连线")}`}
         >
             <span
                 ref={handleRef}
                 className="absolute grid -translate-y-1/2 place-items-center rounded-full border transition-[background-color,box-shadow] duration-150 group-hover:brightness-125 group-focus-visible:brightness-125"
                 style={{
                     top: "50%",
-                    width: 18 * inverseScale,
-                    height: 18 * inverseScale,
-                    ...(side === "left" ? { right: 6 * inverseScale } : { left: 6 * inverseScale }),
-                    borderWidth: inverseScale,
+                    width: "calc(18px * var(--canvas-live-inverse-scale, 1))",
+                    height: "calc(18px * var(--canvas-live-inverse-scale, 1))",
+                    ...(side === "left" ? { right: "calc(6px * var(--canvas-live-inverse-scale, 1))" } : { left: "calc(6px * var(--canvas-live-inverse-scale, 1))" }),
+                    borderWidth: "calc(1px * var(--canvas-live-inverse-scale, 1))",
                     background: theme.spatial.elevated,
                     borderColor: theme.node.activeStroke,
                     color: theme.node.activeStroke,
                     boxShadow: `0 4px 12px ${theme.spatial.shadow}`,
                 }}
             >
-                <Plus style={{ width: 10 * inverseScale, height: 10 * inverseScale }} strokeWidth={2} />
+                <Plus className="size-[10px]" style={{ width: "calc(10px * var(--canvas-live-inverse-scale, 1))", height: "calc(10px * var(--canvas-live-inverse-scale, 1))" }} strokeWidth={2} />
             </span>
         </button>
     );

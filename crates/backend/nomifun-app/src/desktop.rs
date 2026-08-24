@@ -834,6 +834,17 @@ impl DesktopServer {
         self.loopback_port
     }
 
+    /// Attach the OS system-notification sink used when a requirement reaches a
+    /// terminal state. No-op when startup cleanup already dropped `AppServices`.
+    pub fn attach_system_task_notifier(
+        &self,
+        notifier: Arc<dyn nomifun_notify::SystemTaskNotifier>,
+    ) {
+        if let Some(services) = self._keep_alive.services() {
+            services.attach_system_task_notifier(notifier);
+        }
+    }
+
     /// Keep the robot endpoint advertiser in step with the LAN listener.
     ///
     /// A robot is told where to connect exactly once, in its OTA response, and

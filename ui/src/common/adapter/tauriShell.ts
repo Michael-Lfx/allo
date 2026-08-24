@@ -236,8 +236,26 @@ export async function tauriSetAutostart(enabled: boolean): Promise<void> {
   else await mod.disable();
 }
 
-/** Native OS notification (tauri-plugin-notification). */
-export async function tauriSendNotification(opts: { title: string; body: string; icon?: string }): Promise<void> {
+/** Native OS notification. Desktop routes through a Rust command so Windows
+ * toast clicks can emit `flowy://` deep links; other hosts fall back to the
+ * notification plugin. */
+export async function tauriSendNotification(opts: {
+  title: string;
+  body: string;
+  icon?: string;
+  click_target?: string;
+}): Promise<void> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('show_os_notification_cmd', {
+      title: opts.title,
+      body: opts.body,
+      clickTarget: opts.click_target ?? null,
+    });
+    return;
+  } catch {
+    // Older shells / web fallback: plugin path (no click deep link).
+  }
   const mod = await import('@tauri-apps/plugin-notification');
   let granted = await mod.isPermissionGranted();
   if (!granted) granted = (await mod.requestPermission()) === 'granted';

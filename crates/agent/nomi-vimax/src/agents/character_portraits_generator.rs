@@ -255,6 +255,7 @@ mod tests {
         assert!(prompt.contains("red hanfu"));
         assert!(prompt.contains("人物安全约束"));
         assert!(prompt.contains("不得套用现实真人、明星长相"));
+        assert!(prompt.contains("蓝色拓扑网格"));
         assert!(!prompt.contains("{look_lock}"));
         assert!(!prompt.contains("{medium_lock}"));
         assert!(!prompt.contains("{face_guidance}"));
@@ -276,6 +277,7 @@ mod tests {
         assert_eq!(prompt.matches("禁止动漫").count(), 0);
         assert!(prompt.contains("人物安全约束"));
         assert!(prompt.contains("不得套用现实真人、明星长相"));
+        assert!(prompt.contains("蓝色拓扑网格"));
     }
 
     #[test]
@@ -293,5 +295,6 @@ mod tests {
         assert!(!prompt.contains("not anime/cartoon/chibi"));
         assert!(!prompt.contains("CHILD FACE LOCK"));
         assert!(prompt.contains("人物安全约束"));
+        assert!(prompt.contains("蓝色拓扑网格"));
     }
 }

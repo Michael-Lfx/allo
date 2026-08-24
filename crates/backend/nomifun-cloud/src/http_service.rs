@@ -16,7 +16,9 @@ use crate::flowy::FlowyApiClient;
 use crate::session::ServerSession;
 use nomifun_api_types::{
     CloudImConversation, CloudImLogUploadResponse, CloudImMessage, CloudImMessageList,
-    CloudImSendMessageRequest,
+    CloudImSendMessageRequest, CloudBillingAirwallexSession, CloudBillingCouponList,
+    CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingOrder,
+    CloudBillingPaymentChannel, CloudBillingPlan,
 };
 use nomifun_common::AppError;
 
@@ -38,9 +40,13 @@ impl CloudService {
         // Persist when the file is missing OR when base_url/provider were empty —
         // otherwise other services that read yaml from disk (media/vimax) stay
         // gated off by `api_ready() == false` for the whole process lifetime.
+        // Also persist when rewriting the retired `.cn` production host so login
+        // stops targeting the old domain after a restart.
         let should_persist = !path.exists()
             || config.server.base_url.trim().is_empty()
-            || config.media.provider.trim().is_empty();
+            || config.server.website_url.trim().is_empty()
+            || config.media.provider.trim().is_empty()
+            || config.server.rewrite_legacy_cn_hosts();
         ensure_gateway_defaults(&mut config);
         if should_persist {
             save_config_yaml(&path, &config).map_err(|e| AppError::Internal(e))?;
@@ -71,6 +77,7 @@ impl CloudService {
         nomifun_api_types::CloudServerSettingsResponse {
             enabled: cfg.server.enabled,
             base_url: cfg.server.base_url.clone(),
+            website_url: cfg.server.effective_website_url(),
             channel: cfg.server.channel.clone(),
             app: cfg.server.app.clone(),
         }
@@ -87,6 +94,9 @@ impl CloudService {
             }
             if let Some(base_url) = req.base_url {
                 cfg.server.base_url = base_url;
+            }
+            if let Some(website_url) = req.website_url {
+                cfg.server.website_url = website_url;
             }
             if let Some(channel) = req.channel {
                 cfg.server.channel = channel;
@@ -244,6 +254,112 @@ impl CloudService {
 
     pub fn gateway_config_snapshot(&self) -> GatewayConfig {
         self.gateway_config()
+    }
+
+    /// Official website URL with FlowyClaw `?token=&language=` auto-login params.
+    pub async fn website_entry(
+        &self,
+        language: Option<&str>,
+    ) -> Result<nomifun_api_types::CloudWebsiteEntryResponse, AppError> {
+        let cfg = self.gateway_config();
+        let website_url = cfg.server.effective_website_url();
+        let token = match AuthManager::new(cfg.server.clone(), &self.data_dir) {
+            Ok(mgr) => mgr
+                .session()
+                .access_token()
+                .await
+                .ok()
+                .flatten()
+                .filter(|value| !value.trim().is_empty()),
+            Err(ServerClientError::MissingBaseUrl) => None,
+            Err(e) => return Err(AppError::Internal(e.to_string())),
+        };
+        Ok(nomifun_api_types::CloudWebsiteEntryResponse {
+            url: crate::website::build_website_entry_url(
+                &website_url,
+                token.as_deref(),
+                language.unwrap_or("en"),
+            ),
+        })
+    }
+
+    pub async fn list_billing_plans(&self) -> Result<Vec<CloudBillingPlan>, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        let channel = self.gateway_config().server.channel;
+        client
+            .list_billing_plans(&session, &channel)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn list_billing_credit_packs(&self) -> Result<Vec<CloudBillingCreditPack>, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .list_billing_credit_packs(&session)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn list_billing_coupons(
+        &self,
+        item_type: Option<&str>,
+    ) -> Result<CloudBillingCouponList, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        match client.list_billing_coupons(&session, item_type).await {
+            Ok(list) => Ok(list),
+            Err(ServerClientError::AuthRequired(msg)) => Err(AppError::Unauthorized(msg)),
+            Err(ServerClientError::Api { code, msg }) if code == 401 || code == 403 => {
+                Err(AppError::Unauthorized(msg))
+            }
+            Err(_) => Ok(CloudBillingCouponList { list: Vec::new() }),
+        }
+    }
+
+    pub async fn list_billing_payment_channels(
+        &self,
+        item_type: &str,
+        item_id: i64,
+        plan_period: Option<&str>,
+    ) -> Result<Vec<CloudBillingPaymentChannel>, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .list_billing_payment_channels(&session, item_type, item_id, plan_period)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn create_billing_order(
+        &self,
+        mut request: CloudBillingCreateOrderRequest,
+    ) -> Result<CloudBillingOrder, AppError> {
+        request.pay_channel = "airwallex".into();
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .create_billing_order(&session, &request)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn get_billing_order_by_no(
+        &self,
+        order_no: &str,
+    ) -> Result<CloudBillingOrder, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .get_billing_order_by_no(&session, order_no)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn init_billing_airwallex(
+        &self,
+        order_no: &str,
+    ) -> Result<CloudBillingAirwallexSession, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .init_billing_airwallex(&session, order_no)
+            .await
+            .map_err(map_im_client_error)
     }
 
     pub async fn is_authenticated(&self) -> bool {
@@ -448,7 +564,10 @@ fn truncate_diag(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nomi_config::DEFAULT_WECHAT_FLOWY_SERVER_BASE;
+    use nomi_config::{
+        DEFAULT_FLOWY_WEBSITE_URL, DEFAULT_WECHAT_FLOWY_SERVER_BASE, FLOWY_WEBSITE_HOST,
+        LEGACY_FLOWY_SERVER_HOST, LEGACY_WECHAT_FLOWY_SERVER_BASE,
+    };
 
     #[test]
     fn im_client_and_session_requires_auth() {
@@ -476,10 +595,49 @@ mod tests {
         let svc = CloudService::new(dir.path().to_path_buf()).unwrap();
         let settings = svc.server_settings();
         assert_eq!(settings.base_url, DEFAULT_WECHAT_FLOWY_SERVER_BASE);
+        assert_eq!(settings.website_url, DEFAULT_FLOWY_WEBSITE_URL);
         assert!(settings.enabled);
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains(DEFAULT_WECHAT_FLOWY_SERVER_BASE));
+        assert!(raw.contains(DEFAULT_FLOWY_WEBSITE_URL));
         assert!(raw.contains("provider: flowy") || raw.contains("provider: \"flowy\""));
+    }
+
+    #[test]
+    fn new_rewrites_and_persists_legacy_cn_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_yaml_path(Some(dir.path()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "server:\n  enabled: true\n  base_url: \"{LEGACY_WECHAT_FLOWY_SERVER_BASE}\"\nmedia:\n  provider: flowy\n"
+            ),
+        )
+        .unwrap();
+
+        let svc = CloudService::new(dir.path().to_path_buf()).unwrap();
+        assert_eq!(svc.server_settings().base_url, DEFAULT_WECHAT_FLOWY_SERVER_BASE);
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains(DEFAULT_WECHAT_FLOWY_SERVER_BASE));
+        assert!(!raw.contains(LEGACY_FLOWY_SERVER_HOST));
+    }
+
+    #[tokio::test]
+    async fn website_entry_uses_default_host_and_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = CloudService::new(dir.path().to_path_buf()).unwrap();
+        let entry = svc.website_entry(Some("zh-CN")).await.unwrap();
+        let parsed = url::Url::parse(&entry.url).unwrap();
+        assert_eq!(parsed.host_str(), Some(FLOWY_WEBSITE_HOST));
+        assert_eq!(
+            parsed
+                .query_pairs()
+                .find(|(k, _)| k == "language")
+                .map(|(_, v)| v.into_owned()),
+            Some("zh".into())
+        );
     }
 }

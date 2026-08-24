@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Input, Modal, Pagination, Tag } from "antd";
 import { Search } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { WorkspaceState } from "@oc/components/layout/workspace-state";
 import { AssetMediaPreview } from "@oc/components/asset-media-preview";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { cn } from "@oc/lib/utils";
 import { useAssetStore, type Asset } from "@oc/stores/use-asset-store";
 
@@ -24,8 +26,9 @@ type Props = {
 };
 
 export function AssetPickerModal({ open, onInsert, onClose }: Props) {
+    useTranslation();
     return (
-        <Modal title="选择素材" open={open} onCancel={onClose} footer={null} width={860} destroyOnHidden styles={{ body: { padding: "0 24px 24px", minHeight: 480 } }}>
+        <Modal title={canvasT("videoCanvas.asset.pickerTitle", "选择素材")} open={open} onCancel={onClose} footer={null} width={860} destroyOnHidden styles={{ body: { padding: "0 24px 24px", minHeight: 480 } }}>
             <MyAssetsTab onInsert={onInsert} />
         </Modal>
     );
@@ -33,15 +36,25 @@ export function AssetPickerModal({ open, onInsert, onClose }: Props) {
 
 const PAGE_SIZE = 8;
 
-const kindOptions = [
-    { label: "全部", value: "all" },
-    { label: "文本", value: "text" },
-    { label: "图片", value: "image" },
-    { label: "视频", value: "video" },
-    { label: "音频", value: "audio" },
-];
+function kindOptions() {
+    return [
+        { label: canvasT("videoCanvas.asset.kindAll", "全部"), value: "all" },
+        { label: canvasT("videoCanvas.asset.kindText", "文本"), value: "text" },
+        { label: canvasT("videoCanvas.asset.kindImage", "图片"), value: "image" },
+        { label: canvasT("videoCanvas.asset.kindVideo", "视频"), value: "video" },
+        { label: canvasT("videoCanvas.asset.kindAudio", "音频"), value: "audio" },
+    ];
+}
+
+function kindLabel(kind: InsertableAsset["kind"]) {
+    if (kind === "image") return canvasT("videoCanvas.asset.kindImage", "图片");
+    if (kind === "video") return canvasT("videoCanvas.asset.kindVideo", "视频");
+    if (kind === "audio") return canvasT("videoCanvas.asset.kindAudio", "音频");
+    return canvasT("videoCanvas.asset.kindText", "文本");
+}
 
 function PickerCard({ asset, onClick }: { asset: InsertableAsset; onClick: () => void }) {
+    useTranslation();
     const { title, kind } = asset;
     return (
         <button
@@ -53,15 +66,16 @@ function PickerCard({ asset, onClick }: { asset: InsertableAsset; onClick: () =>
             <div className="p-2.5">
                 <div className="flex items-center justify-between gap-2">
                     <span className="line-clamp-1 text-xs font-medium text-stone-800 dark:text-stone-200">{title}</span>
-                    <Tag className="m-0 shrink-0 text-[var(--fs-tiny)]">{kind === "image" ? "图片" : kind === "video" ? "视频" : kind === "audio" ? "音频" : "文本"}</Tag>
+                    <Tag className="m-0 shrink-0 text-[var(--fs-tiny)]">{kindLabel(kind)}</Tag>
                 </div>
             </div>
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-stone-950/0 text-sm font-medium text-white opacity-0 transition group-hover:bg-stone-950/55 group-hover:opacity-100">插入</div>
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-stone-950/0 text-sm font-medium text-white opacity-0 transition group-hover:bg-stone-950/55 group-hover:opacity-100">{canvasT("videoCanvas.asset.insert", "插入")}</div>
         </button>
     );
 }
 
 function MyAssetsTab({ onInsert }: { onInsert: (payload: InsertAssetPayload) => void }) {
+    useTranslation();
     const assets = useAssetStore((state) => state.assets);
     const [keyword, setKeyword] = useState("");
     const [kindFilter, setKindFilter] = useState("all");
@@ -101,7 +115,7 @@ function MyAssetsTab({ onInsert }: { onInsert: (payload: InsertAssetPayload) => 
                     className="w-56"
                     size="small"
                     prefix={<Search className="size-3.5 text-stone-400" />}
-                    placeholder="搜索素材"
+                    placeholder={canvasT("videoCanvas.asset.searchAssets", "搜索素材")}
                     value={keyword}
                     allowClear
                     onChange={(e) => {
@@ -110,7 +124,7 @@ function MyAssetsTab({ onInsert }: { onInsert: (payload: InsertAssetPayload) => 
                     }}
                 />
                 <div className="flex gap-1.5">
-                    {kindOptions.map((opt) => (
+                    {kindOptions().map((opt) => (
                         <Tag.CheckableTag
                             key={opt.value}
                             checked={kindFilter === opt.value}
@@ -133,7 +147,12 @@ function MyAssetsTab({ onInsert }: { onInsert: (payload: InsertAssetPayload) => 
                     ))}
                 </div>
             ) : (
-                <WorkspaceState icon="assets" compact title="没有可用素材" description={keyword || kindFilter !== "all" ? "调整关键词或素材类型后再试。" : "先在素材库中添加图片、视频、音频或文本。"} />
+                <WorkspaceState
+                    icon="assets"
+                    compact
+                    title={canvasT("videoCanvas.asset.emptyTitle", "没有可用素材")}
+                    description={keyword || kindFilter !== "all" ? canvasT("videoCanvas.asset.emptyFiltered", "调整关键词或素材类型后再试。") : canvasT("videoCanvas.asset.emptyHint", "先在素材库中添加图片、视频、音频或文本。")}
+                />
             )}
 
             {filtered.length > PAGE_SIZE && (

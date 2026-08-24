@@ -1,7 +1,17 @@
 import localforage from "localforage";
 
 import { getActiveUserScope } from "@oc/lib/user-scope";
-import { getResource, getResourceBlob, resourceIdFromStorageKey, type RemoteResource } from "@oc/services/api/resources";
+import {
+    getResource,
+    getResourceBlob,
+    hasResourceLookupHint,
+    normalizeResourceMimeType,
+    resourceIdFromStorageKey,
+    type RemoteResource,
+    type ResourceLookupHint,
+} from "@oc/services/api/resources";
+
+export type ResourceCacheHint = ResourceLookupHint;
 
 type ResourceCacheMeta = {
     key: string;
@@ -28,14 +38,14 @@ const MAX_CACHE_ENTRIES = 500;
 const TOUCH_INTERVAL_MS = 10 * 60 * 1000;
 const MAX_CONCURRENT_DOWNLOADS = 4;
 
-export async function getCachedResourceObjectUrl(storageKey: string) {
-    const target = await cacheTarget(storageKey);
+export async function getCachedResourceObjectUrl(storageKey: string, hint?: ResourceCacheHint) {
+    const target = await cacheTarget(storageKey, hint);
     if (!target) return "";
     return readCachedObjectUrl(target);
 }
 
-export async function cacheResourceObjectUrl(storageKey: string) {
-    const target = await cacheTarget(storageKey);
+export async function cacheResourceObjectUrl(storageKey: string, hint?: ResourceCacheHint) {
+    const target = await cacheTarget(storageKey, hint);
     if (!target) return "";
     const cached = await readCachedObjectUrl(target);
     if (cached) return cached;
@@ -65,7 +75,7 @@ function runDownloadQueue() {
 }
 
 export async function primeResourceBlobCache(storageKey: string, blob: Blob) {
-    const target = await cacheTarget(storageKey);
+    const target = await cacheTarget(storageKey, blobCacheHint(blob));
     if (!target) return "";
     sessionBlobs.set(target.key, blob);
     const url = objectUrl(target.key, blob);
@@ -73,8 +83,8 @@ export async function primeResourceBlobCache(storageKey: string, blob: Blob) {
     return url;
 }
 
-export async function getCachedResourceBlob(storageKey: string) {
-    const target = await cacheTarget(storageKey);
+export async function getCachedResourceBlob(storageKey: string, hint?: ResourceCacheHint) {
+    const target = await cacheTarget(storageKey, hint);
     if (!target) return null;
     const cached = await blobStore.getItem<Blob>(target.key);
     if (cached) {
@@ -88,7 +98,7 @@ export async function getCachedResourceBlob(storageKey: string) {
         await pending;
         return sessionBlobs.get(target.key) || blobStore.getItem<Blob>(target.key);
     }
-    await cacheResourceObjectUrl(storageKey);
+    await cacheResourceObjectUrl(storageKey, hint);
     return sessionBlobs.get(target.key) || blobStore.getItem<Blob>(target.key);
 }
 
@@ -144,10 +154,14 @@ async function readCachedObjectUrl(target: ResourceCacheMeta) {
     return objectUrl(target.key, blob);
 }
 
-async function cacheTarget(storageKey: string): Promise<ResourceCacheMeta | null> {
+function blobCacheHint(blob: Blob): ResourceCacheHint | undefined {
+    return hasResourceLookupHint({ mimeType: blob.type, bytes: blob.size }) ? { mimeType: blob.type || undefined, bytes: blob.size } : undefined;
+}
+
+async function cacheTarget(storageKey: string, hint?: ResourceCacheHint): Promise<ResourceCacheMeta | null> {
     const resourceId = resourceIdFromStorageKey(storageKey);
     if (!resourceId) return null;
-    const resource = await getResource(resourceId);
+    const resource = await getResource(resourceId, hint);
     const userScope = getActiveUserScope();
     // Allo `/api/video-canvas/media` is already auth-gated by the backend session.
     // OC's IndexedDB user-scope gate must not block guest / allo-local media reads
@@ -170,6 +184,9 @@ async function cacheTarget(storageKey: string): Promise<ResourceCacheMeta | null
 }
 
 function resourceVersion(resource: RemoteResource) {
+    if (resource.provider === "allo") {
+        return `${resource.size || 0}:${normalizeResourceMimeType(resource.mimeType)}`.replace(/[^a-zA-Z0-9:._-]/g, "_");
+    }
     return (resource.etag || `${resource.size}:${resource.updatedAt}`).replace(/[^a-zA-Z0-9:._-]/g, "_");
 }
 

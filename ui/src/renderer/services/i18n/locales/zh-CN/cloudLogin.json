@@ -63,6 +63,7 @@
     "title": "服务器连接",
     "enabled": "启用 Flowy 服务器",
     "baseUrl": "服务器地址",
+    "websiteUrl": "官网地址",
     "channel": "渠道",
     "app": "应用 ID",
     "saved": "云设置已保存"

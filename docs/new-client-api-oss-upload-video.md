@@ -38,7 +38,7 @@ POST /video/generations/tasks    # content 里用 HTTPS URL + role
 
 | 用途 | 客户端 Base（示例） |
 |------|---------------------|
-| 业务 API | `https://server.flowyaipc.cn/claw` |
+| 业务 API | `https://server.flowyaipc.com/claw` |
 
 路径映射：`{业务根}/uploads/oss/presignPut` → 服务端 `/api/v1/uploads/oss/presignPut`。
 

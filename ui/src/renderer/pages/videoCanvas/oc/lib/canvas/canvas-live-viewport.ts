@@ -18,6 +18,8 @@ export function applyCanvasLiveViewport(container: HTMLDivElement | null, viewpo
     container.style.setProperty("--canvas-grid-x", `${viewport.x % gridSize}px`);
     container.style.setProperty("--canvas-grid-y", `${viewport.y % gridSize}px`);
     container.style.setProperty("--canvas-dot-size", viewport.k < 0.12 ? "0.8px" : "1.15px");
+    container.dataset.canvasHideNodeHeaders = viewport.k < 0.35 ? "true" : "false";
+    container.dataset.canvasLowScale = viewport.k < 0.32 ? "true" : "false";
     // 图形层必须逐帧跟随 DOM 世界层；浮层和滚动通知仍可按原频率节流。
     container.dispatchEvent(new CustomEvent<ViewportTransform>(CANVAS_GRAPHICS_VIEWPORT_PREVIEW_EVENT, { detail: viewport }));
     if (notify) {
@@ -25,6 +27,15 @@ export function applyCanvasLiveViewport(container: HTMLDivElement | null, viewpo
         // Ant Design overlays watch scrollable ancestors, but CSS transforms do not emit layout events.
         container.dispatchEvent(new Event("scroll"));
     }
+}
+
+export function readCanvasScaleFromElement(element: Element | null): number {
+    const host = element instanceof Element ? element.closest<HTMLElement>("[style*='--canvas-committed-scale']") : null;
+    if (!host) return 1;
+    const live = Number(host.style.getPropertyValue("--canvas-live-scale"));
+    if (Number.isFinite(live) && live > 0) return live;
+    const committed = Number(host.style.getPropertyValue("--canvas-committed-scale"));
+    return Number.isFinite(committed) && committed > 0 ? committed : 1;
 }
 
 export function subscribeCanvasGraphicsViewportPreview(container: HTMLDivElement, listener: (viewport: ViewportTransform) => void) {

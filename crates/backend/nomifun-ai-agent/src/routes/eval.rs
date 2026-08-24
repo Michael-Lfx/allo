@@ -6,12 +6,12 @@ use serde::Deserialize;
 
 use nomifun_api_types::{
     ApiResponse, EvalCaseTraceView, EvalRunView, EvalSuiteDescriptor, PullEvalDatasetResponse,
-    StartEvalRunRequest,
+    SessionObservationListDto, StartEvalRunRequest,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
 
-use crate::SessionObservationList;
+use crate::session_observation_list_dto;
 use crate::routes::state::AgentRouterState;
 
 #[derive(Debug, Deserialize)]
@@ -120,11 +120,11 @@ async fn get_case_observation(
     Extension(_user): Extension<CurrentUser>,
     Path((run_id, case_id)): Path<(String, String)>,
     Query(query): Query<ObservationQuery>,
-) -> Result<Json<ApiResponse<SessionObservationList>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state
-            .eval_lab
-            .get_case_observation(&run_id, &case_id, query.limit)
-            .await?,
-    )))
+) -> Result<Json<ApiResponse<SessionObservationListDto>>, AppError> {
+    let observation = state
+        .eval_lab
+        .get_case_observation(&run_id, &case_id, query.limit)
+        .await?;
+    let observation = session_observation_list_dto(observation);
+    Ok(Json(ApiResponse::ok(observation)))
 }

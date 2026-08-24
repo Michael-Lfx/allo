@@ -13,6 +13,9 @@ use crate::redact::{redact_preview, truncate_chars};
 
 /// Scan-line preview kept after payload strip. Not the captured body.
 const SCAN_PREVIEW_CHARS: usize = 80;
+/// Reserved marker used by the runtime for the leading context block in a
+/// user message. It is intentionally kept out of user-facing previews.
+const CONTEXT_PREFIX: &str = "[Context]";
 
 pub const COVERAGE_RETAINED_OBSERVATION_HISTORY: &str = "retained_observation_history";
 
@@ -81,6 +84,10 @@ pub struct ProjectedTurn {
     pub elapsed_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_preview: Option<String>,
+    /// True when the latest request contained only the runtime-injected
+    /// leading Context block and therefore has no user text preview.
+    #[serde(default)]
+    pub prompt_preview_context_only: bool,
     #[serde(default)]
     pub max_event_seq: u64,
     #[serde(default)]
@@ -409,9 +416,23 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
             tool.status = tool_status(tool);
         }
     }
-    let prompt_preview = turn_start_preview.or_else(|| {
-        latest_request.and_then(|event| last_user_text_preview(&event.payload))
-    });
+    let request_preview = latest_request.map(|event| last_user_text_projection(&event.payload));
+    // A correctly bound turn/start is authoritative. If an older or alternate
+    // producer accidentally persisted the injected Context as its preview,
+    // prefer the sanitized request fallback when one exists.
+    let (prompt_preview, prompt_preview_context_only) = match (turn_start_preview, request_preview) {
+        (Some(start), Some(fallback)) if is_leading_context_block(&start) => {
+            if fallback.preview.is_some() {
+                (fallback.preview, false)
+            } else {
+                (None, true)
+            }
+        }
+        (Some(start), _) if is_leading_context_block(&start) => (None, true),
+        (Some(start), _) => (Some(start), false),
+        (None, Some(fallback)) => (fallback.preview, fallback.context_only),
+        (None, None) => (None, false),
+    };
     let status = if let Some(status) = turn_end_status {
         status
     } else if has_turn_end {
@@ -443,6 +464,7 @@ fn project_one(events: &[&ObservationEvent]) -> ProjectedTurn {
         ended_at_ms,
         elapsed_ms: turn_end_elapsed_ms,
         prompt_preview,
+        prompt_preview_context_only,
         max_event_seq,
         has_turn_start,
         has_turn_end,
@@ -722,33 +744,64 @@ fn usage_from_payload(payload: &Value) -> Option<ProjectedTokenUsage> {
     })
 }
 
+#[derive(Debug, Default)]
+struct UserTextProjection {
+    preview: Option<String>,
+    context_only: bool,
+}
+
 /// Last user Text in `messages`, walking from the tail. Skips pure ToolResult.
 pub fn last_user_text_preview(payload: &Value) -> Option<String> {
+    last_user_text_projection(payload).preview
+}
+
+fn last_user_text_projection(payload: &Value) -> UserTextProjection {
     let request = payload.get("request").unwrap_or(payload);
-    let messages = request.get("messages")?.as_array()?;
+    let Some(messages) = request.get("messages").and_then(Value::as_array) else {
+        return UserTextProjection::default();
+    };
     for message in messages.iter().rev() {
-        let role = message.get("role").and_then(Value::as_str)?;
+        let Some(role) = message.get("role").and_then(Value::as_str) else {
+            continue;
+        };
         if role != "user" {
             continue;
         }
         if let Some(text) = message.get("content").and_then(Value::as_str) {
-            if !text.trim().is_empty() {
-                return Some(redact_preview(text));
+            if text.trim().is_empty() {
+                continue;
             }
-            continue;
+            if is_leading_context_block(text) {
+                return UserTextProjection {
+                    preview: None,
+                    context_only: true,
+                };
+            }
+            return UserTextProjection {
+                preview: Some(redact_preview(text)),
+                context_only: false,
+            };
         }
         let Some(blocks) = message.get("content").and_then(Value::as_array) else {
             continue;
         };
         let mut texts = Vec::new();
         let mut has_text = false;
-        for block in blocks {
+        let mut has_context = false;
+        for (index, block) in blocks.iter().enumerate() {
+            let Some(block) = block.as_object() else {
+                continue;
+            };
             let ty = block.get("type").and_then(Value::as_str).unwrap_or("");
             if ty == "tool_result" || ty == "tool_use" {
                 continue;
             }
             if ty == "text" {
                 if let Some(text) = block.get("text").and_then(Value::as_str) {
+                    if index == 0 && is_leading_context_block(text) {
+                        has_context = true;
+                        continue;
+                    }
                     if !text.trim().is_empty() {
                         texts.push(text);
                         has_text = true;
@@ -757,10 +810,27 @@ pub fn last_user_text_preview(payload: &Value) -> Option<String> {
             }
         }
         if has_text {
-            return Some(redact_preview(&texts.join("\n")));
+            return UserTextProjection {
+                preview: Some(redact_preview(&texts.join("\n"))),
+                context_only: false,
+            };
+        }
+        if has_context {
+            return UserTextProjection {
+                preview: None,
+                context_only: true,
+            };
         }
     }
-    None
+    UserTextProjection::default()
+}
+
+fn is_leading_context_block(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let Some(rest) = trimmed.strip_prefix(CONTEXT_PREFIX) else {
+        return false;
+    };
+    rest.is_empty() || rest.chars().next().is_some_and(|character| character.is_whitespace())
 }
 
 /// Fold counters without keeping event payloads. Used for list summary.
@@ -1292,6 +1362,51 @@ mod tests {
     }
 
     #[test]
+    fn preview_fallback_skips_leading_context_block() {
+        let events = vec![event(
+            EVENT_LLM_REQUEST,
+            1,
+            turn_ids("t1", "mc1"),
+            serde_json::json!({
+                "request": {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                { "type": "text", "text": "[Context]\nCurrent date: 2026-08-21" },
+                                { "type": "text", "text": "66" }
+                            ]
+                        }
+                    ]
+                }
+            }),
+        )];
+        let turns = project_turns(&events);
+        assert_eq!(turns[0].prompt_preview.as_deref(), Some("66"));
+        assert!(!turns[0].prompt_preview_context_only);
+    }
+
+    #[test]
+    fn context_only_message_has_no_fallback_preview() {
+        let events = vec![event(
+            EVENT_LLM_REQUEST,
+            1,
+            turn_ids("t1", "mc1"),
+            serde_json::json!({
+                "request": {
+                    "messages": [{
+                        "role": "user",
+                        "content": [{ "type": "text", "text": "[Context]\nCurrent date: 2026-08-21" }]
+                    }]
+                }
+            }),
+        )];
+        let turns = project_turns(&events);
+        assert_eq!(turns[0].prompt_preview, None);
+        assert!(turns[0].prompt_preview_context_only);
+    }
+
+    #[test]
     fn preview_prefers_turn_start_prompt() {
         let events = vec![
             event(
@@ -1323,6 +1438,62 @@ mod tests {
         assert!(!turns[0].has_turn_end);
         assert_eq!(turns[0].status, ExecutionStatus::Running);
         assert_eq!(turns[0].max_event_seq, 2);
+    }
+
+    #[test]
+    fn context_turn_start_preview_falls_back_to_real_user_text() {
+        let events = vec![
+            event(
+                EVENT_TURN_START,
+                1,
+                ObservationIds {
+                    conversation_id: Some("c1".into()),
+                    root_turn_id: Some("t1".into()),
+                    ..ObservationIds::default()
+                },
+                serde_json::json!({
+                    "prompt_preview": "[Context]\nCurrent date: 2026-08-21"
+                }),
+            ),
+            event(
+                EVENT_LLM_REQUEST,
+                2,
+                turn_ids("t1", "mc1"),
+                serde_json::json!({
+                    "request": {
+                        "messages": [{
+                            "role": "user",
+                            "content": [
+                                { "type": "text", "text": "[Context]\nCurrent date: 2026-08-21" },
+                                { "type": "text", "text": "66" }
+                            ]
+                        }]
+                    }
+                }),
+            ),
+        ];
+        let turns = project_turns(&events);
+        assert_eq!(turns[0].prompt_preview.as_deref(), Some("66"));
+        assert!(!turns[0].prompt_preview_context_only);
+    }
+
+    #[test]
+    fn context_turn_start_without_request_preview_stays_blank() {
+        let events = vec![event(
+            EVENT_TURN_START,
+            1,
+            ObservationIds {
+                conversation_id: Some("c1".into()),
+                root_turn_id: Some("t1".into()),
+                ..ObservationIds::default()
+            },
+            serde_json::json!({
+                "prompt_preview": "[Context]\nCurrent date: 2026-08-21"
+            }),
+        )];
+        let turns = project_turns(&events);
+        assert_eq!(turns[0].prompt_preview, None);
+        assert!(turns[0].prompt_preview_context_only);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Settings2 } from "lucide-react";
@@ -5,6 +6,7 @@ import { Button } from "antd";
 
 import { AudioSettingsPanel } from "@oc/components/audio-settings-panel";
 import { audioFormatLabel, audioSpeedLabel, audioVoiceLabel } from "@oc/lib/audio-generation";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { AiConfig } from "@oc/stores/use-config-store";
@@ -19,6 +21,7 @@ type CanvasAudioSettingsPopoverProps = {
 };
 
 export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft" }: CanvasAudioSettingsPopoverProps) {
+    useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
@@ -52,7 +55,7 @@ export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClass
     return (
         <>
             <span ref={buttonRef} className="inline-flex min-w-0">
-                <Button size="small" type="text" className={`canvas-generation-settings-trigger ${buttonClassName || "!h-8 !max-w-[170px] !justify-start !rounded-full !px-2.5"}`} style={{ background: theme.node.fill, color: theme.node.text }} icon={<Settings2 className="size-3.5" />} aria-expanded={open} aria-label={`音频设置：${summary}`} title={`音频设置 · ${summary}`} onClick={() => setOpen((current) => !current)}>
+                <Button size="small" type="text" className={`canvas-generation-settings-trigger ${buttonClassName || "!h-8 !max-w-[170px] !justify-start !rounded-full !px-2.5"}`} style={{ background: theme.node.fill, color: theme.node.text }} icon={<Settings2 className="size-3.5" />} aria-expanded={open} aria-label={canvasT("videoCanvas.settings.audioAria", "音频设置：{{summary}}", { summary })} title={canvasT("videoCanvas.settings.audioTooltip", "音频设置 · {{summary}}", { summary })} onClick={() => setOpen((current) => !current)}>
                     <span className="truncate">{summary}</span>
                 </Button>
             </span>

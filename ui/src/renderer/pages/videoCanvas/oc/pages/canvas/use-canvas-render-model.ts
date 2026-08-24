@@ -1,9 +1,10 @@
 import { useMemo, useRef } from "react";
 
 import { buildNodeGenerationInputs, type NodeGenerationInput } from "@oc/components/canvas/canvas-node-generation";
+import { canvasCullViewRect, filterDisplayConnections } from "@oc/lib/canvas/canvas-connection-draw-list";
 import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
-import { sameNodeSemanticData } from "@oc/lib/canvas/canvas-project-domain";
 import { shouldReduceCanvasMediaEffects } from "@oc/lib/canvas/canvas-performance-mode";
+import { sameNodeSemanticData } from "@oc/lib/canvas/canvas-project-domain";
 import { buildCanvasResourceReferences, buildNodeMentionReferences } from "@oc/lib/canvas/canvas-resource-references";
 import { buildSkillMentionReferences } from "@oc/lib/canvas/canvas-skill-mentions";
 import type { Skill } from "@oc/services/api/skills";
@@ -13,8 +14,6 @@ export type CanvasTrayMediaAsset = ImageAsset | VideoAsset | AudioAsset;
 import type { DirectorScene } from "@oc/types/director";
 import { CanvasNodeType, type CanvasConnection, type CanvasMediaPerformanceMode, type CanvasNodeData, type ContextMenuState, type ViewportTransform } from "@oc/types/canvas";
 
-type DragPreview = { x: number; y: number; nodeIds: Set<string> } | null;
-
 type UseCanvasRenderModelOptions = {
     nodes: CanvasNodeData[];
     connections: CanvasConnection[];
@@ -23,8 +22,6 @@ type UseCanvasRenderModelOptions = {
     viewportSize: { width: number; height: number };
     mediaPerformanceMode: CanvasMediaPerformanceMode;
     selectedNodeIds: Set<string>;
-    hoveredNodeId: string | null;
-    dragPreview: DragPreview;
     collapsingBatchIds: Set<string>;
     addedSkills: Skill[];
     directorScenes?: DirectorScene[];
@@ -53,8 +50,6 @@ export function useCanvasRenderModel({
     viewportSize,
     mediaPerformanceMode,
     selectedNodeIds,
-    hoveredNodeId,
-    dragPreview,
     collapsingBatchIds,
     addedSkills,
     directorScenes,
@@ -111,20 +106,25 @@ export function useCanvasRenderModel({
         });
         return { left, top, width: Math.max(2, right - left), height: Math.max(2, bottom - top) };
     }, [nodes]);
+    const cullView = useMemo(
+        () => canvasCullViewRect(viewport, viewportSize, reduceMediaEffects),
+        [reduceMediaEffects, viewport.k, viewport.x, viewport.y, viewportSize.height, viewportSize.width],
+    );
     const visibleNodes = useMemo(() => {
-        const padding = (reduceMediaEffects ? Math.max(240, Math.max(viewportSize.width, viewportSize.height) * 0.4) : Math.max(800, Math.max(viewportSize.width, viewportSize.height) * 1.5)) / viewport.k;
-        const viewLeft = -viewport.x / viewport.k - padding;
-        const viewTop = -viewport.y / viewport.k - padding;
-        const viewRight = viewLeft + viewportSize.width / viewport.k + padding * 2;
-        const viewBottom = viewTop + viewportSize.height / viewport.k + padding * 2;
         const frames: CanvasNodeData[] = [];
         const regular: CanvasNodeData[] = [];
         nodes.forEach((node) => {
-            if (renderHiddenNodeIds.has(node.id) || node.position.x + node.width <= viewLeft || node.position.x >= viewRight || node.position.y + node.height <= viewTop || node.position.y >= viewBottom) return;
+            if (
+                renderHiddenNodeIds.has(node.id)
+                || node.position.x + node.width <= cullView.left
+                || node.position.x >= cullView.right
+                || node.position.y + node.height <= cullView.top
+                || node.position.y >= cullView.bottom
+            ) return;
             (isFrameNode(node) ? frames : regular).push(node);
         });
         return [...frames, ...regular];
-    }, [nodes, reduceMediaEffects, renderHiddenNodeIds, viewport.k, viewport.x, viewport.y, viewportSize.height, viewportSize.width]);
+    }, [cullView, nodes, renderHiddenNodeIds]);
 
     const imageAssets = useMemo(() => assets.filter((asset): asset is ImageAsset => asset.kind === "image"), [assets]);
     const mediaAssets = useMemo(
@@ -169,7 +169,7 @@ export function useCanvasRenderModel({
     const emotionNode = emotionNodeId ? nodeById.get(emotionNodeId) || null : null;
     const previewNode = previewNodeId ? nodeById.get(previewNodeId) || null : null;
     const contextMenuNode = contextMenu?.type === "node" ? nodeById.get(contextMenu.nodeId) || null : null;
-    const activeNodeId = selectedNodeIds.size > 1 ? null : hoveredNodeId || (selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null);
+    const activeNodeId = selectedNodeIds.size > 1 ? null : selectedNodeIdForToolbar;
 
     const selectedNodeBounds = useMemo(() => {
         if (selectedNodeIds.size < 2) return null;
@@ -220,33 +220,21 @@ export function useCanvasRenderModel({
         });
         return map;
     }, [nodeById, nodes]);
-    const relatedHighlight = useMemo(() => {
-        const nodeIds = new Set<string>();
-        const connectionIds = new Set<string>();
-        if (!activeNodeId) return { nodeIds, connectionIds };
-        nodeIds.add(activeNodeId);
-        connections.forEach((connection) => {
-            if (connection.fromNodeId !== activeNodeId && connection.toNodeId !== activeNodeId) return;
-            connectionIds.add(connection.id);
-            nodeIds.add(connection.fromNodeId);
-            nodeIds.add(connection.toNodeId);
+    const displayConnections = useMemo(() => {
+        const items = connections.flatMap((connection) => {
+            if (collapsedBatchChildIds.has(connection.fromNodeId) || collapsedBatchChildIds.has(connection.toNodeId)) return [];
+            const fromNode = nodeById.get(connection.fromNodeId);
+            const toNode = nodeById.get(connection.toNodeId);
+            if (!fromNode || !toNode) return [];
+            const fromParent = fromNode.parentId ? nodeById.get(fromNode.parentId) : null;
+            const toParent = toNode.parentId ? nodeById.get(toNode.parentId) : null;
+            const displayFrom = fromParent && isFrameNode(fromParent) && fromParent.metadata?.frame?.collapsed ? fromParent : fromNode;
+            const displayTo = toParent && isFrameNode(toParent) && toParent.metadata?.frame?.collapsed ? toParent : toNode;
+            if (displayFrom.id === displayTo.id) return [];
+            return [{ connection, from: displayFrom, to: displayTo }];
         });
-        return { nodeIds, connectionIds };
-    }, [activeNodeId, connections]);
-    const displayConnections = useMemo(() => connections.flatMap((connection) => {
-        if (collapsedBatchChildIds.has(connection.fromNodeId) || collapsedBatchChildIds.has(connection.toNodeId)) return [];
-        const fromNode = nodeById.get(connection.fromNodeId);
-        const toNode = nodeById.get(connection.toNodeId);
-        if (!fromNode || !toNode) return [];
-        const fromParent = fromNode.parentId ? nodeById.get(fromNode.parentId) : null;
-        const toParent = toNode.parentId ? nodeById.get(toNode.parentId) : null;
-        const displayFrom = fromParent && isFrameNode(fromParent) && fromParent.metadata?.frame?.collapsed ? fromParent : fromNode;
-        const displayTo = toParent && isFrameNode(toParent) && toParent.metadata?.frame?.collapsed ? toParent : toNode;
-        if (displayFrom.id === displayTo.id) return [];
-        const from = dragPreview?.nodeIds.has(displayFrom.id) ? { ...displayFrom, position: { x: displayFrom.position.x + dragPreview.x, y: displayFrom.position.y + dragPreview.y } } : displayFrom;
-        const to = dragPreview?.nodeIds.has(displayTo.id) ? { ...displayTo, position: { x: displayTo.position.x + dragPreview.x, y: displayTo.position.y + dragPreview.y } } : displayTo;
-        return [{ connection, from, to }];
-    }), [collapsedBatchChildIds, connections, dragPreview, nodeById]);
+        return filterDisplayConnections(items, cullView);
+    }, [collapsedBatchChildIds, connections, cullView, nodeById]);
 
     const configInputsById = useMemo(() => {
         const map = new Map<string, NodeGenerationInput[]>();
@@ -295,7 +283,6 @@ export function useCanvasRenderModel({
         nodeById,
         previewNode,
         reduceMediaEffects,
-        relatedHighlight,
         resourceReferenceByNodeId,
         selectedNodeBounds,
         selectedVideoNodes,

@@ -44,7 +44,7 @@ GET  /vimax/tv-show/list         # TV Show 列表（本文档新增）
 
 | 用途 | 客户端 Base（示例） |
 |------|---------------------|
-| 业务 API | `https://server.flowyaipc.cn/claw` |
+| 业务 API | `https://server.flowyaipc.com/claw` |
 
 路径映射示例：`{业务根}/vimax/tv-show/publish` → 服务端 `/api/v1/vimax/tv-show/publish`（最终前缀以服务端路由规范为准）。
 

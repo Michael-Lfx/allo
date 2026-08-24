@@ -9,6 +9,7 @@ mod agent_execution_template;
 mod auth;
 mod channel;
 mod cloud;
+mod cloud_billing;
 mod cloud_im;
 mod tv_show;
 mod vimax_skill_hub;
@@ -46,6 +47,7 @@ mod serde_util;
 mod secret;
 mod shell;
 mod skill;
+mod session_observation;
 mod system;
 mod mcp_bridge;
 mod terminal;
@@ -121,7 +123,12 @@ pub use cloud::{
     CloudLoginContinueRequest, CloudLoginFailedResponse, CloudLoginInput,
     CloudLoginPendingResponse, CloudLoginStartRequest, CloudLoginStartResponse,
     CloudLoginSuccessResponse, CloudServerSettingsResponse, CloudSyncModelsResponse,
-    CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
+    CloudWebsiteEntryResponse, CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
+};
+pub use cloud_billing::{
+    CloudBillingAirwallexSession, CloudBillingCoupon, CloudBillingCouponList,
+    CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingOrder,
+    CloudBillingPaymentChannel, CloudBillingPaymentInfo, CloudBillingPlan,
 };
 pub use cloud_im::{
     CloudImAttachmentPayload, CloudImConversation, CloudImLogUploadResponse, CloudImMessage,
@@ -278,6 +285,12 @@ pub use shell::{
     OpenAISpeechToTextConfig, OpenExternalRequest, OpenFileRequest, OpenFolderWithRequest,
     ShowItemInFolderRequest, SpeechToTextConfig, SpeechToTextProvider, SpeechToTextResult,
     TEXT_TO_SPEECH_PREFERENCE_KEY, TextToSpeechConfig, ToolType, TtsApiRequest,
+};
+pub use session_observation::{
+    ObservationSummaryDto, RecorderHealthDto, SessionObservationCallDto,
+    SessionObservationGapDto, SessionObservationListDto, SessionObservationRequestSummaryDto,
+    SessionObservationResponseSummaryDto, SessionObservationTokenUsageDto,
+    SessionObservationToolDto, SessionObservationTurnDto,
 };
 pub use skill::{
     AddExternalPathRequest, BuiltinAutoSkillResponse, ExportSkillRequest,

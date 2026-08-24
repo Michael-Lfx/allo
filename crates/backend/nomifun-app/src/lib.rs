@@ -40,6 +40,11 @@ pub use desktop::{
     StartupCleanupDisposition, WebUiAsset, WebUiAssetSource, WebUiStatus,
 };
 pub use nomifun_auth::AuthPolicy;
+// Re-export so the desktop shell can implement / attach without depending on
+// the notify crate directly beyond what AppServices already exposes.
+pub use nomifun_notify::{
+    NotifyError, SystemNotification, SystemTaskNotifier,
+};
 pub use router::{
     ChannelMessageLoopComponents, ModuleStates, build_preset_state, build_conversation_state,
     build_extension_states, build_module_states, build_ws_state, create_router, create_router_with_all_state,

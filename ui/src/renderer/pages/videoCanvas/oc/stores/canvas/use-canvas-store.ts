@@ -6,6 +6,16 @@ import { localForageStorage } from "@oc/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@oc/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@oc/types/canvas";
 import type { DirectorScene } from "@oc/types/director";
+import type { TimelineProject } from "@oc/types/timeline";
+import {
+    CANVAS_STORE_KEY,
+    loadPersistedCanvasProjects,
+    removePersistedCanvasProjects,
+    writeSplitCanvasProjects,
+    type PersistedCanvasProjects,
+} from "./canvas-store-persist";
+
+export { CANVAS_STORE_KEY, canvasProjectPersistKey } from "./canvas-store-persist";
 
 export type CanvasProject = {
     id: string;
@@ -21,6 +31,8 @@ export type CanvasProject = {
     showImageInfo: boolean;
     viewport: ViewportTransform;
     directorScenes: DirectorScene[];
+    /** 项目级时间线（client-doc）；无独立后端 API。 */
+    timeline?: TimelineProject;
     /** Agent materialization sidecar from server doc.json */
     alloCreative?: Record<string, unknown>;
 };
@@ -34,50 +46,54 @@ type CanvasStore = {
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes" | "alloCreative">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes" | "timeline" | "alloCreative">>) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
-export const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
 type PersistedCanvasState = Pick<CanvasStore, "projects">;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let lastPersistedProjects: CanvasProject[] | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
 let queuedPersistName = CANVAS_STORE_KEY;
-let queuedPersistValue: string | null = null;
+let queuedPersistValue: PersistedCanvasProjects<CanvasProject> | null = null;
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
-        const value = await localForageStorage.getItem(name);
-        if (!value) return null;
-        const parsed = JSON.parse(value) as StorageValue<CanvasStore>;
-        queuedPersistState = parsed.state as PersistedCanvasState;
-        return parsed;
+        const loaded = await loadPersistedCanvasProjects<CanvasProject>(localForageStorage, name);
+        if (!loaded) return null;
+        queuedPersistState = loaded.state;
+        lastPersistedProjects = loaded.state.projects;
+        return loaded as StorageValue<CanvasStore>;
     },
     setItem: (name, value) => {
         const nextState = value.state as PersistedCanvasState;
         if (queuedPersistState && queuedPersistState.projects === nextState.projects) return;
         queuedPersistState = nextState;
         queuedPersistName = name;
-        queuedPersistValue = JSON.stringify(value);
+        queuedPersistValue = { state: nextState, version: value.version };
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
             saveTimer = null;
-            const payload = queuedPersistValue;
-            queuedPersistValue = null;
-            if (payload) void localForageStorage.setItem(queuedPersistName, payload);
+            void flushQueuedCanvasPersist();
         }, 400);
     },
-    removeItem: (name) => localForageStorage.removeItem(name),
+    removeItem: (name) => removePersistedCanvasProjects(localForageStorage, name, lastPersistedProjects),
 };
+
+async function flushQueuedCanvasPersist() {
+    const payload = queuedPersistValue;
+    queuedPersistValue = null;
+    if (!payload) return;
+    await writeSplitCanvasProjects(localForageStorage, queuedPersistName, payload, lastPersistedProjects);
+    lastPersistedProjects = payload.state.projects;
+}
 
 export async function flushCanvasStorePersistence() {
     if (saveTimer) {
         clearTimeout(saveTimer);
         saveTimer = null;
     }
-    const payload = queuedPersistValue;
-    queuedPersistValue = null;
-    if (payload) await localForageStorage.setItem(queuedPersistName, payload);
+    await flushQueuedCanvasPersist();
 }
 
 export const useCanvasStore = create<CanvasStore>()(

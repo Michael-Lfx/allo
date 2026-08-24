@@ -9,6 +9,7 @@ import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync
 import { useTrayLabels } from '@renderer/hooks/useTrayLabels';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
 import { requiresCloudAuthGate, resolvePostLocalAuthPath } from '@renderer/utils/auth/authGate';
+import { cloudLoginRedirectForPath } from '@renderer/pages/billing/billingAuth';
 import ConversationShell from '@renderer/pages/conversation/components/ConversationShell';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
 const Guid = React.lazy(() => import('@renderer/pages/guid'));
@@ -42,6 +43,10 @@ const EvalPage = React.lazy(() => import('@renderer/pages/eval'));
 const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
 const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
 const VideoCanvasProjectPage = React.lazy(() => import('@renderer/pages/videoCanvas/ProjectPage'));
+// TODO: workshop/assets stay deferred (no routes until explicitly published)
+// const WorkshopListPage = React.lazy(() => import('@renderer/pages/workshop'));
+// const WorkshopCanvasPage = React.lazy(() => import('@renderer/pages/workshop/CanvasPage'));
+// const AssetLibraryPage = React.lazy(() => import('@renderer/pages/assets'));
 const CompanionPage = React.lazy(() => import('@renderer/pages/companion'));
 const MemoryPanelPage = React.lazy(() => import('@renderer/pages/memoryPanel'));
 const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
@@ -53,6 +58,7 @@ const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/Clo
 const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
 const CloudLoginPage = React.lazy(() => import('@renderer/pages/cloudLogin'));
+const BillingPage = React.lazy(() => import('@renderer/pages/billing'));
 const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
 const BeautifulUiPreviewPage = React.lazy(() => import('@renderer/pages/beautifulUiPreview'));
 const ColorLabPage = React.lazy(() => import('@renderer/pages/colorLab'));
@@ -140,6 +146,7 @@ const getHashRouteRedirectUrl = () => {
 const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
   const { status: localStatus } = useAuth();
   const { authState: cloudAuthState, ready: cloudReady } = useCloudAuth();
+  const location = useLocation();
   const cloudGate = requiresCloudAuthGate();
   const authChecking =
     localStatus === 'checking' || (cloudGate && (!cloudReady || cloudAuthState.phase === 'unknown'));
@@ -150,7 +157,7 @@ const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) =
 
   // Desktop: Flowy account is the product key. WebUI: local instance admin is enough.
   if (cloudGate && !authChecking && cloudAuthState.phase === 'unauthenticated') {
-    return <Navigate to='/cloud-login' replace />;
+    return <Navigate to={cloudLoginRedirectForPath(location.pathname)} replace />;
   }
 
   // Keep chrome mounted while auth resolves; only the outlet region shows a shell-safe loader.
@@ -322,6 +329,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/test/commercial-slice' element={withRouteFallback(CommercialSlicePage)} />
           <Route path='/scheduled' element={withRouteFallback(ScheduledTasksPage)} />
           <Route path='/scheduled/:cron_job_id' element={withRouteFallback(TaskDetailPage)} />
+          <Route path='/billing' element={withRouteFallback(BillingPage)} />
           {/* Requirements platform — nested shell (ContentSider persists across sections) */}
           <Route path='/requirements' element={withRouteFallback(RequirementsLayout)}>
             <Route index element={withRouteFallback(WorkspacePage)} />
@@ -355,6 +363,12 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
             element={withRouteFallback(VideoCanvasProjectPage)}
           />
           <Route path='/video-generation/:sessionId' element={withRouteFallback(VideoGenerationWorkspacePage)} />
+          {/* workshop/assets deferred — keep pages in tree but unrouted */}
+          {/*
+          <Route path='/assets' element={withRouteFallback(AssetLibraryPage)} />
+          <Route path='/workshop' element={withRouteFallback(WorkshopListPage)} />
+          <Route path='/workshop/:id' element={withRouteFallback(WorkshopCanvasPage)} />
+          */}
         </Route>
         <Route
           path='*'
