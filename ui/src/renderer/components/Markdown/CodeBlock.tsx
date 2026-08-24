@@ -16,6 +16,8 @@ const CODE_PADDING_VERTICAL = 20;
 const COLLAPSED_HEIGHT = PREVIEW_LINES * CODE_LINE_HEIGHT + CODE_PADDING_VERTICAL;
 
 const MermaidBlock = React.lazy(() => import('./MermaidBlock'));
+const SvgBlock = React.lazy(() => import('./SvgBlock'));
+const JsxGraphBlock = React.lazy(() => import('./JsxGraphBlock'));
 
 type CodeBlockProps = {
   children: string;
@@ -79,6 +81,24 @@ function CodeBlock(props: CodeBlockProps) {
     return (
       <React.Suspense fallback={<div className='markdown-mermaid-loading' aria-busy='true' />}>
         <MermaidBlock code={formatCode(children)} style={props.codeStyle} />
+      </React.Suspense>
+    );
+  }
+
+  // Lesson figures: sanitized inline SVG (SMIL animations run natively) and
+  // JSXGraph boards for interactive / programmatically animated diagrams.
+  if (language === 'svg') {
+    return (
+      <React.Suspense fallback={<div className='markdown-mermaid-loading' aria-busy='true' />}>
+        <SvgBlock code={formatCode(children)} style={props.codeStyle} />
+      </React.Suspense>
+    );
+  }
+
+  if (language === 'jsxgraph') {
+    return (
+      <React.Suspense fallback={<div className='markdown-mermaid-loading' aria-busy='true' />}>
+        <JsxGraphBlock code={formatCode(children)} style={props.codeStyle} />
       </React.Suspense>
     );
   }

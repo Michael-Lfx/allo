@@ -16,8 +16,8 @@ use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CourseJobSource, CoursePack,
     CreateCustomQuestionRequest, CreateLessonActivityRequest, DeleteCourseRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
-    RateReviewRequest, SetTagsRequest, SubmitAttemptRequest, UpdateLessonProgressRequest,
-    UpdateQuestionRequest,
+    RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest,
+    SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -66,6 +66,7 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/lessons/{id}/activities/generate",
             post(generate_lesson_activity),
         )
+        .route("/api/learning/figures/repair", post(repair_figure))
         .route(
             "/api/learning/activities/{id}/attempts",
             post(submit_attempt),
@@ -303,6 +304,16 @@ async fn create_lesson_activity(
             .service
             .create_lesson_activity(&user.id, &id, request)
             .await?,
+    )))
+}
+
+async fn repair_figure(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Json(request): Json<RepairFigureRequest>,
+) -> Result<Json<ApiResponse<RepairFigureResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.repair_figure(&request).await?,
     )))
 }
 
