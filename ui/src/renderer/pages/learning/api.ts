@@ -3,6 +3,8 @@ import type {
   AttemptResult,
   CalendarStats,
   CheckinStatus,
+  ConceptGraphSummary,
+  ConceptGraphView,
   ConceptRef,
   CourseDetail,
   CourseJobView,
@@ -11,6 +13,7 @@ import type {
   CreateLessonActivityRequest,
   DiagnosticPlan,
   DueReview,
+  GenerateConceptGraphRequest,
   GenerateCourseRequest,
   GenerateLessonActivityRequest,
   GenerateLessonRequest,
@@ -173,6 +176,13 @@ export const learningApi = {
   deleteCustomQuestion: (id: string) =>
     httpRequest<void>('DELETE', `${BASE}/custom-questions/${encodeURIComponent(id)}`),
   listConceptRefs: () => httpRequest<ConceptRef[]>('GET', `${BASE}/concepts`),
+  listConceptGraphs: () => httpRequest<ConceptGraphSummary[]>('GET', `${BASE}/concept-graphs`),
+  generateConceptGraph: (request: GenerateConceptGraphRequest) =>
+    httpRequest<ConceptGraphView>('POST', `${BASE}/concept-graphs`, request),
+  getConceptGraph: (id: string) =>
+    httpRequest<ConceptGraphView>('GET', `${BASE}/concept-graphs/${encodeURIComponent(id)}`),
+  deleteConceptGraph: (id: string) =>
+    httpRequest<void>('DELETE', `${BASE}/concept-graphs/${encodeURIComponent(id)}`),
   deleteCourse: (id: string, deleteReviews: boolean) =>
     httpRequest<void>('DELETE', `${BASE}/courses/${encodeURIComponent(id)}`, {
       delete_reviews: deleteReviews,
