@@ -372,6 +372,60 @@ async fn a_truncated_tool_call_restarts_against_the_original_requirement() {
     );
 }
 
+/// Chaos matrix: N truncated tool-call passes then a clean EndTurn must cost
+/// exactly N+1 provider calls and report `rounds == N+1`. Manual smoke cannot
+/// sweep this space; the old host continue loop quietly multiplied budgets here.
+#[tokio::test]
+async fn truncated_tool_call_chaos_matrix_restarts_then_completes() {
+    for truncations in 1usize..=2 {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path().to_string_lossy().to_string();
+        let truncated_write = || {
+            sse(&[
+                json!({ "choices": [{ "delta": { "tool_calls": [{
+                    "index": 0,
+                    "id": "call-write",
+                    "type": "function",
+                    "function": { "name": "Write", "arguments": "{\"file_path\":\"a.html\",\"content\":\"<htm" }
+                }] }, "finish_reason": null }] }),
+                json!({ "choices": [{ "delta": {}, "finish_reason": "length" }] }),
+            ])
+        };
+        let mut scripts = Vec::with_capacity(truncations + 1);
+        for _ in 0..truncations {
+            scripts.push(truncated_write());
+        }
+        scripts.push(text_then_stop("done"));
+        let (server, responder) = scripted_server(scripts).await;
+
+        let cfg = config(&server.uri(), &cwd);
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(nomi_tools::write::WriteTool::new(None)));
+        let mut engine = engine(&cfg, registry, dir.path());
+
+        let result = engine
+            .execute_turn("write a.html", &format!("m-chaos-{truncations}"))
+            .await
+            .expect("truncated-then-complete is a normal outcome");
+
+        assert_eq!(
+            result.stop_reason,
+            StopReason::EndTurn,
+            "truncations={truncations}"
+        );
+        assert_eq!(
+            result.rounds,
+            truncations + 1,
+            "truncations={truncations}"
+        );
+        assert_eq!(
+            responder.calls.load(Ordering::SeqCst),
+            truncations + 1,
+            "truncations={truncations}"
+        );
+    }
+}
+
 /// B1's attempt cap is the engine's, and it is absolute: three passes at one
 /// requirement, regardless of `max_turns`. The deleted host loop multiplied
 /// instead — each host continuation re-entered the engine and reset its loop

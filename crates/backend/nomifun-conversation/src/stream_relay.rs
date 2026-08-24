@@ -7101,6 +7101,62 @@ mod tests {
         }));
     }
 
+    /// Chaos: a burst of OutputDiscarded events with rising restart_attempt
+    /// interleaved with text must still leave only the post-discard replacement.
+    #[tokio::test]
+    async fn output_discarded_chaos_burst_keeps_only_the_surviving_suffix() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus,
+            None,
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::Start(StartEventData::default())).unwrap();
+        tx.send(AgentStreamEvent::Text(TextEventData {
+            content: "keep-me ".into(),
+        }))
+        .unwrap();
+        for attempt in 2u32..=5 {
+            tx.send(AgentStreamEvent::Start(StartEventData::default())).unwrap();
+            tx.send(AgentStreamEvent::Text(TextEventData {
+                content: format!("draft-{attempt} "),
+            }))
+            .unwrap();
+            tx.send(AgentStreamEvent::OutputDiscarded(OutputDiscardedEventData {
+                restart_attempt: attempt,
+            }))
+            .unwrap();
+        }
+        tx.send(AgentStreamEvent::Text(TextEventData {
+            content: "final-ok".into(),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+        assert_eq!(outcome.final_text.as_deref(), Some("keep-me final-ok"));
+        let rows = repo.take_inserts();
+        let text = rows.iter().find(|row| row.r#type == "text").unwrap();
+        let content: Value = serde_json::from_str(&text.content).unwrap();
+        let body = content["content"].as_str().unwrap();
+        assert!(body.contains("keep-me"), "{body}");
+        assert!(body.contains("final-ok"), "{body}");
+        for attempt in 2u32..=5 {
+            assert!(
+                !body.contains(&format!("draft-{attempt}")),
+                "draft-{attempt} must be discarded: {body}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn discarded_output_retracts_a_flushed_row_before_the_replacement_is_finalized() {
         let repo = Arc::new(RecordingRepo::new());

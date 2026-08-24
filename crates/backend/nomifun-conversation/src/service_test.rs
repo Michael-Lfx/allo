@@ -8134,6 +8134,195 @@ async fn truncated_continuation_replays_once_and_preserves_files_across_a_second
     assert_ne!(second_receipt.operation_id, original.operation_id);
 }
 
+/// Chaos: eight concurrent continue-truncated clicks with the same idempotency
+/// key must collapse to exactly one new admission. Manual double-click smoke
+/// cannot sample this race reliably.
+#[tokio::test]
+async fn truncated_continuation_chaos_eight_concurrent_same_key_single_owner() {
+    const KEY: &str = "continue-truncated-chaos-same-key";
+    let database = init_database_memory().await.unwrap();
+    nomifun_db::sqlx::query(
+        "INSERT INTO providers (\
+            provider_id, platform, name, base_url, api_key_encrypted, enabled, \
+            created_at, updated_at\
+         ) VALUES (?1, 'openai', 'test', 'https://example.invalid', \
+                   'encrypted', 1, 1, 1)",
+    )
+    .bind(PROVIDER_ID_1)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    nomifun_db::sqlx::query(
+        "INSERT INTO provider_models (\
+            provider_id, model, enabled, sort_order, tasks, traits, params, source, created_at, updated_at\
+         ) VALUES (?1, 'm1', 1, 0, '[]', '[]', '{}', 'inferred', 1, 1)",
+    )
+    .bind(PROVIDER_ID_1)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let runtime_registry_dyn: Arc<dyn AgentRuntimeRegistry> = runtime_registry.clone();
+    let service = ConversationService::new(
+        Arc::<str>::from(SQLITE_TEST_OWNER),
+        std::env::temp_dir(),
+        Arc::new(MockBroadcaster::new()),
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry_dyn.clone(),
+        repo.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let conversation = service
+        .create(
+            SQLITE_TEST_OWNER,
+            serde_json::from_value(json!({
+                "type": "nomi",
+                "model": { "provider_id": PROVIDER_ID_1, "model": "m1" },
+                "extra": {
+                    "workspace": isolated_test_workspace("truncated-continuation-chaos")
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    nomifun_db::sqlx::query(
+        "UPDATE conversations SET status = 'finished' WHERE conversation_id = ? AND user_id = ?",
+    )
+    .bind(&conversation.conversation_id)
+    .bind(SQLITE_TEST_OWNER)
+    .execute(database.pool())
+    .await
+    .unwrap();
+
+    let source_operation = format!(
+        "public-turn:v1:{}:{}:chaos-source",
+        SQLITE_TEST_OWNER, conversation.conversation_id
+    );
+    let source_payload = json!({
+        "content": "build it",
+        "files": [],
+        "inject_skills": [],
+        "hidden": false,
+        "origin": null,
+        "channel_platform": null,
+    })
+    .to_string();
+    let source = repo
+        .claim_delivery_receipt_once(
+            SQLITE_TEST_OWNER,
+            &conversation.conversation_id,
+            &source_operation,
+            "turn",
+            &source_payload,
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    repo.insert_message(&MessageRow {
+        id: 0,
+        message_id: source.receipt.message_id.clone(),
+        conversation_id: conversation.conversation_id.clone(),
+        msg_id: Some(source.receipt.message_id.clone()),
+        r#type: "text".to_owned(),
+        content: json!({"content": "build it"}).to_string(),
+        position: Some("right".to_owned()),
+        status: Some("finish".to_owned()),
+        hidden: false,
+        created_at: now_ms(),
+    })
+    .await
+    .unwrap();
+    assert!(
+        repo.complete_delivery_receipt(
+            SQLITE_TEST_OWNER,
+            &conversation.conversation_id,
+            &source_operation,
+            false,
+            None,
+            Some("output ceiling"),
+            Some("output_truncated"),
+            Some(true),
+            now_ms(),
+        )
+        .await
+        .unwrap()
+    );
+
+    let scripted = Arc::new(ScriptedAgent::new(
+        &conversation.conversation_id,
+        vec![vec![
+            AgentStreamEvent::Text(TextEventData {
+                content: "recovered".to_owned(),
+            }),
+            AgentStreamEvent::Finish(FinishEventData {
+                session_id: None,
+                stop_reason: Some(TurnStopReason::EndTurn),
+            }),
+        ]],
+    ));
+    runtime_registry.insert_agent(
+        &conversation.conversation_id,
+        AgentRuntimeHandle::Mock(scripted),
+    );
+
+    let mut joins = Vec::new();
+    for _ in 0..8 {
+        let service = service.clone();
+        let runtime = runtime_registry_dyn.clone();
+        let conv_id = conversation.conversation_id.clone();
+        let source_id = source.receipt.message_id.clone();
+        joins.push(tokio::spawn(async move {
+            service
+                .continue_truncated_turn_with_idempotency_key(
+                    SQLITE_TEST_OWNER,
+                    &conv_id,
+                    &source_id,
+                    KEY,
+                    &runtime,
+                )
+                .await
+        }));
+    }
+    let results: Vec<_> = futures_util::future::join_all(joins)
+        .await
+        .into_iter()
+        .map(|joined| joined.expect("task join"))
+        .collect();
+    let mut fresh = Vec::new();
+    let mut replays = 0usize;
+    let mut conflicts = 0usize;
+    for result in results {
+        match result {
+            Ok(delivery) if !delivery.replayed => fresh.push(delivery),
+            Ok(delivery) => {
+                if let Some(owner) = fresh.first() {
+                    assert_eq!(delivery.message_id, owner.message_id);
+                }
+                replays += 1;
+            }
+            Err(AppError::Conflict(message))
+                if message.contains("authoritative local turn owner") =>
+            {
+                // Lost the race after the atomic claim window: production UI
+                // retries or ignores; chaos must sample this path, not deny it.
+                conflicts += 1;
+            }
+            other => panic!("unexpected continue outcome: {other:?}"),
+        }
+    }
+    assert_eq!(fresh.len(), 1, "exactly one concurrent click may own the admission");
+    assert_eq!(
+        fresh.len() + replays + conflicts,
+        8,
+        "every click must resolve as owner, replay, or turn-owner conflict"
+    );
+    wait_for_turn_released(&service, &conversation.conversation_id).await;
+}
+
 #[tokio::test]
 async fn successor_pending_generation_cannot_impersonate_creation_for_initial_delivery() {
     const USER_ID: &str = SQLITE_TEST_OWNER;
