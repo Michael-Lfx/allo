@@ -489,7 +489,7 @@
 | `96e0b5ab4` provider 编辑保存 | **已吸收** → `98a2ab7da` | `toUpdateProviderRequest` 过滤 response/form-only 字段，避免 deny_unknown_fields 丢保存 |
 | `34de3b229` SkillHub 专家包安装 | **已吸收（适配）** → `4c6b456eb` | Rust：detail 端点 + slug 冲突检测 + 错误映射；UI 市场卡片保留 mike redesign，仅合入错误分类/i18n |
 | `939320710` i18n 漏翻 | **跳过** | FreeModels 无 stale 探针 UI；`partialTitle` 在 mike TurnDeliverablesCard 未使用。整包会强塞 nomi 健康态 UI |
-| `aa3071217` / `b6e61cbcd` 测试竞态 | **已吸收（适配）** → `9b0ffff95` + 后续修复提交 | robot：补 `await_frame`（源 commit 依赖 `b6e61cbcd`）；bootstrap：`env_guard`；**丢弃** nomi 独有 `WorkDirChange` 测试；断言改用 `config.database_path()`（mike 已迁 `flowy-backend.db`）；顺带吸 ssh `expand_tilde` `/` join + `system_version_e2e` credentials 契约 |
+| `aa3071217` / `b6e61cbcd` 测试竞态 | **已吸收（适配）** → `9b0ffff95` + `176597525` | robot：补 `await_frame`（源 commit 依赖 `b6e61cbcd`）；bootstrap：`env_guard`；**丢弃** nomi 独有 `WorkDirChange` 测试；断言改用 `config.database_path()`（mike 已迁 `flowy-backend.db`）；顺带吸 ssh `expand_tilde` `/` join + `system_version_e2e` credentials 契约 |
 | `4a2eacfd4` channels group access | **未做** | 体积过大（channel/plugins 上千行），留待单独分支 |
 
 验证：
