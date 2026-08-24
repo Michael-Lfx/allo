@@ -27,12 +27,18 @@ export class NotificationAnnouncementQueue {
     this.pending.set(announcement.key, announcement);
   }
 
-  take(channel: NotificationAnnouncementChannel): NotificationAnnouncement | undefined {
-    const next = [...this.pending.values()]
-      .filter((announcement) => announcement.channel === channel)
-      .sort((left, right) => left.createdAt - right.createdAt)[0];
+  take(): NotificationAnnouncement | undefined {
+    const next = [...this.pending.values()].sort(
+      (left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key),
+    )[0];
     if (next) this.pending.delete(next.key);
     return next;
+  }
+
+  retain(keys: ReadonlySet<string>): void {
+    for (const key of this.pending.keys()) {
+      if (!keys.has(key)) this.pending.delete(key);
+    }
   }
 
   clear(): void {

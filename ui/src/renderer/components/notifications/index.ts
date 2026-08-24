@@ -7,12 +7,16 @@ import type {
   AppNotificationLevel,
   AppNotificationUpdate,
   NotificationHandle,
+  NotificationScope,
   NotificationScopeOptions,
 } from './notificationTypes';
 
 export type { AppNotificationInput, AppNotificationLevel, AppNotificationUpdate, NotificationHandle } from './notificationTypes';
 export { mergeRefs, useNotificationBlocker } from './notificationInsets';
 export { notificationStore } from './notificationStore';
+
+type MessageScope = NotificationScope;
+type ScopeAccessor = () => MessageScope | null;
 
 export type AppMessageConfig = Omit<AppNotificationInput, 'level' | 'content'> & { content: ReactNode };
 export type AppMessageMethod = (config: AppMessageConfig | string) => () => void;
@@ -30,31 +34,52 @@ export type AppMessageUseMessageReturn = [AppMessageInstance, null];
 
 const globalScope = notificationStore.createScope({ closable: false, duration: 3000 });
 
-const showMessage = (scope: ReturnType<typeof notificationStore.createScope>, level: AppNotificationLevel, config: AppMessageConfig | string) => {
+const showMessage = (getScope: ScopeAccessor, level: AppNotificationLevel, config: AppMessageConfig | string) => {
+  const scope = getScope();
+  if (!scope) return () => undefined;
   const input = typeof config === 'string' ? { content: config } : config;
   return scope.show({ ...input, level }).dismiss;
 };
 
-const createMessageApi = (scope: ReturnType<typeof notificationStore.createScope>): AppMessageInstance => ({
-  info: (config) => showMessage(scope, 'info', config),
-  success: (config) => showMessage(scope, 'success', config),
-  warning: (config) => showMessage(scope, 'warning', config),
-  error: (config) => showMessage(scope, 'error', config),
-  loading: (config) => showMessage(scope, 'loading', config),
-  normal: (config) => showMessage(scope, 'normal', config),
+const createMessageApi = (getScope: ScopeAccessor): AppMessageInstance => ({
+  info: (config) => showMessage(getScope, 'info', config),
+  success: (config) => showMessage(getScope, 'success', config),
+  warning: (config) => showMessage(getScope, 'warning', config),
+  error: (config) => showMessage(getScope, 'error', config),
+  loading: (config) => showMessage(getScope, 'loading', config),
+  normal: (config) => showMessage(getScope, 'normal', config),
 });
 
 export function useNotifications(config?: AppMessageUseMessageConfig): AppMessageUseMessageReturn {
-  const scopeRef = useRef<ReturnType<typeof notificationStore.createScope> | null>(null);
+  const scopeRef = useRef<MessageScope | null>(null);
+  const initialConfigRef = useRef(config);
   const apiRef = useRef<AppMessageInstance | null>(null);
-  if (!scopeRef.current) scopeRef.current = notificationStore.createScope(config);
-  if (!apiRef.current) apiRef.current = createMessageApi(scopeRef.current);
-  const scope = scopeRef.current;
-  useEffect(() => () => scope.dispose(), [scope]);
+  if (!apiRef.current) apiRef.current = createMessageApi(() => scopeRef.current);
+
+  useEffect(() => {
+    const scope = notificationStore.createScope(initialConfigRef.current);
+    scopeRef.current = scope;
+    return () => {
+      if (scopeRef.current === scope) scopeRef.current = null;
+      scope.dispose();
+    };
+  }, []);
+
   return [apiRef.current, null];
 }
 
-const messageMethod = (level: AppNotificationLevel): AppMessageMethod => (config) => showMessage(globalScope, level, config);
+export type AppNotificationsApi = {
+  show: (input: AppNotificationInput) => NotificationHandle;
+  clear: () => void;
+};
+
+export const appNotifications: AppNotificationsApi = {
+  show: (input) => globalScope.show(input),
+  clear: () => globalScope.clear(),
+};
+
+const messageMethod = (level: AppNotificationLevel): AppMessageMethod => (config) =>
+  showMessage(() => globalScope, level, config);
 
 export const AppMessage = {
   info: messageMethod('info'),
@@ -73,7 +98,7 @@ type AppNotificationMethod = (config: AppNotificationConfig | string) => () => v
 
 const showNotification = (level: AppNotificationLevel, config: AppNotificationConfig | string): (() => void) => {
   const input = typeof config === 'string' ? { content: config } : config;
-  return globalScope.show({ ...input, level, closable: input.closable ?? true }).dismiss;
+  return appNotifications.show({ ...input, level, closable: input.closable ?? true }).dismiss;
 };
 
 export const AppNotification: Record<AppNotificationLevel, AppNotificationMethod> & {

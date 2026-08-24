@@ -219,4 +219,18 @@ describe('notificationStore', () => {
     expect(anyOf(scope)).toHaveLength(0);
     expect(closed).toBe(1);
   });
+
+  test('disposed scopes cannot create notifications through retained show handles', async () => {
+    const scope = notificationStore.createScope();
+    const handle = scope.show({ content: 'before dispose', duration: 0 });
+    scope.dispose();
+
+    const retainedHandle = scope.show({ content: 'after dispose', duration: 0 });
+    retainedHandle.update({ content: 'still absent' });
+
+    await wait(NOTIFICATION_EXIT_DURATION + 50);
+    expect(anyOf(scope)).toHaveLength(0);
+    expect(retainedHandle.id).toBe('');
+    handle.dismiss();
+  });
 });

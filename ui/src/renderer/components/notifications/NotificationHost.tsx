@@ -16,7 +16,6 @@ import {
   announcementChannelForLevel,
   NotificationAnnouncementQueue,
   type NotificationAnnouncement,
-  type NotificationAnnouncementChannel,
 } from './notificationAnnouncementQueue';
 import { notificationStore } from './notificationStore';
 import './notifications.css';
@@ -38,19 +37,10 @@ const NotificationHost: React.FC = () => {
   const announcedRef = useRef(new Map<string, number>());
   const announcementQueueRef = useRef(new NotificationAnnouncementQueue());
   const announcementInitializedRef = useRef(false);
-  const activeAnnouncementRef = useRef<Record<NotificationAnnouncementChannel, NotificationAnnouncement | null>>({
-    polite: null,
-    assertive: null,
-  });
-  const announcementTimersRef = useRef<Record<NotificationAnnouncementChannel, number | null>>({
-    polite: null,
-    assertive: null,
-  });
-  const announcementFollowupTimersRef = useRef<Record<NotificationAnnouncementChannel, number | null>>({
-    polite: null,
-    assertive: null,
-  });
-  const flushAnnouncementRef = useRef<(channel: NotificationAnnouncementChannel) => void>(() => undefined);
+  const activeAnnouncementRef = useRef<NotificationAnnouncement | null>(null);
+  const announcementTimerRef = useRef<number | null>(null);
+  const announcementFollowupTimerRef = useRef<number | null>(null);
+  const flushAnnouncementRef = useRef<() => void>(() => undefined);
   const revealedRef = useRef(new Set<string>());
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
   const previousRects = useRef(new Map<string, DOMRect>());
@@ -151,27 +141,32 @@ const NotificationHost: React.FC = () => {
     return () => notificationStore.resumeInteraction('notification-expanded');
   }, [expanded]);
 
-  flushAnnouncementRef.current = (channel: NotificationAnnouncementChannel) => {
-    if (activeAnnouncementRef.current[channel]) return;
-    const next = announcementQueueRef.current.take(channel);
+  flushAnnouncementRef.current = () => {
+    if (activeAnnouncementRef.current) return;
+    const next = announcementQueueRef.current.take();
     if (!next) return;
 
-    activeAnnouncementRef.current[channel] = next;
-    const setMessage = channel === 'assertive' ? setAssertiveMessage : setPoliteMessage;
+    activeAnnouncementRef.current = next;
+    const setMessage = next.channel === 'assertive' ? setAssertiveMessage : setPoliteMessage;
     setMessage(next.message);
-    announcementTimersRef.current[channel] = window.setTimeout(() => {
-      activeAnnouncementRef.current[channel] = null;
-      announcementTimersRef.current[channel] = null;
+    announcementTimerRef.current = window.setTimeout(() => {
+      activeAnnouncementRef.current = null;
+      announcementTimerRef.current = null;
       setMessage('');
-      announcementFollowupTimersRef.current[channel] = window.setTimeout(() => {
-        announcementFollowupTimersRef.current[channel] = null;
-        flushAnnouncementRef.current(channel);
+      announcementFollowupTimerRef.current = window.setTimeout(() => {
+        announcementFollowupTimerRef.current = null;
+        flushAnnouncementRef.current();
       }, 0);
     }, NOTIFICATION_ANNOUNCEMENT_DISPLAY_MS);
   };
 
   useEffect(() => {
     const sortedActiveRecords = sortByCreatedAt(activeRecords);
+    const activeKeys = new Set(sortedActiveRecords.map((notice) => notice.key));
+    announcementQueueRef.current.retain(activeKeys);
+    announcedRef.current.forEach((_revision, key) => {
+      if (!records.some((notice) => notice.key === key)) announcedRef.current.delete(key);
+    });
     const enqueue = (notice: (typeof sortedActiveRecords)[number]) => {
       const fallback = t(`notifications.level.${notice.level}`, { defaultValue: notice.level });
       const message = textFromNode(notice.announce ?? notice.title) || textFromNode(notice.content) || fallback;
@@ -197,19 +192,15 @@ const NotificationHost: React.FC = () => {
       });
     }
 
-    flushAnnouncementRef.current('assertive');
-    flushAnnouncementRef.current('polite');
-  }, [activeRecords, t]);
+    flushAnnouncementRef.current();
+  }, [activeRecords, records, t]);
 
   useEffect(
     () => () => {
       announcementQueueRef.current.clear();
-      for (const channel of ['polite', 'assertive'] as const) {
-        const timer = announcementTimersRef.current[channel];
-        if (timer !== null) window.clearTimeout(timer);
-        const followupTimer = announcementFollowupTimersRef.current[channel];
-        if (followupTimer !== null) window.clearTimeout(followupTimer);
-      }
+      if (announcementTimerRef.current !== null) window.clearTimeout(announcementTimerRef.current);
+      if (announcementFollowupTimerRef.current !== null) window.clearTimeout(announcementFollowupTimerRef.current);
+      activeAnnouncementRef.current = null;
     },
     [],
   );

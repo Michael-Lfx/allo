@@ -12,6 +12,10 @@ describe('useArcoMessage', () => {
   });
 
   test('the facade exposes the stable message/notification surface the hook builds on', () => {
+    expect(facadeSource.includes('export const appNotifications')).toBe(true);
+    expect(facadeSource.includes('show: (input) => globalScope.show(input)')).toBe(true);
+    expect(facadeSource.includes('notificationStore.createScope(initialConfigRef.current)')).toBe(true);
+    expect(facadeSource.includes('scopeRef.current = notificationStore.createScope(config)')).toBe(false);
     for (const level of ['info', 'success', 'warning', 'error', 'loading', 'normal']) {
       expect(facadeSource.includes(`${level}:`)).toBe(true);
     }

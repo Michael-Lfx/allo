@@ -21,14 +21,14 @@ describe('NotificationAnnouncementQueue', () => {
     expect(announcementChannelForLevel('loading')).toBe('polite');
   });
 
-  test('keeps announcements ordered within a channel', () => {
+  test('keeps announcements ordered globally by creation time', () => {
     const queue = new NotificationAnnouncementQueue();
     queue.enqueue(announcement({ key: 'b', createdAt: 2, message: '第二条' }));
     queue.enqueue(announcement({ key: 'a', createdAt: 1, message: '第一条' }));
 
-    expect(queue.take('polite')?.message).toBe('第一条');
-    expect(queue.take('polite')?.message).toBe('第二条');
-    expect(queue.take('polite')).toBeUndefined();
+    expect(queue.take()?.message).toBe('第一条');
+    expect(queue.take()?.message).toBe('第二条');
+    expect(queue.take()).toBeUndefined();
   });
 
   test('replaces a pending notification with its newest revision', () => {
@@ -37,15 +37,26 @@ describe('NotificationAnnouncementQueue', () => {
     queue.enqueue(announcement({ revision: 2, message: '已完成' }));
     queue.enqueue(announcement({ revision: 1, message: '旧结果' }));
 
-    expect(queue.take('polite')).toMatchObject({ revision: 2, message: '已完成' });
+    expect(queue.take()).toMatchObject({ revision: 2, message: '已完成' });
   });
 
-  test('keeps assertive and polite channels independent', () => {
+  test('preserves the channel on globally ordered announcements', () => {
     const queue = new NotificationAnnouncementQueue();
-    queue.enqueue(announcement({ key: 'info', channel: 'polite', message: '提示' }));
-    queue.enqueue(announcement({ key: 'error', channel: 'assertive', message: '失败' }));
+    queue.enqueue(announcement({ key: 'info', channel: 'polite', createdAt: 2, message: '提示' }));
+    queue.enqueue(announcement({ key: 'error', channel: 'assertive', createdAt: 1, message: '失败' }));
 
-    expect(queue.take('assertive')?.message).toBe('失败');
-    expect(queue.take('polite')?.message).toBe('提示');
+    expect(queue.take()).toMatchObject({ channel: 'assertive', message: '失败' });
+    expect(queue.take()).toMatchObject({ channel: 'polite', message: '提示' });
+  });
+
+  test('removes announcements that are no longer active', () => {
+    const queue = new NotificationAnnouncementQueue();
+    queue.enqueue(announcement({ key: 'stale' }));
+    queue.enqueue(announcement({ key: 'live', createdAt: 2, message: '仍然存在' }));
+
+    queue.retain(new Set(['live']));
+
+    expect(queue.take()?.message).toBe('仍然存在');
+    expect(queue.take()).toBeUndefined();
   });
 });

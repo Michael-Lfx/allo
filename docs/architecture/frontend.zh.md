@@ -124,7 +124,9 @@ export function getBaseUrl(): string {
 
 运行时 Arco `Message` / `Notification` 统一通过 `AppMessage`、
 `AppNotification` 门面调用。`useArcoMessage` 的每个实例拥有独立 scope 和
-`maxCount` 策略，静态调用使用共享 scope。同一 scope 内重复的活动 `id` 会原地更新。
+`maxCount` 策略，静态调用使用共享 scope。新代码应使用稳定的
+`appNotifications.show()` 门面，它返回带有 `dismiss()` 和 `update()` 的 handle；
+Arco 形状的门面仅用于兼容迁移。同一 scope 内重复的活动 `id` 会原地更新。
 返回的 `handle.update()` 是部分更新：未传入的 `title`、`icon`、`action`、
 `onClose`、`announce` 等可选字段保持不变，明确传入的值才会替换原值。
 
@@ -139,7 +141,8 @@ export function getBaseUrl(): string {
 缩放以及操作面板过渡状态计算最终 bottom inset，确保通知不覆盖输入区或移动操作面板。
 卡片主体不处理点击；只有关闭按钮、调用方提供的操作按钮和计数控制可交互。
 `passthrough` 通知保持点击穿透。独立的 polite/assertive live region 负责播报通知内容，
-连续通知按通道排队，相同 revision 去重，待播报的更新只保留最新版本；展开历史不会重复播报。
+连续通知进入按创建时间排序的统一队列，再路由到对应级别的 live region；相同 revision 去重，
+待播报的更新只保留最新版本，轮到播报前已关闭的通知会被移除；展开历史不会重复播报。
 入场、收起和堆叠位移只使用透明度/位移动画：空间 FLIP 位移为 240ms，入场 180ms、退出
 120ms，并支持 reduced-motion。通知主色来自当前主题的 `--primary`，成功、警告、错误和信息
 分别使用主题语义色，并通过低强度 tint 表达，不使用渐变或模糊。通知卡片和计数控制器统一以

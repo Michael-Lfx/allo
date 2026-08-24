@@ -85,6 +85,8 @@ class NotificationStore {
   };
 
   show = (scope: ScopeState, input: AppNotificationInput): NotificationHandle => {
+    if (scope.disposed || this.scopes.get(scope.id) !== scope) return this.createHandle(scope.id, '');
+
     const existing = input.id
       ? this.records.find((record) => record.scopeId === scope.id && record.id === input.id && record.status === 'active')
       : undefined;

@@ -132,4 +132,21 @@ describe('notification facade source contracts', () => {
     expect(css.includes('var(--notification-base-surface) 92%')).toBe(true);
     expect(css.includes('var(--notification-base-surface) 96%')).toBe(true);
   });
+
+  test('the theme contract does not override notification semantic surfaces', () => {
+    const themeContract = readSource('../../styles/theme-control-contract.css');
+    expect(themeContract.includes('.flowy-notification-card {\n  background-color:')).toBe(false);
+    expect(themeContract.includes('.flowy-notification-card--error')).toBe(true);
+  });
+
+  test('built-in theme presets do not retain old Arco notification selectors', () => {
+    const presetDir = path.resolve(__dirname, '../../pages/settings/DisplaySettings/presets');
+    for (const entry of readdirSync(presetDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.css')) continue;
+      const source = readFileSync(path.join(presetDir, entry.name), 'utf8');
+      expect(source.includes('.arco-message')).toBe(false);
+      expect(source.includes('.arco-notification')).toBe(false);
+      expect(source.includes('.arco-message-wrapper')).toBe(false);
+    }
+  });
 });

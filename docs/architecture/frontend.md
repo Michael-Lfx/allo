@@ -104,6 +104,9 @@ backend data, native OS notifications, or notification permissions.
 Runtime Arco `Message` / `Notification` calls use the `AppMessage` and
 `AppNotification` facades. `useArcoMessage` keeps each hook instance in its own
 scope, including its `maxCount` policy, while static calls use the shared scope.
+New code should use the stable `appNotifications.show()` facade, which returns
+a handle with `dismiss()` and `update()`; the Arco-shaped facades remain for
+compatibility migration only.
 Within a scope, a repeated `id` updates the active record in place. A returned
 `handle.update()` is a patch: omitted optional fields such as `title`, `icon`,
 `action`, `onClose`, and `announce` are preserved, while explicitly supplied
@@ -127,9 +130,10 @@ the composer or mobile action panel. Cards do not handle clicks themselves;
 close buttons, supplied actions, and the disclosure control are the only
 interactive surfaces. `passthrough` cards remain pointer-transparent. Separate
 polite and assertive live regions announce notification content without
-re-announcing expansion history. New announcements are queued per channel,
-deduplicated by notification revision, and pending updates replace older
-revisions. Enter/exit motion uses opacity/transform; stack FLIP movement follows
+re-announcing expansion history. New announcements use one creation-ordered
+queue and are routed to the level-specific live region, deduplicated by
+notification revision; pending updates replace older revisions and notices
+closed before their turn are removed. Enter/exit motion uses opacity/transform; stack FLIP movement follows
 the 240ms spatial-transition token, with 180ms entry, a short collapse fade,
 120ms exit, and reduced-motion overrides. Notification surfaces resolve their
 brand color from the active theme's `--primary` token and semantic states from
