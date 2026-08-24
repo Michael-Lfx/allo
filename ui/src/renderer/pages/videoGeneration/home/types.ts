@@ -1,6 +1,6 @@
 import type { CameoDraftItem, VimaxWorkflow } from '../types';
 import type { SeedanceAspectRatio } from '../aspectRatios';
-import type { VideoResolution } from '../videoModelCapabilities';
+import type { VideoResolution } from '@renderer/services/videoModelCapabilities';
 import type { VimaxModelSelection } from '../components/ModelSelectors';
 
 export type VideoHomeMode = 'agent' | 'creation' | 'action';

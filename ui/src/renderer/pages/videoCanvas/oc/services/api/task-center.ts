@@ -4,11 +4,10 @@
 
 import { generationErrorMessage } from '@oc/lib/generation-error';
 import {
-  isMiniMaxH3VideoModel,
   normalizeMiniMaxH3Duration,
   normalizeMiniMaxH3Ratio,
-  normalizeMiniMaxH3Resolution,
 } from '@oc/lib/minimax-h3-video';
+import { isMiniMaxH3VideoModel, normalizeMiniMaxH3Resolution } from '@renderer/services/videoModelCapabilities';
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } from '@oc/services/api/resources';
 import { modelOptionName } from '@oc/stores/use-config-store';
 import {

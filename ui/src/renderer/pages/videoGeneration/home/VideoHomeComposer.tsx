@@ -22,12 +22,10 @@ import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
   normalizeSeedanceAspectRatio,
 } from '../aspectRatios';
-import {
-  DEFAULT_VIDEO_FPS,
-  DEFAULT_VIDEO_RESOLUTION,
-  normalizeVideoFps,
-  normalizeVideoResolution,
-} from '../videoModelCapabilities';
+import { DEFAULT_VIDEO_FPS,
+DEFAULT_VIDEO_RESOLUTION,
+normalizeVideoFps,
+normalizeVideoResolution, } from '@renderer/services/videoModelCapabilities'
 import { suggestCameoCharacterName } from '../cameoUtils';
 import type { CameoDraftItem, VerticalSkillSummary, VimaxWorkflow } from '../types';
 import { isActionImitationWorkflow } from '../workflowKind';

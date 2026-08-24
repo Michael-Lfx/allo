@@ -1,5 +1,6 @@
 /**
- * Per-model resolution / fps capabilities for ViMax Style & Model pickers.
+ * Per-model video resolution / fps capabilities shared by videoGeneration
+ * (ViMax Style & Model pickers) and videoCanvas oc panels.
  * Heuristics mirror Rust `nomi_vimax::video_quality` (Seedance Ark + MiniMax-H3).
  */
 

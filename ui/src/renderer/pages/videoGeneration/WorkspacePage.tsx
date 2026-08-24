@@ -71,13 +71,11 @@ import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
   normalizeSeedanceAspectRatio,
 } from './aspectRatios';
-import {
-  DEFAULT_VIDEO_FPS,
-  DEFAULT_VIDEO_RESOLUTION,
-  normalizeVideoFps,
-  normalizeVideoResolution,
-  type VideoResolution,
-} from './videoModelCapabilities';
+import { DEFAULT_VIDEO_FPS,
+DEFAULT_VIDEO_RESOLUTION,
+normalizeVideoFps,
+normalizeVideoResolution,
+type VideoResolution, } from '@renderer/services/videoModelCapabilities'
 import { DEFAULT_VISUAL_STYLE_PROMPT } from './visualStylePresets';
 import {
   clearVideoGenerationSessionMemory,

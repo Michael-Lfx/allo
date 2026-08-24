@@ -24,11 +24,9 @@ import {
   pickDefaultLlmModel,
   pickDefaultVideoModel,
 } from '../components/ModelSelectors';
-import {
-  normalizeVideoFps,
-  normalizeVideoResolution,
-  videoModelCapabilities,
-} from '../videoModelCapabilities';
+import { normalizeVideoFps,
+normalizeVideoResolution,
+videoModelCapabilities, } from '@renderer/services/videoModelCapabilities'
 import type { GenerationPreferences, VideoHomeMode } from './types';
 import type { VimaxWorkflow } from '../types';
 import { getScrollParents } from './scrollParents';

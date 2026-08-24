@@ -4,14 +4,12 @@
  */
 import React, { useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  DEFAULT_VIDEO_FPS,
-  DEFAULT_VIDEO_RESOLUTION,
-  normalizeVideoFps,
-  normalizeVideoResolution,
-  videoModelCapabilities,
-  type VideoResolution,
-} from '../videoModelCapabilities';
+import { DEFAULT_VIDEO_FPS,
+DEFAULT_VIDEO_RESOLUTION,
+normalizeVideoFps,
+normalizeVideoResolution,
+videoModelCapabilities,
+type VideoResolution, } from '@renderer/services/videoModelCapabilities'
 
 export interface VideoQualityValue {
   resolution: VideoResolution;

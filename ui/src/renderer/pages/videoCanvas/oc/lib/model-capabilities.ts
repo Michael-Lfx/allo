@@ -1,5 +1,7 @@
 import type { ModelProtocol } from "@oc/lib/model-protocols";
-import { isMiniMaxH3VideoModel, MINIMAX_H3_DURATION_DEFAULT, MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN } from "@oc/lib/minimax-h3-video";
+import { MINIMAX_H3_DURATION_DEFAULT, MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN } from "@oc/lib/minimax-h3-video";
+import { DEFAULT_MINIMAX_H3_RESOLUTION, isMiniMaxH3VideoModel, MINIMAX_H3_RESOLUTIONS } from "@renderer/services/videoModelCapabilities";
+import { DEFAULT_SEEDANCE_ASPECT_RATIO, SEEDANCE_ASPECT_RATIOS } from "@renderer/pages/videoGeneration/aspectRatios";
 
 export type ModelCapabilityConfig = {
     version: number;
@@ -56,10 +58,10 @@ function minimaxH3VideoCapability(): VideoCapabilityConfig {
             step: 1,
             default: MINIMAX_H3_DURATION_DEFAULT,
         },
-        ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
-        defaultRatio: "16:9",
-        resolutions: ["768P", "2K"],
-        defaultResolution: "768P",
+        ratios: [...SEEDANCE_ASPECT_RATIOS],
+        defaultRatio: DEFAULT_SEEDANCE_ASPECT_RATIO,
+        resolutions: [...MINIMAX_H3_RESOLUTIONS],
+        defaultResolution: DEFAULT_MINIMAX_H3_RESOLUTION,
         // Prefer MiniMax `aigc_watermark` via backend; do not expose Ark watermark / generate_audio.
         generateAudio: { supported: false, default: false },
         watermark: { supported: false, default: false },
@@ -82,8 +84,8 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol): ModelCap
             maxAudioDurationSeconds: 0,
         },
         duration: { selection: "range", min: 1, max: 15, step: 1, default: 6 },
-        ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
-        defaultRatio: "16:9",
+        ratios: [...SEEDANCE_ASPECT_RATIOS],
+        defaultRatio: DEFAULT_SEEDANCE_ASPECT_RATIO,
         resolutions: ["480p", "720p", "1080p", "2160p"],
         defaultResolution: "720p",
         generateAudio: { supported: false, default: false },

@@ -1,13 +1,9 @@
 /**
- * MiniMax-H3 (Flowy / MiniMax V2) video option helpers.
- * Keep resolution tokens in sync with Rust `normalize_minimax_h3_resolution`
- * and ViMax `videoModelCapabilities.ts`.
+ * MiniMax-H3 (Flowy / MiniMax V2) canvas-side video options.
+ * Model detection and resolution normalization live in
+ * `@renderer/services/videoModelCapabilities` (shared with videoGeneration).
+ * Keep resolution tokens in sync with Rust `normalize_minimax_h3_resolution`.
  */
-
-export const MINIMAX_H3_RESOLUTIONS = [
-  { value: '768P', label: '768P' },
-  { value: '2K', label: '2K' },
-] as const;
 
 export const MINIMAX_H3_RATIOS = [
   { value: '16:9', label: '横屏' },
@@ -22,27 +18,6 @@ export const MINIMAX_H3_RATIOS = [
 export const MINIMAX_H3_DURATION_MIN = 4;
 export const MINIMAX_H3_DURATION_MAX = 15;
 export const MINIMAX_H3_DURATION_DEFAULT = 5;
-
-function modelBlob(model: string): string {
-  return model.toLowerCase().replace(/[_.\s/]/g, '-');
-}
-
-export function isMiniMaxH3VideoModel(model: string): boolean {
-  const b = modelBlob(model);
-  return b.includes('minimax-h3') || b.includes('minimaxh3') || (b.includes('minimax') && b.includes('h3'));
-}
-
-export function normalizeMiniMaxH3Resolution(value: string): string {
-  const lower = String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[_\s]/g, '');
-  if (['2k', '1080p', '1080', '2160p', '4k', 'high'].includes(lower)) return '2K';
-  if (MINIMAX_H3_RESOLUTIONS.some((item) => item.value.toLowerCase() === lower)) {
-    return MINIMAX_H3_RESOLUTIONS.find((item) => item.value.toLowerCase() === lower)!.value;
-  }
-  return '768P';
-}
 
 export function normalizeMiniMaxH3Duration(value: string | number): number {
   const n = typeof value === 'number' ? value : Number.parseInt(String(value), 10);

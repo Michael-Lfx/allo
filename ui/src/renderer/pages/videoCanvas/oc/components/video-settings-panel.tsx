@@ -4,7 +4,8 @@ import { Switch } from "antd";
 
 import { ImageSettingsTheme } from "@oc/components/image-settings-panel";
 import { boolConfig, isSeedanceFastModel, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution } from "@oc/lib/seedance-video";
-import { isMiniMaxH3VideoModel, normalizeMiniMaxH3Duration, normalizeMiniMaxH3Resolution } from "@oc/lib/minimax-h3-video";
+import { normalizeMiniMaxH3Duration } from "@oc/lib/minimax-h3-video";
+import { isMiniMaxH3VideoModel, normalizeMiniMaxH3Resolution } from "@renderer/services/videoModelCapabilities";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { type CanvasTheme } from "@oc/lib/canvas-theme";
 import { normalizeVideoDuration, normalizeVideoResolution, VIDEO_DURATION_MIN } from "@oc/lib/video-generation-options";
