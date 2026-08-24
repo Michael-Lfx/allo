@@ -17,9 +17,9 @@ import { isDesktopShell } from '@/renderer/utils/platform';
 import { useKeepAwake } from '@renderer/hooks/ui/useKeepAwake';
 import { Button, Form, Message, Modal, Switch, Tooltip } from '@arco-design/web-react';
 import { FolderSearch } from '@icon-park/react';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import ImageAnalysisModelContent from '@/renderer/pages/modelHub/ImageAnalysisModelContent';
+const ImageAnalysisModelContent = React.lazy(() => import('@/renderer/pages/modelHub/ImageAnalysisModelContent'));
 import useSWR from 'swr';
 import DeveloperModeSetting from './DeveloperModeSetting';
 import DirInputItem from './DirInputItem';
@@ -328,7 +328,11 @@ const SystemModalContent: React.FC = () => {
           <SettingsRow
             label={t('settings.modelHub.imageAnalysis.title')}
             description={t('settings.modelHub.imageAnalysis.subtitle')}
-            control={<ImageAnalysisModelContent compact autoRefreshCatalog={false} />}
+            control={
+              <Suspense fallback={null}>
+                <ImageAnalysisModelContent compact autoRefreshCatalog={false} />
+              </Suspense>
+            }
             controlLayout='field'
           />
           <SettingsRow

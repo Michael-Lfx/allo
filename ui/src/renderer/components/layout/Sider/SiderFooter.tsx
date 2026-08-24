@@ -1,11 +1,12 @@
 
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
 import { ArrowCircleLeft, SettingTwo } from '@icon-park/react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
+import { prefetchSettingsPages } from '@renderer/pages/settings/prefetch';
 import SiderUserMenu from './SiderUserMenu';
 
 interface SiderFooterProps {
@@ -44,6 +45,25 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
   const { t } = useTranslation();
   const settingsTooltip = isSettings ? t('common.back') : t('common.settings');
 
+  // Warm the settings route chunks while the app is idle so the first click
+  // does not wait on dev-server/bundle loading. Pointer enter covers the
+  // common mouse path even before idle fires.
+  useEffect(() => {
+    if (isSettings) return;
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      const idleId = idleWindow.requestIdleCallback(() => prefetchSettingsPages(), {
+        timeout: 1800,
+      });
+      return () => idleWindow.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(() => prefetchSettingsPages(), 250);
+    return () => window.clearTimeout(timer);
+  }, [isSettings]);
+
   const settingsIcon = isSettings ? (
     <ArrowCircleLeft
       theme='outline'
@@ -66,6 +86,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
     <Tooltip {...siderTooltipProps} content={settingsTooltip} position='right'>
       <div
         onClick={onSettingsClick}
+        onPointerEnter={() => prefetchSettingsPages()}
         className={iconButtonClass(collapsed, isMobile, isSettings)}
         aria-current={isSettings ? 'page' : undefined}
         data-sider-nav-entry
