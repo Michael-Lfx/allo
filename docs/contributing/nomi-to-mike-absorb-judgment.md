@@ -475,50 +475,75 @@
 | 202 | `6a25aaae6` | 2026-08-03 18:36 | `skip` | docs | docs: add bridge protocol v1 shared reference | 文档/handoff/计划类，默认不吸收 |
 | 203 | `d617c9474` | 2026-08-03 10:55 | `skip` | docs | docs: add nomifun mobile remote-control bridge design spec | 文档/handoff/计划类，默认不吸收 |
 
-## 7. 执行记录（2026-08-24，`feat/absorb-nomi-priority-fixes`）
+## 7. 执行记录（闭环，`feat/absorb-nomi-priority-fixes`）
 
-基于 `mike/main`（`d791691c6`）开分支执行 §1。
+基于 `mike/main` 开分支；中途 rebase 到最新 `mike/main`。下列覆盖 §1 absorb + §2 careful 全部条目，以及 §3/§4 的关闭处置。
+
+### 7.1 §1 absorb
 
 | 源 hash | 结果 | 落地说明 |
 | --- | --- | --- |
-| `2d1463fa5` knowledge 焦点 | **已吸收** → `28601a71b` | 冲突解决：保留 mike empty-state drop-zone；虚线卡片/胶囊 CTA 改用可编译的 `focus-visible:*-primary-6`（替换会丢弃的 `rgb(var(--primary-6))`） |
-| `180cabe08` path 安全 | **已吸收** → `19b25756e` | `zip_safe` 取 nomi 更严 Windows colon/ADS 策略；其余 path_safety / memory / skill 一并合入 |
-| `da76ef6b7` markdown 隔离 | **已吸收（适配）** → `d62064121` | **未**切换 Prism；保留 mike HLJS + Beautiful UI chrome；移植 `SyntaxHighlightBoundary`、`resolveSyntaxLanguage`、纯文本 fallback |
-| `9cb0e2568` model alias 文案 | **跳过** | `ModelDefinitionEditor` 在 mike 已删除，相关 i18n key 亦不存在 |
-| `c80555cef` / `16381ffd0` / `cd403baa2` / `12fd8b9fe` 主题/factory-reset | **本轮跳过** | 与 companion redesign / 数百 UI 文件缠死，整包 cherry-pick 冲突面过大；改标 careful 待拆 patch |
-| `96e0b5ab4` provider 编辑保存 | **已吸收** → `98a2ab7da` | `toUpdateProviderRequest` 过滤 response/form-only 字段，避免 deny_unknown_fields 丢保存 |
-| `34de3b229` SkillHub 专家包安装 | **已吸收（适配）** → `4c6b456eb` | Rust：detail 端点 + slug 冲突检测 + 错误映射；UI 市场卡片保留 mike redesign，仅合入错误分类/i18n |
-| `939320710` i18n 漏翻 | **跳过** | FreeModels 无 stale 探针 UI；`partialTitle` 在 mike TurnDeliverablesCard 未使用。整包会强塞 nomi 健康态 UI |
-| `aa3071217` / `b6e61cbcd` 测试竞态 | **已吸收（适配）** → `9b0ffff95` + `176597525` | robot：补 `await_frame`（源 commit 依赖 `b6e61cbcd`）；bootstrap：`env_guard`；**丢弃** nomi 独有 `WorkDirChange` 测试；断言改用 `config.database_path()`（mike 已迁 `flowy-backend.db`）；顺带吸 ssh `expand_tilde` `/` join + `system_version_e2e` credentials 契约 |
-| `57c23eab7` provider 文案 | **已吸收（适配）** | mike 已无 header「添加模型」pill；移植：`AddPlatformModal` 标题、`noConfiguredProviders`、删除供应商确认/aria；新增 i18n key |
-| `c80555cef` factory-reset registry | **部分已在 mike** | `browser-secrets` 已在 `MANAGED_DATASET_ROOTS`；v1 tripwire 因 mike 双族 `flowy/nomifun` DB_FAMILY 与冻结 v1 表不对齐，**未**盲移植 |
-| `cd403baa2`/`12fd8b9fe` dead-css 门禁 | **本轮未吸** | nomi tip 脚本无 BASELINE；当前树大量违规（含 videoCanvas），接入 `check` 会红。待单独清扫或 ratchet |
-| `4a2eacfd4` channels group access | **未做** | 体积过大（channel/plugins 上千行），留待单独分支 |
+| `da76ef6b7` | **已吸收（适配）** | 保留 mike HLJS；移植 `SyntaxHighlightBoundary` / `resolveSyntaxLanguage` / 纯文本 fallback |
+| `9cb0e2568` | **跳过** | `ModelDefinitionEditor` 在 mike 已删除 |
+| `180cabe08` | **已吸收** | Windows path/ADS/device-name 安全 |
+| `2d1463fa5` | **已吸收（适配）** | knowledge CTA `focus-visible:*-primary-6` |
+| `12fd8b9fe` / `cd403baa2` / `16381ffd0` | **已吸收（抽取）** | 删除不可达 `borderColors`；`scripts/check-dead-css-utilities.mjs` 棘轮（145 文件 / 438 处基线）接入 `check:dead-css`；`MIGRATION.md` 短注。未整包 UI 重绘 |
+| `c80555cef` | **关闭** | `browser-secrets` 已在 mike 注册表；v1 tripwire 与双族 `flowy/nomifun` DB_FAMILY 不对齐，不盲移植 companion scope 大改 |
 
-验证：
+### 7.2 §2 careful（逐条关闭）
 
-- `bun test`：Markdown 相关 3 文件 + knowledge CTA contrast → 13 pass
-- `cargo test -p nomifun-common zip_safe` → 9 pass
-- `cargo test -p nomifun-file path_` → path traversal 相关用例 pass
-- 续吸：`ipcBridge.provider-update-wire` + `PresetPackageMarketSettings` → 5 pass；`cargo test -p nomifun-extension --lib market` → 43 pass / 5 ignored
-- `cargo test -p nomifun-robot`：`the_stop_never_overtakes*` / `a_full_turn*` → pass
-- `cargo test -p nomifun-ssh --test ssh_config_import` → 17 pass
-- `cargo test -p nomifun-app --lib bootstrap::environment` → 18 pass
-- `bun run check:i18n` → pass；`modelProviderDuplicate` → 4 pass
+| 源 hash | 结果 | 落地说明 |
+| --- | --- | --- |
+| `54e01ad45` | **已吸收** | `modelHub.provider.scopeNote` + structure test |
+| `57c23eab7` | **已吸收（适配）** | 供应商文案 / 删除确认 / aria |
+| `96e0b5ab4` | **已吸收** | `toUpdateProviderRequest` wire |
+| `34de3b229` | **已吸收（适配）** | SkillHub 安装可靠性（Rust）；保留 mike 市场 UI |
+| `b0c01e27f` | **已吸收（抽取）** | `OutputLimitInput` 预设/单位转换 + 单测 |
+| `6e34a6379` | **已吸收（抽取）** | `buildAuthSchemeOptions` + `header_key:x-api-key` / `query_key:*` presets |
+| `82c94411f` | **已吸收（适配）** | UpdateModal compact/detail；**未**恢复 `UpdateModal.css` |
+| `4c47bdde7` | **已吸收（抽取）** | `url_algebra` + fixture 契约；相对 endpoint override 走 `join_endpoint`。未吸 probe/UI redesign |
+| `88d0f5509` | **已吸收（抽取）** | `nomifun-net::secret_redaction`；failover 先 teardown 再写库 |
+| `37fb2407d` | **已吸收（抽取）** | MCP `request_timeout_for` / request gate / abort；tool 执行与审批超时。未吸 UI lifecycle |
+| `67da81075` | **跳过** | Creative Studio Home 删除；mike 走 videoCanvas |
+| `c5e37e454` | **跳过** | creative-studio 迁移血缘与 mike `036+` 冲突 |
+| `716a3b6d7` / `bb18f1579` / `8139a9390` / `d33a86fe1` / `48b41eba1` / `b12228b43` / `4a65b5eba` | **跳过** | 整条挂 `ModelDefinitionEditor`（mike 已无） |
+| `ffdb4f4f3` | **跳过** | 模型管理 mega redesign（410 files） |
+| `e0d340734` | **跳过** | mike factory 仍用 `provider_repo` / `backend_binary_path` |
+| `6e0ff191f` | **跳过** | nfagent-runtime；mike desktop 无 nfagent |
+| `4a2eacfd4` | **跳过** | ~7k 行 + migration 号与 mike `033` 冲突；需另开专题分支才能做 |
+| `2bf4eee03` | **跳过（已在 mike）** | MarketToolbar / MarketCardGrid 架构已有 |
+| `7c04a18e2` | **跳过（已在 mike）** | `TaskModelSelect` / Companion 薄封装已有 |
+| `c71f30731` | **跳过** | InboxReview 删除与 disposition staged 语义和 mike 不一致 |
+| `939320710` | **跳过** | FreeModels stale / `partialTitle` 路径 mike 无 |
+
+### 7.3 §3 defer-mike-first / §4 follow
+
+| 集合 | 结果 |
+| --- | --- |
+| §3 全部 23 条 creative-studio / canvas | **关闭不吸**（mike video-canvas / vimax 优先；无单独可抽纯 bugfix 进入本分支） |
+| §4 follow（含 `aa3071217`/`b6e61cbcd` 等） | 测试竞态已随本分支吸收；其余随未吸主功能关闭 |
+| §5/§6 skip（134） | 维持 skip，不执行 |
+
+### 7.4 验证摘要
+
+- UI：`check:i18n`；dead-css self-test + ratchet；OutputLimit / auth-scheme / UpdateModal compact / provider scope / knowledge / markdown 相关 bun test
+- Rust：`nomifun-model-invoke` url_algebra + url_join_contract；`nomifun-net` secret_redaction；`nomi-mcp` / `nomi-agent` tool_execution；`nomifun-robot` / `nomifun-ssh` / bootstrap environment（历史轮次）
+
+### 7.5 明确不在本分支范围
+
+- channels group access 整 feat（`4a2eacfd4`）——需独立迁移编号与插件面 PR
+- 清零 dead-css 基线（145→0）——产品/videoCanvas 专项清扫
+- creative-studio ↔ video-canvas 功能对账
 
 
-## 8. 后续任务建议
+## 8. 状态
 
-1. **§2 careful**：按 bucket 分批（`models` / `migration` / `feat` / `refactor` / `runtime-large`），每批先 `git show <hash>` 再决定整吸或手工移植。
-2. **§3 creative/canvas**：默认关闭；若只要某条 bugfix，从 commit 抽 patch，不要跟 redesign。
-3. **不要**对全量非 merge 独有提交做 merge。
-4. **下一轮**：从主题/factory-reset 四条 mega commit 只抽确仍缺失的 CSS/脚本修复；评估 `4a2eacfd4` channels group access。
+**本判断文档约定的 absorb / careful 处置已闭环。** defer / follow / skip 按原则关闭。剩余仅「另开专题」项（§7.5），不再阻塞本分支。
 
 ## 9. 元数据
 
-- remote nomi: `nomifun/nomifun-tauri` → `nomi/main` @ `ae87ae915`
-- remote mike: `Michael-Lfx/allo` → `mike/main` @ `d791691c6`
-- 执行分支：`feat/absorb-nomi-priority-fixes`（ahead of `mike/main`）
+- remote nomi: `nomifun/nomifun-tauri` → `nomi/main`
+- remote mike: `Michael-Lfx/allo` → `mike/main`
+- 执行分支：`feat/absorb-nomi-priority-fixes`
 - 生成命令：`git log --first-parent --format="%h|%ci|%s" remotes/mike/main..remotes/nomi/main`
 - 原始列表：`.absorb_tmp/nomi_first_parent.txt`（已 gitignore）
-- 本判断为 subject 级启发式 + 已知吸收锚点；落地前仍以 `git show` / 冲突实测为准。
