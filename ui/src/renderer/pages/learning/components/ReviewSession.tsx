@@ -3,7 +3,6 @@ import {
   Dropdown,
   Input,
   Menu,
-  Message,
   Modal,
   Progress,
   Tag,
@@ -11,6 +10,7 @@ import {
   Typography,
 } from '@arco-design/web-react';
 import { IconDelete, IconEdit, IconLock, IconMore, IconPushpin, IconQuestionCircle } from '@arco-design/web-react/icon';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';

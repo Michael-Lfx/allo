@@ -1,6 +1,6 @@
 
 
-import { Checkbox, Dropdown, Menu, Message, Popover, Tooltip } from '@arco-design/web-react';
+import { Checkbox, Dropdown, Menu, Popover, Tooltip } from '@arco-design/web-react';
 import {
   BookOne,
   BranchOne,
@@ -18,6 +18,7 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import CapabilityIcon, { CAPABILITY_COLORS } from '@/renderer/components/capability/CapabilityIcon';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import MarqueeText from '@/renderer/components/base/MarqueeText';
 import PathText from '@/renderer/components/base/PathText';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
