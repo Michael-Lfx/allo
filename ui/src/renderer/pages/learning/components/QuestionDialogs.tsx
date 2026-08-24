@@ -10,6 +10,7 @@ import {
   Typography,
 } from '@arco-design/web-react';
 import { useEffect, useState } from 'react';
+import { IconPushpin } from '@arco-design/web-react/icon';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';
 import type { ConceptRef, QuestionEntry } from '../types';
@@ -226,6 +227,15 @@ function QuestionEditDialog({
       onOk={() => void save()}
     >
       <div className='flex flex-col gap-14px'>
+        {entry.edit_pending && entry.edit_note ? (
+          <div className='flex items-start gap-6px rounded-6px bg-[var(--color-fill-2)] px-10px py-8px'>
+            <IconPushpin className='mt-2px shrink-0 text-t-tertiary' />
+            <span className='min-w-0 flex-1 text-12px leading-relaxed text-t-secondary'>
+              <span className='font-500 text-t-primary'>{t('learning.questionEditNoteLabel')}</span>
+              ：{entry.edit_note}
+            </span>
+          </div>
+        ) : null}
         <div>
           <div className='mb-6px font-500'>{t('learning.questionPromptLabel')}</div>
           <Input.TextArea

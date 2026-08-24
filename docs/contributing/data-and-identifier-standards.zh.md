@@ -162,6 +162,20 @@ lineage/generation。不存在数据集时初始化 v3；历史或不兼容的�
 必须在对外服务前写入并完成 generation/reset receipt。reset 失败必须
 fail-closed。用户自有的外部 workspace 不删除，但其历史数据库引用不导入 v3。
 
+### 5.1 开发期迁移文件不可变
+
+迁移文件一旦被任何环境（包括本地 dev 数据库）应用过即不可变：sqlx 按版本
+持久化 SHA-384 checksum，启动时在打开数据库前校验完整 lineage。修改已应用
+的迁移（合并冲突解决、review 调整、格式改动）都会导致启动时 lineage 不匹配；
+而一次性自动退休无法重复，下一次启动只能走显式 factory reset。规则：
+
+- 改 schema 只能追加下一个编号的迁移，绝不修改已应用的迁移；
+- 本地 dev 数据集已不兼容时（例如合并了改动迁移的分支后），用
+  `bun run reset:dev` 复位——它会写入显式 factory-reset 请求文件，旧数据集
+  保留在 `retired-datasets/` 隔离目录；
+- 绝不改写 `_sqlx_migrations` 的 checksum 或行来“修复” lineage 错误：那会
+  绕过不可变 lineage 契约，可能打开一个 schema 与嵌入迁移不一致的数据库。
+
 ## 6. Backup、restore 与 clone
 
 备份和恢复把 v3 受管数据集作为一个整体处理：

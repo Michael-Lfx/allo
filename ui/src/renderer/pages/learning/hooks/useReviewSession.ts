@@ -94,6 +94,82 @@ export function useReviewSession({
     [load, t, setBusyId]
   );
 
+  /** 归档当前卡片：暂停出现但保留数据，可随时恢复 */
+  const archiveReview = useCallback(
+    async (review: DueReview): Promise<boolean> => {
+      setBusyId(review.id);
+      try {
+        if (review.source === 'custom') {
+          await learningApi.archiveCustomQuestion(review.id);
+        } else {
+          await learningApi.archiveReview(review.id);
+        }
+        Message.success(t('learning.reviewArchived'));
+        await load();
+        return true;
+      } catch (actionError) {
+        Message.error(errorMessage(t, actionError));
+        return false;
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load, t, setBusyId]
+  );
+
+  /** 删除当前卡片：课程题移出队列，自定义题彻底删除 */
+  const removeReview = useCallback(
+    async (review: DueReview): Promise<boolean> => {
+      setBusyId(review.id);
+      try {
+        if (review.source === 'custom') {
+          await learningApi.deleteCustomQuestion(review.id);
+          Message.success(t('learning.questionDeleted'));
+        } else {
+          await learningApi.deleteReviewItem(review.id);
+          Message.success(t('learning.reviewRemovedFromQueue'));
+        }
+        await load();
+        return true;
+      } catch (actionError) {
+        Message.error(errorMessage(t, actionError));
+        return false;
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load, t, setBusyId]
+  );
+
+  /** 标记待编辑：记录意图与选填描述，不推进队列，不打断复习心流 */
+  const markEditPending = useCallback(
+    async (review: DueReview, note: string): Promise<void> => {
+      setBusyId(review.id);
+      try {
+        if (review.source === 'custom') {
+          await learningApi.markCustomEditPending(review.id, note);
+        } else {
+          await learningApi.markReviewEditPending(review.id, note);
+        }
+        // 本地同步会话队列中的卡片状态，无需重拉队列
+        setSessionQueue((prev) =>
+          prev.map((item) =>
+            item.id === review.id
+              ? { ...item, edit_pending: true, edit_note: note.trim() || null }
+              : item
+          )
+        );
+        await load();
+        Message.success(t('learning.reviewMarkEditMarked'));
+      } catch (actionError) {
+        Message.error(errorMessage(t, actionError));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load, t, setBusyId, setSessionQueue]
+  );
+
   const startReviewSession = useCallback(async () => {
     setBusyId('review-session');
     try {
@@ -149,6 +225,9 @@ export function useReviewSession({
     forgetReview,
     rateReview,
     skipReview,
+    archiveReview,
+    removeReview,
+    markEditPending,
     startReviewSession,
     startCourseReviewSession,
   };

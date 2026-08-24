@@ -1,8 +1,23 @@
-import { Button, Modal, Progress, Tag, Typography } from '@arco-design/web-react';
+import {
+  Button,
+  Dropdown,
+  Input,
+  Menu,
+  Message,
+  Modal,
+  Progress,
+  Tag,
+  Tooltip,
+  Typography,
+} from '@arco-design/web-react';
+import { IconDelete, IconEdit, IconLock, IconMore, IconPushpin, IconQuestionCircle } from '@arco-design/web-react/icon';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { DueReview, ReviewAnswerResult, ReviewRating } from '../types';
+import { learningApi } from '../api';
+import type { DueReview, QuestionEntry, ReviewAnswerResult, ReviewRating } from '../types';
+import { errorMessage, isReviewUnderdeveloped } from '../utils';
 import { ActivityInput } from './ActivityInput';
+import { QuestionEditDialog } from './QuestionDialogs';
 
 const { Text } = Typography;
 
@@ -15,6 +30,10 @@ export function ReviewCard({
   onRate,
   onSkip,
   onNext,
+  onEdit,
+  onMarkEdit,
+  onArchive,
+  onDelete,
 }: {
   review: DueReview;
   busy: boolean;
@@ -25,11 +44,22 @@ export function ReviewCard({
   onSkip: (review: DueReview) => void;
   /** Leave the finished card and move to the next review item. */
   onNext: () => void;
+  /** 二级操作：编辑 / 标记待编辑 / 归档 / 删除，不常用所以收进下拉菜单 */
+  onEdit: (review: DueReview) => void;
+  onMarkEdit: (review: DueReview) => void;
+  onArchive: (review: DueReview) => void;
+  onDelete: (review: DueReview) => void;
 }) {
   const { t } = useTranslation();
   const [response, setResponse] = useState<unknown>();
   const [result, setResult] = useState<ReviewAnswerResult | null>(null);
   const [wasForgot, setWasForgot] = useState(false);
+  // 卡片内容被编辑后，旧作答与结果不再有效，重置本轮作答状态
+  useEffect(() => {
+    setResponse(undefined);
+    setResult(null);
+    setWasForgot(false);
+  }, [review.question.prompt, review.question.options, review.question.kind]);
   const question = review.question;
   const hasResponse =
     typeof response === 'string' ? response.trim().length > 0 : response !== undefined;
@@ -45,6 +75,67 @@ export function ReviewCard({
     }
     return typeof value === 'string' ? value : '';
   };
+  const actions = (
+    <Dropdown
+      position='br'
+      trigger='click'
+      droplist={
+        <div className='w-220px rounded-8px border border-solid border-[var(--color-border-1)] bg-[var(--color-bg-popup)] p-4px'>
+          <Menu
+            style={{ borderRadius: 8 }}
+            onClickMenuItem={(key) => {
+              if (key === 'edit') onEdit(review);
+              if (key === 'mark-edit') onMarkEdit(review);
+              if (key === 'archive') onArchive(review);
+              if (key === 'delete') onDelete(review);
+            }}
+          >
+            <Menu.Item key='edit'>
+              <span className='flex items-center gap-6px'>
+                <IconEdit /> {t('learning.reviewEdit')}
+              </span>
+            </Menu.Item>
+            <Menu.Item key='mark-edit'>
+              <span className='flex items-center gap-6px'>
+                <IconPushpin /> {t('learning.reviewMarkEdit')}
+              </span>
+            </Menu.Item>
+            <Menu.Item key='archive'>
+              <span className='flex items-center gap-6px'>
+                <IconLock /> {t('learning.reviewArchive')}
+              </span>
+            </Menu.Item>
+            <Menu.Item key='delete' style={{ color: 'var(--color-danger-6)' }}>
+              <span className='flex items-center gap-6px'>
+                <IconDelete /> {t('learning.questionDelete')}
+              </span>
+            </Menu.Item>
+          </Menu>
+          <Tooltip content={t('learning.reviewManageHintFull')} position='left'>
+            <div className='mx-4px my-4px flex cursor-help items-start gap-4px text-12px leading-relaxed text-t-tertiary'>
+              <IconQuestionCircle className='mt-3px shrink-0' />
+              <span className='min-w-0 flex-1'>{t('learning.reviewManageHint')}</span>
+            </div>
+          </Tooltip>
+        </div>
+      }
+    >
+      <Button
+        size='mini'
+        type='text'
+        aria-label={t('learning.reviewActions')}
+        disabled={busy || locked}
+      >
+        <IconMore />
+      </Button>
+    </Dropdown>
+  );
+  const editPendingBadge = review.edit_pending ? (
+    <Tag size='small' color='orange'>
+      <IconPushpin className='mr-3px' />
+      {t('learning.reviewEditPendingLabel')}
+    </Tag>
+  ) : null;
   return (
     <div className='rounded-10px border border-solid border-[var(--color-border-2)] p-14px'>
       <div className='mb-12px flex flex-wrap items-center gap-x-6px gap-y-6px text-12px'>
@@ -72,6 +163,15 @@ export function ReviewCard({
             {t('learning.reviewConceptLabel')}: {review.concept_title}
           </Tag>
         )}
+        {review.edit_pending &&
+          (review.edit_note ? (
+            <Tooltip content={review.edit_note} position='top'>
+              {editPendingBadge}
+            </Tooltip>
+          ) : (
+            editPendingBadge
+          ))}
+        <div className='ml-auto'>{actions}</div>
       </div>
       <div className='mb-12px text-16px font-500 leading-relaxed text-t-primary'>
         {question.prompt}
@@ -200,6 +300,10 @@ export function ReviewSessionModal({
   onForget,
   onRate,
   onSkip,
+  onArchive,
+  onRemove,
+  onMarkEdit,
+  onEdited,
   onClose,
 }: {
   open: boolean;
@@ -209,10 +313,20 @@ export function ReviewSessionModal({
   onForget: (review: DueReview) => Promise<ReviewAnswerResult | undefined>;
   onRate: (review: DueReview, rating: ReviewRating) => Promise<boolean>;
   onSkip: (review: DueReview) => Promise<boolean>;
+  /** 归档动作：成功后由调用方推进队列 */
+  onArchive: (review: DueReview) => Promise<boolean>;
+  /** 删除动作：成功后由调用方推进队列 */
+  onRemove: (review: DueReview) => Promise<boolean>;
+  /** 标记待编辑：记录选填描述，不推进队列 */
+  onMarkEdit: (review: DueReview, note: string) => Promise<void>;
+  /** 编辑保存后原地更新队列中的卡片，不推进 */
+  onEdited: (updated: DueReview) => void;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
   const [index, setIndex] = useState(0);
+  const [editing, setEditing] = useState<QuestionEntry | null>(null);
+  const [editingReview, setEditingReview] = useState<DueReview | null>(null);
   useEffect(() => {
     if (open) setIndex(0);
   }, [open]);
@@ -220,6 +334,103 @@ export function ReviewSessionModal({
   // Each queue card is its own review item with its own schedule, so rating,
   // answering wrong or skipping all move straight to the next card.
   const advance = () => setIndex((value) => value + 1);
+  // 编辑：先拉取含答案的完整条目，再打开编辑对话框
+  const openEdit = async (review: DueReview) => {
+    try {
+      const entry =
+        review.source === 'custom'
+          ? await learningApi.getCustomQuestion(review.id)
+          : await learningApi.getReviewQuestion(review.id);
+      setEditingReview(review);
+      setEditing(entry);
+    } catch (actionError) {
+      Message.error(errorMessage(t, actionError));
+    }
+  };
+  // 编辑保存后原地更新当前卡片；排期与作答状态保持不变
+  const applyEdit = (entry: QuestionEntry) => {
+    const source = editingReview;
+    setEditing(null);
+    setEditingReview(null);
+    const target = queue.find((item) => item.id === source?.id);
+    if (target === undefined) return;
+    onEdited({
+      ...target,
+      question: {
+        activity_id: target.question.activity_id,
+        kind: entry.question_kind ?? target.question.kind,
+        prompt: entry.prompt ?? target.question.prompt,
+        options: entry.options,
+      },
+      // 编辑已保存，待编辑标记随之清除（后端同步清除）
+      edit_pending: false,
+      edit_note: null,
+    });
+  };
+  // 归档：学习算法数据未达标时追问；达标直接归档
+  const confirmArchive = (review: DueReview) => {
+    const run = () =>
+      void onArchive(review).then((handled) => {
+        if (handled) advance();
+      });
+    if (isReviewUnderdeveloped(review)) {
+      Modal.confirm({
+        title: t('learning.reviewArchiveConfirmTitle'),
+        content: t('learning.reviewArchiveConfirmHint', {
+          count: review.review_count,
+          days: review.stability_days.toFixed(1),
+        }),
+        okText: t('learning.reviewArchiveConfirmOk'),
+        okButtonProps: { status: 'warning' },
+        onOk: () => run(),
+      });
+    } else {
+      run();
+    }
+  };
+  // 删除不可逆，二次确认防止误触；确认文案区分课程题与自建题
+  const confirmDelete = (review: DueReview) => {
+    const run = () =>
+      void onRemove(review).then((handled) => {
+        if (handled) advance();
+      });
+    const isCustom = review.source === 'custom';
+    Modal.confirm({
+      title: isCustom
+        ? t('learning.questionDeleteCustomTitle')
+        : t('learning.questionDeleteTitle'),
+      content: isCustom
+        ? t('learning.questionDeleteCustomHint')
+        : t('learning.questionDeleteHint'),
+      okText: t('learning.questionDelete'),
+      okButtonProps: { status: 'danger' },
+      onOk: () => run(),
+    });
+  };
+  // 标记待编辑：选填一句描述，将来编辑时找回思路；不打断复习心流
+  const openMarkEdit = (review: DueReview) => {
+    let note = '';
+    Modal.confirm({
+      title: t('learning.reviewMarkEditTitle'),
+      content: (
+        <div className='flex flex-col gap-8px pt-8px'>
+          <div className='line-clamp-2 text-12px leading-relaxed text-t-tertiary'>
+            {review.question.prompt}
+          </div>
+          <Input.TextArea
+            placeholder={t('learning.reviewMarkEditPlaceholder')}
+            autoSize={{ minRows: 2, maxRows: 5 }}
+            maxLength={200}
+            onChange={(value) => {
+              note = value;
+            }}
+          />
+        </div>
+      ),
+      okText: t('learning.reviewMarkEditOk'),
+      onOk: () => onMarkEdit(review, note),
+    });
+  };
   return (
     <Modal
       title={t('learning.reviewSessionTitle')}
@@ -271,8 +482,22 @@ export function ReviewSessionModal({
               })
             }
             onNext={advance}
+            onEdit={(review) => void openEdit(review)}
+            onMarkEdit={openMarkEdit}
+            onArchive={confirmArchive}
+            onDelete={confirmDelete}
           />
         </div>
+      )}
+      {editing !== null && (
+        <QuestionEditDialog
+          entry={editing}
+          onClose={() => {
+            setEditing(null);
+            setEditingReview(null);
+          }}
+          onSaved={() => applyEdit(editing)}
+        />
       )}
     </Modal>
   );

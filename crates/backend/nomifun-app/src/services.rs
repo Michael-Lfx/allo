@@ -2484,10 +2484,17 @@ impl AppServices {
             knowledge_service.clone(),
             knowledge_completer,
         );
-        // Seed the tutorial knowledge base and example course once per binary
-        // version. Failures are non-fatal: the app still boots without them.
-        if let Err(error) = learning_service.seed_tutorial_content(&data_dir).await {
-            tracing::warn!(%error, "tutorial learning content seed failed; continuing");
+        // Tutorial seed is TEMPORARILY DISABLED: first-boot creation of the
+        // "Flowy 使用指南" knowledge base and the "学习模块上手指南" example
+        // course is paused while its value is under review (uncertain the
+        // preset content is useful, and the feature changes too fast to keep
+        // a frozen asset in sync). Flip TUTORIAL_SEED_ENABLED to `true` to
+        // re-enable.
+        const TUTORIAL_SEED_ENABLED: bool = false;
+        if TUTORIAL_SEED_ENABLED {
+            if let Err(error) = learning_service.seed_tutorial_content(&data_dir).await {
+                tracing::warn!(%error, "tutorial learning content seed failed; continuing");
+            }
         }
         // Boot-resume: re-claim course-generation jobs left running by a
         // previous process so interrupted generations continue from their

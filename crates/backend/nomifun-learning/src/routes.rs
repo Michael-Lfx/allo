@@ -13,10 +13,11 @@ use serde::Deserialize;
 use url::form_urlencoded;
 
 use crate::models::{
-    AnswerReviewRequest, CourseJobSource, CoursePack, CreateCustomQuestionRequest,
-    CreateLessonActivityRequest, DeleteCourseRequest, GenerateCourseRequest,
-    GenerateLessonActivityRequest, GenerateLessonRequest, RateReviewRequest, SetTagsRequest,
-    SubmitAttemptRequest, UpdateLessonProgressRequest, UpdateQuestionRequest,
+    AnswerReviewRequest, CalendarStats, CheckinStatus, CourseJobSource, CoursePack,
+    CreateCustomQuestionRequest, CreateLessonActivityRequest, DeleteCourseRequest,
+    GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
+    RateReviewRequest, SetTagsRequest, SubmitAttemptRequest, UpdateLessonProgressRequest,
+    UpdateQuestionRequest,
 };
 use crate::state::LearningRouterState;
 
@@ -70,10 +71,16 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             post(submit_attempt),
         )
         .route("/api/learning/reviews/due", get(due_reviews))
+        .route("/api/learning/checkins/today", get(checkin_today))
+        .route("/api/learning/stats/calendar", get(calendar_stats))
         .route("/api/learning/tags", get(list_tags))
         .route("/api/learning/reviews/{id}/answer", post(answer_review))
         .route("/api/learning/reviews/{id}/rate", post(rate_review))
         .route("/api/learning/reviews/{id}/skip", post(skip_review))
+        .route("/api/learning/reviews/{id}/archive", post(archive_review))
+        .route("/api/learning/reviews/{id}/unarchive", post(unarchive_review))
+        .route("/api/learning/reviews/{id}/mark-edit", post(mark_review_edit))
+        .route("/api/learning/reviews/{id}", get(review_question))
         .route("/api/learning/reviews/{id}", delete(delete_review_item))
         .route("/api/learning/questions", get(list_questions))
         .route(
@@ -90,7 +97,19 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         )
         .route(
             "/api/learning/custom-questions/{id}",
-            put(update_custom_question).delete(delete_custom_question),
+            put(update_custom_question).delete(delete_custom_question).get(custom_question),
+        )
+        .route(
+            "/api/learning/custom-questions/{id}/archive",
+            post(archive_custom),
+        )
+        .route(
+            "/api/learning/custom-questions/{id}/unarchive",
+            post(unarchive_custom),
+        )
+        .route(
+            "/api/learning/custom-questions/{id}/mark-edit",
+            post(mark_custom_edit),
         )
         .route(
             "/api/learning/custom-questions/{id}/tags",
@@ -385,6 +404,55 @@ async fn due_reviews(
     )))
 }
 
+async fn checkin_today(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<CheckinStatus>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.checkin_today(&user.id).await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct CalendarStatsQuery {
+    /// Minutes east of UTC (same sign as `SchedulerSettings::tz_offset_minutes`),
+    /// reported by the frontend as `-Date().getTimezoneOffset()`.
+    tz_offset: i32,
+    year: i64,
+    /// 1..=12; absent = year view (heatmap).
+    month: Option<u32>,
+}
+
+async fn calendar_stats(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(query): Query<CalendarStatsQuery>,
+) -> Result<Json<ApiResponse<CalendarStats>>, AppError> {
+    if !(-24 * 60..=24 * 60).contains(&query.tz_offset) {
+        return Err(AppError::BadRequest(format!(
+            "tz_offset out of range: {}",
+            query.tz_offset
+        )));
+    }
+    if !(1900..=2999).contains(&query.year) {
+        return Err(AppError::BadRequest(format!(
+            "year out of range: {}",
+            query.year
+        )));
+    }
+    if let Some(month) = query.month {
+        if !(1..=12).contains(&month) {
+            return Err(AppError::BadRequest(format!("month out of range: {month}")));
+        }
+    }
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .calendar_stats(&user.id, query.tz_offset, query.year, query.month)
+            .await?,
+    )))
+}
+
 async fn rate_review(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -493,6 +561,51 @@ async fn delete_review_item(
     Ok(Json(ApiResponse::ok(())))
 }
 
+async fn archive_review(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state.service.archive_review_item(&id, &user.id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn unarchive_review(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state.service.unarchive_review_item(&id, &user.id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn mark_review_edit(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<crate::models::MarkEditRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state
+        .service
+        .mark_review_edit_pending(&id, &user.id, request.note)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn review_question(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::QuestionEntry>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.review_question_entry(&id, &user.id).await?,
+    )))
+}
+
 async fn list_tags(
     State(state): State<LearningRouterState>,
 ) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
@@ -578,6 +691,60 @@ async fn delete_custom_question(
         .delete_custom_question(id.as_str(), &user.id)
         .await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+async fn archive_custom(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state
+        .service
+        .archive_custom_question(id.as_str(), &user.id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn unarchive_custom(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state
+        .service
+        .unarchive_custom_question(id.as_str(), &user.id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn mark_custom_edit(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<crate::models::MarkEditRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    state
+        .service
+        .mark_custom_edit_pending(id.as_str(), &user.id, request.note)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+async fn custom_question(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::QuestionEntry>>, AppError> {
+    let id = parse_id::<LearningReviewItemId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .custom_question_entry(id.as_str(), &user.id)
+            .await?,
+    )))
 }
 
 async fn answer_custom_review(

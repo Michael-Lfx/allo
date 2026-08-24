@@ -184,6 +184,25 @@ before serving requests. A reset failure is fail-closed. External
 user-owned workspaces are not deleted, but their historical database
 references are not imported into v3.
 
+### 5.1 Development-time migration immutability
+
+Migration files are immutable once any environment has applied them: sqlx
+persists a SHA-384 checksum per version and startup verifies the full lineage
+before opening the database. Editing an applied migration (merge resolution,
+review tweaks, formatting) therefore fails startup with a lineage mismatch,
+and the one-time automatic retirement cannot be repeated — the next boot
+requires an explicit factory reset. Rules:
+
+- change a schema by appending the next numbered migration, never by editing
+  an applied one;
+- when a local dev dataset is already incompatible (e.g. after merging a
+  branch that touched migrations), reset it with `bun run reset:dev`, which
+  arms the explicit factory-reset request file; the old dataset stays
+  quarantined under `retired-datasets/`;
+- never rewrite `_sqlx_migrations` checksums or rows to "fix" a lineage error:
+  that bypasses the immutable-lineage contract and can open a database whose
+  schema does not match the embedded migrations.
+
 ## 6. Backup, restore, and clone
 
 Backups and restores operate on the v3 managed dataset as one unit:
