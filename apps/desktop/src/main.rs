@@ -97,6 +97,7 @@ fn resolve_main_window_geometry(
 mod memory_panel_window;
 mod companion_pointer;
 mod system_notify;
+mod taskbar_badge;
 #[cfg(windows)]
 mod windows_aumid;
 mod updater_install_context;
@@ -2409,6 +2410,7 @@ struct TrayMenuItems {
 /// 把主窗口从托盘(或其他窗口背后)唤回:隐藏则显示、最小化则还原,并聚焦。
 /// Bring the main window back from the tray: show if hidden, restore if minimized, then focus.
 fn show_main_window(app: &tauri::AppHandle) {
+    taskbar_badge::clear_badge(app);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -3090,6 +3092,7 @@ fn main() -> std::process::ExitCode {
         .manage(QuitFlag(AtomicBool::new(false)))
         .manage(Arc::new(ExitCoordinator::default()))
         .manage(memory_panel_window::MemoryPanelWindowState::default())
+        .manage(taskbar_badge::TaskCompletionBadge::default())
         .manage(DownloadedUpdateState::default())
         .invoke_handler(tauri::generate_handler![
             download_update,
@@ -3129,6 +3132,9 @@ fn main() -> std::process::ExitCode {
                         api.prevent_close();
                         let _ = window.hide();
                     }
+                }
+                tauri::WindowEvent::Focused(true) => {
+                    taskbar_badge::clear_badge(window.app_handle());
                 }
                 _ => {}
             }

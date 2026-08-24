@@ -48,11 +48,9 @@ pub fn show_os_notification(
     click_target: Option<&str>,
 ) -> Result<(), NotifyError> {
     #[cfg(windows)]
-    {
-        show_windows_toast(app, title, body, click_target)
-    }
+    let result = show_windows_toast(app, title, body, click_target);
     #[cfg(not(windows))]
-    {
+    let result = {
         let _ = click_target;
         app.notification()
             .builder()
@@ -60,7 +58,11 @@ pub fn show_os_notification(
             .body(body)
             .show()
             .map_err(|error| NotifyError::Platform(error.to_string()))
+    };
+    if result.is_ok() {
+        crate::taskbar_badge::on_completion_notified(app);
     }
+    result
 }
 
 #[tauri::command]
@@ -74,6 +76,7 @@ pub fn show_os_notification_cmd(
 }
 
 fn emit_notification_deep_link(app: &AppHandle, click_target: &str) {
+    crate::taskbar_badge::clear_badge(app);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();

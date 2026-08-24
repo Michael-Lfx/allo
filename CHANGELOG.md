@@ -5,6 +5,8 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Windows taskbar shows a completion count badge when desktop notifications fire; focusing the main window clears it.
+
 ## v1.0.5 - 2026-08-21
 
 - Buy a USD personal plan or credit pack in the app with Airwallex. The credits + button opens checkout; card details stay with the payment provider.
