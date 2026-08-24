@@ -5,23 +5,37 @@ const source = (path: string) => readFileSync(new URL(path, import.meta.url), "u
 
 describe("video canvas project entry chunk", () => {
     test("does not statically pull emotion 3D, assistant, text editor, or local agent", () => {
-        const page = source("./oc/pages/canvas/project.tsx");
+        // Entry chain: project.tsx plus its extracted child blocks; heavy modules must
+        // stay behind lazy() boundaries declared somewhere in the chain.
+        const chain = [
+            "./oc/pages/canvas/project.tsx",
+            "./oc/pages/canvas/canvas-project-top-chrome.tsx",
+            "./oc/pages/canvas/canvas-project-stage.tsx",
+            "./oc/pages/canvas/canvas-project-assistant-column.tsx",
+            "./oc/pages/canvas/canvas-project-overlays.tsx",
+            "./oc/pages/canvas/canvas-project-chrome.tsx",
+            "./oc/pages/canvas/canvas-project-dialogs.tsx",
+            "./oc/pages/canvas/canvas-project-empty-state.tsx",
+            "./oc/pages/canvas/use-canvas-node-renderers.tsx",
+        ];
+        // 折叠空白后匹配，容忍 lazy 工厂跨行书写。
+        const chainSource = chain.map(source).join("\n").replace(/\s+/g, " ");
 
-        expect(page.includes('from "@oc/components/canvas/canvas-emotion-workspace"')).toBe(false);
-        expect(page.includes('from "@react-three/fiber"')).toBe(false);
-        expect(page.includes('from "three"')).toBe(false);
-        expect(page.includes('lazy(() => import("@oc/components/canvas/canvas-emotion-workspace"')).toBe(true);
+        expect(chainSource.includes('from "@oc/components/canvas/canvas-emotion-workspace"')).toBe(false);
+        expect(chainSource.includes('from "@react-three/fiber"')).toBe(false);
+        expect(chainSource.includes('from "three"')).toBe(false);
+        expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-emotion-workspace"')).toBe(true);
 
-        expect(page.includes('from "@oc/components/canvas/canvas-assistant-panel"')).toBe(false);
-        expect(page.includes('from "@oc/components/canvas/canvas-text-editor-modal"')).toBe(false);
-        expect(page.includes('from "@oc/components/canvas/canvas-local-agent-panel"')).toBe(false);
-        expect(page.includes('lazy(() => import("@oc/components/canvas/canvas-assistant-panel"')).toBe(true);
-        expect(page.includes('lazy(() => import("@oc/components/canvas/canvas-text-editor-modal"')).toBe(true);
-        expect(page.includes('lazy(() => import("@oc/components/canvas/canvas-local-agent-panel"')).toBe(true);
-        expect(/import\s*\{[^}]*\bCanvasScriptEditor\b/.test(page)).toBe(false);
-        expect(page.includes('lazy(() => import("@oc/components/canvas/canvas-script-editor"')).toBe(true);
-        expect(page.includes("CanvasScriptNodeContent")).toBe(true);
-        expect(page.includes('from "@oc/components/canvas/canvas-script-node"')).toBe(true);
+        expect(chainSource.includes('from "@oc/components/canvas/canvas-assistant-panel"')).toBe(false);
+        expect(chainSource.includes('from "@oc/components/canvas/canvas-text-editor-modal"')).toBe(false);
+        expect(chainSource.includes('from "@oc/components/canvas/canvas-local-agent-panel"')).toBe(false);
+        expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-assistant-panel"')).toBe(true);
+        expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-text-editor-modal"')).toBe(true);
+        expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-local-agent-panel"')).toBe(true);
+        expect(/import\s*\{[^}]*\bCanvasScriptEditor\b/.test(chainSource)).toBe(false);
+        expect(chainSource.includes('lazy(() => import("@oc/components/canvas/canvas-script-editor"')).toBe(true);
+        expect(chainSource.includes("CanvasScriptNodeContent")).toBe(true);
+        expect(chainSource.includes('from "@oc/components/canvas/canvas-script-node"')).toBe(true);
     });
 
     test("canvas node renders rich text via lazy view (no static tiptap)", () => {
