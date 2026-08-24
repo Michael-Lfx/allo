@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Alert, Button, Empty, Input, Modal, Spin, Tabs, Typography } from '@arco-design/web-react';
+import { Alert, Button, Empty, Input, Modal, Spin, Tabs, Tag, Typography } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { learningApi } from './api';
 import { CourseCard, CourseDeleteDialog } from './components/CourseCard';
+import ConceptGraphPanel from './components/ConceptGraphPanel';
 import { CourseJobTable } from './components/CourseJobTable';
 import { CourseWorkspace, DiagnosticModal } from './components/CourseWorkspace';
 import { CreateCourseDialog } from './components/CreateCourseDialog';
@@ -356,6 +357,20 @@ const LearningPage: React.FC = () => {
                 onDelete={courseJobs.deleteJob}
                 onOpenCourse={(courseId) => navigate(`/learn/${courseId}`)}
               />
+            </Tabs.TabPane>
+            <Tabs.TabPane
+              key='concept-graph'
+              title={
+                <span className='inline-flex items-center gap-6px'>
+                  {t('learning.conceptGraphTab')}
+                  <Tag size='small' color='orangered' className='!mx-0'>
+                    {t('learning.conceptGraphExperimental')}
+                  </Tag>
+                </span>
+              }
+              destroyOnHide={false}
+            >
+              <ConceptGraphPanel />
             </Tabs.TabPane>
           </Tabs>
         </section>

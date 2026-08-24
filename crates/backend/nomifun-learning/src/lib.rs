@@ -1,3 +1,4 @@
+mod concept_graph;
 mod generation;
 mod generation_job;
 mod models;
@@ -6,6 +7,11 @@ mod scheduler;
 mod service;
 mod state;
 mod tutorial;
+
+pub use concept_graph::{
+    ConceptGraphData, ConceptGraphEdge, ConceptGraphNode, ConceptGraphRecord, ConceptGraphSummary,
+    GenerateConceptGraphRequest,
+};
 
 pub use models::{
     ActivityKind, ActivityView, AttemptResult, ConceptView, CourseDetail, CourseGenerationMode,

@@ -338,5 +338,18 @@
     "dailyCheckinGoal": "Daily check-in goal",
     "dailyCheckinGoalHint": "Cards planned per day; the day counts as done once reached or the queue is cleared (0 = clear the queue only, default 15)",
     "saved": "Saved"
-  }
+  },
+  "conceptGraphTab": "Concept Graph",
+  "conceptGraphExperimental": "Experimental",
+  "conceptGraphPlaceholder": "Enter a learning goal, e.g. \"from zero to university mathematics\"",
+  "conceptGraphGenerate": "Generate concept graph",
+  "conceptGraphGenerating": "Decomposing into atomic concepts and building the prerequisite DAG; this takes 1-2 minutes…",
+  "conceptGraphGenerated": "Concept graph generated",
+  "conceptGraphFailed": "Concept graph generation failed",
+  "conceptGraphTopicRequired": "Enter a learning goal first",
+  "conceptGraphEmpty": "Enter a learning goal; the AI decomposes it into complete atomic concepts and builds the prerequisite DAG",
+  "conceptGraphHistory": "History",
+  "conceptGraphHistoryEmpty": "No concept graphs yet",
+  "conceptGraphStats": "{{nodes}} concepts · {{edges}} prerequisite edges",
+  "conceptGraphDeleteConfirm": "Delete this concept graph?"
 }

@@ -338,5 +338,18 @@
     "dailyCheckinGoal": "每日打卡目标",
     "dailyCheckinGoalHint": "每天计划复习的卡片数；达标或清空队列即完成当日打卡（0 表示仅清空队列，默认 15）",
     "saved": "已保存"
-  }
+  },
+  "conceptGraphTab": "概念图",
+  "conceptGraphExperimental": "实验",
+  "conceptGraphPlaceholder": "输入学习目标，如「从零基础到大学数学」",
+  "conceptGraphGenerate": "生成概念图",
+  "conceptGraphGenerating": "正在拆分原子概念并构建先决图，约需 1-2 分钟…",
+  "conceptGraphGenerated": "概念图生成成功",
+  "conceptGraphFailed": "概念图生成失败",
+  "conceptGraphTopicRequired": "请输入学习目标",
+  "conceptGraphEmpty": "输入学习目标，AI 将拆分为完备的原子概念并生成先决关系有向无环图",
+  "conceptGraphHistory": "历史",
+  "conceptGraphHistoryEmpty": "暂无概念图",
+  "conceptGraphStats": "{{nodes}} 个概念 · {{edges}} 条先决关系",
+  "conceptGraphDeleteConfirm": "删除该概念图？"
 }

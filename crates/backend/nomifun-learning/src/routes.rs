@@ -6,8 +6,8 @@ use axum::Router;
 use nomifun_api_types::ApiResponse;
 use nomifun_auth::CurrentUser;
 use nomifun_common::{
-    AppError, LearningActivityId, LearningCourseId, LearningLessonId, LearningReviewItemId,
-    UuidV7Error,
+    AppError, LearningActivityId, LearningConceptGraphId, LearningCourseId, LearningLessonId,
+    LearningReviewItemId, UuidV7Error,
 };
 use serde::Deserialize;
 use url::form_urlencoded;
@@ -28,6 +28,14 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
+        .route(
+            "/api/learning/concept-graphs",
+            get(list_concept_graphs).post(generate_concept_graph),
+        )
+        .route(
+            "/api/learning/concept-graphs/{id}",
+            get(get_concept_graph).delete(delete_concept_graph),
+        )
         .route("/api/learning/course-jobs", get(list_course_jobs))
         .route("/api/learning/course-jobs/{id}", get(get_course_job).delete(delete_course_job))
         .route(
@@ -291,7 +299,6 @@ async fn generate_lesson(
             .await?,
     )))
 }
-
 async fn create_lesson_activity(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -818,4 +825,49 @@ where
     value
         .parse::<T>()
         .map_err(|error| AppError::BadRequest(error.to_string()))
+}
+
+// ── Experimental concept graph handlers ──────────────────────────────────
+
+async fn list_concept_graphs(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<crate::concept_graph::ConceptGraphSummary>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_concept_graphs(&user.id).await?,
+    )))
+}
+
+async fn generate_concept_graph(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(request): Json<crate::concept_graph::GenerateConceptGraphRequest>,
+) -> Result<Json<ApiResponse<crate::concept_graph::ConceptGraphRecord>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .generate_concept_graph(&user.id, request)
+            .await?,
+    )))
+}
+
+async fn get_concept_graph(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::concept_graph::ConceptGraphRecord>>, AppError> {
+    let id = parse_id::<LearningConceptGraphId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.get_concept_graph(&user.id, &id).await?,
+    )))
+}
+
+async fn delete_concept_graph(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let id = parse_id::<LearningConceptGraphId>(id)?;
+    state.service.delete_concept_graph(&user.id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
 }

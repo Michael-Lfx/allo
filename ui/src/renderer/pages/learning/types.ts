@@ -336,3 +336,38 @@ export interface CourseJobView {
   created_at: number;
   updated_at: number;
 }
+
+// ── 实验：概念图（对应后端 concept_graph 类型） ──────────────────────
+
+export interface ConceptGraphNode {
+  id: string;
+  title: string;
+}
+
+/** 先决边：from 应先于 to 掌握 */
+export interface ConceptGraphEdge {
+  from: string;
+  to: string;
+}
+
+export interface ConceptGraphSummary {
+  id: string;
+  topic: string;
+  node_count: number;
+  edge_count: number;
+  created_at: number;
+}
+
+export interface ConceptGraphView {
+  id: string;
+  topic: string;
+  nodes: ConceptGraphNode[];
+  edges: ConceptGraphEdge[];
+  created_at: number;
+}
+
+export interface GenerateConceptGraphRequest {
+  topic: string;
+  provider_id?: string;
+  model?: string;
+}

@@ -2500,6 +2500,9 @@ impl AppServices {
             knowledge_service.clone(),
             knowledge_completer,
         );
+        // Experimental concept-graph feature: rough JSON-file persistence
+        // under the data dir until the feature graduates to the database.
+        learning_service.set_concept_graph_dir(data_dir.join("learning-concept-graphs"));
         // Tutorial seed is TEMPORARILY DISABLED: first-boot creation of the
         // "Flowy 使用指南" knowledge base and the "学习模块上手指南" example
         // course is paused while its value is under review (uncertain the
