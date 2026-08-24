@@ -1,5 +1,3 @@
-
-
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import katex from 'katex';
 import React, { useId, useRef, useState } from 'react';
@@ -8,7 +6,9 @@ import BeautifulUiCodeBlock from '@renderer/components/beautifulUi/codeBlock/Cod
 import { beautifulUiHighlightStyle } from '@renderer/components/beautifulUi/codeBlock/codeBlockHighlight';
 import { filenameFromFenceNode } from '@renderer/components/beautifulUi/codeBlock/codeBlockLanguage';
 import { formatCode, getDiffLineStyle } from './markdownUtils';
+import SyntaxHighlightBoundary from './SyntaxHighlightBoundary';
 import SyntaxHighlighter from './SyntaxHighlighter';
+import { resolveSyntaxLanguage } from './syntaxLanguage';
 
 const PREVIEW_LINES = 3;
 const CODE_LINE_HEIGHT = 20;
@@ -57,7 +57,7 @@ function CodeBlock(props: CodeBlockProps) {
     }
   };
 
-  const match = /language-(\w+)/.exec(className || '');
+  const match = /(?:^|\s)language-([^\s]+)/.exec(className || '');
   const language = match?.[1] || 'text';
   const filename = filenameFromFenceNode(props.node);
 
@@ -92,8 +92,9 @@ function CodeBlock(props: CodeBlockProps) {
     );
   }
 
-  const isDiff = language === 'diff';
   const formattedContent = formatCode(children);
+  const highlightLanguage = resolveSyntaxLanguage(language);
+  const isDiff = highlightLanguage === 'diff';
   const totalLines = formattedContent.split('\n').length;
   const canCollapse = totalLines > PREVIEW_LINES;
   const isEffectivelyExpanded = isStreaming || expanded;
@@ -102,6 +103,40 @@ function CodeBlock(props: CodeBlockProps) {
 
   const codeContentId = `${blockId}-content`;
   const footerId = `${blockId}-footer`;
+
+  const highlighterCustomStyle: React.CSSProperties = {
+    margin: 0,
+    padding: 0,
+    borderRadius: 0,
+    border: 'none',
+    background: 'transparent',
+    color: 'var(--color-text-2, #4e5969)',
+    overflow: 'visible',
+    maxWidth: '100%',
+    minWidth: 0,
+    width: '100%',
+    fontSize: '11.5px',
+    lineHeight: 1.7,
+    whiteSpace: 'pre-wrap',
+  };
+  const highlighterCodeStyle: React.CSSProperties = {
+    color: 'inherit',
+    background: 'transparent',
+    display: 'block',
+    maxWidth: '100%',
+    minWidth: 0,
+    overflow: 'visible',
+    overflowWrap: 'anywhere',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    fontSize: '11.5px',
+    lineHeight: 1.7,
+  };
+  const plainTextFallback = (
+    <div style={highlighterCustomStyle} data-syntax-highlight-fallback>
+      <code style={{ ...highlighterCodeStyle, whiteSpace: 'pre-wrap' }}>{formattedContent}</code>
+    </div>
+  );
 
   return (
     <div
@@ -151,62 +186,41 @@ function CodeBlock(props: CodeBlockProps) {
               overflowY: isStreaming ? 'auto' : 'clip',
             }}
           >
-            <SyntaxHighlighter
-              children={formattedContent}
-              language={language}
-              style={beautifulUiHighlightStyle}
-              showLineNumbers
-              PreTag='div'
-              wrapLongLines
-              wrapLines
-              lineNumberStyle={{
-                minWidth: '20px',
-                paddingRight: '10px',
-                marginRight: 0,
-                color: 'color-mix(in srgb, var(--color-text-3, #86909c) 60%, transparent)',
-                fontSize: '10.5px',
-                lineHeight: 1.86,
-                textAlign: 'right',
-                userSelect: 'none',
-              }}
-              lineProps={(lineNumber: number) => ({
-                style: {
-                  display: 'block',
-                  minWidth: 0,
-                  ...(isDiff ? getDiffLineStyle(diffLines[lineNumber - 1] || '', isDark) : {}),
-                },
-              })}
-              customStyle={{
-                margin: 0,
-                padding: 0,
-                borderRadius: 0,
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--color-text-2, #4e5969)',
-                overflow: 'visible',
-                maxWidth: '100%',
-                minWidth: 0,
-                width: '100%',
-                fontSize: '11.5px',
-                lineHeight: 1.7,
-                whiteSpace: 'pre-wrap',
-              }}
-              codeTagProps={{
-                style: {
-                  color: 'inherit',
-                  background: 'transparent',
-                  display: 'block',
-                  maxWidth: '100%',
-                  minWidth: 0,
-                  overflow: 'visible',
-                  overflowWrap: 'anywhere',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  fontSize: '11.5px',
-                  lineHeight: 1.7,
-                },
-              }}
-            />
+            <SyntaxHighlightBoundary
+              fallback={plainTextFallback}
+              resetKey={`${highlightLanguage}\u0000${formattedContent}`}
+            >
+              <SyntaxHighlighter
+                children={formattedContent}
+                language={highlightLanguage}
+                style={beautifulUiHighlightStyle}
+                showLineNumbers
+                PreTag='div'
+                wrapLongLines
+                wrapLines
+                lineNumberStyle={{
+                  minWidth: '20px',
+                  paddingRight: '10px',
+                  marginRight: 0,
+                  color: 'color-mix(in srgb, var(--color-text-3, #86909c) 60%, transparent)',
+                  fontSize: '10.5px',
+                  lineHeight: 1.86,
+                  textAlign: 'right',
+                  userSelect: 'none',
+                }}
+                lineProps={(lineNumber: number) => ({
+                  style: {
+                    display: 'block',
+                    minWidth: 0,
+                    ...(isDiff ? getDiffLineStyle(diffLines[lineNumber - 1] || '', isDark) : {}),
+                  },
+                })}
+                customStyle={highlighterCustomStyle}
+                codeTagProps={{
+                  style: highlighterCodeStyle,
+                }}
+              />
+            </SyntaxHighlightBoundary>
           </div>
         }
         footer={
