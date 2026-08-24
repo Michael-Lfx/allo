@@ -222,4 +222,4 @@ const TvShowCard: React.FC<TvShowCardProps> = ({
   );
 };
 
-export default TvShowCard;
+export default React.memo(TvShowCard);

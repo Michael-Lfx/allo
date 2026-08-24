@@ -419,6 +419,18 @@ const VideoGenerationListPage: React.FC = () => {
     [deletingId, message, t]
   );
 
+  // Keep the per-row onDelete prop referentially stable so React.memo on
+  // SessionCard can skip re-rendering untouched rows (handleDelete itself
+  // changes whenever deletingId/message/t change).
+  const handleDeleteRef = useRef<(session: SessionSummary) => void>(() => {});
+  useEffect(() => {
+    handleDeleteRef.current = handleDelete;
+  }, [handleDelete]);
+
+  const onDeleteSession = useCallback((session: SessionSummary) => {
+    void handleDeleteRef.current(session);
+  }, []);
+
   const handleImportProject = useCallback(async () => {
     if (importing || creating) return;
     if (!isDesktopShell()) {
@@ -627,7 +639,7 @@ const VideoGenerationListPage: React.FC = () => {
                               key={session.id}
                               session={session}
                               onOpen={openSession}
-                              onDelete={(s) => void handleDelete(s)}
+                              onDelete={onDeleteSession}
                               deleting={deletingId === session.id}
                             />
                           ))}

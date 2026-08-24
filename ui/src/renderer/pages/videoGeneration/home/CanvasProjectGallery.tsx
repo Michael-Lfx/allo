@@ -229,16 +229,34 @@ const CanvasProjectGallery: React.FC = () => {
         <div className={styles.canvasGrid}>
           {displayed.map((project) => {
             const isOpening = openingId === project.project_id;
+            const isDisabled = Boolean(openingId) && !isOpening;
             return (
-              <button
+              // Card is a div[role=button] instead of <button> so the delete
+              // Button inside is not a nested interactive element. Disabled
+              // styles mirror .canvasCard:disabled inline (divs have no
+              // :disabled pseudo-class).
+              <div
                 key={project.project_id}
-                type='button'
-                className={`${styles.canvasCard}${isOpening ? ` ${styles.canvasCardOpening}` : ''}`}
-                disabled={Boolean(openingId) && !isOpening}
+                role='button'
+                tabIndex={isDisabled ? -1 : 0}
+                aria-disabled={isDisabled}
                 aria-busy={isOpening}
+                className={`${styles.canvasCard}${isOpening ? ` ${styles.canvasCardOpening}` : ''}`}
+                style={
+                  isDisabled ? { cursor: 'default', opacity: 0.72, transform: 'none' } : undefined
+                }
                 onMouseEnter={prefetchCanvasProjectPage}
                 onFocus={prefetchCanvasProjectPage}
                 onClick={() => openProject(project.project_id)}
+                onKeyDown={(event) => {
+                  // Only activate when the card itself is focused, so Enter/
+                  // Space on the inner delete Button never opens the project.
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openProject(project.project_id);
+                  }
+                }}
               >
                 <span className={styles.canvasCardPreview}>
                   {isOpening ? (
@@ -284,7 +302,7 @@ const CanvasProjectGallery: React.FC = () => {
                     }}
                   />
                 </span>
-              </button>
+              </div>
             );
           })}
         </div>

@@ -333,4 +333,4 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
   );
 };
 
-export default SessionCard;
+export default React.memo(SessionCard);
