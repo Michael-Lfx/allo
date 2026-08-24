@@ -111,8 +111,9 @@ values replace them.
 
 The host is a fixed bottom-right stack: 24px from the desktop edges, 16px on
 narrow screens, plus the safe-area inset. Collapsed mode shows up to three
-transient notifications, with the newest at the bottom. The counter pill counts
-only active transient records hidden by the collapsed limit; `duration: 0`
+transient notifications, with the newest at the bottom. The counter control
+shows `N more notifications` only for active transient records hidden by the
+collapsed limit; `duration: 0`
 records remain visible and switch the cards area to bounded scrolling when they
 exceed the transient limit. The counter expands the full active/exiting list,
 keeps the newest cards at the bottom, and collapses on outside click or Escape.
@@ -126,9 +127,17 @@ the composer or mobile action panel. Cards do not handle clicks themselves;
 close buttons, supplied actions, and the disclosure control are the only
 interactive surfaces. `passthrough` cards remain pointer-transparent. Separate
 polite and assertive live regions announce notification content without
-re-announcing expansion history. Enter/exit motion uses opacity/transform;
-stack FLIP movement follows the 240ms spatial-transition token, with 180ms entry,
-120ms exit, and reduced-motion overrides.
+re-announcing expansion history. New announcements are queued per channel,
+deduplicated by notification revision, and pending updates replace older
+revisions. Enter/exit motion uses opacity/transform; stack FLIP movement follows
+the 240ms spatial-transition token, with 180ms entry, a short collapse fade,
+120ms exit, and reduced-motion overrides. Notification surfaces resolve their
+brand color from the active theme's `--primary` token and semantic states from
+`--success`, `--warning`, `--danger`, and `--info`, with restrained tinting
+instead of gradients or blur. Cards and the disclosure counter always mix
+against the opaque `--flowy-surface-1` base; alpha-bearing theme popup tokens
+must not be used as the notification cover surface, so page content cannot
+bleed through.
 
 The behavior contract is covered by the focused suite under the notification
 module and the locale bundle test:

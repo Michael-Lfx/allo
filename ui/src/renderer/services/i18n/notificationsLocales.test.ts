@@ -34,7 +34,7 @@ describe('notifications locale bundle', () => {
   });
 
   test('covers the counter, collapse and close copy the stack renders', () => {
-    for (const key of ['more', 'moreLabel', 'collapse', 'close']) {
+    for (const key of ['more', 'collapse', 'close']) {
       expect(typeof getLocaleValue(enNotifications, key)).toBe('string');
       expect(typeof getLocaleValue(zhNotifications, key)).toBe('string');
     }

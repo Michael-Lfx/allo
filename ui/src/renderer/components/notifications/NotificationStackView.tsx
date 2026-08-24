@@ -6,12 +6,13 @@ import type { StoredNotification } from './notificationTypes';
 
 export const NOTIFICATION_STAGGER_STEP_MS = 24;
 export const NOTIFICATION_STAGGER_MAX_MS = 96;
+export const NOTIFICATION_COLLAPSE_STAGGER_STEP_MS = 18;
+export const NOTIFICATION_COLLAPSE_STAGGER_MAX_MS = 72;
 
 export type NotificationStackViewLabels = {
   close: string;
   collapse: string;
   more: (count: number) => string;
-  moreLabel: string;
 };
 
 export type NotificationStackViewProps = {
@@ -24,6 +25,7 @@ export type NotificationStackViewProps = {
   liveAssertiveMessage: string;
   labels: NotificationStackViewLabels;
   newlyRevealedKeys?: ReadonlySet<string>;
+  collapsingKeys?: ReadonlySet<string>;
   onToggleExpanded: () => void;
   onDismiss: (notice: StoredNotification) => void;
   onPointerEnter: () => void;
@@ -47,6 +49,7 @@ const NotificationStackView: React.FC<NotificationStackViewProps> = ({
   liveAssertiveMessage,
   labels,
   newlyRevealedKeys,
+  collapsingKeys,
   onToggleExpanded,
   onDismiss,
   onPointerEnter,
@@ -60,6 +63,7 @@ const NotificationStackView: React.FC<NotificationStackViewProps> = ({
   setCardRef,
 }) => {
   let staggerIndex = 0;
+  let collapseStaggerIndex = 0;
 
   return (
     <div
@@ -86,9 +90,8 @@ const NotificationStackView: React.FC<NotificationStackViewProps> = ({
             aria-label={expanded ? labels.collapse : labels.more(hiddenCount)}
             onClick={onToggleExpanded}
           >
-            {!expanded && <span className='flowy-notification-stack__counter-pill'>{hiddenCount}</span>}
             <span className='flowy-notification-stack__counter-text'>
-              {expanded ? labels.collapse : labels.moreLabel}
+              {expanded ? labels.collapse : labels.more(hiddenCount)}
             </span>
             <Down theme='outline' size='14' className='flowy-notification-stack__counter-chevron' aria-hidden='true' />
           </button>
@@ -104,11 +107,19 @@ const NotificationStackView: React.FC<NotificationStackViewProps> = ({
               const delay = Math.min(staggerIndex * NOTIFICATION_STAGGER_STEP_MS, NOTIFICATION_STAGGER_MAX_MS);
               staggerIndex += 1;
               if (delay > 0) staggerStyle = { animationDelay: `${delay}ms` };
+            } else if (!expanded && collapsingKeys?.has(notice.key)) {
+              const delay = Math.min(
+                collapseStaggerIndex * NOTIFICATION_COLLAPSE_STAGGER_STEP_MS,
+                NOTIFICATION_COLLAPSE_STAGGER_MAX_MS,
+              );
+              collapseStaggerIndex += 1;
+              if (delay > 0) staggerStyle = { animationDelay: `${delay}ms` };
             }
             return (
               <NotificationCard
                 key={notice.key}
                 notice={notice}
+                collapsing={collapsingKeys?.has(notice.key)}
                 closeLabel={labels.close}
                 style={staggerStyle}
                 onDismiss={() => onDismiss(notice)}

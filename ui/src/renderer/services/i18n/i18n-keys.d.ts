@@ -4335,7 +4335,6 @@ export type I18nKey =
   | 'notifications.level.success'
   | 'notifications.level.warning'
   | 'notifications.more'
-  | 'notifications.moreLabel'
   | 'poi.description'
   | 'poi.settings.autoExtractEnabled'
   | 'poi.settings.autoExtractHint'

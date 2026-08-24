@@ -8,6 +8,7 @@ type NotificationCardProps = {
   onDismiss: () => void;
   cardRef?: React.Ref<HTMLDivElement>;
   style?: React.CSSProperties;
+  collapsing?: boolean;
 };
 
 const StatusIcon: React.FC<{ level: AppNotificationLevel }> = ({ level }) => {
@@ -19,7 +20,14 @@ const StatusIcon: React.FC<{ level: AppNotificationLevel }> = ({ level }) => {
   return null;
 };
 
-const NotificationCard: React.FC<NotificationCardProps> = ({ notice, closeLabel, onDismiss, cardRef, style }) => {
+const NotificationCard: React.FC<NotificationCardProps> = ({
+  notice,
+  closeLabel,
+  onDismiss,
+  cardRef,
+  style,
+  collapsing,
+}) => {
   const showIcon = notice.showIcon && (notice.icon || notice.level !== 'normal');
 
   return (
@@ -30,7 +38,7 @@ const NotificationCard: React.FC<NotificationCardProps> = ({ notice, closeLabel,
         notice.status === 'exiting' ? 'flowy-notification-card--exiting' : ''
       } ${notice.passthrough ? 'flowy-notification-card--passthrough' : ''} ${
         notice.duration === 0 ? 'flowy-notification-card--persistent' : ''
-      }`}
+      } ${collapsing ? 'flowy-notification-card--collapsing' : ''}`}
       data-notification-id={notice.id ?? notice.key}
       data-notification-level={notice.level}
       data-notification-status={notice.status}

@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import React from 'react';
-import { getCollapsedRecords, sortByCreatedAt, textFromNode, MAX_VISIBLE_TRANSIENT } from './notificationStackModel';
+import {
+  getCollapsedRecords,
+  getCollapseExitKeys,
+  mergeCollapsedRecordsWithExits,
+  sortByCreatedAt,
+  textFromNode,
+  MAX_VISIBLE_TRANSIENT,
+} from './notificationStackModel';
 import type { StoredNotification } from './notificationTypes';
 
 let sequence = 0;
@@ -114,5 +121,20 @@ describe('sortByCreatedAt / textFromNode', () => {
     expect(textFromNode(['a', null, 'b'])).toBe('a b');
     expect(textFromNode(React.createElement('div', null, 'x', 'y'))).toBe('x y');
     expect(textFromNode(undefined)).toBe('');
+  });
+});
+
+describe('collapse transitions', () => {
+  test('identifies records hidden by the collapsed projection in their prior order', () => {
+    const records = [notice(), notice(), notice(), notice()];
+    const collapsed = getCollapsedRecords(records);
+    expect(getCollapseExitKeys(records, collapsed.records)).toEqual([records[0].key]);
+  });
+
+  test('merges still-present exit records without duplicating visible records', () => {
+    const records = [notice(), notice(), notice(), notice()];
+    const exitKeys = new Set([records[0].key]);
+    const merged = mergeCollapsedRecordsWithExits(records, exitKeys);
+    expect(merged.map((item) => item.key)).toEqual(records.map((item) => item.key));
   });
 });

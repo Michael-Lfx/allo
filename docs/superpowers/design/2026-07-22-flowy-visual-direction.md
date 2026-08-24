@@ -21,4 +21,5 @@
 
 - `ui/src/renderer/styles/flowy-visual-system.css` — 字阶、4/8 间距、圆角、表面、强调/状态色（浅/深语义一致）
 - `ui/src/renderer/styles/theme-control-contract.css` — Button/Input/Select/Card/Tabs/Tooltip/应用内通知堆叠/Skeleton 状态
+- 应用内通知使用当前主题 `--primary` 作为计数控制器品牌色，使用 `--success|warning|danger|info` 表达状态；表面以不透明 `--flowy-surface-1` 为混色底，只做低强度 tint，不使用渐变、模糊或彩色侧边条，避免主题 popup 的透明度造成页面内容穿透
 - 密度：`--flowy-density-rail|session|content-pad|workspace`

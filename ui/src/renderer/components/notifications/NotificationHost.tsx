@@ -1,34 +1,73 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import NotificationStackView from './NotificationStackView';
 import type { NotificationStackViewLabels } from './NotificationStackView';
 import { useNotificationBottomInset } from './notificationInsets';
-import { getCollapsedRecords, sortByCreatedAt, textFromNode, MAX_VISIBLE_TRANSIENT } from './notificationStackModel';
+import {
+  getCollapsedRecords,
+  getCollapseExitKeys,
+  mergeCollapsedRecordsWithExits,
+  sortByCreatedAt,
+  textFromNode,
+  MAX_VISIBLE_TRANSIENT,
+} from './notificationStackModel';
+import {
+  announcementChannelForLevel,
+  NotificationAnnouncementQueue,
+  type NotificationAnnouncement,
+  type NotificationAnnouncementChannel,
+} from './notificationAnnouncementQueue';
 import { notificationStore } from './notificationStore';
 import './notifications.css';
+
+export const NOTIFICATION_COLLAPSE_EXIT_MS = 120;
+export const NOTIFICATION_ANNOUNCEMENT_DISPLAY_MS = 1200;
 
 const NotificationHost: React.FC = () => {
   const { t } = useTranslation();
   const records = useSyncExternalStore(notificationStore.subscribe, notificationStore.getSnapshot, notificationStore.getSnapshot);
   const bottomInset = useNotificationBottomInset();
   const [expanded, setExpanded] = useState(false);
+  const [collapseExitKeys, setCollapseExitKeys] = useState<ReadonlySet<string>>(new Set());
   const [politeMessage, setPoliteMessage] = useState('');
   const [assertiveMessage, setAssertiveMessage] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
   const counterRef = useRef<HTMLButtonElement>(null);
   const cardsScrollRef = useRef<HTMLDivElement>(null);
   const announcedRef = useRef(new Map<string, number>());
+  const announcementQueueRef = useRef(new NotificationAnnouncementQueue());
+  const announcementInitializedRef = useRef(false);
+  const activeAnnouncementRef = useRef<Record<NotificationAnnouncementChannel, NotificationAnnouncement | null>>({
+    polite: null,
+    assertive: null,
+  });
+  const announcementTimersRef = useRef<Record<NotificationAnnouncementChannel, number | null>>({
+    polite: null,
+    assertive: null,
+  });
+  const announcementFollowupTimersRef = useRef<Record<NotificationAnnouncementChannel, number | null>>({
+    polite: null,
+    assertive: null,
+  });
+  const flushAnnouncementRef = useRef<(channel: NotificationAnnouncementChannel) => void>(() => undefined);
   const revealedRef = useRef(new Set<string>());
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
   const previousRects = useRef(new Map<string, DOMRect>());
+  const collapseExitTimerRef = useRef<number | null>(null);
 
   // Exiting records still render (120ms exit animation) but must not feed
   // counts, auto-collapse, or announcements — those read active-only.
   const activeRecords = useMemo(() => records.filter((notice) => notice.status === 'active'), [records]);
   const collapsed = useMemo(() => getCollapsedRecords(records), [records]);
   const collapsedKeys = useMemo(() => new Set(collapsed.records.map((notice) => notice.key)), [collapsed]);
-  const displayedRecords = expanded ? sortByCreatedAt(records) : collapsed.records;
+  const effectiveCollapseExitKeys = useMemo(
+    () => new Set([...collapseExitKeys].filter((key) => !collapsedKeys.has(key))),
+    [collapseExitKeys, collapsedKeys],
+  );
+  const displayedRecords = expanded
+    ? sortByCreatedAt(records)
+    : mergeCollapsedRecordsWithExits(records, effectiveCollapseExitKeys);
   const shouldScroll = expanded || collapsed.scrollable;
 
   const labels = useMemo<NotificationStackViewLabels>(
@@ -36,10 +75,39 @@ const NotificationHost: React.FC = () => {
       close: t('notifications.close', { defaultValue: '关闭通知' }),
       collapse: t('notifications.collapse', { defaultValue: '收起通知' }),
       more: (count) => t('notifications.more', { count, defaultValue: '还有 {{count}} 条通知' }),
-      moreLabel: t('notifications.moreLabel', { defaultValue: '更多通知' }),
     }),
     [t],
   );
+
+  const clearCollapseExit = useCallback(() => {
+    if (collapseExitTimerRef.current !== null) {
+      window.clearTimeout(collapseExitTimerRef.current);
+      collapseExitTimerRef.current = null;
+    }
+    setCollapseExitKeys((current) => (current.size === 0 ? current : new Set()));
+  }, []);
+
+  const requestCollapse = useCallback(() => {
+    if (!expanded) return;
+
+    const previousRecords = sortByCreatedAt(records);
+    const nextCollapsedRecords = getCollapsedRecords(records).records;
+    const exitKeys = getCollapseExitKeys(previousRecords, nextCollapsedRecords);
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+    if (collapseExitTimerRef.current !== null) window.clearTimeout(collapseExitTimerRef.current);
+    if (exitKeys.length > 0 && !reducedMotion) {
+      setCollapseExitKeys(new Set(exitKeys));
+      collapseExitTimerRef.current = window.setTimeout(() => {
+        collapseExitTimerRef.current = null;
+        setCollapseExitKeys(new Set());
+      }, NOTIFICATION_COLLAPSE_EXIT_MS + 72);
+    } else {
+      setCollapseExitKeys(new Set());
+      collapseExitTimerRef.current = null;
+    }
+    setExpanded(false);
+  }, [expanded, records]);
 
   // Cards hidden by the collapse limit get a one-time stagger when expansion
   // first reveals them; later expansions of the same cards enter without delay.
@@ -64,12 +132,18 @@ const NotificationHost: React.FC = () => {
   }, [expanded, records, collapsedKeys]);
 
   useEffect(() => {
-    if (!expanded && collapsed.hiddenCount === 0) return;
-    if (expanded && activeRecords.length === 0) setExpanded(false);
-    if (expanded && collapsed.hiddenCount === 0 && activeRecords.length <= MAX_VISIBLE_TRANSIENT) {
-      setExpanded(false);
+    if (!expanded) return;
+    if (activeRecords.length === 0 || (collapsed.hiddenCount === 0 && activeRecords.length <= MAX_VISIBLE_TRANSIENT)) {
+      requestCollapse();
     }
-  }, [activeRecords.length, collapsed.hiddenCount, expanded]);
+  }, [activeRecords.length, collapsed.hiddenCount, expanded, requestCollapse]);
+
+  useEffect(
+    () => () => {
+      if (collapseExitTimerRef.current !== null) window.clearTimeout(collapseExitTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!expanded) return undefined;
@@ -77,23 +151,68 @@ const NotificationHost: React.FC = () => {
     return () => notificationStore.resumeInteraction('notification-expanded');
   }, [expanded]);
 
+  flushAnnouncementRef.current = (channel: NotificationAnnouncementChannel) => {
+    if (activeAnnouncementRef.current[channel]) return;
+    const next = announcementQueueRef.current.take(channel);
+    if (!next) return;
+
+    activeAnnouncementRef.current[channel] = next;
+    const setMessage = channel === 'assertive' ? setAssertiveMessage : setPoliteMessage;
+    setMessage(next.message);
+    announcementTimersRef.current[channel] = window.setTimeout(() => {
+      activeAnnouncementRef.current[channel] = null;
+      announcementTimersRef.current[channel] = null;
+      setMessage('');
+      announcementFollowupTimersRef.current[channel] = window.setTimeout(() => {
+        announcementFollowupTimersRef.current[channel] = null;
+        flushAnnouncementRef.current(channel);
+      }, 0);
+    }, NOTIFICATION_ANNOUNCEMENT_DISPLAY_MS);
+  };
+
   useEffect(() => {
-    const changed = activeRecords
-      .filter((notice) => announcedRef.current.get(notice.key) !== notice.revision)
-      .sort((left, right) => right.createdAt - left.createdAt)[0];
-    if (!changed) return;
-    announcedRef.current.set(changed.key, changed.revision);
-    const fallback = t(`notifications.level.${changed.level}`, { defaultValue: changed.level });
-    const content = textFromNode(changed.announce ?? changed.title) || textFromNode(changed.content) || fallback;
-    if (changed.level === 'error') {
-      setAssertiveMessage(content);
-      const timer = window.setTimeout(() => setAssertiveMessage(''), 1200);
-      return () => window.clearTimeout(timer);
+    const sortedActiveRecords = sortByCreatedAt(activeRecords);
+    const enqueue = (notice: (typeof sortedActiveRecords)[number]) => {
+      const fallback = t(`notifications.level.${notice.level}`, { defaultValue: notice.level });
+      const message = textFromNode(notice.announce ?? notice.title) || textFromNode(notice.content) || fallback;
+      const announcement = {
+        key: notice.key,
+        revision: notice.revision,
+        createdAt: notice.createdAt,
+        channel: announcementChannelForLevel(notice.level),
+        message,
+      } satisfies NotificationAnnouncement;
+      announcedRef.current.set(notice.key, notice.revision);
+      announcementQueueRef.current.enqueue(announcement);
+    };
+
+    if (!announcementInitializedRef.current) {
+      announcementInitializedRef.current = true;
+      sortedActiveRecords.forEach((notice) => announcedRef.current.set(notice.key, notice.revision));
+      const newest = sortedActiveRecords[sortedActiveRecords.length - 1];
+      if (newest) enqueue(newest);
+    } else {
+      sortedActiveRecords.forEach((notice) => {
+        if (announcedRef.current.get(notice.key) !== notice.revision) enqueue(notice);
+      });
     }
-    setPoliteMessage(content);
-    const timer = window.setTimeout(() => setPoliteMessage(''), 1200);
-    return () => window.clearTimeout(timer);
+
+    flushAnnouncementRef.current('assertive');
+    flushAnnouncementRef.current('polite');
   }, [activeRecords, t]);
+
+  useEffect(
+    () => () => {
+      announcementQueueRef.current.clear();
+      for (const channel of ['polite', 'assertive'] as const) {
+        const timer = announcementTimersRef.current[channel];
+        if (timer !== null) window.clearTimeout(timer);
+        const followupTimer = announcementFollowupTimersRef.current[channel];
+        if (followupTimer !== null) window.clearTimeout(followupTimer);
+      }
+    },
+    [],
+  );
 
   useLayoutEffect(() => {
     if (cardsScrollRef.current && expanded) cardsScrollRef.current.scrollTop = cardsScrollRef.current.scrollHeight;
@@ -125,11 +244,11 @@ const NotificationHost: React.FC = () => {
   useEffect(() => {
     if (!expanded) return undefined;
     const handlePointerDown = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setExpanded(false);
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) requestCollapse();
     };
     document.addEventListener('pointerdown', handlePointerDown, true);
     return () => document.removeEventListener('pointerdown', handlePointerDown, true);
-  }, [expanded]);
+  }, [expanded, requestCollapse]);
 
   const handlePointerEnter = () => notificationStore.pauseInteraction('notification-pointer');
   const handlePointerLeave = () => notificationStore.resumeInteraction('notification-pointer');
@@ -143,9 +262,18 @@ const NotificationHost: React.FC = () => {
     if (event.key === 'Escape' && rootRef.current?.contains(document.activeElement)) {
       event.preventDefault();
       event.stopPropagation();
-      setExpanded(false);
+      requestCollapse();
       window.requestAnimationFrame(() => counterRef.current?.focus());
     }
+  };
+
+  const handleToggleExpanded = () => {
+    if (expanded) {
+      requestCollapse();
+      return;
+    }
+    clearCollapseExit();
+    setExpanded(true);
   };
 
   if (typeof document === 'undefined') return null;
@@ -161,7 +289,8 @@ const NotificationHost: React.FC = () => {
       liveAssertiveMessage={assertiveMessage}
       labels={labels}
       newlyRevealedKeys={newlyRevealedKeys}
-      onToggleExpanded={() => setExpanded((value) => !value)}
+      collapsingKeys={expanded ? undefined : effectiveCollapseExitKeys}
+      onToggleExpanded={handleToggleExpanded}
       onDismiss={(notice) => notificationStore.dismiss(notice.scopeId, notice.key)}
       onPointerEnter={handlePointerEnter}
       onPointerLeave={handlePointerLeave}

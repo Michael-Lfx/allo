@@ -30,7 +30,6 @@ const labels: NotificationStackViewProps['labels'] = {
   close: '关闭通知',
   collapse: '收起通知',
   more: (count) => `还有 ${count} 条通知`,
-  moreLabel: '更多通知',
 };
 
 const renderStack = (overrides: Partial<NotificationStackViewProps> = {}): string =>
@@ -58,14 +57,13 @@ const renderStack = (overrides: Partial<NotificationStackViewProps> = {}): strin
 const cardCount = (markup: string): number => markup.split('flowy-notification-card ').length - 1;
 
 describe('NotificationStackView', () => {
-  test('collapsed stack shows the given cards and the counter pill with chevron', () => {
+  test('collapsed stack shows the given cards and the explicit counter copy with chevron', () => {
     const records = [notice(), notice(), notice()];
     const markup = renderStack({ displayedRecords: records, hiddenCount: 2 });
     expect(cardCount(markup)).toBe(3);
     expect(markup.includes('flowy-notification-stack__counter')).toBe(true);
-    expect(markup.includes('flowy-notification-stack__counter-pill')).toBe(true);
-    expect(markup.includes('>2</span>')).toBe(true);
-    expect(markup.includes('更多通知')).toBe(true);
+    expect(markup.includes('还有 2 条通知')).toBe(true);
+    expect(markup.includes('flowy-notification-stack__counter-pill')).toBe(false);
     expect(markup.includes('aria-label="还有 2 条通知"')).toBe(true);
     expect(markup.includes('aria-expanded="false"')).toBe(true);
     expect(markup.includes('flowy-notification-stack__counter-chevron')).toBe(true);
@@ -94,7 +92,6 @@ describe('NotificationStackView', () => {
     expect(markup.includes('flowy-notification-stack__cards--scrollable')).toBe(true);
     // First revealed card has no delay, the second is delayed by one step.
     expect(markup.includes('animation-delay:24ms')).toBe(true);
-    expect(markup.includes('flowy-notification-stack__counter-pill')).toBe(false);
   });
 
   test('exiting records render with the exiting class and no close button', () => {
@@ -103,6 +100,12 @@ describe('NotificationStackView', () => {
     expect(markup.includes('flowy-notification-card--exiting')).toBe(true);
     expect(markup.includes('data-notification-status="exiting"')).toBe(true);
     expect(markup.includes('flowy-notification__close')).toBe(false);
+  });
+
+  test('collapsing records render with the collapse transition marker', () => {
+    const collapsing = notice();
+    const markup = renderStack({ displayedRecords: [collapsing], collapsingKeys: new Set([collapsing.key]) });
+    expect(markup.includes('flowy-notification-card--collapsing')).toBe(true);
   });
 
   test('passthrough and persistent markers reach the card class list', () => {

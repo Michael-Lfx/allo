@@ -15,6 +15,25 @@ export const textFromNode = (node: React.ReactNode): string => {
 export const sortByCreatedAt = (records: readonly StoredNotification[]): StoredNotification[] =>
   records.slice().sort((left, right) => left.createdAt - right.createdAt);
 
+export const getCollapseExitKeys = (
+  previousRecords: readonly StoredNotification[],
+  nextRecords: readonly StoredNotification[],
+): string[] => {
+  const nextKeys = new Set(nextRecords.map((notice) => notice.key));
+  return previousRecords.filter((notice) => !nextKeys.has(notice.key)).map((notice) => notice.key);
+};
+
+export const mergeCollapsedRecordsWithExits = (
+  records: readonly StoredNotification[],
+  exitKeys: ReadonlySet<string>,
+): StoredNotification[] => {
+  const collapsed = getCollapsedRecords(records);
+  if (exitKeys.size === 0) return collapsed.records;
+  const visibleKeys = new Set(collapsed.records.map((notice) => notice.key));
+  const exits = records.filter((notice) => exitKeys.has(notice.key) && !visibleKeys.has(notice.key));
+  return sortByCreatedAt([...collapsed.records, ...exits]);
+};
+
 /**
  * Collapsed-stack slot selection. Accepts the full record list (active +
  * exiting): an exiting record still occupies its slot for the 120ms exit

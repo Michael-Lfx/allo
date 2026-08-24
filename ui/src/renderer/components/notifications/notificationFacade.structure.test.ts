@@ -53,6 +53,7 @@ describe('notification facade source contracts', () => {
     const css = readSource('./notifications.css');
     expect(css.includes('.flowy-notification-card--passthrough')).toBe(true);
     expect(css.includes('.flowy-notification-card--exiting')).toBe(true);
+    expect(css.includes('.flowy-notification-card--collapsing')).toBe(true);
   });
 
   test('the host is mounted once in the layout and the hook facade is rewired', () => {
@@ -71,6 +72,8 @@ describe('notification facade source contracts', () => {
 
     const host = readSource('./NotificationHost.tsx');
     expect(host.includes('getCollapsedRecords(records)')).toBe(true);
+    expect(host.includes('getCollapseExitKeys')).toBe(true);
+    expect(host.includes('NotificationAnnouncementQueue')).toBe(true);
     expect(host.includes('displayedRecords = expanded ? sortByCreatedAt(activeRecords)')).toBe(false);
     expect(host.includes('duration: 240')).toBe(true);
     expect(host.includes('window.requestAnimationFrame(() => counterRef.current?.focus())')).toBe(true);
@@ -84,6 +87,10 @@ describe('notification facade source contracts', () => {
     expect(css.includes('linear-gradient')).toBe(false);
     expect(css.includes('backdrop-filter')).toBe(false);
     expect(css.includes('.arco-message')).toBe(false);
+    expect(css.includes('counter-pill')).toBe(false);
+    for (const token of ['--notification-brand', '--notification-info', '--notification-success', '--notification-warning', '--notification-danger']) {
+      expect(css.includes(token)).toBe(true);
+    }
     expect(css.includes('prefers-reduced-motion: reduce')).toBe(true);
 
     const allowed = new Set(['opacity', 'transform', 'color', 'border-color', 'background-color', 'outline-color']);
@@ -98,7 +105,13 @@ describe('notification facade source contracts', () => {
       const name = match[1];
       // `animation: none` in the reduced-motion block disables, not animates.
       if (name === 'none') continue;
-      expect(['flowy-notification-enter', 'flowy-notification-exit', 'flowy-notification-icon-in', 'flowy-notification-spin']).toContain(name);
+      expect([
+        'flowy-notification-enter',
+        'flowy-notification-exit',
+        'flowy-notification-collapse',
+        'flowy-notification-icon-in',
+        'flowy-notification-spin',
+      ]).toContain(name);
     }
     // Keyframes may only tween opacity/transform.
     for (const block of css.matchAll(/@keyframes[^{]+\{([\s\S]*?)\n\}/g)) {
@@ -107,5 +120,16 @@ describe('notification facade source contracts', () => {
         expect(['opacity', 'transform']).toContain(prop);
       }
     }
+  });
+
+  test('notification surfaces remain opaque and isolated from page content', () => {
+    const css = readSource('./notifications.css');
+
+    expect(css.includes('--notification-base-surface: var(--flowy-surface-1')).toBe(true);
+    expect(css.includes('isolation: isolate')).toBe(true);
+    expect(css.includes('background-image: none')).toBe(true);
+    expect(css.includes('background-color: var(--notification-base-surface)')).toBe(true);
+    expect(css.includes('var(--notification-base-surface) 92%')).toBe(true);
+    expect(css.includes('var(--notification-base-surface) 96%')).toBe(true);
   });
 });
