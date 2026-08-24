@@ -773,7 +773,9 @@
     "doneBody": "已完成",
     "failedBody": "失败",
     "stoppedBody": "已停止",
-    "fallbackTitle": "对话"
+    "fallbackTitle": "对话",
+    "open": "打开",
+    "dismiss": "关闭"
   },
   "emptyPrompt": {
     "title": "从一个具体任务开始",

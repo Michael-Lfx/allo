@@ -13,7 +13,9 @@ export const shouldScheduleAgentRefreshForHash = (hash: string): boolean => {
     route === '#/companion' ||
     route.startsWith('#/companion/') ||
     route === '#/nomi-memory-panel' ||
-    route.startsWith('#/nomi-memory-panel/');
+    route.startsWith('#/nomi-memory-panel/') ||
+    route === '#/completion-toast' ||
+    route.startsWith('#/completion-toast/');
   return !isAuxiliaryRoute;
 };
 

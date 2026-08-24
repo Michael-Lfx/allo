@@ -773,7 +773,9 @@
     "doneBody": "Done",
     "failedBody": "Failed",
     "stoppedBody": "Stopped",
-    "fallbackTitle": "Conversation"
+    "fallbackTitle": "Conversation",
+    "open": "Open",
+    "dismiss": "Dismiss"
   },
   "emptyPrompt": {
     "title": "Start with something concrete",

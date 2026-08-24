@@ -96,6 +96,7 @@ fn resolve_main_window_geometry(
 
 mod memory_panel_window;
 mod companion_pointer;
+mod completion_toast;
 mod system_notify;
 mod taskbar_badge;
 #[cfg(windows)]
@@ -2418,6 +2419,10 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+pub(crate) fn show_main_window_public(app: &tauri::AppHandle) {
+    show_main_window(app);
+}
+
 #[cfg(any(test, target_os = "macos"))]
 fn should_show_main_window_for_macos_reopen(_has_visible_windows: bool) -> bool {
     true
@@ -3092,6 +3097,7 @@ fn main() -> std::process::ExitCode {
         .manage(QuitFlag(AtomicBool::new(false)))
         .manage(Arc::new(ExitCoordinator::default()))
         .manage(memory_panel_window::MemoryPanelWindowState::default())
+        .manage(completion_toast::CompletionToastState::default())
         .manage(taskbar_badge::TaskCompletionBadge::default())
         .manage(DownloadedUpdateState::default())
         .invoke_handler(tauri::generate_handler![
@@ -3111,7 +3117,9 @@ fn main() -> std::process::ExitCode {
             set_keep_awake,
             set_tray_labels,
             restart_application,
-            system_notify::show_os_notification_cmd
+            system_notify::show_os_notification_cmd,
+            completion_toast::activate_completion_toast,
+            completion_toast::dismiss_completion_toast
         ])
         // Close-to-tray is now the DEFAULT (and only) close behavior. Closing the
         // main window (titlebar ×, OS close, Alt+F4) hides it to the tray instead

@@ -18,6 +18,7 @@ describe('agent detection refresh scheduler', () => {
     expect(shouldScheduleAgentRefreshForHash('#/companion?companion_id=abc')).toBe(false);
     expect(shouldScheduleAgentRefreshForHash('#/companion/details')).toBe(false);
     expect(shouldScheduleAgentRefreshForHash('#/nomi-memory-panel')).toBe(false);
+    expect(shouldScheduleAgentRefreshForHash('#/completion-toast')).toBe(false);
   });
 
   test('does not treat primary-route navigation as a refresh trigger', () => {

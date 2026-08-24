@@ -61,6 +61,7 @@ pub fn show_os_notification(
     };
     if result.is_ok() {
         crate::taskbar_badge::on_completion_notified(app);
+        crate::completion_toast::show_completion_toast(app, title, body, click_target);
     }
     result
 }
@@ -75,7 +76,7 @@ pub fn show_os_notification_cmd(
     show_os_notification(&app, &title, &body, click_target.as_deref()).map_err(|e| e.to_string())
 }
 
-fn emit_notification_deep_link(app: &AppHandle, click_target: &str) {
+pub(crate) fn emit_notification_deep_link(app: &AppHandle, click_target: &str) {
     crate::taskbar_badge::clear_badge(app);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();

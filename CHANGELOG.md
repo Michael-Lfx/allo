@@ -6,6 +6,7 @@ at a high level rather than a complete commit log.
 ## Unreleased
 
 - Windows taskbar shows a completion count badge when desktop notifications fire; focusing the main window clears it.
+- Desktop shows an interactive bottom-right completion popup (Open / Dismiss) that is not gated by Windows Focus Assist banner settings.
 
 ## v1.0.5 - 2026-08-21
 
