@@ -171,7 +171,7 @@ export function QuestionManager({
   const sourceColumn = {
     title: t('learning.questionSource'),
     dataIndex: 'source',
-    width: 220,
+    width: 140,
     render: (_value: unknown, entry: QuestionEntry) =>
       entry.source === 'custom' ? (
         <Tag color='purple'>{t('learning.questionCustomSource')}</Tag>
@@ -187,7 +187,7 @@ export function QuestionManager({
   const stateColumn = {
     title: t('learning.questionState'),
     dataIndex: 'state',
-    width: 130,
+    width: 120,
     render: (_value: unknown, entry: QuestionEntry) => {
       const state = questionStateMeta(entry, t);
       const hint =
@@ -223,14 +223,14 @@ export function QuestionManager({
   const dueColumn = {
     title: t('learning.questionDueAt'),
     dataIndex: 'due_at',
-    width: 170,
+    width: 160,
     sorter: (a: QuestionEntry, b: QuestionEntry) => (a.due_at ?? 0) - (b.due_at ?? 0),
     render: (value: number | null) => formatReviewTime(value),
   };
   const tagsColumn = {
     title: t('learning.questionTags'),
     dataIndex: 'tags',
-    width: 200,
+    width: 140,
     render: (_value: unknown, entry: QuestionEntry) => (
       <div
         className='flex flex-wrap items-center gap-4px'
@@ -255,7 +255,7 @@ export function QuestionManager({
   };
   const actionsColumn = {
     title: t('learning.questionActions'),
-    width: 190,
+    width: 160,
     render: (_value: unknown, entry: QuestionEntry) => (
       <div className='flex gap-6px'>
         <Button
