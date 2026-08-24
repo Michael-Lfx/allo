@@ -58,8 +58,10 @@ describe('WorkpathDrawer structure', () => {
     expect(indicatorIndex).toBeLessThan(hoverOpsIndex);
     expect(source.includes("t('sessionList.pinnedWorkpath')")).toBe(true);
     expect(source.includes('bg-[rgb(var(--primary-6))]')).toBe(false);
-    // Clears the 16px folder glyph: the marker hangs off the icon's top-left corner.
-    expect(source.includes('absolute -top-4px -left-6px')).toBe(true);
+    // Clears the 16px folder glyph: the solid marker hangs off the icon's
+    // top-right corner.
+    expect(source.includes('absolute -top-4px -right-5px')).toBe(true);
+    expect(source.includes("<Pushpin theme='filled' size='10'")).toBe(true);
     // Bare theme-adaptive accent glyph: no disc, no ring, no fixed white.
     expect(source.includes("theme='filled'")).toBe(true);
     expect(source.includes('text-[rgb(var(--primary-6))]')).toBe(true);
