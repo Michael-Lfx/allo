@@ -58,6 +58,9 @@ const LOCAL_TRUST_HEADER = 'x-nomi-local-trust';
 /** Window event emitted when an HTTP API response proves the browser session is expired. */
 export const AUTH_EXPIRED_EVENT = 'nomifun:auth-expired';
 
+/** Window event emitted when a Flowy cloud credential is missing or expired. */
+export const CLOUD_AUTH_EXPIRED_EVENT = 'nomifun:cloud-auth-expired';
+
 /**
  * The per-boot local-trust secret injected by the Tauri desktop shell, or null
  * in WebUI browser mode (where auth is via login/JWT cookie instead).
@@ -342,15 +345,36 @@ function clearBrowserAuthArtifacts(): void {
   // in flight cascades them into fresh CSRF 403s (audit 2026-07-30, finding B).
 }
 
-function emitAuthExpiredEvent(): void {
+function emitWindowEvent(name: string): void {
   if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
   const event =
     typeof CustomEvent === 'function'
-      ? new CustomEvent(AUTH_EXPIRED_EVENT)
+      ? new CustomEvent(name)
       : typeof Event === 'function'
-        ? new Event(AUTH_EXPIRED_EVENT)
-        : ({ type: AUTH_EXPIRED_EVENT } as Event);
+        ? new Event(name)
+        : ({ type: name } as Event);
   window.dispatchEvent(event);
+}
+
+function emitAuthExpiredEvent(): void {
+  emitWindowEvent(AUTH_EXPIRED_EVENT);
+}
+
+function emitCloudAuthExpiredEvent(): void {
+  emitWindowEvent(CLOUD_AUTH_EXPIRED_EVENT);
+}
+
+function notifyHttpAuthFailure(status: number, body: unknown): void {
+  const authExpired = isAuthExpiredResponse(status, body);
+  const unauthorized = status === 401;
+  // WebUI local JWT rejection stays on the existing /login redirect.
+  if (isWebUiBrowserMode() && status === 403 && authExpired) {
+    handleHttpAuthExpired();
+    return;
+  }
+  if (authExpired || unauthorized) {
+    emitCloudAuthExpiredEvent();
+  }
 }
 
 function handleHttpAuthExpired(): void {
@@ -648,9 +672,7 @@ export async function httpRequest<T>(
       }
 
       const authExpired = isAuthExpiredResponse(response.status, errorBody);
-      if (authExpired && response.status !== 400) {
-        handleHttpAuthExpired();
-      }
+      notifyHttpAuthFailure(response.status, errorBody);
       if (authExpired) {
         if (isDebugEnabled('debug:http') && !isNoisyPath) {
           console.debug(
@@ -759,6 +781,7 @@ export async function httpMultipartRequest<T>(
     } catch {
       errorBody = rawText;
     }
+    notifyHttpAuthFailure(response.status, errorBody);
     if (options?.silentStatuses?.includes(response.status)) {
       console.debug(`[httpBridge] POST ${path} → ${response.status} (silenced)`, errorBody);
     } else {

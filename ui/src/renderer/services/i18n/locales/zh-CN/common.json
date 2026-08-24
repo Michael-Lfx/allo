@@ -200,5 +200,10 @@
     "syncWarning": "消息同步暂时中断，正在重试",
     "authRequired": "登录状态已失效",
     "relogin": "重新登录"
+  },
+  "cloudSessionExpired": {
+    "title": "登录已失效",
+    "description": "云端登录已过期，请重新登录后继续。",
+    "relogin": "重新登录"
   }
 }

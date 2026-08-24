@@ -200,5 +200,10 @@
     "syncWarning": "Message sync interrupted, retrying",
     "authRequired": "Your login session expired",
     "relogin": "Sign in again"
+  },
+  "cloudSessionExpired": {
+    "title": "Session expired",
+    "description": "Your cloud login expired. Sign in again to continue.",
+    "relogin": "Sign in again"
   }
 }

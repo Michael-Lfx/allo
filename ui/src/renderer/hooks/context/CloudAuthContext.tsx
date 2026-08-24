@@ -1,9 +1,10 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { ipcBridge } from '@/common';
 import type { ICloudWhoami } from '@/common/adapter/ipcBridge';
-import { isBackendHttpError, isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
+import { CLOUD_AUTH_EXPIRED_EVENT, isBackendHttpError, isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { configService } from '@/common/config/configService';
 import { getBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
+import CloudSessionExpiredModal from '@renderer/components/auth/CloudSessionExpiredModal';
 import {
   clearAvailableModelsCache,
   refreshProvidersCatalog,
@@ -99,6 +100,8 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
   const whoamiRef = useRef(whoami);
   const storageGenerationRef = useRef<string | undefined>(undefined);
   const accountIdRef = useRef<string | undefined>(undefined);
+  const expiredModalOpenRef = useRef(false);
+  const [expiredModalOpen, setExpiredModalOpen] = useState(false);
   authStateRef.current = authState;
   whoamiRef.current = whoami;
 
@@ -306,6 +309,22 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
     };
   }, [refresh]);
 
+  const closeExpiredModal = useCallback(() => {
+    expiredModalOpenRef.current = false;
+    setExpiredModalOpen(false);
+  }, []);
+
+  const goCloudRelogin = useCallback(() => {
+    closeExpiredModal();
+    try {
+      if (typeof window === 'undefined') return;
+      if (window.location.hash.includes('/cloud-login')) return;
+      window.location.hash = '/cloud-login';
+    } catch {
+      // Hash navigation is best-effort; the logout still cleared the session.
+    }
+  }, [closeExpiredModal]);
+
   const logout = useCallback(async () => {
     // Invalidate any in-flight whoami/catalog run before changing the server
     // session. A late response must never repopulate the renderer after logout.
@@ -326,6 +345,28 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
       setReady(true);
     }
   }, [beginRun, isCurrentRun]);
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onCloudAuthExpired = () => {
+      try {
+        const hash = window.location.hash ?? '';
+        if (hash.includes('/cloud-login') || hash.includes('/login')) return;
+      } catch {
+        // Continue and show the modal if location is unavailable.
+      }
+      if (expiredModalOpenRef.current) return;
+      expiredModalOpenRef.current = true;
+      setExpiredModalOpen(true);
+      void logout();
+    };
+    window.addEventListener(CLOUD_AUTH_EXPIRED_EVENT, onCloudAuthExpired);
+    return () => window.removeEventListener(CLOUD_AUTH_EXPIRED_EVENT, onCloudAuthExpired);
+  }, [logout]);
+
+  React.useEffect(() => {
+    if (authState.phase === 'authenticated') closeExpiredModal();
+  }, [authState.phase, closeExpiredModal]);
 
   const retryModelEnvironment = useCallback(async () => {
     const accountId = accountIdRef.current;
@@ -360,7 +401,16 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
     [authState, logout, modelEnvironment, modelError, modelStatus, ready, refresh, retryModelEnvironment, status, whoami]
   );
 
-  return <CloudAuthContext.Provider value={value}>{children}</CloudAuthContext.Provider>;
+  return (
+    <CloudAuthContext.Provider value={value}>
+      {children}
+      <CloudSessionExpiredModal
+        visible={expiredModalOpen}
+        onCancel={closeExpiredModal}
+        onRelogin={goCloudRelogin}
+      />
+    </CloudAuthContext.Provider>
+  );
 };
 
 export function useCloudAuth(): CloudAuthContextValue {

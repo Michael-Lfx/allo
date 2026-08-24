@@ -23,4 +23,11 @@ describe('cloud authentication model-environment contract', () => {
     expect(text.includes('retryModelEnvironment')).toBe(true);
     expect(text.includes('await refresh({ forceModelSync: true })')).toBe(true);
   });
+
+  test('listens for a global cloud-auth-expired event and shows a re-login modal', () => {
+    const text = source();
+    expect(text.includes('CLOUD_AUTH_EXPIRED_EVENT')).toBe(true);
+    expect(text.includes('CloudSessionExpiredModal')).toBe(true);
+    expect(text.includes("window.location.hash = '/cloud-login'")).toBe(true);
+  });
 });

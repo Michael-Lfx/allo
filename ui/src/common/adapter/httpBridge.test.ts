@@ -8,6 +8,7 @@ import { describe, expect, test } from 'bun:test';
 import * as httpBridgeModule from './httpBridge';
 import {
   AUTH_EXPIRED_EVENT,
+  CLOUD_AUTH_EXPIRED_EVENT,
   httpPost,
   httpRequest,
   BackendHttpError,
@@ -361,6 +362,7 @@ describe('httpRequest client deadline + network-failure diagnosis', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(location.hash).toBe('/login');
       expect(emitted.includes(AUTH_EXPIRED_EVENT)).toBe(true);
+      expect(emitted.includes(CLOUD_AUTH_EXPIRED_EVENT)).toBe(false);
     } finally {
       globalThis.fetch = realFetch;
       restoreBrowserGlobals();
@@ -444,6 +446,7 @@ describe('httpRequest client deadline + network-failure diagnosis', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(location.hash).toBe('');
       expect(emitted.includes(AUTH_EXPIRED_EVENT)).toBe(false);
+      expect(emitted.includes(CLOUD_AUTH_EXPIRED_EVENT)).toBe(true);
     } finally {
       globalThis.fetch = realFetch;
       restoreBrowserGlobals();
@@ -451,12 +454,17 @@ describe('httpRequest client deadline + network-failure diagnosis', () => {
   });
 
   test('desktop local-trust requests do not redirect to login when a mocked 403 is returned', async () => {
+    const emitted: string[] = [];
     const location = { pathname: '/settings/model', hash: '' };
     let capturedHeaders: Record<string, string> | undefined;
     installBrowserGlobals({
       __backendPort: 25808,
       __nomiLocalTrust: 'local-secret',
       location: location as Location,
+      dispatchEvent: ((event: Event) => {
+        emitted.push(event.type);
+        return true;
+      }) as Window['dispatchEvent'],
     });
     globalThis.fetch = ((_url: string, init?: RequestInit) => {
       capturedHeaders = init?.headers as Record<string, string>;
@@ -480,6 +488,8 @@ describe('httpRequest client deadline + network-failure diagnosis', () => {
       expect(isHandledAuthExpiredHttpError(caught)).toBe(false);
       expect(capturedHeaders?.['x-nomi-local-trust']).toBe('local-secret');
       expect(location.hash).toBe('');
+      expect(emitted.includes(AUTH_EXPIRED_EVENT)).toBe(false);
+      expect(emitted.includes(CLOUD_AUTH_EXPIRED_EVENT)).toBe(true);
     } finally {
       globalThis.fetch = realFetch;
       restoreBrowserGlobals();
