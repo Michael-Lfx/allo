@@ -252,22 +252,27 @@ function FramePreview({ nodes, frame, theme }: { nodes: CanvasNodeData[]; frame:
         const scale = Math.min(previewWidth / width, previewHeight / height);
         const offsetX = (previewWidth - width * scale) / 2;
         const offsetY = (previewHeight - height * scale) / 2;
+        let videoCount = 0;
         return previewNodes.map((node) => ({
             node,
             left: offsetX + (node.position.x - left) * scale,
             top: offsetY + (node.position.y - top) * scale,
             width: Math.max(node.width * scale, 12),
             height: Math.max(node.height * scale, 10),
+            videoIndex: node.type === CanvasNodeType.Video ? videoCount++ : -1,
         }));
     }, [frame.height, frame.width, nodes]);
+    // 折叠预览同时挂载过多 `<video preload="metadata">` 会并发拉取元数据；超过上限的视频
+    // 降级为图标（节点无首帧封面元数据），不挂载 video 元素。
+    const MAX_PREVIEW_VIDEOS = 8;
 
     return (
         <div className="pointer-events-none absolute inset-x-2 bottom-2 overflow-hidden rounded-md" style={{ top: FRAME_HEADER_HEIGHT, background: theme.frame.preview }}>
             {layout.length ? (
-                layout.map(({ node, ...style }) => (
+                layout.map(({ node, videoIndex, ...style }) => (
                     <div key={node.id} className="absolute overflow-hidden rounded-[var(--r-xs)] border" style={{ ...style, background: theme.node.fill, borderColor: theme.node.stroke }}>
                         {node.type === CanvasNodeType.Image && node.metadata?.content ? <img src={node.metadata.content} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" draggable={false} /> : null}
-                        {node.type === CanvasNodeType.Video && node.metadata?.content ? <video src={node.metadata.content} className="h-full w-full object-cover" muted playsInline preload="metadata" /> : null}
+                        {node.type === CanvasNodeType.Video && node.metadata?.content ? (videoIndex < MAX_PREVIEW_VIDEOS ? <video src={node.metadata.content} className="h-full w-full object-cover" muted playsInline preload="metadata" /> : <Video className="m-auto size-4 h-full opacity-40" />) : null}
                         {node.type === CanvasNodeType.Video && !node.metadata?.content ? <Video className="m-auto size-4 h-full opacity-40" /> : null}
                         {node.type === CanvasNodeType.Text ? <div className="line-clamp-3 p-1 text-[var(--fs-nano)] leading-[9px]" style={{ color: theme.node.text }}>{node.metadata?.content || node.title}</div> : null}
                         {node.type === CanvasNodeType.Script ? <div className="p-1 text-[var(--fs-nano)] leading-[9px]" style={{ color: theme.node.text }}>{canvasT("videoCanvas.frame.scriptShots", "分镜脚本 · {{count}} 镜", { count: node.metadata?.storyboard?.rows.length || 0 })}</div> : null}

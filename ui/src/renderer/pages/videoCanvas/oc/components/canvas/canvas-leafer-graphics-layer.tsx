@@ -92,7 +92,11 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         selectionBox,
     };
     const propsRef = useRef(resolvedProps);
-    propsRef.current = resolvedProps;
+    // 不在 render 期写 ref：统一在 layout effect 提交后同步，下游 syncViewport 等读取点
+    // 都在 effect/事件回调中，且本 effect 声明在场景挂载 effect 之前，首帧时序与原先一致。
+    useLayoutEffect(() => {
+        propsRef.current = resolvedProps;
+    });
 
     useLayoutEffect(() => {
         const underlayHost = underlayHostRef.current;

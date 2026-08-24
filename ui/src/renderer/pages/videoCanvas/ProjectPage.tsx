@@ -12,6 +12,7 @@ import CanvasProjectPage from '@oc/pages/canvas/project';
 import { hydrateCanvasProjectFromServer, syncCanvasProjectToServer } from './lib/ocBridge';
 import { getCanvasProject } from './api';
 import { createCanvasProjectAutosaveController } from './lib/canvasProjectAutosave';
+import { keepaliveSyncCanvasProject } from './lib/canvasProjectKeepalive';
 import VimaxProvenanceBar from './lib/VimaxProvenanceBar';
 import { syncOcConfigFromAlloMediaModels } from './lib/syncOcModels';
 import { videoCanvasQueryClient } from './lib/queryClient';
@@ -169,14 +170,19 @@ const VideoCanvasProjectPage: React.FC = () => {
     const flushOnPageHide = () => {
       void autosave.flush();
     };
+    // 页面卸载时常规 fetch 可能被浏览器取消：再加一发 keepalive PUT 兜底（幂等，重复无害）。
+    const flushOnUnload = () => {
+      flushOnPageHide();
+      keepaliveSyncCanvasProject(canvasId);
+    };
     const flushWhenHidden = () => {
       if (document.visibilityState === 'hidden') flushOnPageHide();
     };
-    window.addEventListener('pagehide', flushOnPageHide);
+    window.addEventListener('pagehide', flushOnUnload);
     document.addEventListener('visibilitychange', flushWhenHidden);
     return () => {
       unsub();
-      window.removeEventListener('pagehide', flushOnPageHide);
+      window.removeEventListener('pagehide', flushOnUnload);
       document.removeEventListener('visibilitychange', flushWhenHidden);
       void autosave.dispose();
     };

@@ -345,6 +345,8 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
             window.removeEventListener("pointermove", handlePointerMove);
             window.removeEventListener("pointerup", handlePointerEnd);
             window.removeEventListener("pointercancel", handlePointerEnd);
+            // 卸载兜底：拖拽/框选期间卸载会跳过 pointerup，body cursor 可能残留 grabbing。
+            document.body.style.cursor = "default";
         };
     }, [containerRef, onCanvasDeselect, scheduleViewportChange, syncViewport]);
 

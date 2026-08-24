@@ -30,6 +30,11 @@ type DirectorViewportProps = {
 };
 
 type CaptureContext = { gl: WebGLRenderer; scene: Scene; camera: PerspectiveCamera; suspendDisplayMaterialOverride: () => () => void };
+// three-stdlib 在 oc-shims.d.ts 中被声明为无类型模块，这里只声明回调实际消费的最小面。
+type LoadedGltf = {
+    scene: Group;
+    animations: AnimationClip[];
+};
 
 export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewportProps>(function DirectorViewport(props, ref) {
     const captureContext = useRef<CaptureContext | null>(null);
@@ -211,11 +216,11 @@ function DirectorModel({ object, selected, selectedBone, playhead, onSelectBone,
     useEffect(() => {
         let active = true;
         const loader = new GLTFLoader();
-        void resolveMediaUrl(object.storageKey, modelUrl).then((url) => loader.load(url, (gltf: any) => {
+        void resolveMediaUrl(object.storageKey, modelUrl).then((url) => loader.load(url, (gltf: LoadedGltf) => {
             if (!active) return;
             const next = SkeletonUtils.clone(gltf.scene);
             normalizeModel(next, object.castShadow, object.receiveShadow);
-            const nextRig = inferDirectorRig(next, gltf.animations.map((clip: any) => clip.name));
+            const nextRig = inferDirectorRig(next, gltf.animations.map((clip: AnimationClip) => clip.name));
             if (object.kind === "actor" || object.primitive === "character") applyActorReferenceMaterial(next, object.color);
             mixerRef.current = new AnimationMixer(next);
             setRig(nextRig);

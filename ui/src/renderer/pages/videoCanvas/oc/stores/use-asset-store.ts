@@ -4,7 +4,7 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 import { nanoid } from "nanoid";
 import { localForageStorage } from "@oc/lib/localforage-storage";
 import { cleanupUnusedImages, resolveImageUrl, uploadImage } from "@oc/services/image-storage";
-import { cleanupUnusedMedia, resolveMediaUrl } from "@oc/services/file-storage";
+import { cleanupUnusedMedia, resolveMediaUrl, uploadMediaFile } from "@oc/services/file-storage";
 
 export type AssetKind = "text" | "image" | "video" | "audio" | "model" | "entity";
 export type AssetCategory = "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "other";
@@ -49,8 +49,91 @@ type AssetStore = {
     replaceAssets: (assets: Asset[]) => void;
     cleanupImages: (extra?: unknown) => void;
 };
-
 export const ASSET_STORE_KEY = "infinite-canvas:asset_store";
+
+// 运行期 blob: URL 只在会话内有效：持久化前把尚无 storageKey 的 blob 条目上传落盘并换为
+// storageKey，反解失败则跳过该条（getItem 侧已有按 storageKey 反解路径，下次写入会再试）。
+// 写入带防抖——拖拽/连续编辑只落最新状态；队列串行化，新条目不会被旧写覆盖丢弃。
+const ASSET_PERSIST_DEBOUNCE_MS = 500;
+
+let assetPersistTimer: ReturnType<typeof setTimeout> | undefined;
+let assetPersistPending: { name: string; value: StorageValue<AssetStore> } | null = null;
+
+async function normalizeAssetsForPersist(assets: Asset[]): Promise<Asset[]> {
+    return Promise.all(
+        assets.map(async (asset): Promise<Asset> => {
+            try {
+                if (asset.kind === "image") {
+                    if (asset.data.storageKey || !asset.data.dataUrl.startsWith("blob:")) return asset;
+                    const uploaded = await uploadImage(asset.data.dataUrl);
+                    return {
+                        ...asset,
+                        coverUrl: asset.coverUrl.startsWith("blob:") ? uploaded.url : asset.coverUrl,
+                        data: { ...asset.data, dataUrl: uploaded.url, storageKey: uploaded.storageKey, bytes: uploaded.bytes, mimeType: uploaded.mimeType },
+                    };
+                }
+                if (asset.kind === "video" && !asset.data.storageKey && asset.data.url.startsWith("blob:")) {
+                    const uploaded = await uploadMediaFile(asset.data.url, "video");
+                    return {
+                        ...asset,
+                        coverUrl: asset.coverUrl.startsWith("blob:") ? uploaded.url : asset.coverUrl,
+                        data: {
+                            ...asset.data,
+                            url: uploaded.url,
+                            storageKey: uploaded.storageKey,
+                            bytes: uploaded.bytes,
+                            mimeType: uploaded.mimeType,
+                            ...(uploaded.width != null ? { width: uploaded.width } : null),
+                            ...(uploaded.height != null ? { height: uploaded.height } : null),
+                            ...(uploaded.durationMs != null ? { durationMs: uploaded.durationMs } : null),
+                        },
+                    };
+                }
+                if (asset.kind === "audio" && !asset.data.storageKey && asset.data.url.startsWith("blob:")) {
+                    const uploaded = await uploadMediaFile(asset.data.url, "audio");
+                    return {
+                        ...asset,
+                        coverUrl: asset.coverUrl.startsWith("blob:") ? uploaded.url : asset.coverUrl,
+                        data: {
+                            ...asset.data,
+                            url: uploaded.url,
+                            storageKey: uploaded.storageKey,
+                            bytes: uploaded.bytes,
+                            mimeType: uploaded.mimeType,
+                            ...(uploaded.durationMs != null ? { durationMs: uploaded.durationMs } : null),
+                        },
+                    };
+                }
+                if (asset.kind === "model" && !asset.data.storageKey && asset.data.url.startsWith("blob:")) {
+                    const uploaded = await uploadMediaFile(asset.data.url, "model");
+                    return {
+                        ...asset,
+                        coverUrl: asset.coverUrl.startsWith("blob:") ? uploaded.url : asset.coverUrl,
+                        data: { ...asset.data, url: uploaded.url, storageKey: uploaded.storageKey, bytes: uploaded.bytes, mimeType: uploaded.mimeType },
+                    };
+                }
+                return asset;
+            } catch {
+                // 上传失败（如 blob 已失效）时保留原条目原样写入，等待下次持久化再试。
+                return asset;
+            }
+        }),
+    );
+}
+
+async function drainAssetPersist() {
+    for (;;) {
+        const pending = assetPersistPending;
+        if (!pending) return;
+        assetPersistPending = null;
+        try {
+            const assets = await normalizeAssetsForPersist(pending.value.state.assets);
+            await localForageStorage.setItem(pending.name, JSON.stringify({ ...pending.value, state: { ...pending.value.state, assets } }));
+        } catch {
+            // 单次写入失败不阻塞队列中的后续条目。
+        }
+    }
+}
 
 const assetStorage: PersistStorage<AssetStore> = {
     getItem: async (name) => {
@@ -77,7 +160,15 @@ const assetStorage: PersistStorage<AssetStore> = {
         );
         return parsed;
     },
-    setItem: (name, value) => localForageStorage.setItem(name, JSON.stringify(value)),
+    setItem: (name, value) => {
+        assetPersistPending = { name, value };
+        if (assetPersistTimer !== null)  clearTimeout(assetPersistTimer);
+        assetPersistTimer = setTimeout(() => {
+            assetPersistTimer = undefined;
+            void drainAssetPersist();
+        }, ASSET_PERSIST_DEBOUNCE_MS);
+        return Promise.resolve();
+    },
     removeItem: (name) => localForageStorage.removeItem(name),
 };
 
