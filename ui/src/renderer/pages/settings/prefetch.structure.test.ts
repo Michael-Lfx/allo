@@ -1,0 +1,35 @@
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { readFileSync } from 'node:fs';
+import { describe, expect, test } from 'bun:test';
+
+const prefetchSource = readFileSync(new URL('./prefetch.ts', import.meta.url), 'utf8');
+const footerSource = readFileSync(
+  new URL('../../components/layout/Sider/SiderFooter.tsx', import.meta.url),
+  'utf8'
+);
+
+describe('settings route prefetch', () => {
+  test('warms the settings page, sider, and default system panel chunks', () => {
+    expect(prefetchSource.includes("void import('./SystemSettings')")).toBe(true);
+    expect(prefetchSource.includes("void import('./components/SettingsSider')")).toBe(true);
+    expect(
+      prefetchSource.includes(
+        "void import('@/renderer/components/settings/SettingsModal/contents/SystemModalContent')"
+      )
+    ).toBe(true);
+    expect(prefetchSource.includes("from './SystemSettings'")).toBe(false);
+  });
+
+  test('the sider settings button prefetches on hover and idle', () => {
+    expect(
+      footerSource.includes("import { prefetchSettingsPages } from '@renderer/pages/settings/prefetch'")
+    ).toBe(true);
+    expect(footerSource.includes('onPointerEnter={() => prefetchSettingsPages()}')).toBe(true);
+    expect(footerSource.includes('prefetchSettingsPages()')).toBe(true);
+  });
+});
