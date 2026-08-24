@@ -5,7 +5,10 @@ const source = readFileSync(new URL('./WindowControls.tsx', import.meta.url), 'u
 
 describe('WindowControls', () => {
   test('keeps the native window control island outside the drag plane', () => {
-    expect(source.includes("<div className='app-window-controls' data-tauri-no-drag>")).toBe(true);
+    expect(source.includes("<div className='app-window-controls' data-tauri-no-drag data-tauri-drag-region='false'>")).toBe(
+      true
+    );
     expect(source.includes('app-window-controls__button')).toBe(true);
+    expect(source.includes("data-tauri-drag-region='false'")).toBe(true);
   });
 });

@@ -69,6 +69,9 @@ describe('Titlebar instant icon tooltips', () => {
     expect(titlebarStyles).toMatch(
       /\.app-titlebar--mac\s+\.app-titlebar__menu,[\s\S]*?\.app-titlebar--mac\s+\.app-titlebar__toolbar\s*\{[\s\S]*?-webkit-app-region:\s*no-drag;/,
     );
+    expect(titlebarStyles).toMatch(
+      /\.app-window-controls__button,[\s\S]*?\.app-window-controls__button \* \{[\s\S]*?-webkit-app-region:\s*no-drag;/,
+    );
   });
 
   test('only toggles maximize for a real drag-region target outside no-drag controls', () => {

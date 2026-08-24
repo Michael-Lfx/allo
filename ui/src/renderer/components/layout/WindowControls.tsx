@@ -75,8 +75,15 @@ const WindowControls: React.FC = () => {
   };
 
   return (
-    <div className='app-window-controls' data-tauri-no-drag>
-      <button type='button' className='app-window-controls__button' onClick={handleMinimize} aria-label='Minimize'>
+    <div className='app-window-controls' data-tauri-no-drag data-tauri-drag-region='false'>
+      <button
+        type='button'
+        className='app-window-controls__button'
+        onClick={handleMinimize}
+        aria-label='Minimize'
+        data-tauri-no-drag
+        data-tauri-drag-region='false'
+      >
         <Minus theme='outline' size='14' fill='currentColor' strokeWidth={4} />
       </button>
       <button
@@ -84,6 +91,8 @@ const WindowControls: React.FC = () => {
         className='app-window-controls__button'
         onClick={handleToggleMaximize}
         aria-label={isMaximized ? 'Restore' : 'Maximize'}
+        data-tauri-no-drag
+        data-tauri-drag-region='false'
       >
         {isMaximized ? <WindowRestoreIcon size={14} /> : <WindowMaximizeIcon size={14} />}
       </button>
@@ -92,6 +101,8 @@ const WindowControls: React.FC = () => {
         className='app-window-controls__button app-window-controls__button--close'
         onClick={handleClose}
         aria-label='Close'
+        data-tauri-no-drag
+        data-tauri-drag-region='false'
       >
         <CloseSmall theme='outline' size='16' fill='currentColor' strokeWidth={3} />
       </button>

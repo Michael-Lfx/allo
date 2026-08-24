@@ -304,6 +304,14 @@
   -webkit-app-region: no-drag;
 }
 
+/* WebView2 does not reliably inherit -webkit-app-region. The desktop titlebar
+   is a drag plane, so every clickable descendant must set no-drag itself or
+   minimize / maximize / close clicks become window drags. */
+.app-window-controls__button,
+.app-window-controls__button * {
+  -webkit-app-region: no-drag;
+}
+
 .app-window-controls__button {
   width: 40px;
   /* Match the parent titlebar height so system buttons go edge-to-edge
