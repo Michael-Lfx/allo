@@ -11,6 +11,24 @@
 export const CHAT_HEADER_CLASSES =
   'min-h-44px flex items-center justify-between px-16px pt-8px pb-10px gap-16px !bg-1 chat-layout-header chat-layout-header--glass overflow-hidden';
 
+/** Header variant shared by ChatLayout and PendingConversationOverlay when a
+ * workspace path is rendered below the conversation title. */
+export const CHAT_HEADER_WITH_SUBTITLE_CLASSES = 'min-h-60px';
+
+/**
+ * Pending conversations share the desktop title bar contract, but mobile
+ * renders its actions in the native titlebar slot instead of the desktop
+ * header. Keep the visibility rule explicit so the transition cannot expose
+ * a subtitle that disappears when the formal conversation mounts.
+ */
+export const getWorkspaceTitleSubtitle = (
+  workspacePath: string | undefined,
+  isMobile: boolean
+): string | undefined => {
+  const trimmedPath = workspacePath?.trim();
+  return !isMobile && trimmedPath ? trimmedPath : undefined;
+};
+
 /** Content column wrapping MessageList + composer (NomiChat root). */
 export const CHAT_CONTENT_COLUMN_CLASSES = 'flex-1 flex flex-col px-20px min-h-0';
 

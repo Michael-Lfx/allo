@@ -152,7 +152,13 @@
     "skills": "技能",
     "capabilityHub": "能力扩展",
     "companion": "桌面伙伴",
-    "eval": "评测"
+    "eval": "评测",
+    "sections": {
+      "work": "工作",
+      "resources": "资源",
+      "automation": "自动化",
+      "workspaces": "工作区"
+    }
   },
   "userMenu": {
     "creditsBalance": "积分余额",

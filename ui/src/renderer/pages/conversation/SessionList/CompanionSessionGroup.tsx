@@ -12,7 +12,7 @@ import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
 import { Message, Tooltip } from '@arco-design/web-react';
 import { Attention, Robot } from '@icon-park/react';
 import classNames from 'classnames';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import useSWR from 'swr';
@@ -22,6 +22,9 @@ import {
   getVisibleCompanionEntries,
 } from './utils/companionVisibleEntries';
 import { useConversationListSync } from './hooks/useConversationListSync';
+import { useDisclosureMotion } from './hooks/useDisclosureMotion';
+import SessionOverflowButton from './SessionOverflowButton';
+import { getCompanionDisclosureIds } from './utils/disclosureIds';
 
 interface Props {
   /** Active conversation id parsed from the `/conversation/:id` route, for row highlight. */
@@ -61,6 +64,18 @@ const CompanionSessionGroup: React.FC<Props> = ({
   const navigate = useNavigate();
   const { companions } = useCompanions();
   const [showAllCompanions, setShowAllCompanions] = useState(false);
+  const [groupToggleKey, setGroupToggleKey] = useState(0);
+  const [overflowToggleKey, setOverflowToggleKey] = useState(0);
+  const instanceId = useId();
+  const disclosureIds = getCompanionDisclosureIds(instanceId);
+  const controlsId = disclosureIds.sessionsId;
+  const overflowControlsId = disclosureIds.overflowId;
+  const groupMotion = useDisclosureMotion(expanded, groupToggleKey);
+
+  const handleGroupToggle = () => {
+    setGroupToggleKey((value) => value + 1);
+    onToggleExpanded?.();
+  };
 
   // companionId → 其唯一会话 id（只读解析，用于活动行高亮 + 点击直达，避免无谓 ensure）。
   // 随花名册变化重解析；getCompanionSession 对未建会话返回 null（不入表）。
@@ -158,6 +173,19 @@ const CompanionSessionGroup: React.FC<Props> = ({
     [navigate, onSessionClick]
   );
 
+  const activeCompanionIndex =
+    activeConversationId == null
+      ? -1
+      : companions.findIndex(
+          (c) => sessionMap.get(c.companion_id) === activeConversationId
+        );
+  const forceShowActiveCompanion =
+    activeCompanionIndex >= COMPANION_COLLAPSED_LIST_LIMIT;
+  const overflowMotion = useDisclosureMotion(
+    showAllCompanions || forceShowActiveCompanion,
+    overflowToggleKey
+  );
+
   // 无伙伴时不渲染分组（避免对不使用伙伴的用户造成噪音；创建后经 WS 刷新即出现）。
   if (companions.length === 0) return null;
 
@@ -195,30 +223,119 @@ const CompanionSessionGroup: React.FC<Props> = ({
     );
   }
 
-  const activeCompanionIndex =
-    activeConversationId == null
-      ? -1
-      : companions.findIndex(
-          (c) => sessionMap.get(c.companion_id) === activeConversationId
-        );
-  const forceShowActiveCompanion =
-    activeCompanionIndex >= COMPANION_COLLAPSED_LIST_LIMIT;
   const visibleCompanions = getVisibleCompanionEntries(
     companions,
     showAllCompanions || forceShowActiveCompanion
   );
+  const companionOverflowCount = Math.max(0, companions.length - COMPANION_COLLAPSED_LIST_LIMIT);
+  const baseCompanions = companions.slice(0, COMPANION_COLLAPSED_LIST_LIMIT);
+  const overflowCompanions = companions.slice(COMPANION_COLLAPSED_LIST_LIMIT);
+
+  const toggleOverflow = () => {
+    setOverflowToggleKey((value) => value + 1);
+    setShowAllCompanions((value) => !value);
+  };
+
+  const renderCompanion = (c: ICompanionWithStatus) => {
+    const active =
+      activeConversationId != null &&
+      sessionMap.get(c.companion_id) === activeConversationId;
+    const modelReady = modelReadyOf(c);
+    const companionRobots = robotsByCompanion.get(c.companion_id) ?? [];
+
+    return (
+      <React.Fragment key={c.companion_id}>
+        <div
+          onClick={() => void handleOpen(c)}
+          className={classNames(
+            'group flex items-center gap-8px shrink-0 rd-10px pl-10px pr-8px h-34px cursor-pointer transition-colors box-border min-w-0',
+            active ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
+          )}
+        >
+          <div className='relative size-22px shrink-0 flex items-center justify-center'>
+            <CompanionAvatar
+              character={c.character}
+              companionId={c.companion_id}
+              customFigure={customFigureMetaOf(c)}
+              mood={(c.status.mood as CompanionMood) || 'content'}
+              activity='idle'
+              size={20}
+            />
+            {/* 这圈边框把状态点从头像上「抠」出来，所以宽度和样式都得写实：
+                `border-2` 只是 --bg-2 颜色，没有宽度也没有 border-style（本仓库
+                没有全局 border reset），整圈一个像素都不画。
+                The cut-out ring needs a real width AND a style to exist. */}
+            <span
+              className='absolute -right-1px -bottom-1px w-9px h-9px rd-full border-2px border-solid border-[var(--color-bg-1)]'
+              style={{ background: modelReady ? 'rgb(var(--success-6))' : 'rgb(var(--warning-6))' }}
+              title={modelReady ? undefined : t('nomi.chat.modelUnset')}
+            />
+          </div>
+          <div className='flex flex-col gap-1px min-w-0 flex-1'>
+            <span
+              className={classNames(
+                'text-13px font-600 leading-16px truncate min-w-0',
+                active ? '!text-primary-6' : 'text-t-primary'
+              )}
+            >
+              {c.name}
+            </span>
+            <span className={classNames('text-11px leading-13px', active ? 'text-primary-6 opacity-70' : 'text-t-tertiary')}>
+              Lv{c.status.level}
+            </span>
+          </div>
+        </div>
+        {/* 机器人对话：归属到该伙伴之下，缩进为二级条目。点击直达其会话
+            （ChatConversation 识别 type='nomi'+companion_session 渲染）。 */}
+        {companionRobots.map((conv) => {
+          const robotId = (conv.extra as { robot_id?: string } | undefined)?.robot_id ?? '';
+          const label = robotNames.get(robotId) ?? t('nomi.robot.group.deviceUnknown');
+          const activeRobot = activeConversationId != null && conv.id === activeConversationId;
+          return (
+            <Tooltip key={conv.id} content={t('nomi.robot.group.deviceTooltip', { robot: label })} position='right' mini>
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openRobotConversation(conv.id);
+                }}
+                className={classNames(
+                  'flex items-center gap-6px shrink-0 rd-8px pl-42px pr-8px py-3px cursor-pointer transition-colors box-border min-w-0',
+                  activeRobot ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
+                )}
+              >
+                <span className='size-16px flex items-center justify-center shrink-0 text-t-tertiary'>
+                  <Robot theme='outline' size={12} fill='currentColor' className='block leading-none' />
+                </span>
+                <span
+                  className={classNames(
+                    'text-12px truncate min-w-0',
+                    activeRobot ? '!text-primary-6' : 'text-t-secondary'
+                  )}
+                >
+                  {label}
+                </span>
+              </div>
+            </Tooltip>
+          );
+        })}
+      </React.Fragment>
+    );
+  };
 
   return (
     <div className='min-w-0 mb-2px'>
       {/* 感叹号跟在标题后；黑框提示出现在图标正下方。 */}
       <div className='pl-10px pr-4px pb-6px flex items-center justify-between gap-8px min-w-0'>
         <div className='flex items-center gap-4px min-w-0'>
-          <span
-            className='sider-section-title text-13px font-[500] leading-none tracking-wide truncate shrink-0 opacity-75 transition-opacity hover:opacity-100 cursor-pointer'
-            onClick={() => onToggleExpanded?.()}
+          <button
+            type='button'
+            aria-expanded={expanded}
+            aria-controls={controlsId}
+            className='sider-section-title appearance-none border-none bg-transparent p-0 text-13px font-[500] leading-none tracking-wide truncate shrink-0 opacity-75 transition-opacity hover:opacity-100 cursor-pointer'
+            onClick={handleGroupToggle}
           >
             {t('sessionList.companionGroup')}
-          </span>
+          </button>
           <Tooltip
             content={t('sessionList.companionTip')}
             position='bottom'
@@ -239,109 +356,38 @@ const CompanionSessionGroup: React.FC<Props> = ({
         <span className='text-12px text-t-tertiary leading-none shrink-0'>{companions.length}</span>
       </div>
 
-      {expanded && (
-        <div className='flex flex-col gap-2px'>
-          {visibleCompanions.entries.map((c) => {
-            const active =
-              activeConversationId != null &&
-              sessionMap.get(c.companion_id) === activeConversationId;
-            const modelReady = modelReadyOf(c);
-            const companionRobots = robotsByCompanion.get(c.companion_id) ?? [];
-            return (
-              <React.Fragment key={c.companion_id}>
+      <div
+        id={controlsId}
+        aria-hidden={!groupMotion.shouldRender || groupMotion.phase === 'exiting'}
+        data-disclosure-phase={groupMotion.phase}
+        className='flowy-disclosure-content flex flex-col gap-2px'
+      >
+        {groupMotion.shouldRender && (
+          <>
+            {baseCompanions.map(renderCompanion)}
+            {overflowCompanions.length > 0 && (
               <div
-                onClick={() => void handleOpen(c)}
-                className={classNames(
-                  'group flex items-center gap-8px shrink-0 rd-10px pl-10px pr-8px h-34px cursor-pointer transition-colors box-border min-w-0',
-                  active ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
-                )}
+                id={overflowControlsId}
+                data-testid='companion-overflow-sessions'
+                aria-hidden={overflowMotion.phase === 'closed' || overflowMotion.phase === 'exiting'}
+                data-disclosure-phase={overflowMotion.phase}
+                className='flowy-disclosure-content flex flex-col'
               >
-                <div className='relative size-22px shrink-0 flex items-center justify-center'>
-                  <CompanionAvatar
-                    character={c.character}
-                    companionId={c.companion_id}
-                    customFigure={customFigureMetaOf(c)}
-                    mood={(c.status.mood as CompanionMood) || 'content'}
-                    activity='idle'
-                    size={20}
-                  />
-                  {/* 这圈边框把状态点从头像上「抠」出来，所以宽度和样式都得写实：
-                      `border-2` 只是 --bg-2 颜色，没有宽度也没有 border-style（本仓库
-                      没有全局 border reset），整圈一个像素都不画。
-                      The cut-out ring needs a real width AND a style to exist. */}
-                  <span
-                    className='absolute -right-1px -bottom-1px w-9px h-9px rd-full border-2px border-solid border-[var(--color-bg-1)]'
-                    style={{ background: modelReady ? 'rgb(var(--success-6))' : 'rgb(var(--warning-6))' }}
-                    title={modelReady ? undefined : t('nomi.chat.modelUnset')}
-                  />
-                </div>
-                <div className='flex flex-col gap-1px min-w-0 flex-1'>
-                  <span
-                    className={classNames(
-                      'text-13px font-600 leading-16px truncate min-w-0',
-                      active ? '!text-primary-6' : 'text-t-primary'
-                    )}
-                  >
-                    {c.name}
-                  </span>
-                  <span className={classNames('text-11px leading-13px', active ? 'text-primary-6 opacity-70' : 'text-t-tertiary')}>
-                    Lv{c.status.level}
-                  </span>
-                </div>
+                {overflowMotion.shouldRender && overflowCompanions.map(renderCompanion)}
               </div>
-              {/* 机器人对话：归属到该伙伴之下，缩进为二级条目。点击直达其会话
-                  （ChatConversation 识别 type='nomi'+companion_session 渲染）。 */}
-              {companionRobots.map((conv) => {
-                const robotId = (conv.extra as { robot_id?: string } | undefined)?.robot_id ?? '';
-                const label = robotNames.get(robotId) ?? t('nomi.robot.group.deviceUnknown');
-                const activeRobot = activeConversationId != null && conv.id === activeConversationId;
-                return (
-                  <Tooltip key={conv.id} content={t('nomi.robot.group.deviceTooltip', { robot: label })} position='right' mini>
-                    <div
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openRobotConversation(conv.id);
-                      }}
-                      className={classNames(
-                        'flex items-center gap-6px shrink-0 rd-8px pl-42px pr-8px py-3px cursor-pointer transition-colors box-border min-w-0',
-                        activeRobot ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
-                      )}
-                    >
-                      <span className='size-16px flex items-center justify-center shrink-0 text-t-tertiary'>
-                        <Robot theme='outline' size={12} fill='currentColor' className='block leading-none' />
-                      </span>
-                      <span
-                        className={classNames(
-                          'text-12px truncate min-w-0',
-                          activeRobot ? '!text-primary-6' : 'text-t-secondary'
-                        )}
-                      >
-                        {label}
-                      </span>
-                    </div>
-                  </Tooltip>
-                );
-              })}
-              </React.Fragment>
-            );
-          })}
-          {visibleCompanions.hasOverflow && !forceShowActiveCompanion && (
-            <button
-              type='button'
-              aria-expanded={showAllCompanions}
-              className='ml-42px mt-1px mb-2px inline-flex h-20px w-fit max-w-full appearance-none items-center border-none bg-transparent p-0 text-left text-12px leading-20px text-t-secondary transition-colors cursor-pointer select-none hover:text-t-primary focus:outline-none focus-visible:text-t-primary'
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowAllCompanions((value) => !value);
-              }}
-            >
-              {showAllCompanions
-                ? t('sessionList.collapseDisplay')
-                : t('sessionList.expandDisplay', { count: visibleCompanions.hiddenCount })}
-            </button>
-          )}
-        </div>
-      )}
+            )}
+            {visibleCompanions.hasOverflow && !forceShowActiveCompanion && (
+              <SessionOverflowButton
+                expanded={showAllCompanions}
+                hiddenCount={companionOverflowCount}
+                controlsId={overflowControlsId}
+                onToggle={toggleOverflow}
+                className='flowy-companion-session-overflow'
+              />
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 };

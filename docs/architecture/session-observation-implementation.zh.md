@@ -24,8 +24,6 @@
 | 身份 | 映射已有 ID。禁止无限定词 `Run`。Provider 重试字段禁止叫 `attempt_id`。 |
 | 默认 capture | persist 前：`canonical + truncated + redacted`；媒体 `metadata_only`。 |
 
-实施原则见仓库规则 `.cursor/rules/implementation-principles.mdc`。冲突时：当前阶段验收 > 正确性与数据安全 > 公共契约 > 项目规则与测试 > 现有惯例 > 最小完整实现。
-
 ---
 
 ## 2. 目标与非目标

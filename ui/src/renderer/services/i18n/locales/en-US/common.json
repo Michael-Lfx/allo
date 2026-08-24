@@ -152,7 +152,13 @@
     "skills": "Skills",
     "capabilityHub": "Capabilities",
     "companion": "Desktop Companion",
-    "eval": "Eval"
+    "eval": "Eval",
+    "sections": {
+      "work": "Work",
+      "resources": "Resources",
+      "automation": "Automation",
+      "workspaces": "Workspaces"
+    }
   },
   "userMenu": {
     "creditsBalance": "Credits",

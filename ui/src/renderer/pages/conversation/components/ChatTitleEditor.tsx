@@ -1,5 +1,6 @@
 import type { ConversationId } from '@/common/types/ids';
 import ConversationTitleMinimap from '@/renderer/pages/conversation/components/ConversationTitleMinimap';
+import MarqueeText from '@/renderer/components/base/MarqueeText';
 import { Input } from '@arco-design/web-react';
 import classNames from 'classnames';
 import React from 'react';
@@ -15,6 +16,8 @@ type ChatTitleEditorProps = {
   submitTitleRename: () => Promise<void>;
   titleAreaMaxWidth: number;
   title: React.ReactNode;
+  /** Optional read-only context rendered below the editable conversation title. */
+  subtitle?: React.ReactNode;
   conversation_id?: ConversationId;
   /** Optional leading icon (e.g. agent logo) rendered inside the hover region, just before the title */
   leading?: React.ReactNode;
@@ -31,10 +34,29 @@ const ChatTitleEditor: React.FC<ChatTitleEditorProps> = ({
   submitTitleRename,
   titleAreaMaxWidth,
   title,
+  subtitle,
   conversation_id,
   leading,
 }) => {
   const { t } = useTranslation();
+  const titleClassName = classNames(
+    'block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-16px font-bold text-t-primary transition-colors duration-150',
+    canRenameTitle &&
+      'cursor-text group-hover:text-[rgb(var(--primary-6))] group-focus-within:text-[rgb(var(--primary-6))] focus:outline-none'
+  );
+
+  const handleTitleClick = () => {
+    if (!canRenameTitle) return;
+    setEditingTitle(true);
+  };
+
+  const handleTitleKeyDown = (event: React.KeyboardEvent<HTMLSpanElement>) => {
+    if (!canRenameTitle) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      setEditingTitle(true);
+    }
+  };
 
   return (
     <div
@@ -47,7 +69,7 @@ const ChatTitleEditor: React.FC<ChatTitleEditorProps> = ({
       style={{ width: '100%', maxWidth: `${titleAreaMaxWidth}px` }}
     >
       {leading && <div className='shrink-0 flex items-center pl-8px'>{leading}</div>}
-      <div className='min-w-0 flex-1 px-8px py-5px'>
+      <div className='min-w-0 flex-1 flex flex-col justify-center px-8px py-5px'>
         {editingTitle && canRenameTitle ? (
           <Input
             autoFocus
@@ -79,28 +101,32 @@ const ChatTitleEditor: React.FC<ChatTitleEditorProps> = ({
             size='default'
           />
         ) : (
-          <span
-            role={canRenameTitle ? 'button' : undefined}
-            tabIndex={canRenameTitle ? 0 : undefined}
-            className={classNames(
-              'block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-16px font-bold text-t-primary transition-colors duration-150',
-              canRenameTitle &&
-                'cursor-text group-hover:text-[rgb(var(--primary-6))] group-focus-within:text-[rgb(var(--primary-6))] focus:outline-none'
-            )}
-            onClick={() => {
-              if (!canRenameTitle) return;
-              setEditingTitle(true);
-            }}
-            onKeyDown={(event) => {
-              if (!canRenameTitle) return;
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                setEditingTitle(true);
-              }
-            }}
-          >
-            {title}
-          </span>
+          typeof title === 'string' ? (
+            <MarqueeText
+              text={title}
+              trigger='hoverOrFocus'
+              role={canRenameTitle ? 'button' : undefined}
+              tabIndex={canRenameTitle ? 0 : undefined}
+              className={titleClassName}
+              onClick={handleTitleClick}
+              onKeyDown={handleTitleKeyDown}
+            />
+          ) : (
+            <span
+              role={canRenameTitle ? 'button' : undefined}
+              tabIndex={canRenameTitle ? 0 : undefined}
+              className={titleClassName}
+              onClick={handleTitleClick}
+              onKeyDown={handleTitleKeyDown}
+            >
+              {title}
+            </span>
+          )
+        )}
+        {subtitle && (
+          <div className='min-w-0'>
+            {subtitle}
+          </div>
         )}
       </div>
       {!editingTitle && (

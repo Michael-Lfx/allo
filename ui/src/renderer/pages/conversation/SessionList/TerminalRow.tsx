@@ -9,6 +9,7 @@ import classNames from 'classnames';
 import { ipcBridge } from '@/common';
 import type { AutoWorkRunState, IdmmRunState, ITerminalSession } from '@/common/adapter/ipcBridge';
 import { CapabilityIconCluster } from '@/renderer/components/capability/CapabilityIcon';
+import MarqueeText from '@/renderer/components/base/MarqueeText';
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import TerminalHoverCard from '@/renderer/pages/conversation/components/TerminalHoverCard';
 
@@ -198,7 +199,13 @@ const TerminalRow: React.FC<TerminalRowProps> = ({
         {/* Name owns the flexible middle; age is a fixed right-aligned marker so
             rows scan cleanly without metadata hugging the title. */}
         <FlexFullContainer className='h-24px min-w-0 flex-1' containerClassName='flex items-center'>
-          <span className='chat-history__item-name min-w-0 text-14px font-[500] lh-24px text-t-primary'>{session.name}</span>
+          <MarqueeText
+            text={session.name}
+            trigger='hover'
+            title=''
+            disabled={selectionMode || menuVisible}
+            className='chat-history__item-name min-w-0 text-14px font-[500] lh-24px text-t-primary'
+          />
         </FlexFullContainer>
         {/* Pin dot indicator for pinned sessions (visible at rest, hidden on hover when menu shows) */}
         {!selectionMode && session.pinned && (

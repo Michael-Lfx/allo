@@ -1,19 +1,35 @@
 
 
-import { Checkbox, Popover, Tooltip } from '@arco-design/web-react';
-import { BookOne, BranchOne, DeleteOne, FolderClose, FolderOpen, Home, Plus, Pushpin } from '@icon-park/react';
+import { Checkbox, Dropdown, Menu, Message, Popover, Tooltip } from '@arco-design/web-react';
+import {
+  BookOne,
+  BranchOne,
+  Copy,
+  DeleteOne,
+  FolderClose,
+  FolderOpen,
+  Home,
+  MoreOne,
+  Plus,
+  Pushpin,
+} from '@icon-park/react';
 import classNames from 'classnames';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import CapabilityIcon, { CAPABILITY_COLORS } from '@/renderer/components/capability/CapabilityIcon';
-import CopyIconButton from '@/renderer/components/base/CopyIconButton';
+import MarqueeText from '@/renderer/components/base/MarqueeText';
 import PathText from '@/renderer/components/base/PathText';
+import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import WorkpathHoverCard from '@/renderer/pages/conversation/components/WorkpathHoverCard';
+import { copyText } from '@/renderer/utils/ui/clipboard';
 import type { ConversationId } from '@/common/types/ids';
 
 import type { WorkpathUiState } from './hooks/useWorkpathUiState';
+import { useDisclosureMotion } from './hooks/useDisclosureMotion';
+import { useWorkpathBranch } from './hooks/useWorkpathBranches';
 import { useWorkpathKnowledgeLit } from './hooks/useWorkpathKnowledge';
+import SessionOverflowButton from './SessionOverflowButton';
 import {
   getBatchSelectionScopeState,
   getWorkpathBatchSelectionScope,
@@ -32,6 +48,8 @@ import {
   formatWorkpathDisplay,
   type SidebarDisplayPreferences,
 } from './utils/sidebarDisplayPreferences';
+import { getWorkpathMenuActionKeys } from './utils/workpathMenuActions';
+import { getWorkpathDisclosureIds } from './utils/disclosureIds';
 import type { SessionEntry, WorkpathNode } from './utils/workpathTree';
 
 export interface WorkpathDrawerProps {
@@ -51,12 +69,11 @@ export interface WorkpathDrawerProps {
   onToggleBatchSelectionScope?: (scope: BatchSelectableScope) => void;
   renderEntry: (entry: SessionEntry) => React.ReactNode;
   displayPreferences?: SidebarDisplayPreferences;
-  gitBranch?: string | null;
 }
 
 /**
- * First-level workpath drawer: header row (expand arrow + folder/home icon +
- * display name + conversation-count badge + hover ops) and, when expanded,
+ * First-level workpath drawer: header row (folder/home icon + display name +
+ * conversation-count badge + hover ops) and, when expanded,
  * directly renders its interactive conversation rows.
  * Collapse interaction follows the WorkspaceCollapse paradigm (conditional
  * render, h-34px header, hover bg, trailing ops revealed on hover).
@@ -73,17 +90,33 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   onToggleBatchSelectionScope,
   renderEntry,
   displayPreferences = DEFAULT_SIDEBAR_DISPLAY_PREFERENCES,
-  gitBranch,
 }) => {
   const { t } = useTranslation();
   const syncedActiveDrawerRouteRef = useRef<string | null>(null);
   const [showAllConversations, setShowAllConversations] = useState(false);
+  const [drawerToggleKey, setDrawerToggleKey] = useState(0);
+  const [overflowToggleKey, setOverflowToggleKey] = useState(0);
+  const [workpathIdentityHovered, setWorkpathIdentityHovered] = useState(false);
+  const isMobile = useLayoutContext()?.isMobile ?? false;
 
   const isDefault = node.key === DEFAULT_WORKPATH_KEY;
+  const instanceId = useId();
+  const { branch: gitBranch, workpathRef } = useWorkpathBranch(
+    node.key,
+    displayPreferences.showGitBranch && !isDefault
+  );
+  const disclosureIds = getWorkpathDisclosureIds(node.key, instanceId);
+  const controlsId = disclosureIds.sessionsId;
+  const overflowControlsId = disclosureIds.overflowId;
   const displayName = isDefault ? t('sessionList.defaultWorkpath') : node.displayName;
   const workpathDisplay = isDefault ? null : formatWorkpathDisplay(node.key, node.displayName, displayPreferences.workpathNameMode);
   const twoLineWorkpath = workpathDisplay?.kind === 'twoLine';
   const sessionCount = node.interactive.length;
+  const workpathMenuActionKeys = getWorkpathMenuActionKeys({
+    isDefault,
+    isProjectWorkpath,
+    canRemoveProjectWorkpath: Boolean(onRemoveProjectWorkpath),
+  });
 
   const activeEntry =
     activeConversationId === null ? null : (node.interactive.find((entry) => entry.id === activeConversationId) ?? null);
@@ -94,7 +127,10 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     terminal: false,
   });
   const hasInteractiveContent =
-    visibleEntries.interactive.length > 0 || visibleEntries.kindMeta.interactive.hasOverflow;
+    node.interactive.length > 0 || visibleEntries.kindMeta.interactive.hasOverflow;
+  const interactiveOverflowCount = Math.max(0, node.interactive.length - WORKPATH_COLLAPSED_SESSION_LIMIT);
+  const baseInteractiveEntries = node.interactive.slice(0, WORKPATH_COLLAPSED_SESSION_LIMIT);
+  const overflowInteractiveEntries = node.interactive.slice(WORKPATH_COLLAPSED_SESSION_LIMIT);
   const activeRouteKey = activeEntry ? `${node.key}:${activeEntry.id}` : null;
   const drawerExpansion = getRenderedExpansionState({
     active: activeEntry !== null,
@@ -102,6 +138,11 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     activeRouteSynced: syncedActiveDrawerRouteRef.current === activeRouteKey,
   });
   const expanded = drawerExpansion.expanded;
+  const drawerMotion = useDisclosureMotion(expanded, drawerToggleKey);
+  const overflowMotion = useDisclosureMotion(
+    showAllConversations || forceShowAllForActiveConversation,
+    overflowToggleKey
+  );
 
   // Workpath-level capability: knowledge base. P2 临时点亮规则（组内任一成员
   // binding enabled）— Task 11 / P3 切到 workpath 级单次查询后由 hook 内部替换。
@@ -127,7 +168,13 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   ]);
 
   const toggleDrawer = () => {
+    setDrawerToggleKey((value) => value + 1);
     ui.toggleExpanded(node.key);
+  };
+
+  const toggleOverflow = () => {
+    setOverflowToggleKey((value) => value + 1);
+    setShowAllConversations((value) => !value);
   };
 
   const headerIcon = isDefault ? (
@@ -139,27 +186,55 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   );
 
   const nameSpan = (
-    <span className='text-14px font-[500] truncate text-t-primary min-w-0'>{displayName}</span>
+    <MarqueeText
+      text={displayName}
+      trigger='hover'
+      disabled={batchMode || isMobile}
+      active={workpathIdentityHovered && !isMobile}
+      className='min-w-0 flex-1 text-14px font-[500] text-t-primary'
+    />
   );
   const renderWorkpathName = () => {
     if (isDefault || !workpathDisplay) return nameSpan;
     if (workpathDisplay.kind === 'compressed') {
       return (
-        <span className='inline-flex min-w-0'>
-          <PathText path={node.key} className='text-14px font-[500] text-t-primary' />
+        <span className='min-w-0 flex-1'>
+          <PathText
+            path={node.key}
+            className='text-14px font-[500] text-t-primary'
+            marqueeOnHover={!batchMode && !isMobile}
+            marqueeActive={workpathIdentityHovered && !isMobile}
+          />
         </span>
       );
     }
     if (workpathDisplay.kind === 'single') {
       return (
-        <span className='text-14px font-[500] truncate text-t-primary min-w-0'>{workpathDisplay.primary}</span>
+        <MarqueeText
+          text={workpathDisplay.primary}
+          trigger='hover'
+          disabled={batchMode || isMobile}
+          active={workpathIdentityHovered && !isMobile}
+          className='min-w-0 flex-1 text-14px font-[500] text-t-primary'
+        />
       );
     }
     return (
-      <span className='min-w-0 flex-1 flex flex-col justify-center overflow-hidden gap-2px'>
-        <span className='text-13px font-[500] truncate text-t-primary leading-16px'>{workpathDisplay.primary}</span>
+      <span className='flowy-workpath-two-line min-w-0 flex-1 flex flex-col justify-center overflow-hidden gap-2px'>
+        <MarqueeText
+          text={workpathDisplay.primary}
+          trigger='hover'
+          disabled={batchMode || isMobile}
+          active={workpathIdentityHovered && !isMobile}
+          className='min-w-0 text-14px font-[500] text-t-primary leading-16px'
+        />
         {workpathDisplay.secondary && (
-          <PathText path={workpathDisplay.secondary} className='text-11px font-[400] text-t-secondary leading-13px' />
+          <PathText
+            path={workpathDisplay.secondary}
+            className='flowy-workpath-secondary text-11px font-[400] text-t-secondary leading-13px'
+            marqueeOnHover={!batchMode && !isMobile}
+            marqueeActive={workpathIdentityHovered && !isMobile}
+          />
         )}
       </span>
     );
@@ -176,197 +251,228 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     ) : null;
 
   return (
-    <div className='workpath-drawer min-w-0'>
+    <div ref={workpathRef} className='workpath-drawer min-w-0'>
       {/* Drawer header */}
-      <Popover
-        trigger='hover'
-        position='right'
-        content={
-          <WorkpathHoverCard
-            displayName={displayName}
-            conversationCount={sessionCount}
-            workspacePath={isDefault ? undefined : node.key}
-          />
-        }
-        triggerProps={{ mouseEnterDelay: 400, popupStyle: { padding: 0 } }}
-        getPopupContainer={() => document.body}
-        style={{ maxWidth: 'calc(100vw - 24px)' }}
+      <div
+        data-testid='workpath-toggle-row'
+        className={classNames(
+          'flowy-workpath-drawer-header relative flex items-center gap-6px pl-10px pr-56px rd-6px min-w-0 group',
+          twoLineWorkpath ? 'flowy-workpath-header-two-line h-42px py-4px' : 'h-34px'
+        )}
       >
-        <div
-          className={classNames(
-            'flex items-center gap-8px pl-10px pr-8px cursor-pointer hover:bg-fill-2 rd-10px transition-colors min-w-0 group',
-            twoLineWorkpath ? 'h-42px py-4px' : 'h-34px'
-          )}
-          onClick={() => {
-            if (batchMode && !workpathSelectionState.disabled) {
-              onToggleBatchSelectionScope?.(workpathSelectionScope);
-              return;
-            }
-            toggleDrawer();
-          }}
-        >
-          {batchMode && (
-            <span
-              className='shrink-0 flex-center'
-              onClick={(e) => {
-                e.stopPropagation();
-              }}
-            >
-              <Checkbox
-                checked={workpathSelectionState.checked}
-                indeterminate={workpathSelectionState.indeterminate}
-                disabled={workpathSelectionState.disabled}
-                className='session-batch-selection-checkbox'
-                onChange={() => onToggleBatchSelectionScope?.(workpathSelectionScope)}
-              />
-            </span>
-          )}
+        {batchMode && (
           <span
-            className='size-22px flex items-center justify-center shrink-0 text-t-primary'
+            className='shrink-0 flex-center'
             onClick={(e) => {
               e.stopPropagation();
-              toggleDrawer();
             }}
           >
-            {headerIcon}
+            <Checkbox
+              checked={workpathSelectionState.checked}
+              indeterminate={workpathSelectionState.indeterminate}
+              disabled={workpathSelectionState.disabled}
+              className='session-batch-selection-checkbox'
+              onChange={() => onToggleBatchSelectionScope?.(workpathSelectionScope)}
+            />
           </span>
-
-          <div className='flex-1 min-w-0 flex items-center gap-6px overflow-hidden'>
-            {/* Workpath capability markers live with the identity text, not the
-                hover action slot, so they never disappear under create/pin ops. */}
-            {knowledgeLit && (
-              <span className='shrink-0 flex items-center'>
-                <CapabilityIcon
-                  icon={<BookOne theme='outline' size={13} fill='currentColor' />}
-                  color={CAPABILITY_COLORS.primary}
-                  title={t('knowledge.title')}
-                  size={13}
-                />
-              </span>
-            )}
-
-            {/* Default node shows its localized label; real workpaths follow the
-                user's display preference, with the complete path still available
-                from the tooltip, hover card, and copy op beside it. */}
-            {renderWorkpathName()}
-            {branchBadge}
-          </div>
-
-          {/* Pinned dot indicator (rest state; hidden once hover ops appear) */}
-          {!batchMode && node.pinned && <span className='size-6px rd-full shrink-0 bg-aou-1 group-hover:hidden' />}
-
-          {/* Hover ops: copy path + direct interactive-session create + pin toggle. */}
-          {!batchMode && (
+        )}
+        {/* The hover card is read-only context, so the popup never intercepts
+            pointer events on their way to the row actions, and it only opens
+            from the identity zone below. */}
+        <Popover
+          trigger='hover'
+          position='right'
+          content={
+            <WorkpathHoverCard
+              displayName={displayName}
+              conversationCount={sessionCount}
+              workspacePath={isDefault ? undefined : node.key}
+            />
+          }
+          triggerProps={{ mouseEnterDelay: 400, popupStyle: { padding: 0 } }}
+          getPopupContainer={() => document.body}
+          style={{ maxWidth: 'calc(100vw - 24px)', pointerEvents: 'none' }}
+        >
+          <button
+            type='button'
+            aria-expanded={batchMode ? undefined : expanded}
+            aria-controls={batchMode ? undefined : controlsId}
+            className='flex min-w-0 flex-1 items-center gap-8px appearance-none border-none bg-transparent p-0 text-left'
+            onClick={() => {
+              if (batchMode && !workpathSelectionState.disabled) {
+                onToggleBatchSelectionScope?.(workpathSelectionScope);
+                return;
+              }
+              toggleDrawer();
+            }}
+            onPointerEnter={() => setWorkpathIdentityHovered(true)}
+            onPointerLeave={() => setWorkpathIdentityHovered(false)}
+          >
             <span
-              className='hidden group-hover:flex shrink-0 items-center gap-6px'
-              onClick={(e) => e.stopPropagation()}
+              className='relative size-22px flex items-center justify-center shrink-0 text-t-primary'
             >
-              {!isDefault && (
-                <CopyIconButton
-                  text={node.key}
-                  tooltip={t('common.copyPath')}
-                  className='shrink-0 size-18px sider-action-btn workpath-action-btn text-t-tertiary'
-                />
-              )}
-              <span
-                data-testid='workpath-create-interactive-btn'
-                role='button'
-                tabIndex={0}
-                aria-label={t('sessionList.newInteractive')}
-                className='flex-center cursor-pointer transition-colors text-t-tertiary hover:text-t-primary size-18px rd-4px sider-action-btn workpath-action-btn'
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onCreateInteractive(node);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onCreateInteractive(node);
-                  }
-                }}
-              >
-                <Plus theme='outline' size='14' fill='currentColor' className='block leading-none' />
-              </span>
-              <Tooltip content={node.pinned ? t('sessionList.unpinWorkpath') : t('sessionList.pinWorkpath')} position='top'>
+              {headerIcon}
+              {node.pinned && (
                 <span
-                  role='button'
-                  tabIndex={0}
-                  aria-label={node.pinned ? t('sessionList.unpinWorkpath') : t('sessionList.pinWorkpath')}
-                  className={classNames(
-                    'flex-center cursor-pointer transition-colors hover:text-t-primary size-18px rd-4px sider-action-btn workpath-action-btn',
-                    node.pinned ? 'text-aou-1' : 'text-t-tertiary'
-                  )}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    ui.togglePinned(node.key);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      e.stopPropagation();
+                  data-testid='workpath-pinned-badge'
+                  role='img'
+                  aria-label={t('sessionList.pinnedWorkpath')}
+                  className='absolute -top-4px -right-5px z-1 flex-center text-[rgb(var(--primary-6))] pointer-events-none'
+                >
+                  <Pushpin theme='filled' size='10' fill='currentColor' className='block' />
+                </span>
+              )}
+            </span>
+
+            <div className='flex-1 min-w-0 flex items-center gap-6px overflow-hidden'>
+              {/* Workpath capability markers live with the identity text, not the
+                  hover action slot, so they never disappear under create/pin ops. */}
+              {knowledgeLit && (
+                <span className='shrink-0 flex items-center'>
+                  <CapabilityIcon
+                    icon={<BookOne theme='outline' size={13} fill='currentColor' />}
+                    color={CAPABILITY_COLORS.primary}
+                    title={t('knowledge.title')}
+                    size={13}
+                  />
+                </span>
+              )}
+
+              {/* Default node shows its localized label; real workpaths follow the
+                  user's display preference, with the complete path still available
+                  from the tooltip, hover card, and copy op beside it. */}
+              {renderWorkpathName()}
+              {branchBadge}
+            </div>
+          </button>
+        </Popover>
+
+        {/* Hover ops: keep the high-frequency create action visible and move
+            lower-frequency workpath actions behind the same more-menu pattern
+            used by conversation rows. */}
+        {!batchMode && (
+          <span
+            className='absolute right-8px top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-4px opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type='button'
+              data-testid='workpath-create-interactive-btn'
+              aria-label={t('sessionList.newInteractive')}
+              className='flex-center cursor-pointer appearance-none border-none bg-transparent p-0 transition-colors text-t-tertiary hover:text-t-primary size-18px rd-4px sider-action-btn workpath-action-btn'
+              onClick={(e) => {
+                e.stopPropagation();
+                onCreateInteractive(node);
+              }}
+            >
+              <Plus theme='outline' size='14' fill='currentColor' className='block leading-none' />
+            </button>
+            <Dropdown
+              droplist={
+                <Menu
+                  onClickMenuItem={(key) => {
+                    if (key === 'copy') {
+                      copyText(node.key)
+                        .then(() => Message.success(t('common.copySuccess')))
+                        .catch(() => Message.error(t('common.copyFailed')));
+                      return;
+                    }
+                    if (key === 'pin') {
                       ui.togglePinned(node.key);
+                      return;
+                    }
+                    if (key === 'remove' && onRemoveProjectWorkpath) {
+                      onRemoveProjectWorkpath(node);
                     }
                   }}
                 >
-                  <Pushpin theme='outline' size='14' fill='currentColor' className='block leading-none' />
-                </span>
-              </Tooltip>
-              {!isDefault && isProjectWorkpath && onRemoveProjectWorkpath && (
-                <Tooltip content={t('sessionList.removeWorkpath')} position='top'>
-                  <span
-                    role='button'
-                    tabIndex={0}
-                    aria-label={t('sessionList.removeWorkpath')}
-                    className='flex-center cursor-pointer transition-colors text-t-tertiary hover:text-t-primary size-20px rd-4px sider-action-btn workpath-action-btn'
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRemoveProjectWorkpath(node);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        onRemoveProjectWorkpath(node);
-                      }
-                    }}
-                  >
-                    <DeleteOne theme='outline' size='14' fill='currentColor' className='block leading-none' />
-                  </span>
-                </Tooltip>
-              )}
-            </span>
-          )}
-        </div>
-      </Popover>
+                  {workpathMenuActionKeys.includes('copy') && (
+                    <Menu.Item key='copy'>
+                      <div className='flex items-center gap-8px'>
+                        <Copy theme='outline' size='14' />
+                        <span>{t('common.copyPath')}</span>
+                      </div>
+                    </Menu.Item>
+                  )}
+                  {workpathMenuActionKeys.includes('pin') && (
+                    <Menu.Item key='pin'>
+                      <div className='flex items-center gap-8px'>
+                        <Pushpin
+                          theme='outline'
+                          size='14'
+                          className={node.pinned ? 'text-aou-7' : 'text-t-secondary'}
+                        />
+                        <span>{node.pinned ? t('sessionList.unpinWorkpath') : t('sessionList.pinWorkpath')}</span>
+                      </div>
+                    </Menu.Item>
+                  )}
+                  {workpathMenuActionKeys.includes('remove') && onRemoveProjectWorkpath && (
+                    <Menu.Item key='remove'>
+                      <div className='flex items-center gap-8px text-[rgb(var(--warning-6))]'>
+                        <DeleteOne theme='outline' size='14' />
+                        <span>{t('sessionList.removeWorkpath')}</span>
+                      </div>
+                    </Menu.Item>
+                  )}
+                </Menu>
+              }
+              trigger='click'
+              position='br'
+              getPopupContainer={() => document.body}
+              unmountOnExit={false}
+            >
+              <button
+                type='button'
+                data-testid='workpath-more-actions-btn'
+                aria-label={t('common.more')}
+                className='flex-center cursor-pointer appearance-none border-none bg-transparent p-0 transition-colors text-t-tertiary hover:text-t-primary size-20px rd-4px sider-action-btn workpath-action-btn'
+                onClick={(e) => e.stopPropagation()}
+              >
+                <MoreOne theme='outline' size='14' fill='currentColor' className='block leading-none' />
+              </button>
+            </Dropdown>
+          </span>
+        )}
+      </div>
 
       {/* Drawer content: workpaths expose interactive conversations directly. */}
-      {expanded && (
-        <div
-          data-testid='workpath-conversation-list'
-          className={classNames(
-            'workpath-drawer-content min-w-0 flex flex-col',
-            hasInteractiveContent && 'gap-2px pt-2px'
-          )}
-        >
-          {visibleEntries.interactive.map((entry) => renderEntry(entry))}
-          {visibleEntries.kindMeta.interactive.hasOverflow && !forceShowAllForActiveConversation && (
-            <button
-              type='button'
-              aria-expanded={showAllConversations}
-              className='ml-42px mt-1px mb-2px inline-flex h-20px w-fit max-w-full appearance-none items-center border-none bg-transparent p-0 text-left text-12px leading-20px text-t-secondary transition-colors cursor-pointer select-none hover:text-t-primary focus:outline-none focus-visible:text-t-primary'
-              onClick={(event) => {
-                event.stopPropagation();
-                setShowAllConversations((value) => !value);
-              }}
-            >
-              {showAllConversations
-                ? t('sessionList.collapseDisplay')
-                : t('sessionList.expandDisplay', { count: visibleEntries.kindMeta.interactive.hiddenCount })}
-            </button>
-          )}
-        </div>
-      )}
+      <div
+        id={controlsId}
+        data-testid='workpath-conversation-list'
+        aria-hidden={!drawerMotion.shouldRender || drawerMotion.phase === 'exiting'}
+        data-disclosure-phase={drawerMotion.phase}
+        className={classNames(
+          'workpath-drawer-content flowy-disclosure-content min-w-0 flex flex-col',
+          'flowy-workpath-session-list',
+          hasInteractiveContent && drawerMotion.shouldRender && 'gap-2px pt-2px'
+        )}
+      >
+        {drawerMotion.shouldRender && (
+          <>
+            {baseInteractiveEntries.map((entry) => renderEntry(entry))}
+            {overflowInteractiveEntries.length > 0 && (
+              <div
+                id={overflowControlsId}
+                data-testid='workpath-overflow-conversations'
+                aria-hidden={overflowMotion.phase === 'closed' || overflowMotion.phase === 'exiting'}
+                data-disclosure-phase={overflowMotion.phase}
+                className='flowy-disclosure-content flex flex-col'
+              >
+                {overflowMotion.shouldRender && overflowInteractiveEntries.map((entry) => renderEntry(entry))}
+              </div>
+            )}
+            {visibleEntries.kindMeta.interactive.hasOverflow && !forceShowAllForActiveConversation && (
+              <SessionOverflowButton
+                expanded={showAllConversations}
+                hiddenCount={interactiveOverflowCount}
+                controlsId={overflowControlsId}
+                onToggle={toggleOverflow}
+                className='flowy-workpath-session-overflow'
+              />
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 };

@@ -9,14 +9,20 @@ import { readFileSync } from 'node:fs';
 
 const workpathDrawerSource = readFileSync(new URL('./WorkpathDrawer.tsx', import.meta.url), 'utf8');
 const companionGroupSource = readFileSync(new URL('./CompanionSessionGroup.tsx', import.meta.url), 'utf8');
+const overflowButtonSource = readFileSync(new URL('./SessionOverflowButton.tsx', import.meta.url), 'utf8');
 
 describe('SessionList overflow controls', () => {
-  test('uses high-contrast themed text for expandable overflow buttons', () => {
+  test('shares semantic overflow controls across mounted session groups', () => {
     for (const source of [workpathDrawerSource, companionGroupSource]) {
-      expect(source.includes("t('sessionList.expandDisplay'")).toBe(true);
-      expect(source.includes('text-t-secondary transition-colors cursor-pointer')).toBe(true);
-      expect(source.includes('text-t-quaternary transition-colors cursor-pointer')).toBe(false);
-      expect(source.includes('hover:text-t-primary')).toBe(true);
+      expect(source.includes("import SessionOverflowButton from './SessionOverflowButton';")).toBe(true);
+      expect(source.includes('<SessionOverflowButton')).toBe(true);
     }
+    expect(workpathDrawerSource.includes("className='flowy-workpath-session-overflow'")).toBe(true);
+    expect(companionGroupSource.includes("className='flowy-companion-session-overflow'")).toBe(true);
+    expect(overflowButtonSource.includes("t('sessionList.expandDisplay'")).toBe(true);
+    expect(overflowButtonSource.includes('aria-expanded={expanded}')).toBe(true);
+    expect(overflowButtonSource.includes('aria-controls={controlsId}')).toBe(true);
+    expect(overflowButtonSource.includes("type='button'")).toBe(true);
+    expect(overflowButtonSource.includes('session-overflow-button')).toBe(true);
   });
 });

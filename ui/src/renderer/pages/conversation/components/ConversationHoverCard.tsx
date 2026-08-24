@@ -33,7 +33,7 @@ const ConversationHoverCard: React.FC<ConversationHoverCardProps> = ({ conversat
       <div className='flex flex-col gap-2px'>
         <span className='text-12px text-t-tertiary'>{t('conversation.hoverCard.name')}</span>
         <span className='text-13px text-t-primary break-all'>
-          {conversation.name || t('conversation.welcome.newConversation')}
+          {conversation.name?.trim() || t('conversation.historySearch.untitled')}
         </span>
       </div>
       {/* Full session ID shown as text (selectable) with a copy affordance —

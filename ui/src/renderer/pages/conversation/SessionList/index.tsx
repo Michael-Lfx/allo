@@ -14,8 +14,10 @@ import { parseSessionRoute } from '@/renderer/utils/routes/sessionRoute';
 import { scrollSidebarItemIntoView } from '@/renderer/utils/ui/scrollIntoView';
 import { cleanupSiderTooltips } from '@/renderer/utils/ui/siderTooltip';
 import { Input, Message, Modal } from '@arco-design/web-react';
-import { FolderOpen, Plus, Right } from '@icon-park/react';
+import { FolderOpen } from '@icon-park/react';
+import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -26,9 +28,9 @@ import { useBatchSelection } from './hooks/useBatchSelection';
 import { useConversationActions } from './hooks/useConversationActions';
 import { useExport } from './hooks/useExport';
 import { capabilityKey, useSessionCapabilities } from './hooks/useSessionCapabilities';
-import { useWorkpathBranches } from './hooks/useWorkpathBranches';
 import type { ConversationRowProps } from './types';
 import WorkpathDrawer from './WorkpathDrawer';
+import WorkspaceSectionActions from './WorkspaceSectionActions';
 import { useWorkpathUiState } from './hooks/useWorkpathUiState';
 import { toggleBatchSelectionScope, type BatchSelectableScope, type BatchSelectionState } from './utils/batchSelectionScopes';
 import { DEFAULT_WORKPATH_KEY } from './utils/workpathKey';
@@ -51,6 +53,10 @@ export type WorkpathSessionListProps = {
   batchMode?: boolean;
   displayPreferences?: SidebarDisplayPreferences;
   onBatchModeChange?: (value: boolean) => void;
+  /** Primary sider mode: the outer sider owns the visible workspace heading. */
+  embeddedInPrimarySider?: boolean;
+  /** DOM target for the primary sider's fixed workspace heading actions. */
+  workspaceActionsTarget?: HTMLElement | null;
 };
 
 /**
@@ -65,6 +71,8 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   batchMode = false,
   displayPreferences = DEFAULT_SIDEBAR_DISPLAY_PREFERENCES,
   onBatchModeChange,
+  embeddedInPrimarySider = false,
+  workspaceActionsTarget = null,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -103,11 +111,6 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   );
 
   const projectWorkpathKeys = useMemo(() => new Set(emptyProjectWorkpaths), [emptyProjectWorkpaths]);
-  const branchWorkpaths = useMemo(
-    () => tree.filter((node) => node.key !== DEFAULT_WORKPATH_KEY).map((node) => node.key),
-    [tree]
-  );
-  const workpathBranches = useWorkpathBranches(branchWorkpaths, displayPreferences.showGitBranch && !collapsed);
 
   // Active session from the route — used for row selected state and drawer expansion.
   const activeRoute = useMemo(() => parseSessionRoute(pathname), [pathname]);
@@ -368,6 +371,19 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
       handleOpenDropdown();
     }
   }, [dropdownOpen, handleOpenDropdown, handleCloseDropdown]);
+
+  const workspaceActions = (
+    <WorkspaceSectionActions
+      expanded={expanded}
+      dropdownOpen={dropdownOpen}
+      onToggleExpanded={() => setExpanded((value) => !value)}
+      onToggleDropdown={toggleDropdownOpen}
+      dropdownTriggerRef={dropdownTriggerRef}
+      expandLabel={t('sessionList.expandWorkspaces')}
+      collapseLabel={t('sessionList.collapseWorkspaces')}
+      addLabel={t('sessionList.addWorkspace')}
+    />
+  );
 
   /* ---------------------------------- row render ---------------------------------- */
 
@@ -718,7 +734,10 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   return (
     <>
       {modals}
-      <div className='min-w-0 mt-10px'>
+      {embeddedInPrimarySider && workspaceActionsTarget
+        ? createPortal(workspaceActions, workspaceActionsTarget)
+        : null}
+      <div className={classNames('min-w-0', embeddedInPrimarySider ? 'flowy-embedded-workpath-list' : 'mt-10px')}>
         {/* 桌面伙伴专属工作空间分组（roster-driven，置于项目/工作路径之上）。仅交互式、
             不在此新建；可折叠（状态持久化于 useWorkpathUiState，默认展开）；
             点击伙伴行跳转其唯一会话 /conversation/:id。 */}
@@ -738,80 +757,36 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
           renderRow={renderSshRow}
         />
 
-        <div data-testid='workpath-section-toolbar' className='pl-10px pr-4px pb-6px flex items-center justify-between'>
-          {/* Left text — click to fold/unfold the workpath list */}
-          <button
-            type='button'
-            aria-expanded={expanded}
-            onClick={() => setExpanded((value) => !value)}
-            className='group flex items-center gap-2px min-w-0 select-none cursor-pointer b-none bg-transparent p-0 text-left opacity-75 transition-opacity hover:opacity-100 relative'
+        {!embeddedInPrimarySider && (
+          <div
+            data-testid='workpath-section-toolbar'
+            className='flowy-workpath-section-toolbar flex items-center justify-between pl-10px pr-4px pb-6px'
           >
             <span className='sider-section-title text-13px font-[500] leading-none tracking-wide truncate min-w-0'>
               {t('sessionList.workspaces')}
             </span>
-            {/* Arrow icon - shown on hover of the title button, rotates based on expanded state */}
-            {(!collapsed || dropdownOpen) && (
-              <div
-                className={`ml-1 shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-200 ${
-                  expanded ? 'rotate-90' : ''
-                } collapsed-hidden`}
-                style={{
-                  transformOrigin: 'center center',
-                }}
-              >
-                <Right
-                  theme='outline'
-                  size='12'
-                  fill='currentColor'
-                  className='block leading-none'
-                />
-              </div>
-            )}
-          </button>
-          {/* Right plus button */}
-          <button
-            ref={dropdownTriggerRef}
-            type='button'
-            onClick={toggleDropdownOpen}
-            aria-label={t('common.add') || '添加'}
-            style={{
-              border: 'none',
-              outline: 'none',
-              background: 'transparent',
-              padding: 0,
-              margin: 0,
-            }}
-            className={`h-22px px-8px flex items-center gap-4px select-none cursor-pointer rd-6px transition-all group ${
-              dropdownOpen
-                ? 'bg-fill-2'
-                : 'hover:bg-fill-2'
-            }`}>
-            <Plus
-              theme='outline'
-              size='13'
-              fill='currentColor'
-              className={`transition-transform duration-200 ${dropdownOpen ? 'rotate-45' : ''}`}
-            />
-          </button>
-        </div>
+            {workspaceActions}
+          </div>
+        )}
 
-        {expanded && tree.map((node) => (
-          <WorkpathDrawer
-            key={node.key}
-            node={node}
-            ui={ui}
-            activeConversationId={activeConversationId}
-            onCreateInteractive={handleCreateInteractive}
-            onRemoveProjectWorkpath={handleRemoveProjectWorkpath}
-            isProjectWorkpath={projectWorkpathKeys.has(node.key)}
-            batchMode={batchMode}
-            batchSelectionState={batchSelectionState}
-            onToggleBatchSelectionScope={handleToggleBatchSelectionScope}
-            renderEntry={renderEntry}
-            displayPreferences={displayPreferences}
-            gitBranch={workpathBranches.get(node.key)}
-          />
-        ))}
+        <div id='flowy-workpath-tree' aria-hidden={!expanded}>
+          {expanded && tree.map((node) => (
+            <WorkpathDrawer
+              key={node.key}
+              node={node}
+              ui={ui}
+              activeConversationId={activeConversationId}
+              onCreateInteractive={handleCreateInteractive}
+              onRemoveProjectWorkpath={handleRemoveProjectWorkpath}
+              isProjectWorkpath={projectWorkpathKeys.has(node.key)}
+              batchMode={batchMode}
+              batchSelectionState={batchSelectionState}
+              onToggleBatchSelectionScope={handleToggleBatchSelectionScope}
+              renderEntry={renderEntry}
+              displayPreferences={displayPreferences}
+            />
+          ))}
+        </div>
 
         {/* 空态提示已移除（导航精简） */}
 

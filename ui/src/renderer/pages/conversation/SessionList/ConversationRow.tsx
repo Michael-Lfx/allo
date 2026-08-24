@@ -1,6 +1,7 @@
 
 
 import { CapabilityIconCluster } from '@/renderer/components/capability/CapabilityIcon';
+import MarqueeText from '@/renderer/components/base/MarqueeText';
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import ConversationHoverCard from '@/renderer/pages/conversation/components/ConversationHoverCard';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@/renderer/utils/ui/siderTooltip';
@@ -27,7 +28,6 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
     checked,
     selected,
     menuVisible,
-    dimIcon = false,
     showSessionAge = true,
   } = props;
   const layout = useLayoutContext();
@@ -50,6 +50,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
   const cronStatus = getJobStatus(conversation.id);
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
   const ageLabel = formatSessionAgeLabel(t, conversation.created_at);
+  const displayName = conversation.name?.trim() || t('conversation.historySearch.untitled');
 
   // Session-level capability markers (trailing group): 召唤伙伴 → 定时任务 →
   // 自动工作 → 智能决策, shared builder with TerminalRow. The summon marker
@@ -80,6 +81,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
   const showAgeMeta = showSessionAge && !!ageLabel && !collapsed;
   const showDesktopTrailingMeta = !collapsed && !isMobile && (showAgeMeta || showUnreadDot);
   const showCompactUnreadDot = showUnreadDot && (collapsed || isMobile);
+  const showHoverPinnedIcon = !batchMode && isPinned && !isMobile && !isGenerating;
 
   const unreadDot = (
     <span
@@ -94,8 +96,9 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
         className={classNames(
           'chat-history__item h-34px rd-10px flex items-center group cursor-pointer relative overflow-hidden shrink-0 conversation-item [&.conversation-item+&.conversation-item]:mt-2px min-w-0 transition-colors',
           collapsed ? 'justify-center px-0' : 'justify-start gap-8px pr-16px',
-          // dimIcon means this row sits inside a project/cron parent — visually indent the row content while keeping the bg full-width
-          !collapsed && (dimIcon ? 'pl-42px' : 'pl-18px'),
+          // Nested workpath conversations use the compact baseline; the parent
+          // row and the surrounding drawer already provide the hierarchy cue.
+          !collapsed && 'pl-18px',
           {
             'hover:bg-fill-2': !batchMode && !selected,
             // Keep the active conversation visually lifted like a hovered row;
@@ -119,7 +122,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
           </span>
         )}
         {isGenerating && !batchMode && <Spin size={16} />}
-        {!batchMode && isPinned && !isMobile && !isGenerating && (
+        {showHoverPinnedIcon && (
           <span
             className='absolute left-18px top-1/2 z-1 -translate-y-1/2 text-t-secondary pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity'
             style={{ lineHeight: 0 }}
@@ -127,6 +130,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             <Pushpin theme='outline' size='14' />
           </span>
         )}
+        {showHoverPinnedIcon && <span className='w-22px shrink-0' aria-hidden='true' />}
         {/* Capability markers are session identity, so they sit before the text and
             stay visible while hover-only actions appear on the right. */}
         {!batchMode && !collapsed && capabilityItems.length > 0 && (
@@ -135,15 +139,16 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
         {/* Name owns the flexible middle; age is a fixed right-aligned marker so
             rows scan cleanly without metadata hugging the title. */}
         <FlexFullContainer
-          className={classNames(
-            'h-24px min-w-0 flex-1 collapsed-hidden transition-[padding]',
-            isPinned && !isMobile && !isGenerating && 'group-hover:pl-22px'
-          )}
+          className='h-24px min-w-0 flex-1 collapsed-hidden'
           containerClassName='flex items-center'
         >
-          <span className='chat-history__item-name block overflow-hidden text-ellipsis whitespace-nowrap min-w-0 text-14px font-[500] lh-24px text-t-primary'>
-            {conversation.name}
-          </span>
+          <MarqueeText
+            text={displayName}
+            trigger='hover'
+            title=''
+            disabled={collapsed || batchMode || isMobile || menuVisible}
+            className='chat-history__item-name block overflow-hidden text-ellipsis whitespace-nowrap min-w-0 text-14px font-[500] lh-24px text-t-primary'
+          />
         </FlexFullContainer>
         {/* Keep trailing width in the layout on hover (invisible, not display:none)
             so the title ellipsis width does not flash wider then narrower. */}
@@ -155,7 +160,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             })}
           >
             {showAgeMeta && (
-              <span className='w-40px text-right text-11px text-t-tertiary'>{ageLabel}</span>
+              <span className='session-age-meta w-40px text-right text-11px text-t-tertiary'>{ageLabel}</span>
             )}
             {showUnreadDot && unreadDot}
           </span>
@@ -267,7 +272,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
       <Tooltip
         key={conversation.id}
         {...siderTooltipProps}
-        content={conversation.name || t('conversation.welcome.newConversation')}
+        content={displayName}
         position='right'
       >
         {renderRow()}

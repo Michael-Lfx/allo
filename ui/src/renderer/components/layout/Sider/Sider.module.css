@@ -1,10 +1,6 @@
-/* Keep the navigation rail quieter than the main content in the light theme.
-   These overrides stay local to the sider so the shared text tokens keep their
-   normal contrast everywhere else. */
 .sider {
-  --text-primary: #454b55;
-  --text-secondary: #6f7680;
-  --bg-6: #9298a1;
+  --text-primary: var(--flowy-text-primary, var(--color-text-1));
+  --text-secondary: var(--flowy-text-secondary, var(--color-text-2));
   position: relative;
   isolation: isolate;
 }
@@ -59,12 +55,6 @@
   outline-offset: -2px;
 }
 
-:global([data-theme='dark']) .sider {
-  --text-primary: #ffffff;
-  --text-secondary: #ced3da;
-  --bg-6: #5a5a5a;
-}
-
 /* GPU-friendly: transform applies to the + SVG only (see Sider.tsx), not the padded row or icon frame */
 
 .newChatTrigger {
@@ -73,7 +63,7 @@
 
 .newChatIcon {
   transform: translateZ(0);
-  transition: transform 0.14s cubic-bezier(0.33, 1, 0.68, 1);
+  transition: transform var(--flowy-motion-fast) var(--flowy-ease-move);
 }
 
 .newChatTrigger:hover .newChatIcon {
@@ -108,22 +98,71 @@
    fixed top nav and the scrollable list stay on the same vertical center line.
    Mimics macOS native overlay scrollbars. */
 .scrollArea {
+  --flowy-workpath-header-height: 42px;
+  --flowy-sider-sticky-base: color-mix(in srgb, var(--flowy-panel) 88%, var(--flowy-canvas) 12%);
+  --flowy-sider-sticky-surface: color-mix(
+    in srgb,
+    var(--flowy-sider-sticky-base) 96%,
+    rgb(var(--primary-6)) 4%
+  );
+  --flowy-sider-sticky-hover-surface: color-mix(
+    in srgb,
+    var(--flowy-sider-sticky-surface) 84%,
+    var(--flowy-text-primary) 16%
+  );
+  --flowy-sider-divider: color-mix(in srgb, var(--flowy-text-primary) 22%, var(--flowy-panel));
+  container-name: flowy-sider;
+  container-type: inline-size;
+  scroll-padding-block-start: calc(var(--flowy-workpath-header-height) + 8px);
   scrollbar-width: none; /* Firefox */
+}
+
+.workspaceSection {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding-inline: 5px 8px;
+}
+
+.workspaceSectionHeader {
+  position: static;
+  width: 100%;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  background: transparent;
+  border-bottom: 1px solid var(--flowy-sider-divider);
+}
+
+.scrollArea :global(.flowy-workpath-drawer-header) {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--flowy-sider-sticky-surface);
+  border-bottom: 1px solid var(--flowy-sider-divider);
+}
+
+.scrollArea :global(.flowy-workpath-drawer-header:hover) {
+  background: var(--flowy-sider-sticky-hover-surface);
+}
+
+@container flowy-sider (max-width: 200px) {
+  :global(.session-age-meta) {
+    display: none;
+  }
+
+  .scrollArea :global(.flowy-workpath-header-two-line) {
+    height: 34px;
+    padding-block: 0;
+  }
+
+  .scrollArea :global(.flowy-workpath-header-two-line .flowy-workpath-secondary) {
+    display: none;
+  }
 }
 
 .scrollArea::-webkit-scrollbar {
   width: 0;
   height: 0;
-}
-
-/* Pinned sidebar row — reserve a dedicated 28px slot on the right for the
-   pushpin indicator so it never overlaps the row title. When the row is
-   hovered, the three-dot menu takes over that slot and the text reclaims
-   the gap (18px), matching non-pinned rows. */
-.pinnedTextSlot {
-  padding-right: 28px;
-}
-
-:global(.group):hover .pinnedTextSlot {
-  padding-right: 18px;
 }

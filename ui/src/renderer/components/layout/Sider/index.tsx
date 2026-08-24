@@ -42,10 +42,9 @@ interface SiderProps {
  * list, the create switches, and full-text search were lifted out into the
  * content-area secondary sidebar (`ConversationShell` / `ContentSider`),
  * reached via the "会话" entry. The rail holds top-level destinations grouped
- * by small-text section headers (`SiderSectionHeader`): 常用 (会话),
- * 对外服务 (对外伙伴), 数据空间 (学习 / 知识库), 自动化 (定时任务 / 需求平台),
- * 增强工具 (设定 / Skill / MCP), and a bottom-pinned 设置 group
- * (模型管理 + the footer). Execution engines live as an
+ * by small-text section headers (`SiderSectionHeader`): 工作 (会话 / 视频生成),
+ * 资源 (知识库 / 学习 / 评测), 自动化 (定时任务), and a bottom-pinned
+ * 设置 group (模型管理 + the footer). Execution engines live as an
  * independent tab inside Settings rather than being mixed into model
  * management.
  */
@@ -60,6 +59,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const { logout: localLogout, status: localStatus, user: localUser } = useAuth();
   const { logout: cloudLogout, status: cloudStatus, whoami } = useCloudAuth();
   const [batchMode, setBatchMode] = useState(false);
+  const [workspaceActionsTarget, setWorkspaceActionsTarget] = useState<HTMLElement | null>(null);
   const siderRef = useRef<HTMLDivElement>(null);
   const { preferences: displayPreferences } = useSidebarDisplayPreferences();
   const isSettings = pathname.startsWith('/settings');
@@ -206,7 +206,12 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
 
   return (
-    <div ref={siderRef} className={`${styles.sider} size-full flex flex-col`} onClick={handleSiderClick}>
+    <div
+      id='flowy-primary-sider'
+      ref={siderRef}
+      className={`${styles.sider} size-full flex flex-col`}
+      onClick={handleSiderClick}
+    >
       <span
         aria-hidden='true'
         className={styles.selectionIndicator}
@@ -232,7 +237,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
             data-testid='sider-primary-nav'
             className={`${styles.primaryNav} shrink-0 flex flex-col gap-2px`}
           >
-            {/* 会话 — 一级菜单入口 */}
+            <SiderSectionHeader label={t('common.titlebar.sections.work')} collapsed={collapsed} />
             <SiderConversationEntry
               isMobile={isMobile}
               isActive={isSessionRoute}
@@ -240,7 +245,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               siderTooltipProps={siderTooltipProps}
               onClick={handleConversationClick}
             />
-            {/* ViMax video generation — collapsible recent projects (workpath-aligned) */}
             <SiderVideoGenerationGroup
               isMobile={isMobile}
               moduleActive={pathname.startsWith('/video-generation')}
@@ -250,6 +254,8 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               onEnterHome={handleVideoGenerationHome}
               onOpenProject={handleOpenRecentVideoGeneration}
             />
+
+            <SiderSectionHeader label={t('common.titlebar.sections.resources')} collapsed={collapsed} />
             <SiderKnowledgeEntry
               isMobile={isMobile}
               isActive={pathname.startsWith('/knowledge')}
@@ -273,7 +279,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 onClick={handleEvalClick}
               />
             )}
-            {/* 自动化 — automation platforms */}
+            <SiderSectionHeader label={t('common.titlebar.sections.automation')} collapsed={collapsed} />
             <SiderScheduledEntry
               isMobile={isMobile}
               isActive={pathname === '/scheduled'}
@@ -284,18 +290,39 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
           </div>
           {/* 项目/工作路径树 — 独立滚动，一级菜单保持固定 */}
           {!collapsed && (
-            <div
-              data-testid='sider-workspaces-scroll-area'
-              className={`${styles.scrollArea} flex-1 min-h-0 overflow-y-auto overflow-x-hidden pl-5px pr-8px pt-2px pb-8px`}
+            <section
+              data-testid='sider-workspaces-section'
+              aria-labelledby='flowy-workspaces-heading'
+              className={styles.workspaceSection}
             >
-              <WorkpathSessionList
+              <SiderSectionHeader
+                id='flowy-workspaces-heading'
+                label={t('common.titlebar.sections.workspaces')}
                 collapsed={false}
-                tooltipEnabled={false}
-                batchMode={batchMode}
-                displayPreferences={displayPreferences}
-                onBatchModeChange={setBatchMode}
+                compact
+                className={styles.workspaceSectionHeader}
+                actions={
+                  <span
+                    ref={setWorkspaceActionsTarget}
+                    data-testid='sider-workspace-actions-target'
+                  />
+                }
               />
-            </div>
+              <div
+                data-testid='sider-workspaces-scroll-area'
+                className={`${styles.scrollArea} flex-1 min-h-0 overflow-y-auto overflow-x-hidden pt-0 pb-8px`}
+              >
+                <WorkpathSessionList
+                  collapsed={false}
+                  tooltipEnabled={false}
+                  batchMode={batchMode}
+                  displayPreferences={displayPreferences}
+                  onBatchModeChange={setBatchMode}
+                  workspaceActionsTarget={workspaceActionsTarget}
+                  embeddedInPrimarySider
+                />
+              </div>
+            </section>
           )}
         </div>
       )}

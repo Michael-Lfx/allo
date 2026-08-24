@@ -285,6 +285,42 @@ async fn provisional_title_keeps_emoji_and_collapses_whitespace() {
 }
 
 #[tokio::test]
+async fn empty_title_result_keeps_message_fallbacks() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let completer = Arc::new(FakeTitleCompleter::empty());
+    svc.with_title_completer(completer.clone());
+    let cases = [
+        ("41", "41"),
+        ("2026 年计划", "2026 年计划"),
+        ("123abc", "123abc"),
+        ("1. 修复标题问题", "修复标题问题"),
+        (".NET 迁移", ".NET 迁移"),
+        ("-1 编号", "-1 编号"),
+        ("../docs", "../docs"),
+        ("`literal`", "`literal`"),
+        ("```", "```"),
+    ];
+
+    for (index, (input, expected)) in cases.iter().enumerate() {
+        let conversation_id = seed_title_conversation(&repo, "", json!({})).await;
+        let message_id = format!("title-fallback-{index}");
+        repo.insert_message(&title_message_row(&conversation_id, &message_id, "right", input, 10))
+            .await
+            .unwrap();
+
+        svc.maybe_autotitle(&conversation_id, &message_id, (*input).to_owned(), title_session_model())
+            .await;
+
+        let (name, state, source) = title_state(&repo, &conversation_id).await;
+        assert_eq!(name, *expected);
+        assert_eq!(state.as_deref(), Some("failed"));
+        assert_eq!(source.as_deref(), Some("auto"));
+    }
+
+    assert_eq!(completer.calls().len(), cases.len());
+}
+
+#[tokio::test]
 async fn echoed_user_input_keeps_temporary_title_and_fails() {
     let (svc, _broadcaster, repo, _runtime_registry) = make_service();
     let completer = Arc::new(FakeTitleCompleter::echo_input());

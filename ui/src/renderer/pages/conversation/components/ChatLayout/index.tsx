@@ -4,6 +4,7 @@ import { browserStorageKey } from '@/common/utils/browserStorageKey';
 import type { PresetInfo } from '@/renderer/hooks/agent/usePresetInfo';
 import appLogo from '@/renderer/assets/logo.svg';
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
+import PathText from '@/renderer/components/base/PathText';
 import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
@@ -41,8 +42,17 @@ import type { ITerminalSession } from '@/common/adapter/ipcBridge';
 import { SHELL_SENTINEL } from '@/renderer/pages/terminal/launchPresets';
 import { inferPreviewTabKind } from '@/renderer/pages/conversation/Preview/previewTabKind';
 import classNames from 'classnames';
-import { calcLayoutMetrics } from '@/renderer/pages/conversation/utils/layoutCalc';
-import { CHAT_HEADER_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
+import {
+  DEFAULT_WORKSPACE_PANEL_PX,
+  MAX_WORKSPACE_PANEL_PX,
+  MIN_WORKSPACE_PANEL_PX,
+  WORKSPACE_HEADER_HEIGHT,
+  calcLayoutMetrics,
+} from '@/renderer/pages/conversation/utils/layoutCalc';
+import {
+  CHAT_HEADER_CLASSES,
+  CHAT_HEADER_WITH_SUBTITLE_CLASSES,
+} from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import { Layout as ArcoLayout, Message } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -89,6 +99,8 @@ export interface ChatLayoutProps {
   tabsSlot?: React.ReactNode;
   /** Workspace path for opening in external tools */
   workspacePath?: string;
+  /** Real workspace path shown as a read-only subtitle below the title. */
+  workspaceTitleSubtitle?: string;
   /** Authoritative temp-workspace flag from `conversation.extra.is_temporary_workspace`. */
   isTemporaryWorkspace?: boolean;
   /** Custom rename handler; when provided, replaces the default conversation.update rename flow */
@@ -111,6 +123,17 @@ export interface ChatLayoutProps {
 const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
   const { t } = useTranslation();
   const { conversation_id, workspacePath, isTemporaryWorkspace } = props;
+  const workspaceTitleSubtitle = props.workspaceTitleSubtitle?.trim() || undefined;
+  const hasWorkspaceTitleSubtitle = Boolean(workspaceTitleSubtitle);
+  const titleSubtitle = workspaceTitleSubtitle ? (
+    <span
+      data-testid='conversation-workspace-subtitle'
+      title={workspaceTitleSubtitle}
+      className='block min-w-0 overflow-hidden text-11px leading-14px text-t-secondary'
+    >
+      <PathText path={workspaceTitleSubtitle} className='min-w-0' marqueeOnHover />
+    </span>
+  ) : undefined;
   const { active: developerMode } = useDeveloperModeGate();
   const [columnView, setColumnView] = useState<ConversationColumnView>('dialogue');
   const conversationViewKey = conversation_id ?? '';
@@ -347,7 +370,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
 
   const desktopHeader = (
     <ArcoLayout.Header
-      className={classNames(CHAT_HEADER_CLASSES)}
+      className={classNames(CHAT_HEADER_CLASSES, hasWorkspaceTitleSubtitle && CHAT_HEADER_WITH_SUBTITLE_CLASSES)}
     >
       <FlexFullContainer className='h-full min-w-0' containerClassName='flex items-center'>
         <ChatTitleEditor
@@ -360,6 +383,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
           submitTitleRename={submitTitleRename}
           titleAreaMaxWidth={titleAreaMaxWidth}
           title={props.title}
+          subtitle={titleSubtitle}
           conversation_id={conversation_id}
           leading={
             props.headerLeading ??

@@ -30,11 +30,24 @@ describe('workpath section toolbar structure', () => {
     expect(createBarSource.includes("t(batchMode ? 'sessionList.exitBatchSelect' : 'sessionList.batchSelect')")).toBe(true);
   });
 
-  test('keeps the workpath area as a section label without duplicated action buttons', () => {
+  test('keeps workspace actions icon-only and relocates them to the primary heading', () => {
     const source = readLocalSource('index.tsx');
+    const actions = readLocalSource('WorkspaceSectionActions.tsx');
 
     expect(source.includes("data-testid='workpath-section-toolbar'")).toBe(true);
     expect(source.includes("t('sessionList.workspaces')")).toBe(true);
+    expect(source.includes('embeddedInPrimarySider')).toBe(true);
+    expect(source.includes('createPortal(workspaceActions, workspaceActionsTarget)')).toBe(true);
+    expect(source.includes('workspaceActionsTarget?: HTMLElement | null')).toBe(true);
+    expect(actions.includes('ExpandDownOne')).toBe(true);
+    expect(actions.includes('FoldUpOne')).toBe(true);
+    expect(actions.includes('FolderPlus')).toBe(true);
+    expect(actions.includes("size='12'" )).toBe(true);
+    expect(actions.includes('aria-haspopup=\'dialog\'')).toBe(true);
+    expect(actions.includes("aria-controls='flowy-workpath-tree'")).toBe(true);
+    expect(actions.includes('InstantHoverTooltip')).toBe(true);
+    expect(readLocalSource('../../../styles/layout.css')).toContain('width: 20px;');
+    expect(readLocalSource('../../../styles/layout.css')).toContain('height: 20px;');
     expect(source.includes("data-testid='workpath-create-project-btn'")).toBe(false);
     expect(source.includes("data-testid='workpath-batch-select-btn'")).toBe(false);
   });

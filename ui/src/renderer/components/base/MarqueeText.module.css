@@ -1,0 +1,51 @@
+.viewport {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+.staticContent {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track {
+  display: inline-block;
+  min-width: max-content;
+  white-space: nowrap;
+  transform: translate3d(var(--marquee-offset, 0px), 0, 0);
+  transition-property: transform;
+  transition-duration: var(--marquee-duration, 0ms);
+  transition-timing-function: var(--marquee-ease);
+}
+
+.trackActive {
+  will-change: transform;
+}
+
+.measure {
+  position: fixed;
+  top: -10000px;
+  left: -10000px;
+  display: inline-block;
+  width: max-content;
+  max-width: none;
+  visibility: hidden;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+  font: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track,
+  .trackActive {
+    will-change: auto;
+    transform: translate3d(0, 0, 0) !important;
+    transition: none !important;
+  }
+}
