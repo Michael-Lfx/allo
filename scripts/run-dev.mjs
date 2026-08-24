@@ -7,6 +7,7 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -113,24 +114,45 @@ async function stopProcess(child, _reason) {
   await waitForChildExit(child, 5_000);
 }
 
+const VITE_HOST = '127.0.0.1';
+const VITE_PORT = 5173;
+// Cold start on Windows commonly takes ~25s just to bind. The old 30s HTTP
+// probe also required GET / to finish in 1s, but the first index.html transform
+// of this SPA often exceeds that — so Vite printed "ready" and the supervisor
+// still killed it.
+const VITE_READY_TIMEOUT_MS = 120_000;
+
+function isViteListening() {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: VITE_HOST, port: VITE_PORT }, () => {
+      socket.end();
+      resolve(true);
+    });
+    socket.setTimeout(1_000);
+    socket.once('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
+
 async function waitForVite() {
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + VITE_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    try {
-      const response = await fetch('http://127.0.0.1:5173/', {
-        signal: AbortSignal.timeout(1_000),
-      });
-      if (response.ok) return;
-    } catch {
-      // Vite is still starting; the supervisor also races its exit promise.
-    }
+    if (await isViteListening()) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error('Vite did not become healthy on http://127.0.0.1:5173 within 30 seconds');
+  throw new Error(
+    `Vite did not become healthy on http://${VITE_HOST}:${VITE_PORT} within ${VITE_READY_TIMEOUT_MS / 1000} seconds`,
+  );
 }
 
 function startVite() {
-  return spawn(process.execPath, [VITE_ENTRY, '--host', '127.0.0.1', '--port', '5173'], {
+  return spawn(process.execPath, [VITE_ENTRY, '--host', VITE_HOST, '--port', String(VITE_PORT)], {
     cwd: join(ROOT, 'ui'),
     stdio: 'inherit',
     env,
