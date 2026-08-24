@@ -1,58 +1,33 @@
 import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { Input, Popover } from '@arco-design/web-react';
+import { Popover } from '@arco-design/web-react';
 import {
-  BookOpen,
-  CloseSmall,
   Down,
-  FileText,
   MagicWand,
   People,
-  Pic,
   Platte,
   RobotOne,
   SettingTwo,
   Star,
-  VideoOne,
 } from '@icon-park/react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
-import { DEFAULT_VISUAL_STYLE_PROMPT, VISUAL_STYLE_PRESETS } from '../visualStylePresets';
-import {
-  DEFAULT_SEEDANCE_ASPECT_RATIO,
-  normalizeSeedanceAspectRatio,
-} from '../aspectRatios';
-import { DEFAULT_VIDEO_FPS,
-DEFAULT_VIDEO_RESOLUTION,
-normalizeVideoFps,
-normalizeVideoResolution, } from '@renderer/services/videoModelCapabilities'
-import { suggestCameoCharacterName } from '../cameoUtils';
-import type { CameoDraftItem, VerticalSkillSummary, VimaxWorkflow } from '../types';
 import { isActionImitationWorkflow } from '../workflowKind';
-import { BoldSendArrowIcon, SlantedDocIcon } from './ComposerIcons';
-import {
-  ACTION_CHARACTER_ACCEPT,
-  ACTION_CHARACTER_MAX_BYTES,
-  ACTION_VIDEO_ACCEPT,
-  ACTION_VIDEO_MAX_BYTES,
-  displayFileStem,
-  isSupportedImageFile,
-  isSupportedTextFile,
-  isSupportedVideoFile,
-  readUploadedTextFile,
-  VIDEO_HOME_UPLOAD_ACCEPT,
-} from './documentUpload';
+import { BoldSendArrowIcon } from './ComposerIcons';
+import { ActionUploadSlots } from './ActionUploadSlots';
+import { ModeMenu } from './ModeMenu';
+import { PromptComposer } from './PromptComposer';
+import { SlashSkillMenu } from './SlashSkillMenu';
+import { agentModesFor, creationSkillsFor } from './modeCatalog';
+import { useHomeDraft } from './useHomeDraft';
+import { useHomeUpload } from './useHomeUpload';
+import { useVerticalSkillHub } from './useVerticalSkillHub';
+import type { VimaxWorkflow } from '../types';
 import type {
-  ActionAssetDraft,
-  AgentModeDefinition,
-  CanvasReferenceDraft,
-  CreationSkillDefinition,
   CreationSkillId,
-  GenerationPreferences,
   VideoCreateDraft,
   VideoHomeMode,
 } from './types';
-import { listVerticalSkills } from '../api';
 import { generationPreferencesSummary } from '../preferenceSummary';
 import styles from './home.module.css';
 
@@ -61,164 +36,7 @@ const GenerationPreferencesPopover = lazy(() => import('./GenerationPreferencesP
 const VerticalSkillMenu = lazy(() => import('./VerticalSkillMenu'));
 const VerticalSkillCreateModal = lazy(() => import('./VerticalSkillCreateModal'));
 
-const TextArea = Input.TextArea;
-const DRAFT_KEY = 'flowy.videoGeneration.homeDraft.v3';
-const LEGACY_DRAFT_KEY = 'flowy.videoGeneration.homeDraft.v2';
-const LEGACY_DRAFT_KEY_V1 = 'flowy.videoGeneration.draft.v1';
-const MAX_REFERENCES = 8;
-
-const EMPTY_MODELS = {
-  llm_model: '',
-  image_model: '',
-  video_model: '',
-};
-
-const DEFAULT_PREFERENCES: GenerationPreferences = {
-  automatic: false,
-  smartAspect: true,
-  mediaKind: 'video',
-  aspectRatio: DEFAULT_SEEDANCE_ASPECT_RATIO,
-  resolution: DEFAULT_VIDEO_RESOLUTION,
-  fps: DEFAULT_VIDEO_FPS,
-  targetDurationSecs: 30,
-  specifyTargetDuration: false,
-  models: EMPTY_MODELS,
-};
-
-const CREATION_SKILL_IDS: readonly CreationSkillId[] = [
-  'cinematic',
-  'anime',
-  'cyberpunk',
-  'inkWash',
-];
-
-const CREATION_SKILL_PROMPTS: Record<CreationSkillId, string> = {
-  cinematic:
-    VISUAL_STYLE_PRESETS.find((preset) => preset.key === 'cinematic')?.prompt ??
-    DEFAULT_VISUAL_STYLE_PROMPT,
-  anime:
-    VISUAL_STYLE_PRESETS.find((preset) => preset.key === 'anime')?.prompt ??
-    DEFAULT_VISUAL_STYLE_PROMPT,
-  cyberpunk:
-    VISUAL_STYLE_PRESETS.find((preset) => preset.key === 'cyberpunk')?.prompt ??
-    DEFAULT_VISUAL_STYLE_PROMPT,
-  inkWash:
-    VISUAL_STYLE_PRESETS.find((preset) => preset.key === 'inkWash')?.prompt ??
-    DEFAULT_VISUAL_STYLE_PROMPT,
-};
-
-function makeLocalId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function defaultDraft(): VideoCreateDraft {
-  return {
-    workflow: 'idea2video',
-    sourceText: '',
-    creationPrompt: '',
-    creationSkillId: 'cinematic',
-    requirement: '',
-    style: DEFAULT_VISUAL_STYLE_PROMPT,
-    verticalSkillIds: [],
-    preferences: DEFAULT_PREFERENCES,
-    cameos: [],
-    canvasReferences: [],
-    actionCharacter: null,
-    actionVideo: null,
-  };
-}
-
-function loadDraft(): VideoCreateDraft {
-  const fallback = defaultDraft();
-  try {
-    const raw =
-      window.sessionStorage.getItem(DRAFT_KEY) ??
-      window.sessionStorage.getItem(LEGACY_DRAFT_KEY) ??
-      window.sessionStorage.getItem(LEGACY_DRAFT_KEY_V1);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const legacyModels = (parsed.models ?? {}) as Partial<GenerationPreferences['models']>;
-    const parsedPreferences = (parsed.preferences ?? {}) as Partial<GenerationPreferences>;
-    const models = {
-      llm_model: parsedPreferences.models?.llm_model ?? legacyModels.llm_model ?? '',
-      image_model: parsedPreferences.models?.image_model ?? legacyModels.image_model ?? '',
-      video_model: parsedPreferences.models?.video_model ?? legacyModels.video_model ?? '',
-    };
-    const workflow: VimaxWorkflow =
-      parsed.workflow === 'script2video' ||
-      parsed.workflow === 'novel2video' ||
-      parsed.workflow === 'action2video'
-        ? parsed.workflow
-        : 'idea2video';
-    const creationSkillId = CREATION_SKILL_IDS.includes(
-      parsed.creationSkillId as CreationSkillId
-    )
-      ? (parsed.creationSkillId as CreationSkillId)
-      : 'cinematic';
-    const verticalSkillIds = Array.isArray(parsed.verticalSkillIds)
-      ? parsed.verticalSkillIds.filter((id): id is string => typeof id === 'string')
-      : [];
-    return {
-      ...fallback,
-      workflow,
-      sourceText: typeof parsed.sourceText === 'string' ? parsed.sourceText : '',
-      creationPrompt:
-        typeof parsed.creationPrompt === 'string' ? parsed.creationPrompt : '',
-      creationSkillId,
-      requirement: typeof parsed.requirement === 'string' ? parsed.requirement : '',
-      style:
-        typeof parsed.style === 'string' && parsed.style.trim()
-          ? parsed.style
-          : DEFAULT_VISUAL_STYLE_PROMPT,
-      verticalSkillIds,
-      preferences: {
-        automatic: parsedPreferences.automatic === true,
-        smartAspect: parsedPreferences.smartAspect !== false,
-        mediaKind: parsedPreferences.mediaKind === 'image' ? 'image' : 'video',
-        aspectRatio: normalizeSeedanceAspectRatio(
-          String(parsedPreferences.aspectRatio ?? parsed.aspectRatio ?? '')
-        ),
-        resolution: normalizeVideoResolution(
-          models.video_model,
-          String(
-            parsedPreferences.resolution ??
-              parsed.resolution ??
-              DEFAULT_VIDEO_RESOLUTION
-          )
-        ),
-        fps: normalizeVideoFps(
-          models.video_model,
-          Number(parsedPreferences.fps ?? parsed.fps ?? DEFAULT_VIDEO_FPS)
-        ),
-        targetDurationSecs:
-          typeof parsedPreferences.targetDurationSecs === 'number'
-            ? parsedPreferences.targetDurationSecs
-            : typeof parsed.targetDurationSecs === 'number'
-              ? parsed.targetDurationSecs
-              : 30,
-        specifyTargetDuration: parsedPreferences.specifyTargetDuration === true,
-        models,
-      },
-      // Files intentionally cannot survive reloads.
-      cameos: [],
-      canvasReferences: [],
-      actionCharacter: null,
-      actionVideo: null,
-    };
-  } catch {
-    return fallback;
-  }
-}
-
-export function clearVideoHomeDraft(): void {
-  try {
-    window.sessionStorage.removeItem(DRAFT_KEY);
-    window.sessionStorage.removeItem(LEGACY_DRAFT_KEY);
-    window.sessionStorage.removeItem(LEGACY_DRAFT_KEY_V1);
-  } catch {
-    // Storage may be unavailable in hardened webviews.
-  }
-}
+export { clearVideoHomeDraft } from './homeDraft';
 
 interface VideoHomeComposerProps {
   mode: VideoHomeMode;
@@ -237,98 +55,43 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const draftedTracked = useRef(false);
-  const [draft, setDraft] = useState<VideoCreateDraft>(loadDraft);
+  const { draft, setDraft } = useHomeDraft();
+  const isAction = mode === 'action';
+  const {
+    handleFiles,
+    uploadError,
+    setUploadError,
+    documentName,
+    setDocumentName,
+    setActionCharacter,
+    setActionVideo,
+    removeCanvasReference,
+  } = useHomeUpload({
+    draft,
+    setDraft,
+    mode,
+    isAction,
+    loading: loading ?? false,
+    t,
+  });
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [prefsModuleReady, setPrefsModuleReady] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [skillHubOpen, setSkillHubOpen] = useState(false);
   const [skillCreateOpen, setSkillCreateOpen] = useState(false);
-  const [skillListReloadToken, setSkillListReloadToken] = useState(0);
-  const [skillCatalog, setSkillCatalog] = useState<VerticalSkillSummary[]>([]);
   const [modelMissing, setModelMissing] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [documentName, setDocumentName] = useState<string | null>(null);
-  const draftRef = useRef(draft);
   const composerRef = useRef<HTMLDivElement>(null);
-  const characterInputRef = useRef<HTMLInputElement | null>(null);
-  const videoInputRef = useRef<HTMLInputElement | null>(null);
-  const isAction = mode === 'action';
+  const {
+    mergeCatalog,
+    reloadToken: skillListReloadToken,
+    bumpReloadToken,
+    selectedVerticalSkills,
+  } = useVerticalSkillHub(mode, draft.verticalSkillIds);
 
-  const agentModes = useMemo<AgentModeDefinition[]>(
-    () => [
-      {
-        id: 'idea2video',
-        label: t('videoGeneration.create.modes.idea', { defaultValue: '一个想法' }),
-        description: t('videoGeneration.create.modes.ideaDesc', {
-          defaultValue: '从一句灵感扩写成完整影片',
-        }),
-      },
-      {
-        id: 'script2video',
-        label: t('videoGeneration.create.modes.script', { defaultValue: '完整剧本' }),
-        description: t('videoGeneration.create.modes.scriptDesc', {
-          defaultValue: '按剧情结构自动拆解镜头',
-        }),
-      },
-      {
-        id: 'novel2video',
-        label: t('videoGeneration.create.modes.novel', { defaultValue: '小说文本' }),
-        description: t('videoGeneration.create.modes.novelDesc', {
-          defaultValue: '提炼长文情节并设计分镜',
-        }),
-      },
-    ],
-    [t]
-  );
-
-  const creationSkills = useMemo<CreationSkillDefinition[]>(
-    () => [
-      {
-        id: 'cinematic',
-        label: t('videoGeneration.create.skills.cinematic.label', {
-          defaultValue: '电影写实',
-        }),
-        description: t('videoGeneration.create.skills.cinematic.desc', {
-          defaultValue: '纪实光影 · 叙事镜头',
-        }),
-        stylePrompt: CREATION_SKILL_PROMPTS.cinematic,
-      },
-      {
-        id: 'anime',
-        label: t('videoGeneration.create.skills.anime.label', {
-          defaultValue: '二次元',
-        }),
-        description: t('videoGeneration.create.skills.anime.desc', {
-          defaultValue: '鲜明线稿 · 动漫质感',
-        }),
-        stylePrompt: CREATION_SKILL_PROMPTS.anime,
-      },
-      {
-        id: 'cyberpunk',
-        label: t('videoGeneration.create.skills.cyberpunk.label', {
-          defaultValue: '赛博霓虹',
-        }),
-        description: t('videoGeneration.create.skills.cyberpunk.desc', {
-          defaultValue: '未来都市 · 高对比',
-        }),
-        stylePrompt: CREATION_SKILL_PROMPTS.cyberpunk,
-      },
-      {
-        id: 'inkWash',
-        label: t('videoGeneration.create.skills.inkWash.label', {
-          defaultValue: '水墨意境',
-        }),
-        description: t('videoGeneration.create.skills.inkWash.desc', {
-          defaultValue: '留白构图 · 东方美学',
-        }),
-        stylePrompt: CREATION_SKILL_PROMPTS.inkWash,
-      },
-    ],
-    [t]
-  );
+  const agentModes = useMemo(() => agentModesFor(t), [t]);
+  const creationSkills = useMemo(() => creationSkillsFor(t), [t]);
 
   const agentModeLabel = t('videoGeneration.mode.agentLabel', {
     defaultValue: 'Agent 模式',
@@ -367,48 +130,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setPreferencesOpen(false);
     setUploadError(null);
   }, [mode]);
-
-  useEffect(() => {
-    draftRef.current = draft;
-    try {
-      window.sessionStorage.setItem(
-        DRAFT_KEY,
-        JSON.stringify({
-          ...draft,
-          cameos: draft.cameos.map(({ localId, characterName, description }) => ({
-            localId,
-            characterName,
-            description,
-          })),
-          canvasReferences: [],
-          actionCharacter: null,
-          actionVideo: null,
-          verticalSkillIds: draft.verticalSkillIds,
-        })
-      );
-    } catch {
-      // Storage may be unavailable in hardened webviews.
-    }
-  }, [draft]);
-
-  useEffect(
-    () => () => {
-      const current = draftRef.current;
-      for (const cameo of current.cameos) {
-        if (cameo.previewUrl) URL.revokeObjectURL(cameo.previewUrl);
-      }
-      for (const reference of current.canvasReferences) {
-        URL.revokeObjectURL(reference.previewUrl);
-      }
-      if (current.actionCharacter?.previewUrl) {
-        URL.revokeObjectURL(current.actionCharacter.previewUrl);
-      }
-      if (current.actionVideo?.previewUrl) {
-        URL.revokeObjectURL(current.actionVideo.previewUrl);
-      }
-    },
-    []
-  );
 
   useEffect(() => {
     if (isAction) {
@@ -457,45 +178,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const verticalSkillLabel = t('videoGeneration.skills.mountButton', {
     defaultValue: 'Skill',
   });
-  const selectedVerticalSkills = useMemo(() => {
-    const byId = new Map(skillCatalog.map((skill) => [skill.id, skill]));
-    return draft.verticalSkillIds.map((id) => {
-      const skill = byId.get(id);
-      return {
-        id,
-        label: skill?.display_name || skill?.name || id.replace(/^[^:]+:/, ''),
-      };
-    });
-  }, [draft.verticalSkillIds, skillCatalog]);
-
-  useEffect(() => {
-    if (mode !== 'agent') return;
-    if (skillCatalog.length > 0 && skillListReloadToken === 0) return;
-    let cancelled = false;
-    const loadCatalog = () => listVerticalSkills()
-      .then((list) => {
-        if (!cancelled) setSkillCatalog(list);
-      })
-      .catch(() => {
-        /* catalog is best-effort for chip labels */
-      });
-    const idleWindow = window as Window & {
-      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
-      cancelIdleCallback?: (handle: number) => void;
-    };
-    if (typeof idleWindow.requestIdleCallback === 'function') {
-      const idleId = idleWindow.requestIdleCallback(loadCatalog, { timeout: 1200 });
-      return () => {
-        cancelled = true;
-        idleWindow.cancelIdleCallback?.(idleId);
-      };
-    }
-    const timer = window.setTimeout(loadCatalog, 250);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [mode, skillCatalog.length, skillListReloadToken]);
 
   const removeVerticalSkill = (skillId: string) => {
     setDraft((current) => ({
@@ -594,32 +276,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setUploadError(null);
   };
 
-  const revokeActionDraft = (asset: ActionAssetDraft | null) => {
-    if (asset?.previewUrl) URL.revokeObjectURL(asset.previewUrl);
-  };
-
-  const setActionCharacter = (file: File | null) => {
-    setDraft((current) => {
-      revokeActionDraft(current.actionCharacter);
-      if (!file) return { ...current, actionCharacter: null };
-      return {
-        ...current,
-        actionCharacter: { file, previewUrl: URL.createObjectURL(file) },
-      };
-    });
-  };
-
-  const setActionVideo = (file: File | null) => {
-    setDraft((current) => {
-      revokeActionDraft(current.actionVideo);
-      if (!file) return { ...current, actionVideo: null };
-      return {
-        ...current,
-        actionVideo: { file, previewUrl: URL.createObjectURL(file) },
-      };
-    });
-  };
-
   const selectCreationSkill = (creationSkillId: CreationSkillId) => {
     const skill = creationSkills.find((item) => item.id === creationSkillId);
     setDraft((current) => ({
@@ -632,118 +288,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
 
   const removeTrailingSlash = () => {
     setActiveText(activeText.replace(/\/\s*$/, '').trimEnd());
-  };
-
-  const addAgentImages = (files: File[]) => {
-    const room = Math.max(0, MAX_REFERENCES - draft.cameos.length);
-    const added: CameoDraftItem[] = files.slice(0, room).map((file, index) => ({
-      localId: makeLocalId('cameo'),
-      characterName: suggestCameoCharacterName(file.name, draft.cameos.length + index),
-      description: '',
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }));
-    setDraft((current) => ({ ...current, cameos: [...current.cameos, ...added] }));
-  };
-
-  const addCanvasImages = (files: File[]) => {
-    const room = Math.max(0, MAX_REFERENCES - draft.canvasReferences.length);
-    const added: CanvasReferenceDraft[] = files.slice(0, room).map((file) => ({
-      localId: makeLocalId('reference'),
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }));
-    setDraft((current) => ({
-      ...current,
-      canvasReferences: [...current.canvasReferences, ...added],
-    }));
-  };
-
-  const handleFiles = async (files: File[]) => {
-    if (loading || files.length === 0) return;
-    setUploadError(null);
-    if (isAction) {
-      const images = files.filter(isSupportedImageFile);
-      const videos = files.filter(isSupportedVideoFile);
-      const unsupported = files.filter(
-        (file) => !isSupportedImageFile(file) && !isSupportedVideoFile(file)
-      );
-      if (images[0]) {
-        if (images[0].size > ACTION_CHARACTER_MAX_BYTES) {
-          setUploadError(
-            t('videoGeneration.create.action.characterTooLarge', {
-              defaultValue: '角色图不能超过 10 MB。',
-            })
-          );
-        } else {
-          setActionCharacter(images[0]);
-        }
-      }
-      if (videos[0]) {
-        if (videos[0].size > ACTION_VIDEO_MAX_BYTES) {
-          setUploadError(
-            t('videoGeneration.create.action.videoTooLarge', {
-              defaultValue: '参考视频不能超过 80 MB。',
-            })
-          );
-        } else {
-          setActionVideo(videos[0]);
-        }
-      }
-      if (unsupported.length > 0) {
-        setUploadError(
-          t('videoGeneration.create.action.unsupported', {
-            defaultValue: '请上传 PNG / JPEG / WEBP 角色图，或 MP4 / WebM / MOV 参考视频。',
-          })
-        );
-      }
-      return;
-    }
-    const images = files.filter(isSupportedImageFile);
-    const documents = files.filter(isSupportedTextFile);
-    const unsupported = files.filter(
-      (file) => !isSupportedImageFile(file) && !isSupportedTextFile(file)
-    );
-    if (images.length > 0) {
-      if (mode === 'creation') addCanvasImages(images);
-      else addAgentImages(images);
-    }
-    if (documents[0]) {
-      try {
-        const text = await readUploadedTextFile(documents[0]);
-        setDocumentName(documents[0].name);
-        setDraft((current) =>
-          mode === 'agent'
-            ? {
-                ...current,
-                workflow:
-                  current.workflow === 'idea2video' ? 'script2video' : current.workflow,
-                sourceText: text,
-              }
-            : { ...current, creationPrompt: text }
-        );
-      } catch (error) {
-        setUploadError(error instanceof Error ? error.message : String(error));
-      }
-    }
-    if (unsupported.length > 0) {
-      setUploadError(
-        t('videoGeneration.create.upload.unsupported', {
-          defaultValue: '部分文件格式暂不支持，请上传图片、DOCX 或纯文本文档。',
-        })
-      );
-    }
-  };
-
-  const removeCanvasReference = (localId: string) => {
-    const target = draft.canvasReferences.find((item) => item.localId === localId);
-    if (target) URL.revokeObjectURL(target.previewUrl);
-    setDraft((current) => ({
-      ...current,
-      canvasReferences: current.canvasReferences.filter(
-        (item) => item.localId !== localId
-      ),
-    }));
   };
 
   const openPreferences = (open: boolean) => {
@@ -814,145 +358,30 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     else onSubmitCreation(normalized);
   };
 
-  const modeMenu = (
-    <div className={styles.modeMenu}>
-      <button
-        type='button'
-        className={`${styles.modeMenuItem} ${
-          mode === 'agent' ? styles.modeMenuItemActive : ''
-        }`}
-        onClick={() => {
-          onModeChange('agent');
-          setModeMenuOpen(false);
-        }}
-      >
-        <RobotOne theme='outline' size={18} />
-        <span>
-          <strong>{agentModeLabel}</strong>
-          <small>
-            {t('videoGeneration.mode.agentMenuDesc', {
-              defaultValue: '自动规划分镜并渲染成片',
-            })}
-          </small>
-        </span>
-      </button>
-      <button
-        type='button'
-        className={`${styles.modeMenuItem} ${
-          mode === 'action' ? styles.modeMenuItemActive : ''
-        }`}
-        onClick={() => {
-          onModeChange('action');
-          setModeMenuOpen(false);
-        }}
-      >
-        <People theme='outline' size={18} />
-        <span>
-          <strong>{actionModeLabel}</strong>
-          <small>
-            {t('videoGeneration.mode.actionMenuDesc', {
-              defaultValue: '角色图 + 参考视频，模仿动作成片',
-            })}
-          </small>
-        </span>
-      </button>
-      <button
-        type='button'
-        className={`${styles.modeMenuItem} ${
-          mode === 'creation' ? styles.modeMenuItemActive : ''
-        }`}
-        onClick={() => {
-          onModeChange('creation');
-          setModeMenuOpen(false);
-        }}
-      >
-        <Platte theme='outline' size={18} />
-        <span>
-          <strong>{creationModeLabel}</strong>
-          <small>
-            {t('videoGeneration.mode.creationMenuDesc', {
-              defaultValue: '进入无限画布自由编排',
-            })}
-          </small>
-        </span>
-      </button>
-    </div>
-  );
+  const handleModeSelect = (nextMode: VideoHomeMode) => {
+    onModeChange(nextMode);
+    setModeMenuOpen(false);
+  };
 
   const skillMenu = (
-    <div
-      className={styles.slashMenu}
-      role='listbox'
-      aria-label={
-        mode === 'agent'
-          ? t('videoGeneration.create.modesMenuAria', {
-              defaultValue: '选择 Mode',
-            })
-          : t('videoGeneration.create.skillsMenuAria', {
-              defaultValue: '选择技能',
-            })
-      }
-    >
-      <div className={styles.slashMenuTitle}>
-        {mode === 'agent'
-          ? t('videoGeneration.create.modesMenuTitle', {
-              defaultValue: '选择 Mode',
-            })
-          : t('videoGeneration.create.skillsMenuTitle', {
-              defaultValue: '选择风格技能',
-            })}
-      </div>
-      {(mode === 'agent' ? agentModes : creationSkills).map((skill) => {
-        const icons =
-          mode === 'agent'
-            ? [
-                <VideoOne key='idea' size={15} />,
-                <FileText key='script' size={15} />,
-                <BookOpen key='novel' size={15} />,
-              ]
-            : null;
-        const agentIndex =
-          mode === 'agent'
-            ? agentModes.findIndex((item) => item.id === skill.id)
-            : -1;
-        const active =
-          mode === 'agent'
-            ? draft.workflow === skill.id
-            : draft.creationSkillId === skill.id;
-        return (
-          <button
-            key={skill.id}
-            type='button'
-            role='option'
-            aria-selected={active}
-            className={`${styles.slashMenuItem} ${
-              active ? styles.slashMenuItemActive : ''
-            }`}
-            onClick={() => {
-              removeTrailingSlash();
-              if (mode === 'agent') selectAgentMode(skill.id as VimaxWorkflow);
-              else selectCreationSkill(skill.id as CreationSkillId);
-            }}
-          >
-            {icons?.[agentIndex] ??
-              (skill.id === 'cinematic' ? <Pic size={15} /> : <Platte size={15} />)}
-            <span>
-              <strong>{skill.label}</strong>
-              <small>{skill.description}</small>
-            </span>
-          </button>
-        );
-      })}
-    </div>
+    <SlashSkillMenu
+      mode={mode === 'agent' ? 'agent' : 'creation'}
+      items={mode === 'agent' ? agentModes : creationSkills}
+      selectedId={mode === 'agent' ? draft.workflow : draft.creationSkillId}
+      onSelect={(id) => {
+        removeTrailingSlash();
+        if (mode === 'agent') selectAgentMode(id as VimaxWorkflow);
+        else selectCreationSkill(id as CreationSkillId);
+      }}
+    />
   );
-
-  const activeReferences =
-    mode === 'agent' ? draft.cameos : draft.canvasReferences;
 
   const uploadPreview =
     mode === 'creation'
       ? draft.canvasReferences[0]?.previewUrl
       : draft.cameos[0]?.previewUrl;
+  const referenceCount =
+    mode === 'agent' ? draft.cameos.length : draft.canvasReferences.length;
 
   const prefsSummary = generationPreferencesSummary(
     draft.preferences,
@@ -1024,269 +453,32 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         }}
       >
         {isAction ? (
-          <div className={styles.actionSlots}>
-            <button
-              type='button'
-              className={`${styles.actionSlot} ${
-                draft.actionCharacter ? styles.actionSlotFilled : ''
-              }`}
-              disabled={loading}
-              onClick={() => characterInputRef.current?.click()}
-              aria-label={t('videoGeneration.create.action.characterAria', {
-                defaultValue: '上传角色图（PNG / JPEG / WEBP）',
-              })}
-            >
-              {draft.actionCharacter ? (
-                <img
-                  src={draft.actionCharacter.previewUrl}
-                  alt=''
-                  className={styles.actionSlotPreview}
-                />
-              ) : (
-                <People theme='outline' size={22} />
-              )}
-              <span className={styles.actionSlotMeta}>
-                {t('videoGeneration.create.action.character', { defaultValue: '角色图' })}
-              </span>
-              {draft.actionCharacter ? (
-                <span
-                  role='button'
-                  tabIndex={0}
-                  className={styles.actionSlotClear}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setActionCharacter(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setActionCharacter(null);
-                    }
-                  }}
-                  aria-label={t('videoGeneration.create.action.removeCharacter', {
-                    defaultValue: '移除角色图',
-                  })}
-                >
-                  <CloseSmall size={12} />
-                </span>
-              ) : null}
-            </button>
-            <input
-              ref={characterInputRef}
-              type='file'
-              accept={ACTION_CHARACTER_ACCEPT}
-              hidden
-              disabled={loading}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void handleFiles([file]);
-                event.target.value = '';
-              }}
-            />
-            <button
-              type='button'
-              className={`${styles.actionSlot} ${
-                draft.actionVideo ? styles.actionSlotFilled : ''
-              }`}
-              disabled={loading}
-              onClick={() => videoInputRef.current?.click()}
-              aria-label={t('videoGeneration.create.action.videoAria', {
-                defaultValue: '上传参考视频（MP4 / WebM / MOV）',
-              })}
-            >
-              {draft.actionVideo ? (
-                <video
-                  src={draft.actionVideo.previewUrl}
-                  className={styles.actionSlotPreview}
-                  muted
-                  playsInline
-                />
-              ) : (
-                <VideoOne theme='outline' size={22} />
-              )}
-              <span className={styles.actionSlotMeta}>
-                {t('videoGeneration.create.action.video', { defaultValue: '参考视频' })}
-              </span>
-              {draft.actionVideo ? (
-                <span
-                  role='button'
-                  tabIndex={0}
-                  className={styles.actionSlotClear}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setActionVideo(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setActionVideo(null);
-                    }
-                  }}
-                  aria-label={t('videoGeneration.create.action.removeVideo', {
-                    defaultValue: '移除参考视频',
-                  })}
-                >
-                  <CloseSmall size={12} />
-                </span>
-              ) : null}
-            </button>
-            <input
-              ref={videoInputRef}
-              type='file'
-              accept={ACTION_VIDEO_ACCEPT}
-              hidden
-              disabled={loading}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void handleFiles([file]);
-                event.target.value = '';
-              }}
-            />
-          </div>
-        ) : (
-        <div className={styles.composerMain}>
-          <button
-            type='button'
-            className={`${styles.uploadSlot} ${
-              uploadPreview ? styles.uploadSlotFilled : ''
-            } ${documentName && !uploadPreview ? styles.uploadSlotDocument : ''}`}
-            disabled={loading}
-            onClick={() => fileInputRef.current?.click()}
-            title={t('videoGeneration.create.upload.aria', {
-              defaultValue:
-                '上传角色参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）',
-            })}
-            aria-label={t('videoGeneration.create.upload.aria', {
-              defaultValue:
-                '上传角色参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）',
-            })}
-          >
-            {uploadPreview ? (
-              <img src={uploadPreview} alt='' className={styles.uploadPreview} />
-            ) : (
-              <span
-                className={`${styles.uploadGlyph} ${
-                  documentName ? styles.uploadGlyphActive : ''
-                }`}
-                aria-hidden='true'
-              >
-                <SlantedDocIcon size={24} className={styles.uploadDocIcon} />
-              </span>
-            )}
-            {activeReferences.length > 1 ? (
-              <em className={styles.uploadCount}>+{activeReferences.length - 1}</em>
-            ) : documentName && uploadPreview ? (
-              <em className={styles.uploadDocBadge} aria-hidden='true'>
-                <FileText size={11} />
-              </em>
-            ) : null}
-          </button>
-          <input
-            ref={fileInputRef}
-            type='file'
-            accept={VIDEO_HOME_UPLOAD_ACCEPT}
-            multiple
-            hidden
-            disabled={loading}
-            onChange={(event) => {
-              void handleFiles(Array.from(event.target.files ?? []));
-              event.target.value = '';
-            }}
+          <ActionUploadSlots
+            loading={loading ?? false}
+            actionCharacter={draft.actionCharacter}
+            actionVideo={draft.actionVideo}
+            setActionCharacter={setActionCharacter}
+            setActionVideo={setActionVideo}
+            handleFiles={handleFiles}
           />
-
-          <div className={styles.promptArea}>
-            <div className={styles.promptInner}>
-              {(documentName ||
-                (mode === 'creation' && draft.canvasReferences.length > 0)) && (
-                <div className={styles.inlineAttachments}>
-                  {documentName ? (
-                    <span className={styles.documentChip}>
-                      <FileText size={13} />
-                      {displayFileStem(documentName)}
-                      <button
-                        type='button'
-                        aria-label={t('videoGeneration.create.upload.removeDocument', {
-                          defaultValue: '移除文档',
-                        })}
-                        onClick={() => {
-                          setDocumentName(null);
-                          setActiveText('');
-                        }}
-                      >
-                        <CloseSmall size={12} />
-                      </button>
-                    </span>
-                  ) : null}
-                  {mode === 'creation'
-                    ? draft.canvasReferences.slice(0, 4).map((reference) => (
-                        <span key={reference.localId} className={styles.referenceThumb}>
-                          <img src={reference.previewUrl} alt={reference.file.name} />
-                          <button
-                            type='button'
-                            aria-label={t('videoGeneration.create.upload.removeReference', {
-                              name: reference.file.name,
-                              defaultValue: '移除 {{name}}',
-                            })}
-                            onClick={() => removeCanvasReference(reference.localId)}
-                          >
-                            <CloseSmall size={12} />
-                          </button>
-                        </span>
-                      ))
-                    : null}
-                </div>
-              )}
-              <div className={styles.promptEditor}>
-                {mode === 'agent' && selectedVerticalSkills.length > 0 ? (
-                  <div className={styles.skillChips}>
-                    {selectedVerticalSkills.map((skill, index) => (
-                      <React.Fragment key={skill.id}>
-                        {index > 0 ? (
-                          <span className={styles.skillDiamond} aria-hidden='true' />
-                        ) : null}
-                        <button
-                          type='button'
-                          className={styles.skillTag}
-                          disabled={loading}
-                          title={skill.label}
-                          aria-label={t('videoGeneration.skills.removeSelected', {
-                            name: skill.label,
-                            defaultValue: '移除 Skill {{name}}',
-                          })}
-                          onClick={() => removeVerticalSkill(skill.id)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Backspace' || event.key === 'Delete') {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              removeVerticalSkill(skill.id);
-                            }
-                          }}
-                        >
-                          <strong>{skill.label}</strong>
-                          <CloseSmall size={11} />
-                        </button>
-                      </React.Fragment>
-                    ))}
-                  </div>
-                ) : null}
-                <TextArea
-                  value={activeText}
-                  onChange={setActiveText}
-                  placeholder={
-                    mode === 'agent' && selectedVerticalSkills.length > 0
-                      ? ''
-                      : placeholder
-                  }
-                  disabled={loading}
-                  className={styles.promptInput}
-                  onKeyDown={handlePromptKeyDown}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
+        ) : (
+          <PromptComposer
+            mode={mode}
+            loading={loading ?? false}
+            documentName={documentName}
+            setDocumentName={setDocumentName}
+            uploadPreview={uploadPreview}
+            referenceCount={referenceCount}
+            canvasReferences={draft.canvasReferences}
+            removeCanvasReference={removeCanvasReference}
+            selectedVerticalSkills={selectedVerticalSkills}
+            removeVerticalSkill={removeVerticalSkill}
+            activeText={activeText}
+            setActiveText={setActiveText}
+            placeholder={placeholder}
+            handlePromptKeyDown={handlePromptKeyDown}
+            handleFiles={handleFiles}
+          />
         )}
 
         {uploadError ? <div className={styles.inlineError}>{uploadError}</div> : null}
@@ -1307,7 +499,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 }
                 setModeMenuOpen(open);
               }}
-              content={modeMenu}
+              content={
+                <ModeMenu mode={mode} onSelect={handleModeSelect} />
+              }
             >
               <button type='button' className={`${styles.toolbarButton} ${styles.modeButton}`}>
                 {mode === 'agent' ? (
@@ -1406,13 +600,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                         onChangeSelected={(verticalSkillIds) =>
                           setDraft((current) => ({ ...current, verticalSkillIds }))
                         }
-                        onCatalogChange={(list) => {
-                          setSkillCatalog((prev) => {
-                            const map = new Map(prev.map((skill) => [skill.id, skill]));
-                            list.forEach((skill) => map.set(skill.id, skill));
-                            return Array.from(map.values());
-                          });
-                        }}
+                        onCatalogChange={mergeCatalog}
                         onRequestCreate={() => {
                           setSkillHubOpen(false);
                           setSkillCreateOpen(true);
@@ -1497,7 +685,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   ? current.verticalSkillIds
                   : [...current.verticalSkillIds, skillId],
               }));
-              setSkillListReloadToken((n) => n + 1);
+              bumpReloadToken();
             }}
           />
         </Suspense>
