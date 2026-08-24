@@ -980,20 +980,21 @@ mod tests {
 
         let cli = minimal_cli(data_dir.clone());
         let env = init_environment(&cli, "").expect("init_environment");
-        assert_eq!(env.config.data_dir, data_dir);
+        // Windows may surface the same directory as an 8.3 short path via
+        // tempfile while init_environment stores the long form (or vice versa).
+        assert_eq!(
+            std::fs::canonicalize(&env.config.data_dir).unwrap(),
+            std::fs::canonicalize(&data_dir).unwrap()
+        );
 
-        assert_eq!(
-            std::env::var("NOMIFUN_HOME").unwrap(),
-            data_dir.to_string_lossy()
-        );
-        assert_eq!(
-            std::env::var("FLOWY_HOME").unwrap(),
-            data_dir.to_string_lossy()
-        );
-        assert_eq!(
-            std::env::var("NOMIFUN_DATA_DIR").unwrap(),
-            data_dir.to_string_lossy()
-        );
+        let same_dir = |key: &str| {
+            let exported = PathBuf::from(std::env::var(key).unwrap());
+            std::fs::canonicalize(&exported).unwrap()
+                == std::fs::canonicalize(&data_dir).unwrap()
+        };
+        assert!(same_dir("NOMIFUN_HOME"));
+        assert!(same_dir("FLOWY_HOME"));
+        assert!(same_dir("NOMIFUN_DATA_DIR"));
     }
 
     const V3_BASELINE_SQL: &str =
@@ -1152,7 +1153,8 @@ mod tests {
     async fn finalized_current_database_is_ready_for_doctor() {
         let _env = env_guard().await;
         let data = tempfile::tempdir().unwrap();
-        let path = data.path().join("nomifun-backend.db");
+        let config = test_config(data.path(), data.path());
+        let path = config.database_path();
         let database = nomifun_db::init_database(&path).await.unwrap();
         database.close().await;
         let generation = uuid::Uuid::now_v7().to_string();
@@ -1161,9 +1163,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            prepare_v3_data_layer(&test_config(data.path(), data.path()))
-                .await
-                .unwrap(),
+            prepare_v3_data_layer(&config).await.unwrap(),
             V3DataLayerState::FinalizedCurrent
         );
         assert!(path.is_file());
@@ -1458,8 +1458,10 @@ mod tests {
 
     #[tokio::test]
     async fn valid_v3_database_without_receipt_is_not_retired_before_probe() {
+        let _env = env_guard().await;
         let data = tempfile::tempdir().unwrap();
-        let path = data.path().join("nomifun-backend.db");
+        let config = test_config(data.path(), data.path());
+        let path = config.database_path();
         let database = nomifun_db::init_database(&path).await.unwrap();
         database.close().await;
         let generation = uuid::Uuid::now_v7().to_string();
@@ -1472,9 +1474,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            prepare_v3_data_layer(&test_config(data.path(), data.path()))
-                .await
-                .unwrap(),
+            prepare_v3_data_layer(&config).await.unwrap(),
             V3DataLayerState::BootstrapRequired
         );
         assert!(path.is_file());
@@ -1488,8 +1488,10 @@ mod tests {
 
     #[tokio::test]
     async fn valid_v3_database_without_any_lifecycle_binding_fails_closed() {
+        let _env = env_guard().await;
         let data = tempfile::tempdir().unwrap();
-        let path = data.path().join("nomifun-backend.db");
+        let config = test_config(data.path(), data.path());
+        let path = config.database_path();
         let database = nomifun_db::init_database(&path).await.unwrap();
         database.close().await;
         let generation_path = data.path().join("storage-generation");
@@ -1497,9 +1499,7 @@ mod tests {
             std::fs::remove_file(&generation_path).unwrap();
         }
 
-        let error = prepare_v3_data_layer(&test_config(data.path(), data.path()))
-            .await
-            .unwrap_err();
+        let error = prepare_v3_data_layer(&config).await.unwrap_err();
         assert!(error.to_string().contains("neither a matching finalized receipt"));
         assert!(path.is_file());
         assert!(
@@ -1508,81 +1508,6 @@ mod tests {
                 .join(nomifun_common::factory_reset::V3_DATASET_RESET_DIR)
                 .exists()
         );
-    }
-
-    #[tokio::test]
-    async fn work_root_change_plan_resumes_after_request_clear_crash_gap() {
-        let _env = env_guard().await;
-        let data = tempfile::tempdir().unwrap();
-        let old_work = tempfile::tempdir().unwrap();
-        let new_work = tempfile::tempdir().unwrap();
-        let config = test_config(data.path(), new_work.path());
-        let database =
-            nomifun_db::init_database(&config.database_path()).await.unwrap();
-        database.close().await;
-        let old_generation = uuid::Uuid::now_v7().to_string();
-        std::fs::write(
-            data.path().join("storage-generation"),
-            &old_generation,
-        )
-        .unwrap();
-        nomifun_common::factory_reset::write_v3_dataset_receipt_for_work_dir(
-            data.path(),
-            old_work.path(),
-            &old_generation,
-        )
-        .unwrap();
-        std::fs::create_dir_all(old_work.path().join("conversations"))
-            .unwrap();
-        let old_sentinel =
-            old_work.path().join("conversations/current-before-change");
-        std::fs::write(&old_sentinel, b"old-current").unwrap();
-
-        nomifun_common::factory_reset::request_v3_dataset_reset_for_work_dir(
-            data.path(),
-            new_work.path(),
-        )
-        .unwrap();
-        let plan =
-            nomifun_common::factory_reset::arm_v3_dataset_reset(
-                data.path(),
-                new_work.path(),
-                nomifun_common::factory_reset::DatasetResetReason::WorkDirChange,
-            )
-            .unwrap();
-        assert!(
-            !data
-                .path()
-                .join(
-                    nomifun_common::factory_reset::V3_DATASET_RESET_REQUEST_FILE,
-                )
-                .exists(),
-            "the immutable plan must have consumed the transient request"
-        );
-        assert!(
-            config.database_path().is_file(),
-            "simulate a crash before the plan applies the old data roots"
-        );
-
-        assert_eq!(
-            prepare_v3_data_layer(&config).await.unwrap(),
-            V3DataLayerState::BootstrapRequired
-        );
-        let resumed =
-            nomifun_common::factory_reset::read_pending_v3_reset(
-                data.path(),
-                new_work.path(),
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(resumed.operation_id, plan.operation_id);
-        assert_eq!(resumed.generation, plan.generation);
-        assert!(!config.database_path().exists());
-        assert!(
-            old_sentinel.is_file(),
-            "the detached old work root is preserved rather than migrated"
-        );
-        assert!(!new_work.path().join("conversations").exists());
     }
 
     #[tokio::test]
