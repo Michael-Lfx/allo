@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, Close } from '@icon-park/react';
 import { Spin } from '@arco-design/web-react';
 import type { SessionStatus, VimaxRunStatus } from '../types';
 import { formatElapsedClock } from '../progressEventElapsed';
@@ -61,15 +60,45 @@ function formatClockTime(ms: number | null): string {
   });
 }
 
+function StageGlyph({ kind }: { kind: 'check' | 'close' }) {
+  return (
+    <svg
+      width='12'
+      height='12'
+      viewBox='0 0 16 16'
+      fill='none'
+      aria-hidden='true'
+      focusable='false'
+    >
+      {kind === 'check' ? (
+        <path
+          d='M3.15 8.35 6.4 11.35 12.45 4.9'
+          stroke='currentColor'
+          strokeWidth='2.2'
+          strokeLinecap='round'
+          strokeLinejoin='round'
+        />
+      ) : (
+        <path
+          d='M4.5 4.5 11.5 11.5 M11.5 4.5 4.5 11.5'
+          stroke='currentColor'
+          strokeWidth='2.2'
+          strokeLinecap='round'
+        />
+      )}
+    </svg>
+  );
+}
+
 const StageMarker: React.FC<{ state: StudioStageState; index: number }> = ({ state, index }) => {
   switch (state) {
     case 'done':
-      return <Check theme='outline' size={12} strokeWidth={4} />;
+      return <StageGlyph kind='check' />;
     case 'active':
       return <Spin size={12} />;
     case 'failed':
     case 'cancelled':
-      return <Close theme='outline' size={12} strokeWidth={4} />;
+      return <StageGlyph kind='close' />;
     case 'pending':
       return <>{index + 1}</>;
     default: {

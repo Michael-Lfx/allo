@@ -349,11 +349,21 @@
   height: 20px;
   flex: none;
   place-items: center;
+  place-content: center;
   border-radius: 999px;
   background: var(--color-fill-2);
   color: var(--color-text-3);
   font-size: 10px;
   font-weight: 700;
+  line-height: 1;
+}
+
+.stageDot svg,
+.stageDot :global(.arco-spin) {
+  display: block;
+  width: 12px;
+  height: 12px;
+  overflow: visible;
 }
 
 .stageSegmentDone,
@@ -363,7 +373,7 @@
 }
 
 .stageSegmentDone .stageDot {
-  color: white;
+  color: #fff;
   background: rgb(var(--success-6));
 }
 
@@ -396,7 +406,7 @@
 }
 
 .stageSegmentFailed .stageDot {
-  color: white;
+  color: #fff;
   background: rgb(var(--danger-6));
 }
 
@@ -409,7 +419,7 @@
 }
 
 .stageSegmentCancelled .stageDot {
-  color: white;
+  color: #fff;
   background: var(--color-text-4);
 }
 
