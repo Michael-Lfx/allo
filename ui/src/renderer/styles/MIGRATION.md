@@ -1,6 +1,20 @@
 # Theme Color Migration Guide
 
-## 🎨 使用方式
+> Gate: `bun run check:dead-css` (`scripts/check-dead-css-utilities.mjs`) is a **ratchet**
+> (not a hard ban yet). Existing violations are baselined; new or worsened uses fail.
+> When a file is cleaned to zero, remove it from `BASELINE` in that script.
+
+## `-b-` direction trap
+
+`border-b-base` / `border-b-light` do **not** set `--border-base` / `--border-light`.
+UnoCSS parses `-b-` as the bottom direction first, then looks up the remainder in
+`theme.colors`, so you get `border-bottom-color: var(--bg-base)` (from
+`backgroundColors`). The old `borderColors = { 'b-base', ... }` block in
+`ui/uno.config.ts` was unreachable and has been deleted. Prefer
+`border border-solid border-[var(--border-base)]` (or directional
+`border-b border-b-solid border-b-[var(--border-base)]`).
+
+## 使用方式
 
 ### 1. UnoCSS 原子类（推荐）✨
 
