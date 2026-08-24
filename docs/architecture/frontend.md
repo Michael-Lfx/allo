@@ -123,10 +123,15 @@ keeps the newest cards at the bottom, and collapses on outside click or Escape.
 Escape returns focus to the disclosure button when the notification region had
 focus.
 
-Timers pause while the stack is hovered, focused, or expanded. `ComposerSurface`
-and `MobileActionSheet` register real blocker elements so `ResizeObserver`,
-window/visual-viewport resize, and sheet transition updates lift the stack above
-the composer or mobile action panel. Cards do not handle clicks themselves;
+Timers pause while the stack is hovered, focused, or expanded. Only the
+conversation `SendBox` and an open `MobileActionSheet` register real blocker
+elements. The centered `/guid` `GuidInputCard` intentionally does not register as
+a bottom obstruction, so home notifications remain anchored to the viewport
+bottom instead of being lifted to the top of the centered composer. The shared
+`ComposerSurface` defaults to no notification registration; callers must opt in
+only for bottom-anchored surfaces. `ResizeObserver`, window/visual-viewport
+resize, descendant scroll, and sheet transition updates keep registered blocker
+positions current. Cards do not handle clicks themselves;
 close buttons, supplied actions, and the disclosure control are the only
 interactive surfaces. `passthrough` cards remain pointer-transparent. Separate
 polite and assertive live regions announce notification content without

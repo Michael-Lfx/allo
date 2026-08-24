@@ -136,10 +136,12 @@ Arco 形状的门面仅用于兼容迁移。同一 scope 内重复的活动 `id`
 计数卡展开全部活动/退出中的通知，最新通知仍在底部；点击外部或在通知区域按 Escape
 会收起，若收起前焦点在通知区域，Escape 会将焦点恢复到计数按钮。
 
-通知在悬浮、获得焦点或展开期间暂停计时。`ComposerSurface` 和
-`MobileActionSheet` 注册真实 DOM 避让元素，由 `ResizeObserver`、窗口/Visual Viewport
-缩放以及操作面板过渡状态计算最终 bottom inset，确保通知不覆盖输入区或移动操作面板。
-卡片主体不处理点击；只有关闭按钮、调用方提供的操作按钮和计数控制可交互。
+通知在悬浮、获得焦点或展开期间暂停计时。只有会话页的 `SendBox` 和已打开的
+`MobileActionSheet` 注册真实 DOM 避让元素。居中的 `/guid` 首页
+`GuidInputCard` 不注册为底部遮挡物，通知会继续贴近视口右下角，不会被抬到首页输入卡顶部。
+共享的 `ComposerSurface` 默认不注册通知避让，只有底部固定的调用方可以显式开启。
+`ResizeObserver`、窗口/Visual Viewport 缩放、后代滚动和操作面板过渡状态会更新已注册
+避让元素的位置。只有关闭按钮、调用方提供的操作按钮和计数控制可交互。
 `passthrough` 通知保持点击穿透。独立的 polite/assertive live region 负责播报通知内容，
 普通通知进入按创建时间排序的队列；相同 revision 去重，待播报的更新只保留最新版本，
 轮到播报前已关闭的通知会被移除；错误通知进入 assertive 通道，优先打断当前正在展示的

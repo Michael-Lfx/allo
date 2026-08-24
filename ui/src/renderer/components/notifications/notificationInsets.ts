@@ -87,6 +87,9 @@ export const useNotificationBottomInset = (): number => {
     const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
     registry.forEach((element) => resizeObserver?.observe(element));
     window.addEventListener('resize', update);
+    // Blockers can move when an ancestor scroll container (for example the
+    // home page) scrolls without changing the blocker's own size.
+    window.addEventListener('scroll', update, true);
     window.visualViewport?.addEventListener('resize', update);
     window.visualViewport?.addEventListener('scroll', update);
     // Transform-driven blockers (e.g. MobileActionSheet sliding in over 0.28s)
@@ -112,6 +115,7 @@ export const useNotificationBottomInset = (): number => {
       resizeObserver?.disconnect();
       cancelAnimationFrame(rafId);
       window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
       window.visualViewport?.removeEventListener('resize', update);
       window.visualViewport?.removeEventListener('scroll', update);
       window.removeEventListener('transitionend', update, true);

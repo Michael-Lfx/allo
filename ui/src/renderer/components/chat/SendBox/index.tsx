@@ -2104,6 +2104,7 @@ const SendBox: React.FC<{
 
   return (
     <ComposerSurface
+      registerNotificationBlocker
       outerRef={dropzoneRef}
       panelRef={containerRef}
       dragHandlers={dragHandlers}

@@ -117,8 +117,10 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
         ? activeBorderColor
         : inactiveBorderColor;
 
+  // The home composer is centered content, not a bottom-anchored obstruction.
   return (
     <ComposerSurface
+      registerNotificationBlocker={false}
       outerRef={containerRef}
       dragHandlers={dragHandlers}
       isOverlayOpen={mentionOpen || slashMenuOpen}

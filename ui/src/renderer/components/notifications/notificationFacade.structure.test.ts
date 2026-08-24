@@ -64,10 +64,24 @@ describe('notification facade source contracts', () => {
     expect(hook.includes("from '@arco-design/web-react'")).toBe(false);
   });
 
+  test('only bottom-anchored composers opt into notification avoidance', () => {
+    const composer = readSource('../../components/chat/ComposerSurface.tsx');
+    const sendBox = readSource('../../components/chat/SendBox/index.tsx');
+    const homeComposer = readSource('../../pages/guid/components/GuidInputCard.tsx');
+
+    expect(composer.includes('registerNotificationBlocker?: boolean')).toBe(true);
+    expect(composer.includes('registerNotificationBlocker = false')).toBe(true);
+    expect(composer.includes('useNotificationBlocker(registerNotificationBlocker)')).toBe(true);
+    expect(sendBox.includes('registerNotificationBlocker')).toBe(true);
+    expect(homeComposer.includes('registerNotificationBlocker={false}')).toBe(true);
+  });
+
   test('defect regressions stay fixed in source', () => {
     const insets = readSource('./notificationInsets.ts');
     expect(insets.includes("'transitionend', update, true")).toBe(true);
     expect(insets.includes("'animationend', update, true")).toBe(true);
+    expect(insets.includes("'scroll', update, true")).toBe(true);
+    expect(insets.includes("removeEventListener('scroll', update, true)")).toBe(true);
     expect(insets.includes('requestAnimationFrame')).toBe(true);
 
     const host = readSource('./NotificationHost.tsx');
