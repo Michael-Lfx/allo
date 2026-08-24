@@ -1,9 +1,8 @@
 
-
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Progress } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { CheckOne, Download, FolderOpen, Refresh, CloseOne, Install } from '@icon-park/react';
+import { CheckOne, Download, Refresh, CloseOne } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 import NomiModal from '@/renderer/components/base/NomiModal';
 import MarkdownView from '@/renderer/components/Markdown';
@@ -32,36 +31,27 @@ type UpdateStatus =
 
 type UpdateInfo = UpdateReleaseInfo;
 
+type UpdatePresentation = 'compact' | 'detail';
+
+const formatVersion = (version?: string | null) => {
+  if (!version) return '-';
+  return version.startsWith('v') ? version : `v${version}`;
+};
+
 const BAIDU_RELEASE_MIRROR_URL = 'https://pan.baidu.com/s/5GPonoJNrwJ7GciBSDgXLaA';
 
-const COMPACT_PANEL_CLASS = 'flex flex-col items-center px-24px pt-24px pb-28px';
-const COMPACT_ICON_WRAP_CLASS =
-  'mb-12px flex h-48px w-48px shrink-0 items-center justify-center rounded-full';
-
-const CompactUpdatePanel: React.FC<{
-  icon: React.ReactNode;
-  iconWrapClassName?: string;
-  title: string;
-  description?: React.ReactNode;
-  extra?: React.ReactNode;
-  actions?: React.ReactNode;
-}> = ({ icon, iconWrapClassName, title, description, extra, actions }) => (
-  <div className={COMPACT_PANEL_CLASS}>
-    <div className={`${COMPACT_ICON_WRAP_CLASS} ${iconWrapClassName ?? ''}`.trim()}>{icon}</div>
-    <div className='text-15px font-600 text-t-primary'>{title}</div>
-    {description ? (
-      <div className='mt-8px max-w-240px text-center text-12px leading-18px text-t-secondary'>{description}</div>
-    ) : null}
-    {extra}
-    {actions ? <div className='mt-20px flex flex-wrap justify-center gap-8px'>{actions}</div> : null}
-  </div>
-);
+const COMPACT_HOST_CLASS =
+  'update-compact-card-host pointer-events-none fixed bottom-24px right-24px z-10020 w-[min(360px,calc(100vw-32px))]';
+const COMPACT_CARD_CLASS =
+  'update-compact-card pointer-events-auto box-border w-full rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-1)] p-14px text-t-primary shadow-[0_14px_36px_rgba(15,23,42,0.16),0_3px_10px_rgba(15,23,42,0.08)]';
+const COMPACT_ACTION_CLASS = 'update-compact-card__action !h-28px !w-full !min-w-0 !justify-center !rounded-7px !text-12px !font-600';
 
 const UpdateModal: React.FC = () => {
   const { t } = useTranslation();
   /** Bundled Tauri shell — in-app OTA via ModelScope + tauri-plugin-updater only. */
   const isNativeUpdater = isDesktopShell();
   const [visible, setVisible] = useState(false);
+  const [presentation, setPresentation] = useState<UpdatePresentation>('compact');
   const [status, setStatus] = useState<UpdateStatus>('checking');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [currentVersion, setCurrentVersion] = useState<string>('');
@@ -83,6 +73,7 @@ const UpdateModal: React.FC = () => {
   const downloadVersionRef = useRef<string | null>(null);
 
   const resetState = () => {
+    setPresentation('compact');
     setStatus('checking');
     setUpdateInfo(null);
     setCurrentVersion('');
@@ -108,6 +99,10 @@ const UpdateModal: React.FC = () => {
   };
 
   const checkForUpdates = async () => {
+    // Every check result belongs to the compact surface. In particular, retrying
+    // from expanded error details must not revive the removed legacy checking
+    // modal while the request is in flight.
+    setPresentation('compact');
     setStatus('checking');
     try {
       if (isNativeUpdater) {
@@ -250,6 +245,9 @@ const UpdateModal: React.FC = () => {
     if (!updateInfo && !autoUpdateAvailable) return;
     downloadRequestedRef.current = true;
     downloadVersionRef.current = updateInfo?.version || autoUpdateInfo?.version || null;
+    // The compact card owns progress presentation. This does not alter the
+    // existing download path; it only collapses the optional detail dialog.
+    setPresentation('compact');
     setStatus('downloading');
     setProgress({ percent: 0, speed: '', total: 0, transferred: 0 });
     try {
@@ -484,6 +482,12 @@ const UpdateModal: React.FC = () => {
     setVisible(false);
   };
 
+  const showDetails = () => {
+    if (status === 'available' || status === 'error') {
+      setPresentation('detail');
+    }
+  };
+
   const openFile = () => {
     if (!downloadPath) return;
     void ipcBridge.shell.openFile.invoke(downloadPath).catch((error) => {
@@ -532,51 +536,221 @@ const UpdateModal: React.FC = () => {
     );
   };
 
-  const renderContent = () => {
-    switch (status) {
-      case 'checking':
-        return (
-          <CompactUpdatePanel
-            icon={
-              <div className='relative h-48px w-48px'>
-                {/* 环形 spinner：border-3 是颜色类（--bg-3）而不是 3px 宽度，配上本仓库没有
-                    border-style 全局重置，两层圆环一条边都画不出来。宽度/样式/颜色分开写。
-                    `border-3` is a colour (--bg-3), not a width — with no border-style
-                    reset in this repo both rings painted nothing. */}
-                <div className='absolute inset-0 rounded-full border-3px border-solid border-[var(--color-fill-3)]' />
-                <div className='absolute inset-0 animate-spin rounded-full border-3px border-solid border-primary border-t-transparent' />
+  const renderCompactContent = () => {
+    const availableVersion = updateInfo?.version || autoUpdateInfo?.version || '';
+    const canDismiss = status !== 'installing';
+    const title =
+      status === 'downloading' || status === 'downloaded' || status === 'installing'
+        ? t('update.compactProgressTitle')
+        : status === 'error'
+          ? t('update.errorTitle')
+          : t('update.compactTitle');
+
+    return (
+      <section
+        className={`${COMPACT_CARD_CLASS} update-compact-card--${status}`}
+        role='dialog'
+        aria-modal='false'
+        aria-label={title}
+      >
+        <div className='mb-8px flex min-h-24px items-center justify-between gap-12px'>
+          <div className='min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-14px font-650 leading-20px'>
+            {title}
+          </div>
+          {canDismiss && (
+            <button
+              type='button'
+              className='inline-flex h-24px w-24px shrink-0 cursor-pointer items-center justify-center rounded-6px border-0 bg-transparent p-0 text-18px leading-none text-t-tertiary hover:bg-[var(--color-fill-2)] hover:text-t-primary'
+              onClick={handleClose}
+              aria-label={t('common.close')}
+            >
+              <span aria-hidden='true'>×</span>
+            </button>
+          )}
+        </div>
+
+        {status === 'checking' && (
+          <div className='flex min-w-0 items-start gap-10px text-13px leading-19px text-t-secondary' aria-live='polite'>
+            <span
+              className='mt-1px h-16px w-16px shrink-0 animate-spin rounded-full border-2px border-solid border-[rgba(var(--primary-6),0.2)] border-t-[rgb(var(--primary-6))]'
+              aria-hidden='true'
+            />
+            <span>{t('update.checking')}</span>
+          </div>
+        )}
+
+        {status === 'upToDate' && (
+          <div className='flex min-w-0 items-start gap-10px text-13px leading-19px text-t-secondary' aria-live='polite'>
+            <span className='inline-flex h-24px w-24px shrink-0 items-center justify-center rounded-full bg-[rgb(var(--success-6))]/12 text-[rgb(var(--success-6))]'>
+              <CheckOne theme='filled' size='15' />
+            </span>
+            <div>
+              <div className='text-13px font-550 leading-19px text-t-primary'>{t('update.upToDateTitle')}</div>
+              <div className='overflow-hidden text-ellipsis whitespace-nowrap text-12px leading-18px text-t-tertiary'>
+                {t('update.currentVersion', { version: formatVersion(currentVersion) })}
               </div>
-            }
-            title={t('update.checking')}
-            actions={renderBaiduManualDownloadButton()}
-          />
-        );
+            </div>
+          </div>
+        )}
 
-      case 'upToDate':
-        return (
-          <CompactUpdatePanel
-            icon={<CheckOne theme='filled' size='24' fill='rgb(var(--success-6))' />}
-            iconWrapClassName='bg-[rgb(var(--success-6))]/12'
-            title={t('update.upToDateTitle')}
-            description={t('update.currentVersion', { version: currentVersion || '-' })}
-            actions={renderBaiduManualDownloadButton()}
-          />
-        );
+        {status === 'available' && (
+          <>
+            <div className='flex min-w-0 items-baseline gap-6px text-13px leading-20px text-t-secondary'>
+              <span>{formatVersion(currentVersion)}</span>
+              <span className='text-t-tertiary' aria-hidden='true'>
+                →
+              </span>
+              <strong className='font-650 text-t-primary'>{formatVersion(availableVersion)}</strong>
+              <button
+                type='button'
+                className='update-compact-card__detail-link ml-auto shrink-0 cursor-pointer border-0 bg-transparent p-0 text-12px leading-18px text-[rgb(var(--primary-6))] underline-offset-2 hover:underline'
+                onClick={showDetails}
+              >
+                {t('update.viewDetails')}
+              </button>
+            </div>
+            <div className='mt-10px grid grid-cols-2 gap-8px'>
+              <Button type='primary' size='mini' onClick={startDownload} className={COMPACT_ACTION_CLASS}>
+                {t('update.updateNow')}
+              </Button>
+              <Button size='mini' onClick={handleClose} className={COMPACT_ACTION_CLASS}>
+                {t('update.later')}
+              </Button>
+            </div>
+          </>
+        )}
 
+        {status === 'downloading' && (
+          <div aria-live='polite'>
+            <div className='mb-8px flex min-w-0 items-baseline justify-between gap-12px text-12px leading-18px text-t-primary'>
+              <span>{formatVersion(availableVersion || downloadVersionRef.current)}</span>
+              <span className='overflow-hidden text-ellipsis whitespace-nowrap text-t-tertiary'>
+                {t('update.downloadingTitle')}
+              </span>
+            </div>
+            <Progress
+              percent={progress.percent}
+              status='normal'
+              showText={false}
+              strokeWidth={6}
+              className='!mb-0 !block'
+            />
+            <div className='mt-5px flex min-w-0 items-center justify-between gap-12px text-11px leading-16px text-t-tertiary'>
+              <span className='overflow-hidden text-ellipsis whitespace-nowrap'>
+                {progress.total > 0
+                  ? `${formatSize(progress.transferred)} / ${formatSize(progress.total)}`
+                  : formatSize(progress.transferred)}
+              </span>
+              <span className='overflow-hidden text-ellipsis whitespace-nowrap'>
+                {progress.speed || `${Math.round(progress.percent)}%`}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {status === 'downloaded' && (
+          <>
+            <div className='flex min-w-0 items-start gap-10px text-13px leading-19px text-t-secondary' aria-live='polite'>
+              <span className='inline-flex h-24px w-24px shrink-0 items-center justify-center rounded-full bg-[rgb(var(--success-6))]/12 text-[rgb(var(--success-6))]'>
+                <CheckOne theme='filled' size='15' />
+              </span>
+              <div>
+                <div className='text-13px font-550 leading-19px text-t-primary'>{t('update.readyToInstall')}</div>
+                <div className='overflow-hidden text-ellipsis whitespace-nowrap text-12px leading-18px text-t-tertiary'>
+                  {t('update.readyToInstallDesc')}
+                </div>
+              </div>
+            </div>
+            <div className='mt-10px grid grid-cols-2 gap-8px'>
+              <Button type='primary' size='mini' onClick={quitAndInstall} className={COMPACT_ACTION_CLASS}>
+                {t('update.installNow')}
+              </Button>
+              <Button size='mini' onClick={handleClose} className={COMPACT_ACTION_CLASS}>
+                {t('update.later')}
+              </Button>
+            </div>
+          </>
+        )}
+
+        {status === 'installing' && (
+          <div className='flex min-w-0 items-start gap-10px text-13px leading-19px text-t-secondary' aria-live='polite'>
+            <span
+              className='mt-1px h-16px w-16px shrink-0 animate-spin rounded-full border-2px border-solid border-[rgba(var(--primary-6),0.2)] border-t-[rgb(var(--primary-6))]'
+              aria-hidden='true'
+            />
+            <div>
+              <div className='text-13px font-550 leading-19px text-t-primary'>
+                {installPhase === 'installing' ? t('update.installingTitle') : t('update.preparingInstallTitle')}
+              </div>
+              <div className='overflow-hidden text-ellipsis whitespace-nowrap text-12px leading-18px text-t-tertiary'>
+                {installPhase === 'installing' ? t('update.installingDesc') : t('update.preparingInstallDesc')}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {status === 'success' && (
+          <>
+            <div className='flex min-w-0 items-start gap-10px text-13px leading-19px text-t-secondary' aria-live='polite'>
+              <span className='inline-flex h-24px w-24px shrink-0 items-center justify-center rounded-full bg-[rgb(var(--success-6))]/12 text-[rgb(var(--success-6))]'>
+                <CheckOne theme='filled' size='15' />
+              </span>
+              <div className='text-13px font-550 leading-19px text-t-primary'>{t('update.downloadCompleteTitle')}</div>
+            </div>
+            <div className='mt-10px grid grid-cols-2 gap-8px'>
+              <Button size='mini' onClick={showInFolder} className={COMPACT_ACTION_CLASS}>
+                {t('update.showInFolder')}
+              </Button>
+              <Button type='primary' size='mini' onClick={openFile} className={COMPACT_ACTION_CLASS}>
+                {t('update.openFile')}
+              </Button>
+            </div>
+          </>
+        )}
+
+        {status === 'error' && (
+          <>
+            <div className='line-clamp-2 text-12px leading-18px text-t-secondary' aria-live='polite'>
+              {errorMsg}
+            </div>
+            <div className='mt-6px'>
+              <button
+                type='button'
+                className='update-compact-card__detail-link mb-8px block cursor-pointer border-0 bg-transparent p-0 text-12px leading-18px text-[rgb(var(--primary-6))] underline-offset-2 hover:underline'
+                onClick={showDetails}
+              >
+                {t('update.viewDetails')}
+              </button>
+              <div className='grid grid-cols-2 gap-8px'>
+                <Button type='primary' size='mini' onClick={checkForUpdates} className={COMPACT_ACTION_CLASS}>
+                  {t('common.retry')}
+                </Button>
+                <Button size='mini' onClick={handleClose} className={COMPACT_ACTION_CLASS}>
+                  {t('update.later')}
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </section>
+    );
+  };
+
+  const renderDetailContent = () => {
+    switch (status) {
       case 'available':
         return (
-          <div className='flex flex-col h-full'>
-            {/* Version info header */}
-            <div className='flex items-center justify-between px-24px py-16px border-b border-b-solid border-arco-2 bg-fill-1'>
+          <div className='flex h-full min-h-0 flex-col'>
+            <div className='flex items-center justify-between border-b border-b-solid border-arco-2 bg-fill-1 px-24px py-16px'>
               <div className='flex items-center gap-12px'>
-                <div className='w-40px h-40px bg-[rgb(var(--primary-6))]/12 rounded-10px flex items-center justify-center'>
+                <div className='flex h-40px w-40px items-center justify-center rounded-10px bg-[rgb(var(--primary-6))]/12'>
                   <Download size='20' fill='rgb(var(--primary-6))' />
                 </div>
                 <div>
                   <div className='text-15px font-600 text-t-primary'>{t('update.availableTitle')}</div>
-                  <div className='text-12px text-t-tertiary mt-2px'>
+                  <div className='mt-2px text-12px text-t-tertiary'>
                     {currentVersion} →{' '}
-                    <span className='text-[rgb(var(--primary-6))] font-500'>
+                    <span className='font-500 text-[rgb(var(--primary-6))]'>
                       {updateInfo?.version || autoUpdateInfo?.version}
                     </span>
                   </div>
@@ -591,167 +765,81 @@ const UpdateModal: React.FC = () => {
             </div>
 
             {!isNativeUpdater && !hasCompatibleManualAsset && !autoUpdateAvailable && (
-              <div className='mx-24px mt-12px px-12px py-10px text-12px rounded-8px bg-[rgb(var(--warning-6))]/10 text-[rgb(var(--warning-6))]'>
+              <div className='mx-24px mt-12px rounded-8px bg-[rgb(var(--warning-6))]/10 px-12px py-10px text-12px text-[rgb(var(--warning-6))]'>
                 {t('update.noCompatibleAssetManual')}
               </div>
             )}
 
             {renderManualDownloadHints()}
 
-            {/* Release notes content */}
-            <div className='min-h-0 flex-1 overflow-y-auto px-24px py-16px custom-scrollbar'>
-              {updateInfo?.name && <div className='text-14px font-500 text-t-primary mb-12px'>{updateInfo.name}</div>}
+            <div
+              className='update-modal__release-scroll custom-scrollbar min-h-0 flex-1 overflow-y-auto px-24px py-16px'
+              tabIndex={0}
+              role='region'
+              aria-label={t('update.availableTitle')}
+            >
+              {updateInfo?.name && <div className='mb-12px text-14px font-500 text-t-primary'>{updateInfo.name}</div>}
               {updateInfo?.body || autoUpdateInfo?.releaseNotes ? (
-                <div className='text-13px text-t-secondary leading-relaxed'>
+                <div className='text-13px leading-relaxed text-t-secondary'>
                   <MarkdownView allowHtml>{updateInfo?.body || autoUpdateInfo?.releaseNotes || ''}</MarkdownView>
                 </div>
               ) : (
-                <div className='text-13px text-t-tertiary italic'>{t('update.noReleaseNotes')}</div>
+                <div className='text-13px italic text-t-tertiary'>{t('update.noReleaseNotes')}</div>
               )}
             </div>
           </div>
         );
 
-      case 'downloading':
-        return (
-          <CompactUpdatePanel
-            icon={<Download size='22' fill='rgb(var(--primary-6))' className='animate-bounce' />}
-            iconWrapClassName='bg-[rgb(var(--primary-6))]/12'
-            title={t('update.downloadingTitle')}
-            extra={
-              <div className='mt-16px w-full max-w-280px'>
-                <Progress
-                  percent={progress.percent}
-                  status='normal'
-                  showText={false}
-                  strokeWidth={6}
-                  className='!mb-8px'
-                />
-                <div className='flex justify-between text-12px text-t-tertiary'>
-                  <span>
-                    {progress.total > 0
-                      ? `${formatSize(progress.transferred)} / ${formatSize(progress.total)}`
-                      : formatSize(progress.transferred)}
-                  </span>
-                  <span className='font-500 text-[rgb(var(--primary-6))]'>{progress.speed}</span>
-                </div>
-              </div>
-            }
-            actions={renderBaiduManualDownloadButton()}
-          />
-        );
-
-      case 'downloaded':
-        return (
-          <CompactUpdatePanel
-            icon={<Install size='22' fill='rgb(var(--primary-6))' />}
-            iconWrapClassName='bg-[rgb(var(--primary-6))]/12'
-            title={t('update.readyToInstall')}
-            description={t('update.installWarning')}
-            actions={
-              <>
-                <Button type='primary' onClick={quitAndInstall} className='flowy-icon-text-btn !px-20px min-w-128px'>
-                  <span className='flowy-button-inline-content inline-flex items-center' style={{ gap: 10 }}>
-                    <Install theme='outline' size='16' fill='currentColor' strokeWidth={3} />
-                    {t('update.installNow')}
-                  </span>
-                </Button>
-                {renderBaiduManualDownloadButton()}
-              </>
-            }
-          />
-        );
-
-      case 'installing': {
-        const isHandingOff = installPhase === 'installing';
-        return (
-          <CompactUpdatePanel
-            icon={
-              <div className='relative h-48px w-48px'>
-                <div className='absolute inset-0 rounded-full border-3px border-solid border-[var(--color-fill-3)]' />
-                <div className='absolute inset-0 animate-spin rounded-full border-3px border-solid border-primary border-t-transparent' />
-                <div className='absolute inset-0 flex items-center justify-center'>
-                  <Install size='18' fill='rgb(var(--primary-6))' />
-                </div>
-              </div>
-            }
-            title={isHandingOff ? t('update.installingTitle') : t('update.preparingInstallTitle')}
-            description={
-              <span aria-live='polite'>
-                {isHandingOff ? t('update.installingDesc') : t('update.preparingInstallDesc')}
-              </span>
-            }
-          />
-        );
-      }
-
-      case 'success':
-        return (
-          <CompactUpdatePanel
-            icon={<CheckOne theme='filled' size='24' fill='rgb(var(--success-6))' />}
-            iconWrapClassName='bg-[rgb(var(--success-6))]/12'
-            title={t('update.downloadCompleteTitle')}
-            description={<span className='break-all line-clamp-2'>{downloadPath}</span>}
-            actions={
-              <>
-                <Button size='small' onClick={showInFolder} icon={<FolderOpen size='14' />} className='flowy-icon-text-btn !px-16px'>
-                  {t('update.showInFolder')}
-                </Button>
-                <Button type='primary' size='small' onClick={openFile} className='!px-16px'>
-                  {t('update.openFile')}
-                </Button>
-                {renderBaiduManualDownloadButton()}
-              </>
-            }
-          />
-        );
-
       case 'error':
         return (
-          <CompactUpdatePanel
-            icon={<CloseOne theme='filled' size='24' fill='rgb(var(--danger-6))' />}
-            iconWrapClassName='bg-[rgb(var(--danger-6))]/12'
-            title={t('update.errorTitle')}
-            description={errorMsg}
-            actions={
-              <>
-                <Button onClick={checkForUpdates} icon={<Refresh size='16' />} className='flowy-icon-text-btn !px-20px'>
-                  {t('common.retry')}
-                </Button>
-                {!isNativeUpdater && renderBaiduManualDownloadButton()}
-              </>
-            }
-          />
+          <div className='flex flex-col items-center px-24px py-28px'>
+            <div className='mb-12px flex h-48px w-48px items-center justify-center rounded-full bg-[rgb(var(--danger-6))]/12'>
+              <CloseOne theme='filled' size='24' fill='rgb(var(--danger-6))' />
+            </div>
+            <div className='text-15px font-600 text-t-primary'>{t('update.errorTitle')}</div>
+            <div className='mt-8px max-w-420px text-center text-12px leading-18px text-t-secondary' aria-live='polite'>
+              {errorMsg}
+            </div>
+            <div className='mt-20px flex flex-wrap justify-center gap-8px'>
+              <Button onClick={checkForUpdates} icon={<Refresh size='16' />} className='flowy-icon-text-btn !px-20px'>
+                {t('common.retry')}
+              </Button>
+              {!isNativeUpdater && renderBaiduManualDownloadButton()}
+            </div>
+          </div>
         );
     }
+    return null;
   };
 
-  const showReleaseNotes = status === 'available';
+  const isAvailableDialog = status === 'available';
+  const isErrorDialog = status === 'error';
+  const canShowDetails = isAvailableDialog || isErrorDialog;
+
+  if (!visible) return null;
+
+  if (presentation === 'compact' || !canShowDetails) {
+    return <div className={COMPACT_HOST_CLASS}>{renderCompactContent()}</div>;
+  }
 
   return (
     <NomiModal
-      visible={visible}
+      visible
       onCancel={handleClose}
-      size={showReleaseNotes ? 'medium' : 'small'}
-      style={showReleaseNotes ? { height: '520px' } : { height: 'auto', width: '360px' }}
+      size={isAvailableDialog ? 'medium' : 'small'}
+      style={isAvailableDialog ? { height: '520px' } : { height: 'auto', width: '420px' }}
       header={{
-        title: t('update.modalTitle'),
-        showClose: status !== 'installing',
+        title: isAvailableDialog ? t('update.availableTitle') : t('update.errorTitle'),
+        showClose: true,
       }}
       footer={null}
       contentStyle={{
-        height: showReleaseNotes ? '420px' : 'auto',
+        height: isAvailableDialog ? '420px' : 'auto',
         padding: 0,
-        overflow: showReleaseNotes ? 'hidden' : 'auto',
+        overflow: isAvailableDialog ? 'hidden' : 'auto',
       }}
     >
-      {showReleaseNotes ? (
-        <div className='flex h-full w-full flex-col'>
-          <div className='min-h-0 flex-1'>{renderContent()}</div>
-        </div>
-      ) : (
-        renderContent()
-      )}
+      <div className='flex h-full w-full min-h-0 flex-col'>{renderDetailContent()}</div>
     </NomiModal>
   );
 };
