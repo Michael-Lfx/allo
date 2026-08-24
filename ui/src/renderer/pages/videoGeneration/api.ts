@@ -394,6 +394,59 @@ export async function loadArtifactMediaUrl(
   throw new Error(`Artifact is not media: ${artifactPath}`);
 }
 
+// ── Cached media blob URLs (LRU) ────────────────────────────────────────────
+// Remount-heavy components (session cards, storyboard filmstrip thumbs) would
+// re-download the same artifact file on every mount otherwise. The cache owns
+// the blob URL lifecycle: callers must NOT revoke returned URLs. Eviction
+// revokes, so entries may disappear under memory pressure — acceptable for
+// display-only previews.
+const MEDIA_URL_CACHE_LIMIT = 24;
+const mediaUrlCache = new Map<string, string>();
+const mediaUrlInflight = new Map<string, Promise<string>>();
+
+/**
+ * Like {@link loadArtifactMediaUrl} but memoized per `${sessionId}:${path}`.
+ * Concurrent callers share one download; repeated mounts get the same URL.
+ */
+export function loadArtifactMediaUrlCached(
+  sessionId: string,
+  artifactPath: string
+): Promise<string> {
+  const key = `${sessionId}:${artifactPath}`;
+  const hit = mediaUrlCache.get(key);
+  if (hit != null) {
+    // Refresh LRU recency.
+    mediaUrlCache.delete(key);
+    mediaUrlCache.set(key, hit);
+    return Promise.resolve(hit);
+  }
+  const inflight = mediaUrlInflight.get(key);
+  if (inflight) return inflight;
+  const request = loadArtifactMediaUrl(sessionId, artifactPath)
+    .then((url) => {
+      const existing = mediaUrlCache.get(key);
+      if (existing != null) {
+        // Another caller populated the entry first — drop our duplicate.
+        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+        return existing;
+      }
+      mediaUrlCache.set(key, url);
+      while (mediaUrlCache.size > MEDIA_URL_CACHE_LIMIT) {
+        const oldestKey = mediaUrlCache.keys().next().value;
+        if (oldestKey == null) break;
+        const oldest = mediaUrlCache.get(oldestKey);
+        mediaUrlCache.delete(oldestKey);
+        if (oldest?.startsWith('blob:')) URL.revokeObjectURL(oldest);
+      }
+      return url;
+    })
+    .finally(() => {
+      mediaUrlInflight.delete(key);
+    });
+  mediaUrlInflight.set(key, request);
+  return request;
+}
+
 function looksLikeJson(s: string): boolean {
   try {
     JSON.parse(s);
@@ -652,23 +705,23 @@ export async function getVerticalSkill(id: string): Promise<VerticalSkillDetail>
   );
 }
 
-export async function createVerticalSkill(
-  draft: VerticalSkillDraft
-): Promise<VerticalSkillSummary> {
-  const skill = await httpRequest<{
-    id: string;
-    name: string;
-    display_name: string;
-    description: string;
-    category?: string;
-    version?: string;
-    tags?: string[];
-    compatible_modes?: string[];
-    visibility?: string;
-    style_overlay?: string;
-    requirement_overlay?: string;
-    playbook?: string;
-  }>('POST', `${BASE}/skills`, draft);
+/** Raw skill payload shape returned by create / import / install endpoints. */
+interface RawVerticalSkill {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  category?: string;
+  version?: string;
+  tags?: string[];
+  compatible_modes?: string[];
+  visibility?: string;
+  style_overlay?: string;
+  requirement_overlay?: string;
+  playbook?: string;
+}
+
+function normalizeSkillSummary(skill: RawVerticalSkill): VerticalSkillSummary {
   const source = skill.id.includes(':') ? skill.id.split(':')[0] : 'user';
   return {
     id: skill.id,
@@ -686,6 +739,13 @@ export async function createVerticalSkill(
       skill.requirement_overlay?.trim() || skill.playbook?.trim()
     ),
   };
+}
+
+export async function createVerticalSkill(
+  draft: VerticalSkillDraft
+): Promise<VerticalSkillSummary> {
+  const skill = await httpRequest<RawVerticalSkill>('POST', `${BASE}/skills`, draft);
+  return normalizeSkillSummary(skill);
 }
 
 export async function updateVerticalSkill(
@@ -720,37 +780,8 @@ export async function unpublishVerticalSkill(id: string): Promise<void> {
 }
 
 export async function importVerticalSkill(path: string): Promise<VerticalSkillSummary> {
-  const skill = await httpRequest<{
-    id: string;
-    name: string;
-    display_name: string;
-    description: string;
-    category?: string;
-    version?: string;
-    tags?: string[];
-    compatible_modes?: string[];
-    visibility?: string;
-    style_overlay?: string;
-    requirement_overlay?: string;
-    playbook?: string;
-  }>('POST', `${BASE}/skills/import`, { path });
-  const source = skill.id.includes(':') ? skill.id.split(':')[0] : 'user';
-  return {
-    id: skill.id,
-    name: skill.name,
-    display_name: skill.display_name,
-    description: skill.description,
-    category: skill.category ?? '',
-    version: skill.version ?? '1.0.0',
-    tags: skill.tags ?? [],
-    compatible_modes: (skill.compatible_modes ?? []).map(String),
-    source,
-    visibility: skill.visibility ?? 'private',
-    has_style_overlay: Boolean(skill.style_overlay?.trim()),
-    has_requirement_overlay: Boolean(
-      skill.requirement_overlay?.trim() || skill.playbook?.trim()
-    ),
-  };
+  const skill = await httpRequest<RawVerticalSkill>('POST', `${BASE}/skills/import`, { path });
+  return normalizeSkillSummary(skill);
 }
 
 function skillHubQuery(params: Record<string, string | number | undefined | null>): string {
@@ -817,37 +848,12 @@ export async function getCloudSkillDetail(id: number): Promise<VimaxCloudSkill> 
 }
 
 export async function installCloudSkill(id: number): Promise<VerticalSkillSummary> {
-  const skill = await httpRequest<{
-    id: string;
-    name: string;
-    display_name: string;
-    description: string;
-    category?: string;
-    version?: string;
-    tags?: string[];
-    compatible_modes?: string[];
-    visibility?: string;
-    style_overlay?: string;
-    requirement_overlay?: string;
-    playbook?: string;
-  }>('POST', `${BASE}/skill-hub/${id}/install`, {});
-  const source = skill.id.includes(':') ? skill.id.split(':')[0] : 'user';
-  return {
-    id: skill.id,
-    name: skill.name,
-    display_name: skill.display_name,
-    description: skill.description,
-    category: skill.category ?? '',
-    version: skill.version ?? '1.0.0',
-    tags: skill.tags ?? [],
-    compatible_modes: (skill.compatible_modes ?? []).map(String),
-    source,
-    visibility: skill.visibility ?? 'private',
-    has_style_overlay: Boolean(skill.style_overlay?.trim()),
-    has_requirement_overlay: Boolean(
-      skill.requirement_overlay?.trim() || skill.playbook?.trim()
-    ),
-  };
+  const skill = await httpRequest<RawVerticalSkill>(
+    'POST',
+    `${BASE}/skill-hub/${id}/install`,
+    {}
+  );
+  return normalizeSkillSummary(skill);
 }
 
 export async function likeCloudSkill(id: number): Promise<VimaxCloudSkillLikeResult> {

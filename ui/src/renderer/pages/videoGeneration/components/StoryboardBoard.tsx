@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Spin } from '@arco-design/web-react';
 import { Edit, LoadingFour, Music, VideoOne } from '@icon-park/react';
-import { getArtifact, loadArtifactMediaUrl } from '../api';
+import { getArtifact, loadArtifactMediaUrlCached } from '../api';
 import {
   buildStoryboardScenesFromStoryboards,
   findStoryboardPaths,
@@ -15,7 +15,8 @@ import {
   resolveStoryboardVideoStatus,
   type StoryboardVideoSlotStatus,
 } from '../storyboardVideoStatus';
-import type { ArtifactNode, SessionStatus } from '../types';
+import type { ArtifactNode } from '../types';
+import { useRunStatusFull } from '../useRunStatusFeed';
 import styles from '../index.module.css';
 
 const TextArea = Input.TextArea;
@@ -23,8 +24,6 @@ const TextArea = Input.TextArea;
 interface StoryboardBoardProps {
   sessionId: string;
   artifacts: ArtifactNode[];
-  /** Live pipeline status — drives per-shot Video pending / Generating badges. */
-  runStatus?: SessionStatus | null;
   disabled?: boolean;
   revising?: boolean;
   /** Persist edited Visual / audio direction for the active shot. */
@@ -109,16 +108,10 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
     }
     let cancelled = false;
     setFailed(false);
-    void loadArtifactMediaUrl(sessionId, path)
+    // Cached loader — the cache owns the blob URL lifecycle; do not revoke here.
+    void loadArtifactMediaUrlCached(sessionId, path)
       .then((nextUrl) => {
-        if (cancelled) {
-          URL.revokeObjectURL(nextUrl);
-          return;
-        }
-        setUrl((previous) => {
-          if (previous?.startsWith('blob:')) URL.revokeObjectURL(previous);
-          return nextUrl;
-        });
+        if (!cancelled) setUrl(nextUrl);
       })
       .catch(() => {
         if (!cancelled) setFailed(true);
@@ -127,13 +120,6 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
       cancelled = true;
     };
   }, [path, sessionId]);
-
-  useEffect(
-    () => () => {
-      if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
-    },
-    [url]
-  );
 
   // Ready clip — show the video player / filmstrip preview.
   if (video && path) {
@@ -153,10 +139,26 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
     );
   }
 
-  // Pending / generating — optional still underneath a high-contrast status chip.
+  // Still-frame mode (filmstrip thumbs prefer the shot's first-frame image so
+  // compact cells never download a whole clip just to show a thumbnail).
   const status: Exclude<StoryboardVideoSlotStatus, 'ready'> =
     videoStatus === 'generating' ? 'generating' : 'pending';
 
+  if (videoStatus === 'ready') {
+    if (!url) return <Spin size={compact ? 12 : 18} />;
+    if (failed) {
+      return <VideoOne theme='outline' size={compact ? 20 : 34} className='opacity-35' />;
+    }
+    return (
+      <img
+        src={url}
+        alt={alt}
+        className={compact ? 'h-full w-full object-cover' : styles.storyShot}
+      />
+    );
+  }
+
+  // Pending / generating — optional still underneath a high-contrast status chip.
   if (path && url && !failed) {
     return (
       <div className={styles.videoStatusMediaWrap}>
@@ -178,12 +180,12 @@ const SceneMedia: React.FC<SceneMediaProps> = ({
 const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   sessionId,
   artifacts,
-  runStatus,
   disabled,
   revising,
   onSaveSceneDescriptions,
 }) => {
   const { t } = useTranslation();
+  const runStatus = useRunStatusFull();
   const storyboardPaths = useMemo(() => findStoryboardPaths(artifacts), [artifacts]);
   const storyboardPathSignature = storyboardPaths.join('|');
   const [storyboardEntries, setStoryboardEntries] = useState<
@@ -463,8 +465,9 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
           const number = scene.index + 1;
           const active = scene.id === activeScene.id;
           const status = videoStatusFor(scene);
-          const thumbPath =
-            scene.videoPath ?? (status === 'ready' ? undefined : scene.imagePath);
+          // Compact thumbs prefer the first-frame still so a ready shot never
+          // downloads its whole clip just to render a thumbnail.
+          const thumbPath = scene.imagePath ?? scene.videoPath;
           return (
             <button
               key={scene.id}
@@ -479,7 +482,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                 <SceneMedia
                   sessionId={sessionId}
                   path={thumbPath}
-                  video={Boolean(scene.videoPath)}
+                  video={!scene.imagePath && Boolean(scene.videoPath)}
                   compact
                   alt={t('videoGeneration.studio.storyboard.shotAlt', {
                     number,

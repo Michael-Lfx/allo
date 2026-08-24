@@ -6,7 +6,7 @@ import { Popconfirm, Tag } from '@arco-design/web-react';
 import { Delete, VideoOne } from '@icon-park/react';
 import type { SessionSummary, VimaxRunStatus, VimaxWorkflow } from '../types';
 import { normalizeWorkflow } from '../workflowKind';
-import { loadArtifactMediaUrl } from '../api';
+import { loadArtifactMediaUrlCached } from '../api';
 import { stageLabel } from '../stageI18n';
 import styles from '../index.module.css';
 
@@ -124,65 +124,40 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onOpen, onDelete, de
 
   useEffect(() => {
     let cancelled = false;
-    let loaded: string | null = null;
     const coverRel = session.cover?.trim();
     if (!visible || !coverRel) {
-      setCoverUrl((prev) => {
-        if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
-        return null;
-      });
+      setCoverUrl(null);
       return;
     }
-    void loadArtifactMediaUrl(session.id, coverRel)
+    // Cached loader — the cache owns the blob URL lifecycle; no manual revokes.
+    void loadArtifactMediaUrlCached(session.id, coverRel)
       .then((url) => {
-        if (cancelled) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        loaded = url;
-        setCoverUrl((prev) => {
-          if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
-          return url;
-        });
+        if (!cancelled) setCoverUrl(url);
       })
       .catch(() => {
         /* keep gradient fallback */
       });
     return () => {
       cancelled = true;
-      if (loaded?.startsWith('blob:')) URL.revokeObjectURL(loaded);
     };
   }, [session.id, session.cover, visible]);
 
   useEffect(() => {
     let cancelled = false;
-    let loaded: string | null = null;
     const videoRel = session.final_video?.trim();
     if (!loadVideo || !videoRel) {
-      setVideoUrl((prev) => {
-        if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
-        return null;
-      });
+      setVideoUrl(null);
       return;
     }
-    void loadArtifactMediaUrl(session.id, videoRel)
+    void loadArtifactMediaUrlCached(session.id, videoRel)
       .then((url) => {
-        if (cancelled) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        loaded = url;
-        setVideoUrl((prev) => {
-          if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
-          return url;
-        });
+        if (!cancelled) setVideoUrl(url);
       })
       .catch(() => {
         /* optional hover preview */
       });
     return () => {
       cancelled = true;
-      if (loaded?.startsWith('blob:')) URL.revokeObjectURL(loaded);
     };
   }, [loadVideo, session.id, session.final_video]);
 

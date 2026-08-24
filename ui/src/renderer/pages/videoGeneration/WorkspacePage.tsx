@@ -40,7 +40,6 @@ import {
   exportSession,
   getArtifact,
   getSession,
-  getSessionStatus,
   isActiveStatus,
   listArtifacts,
   loadArtifactMediaUrl,
@@ -50,7 +49,7 @@ import {
   materializeSessionToCanvas,
   writeArtifactText,
 } from './api';
-import type { ArtifactContent, ArtifactNode, SessionStatus, VimaxSession, VimaxWorkflow } from './types';
+import type { ArtifactContent, ArtifactNode, VimaxSession, VimaxWorkflow } from './types';
 import ArtifactTree from './components/ArtifactTree';
 import ArtifactPreviewPanel from './components/ArtifactPreviewPanel';
 import AspectRatioPicker from './components/AspectRatioPicker';
@@ -71,11 +70,13 @@ import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
   normalizeSeedanceAspectRatio,
 } from './aspectRatios';
-import { DEFAULT_VIDEO_FPS,
-DEFAULT_VIDEO_RESOLUTION,
-normalizeVideoFps,
-normalizeVideoResolution,
-type VideoResolution, } from '@renderer/services/videoModelCapabilities'
+import {
+  DEFAULT_VIDEO_FPS,
+  DEFAULT_VIDEO_RESOLUTION,
+  normalizeVideoFps,
+  normalizeVideoResolution,
+  type VideoResolution,
+} from '@renderer/services/videoModelCapabilities';
 import { DEFAULT_VISUAL_STYLE_PROMPT } from './visualStylePresets';
 import {
   clearVideoGenerationSessionMemory,
@@ -83,6 +84,13 @@ import {
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
 import { shouldContinueAsRender } from './continueMode';
+import {
+  getRunStatusSnapshot,
+  patchRunStatus,
+  useRunStatusFeedController,
+  useRunStatusFlags,
+  useRunStatusFull,
+} from './useRunStatusFeed';
 import styles from './index.module.css';
 
 const TextArea = Input.TextArea;
@@ -98,6 +106,20 @@ function sourceFieldForWorkflow(workflow: VimaxWorkflow | string): 'idea' | 'scr
       return 'idea';
   }
 }
+
+/** Live stage/message line — the only header piece tracking every poll tick. */
+const RunProgressLine: React.FC<{ fallbackStage?: string | null }> = ({ fallbackStage }) => {
+  const { t } = useTranslation();
+  const runStatus = useRunStatusFull();
+  return (
+    <>
+      {progressStatusText(runStatus?.stage ?? fallbackStage, runStatus?.message, t) ||
+        t('videoGeneration.workspace.workflowLocked', {
+          defaultValue: '工作流在创建后已锁定，不可更改。',
+        })}
+    </>
+  );
+};
 
 const WorkspacePage: React.FC = () => {
   const { sessionId = '' } = useParams<{ sessionId: string }>();
@@ -134,7 +156,6 @@ const WorkspacePage: React.FC = () => {
   const [publishing, setPublishing] = useState(false);
   const [materializing, setMaterializing] = useState(false);
 
-  const [runStatus, setRunStatus] = useState<SessionStatus | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactNode[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [preview, setPreview] = useState<ArtifactContent | null>(null);
@@ -263,32 +284,70 @@ const WorkspacePage: React.FC = () => {
     }
   }, [sessionId]);
 
-  const refreshStatus = useCallback(async () => {
-    if (!sessionId) return;
-    try {
-      const st = await getSessionStatus(sessionId);
-      setRunStatus(st);
-      if (st.status === 'succeeded' || st.final_video || st.cover) {
-        setSession((prev) =>
-          prev
-            ? {
-                ...prev,
-                status: st.status,
-                stage: st.stage,
-                final_video: st.final_video ?? prev.final_video,
-                cover: st.cover ?? prev.cover,
-              }
-            : prev
-        );
-      } else {
-        setSession((prev) => (prev ? { ...prev, status: st.status, stage: st.stage } : prev));
+  // Coarse run-status signals. Heartbeat ticks that only advance stage /
+  // message keep flag identity stable so the heavy page body skips re-render;
+  // live-progress components subscribe to the full snapshot themselves
+  // (see ./useRunStatusFeed).
+  const statusFlags = useRunStatusFlags();
+  const prevRunStatusRef = useRef<string | null>(null);
+  const creditsFailToastKeyRef = useRef<string | null>(null);
+  const lastArtifactRefreshKeyRef = useRef<string | null>(null);
+  const lastPeriodicArtifactAtRef = useRef(0);
+
+  // Mounts the self-scheduling status poll (1s active-visible / 5s otherwise,
+  // no request pile-up). Per-poll side effects stay here: merge coarse fields
+  // into the session record without identity churn, and rescan artifacts when
+  // clips land. Artifact scans pause entirely while the tab is hidden.
+  const refreshRun = useRunStatusFeedController(sessionId, (st) => {
+    setSession((prev) => {
+      if (!prev) return prev;
+      const final_video = st.final_video ?? prev.final_video;
+      const cover = st.cover ?? prev.cover;
+      if (
+        prev.status === st.status &&
+        prev.stage === st.stage &&
+        prev.final_video === final_video &&
+        prev.cover === cover
+      ) {
+        return prev;
       }
-      return st;
-    } catch (e) {
-      console.warn('[videoGeneration] status poll failed', e);
-      return null;
+      return { ...prev, status: st.status, stage: st.stage, final_video, cover };
+    });
+    if (document.hidden) return;
+
+    if (!isActiveStatus(st.status)) {
+      void refreshArtifacts();
+      lastArtifactRefreshKeyRef.current = `${st.status}:${st.stage}:${st.updated_at ?? ''}`;
+      return;
     }
-  }, [sessionId]);
+
+    const stage = st.stage || '';
+    const artifactLandingStages = new Set([
+      'video_clip_done',
+      'video_clip_exists',
+      'video_download',
+      'render_scene_done',
+      'concat_done',
+      'render_done',
+    ]);
+    // Include message + updated_at so consecutive shots finishing with the
+    // same stage name still trigger a refresh.
+    const refreshKey = `${stage}:${st.message ?? ''}:${st.updated_at ?? ''}`;
+    if (artifactLandingStages.has(stage) && refreshKey !== lastArtifactRefreshKeyRef.current) {
+      lastArtifactRefreshKeyRef.current = refreshKey;
+      lastPeriodicArtifactAtRef.current = Date.now();
+      void refreshArtifacts();
+      return;
+    }
+
+    // Safety net: while rendering, rescan the artifact tree every ~4s so
+    // storyboard thumbs catch videos even if a stage event was missed.
+    const now = Date.now();
+    if (now - lastPeriodicArtifactAtRef.current >= 4000) {
+      lastPeriodicArtifactAtRef.current = now;
+      void refreshArtifacts();
+    }
+  });
 
   useEffect(() => {
     void loadSession();
@@ -297,25 +356,24 @@ const WorkspacePage: React.FC = () => {
   useEffect(() => {
     if (!sessionId || loading || loadError) return;
     void refreshArtifacts();
-    void refreshStatus();
-  }, [sessionId, loading, loadError, refreshArtifacts, refreshStatus]);
+    void refreshRun();
+  }, [sessionId, loading, loadError, refreshArtifacts, refreshRun]);
 
-  // Toast only on an active→failed transition so revisiting an old failed job
-  // does not re-spam; ProgressTimeline still shows the credits panel either way.
-  const prevRunStatusRef = useRef<string | null>(null);
-  const creditsFailToastKeyRef = useRef<string | null>(null);
+  // Reset transition tracking when switching sessions.
   useEffect(() => {
     prevRunStatusRef.current = null;
     creditsFailToastKeyRef.current = null;
   }, [sessionId]);
+
+  // Toast only on an active→failed transition so revisiting an old failed job
+  // does not re-spam; ProgressTimeline still shows the credits panel either way.
   useEffect(() => {
     const prev = prevRunStatusRef.current;
-    const next = runStatus?.status ?? null;
+    const next = statusFlags.status;
     prevRunStatusRef.current = next;
-    if (!sessionId || next !== 'failed' || !runStatus?.error) return;
+    if (!sessionId || next !== 'failed' || !statusFlags.creditsFailed) return;
     if (prev !== 'planning' && prev !== 'rendering') return;
-    if (!isInsufficientCreditsError(runStatus.error)) return;
-    const key = `${sessionId}:${runStatus.error}`;
+    const key = `${sessionId}:credits`;
     if (creditsFailToastKeyRef.current === key) return;
     creditsFailToastKeyRef.current = key;
     message.error(
@@ -323,61 +381,7 @@ const WorkspacePage: React.FC = () => {
         defaultValue: '积分不足，请充值或缩短时长后从断点继续。',
       })
     );
-  }, [sessionId, runStatus?.status, runStatus?.error, message, t]);
-
-  // Poll while planning / rendering (1s so stage text feels live).
-  // Also keep a slow poll while failed/idle so a late finish_job is not missed.
-  // Refresh artifacts whenever a clip lands — including repeated `video_clip_done`
-  // for shot 2, 3, … (stage string alone is not unique across shots).
-  const lastArtifactRefreshKeyRef = useRef<string | null>(null);
-  const lastPeriodicArtifactAtRef = useRef(0);
-  useEffect(() => {
-    if (!sessionId) return;
-    const active = isActiveStatus(runStatus?.status);
-    const ms = active ? 1000 : 5000;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        const st = await refreshStatus();
-        if (!st) return;
-        if (!isActiveStatus(st.status)) {
-          void refreshArtifacts();
-          lastArtifactRefreshKeyRef.current = `${st.status}:${st.stage}:${st.updated_at ?? ''}`;
-          return;
-        }
-
-        const stage = st.stage || '';
-        const artifactLandingStages = new Set([
-          'video_clip_done',
-          'video_clip_exists',
-          'video_download',
-          'render_scene_done',
-          'concat_done',
-          'render_done',
-        ]);
-        // Include message + updated_at so consecutive shots finishing with the
-        // same stage name still trigger a refresh.
-        const refreshKey = `${stage}:${st.message ?? ''}:${st.updated_at ?? ''}`;
-        if (
-          artifactLandingStages.has(stage) &&
-          refreshKey !== lastArtifactRefreshKeyRef.current
-        ) {
-          lastArtifactRefreshKeyRef.current = refreshKey;
-          lastPeriodicArtifactAtRef.current = Date.now();
-          void refreshArtifacts();
-          return;
-        }
-
-        // Safety net: while rendering, rescan the artifact tree every ~4s so
-        // storyboard thumbs catch videos even if a stage event was missed.
-        const now = Date.now();
-        if (now - lastPeriodicArtifactAtRef.current >= 4000) {
-          lastPeriodicArtifactAtRef.current = now;
-          void refreshArtifacts();
-        }
-      })();
-    }, ms);
-    return () => window.clearInterval(timer);
-  }, [runStatus?.status, sessionId, refreshStatus, refreshArtifacts]);
+  }, [sessionId, statusFlags.status, statusFlags.creditsFailed, message, t]);
 
   // Load artifact preview when selection changes (blob URLs for media + auth).
   useEffect(() => {
@@ -425,7 +429,7 @@ const WorkspacePage: React.FC = () => {
 
   // Final video via authenticated blob URL (relative path is not a public HTTP URL).
   useEffect(() => {
-    const rel = runStatus?.final_video || session?.final_video;
+    const rel = statusFlags.finalVideoPath || session?.final_video;
     if (!sessionId || !rel) {
       setFinalBlobUrl((prev) => {
         if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
@@ -453,11 +457,11 @@ const WorkspacePage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, runStatus?.final_video, session?.final_video]);
+  }, [sessionId, statusFlags.finalVideoPath, session?.final_video]);
 
   // Film poster (display-only) via authenticated blob URL.
   useEffect(() => {
-    const rel = runStatus?.cover || session?.cover;
+    const rel = statusFlags.coverPath || session?.cover;
     if (!sessionId || !rel) {
       setCoverBlobUrl((prev) => {
         if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
@@ -485,7 +489,7 @@ const WorkspacePage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, runStatus?.cover, session?.cover]);
+  }, [sessionId, statusFlags.coverPath, session?.cover]);
 
   const handlePlan = useCallback(async () => {
     if (!sessionId || !session) return;
@@ -523,12 +527,12 @@ const WorkspacePage: React.FC = () => {
       };
       await planSession(sessionId, body);
       message.success(t('videoGeneration.workspace.planStarted', { defaultValue: '已开始规划' }));
-      const st = await refreshStatus();
+      const st = await refreshRun();
       if (!st || !isActiveStatus(st.status)) {
-        // Optimistic: mark planning so polling kicks in even if status lags
-        setRunStatus((prev) =>
-          prev
-            ? { ...prev, status: 'planning' }
+        // Optimistic: mark planning so polling kicks in even if status lags.
+        patchRunStatus(
+          getRunStatusSnapshot()
+            ? { status: 'planning' }
             : { stage: 'plan', message: '', progress: 0, status: 'planning' }
         );
       }
@@ -558,7 +562,7 @@ const WorkspacePage: React.FC = () => {
     models,
     message,
     t,
-    refreshStatus,
+    refreshRun,
     refreshArtifacts,
   ]);
 
@@ -641,11 +645,11 @@ const WorkspacePage: React.FC = () => {
         fps: normalizeVideoFps(models.video_model, fps),
       });
       message.success(t('videoGeneration.workspace.renderStarted', { defaultValue: '已开始渲染' }));
-      const st = await refreshStatus();
+      const st = await refreshRun();
       if (!st || !isActiveStatus(st.status)) {
-        setRunStatus((prev) =>
-          prev
-            ? { ...prev, status: 'rendering' }
+        patchRunStatus(
+          getRunStatusSnapshot()
+            ? { status: 'rendering' }
             : { stage: 'render', message: '', progress: 0, status: 'rendering' }
         );
       }
@@ -661,7 +665,7 @@ const WorkspacePage: React.FC = () => {
     } finally {
       setRendering(false);
     }
-  }, [sessionId, session?.workflow, models, resolution, fps, message, t, refreshStatus]);
+  }, [sessionId, session?.workflow, models, resolution, fps, message, t, refreshRun]);
 
   const handleCancel = useCallback(async () => {
     if (!sessionId) return;
@@ -669,7 +673,7 @@ const WorkspacePage: React.FC = () => {
     try {
       await cancelSession(sessionId);
       message.info(t('videoGeneration.workspace.cancelOk', { defaultValue: '已请求取消' }));
-      await refreshStatus();
+      await refreshRun();
     } catch (e) {
       message.error(
         `${t('videoGeneration.workspace.cancelFailed', { defaultValue: '取消失败' })}: ${
@@ -679,7 +683,7 @@ const WorkspacePage: React.FC = () => {
     } finally {
       setCancelling(false);
     }
-  }, [sessionId, message, t, refreshStatus]);
+  }, [sessionId, message, t, refreshRun]);
 
   const handleDelete = useCallback(async () => {
     if (!sessionId || deleting) return;
@@ -699,19 +703,28 @@ const WorkspacePage: React.FC = () => {
     }
   }, [sessionId, deleting, message, t, navigate]);
 
-  /** Prefer resume render when failure/cancel happened in a render-phase stage. */
-  const continueAsRender = useMemo(() => {
-    return shouldContinueAsRender({
-      events: runStatus?.events,
-      stage: runStatus?.stage,
-      sessionStage: session?.stage,
-    });
-  }, [runStatus?.events, runStatus?.stage, session?.stage]);
+  // Subscribe to the full snapshot only while a terminal failure is showing —
+  // resume-vs-replan is the sole page-level consumer of raw events.
+  const failedRunStatus = useRunStatusFull(statusFlags.failedLike);
 
+  /** Prefer resume render when failure/cancel happened in a render-phase stage. */
+  const continueAsRender = useMemo(
+    () =>
+      shouldContinueAsRender({
+        events: failedRunStatus?.events,
+        stage: failedRunStatus?.stage,
+        sessionStage: session?.stage,
+      }),
+    [failedRunStatus, session?.stage]
+  );
+
+  const liveStatus = statusFlags.status ?? session?.status ?? null;
   const isFailed =
-    (runStatus?.status ?? session?.status) === 'failed' ||
-    (runStatus?.status ?? session?.status) === 'cancelled' ||
-    (runStatus?.status ?? session?.status) === 'interrupted';
+    statusFlags.failedLike ||
+    (statusFlags.status == null &&
+      (session?.status === 'failed' ||
+        session?.status === 'cancelled' ||
+        session?.status === 'interrupted'));
 
   const handleContinue = useCallback(() => {
     if (isActionImitationWorkflow(session?.workflow) || continueAsRender) {
@@ -739,7 +752,7 @@ const WorkspacePage: React.FC = () => {
       );
       return;
     }
-    if (isActiveStatus(runStatus?.status) || planning || rendering) {
+    if (statusFlags.busy || planning || rendering) {
       message.warning(
         t('videoGeneration.actions.exportBusy', {
           defaultValue: '规划或渲染进行中，请完成后再导出。',
@@ -786,7 +799,7 @@ const WorkspacePage: React.FC = () => {
     message,
     planning,
     rendering,
-    runStatus?.status,
+    statusFlags.busy,
     session?.title,
     sessionId,
     t,
@@ -803,9 +816,9 @@ const WorkspacePage: React.FC = () => {
       navigate('/cloud-login');
       return;
     }
-    const status = runStatus?.status ?? session.status;
-    const hasFilm = Boolean(runStatus?.final_video || session.final_video);
-    const hasCover = Boolean(runStatus?.cover || session.cover);
+    const status = statusFlags.status ?? session.status;
+    const hasFilm = Boolean(statusFlags.finalVideoPath || session.final_video);
+    const hasCover = Boolean(statusFlags.coverPath || session.cover);
     if (status !== 'succeeded' || !hasFilm) {
       message.warning(
         t('videoGeneration.tvShow.publish.needSucceeded', {
@@ -822,7 +835,7 @@ const WorkspacePage: React.FC = () => {
       );
       return;
     }
-    if (isActiveStatus(runStatus?.status) || planning || rendering) {
+    if (statusFlags.busy || planning || rendering) {
       message.warning(
         t('videoGeneration.tvShow.publish.busy', {
           defaultValue: '规划或渲染进行中，请完成后再发布。',
@@ -862,17 +875,24 @@ const WorkspacePage: React.FC = () => {
     planning,
     publishing,
     rendering,
-    runStatus?.cover,
-    runStatus?.final_video,
-    runStatus?.status,
+    statusFlags.busy,
+    statusFlags.coverPath,
+    statusFlags.finalVideoPath,
+    statusFlags.status,
     session,
     sessionId,
     t,
   ]);
 
   const handleRevealFilm = useCallback(async () => {
-    const rel = (runStatus?.final_video || session?.final_video || '').replace(/\\/g, '/').replace(/^\/+/, '');
-    const root = (runStatus?.working_dir_abs || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    // Click-time snapshot read — no reactive subscription needed for a one-shot action.
+    const snap = getRunStatusSnapshot();
+    const rel = ((snap?.final_video || session?.final_video || '') as string)
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '');
+    const root = ((snap?.working_dir_abs || '') as string)
+      .replace(/\\/g, '/')
+      .replace(/\/+$/, '');
     if (!rel || !root) {
       message.warning(
         t('videoGeneration.studio.revealMissing', {
@@ -904,42 +924,43 @@ const WorkspacePage: React.FC = () => {
         }`
       );
     }
-  }, [message, runStatus?.final_video, runStatus?.working_dir_abs, session?.final_video, sessionId, t]);
+  }, [message, session?.final_video, sessionId, t]);
 
-  const busy = isActiveStatus(runStatus?.status) || planning || rendering;
+  const busy = statusFlags.busy || planning || rendering;
   const isAction = isActionImitationWorkflow(session?.workflow);
   const hasStoryboard =
     !isAction &&
     (Boolean(findStoryboardPath(artifacts)) ||
       session?.stage === 'planned' ||
-      runStatus?.stage === 'planned' ||
-      runStatus?.status === 'rendering' ||
-      runStatus?.status === 'succeeded' ||
+      statusFlags.stagePlanned ||
+      statusFlags.status === 'rendering' ||
+      statusFlags.status === 'succeeded' ||
       session?.status === 'succeeded');
   const canRender = isAction
     ? !busy && actionAssetsReady
     : !busy && (hasStoryboard || isFailed);
   const canContinue = isFailed && !busy;
-  const currentStatus = runStatus?.status ?? session?.status;
+  const currentStatus = liveStatus;
   /** Plan finished (idle + `planned`) but the film is not rendered yet. */
   const plannedIdle =
     currentStatus === 'idle' &&
-    !runStatus?.final_video &&
+    !statusFlags.hasFinalVideo &&
     !session?.final_video &&
-    (runStatus?.stage === 'planned' || session?.stage === 'planned');
+    (statusFlags.stagePlanned || session?.stage === 'planned');
   const canPublishTvShow =
     !busy &&
     !publishing &&
-    (runStatus?.status ?? session?.status) === 'succeeded' &&
-    Boolean(runStatus?.final_video || session?.final_video) &&
-    Boolean(runStatus?.cover || session?.cover);
+    currentStatus === 'succeeded' &&
+    (statusFlags.hasFinalVideo || Boolean(session?.final_video)) &&
+    (statusFlags.hasCover || Boolean(session?.cover));
   const canOpenInCanvas =
     !isAction &&
     !busy &&
     !materializing &&
     (hasStoryboard ||
-      Boolean(runStatus?.final_video || session?.final_video) ||
-      (runStatus?.status ?? session?.status) === 'succeeded');
+      statusFlags.hasFinalVideo ||
+      Boolean(session?.final_video) ||
+      currentStatus === 'succeeded');
 
   const handleOpenInCanvas = useCallback(async () => {
     if (!sessionId || materializing || busy) return;
@@ -1045,15 +1066,12 @@ const WorkspacePage: React.FC = () => {
                 <Tag size='small' color='arcoblue'>
                   {workflowLabel(session.workflow, t)}
                 </Tag>
-                <Tag size='small' color={statusTagColor(runStatus?.status ?? session.status)}>
-                  {statusLabel(runStatus?.status ?? session.status, t)}
+                <Tag size='small' color={statusTagColor(currentStatus)}>
+                  {statusLabel(currentStatus, t)}
                 </Tag>
               </div>
               <p className='m-0 mt-4px text-12px text-[var(--color-text-3)]'>
-                {progressStatusText(runStatus?.stage ?? session?.stage, runStatus?.message, t) ||
-                  t('videoGeneration.workspace.workflowLocked', {
-                    defaultValue: '工作流在创建后已锁定，不可更改。',
-                  })}
+                <RunProgressLine fallbackStage={session.stage} />
               </p>
             </div>
           </div>
@@ -1062,9 +1080,9 @@ const WorkspacePage: React.FC = () => {
               type='outline'
               size='small'
               onClick={() => {
-                void loadSession();
+                // Pull latest run data only — never reset in-progress form edits.
+                void refreshRun();
                 void refreshArtifacts();
-                void refreshStatus();
               }}
             >
               <span className='inline-flex items-center gap-4px'>
@@ -1133,13 +1151,9 @@ const WorkspacePage: React.FC = () => {
         </div>
 
         <StudioStageRail
-          status={currentStatus}
-          stage={runStatus?.stage ?? session.stage}
           hasStoryboard={hasStoryboard}
           hasFinalVideo={Boolean(finalBlobUrl)}
           variant={isAction ? 'action' : 'film'}
-          events={runStatus?.events}
-          updatedAt={runStatus?.updated_at ?? null}
         />
 
         {artifacts.length > 0 ? (
@@ -1240,7 +1254,7 @@ const WorkspacePage: React.FC = () => {
           </section>
         ) : null}
 
-        {runStatus && (busy || isFailed) ? (
+        {statusFlags.busy || isFailed ? (
           <section
             className={[
               styles.studioPanel,
@@ -1249,7 +1263,6 @@ const WorkspacePage: React.FC = () => {
             ].join(' ')}
           >
             <ProgressTimeline
-              status={runStatus}
               onCancel={() => void handleCancel()}
               cancelling={cancelling}
               models={models}
@@ -1569,7 +1582,6 @@ const WorkspacePage: React.FC = () => {
             <StoryboardBoard
               sessionId={sessionId}
               artifacts={artifacts}
-              runStatus={runStatus}
               disabled={busy}
               revising={revising}
               onSaveSceneDescriptions={handleSaveSceneDescriptions}

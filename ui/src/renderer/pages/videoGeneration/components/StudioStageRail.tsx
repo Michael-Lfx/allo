@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Spin } from '@arco-design/web-react';
-import type { SessionStatus, VimaxRunStatus } from '../types';
+import type { VimaxRunStatus } from '../types';
 import { formatElapsedClock } from '../progressEventElapsed';
 import {
   buildStudioStageTimeline,
@@ -10,18 +10,14 @@ import {
   type StudioStageState,
   type StudioStageVariant,
 } from '../studioStageTimeline';
+import { useDocumentHidden, useRunStatusFull } from '../useRunStatusFeed';
 import styles from '../index.module.css';
 
 interface StudioStageRailProps {
-  status?: VimaxRunStatus | null;
-  stage?: string | null;
   hasStoryboard: boolean;
   hasFinalVideo: boolean;
   /** `action` = action-imitation runs, which use the 3-phase rail. */
   variant?: StudioStageVariant;
-  /** Live progress events — drive per-phase duration and segment widths. */
-  events?: SessionStatus['events'];
-  updatedAt?: string | null;
 }
 
 const STAGE_LABEL_KEYS: Record<StudioStageKey, { key: string; fallback: string }> = {
@@ -109,38 +105,37 @@ const StageMarker: React.FC<{ state: StudioStageState; index: number }> = ({ sta
 };
 
 const StudioStageRail: React.FC<StudioStageRailProps> = ({
-  status,
-  stage,
   hasStoryboard,
   hasFinalVideo,
   variant = 'film',
-  events,
-  updatedAt,
 }) => {
   const { t } = useTranslation();
+  const runStatus = useRunStatusFull();
+  const hidden = useDocumentHidden();
+  const status: VimaxRunStatus | null = runStatus?.status ?? null;
   const busy = status === 'planning' || status === 'rendering';
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
-    if (!busy) return;
+    if (!busy || hidden) return;
     setNowMs(Date.now());
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [busy]);
+  }, [busy, hidden]);
 
   const segments = useMemo(
     () =>
       buildStudioStageTimeline({
         status,
-        stage,
-        events,
-        updatedAt,
+        stage: runStatus?.stage ?? null,
+        events: runStatus?.events,
+        updatedAt: runStatus?.updated_at ?? null,
         nowMs,
         hasStoryboard,
         hasFinalVideo,
         variant,
       }),
-    [status, stage, events, updatedAt, nowMs, hasStoryboard, hasFinalVideo, variant]
+    [status, runStatus?.stage, runStatus?.events, runStatus?.updated_at, nowMs, hasStoryboard, hasFinalVideo, variant]
   );
 
   return (

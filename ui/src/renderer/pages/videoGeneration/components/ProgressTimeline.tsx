@@ -9,9 +9,9 @@ import { isInsufficientCreditsError } from '../creditsError';
 import { eventElapsed, formatElapsedClock, coalesceProgressEvents } from '../progressEventElapsed';
 import { statusLabel, statusTagColor } from './SessionCard';
 import { stageLabel } from '../stageI18n';
+import { useDocumentHidden, useRunStatusFull } from '../useRunStatusFeed';
 
 interface ProgressTimelineProps {
-  status: SessionStatus | null;
   onCancel?: () => void;
   cancelling?: boolean;
   /** Currently selected models — used to explain failures. */
@@ -174,13 +174,10 @@ function classifyFailure(
   };
 }
 
-const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
-  status,
-  onCancel,
-  cancelling,
-  models,
-}) => {
+const ProgressTimeline: React.FC<ProgressTimelineProps> = ({ onCancel, cancelling, models }) => {
   const { t } = useTranslation();
+  const status = useRunStatusFull();
+  const hidden = useDocumentHidden();
   const chronological = status?.events ?? [];
   const events = useMemo(() => {
     const list = status?.events ?? [];
@@ -191,11 +188,11 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
   const busy = status?.status === 'planning' || status?.status === 'rendering';
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
-    if (!busy) return;
+    if (!busy || hidden) return;
     setNowMs(Date.now());
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [busy]);
+  }, [busy, hidden]);
 
   const failure = useMemo(() => {
     if (!status?.error) return null;
