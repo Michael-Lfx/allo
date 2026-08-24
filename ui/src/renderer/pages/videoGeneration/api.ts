@@ -15,7 +15,6 @@ import type {
   CreateSessionBody,
   PlanBody,
   RenderBody,
-  ReviseBody,
   SessionStatus,
   SessionSummary,
   TvShowLikeResult,
@@ -112,10 +111,6 @@ export async function planSession(id: string, body: PlanBody): Promise<void> {
   invalidateSessionList();
 }
 
-export async function reviseSession(id: string, body: ReviseBody): Promise<void> {
-  await httpRequest<unknown>('POST', `${BASE}/sessions/${encodeURIComponent(id)}/revise`, body);
-  invalidateSessionList();
-}
 
 /** Overwrite a text/JSON artifact in place. */
 export async function writeArtifactText(
@@ -484,18 +479,6 @@ export function uploadCameo(
     xhr.addEventListener('error', () => reject(new Error('Cameo upload failed: network error')));
     xhr.send(formData);
   });
-}
-
-export async function updateCameo(
-  sessionId: string,
-  cameoId: string,
-  body: { character_name?: string; description?: string }
-): Promise<CameoPhoto> {
-  return httpRequest<CameoPhoto>(
-    'PATCH',
-    `${BASE}/sessions/${encodeURIComponent(sessionId)}/cameos/${encodeURIComponent(cameoId)}`,
-    body
-  );
 }
 
 export async function deleteCameo(sessionId: string, cameoId: string): Promise<void> {

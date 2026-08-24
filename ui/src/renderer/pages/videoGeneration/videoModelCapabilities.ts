@@ -104,7 +104,3 @@ export function normalizeVideoFps(model: string, fps: number): number {
   if (caps.fpsOptions.includes(fps)) return fps;
   return caps.fpsOptions[0] ?? DEFAULT_VIDEO_FPS;
 }
-
-export function defaultVideoResolutionForModel(model: string): VideoResolution {
-  return isMiniMaxH3VideoModel(model) ? DEFAULT_MINIMAX_H3_RESOLUTION : DEFAULT_VIDEO_RESOLUTION;
-}

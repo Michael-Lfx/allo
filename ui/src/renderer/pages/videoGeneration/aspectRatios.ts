@@ -13,10 +13,6 @@ export function normalizeSeedanceAspectRatio(raw: string | null | undefined): Se
   return hit ?? DEFAULT_SEEDANCE_ASPECT_RATIO;
 }
 
-export function seedanceAspectSelectOptions(): { label: string; value: SeedanceAspectRatio }[] {
-  return SEEDANCE_ASPECT_RATIOS.map((value) => ({ label: value, value }));
-}
-
 /** Unitless width/height for CSS `aspect-ratio` / `--shot-aspect`. */
 export function aspectRatioNumber(raw: string | null | undefined): number {
   const n = normalizeSeedanceAspectRatio(raw);

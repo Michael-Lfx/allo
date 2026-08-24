@@ -296,11 +296,6 @@ export interface RenderBody {
   fps?: number;
 }
 
-export interface ReviseBody {
-  revision_target: string;
-  revision_instruction: string;
-}
-
 /** Result of a direct artifact write / replace / prompt update. */
 export interface ArtifactEditResult {
   revised_path: string;

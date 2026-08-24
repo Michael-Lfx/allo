@@ -210,30 +210,3 @@ export async function deleteCanvasMedia(mediaId: string): Promise<void> {
   );
 }
 
-export async function waitForGenerationTask(
-  taskId: string,
-  opts?: {
-    intervalMs?: number;
-    timeoutMs?: number;
-    onProgress?: (t: GenerationTaskView) => void;
-  }
-): Promise<GenerationTaskView> {
-  const intervalMs = opts?.intervalMs ?? 1500;
-  const timeoutMs = opts?.timeoutMs ?? 15 * 60 * 1000;
-  const started = Date.now();
-  for (;;) {
-    const task = await getGenerationTask(taskId);
-    opts?.onProgress?.(task);
-    if (
-      task.status === 'succeeded' ||
-      task.status === 'failed' ||
-      task.status === 'canceled'
-    ) {
-      return task;
-    }
-    if (Date.now() - started > timeoutMs) {
-      throw new Error('generation timed out');
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-}
