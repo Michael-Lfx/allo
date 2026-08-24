@@ -37,15 +37,29 @@ pub struct ResolvedCall {
 
 impl ResolvedCall {
     /// The endpoint + request shape for this call, resolved by the single
-    /// dispatch authority in `nomifun-api-types`.
+    /// dispatch authority in `nomifun-api-types`, then re-joined through
+    /// [`crate::url_algebra::join_endpoint`] when a relative `params.endpoint`
+    /// override is present so a duplicated `/v1` seam cannot reach the wire.
     pub fn dispatch_target(&self) -> nomifun_api_types::DispatchTarget {
-        nomifun_api_types::resolve_dispatch_target(
+        let mut target = nomifun_api_types::resolve_dispatch_target(
             &self.platform,
             &self.connection.base_url,
             self.connection.is_full_url,
             self.task,
             &self.model_params,
-        )
+        );
+        if !self.connection.is_full_url
+            && let Some(endpoint) = self
+                .model_params
+                .get("endpoint")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            && !(endpoint.starts_with("http://") || endpoint.starts_with("https://"))
+        {
+            target.url = crate::url_algebra::join_endpoint(&self.connection.base_url, endpoint);
+        }
+        target
     }
 }
 
@@ -78,7 +92,9 @@ mod tests {
 
     #[test]
     fn dispatch_target_delegates_to_api_types_resolver() {
-        let call = chat_call("https://api.openai.com", false);
+        // Preset OpenAI roots already carry `/v1`; mike's resolver appends the
+        // version-free template and does not rewrite other platforms to `/v1`.
+        let call = chat_call("https://api.openai.com/v1", false);
         let t = call.dispatch_target();
         assert_eq!(t.url, "https://api.openai.com/v1/chat/completions");
         assert_eq!(t.method, "POST");
@@ -87,10 +103,23 @@ mod tests {
         // is_full_url and model_params flow through.
         let full = chat_call("https://proxy.example/custom", true);
         assert_eq!(full.dispatch_target().url, "https://proxy.example/custom");
-        let mut with_params = chat_call("https://api.openai.com", false);
+        let mut with_params = chat_call("https://api.openai.com/v1", false);
         with_params.model_params = json!({"endpoint": "/custom/chat", "request_shape": "multipart"});
         let t = with_params.dispatch_target();
-        assert_eq!(t.url, "https://api.openai.com/custom/chat");
+        assert_eq!(t.url, "https://api.openai.com/v1/custom/chat");
         assert_eq!(t.shape, RequestShape::Multipart);
+    }
+
+    /// A user who pastes the version into BOTH halves — the documented base URL
+    /// plus the documented request path — used to get `/v1/v1/chat/completions`
+    /// and a bare 404 with no indication of which half was wrong.
+    #[test]
+    fn doubled_version_seam_does_not_reach_the_wire() {
+        let mut call = chat_call("https://www.cheapapi.xin/v1", false);
+        call.model_params = json!({"endpoint": "/v1/chat/completions"});
+        assert_eq!(
+            call.dispatch_target().url,
+            "https://www.cheapapi.xin/v1/chat/completions"
+        );
     }
 }

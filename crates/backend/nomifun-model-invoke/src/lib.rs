@@ -23,6 +23,7 @@ pub mod routes_table;
 pub mod service;
 pub mod transport;
 pub mod types;
+pub mod url_algebra;
 
 pub use adapter::{AdapterRegistry, ProtocolAdapter};
 pub use adapters::default_adapters;
@@ -38,4 +39,8 @@ pub use types::{
     AsrRequest, ChatTextRequest, EmbedRequest, ImageEditRequest, ImageGenRequest, InputAsset, JobHandle,
     ModelRef, ProducedAsset, ProducedData, RerankRequest, RerankResult, TaskOutcome, TaskRequest, TaskResult,
     TtsRequest, VideoGenRequest,
+};
+pub use url_algebra::{
+    EndpointRootShape, ROOT_VERSION_SUFFIXES, is_version_segment, join_endpoint, root_candidates,
+    root_declares_version, root_matches_shape,
 };
