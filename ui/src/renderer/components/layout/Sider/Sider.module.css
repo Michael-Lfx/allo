@@ -1,10 +1,6 @@
-/* Keep the navigation rail quieter than the main content in the light theme.
-   These overrides stay local to the sider so the shared text tokens keep their
-   normal contrast everywhere else. */
 .sider {
-  --text-primary: #454b55;
-  --text-secondary: #6f7680;
-  --bg-6: #9298a1;
+  --text-primary: var(--flowy-text-primary, var(--color-text-1));
+  --text-secondary: var(--flowy-text-secondary, var(--color-text-2));
   position: relative;
   isolation: isolate;
 }
@@ -59,12 +55,6 @@
   outline-offset: -2px;
 }
 
-:global([data-theme='dark']) .sider {
-  --text-primary: #ffffff;
-  --text-secondary: #ced3da;
-  --bg-6: #5a5a5a;
-}
-
 /* GPU-friendly: transform applies to the + SVG only (see Sider.tsx), not the padded row or icon frame */
 
 .newChatTrigger {
@@ -73,7 +63,7 @@
 
 .newChatIcon {
   transform: translateZ(0);
-  transition: transform 0.14s cubic-bezier(0.33, 1, 0.68, 1);
+  transition: transform var(--flowy-motion-fast) var(--flowy-ease-move);
 }
 
 .newChatTrigger:hover .newChatIcon {
@@ -108,7 +98,55 @@
    fixed top nav and the scrollable list stay on the same vertical center line.
    Mimics macOS native overlay scrollbars. */
 .scrollArea {
+  --flowy-workspace-heading-height: 32px;
+  --flowy-workspace-section-height: var(--flowy-workspace-heading-height);
+  --flowy-workpath-header-height: 42px;
+  container-name: flowy-sider;
+  container-type: inline-size;
+  scroll-padding-block-start: calc(
+    var(--flowy-workspace-section-height) + var(--flowy-workpath-header-height) + 8px
+  );
   scrollbar-width: none; /* Firefox */
+}
+
+.workspaceSection {
+  min-width: 0;
+  padding-inline: 5px 8px;
+}
+
+.workspaceSectionHeader {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: var(--flowy-panel);
+  border-bottom: 1px solid var(--flowy-border-subtle);
+}
+
+.scrollArea :global(.flowy-workpath-drawer-header) {
+  position: sticky;
+  top: var(--flowy-workspace-section-height);
+  z-index: 3;
+  background: var(--flowy-panel);
+  border-bottom: 1px solid var(--flowy-border-subtle);
+}
+
+.scrollArea :global(.flowy-workpath-drawer-header:hover) {
+  background: var(--flowy-interactive-hover);
+}
+
+@container flowy-sider (max-width: 200px) {
+  :global(.session-age-meta) {
+    display: none;
+  }
+
+  .scrollArea :global(.flowy-workpath-header-two-line) {
+    height: 34px;
+    padding-block: 0;
+  }
+
+  .scrollArea :global(.flowy-workpath-header-two-line .flowy-workpath-secondary) {
+    display: none;
+  }
 }
 
 .scrollArea::-webkit-scrollbar {

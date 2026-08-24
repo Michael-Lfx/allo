@@ -36,28 +36,11 @@ import { useConversationShortcuts } from '@renderer/hooks/ui/useConversationShor
 import { isDesktopShell } from '@renderer/utils/platform';
 import { computeCssSyncDecision, resolveCssByActiveTheme } from '@renderer/utils/theme/themeCssSync';
 import { DEFAULT_THEME_ID } from '@renderer/pages/settings/DisplaySettings/presets';
+import SidebarToggleIcon from '@renderer/components/layout/Sider/SidebarToggleIcon';
+import { useTranslation } from 'react-i18next';
 import '@renderer/styles/layout.css';
 
 const healthGet = httpGet<{ version?: string }>('/health');
-
-const SidebarIcon: React.FC<{ size?: number; strokeWidth?: number }> = ({ size = 18, strokeWidth = 4 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox='0 0 48 48'
-    fill='none'
-    stroke='currentColor'
-    strokeWidth={strokeWidth}
-    strokeLinecap='round'
-    strokeLinejoin='round'
-    aria-hidden='true'
-    focusable='false'
-    style={{ display: 'inline-block', verticalAlign: 'middle' }}
-  >
-    <rect x='6' y='10' width='36' height='28' rx='5' />
-    <line x1='18' y1='10' x2='18' y2='38' />
-  </svg>
-);
 
 const useDebug = () => {
   const [count, setCount] = useState(0);
@@ -143,6 +126,7 @@ const Layout: React.FC<{
   /** When set, replaces `<Outlet />` (auth gate keeps chrome without mounting child routes). */
   children?: React.ReactNode;
 }> = ({ sider, onSessionClick: _onSessionClick, children }) => {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
   const [railWidth, setRailWidth] = useState<number>(() => readStoredRailWidth());
   const [isMobile, setIsMobile] = useState(false);
@@ -562,7 +546,7 @@ const Layout: React.FC<{
         left: 0,
         zIndex: 100,
         transform: collapsed ? 'translateX(-100%)' : 'translateX(0)',
-        transition: 'none',
+        transition: 'transform var(--flowy-motion-slow) var(--flowy-ease-move)',
         pointerEvents: collapsed ? ('none' as const) : ('auto' as const),
       }
     : {
@@ -617,10 +601,12 @@ const Layout: React.FC<{
                     type='button'
                     className='app-titlebar__button app-titlebar__button--mobile'
                     onClick={() => setCollapsed(true)}
-                    title='Collapse sidebar'
-                    aria-label='Collapse sidebar'
+                    title={t('common.navCollapse')}
+                    aria-label={t('common.navCollapse')}
+                    aria-expanded={!collapsed}
+                    aria-controls='flowy-primary-sider'
                   >
-                    <SidebarIcon size={18} strokeWidth={2.5} />
+                    <SidebarToggleIcon collapsed={collapsed} size={18} strokeWidth={2.5} />
                   </button>
                 )}
                 {/* 侧栏折叠改由标题栏统一控制 / Sidebar folding handled by Titlebar toggle */}

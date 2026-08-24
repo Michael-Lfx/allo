@@ -101,7 +101,7 @@ describe('WorkpathDrawer structure', () => {
     // The row owns the hover actions, so the card's trigger starts inside the
     // row and closes before the action slot: hovering + / more never opens
     // the card, and the click-through popup can never swallow their events.
-    expect(source.indexOf('<Popover')).toBeGreaterThan(source.indexOf('group group-hover:pr-50px'));
+    expect(source.indexOf('<Popover')).toBeGreaterThan(source.indexOf('flowy-workpath-drawer-header'));
     expect(source.indexOf('</Popover>')).toBeLessThan(source.indexOf('{/* Hover ops:'));
     expect(cardSource.includes("t('sessionList.workpathConversationCount'")).toBe(true);
     expect(cardSource.includes('{workspacePath}')).toBe(true);
@@ -111,7 +111,7 @@ describe('WorkpathDrawer structure', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
     const conversationSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'ConversationRow.tsx'), 'utf8');
 
-    expect(source.includes('hover:bg-fill-2')).toBe(true);
+    expect(source.includes('flowy-workpath-drawer-header')).toBe(true);
     expect(source.includes('hasInteractiveContent && \'gap-2px pt-2px\'')).toBe(true);
     expect(conversationSource.includes("'hover:bg-fill-2': !batchMode && !selected")).toBe(true);
   });
@@ -121,10 +121,29 @@ describe('WorkpathDrawer structure', () => {
     const sessionListSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'index.tsx'), 'utf8');
 
     expect(source.includes("data-testid='workpath-conversation-list'")).toBe(true);
-    expect(source.includes('visibleEntries.interactive.map((entry) => renderEntry(entry))')).toBe(true);
+    expect(source.includes('baseInteractiveEntries.map((entry) => renderEntry(entry))')).toBe(true);
     expect(source.includes('SessionKindGroup')).toBe(false);
     expect(source.includes('visibleEntries.terminal')).toBe(false);
     expect(sessionListSource.includes('buildWorkpathTree(conversations, [], ui.pinnedKeys, emptyProjectWorkpaths)')).toBe(true);
     expect(sessionListSource.includes('onCreateTerminal={handleCreateTerminal}')).toBe(false);
+  });
+
+  test('uses a semantic workpath disclosure control and a stable content id', () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'WorkpathDrawer.tsx'), 'utf8');
+
+    expect(source.includes("data-testid='workpath-toggle-row'")).toBe(true);
+    expect(source.includes('flowy-workpath-drawer-header')).toBe(true);
+    expect(source.includes('pr-56px')).toBe(true);
+    expect(source.includes('group-hover:pr-50px')).toBe(false);
+    expect(source.includes("type='button'\n            aria-expanded={batchMode ? undefined : expanded}")).toBe(true);
+    expect(source.includes('aria-controls={batchMode ? undefined : controlsId}')).toBe(true);
+    expect(source.includes('workpathKey(node.key)')).toBe(true);
+    expect(source.includes('workpath-disclosure-caret')).toBe(true);
+    expect(source.includes('flowy-disclosure-content')).toBe(true);
+    expect(source.includes('overflowMotion.shouldRender')).toBe(true);
+    expect(source.includes("aria-hidden={overflowMotion.phase === 'exiting'}")).toBe(true);
+    expect(source.includes('flowy-workpath-header-two-line')).toBe(true);
+    expect(source.includes('flowy-workpath-secondary')).toBe(true);
+    expect(source.includes("className='flowy-workpath-session-overflow'")).toBe(true);
   });
 });

@@ -50,4 +50,12 @@ describe('ConversationRow structure', () => {
     expect(source.includes('disabled={collapsed || batchMode || isMobile || menuVisible}')).toBe(true);
     expect(source.includes("right-8px top-1/2 -translate-y-1/2")).toBe(true);
   });
+
+  test('uses a localized fallback for empty conversation titles', () => {
+    expect(source.includes("const displayName = conversation.name?.trim() || t('conversation.historySearch.untitled');")).toBe(
+      true
+    );
+    expect(source.includes('text={displayName}')).toBe(true);
+    expect(source.includes('session-age-meta')).toBe(true);
+  });
 });

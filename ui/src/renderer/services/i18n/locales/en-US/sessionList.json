@@ -32,7 +32,7 @@
   "currentGitBranch": "Current branch: {{branch}}",
   "workpathConversationCount": "{{count}} chats",
   "showSessionAge": "Show session age",
-  "expandDisplay": "Show more",
+  "expandDisplay": "Show {{count}} more",
   "collapseDisplay": "Show less",
   "createdToday": "today",
   "createdNow": "now",

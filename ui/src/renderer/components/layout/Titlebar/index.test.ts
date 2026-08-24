@@ -27,6 +27,13 @@ describe('Titlebar instant icon tooltips', () => {
     );
   });
 
+  test('exposes the sidebar state to assistive technology and uses the stateful icon', () => {
+    expect(titlebarSource.includes("import SidebarToggleIcon from '../Sider/SidebarToggleIcon';")).toBe(true);
+    expect(titlebarSource.includes('ariaExpanded: !layout?.siderCollapsed')).toBe(true);
+    expect(titlebarSource.includes("ariaControls: 'flowy-primary-sider'")).toBe(true);
+    expect(titlebarSource.includes('collapsed={Boolean(layout?.siderCollapsed)}')).toBe(true);
+  });
+
   test('uses a stable three-column desktop layout and limits new-conversation to chats and Settings', () => {
     expect(titlebarSource.includes("'app-titlebar--wide': !layout?.isMobile")).toBe(true);
     expect(titlebarSource.includes("data-titlebar-group='navigation'")).toBe(true);

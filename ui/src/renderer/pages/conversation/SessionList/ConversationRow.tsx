@@ -50,6 +50,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
   const cronStatus = getJobStatus(conversation.id);
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
   const ageLabel = formatSessionAgeLabel(t, conversation.created_at);
+  const displayName = conversation.name?.trim() || t('conversation.historySearch.untitled');
 
   // Session-level capability markers (trailing group): 召唤伙伴 → 定时任务 →
   // 自动工作 → 智能决策, shared builder with TerminalRow. The summon marker
@@ -144,7 +145,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
           containerClassName='flex items-center'
         >
           <MarqueeText
-            text={conversation.name}
+            text={displayName}
             trigger='hover'
             title=''
             disabled={collapsed || batchMode || isMobile || menuVisible}
@@ -161,7 +162,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             })}
           >
             {showAgeMeta && (
-              <span className='w-40px text-right text-11px text-t-tertiary'>{ageLabel}</span>
+              <span className='session-age-meta w-40px text-right text-11px text-t-tertiary'>{ageLabel}</span>
             )}
             {showUnreadDot && unreadDot}
           </span>
@@ -273,7 +274,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
       <Tooltip
         key={conversation.id}
         {...siderTooltipProps}
-        content={conversation.name || t('conversation.welcome.newConversation')}
+        content={displayName}
         position='right'
       >
         {renderRow()}

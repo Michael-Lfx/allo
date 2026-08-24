@@ -1,7 +1,19 @@
 
 
 import { Checkbox, Dropdown, Menu, Message, Popover, Tooltip } from '@arco-design/web-react';
-import { BookOne, BranchOne, Copy, DeleteOne, FolderClose, FolderOpen, Home, MoreOne, Plus, Pushpin } from '@icon-park/react';
+import {
+  BookOne,
+  BranchOne,
+  Copy,
+  DeleteOne,
+  FolderClose,
+  FolderOpen,
+  Home,
+  MoreOne,
+  Plus,
+  Pushpin,
+  Right,
+} from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -15,14 +27,16 @@ import { copyText } from '@/renderer/utils/ui/clipboard';
 import type { ConversationId } from '@/common/types/ids';
 
 import type { WorkpathUiState } from './hooks/useWorkpathUiState';
+import { useDisclosureMotion } from './hooks/useDisclosureMotion';
 import { useWorkpathKnowledgeLit } from './hooks/useWorkpathKnowledge';
+import SessionOverflowButton from './SessionOverflowButton';
 import {
   getBatchSelectionScopeState,
   getWorkpathBatchSelectionScope,
   type BatchSelectableScope,
   type BatchSelectionState,
 } from './utils/batchSelectionScopes';
-import { DEFAULT_WORKPATH_KEY } from './utils/workpathKey';
+import { DEFAULT_WORKPATH_KEY, workpathKey } from './utils/workpathKey';
 import {
   getVisibleWorkpathEntries,
   getWorkpathEntryDisplayIndex,
@@ -81,10 +95,13 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   const { t } = useTranslation();
   const syncedActiveDrawerRouteRef = useRef<string | null>(null);
   const [showAllConversations, setShowAllConversations] = useState(false);
+  const [drawerToggleKey, setDrawerToggleKey] = useState(0);
+  const [overflowToggleKey, setOverflowToggleKey] = useState(0);
   const [workpathIdentityHovered, setWorkpathIdentityHovered] = useState(false);
   const isMobile = useLayoutContext()?.isMobile ?? false;
 
   const isDefault = node.key === DEFAULT_WORKPATH_KEY;
+  const controlsId = `flowy-workpath-${workpathKey(node.key).replace(/[^a-zA-Z0-9_-]/g, '_')}-sessions`;
   const displayName = isDefault ? t('sessionList.defaultWorkpath') : node.displayName;
   const workpathDisplay = isDefault ? null : formatWorkpathDisplay(node.key, node.displayName, displayPreferences.workpathNameMode);
   const twoLineWorkpath = workpathDisplay?.kind === 'twoLine';
@@ -104,7 +121,10 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     terminal: false,
   });
   const hasInteractiveContent =
-    visibleEntries.interactive.length > 0 || visibleEntries.kindMeta.interactive.hasOverflow;
+    node.interactive.length > 0 || visibleEntries.kindMeta.interactive.hasOverflow;
+  const interactiveOverflowCount = Math.max(0, node.interactive.length - WORKPATH_COLLAPSED_SESSION_LIMIT);
+  const baseInteractiveEntries = node.interactive.slice(0, WORKPATH_COLLAPSED_SESSION_LIMIT);
+  const overflowInteractiveEntries = node.interactive.slice(WORKPATH_COLLAPSED_SESSION_LIMIT);
   const activeRouteKey = activeEntry ? `${node.key}:${activeEntry.id}` : null;
   const drawerExpansion = getRenderedExpansionState({
     active: activeEntry !== null,
@@ -112,6 +132,11 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     activeRouteSynced: syncedActiveDrawerRouteRef.current === activeRouteKey,
   });
   const expanded = drawerExpansion.expanded;
+  const drawerMotion = useDisclosureMotion(expanded, drawerToggleKey);
+  const overflowMotion = useDisclosureMotion(
+    showAllConversations || forceShowAllForActiveConversation,
+    overflowToggleKey
+  );
 
   // Workpath-level capability: knowledge base. P2 临时点亮规则（组内任一成员
   // binding enabled）— Task 11 / P3 切到 workpath 级单次查询后由 hook 内部替换。
@@ -137,7 +162,13 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
   ]);
 
   const toggleDrawer = () => {
+    setDrawerToggleKey((value) => value + 1);
     ui.toggleExpanded(node.key);
+  };
+
+  const toggleOverflow = () => {
+    setOverflowToggleKey((value) => value + 1);
+    setShowAllConversations((value) => !value);
   };
 
   const headerIcon = isDefault ? (
@@ -183,18 +214,18 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
       );
     }
     return (
-      <span className='min-w-0 flex-1 flex flex-col justify-center overflow-hidden gap-2px'>
+      <span className='flowy-workpath-two-line min-w-0 flex-1 flex flex-col justify-center overflow-hidden gap-2px'>
         <MarqueeText
           text={workpathDisplay.primary}
           trigger='hover'
           disabled={batchMode || isMobile}
           active={workpathIdentityHovered && !isMobile}
-          className='min-w-0 text-13px font-[500] text-t-primary leading-16px'
+          className='min-w-0 text-14px font-[500] text-t-primary leading-16px'
         />
         {workpathDisplay.secondary && (
           <PathText
             path={workpathDisplay.secondary}
-            className='text-11px font-[400] text-t-secondary leading-13px'
+            className='flowy-workpath-secondary text-11px font-[400] text-t-secondary leading-13px'
             marqueeOnHover={!batchMode && !isMobile}
             marqueeActive={workpathIdentityHovered && !isMobile}
           />
@@ -217,17 +248,11 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
     <div className='workpath-drawer min-w-0'>
       {/* Drawer header */}
       <div
+        data-testid='workpath-toggle-row'
         className={classNames(
-          'relative flex items-center gap-8px pl-10px pr-8px cursor-pointer hover:bg-fill-2 rd-10px transition-colors min-w-0 group group-hover:pr-50px group-focus-within:pr-50px',
-          twoLineWorkpath ? 'h-42px py-4px' : 'h-34px'
+          'flowy-workpath-drawer-header relative flex items-center gap-8px pl-10px pr-56px rd-10px min-w-0 group',
+          twoLineWorkpath ? 'flowy-workpath-header-two-line h-42px py-4px' : 'h-34px'
         )}
-        onClick={() => {
-          if (batchMode && !workpathSelectionState.disabled) {
-            onToggleBatchSelectionScope?.(workpathSelectionScope);
-            return;
-          }
-          toggleDrawer();
-        }}
       >
         {batchMode && (
           <span
@@ -262,17 +287,30 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
           getPopupContainer={() => document.body}
           style={{ maxWidth: 'calc(100vw - 24px)', pointerEvents: 'none' }}
         >
-          <div
-            className='flex min-w-0 flex-1 items-center gap-8px'
+          <button
+            type='button'
+            aria-expanded={batchMode ? undefined : expanded}
+            aria-controls={batchMode ? undefined : controlsId}
+            className='flex min-w-0 flex-1 items-center gap-8px appearance-none border-none bg-transparent p-0 text-left'
+            onClick={() => {
+              if (batchMode && !workpathSelectionState.disabled) {
+                onToggleBatchSelectionScope?.(workpathSelectionScope);
+                return;
+              }
+              toggleDrawer();
+            }}
             onPointerEnter={() => setWorkpathIdentityHovered(true)}
             onPointerLeave={() => setWorkpathIdentityHovered(false)}
           >
             <span
+              className='workpath-disclosure-caret size-12px shrink-0 flex items-center justify-center text-t-tertiary'
+              style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+              aria-hidden='true'
+            >
+              <Right theme='outline' size='11' strokeWidth={3} fill='currentColor' />
+            </span>
+            <span
               className='relative size-22px flex items-center justify-center shrink-0 text-t-primary'
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleDrawer();
-              }}
             >
               {headerIcon}
               {node.pinned && (
@@ -307,7 +345,7 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
               {renderWorkpathName()}
               {branchBadge}
             </div>
-          </div>
+          </button>
         </Popover>
 
         {/* Hover ops: keep the high-frequency create action visible and move
@@ -415,29 +453,36 @@ const WorkpathDrawer: React.FC<WorkpathDrawerProps> = ({
       </div>
 
       {/* Drawer content: workpaths expose interactive conversations directly. */}
-      {expanded && (
+      {drawerMotion.shouldRender && (
         <div
+          id={controlsId}
           data-testid='workpath-conversation-list'
+          aria-hidden={drawerMotion.phase === 'exiting'}
+          data-disclosure-phase={drawerMotion.phase}
           className={classNames(
-            'workpath-drawer-content min-w-0 flex flex-col',
+            'workpath-drawer-content flowy-disclosure-content min-w-0 flex flex-col',
+            'flowy-workpath-session-list',
             hasInteractiveContent && 'gap-2px pt-2px'
           )}
         >
-          {visibleEntries.interactive.map((entry) => renderEntry(entry))}
-          {visibleEntries.kindMeta.interactive.hasOverflow && !forceShowAllForActiveConversation && (
-            <button
-              type='button'
-              aria-expanded={showAllConversations}
-              className='ml-42px mt-1px mb-2px inline-flex h-20px w-fit max-w-full appearance-none items-center border-none bg-transparent p-0 text-left text-12px leading-20px text-t-secondary transition-colors cursor-pointer select-none hover:text-t-primary focus:outline-none focus-visible:text-t-primary'
-              onClick={(event) => {
-                event.stopPropagation();
-                setShowAllConversations((value) => !value);
-              }}
+          {baseInteractiveEntries.map((entry) => renderEntry(entry))}
+          {overflowMotion.shouldRender && overflowInteractiveEntries.length > 0 && (
+            <div
+              aria-hidden={overflowMotion.phase === 'exiting'}
+              data-disclosure-phase={overflowMotion.phase}
+              className='flowy-disclosure-content flex flex-col'
             >
-              {showAllConversations
-                ? t('sessionList.collapseDisplay')
-                : t('sessionList.expandDisplay', { count: visibleEntries.kindMeta.interactive.hiddenCount })}
-            </button>
+              {overflowInteractiveEntries.map((entry) => renderEntry(entry))}
+            </div>
+          )}
+          {visibleEntries.kindMeta.interactive.hasOverflow && !forceShowAllForActiveConversation && (
+            <SessionOverflowButton
+              expanded={showAllConversations}
+              hiddenCount={interactiveOverflowCount}
+              controlsId={controlsId}
+              onToggle={toggleOverflow}
+              className='flowy-workpath-session-overflow'
+            />
           )}
         </div>
       )}

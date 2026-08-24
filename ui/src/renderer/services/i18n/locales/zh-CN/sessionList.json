@@ -32,7 +32,7 @@
   "currentGitBranch": "当前分支：{{branch}}",
   "workpathConversationCount": "{{count}} 个对话",
   "showSessionAge": "显示会话时间",
-  "expandDisplay": "展开显示",
+  "expandDisplay": "展开 {{count}} 条",
   "collapseDisplay": "收起",
   "createdToday": "今天",
   "createdNow": "刚刚",

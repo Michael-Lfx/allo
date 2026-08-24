@@ -15,6 +15,7 @@ import { scrollSidebarItemIntoView } from '@/renderer/utils/ui/scrollIntoView';
 import { cleanupSiderTooltips } from '@/renderer/utils/ui/siderTooltip';
 import { Input, Message, Modal } from '@arco-design/web-react';
 import { FolderOpen, Plus, Right } from '@icon-park/react';
+import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -51,6 +52,8 @@ export type WorkpathSessionListProps = {
   batchMode?: boolean;
   displayPreferences?: SidebarDisplayPreferences;
   onBatchModeChange?: (value: boolean) => void;
+  /** Primary sider mode: the outer sider owns the visible workspace heading. */
+  embeddedInPrimarySider?: boolean;
 };
 
 /**
@@ -65,6 +68,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   batchMode = false,
   displayPreferences = DEFAULT_SIDEBAR_DISPLAY_PREFERENCES,
   onBatchModeChange,
+  embeddedInPrimarySider = false,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -718,7 +722,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   return (
     <>
       {modals}
-      <div className='min-w-0 mt-10px'>
+      <div className={classNames('min-w-0', embeddedInPrimarySider ? 'flowy-embedded-workpath-list' : 'mt-10px')}>
         {/* 桌面伙伴专属工作空间分组（roster-driven，置于项目/工作路径之上）。仅交互式、
             不在此新建；可折叠（状态持久化于 useWorkpathUiState，默认展开）；
             点击伙伴行跳转其唯一会话 /conversation/:id。 */}
@@ -738,23 +742,40 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
           renderRow={renderSshRow}
         />
 
-        <div data-testid='workpath-section-toolbar' className='pl-10px pr-4px pb-6px flex items-center justify-between'>
+        <div
+          data-testid='workpath-section-toolbar'
+          className={classNames(
+            'flex items-center justify-between',
+            embeddedInPrimarySider
+              ? 'flowy-embedded-workpath-toolbar'
+              : 'pl-10px pr-4px pb-6px'
+          )}
+        >
           {/* Left text — click to fold/unfold the workpath list */}
           <button
             type='button'
             aria-expanded={expanded}
+            aria-controls='flowy-workpath-tree'
+            aria-label={embeddedInPrimarySider ? t(expanded ? 'common.collapse' : 'common.expandMore') : undefined}
             onClick={() => setExpanded((value) => !value)}
-            className='group flex items-center gap-2px min-w-0 select-none cursor-pointer b-none bg-transparent p-0 text-left opacity-75 transition-opacity hover:opacity-100 relative'
+            className={classNames(
+              'group flex items-center gap-2px min-w-0 select-none cursor-pointer b-none bg-transparent p-0 text-left opacity-75 transition-opacity hover:opacity-100 relative',
+              embeddedInPrimarySider && 'flowy-embedded-workpath-toggle'
+            )}
           >
-            <span className='sider-section-title text-13px font-[500] leading-none tracking-wide truncate min-w-0'>
-              {t('sessionList.workspaces')}
-            </span>
+            {!embeddedInPrimarySider && (
+              <span className='sider-section-title text-13px font-[500] leading-none tracking-wide truncate min-w-0'>
+                {t('sessionList.workspaces')}
+              </span>
+            )}
             {/* Arrow icon - shown on hover of the title button, rotates based on expanded state */}
-            {(!collapsed || dropdownOpen) && (
+            {(embeddedInPrimarySider || !collapsed || dropdownOpen) && (
               <div
-                className={`ml-1 shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-200 ${
-                  expanded ? 'rotate-90' : ''
-                } collapsed-hidden`}
+                className={classNames(
+                  'ml-1 shrink-0 transition-all duration-200 collapsed-hidden',
+                  embeddedInPrimarySider ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+                  expanded && 'rotate-90'
+                )}
                 style={{
                   transformOrigin: 'center center',
                 }}
@@ -795,23 +816,25 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
           </button>
         </div>
 
-        {expanded && tree.map((node) => (
-          <WorkpathDrawer
-            key={node.key}
-            node={node}
-            ui={ui}
-            activeConversationId={activeConversationId}
-            onCreateInteractive={handleCreateInteractive}
-            onRemoveProjectWorkpath={handleRemoveProjectWorkpath}
-            isProjectWorkpath={projectWorkpathKeys.has(node.key)}
-            batchMode={batchMode}
-            batchSelectionState={batchSelectionState}
-            onToggleBatchSelectionScope={handleToggleBatchSelectionScope}
-            renderEntry={renderEntry}
-            displayPreferences={displayPreferences}
-            gitBranch={workpathBranches.get(node.key)}
-          />
-        ))}
+        <div id='flowy-workpath-tree' aria-hidden={!expanded}>
+          {expanded && tree.map((node) => (
+            <WorkpathDrawer
+              key={node.key}
+              node={node}
+              ui={ui}
+              activeConversationId={activeConversationId}
+              onCreateInteractive={handleCreateInteractive}
+              onRemoveProjectWorkpath={handleRemoveProjectWorkpath}
+              isProjectWorkpath={projectWorkpathKeys.has(node.key)}
+              batchMode={batchMode}
+              batchSelectionState={batchSelectionState}
+              onToggleBatchSelectionScope={handleToggleBatchSelectionScope}
+              renderEntry={renderEntry}
+              displayPreferences={displayPreferences}
+              gitBranch={workpathBranches.get(node.key)}
+            />
+          ))}
+        </div>
 
         {/* 空态提示已移除（导航精简） */}
 

@@ -35,6 +35,8 @@ describe('workpath section toolbar structure', () => {
 
     expect(source.includes("data-testid='workpath-section-toolbar'")).toBe(true);
     expect(source.includes("t('sessionList.workspaces')")).toBe(true);
+    expect(source.includes('embeddedInPrimarySider')).toBe(true);
+    expect(source.includes("aria-controls='flowy-workpath-tree'")).toBe(true);
     expect(source.includes("data-testid='workpath-create-project-btn'")).toBe(false);
     expect(source.includes("data-testid='workpath-batch-select-btn'")).toBe(false);
   });

@@ -51,6 +51,117 @@
   border-right: 1px solid var(--flowy-border-subtle);
 }
 
+.sidebar-toggle-icon__caret {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform var(--flowy-motion-base) var(--flowy-ease-move);
+}
+
+.workpath-disclosure-caret {
+  transform-origin: center;
+  transition: transform var(--flowy-motion-base) var(--flowy-ease-move);
+}
+
+.flowy-workpath-drawer-header {
+  transition: background-color var(--flowy-motion-fast) var(--flowy-ease-enter);
+}
+
+.flowy-workpath-drawer-header:hover {
+  background: var(--flowy-interactive-hover, var(--color-fill-2));
+}
+
+.session-overflow-button {
+  display: inline-flex;
+  width: 100%;
+  min-height: 34px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--flowy-text-secondary, var(--color-text-2));
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--flowy-motion-fast) var(--flowy-ease-enter),
+    color var(--flowy-motion-fast) var(--flowy-ease-enter),
+    transform var(--flowy-motion-fast) var(--flowy-ease-move);
+}
+
+.flowy-workpath-session-list {
+  --flowy-workpath-child-inset: 18px;
+}
+
+.flowy-workpath-session-overflow {
+  padding-inline-start: var(--flowy-workpath-child-inset);
+}
+
+.flowy-companion-session-overflow {
+  padding-inline-start: 42px;
+}
+
+.flowy-embedded-workpath-toolbar {
+  height: 24px;
+  align-items: center;
+  padding: 0 4px 0 10px;
+}
+
+.flowy-embedded-workpath-toggle {
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+}
+
+.session-overflow-button:hover {
+  background: var(--flowy-interactive-hover, var(--color-fill-2));
+  color: var(--flowy-text-primary, var(--color-text-1));
+}
+
+.session-overflow-button:active {
+  background: var(--flowy-interactive-pressed, var(--color-fill-3));
+  transform: scale(0.985);
+}
+
+.session-overflow-button:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: -2px;
+}
+
+@media (max-width: 767px) {
+  .session-overflow-button {
+    min-height: 40px;
+  }
+}
+
+.flowy-disclosure-content[data-disclosure-phase='entering'] > *,
+.flowy-disclosure-content[data-disclosure-phase='exiting'] > * {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.flowy-disclosure-content[data-disclosure-phase='open'] > * {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.flowy-disclosure-content[data-disclosure-phase='exiting'] {
+  pointer-events: none;
+}
+
+.flowy-disclosure-content > * {
+  transition:
+    opacity var(--flowy-motion-base) var(--flowy-ease-enter),
+    transform var(--flowy-motion-base) var(--flowy-ease-move);
+}
+
 /* Shared page frame for settings and standalone hubs. Keeping this at the
    layout layer prevents individual modules from drifting in background or spacing. */
 .app-page-shell {
@@ -266,7 +377,11 @@
   .settings-sider__item,
   .settings-sider__item-label,
   .chat-history__placeholder,
-  .chat-history__section {
+  .chat-history__section,
+  .sidebar-toggle-icon__caret,
+  .workpath-disclosure-caret,
+  .session-overflow-button,
+  .flowy-disclosure-content > * {
     transition: none;
   }
 }
@@ -396,5 +511,11 @@
   .chat-history__section {
     font-size: 14px !important;
     line-height: 20px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .layout-sider {
+    transition: none !important;
   }
 }

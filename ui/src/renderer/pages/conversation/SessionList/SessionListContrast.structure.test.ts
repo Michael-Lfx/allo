@@ -19,7 +19,7 @@ describe('SessionList dark-theme contrast', () => {
 
   test('uses the shared theme token for the workspace section title', () => {
     expect(sessionListSource).toContain("className='sider-section-title text-13px");
-    expect(companionGroupSource).toContain("className='sider-section-title text-13px");
+    expect(companionGroupSource).toContain("className='sider-section-title appearance-none");
     expect(layoutCss).toContain('.sider-section-title,');
     expect(layoutCss).toContain('color: var(--sider-section-title-color, var(--text-secondary));');
   });
