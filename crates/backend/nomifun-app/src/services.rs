@@ -2383,6 +2383,18 @@ impl AppServices {
                 workspace: data_dir.clone(),
             });
         knowledge_service.set_completer(knowledge_completer.clone());
+        // The learning pipeline gets its OWN completer instance on its own
+        // trait (`LearningCompleter`, with per-stage max_tokens budgets):
+        // course generation / concept graphs / reflection grading must not
+        // share the knowledge autogen instance, whose 8192-token cap is
+        // tuned for README overviews and cannot be overridden per call.
+        let learning_completer: Arc<dyn nomifun_learning::LearningCompleter> =
+            Arc::new(nomifun_ai_agent::LiveLearningCompleter {
+                provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+                provider_model_repo: provider_model_repo.clone(),
+                encryption_key,
+                workspace: data_dir.clone(),
+            });
         // Recover profiles left by an interrupted earlier browser runtime
         // before constructing any Host authority. If ownership/termination
         // cannot be proven, Browser functionality remains degraded for this
@@ -2498,7 +2510,7 @@ impl AppServices {
         ));
         learning_service.set_generation_dependencies(
             knowledge_service.clone(),
-            knowledge_completer,
+            learning_completer,
         );
         // Experimental concept-graph feature: rough JSON-file persistence
         // under the data dir until the feature graduates to the database.

@@ -12,10 +12,11 @@ pub(super) use nomifun_common::{
     generate_id, now_ms,
 };
 pub(super) use nomifun_db::SqlitePool;
-pub(super) use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService};
+pub(super) use nomifun_knowledge::KnowledgeService;
 pub(super) use serde_json::Value;
 pub(super) use sqlx::{Row, Sqlite, Transaction};
 
+pub(super) use crate::completer::LearningCompleter;
 pub(super) use crate::generation::{Blueprint, generate_lesson, generate_lesson_activity};
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
@@ -35,7 +36,7 @@ pub(super) use crate::scheduler::{
 pub struct LearningService {
     pool: SqlitePool,
     knowledge_service: Arc<RwLock<Option<Arc<KnowledgeService>>>>,
-    course_completer: Arc<RwLock<Option<Arc<dyn KnowledgeCompleter>>>>,
+    course_completer: Arc<RwLock<Option<Arc<dyn LearningCompleter>>>>,
     concept_graph_dir: Arc<RwLock<Option<PathBuf>>>,
 }
 
@@ -52,7 +53,7 @@ impl LearningService {
     pub fn set_generation_dependencies(
         &self,
         knowledge_service: Arc<KnowledgeService>,
-        completer: Arc<dyn KnowledgeCompleter>,
+        completer: Arc<dyn LearningCompleter>,
     ) {
         *self
             .knowledge_service

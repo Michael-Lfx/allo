@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use nomifun_common::{AppError, now_ms};
 use nomifun_db::SqlitePool;
-use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService};
+use nomifun_knowledge::KnowledgeService;
 use sqlx::Row;
+
+use crate::completer::LearningCompleter;
 
 use crate::generation::{
     Blueprint, LessonOutput, assemble_outline_pack, assemble_pack, build_blueprint_prompt,
@@ -23,7 +25,7 @@ pub(crate) struct GenerationJobRunner {
     pool: SqlitePool,
     service: LearningService,
     knowledge_service: Arc<KnowledgeService>,
-    completer: Arc<dyn KnowledgeCompleter>,
+    completer: Arc<dyn LearningCompleter>,
 }
 
 impl GenerationJobRunner {
@@ -31,7 +33,7 @@ impl GenerationJobRunner {
         pool: SqlitePool,
         service: LearningService,
         knowledge_service: Arc<KnowledgeService>,
-        completer: Arc<dyn KnowledgeCompleter>,
+        completer: Arc<dyn LearningCompleter>,
     ) -> Self {
         Self {
             pool,
@@ -102,7 +104,7 @@ async fn run_job(
     pool: &SqlitePool,
     service: &LearningService,
     knowledge_service: &KnowledgeService,
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     job_id: &str,
 ) -> Result<(), AppError> {
     loop {
@@ -151,7 +153,7 @@ async fn run_sampling(
 async fn run_blueprint(
     pool: &SqlitePool,
     knowledge_service: &KnowledgeService,
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     job_id: &str,
     row: &JobRow,
 ) -> Result<(), AppError> {
@@ -207,7 +209,7 @@ async fn run_blueprint(
 
 async fn run_lessons(
     pool: &SqlitePool,
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     job_id: &str,
     row: &JobRow,
 ) -> Result<(), AppError> {

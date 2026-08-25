@@ -193,11 +193,13 @@ mod tests {
     struct UnusedCompleter;
 
     #[async_trait::async_trait]
-    impl nomifun_knowledge::KnowledgeCompleter for UnusedCompleter {
+    impl crate::completer::LearningCompleter for UnusedCompleter {
         async fn complete(
             &self,
+            _model_override: Option<(&str, &str)>,
             _system: &str,
             _user: &str,
+            _max_tokens: u32,
         ) -> Result<String, nomifun_common::AppError> {
             Err(nomifun_common::AppError::Internal(
                 "tutorial seed does not invoke the completer".into(),

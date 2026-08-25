@@ -21,11 +21,13 @@
     struct UnusedCompleter;
 
     #[async_trait::async_trait]
-    impl nomifun_knowledge::KnowledgeCompleter for UnusedCompleter {
+    impl LearningCompleter for UnusedCompleter {
         async fn complete(
             &self,
+            _model_override: Option<(&str, &str)>,
             _system: &str,
             _user: &str,
+            _max_tokens: u32,
         ) -> Result<String, nomifun_common::AppError> {
             Err(nomifun_common::AppError::Internal(
                 "job tests do not invoke the completer".into(),
@@ -512,7 +514,7 @@
         }
     }
 
-    /// Scripted `KnowledgeCompleter` recording calls, the last user message
+    /// Scripted `LearningCompleter` recording calls, the last user message
     /// and the last explicit `(provider_id, model)` override; `fail` makes
     /// every call error out so fallback paths can be exercised.
     struct ScriptedCompleter {
@@ -536,27 +538,18 @@
     }
 
     #[async_trait::async_trait]
-    impl KnowledgeCompleter for ScriptedCompleter {
-        async fn complete(&self, _system: &str, user: &str) -> Result<String, AppError> {
-            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
-            *self.last_user.lock().unwrap() = Some(user.to_owned());
-            *self.last_override.lock().unwrap() = None;
-            if self.fail {
-                return Err(AppError::Internal("model unavailable".into()));
-            }
-            Ok(self.reply.clone())
-        }
-
-        async fn complete_with(
+    impl LearningCompleter for ScriptedCompleter {
+        async fn complete(
             &self,
+            model_override: Option<(&str, &str)>,
             _system: &str,
             user: &str,
-            provider_id: &str,
-            model: &str,
+            _max_tokens: u32,
         ) -> Result<String, AppError> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
             *self.last_user.lock().unwrap() = Some(user.to_owned());
-            *self.last_override.lock().unwrap() = Some((provider_id.to_owned(), model.to_owned()));
+            *self.last_override.lock().unwrap() =
+                model_override.map(|(id, model)| (id.to_owned(), model.to_owned()));
             if self.fail {
                 return Err(AppError::Internal("model unavailable".into()));
             }

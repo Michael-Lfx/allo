@@ -6,7 +6,7 @@ use super::*;
 /// One blueprint call with at most one targeted retry: the concrete validation
 /// error is fed back so the model fixes structure instead of shrinking output.
 pub(crate) async fn generate_blueprint(
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     prompt: &str,
     samples: &[(String, String)],
@@ -23,7 +23,14 @@ pub(crate) async fn generate_blueprint(
                  Return a corrected blueprint JSON now, keeping the requested size."
             )
         };
-        let raw = complete(completer, model_override, BLUEPRINT_SYSTEM, &user).await?;
+        let raw = complete(
+            completer,
+            model_override,
+            BLUEPRINT_SYSTEM,
+            &user,
+            BLUEPRINT_MAX_TOKENS,
+        )
+        .await?;
         match parse_json_object::<Blueprint>(&raw) {
             Ok(blueprint) => match validate_blueprint(&blueprint, samples, module_count, lessons_per_module) {
                 Ok(()) => return Ok(blueprint),

@@ -1,9 +1,11 @@
 pub(super) use std::collections::HashSet;
 
 pub(super) use nomifun_common::AppError;
-pub(super) use nomifun_knowledge::{KnowledgeCompleter, KnowledgeService, autogen};
+pub(super) use nomifun_knowledge::KnowledgeService;
 pub(super) use serde::Deserialize;
 pub(super) use serde::de::DeserializeOwned;
+
+pub(super) use crate::completer::LearningCompleter;
 
 pub(super) use crate::models::{
     ActivityKind, ActivityPack, ConceptPack, CoursePack, GenerateCourseRequest, LessonPack,
@@ -309,7 +311,7 @@ pub(crate) struct ActivitiesOutput {
 
 pub async fn generate_course_pack(
     knowledge: &KnowledgeService,
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     request: &GenerateCourseRequest,
 ) -> Result<CoursePack, AppError> {
     let base = knowledge
@@ -329,11 +331,11 @@ pub async fn generate_course_pack(
     // Wider sampling than the knowledge-overview default: more files, larger
     // excerpts, higher total — the multi-stage pipeline has the budget to
     // read them and the lessons need richer grounding.
-    let samples = autogen::sample_base_files_with_budget(
+    let samples = sample::sample_base_files_with_budget(
         &content_root,
-        autogen::LEARNING_SAMPLE_MAX_FILES,
-        autogen::LEARNING_SAMPLE_MAX_PER_FILE,
-        autogen::LEARNING_SAMPLE_MAX_TOTAL,
+        sample::LEARNING_SAMPLE_MAX_FILES,
+        sample::LEARNING_SAMPLE_MAX_PER_FILE,
+        sample::LEARNING_SAMPLE_MAX_TOTAL,
     )
     .await;
     if samples.is_empty() {
@@ -424,7 +426,11 @@ pub async fn generate_course_pack(
 pub(crate) use self::activities::{ExistingLessonQuestion, generate_lesson_activity};
 pub(crate) use self::assemble::{assemble_outline_pack, assemble_pack, validate_generated_pack};
 pub(crate) use self::blueprint::{build_blueprint_prompt, generate_blueprint};
-pub(crate) use self::completer::{complete, complete_with_timeout, repair_figure};
+pub(crate) use self::completer::{
+    complete, complete_with_timeout, repair_figure, ACTIVITIES_MAX_TOKENS, BLUEPRINT_MAX_TOKENS,
+    CONCEPT_GRAPH_MAX_TOKENS, CONCEPT_GRAPH_REPAIR_MAX_TOKENS, LESSON_DOCUMENT_MAX_TOKENS,
+    REFLECTION_GRADING_MAX_TOKENS, SINGLE_ACTIVITY_MAX_TOKENS,
+};
 pub(crate) use self::lesson::generate_lesson;
 pub(crate) use self::parser::parse_json_object;
 pub(crate) use self::sample::sample_base_files;

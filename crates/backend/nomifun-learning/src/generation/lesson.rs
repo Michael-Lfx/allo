@@ -14,7 +14,7 @@ use super::activities::validate_lesson_activities;
 /// one object — was the dominant source of parse failures; splitting it keeps
 /// the failure-prone JSON payload tiny while each stage keeps its own retry.
 pub(crate) async fn generate_lesson(
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     blueprint: &Blueprint,
     module: &BlueprintModule,
@@ -57,7 +57,7 @@ pub(crate) async fn generate_lesson(
 /// failed attempt is retried once with the concrete validation error so the
 /// model fixes structure instead of shrinking output.
 async fn generate_lesson_document(
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     prompt: &str,
 ) -> Result<String, String> {
@@ -72,9 +72,15 @@ async fn generate_lesson_document(
                  and keep the long-form length."
             )
         };
-        let raw = complete(completer, model_override, LESSON_DOCUMENT_SYSTEM, &user)
-            .await
-            .map_err(|error| error.to_string())?;
+        let raw = complete(
+            completer,
+            model_override,
+            LESSON_DOCUMENT_SYSTEM,
+            &user,
+            LESSON_DOCUMENT_MAX_TOKENS,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         let document = strip_markdown_fences(&raw);
         match validate_lesson_document(&document) {
             Ok(()) => return Ok(document),

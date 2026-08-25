@@ -6,7 +6,7 @@ use super::*;
 /// Stage 2 of one lesson: produce `estimated_minutes` + activities as a
 /// small JSON object, grounded in the finished document.
 pub(super) async fn generate_lesson_activities(
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     prompt: &str,
     blueprint: &Blueprint,
@@ -22,9 +22,15 @@ pub(super) async fn generate_lesson_activities(
                  Return a corrected JSON now, keeping every activity field complete."
             )
         };
-        let raw = complete(completer, model_override, LESSON_SYSTEM, &user)
-            .await
-            .map_err(|error| error.to_string())?;
+        let raw = complete(
+            completer,
+            model_override,
+            LESSON_SYSTEM,
+            &user,
+            ACTIVITIES_MAX_TOKENS,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         match parse_json_object::<ActivitiesOutput>(&raw) {
             Ok(output) => match validate_lesson_activities(&output.activities, blueprint, lesson) {
                 Ok(()) => return Ok(output),
@@ -55,7 +61,7 @@ pub(crate) struct ExistingLessonQuestion {
 /// for shape and novelty against the questions the lesson already has.
 /// The result is a draft for preview — nothing is persisted here.
 pub(crate) async fn generate_lesson_activity(
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     kind: ActivityKind,
     focus: &str,
@@ -90,9 +96,15 @@ pub(crate) async fn generate_lesson_activity(
                  Return a corrected JSON now, keeping every field complete."
             )
         };
-        let raw = complete(completer, model_override, LESSON_ACTIVITY_SYSTEM, &user)
-            .await
-            .map_err(|error| error.to_string())?;
+        let raw = complete(
+            completer,
+            model_override,
+            LESSON_ACTIVITY_SYSTEM,
+            &user,
+            SINGLE_ACTIVITY_MAX_TOKENS,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         match parse_json_object::<ActivityPack>(&raw) {
             Ok(activity) => {
                 match validate_generated_activity(&activity, kind, lesson_concept_keys, existing_questions) {

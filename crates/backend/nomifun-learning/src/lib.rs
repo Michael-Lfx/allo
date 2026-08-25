@@ -1,3 +1,4 @@
+mod completer;
 mod concept_graph;
 mod generation;
 mod generation_job;
@@ -7,6 +8,8 @@ mod scheduler;
 mod service;
 mod state;
 mod tutorial;
+
+pub use completer::LearningCompleter;
 
 pub use concept_graph::{
     ConceptGraphData, ConceptGraphEdge, ConceptGraphNode, ConceptGraphRecord, ConceptGraphSummary,

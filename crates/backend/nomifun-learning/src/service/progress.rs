@@ -217,12 +217,14 @@ impl LearningService {
                 AppError::Conflict("AI reflection grading is not configured".into())
             })?;
         let user = build_reflection_grading_prompt(prompt, answer, linked_concepts);
-        let raw = match (provider_id, model) {
-            (Some(provider_id), Some(model)) => completer
-                .complete_with(REFLECTION_GRADING_SYSTEM, &user, provider_id.as_str(), model)
-                .await,
-            _ => completer.complete(REFLECTION_GRADING_SYSTEM, &user).await,
-        }?;
+        let raw = completer
+            .complete(
+                provider_id.zip(model).map(|(id, model)| (id.as_str(), model)),
+                REFLECTION_GRADING_SYSTEM,
+                &user,
+                crate::generation::REFLECTION_GRADING_MAX_TOKENS,
+            )
+            .await?;
         parse_reflection_grading(&raw)
     }
 

@@ -21,6 +21,7 @@ pub mod extraction_scanner;
 pub mod knowledge_completer;
 pub mod knowledge_retrieval;
 pub mod knowledge_writeback;
+pub mod learning_completer;
 pub mod learning_course;
 pub mod meeting_sink;
 #[cfg(feature = "managed-search")]
@@ -126,6 +127,7 @@ pub use idle_scanner::start_idle_scanner;
 pub use browser_fetcher::BrowserFetcher;
 pub use knowledge_completer::LiveKnowledgeCompleter;
 pub use knowledge_completer::{resolve_default_model, resolve_flowy_cloud_model};
+pub use learning_completer::LiveLearningCompleter;
 pub use knowledge_retrieval::LiveKnowledgeRetrievalSink;
 pub use knowledge_writeback::LiveKnowledgeWritebackSink;
 pub use learning_course::LiveLearningCourseSink;

@@ -234,7 +234,7 @@ pub(crate) mod tests {
         UpdateProviderParams,
     };
 
-    fn provider(id: &str, enabled: bool) -> Provider {
+    pub(crate) fn provider(id: &str, enabled: bool) -> Provider {
         Provider {
             id: 0,
             provider_id: id.into(),
@@ -279,7 +279,7 @@ pub(crate) mod tests {
         }
     }
 
-    struct ListOnlyRepo(Vec<Provider>);
+    pub(crate) struct ListOnlyRepo(pub(crate) Vec<Provider>);
 
     #[async_trait::async_trait]
     impl IProviderRepository for ListOnlyRepo {
