@@ -12,6 +12,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
+import {
+  classifyConversationDeleteError,
+  conversationDeleteMessageKey,
+  type ConversationDeleteFailureKind,
+} from './conversationDeleteErrors';
 import { isConversationPinned } from '../utils/conversationPinned';
 
 type UseConversationActionsParams = {
@@ -102,7 +107,8 @@ export const useConversationActions = ({
             }
           } catch (error) {
             console.error('Failed to remove conversation:', error);
-            Message.error(t('conversation.history.deleteFailed'));
+            const failureKind = classifyConversationDeleteError(error);
+            Message.error(t(conversationDeleteMessageKey(failureKind, false)));
           }
         },
         style: { borderRadius: '12px' },
@@ -128,17 +134,30 @@ export const useConversationActions = ({
       onOk: async () => {
         const selectedIds = Array.from(selectedConversationIds);
         try {
-          const results = await Promise.all(selectedIds.map((conversation_id) => removeConversation(conversation_id)));
-          const successCount = results.filter(Boolean).length;
+          const results = await Promise.allSettled(
+            selectedIds.map((conversation_id) => removeConversation(conversation_id)),
+          );
+          const successCount = results.filter(
+            (result) => result.status === 'fulfilled' && result.value,
+          ).length;
+          const failureCounts = new Map<ConversationDeleteFailureKind, number>();
+          for (const result of results) {
+            if (result.status !== 'rejected') continue;
+            const kind = classifyConversationDeleteError(result.reason);
+            failureCounts.set(kind, (failureCounts.get(kind) ?? 0) + 1);
+            console.error('Failed to remove conversation in batch:', result.reason);
+          }
           emitter.emit('chat.history.refresh');
           if (successCount > 0) {
             Message.success(t('conversation.history.batchDeleteSuccess', { count: successCount }));
-          } else {
-            Message.error(t('conversation.history.deleteFailed'));
           }
-        } catch (error) {
-          console.error('Failed to batch delete conversations:', error);
-          Message.error(t('conversation.history.deleteFailed'));
+          if (failureCounts.size > 0) {
+            Message.error(
+              Array.from(failureCounts.entries())
+                .map(([kind, count]) => t(conversationDeleteMessageKey(kind, true), { count }))
+                .join(', '),
+            );
+          }
         } finally {
           setSelectedConversationIds(new Set());
           onBatchModeChange?.(false);

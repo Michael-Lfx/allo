@@ -1,0 +1,45 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  classifyConversationDeleteError,
+  conversationDeleteMessageKey,
+} from './conversationDeleteErrors';
+
+function backendError(code: string) {
+  return {
+    name: 'BackendHttpError',
+    status: code === 'CONVERSATION_DELETE_PENDING' ? 502 : 409,
+    code,
+  };
+}
+
+describe('conversation deletion errors', () => {
+  it('classifies stable backend deletion codes without parsing messages', () => {
+    expect(classifyConversationDeleteError(backendError('CONVERSATION_ATTEMPT_RETAINED'))).toBe(
+      'attemptRetained',
+    );
+    expect(classifyConversationDeleteError(backendError('CONVERSATION_RUNNING_ORPHAN'))).toBe(
+      'runningOrphan',
+    );
+    expect(classifyConversationDeleteError(backendError('CONVERSATION_DELETE_PENDING'))).toBe(
+      'pending',
+    );
+    expect(classifyConversationDeleteError(backendError('CONFLICT'))).toBe('unknown');
+    expect(classifyConversationDeleteError(new Error('Execution attempt conversations are retained'))).toBe(
+      'unknown',
+    );
+  });
+
+  it('selects localized single and batch message keys', () => {
+    expect(conversationDeleteMessageKey('attemptRetained', false)).toBe(
+      'conversation.history.deleteAttemptRetained',
+    );
+    expect(conversationDeleteMessageKey('runningOrphan', false)).toBe(
+      'conversation.history.deleteRunningOrphan',
+    );
+    expect(conversationDeleteMessageKey('pending', false)).toBe('conversation.history.deletePending');
+    expect(conversationDeleteMessageKey('unknown', true)).toBe(
+      'conversation.history.batchDeleteFailed',
+    );
+  });
+});

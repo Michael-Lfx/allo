@@ -3771,7 +3771,14 @@ async fn delete_rejects_soft_deleted_execution_attempt_transcript() {
         .delete(USER_ID, &attempt_conversation.conversation_id)
         .await
         .unwrap_err();
-    assert!(matches!(error, AppError::Conflict(_)));
+    assert!(matches!(&error, AppError::Conflict(_)));
+    assert_eq!(error.error_code(), "CONVERSATION_ATTEMPT_RETAINED");
+    assert_eq!(
+        error.error_details().and_then(|details| details
+            .get("retained_as")
+            .cloned()),
+        Some(json!("execution_audit"))
+    );
     assert!(
         conversation_repo
             .get(&attempt_conversation.conversation_id)
@@ -15061,7 +15068,8 @@ async fn cold_running_orphan_rejects_user_stop_and_delete_without_mutation() {
         .delete(SQLITE_TEST_OWNER, &conversation_id)
         .await
         .expect_err("delete must not bypass restart-orphan quarantine");
-    assert!(matches!(delete_error, AppError::Conflict(_)));
+    assert!(matches!(&delete_error, AppError::Conflict(_)));
+    assert_eq!(delete_error.error_code(), "CONVERSATION_RUNNING_ORPHAN");
 
     let row = repo
         .get(&conversation_id)

@@ -6325,10 +6325,7 @@ impl ConversationService {
             .is_execution_attempt_conversation(user_id, conv_id)
             .await?
         {
-            return Err(AppError::Conflict(
-                "Execution attempt conversations are retained as audit history and cannot be deleted directly"
-                    .into(),
-            ));
+            return Err(AppError::conversation_attempt_retained());
         }
 
         // Deletion cannot be used as a back door around restart-orphan
@@ -6341,10 +6338,7 @@ impl ConversationService {
             && !self.runtime_state.has_active_turn(id)
         {
             let _ = running_orphan_disposition(&existing.r#type)?;
-            return Err(AppError::Conflict(
-                "Conversation has an unproven running turn from a prior process; deletion requires exact process-empty proof"
-                    .to_owned(),
-            ));
+            return Err(AppError::conversation_running_orphan());
         }
 
         // Deletion is stronger than a stop: block all future admissions in
@@ -6381,10 +6375,7 @@ impl ConversationService {
                 ));
             }
             Err(_) => {
-                return Err(AppError::Timeout(
-                    "conversation deletion continues in the background; the deleted event is the authoritative success signal"
-                        .to_owned(),
-                ));
+                return Err(AppError::conversation_delete_pending());
             }
         }
 
