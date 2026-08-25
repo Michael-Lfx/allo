@@ -39,8 +39,8 @@ const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
     <CapabilityHubSearchContext.Provider value={{ searchQuery, setSearchQuery }}>
       <HubPageShell
         hideHeader
-        className='capability-hub-page md:!pt-20px md:!pb-28px'
-        maxWidthClass='md:max-w-1200px'
+        className='capability-hub-page'
+        maxWidthClass='md:max-w-1180px'
         toolbarClassName='mb-8px'
         toolbar={
           <CapabilityHubHeader

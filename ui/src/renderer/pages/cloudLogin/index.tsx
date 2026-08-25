@@ -162,6 +162,12 @@ const CloudLoginFlow: React.FC<CloudLoginFlowProps> = ({ status, whoami, logout,
 
   useEffect(() => {
     if (!showOtp) return;
+    // Warm the post-login destination while the user is still typing the code.
+    void preloadGuidPathChunk().catch(() => undefined);
+  }, [showOtp]);
+
+  useEffect(() => {
+    if (!showOtp) return;
     const checkpoint = getOtpBlueprintCheckpoint(flow.code.length);
     setBlueprintStep((2 + checkpoint) as BlueprintRouteStep);
   }, [flow.code.length, showOtp]);
@@ -440,7 +446,7 @@ const CloudLoginPage: React.FC = () => {
   const completeSession = useCallback(async () => {
     setIsSessionReady(false);
     try {
-      const refreshResult = await refresh({ forceModelSync: true });
+      const refreshResult = await refresh({ forceModelSync: true, waitForModels: false });
       if (refreshResult !== 'authenticated') {
         justLoggedInRef.current = false;
         setCompletionError(true);
@@ -491,14 +497,12 @@ const CloudLoginPage: React.FC = () => {
     if (!justLoggedInRef.current || !isSessionReady || status !== 'authenticated') return;
 
     const navigationRun = ++navigationRunRef.current;
+    // Model restoration keeps running in the background; Guid already renders
+    // its own loading state via isModelCatalogLoading.
     preloadCommercialPathChunks();
-    void preloadGuidPathChunk()
-      .catch(() => undefined)
-      .then(() => {
-        if (navigationRunRef.current !== navigationRun || !justLoggedInRef.current) return;
-        justLoggedInRef.current = false;
-        navigate(resolvePostCloudLoginPath(location.search), { replace: true });
-      });
+    void preloadGuidPathChunk().catch(() => undefined);
+    justLoggedInRef.current = false;
+    navigate(resolvePostCloudLoginPath(location.search), { replace: true });
 
     return () => {
       navigationRunRef.current += 1;

@@ -58,14 +58,22 @@ describe('capability hub load contracts', () => {
   test('capability hub chrome uses two-row discover and installed controls', () => {
     const header = read('./capabilityHub/CapabilityHubHeader.tsx');
     const shell = read('./capabilityHub/CapabilityHubShell.tsx');
+    const styles = read('./components/settings.css');
 
-    expect(header).toContain('capability-hub-toolbar');
+    expect(header).toContain('capability-hub-toolbar-pair');
+    expect(header).toContain('capability-hub-tabs-row');
     expect(header).toContain('capability-hub-segment');
     expect(header).toContain("data-testid='capability-hub-installed'");
     expect(header).toContain("data-testid='capability-hub-search'");
     expect(header).toContain("settings.capabilityHub.discover");
     expect(header).toContain("if (view === 'installed') onToggleInstalled()");
     expect(header).toContain("if (view === 'market') onToggleInstalled()");
-    expect(shell).toContain("className='capability-hub-page md:!pt-20px md:!pb-28px'");
+    expect(header.indexOf('capability-hub-actions')).toBeLessThan(header.indexOf('capability-hub-toolbar-pair'));
+    expect(shell).toContain("className='capability-hub-page'");
+    expect(shell).not.toContain('md:!pt-20px');
+    expect(styles).not.toContain('.capability-hub-page {\n  background:');
+    expect(styles).toContain('grid-template-columns: 1fr 1fr');
+    expect(styles).toContain('width: 2ch');
+    expect(styles).toContain('font-variant-numeric: tabular-nums');
   });
 });

@@ -55,7 +55,7 @@ interface CloudAuthContextValue {
   /** @deprecated Use modelEnvironment. Kept for existing selectors during migration. */
   modelStatus: CloudModelStatus;
   modelError: Error | null;
-  refresh: (options?: { forceModelSync?: boolean }) => Promise<CloudAuthRefreshResult>;
+  refresh: (options?: { forceModelSync?: boolean; waitForModels?: boolean }) => Promise<CloudAuthRefreshResult>;
   retryModelEnvironment: () => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -223,9 +223,12 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
   );
 
   const refresh = useCallback(
-    async (options: { forceModelSync?: boolean } = {}): Promise<CloudAuthRefreshResult> => {
+    async (
+      options: { forceModelSync?: boolean; waitForModels?: boolean } = {}
+    ): Promise<CloudAuthRefreshResult> => {
       const { runId, controller } = beginRun();
       const forceModelSync = options.forceModelSync === true;
+      const waitForModels = options.waitForModels !== false;
       if (!localReady || localStatus !== 'authenticated') {
         await clearAvailableModelsCache();
         if (!isCurrentRun(runId, controller)) return 'stale';
@@ -271,7 +274,15 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
         storageGenerationRef.current = storageGeneration;
         setWhoami(profile);
         setAuthState({ phase: 'authenticated', accountId });
-        await restoreModelEnvironmentForRun(runId, controller, accountId, forceModelSync);
+        if (waitForModels) {
+          // Default path: callers such as the storage-generation switch stay
+          // serialized behind a fully restored catalog.
+          await restoreModelEnvironmentForRun(runId, controller, accountId, forceModelSync);
+        } else {
+          // Login fast path: authentication is confirmed; the catalog keeps
+          // restoring in the background while Guid renders its loading state.
+          void restoreModelEnvironmentForRun(runId, controller, accountId, forceModelSync);
+        }
         return isCurrentRun(runId, controller) ? 'authenticated' : 'stale';
       } catch (error) {
         if (!isCurrentRun(runId, controller)) return 'stale';

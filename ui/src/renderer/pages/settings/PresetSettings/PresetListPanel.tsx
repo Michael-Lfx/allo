@@ -130,8 +130,8 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
 
   return (
     <div className='flex flex-col gap-16px pb-16px'>
+      {!hideChrome && (
       <div className={`flex items-center justify-end gap-8px ${isMobile ? 'w-full' : ''}`}>
-        {!hideChrome && (
         <Button
           type={isSearchVisible ? 'secondary' : 'text'}
           size='small'
@@ -154,7 +154,6 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
             setSearchExpanded(true);
           }}
         />
-        )}
         <Button
           type='primary'
           size='small'
@@ -166,6 +165,7 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
           {t('settings.createPreset', { defaultValue: 'Create Preset' })}
         </Button>
       </div>
+      )}
 
       {isSearchVisible && (
         <Input

@@ -17,27 +17,74 @@ pub struct DeviceFingerprint {
     pub cpu_chip_id: String,
 }
 
+/// Fingerprint values already persisted on this device. Empty strings mean
+/// "never collected" and trigger a fresh read (concurrent on Windows, where
+/// each source spawns a separate PowerShell process).
+#[derive(Debug, Clone, Default)]
+pub struct PersistedFingerprint {
+    pub mac: String,
+    pub sn: String,
+    pub cpu_chip_id: String,
+}
+
 pub fn collect_fingerprint(
-    persisted_sn: Option<&str>,
+    persisted: &PersistedFingerprint,
 ) -> Result<DeviceFingerprint, ServerClientError> {
-    let mac = read_mac_address().unwrap_or_else(|| {
-        warn!("could not read MAC address; using generated placeholder");
-        "00:00:00:00:00:01".to_string()
-    });
-    let sn = if let Some(sn) = persisted_sn {
-        sn.to_string()
+    let (new_mac, new_sn, new_cpu) =
+        if persisted.mac.is_empty() || persisted.sn.is_empty() || persisted.cpu_chip_id.is_empty() {
+            collect_unpersisted()
+        } else {
+            (None, None, None)
+        };
+
+    let mac = if persisted.mac.is_empty() {
+        new_mac.unwrap_or_else(|| {
+            warn!("could not read MAC address; using generated placeholder");
+            "00:00:00:00:00:01".to_string()
+        })
     } else {
-        read_serial_number().unwrap_or_else(generate_serial_number)
+        normalize_mac(&persisted.mac)
     };
-    let cpu_chip_id = read_cpu_chip_id().unwrap_or_else(|| {
-        warn!("could not read CPU chip id; using hashed fallback");
-        hash_cpu_fallback("unknown-cpu")
-    });
+    let sn = if persisted.sn.is_empty() {
+        new_sn.unwrap_or_else(generate_serial_number)
+    } else {
+        persisted.sn.clone()
+    };
+    let cpu_chip_id = if persisted.cpu_chip_id.is_empty() {
+        new_cpu.unwrap_or_else(|| {
+            warn!("could not read CPU chip id; using hashed fallback");
+            hash_cpu_fallback("unknown-cpu")
+        })
+    } else {
+        persisted.cpu_chip_id.clone()
+    };
+
     Ok(DeviceFingerprint {
-        mac: normalize_mac(&mac),
+        mac,
         sn,
         cpu_chip_id,
     })
+}
+
+/// Reads the three raw fingerprint sources. On Windows each read spawns a
+/// PowerShell process, so they run concurrently and are joined here instead of
+/// paying three sequential process startups.
+fn collect_unpersisted() -> (Option<String>, Option<String>, Option<String>) {
+    #[cfg(target_os = "windows")]
+    {
+        let mac = std::thread::spawn(read_mac_address);
+        let sn = std::thread::spawn(read_serial_number);
+        let cpu = std::thread::spawn(read_cpu_chip_id);
+        (
+            mac.join().ok().flatten(),
+            sn.join().ok().flatten(),
+            cpu.join().ok().flatten(),
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        (read_mac_address(), read_serial_number(), read_cpu_chip_id())
+    }
 }
 
 pub fn build_activate_request(
@@ -271,16 +318,72 @@ mod tests {
     }
 
     #[test]
-    fn collect_fingerprint_with_persisted_sn() {
-        let fp = collect_fingerprint(Some("SN123")).expect("fingerprint");
+    fn collect_fingerprint_reuses_persisted_values() {
+        let persisted = PersistedFingerprint {
+            mac: "aa-bb-cc-dd-ee-ff".into(),
+            sn: "SN123".into(),
+            cpu_chip_id: "CPUABC123".into(),
+        };
+        let fp = collect_fingerprint(&persisted).expect("fingerprint");
+        assert_eq!(fp.mac, "AA:BB:CC:DD:EE:FF");
         assert_eq!(fp.sn, "SN123");
+        assert_eq!(fp.cpu_chip_id, "CPUABC123");
+    }
+
+    #[test]
+    fn collect_fingerprint_mixes_persisted_sn_with_fresh_reads() {
+        let persisted = PersistedFingerprint {
+            sn: "LEGACY-SN".into(),
+            ..Default::default()
+        };
+        let fp = collect_fingerprint(&persisted).expect("fingerprint");
+        assert_eq!(fp.sn, "LEGACY-SN");
         assert!(!fp.mac.is_empty());
         assert!(!fp.cpu_chip_id.is_empty());
     }
 
     #[test]
+    fn collect_unpersisted_round_trips_into_fingerprint() {
+        let raw = collect_unpersisted();
+        let persisted = PersistedFingerprint {
+            mac: raw.0.clone().unwrap_or_default(),
+            sn: raw.1.clone().unwrap_or_default(),
+            cpu_chip_id: raw.2.clone().unwrap_or_default(),
+        };
+        let fp = collect_fingerprint(&persisted).expect("fingerprint");
+        if let Some(mac) = raw.0 {
+            assert_eq!(fp.mac, normalize_mac(&mac));
+        }
+        if let Some(sn) = raw.1 {
+            assert_eq!(fp.sn, sn);
+        }
+        if let Some(cpu) = raw.2 {
+            assert_eq!(fp.cpu_chip_id, cpu);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_collection_runs_readers_concurrently() {
+        let source = include_str!("fingerprint.rs");
+        let start = source.find("fn collect_unpersisted").expect("helper fn");
+        let end = source
+            .find("#[cfg(not(target_os = \"windows\"))]")
+            .expect("non-windows branch");
+        let body = &source[start..end];
+        assert!(body.contains("std::thread::spawn(read_mac_address)"));
+        assert!(body.contains("std::thread::spawn(read_serial_number)"));
+        assert!(body.contains("std::thread::spawn(read_cpu_chip_id)"));
+        assert!(body.contains(".join().ok().flatten()"));
+    }
+
+    #[test]
     fn apply_geo_fills_activation_fields() {
-        let fp = collect_fingerprint(Some("SN1")).expect("fp");
+        let fp = collect_fingerprint(&PersistedFingerprint {
+            sn: "SN1".into(),
+            ..Default::default()
+        })
+        .expect("fp");
         let geo = GeoIpInfo {
             public_ip: "203.0.113.1".into(),
             country: "China".into(),

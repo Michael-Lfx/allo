@@ -17,6 +17,20 @@ describe('cloud authentication model-environment contract', () => {
     expect(text.includes("return 'stale'")).toBe(true);
   });
 
+  test('waits for model restore by default and lets callers opt out', () => {
+    const text = source();
+    expect(text.includes('waitForModels?: boolean')).toBe(true);
+    expect(text.includes('options.waitForModels !== false')).toBe(true);
+    // Default path stays serialized behind a fully restored catalog...
+    expect(
+      text.includes('await restoreModelEnvironmentForRun(runId, controller, accountId, forceModelSync)')
+    ).toBe(true);
+    // ...while the login fast path fires the restore without awaiting it.
+    expect(
+      text.includes('void restoreModelEnvironmentForRun(runId, controller, accountId, forceModelSync)')
+    ).toBe(true);
+  });
+
   test('clears catalog caches across unauthenticated transitions and exposes retry', () => {
     const text = source();
     expect(text.includes('clearAvailableModelsCache()')).toBe(true);

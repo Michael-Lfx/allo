@@ -14,6 +14,9 @@ describe('settings capability hubs responsive layout', () => {
     }
     expect(skills).not.toContain("bg-fill-2 rounded-24px");
     expect(market).not.toContain("bg-fill-2 rounded-24px");
+    expect(read('./components/settings.css')).not.toContain(
+      'color-mix(in srgb, var(--color-fill-2) 42%, var(--color-bg-1))'
+    );
   });
 
   test('keeps compact source selection and import actions intact at narrow widths', () => {
