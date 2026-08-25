@@ -5,8 +5,15 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
-- Windows taskbar shows a completion count badge when desktop notifications fire; focusing the main window clears it.
-- Desktop shows an interactive bottom-right completion popup (Open / Dismiss) that is not gated by Windows Focus Assist banner settings.
+## v1.0.6 - 2026-08-25
+
+- Meetings record with switchable local or cloud STT, live captions, speaker labels, and notes that land in bound chats and tasks. Tray and global shortcuts start or join a session; Agent listen mode keeps a rolling transcript.
+- Cloud login returns as soon as the session is saved. Expired cloud tokens open a global re-login modal.
+- Desktop completion toasts sit at the bottom-right (Open / Dismiss) and are not blocked by Windows Focus Assist banners. The Windows taskbar shows a count badge until you focus the main window.
+- Video canvas honors resolution and retry state, keeps local videos, and opens projects faster.
+- SkillHub expert packages install more reliably. Capability hub chrome matches other settings pages.
+- Home conversation follow stays pinned through wraps and thinking collapse. Windows titlebar min/max clicks work again.
+- Packaging: one `v1.0.6` tag builds Windows, macOS, and Linux in parallel.
 
 ## v1.0.5 - 2026-08-21
 
