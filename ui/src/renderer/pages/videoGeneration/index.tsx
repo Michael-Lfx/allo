@@ -97,6 +97,14 @@ const VideoGenerationListPage: React.FC = () => {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const pageScrollRef = useRef<HTMLDivElement>(null);
   const savedPageScrollTopRef = useRef(0);
+  const initialWorkModeRef = useRef(workMode);
+
+  useEffect(() => {
+    trackFunnelEvent('home_viewed', {
+      feature: 'video_generation',
+      mode: initialWorkModeRef.current,
+    });
+  }, []);
 
   const handleListTabChange = useCallback((key: string) => {
     savedPageScrollTopRef.current = pageScrollRef.current?.scrollTop ?? 0;
@@ -207,6 +215,12 @@ const VideoGenerationListPage: React.FC = () => {
               resolution: draft.preferences.resolution,
               fps: draft.preferences.fps,
             });
+            trackFunnelEvent('render_started', {
+              feature: 'video_generation',
+              workflow: draft.workflow,
+              session_id: created.id,
+              source: 'action_create',
+            });
           } else {
             // Upload refs here; planning starts on the workspace so the detail
             // page always enters the planning UI via the same path as「生成分镜」.
@@ -236,6 +250,17 @@ const VideoGenerationListPage: React.FC = () => {
           clearVideoHomeDraft();
         } catch (launchError) {
           const raw = launchError instanceof Error ? launchError.message : String(launchError);
+          if (draft.workflow === 'action2video') {
+            trackFunnelEvent('film_failed', {
+              feature: 'video_generation',
+              workflow: draft.workflow,
+              session_id: created.id,
+              failure_channel: 'video',
+              error_code: isInsufficientCreditsError(raw)
+                ? 'insufficient_credits'
+                : 'launch_failed',
+            });
+          }
           const failedLabel =
             draft.workflow === 'action2video'
               ? t('videoGeneration.workspace.renderFailed', { defaultValue: '渲染失败' })

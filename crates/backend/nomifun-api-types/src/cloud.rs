@@ -1,6 +1,9 @@
 //! Flowy cloud account HTTP DTOs (email OTP login).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -130,4 +133,41 @@ pub struct CloudWebsiteEntryResponse {
 pub struct CloudSyncModelsResponse {
     /// True when the upstream catalog was fetched and written to the local provider row.
     pub synced: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoGrowthEvent {
+    pub event_id: String,
+    pub name: String,
+    pub occurred_at: String,
+    pub properties: BTreeMap<String, Value>,
+    pub cohort: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoGrowthEventBatchRequest {
+    pub events: Vec<VideoGrowthEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoGrowthEventBatchResponse {
+    pub accepted: u64,
+    pub duplicates: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoGrowthMetricsResponse {
+    pub window_days: u16,
+    pub wafc: u64,
+    pub ttf_film_p50_ms: Option<u64>,
+    pub ttf_film_p95_ms: Option<u64>,
+    pub start_to_film_rate: f64,
+    pub film_success_rate: f64,
+    pub film_d7_rate: f64,
+    pub publish_rate: f64,
+    pub generated_at: String,
 }

@@ -16,7 +16,8 @@ use nomifun_api_types::{
     CloudImLogUploadResponse, CloudImMessage, CloudImMessageList, CloudImSendMessageRequest,
     CloudLoginContinueRequest, CloudLoginStartRequest, CloudLoginStartResponse,
     CloudServerSettingsResponse, CloudSyncModelsResponse, CloudWebsiteEntryResponse,
-    CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
+    CloudWhoamiResponse, UpdateCloudServerSettingsRequest, VideoGrowthEvent,
+    VideoGrowthEventBatchRequest, VideoGrowthEventBatchResponse, VideoGrowthMetricsResponse,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::AppError;
@@ -39,6 +40,23 @@ const MAX_IMAGE_PAYLOAD_BYTES: i64 = 10 * 1024 * 1024;
 const MAX_IMAGE_UPLOAD_BODY_BYTES: usize = 11 * 1024 * 1024;
 const ALLOWED_IM_IMAGE_CONTENT_TYPES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const MAX_GROWTH_EVENTS_PER_BATCH: usize = 50;
+const MAX_GROWTH_PROPERTIES: usize = 24;
+const VIDEO_GROWTH_EVENT_NAMES: [&str; 13] = [
+    "home_viewed",
+    "task_drafted",
+    "task_accepted",
+    "first_task_started",
+    "first_artifact_visible",
+    "render_started",
+    "film_succeeded",
+    "film_failed",
+    "value_confirmed",
+    "project_exported",
+    "tv_published",
+    "resume_started",
+    "resume_succeeded",
+];
 
 #[derive(Clone)]
 pub struct CloudRouterState {
@@ -121,6 +139,14 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
         .route("/api/cloud/login/continue", post(login_continue))
         .route("/api/cloud/logout", post(logout))
         .route("/api/cloud/sync-models", post(sync_models))
+        .route(
+            "/api/cloud/growth/video/events",
+            post(upload_video_growth_events),
+        )
+        .route(
+            "/api/cloud/growth/video/metrics",
+            get(get_video_growth_metrics),
+        )
         .route("/api/cloud/plans", get(list_billing_plans))
         .route("/api/cloud/credit-packs", get(list_billing_credit_packs))
         .route("/api/cloud/coupons", get(list_billing_coupons))
@@ -144,6 +170,119 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
         .with_state(state)
         .merge(upload_routes)
         .merge(screenshot_upload_routes)
+}
+
+fn validate_video_growth_event(event: &VideoGrowthEvent) -> Result<(), AppError> {
+    if event.event_id.is_empty() || event.event_id.len() > 128 {
+        return Err(AppError::BadRequest("growth event id is invalid".into()));
+    }
+    if !VIDEO_GROWTH_EVENT_NAMES.contains(&event.name.as_str()) {
+        return Err(AppError::BadRequest("growth event name is invalid".into()));
+    }
+    if event.cohort.as_deref().is_some_and(|value| value != "A" && value != "B") {
+        return Err(AppError::BadRequest("growth event cohort is invalid".into()));
+    }
+    chrono::DateTime::parse_from_rfc3339(&event.occurred_at)
+        .map_err(|_| AppError::BadRequest("growth event timestamp is invalid".into()))?;
+    if event.properties.len() > MAX_GROWTH_PROPERTIES {
+        return Err(AppError::BadRequest(
+            "growth event has too many properties".into(),
+        ));
+    }
+    for (key, value) in &event.properties {
+        if key.is_empty() || key.len() > 64 {
+            return Err(AppError::BadRequest(
+                "growth event property key is invalid".into(),
+            ));
+        }
+        match value {
+            serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_) => {}
+            serde_json::Value::String(value) if value.len() <= 256 => {}
+            _ => {
+                return Err(AppError::BadRequest(
+                    "growth event property value is invalid".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn upload_video_growth_events(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Json(request): Json<VideoGrowthEventBatchRequest>,
+) -> Result<Json<ApiResponse<VideoGrowthEventBatchResponse>>, AppError> {
+    if request.events.is_empty() || request.events.len() > MAX_GROWTH_EVENTS_PER_BATCH {
+        return Err(AppError::BadRequest(
+            "growth event batch size is invalid".into(),
+        ));
+    }
+    for event in &request.events {
+        validate_video_growth_event(event)?;
+    }
+    Ok(Json(ApiResponse::ok(
+        state.service.upload_video_growth_events(&request).await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoGrowthMetricsQuery {
+    #[serde(default = "default_growth_metrics_days")]
+    days: u16,
+}
+
+fn default_growth_metrics_days() -> u16 {
+    7
+}
+
+async fn get_video_growth_metrics(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<VideoGrowthMetricsQuery>,
+) -> Result<Json<ApiResponse<VideoGrowthMetricsResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .get_video_growth_metrics(query.days.clamp(1, 90))
+            .await?,
+    )))
+}
+
+#[cfg(test)]
+mod growth_tests {
+    use super::*;
+
+    fn event(name: &str) -> VideoGrowthEvent {
+        VideoGrowthEvent {
+            event_id: "video:film_succeeded:session-1".into(),
+            name: name.into(),
+            occurred_at: "2026-08-26T00:00:00Z".into(),
+            properties: Default::default(),
+            cohort: Some("A".into()),
+        }
+    }
+
+    #[test]
+    fn accepts_known_video_growth_event() {
+        assert!(validate_video_growth_event(&event("film_succeeded")).is_ok());
+    }
+
+    #[test]
+    fn rejects_unknown_video_growth_event() {
+        assert!(validate_video_growth_event(&event("arbitrary_event")).is_err());
+    }
+
+    #[test]
+    fn rejects_nested_growth_property() {
+        let mut event = event("film_succeeded");
+        event
+            .properties
+            .insert("payload".into(), serde_json::json!({"prompt": "private"}));
+        assert!(validate_video_growth_event(&event).is_err());
+    }
 }
 
 async fn get_settings(

@@ -32,7 +32,9 @@ import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import { isDesktopShell } from '@renderer/utils/platform';
 import {
   confirmFirstValue,
+  hasVideoSessionEvent,
   trackFunnelEvent,
+  trackVideoSessionEvent,
 } from '@renderer/utils/analytics/productFunnel';
 import {
   cancelSession,
@@ -392,6 +394,40 @@ const WorkspacePage: React.FC = () => {
     const prev = prevRunStatusRef.current;
     const next = statusFlags.status;
     prevRunStatusRef.current = next;
+    if (sessionId && next === 'succeeded' && statusFlags.hasFinalVideo) {
+      trackVideoSessionEvent('film_succeeded', sessionId, {
+        workflow: session?.workflow ?? null,
+        status: next,
+      });
+      if (hasVideoSessionEvent('resume_started', sessionId)) {
+        trackVideoSessionEvent('resume_succeeded', sessionId, {
+          workflow: session?.workflow ?? null,
+        });
+      }
+    }
+    if (
+      sessionId &&
+      (next === 'failed' || next === 'cancelled' || next === 'interrupted') &&
+      (prev === 'planning' || prev === 'rendering')
+    ) {
+      const snapshot = getRunStatusSnapshot();
+      const stage = snapshot?.stage ?? '';
+      const failureChannel = /plan|brief|script|storyboard/i.test(stage)
+        ? 'llm'
+        : /image|poster|cover/i.test(stage)
+          ? 'image'
+          : /video|render|concat/i.test(stage)
+            ? 'video'
+            : 'pipeline';
+      trackFunnelEvent('film_failed', {
+        feature: 'video_generation',
+        session_id: sessionId,
+        workflow: session?.workflow ?? null,
+        status: next,
+        failure_channel: failureChannel,
+        error_code: statusFlags.creditsFailed ? 'insufficient_credits' : next,
+      });
+    }
     if (!sessionId || next !== 'failed' || !statusFlags.creditsFailed) return;
     if (prev !== 'planning' && prev !== 'rendering') return;
     const key = `${sessionId}:credits`;
@@ -402,7 +438,15 @@ const WorkspacePage: React.FC = () => {
         defaultValue: '积分不足，请充值或缩短时长后从断点继续。',
       })
     );
-  }, [sessionId, statusFlags.status, statusFlags.creditsFailed, message, t]);
+  }, [
+    session?.workflow,
+    sessionId,
+    statusFlags.creditsFailed,
+    statusFlags.hasFinalVideo,
+    statusFlags.status,
+    message,
+    t,
+  ]);
 
   // Load artifact preview when selection changes (blob URLs for media + auth).
   useEffect(() => {
@@ -754,6 +798,12 @@ const WorkspacePage: React.FC = () => {
         resolution: normalizeVideoResolution(models.video_model, resolution),
         fps: normalizeVideoFps(models.video_model, fps),
       });
+      trackFunnelEvent('render_started', {
+        feature: 'video_generation',
+        session_id: sessionId,
+        workflow: session?.workflow ?? null,
+        source: statusFlags.failedLike ? 'resume' : 'workspace',
+      });
       message.success(t('videoGeneration.workspace.renderStarted', { defaultValue: '已开始渲染' }));
       const st = await refreshRun();
       if (!st || !isActiveStatus(st.status)) {
@@ -775,7 +825,17 @@ const WorkspacePage: React.FC = () => {
     } finally {
       setRendering(false);
     }
-  }, [sessionId, session?.workflow, models, resolution, fps, message, t, refreshRun]);
+  }, [
+    sessionId,
+    session?.workflow,
+    models,
+    resolution,
+    fps,
+    statusFlags.failedLike,
+    message,
+    t,
+    refreshRun,
+  ]);
 
   const handleCancel = useCallback(async () => {
     if (!sessionId) return;
@@ -837,12 +897,21 @@ const WorkspacePage: React.FC = () => {
         session?.status === 'interrupted'));
 
   const handleContinue = useCallback(() => {
+    if (sessionId) {
+      trackVideoSessionEvent('resume_started', sessionId, {
+        workflow: session?.workflow ?? null,
+        phase:
+          isActionImitationWorkflow(session?.workflow) || continueAsRender
+            ? 'render'
+            : 'plan',
+      });
+    }
     if (isActionImitationWorkflow(session?.workflow) || continueAsRender) {
       void handleRender();
     } else {
       void handlePlan();
     }
-  }, [continueAsRender, handleRender, handlePlan, session?.workflow]);
+  }, [continueAsRender, handleRender, handlePlan, session?.workflow, sessionId]);
 
   const handleArtifactsChanged = useCallback(() => {
     void refreshArtifacts();
@@ -887,6 +956,9 @@ const WorkspacePage: React.FC = () => {
     setExporting(true);
     try {
       const result = await exportSession(sessionId, dest);
+      trackVideoSessionEvent('project_exported', sessionId, {
+        workflow: session?.workflow ?? null,
+      });
       message.success(
         `${t('videoGeneration.actions.exportOk', { defaultValue: '工程已导出' })}: ${result.dest_path}`
       );
@@ -911,6 +983,7 @@ const WorkspacePage: React.FC = () => {
     rendering,
     statusFlags.busy,
     session?.title,
+    session?.workflow,
     sessionId,
     t,
   ]);
@@ -957,6 +1030,9 @@ const WorkspacePage: React.FC = () => {
     try {
       await publishSessionToTvShow(sessionId, {
         title: session.title || undefined,
+      });
+      trackVideoSessionEvent('tv_published', sessionId, {
+        workflow: session.workflow,
       });
       message.success(
         t('videoGeneration.tvShow.publish.ok', {

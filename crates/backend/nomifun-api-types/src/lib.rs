@@ -124,6 +124,8 @@ pub use cloud::{
     CloudLoginPendingResponse, CloudLoginStartRequest, CloudLoginStartResponse,
     CloudLoginSuccessResponse, CloudServerSettingsResponse, CloudSyncModelsResponse,
     CloudWebsiteEntryResponse, CloudWhoamiResponse, UpdateCloudServerSettingsRequest,
+    VideoGrowthEvent, VideoGrowthEventBatchRequest, VideoGrowthEventBatchResponse,
+    VideoGrowthMetricsResponse,
 };
 pub use cloud_billing::{
     CloudBillingAirwallexSession, CloudBillingCoupon, CloudBillingCouponList,

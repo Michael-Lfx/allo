@@ -18,7 +18,8 @@ use nomifun_api_types::{
     CloudImConversation, CloudImLogUploadResponse, CloudImMessage, CloudImMessageList,
     CloudImSendMessageRequest, CloudBillingAirwallexSession, CloudBillingCouponList,
     CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingOrder,
-    CloudBillingPaymentChannel, CloudBillingPlan,
+    CloudBillingPaymentChannel, CloudBillingPlan, VideoGrowthEventBatchRequest,
+    VideoGrowthEventBatchResponse, VideoGrowthMetricsResponse,
 };
 use nomifun_common::AppError;
 
@@ -358,6 +359,28 @@ impl CloudService {
         let (client, session) = self.im_client_and_session().await?;
         client
             .init_billing_airwallex(&session, order_no)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn upload_video_growth_events(
+        &self,
+        request: &VideoGrowthEventBatchRequest,
+    ) -> Result<VideoGrowthEventBatchResponse, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .upload_video_growth_events(&session, request)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn get_video_growth_metrics(
+        &self,
+        days: u16,
+    ) -> Result<VideoGrowthMetricsResponse, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .get_video_growth_metrics(&session, days)
             .await
             .map_err(map_im_client_error)
     }

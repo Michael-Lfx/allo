@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { ipcBridge } from '@/common';
 import type { ICloudWhoami } from '@/common/adapter/ipcBridge';
 import { CLOUD_AUTH_EXPIRED_EVENT, isBackendHttpError, isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
@@ -11,6 +11,7 @@ import {
   setProviderCatalogContext,
   type ProviderCatalogRefreshResult,
 } from '@renderer/hooks/agent/useModelProviderList';
+import { setVideoGrowthCloudAuthenticated } from '@renderer/utils/analytics/videoGrowthUpload';
 import {
   classifyCloudModelEnvironment,
   type CloudModelEnvironmentClassification,
@@ -104,6 +105,10 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
   const [expiredModalOpen, setExpiredModalOpen] = useState(false);
   authStateRef.current = authState;
   whoamiRef.current = whoami;
+
+  useEffect(() => {
+    setVideoGrowthCloudAuthenticated(authState.phase === 'authenticated');
+  }, [authState.phase]);
 
   const isCurrentRun = useCallback((runId: number, controller: AbortController): boolean => {
     return !controller.signal.aborted && runId === restoreRunRef.current;

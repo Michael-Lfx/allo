@@ -6,6 +6,7 @@ import {
   confirmFirstValue,
   getFunnelCohort,
   hasFunnelEvent,
+  hasVideoSessionEvent,
   listFunnelEvents,
   markTurnAccepted,
   markTurnFirstToken,
@@ -15,6 +16,10 @@ import {
   resetTurnTimingForTests,
   trackFunnelEvent,
 } from './productFunnel';
+import {
+  listQueuedVideoGrowthEventsForTests,
+  resetVideoGrowthUploadForTests,
+} from './videoGrowthUpload';
 
 describe('product funnel', () => {
   test('records auth and accepted first-task events with a stable cohort', () => {
@@ -29,6 +34,7 @@ describe('product funnel', () => {
     expect(hasFunnelEvent('task_accepted')).toBe(true);
     expect(hasFunnelEvent('first_task_started')).toBe(true);
     const last = listFunnelEvents().at(-1);
+    expect(last?.id).toBeTruthy();
     expect(last?.cohort).toBe(cohort);
     expect(last?.props?.runtime === 'desktop' || last?.props?.runtime === 'webui').toBe(true);
     expect(last?.props?.viewport === 'desktop' || last?.props?.viewport === 'mobile').toBe(true);
@@ -50,5 +56,49 @@ describe('product funnel', () => {
     expect(hasFunnelEvent('first_value_confirmed')).toBe(false);
     expect(confirmFirstValue({ source: 'follow_up' })).not.toBeNull();
     expect(hasFunnelEvent('first_value_confirmed')).toBe(true);
+  });
+
+  test('records video value once per session while preserving first-value semantics', () => {
+    resetFunnelForTests();
+    resetVideoGrowthUploadForTests();
+    expect(
+      confirmFirstValue({
+        feature: 'video_generation',
+        session_id: 'session-1',
+        source: 'film_play',
+      })
+    ).not.toBeNull();
+    expect(
+      confirmFirstValue({
+        feature: 'video_generation',
+        session_id: 'session-2',
+        source: 'film_reveal',
+      })
+    ).toBeNull();
+    expect(hasVideoSessionEvent('value_confirmed', 'session-1')).toBe(true);
+    expect(hasVideoSessionEvent('value_confirmed', 'session-2')).toBe(true);
+    expect(
+      listFunnelEvents().filter((event) => event.name === 'first_value_confirmed')
+    ).toHaveLength(1);
+    expect(
+      listQueuedVideoGrowthEventsForTests().filter(
+        (event) => event.name === 'value_confirmed'
+      )
+    ).toHaveLength(2);
+  });
+
+  test('queues only allow-listed video metadata', () => {
+    resetFunnelForTests();
+    resetVideoGrowthUploadForTests();
+    trackFunnelEvent('render_started', {
+      feature: 'video_generation',
+      session_id: 'session-private',
+      workflow: 'idea2video',
+      prompt: 'must not upload',
+    });
+    const [queued] = listQueuedVideoGrowthEventsForTests();
+    expect(queued?.properties.session_id).toBe('session-private');
+    expect(queued?.properties.workflow).toBe('idea2video');
+    expect('prompt' in (queued?.properties ?? {})).toBe(false);
   });
 });

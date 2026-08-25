@@ -1,13 +1,24 @@
 
 
+import { enqueueVideoGrowthEvent } from './videoGrowthUpload';
+
 export type FunnelEventName =
   | 'auth_completed'
   | 'home_interactive'
+  | 'home_viewed'
   | 'task_drafted'
   | 'prerequisite_resolved'
   | 'task_accepted'
   | 'first_task_started'
   | 'first_artifact_visible'
+  | 'render_started'
+  | 'film_succeeded'
+  | 'film_failed'
+  | 'value_confirmed'
+  | 'project_exported'
+  | 'tv_published'
+  | 'resume_started'
+  | 'resume_succeeded'
   | 'answer_completed'
   | 'first_value_confirmed'
   | 'd1_retained'
@@ -22,6 +33,7 @@ export type FunnelEventName =
   | 'abandoned_before_first_token';
 
 export type FunnelEvent = {
+  id: string;
   name: FunnelEventName;
   at: string;
   props?: Record<string, string | number | boolean | null>;
@@ -33,6 +45,13 @@ const COHORT_KEY = 'flowy.funnel.cohort.v1';
 
 let memoryEvents: FunnelEvent[] = [];
 let memoryCohort: 'A' | 'B' | null = null;
+
+function createEventId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
 function canUseStorage(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
@@ -114,8 +133,13 @@ export function getFunnelSegmentProps(): FunnelEvent['props'] {
   };
 }
 
-export function trackFunnelEvent(name: FunnelEventName, props?: FunnelEvent['props']): FunnelEvent {
+function recordFunnelEvent(
+  name: FunnelEventName,
+  props?: FunnelEvent['props'],
+  eventId = createEventId()
+): FunnelEvent {
   const event: FunnelEvent = {
+    id: eventId,
     name,
     at: new Date().toISOString(),
     props: {
@@ -130,7 +154,45 @@ export function trackFunnelEvent(name: FunnelEventName, props?: FunnelEvent['pro
   if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
     window.dispatchEvent(new CustomEvent('flowy:funnel', { detail: event }));
   }
+  enqueueVideoGrowthEvent(event);
   return event;
+}
+
+export function trackFunnelEvent(name: FunnelEventName, props?: FunnelEvent['props']): FunnelEvent {
+  return recordFunnelEvent(name, props);
+}
+
+export type VideoSessionEventName =
+  | 'render_started'
+  | 'film_succeeded'
+  | 'film_failed'
+  | 'value_confirmed'
+  | 'project_exported'
+  | 'tv_published'
+  | 'resume_started'
+  | 'resume_succeeded';
+
+export function trackVideoSessionEvent(
+  name: VideoSessionEventName,
+  sessionId: string,
+  props?: FunnelEvent['props']
+): FunnelEvent | null {
+  const eventId = `video:${name}:${sessionId}`.slice(0, 128);
+  if (readEvents().some((event) => event.id === eventId)) return null;
+  return recordFunnelEvent(
+    name,
+    {
+      ...props,
+      feature: 'video_generation',
+      session_id: sessionId,
+    },
+    eventId
+  );
+}
+
+export function hasVideoSessionEvent(name: VideoSessionEventName, sessionId: string): boolean {
+  const eventId = `video:${name}:${sessionId}`.slice(0, 128);
+  return readEvents().some((event) => event.id === eventId);
 }
 
 export function listFunnelEvents(): FunnelEvent[] {
@@ -175,6 +237,13 @@ export function maybeTrackRetention(now = Date.now()): FunnelEvent[] {
  * First token alone is never enough.
  */
 export function confirmFirstValue(props?: FunnelEvent['props']): FunnelEvent | null {
+  const sessionId =
+    props?.feature === 'video_generation' && typeof props.session_id === 'string'
+      ? props.session_id
+      : null;
+  if (sessionId) {
+    trackVideoSessionEvent('value_confirmed', sessionId, props);
+  }
   if (hasFunnelEvent('first_value_confirmed')) return null;
   return trackFunnelEvent('first_value_confirmed', props);
 }

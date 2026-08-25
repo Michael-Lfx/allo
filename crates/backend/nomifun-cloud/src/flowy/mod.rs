@@ -2,6 +2,7 @@
 
 mod asr;
 mod billing;
+mod growth;
 mod im;
 mod llm_chat;
 mod media;
