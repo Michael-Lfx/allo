@@ -70,8 +70,14 @@
         // the job stuck in `lessons` forever with no error.
         struct HungCompleter;
         #[async_trait::async_trait]
-        impl KnowledgeCompleter for HungCompleter {
-            async fn complete(&self, _system: &str, _user: &str) -> Result<String, AppError> {
+        impl LearningCompleter for HungCompleter {
+            async fn complete(
+                &self,
+                _model_override: Option<(&str, &str)>,
+                _system: &str,
+                _user: &str,
+                _max_tokens: u32,
+            ) -> Result<String, AppError> {
                 std::future::pending().await
             }
         }
@@ -81,6 +87,7 @@
             None,
             "system",
             "user",
+            4096,
             std::time::Duration::from_millis(50),
         )
         .await
@@ -755,8 +762,14 @@
     }
 
     #[async_trait::async_trait]
-    impl KnowledgeCompleter for ScriptedCompleter {
-        async fn complete(&self, system: &str, user: &str) -> Result<String, AppError> {
+    impl LearningCompleter for ScriptedCompleter {
+        async fn complete(
+            &self,
+            _model_override: Option<(&str, &str)>,
+            system: &str,
+            user: &str,
+            _max_tokens: u32,
+        ) -> Result<String, AppError> {
             self.calls
                 .lock()
                 .unwrap()

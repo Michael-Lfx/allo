@@ -2,6 +2,46 @@ use super::parser::strip_code_fences;
 use super::*;
 
 
+// ── Per-stage output budgets ───────────────────────────────────────────────
+// The learning pipeline's calls differ wildly in output size, so every stage
+// passes its own `max_tokens` budget instead of a one-size-fits-all cap:
+//
+// | stage                     | budget | why                                            |
+// |---------------------------|--------|------------------------------------------------|
+// | blueprint                 |  4096  | structure-only JSON (title/concepts/modules)   |
+// | lesson document           |  8192  | longest call: 1000-1500 chars + figures        |
+// | activities                |  4096  | 3-5 small questions as JSON                    |
+// | single activity           |  4096  | exactly one question                           |
+// | figure repair             |  4096  | corrected figure code                          |
+// | reflection grading        |  2048  | tiny {score, feedback} JSON                    |
+// | concept graph             | 16384  | whole 60-120-concept graph in one reply; a     |
+// |                           |        | regeneration round rewrites EVERYTHING again   |
+// | concept graph repair      |  4096  | additive 1-10 concepts only                    |
+//
+// All budgets are output ceilings, not targets: a budget too small truncates
+// a reply mid-JSON (guaranteed-unparseable), so heavy stages get headroom;
+// a budget too large risks exceeding the provider context window on the
+// input side, so tiny stages stay tiny.
+
+/// Course blueprint: structure-only JSON, medium-sized.
+pub(crate) const BLUEPRINT_MAX_TOKENS: u32 = 4096;
+/// Long-form lesson document (1000-1500 chars + optional figures).
+pub(crate) const LESSON_DOCUMENT_MAX_TOKENS: u32 = 8192;
+/// Per-lesson activities JSON (3-5 questions).
+pub(crate) const ACTIVITIES_MAX_TOKENS: u32 = 4096;
+/// Single additional activity.
+pub(crate) const SINGLE_ACTIVITY_MAX_TOKENS: u32 = 4096;
+/// Corrected figure code only.
+pub(crate) const FIGURE_REPAIR_MAX_TOKENS: u32 = 4096;
+/// Reflection grading: tiny `{score, feedback}` JSON.
+pub(crate) const REFLECTION_GRADING_MAX_TOKENS: u32 = 2048;
+/// Whole concept graph (60-120 concepts) in one reply; regeneration rounds
+/// rewrite everything again.
+pub(crate) const CONCEPT_GRAPH_MAX_TOKENS: u32 = 16 * 1024;
+/// Manual concept-graph repair: additive 1-10 concepts only.
+pub(crate) const CONCEPT_GRAPH_REPAIR_MAX_TOKENS: u32 = 4096;
+
+
 /// Figure-repair stage: one model call that receives the broken figure code
 /// plus the runtime error it produced and returns only corrected code. The
 /// rules mirror the lesson standard so a repair slots back into the renderer
@@ -22,7 +62,7 @@ fix the error, and follow the figure rules:
 /// Repair a figure that failed to render. Returns the corrected figure body
 /// with any wrapping fences stripped.
 pub(crate) async fn repair_figure(
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     language: &str,
     code: &str,
@@ -32,9 +72,15 @@ pub(crate) async fn repair_figure(
         "Language: {language}\nError produced at render time:\n{error}\n\n\
          Broken figure code:\n{code}\n\nReturn the corrected figure body now."
     );
-    let raw = complete(completer, model_override, FIGURE_REPAIR_SYSTEM, &user)
-        .await
-        .map_err(|error| error.to_string())?;
+    let raw = complete(
+        completer,
+        model_override,
+        FIGURE_REPAIR_SYSTEM,
+        &user,
+        FIGURE_REPAIR_MAX_TOKENS,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     Ok(strip_code_fences(&raw))
 }
 
@@ -46,16 +92,18 @@ const COMPLETE_CALL_TIMEOUT_SECS: u64 = 180;
 
 
 pub(crate) async fn complete(
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     system: &str,
     user: &str,
+    max_tokens: u32,
 ) -> Result<String, AppError> {
     complete_with_timeout(
         completer,
         model_override,
         system,
         user,
+        max_tokens,
         std::time::Duration::from_secs(COMPLETE_CALL_TIMEOUT_SECS),
     )
     .await
@@ -66,21 +114,17 @@ pub(crate) async fn complete(
 /// (e.g. a whole concept graph in one reply) can request a longer bound
 /// than the course-generation ceiling.
 pub(crate) async fn complete_with_timeout(
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     system: &str,
     user: &str,
+    max_tokens: u32,
     timeout: std::time::Duration,
 ) -> Result<String, AppError> {
     let call = async {
-        match model_override {
-            Some((provider_id, model)) => {
-                completer
-                    .complete_with(system, user, provider_id.as_str(), model)
-                    .await
-            }
-            None => completer.complete(system, user).await,
-        }
+        completer
+            .complete(model_override.map(|(id, model)| (id.as_str(), model)), system, user, max_tokens)
+            .await
     };
     tokio::time::timeout(timeout, call)
         .await

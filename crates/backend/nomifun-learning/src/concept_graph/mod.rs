@@ -16,8 +16,9 @@
 use std::collections::{HashMap, HashSet};
 
 use nomifun_common::AppError;
-use nomifun_knowledge::KnowledgeCompleter;
 use serde::{Deserialize, Serialize};
+
+use crate::completer::LearningCompleter;
 
 mod audit;
 mod repair;
@@ -471,7 +472,7 @@ Rules:
 /// [`MAX_REPAIR_ROUNDS`] rounds. A graph that still fails the gate is
 /// rejected: a half-broken graph is never published.
 pub(crate) async fn generate_concept_graph(
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     topic: &str,
 ) -> Result<ConceptGraphData, AppError> {
@@ -484,6 +485,7 @@ pub(crate) async fn generate_concept_graph(
             model_override,
             GENERATE_SYSTEM,
             &user,
+            crate::generation::CONCEPT_GRAPH_MAX_TOKENS,
             std::time::Duration::from_secs(CONCEPT_GRAPH_CALL_TIMEOUT_SECS),
         )
         .await?;

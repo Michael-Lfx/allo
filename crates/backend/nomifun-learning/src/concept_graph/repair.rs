@@ -8,8 +8,9 @@
 use std::collections::HashSet;
 
 use nomifun_common::AppError;
-use nomifun_knowledge::KnowledgeCompleter;
 use serde::Deserialize;
+
+use crate::completer::LearningCompleter;
 
 use super::{
     AuditFinding, ConceptGraphData, ConceptGraphRecord, NormalizedBatch, RawConcept,
@@ -46,7 +47,7 @@ struct RawRepair {
 /// stages. Returns the repaired graph (existing keys immutable, additions
 /// merged, re-audited); an empty finding selection returns the graph as-is.
 pub(crate) async fn repair_graph(
-    completer: &dyn KnowledgeCompleter,
+    completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     record: &ConceptGraphRecord,
     request: &RepairConceptGraphRequest,
@@ -64,7 +65,14 @@ pub(crate) async fn repair_graph(
     let mut last_error = String::new();
     for attempt in 0..2 {
         let user = build_repair_user(record, &findings, attempt, &last_error);
-        let raw = complete(completer, model_override, REPAIR_SYSTEM, &user).await?;
+        let raw = complete(
+            completer,
+            model_override,
+            REPAIR_SYSTEM,
+            &user,
+            crate::generation::CONCEPT_GRAPH_REPAIR_MAX_TOKENS,
+        )
+        .await?;
         match parse_json_object::<RawRepair>(&raw) {
             Ok(parsed) => match normalize_repair(parsed, record) {
                 Ok(batch) => {

@@ -54,13 +54,6 @@ pub const SAMPLE_MAX_PER_FILE: usize = 4 * 1024;
 /// Sampling budget: total cap across all sampled excerpts.
 pub const SAMPLE_MAX_TOTAL: usize = 60 * 1024;
 
-/// Learning-course generation samples a wider corpus so per-lesson documents
-/// stay grounded: more files, larger excerpts, higher total budget. The
-/// overview prompt keeps the default (smaller) budget above.
-pub const LEARNING_SAMPLE_MAX_FILES: usize = 40;
-pub const LEARNING_SAMPLE_MAX_PER_FILE: usize = 8 * 1024;
-pub const LEARNING_SAMPLE_MAX_TOTAL: usize = 160 * 1024;
-
 /// Generated descriptions are clamped to this many chars before persisting.
 pub const DESCRIPTION_MAX_CHARS: usize = 120;
 
@@ -388,27 +381,6 @@ mod tests {
             .find(|(rel, _)| rel == "big.md")
             .expect("big.md sampled");
         assert!(default_big.1.len() <= SAMPLE_MAX_PER_FILE);
-
-        // Learning budgets exceed the overview defaults: big.md keeps its
-        // full 6 KB and the total stays under the learning cap.
-        let wide = sample_base_files_with_budget(
-            root,
-            LEARNING_SAMPLE_MAX_FILES,
-            LEARNING_SAMPLE_MAX_PER_FILE,
-            LEARNING_SAMPLE_MAX_TOTAL,
-        )
-        .await;
-        let wide_total: usize = wide.iter().map(|(_, s)| s.len()).sum();
-        assert!(wide_total <= LEARNING_SAMPLE_MAX_TOTAL);
-        let big = wide
-            .iter()
-            .find(|(rel, _)| rel == "big.md")
-            .expect("big.md sampled");
-        assert!(
-            big.1.len() > SAMPLE_MAX_PER_FILE,
-            "learning per-file budget must exceed the overview cap"
-        );
-        assert!(big.1.len() <= LEARNING_SAMPLE_MAX_PER_FILE);
     }
 
     #[test]
