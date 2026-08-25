@@ -16,6 +16,7 @@ mod goal;
 mod idmm_intervention;
 mod knowledge;
 mod mcp_server;
+mod meeting;
 mod message;
 mod oauth_token;
 mod provider;
@@ -66,6 +67,9 @@ pub use knowledge::{
     UpdateKnowledgeTagParams,
 };
 pub use mcp_server::McpServerRow;
+pub use meeting::{
+    MeetingSegmentRow, MeetingSessionRow, MeetingSpeakerRow, MeetingVoiceprintRow,
+};
 pub use message::MessageRow;
 pub use oauth_token::OAuthTokenRow;
 pub use provider::Provider;

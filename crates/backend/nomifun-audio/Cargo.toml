@@ -12,9 +12,11 @@ silero-vad = ["dep:ort"]
 
 [dependencies]
 async-trait = { workspace = true }
+nomifun-db = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 ort = { workspace = true, optional = true }
 

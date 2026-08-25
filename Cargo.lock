@@ -6813,10 +6813,12 @@ name = "nomifun-audio"
 version = "1.0.5"
 dependencies = [
  "async-trait",
+ "nomifun-db",
  "ort",
  "serde",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

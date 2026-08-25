@@ -24,6 +24,7 @@ pub mod loopback;
 pub mod mixer;
 pub mod process_watch;
 pub mod recorder;
+pub mod session;
 pub mod vad;
 
 pub use capture::AudioCaptureSource;
@@ -36,5 +37,9 @@ pub use process_watch::{ProcessWatcher, detect_meeting_process};
 pub use recorder::{
     MeetingRecorder, NodeStats, PipelineStats, SilenceGuard, StatsHandle, SttCallback,
     TranscriptSegment, pcm_to_wav,
+};
+pub use session::{
+    CreateMeetingSessionRequest, MeetingEvent, MeetingSegmentSnapshot, MeetingSessionService,
+    MeetingSessionSnapshot, MeetingSessionStatus, SttBackendChoice,
 };
 pub use vad::{EnergyVad, VadBackend, VadConfig, create_vad};
