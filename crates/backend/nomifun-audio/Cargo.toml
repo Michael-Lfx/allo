@@ -11,6 +11,8 @@ default = ["aac-encode"]
 # Windows: AAC-LC via Media Foundation → .m4a. Elsewhere falls back to WAV.
 aac-encode = []
 silero-vad = ["dep:ort"]
+# Local sherpa-onnx ASR (native link). Auto/cloud STT work without this.
+local-stt = ["dep:sherpa-onnx"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -22,6 +24,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 ort = { workspace = true, optional = true }
+sherpa-onnx = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

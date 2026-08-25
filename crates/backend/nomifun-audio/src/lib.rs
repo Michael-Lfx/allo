@@ -28,6 +28,7 @@ pub(crate) mod pcm_util;
 pub mod process_watch;
 pub mod recorder;
 pub mod session;
+pub mod stt;
 pub mod vad;
 
 pub use capture::AudioCaptureSource;
@@ -46,5 +47,9 @@ pub use recorder::{
 pub use session::{
     CreateMeetingSessionRequest, MeetingEvent, MeetingSegmentSnapshot, MeetingSessionService,
     MeetingSessionSnapshot, MeetingSessionStatus, SttBackendChoice,
+};
+pub use stt::{
+    CloudSttCallback, FakeSttCallback, MeetingCloudStt, NullSttCallback, SHERPA_ASR_MODEL_DIR_ENV,
+    SherpaSttCallback, SherpaSttError, SwitchableSttCallback, build_switchable_stt, try_load_sherpa,
 };
 pub use vad::{EnergyVad, VadBackend, VadConfig, create_vad};
