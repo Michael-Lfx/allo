@@ -21,6 +21,7 @@ import type {
   Lesson,
   LessonStatus,
   QuestionEntry,
+  RepairConceptGraphRequest,
   RetryCourseJobRequest,
   ReviewAnswerResult,
   ReviewRating,
@@ -181,6 +182,12 @@ export const learningApi = {
     httpRequest<ConceptGraphView>('POST', `${BASE}/concept-graphs`, request),
   getConceptGraph: (id: string) =>
     httpRequest<ConceptGraphView>('GET', `${BASE}/concept-graphs/${encodeURIComponent(id)}`),
+  repairConceptGraph: (id: string, request: RepairConceptGraphRequest) =>
+    httpRequest<ConceptGraphView>(
+      'POST',
+      `${BASE}/concept-graphs/${encodeURIComponent(id)}/repair`,
+      request,
+    ),
   deleteConceptGraph: (id: string) =>
     httpRequest<void>('DELETE', `${BASE}/concept-graphs/${encodeURIComponent(id)}`),
   deleteCourse: (id: string, deleteReviews: boolean) =>

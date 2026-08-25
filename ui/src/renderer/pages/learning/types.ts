@@ -342,12 +342,46 @@ export interface CourseJobView {
 export interface ConceptGraphNode {
   id: string;
   title: string;
+  /** 0=里程碑，1=原子概念（旧数据缺失时视为原子） */
+  level?: 0 | 1;
+  /** 子领域分组名（里程碑无分组） */
+  group?: string;
+  /** 为什么不可或缺 */
+  necessity?: string;
+  /** 是否为锚点（跨组引用的唯一许可目标） */
+  is_anchor?: boolean;
 }
 
 /** 先决边：from 应先于 to 掌握 */
 export interface ConceptGraphEdge {
   from: string;
   to: string;
+  /** 该边为何存在的理由 */
+  reason?: string;
+}
+
+export interface ConceptGraphDroppedEdge {
+  from: string;
+  to: string;
+  reason: string;
+}
+
+export type AuditSeverity = 'info' | 'warning' | 'danger';
+
+export interface ConceptGraphFinding {
+  kind: string;
+  severity: AuditSeverity;
+  message: string;
+  node_ids: string[];
+}
+
+export interface ConceptGraphAudit {
+  /** 全部阶段丢弃的引用数（unknown/self/duplicate/cycle） */
+  ref_drop_count: number;
+  /** 丢弃率 = 丢弃引用 / 模型原始引用总数 */
+  ref_drop_rate: number;
+  dropped_edges: ConceptGraphDroppedEdge[];
+  findings: ConceptGraphFinding[];
 }
 
 export interface ConceptGraphSummary {
@@ -363,6 +397,7 @@ export interface ConceptGraphView {
   topic: string;
   nodes: ConceptGraphNode[];
   edges: ConceptGraphEdge[];
+  audit: ConceptGraphAudit;
   created_at: number;
 }
 
@@ -370,4 +405,9 @@ export interface GenerateConceptGraphRequest {
   topic: string;
   provider_id?: string;
   model?: string;
+}
+
+/** 手动修复请求：kinds 为空时修复全部审计发现 */
+export interface RepairConceptGraphRequest {
+  kinds?: string[];
 }

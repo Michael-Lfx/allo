@@ -424,7 +424,7 @@ pub async fn generate_course_pack(
 pub(crate) use self::activities::{ExistingLessonQuestion, generate_lesson_activity};
 pub(crate) use self::assemble::{assemble_outline_pack, assemble_pack, validate_generated_pack};
 pub(crate) use self::blueprint::{build_blueprint_prompt, generate_blueprint};
-pub(crate) use self::completer::{complete, repair_figure};
+pub(crate) use self::completer::{complete, complete_with_timeout, repair_figure};
 pub(crate) use self::lesson::generate_lesson;
 pub(crate) use self::parser::parse_json_object;
 pub(crate) use self::sample::sample_base_files;

@@ -144,4 +144,36 @@ impl LearningService {
             .map_err(|error| AppError::Internal(format!("failed to delete concept graph: {error}")))
     }
 
+    /// Manually triggered repair: the stored audit report is the decision
+    /// basis, the model adds concepts, and the merged graph is re-audited
+    /// and persisted over the same record.
+    pub async fn repair_concept_graph(
+        &self,
+        user_id: &UserId,
+        id: &LearningConceptGraphId,
+        request: crate::concept_graph::RepairConceptGraphRequest,
+    ) -> Result<crate::concept_graph::ConceptGraphRecord, AppError> {
+        let record = self.get_concept_graph(user_id, id).await?;
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone()
+            .ok_or_else(|| {
+                AppError::Conflict("concept graph generation is not configured".into())
+            })?;
+        let graph = crate::concept_graph::repair_graph(completer.as_ref(), None, &record, &request)
+            .await?;
+        let mut updated = record;
+        updated.graph = graph;
+        let path = self.concept_graph_path(id)?;
+        let json = serde_json::to_vec_pretty(&updated).map_err(|error| {
+            AppError::Internal(format!("failed to serialize concept graph: {error}"))
+        })?;
+        tokio::fs::write(&path, json).await.map_err(|error| {
+            AppError::Internal(format!("failed to store concept graph: {error}"))
+        })?;
+        Ok(updated)
+    }
+
 }

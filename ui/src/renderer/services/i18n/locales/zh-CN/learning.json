@@ -351,5 +351,18 @@
   "conceptGraphHistory": "历史",
   "conceptGraphHistoryEmpty": "暂无概念图",
   "conceptGraphStats": "{{nodes}} 个概念 · {{edges}} 条先决关系",
-  "conceptGraphDeleteConfirm": "删除该概念图？"
+  "conceptGraphDeleteConfirm": "删除该概念图？",
+  "conceptGraphAnchorMark": "锚",
+  "conceptGraphViewAll": "全部",
+  "conceptGraphViewMilestones": "里程碑",
+  "conceptGraphViewAtoms": "原子概念",
+  "conceptGraphAudit": "结构审计",
+  "conceptGraphAuditEmpty": "审计未发现结构问题",
+  "conceptGraphRefDrop": "引用丢弃 {{count}} 条（{{rate}}%）",
+  "conceptGraphRepair": "修复",
+  "conceptGraphRepairSuccess": "修复完成",
+  "conceptGraphRepairFailed": "修复失败",
+  "conceptGraphSeverityDanger": "严重",
+  "conceptGraphSeverityWarning": "警告",
+  "conceptGraphSeverityInfo": "提示"
 }
