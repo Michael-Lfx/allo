@@ -175,6 +175,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     dropdownVisibleId,
     handleConversationClick,
     handleDeleteClick,
+    handleBatchDelete,
     handleEditStart,
     handleRenameConfirm,
     handleRenameCancel,
@@ -211,60 +212,6 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
     setSelectedConversationIds,
     onBatchModeChange,
   });
-
-  // Batch deletion is scoped to the interactive conversations rendered here.
-  const handleBatchDeleteAll = useCallback(() => {
-    const convIds = Array.from(selectedConversationIds);
-    const total = convIds.length;
-    if (total === 0) {
-      Message.warning(t('conversation.history.batchNoSelection'));
-      return;
-    }
-    Modal.confirm({
-      title: t('conversation.history.batchDelete', { count: total }),
-      content: t('conversation.history.batchDeleteConfirm', { count: total }),
-      okText: t('conversation.history.confirmDelete'),
-      cancelText: t('conversation.history.cancelDelete'),
-      okButtonProps: { status: 'warning' },
-      onOk: async () => {
-        let successCount = 0;
-        try {
-          const convResults = await Promise.all(
-            convIds.map(async (conversation_id) => {
-              try {
-                await ipcBridge.conversation.remove.invoke({ conversation_id: conversation_id });
-                emitter.emit('conversation.deleted', conversation_id);
-                if (activeConversationId === conversation_id) void navigate('/guid');
-                return true;
-              } catch {
-                return false;
-              }
-            })
-          );
-          successCount += convResults.filter(Boolean).length;
-          emitter.emit('chat.history.refresh');
-          if (successCount > 0) {
-            Message.success(t('conversation.history.batchDeleteSuccess', { count: successCount }));
-          } else {
-            Message.error(t('conversation.history.deleteFailed'));
-          }
-        } finally {
-          setSelectedConversationIds(new Set());
-          onBatchModeChange?.(false);
-        }
-      },
-      style: { borderRadius: '12px' },
-      alignCenter: true,
-      getPopupContainer: () => document.body,
-    });
-  }, [
-    selectedConversationIds,
-    activeConversationId,
-    navigate,
-    onBatchModeChange,
-    setSelectedConversationIds,
-    t,
-  ]);
 
   /* ----------------------------- create-session entries ----------------------------- */
 
@@ -806,7 +753,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
               {
                 key: 'delete',
                 label: t('conversation.history.batchDelete', { count: totalSelected }),
-                onClick: handleBatchDeleteAll,
+                onClick: handleBatchDelete,
                 danger: true,
                 disabled: totalSelected === 0,
               },

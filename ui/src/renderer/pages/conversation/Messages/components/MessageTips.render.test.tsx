@@ -111,13 +111,29 @@ describe('MessageTips error render contract', () => {
     });
 
     const recoveryIndex = html.indexOf('data-testid="message-error-recovery"');
-    const editIndex = html.indexOf('data-testid="message-error-edit"');
     const copyIndex = html.indexOf('message-error-note__copy');
     const feedbackIndex = html.indexOf('message-error-note__feedback');
 
     expect(recoveryIndex).toBeGreaterThan(-1);
-    expect(editIndex).toBeGreaterThan(recoveryIndex);
-    expect(copyIndex).toBeGreaterThan(editIndex);
+    expect(copyIndex).toBeGreaterThan(recoveryIndex);
     expect(feedbackIndex).toBeGreaterThan(copyIndex);
+  });
+
+  test('uses the billing recovery action instead of changing the model', () => {
+    const html = renderMessage({
+      message: '积分不足',
+      code: 'USER_LLM_PROVIDER_BILLING_REQUIRED',
+      ownership: 'user_llm_provider',
+      retryable: false,
+      resolution: { kind: 'check_provider_billing', target: 'provider_settings' },
+    });
+
+    expect(html).toContain('data-testid="message-error-recovery"');
+    expect(html).toContain('购买积分');
+    expect(html).not.toContain('更换模型');
+    expect(html).not.toContain('/models?section=models');
+    expect(html).toContain('message-error-note__copy');
+    expect(html).toContain('message-error-note__feedback');
+    expect(html).not.toContain('message-error-note__retry');
   });
 });

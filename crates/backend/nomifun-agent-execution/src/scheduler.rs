@@ -13,12 +13,13 @@ use dashmap::DashMap;
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use nomifun_api_types::{
-    AgentExecution, AgentExecutionDetail, ExecutionModelRef, ExecutionParticipant, ExecutionStep,
+    AgentExecution, AgentExecutionDetail, ExecutionAttempt, ExecutionModelRef,
+    ExecutionParticipant, ExecutionStep,
 };
 use nomifun_common::{
-    AdaptationPolicy, AgentExecutionEventKind, AgentExecutionStatus, AgentStepMode, AppError,
-    ExecutionAttemptStatus, ExecutionStepKind, ExecutionStepStatus, StepFailurePolicy,
-    apply_agent_role_context, generate_id, now_ms,
+    AdaptationPolicy, AgentExecutionEventKind, AgentExecutionStatus, AgentStepMode,
+    AgentToolPolicy, AppError, ExecutionAttemptStatus, ExecutionStepKind, ExecutionStepStatus,
+    StepFailurePolicy, apply_agent_role_context, generate_id, now_ms,
 };
 use nomifun_db::{
     AgentExecutionAttemptRecoveryDisposition, AgentExecutionLeaseToken,
@@ -2651,7 +2652,12 @@ fn aggregate_summary(detail: &AgentExecutionDetail) -> String {
             .iter()
             .filter(|attempt| attempt.step_id == step.step_id)
             .max_by_key(|attempt| attempt.attempt_no)
-            .and_then(|attempt| attempt.output_summary.as_deref())
+            .and_then(|attempt| {
+                attempt
+                    .output_summary
+                    .as_deref()
+                    .or(attempt.error.as_deref())
+            })
             .unwrap_or("-");
         lines.push(format!(
             "{} | {} | {}",
@@ -2960,6 +2966,106 @@ mod tests {
         ] {
             assert!(!status_is_active_for_scheduler_failure(inactive));
         }
+    }
+
+    #[test]
+    fn aggregate_summary_preserves_stream_failure_reason() {
+        let detail = AgentExecutionDetail {
+            execution: AgentExecution {
+                execution_id: "exec".to_owned(),
+                goal: "test stream failure reporting".to_owned(),
+                lead_conversation_id: Some("lead".to_owned()),
+                work_dir: None,
+                delegation_policy: Default::default(),
+                plan_gate: Default::default(),
+                adaptation_policy: AdaptationPolicy::Fixed,
+                decision_policy: Default::default(),
+                max_parallel: 1,
+                status: AgentExecutionStatus::CompletedWithFailures,
+                summary: None,
+                total_tokens: None,
+                version: 1,
+                plan_revision: 0,
+                event_sequence: 0,
+                created_at: 0,
+                updated_at: 0,
+            },
+            participants: Vec::new(),
+            steps: vec![ExecutionStep {
+                step_id: "step".to_owned(),
+                execution_id: "exec".to_owned(),
+                title: "Search project".to_owned(),
+                spec: "search".to_owned(),
+                profile: None,
+                kind: ExecutionStepKind::Agent,
+                agent_mode: Some(AgentStepMode::Normal),
+                status: ExecutionStepStatus::Failed,
+                tool_policy: AgentToolPolicy::Full,
+                role: None,
+                fanout_group: None,
+                control_policy: None,
+                failure_policy: StepFailurePolicy::FailExecution,
+                assigned_participant_id: None,
+                assignment_source: None,
+                assignment_score: None,
+                assignment_rationale: None,
+                assignment_locked: false,
+                preset_prompt: None,
+                graph_x: None,
+                graph_y: None,
+                dispatch_after: None,
+                introduced_in_revision: 0,
+                superseded_in_revision: None,
+                version: 1,
+                created_at: 0,
+                updated_at: 0,
+            }],
+            dependencies: Vec::new(),
+            attempts: vec![ExecutionAttempt {
+                attempt_id: "attempt".to_owned(),
+                execution_id: "exec".to_owned(),
+                step_id: "step".to_owned(),
+                attempt_no: 1,
+                participant_id: None,
+                conversation_id: Some("child".to_owned()),
+                status: ExecutionAttemptStatus::Failed,
+                trigger_reason: "provider_stream".to_owned(),
+                effective_config: json!({}),
+                question: None,
+                error: Some("NOMIFUN_STREAM_BROKEN: stream ended before finish_reason".to_owned()),
+                output_summary: None,
+                output_files: Vec::new(),
+                tokens: None,
+                retry_after: None,
+                runtime_state: None,
+                started_at: Some(0),
+                finished_at: Some(1),
+                version: 1,
+                created_at: 0,
+                updated_at: 1,
+            }],
+        };
+
+        let summary = aggregate_summary(&detail);
+        assert!(summary.contains("Search project | failed |"));
+        assert!(summary.contains("NOMIFUN_STREAM_BROKEN"));
+
+        let terminal = terminal_transition_payload(
+            &detail.execution,
+            AgentExecutionStatus::CompletedWithFailures,
+            Some("NOMIFUN_STREAM_BROKEN"),
+        );
+        assert_eq!(
+            terminal["lead_report_operation_id"],
+            "exec-lead-report:exec:event:1"
+        );
+        let without_lead = AgentExecution {
+            lead_conversation_id: None,
+            ..detail.execution.clone()
+        };
+        assert!(terminal_transition_payload(&without_lead, AgentExecutionStatus::Failed, None)
+            ["lead_report_operation_id"]
+            .is_null());
     }
 
     #[test]

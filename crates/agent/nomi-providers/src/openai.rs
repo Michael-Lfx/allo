@@ -871,7 +871,23 @@ impl LlmProvider for OpenAIProvider {
                 max_tokens = request.max_tokens,
                 "Sending OpenAI-compatible SSE request"
             );
-            tracing::debug!(target: "nomi_providers", body = %serde_json::to_string_pretty(&body).unwrap_or_default(), "outgoing request");
+            let message_count = body
+                .get("messages")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            let tool_count = body
+                .get("tools")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            tracing::debug!(
+                target: "nomi_providers",
+                model = %request.model,
+                message_count,
+                tool_count,
+                include_stream_usage,
+                sanitize_tool_schemas,
+                "outgoing request summary"
+            );
 
             match self
                 .send_initial_with_key_rotation(&client, &url, &body)
@@ -1016,7 +1032,7 @@ async fn process_sse_stream_with_capture(
             }
 
             if let Some(data) = line.strip_prefix("data:").map(str::trim_start) {
-                tracing::debug!(target: "nomi_providers", chunk = %data, "sse chunk received");
+                tracing::debug!(target: "nomi_providers", data_len = data.len(), "sse chunk received");
                 if data == "[DONE]" {
                     // A few compatible gateways use [DONE] as their only
                     // terminal marker. Infer stop/tool_calls from the already
@@ -3886,6 +3902,102 @@ mod tests {
         assert!(metadata["failure_reason"]
             .as_str()
             .is_some_and(|reason| reason.contains("malformed JSON arguments")));
+
+        std::fs::remove_dir_all(directory).expect("remove test diagnostics");
+    }
+
+    #[tokio::test]
+    async fn invalid_utf8_sse_emits_stream_error_and_persists_capture() {
+        let directory = std::env::temp_dir().join(format!(
+            "nomi-openai-sse-invalid-utf8-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let response = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body(b"data: {\xff}\n\n".to_vec())
+                .expect("build invalid UTF-8 SSE response"),
+        );
+        let capture = FailedSseCaptureContext::with_directory(
+            directory.clone(),
+            "openai-compatible",
+            "test-model",
+            Some("turn-invalid-utf8".into()),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        assert!(matches!(
+            process_sse_stream_with_capture(response, &tx, false, Some(capture)).await,
+            StreamOutcome::Ok
+        ));
+        drop(tx);
+        assert!(matches!(
+            rx.recv().await,
+            Some(LlmEvent::Error(message)) if message.contains("invalid UTF-8")
+        ));
+
+        let metadata_path = std::fs::read_dir(&directory)
+            .expect("capture directory exists")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|extension| extension == "json"))
+            .expect("failed stream metadata is persisted");
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(metadata_path).expect("read metadata"),
+        )
+        .expect("metadata JSON");
+        assert_eq!(metadata["turn_id"], "turn-invalid-utf8");
+        assert!(metadata["failure_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("invalid UTF-8")));
+
+        std::fs::remove_dir_all(directory).expect("remove test diagnostics");
+    }
+
+    #[tokio::test]
+    async fn eof_before_finish_reason_returns_failed_stream_and_persists_capture() {
+        let directory = std::env::temp_dir().join(format!(
+            "nomi-openai-sse-eof-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n"
+        );
+        let response = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body(body.to_owned())
+                .expect("build truncated SSE response"),
+        );
+        let capture = FailedSseCaptureContext::with_directory(
+            directory.clone(),
+            "openai-compatible",
+            "test-model",
+            Some("turn-eof".into()),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        assert!(matches!(
+            process_sse_stream_with_capture(response, &tx, false, Some(capture)).await,
+            StreamOutcome::FailedPartial(_)
+        ));
+        assert!(matches!(rx.recv().await, Some(LlmEvent::TextDelta(text)) if text == "partial"));
+        drop(tx);
+
+        let metadata_path = std::fs::read_dir(&directory)
+            .expect("capture directory exists")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|extension| extension == "json"))
+            .expect("failed stream metadata is persisted");
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(metadata_path).expect("read metadata"),
+        )
+        .expect("metadata JSON");
+        assert_eq!(metadata["turn_id"], "turn-eof");
+        assert!(metadata["failure_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("before finish_reason")));
 
         std::fs::remove_dir_all(directory).expect("remove test diagnostics");
     }

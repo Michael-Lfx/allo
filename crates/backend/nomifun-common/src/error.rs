@@ -5,6 +5,62 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+/// Stable lifecycle reasons returned by `conversation.delete`.
+///
+/// These are deliberately typed instead of being inferred from the display
+/// text of a generic `Conflict` or `Timeout` error. The display text remains
+/// user-facing, while the variant owns the HTTP status, machine code, and
+/// structured recovery details used by clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ConversationDeleteErrorKind {
+    #[error("Execution attempt conversations are retained as audit history and cannot be deleted directly")]
+    AttemptRetained,
+
+    #[error("Conversation has an unproven running turn from a prior process; deletion requires exact process-empty proof")]
+    RunningOrphan,
+
+    #[error("conversation deletion continues in the background; the deleted event is the authoritative success signal")]
+    Pending,
+}
+
+impl ConversationDeleteErrorKind {
+    pub const fn status_code(self) -> StatusCode {
+        match self {
+            Self::AttemptRetained | Self::RunningOrphan => StatusCode::CONFLICT,
+            Self::Pending => StatusCode::BAD_GATEWAY,
+        }
+    }
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::AttemptRetained => "CONVERSATION_ATTEMPT_RETAINED",
+            Self::RunningOrphan => "CONVERSATION_RUNNING_ORPHAN",
+            Self::Pending => "CONVERSATION_DELETE_PENDING",
+        }
+    }
+
+    pub fn details(self) -> Value {
+        match self {
+            Self::AttemptRetained => json!({
+                "operation": "conversation.delete",
+                "retryable": false,
+                "retained_as": "execution_audit",
+            }),
+            Self::RunningOrphan => json!({
+                "operation": "conversation.delete",
+                "retryable": false,
+                "requires_recovery": true,
+            }),
+            Self::Pending => json!({
+                "operation": "conversation.delete",
+                "retryable": true,
+                "background": true,
+                "authoritative_event": "conversation.listChanged(deleted)",
+            }),
+        }
+    }
+}
+
 /// Application-level error with HTTP status code mapping.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -22,6 +78,11 @@ pub enum AppError {
 
     #[error("Conflict: {0}")]
     Conflict(String),
+
+    /// A conversation deletion was rejected or moved to background work for
+    /// a typed lifecycle reason.
+    #[error("{0}")]
+    ConversationDelete(ConversationDeleteErrorKind),
 
     /// A provider cannot be deleted because features still reference it.
     #[error("Provider is in use: {} reference(s)", .0.usages.len())]
@@ -80,6 +141,20 @@ struct ErrorBody {
 }
 
 impl AppError {
+    /// Conversation deletion errors use stable client-facing codes while
+    /// retaining the existing HTTP status and lifecycle safeguards.
+    pub fn conversation_attempt_retained() -> Self {
+        Self::ConversationDelete(ConversationDeleteErrorKind::AttemptRetained)
+    }
+
+    pub fn conversation_running_orphan() -> Self {
+        Self::ConversationDelete(ConversationDeleteErrorKind::RunningOrphan)
+    }
+
+    pub fn conversation_delete_pending() -> Self {
+        Self::ConversationDelete(ConversationDeleteErrorKind::Pending)
+    }
+
     /// HTTP status code for this error variant.
     pub fn status_code(&self) -> StatusCode {
         match self {
@@ -88,6 +163,7 @@ impl AppError {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::ConversationDelete(kind) => kind.status_code(),
             Self::ProviderInUse(_) => StatusCode::CONFLICT,
             Self::ProviderUnavailable(_) => StatusCode::BAD_REQUEST,
             Self::ManagedFreeModelsDisabled(_) => StatusCode::BAD_REQUEST,
@@ -116,6 +192,7 @@ impl AppError {
                 }
             }
             Self::Conflict(_) => "CONFLICT",
+            Self::ConversationDelete(kind) => kind.code(),
             Self::ProviderInUse(_) => "PROVIDER_IN_USE",
             Self::ProviderUnavailable(_) => "PROVIDER_UNAVAILABLE",
             Self::ManagedFreeModelsDisabled(_) => "MANAGED_FREE_MODELS_DISABLED",
@@ -141,6 +218,7 @@ impl AppError {
                 Some(workspace_path_whitespace_details(path, "runtime"))
             }
             Self::ProviderInUse(details) => Some(json!({ "usages": details.usages })),
+            Self::ConversationDelete(kind) => Some(kind.details()),
             _ => None,
         }
     }
@@ -249,6 +327,18 @@ mod tests {
         );
         assert_eq!(AppError::Forbidden("x".into()).status_code(), StatusCode::FORBIDDEN);
         assert_eq!(AppError::Conflict("x".into()).status_code(), StatusCode::CONFLICT);
+        assert_eq!(
+            AppError::conversation_attempt_retained().status_code(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            AppError::conversation_running_orphan().status_code(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            AppError::conversation_delete_pending().status_code(),
+            StatusCode::BAD_GATEWAY
+        );
         assert_eq!(AppError::RateLimited.status_code(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(AppError::CloudOtpInvalidCode.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(
@@ -283,6 +373,18 @@ mod tests {
         );
         assert_eq!(AppError::Conflict("x".into()).error_code(), "CONFLICT");
         assert_eq!(
+            AppError::conversation_attempt_retained().error_code(),
+            "CONVERSATION_ATTEMPT_RETAINED"
+        );
+        assert_eq!(
+            AppError::conversation_running_orphan().error_code(),
+            "CONVERSATION_RUNNING_ORPHAN"
+        );
+        assert_eq!(
+            AppError::conversation_delete_pending().error_code(),
+            "CONVERSATION_DELETE_PENDING"
+        );
+        assert_eq!(
             AppError::ManagedFreeModelsDisabled("disabled".into()).error_code(),
             "MANAGED_FREE_MODELS_DISABLED"
         );
@@ -303,6 +405,82 @@ mod tests {
             AppError::WorkspacePathEdgeWhitespaceRuntimeUnsupported("x".into()).error_code(),
             "WORKSPACE_PATH_EDGE_WHITESPACE_RUNTIME_UNSUPPORTED"
         );
+    }
+
+    #[test]
+    fn conversation_delete_errors_expose_structured_details() {
+        assert_eq!(
+            AppError::conversation_attempt_retained().error_details(),
+            Some(json!({
+                "operation": "conversation.delete",
+                "retryable": false,
+                "retained_as": "execution_audit",
+            }))
+        );
+        assert_eq!(
+            AppError::conversation_running_orphan().error_details(),
+            Some(json!({
+                "operation": "conversation.delete",
+                "retryable": false,
+                "requires_recovery": true,
+            }))
+        );
+        assert_eq!(
+            AppError::conversation_delete_pending().error_details(),
+            Some(json!({
+                "operation": "conversation.delete",
+                "retryable": true,
+                "background": true,
+                "authoritative_event": "conversation.listChanged(deleted)",
+            }))
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_delete_response_body_exposes_stable_contract() {
+        let cases = [
+            (
+                AppError::conversation_attempt_retained(),
+                StatusCode::CONFLICT,
+                "CONVERSATION_ATTEMPT_RETAINED",
+                json!({
+                    "operation": "conversation.delete",
+                    "retryable": false,
+                    "retained_as": "execution_audit",
+                }),
+            ),
+            (
+                AppError::conversation_running_orphan(),
+                StatusCode::CONFLICT,
+                "CONVERSATION_RUNNING_ORPHAN",
+                json!({
+                    "operation": "conversation.delete",
+                    "retryable": false,
+                    "requires_recovery": true,
+                }),
+            ),
+            (
+                AppError::conversation_delete_pending(),
+                StatusCode::BAD_GATEWAY,
+                "CONVERSATION_DELETE_PENDING",
+                json!({
+                    "operation": "conversation.delete",
+                    "retryable": true,
+                    "background": true,
+                    "authoritative_event": "conversation.listChanged(deleted)",
+                }),
+            ),
+        ];
+
+        for (error, status, code, details) in cases {
+            let response = error.into_response();
+            assert_eq!(response.status(), status);
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["success"], false);
+            assert_eq!(body["code"], code);
+            assert_eq!(body["details"], details);
+        }
     }
 
     #[test]

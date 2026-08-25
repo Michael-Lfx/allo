@@ -46,4 +46,15 @@ describe('authoritative conversation deletion route handling', () => {
       sessionListSource.includes('const success = await ipcBridge.conversation.remove.invoke')
     ).toBe(false);
   });
+
+  test('routes the visible batch delete action through the shared error-aware handler', () => {
+    expect(
+      sessionListSource.includes('    handleBatchDelete,\n    handleEditStart,')
+    ).toBe(true);
+    expect(sessionListSource.includes('onClick: handleBatchDelete')).toBe(true);
+    expect(sessionListSource.includes('const handleBatchDeleteAll')).toBe(false);
+    expect(sessionListSource.includes('Promise.all(\n            convIds.map')).toBe(false);
+    expect(conversationActionsSource.includes('Promise.allSettled(')).toBe(true);
+    expect(conversationActionsSource.includes('summarizeConversationDeleteResults(results)')).toBe(true);
+  });
 });

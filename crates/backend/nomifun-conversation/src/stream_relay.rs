@@ -2375,6 +2375,14 @@ impl StreamRelay {
                             self.forward_to_websocket_with_msg_id(&segment.id, &event);
                         }
                         AgentStreamEvent::Text(data) => {
+                            // A provider or middleware may normalize a text
+                            // delta to empty content (for example, when a
+                            // robot-session stage direction is stripped).
+                            // It is not visible output and must not claim the
+                            // primary text owner or reconcile the durable root.
+                            if data.content.is_empty() {
+                                continue;
+                            }
                             let _ = self
                                 .ordered_event_side_effect(
                                     "complete_thinking_before_text",
@@ -10574,6 +10582,181 @@ mod tests {
             update.status.as_ref().and_then(|status| status.as_deref()) == Some("finish")
                 && update.hidden == Some(false)
         }));
+    }
+
+    #[tokio::test]
+    async fn empty_text_after_tool_placeholder_does_not_claim_root() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        repo.reject_duplicate_message_inserts();
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        );
+        let mut ws_rx = bus.subscribe();
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "tc-empty-root-first".into(),
+            name: "read_file".into(),
+            args: json!({"path": "a.ts"}),
+            status: ToolCallStatus::Running,
+            description: None,
+            input: None,
+            output: None,
+            artifacts: Vec::new(),
+            retry: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Text(TextEventData { content: String::new() }))
+            .unwrap();
+        tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+            call_id: "tc-empty-root-second".into(),
+            name: "read_file".into(),
+            args: json!({"path": "b.ts"}),
+            status: ToolCallStatus::Running,
+            description: None,
+            input: None,
+            output: None,
+            artifacts: Vec::new(),
+            retry: None,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+
+        let mut ws_events = vec![];
+        while let Ok(evt) = ws_rx.try_recv() {
+            ws_events.push(evt);
+        }
+        assert!(
+            !ws_events.iter().any(|event| {
+                event.name == "message.stream"
+                    && event.data["type"] == "content"
+                    && event.data["data"]["content"] == ""
+            }),
+            "an empty normalized text event must not be forwarded"
+        );
+
+        let inserts = repo.take_inserts();
+        assert_eq!(
+            inserts.iter().filter(|row| row.r#type == "tool_call").count(),
+            2,
+            "both tool calls must persist after the empty text event"
+        );
+        assert_eq!(
+            inserts
+                .iter()
+                .filter(|row| row.message_id == TEST_ASSISTANT_MESSAGE_ID)
+                .count(),
+            1,
+            "the hidden root placeholder must remain the sole primary row"
+        );
+    }
+
+    #[tokio::test]
+    async fn robot_stage_direction_empty_text_after_tool_placeholder_is_ignored() {
+        use nomifun_ai_agent::protocol::events::tool_call::{ToolCallEventData, ToolCallStatus};
+
+        let repo = Arc::new(RecordingRepo::new());
+        repo.reject_duplicate_message_inserts();
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        )
+        .with_robot_session(true);
+        let mut ws_rx = bus.subscribe();
+        let rx = tx.subscribe();
+
+        for (call_id, path) in [
+            ("tc-robot-empty-first", "a.ts"),
+            ("tc-robot-empty-second", "b.ts"),
+        ] {
+            tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
+                call_id: call_id.into(),
+                name: "read_file".into(),
+                args: json!({"path": path}),
+                status: ToolCallStatus::Running,
+                description: None,
+                input: None,
+                output: None,
+                artifacts: Vec::new(),
+                retry: None,
+            }))
+            .unwrap();
+            if path == "a.ts" {
+                tx.send(AgentStreamEvent::Text(TextEventData {
+                    content: "[wink]".into(),
+                }))
+                .unwrap();
+            }
+        }
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+
+        let mut ws_events = vec![];
+        while let Ok(evt) = ws_rx.try_recv() {
+            ws_events.push(evt);
+        }
+        assert_eq!(streamed_content(&ws_events), "");
+        let inserts = repo.take_inserts();
+        assert_eq!(
+            inserts.iter().filter(|row| row.r#type == "tool_call").count(),
+            2,
+            "a stripped stage direction must not poison the following tool call"
+        );
+    }
+
+    #[tokio::test]
+    async fn whitespace_text_remains_visible_and_persisted() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(TestUserEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.into(),
+            TEST_USER_ID.into(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        );
+        let mut ws_rx = bus.subscribe();
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::Text(TextEventData {
+            content: " ".into(),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default()))
+            .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+        let mut ws_events = vec![];
+        while let Ok(evt) = ws_rx.try_recv() {
+            ws_events.push(evt);
+        }
+        assert_eq!(streamed_content(&ws_events), " ");
+        assert_eq!(persisted_text(&repo.take_inserts()), vec![" "]);
     }
 
     #[tokio::test]
