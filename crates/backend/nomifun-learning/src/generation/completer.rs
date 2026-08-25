@@ -62,8 +62,10 @@ pub(crate) async fn complete(
 }
 
 
-/// [`complete`] with an explicit timeout so tests can bound a hung call.
-pub(super) async fn complete_with_timeout(
+/// [`complete`] with an explicit timeout so callers with heavier outputs
+/// (e.g. a whole concept graph in one reply) can request a longer bound
+/// than the course-generation ceiling.
+pub(crate) async fn complete_with_timeout(
     completer: &dyn KnowledgeCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     system: &str,
@@ -84,7 +86,7 @@ pub(super) async fn complete_with_timeout(
         .await
         .map_err(|_| {
             AppError::Timeout(format!(
-                "model call exceeded {}s during course generation",
+                "model call exceeded {}s (course generation or concept graph)",
                 timeout.as_secs()
             ))
         })?

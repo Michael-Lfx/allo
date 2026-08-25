@@ -351,5 +351,18 @@
   "conceptGraphHistory": "History",
   "conceptGraphHistoryEmpty": "No concept graphs yet",
   "conceptGraphStats": "{{nodes}} concepts · {{edges}} prerequisite edges",
-  "conceptGraphDeleteConfirm": "Delete this concept graph?"
+  "conceptGraphDeleteConfirm": "Delete this concept graph?",
+  "conceptGraphAnchorMark": "anchor",
+  "conceptGraphViewAll": "All",
+  "conceptGraphViewMilestones": "Milestones",
+  "conceptGraphViewAtoms": "Atomic",
+  "conceptGraphAudit": "Structural audit",
+  "conceptGraphAuditEmpty": "The audit found no structural issues",
+  "conceptGraphRefDrop": "{{count}} references dropped ({{rate}}%)",
+  "conceptGraphRepair": "Repair",
+  "conceptGraphRepairSuccess": "Repair complete",
+  "conceptGraphRepairFailed": "Repair failed",
+  "conceptGraphSeverityDanger": "Danger",
+  "conceptGraphSeverityWarning": "Warning",
+  "conceptGraphSeverityInfo": "Info"
 }

@@ -36,6 +36,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/concept-graphs/{id}",
             get(get_concept_graph).delete(delete_concept_graph),
         )
+        .route(
+            "/api/learning/concept-graphs/{id}/repair",
+            post(repair_concept_graph),
+        )
         .route("/api/learning/course-jobs", get(list_course_jobs))
         .route("/api/learning/course-jobs/{id}", get(get_course_job).delete(delete_course_job))
         .route(
@@ -870,4 +874,19 @@ async fn delete_concept_graph(
     let id = parse_id::<LearningConceptGraphId>(id)?;
     state.service.delete_concept_graph(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+async fn repair_concept_graph(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<crate::concept_graph::RepairConceptGraphRequest>,
+) -> Result<Json<ApiResponse<crate::concept_graph::ConceptGraphRecord>>, AppError> {
+    let id = parse_id::<LearningConceptGraphId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .repair_concept_graph(&user.id, &id, request)
+            .await?,
+    )))
 }
