@@ -19,6 +19,11 @@ export function generationPreferencesSummary(
     const summary = `${modelLabel} · ${value.resolution.toUpperCase()}`;
     return { summary, title: `video · ${summary}` };
   }
+  if (mode === 'generate') {
+    const ratio = value.smartAspect ? labels.smart : value.aspectRatio;
+    const summary = `${ratio} · ${value.resolution.toUpperCase()} · ${value.targetDurationSecs}s`;
+    return { summary, title: `video · ${summary}` };
+  }
   const ratio = value.smartAspect ? labels.smart : value.aspectRatio;
   const media = value.mediaKind === 'image' ? modelLabel : value.resolution.toUpperCase();
   const summary = value.automatic

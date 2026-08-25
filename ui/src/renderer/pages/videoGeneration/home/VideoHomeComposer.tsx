@@ -8,6 +8,7 @@ import {
   RobotOne,
   SettingTwo,
   Star,
+  VideoOne,
 } from '@icon-park/react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -28,7 +29,15 @@ import type {
   VideoCreateDraft,
   VideoHomeMode,
 } from './types';
+import { usesCanvasReferences } from './types';
 import { generationPreferencesSummary } from '../preferenceSummary';
+import {
+  CLIP_DURATION_DEFAULT_SECS,
+  CLIP_DURATION_MAX_SECS,
+  CLIP_DURATION_MIN_SECS,
+  CLIP_DURATION_STEP_SECS,
+  clampDuration,
+} from '../durationBounds';
 import styles from './home.module.css';
 
 const CameoCastEditor = lazy(() => import('../components/CameoCastEditor'));
@@ -44,6 +53,7 @@ interface VideoHomeComposerProps {
   onModeChange: (mode: VideoHomeMode) => void;
   onSubmitAgent: (draft: VideoCreateDraft) => void;
   onSubmitCreation: (draft: VideoCreateDraft) => void;
+  onSubmitGenerate: (draft: VideoCreateDraft) => void;
 }
 
 const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
@@ -52,12 +62,14 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   onModeChange,
   onSubmitAgent,
   onSubmitCreation,
+  onSubmitGenerate,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const draftedTracked = useRef(false);
   const { draft, setDraft } = useHomeDraft();
   const isAction = mode === 'action';
+  const isGenerate = mode === 'generate';
   const {
     handleFiles,
     uploadError,
@@ -93,6 +105,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const agentModes = useMemo(() => agentModesFor(t), [t]);
   const creationSkills = useMemo(() => creationSkillsFor(t), [t]);
 
+  const generateModeLabel = t('videoGeneration.mode.generateLabel', {
+    defaultValue: '视频生成',
+  });
   const agentModeLabel = t('videoGeneration.mode.agentLabel', {
     defaultValue: 'Agent 模式',
   });
@@ -103,11 +118,13 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     defaultValue: '动作模仿',
   });
   const modeLabel =
-    mode === 'agent'
-      ? agentModeLabel
-      : mode === 'creation'
-        ? creationModeLabel
-        : actionModeLabel;
+    mode === 'generate'
+      ? generateModeLabel
+      : mode === 'agent'
+        ? agentModeLabel
+        : mode === 'creation'
+          ? creationModeLabel
+          : actionModeLabel;
 
   useEffect(() => {
     setDraft((current) => {
@@ -118,6 +135,39 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           workflow: 'action2video',
           verticalSkillIds: [],
           preferences: { ...current.preferences, mediaKind: 'video' },
+        };
+      }
+      if (mode === 'generate') {
+        const clipped = clampDuration(
+          current.preferences.targetDurationSecs,
+          CLIP_DURATION_MIN_SECS,
+          CLIP_DURATION_MAX_SECS,
+          CLIP_DURATION_STEP_SECS
+        );
+        const nextDuration =
+          current.preferences.targetDurationSecs > CLIP_DURATION_MAX_SECS ||
+          current.preferences.targetDurationSecs < CLIP_DURATION_MIN_SECS
+            ? CLIP_DURATION_DEFAULT_SECS
+            : clipped;
+        if (
+          current.preferences.mediaKind === 'video' &&
+          !current.preferences.automatic &&
+          current.preferences.targetDurationSecs === nextDuration &&
+          !isActionImitationWorkflow(current.workflow)
+        ) {
+          return current;
+        }
+        return {
+          ...current,
+          workflow: isActionImitationWorkflow(current.workflow)
+            ? 'idea2video'
+            : current.workflow,
+          preferences: {
+            ...current.preferences,
+            mediaKind: 'video',
+            automatic: false,
+            targetDurationSecs: nextDuration,
+          },
         };
       }
       if (isActionImitationWorkflow(current.workflow)) {
@@ -132,14 +182,21 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   }, [mode]);
 
   useEffect(() => {
-    if (isAction) {
+    if (isAction || isGenerate) {
       if (draft.preferences.models.video_model) setModelMissing(false);
       return;
     }
     if (draft.preferences.models.llm_model) setModelMissing(false);
-  }, [draft.preferences.models.llm_model, draft.preferences.models.video_model, isAction]);
+  }, [
+    draft.preferences.models.llm_model,
+    draft.preferences.models.video_model,
+    isAction,
+    isGenerate,
+  ]);
 
-  const activeText = mode === 'creation' ? draft.creationPrompt : draft.sourceText;
+  const activeText = usesCanvasReferences(mode)
+    ? draft.creationPrompt
+    : draft.sourceText;
   useEffect(() => {
     if (isAction) {
       if (!draft.actionCharacter || !draft.actionVideo || draftedTracked.current) return;
@@ -156,7 +213,12 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     trackFunnelEvent('task_drafted', {
       feature: 'video_generation',
       mode,
-      workflow: mode === 'creation' ? draft.creationSkillId : draft.workflow,
+      workflow:
+        mode === 'creation'
+          ? draft.creationSkillId
+          : mode === 'generate'
+            ? 'clip'
+            : draft.workflow,
     });
   }, [
     activeText,
@@ -235,30 +297,37 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     composerRef.current ?? node.parentElement ?? document.body;
 
   const placeholder =
-    mode === 'creation'
-      ? t('videoGeneration.create.composer.creationPlaceholder', {
-          defaultValue: '描述你想创作的画面、镜头或氛围，支持 / 唤起风格技能…',
+    mode === 'generate'
+      ? t('videoGeneration.create.composer.generatePlaceholder', {
+          defaultValue: '描述你想生成的画面与运动，可上传参考图…',
         })
-      : draft.workflow === 'script2video'
-        ? t('videoGeneration.create.composer.scriptPlaceholder', {
-            defaultValue:
-              '粘贴剧本；自动按集/场拆分，默认拍全集。需求可写「拍第N集」「前N场」',
+      : mode === 'creation'
+        ? t('videoGeneration.create.composer.creationPlaceholder', {
+            defaultValue: '描述你想创作的画面、镜头或氛围，支持 / 唤起风格技能…',
           })
-        : draft.workflow === 'novel2video'
-          ? t('videoGeneration.create.composer.novelPlaceholder', {
-              defaultValue: '粘贴小说片段，Flowy 会提炼剧情并设计分镜…',
+        : draft.workflow === 'script2video'
+          ? t('videoGeneration.create.composer.scriptPlaceholder', {
+              defaultValue:
+                '粘贴剧本；自动按集/场拆分，默认拍全集。需求可写「拍第N集」「前N场」',
             })
-          : t('videoGeneration.create.composer.ideaPlaceholderSlash', {
-              defaultValue: '输入一个想法、故事或产品画面，支持 / 切换 Mode…',
-            });
+          : draft.workflow === 'novel2video'
+            ? t('videoGeneration.create.composer.novelPlaceholder', {
+                defaultValue: '粘贴小说片段，Flowy 会提炼剧情并设计分镜…',
+              })
+            : t('videoGeneration.create.composer.ideaPlaceholderSlash', {
+                defaultValue: '输入一个想法、故事或产品画面，支持 / 切换 Mode…',
+              });
 
   const setActiveText = (value: string) => {
     setDraft((current) =>
-      mode === 'creation'
+      usesCanvasReferences(mode)
         ? { ...current, creationPrompt: value }
         : { ...current, sourceText: value }
     );
-    setSlashMenuOpen(/(?:^|\s)\/$/.test(value));
+    // Slash skill menu is Agent / Creation only.
+    if (mode === 'agent' || mode === 'creation') {
+      setSlashMenuOpen(/(?:^|\s)\/$/.test(value));
+    }
   };
 
   const selectAgentMode = (workflow: VimaxWorkflow) => {
@@ -327,6 +396,11 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       return;
     }
     if (!activeText.trim()) return;
+    if (isGenerate && !draft.preferences.models.video_model) {
+      setModelMissing(true);
+      openPreferences(true);
+      return;
+    }
     if (mode === 'agent' && !draft.preferences.models.llm_model) {
       setModelMissing(true);
       openPreferences(true);
@@ -351,10 +425,23 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         mode === 'creation'
           ? activeCreationSkill.stylePrompt
           : draft.style,
+      preferences: isGenerate
+        ? {
+            ...draft.preferences,
+            mediaKind: 'video' as const,
+            targetDurationSecs: clampDuration(
+              draft.preferences.targetDurationSecs,
+              CLIP_DURATION_MIN_SECS,
+              CLIP_DURATION_MAX_SECS,
+              CLIP_DURATION_STEP_SECS
+            ),
+          }
+        : draft.preferences,
     };
     openPreferences(false);
     setModelMissing(false);
     if (mode === 'agent') onSubmitAgent(normalized);
+    else if (mode === 'generate') onSubmitGenerate(normalized);
     else onSubmitCreation(normalized);
   };
 
@@ -363,25 +450,35 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setModeMenuOpen(false);
   };
 
-  const skillMenu = (
-    <SlashSkillMenu
-      mode={mode === 'agent' ? 'agent' : 'creation'}
-      items={mode === 'agent' ? agentModes : creationSkills}
-      selectedId={mode === 'agent' ? draft.workflow : draft.creationSkillId}
-      onSelect={(id) => {
-        removeTrailingSlash();
-        if (mode === 'agent') selectAgentMode(id as VimaxWorkflow);
-        else selectCreationSkill(id as CreationSkillId);
-      }}
-    />
-  );
+  const skillMenu =
+    mode === 'agent' ? (
+      <SlashSkillMenu
+        mode='agent'
+        items={agentModes}
+        selectedId={draft.workflow}
+        onSelect={(id) => {
+          removeTrailingSlash();
+          selectAgentMode(id as VimaxWorkflow);
+        }}
+      />
+    ) : mode === 'creation' ? (
+      <SlashSkillMenu
+        mode='creation'
+        items={creationSkills}
+        selectedId={draft.creationSkillId}
+        onSelect={(id) => {
+          removeTrailingSlash();
+          selectCreationSkill(id as CreationSkillId);
+        }}
+      />
+    ) : null;
 
-  const uploadPreview =
-    mode === 'creation'
-      ? draft.canvasReferences[0]?.previewUrl
-      : draft.cameos[0]?.previewUrl;
-  const referenceCount =
-    mode === 'agent' ? draft.cameos.length : draft.canvasReferences.length;
+  const uploadPreview = usesCanvasReferences(mode)
+    ? draft.canvasReferences[0]?.previewUrl
+    : draft.cameos[0]?.previewUrl;
+  const referenceCount = usesCanvasReferences(mode)
+    ? draft.canvasReferences.length
+    : draft.cameos.length;
 
   const prefsSummary = generationPreferencesSummary(
     draft.preferences,
@@ -433,13 +530,17 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             ? t('videoGeneration.create.homeHintAction', {
                 defaultValue: '上传角色图和参考视频，让角色模仿动作生成成片。',
               })
-            : mode === 'agent'
-              ? t('videoGeneration.create.homeHintAgent', {
-                  defaultValue: '写下故事或想法，Flowy 帮你变成成片。',
+            : mode === 'generate'
+              ? t('videoGeneration.create.homeHintGenerate', {
+                  defaultValue: '上传参考图并填写提示词，直接生成视频片段。',
                 })
-              : t('videoGeneration.create.homeHintCreation', {
-                  defaultValue: '描述画面与镜头，在无限画布里自由编排生成。',
-                })}
+              : mode === 'agent'
+                ? t('videoGeneration.create.homeHintAgent', {
+                    defaultValue: '写下故事或想法，Flowy 帮你变成成片。',
+                  })
+                : t('videoGeneration.create.homeHintCreation', {
+                    defaultValue: '描述画面与镜头，在无限画布里自由编排生成。',
+                  })}
         </p>
       </div>
 
@@ -504,7 +605,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
               }
             >
               <button type='button' className={`${styles.toolbarButton} ${styles.modeButton}`}>
-                {mode === 'agent' ? (
+                {mode === 'generate' ? (
+                  <VideoOne size={15} />
+                ) : mode === 'agent' ? (
                   <RobotOne size={15} />
                 ) : mode === 'creation' ? (
                   <Platte size={15} />
@@ -534,7 +637,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             ) : (
               prefsTrigger
             )}
-            {mode !== 'action' ? (
+            {skillMenu ? (
             <Popover
               trigger='click'
               position='bl'
@@ -643,13 +746,17 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 ? t('videoGeneration.create.generateActionVideo', {
                     defaultValue: '生成视频',
                   })
-                : mode === 'agent'
-                  ? t('videoGeneration.create.generateStoryboard', {
-                      defaultValue: '生成分镜',
+                : mode === 'generate'
+                  ? t('videoGeneration.create.generateClip', {
+                      defaultValue: '生成视频',
                     })
-                  : t('videoGeneration.create.enterCanvas', {
-                      defaultValue: '进入画布',
-                    })
+                  : mode === 'agent'
+                    ? t('videoGeneration.create.generateStoryboard', {
+                        defaultValue: '生成分镜',
+                      })
+                    : t('videoGeneration.create.enterCanvas', {
+                        defaultValue: '进入画布',
+                      })
             }
           >
             {loading ? (

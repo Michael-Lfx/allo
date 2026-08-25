@@ -639,6 +639,43 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         generateNodeRef.current = handleGenerateNode;
     }, [handleGenerateNode]);
 
+    // Ordinary "视频生成" home mode: one-shot auto-start on the seeded config node.
+    const homeAutoGenerateTriedRef = useRef(false);
+    useEffect(() => {
+        if (!projectLoaded || homeAutoGenerateTriedRef.current) return;
+        const creative = currentProject?.alloCreative;
+        const homeLaunch =
+            creative && typeof creative === 'object' && 'homeLaunch' in creative
+                ? (creative as { homeLaunch?: Record<string, unknown> }).homeLaunch
+                : undefined;
+        if (!homeLaunch || homeLaunch.autoGenerate !== true) return;
+        const configNode = nodes.find(
+            (node) =>
+                node.type === CanvasNodeType.Config &&
+                (node.metadata?.status === 'idle' || !node.metadata?.status)
+        );
+        if (!configNode) return;
+        homeAutoGenerateTriedRef.current = true;
+        updateProject(projectId, {
+            alloCreative: {
+                ...(typeof creative === 'object' && creative ? creative : {}),
+                homeLaunch: { ...homeLaunch, autoGenerate: false },
+            },
+        });
+        const prompt =
+            configNode.metadata?.prompt?.trim() ||
+            configNode.metadata?.composerContent?.trim() ||
+            '';
+        void handleGenerateNode(configNode.id, 'video', prompt);
+    }, [
+        projectLoaded,
+        nodes,
+        currentProject?.alloCreative,
+        handleGenerateNode,
+        updateProject,
+        projectId,
+    ]);
+
     const { cancelSubmittedBatchItem, enqueueGenerationBatch, retryFailedBatchItems, stopRemainingBatchItems } = useCanvasGenerationBatches({
         projectId,
         projectLoaded,

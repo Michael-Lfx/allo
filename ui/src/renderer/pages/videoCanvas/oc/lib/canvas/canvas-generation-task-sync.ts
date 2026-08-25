@@ -88,9 +88,15 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
 
     if (mode === "video") {
         if (!result.video?.dataUrl) throw new Error("后端任务没有返回视频");
-        const video = result.video.storageKey
-            ? { url: await resolveMediaUrl(result.video.storageKey, result.video.dataUrl), storageKey: result.video.storageKey, width: result.video.width, height: result.video.height, durationMs: result.video.durationMs, bytes: result.video.bytes || 0, mimeType: result.video.mimeType || "video/mp4" }
-            : await storeGeneratedVideo({ url: result.video.dataUrl, mimeType: result.video.mimeType || "video/mp4" });
+        const video = await storeGeneratedVideo({
+            url: result.video.dataUrl,
+            storageKey: result.video.storageKey,
+            mimeType: result.video.mimeType || "video/mp4",
+            width: result.video.width,
+            height: result.video.height,
+            bytes: result.video.bytes,
+            durationMs: result.video.durationMs,
+        });
         const videoSize = fitNodeSize(video.width || node.width || VIDEO_NODE_MAX_SIZE.width, video.height || node.height || VIDEO_NODE_MAX_SIZE.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
         return {
             ...node,

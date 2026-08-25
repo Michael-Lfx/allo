@@ -177,7 +177,9 @@ const VideoGenerationListPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (workMode !== 'creation' && listTab === 'recent') void refresh();
+    if (workMode !== 'creation' && workMode !== 'generate' && listTab === 'recent') {
+      void refresh();
+    }
   }, [listTab, refresh, workMode]);
 
   useEffect(() => {
@@ -302,6 +304,7 @@ const VideoGenerationListPage: React.FC = () => {
       const next = new URLSearchParams(searchParams);
       if (mode === 'creation') next.set('mode', 'creation');
       else if (mode === 'action') next.set('mode', 'action');
+      else if (mode === 'generate') next.set('mode', 'generate');
       else next.delete('mode');
       setSearchParams(next, { replace: true });
     },
@@ -312,7 +315,7 @@ const VideoGenerationListPage: React.FC = () => {
     async (draft: VideoCreateDraft) => {
       if (creating) return;
       setCreating(true);
-      const references: Array<{ media_id: string }> = [];
+      const references: import('../videoCanvas/api').CanvasMediaMeta[] = [];
       let canvasCreated = false;
       try {
         const { uploadCanvasMedia } = await import('../videoCanvas/api');
@@ -345,6 +348,7 @@ const VideoGenerationListPage: React.FC = () => {
           prompt: draft.creationPrompt,
           requirement: draft.requirement.trim() || undefined,
           mediaKind: draft.preferences.mediaKind,
+          intent: 'creation',
           skill: {
             id: draft.creationSkillId,
             label: skillLabel,
@@ -388,6 +392,82 @@ const VideoGenerationListPage: React.FC = () => {
           `${t('videoCanvas.actions.createFailed', { defaultValue: '创建失败' })}: ${
             cause instanceof Error ? cause.message : String(cause)
           }`
+        );
+      } finally {
+        setCreating(false);
+      }
+    },
+    [creating, message, navigate, t]
+  );
+
+  /** Ordinary clip generate: prompt + optional refs → canvas video node, auto-start. */
+  const handleCreateGenerate = useCallback(
+    async (draft: VideoCreateDraft) => {
+      if (creating) return;
+      setCreating(true);
+      const references: import('../videoCanvas/api').CanvasMediaMeta[] = [];
+      let canvasCreated = false;
+      try {
+        const { uploadCanvasMedia } = await import('../videoCanvas/api');
+        for (const reference of draft.canvasReferences) {
+          references.push(
+            await uploadCanvasMedia(reference.file, reference.file.name)
+          );
+        }
+        const title =
+          draft.creationPrompt.split(/\r?\n/, 1)[0]?.trim().slice(0, 36) ||
+          t('videoGeneration.create.generateTitle', {
+            defaultValue: '视频生成',
+          });
+        const durationSecs =
+          clampDuration(
+            draft.preferences.targetDurationSecs,
+            CLIP_DURATION_MIN_SECS,
+            CLIP_DURATION_MAX_SECS,
+            CLIP_DURATION_STEP_SECS
+          ) || CLIP_DURATION_DEFAULT_SECS;
+        const id = await createServerBackedCanvasProject(title, {
+          prompt: draft.creationPrompt,
+          requirement: draft.requirement.trim() || undefined,
+          mediaKind: 'video',
+          intent: 'generate',
+          autoGenerate: true,
+          preferences: {
+            automatic: false,
+            aspectRatio: draft.preferences.aspectRatio,
+            resolution: draft.preferences.resolution,
+            fps: draft.preferences.fps,
+            targetDurationSecs: durationSecs,
+            videoModel: draft.preferences.models.video_model || undefined,
+          },
+          references,
+        });
+        canvasCreated = true;
+        trackFunnelEvent('task_accepted', {
+          feature: 'video_generation',
+          mode: 'generate',
+          project_id: id,
+          duration_secs: durationSecs,
+          has_references: references.length > 0,
+        });
+        trackFunnelEvent('first_task_started', {
+          feature: 'video_generation',
+          mode: 'generate',
+          project_id: id,
+        });
+        clearVideoHomeDraft();
+        navigate(`/video-generation/canvas/${encodeURIComponent(id)}`);
+      } catch (cause) {
+        if (!canvasCreated && references.length > 0) {
+          const { deleteCanvasMedia } = await import('../videoCanvas/api');
+          await Promise.allSettled(
+            references.map((reference) => deleteCanvasMedia(reference.media_id))
+          );
+        }
+        message.error(
+          `${t('videoGeneration.create.generateFailed', {
+            defaultValue: '视频生成创建失败',
+          })}: ${cause instanceof Error ? cause.message : String(cause)}`
         );
       } finally {
         setCreating(false);
@@ -499,9 +579,10 @@ const VideoGenerationListPage: React.FC = () => {
           onModeChange={handleModeChange}
           onSubmitAgent={(draft) => void handleCreate(draft)}
           onSubmitCreation={(draft) => void handleCreateCanvas(draft)}
+          onSubmitGenerate={(draft) => void handleCreateGenerate(draft)}
         />
 
-        {workMode === 'creation' ? (
+        {workMode === 'creation' || workMode === 'generate' ? (
           <Suspense
             fallback={
               <div className='flex justify-center py-38px'>

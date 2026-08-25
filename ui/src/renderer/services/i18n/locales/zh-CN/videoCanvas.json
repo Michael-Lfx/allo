@@ -1071,6 +1071,7 @@
     "ratio": "比例",
     "t2vRatioHint": "文生视频需指定比例；图生视频由服务端按画面自适应",
     "duration": "时长",
+    "durationHint": "拖动或点击刻度",
     "adaptive": "自适应",
     "seedanceFastHint": "fast 模型自动使用 720P",
     "durationAria": "视频时长（秒）",

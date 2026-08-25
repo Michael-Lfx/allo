@@ -1,13 +1,38 @@
 import { audioExtension, imageExtension } from "@oc/lib/canvas/canvas-project-generation";
 import { getMediaBlob } from "@oc/services/file-storage";
 import { getImageBlob } from "@oc/services/image-storage";
+import { resourceIdFromStorageKey, resourceStorageKey } from "@oc/services/api/resources";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 import { buildBackendAuthHeaders } from "@/common/adapter/httpBridge";
+import { resolveCanvasUrl } from "@renderer/pages/videoCanvas/api";
+
+const EXPIRED_MEDIA_HINT = "无法下载：本地缓存缺失，且媒体链接可能已过期，请重新生成后再试";
+
+/** Recover `resource:{id}` from a canvas media URL when metadata lost the storageKey. */
+function storageKeyFromContent(content: string): string | undefined {
+    const path = content.split(/[?#]/, 1)[0] || "";
+    const match = path.match(/\/api\/video-canvas\/media\/([^/]+)$/);
+    if (!match?.[1]) return undefined;
+    try {
+        return resourceStorageKey(decodeURIComponent(match[1]));
+    } catch {
+        return resourceStorageKey(match[1]);
+    }
+}
+
+function isLikelyNetworkFetchError(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error || "");
+    return /\b(?:failed to fetch|fetch failed|networkerror|load failed|network request failed)\b/i.test(message);
+}
 
 /** Resolve media bytes for download; never rely on bare saveAs(remoteUrl) (auth/CORS). */
 export async function resolveCanvasNodeMediaBlob(node: CanvasNodeData): Promise<Blob> {
-    const storageKey = node.metadata?.storageKey?.trim();
-    const content = node.metadata?.content?.trim();
+    let storageKey = node.metadata?.storageKey?.trim() || "";
+    const content = node.metadata?.content?.trim() || "";
+
+    if (!storageKey && content) {
+        storageKey = storageKeyFromContent(content) || "";
+    }
 
     if (storageKey) {
         const blob =
@@ -20,23 +45,40 @@ export async function resolveCanvasNodeMediaBlob(node: CanvasNodeData): Promise<
     if (!content) throw new Error("当前节点没有可下载的内容");
 
     if (content.startsWith("data:") || content.startsWith("blob:")) {
-        const response = await fetch(content);
-        if (!response.ok) throw new Error("读取本地媒体失败");
-        const blob = await response.blob();
-        if (!blob.size) throw new Error("媒体内容为空");
-        return blob;
+        try {
+            const response = await fetch(content);
+            if (!response.ok) throw new Error("读取本地媒体失败");
+            const blob = await response.blob();
+            if (!blob.size) throw new Error("媒体内容为空");
+            return blob;
+        } catch (error) {
+            if (error instanceof Error && !isLikelyNetworkFetchError(error)) throw error;
+            throw new Error(EXPIRED_MEDIA_HINT);
+        }
     }
 
-    const response = await fetch(content, {
-        method: "GET",
-        headers: buildBackendAuthHeaders("GET"),
-        credentials: "omit",
-        cache: "no-store",
-    });
-    if (!response.ok) throw new Error(`下载失败（${response.status}）`);
-    const blob = await response.blob();
-    if (!blob.size) throw new Error("下载到的文件为空");
-    return blob;
+    const absolute = resolveCanvasUrl(content) || content;
+    try {
+        const response = await fetch(absolute, {
+            method: "GET",
+            headers: buildBackendAuthHeaders("GET"),
+            credentials: "omit",
+            cache: "no-store",
+        });
+        if (!response.ok) {
+            if (response.status === 404 || response.status === 410) throw new Error(EXPIRED_MEDIA_HINT);
+            throw new Error(`下载失败（${response.status}）`);
+        }
+        const blob = await response.blob();
+        if (!blob.size) throw new Error("下载到的文件为空");
+        return blob;
+    } catch (error) {
+        if (error instanceof Error && error.message === EXPIRED_MEDIA_HINT) throw error;
+        if (error instanceof Error && /下载失败（\d+）/.test(error.message)) throw error;
+        if (storageKey && resourceIdFromStorageKey(storageKey)) throw new Error(EXPIRED_MEDIA_HINT);
+        if (isLikelyNetworkFetchError(error)) throw new Error(EXPIRED_MEDIA_HINT);
+        throw error instanceof Error ? error : new Error(EXPIRED_MEDIA_HINT);
+    }
 }
 
 export function canvasNodeDownloadFileName(node: CanvasNodeData) {

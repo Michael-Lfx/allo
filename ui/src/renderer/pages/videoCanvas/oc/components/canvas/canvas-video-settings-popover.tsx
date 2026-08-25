@@ -83,7 +83,7 @@ function VideoSettingsPortal({
     const alignCenter = placement === "top" || placement === "bottom";
     const left = alignCenter ? buttonRect.left + buttonRect.width / 2 - width / 2 : alignRight ? buttonRect.right - width : buttonRect.left;
     const topPlacement = placement?.startsWith("top");
-    const estimatedHeight = 370;
+    const estimatedHeight = 420;
     const topSpace = buttonRect.top - gap - margin;
     const bottomSpace = window.innerHeight - buttonRect.bottom - gap - margin;
     const placeAbove = topPlacement ? topSpace >= estimatedHeight || topSpace >= bottomSpace : bottomSpace < estimatedHeight && topSpace > bottomSpace;

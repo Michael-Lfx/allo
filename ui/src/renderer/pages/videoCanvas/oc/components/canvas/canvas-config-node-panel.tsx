@@ -7,10 +7,12 @@ import { ModelPicker } from "@oc/components/model-picker";
 import { configuredModelMatchesCapability, defaultConfig, useEffectiveConfig, type AiConfig } from "@oc/stores/use-config-store";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { normalizeVideoDuration, normalizeVideoResolution } from "@oc/lib/video-generation-options";
+import { normalizeVideoDuration, isMiniMaxH3ResolutionToken } from "@oc/lib/video-generation-options";
+import { canonicalizeVideoResolution } from "@oc/lib/canvas-video-resolution";
 import { modelCapabilityConfigFor, normalizeVideoValue, videoDurationAllowed } from "@oc/lib/model-capabilities";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { useThemeStore } from "@oc/stores/use-theme-store";
+import { isMiniMaxH3VideoModel } from "@renderer/services/videoModelCapabilities";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
@@ -210,6 +212,8 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
     const model = storedModel && configuredModelMatchesCapability(globalConfig, storedModel, mode) ? storedModel : defaultModel && configuredModelMatchesCapability(globalConfig, defaultModel, mode) ? defaultModel : fallbackModel;
     const videoProfile = mode === "video" ? modelCapabilityConfigFor(globalConfig, model).video! : undefined;
     const normalizedVideo = videoProfile ? normalizeVideoValue(videoProfile, { seconds: node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds, ratio: node.metadata?.size || globalConfig.size || defaultConfig.size, resolution: node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality }) : undefined;
+    // Prefer model-aware remap (Seedance 1080p ↔ MiniMax 2K) over profile exact-match alone.
+    const resolvedVquality = storeVqualityForUi(model, node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality);
     return {
         ...globalConfig,
         model,
@@ -217,7 +221,7 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         size: normalizedVideo?.ratio || node.metadata?.size || globalConfig.size || defaultConfig.size,
         transparentBackground: (node.metadata?.transparentBackground || globalConfig.transparentBackground) === "true" ? "true" : "false",
         videoSeconds: normalizedVideo?.seconds || normalizeVideoDuration(node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds),
-        vquality: normalizedVideo?.resolution.replace(/p$/i, "") || normalizeVideoResolution(node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality),
+        vquality: resolvedVquality,
         videoGenerateAudio: videoProfile?.generateAudio.supported ? node.metadata?.generateAudio || globalConfig.videoGenerateAudio || String(videoProfile.generateAudio.default) : "false",
         videoWatermark: videoProfile?.watermark.supported ? node.metadata?.watermark || globalConfig.videoWatermark || String(videoProfile.watermark.default) : "false",
         audioVoice: node.metadata?.audioVoice || globalConfig.audioVoice || defaultConfig.audioVoice,
@@ -226,6 +230,13 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         audioInstructions: node.metadata?.audioInstructions || globalConfig.audioInstructions || defaultConfig.audioInstructions,
         count: String(node.metadata?.count || (mode === "image" ? globalConfig.canvasImageCount || globalConfig.count : globalConfig.count) || defaultConfig.count),
     };
+}
+
+/** Persist UI `vquality`: MiniMax keeps canonical tokens; Seedance/generic keep bare heights for legacy pills. */
+function storeVqualityForUi(model: string, value: string) {
+    const canonical = canonicalizeVideoResolution(model, value);
+    if (isMiniMaxH3VideoModel(model) || isMiniMaxH3ResolutionToken(canonical)) return canonical;
+    return String(canonical).replace(/p$/i, "");
 }
 
 function videoConfigPatch(key: keyof AiConfig, value: string) {

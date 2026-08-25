@@ -3,7 +3,7 @@ import { type ReactNode } from "react";
 import { Switch } from "antd";
 
 import { ImageSettingsTheme } from "@oc/components/image-settings-panel";
-import { boolConfig, isSeedanceFastModel, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution } from "@oc/lib/seedance-video";
+import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution } from "@oc/lib/seedance-video";
 import { normalizeMiniMaxH3Duration } from "@oc/lib/minimax-h3-video";
 import { isMiniMaxH3VideoModel, normalizeMiniMaxH3Resolution } from "@renderer/services/videoModelCapabilities";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
@@ -11,6 +11,7 @@ import { type CanvasTheme } from "@oc/lib/canvas-theme";
 import { normalizeVideoDuration, normalizeVideoResolution, VIDEO_DURATION_MIN } from "@oc/lib/video-generation-options";
 import { modelCapabilityConfigFor, videoDurationOptions, type VideoCapabilityConfig } from "@oc/lib/model-capabilities";
 import { modelOptionName, resolveModelRequestConfig, type AiConfig } from "@oc/stores/use-config-store";
+import { CanvasVideoDurationBar } from "./canvas/canvas-video-duration-bar";
 
 function sizeOptions() {
     return [
@@ -46,7 +47,6 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
 
     const seconds = normalizeVideoDuration(config.videoSeconds);
     const secondOptions = videoDurationOptions(profile);
-    const durationColumns = secondOptions.length + (profile.duration.selection === "range" ? 1 : 0);
     const size = normalizeVideoSizeValue(config.size);
     const dimensions = readSizeDimensions(size);
     const resolution = normalizeVideoResolutionValue(config.vquality);
@@ -94,14 +94,15 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </div>
                 </SettingGroup>
                 <SettingGroup title={canvasT("videoCanvas.settings.seconds", "秒数")} color={theme.node.muted}>
-                    <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${durationColumns}, minmax(0, 1fr))` }}>
-                        {secondOptions.map((value) => (
-                            <OptionPill key={value} selected={seconds === String(value)} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>
-                                {value}s
-                            </OptionPill>
-                        ))}
-                        {profile.duration.selection === "range" ? <DurationInput value={Number(seconds)} min={profile.duration.min || VIDEO_DURATION_MIN} max={profile.duration.max} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} /> : null}
-                    </div>
+                    <CanvasVideoDurationBar
+                        value={Number(seconds)}
+                        min={profile.duration.min || VIDEO_DURATION_MIN}
+                        max={profile.duration.max || Math.max(...secondOptions, profile.duration.min || VIDEO_DURATION_MIN)}
+                        step={profile.duration.step || 1}
+                        ticks={secondOptions}
+                        theme={theme}
+                        onChange={(value) => onConfigChange("videoSeconds", String(value))}
+                    />
                 </SettingGroup>
                 {profile.generateAudio.supported || profile.watermark.supported ? <SettingGroup title={canvasT("videoCanvas.settings.output", "输出")} color={theme.node.muted}><div className="grid grid-cols-2 gap-3 rounded-md px-2" style={{ background: theme.toolbar.itemHover }}>{profile.generateAudio.supported ? <SwitchRow label={canvasT("videoCanvas.settings.genAudio", "生成声音")} checked={generateAudio} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} /> : null}{profile.watermark.supported ? <SwitchRow label={canvasT("videoCanvas.settings.watermark", "添加水印")} checked={watermark} theme={theme} onChange={(checked) => onConfigChange("videoWatermark", String(checked))} /> : null}</div></SettingGroup> : null}
             </div>
@@ -114,7 +115,6 @@ function MiniMaxH3VideoSettingsPanel({ config, profile, onConfigChange, theme, s
     const ratio = profile.ratios.includes(config.size) ? config.size : profile.defaultRatio;
     const duration = normalizeMiniMaxH3Duration(config.videoSeconds);
     const durationOptions = videoDurationOptions(profile);
-    const durationColumns = durationOptions.length + (profile.duration.selection === "range" ? 1 : 0);
 
     return (
         <ImageSettingsTheme theme={theme}>
@@ -140,13 +140,15 @@ function MiniMaxH3VideoSettingsPanel({ config, profile, onConfigChange, theme, s
                     <div className="text-[var(--fs-tiny)] leading-4 opacity-55">{canvasT("videoCanvas.settings.t2vRatioHint", "文生视频需指定比例；图生视频由服务端按画面自适应")}</div>
                 </SettingGroup>
                 <SettingGroup title={canvasT("videoCanvas.settings.duration", "时长")} color={theme.node.muted}>
-                    <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.min(durationColumns, 6)}, minmax(0, 1fr))` }}>
-                        {durationOptions.map((value) => (
-                            <OptionPill key={value} selected={duration === value} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>
-                                {value}s
-                            </OptionPill>
-                        ))}
-                    </div>
+                    <CanvasVideoDurationBar
+                        value={duration}
+                        min={profile.duration.min || VIDEO_DURATION_MIN}
+                        max={profile.duration.max || Math.max(...durationOptions, profile.duration.min || VIDEO_DURATION_MIN)}
+                        step={profile.duration.step || 1}
+                        ticks={durationOptions}
+                        theme={theme}
+                        onChange={(value) => onConfigChange("videoSeconds", String(value))}
+                    />
                 </SettingGroup>
             </div>
         </ImageSettingsTheme>
@@ -155,6 +157,7 @@ function MiniMaxH3VideoSettingsPanel({ config, profile, onConfigChange, theme, s
 
 function JiMengVideoSettingsPanel({ config, profile, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps & { profile: VideoCapabilityConfig }) {
     const seconds = normalizeVideoDuration(config.videoSeconds);
+    const durationOptions = videoDurationOptions(profile);
     return (
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
@@ -165,9 +168,15 @@ function JiMengVideoSettingsPanel({ config, profile, onConfigChange, theme, show
                     </div>
                 </SettingGroup>
                 <SettingGroup title={canvasT("videoCanvas.settings.seconds", "秒数")} color={theme.node.muted}>
-                    <div className="grid grid-cols-2 gap-1.5">
-                        {videoDurationOptions(profile).map((value) => <OptionPill key={value} selected={seconds === String(value)} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>{value}s</OptionPill>)}
-                    </div>
+                    <CanvasVideoDurationBar
+                        value={Number(seconds)}
+                        min={Math.min(...durationOptions)}
+                        max={Math.max(...durationOptions)}
+                        step={1}
+                        ticks={durationOptions}
+                        theme={theme}
+                        onChange={(value) => onConfigChange("videoSeconds", String(value))}
+                    />
                 </SettingGroup>
             </div>
         </ImageSettingsTheme>
@@ -182,7 +191,6 @@ function SeedanceVideoSettingsPanel({ config, profile, onConfigChange, theme, sh
     const generateAudio = boolConfig(config.videoGenerateAudio, profile.generateAudio.default);
     const watermark = boolConfig(config.videoWatermark, profile.watermark.default);
     const durationOptions = videoDurationOptions(profile);
-    const durationColumns = durationOptions.length + (profile.duration.selection === "range" ? 1 : 0);
 
     return (
         <ImageSettingsTheme theme={theme}>
@@ -192,15 +200,13 @@ function SeedanceVideoSettingsPanel({ config, profile, onConfigChange, theme, sh
                     <div className="grid grid-cols-3 gap-1.5">
                         {profile.resolutions.map((value) => {
                             const item = { value, label: value.toUpperCase() };
-                            const disabled = item.value === "1080p" && isSeedanceFastModel(model);
                             return (
-                                <OptionPill key={item.value} selected={resolution === item.value} disabled={disabled} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
+                                <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
                                     {item.label}
                                 </OptionPill>
                             );
                         })}
                     </div>
-                    {isSeedanceFastModel(model) ? <div className="text-[var(--fs-tiny)] leading-4 opacity-55">{canvasT("videoCanvas.settings.seedanceFastHint", "fast 模型自动使用 720P")}</div> : null}
                 </SettingGroup>
                 <SettingGroup title={canvasT("videoCanvas.settings.ratio", "比例")} color={theme.node.muted}>
                     <div className="grid grid-cols-4 gap-1.5">
@@ -225,14 +231,15 @@ function SeedanceVideoSettingsPanel({ config, profile, onConfigChange, theme, sh
                     </div>
                 </SettingGroup>
                 <SettingGroup title={canvasT("videoCanvas.settings.duration", "时长")} color={theme.node.muted}>
-                    <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${durationColumns}, minmax(0, 1fr))` }}>
-                        {durationOptions.map((value) => (
-                            <OptionPill key={value} selected={duration === value} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>
-                                {value}s
-                            </OptionPill>
-                        ))}
-                        {profile.duration.selection === "range" ? <DurationInput value={duration} min={profile.duration.min || VIDEO_DURATION_MIN} max={profile.duration.max} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} /> : null}
-                    </div>
+                    <CanvasVideoDurationBar
+                        value={duration}
+                        min={profile.duration.min || VIDEO_DURATION_MIN}
+                        max={profile.duration.max || Math.max(...durationOptions, profile.duration.min || VIDEO_DURATION_MIN)}
+                        step={profile.duration.step || 1}
+                        ticks={durationOptions}
+                        theme={theme}
+                        onChange={(value) => onConfigChange("videoSeconds", String(value))}
+                    />
                 </SettingGroup>
                 <SettingGroup title={canvasT("videoCanvas.settings.output", "输出")} color={theme.node.muted}>
                     <div className="grid grid-cols-2 gap-3 rounded-md px-2" style={{ background: theme.toolbar.itemHover }}>
@@ -246,6 +253,10 @@ function SeedanceVideoSettingsPanel({ config, profile, onConfigChange, theme, sh
 }
 
 export function videoResolutionLabel(value: string) {
+    const token = String(value || "").trim();
+    const lower = token.toLowerCase().replace(/[_\s]/g, "");
+    if (lower === "2k") return "2K";
+    if (lower === "768" || lower === "768p") return "768P";
     return `${normalizeVideoResolutionValue(value)}P`;
 }
 
@@ -308,35 +319,6 @@ function DimensionInput({ prefix, value, disabled, theme, onChange }: { prefix: 
                 {prefix}
             </span>
             <input type="number" min={1} disabled={disabled} className="min-w-0 flex-1 bg-transparent px-2 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" value={value || ""} onChange={(event) => onChange(Number(event.target.value) || null)} onMouseDown={(event) => event.stopPropagation()} />
-        </label>
-    );
-}
-
-function DurationInput({ value, min, max, theme, onChange }: { value: number; min: number; max?: number; theme: CanvasTheme; onChange: (value: number) => void }) {
-    const commit = (input: HTMLInputElement) => {
-        const next = Math.min(max || Number.POSITIVE_INFINITY, Math.max(min, Math.floor(Number(input.value) || value || min)));
-        input.value = String(next);
-        onChange(next);
-    };
-
-    return (
-        <label className="flex h-8 min-w-0 items-center overflow-hidden rounded-md border text-[var(--fs-label)]" style={{ background: theme.toolbar.itemHover, borderColor: theme.toolbar.border, color: theme.node.text }}>
-            <input
-                key={`${min}-${value}`}
-                type="number"
-                inputMode="numeric"
-                min={min}
-                max={max}
-                defaultValue={value}
-                aria-label={canvasT("videoCanvas.settings.durationAria", "视频时长（秒）")}
-                className="min-w-0 flex-1 bg-transparent pl-2 text-right outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                onBlur={(event) => commit(event.currentTarget)}
-                onKeyDown={(event) => {
-                    if (event.key === "Enter") event.currentTarget.blur();
-                }}
-                onMouseDown={(event) => event.stopPropagation()}
-            />
-            <span className="shrink-0 px-1.5" style={{ color: theme.node.muted }}>{canvasT("videoCanvas.settings.secUnit", "秒")}</span>
         </label>
     );
 }

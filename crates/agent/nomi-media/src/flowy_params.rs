@@ -23,11 +23,18 @@ pub fn normalize_video_resolution(model: &str, resolution: &str) -> Option<Strin
     if is_minimax_h3_model(model) {
         return Some(normalize_minimax_h3_resolution(r));
     }
-    let lower = r.to_ascii_lowercase();
+    let mut lower = r.to_ascii_lowercase().replace(['_', ' '], "");
+    // Canvas historically stores bare heights (`1080`); Seedance expects `1080p`.
+    if !lower.is_empty()
+        && !lower.ends_with('p')
+        && lower.chars().all(|c| c.is_ascii_digit())
+    {
+        lower = format!("{lower}p");
+    }
     let model_lower = model.to_ascii_lowercase();
     let seedance_capped = model_lower.contains("seedance")
         && (model_lower.contains("fast") || model_lower.contains("mini"));
-    if seedance_capped && (lower == "1080p" || lower == "4k") {
+    if seedance_capped && (lower == "1080p" || lower == "2160p" || lower == "4k") {
         tracing::warn!(
             model,
             requested = %lower,
@@ -74,6 +81,10 @@ mod tests {
         );
         assert_eq!(
             normalize_video_resolution("AIPC-Doubao-Seedance-2.0", "1080p").as_deref(),
+            Some("1080p")
+        );
+        assert_eq!(
+            normalize_video_resolution("AIPC-Doubao-Seedance-2.0", "1080").as_deref(),
             Some("1080p")
         );
         assert_eq!(

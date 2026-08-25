@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { People, Platte, RobotOne } from '@icon-park/react';
+import { People, Platte, RobotOne, VideoOne } from '@icon-park/react';
 import type { VideoHomeMode } from './types';
 import styles from './home.module.css';
 
@@ -8,9 +8,12 @@ export interface ModeMenuProps {
   onSelect: (mode: VideoHomeMode) => void;
 }
 
-/** Mode-switch menu shown from the composer toolbar (Agent / 动作模仿 / 创作). */
+/** Mode-switch menu shown from the composer toolbar (视频生成 / Agent / 动作模仿 / 创作). */
 export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
   const { t } = useTranslation();
+  const generateModeLabel = t('videoGeneration.mode.generateLabel', {
+    defaultValue: '视频生成',
+  });
   const agentModeLabel = t('videoGeneration.mode.agentLabel', {
     defaultValue: 'Agent 模式',
   });
@@ -23,6 +26,23 @@ export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
 
   return (
     <div className={styles.modeMenu}>
+      <button
+        type='button'
+        className={`${styles.modeMenuItem} ${
+          mode === 'generate' ? styles.modeMenuItemActive : ''
+        }`}
+        onClick={() => onSelect('generate')}
+      >
+        <VideoOne theme='outline' size={18} />
+        <span>
+          <strong>{generateModeLabel}</strong>
+          <small>
+            {t('videoGeneration.mode.generateMenuDesc', {
+              defaultValue: '参考图 + 提示词，直接生成视频片段',
+            })}
+          </small>
+        </span>
+      </button>
       <button
         type='button'
         className={`${styles.modeMenuItem} ${

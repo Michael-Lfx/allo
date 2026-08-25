@@ -71,12 +71,28 @@ pub fn video_model_capabilities(model: &str) -> VideoModelCapabilities {
     }
 }
 
+/// Normalize bare heights / aliases onto Seedance-style tokens (`720p`).
+/// Canvas UI historically stored `vquality` as `"720"` (no `p`); accept both.
+fn canonicalize_seedance_resolution_token(resolution: &str) -> String {
+    let lower = resolution.trim().to_ascii_lowercase().replace(['_', ' '], "");
+    match lower.as_str() {
+        "low" => "480p".into(),
+        "auto" | "medium" | "high" => "720p".into(),
+        "4k" | "2160" | "2160p" => "2160p".into(),
+        other if other.ends_with('p') => other.to_string(),
+        other if !other.is_empty() && other.chars().all(|c| c.is_ascii_digit()) => {
+            format!("{other}p")
+        }
+        _ => lower,
+    }
+}
+
 /// Normalize a user/config resolution string and clamp to the model's allow-list.
 pub fn normalize_resolution_for_model(model: &str, resolution: &str) -> String {
     if is_minimax_h3_model(model) {
         return normalize_minimax_h3_resolution(resolution);
     }
-    let raw = resolution.trim().to_ascii_lowercase();
+    let raw = canonicalize_seedance_resolution_token(resolution);
     let caps = video_model_capabilities(model);
     if caps.resolutions.iter().any(|r| *r == raw) {
         return raw;
@@ -142,6 +158,22 @@ mod tests {
             "1080p"
         );
         assert_eq!(normalize_fps_for_model("AIPC-Doubao-Seedance-2.0", 60), 24);
+    }
+
+    #[test]
+    fn seedance_accepts_bare_height_from_canvas_ui() {
+        assert_eq!(
+            normalize_resolution_for_model("AIPC-Doubao-Seedance-2.0", "1080"),
+            "1080p"
+        );
+        assert_eq!(
+            normalize_resolution_for_model("AIPC-Doubao-Seedance-2.0", "480"),
+            "480p"
+        );
+        assert_eq!(
+            normalize_resolution_for_model("AIPC-Doubao-Seedance-2.0-fast", "1080"),
+            "720p"
+        );
     }
 
     #[test]

@@ -7,7 +7,8 @@ import {
   normalizeMiniMaxH3Duration,
   normalizeMiniMaxH3Ratio,
 } from '@oc/lib/minimax-h3-video';
-import { isMiniMaxH3VideoModel, normalizeMiniMaxH3Resolution } from '@renderer/services/videoModelCapabilities';
+import { isMiniMaxH3VideoModel } from '@renderer/services/videoModelCapabilities';
+import { canonicalizeVideoResolution } from '@oc/lib/canvas-video-resolution';
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } from '@oc/services/api/resources';
 import { modelOptionName } from '@oc/stores/use-config-store';
 import {
@@ -296,13 +297,17 @@ function alloBodyFromCreateInput(input: CreateTaskInput): CreateGenerationBody {
   const model = modelValue ? modelOptionName(modelValue) : undefined;
   const durationRaw = Number(config.videoSeconds ?? metadata.durationSecs ?? 5);
   let duration_secs = Number.isFinite(durationRaw) ? Math.max(1, Math.round(durationRaw)) : 5;
-  let resolution = String(config.vquality || metadata.resolution || '720p');
+  const rawResolution = String(config.vquality || metadata.resolution || '720p');
+  // Always emit model-canonical tokens (`720p` / `768P` / `2K`). Canvas UI may
+  // store bare heights (`1080`) or MiniMax values that earlier helpers mangled.
+  let resolution = model
+    ? canonicalizeVideoResolution(model, rawResolution)
+    : canonicalizeVideoResolution('', rawResolution);
   let aspect_ratio = String(config.size || metadata.aspectRatio || '16:9');
   if (model && isMiniMaxH3VideoModel(model)) {
     const hasMedia =
       Boolean(firstFrameId || lastFrameId) || referenceIds.length > 0;
     duration_secs = normalizeMiniMaxH3Duration(duration_secs);
-    resolution = normalizeMiniMaxH3Resolution(resolution);
     aspect_ratio = normalizeMiniMaxH3Ratio(aspect_ratio, hasMedia);
   }
 

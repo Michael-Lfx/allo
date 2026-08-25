@@ -3,12 +3,30 @@ import type { SeedanceAspectRatio } from '../aspectRatios';
 import type { VideoResolution } from '@renderer/services/videoModelCapabilities';
 import type { VimaxModelSelection } from '../components/ModelSelectors';
 
-export type VideoHomeMode = 'agent' | 'creation' | 'action';
+/**
+ * Top-level home modes (ModeMenu peers).
+ * - `generate`: prompt + optional refs → single video clip (ordinary T2V / I2V)
+ * - `agent`: ViMax multi-scene pipelines
+ * - `action`: character still + reference video imitation
+ * - `creation`: infinite canvas free composition
+ */
+export type VideoHomeMode = 'generate' | 'agent' | 'creation' | 'action';
 
 export function parseVideoHomeMode(raw: string | null | undefined): VideoHomeMode {
+  if (raw === 'generate' || raw === 'video') return 'generate';
   if (raw === 'creation' || raw === 'canvas') return 'creation';
   if (raw === 'action') return 'action';
   return 'agent';
+}
+
+/** Modes that land on the canvas with a single-clip duration bar (≈4–15s). */
+export function isClipDurationMode(mode: VideoHomeMode): boolean {
+  return mode === 'generate' || mode === 'creation';
+}
+
+/** Modes that attach image references via `canvasReferences` (not Cameo / action slots). */
+export function usesCanvasReferences(mode: VideoHomeMode): boolean {
+  return mode === 'generate' || mode === 'creation';
 }
 export type GenerationMediaKind = 'image' | 'video';
 export type CreationSkillId = 'cinematic' | 'anime' | 'cyberpunk' | 'inkWash';
@@ -40,7 +58,7 @@ export interface GenerationPreferences {
   targetDurationSecs: number;
   /**
    * Agent-only: when false (default), omit duration budget so planning decides.
-   * Creation mode always uses `targetDurationSecs` as clip length.
+   * Generate / creation modes always use `targetDurationSecs` as clip length (≈4–15s).
    */
   specifyTargetDuration: boolean;
   models: VimaxModelSelection;
@@ -58,7 +76,7 @@ export interface VideoCreateDraft {
   preferences: GenerationPreferences;
   /** Agent-only local Cameo drafts. Files and object URLs are never persisted. */
   cameos: CameoDraftItem[];
-  /** Creation-only image references. Files and object URLs are never persisted. */
+  /** Generate / creation image references. Files and object URLs are never persisted. */
   canvasReferences: CanvasReferenceDraft[];
   /** Action-imitation character still. File and object URL are never persisted. */
   actionCharacter: ActionAssetDraft | null;

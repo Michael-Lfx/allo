@@ -28,6 +28,7 @@ import { normalizeVideoFps,
 normalizeVideoResolution,
 videoModelCapabilities, } from '@renderer/services/videoModelCapabilities'
 import type { GenerationPreferences, VideoHomeMode } from './types';
+import { isClipDurationMode } from './types';
 import type { VimaxWorkflow } from '../types';
 import { getScrollParents } from './scrollParents';
 import styles from './home.module.css';
@@ -139,7 +140,7 @@ function isSelectPopupOpen(): boolean {
 }
 
 function durationBounds(mode: VideoHomeMode) {
-  if (mode === 'creation') {
+  if (isClipDurationMode(mode)) {
     return {
       min: CLIP_DURATION_MIN_SECS,
       max: CLIP_DURATION_MAX_SECS,
@@ -168,6 +169,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 }) => {
   const { t } = useTranslation();
   const isAction = mode === 'action' || workflow === 'action2video';
+  const isGenerate = mode === 'generate';
+  /** Ordinary video generate + action: video-only; no image/LLM planning tabs. */
+  const videoOnlyMode = isAction || isGenerate;
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const panelPosRef = useRef<PanelPlacement>({
@@ -181,11 +185,11 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
   // Defer catalog network until the panel opens — closed summary only needs
   // already-persisted preference ids / labels.
-  const llmModels = useGeneratorModels('text', { enabled: open && !isAction });
+  const llmModels = useGeneratorModels('text', { enabled: open && !videoOnlyMode });
   const { imageModels, videoModels, isLoading: mediaLoading } = useMediaModels({
     enabled: open,
   });
-  const mediaKind = isAction ? 'video' : value.mediaKind;
+  const mediaKind = videoOnlyMode ? 'video' : value.mediaKind;
   const duration = durationBounds(mode);
 
   const automaticLabel = t('videoGeneration.create.preferences.automatic', {
@@ -212,16 +216,23 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
   const summary = isAction
     ? `${shortModelLabel(value.models.video_model, noModelLabel)} · ${value.resolution.toUpperCase()}`
-    : value.automatic
-      ? automaticLabel
-      : mediaKind === 'image'
-        ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${shortModelLabel(
-            value.models.image_model,
-            noModelLabel
-          )}`
-        : `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()}`;
+    : isGenerate
+      ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()} · ${clampDuration(
+          value.targetDurationSecs,
+          duration.min,
+          duration.max,
+          duration.step
+        )}s`
+      : value.automatic
+        ? automaticLabel
+        : mediaKind === 'image'
+          ? `${value.smartAspect ? smartLabel : value.aspectRatio} · ${shortModelLabel(
+              value.models.image_model,
+              noModelLabel
+            )}`
+          : `${value.smartAspect ? smartLabel : value.aspectRatio} · ${value.resolution.toUpperCase()}`;
 
-  const summaryTitle = isAction
+  const summaryTitle = isAction || isGenerate
     ? summary
     : value.automatic
       ? automaticLabel
@@ -413,11 +424,11 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
     const current = valueRef.current;
     const patch: Partial<GenerationPreferences['models']> = {};
-    if (!isAction && !current.models.llm_model && llmOptions[0]) {
+    if (!videoOnlyMode && !current.models.llm_model && llmOptions[0]) {
       patch.llm_model =
         pickDefaultLlmModel(llmOptions.map((option) => option.value)) ?? llmOptions[0].value;
     } else if (
-      !isAction &&
+      !videoOnlyMode &&
       current.models.llm_model &&
       llmOptions.length > 0 &&
       !llmOptions.some((option) => option.value === current.models.llm_model)
@@ -425,10 +436,10 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
       patch.llm_model =
         pickDefaultLlmModel(llmOptions.map((option) => option.value)) ?? llmOptions[0].value;
     }
-    if (!isAction && !current.models.image_model && imageOptions[0]) {
+    if (!videoOnlyMode && !current.models.image_model && imageOptions[0]) {
       patch.image_model = imageOptions[0].value;
     } else if (
-      !isAction &&
+      !videoOnlyMode &&
       current.models.image_model &&
       imageOptions.length > 0 &&
       !imageOptions.some((option) => option.value === current.models.image_model)
@@ -458,6 +469,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     value.models.image_model,
     value.models.video_model,
     isAction,
+    videoOnlyMode,
   ]);
 
   const setMediaKind = (kind: GenerationPreferences['mediaKind']) => {
@@ -508,7 +520,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                     defaultValue: '生成偏好',
                   })}
                 </div>
-                {isAction ? null : (
+                {videoOnlyMode ? null : (
                 <label className={styles.autoToggle}>
                   <span>{automaticLabel}</span>
                   <Switch
@@ -521,7 +533,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                 )}
               </div>
 
-            {isAction ? null : (
+            {videoOnlyMode ? null : (
             <div
               className={styles.mediaKindTabs}
               role='tablist'
@@ -741,7 +753,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
               </div>
             </div>
 
-            {mediaKind === 'video' && mode === 'creation' ? (
+            {mediaKind === 'video' && isClipDurationMode(mode) ? (
               <div
                 className={`${styles.preferenceSection} ${
                   value.automatic ? styles.preferenceSectionMuted : ''
@@ -906,13 +918,14 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
               <div className={styles.modelWarning}>
                 <span>
                   {t(
-                    isAction
+                    isAction || isGenerate
                       ? 'videoGeneration.create.modelRequiredAction'
                       : 'videoGeneration.create.modelRequired',
                     {
-                      defaultValue: isAction
-                        ? '生成前需要选择视频模型。'
-                        : '生成前需要可用的规划模型。',
+                      defaultValue:
+                        isAction || isGenerate
+                          ? '生成前需要选择视频模型。'
+                          : '生成前需要可用的规划模型。',
                     }
                   )}
                 </span>
