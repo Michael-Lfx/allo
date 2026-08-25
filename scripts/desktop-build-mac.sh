@@ -82,7 +82,9 @@ fi
 
 for t in "${TRIPLES[@]}"; do
   if [[ "$t" == "x86_64-apple-darwin" || "$t" == "universal-apple-darwin" ]]; then
-    echo "ℹ️  $t：Intel 切片不链接 Silero/ort（无 ONNX Runtime 预编译库），VAD 使用 energy。" >&2
+    # Use ${t}: — bash 3.2 (macOS) with set -u misparses $t followed by
+    # a fullwidth/multibyte char as an unbound variable name.
+    echo "note: ${t}: Intel slice omits Silero/ort (no ONNX Runtime prebuilt); VAD uses energy." >&2
   fi
 done
 
