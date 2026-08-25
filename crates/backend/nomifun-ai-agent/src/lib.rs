@@ -50,7 +50,8 @@ pub use nomi_agent::companion_tools::{CompanionSkillSink, CreateCompanionSkillTo
 pub use nomi_agent::summon_tools::{SummonContextSink, SummonProposalSink};
 pub use nomi_agent::cron_tools::{CronJobSummary, CronSink};
 pub use nomi_agent::meeting_tools::{
-    MeetingSessionSummary, MeetingSink, MeetingTranscriptHit, MEETING_TOOL_NAMES,
+    MeetingListenContextSink, MeetingListenContributor, MeetingSessionSummary, MeetingSink,
+    MeetingTranscriptHit, MEETING_TOOL_NAMES,
 };
 pub use nomi_agent::ssh_backend::{
     RemoteCommandOutput, RemoteFileStat, SshBackend, SshBackendProvider, SshLeaseRelease,
@@ -127,7 +128,7 @@ pub use knowledge_completer::{resolve_default_model, resolve_flowy_cloud_model};
 pub use knowledge_retrieval::LiveKnowledgeRetrievalSink;
 pub use knowledge_writeback::LiveKnowledgeWritebackSink;
 pub use learning_course::LiveLearningCourseSink;
-pub use meeting_sink::LiveMeetingSink;
+pub use meeting_sink::{LiveMeetingListenContextSink, LiveMeetingSink};
 #[cfg(feature = "managed-search")]
 pub use managed_search::ManagedSearchHandle;
 #[cfg(feature = "managed-search")]

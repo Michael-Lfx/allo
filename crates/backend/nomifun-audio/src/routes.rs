@@ -16,8 +16,9 @@ use crate::devices::{AudioDeviceManager, DeviceKind};
 use crate::process_watch::detect_meeting_process;
 use crate::runtime::MeetingRuntime;
 use crate::session::{
-    CreateMeetingSessionRequest, GenerateMeetingNotesResult, MeetingNotesView,
-    MeetingSegmentSnapshot, MeetingSessionService, MeetingSessionSnapshot, SttBackendChoice,
+    CreateMeetingSessionRequest, GenerateMeetingNotesResult, MeetingListenService,
+    MeetingListenStatus, MeetingNotesView, MeetingSegmentSnapshot, MeetingSessionService,
+    MeetingSessionSnapshot, SttBackendChoice,
 };
 use crate::voiceprint::{FakeVoiceprintEncoder, VoiceprintStore, embedding_from_blob};
 
@@ -26,6 +27,7 @@ use crate::voiceprint::{FakeVoiceprintEncoder, VoiceprintStore, embedding_from_b
 pub struct MeetingRouterState {
     pub service: MeetingSessionService,
     pub runtime: Arc<MeetingRuntime>,
+    pub listen: Arc<MeetingListenService>,
     /// Parent directory; each create nests `{meetings_root}/{session_id}/`.
     pub meetings_root: PathBuf,
     pub voiceprints: Arc<VoiceprintStore<FakeVoiceprintEncoder>>,
@@ -66,12 +68,17 @@ pub fn meeting_routes(state: MeetingRouterState) -> Router {
             "/api/meetings/{id}/notes/generate",
             post(generate_notes),
         )
+        .route("/api/meetings/{id}/listen/start", post(listen_start))
+        .route("/api/meetings/{id}/listen/stop", post(listen_stop))
+        .route("/api/meetings/{id}/listen/status", get(listen_status))
         .with_state(state)
 }
 
 fn map_service_err(e: String) -> AppError {
     if e.contains("not found") {
         AppError::NotFound(e)
+    } else if e.contains("requires") || e.contains("already listening") {
+        AppError::BadRequest(e)
     } else {
         AppError::Internal(e)
     }
@@ -321,6 +328,71 @@ async fn bind_conversation(
         .await
         .map_err(map_service_err)?;
     Ok(Json(ApiResponse::ok(snap)))
+}
+
+#[derive(Debug, Deserialize)]
+struct ListenStartBody {
+    conversation_id: Option<String>,
+}
+
+async fn listen_start(
+    State(state): State<MeetingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<ListenStartBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<MeetingListenStatus>>, AppError> {
+    let session = require_owned(&state.service, user.id.as_str(), &id).await?;
+    let req = match body {
+        Ok(Json(req)) => req,
+        Err(_) => ListenStartBody {
+            conversation_id: None,
+        },
+    };
+    let conversation_id = req
+        .conversation_id
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| session.bound_conversation_id.clone());
+
+    if let Some(cid) = conversation_id.as_ref()
+        && session.bound_conversation_id.as_deref() != Some(cid.as_str())
+    {
+        state
+            .service
+            .bind_conversation(&id, Some(cid.clone()))
+            .await
+            .map_err(map_service_err)?;
+    }
+
+    let seed = state
+        .service
+        .list_segments(&id)
+        .await
+        .map_err(map_service_err)?;
+    let status = state
+        .listen
+        .start(&id, conversation_id, seed)
+        .await
+        .map_err(map_service_err)?;
+    Ok(Json(ApiResponse::ok(status)))
+}
+
+async fn listen_stop(
+    State(state): State<MeetingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<MeetingListenStatus>>, AppError> {
+    let _ = require_owned(&state.service, user.id.as_str(), &id).await?;
+    let status = state.listen.stop(&id).map_err(map_service_err)?;
+    Ok(Json(ApiResponse::ok(status)))
+}
+
+async fn listen_status(
+    State(state): State<MeetingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<MeetingListenStatus>>, AppError> {
+    let _ = require_owned(&state.service, user.id.as_str(), &id).await?;
+    Ok(Json(ApiResponse::ok(state.listen.status(&id))))
 }
 
 async fn list_segments(
@@ -725,6 +797,7 @@ mod tests {
         meeting_routes(MeetingRouterState {
             service,
             runtime,
+            listen: Arc::new(MeetingListenService::new()),
             meetings_root: tmp.to_path_buf(),
             voiceprints,
         })

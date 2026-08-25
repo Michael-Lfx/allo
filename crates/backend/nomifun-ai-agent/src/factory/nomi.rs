@@ -999,6 +999,13 @@ pub(super) async fn build(
             .register_meeting_sink(make_sink(owner_id, &conv_id_for_cron))
             .await;
     }
+    if is_instance_owner
+        && let Some(make_listen) = deps.meeting_listen_context_factory.as_ref()
+    {
+        agent
+            .register_meeting_listen_context(make_listen(&conv_id_for_cron))
+            .await;
+    }
     // Per-turn background review (optimization 2): register the default
     // lightweight reviewer for non-companion sessions where distill is enabled.
     // Fire-and-forget — never blocks the conversation loop.

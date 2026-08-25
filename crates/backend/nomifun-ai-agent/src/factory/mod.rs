@@ -212,6 +212,10 @@ pub struct AgentFactoryDeps {
     /// leaves meeting tools unregistered (standalone / tests).
     pub meeting_sink_factory:
         Option<Arc<dyn Fn(&str, &str) -> Arc<dyn crate::MeetingSink> + Send + Sync>>,
+    /// Per-conversation factory for meeting listen turn-tail context. Registered
+    /// alongside meeting tools when the listen service is available.
+    pub meeting_listen_context_factory:
+        Option<Arc<dyn Fn(&str) -> Arc<dyn crate::MeetingListenContextSink> + Send + Sync>>,
     /// Optional sink enabling the companion-companion memory tools
     /// (`recall_memories` / `save_memory` / `list_recent_events`). Only
     /// registered for conversations whose `extra.companion_session` is true.

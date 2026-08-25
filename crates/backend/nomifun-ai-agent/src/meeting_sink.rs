@@ -5,16 +5,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nomi_agent::meeting_tools::{MeetingSessionSummary, MeetingSink, MeetingTranscriptHit};
+use nomi_agent::meeting_tools::{
+    MeetingListenContextSink, MeetingSessionSummary, MeetingSink, MeetingTranscriptHit,
+};
 use nomifun_audio::{
-    AudioDeviceManager, CreateMeetingSessionRequest, DeviceKind, MeetingRuntime,
-    MeetingSessionService, MeetingSessionSnapshot, SttBackendChoice,
+    AudioDeviceManager, CreateMeetingSessionRequest, DeviceKind, MeetingListenService,
+    MeetingRuntime, MeetingSessionService, MeetingSessionSnapshot, SttBackendChoice,
+    format_listen_segment,
 };
 
 /// Conversation-bound meeting tool backend.
 pub struct LiveMeetingSink {
     service: MeetingSessionService,
     runtime: Arc<MeetingRuntime>,
+    listen: Arc<MeetingListenService>,
     meetings_root: PathBuf,
     user_id: String,
     conversation_id: String,
@@ -27,6 +31,7 @@ impl LiveMeetingSink {
     pub fn new(
         service: MeetingSessionService,
         runtime: Arc<MeetingRuntime>,
+        listen: Arc<MeetingListenService>,
         meetings_root: PathBuf,
         user_id: impl Into<String>,
         conversation_id: impl Into<String>,
@@ -35,6 +40,7 @@ impl LiveMeetingSink {
         Self {
             service,
             runtime,
+            listen,
             meetings_root,
             user_id: user_id.into(),
             conversation_id: conversation_id.into(),
@@ -221,23 +227,139 @@ impl MeetingSink for LiveMeetingSink {
     }
 
     async fn ask(&self, session_id: &str, question: &str) -> Result<String, String> {
+        let _ = self.require_owned(session_id).await?;
+        let mut parts = vec![format!("Question: {question}")];
+
+        if let Some((summary, window)) = self.listen.ask_context(session_id) {
+            if let Some(summary) = summary.filter(|s| !s.trim().is_empty()) {
+                parts.push(format!("Listen rolling summary:\n{summary}"));
+            }
+            let finals: Vec<_> = window.iter().filter(|s| !s.is_partial).collect();
+            if !finals.is_empty() {
+                let body: Vec<String> = finals.iter().map(|s| format_listen_segment(s)).collect();
+                parts.push(format!("Listen window:\n{}", body.join("\n")));
+            }
+        }
+
         let hits = self.search_transcript(session_id, question, 30).await?;
         if hits.is_empty() {
-            return Ok(format!(
-                "No transcript matches for question: {question}\n\
-                 (Full listen-window answers land in P4.)"
-            ));
+            if parts.len() == 1 {
+                return Ok(format!(
+                    "No transcript matches for question: {question}\n\
+                     (Enable listen mode for rolling-window answers.)"
+                ));
+            }
+        } else {
+            let body: Vec<String> = hits
+                .iter()
+                .map(|h| {
+                    let speaker = h.speaker_label.as_deref().unwrap_or("?");
+                    let t0 = h
+                        .start_ms
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "-".into());
+                    let t1 = h.end_ms.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+                    format!("[{t0}-{t1}ms] {speaker}: {}", h.text)
+                })
+                .collect();
+            parts.push(format!("Relevant transcript search:\n{}", body.join("\n")));
         }
-        let body: Vec<String> = hits
-            .iter()
-            .map(|h| {
-                let speaker = h.speaker_label.as_deref().unwrap_or("?");
-                format!("{speaker}: {}", h.text)
+
+        Ok(parts.join("\n\n"))
+    }
+
+    async fn captions_recent(
+        &self,
+        session_id: &str,
+        limit: i64,
+    ) -> Result<Vec<MeetingTranscriptHit>, String> {
+        let _ = self.require_owned(session_id).await?;
+        let rows = self.service.captions_recent(session_id, limit).await?;
+        Ok(rows
+            .into_iter()
+            .map(|s| MeetingTranscriptHit {
+                segment_id: s.segment_id,
+                speaker_label: {
+                    let label = s.speaker_label.trim();
+                    if label.is_empty() {
+                        None
+                    } else {
+                        Some(label.to_owned())
+                    }
+                },
+                text: s.text,
+                start_ms: Some(s.start_ms),
+                end_ms: Some(s.end_ms),
+                is_partial: s.is_partial,
             })
-            .collect();
+            .collect())
+    }
+
+    async fn listen_start(
+        &self,
+        session_id: &str,
+        conversation_id: Option<&str>,
+    ) -> Result<String, String> {
+        let session = self.require_owned(session_id).await?;
+        let conversation_id = conversation_id
+            .map(str::to_owned)
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| session.bound_conversation_id.clone())
+            .or_else(|| Some(self.conversation_id.clone()));
+
+        if let Some(cid) = conversation_id.as_ref()
+            && session.bound_conversation_id.as_deref() != Some(cid.as_str())
+        {
+            self.service
+                .bind_conversation(session_id, Some(cid.clone()))
+                .await?;
+        }
+
+        let seed = self.service.list_segments(session_id).await?;
+        let status = self.listen.start(session_id, conversation_id, seed).await?;
         Ok(format!(
-            "Question: {question}\nRelevant transcript:\n{}",
-            body.join("\n")
+            "Listen enabled for session={} conversation={:?} window_segments={}",
+            status.session_id, status.conversation_id, status.window_segment_count
         ))
+    }
+
+    async fn listen_stop(&self, session_id: &str) -> Result<String, String> {
+        let _ = self.require_owned(session_id).await?;
+        let status = self.listen.stop(session_id)?;
+        Ok(format!(
+            "Listen disabled for session={} (was conversation={:?})",
+            status.session_id, status.conversation_id
+        ))
+    }
+}
+
+/// Per-conversation listen context for turn-tail + optional question retrieval.
+pub struct LiveMeetingListenContextSink {
+    listen: Arc<MeetingListenService>,
+    conversation_id: String,
+}
+
+impl LiveMeetingListenContextSink {
+    pub fn new(listen: Arc<MeetingListenService>, conversation_id: impl Into<String>) -> Self {
+        Self {
+            listen,
+            conversation_id: conversation_id.into(),
+        }
+    }
+
+    pub fn into_arc(self) -> Arc<dyn MeetingListenContextSink> {
+        Arc::new(self)
+    }
+}
+
+#[async_trait]
+impl MeetingListenContextSink for LiveMeetingListenContextSink {
+    async fn resolve_context(&self) -> Option<String> {
+        self.listen.context_for_conversation(&self.conversation_id)
+    }
+
+    async fn retrieve_for_question(&self, question: &str) -> Option<String> {
+        self.listen
+            .retrieve_for_question(&self.conversation_id, question, 8)
     }
 }

@@ -1341,6 +1341,14 @@ pub fn build_meeting_state(services: &AppServices) -> nomifun_audio::MeetingRout
             services.requirement_service.clone(),
         ),
     );
+    services.meeting_listen.set_completer(Arc::new(
+        crate::meeting_notes_wiring::LiveMeetingNotesCompleter {
+            provider_repo: services.provider_repo.clone(),
+            provider_model_repo: services.provider_model_repo.clone(),
+            encryption_key: services.encryption_key,
+            workspace: services.data_dir.clone(),
+        },
+    ));
 
     let meeting_repo = Arc::new(nomifun_db::SqliteMeetingRepository::new(
         services.database.pool().clone(),
@@ -1348,6 +1356,7 @@ pub fn build_meeting_state(services: &AppServices) -> nomifun_audio::MeetingRout
     nomifun_audio::MeetingRouterState {
         service: services.meeting_service.clone(),
         runtime: services.meeting_runtime.clone(),
+        listen: services.meeting_listen.clone(),
         meetings_root: services.data_dir.join("meetings"),
         voiceprints: Arc::new(nomifun_audio::VoiceprintStore::new(
             nomifun_audio::FakeVoiceprintEncoder::new(16),

@@ -20,9 +20,10 @@ use nomi_agent::output::OutputSink;
 use nomi_agent::requirement_tools::{RequirementCompleteTool, RequirementSink, RequirementUpdateStatusTool};
 use nomi_agent::cron_tools::{CronCreateTool, CronDeleteTool, CronListTool, CronSink};
 use nomi_agent::meeting_tools::{
-    MEETING_TOOL_NAMES, MeetingAskTool, MeetingGetNotesTool, MeetingGetTool, MeetingListTool,
-    MeetingPauseTool, MeetingResumeTool, MeetingSearchTranscriptTool, MeetingSink,
-    MeetingStartTool, MeetingStopTool,
+    MEETING_TOOL_NAMES, MeetingAskTool, MeetingCaptionsRecentTool, MeetingGetNotesTool,
+    MeetingGetTool, MeetingListTool, MeetingListenContextSink, MeetingListenContributor,
+    MeetingListenStartTool, MeetingListenStopTool, MeetingPauseTool, MeetingResumeTool,
+    MeetingSearchTranscriptTool, MeetingSink, MeetingStartTool, MeetingStopTool,
 };
 use nomi_agent::session::Session;
 use nomi_config::config::{CliArgs, Config};
@@ -224,6 +225,10 @@ pub struct NomiAgentManager {
         Arc<dyn nomi_agent::knowledge_tools::KnowledgeRetrievalSink>,
         Vec<nomifun_common::KnowledgeBaseId>,
     )>,
+    /// When set, user messages may be augmented with question-scoped listen
+    /// window segments (optional retrieval). Turn-tail summary/window still
+    /// comes from [`MeetingListenContributor`].
+    meeting_listen_rag: std::sync::RwLock<Option<Arc<dyn MeetingListenContextSink>>>,
     /// Per-turn background review hooks (optimization 2). Each hook is fired
     /// asynchronously after a human-origin turn completes — fire-and-forget,
     /// never blocks the conversation loop.
@@ -1377,6 +1382,7 @@ impl NomiAgentManager {
             distill_cfg,
             knowledge_prelude: std::sync::Mutex::new(knowledge_prelude),
             knowledge_auto_rag,
+            meeting_listen_rag: std::sync::RwLock::new(None),
             post_turn_review: std::sync::RwLock::new(Vec::new()),
             moa_slot_prices,
             goal_runtime: std::sync::RwLock::new(goal_runtime),
@@ -1677,6 +1683,19 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             let content = match knowledge_hits {
                 Some(hits) => prepend_knowledge_context(&hits, content),
                 None => content,
+            };
+            let listen_hits = self
+                .meeting_listen_rag
+                .read()
+                .ok()
+                .and_then(|g| g.clone());
+            let content = if let Some(sink) = listen_hits {
+                match sink.retrieve_for_question(&data.content).await {
+                    Some(block) if !block.trim().is_empty() => format!("{block}\n{content}"),
+                    _ => content,
+                }
+            } else {
+                content
             };
             let content = inject_loaded_skill_context(content, &data.loaded_skill_snapshots);
             let content = match image_analysis {
@@ -2619,12 +2638,35 @@ impl NomiAgentManager {
         reg.register(Box::new(MeetingGetTool::new(sink.clone())));
         reg.register(Box::new(MeetingSearchTranscriptTool::new(sink.clone())));
         reg.register(Box::new(MeetingGetNotesTool::new(sink.clone())));
+        reg.register(Box::new(MeetingCaptionsRecentTool::new(sink.clone())));
         reg.register(Box::new(MeetingStartTool::new(sink.clone())));
         reg.register(Box::new(MeetingPauseTool::new(sink.clone())));
         reg.register(Box::new(MeetingResumeTool::new(sink.clone())));
         reg.register(Box::new(MeetingStopTool::new(sink.clone())));
-        reg.register(Box::new(MeetingAskTool::new(sink)));
+        reg.register(Box::new(MeetingAskTool::new(sink.clone())));
+        reg.register(Box::new(MeetingListenStartTool::new(sink.clone())));
+        reg.register(Box::new(MeetingListenStopTool::new(sink)));
         debug!(conversation_id = %self.runtime.conversation_id(), "Registered meeting native tools");
+    }
+
+    /// Register listen-mode turn-tail contributor + optional question retrieval.
+    pub async fn register_meeting_listen_context(
+        &self,
+        sink: Arc<dyn MeetingListenContextSink>,
+    ) {
+        {
+            let mut engine = self.engine.lock().await;
+            engine.register_context_contributor(Arc::new(MeetingListenContributor::new(
+                sink.clone(),
+            )));
+        }
+        if let Ok(mut slot) = self.meeting_listen_rag.write() {
+            *slot = Some(sink);
+        }
+        debug!(
+            conversation_id = %self.runtime.conversation_id(),
+            "Registered meeting listen context contributor"
+        );
     }
 }
 
@@ -4309,6 +4351,7 @@ mod tests {
             distill_cfg: Arc::new(config),
             knowledge_prelude: std::sync::Mutex::new(None),
             knowledge_auto_rag: None,
+            meeting_listen_rag: std::sync::RwLock::new(None),
             post_turn_review: std::sync::RwLock::new(Vec::new()),
             moa_slot_prices: Vec::new(),
             goal_runtime: std::sync::RwLock::new(None),
@@ -4816,6 +4859,7 @@ mod tests {
             distill_cfg: Arc::new(config),
             knowledge_prelude: std::sync::Mutex::new(None),
             knowledge_auto_rag: None,
+            meeting_listen_rag: std::sync::RwLock::new(None),
             post_turn_review: std::sync::RwLock::new(Vec::new()),
             moa_slot_prices: Vec::new(),
             goal_runtime: std::sync::RwLock::new(None),
