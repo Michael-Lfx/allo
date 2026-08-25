@@ -35,6 +35,7 @@ import {
 } from './api';
 import type { PlanBody, SessionSummary } from './types';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
+import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
 import { parseVideoHomeMode } from './home/types';
 import type { VideoCreateDraft, VideoHomeMode } from './home/types';
 import {
@@ -193,6 +194,12 @@ const VideoGenerationListPage: React.FC = () => {
     }
     const timer = window.setTimeout(prefetchGallery, 250);
     return () => window.clearTimeout(timer);
+  }, []);
+
+  // 「打开到 Canvas」/ 画布入口跳转到这里；用户在列表页停留时提前拉取并解析
+  // ProjectPage 大 chunk，跳转时不再出现多秒骨架屏。
+  useEffect(() => {
+    void loadVideoCanvasProjectPage();
   }, []);
 
   const displayed = useMemo(() => {

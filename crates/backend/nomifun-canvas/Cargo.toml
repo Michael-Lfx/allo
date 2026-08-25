@@ -15,7 +15,7 @@ nomifun-auth.workspace = true
 nomifun-cloud.workspace = true
 axum.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["io"] }
 tower-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true

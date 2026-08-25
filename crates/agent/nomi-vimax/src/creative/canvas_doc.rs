@@ -16,8 +16,17 @@ use super::ir::{
     CreativeCharacter, CreativeFilm, CreativeMediaFile, CreativeScene, CreativeWorldKind,
 };
 
-/// Map from media `rel_path` → canvas media_id after ingest.
-pub type MediaIdMap = HashMap<String, String>;
+/// Ingested canvas media reference: media_id plus lookup hints so the frontend
+/// can skip HEAD probes when opening the materialized canvas.
+#[derive(Debug, Clone)]
+pub struct IngestedMedia {
+    pub media_id: String,
+    pub bytes: u64,
+    pub mime: String,
+}
+
+/// Map from media `rel_path` → ingested canvas media after materialize.
+pub type MediaIdMap = HashMap<String, IngestedMedia>;
 
 pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Value {
     let mut nodes: Vec<Value> = Vec::new();
@@ -86,9 +95,10 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
             meta["content"] = json!(url);
             meta["characterCoverUrl"] = json!(url);
         }
-        if let Some(sk) = &storage_key {
+        if let Some((sk, entry)) = &storage_key {
             meta["storageKey"] = json!(sk);
-            meta["mimeType"] = json!("image/png");
+            meta["mimeType"] = json!(entry.mime);
+            meta["bytes"] = json!(entry.bytes);
         }
         if let Some(vp) = &ch.voice_profile {
             meta["characterVoiceProfile"] = json!({
@@ -122,8 +132,7 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
                 continue;
             }
             let vid = format!("vimax-char-{}-{}", ch.idx, sanitize_id(view));
-            let (c, sk, st) = media_content(Some(media), media_ids);
-            let (Some(url), Some(storage)) = (c, sk) else {
+            let (_, Some((_, entry)), st) = media_content(Some(media), media_ids) else {
                 continue;
             };
             nodes.push(image_node(
@@ -131,8 +140,7 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
                 &format!("{} · {view}", ch.identifier_in_scene),
                 X_CAST + 260.0,
                 view_y,
-                &url,
-                &storage,
+                entry,
                 st,
                 json!({
                     "workflowKind": "character",
@@ -168,10 +176,7 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
             wa.kind.as_str(),
             sanitize_id(&wa.key)
         );
-        let (Some(url), Some(sk)) = (
-            media_url(&wa.media, media_ids),
-            media_storage_key(&wa.media, media_ids),
-        ) else {
+        let Some(entry) = media_ids.get(&wa.media.rel_path) else {
             continue;
         };
         let title = match wa.kind {
@@ -187,8 +192,7 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
             &title,
             X_WORLD,
             y_world,
-            &url,
-            &sk,
+            entry,
             "success",
             json!({
                 "status": "success",
@@ -243,22 +247,17 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
 
     // ── Film final ← all shot videos ────────────────────────────────────────
     if let Some(final_v) = &film.final_video {
-        if let (Some(url), Some(sk)) = (
-            media_url(final_v, media_ids),
-            media_storage_key(final_v, media_ids),
-        ) {
+        if let Some(entry) = media_ids.get(&final_v.rel_path) {
             nodes.push(video_node(
                 "vimax-final",
                 "成片 · Final",
                 X_FINAL,
                 40.0,
-                &url,
-                &sk,
+                entry,
                 json!({
                     "status": "success",
                     "workflowKind": "final",
                     "workflowTitle": "成片",
-                    "mimeType": "video/mp4",
                     "videoEditOperation": "concat",
                     "alloVimax": {
                         "kind": "final",
@@ -280,17 +279,13 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
     }
 
     if let Some(cover) = &film.cover {
-        if let (Some(url), Some(sk)) = (
-            media_url(cover, media_ids),
-            media_storage_key(cover, media_ids),
-        ) {
+        if let Some(entry) = media_ids.get(&cover.rel_path) {
             nodes.push(image_node(
                 "vimax-cover",
                 "封面",
                 X_FINAL,
                 300.0,
-                &url,
-                &sk,
+                entry,
                 "success",
                 json!({
                     "workflowKind": "styleboard",
@@ -494,16 +489,13 @@ fn build_scene_block(
         if let Some(shot) = shot_media {
             // Optional legacy first_frame (revise path); default Agent render skips it.
             if let Some(ff) = &shot.first_frame {
-                if let (Some(url), Some(sk)) =
-                    (media_url(ff, media_ids), media_storage_key(ff, media_ids))
-                {
+                if let Some(entry) = media_ids.get(&ff.rel_path) {
                     nodes.push(image_node(
                         &ff_id,
                         &format!("S{shot_idx} 首帧"),
                         x_frame,
                         y_row,
-                        &url,
-                        &sk,
+                        entry,
                         "success",
                         json!({
                             "status": "success",
@@ -529,16 +521,13 @@ fn build_scene_block(
                 .as_ref()
                 .or(shot.last_frame.as_ref());
             if let Some(vlf) = vlf_src {
-                if let (Some(url), Some(sk)) =
-                    (media_url(vlf, media_ids), media_storage_key(vlf, media_ids))
-                {
+                if let Some(entry) = media_ids.get(&vlf.rel_path) {
                     nodes.push(image_node(
                         &vlf_id,
                         &format!("S{shot_idx} 连续末帧"),
                         x_frame,
                         y_row + 140.0,
-                        &url,
-                        &sk,
+                        entry,
                         "success",
                         json!({
                             "status": "success",
@@ -558,9 +547,7 @@ fn build_scene_block(
             }
 
             if let Some(video) = &shot.video {
-                if let (Some(url), Some(sk)) =
-                    (media_url(video, media_ids), media_storage_key(video, media_ids))
-                {
+                if let Some(entry) = media_ids.get(&video.rel_path) {
                     let edit_op = if ff_node_id.is_some() || continuity_in.is_some() {
                         "image_to_video"
                     } else {
@@ -572,7 +559,6 @@ fn build_scene_block(
                         "workflowTitle": format!("镜头 {shot_idx}"),
                         "shotIndex": shot_idx,
                         "sceneId": scene.key,
-                        "mimeType": "video/mp4",
                         "prompt": video_prompt,
                         "videoEditOperation": edit_op,
                         "generateAudio": "true",
@@ -611,8 +597,7 @@ fn build_scene_block(
                         &format!("镜头 {shot_idx}"),
                         x_shot,
                         y_row,
-                        &url,
-                        &sk,
+                        entry,
                         vmeta,
                     ));
                     row["videoNodeId"] = json!(video_id);
@@ -762,21 +747,17 @@ fn build_scene_block(
     // Scene-level final
     if let Some(sf) = &scene.final_video {
         if film.final_video.as_ref().map(|f| f.rel_path.as_str()) != Some(sf.rel_path.as_str()) {
-            if let (Some(url), Some(sk)) =
-                (media_url(sf, media_ids), media_storage_key(sf, media_ids))
-            {
+            if let Some(entry) = media_ids.get(&sf.rel_path) {
                 let fid = format!("vimax-scene-final-{}", scene.key);
                 nodes.push(video_node(
                     &fid,
                     &format!("{} 成片", scene.title),
                     x_shot + 360.0,
                     origin_y,
-                    &url,
-                    &sk,
+                    entry,
                     json!({
                         "status": "success",
                         "workflowKind": "final",
-                        "mimeType": "video/mp4",
                         "videoEditOperation": "concat",
                         "alloVimax": {
                             "kind": "scene_final",
@@ -840,18 +821,20 @@ fn build_allo_creative_sidecar(film: &CreativeFilm, media_ids: &MediaIdMap) -> V
 fn rewrite_media_paths(value: &mut Value, media_ids: &MediaIdMap) {
     match value {
         Value::Object(map) => {
-            if let (Some(Value::String(rel)), Some(id)) = (
+            if let (Some(Value::String(rel)), Some(entry)) = (
                 map.get("rel_path").cloned(),
                 map.get("rel_path")
                     .and_then(|v| v.as_str())
                     .and_then(|r| media_ids.get(r)),
             ) {
                 let _ = rel;
-                map.insert("media_id".into(), json!(id));
+                map.insert("media_id".into(), json!(entry.media_id));
                 map.insert(
                     "url".into(),
-                    json!(format!("/api/video-canvas/media/{id}")),
+                    json!(format!("/api/video-canvas/media/{}", entry.media_id)),
                 );
+                map.insert("bytes".into(), json!(entry.bytes));
+                map.insert("mime".into(), json!(entry.mime));
                 // Drop machine-local abs_path from the canvas sidecar.
                 map.remove("abs_path");
             }
@@ -999,30 +982,20 @@ fn preferred_portrait(ch: &CreativeCharacter) -> Option<&CreativeMediaFile> {
     ch.portraits.values().next()
 }
 
-fn media_url(media: &CreativeMediaFile, map: &MediaIdMap) -> Option<String> {
-    map.get(&media.rel_path)
-        .map(|id| format!("/api/video-canvas/media/{id}"))
-}
-
-fn media_storage_key(media: &CreativeMediaFile, map: &MediaIdMap) -> Option<String> {
-    map.get(&media.rel_path)
-        .map(|id| format!("resource:{id}"))
-}
-
-fn media_content(
+fn media_content<'a>(
     media: Option<&CreativeMediaFile>,
-    map: &MediaIdMap,
-) -> (Option<String>, Option<String>, &'static str) {
-    match media {
-        Some(m) => {
-            let url = media_url(m, map);
-            let sk = media_storage_key(m, map);
-            if url.is_some() {
-                (url, sk, "success")
-            } else {
-                (None, None, "idle")
-            }
-        }
+    map: &'a MediaIdMap,
+) -> (
+    Option<String>,
+    Option<(String, &'a IngestedMedia)>,
+    &'static str,
+) {
+    match media.and_then(|m| map.get(&m.rel_path)) {
+        Some(entry) => (
+            Some(format!("/api/video-canvas/media/{}", entry.media_id)),
+            Some((format!("resource:{}", entry.media_id), entry)),
+            "success",
+        ),
         None => (None, None, "idle"),
     }
 }
@@ -1056,16 +1029,22 @@ fn image_node(
     title: &str,
     x: f64,
     y: f64,
-    url: &str,
-    storage_key: &str,
+    entry: &IngestedMedia,
     status: &str,
     extra: Value,
 ) -> Value {
     let mut meta = extra;
     if let Some(obj) = meta.as_object_mut() {
-        obj.insert("content".into(), json!(url));
-        obj.insert("storageKey".into(), json!(storage_key));
-        obj.insert("mimeType".into(), json!("image/png"));
+        obj.insert(
+            "content".into(),
+            json!(format!("/api/video-canvas/media/{}", entry.media_id)),
+        );
+        obj.insert(
+            "storageKey".into(),
+            json!(format!("resource:{}", entry.media_id)),
+        );
+        obj.insert("mimeType".into(), json!(entry.mime));
+        obj.insert("bytes".into(), json!(entry.bytes));
         obj.insert("status".into(), json!(status));
     }
     json!({
@@ -1084,13 +1063,20 @@ fn video_node(
     title: &str,
     x: f64,
     y: f64,
-    url: &str,
-    storage_key: &str,
+    entry: &IngestedMedia,
     mut meta: Value,
 ) -> Value {
     if let Some(obj) = meta.as_object_mut() {
-        obj.insert("content".into(), json!(url));
-        obj.insert("storageKey".into(), json!(storage_key));
+        obj.insert(
+            "content".into(),
+            json!(format!("/api/video-canvas/media/{}", entry.media_id)),
+        );
+        obj.insert(
+            "storageKey".into(),
+            json!(format!("resource:{}", entry.media_id)),
+        );
+        obj.insert("mimeType".into(), json!(entry.mime));
+        obj.insert("bytes".into(), json!(entry.bytes));
     }
     json!({
         "id": id,

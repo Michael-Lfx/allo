@@ -10,6 +10,7 @@ import {
   listCanvasProjects,
   type CanvasProjectMeta,
 } from '../../videoCanvas/api';
+import { loadVideoCanvasProjectPage } from '../../videoCanvas/loadProjectPage';
 import styles from './home.module.css';
 
 function formatUpdatedAt(ms: number, t: TFunction): string {
@@ -35,10 +36,6 @@ function formatUpdatedAt(ms: number, t: TFunction): string {
       defaultValue: '{{count}} 天前',
     });
   return t('videoGeneration.time.weeksAgo', { defaultValue: '上周' });
-}
-
-function prefetchCanvasProjectPage() {
-  void import('../../videoCanvas/ProjectPage');
 }
 
 const CanvasProjectGallery: React.FC = () => {
@@ -75,7 +72,7 @@ const CanvasProjectGallery: React.FC = () => {
 
   useEffect(() => {
     if (!projects.length) return;
-    prefetchCanvasProjectPage();
+    loadVideoCanvasProjectPage();
   }, [projects.length]);
 
   const displayed = useMemo(() => {
@@ -91,7 +88,7 @@ const CanvasProjectGallery: React.FC = () => {
   const openProject = (projectId: string) => {
     if (openingId || creating || deletingId) return;
     setOpeningId(projectId);
-    prefetchCanvasProjectPage();
+    void loadVideoCanvasProjectPage();
     navigate(`/video-generation/canvas/${encodeURIComponent(projectId)}`);
   };
 
@@ -245,8 +242,8 @@ const CanvasProjectGallery: React.FC = () => {
                 style={
                   isDisabled ? { cursor: 'default', opacity: 0.72, transform: 'none' } : undefined
                 }
-                onMouseEnter={prefetchCanvasProjectPage}
-                onFocus={prefetchCanvasProjectPage}
+                onMouseEnter={() => void loadVideoCanvasProjectPage()}
+                onFocus={() => void loadVideoCanvasProjectPage()}
                 onClick={() => openProject(project.project_id)}
                 onKeyDown={(event) => {
                   // Only activate when the card itself is focused, so Enter/

@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::creative::{build_canvas_document, CreativeFilm, CreativeMediaFile, CreativeMediaKind, CreativeScene, CreativeShot, CREATIVE_IR_VERSION};
+use crate::creative::{
+    build_canvas_document, CreativeFilm, CreativeMediaFile, CreativeMediaKind, CreativeScene,
+    CreativeShot, IngestedMedia, CREATIVE_IR_VERSION,
+};
 use crate::domain::{
     Camera, CharacterInScene, ShotBriefDescription, ShotDescription, VoiceProfile, WorkflowKind,
 };
@@ -135,7 +138,15 @@ fn canvas_doc_preserves_camera_tree_and_voice() {
     let film = sample_film();
     let mut ids = HashMap::new();
     for m in film.all_media_files() {
-        ids.insert(m.rel_path.clone(), format!("media-{}", ids.len()));
+        let index = ids.len();
+        ids.insert(
+            m.rel_path.clone(),
+            IngestedMedia {
+                media_id: format!("media-{index}"),
+                bytes: 4096 + index as u64,
+                mime: m.mime.clone(),
+            },
+        );
     }
     let doc = build_canvas_document(&film, &ids);
     let allo = doc.get("alloCreative").expect("alloCreative sidecar");
@@ -172,12 +183,18 @@ fn canvas_doc_preserves_camera_tree_and_voice() {
         .as_str()
         .unwrap()
         .starts_with("resource:"));
+    // Ingested lookup hints land on materialized nodes so the frontend skips
+    // HEAD probes when opening the canvas.
+    assert_eq!(video["metadata"]["mimeType"].as_str(), Some("video/mp4"));
+    assert!(video["metadata"]["bytes"].as_u64().unwrap() > 0);
 
     let world = nodes
         .iter()
         .find(|n| n.get("id").and_then(|t| t.as_str()) == Some("vimax-world-environment-码头"))
         .expect("environment node");
     assert_eq!(world["type"].as_str(), Some("image"));
+    assert_eq!(world["metadata"]["mimeType"].as_str(), Some("image/png"));
+    assert!(world["metadata"]["bytes"].as_u64().unwrap() > 0);
 
     let conns = doc.get("connections").and_then(|v| v.as_array()).unwrap();
     let has = |from: &str, to: &str| {

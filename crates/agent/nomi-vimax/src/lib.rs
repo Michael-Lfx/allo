@@ -21,8 +21,8 @@ pub mod skills;
 pub mod video_quality;
 
 pub use creative::{
-    build_canvas_document, scan_session_film, CreativeFilm, CreativeMediaFile, MediaIdMap,
-    CREATIVE_IR_VERSION,
+    build_canvas_document, scan_session_film, CreativeFilm, CreativeMediaFile, IngestedMedia,
+    MediaIdMap, CREATIVE_IR_VERSION,
 };
 pub use aspect::{
     DEFAULT_ASPECT_RATIO, SEEDANCE_ASPECT_RATIOS, aspect_prompt_clause, aspect_to_dashscope_size,

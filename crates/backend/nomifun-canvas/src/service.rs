@@ -23,6 +23,12 @@ pub struct ProjectWithDoc {
     pub doc: Value,
 }
 
+/// `HEAD /api/video-canvas/media/{id}` response metadata.
+#[derive(Debug, Clone)]
+pub struct MediaServeHead {
+    pub mime: String,
+    pub bytes: u64,
+}
 #[derive(Debug, Clone)]
 pub struct InternalTask {
     pub task_id: String,
@@ -626,20 +632,55 @@ impl CanvasService {
         Ok(path)
     }
 
-    pub async fn serve_media(&self, media_id: &str) -> Result<(String, Vec<u8>), AppError> {
+    /// Lookup metadata for `HEAD /media/{id}`: index-only, never opens the
+    /// media file. Falls back to `metadata()` when a legacy index entry has no
+    /// recorded byte size.
+    pub async fn head_media(&self, media_id: &str) -> Result<MediaServeHead, AppError> {
+        let (mime, path, bytes) = self.media_serve_target(media_id).await?;
+        let bytes = match bytes {
+            Some(bytes) => bytes,
+            None => tokio::fs::metadata(&path)
+                .await
+                .map_err(|e| AppError::NotFound(format!("media file: {e}")))?
+                .len(),
+        };
+        Ok(MediaServeHead { mime, bytes })
+    }
+
+    /// Open the stored media file for streaming `GET /media/{id}`; returns the
+    /// handle instead of reading contents so large videos never buffer in RAM.
+    pub async fn open_media(
+        &self,
+        media_id: &str,
+    ) -> Result<(String, u64, tokio::fs::File), AppError> {
+        let (mime, path, bytes) = self.media_serve_target(media_id).await?;
+        let file = tokio::fs::File::open(&path)
+            .await
+            .map_err(|e| AppError::NotFound(format!("media file: {e}")))?;
+        let bytes = match bytes {
+            Some(bytes) => bytes,
+            None => file.metadata().await.map_err(|e| AppError::NotFound(format!("media file: {e}")))?.len(),
+        };
+        Ok((mime, bytes, file))
+    }
+
+    /// Resolve `{mime, path, indexed_bytes}` from the media index.
+    async fn media_serve_target(
+        &self,
+        media_id: &str,
+    ) -> Result<(String, std::path::PathBuf, Option<u64>), AppError> {
         validate_project_id(media_id)?;
         let idx = self.load_media_index().await?;
         let entry = idx
             .items
             .iter()
             .find(|e| e.media_id == media_id)
-            .ok_or_else(|| AppError::NotFound(format!("media {media_id}")))?
-            .clone();
+            .ok_or_else(|| AppError::NotFound(format!("media {media_id}")))?;
         let path = self.media_dir().join(format!("{}.{}", entry.media_id, entry.ext));
-        let bytes = tokio::fs::read(&path)
-            .await
-            .map_err(|e| AppError::NotFound(format!("media file: {e}")))?;
-        Ok((entry.mime, bytes))
+        // 0 means legacy entry without a recorded size — callers fall back to
+        // `metadata()` so Content-Length stays correct.
+        let bytes = (entry.bytes > 0).then_some(entry.bytes);
+        Ok((entry.mime.clone(), path, bytes))
     }
 
     pub async fn delete_media(&self, media_id: &str) -> Result<(), AppError> {
@@ -853,4 +894,75 @@ fn validate_project_id(id: &str) -> Result<(), AppError> {
         return Err(AppError::BadRequest("invalid id".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::AsyncReadExt as _;
+
+    use super::*;
+
+    async fn service_with_media(
+        bytes: &[u8],
+        kind: &str,
+        mime: &str,
+        ext: &str,
+    ) -> (Arc<CanvasService>, String) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let service = CanvasService::new(dir.path().to_path_buf());
+        let media_id = service
+            .ingest_generated_bytes(bytes.to_vec(), kind, mime, ext, "test".into())
+            .await
+            .expect("ingest");
+        std::mem::forget(dir);
+        (service, media_id)
+    }
+
+    #[tokio::test]
+    async fn head_media_reads_only_the_index() {
+        let (service, media_id) = service_with_media(b"0123456789", "video", "video/mp4", "mp4").await;
+        // Simulate an unreadable/absent content file: HEAD must still succeed
+        // because it serves the recorded index metadata without touching disk.
+        let file = service.media_dir().join(format!("{media_id}.mp4"));
+        std::fs::remove_file(&file).expect("remove media file");
+
+        let head = service.head_media(&media_id).await.expect("head from index");
+        assert_eq!(head.mime, "video/mp4");
+        assert_eq!(head.bytes, 10);
+        assert!(service.head_media("missing-id").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn head_media_falls_back_to_metadata_for_legacy_zero_bytes() {
+        let (service, media_id) = service_with_media(b"abc", "image", "image/png", "png").await;
+        // Legacy index entries recorded 0 bytes; the file still exists, so the
+        // size must come from `metadata()` without reading file contents.
+        let idx_path = service.media_index_path();
+        let mut idx = service.load_media_index().await.expect("index");
+        for entry in &mut idx.items {
+            if entry.media_id == media_id {
+                entry.bytes = 0;
+            }
+        }
+        service.save_media_index(&idx).await.expect("save index");
+        let head = service.head_media(&media_id).await.expect("head");
+        assert_eq!(head.mime, "image/png");
+        assert_eq!(head.bytes, 3);
+        let _ = idx_path;
+    }
+
+    #[tokio::test]
+    async fn open_media_streams_identical_bytes() {
+        let payload = b"stream-me-please-1234567890";
+        let (service, media_id) =
+            service_with_media(payload, "video", "video/mp4", "mp4").await;
+
+        let (mime, bytes, mut file) = service.open_media(&media_id).await.expect("open");
+        assert_eq!(mime, "video/mp4");
+        assert_eq!(bytes, payload.len() as u64);
+
+        let mut got = Vec::new();
+        file.read_to_end(&mut got).await.expect("read stream");
+        assert_eq!(got, payload);
+    }
 }

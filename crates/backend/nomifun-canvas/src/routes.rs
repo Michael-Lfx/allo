@@ -67,7 +67,10 @@ pub fn video_canvas_routes(state: CanvasRouterState) -> Router {
 /// Auth-exempt binary serve (same rationale as workshop public files).
 pub fn video_canvas_public_routes(state: CanvasRouterState) -> Router {
     Router::new()
-        .route("/api/video-canvas/media/{media_id}", get(serve_media))
+        .route(
+            "/api/video-canvas/media/{media_id}",
+            get(serve_media).head(head_media),
+        )
         .with_state(state)
 }
 
@@ -253,12 +256,28 @@ async fn serve_media(
     State(state): State<CanvasRouterState>,
     Path(media_id): Path<String>,
 ) -> Result<Response, AppError> {
-    let (mime, bytes) = state.service.serve_media(&media_id).await?;
+    let (mime, bytes, file) = state.service.open_media(&media_id).await?;
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime)
+        .header(header::CONTENT_LENGTH, bytes.to_string())
         .header(header::CACHE_CONTROL, SERVE_CACHE_CONTROL)
-        .body(Body::from(bytes))
+        .body(Body::from_stream(tokio_util::io::ReaderStream::new(file)))
+        .map_err(|e| AppError::Internal(format!("build response: {e}")))
+}
+
+/// `HEAD /media/{id}` — index-only lookup; never opens or reads the media file.
+async fn head_media(
+    State(state): State<CanvasRouterState>,
+    Path(media_id): Path<String>,
+) -> Result<Response, AppError> {
+    let head = state.service.head_media(&media_id).await?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, head.mime)
+        .header(header::CONTENT_LENGTH, head.bytes.to_string())
+        .header(header::CACHE_CONTROL, SERVE_CACHE_CONTROL)
+        .body(Body::empty())
         .map_err(|e| AppError::Internal(format!("build response: {e}")))
 }
 

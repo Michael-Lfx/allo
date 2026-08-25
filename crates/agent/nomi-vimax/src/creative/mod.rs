@@ -7,7 +7,7 @@ mod scan;
 #[cfg(test)]
 mod tests;
 
-pub use canvas_doc::{build_canvas_document, MediaIdMap};
+pub use canvas_doc::{IngestedMedia, build_canvas_document, MediaIdMap};
 pub use ir::{
     CreativeCharacter, CreativeFilm, CreativeMediaFile, CreativeMediaKind, CreativeScene,
     CreativeShot, CreativeWorldAsset, CreativeWorldKind, CREATIVE_IR_VERSION,

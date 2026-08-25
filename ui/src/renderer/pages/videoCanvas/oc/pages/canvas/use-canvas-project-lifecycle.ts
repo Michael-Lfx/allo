@@ -9,6 +9,7 @@ import { listAddedSkills, type Skill } from "@oc/services/api/skills";
 import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow } from "@oc/services/user-data-sync";
 import { flushCanvasStorePersistence, useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, CanvasNodeMetadata, ViewportTransform } from "@oc/types/canvas";
+import { createCanvasPersistPause } from "../../../lib/canvasProjectAutosave";
 import type { CanvasHistorySnapshot } from "./use-canvas-history";
 
 type UseCanvasProjectLifecycleOptions = {
@@ -74,11 +75,16 @@ export function useCanvasProjectLifecycle({
     const currentProject = useCanvasStore((state) => state.projects.find((project) => project.id === projectId));
     const [addedSkills, setAddedSkills] = useState<Skill[]>([]);
     const viewportSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // 打开工程后的首次媒体 hydrate 完成前，禁止把 store 变化持久化：
+    // hydrate 的 setNodes/setChatSessions 不是用户编辑，落盘会触发一串
+    // 无意义的 doc PUT（历史上还会把一次性 blob: URL 写进服务端文档）。
+    const persistPausedRef = useRef(createCanvasPersistPause());
 
     useEffect(() => {
         if (!hydrated) return;
         let cancelled = false;
         setProjectLoaded(false);
+        persistPausedRef.current.pause();
         const project = openProject(projectId);
         if (!project) {
             navigate("/video-generation?mode=creation", { replace: true });
@@ -120,6 +126,9 @@ export function useCanvasProjectLifecycle({
             if (nodesResult.status === "fulfilled") setNodes((current) => mergeHydratedNodeMedia(current, initialNodes, nodesResult.value));
             if (sessionsResult.status === "fulfilled") setChatSessions((current) => mergeHydratedSessions(current, sessionsResult.value));
             if (nodesResult.status === "rejected" || sessionsResult.status === "rejected") message.warning("部分本地媒体恢复失败，已使用项目记录继续打开");
+            // 合并已调度完成，恢复持久化；随后的首次 updateProject 携带的就是
+            // 干净的合并结果，而不是 hydrate 过程的中间态。
+            persistPausedRef.current.resume();
         };
         void restore();
         return () => {
@@ -143,12 +152,12 @@ export function useCanvasProjectLifecycle({
     }, [projectLoaded]);
 
     useEffect(() => {
-        if (!projectLoaded || historyPausedRef.current) return;
+        if (!projectLoaded || historyPausedRef.current || persistPausedRef.current.paused) return;
         updateProject(projectId, { nodes, connections, chatSessions, activeChatId, backgroundMode, showImageInfo });
     }, [activeChatId, backgroundMode, chatSessions, connections, historyPausedRef, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
 
     useEffect(() => {
-        if (!projectLoaded) return;
+        if (!projectLoaded || persistPausedRef.current.paused) return;
         if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
         viewportSaveTimerRef.current = setTimeout(() => {
             updateProject(projectId, { viewport: viewportRef.current });

@@ -1052,34 +1052,33 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
     const mimeType = node.metadata?.mimeType;
     const bytes = node.metadata?.bytes;
     const isRemoteResource = Boolean(resourceIdFromStorageKey(storageKey));
-    const [url, setUrl] = useState(isRemoteResource ? "" : fallback);
-    const [loading, setLoading] = useState(isRemoteResource && eager);
+    // 视频/音频保持「点按再加载」；图片直接用 HTTP content URL 出图
+    // （后端 Cache-Control: max-age=3600），不等 IndexedDB blob。
+    const deferUntilInteraction = node.type !== CanvasNodeType.Image;
+    const [url, setUrl] = useState(() => (isRemoteResource && deferUntilInteraction ? "" : fallback));
+    const [loading, setLoading] = useState(false);
 
     useEffect(() => {
-        let cancelled = false;
         if (!isRemoteResource) {
             setUrl(fallback);
-            setLoading(false);
             return;
         }
-        setUrl("");
-        setLoading(eager);
+        let cancelled = false;
+        // 点按型媒体（视频/音频）保持空 URL，等用户点击 load() 或命中缓存。
+        if (!deferUntilInteraction) setUrl(fallback);
         const hint = nodeResourceCacheHint(mimeType, bytes);
         const resolve = eager ? cacheResourceObjectUrl(storageKey, hint) : getCachedResourceObjectUrl(storageKey, hint);
         void resolve
             .then((cached) => {
-                if (!cancelled) setUrl(cached || (eager ? fallback : ""));
+                // 后台缓存不得扰动已展示的 HTTP 图（避免 src 闪换）；只有
+                // 点按型媒体、或节点没有可展示的 content 时才提升 blob URL。
+                if (!cancelled && cached && (deferUntilInteraction || !fallback)) setUrl(cached);
             })
-            .catch(() => {
-                if (!cancelled && eager) setUrl(fallback);
-            })
-            .finally(() => {
-                if (!cancelled) setLoading(false);
-            });
+            .catch(() => undefined);
         return () => {
             cancelled = true;
         };
-    }, [bytes, eager, fallback, isRemoteResource, mimeType, storageKey]);
+    }, [bytes, deferUntilInteraction, eager, fallback, isRemoteResource, mimeType, storageKey]);
 
     const load = useCallback(async () => {
         if (url) return url;

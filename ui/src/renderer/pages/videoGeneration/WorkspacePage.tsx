@@ -92,6 +92,7 @@ import {
   useRunStatusFull,
 } from './useRunStatusFeed';
 import styles from './index.module.css';
+import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
 
 const TextArea = Input.TextArea;
 
@@ -177,6 +178,12 @@ const WorkspacePage: React.FC = () => {
     },
     [],
   );
+
+  // 「打开到 Canvas」按钮的目标页面：进入工作台即预热 ProjectPage 大 chunk，
+  // 悬停按钮时再补一次，保证点击跳转不再等 chunk 解析。
+  useEffect(() => {
+    void loadVideoCanvasProjectPage();
+  }, []);
 
   const [previewEpoch, setPreviewEpoch] = useState(0);
   const storyboardVisibleTracked = useRef(false);
@@ -1102,6 +1109,7 @@ const WorkspacePage: React.FC = () => {
                     })
                   : undefined
               }
+              onPointerEnter={() => void loadVideoCanvasProjectPage()}
               onClick={() => void handleOpenInCanvas()}
             >
               <span className='inline-flex items-center gap-4px'>

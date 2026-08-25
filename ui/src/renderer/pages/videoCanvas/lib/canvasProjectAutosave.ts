@@ -28,6 +28,34 @@ export interface CanvasProjectAutosaveController {
   dispose: () => Promise<void>;
 }
 
+/**
+ * Gate for store persistence while an opened project's first media hydrate is
+ * still in flight. Hydration mutations are not user edits; persisting them
+ * produces a spurious PUT storm (historically persisting ephemeral blob URLs
+ * into the server document). Starts resumed; the open flow pauses before
+ * restoring, resumes once the merged hydrated state has landed.
+ */
+export interface CanvasPersistPause {
+  readonly paused: boolean;
+  pause: () => void;
+  resume: () => void;
+}
+
+export function createCanvasPersistPause(): CanvasPersistPause {
+  let paused = false;
+  return {
+    get paused() {
+      return paused;
+    },
+    pause: () => {
+      paused = true;
+    },
+    resume: () => {
+      paused = false;
+    },
+  };
+}
+
 export interface CanvasProjectAutosaveOptions {
   save: () => Promise<void>;
   debounceMs?: number;

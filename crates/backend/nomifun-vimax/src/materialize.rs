@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nomi_vimax::{
-    build_canvas_document, media_local, scan_session_film, CreativeFilm, MediaIdMap, SessionRecord,
+    build_canvas_document, media_local, scan_session_film, CreativeFilm, IngestedMedia, MediaIdMap,
+    SessionRecord,
 };
 use nomifun_canvas::CanvasService;
 use nomifun_common::AppError;
@@ -279,7 +280,14 @@ async fn ingest_film_media(
             .await
         {
             Ok(meta) => {
-                map.insert(media.rel_path.clone(), meta.media_id);
+                map.insert(
+                    media.rel_path.clone(),
+                    IngestedMedia {
+                        media_id: meta.media_id,
+                        bytes: meta.bytes,
+                        mime: meta.mime,
+                    },
+                );
             }
             Err(e) => warnings.push(format!("ingest {}: {e}", media.rel_path)),
         }

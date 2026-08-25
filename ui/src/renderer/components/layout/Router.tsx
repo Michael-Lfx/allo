@@ -11,6 +11,7 @@ import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
 import { requiresCloudAuthGate, resolvePostLocalAuthPath } from '@renderer/utils/auth/authGate';
 import { cloudLoginRedirectForPath } from '@renderer/pages/billing/billingAuth';
 import ConversationShell from '@renderer/pages/conversation/components/ConversationShell';
+import { loadVideoCanvasProjectPage } from '@renderer/pages/videoCanvas/loadProjectPage';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
 const Guid = React.lazy(() => import('@renderer/pages/guid'));
 const PresetSettings = React.lazy(() => import('@renderer/pages/settings/PresetSettings'));
@@ -42,7 +43,7 @@ const LearningPage = React.lazy(() => import('@renderer/pages/learning'));
 const EvalPage = React.lazy(() => import('@renderer/pages/eval'));
 const VideoGenerationListPage = React.lazy(() => import('@renderer/pages/videoGeneration'));
 const VideoGenerationWorkspacePage = React.lazy(() => import('@renderer/pages/videoGeneration/WorkspacePage'));
-const VideoCanvasProjectPage = React.lazy(() => import('@renderer/pages/videoCanvas/ProjectPage'));
+const VideoCanvasProjectPage = React.lazy(loadVideoCanvasProjectPage);
 // TODO: workshop/assets stay deferred (no routes until explicitly published)
 // const WorkshopListPage = React.lazy(() => import('@renderer/pages/workshop'));
 // const WorkshopCanvasPage = React.lazy(() => import('@renderer/pages/workshop/CanvasPage'));
