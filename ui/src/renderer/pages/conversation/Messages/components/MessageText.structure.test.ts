@@ -9,6 +9,7 @@ import { describe, expect, test } from 'bun:test';
 
 const source = readFileSync(new URL('./MessageText.tsx', import.meta.url), 'utf8');
 const typographySource = readFileSync(new URL('../typography.ts', import.meta.url), 'utf8');
+const messagesCss = readFileSync(new URL('../messages.css', import.meta.url), 'utf8');
 
 describe('MessageText process action chrome', () => {
   test('keeps copy and time visible while allowing active process text to hide the row', () => {
@@ -62,11 +63,40 @@ describe('MessageText process action chrome', () => {
   });
 
   test('keeps completed markdown fences expanded while the reply is still streaming', () => {
-    const prefixView = source.slice(
-      source.indexOf('streamingParts.stablePrefix'),
-      source.indexOf('streamingParts.tailKind')
+    expect(source.includes("streamingParts.tailKind === 'code'")).toBe(true);
+    const codeBranch = source.slice(
+      source.indexOf("streamingParts.tailKind === 'code'"),
+      source.indexOf('streamingParts.codeContent')
     );
-    expect(prefixView.includes('isStreaming')).toBe(true);
+    expect(codeBranch.includes('isStreaming')).toBe(true);
+  });
+
+  test('renders streaming prose through one MarkdownView so tables and lists do not restyle on promotion', () => {
+    const streamingBlock = source.match(/<StreamingText[\s\S]*?<\/StreamingText>/)?.[0] ?? '';
+    expect(streamingBlock.includes("streamingParts.tailKind === 'code'")).toBe(true);
+    expect(streamingBlock.includes("className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}")).toBe(false);
+    expect(streamingBlock.includes('{data}')).toBe(true);
+  });
+
+  test('does not pretty-rebalance wrap points on the live streaming tail', () => {
+    expect(messagesCss.includes('text-wrap: pretty')).toBe(true);
+    expect(messagesCss.includes('.message-text-body.message-streaming-body')).toBe(true);
+    const prettyIndex = messagesCss.indexOf('text-wrap: pretty');
+    const streamingWrapIndex = messagesCss.indexOf('.message-text-body.message-streaming-body');
+    expect(streamingWrapIndex).toBeGreaterThan(prettyIndex);
+    const streamingWrapRule = messagesCss.slice(
+      streamingWrapIndex,
+      messagesCss.indexOf('}', streamingWrapIndex) + 1
+    );
+    expect(streamingWrapRule.includes('text-wrap: wrap')).toBe(true);
+    expect(streamingWrapRule.includes('text-wrap: pretty')).toBe(false);
+  });
+
+  test('skips JSON probing while the reply is still streaming', () => {
+    expect(source.includes('useFormatContent(text, isStreaming)')).toBe(true);
+    const formatHook = source.match(/const useFormatContent = [\s\S]*?^};/m)?.[0] ?? '';
+    expect(formatHook.includes('if (isStreaming)')).toBe(true);
+    expect(formatHook.includes('JSON.parse(content)')).toBe(true);
   });
 
   test('uses one body typography contract for plain text and markdown text', () => {

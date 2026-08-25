@@ -1380,6 +1380,7 @@ const MessageList: React.FC<{
     itemCount: displayList.length,
     virtuosoRef,
     virtuosoMode: scrollParent != null,
+    layoutPinKey: list,
   });
 
   // ── Windowed history: load older messages on scroll-up with a scroll-anchor ──
@@ -1455,10 +1456,11 @@ const MessageList: React.FC<{
 
   // Restore the viewport after an older window prepends (content grew at the
   // top). Keyed on the raw `list.length` (always grows by the prepended count,
-  // even when the grouping transform merges cards). `overflowAnchor: none` on
-  // the scroller keeps the browser from fighting this. Only acts while a
-  // load-older is pending; ordinary bottom growth (streaming) leaves the anchor
-  // null and is untouched.
+  // even when the grouping transform merges cards). Virtuoso items keep
+  // overflow-anchor: none so this restore is not fought; the end spacer is the
+  // follow anchor while pinned to the tail. Only acts while a load-older is
+  // pending; ordinary bottom growth (streaming) leaves the anchor null and is
+  // untouched.
   useLayoutEffect(() => {
     const anchor = prependAnchorRef.current;
     if (!anchor) return;
@@ -1758,12 +1760,11 @@ const MessageList: React.FC<{
             ref={combinedScrollerRef}
             data-testid='message-list-scroller'
             className='flex-1 h-full overflow-y-auto pb-10px box-border'
-            style={{ overflowAnchor: 'none' }}
             onPointerDown={handlePointerDown}
             onScroll={handleScrollWithPaging}
             onWheel={handleWheel}
           >
-            <div ref={handleContentRef} data-testid='message-list-content' style={{ overflowAnchor: 'none' }}>
+            <div ref={handleContentRef} data-testid='message-list-content'>
               {loadingOlder ? (
                 <div
                   className='message-list-loading-older sticky top-0 z-10 py-8px text-center text-12px text-t-secondary'
@@ -1783,6 +1784,10 @@ const MessageList: React.FC<{
                   atBottomThreshold={FOLLOW_BOTTOM_THRESHOLD_PX}
                   computeItemKey={(_index, item) => item.id}
                   increaseViewportBy={{ top: 800, bottom: 800 }}
+                  // Default item ResizeObserver waits a rAF; the extra frame is
+                  // the wrap that shoves the last line into the live step, then
+                  // the height/scroll pin pulls it back.
+                  skipAnimationFrameInResizeObserver
                   rangeChanged={handleVirtuosoRangeChanged}
                   components={{
                     Header: () => <div className='h-10px' />,

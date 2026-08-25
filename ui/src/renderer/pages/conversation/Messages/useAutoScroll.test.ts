@@ -91,13 +91,26 @@ describe('useAutoScroll scroll ownership', () => {
     expect(observer.includes('followContentGrowth()')).toBe(true);
     expect(observer.includes('if (virtuosoMode) return')).toBe(false);
     expect(growth.includes('if (virtuosoMode) return')).toBe(false);
-    expect(growth.includes('scrollerEl.scrollTop = maxTop')).toBe(true);
+    expect(growth.includes("querySelector('.message-list-end-spacer')")).toBe(true);
+    expect(growth.includes('scrollerEl.scrollTop += delta')).toBe(true);
     expect(observer.includes('scheduleAutoFollow()')).toBe(false);
   });
 
-  test('still pins a plain list to max scrollTop when content grows', () => {
+  test('pins scrollTop in useLayoutEffect so wrap and follow share one frame', () => {
+    expect(source.includes('layoutPinKey')).toBe(true);
+    expect(source.includes('[followContentGrowth, layoutPinKey]')).toBe(true);
+    const layoutPin = source.slice(source.indexOf('layoutPinKey?: unknown'));
+    expect(layoutPin.includes('useLayoutEffect(() => {')).toBe(true);
+    expect(layoutPin.includes('followContentGrowth();')).toBe(true);
+  });
+
+  test('pins follow to the end spacer so a thinking collapse does not leave the reply in the middle', () => {
     const growth = sliceBetween('const followContentGrowth', 'const scrollToBottom');
 
+    expect(growth.includes("querySelector('.message-list-end-spacer')")).toBe(true);
+    expect(growth.includes('getBoundingClientRect()')).toBe(true);
+    expect(growth.includes('paddingBottom')).toBe(true);
+    expect(growth.includes('scrollerEl.scrollTop += delta')).toBe(true);
     expect(growth.includes('getMaxScrollTop(scrollerEl)')).toBe(true);
     expect(growth.includes('scrollerEl.scrollTop = maxTop')).toBe(true);
     expect(growth.includes('userScrolledRef.current')).toBe(true);

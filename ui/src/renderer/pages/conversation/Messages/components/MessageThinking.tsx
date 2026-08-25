@@ -107,7 +107,7 @@ const MessageThinking: React.FC<MessageThinkingProps> = ({
   const liveWindow = isLiveProcessThinkingWindow(variant, traceStatus);
   const defaultExpanded = expanded ?? (isProcessVariant ? !isDone : true);
   const [internalExpanded, setInternalExpanded] = useState(() => defaultExpanded);
-  const resolvedExpanded = liveWindow ? true : (expanded ?? internalExpanded);
+  const resolvedExpanded = liveWindow ? true : (expanded ?? (isProcessVariant ? !isDone : internalExpanded));
   const [elapsedTime, setElapsedTime] = useState(() => {
     const initialStartedAt = message.created_at ?? Date.now();
     return isDone ? 0 : Math.max(0, Math.floor((Date.now() - initialStartedAt) / 1000));

@@ -36,4 +36,25 @@ describe('message list streaming follow', () => {
     expect(messageListSource.includes('virtuosoRef,')).toBe(true);
     expect(messageListSource.includes('virtuosoMode: scrollParent != null')).toBe(true);
   });
+
+  test('measures streaming row growth in the same frame so the last line does not bounce', () => {
+    expect(messageListSource.includes('skipAnimationFrameInResizeObserver')).toBe(true);
+  });
+
+  test('anchors follow to the end spacer so a wrap does not shove then restore the last line', () => {
+    expect(messageListSource.includes("style={{ overflowAnchor: 'none' }}")).toBe(false);
+    expect(messageListSource.includes('layoutPinKey: list')).toBe(true);
+    expect(messageStyles.includes('.message-list-end-spacer')).toBe(true);
+    const spacerRule = messageStyles.slice(
+      messageStyles.indexOf('.message-list-end-spacer {'),
+      messageStyles.indexOf('}', messageStyles.indexOf('.message-list-end-spacer {')) + 1
+    );
+    expect(spacerRule.includes('overflow-anchor: auto')).toBe(true);
+    expect(messageStyles.includes("[data-testid='virtuoso-item-list']")).toBe(true);
+    const listRule = messageStyles.slice(
+      messageStyles.indexOf("[data-testid='virtuoso-item-list']"),
+      messageStyles.indexOf('}', messageStyles.indexOf("[data-testid='virtuoso-item-list']")) + 1
+    );
+    expect(listRule.includes('overflow-anchor: none')).toBe(true);
+  });
 });

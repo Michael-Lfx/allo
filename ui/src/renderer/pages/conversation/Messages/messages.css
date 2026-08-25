@@ -27,11 +27,21 @@
 }
 
 /* Trailing room under the latest reply so follow-to-bottom doesn't glue
-   streaming tokens to the composer. */
+   streaming tokens to the composer. `overflow-anchor: auto` keeps this
+   spacer pinned while the streaming row grows, so a wrap does not paint
+   one frame shoved into the live step and the next frame restored. */
 .message-list-end-spacer {
   height: 64px;
   flex-shrink: 0;
   pointer-events: none;
+  overflow-anchor: auto;
+}
+
+/* Virtuoso items hardcode overflow-anchor: none. Keep the item list from
+   becoming an anchor so load-older prepend restore is not fought; the end
+   spacer (Footer, not an Item) is the follow anchor. */
+[data-testid='virtuoso-item-list'] {
+  overflow-anchor: none;
 }
 
 .message-item {
@@ -91,6 +101,12 @@
 .message-item p,
 .message-text-body {
   text-wrap: pretty;
+}
+
+/* Pretty rebalances earlier wrap points as the tail grows, which reads as
+   line-jumping during fast streams. Keep greedy wrap on the live tail only. */
+.message-text-body.message-streaming-body {
+  text-wrap: wrap;
 }
 
 /* Tracking is size-specific: headings read too loose as they grow. */

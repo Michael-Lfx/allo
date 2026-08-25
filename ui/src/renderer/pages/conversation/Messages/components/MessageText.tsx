@@ -317,8 +317,11 @@ export const resolveMessageFilePath = (file_path: string, workspace?: string): s
   return `${normalizedWorkspace}/${normalizedFilePath}`.replace(/\/+/g, '/');
 };
 
-const useFormatContent = (content: string) => {
+const useFormatContent = (content: string, isStreaming = false) => {
   return useMemo(() => {
+    if (isStreaming) {
+      return { data: content };
+    }
     try {
       const json = JSON.parse(content);
       const isJson = typeof json === 'object';
@@ -329,7 +332,7 @@ const useFormatContent = (content: string) => {
     } catch {
       return { data: content };
     }
-  }, [content]);
+  }, [content, isStreaming]);
 };
 
 const MessageText: React.FC<{
@@ -358,7 +361,7 @@ const MessageText: React.FC<{
   }, [message.content.content]);
 
   const { text, files } = parseMessageFileMarker(contentToRender, message.position);
-  const { data, json } = useFormatContent(text);
+  const { data, json } = useFormatContent(text, isStreaming);
   const streamingParts = useMemo(
     () => (isStreaming && !json && typeof data === 'string' ? splitStreamingMarkdown(data) : undefined),
     [data, isStreaming, json]
@@ -717,7 +720,7 @@ const MessageText: React.FC<{
                     allowUnverifiedImages={isUserMessage}
                   >{`\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``}</MarkdownView>
                 </CollapsibleContent>
-              ) : streamingParts ? (
+              ) : streamingParts && streamingParts.tailKind === 'code' ? (
                 <>
                   {streamingParts.stablePrefix ? (
                     <MarkdownView
@@ -730,14 +733,20 @@ const MessageText: React.FC<{
                       {streamingParts.stablePrefix}
                     </MarkdownView>
                   ) : null}
-                  {streamingParts.tailKind === 'code' ? (
-                    <CodeBlock language={streamingParts.codeLanguage} streaming>
-                      {streamingParts.codeContent ?? ''}
-                    </CodeBlock>
-                  ) : streamingParts.tail ? (
-                    <div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>{streamingParts.tail}</div>
-                  ) : null}
+                  <CodeBlock language={streamingParts.codeLanguage} streaming>
+                    {streamingParts.codeContent ?? ''}
+                  </CodeBlock>
                 </>
+              ) : streamingParts ? (
+                <MarkdownView
+                  codeStyle={CODE_STYLE}
+                  fontSize={MESSAGE_BODY_FONT_SIZE}
+                  lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                  allowUnverifiedImages={isUserMessage}
+                  isStreaming
+                >
+                  {data}
+                </MarkdownView>
               ) : (
                 <MarkdownView
                   codeStyle={CODE_STYLE}

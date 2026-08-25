@@ -46,6 +46,20 @@ describe('StreamingText', () => {
     expect(reducedMotion.includes('animation: none')).toBe(true);
   });
 
+  test('keeps the streaming caret out of wrap width', () => {
+    expect(cssSource.includes('padding-right: 6px')).toBe(false);
+    expect(cssSource.includes('margin-right: -4px')).toBe(true);
+    expect(shadowSource.includes('padding-right: 6px')).toBe(false);
+    expect(shadowSource.includes('margin-right: -4px')).toBe(true);
+    const caretRule = cssSource.slice(
+      cssSource.indexOf('.streaming .body:empty::after'),
+      cssSource.indexOf('@keyframes streaming-caret')
+    );
+    expect(caretRule.includes('display: inline-block')).toBe(true);
+    expect(caretRule.includes('width: 2px')).toBe(true);
+    expect(caretRule.includes('margin-left: 2px')).toBe(true);
+  });
+
   test('uses an ink caret without a primary glow', () => {
     expect(cssSource.includes('linear-gradient')).toBe(false);
     expect(cssSource.includes('box-shadow: 0 0 8px')).toBe(false);

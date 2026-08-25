@@ -44,6 +44,16 @@ describe('CodeBlock', () => {
     expect(source.includes('@icon-park/react')).toBe(false);
   });
 
+  test('keeps the streaming code caret out of wrap width', () => {
+    const caretRule = cssSource.slice(
+      cssSource.indexOf('.streaming .line:last-child .lineText::after'),
+      cssSource.indexOf('@keyframes code-block-caret')
+    );
+    expect(caretRule.includes('margin-right: -5px')).toBe(true);
+    expect(caretRule.includes('width: 3px')).toBe(true);
+    expect(caretRule.includes('margin-left: 2px')).toBe(true);
+  });
+
   test('uses an accent streaming caret without a primary glow', () => {
     expect(cssSource.includes('linear-gradient')).toBe(false);
     expect(cssSource.includes('0 0 8px')).toBe(false);

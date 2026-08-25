@@ -146,6 +146,7 @@ pre.body {
   width: 3px;
   height: 12px;
   margin-left: 2px;
+  margin-right: -5px;
   vertical-align: -0.1em;
   border-radius: 999px;
   background: var(--color-primary-6, #165dff);

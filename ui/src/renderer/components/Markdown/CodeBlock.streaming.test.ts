@@ -27,6 +27,8 @@ describe('CodeBlock streaming behavior', () => {
     expect(source.includes("overflowY: isStreaming ? 'auto' : 'hidden'")).toBe(false);
     expect(source.includes('canCollapse && !isStreaming')).toBe(true);
     expect(source.includes('node.scrollTop = node.scrollHeight')).toBe(true);
+    expect(source.includes('streaming={isStreaming}')).toBe(false);
+    expect(source.includes('streaming={false}')).toBe(true);
   });
 
   test('conversation streaming activates Markdown only after a code fence begins', () => {

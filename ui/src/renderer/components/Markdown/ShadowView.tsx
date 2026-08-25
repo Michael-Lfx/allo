@@ -125,6 +125,7 @@ const createInitStyle = (
     width: 2px;
     height: 1em;
     margin-left: 2px;
+    margin-right: -4px;
     vertical-align: -0.12em;
     background: var(--beautiful-ui-streaming-caret-bg, var(--color-text-1, #1d2129));
     box-shadow: var(--beautiful-ui-streaming-caret-shadow, none);

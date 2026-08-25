@@ -32,6 +32,7 @@ describe('MessageThinking expansion', () => {
     expect(source.includes("const defaultExpanded = expanded ?? (isProcessVariant ? !isDone : true);")).toBe(true);
     expect(source.includes('useState(() => defaultExpanded)')).toBe(true);
     expect(source.includes('onExpandedChange?.(nextExpanded)')).toBe(true);
+    expect(source.includes('expanded ?? (isProcessVariant ? !isDone : internalExpanded)')).toBe(true);
     expect(source.includes('useState(!isDone)')).toBe(false);
     expect(source.includes('setExpanded(false)')).toBe(false);
   });
@@ -40,7 +41,7 @@ describe('MessageThinking expansion', () => {
     expect(source.includes('isLiveProcessThinkingWindow')).toBe(true);
     expect(source.includes('pinScrollableToLatest')).toBe(true);
     expect(source.includes('const liveWindow = isLiveProcessThinkingWindow(variant, traceStatus)')).toBe(true);
-    expect(source.includes('const resolvedExpanded = liveWindow ? true : (expanded ?? internalExpanded)')).toBe(true);
+    expect(source.includes('const resolvedExpanded = liveWindow ? true : (expanded ?? (isProcessVariant ? !isDone : internalExpanded))')).toBe(true);
     expect(source.includes('pinScrollableToLatest(element)')).toBe(true);
     expect(source.includes('useLayoutEffect')).toBe(true);
     expect(source.includes('requestAnimationFrame(() => {\n    pinScrollableToLatest(element)')).toBe(false);

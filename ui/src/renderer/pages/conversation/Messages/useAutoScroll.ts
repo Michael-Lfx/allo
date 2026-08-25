@@ -4,15 +4,19 @@
  *
  * Strategy:
  * - Track whether the user has intentionally scrolled away from the bottom.
- * - One owner: ResizeObserver pins scrollTop to the true content bottom
- *   (including the 64px end spacer). Virtuoso followOutput stays off.
+ * - One owner: the end spacer is the overflow-anchor, and useLayoutEffect
+ *   plus ResizeObserver pin the spacer to the visible bottom before paint.
+ *   Pinning scrollTop to scrollHeight max is wrong when Virtuoso's height
+ *   cache still includes a just-collapsed thinking window — that leaves a
+ *   hole under the reply and parks the answer in the middle of the screen.
+ *   Virtuoso followOutput stays off.
  *   Tool chips grow the outer disclosure; followOutput would notice the
  *   taller list while the spacer keeps it off the true bottom, then jump the
  *   last two lines back into place.
  * - Sending a user message always jumps to the tail, even if follow was paused.
  * - Use DOM-native scrollIntoView for explicit message jumps.
  */
-import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import type { VirtuosoHandle } from 'react-virtuoso';
 import type { TMessage } from '@/common/chat/chatLib';
 
@@ -33,6 +37,8 @@ interface UseAutoScrollOptions {
   virtuosoRef?: RefObject<VirtuosoHandle | null>;
   /** True while Virtuoso is mounted and owns streaming tail follow. */
   virtuosoMode?: boolean;
+  /** Identity that changes when streaming content grows; pins scroll before paint. */
+  layoutPinKey?: unknown;
 }
 
 interface ScrollElementIntoViewOptions {
@@ -81,6 +87,7 @@ export function useAutoScroll({
   itemCount,
   virtuosoRef,
   virtuosoMode: _virtuosoMode = false,
+  layoutPinKey,
 }: UseAutoScrollOptions): UseAutoScrollReturn {
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null);
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
@@ -150,6 +157,17 @@ export function useAutoScroll({
   const followContentGrowth = useCallback(() => {
     if (!scrollerEl || userScrolledRef.current || userIntentPausedRef.current) return;
     if (Date.now() < resizeAutoFollowBlockedUntilRef.current) return;
+
+    const spacer = scrollerEl.querySelector('.message-list-end-spacer');
+    if (spacer instanceof HTMLElement) {
+      const paddingBottom = Number.parseFloat(getComputedStyle(scrollerEl).paddingBottom) || 0;
+      const pinLine = scrollerEl.getBoundingClientRect().bottom - paddingBottom;
+      const delta = spacer.getBoundingClientRect().bottom - pinLine;
+      if (Math.abs(delta) < 1) return;
+      markProgrammaticScroll();
+      scrollerEl.scrollTop += delta;
+      return;
+    }
 
     const maxTop = getMaxScrollTop(scrollerEl);
     if (Math.abs(scrollerEl.scrollTop - maxTop) < 1) return;
@@ -275,6 +293,10 @@ export function useAutoScroll({
     },
     [pauseAutoFollow]
   );
+
+  useLayoutEffect(() => {
+    followContentGrowth();
+  }, [followContentGrowth, layoutPinKey]);
 
   useEffect(() => {
     if (!scrollerEl || !contentEl) return;

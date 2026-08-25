@@ -147,7 +147,7 @@ function CodeBlock(props: CodeBlockProps) {
       <BeautifulUiCodeBlock
         language={language}
         filename={filename}
-        streaming={isStreaming}
+        streaming={false}
         hiddenCopyButton={hiddenCodeCopyButton}
         toolbar={
           canCollapse && !isStreaming ? (
