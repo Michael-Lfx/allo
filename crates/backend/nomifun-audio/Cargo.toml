@@ -13,6 +13,8 @@ aac-encode = []
 silero-vad = ["dep:ort"]
 # Local sherpa-onnx ASR (native link). Auto/cloud STT work without this.
 local-stt = ["dep:sherpa-onnx"]
+# Offline speaker diarization / voiceprint via sherpa-onnx (same native dep as local-stt).
+diarization = ["dep:sherpa-onnx"]
 
 [dependencies]
 async-trait = { workspace = true }

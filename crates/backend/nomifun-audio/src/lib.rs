@@ -18,6 +18,7 @@
 
 pub mod capture;
 pub mod devices;
+pub mod diarization;
 pub mod encode;
 pub mod frame;
 pub mod keepawake;
@@ -30,9 +31,14 @@ pub mod recorder;
 pub mod session;
 pub mod stt;
 pub mod vad;
+pub mod voiceprint;
 
 pub use capture::AudioCaptureSource;
 pub use devices::{AudioDeviceInfo, AudioDeviceManager, DeviceKind};
+pub use diarization::{
+    Diarizer, EnergyClusterDiarizer, EnergyClusterDiarizerConfig, SpeakerAssigner, SpeakerIdentity,
+    SpeakerSpan, create_diarizer, dominant_speaker_key,
+};
 pub use encode::{encode_track_default, pcm_to_m4a, pcm_to_wav, write_track_m4a};
 pub use frame::{AudioChannel, TaggedFrame};
 pub use keepawake::KeepAwakeGuard;
@@ -53,3 +59,12 @@ pub use stt::{
     SherpaSttCallback, SherpaSttError, SwitchableSttCallback, build_switchable_stt, try_load_sherpa,
 };
 pub use vad::{EnergyVad, VadBackend, VadConfig, create_vad};
+pub use voiceprint::{
+    FakeVoiceprintEncoder, VoiceprintEncoder, VoiceprintEntry, VoiceprintGallery, VoiceprintMatch,
+    VoiceprintStore, cosine_similarity, embedding_from_blob, embedding_to_blob, slice_pcm_ms,
+};
+
+#[cfg(any(feature = "local-stt", feature = "diarization"))]
+pub use diarization::{SherpaDiarizer, SherpaDiarizerConfig};
+#[cfg(any(feature = "local-stt", feature = "diarization"))]
+pub use voiceprint::{SherpaVoiceprintEncoder, SherpaVoiceprintEncoderConfig};
