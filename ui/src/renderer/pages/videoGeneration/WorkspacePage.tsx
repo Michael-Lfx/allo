@@ -48,6 +48,8 @@ import {
   renderSession,
   materializeSessionToCanvas,
   writeArtifactText,
+  listCameos,
+  uploadCameo,
 } from './api';
 import type { ArtifactContent, ArtifactNode, VimaxSession, VimaxWorkflow } from './types';
 import ArtifactTree from './components/ArtifactTree';
@@ -91,10 +93,20 @@ import {
   useRunStatusFlags,
   useRunStatusFull,
 } from './useRunStatusFeed';
+import { clampDuration } from './durationBounds';
 import styles from './index.module.css';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
 
 const TextArea = Input.TextArea;
+
+/** Dedupes home→workspace auto-plan across React Strict Mode remounts. */
+const autoPlannedSessions = new Set<string>();
+
+type WorkspaceLaunchState = {
+  launchDraft?: VideoCreateDraft;
+  launchError?: boolean;
+  autoPlan?: boolean;
+};
 
 function sourceFieldForWorkflow(workflow: VimaxWorkflow | string): 'idea' | 'script' | 'novel_text' {
   switch (normalizeWorkflow(workflow)) {
@@ -188,10 +200,12 @@ const WorkspacePage: React.FC = () => {
   const [previewEpoch, setPreviewEpoch] = useState(0);
   const storyboardVisibleTracked = useRef(false);
   const [actionAssetsReady, setActionAssetsReady] = useState(false);
+  /** Bump so WorkspaceCameoStrip re-lists after plan / artifact changes. */
+  const [cameoRefreshToken, setCameoRefreshToken] = useState(0);
 
-  const launchDraft = (
-    location.state as { launchDraft?: VideoCreateDraft; launchError?: boolean } | null
-  )?.launchDraft;
+  const launchState = (location.state as WorkspaceLaunchState | null) ?? null;
+  const launchDraft = launchState?.launchDraft;
+  const shouldAutoPlan = Boolean(launchState?.autoPlan) && !launchState?.launchError;
 
   const sourceField = session ? sourceFieldForWorkflow(session.workflow) : 'idea';
 
@@ -516,36 +530,58 @@ const WorkspacePage: React.FC = () => {
       return;
     }
     setPlanning(true);
+    patchRunStatus(
+      getRunStatusSnapshot()
+        ? { status: 'planning' }
+        : { stage: 'planning', message: '', progress: 0, status: 'planning' }
+    );
     try {
+      const fromSession =
+        session.vertical_skill_ids && session.vertical_skill_ids.length > 0
+          ? session.vertical_skill_ids
+          : undefined;
+      const fromLaunch =
+        launchDraft?.verticalSkillIds && launchDraft.verticalSkillIds.length > 0
+          ? launchDraft.verticalSkillIds
+          : undefined;
+      const prefs = launchDraft?.preferences;
       const body = {
         [sourceField]: trimmed,
         user_requirement: requirement.trim() || undefined,
         style: style.trim() || undefined,
-        vertical_skill_ids:
-          session?.vertical_skill_ids && session.vertical_skill_ids.length > 0
-            ? session.vertical_skill_ids
-            : undefined,
+        vertical_skill_ids: fromSession ?? fromLaunch,
         aspect_ratio: aspectRatio,
         resolution: normalizeVideoResolution(models.video_model, resolution),
         fps: normalizeVideoFps(models.video_model, fps),
         llm_model: models.llm_model.trim() || undefined,
         image_model: models.image_model.trim() || undefined,
         video_model: models.video_model.trim() || undefined,
+        target_duration_secs:
+          prefs?.mediaKind === 'video' && prefs.specifyTargetDuration
+            ? clampDuration(prefs.targetDurationSecs)
+            : undefined,
       };
       await planSession(sessionId, body);
       message.success(t('videoGeneration.workspace.planStarted', { defaultValue: '已开始规划' }));
+      setCameoRefreshToken((n) => n + 1);
       const st = await refreshRun();
       if (!st || !isActiveStatus(st.status)) {
         // Optimistic: mark planning so polling kicks in even if status lags.
         patchRunStatus(
           getRunStatusSnapshot()
             ? { status: 'planning' }
-            : { stage: 'plan', message: '', progress: 0, status: 'planning' }
+            : { stage: 'planning', message: '', progress: 0, status: 'planning' }
         );
       }
       void refreshArtifacts();
     } catch (e) {
       const raw = e instanceof Error ? e.message : String(e);
+      // Home auto-plan can race Strict Mode; ignore "already running".
+      if (/already has an active job/i.test(raw)) {
+        void refreshRun();
+        return;
+      }
+      void refreshRun();
       message.error(
         isInsufficientCreditsError(raw)
           ? t('videoGeneration.workspace.failure.creditsToast', {
@@ -567,10 +603,77 @@ const WorkspacePage: React.FC = () => {
     resolution,
     fps,
     models,
+    launchDraft,
     message,
     t,
     refreshRun,
     refreshArtifacts,
+  ]);
+
+  // Home「发送」lands here with autoPlan: sync any in-memory refs, then plan.
+  useEffect(() => {
+    if (!shouldAutoPlan || !sessionId || loading || loadError || !session) return;
+    if (autoPlannedSessions.has(sessionId)) return;
+    if (isActionImitationWorkflow(session.workflow)) return;
+    const clearAutoPlanFlag = () => {
+      navigate(`${location.pathname}${location.search}`, {
+        replace: true,
+        // Keep launchDraft so brief fields stay filled; drop autoPlan to avoid loops.
+        state: launchDraft ? { launchDraft } : {},
+      });
+    };
+    if (
+      isActiveStatus(session.status) ||
+      session.stage === 'planned' ||
+      session.status === 'succeeded'
+    ) {
+      autoPlannedSessions.add(sessionId);
+      clearAutoPlanFlag();
+      return;
+    }
+    autoPlannedSessions.add(sessionId);
+    clearAutoPlanFlag();
+    void (async () => {
+      // Home may have shown thumbnails while HTTP upload failed (e.g. old 11MB
+      // body limit). Retry from in-memory Files before planning locks inputs.
+      const pending = (launchDraft?.cameos ?? []).filter((c) => c.file);
+      if (pending.length > 0) {
+        try {
+          const existing = await listCameos(sessionId);
+          if (existing.length === 0) {
+            for (const [index, cameo] of pending.entries()) {
+              await uploadCameo(
+                sessionId,
+                cameo.file!,
+                cameo.characterName.trim() || `参考图${index + 1}`,
+                cameo.description.trim()
+              );
+            }
+            setCameoRefreshToken((n) => n + 1);
+          }
+        } catch (e) {
+          message.error(
+            `${t('videoGeneration.workspace.uploadFailed', {
+              defaultValue: '上传参考图失败',
+            })}: ${e instanceof Error ? e.message : String(e)}`
+          );
+        }
+      }
+      await handlePlan();
+    })();
+  }, [
+    shouldAutoPlan,
+    sessionId,
+    loading,
+    loadError,
+    session,
+    handlePlan,
+    navigate,
+    location.pathname,
+    location.search,
+    launchDraft,
+    message,
+    t,
   ]);
 
   const handleSaveSceneDescriptions = useCallback(
@@ -1182,7 +1285,8 @@ const WorkspacePage: React.FC = () => {
                   </div>
                   <div className='mt-2px text-12px text-[var(--color-text-3)]'>
                     {t('videoGeneration.studio.technicalDetailsHint', {
-                      defaultValue: '审阅并编辑定妆图、环境/道具参考与工程文件，再生成成片。',
+                      defaultValue:
+                        '审阅参考图分类、定妆图、环境/道具板与工程文件，再生成成片。',
                     })}
                   </div>
                 </div>
@@ -1262,7 +1366,7 @@ const WorkspacePage: React.FC = () => {
           </section>
         ) : null}
 
-        {statusFlags.busy || isFailed ? (
+        {busy || isFailed ? (
           <section
             className={[
               styles.studioPanel,
@@ -1385,7 +1489,15 @@ const WorkspacePage: React.FC = () => {
               className='!text-14px !leading-23px'
             />
             {sessionId ? (
-              <WorkspaceCameoStrip sessionId={sessionId} disabled={busy} />
+              <WorkspaceCameoStrip
+                sessionId={sessionId}
+                disabled={busy}
+                refreshToken={cameoRefreshToken}
+                onChanged={() => {
+                  setCameoRefreshToken((n) => n + 1);
+                  void refreshArtifacts();
+                }}
+              />
             ) : null}
             <div className={`mt-12px grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
               <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>

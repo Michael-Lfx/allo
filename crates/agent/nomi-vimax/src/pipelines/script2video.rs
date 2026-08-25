@@ -16,7 +16,8 @@ use crate::progress::ProgressCallback;
 use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
 
 use super::cameo_bind::{
-    apply_session_cameos, cameo_extractor_hint, resolve_session_root, world_cameo_context,
+    apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
+    world_cameo_context,
 };
 use super::{
     PipelineBackends, emit, emit_meta, emit_pct, emit_pct_meta, group_shots_into_cameras,
@@ -84,6 +85,19 @@ impl Script2VideoPipeline {
 
         let plan_started = std::time::Instant::now();
 
+        let session_root = resolve_session_root(&self.working_dir);
+        emit_pct(
+            &progress,
+            "classify_references",
+            "正在识别用户上传参考图类型",
+            10.0,
+        );
+        let _ = classify_session_references(
+            &session_root,
+            Arc::clone(&self.backends.chat),
+        )
+        .await?;
+
         emit_pct(&progress, "extract_characters", "正在从剧本提取角色", 12.0);
         let characters = self.extract_characters(script, &style).await?;
 
@@ -93,13 +107,14 @@ impl Script2VideoPipeline {
         emit_pct(
             &progress,
             "cameo_bind",
-            "正在绑定用户角色参考图并做隐私安全换脸",
+            "正在绑定用户角色参考图（有真人脸才做隐私换脸）",
             18.0,
         );
         apply_session_cameos(
             &self.working_dir,
             &characters,
             Arc::clone(&self.backends.image),
+            Arc::clone(&self.backends.chat),
         )
         .await?;
 
@@ -214,7 +229,13 @@ impl Script2VideoPipeline {
         let shot_descriptions: Vec<ShotDescription> =
             read_json_artifact(&wd.join("shot_descriptions.json")).await?;
         let camera_tree: Vec<Camera> = read_json_artifact(&wd.join("camera_tree.json")).await?;
-        apply_session_cameos(wd, &characters, Arc::clone(&self.backends.image)).await?;
+        apply_session_cameos(
+            wd,
+            &characters,
+            Arc::clone(&self.backends.image),
+            Arc::clone(&self.backends.chat),
+        )
+        .await?;
         Ok(PlanArtifacts {
             characters,
             storyboard,
@@ -2084,11 +2105,15 @@ fn pick_frame_ref_strip(
             || s.contains("three_view")
             || s.contains("_cameo")
             || s.contains("/cameo/")
+            || s.contains("/references/by_category/character")
         {
             portraits.push((p, t));
-        } else if s.contains("environments") {
+        } else if s.contains("environments")
+            || s.contains("/by_category/environment")
+            || s.contains("/by_category/style")
+        {
             envs.push((p, t));
-        } else if s.contains("props") {
+        } else if s.contains("props") || s.contains("/by_category/prop") {
             props.push((p, t));
         } else {
             rest.push((p, t));
@@ -2136,6 +2161,7 @@ fn ensure_frame_refs(
             || s.contains("three_view")
             || s.contains("_cameo")
             || s.contains("/cameo/")
+            || s.contains("/references/by_category/character")
     };
     let mentions_id = |text: &str, id: &str| text.to_ascii_lowercase().contains(&id.to_ascii_lowercase());
 

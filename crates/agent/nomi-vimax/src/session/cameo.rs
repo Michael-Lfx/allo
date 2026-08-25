@@ -1,11 +1,15 @@
-//! Session-scoped Cameo photos — user-uploaded character identity references.
+//! Session-scoped user reference images (formerly "Cameo").
 //!
 //! Layout (under session working dir):
 //! ```text
-//! cameo/
+//! references/
 //!   manifest.json
 //!   photos/{id}.png
+//!   by_category/{character|environment|prop|style}/{label}_{id8}.png
+//!   reference_classification.json
 //! ```
+//!
+//! Legacy sessions may still have `cameo/`; [`ensure_references_layout`] migrates on load.
 
 use std::path::{Path, PathBuf};
 
@@ -16,15 +20,21 @@ use uuid::Uuid;
 
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local::{
-    image_magic_kind, is_usable_image_file, scrub_unusable_image, write_image_bytes_atomic,
+    copy_image_file_atomic, image_magic_kind, is_usable_image_file, scrub_unusable_image,
+    write_image_bytes_atomic,
 };
 
 pub const CAMEO_MANIFEST_VERSION: u32 = 1;
-pub const CAMEO_DIR: &str = "cameo";
-pub const CAMEO_PHOTOS_DIR: &str = "cameo/photos";
-pub const CAMEO_MANIFEST_REL: &str = "cameo/manifest.json";
+/// On-disk folder name shown in technical artifacts (user-facing: 参考图).
+pub const CAMEO_DIR: &str = "references";
+pub const CAMEO_PHOTOS_DIR: &str = "references/photos";
+pub const CAMEO_MANIFEST_REL: &str = "references/manifest.json";
+pub const CAMEO_BY_CATEGORY_DIR: &str = "references/by_category";
+const LEGACY_CAMEO_DIR: &str = "cameo";
+const LEGACY_CAMEO_MANIFEST_REL: &str = "cameo/manifest.json";
 pub const CAMEO_MAX_PHOTOS: usize = 8;
-pub const CAMEO_MAX_BYTES: usize = 10 * 1024 * 1024;
+/// Film stills / high-res boards before PNG normalize can exceed 10MB.
+pub const CAMEO_MAX_BYTES: usize = 25 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CameoManifest {
@@ -50,7 +60,7 @@ impl Default for CameoManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CameoPhotoEntry {
     pub id: String,
-    /// Relative to session working dir, e.g. `cameo/photos/{id}.png`.
+    /// Relative to session working dir, e.g. `references/photos/{id}.png`.
     pub rel_path: String,
     #[serde(default)]
     pub character_name: String,
@@ -78,12 +88,69 @@ pub struct CameoUpdate {
     pub bound_identifier: Option<Option<String>>,
 }
 
-/// Load manifest if present; otherwise return empty.
-pub fn load_manifest(working_dir: &Path) -> VimaxResult<CameoManifest> {
+/// Ensure `references/` layout exists; migrate legacy `cameo/` when needed.
+pub fn ensure_references_layout(working_dir: &Path) -> VimaxResult<()> {
+    let modern = working_dir.join(CAMEO_DIR);
+    let legacy = working_dir.join(LEGACY_CAMEO_DIR);
+    if modern.exists() {
+        return Ok(());
+    }
+    if !legacy.exists() {
+        return Ok(());
+    }
+    // Prefer rename (same volume); fall back to copy+keep legacy readable.
+    match std::fs::rename(&legacy, &modern) {
+        Ok(()) => {
+            tracing::info!(
+                from = %legacy.display(),
+                to = %modern.display(),
+                "migrated legacy cameo/ → references/"
+            );
+            rewrite_legacy_rel_paths(working_dir)?;
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "could not rename cameo/ → references/; reading legacy paths"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_legacy_rel_paths(working_dir: &Path) -> VimaxResult<()> {
     let path = working_dir.join(CAMEO_MANIFEST_REL);
     if !path.exists() {
-        return Ok(CameoManifest::default());
+        return Ok(());
     }
+    let raw = std::fs::read_to_string(&path)?;
+    let mut manifest: CameoManifest = serde_json::from_str(&raw)?;
+    let mut dirty = false;
+    for photo in &mut manifest.photos {
+        let cleaned = photo.rel_path.replace('\\', "/");
+        if let Some(rest) = cleaned.strip_prefix("cameo/") {
+            photo.rel_path = format!("references/{rest}");
+            dirty = true;
+        }
+    }
+    if dirty {
+        save_manifest(working_dir, &manifest)?;
+    }
+    Ok(())
+}
+
+/// Load manifest if present; otherwise return empty.
+pub fn load_manifest(working_dir: &Path) -> VimaxResult<CameoManifest> {
+    let _ = ensure_references_layout(working_dir);
+    let path = working_dir.join(CAMEO_MANIFEST_REL);
+    let legacy = working_dir.join(LEGACY_CAMEO_MANIFEST_REL);
+    let path = if path.exists() {
+        path
+    } else if legacy.exists() {
+        legacy
+    } else {
+        return Ok(CameoManifest::default());
+    };
     let raw = std::fs::read_to_string(&path)?;
     let mut manifest: CameoManifest = serde_json::from_str(&raw)?;
     if manifest.version == 0 {
@@ -159,29 +226,29 @@ pub fn upload_photo(
 ) -> VimaxResult<CameoPhotoEntry> {
     if bytes.len() > CAMEO_MAX_BYTES {
         return Err(VimaxError::InvalidParams(format!(
-            "cameo image exceeds {CAMEO_MAX_BYTES} bytes"
+            "reference image exceeds {CAMEO_MAX_BYTES} bytes"
         )));
     }
     if image_magic_kind(bytes).is_none() {
         return Err(VimaxError::InvalidParams(
-            "cameo image must be PNG, JPEG, or WEBP".into(),
+            "reference image must be PNG, JPEG, or WEBP".into(),
         ));
     }
     let img = image::load_from_memory(bytes)
-        .map_err(|e| VimaxError::InvalidParams(format!("invalid cameo image: {e}")))?;
+        .map_err(|e| VimaxError::InvalidParams(format!("invalid reference image: {e}")))?;
     let (width, height) = img.dimensions();
 
-    let name = normalize_character_name(character_name);
+    let mut name = normalize_character_name(character_name);
     if name.is_empty() {
-        return Err(VimaxError::InvalidParams(
-            "cameo character_name is required".into(),
-        ));
+        // Labels are optional for env/prop/style refs; planning classifies visually.
+        let n = load_manifest(working_dir).map(|m| m.photos.len() + 1).unwrap_or(1);
+        name = format!("参考图{n}");
     }
 
     let mut manifest = load_manifest(working_dir)?;
     if manifest.photos.len() >= CAMEO_MAX_PHOTOS {
         return Err(VimaxError::InvalidParams(format!(
-            "at most {CAMEO_MAX_PHOTOS} cameo photos per session"
+            "at most {CAMEO_MAX_PHOTOS} reference images per session"
         )));
     }
 
@@ -225,7 +292,7 @@ pub fn update_photo(
         let name = normalize_character_name(&name);
         if name.is_empty() {
             return Err(VimaxError::InvalidParams(
-                "cameo character_name is required".into(),
+                "reference image label cannot be empty".into(),
             ));
         }
         entry.character_name = name;
@@ -320,7 +387,72 @@ fn is_safe_cameo_rel(rel: &str) -> bool {
     let cleaned = rel.replace('\\', "/");
     !cleaned.contains("..")
         && !cleaned.starts_with('/')
-        && cleaned.starts_with(&format!("{CAMEO_PHOTOS_DIR}/"))
+        && (cleaned.starts_with(&format!("{CAMEO_PHOTOS_DIR}/"))
+            || cleaned.starts_with("cameo/photos/"))
+}
+
+/// Copy classified uploads into `references/by_category/...` for technical artifacts.
+pub fn materialize_by_category(
+    working_dir: &Path,
+    categories: &[(String, String, String)],
+) -> VimaxResult<()> {
+    // categories: (photo_id, category, suggested_label)
+    let _ = ensure_references_layout(working_dir);
+    let photos = list_photos(working_dir)?;
+    let root = working_dir.join(CAMEO_BY_CATEGORY_DIR);
+    if root.exists() {
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    std::fs::create_dir_all(&root)?;
+    for (photo_id, category, label) in categories {
+        let Some(photo) = photos.iter().find(|p| p.id == *photo_id) else {
+            continue;
+        };
+        let src = working_dir.join(&photo.rel_path);
+        if !is_usable_image_file(&src) {
+            continue;
+        }
+        let cat = sanitize_component(category);
+        let label = sanitize_component(if label.trim().is_empty() {
+            photo.character_name.as_str()
+        } else {
+            label.as_str()
+        });
+        let id8: String = photo_id.chars().take(8).collect();
+        let dest_dir = root.join(&cat);
+        std::fs::create_dir_all(&dest_dir)?;
+        let dest = dest_dir.join(format!("{label}_{id8}.png"));
+        copy_image_file_atomic(&src, &dest)?;
+    }
+    Ok(())
+}
+
+fn sanitize_component(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || is_cjk(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    let out = out.trim_matches('_').chars().take(48).collect::<String>();
+    if out.is_empty() {
+        "ref".into()
+    } else {
+        out
+    }
+}
+
+fn is_cjk(c: char) -> bool {
+    let u = c as u32;
+    (0x4E00..=0x9FFF).contains(&u)
+        || (0x3400..=0x4DBF).contains(&u)
 }
 
 #[cfg(test)]
@@ -355,11 +487,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_html_and_empty_name() {
+    fn rejects_html_and_allows_empty_name() {
         let dir = tempfile::tempdir().unwrap();
         let working = dir.path();
         assert!(upload_photo(working, b"<html>x</html>", "Bob", "").is_err());
-        assert!(upload_photo(working, &tiny_jpeg(), "   ", "").is_err());
+        let entry = upload_photo(working, &tiny_jpeg(), "   ", "").unwrap();
+        assert!(entry.character_name.starts_with("参考图"));
+        assert!(entry.rel_path.starts_with("references/photos/"));
     }
 
     #[test]

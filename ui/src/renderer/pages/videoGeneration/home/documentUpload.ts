@@ -13,7 +13,12 @@ function uploadMessage(key: string, defaultValue: string): string {
 export const VIDEO_HOME_UPLOAD_ACCEPT = [
   'image/png',
   'image/jpeg',
+  'image/jpg',
   'image/webp',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.webp',
   '.txt',
   '.md',
   '.markdown',
@@ -24,13 +29,19 @@ export const VIDEO_HOME_UPLOAD_ACCEPT = [
   '.docx',
 ].join(',');
 
-export const ACTION_CHARACTER_ACCEPT = 'image/png,image/jpeg,image/webp';
+export const ACTION_CHARACTER_ACCEPT =
+  'image/png,image/jpeg,image/jpg,image/webp,.png,.jpg,.jpeg,.webp';
 export const ACTION_VIDEO_ACCEPT = 'video/mp4,video/webm,video/quicktime,.mp4,.webm,.avi,.mov,.m4v';
 export const ACTION_CHARACTER_MAX_BYTES = 10 * 1024 * 1024;
 export const ACTION_VIDEO_MAX_BYTES = 80 * 1024 * 1024;
+/** Matches nomi-vimax `CAMEO_MAX_BYTES` (film stills / moodboards). */
+export const REFERENCE_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 
 export function isSupportedImageFile(file: File): boolean {
-  return /^image\/(png|jpeg|webp)$/i.test(file.type);
+  if (/^image\/(png|jpe?g|webp)$/i.test(file.type)) return true;
+  // Some desktop shells leave MIME empty or use non-standard `image/jpg`.
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+  return ['png', 'jpg', 'jpeg', 'webp'].includes(extension);
 }
 
 export function isSupportedVideoFile(file: File): boolean {

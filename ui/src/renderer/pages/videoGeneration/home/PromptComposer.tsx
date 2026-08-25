@@ -60,11 +60,11 @@ export function PromptComposer({
         onClick={() => fileInputRef.current?.click()}
         title={t('videoGeneration.create.upload.aria', {
           defaultValue:
-            '上传角色参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）',
+            '上传参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）',
         })}
         aria-label={t('videoGeneration.create.upload.aria', {
           defaultValue:
-            '上传角色参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）',
+            '上传参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）',
         })}
       >
         {uploadPreview ? (

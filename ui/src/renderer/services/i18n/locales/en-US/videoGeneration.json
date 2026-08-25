@@ -194,11 +194,13 @@
       "ideaPlaceholderSlash": "Enter an idea, story, or product scene — type / to switch Mode…"
     },
     "upload": {
-      "aria": "Upload character references, scripts, or documents (PNG / JPEG / WEBP / DOCX / TXT / Markdown, etc.)",
+      "aria": "Upload reference images, scripts, or documents (PNG / JPEG / WEBP / DOCX / TXT / Markdown, etc.)",
       "removeDocument": "Remove document",
       "removeReference": "Remove {{name}}",
       "unsupported": "Some files are unsupported. Please upload images, DOCX, or plain-text documents.",
-      "cameoNameRequired": "Please name every character reference image.",
+      "imageTooLarge": "Reference images must be 25 MB or smaller. Compress film stills before uploading.",
+      "cameoNameRequired": "Please add a label for each reference image (optional; use a character name for cast photos).",
+      "cameoFileMissing": "Reference image files are missing (re-select them after a refresh), then send again.",
       "docUnsupported": "Unsupported document format. Upload DOCX, TXT, Markdown, JSON, CSV, SRT, or VTT.",
       "docTooLarge": "Documents must be 5 MB or smaller.",
       "docEmpty": "The document is empty.",
@@ -240,16 +242,16 @@
       "brand": "Tell a day in the life of a running shoe with cinematic shots"
     },
     "cameo": {
-      "title": "Character references (Cameo)",
-      "hint": "Optional: upload character photos and names. Planning anonymizes faces to a generic unrecognizable look while keeping wardrobe and overall appearance, reducing real-person likeness blocks.",
-      "add": "Add photo",
+      "title": "Reference images",
+      "hint": "Upload character, scene, prop, or style references. Planning classifies them automatically for global assets. Faces on character photos are privacy-anonymized.",
+      "add": "Add reference",
       "dropHint": "Drop or click to upload PNG / JPEG / WEBP (up to 8)",
-      "namePlaceholder": "Character name (match the story cast)",
-      "descPlaceholder": "Optional note (identity / wardrobe)",
+      "namePlaceholder": "Label (optional; character name for cast)",
+      "descPlaceholder": "Optional note (scene / prop / wardrobe)",
       "remove": "Remove",
-      "uploading": "Uploading character references…",
-      "uploadFailed": "Failed to upload character reference",
-      "defaultName": "Character {{n}}"
+      "uploading": "Uploading reference images…",
+      "uploadFailed": "Failed to upload reference image",
+      "defaultName": "Reference {{n}}"
     }
   },
   "workflow": {
@@ -366,8 +368,10 @@
     "refresh": "Refresh",
     "workflowLocked": "Workflow is locked after creation.",
     "cameo": {
-      "title": "Bound character references",
-      "empty": "No Cameo yet. Upload at create time; re-plan after deleting to refresh bindings.",
+      "title": "Reference images",
+      "empty": "This task has no reference images yet. Use Add above, or go back to the home composer and re-select images before sending. After planning they also appear under Technical artifacts → Reference images.",
+      "add": "Add",
+      "loadFailed": "Failed to load reference images: {{error}}",
       "delete": "Delete"
     },
     "action": {

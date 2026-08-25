@@ -509,8 +509,9 @@ impl SessionIndex {
                 .exists(),
         );
         map.insert(
-            "cameo/manifest.json".into(),
-            root.join(cameo::CAMEO_MANIFEST_REL).exists(),
+            "references/manifest.json".into(),
+            root.join(cameo::CAMEO_MANIFEST_REL).exists()
+                || root.join("cameo/manifest.json").exists(),
         );
         Ok(map)
     }
