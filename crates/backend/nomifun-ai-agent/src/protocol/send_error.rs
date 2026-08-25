@@ -1021,6 +1021,19 @@ mod tests {
     }
 
     #[test]
+    fn provider_sse_failure_does_not_claim_internal_relay_breakage() {
+        let err = AgentSendError::from_app_error(AppError::BadGateway(
+            "Nomi agent error: API error: OpenAI-compatible provider returned invalid UTF-8 in an SSE line"
+                .into(),
+        ));
+
+        assert_eq!(err.code(), Some(AgentErrorCode::UserLlmProviderGatewayError));
+        assert_ne!(err.code(), Some(AgentErrorCode::NomifunStreamBroken));
+        assert_eq!(err.ownership(), Some(AgentErrorOwnership::UserLlmProvider));
+        assert_eq!(err.stream_error().retryable, Some(true));
+    }
+
+    #[test]
     fn classifies_provider_config_errors_as_not_retryable() {
         let err = AgentSendError::from_app_error(AppError::BadGateway(
             "Provider error: Connection error: Signable request error: failed to create canonical request".into(),

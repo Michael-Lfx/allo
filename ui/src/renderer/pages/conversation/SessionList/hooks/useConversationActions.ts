@@ -13,9 +13,8 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
 import {
-  classifyConversationDeleteError,
   conversationDeleteMessageKey,
-  type ConversationDeleteFailureKind,
+  summarizeConversationDeleteResults,
 } from './conversationDeleteErrors';
 import { isConversationPinned } from '../utils/conversationPinned';
 
@@ -137,15 +136,11 @@ export const useConversationActions = ({
           const results = await Promise.allSettled(
             selectedIds.map((conversation_id) => removeConversation(conversation_id)),
           );
-          const successCount = results.filter(
-            (result) => result.status === 'fulfilled' && result.value,
-          ).length;
-          const failureCounts = new Map<ConversationDeleteFailureKind, number>();
-          for (const result of results) {
-            if (result.status !== 'rejected') continue;
-            const kind = classifyConversationDeleteError(result.reason);
-            failureCounts.set(kind, (failureCounts.get(kind) ?? 0) + 1);
-            console.error('Failed to remove conversation in batch:', result.reason);
+          const { successCount, failureCounts, failures } = summarizeConversationDeleteResults(results);
+          for (const { reason } of failures) {
+            if (reason !== undefined) {
+              console.error('Failed to remove conversation in batch:', reason);
+            }
           }
           emitter.emit('chat.history.refresh');
           if (successCount > 0) {

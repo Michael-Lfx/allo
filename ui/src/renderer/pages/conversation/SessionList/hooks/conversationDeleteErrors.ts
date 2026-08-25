@@ -1,10 +1,22 @@
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
+import type { I18nKey } from '@/renderer/services/i18n/i18n-keys';
 
 export type ConversationDeleteFailureKind =
   | 'attemptRetained'
   | 'runningOrphan'
   | 'pending'
   | 'unknown';
+
+export type ConversationDeleteBatchFailure = {
+  kind: ConversationDeleteFailureKind;
+  reason: unknown;
+};
+
+export type ConversationDeleteBatchSummary = {
+  successCount: number;
+  failureCounts: Map<ConversationDeleteFailureKind, number>;
+  failures: ConversationDeleteBatchFailure[];
+};
 
 export function classifyConversationDeleteError(error: unknown): ConversationDeleteFailureKind {
   if (!isBackendHttpError(error)) return 'unknown';
@@ -24,7 +36,7 @@ export function classifyConversationDeleteError(error: unknown): ConversationDel
 export function conversationDeleteMessageKey(
   kind: ConversationDeleteFailureKind,
   batch: boolean,
-): string {
+): I18nKey {
   if (batch) {
     switch (kind) {
       case 'attemptRetained':
@@ -48,4 +60,26 @@ export function conversationDeleteMessageKey(
     default:
       return 'conversation.history.deleteFailed';
   }
+}
+
+export function summarizeConversationDeleteResults(
+  results: readonly PromiseSettledResult<boolean>[],
+): ConversationDeleteBatchSummary {
+  let successCount = 0;
+  const failureCounts = new Map<ConversationDeleteFailureKind, number>();
+  const failures: ConversationDeleteBatchFailure[] = [];
+
+  for (const result of results) {
+    if (result.status === 'fulfilled' && result.value) {
+      successCount += 1;
+      continue;
+    }
+
+    const reason = result.status === 'rejected' ? result.reason : undefined;
+    const kind = classifyConversationDeleteError(reason);
+    failureCounts.set(kind, (failureCounts.get(kind) ?? 0) + 1);
+    failures.push({ kind, reason });
+  }
+
+  return { successCount, failureCounts, failures };
 }

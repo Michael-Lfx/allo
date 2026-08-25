@@ -871,7 +871,23 @@ impl LlmProvider for OpenAIProvider {
                 max_tokens = request.max_tokens,
                 "Sending OpenAI-compatible SSE request"
             );
-            tracing::debug!(target: "nomi_providers", body = %serde_json::to_string_pretty(&body).unwrap_or_default(), "outgoing request");
+            let message_count = body
+                .get("messages")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            let tool_count = body
+                .get("tools")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            tracing::debug!(
+                target: "nomi_providers",
+                model = %request.model,
+                message_count,
+                tool_count,
+                include_stream_usage,
+                sanitize_tool_schemas,
+                "outgoing request summary"
+            );
 
             match self
                 .send_initial_with_key_rotation(&client, &url, &body)

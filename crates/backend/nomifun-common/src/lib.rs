@@ -52,7 +52,9 @@ pub use enums::{
     McpSource, MessagePosition, MessageStatus, MessageType, PreviewContentType, ProtocolType, RemoteAgentAuthType,
     RemoteAgentProtocol, RemoteAgentStatus,
 };
-pub use error::{AppError, ErrorChain, workspace_path_has_edge_whitespace_segment};
+pub use error::{
+    AppError, ConversationDeleteErrorKind, ErrorChain, workspace_path_has_edge_whitespace_segment,
+};
 pub use execution_authority::ExecutionAuthority;
 pub use fsname::sanitize_dir_segment;
 pub use hooks::{OnConversationDelete, OnTerminalDelete, RequirementCreator};

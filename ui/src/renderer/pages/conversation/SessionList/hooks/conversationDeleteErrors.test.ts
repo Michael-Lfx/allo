@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyConversationDeleteError,
   conversationDeleteMessageKey,
+  summarizeConversationDeleteResults,
 } from './conversationDeleteErrors';
 
 function backendError(code: string) {
@@ -41,5 +42,24 @@ describe('conversation deletion errors', () => {
     expect(conversationDeleteMessageKey('unknown', true)).toBe(
       'conversation.history.batchDeleteFailed',
     );
+  });
+
+  it('summarizes mixed batch outcomes without hiding successful deletions', () => {
+    const retainedError = backendError('CONVERSATION_ATTEMPT_RETAINED');
+    const summary = summarizeConversationDeleteResults([
+      { status: 'fulfilled', value: true },
+      { status: 'fulfilled', value: false },
+      { status: 'rejected', reason: retainedError },
+      { status: 'rejected', reason: new Error('network failure') },
+    ]);
+
+    expect(summary.successCount).toBe(1);
+    expect(summary.failureCounts.get('attemptRetained')).toBe(1);
+    expect(summary.failureCounts.get('unknown')).toBe(2);
+    expect(summary.failures).toEqual([
+      { kind: 'unknown', reason: undefined },
+      { kind: 'attemptRetained', reason: retainedError },
+      { kind: 'unknown', reason: expect.any(Error) },
+    ]);
   });
 });

@@ -122,8 +122,10 @@ Cloud 非标准响应/特殊事件顺序
 ```
 
 如果 Cloud 返回的是无法解析的 JSON、错误的 SSE 行、非法 UTF-8、缺少 finish reason 或
-连接提前关闭，则更可能进入 `NOMIFUN_STREAM_BROKEN`，而不是直接进入
-`NOMIFUN_STATE_INCONSISTENT`。
+连接提前关闭，OpenAI-compatible provider 会把它作为 provider 流失败交给 Agent，当前
+错误分类是 `UserLlmProviderGatewayError`，Attempt 必须失败且不能生成成功 delivery
+receipt。`NOMIFUN_STREAM_BROKEN` 只表示 Agent 内部永久 event relay 断裂，不是所有 provider
+SSE 解析/传输错误的统称。
 
 ## 5. 响应流异常诊断路径
 
@@ -139,7 +141,10 @@ nomi_config::data_dir()/diagnostics/failed-provider-sse
 
 因此：
 
-- `NOMIFUN_STREAM_BROKEN` 应优先按 model + turn ID 检查失败 SSE 元数据和原始流；
+- provider 流失败应按 model + turn ID 检查失败 SSE 元数据和原始流，并核对
+  `UserLlmProviderGatewayError`、Attempt 失败和主会话汇报；
+- `NOMIFUN_STREAM_BROKEN` 只在 Agent 内部 relay 断裂时检查 runtime eviction 和 relay
+  诊断；
 - `NOMIFUN_STATE_INCONSISTENT` 需要检查规范化事件顺序，而不能只看上游是否出现
   `content: ""`。
 
@@ -183,7 +188,8 @@ deleted 事件。
 2. 对正常模型和报错模型分别对齐：请求 URL、请求模型 ID、SSE 原始 chunk、解析器事件、
    `AgentStreamEvent` 和 relay 持久化结果。
 3. 优先检查包含工具调用的场景，尤其是连续工具调用、工具调用前后 reasoning/text 切换。
-4. 对 `NOMIFUN_STREAM_BROKEN` 检查失败 SSE 诊断文件；对状态冲突检查是否真的存在
+4. 对 provider 流错误检查失败 SSE 诊断文件和 `UserLlmProviderGatewayError`；只有确认是
+   Agent 内部 relay 断裂时才检查 `NOMIFUN_STREAM_BROKEN`。对状态冲突检查是否真的存在
    `Text("")` 或 robot stage filter 的空化。
 5. 用同一 conversation ID 对齐错误、turn completion、runtime release、删除请求和
    `conversation.listChanged(deleted)`。
@@ -256,8 +262,10 @@ $env:NOMIFUN_LOG_LEVEL = 'info,nomi_providers=debug,nomifun_agent_execution=debu
 Windows 默认数据根通常是 `%LOCALAPPDATA%\NomiFun`，开发环境也可能使用
 `%LOCALAPPDATA%\NomiFun-dev`；以启动日志或实际 `NOMIFUN_DATA_DIR` 为准。
 
-`nomi_providers=debug` 会记录原始 SSE data 行，可能包含用户问题、模型回答、工具参数等
-敏感内容。只在本机短时间开启，收集后不要直接把完整日志发到公共位置。
+`nomi_providers=debug` 只记录请求/响应摘要（model、数量、选项和响应字节长度），不再把
+完整 request body 或 SSE data 行写入日志。失败 SSE 原文仅保存在本机
+`diagnostics/failed-provider-sse` 的捕获文件中，可能包含用户问题、模型回答、工具参数等
+敏感内容；只在本机短时间开启，收集后不要直接把捕获文件发到公共位置。
 
 ### 10.3 用开发者模式读取 canonical 证据
 
@@ -289,7 +297,7 @@ GET /api/debug/session-observations/turns/<root_turn_id>/calls/<model_call_id>?c
 
 ### 10.4 采集失败 SSE
 
-若现象是 `NOMIFUN_STREAM_BROKEN`，优先查看：
+若现象是 `UserLlmProviderGatewayError` 或确实是 provider 流失败，优先查看：
 
 ```text
 <data-dir>\diagnostics\failed-provider-sse\
@@ -324,7 +332,8 @@ Sending OpenAI-compatible SSE request
 sse chunk received
 persisted failed OpenAI-compatible SSE diagnostic
 NOMIFUN_STATE_INCONSISTENT
-NOMIFUN_STREAM_BROKEN
+UserLlmProviderGatewayError
+NOMIFUN_STREAM_BROKEN（仅内部 relay 断裂时）
 conversation deletion
 Conversation deleted
 ```
@@ -349,7 +358,7 @@ deleted 事件后 UI 没有移除。删除成功的判据是持久化删除 + `d
 
 | 观察结果 | 能证明什么 | 不能证明什么 |
 | --- | --- | --- |
-| failed SSE 元数据匹配 model/turn，原始流提前结束或格式非法 | Cloud 传输/响应协议导致 stream broken 的证据 | 不能证明 relay owner 冲突 |
+| failed SSE 元数据匹配 model/turn，原始流提前结束或格式非法 | Cloud 传输/响应协议导致 provider gateway error、Attempt 失败的证据 | 不能证明内部 relay owner 冲突，也不应直接命名为 `NOMIFUN_STREAM_BROKEN` |
 | canonical response 有 tool 调用但无 terminal response | 该 model call 在 provider/engine 边界未正常结束 | 不能证明存在空 `AgentStreamEvent::Text` |
 | UI 详情为 `owner Text conflicts with ExistingTextPlaceholder` | relay 的 owner 检查失败 | 不能单凭此判断 Cloud 原始响应格式 |
 | raw SSE 里出现 `content: ""` | Cloud 发过空 content frame | 当前 parser 会过滤它，仍不能证明它进入了 relay |
@@ -610,9 +619,8 @@ Cloud / Attempt 后端链路可能失败
    attempt conversation -> root/model_call` 关联，单独保存 Attempt 状态、子会话 observation、
    failed-provider-sse 元数据和主会话摘要；不要用页面渲染错误代替 Attempt 失败证据。
 
-在用户审查前，本节不选择修复方案，也不修改业务代码。后续候选方向仅作为待审查事项：
-验证并固定 React/Vite 依赖去重、清理失效预构建缓存、确认 ReactFlow 挂载边界，并补充真实
-ReactFlow mount regression test；是否采用其中任何一项，需要在拿到最小复现和用户审查后决定。
+以上段落保留为实施前的调查快照；代码修复和当前验证边界见第 13 节。ReactFlow 仍仅作为
+依赖安装/缓存问题的环境前置条件复核，不纳入本次 Cloud 流、relay 或删除契约修复。
 
 ### 12.7 后续实测对该问题的降级结论
 
@@ -654,7 +662,9 @@ React/ReactDOM/ReactFlow 实际版本、`ui/node_modules/.vite/deps/_metadata.js
 ### 13.2 响应流和协助汇报修复
 
 - 保留 OpenAI-compatible parser 对空 delta 的既有过滤，不增加 SOL 5.6 特判；
-- SSE 调试日志不再打印完整 `data` 内容，只保留长度；
+- provider 请求/响应调试日志不再打印完整 body 或 `data` 内容，只保留安全摘要和响应长度；
+- provider 的 malformed/invalid UTF-8/EOF/缺少 finish reason 统一保持 provider gateway error
+  语义，不冒充内部 `NOMIFUN_STREAM_BROKEN`；
 - 新增非法 UTF-8 和缺少 `finish_reason` 的失败 SSE 捕获测试；
 - 协助终态仍遵守“没有 delivery receipt 不能成功”的规则；
 - `aggregate_summary` 在没有 `output_summary` 时回退到 Attempt 的 `error`，避免主会话只显示 `step | failed | -` 而丢失流异常原因。

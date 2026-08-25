@@ -25,7 +25,8 @@ use nomifun_api_types::{
 };
 use nomifun_common::{
     AdaptationPolicy, AgentExecutionEventKind, AgentExecutionStatus, AgentKillReason,
-    AgentStepMode, AgentToolPolicy, AgentType, AppError, Confirmation, ConversationSource,
+    AgentStepMode, AgentToolPolicy, AgentType, AppError, Confirmation, ConversationDeleteErrorKind,
+    ConversationSource,
     ConversationId, ConversationStatus,
     DecisionPolicy, DelegationPolicy, ExecutionAttemptStatus, ExecutionStepKind,
     ExecutionStepStatus, MessageId, PaginatedResult, ParticipantAssignmentSource, PlanGate,
@@ -3771,7 +3772,10 @@ async fn delete_rejects_soft_deleted_execution_attempt_transcript() {
         .delete(USER_ID, &attempt_conversation.conversation_id)
         .await
         .unwrap_err();
-    assert!(matches!(&error, AppError::Conflict(_)));
+    assert!(matches!(
+        &error,
+        AppError::ConversationDelete(ConversationDeleteErrorKind::AttemptRetained)
+    ));
     assert_eq!(error.error_code(), "CONVERSATION_ATTEMPT_RETAINED");
     assert_eq!(
         error.error_details().and_then(|details| details
@@ -15068,7 +15072,10 @@ async fn cold_running_orphan_rejects_user_stop_and_delete_without_mutation() {
         .delete(SQLITE_TEST_OWNER, &conversation_id)
         .await
         .expect_err("delete must not bypass restart-orphan quarantine");
-    assert!(matches!(&delete_error, AppError::Conflict(_)));
+    assert!(matches!(
+        &delete_error,
+        AppError::ConversationDelete(ConversationDeleteErrorKind::RunningOrphan)
+    ));
     assert_eq!(delete_error.error_code(), "CONVERSATION_RUNNING_ORPHAN");
 
     let row = repo
