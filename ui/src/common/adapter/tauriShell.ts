@@ -135,9 +135,27 @@ export async function tauriSetKeepAwake(enabled: boolean): Promise<void> {
 /** 本地化原生系统托盘菜单(「显示」「退出」)。Rust 侧无法解析 i18n,创建时用英文兜底,
  *  渲染层在挂载/切换语言时调用此命令传入译文。非桌面环境会抛错,由上层吞掉。
  *  Localize the native system-tray menu labels (Show / Quit) via the desktop command. */
-export async function tauriSetTrayLabels(show: string, quit: string): Promise<void> {
+export async function tauriSetTrayLabels(
+  show: string,
+  quit: string,
+  meeting?: {
+    start?: string;
+    pause?: string;
+    resume?: string;
+    stop?: string;
+    open?: string;
+  }
+): Promise<void> {
   const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('set_tray_labels', { show, quit });
+  await invoke('set_tray_labels', {
+    show,
+    quit,
+    start: meeting?.start ?? null,
+    pause: meeting?.pause ?? null,
+    resume: meeting?.resume ?? null,
+    stop: meeting?.stop ?? null,
+    open: meeting?.open ?? null,
+  });
 }
 
 /** Inspect whether the running desktop bundle can be safely replaced by the updater. */

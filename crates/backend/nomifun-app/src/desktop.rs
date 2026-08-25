@@ -845,6 +845,11 @@ impl DesktopServer {
         }
     }
 
+    /// In-process service graph for desktop tray / shortcut meeting controls (Y1).
+    pub(crate) fn app_services(&self) -> Option<&crate::services::AppServices> {
+        self._keep_alive.services()
+    }
+
     /// Keep the robot endpoint advertiser in step with the LAN listener.
     ///
     /// A robot is told where to connect exactly once, in its OTA response, and

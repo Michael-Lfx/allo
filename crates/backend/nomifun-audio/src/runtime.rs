@@ -248,6 +248,18 @@ impl MeetingRuntime {
             .set_status(session_id, MeetingSessionStatus::Stopped)
             .await
     }
+
+    /// First live session id, if any (desktop tray / global-shortcut target).
+    pub fn first_live_session_id(&self) -> Option<String> {
+        self.live.iter().next().map(|entry| entry.key().clone())
+    }
+
+    /// Whether the live recorder for `session_id` is currently paused.
+    pub fn is_live_paused(&self, session_id: &str) -> Option<bool> {
+        self.live
+            .get(session_id)
+            .map(|live| live.recorder.is_paused())
+    }
 }
 
 fn spawn_pcm_tee(
