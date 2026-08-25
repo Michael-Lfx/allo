@@ -6777,6 +6777,7 @@ dependencies = [
  "nomi-tools",
  "nomi-types",
  "nomifun-api-types",
+ "nomifun-audio",
  "nomifun-auth",
  "nomifun-browser-platform",
  "nomifun-common",

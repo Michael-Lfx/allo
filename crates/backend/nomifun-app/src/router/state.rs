@@ -1323,6 +1323,25 @@ pub fn build_ssh_host_state(services: &AppServices) -> nomifun_ssh::SshHostRoute
 }
 
 pub fn build_meeting_state(services: &AppServices) -> nomifun_audio::MeetingRouterState {
+    services.meeting_service.set_notes_completer(Arc::new(
+        crate::meeting_notes_wiring::LiveMeetingNotesCompleter {
+            provider_repo: services.provider_repo.clone(),
+            provider_model_repo: services.provider_model_repo.clone(),
+            encryption_key: services.encryption_key,
+            workspace: services.data_dir.clone(),
+        },
+    ));
+    services.meeting_service.set_conversation_sink(Arc::new(
+        crate::meeting_notes_wiring::MeetingNotesConversationSinkImpl {
+            conversation_repo: services.conversation_repo.clone(),
+        },
+    ));
+    services.meeting_service.set_requirement_creator(
+        nomifun_requirement::RequirementServiceSink::creator_arc(
+            services.requirement_service.clone(),
+        ),
+    );
+
     let meeting_repo = Arc::new(nomifun_db::SqliteMeetingRepository::new(
         services.database.pool().clone(),
     )) as Arc<dyn nomifun_db::IMeetingRepository>;

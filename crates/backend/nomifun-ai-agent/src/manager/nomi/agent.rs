@@ -19,6 +19,11 @@ use nomi_agent::learning_tools::{
 use nomi_agent::output::OutputSink;
 use nomi_agent::requirement_tools::{RequirementCompleteTool, RequirementSink, RequirementUpdateStatusTool};
 use nomi_agent::cron_tools::{CronCreateTool, CronDeleteTool, CronListTool, CronSink};
+use nomi_agent::meeting_tools::{
+    MEETING_TOOL_NAMES, MeetingAskTool, MeetingGetNotesTool, MeetingGetTool, MeetingListTool,
+    MeetingPauseTool, MeetingResumeTool, MeetingSearchTranscriptTool, MeetingSink,
+    MeetingStartTool, MeetingStopTool,
+};
 use nomi_agent::session::Session;
 use nomi_config::config::{CliArgs, Config};
 use nomi_mcp::manager::McpManager;
@@ -2602,6 +2607,24 @@ impl NomiAgentManager {
         reg.register(Box::new(CronListTool::new(sink.clone())));
         reg.register(Box::new(CronDeleteTool::new(sink)));
         debug!(conversation_id = %self.runtime.conversation_id(), "Registered cron native tools");
+    }
+
+    /// Register G3 meeting tools (`meeting.list` / `meeting.start` / …) backed by
+    /// `sink`. Same post-construction slot as [`Self::register_cron_sink`].
+    pub async fn register_meeting_sink(&self, sink: Arc<dyn MeetingSink>) {
+        let mut engine = self.engine.lock().await;
+        engine.allow_named_tools(MEETING_TOOL_NAMES);
+        let reg = engine.registry_mut();
+        reg.register(Box::new(MeetingListTool::new(sink.clone())));
+        reg.register(Box::new(MeetingGetTool::new(sink.clone())));
+        reg.register(Box::new(MeetingSearchTranscriptTool::new(sink.clone())));
+        reg.register(Box::new(MeetingGetNotesTool::new(sink.clone())));
+        reg.register(Box::new(MeetingStartTool::new(sink.clone())));
+        reg.register(Box::new(MeetingPauseTool::new(sink.clone())));
+        reg.register(Box::new(MeetingResumeTool::new(sink.clone())));
+        reg.register(Box::new(MeetingStopTool::new(sink.clone())));
+        reg.register(Box::new(MeetingAskTool::new(sink)));
+        debug!(conversation_id = %self.runtime.conversation_id(), "Registered meeting native tools");
     }
 }
 

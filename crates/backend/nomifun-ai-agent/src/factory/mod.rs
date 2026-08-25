@@ -207,6 +207,11 @@ pub struct AgentFactoryDeps {
     /// disabled).
     pub cron_sink_factory:
         Option<Arc<dyn Fn(&str, &str) -> Arc<dyn crate::CronSink> + Send + Sync>>,
+    /// Per-conversation factory for G3 meeting tools (`meeting.list` / …).
+    /// Bound to the shared `MeetingSessionService` + `MeetingRuntime`. `None`
+    /// leaves meeting tools unregistered (standalone / tests).
+    pub meeting_sink_factory:
+        Option<Arc<dyn Fn(&str, &str) -> Arc<dyn crate::MeetingSink> + Send + Sync>>,
     /// Optional sink enabling the companion-companion memory tools
     /// (`recall_memories` / `save_memory` / `list_recent_events`). Only
     /// registered for conversations whose `extra.companion_session` is true.

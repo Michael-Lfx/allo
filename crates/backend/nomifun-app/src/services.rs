@@ -2972,6 +2972,32 @@ impl AppServices {
                     conversation_id.to_string(),
                 )
             })),
+            // G3 meeting tools: same MeetingSession as HTTP / tray. Capture start
+            // is Desktop-only (`capture_allowed`); headless/web still get list/get/
+            // search but meeting.start rejects.
+            meeting_sink_factory: {
+                let meeting_service = meeting_service.clone();
+                let meeting_runtime = meeting_runtime.clone();
+                let meetings_root = data_dir.join("meetings");
+                let capture_allowed = matches!(
+                    capabilities.runtime_capabilities.runtime,
+                    nomifun_api_types::RuntimeKind::Desktop
+                );
+                Some(Arc::new(move |user_id: &str, conversation_id: &str| {
+                    nomifun_ai_agent::LiveMeetingSink::new(
+                        meeting_service.clone(),
+                        meeting_runtime.clone(),
+                        meetings_root.clone(),
+                        user_id,
+                        conversation_id,
+                        capture_allowed,
+                    )
+                    .into_arc()
+                })
+                    as Arc<
+                        dyn Fn(&str, &str) -> Arc<dyn nomifun_ai_agent::MeetingSink> + Send + Sync,
+                    >)
+            },
             companion_sink: Some(companion_service.memory_sink()),
             // Companion self-evolved skill auto-use (`companion_skill` tool + per-turn
             // when_to_use injection). Only registered for companion sessions (factory gates).
