@@ -197,6 +197,34 @@ pub async fn validate_current_migration_lineage(pool: &SqlitePool) -> Result<(),
     }
 }
 
+fn sql_lf(sql: &str) -> String {
+    sql.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn checksum_sha384(bytes: &[u8]) -> Vec<u8> {
+    <sha2::Sha384 as sha2::Digest>::digest(bytes).to_vec()
+}
+
+/// Accept exact checksums and LF/CRLF-only encodings of the same embedded SQL.
+///
+/// Windows editors/`core.autocrlf` can apply a migration with CRLF bytes, then a
+/// later LF checkout rebuilds a different sqlx checksum for identical schema.
+fn migration_checksum_compatible(
+    stored: &[u8],
+    embedded_sql: &str,
+    embedded_checksum: &[u8],
+) -> bool {
+    if stored == embedded_checksum {
+        return true;
+    }
+    let lf = sql_lf(embedded_sql);
+    if stored == checksum_sha384(lf.as_bytes()).as_slice() {
+        return true;
+    }
+    let crlf = lf.replace('\n', "\r\n");
+    stored == checksum_sha384(crlf.as_bytes()).as_slice()
+}
+
 /// Validate that the applied migration rows are an exact, non-empty prefix of
 /// the migrations embedded in this binary.
 ///
@@ -204,6 +232,9 @@ pub async fn validate_current_migration_lineage(pool: &SqlitePool) -> Result<(),
 /// startup must admit an older supported prefix so [`init_database`] can apply
 /// the missing suffix. It still rejects every lineage that the migrator cannot
 /// authenticate, including unknown future versions and edited checksums.
+/// Line-ending-only checksum drift (LF vs CRLF of the same SQL) is treated as
+/// compatible; [`heal_eol_only_migration_checksums`] rewrites those rows before
+/// sqlx's migrator runs so VersionMismatch cannot fire on the same drift.
 pub async fn inspect_supported_migration_lineage(
     pool: &SqlitePool,
 ) -> Result<MigrationLineageStatus, DbError> {
@@ -239,10 +270,12 @@ pub async fn inspect_supported_migration_lineage(
         let version: i64 = row.try_get("version").map_err(DbError::Query)?;
         let success: bool = row.try_get("success").map_err(DbError::Query)?;
         let checksum: Vec<u8> = row.try_get("checksum").map_err(DbError::Query)?;
-        if version != expected.version
-            || !success
-            || checksum.as_slice() != expected.checksum.as_ref()
-        {
+        let checksum_ok = migration_checksum_compatible(
+            checksum.as_slice(),
+            expected.sql.as_ref(),
+            expected.checksum.as_ref(),
+        );
+        if version != expected.version || !success || !checksum_ok {
             return Err(DbError::Init(format!(
                 "database migration lineage does not match embedded migration {}",
                 expected.version
@@ -254,6 +287,47 @@ pub async fn inspect_supported_migration_lineage(
     } else {
         MigrationLineageStatus::UpgradeRequired
     })
+}
+
+/// Rewrite applied checksums that only differ by LF/CRLF so sqlx's migrator
+/// accepts the same SQL content the probe already authenticated.
+async fn heal_eol_only_migration_checksums(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<(), DbError> {
+    let expected = DB_MIGRATOR.iter().collect::<Vec<_>>();
+    let rows = sqlx::query("SELECT version, success, checksum FROM _sqlx_migrations ORDER BY version")
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(DbError::Query)?;
+    for (row, expected) in rows.iter().zip(expected.iter()) {
+        let version: i64 = row.try_get("version").map_err(DbError::Query)?;
+        let success: bool = row.try_get("success").map_err(DbError::Query)?;
+        let checksum: Vec<u8> = row.try_get("checksum").map_err(DbError::Query)?;
+        if version != expected.version || !success {
+            continue;
+        }
+        if checksum.as_slice() == expected.checksum.as_ref() {
+            continue;
+        }
+        if !migration_checksum_compatible(
+            checksum.as_slice(),
+            expected.sql.as_ref(),
+            expected.checksum.as_ref(),
+        ) {
+            continue;
+        }
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(expected.checksum.as_ref())
+            .bind(version)
+            .execute(&mut *conn)
+            .await
+            .map_err(DbError::Query)?;
+        info!(
+            version,
+            "normalized LF/CRLF-only migration checksum to the embedded lineage"
+        );
+    }
+    Ok(())
 }
 
 /// Initialize a file-backed SQLite database.
@@ -395,6 +469,7 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), DbError> {
     // _sqlx_migrations.version`. The outer startup lock also covers connection
     // setup before migration execution.
     let mut conn = pool.acquire().await.map_err(DbError::Query)?;
+    heal_eol_only_migration_checksums(&mut conn).await?;
     run_migrations_with_retry(&mut conn).await?;
     validate_quick_check_on_connection(&mut conn).await
 }
@@ -592,6 +667,36 @@ async fn ensure_installation_owner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_checksum_compatible_accepts_lf_crlf_only_drift() {
+        let sql = "CREATE TABLE t (id INTEGER);\n";
+        let lf_sum = checksum_sha384(sql.as_bytes());
+        let crlf = sql.replace('\n', "\r\n");
+        let crlf_sum = checksum_sha384(crlf.as_bytes());
+        assert!(migration_checksum_compatible(
+            lf_sum.as_slice(),
+            sql,
+            lf_sum.as_slice()
+        ));
+        assert!(migration_checksum_compatible(
+            crlf_sum.as_slice(),
+            sql,
+            lf_sum.as_slice()
+        ));
+        assert!(migration_checksum_compatible(
+            lf_sum.as_slice(),
+            &crlf,
+            crlf_sum.as_slice()
+        ));
+        let edited = "CREATE TABLE t (id INTEGER, x INTEGER);\n";
+        let edited_sum = checksum_sha384(edited.as_bytes());
+        assert!(!migration_checksum_compatible(
+            edited_sum.as_slice(),
+            sql,
+            lf_sum.as_slice()
+        ));
+    }
 
     #[tokio::test]
     async fn public_snapshot_includes_committed_wal_pages_and_refuses_overwrite() {
