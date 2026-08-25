@@ -769,6 +769,13 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
+    // Meeting sessions (desktop-first, owner-scoped): capture control + voiceprints.
+    let meeting_authenticated = protect_instance_owner(
+        nomifun_audio::meeting_routes(states.meeting),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
+
     // Unified agent listing/refresh/test routes + developer-mode eval lab.
     let agent_authenticated = protect_instance_owner(
         agent_routes(states.agent.clone()).merge(eval_routes(states.agent)),
@@ -1140,6 +1147,7 @@ pub fn create_router_with_all_state(
         .merge(conversation_ops_authenticated)
         .merge(remote_agent_authenticated)
         .merge(ssh_host_authenticated)
+        .merge(meeting_authenticated)
         .merge(agent_authenticated)
         .merge(model_failover_authenticated)
         .merge(connection_test_authenticated)

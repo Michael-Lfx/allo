@@ -263,6 +263,7 @@ nomifun-webhook.workspace = true
 nomifun-secret = { workspace = true, features = ["web"] }
 nomifun-terminal.workspace = true
 nomifun-ssh.workspace = true
+nomifun-audio.workspace = true
 nomifun-preset.workspace = true
 nomifun-runtime.workspace = true
 nomifun-net.workspace = true

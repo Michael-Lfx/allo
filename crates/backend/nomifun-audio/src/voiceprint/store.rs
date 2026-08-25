@@ -149,12 +149,26 @@ impl<E: VoiceprintEncoder> VoiceprintStore<E> {
         sample_rate: u32,
     ) -> Result<MeetingVoiceprintRow, String> {
         let embedding = self.encoder.encode(pcm, sample_rate)?;
+        self.enroll_embedding(user_id, display_name, &embedding)
+            .await
+    }
+
+    /// Enroll with a precomputed (or placeholder) embedding vector.
+    pub async fn enroll_embedding(
+        &self,
+        user_id: &str,
+        display_name: &str,
+        embedding: &[f32],
+    ) -> Result<MeetingVoiceprintRow, String> {
+        if embedding.is_empty() {
+            return Err("embedding must not be empty".into());
+        }
         let now = now_ms();
         let params = UpsertMeetingVoiceprintParams {
             voiceprint_id: Uuid::now_v7().to_string(),
             user_id: user_id.to_string(),
             display_name: display_name.to_string(),
-            embedding_blob: embedding_to_blob(&embedding),
+            embedding_blob: embedding_to_blob(embedding),
             created_at: now,
             updated_at: now,
         };

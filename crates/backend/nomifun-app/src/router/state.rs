@@ -81,6 +81,7 @@ pub struct ModuleStates {
     pub conversation: ConversationRouterState,
     pub remote_agent: RemoteAgentRouterState,
     pub ssh_host: nomifun_ssh::SshHostRouterState,
+    pub meeting: nomifun_audio::MeetingRouterState,
     pub agent: AgentRouterState,
 
     pub connection_test: ConnectionTestRouterState,
@@ -615,6 +616,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         conversation,
         remote_agent: build_remote_agent_state(services),
         ssh_host: build_ssh_host_state(services),
+        meeting: build_meeting_state(services),
         agent: AgentRouterState {
             agent_registry: services.agent_registry.clone(),
             service: agent_service,
@@ -1317,6 +1319,21 @@ pub fn build_ssh_host_state(services: &AppServices) -> nomifun_ssh::SshHostRoute
     nomifun_ssh::SshHostRouterState {
         service: services.ssh_pool.host_service(),
         pool: Some(services.ssh_pool.clone()),
+    }
+}
+
+pub fn build_meeting_state(services: &AppServices) -> nomifun_audio::MeetingRouterState {
+    let meeting_repo = Arc::new(nomifun_db::SqliteMeetingRepository::new(
+        services.database.pool().clone(),
+    )) as Arc<dyn nomifun_db::IMeetingRepository>;
+    nomifun_audio::MeetingRouterState {
+        service: services.meeting_service.clone(),
+        runtime: services.meeting_runtime.clone(),
+        meetings_root: services.data_dir.join("meetings"),
+        voiceprints: Arc::new(nomifun_audio::VoiceprintStore::new(
+            nomifun_audio::FakeVoiceprintEncoder::new(16),
+            meeting_repo,
+        )),
     }
 }
 

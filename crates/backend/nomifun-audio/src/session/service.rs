@@ -37,6 +37,14 @@ impl MeetingSessionService {
     ) -> Result<MeetingSessionSnapshot, String> {
         let now = now_ms();
         let session_id = Uuid::now_v7().to_string();
+        // Callers pass a meetings root; each session gets its own subdirectory.
+        let data_dir = {
+            let path = std::path::PathBuf::from(&req.data_dir).join(&session_id);
+            if let Err(e) = std::fs::create_dir_all(&path) {
+                tracing::warn!(error = %e, path = %path.display(), "meeting data_dir create failed");
+            }
+            path.to_string_lossy().into_owned()
+        };
         let row = self
             .repo
             .insert_session(&InsertMeetingSessionParams {
@@ -45,7 +53,7 @@ impl MeetingSessionService {
                 title: req.title,
                 status: MeetingSessionStatus::Created.as_str().to_string(),
                 bound_conversation_id: req.bound_conversation_id,
-                data_dir: req.data_dir,
+                data_dir,
                 mic_available: req.mic_available,
                 loopback_available: req.loopback_available,
                 stt_backend: req.stt_backend.as_str().to_string(),
@@ -214,6 +222,38 @@ impl MeetingSessionService {
         rows.into_iter().map(segment_from_row).collect()
     }
 
+    pub async fn update_capture_availability(
+        &self,
+        session_id: &str,
+        mic_available: bool,
+        loopback_available: bool,
+    ) -> Result<MeetingSessionSnapshot, String> {
+        let row = self
+            .repo
+            .update_session(
+                session_id,
+                &UpdateMeetingSessionParams {
+                    title: None,
+                    status: None,
+                    bound_conversation_id: None,
+                    mic_available: Some(mic_available),
+                    loopback_available: Some(loopback_available),
+                    stt_backend: None,
+                    started_at: None,
+                    ended_at: None,
+                    updated_at: now_ms(),
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("meeting session not found: {session_id}"))?;
+        let snap = snapshot_from_row(row)?;
+        self.publish(MeetingEvent::SessionUpdated {
+            session: snap.clone(),
+        });
+        Ok(snap)
+    }
+
     pub fn publish_capability_degraded(
         &self,
         session_id: impl Into<String>,
@@ -225,6 +265,13 @@ impl MeetingSessionService {
             session_id: session_id.into(),
             mic_available,
             loopback_available,
+            message: message.into(),
+        });
+    }
+
+    pub fn publish_error(&self, session_id: impl Into<String>, message: impl Into<String>) {
+        self.publish(MeetingEvent::Error {
+            session_id: session_id.into(),
             message: message.into(),
         });
     }
