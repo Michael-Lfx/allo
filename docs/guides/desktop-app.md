@@ -52,7 +52,7 @@ Why the less obvious entries are there:
 
 Three more notes specific to this dependency tree:
 
-- Tauri's generic list also names `libssl-dev`, `libxdo-dev` and `libasound2-dev`, and a missing `-lgbm` is often blamed on `libdrm-dev`. None of the four are used here: there is no `openssl-sys` (TLS is rustls with vendored crypto), no `libxdo` (input simulation goes through pure-Rust `x11rb`), no ALSA consumer (Opus is vendored and `symphonia` is pure Rust), and `drm-sys` uses pregenerated bindings and emits no `-ldrm`. They are harmless if you already have them.
+- Tauri's generic list also names `libssl-dev` and `libxdo-dev`, and a missing `-lgbm` is often blamed on `libdrm-dev`. Those three are unused here: there is no `openssl-sys` (TLS is rustls with vendored crypto), no `libxdo` (input simulation goes through pure-Rust `x11rb`), and `drm-sys` uses pregenerated bindings and emits no `-ldrm`. They are harmless if you already have them. **`libasound2-dev` is required** — `cpal` / `alsa-sys` link ALSA for meeting audio capture.
 - The first build needs network access: `ort-sys` downloads a prebuilt ONNX Runtime (see [First build needs network access to pyke](../contributing/development.md#first-build-needs-network-access-to-pyke)), and `bun run build` fetches linuxdeploy and its plugins from GitHub.
 - `lsof` is optional. `bun run dev` uses it to free port 5173 ([`scripts/free-ports.mjs`](../../scripts/free-ports.mjs)) and silently skips that cleanup when it is missing.
 

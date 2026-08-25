@@ -246,6 +246,7 @@ jobs:
             libgbm-dev \
             libclang-dev \
             librsvg2-dev \
+            libasound2-dev \
             xdg-utils
 
       - name: Install dependencies

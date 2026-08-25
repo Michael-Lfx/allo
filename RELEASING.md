@@ -115,7 +115,7 @@ Use this order for every desktop release.
    Prepare the native Linux packaging dependencies first:
 
    ```bash
-   sudo apt-get install -y pkg-config libgbm-dev libayatana-appindicator3-dev librsvg2-dev
+   sudo apt-get install -y pkg-config libgbm-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev
    ```
 
    `build:linux` preflights the `gbm`, AppIndicator, and `librsvg-2.0`

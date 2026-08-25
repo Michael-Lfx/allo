@@ -46,6 +46,7 @@ require_linux_build_deps() {
   else
     pkg-config --exists gbm || missing+=("libgbm-dev (pkg-config: gbm)")
     pkg-config --exists librsvg-2.0 || missing+=("librsvg2-dev (pkg-config: librsvg-2.0)")
+    pkg-config --exists alsa || missing+=("libasound2-dev (pkg-config: alsa)")
     if ! pkg-config --exists ayatana-appindicator3-0.1 && ! pkg-config --exists appindicator3-0.1; then
       missing+=("libayatana-appindicator3-dev 或 libappindicator3-dev (pkg-config: *appindicator3-0.1)")
     fi
@@ -60,12 +61,13 @@ require_linux_build_deps() {
     cat >&2 <<'EOF'
 
 Debian/Ubuntu 可先安装:
-  sudo apt-get install -y pkg-config libgbm-dev libayatana-appindicator3-dev librsvg2-dev
+  sudo apt-get install -y pkg-config libgbm-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev
 
 说明:
   - libgbm-dev 提供 -lgbm 链接名与 gbm.pc。
   - libayatana-appindicator3-dev 提供 Tauri 托盘/AppIndicator 打包探测。
   - librsvg2-dev 提供 linuxdeploy GTK 插件需要的 librsvg-2.0.pc。
+  - libasound2-dev 提供 alsa.pc（cpal / alsa-sys，会议音频采集需要）。
   - 本脚本会设置 APPIMAGE_EXTRACT_AND_RUN=1，让 linuxdeploy AppImage 在无 FUSE2 的构建机上也能运行。
 EOF
     exit 1

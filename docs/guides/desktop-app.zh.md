@@ -50,7 +50,7 @@ sudo apt install librsvg2-dev xdg-utils
 
 关于这棵依赖树，还有三点需要说明：
 
-- Tauri 的通用清单里还有 `libssl-dev`、`libxdo-dev` 和 `libasound2-dev`，而缺少 `-lgbm` 也常被误归因到 `libdrm-dev`。这四个在这里都用不到：没有 `openssl-sys` (TLS 走 rustls 与内置静态加密库)，没有 `libxdo` (输入模拟走纯 Rust 的 `x11rb`)，没有任何 ALSA 使用方 (Opus 是内置编译的，`symphonia` 是纯 Rust)，`drm-sys` 用的是预生成绑定、不会产出 `-ldrm`。已经装了也无害。
+- Tauri 的通用清单里还有 `libssl-dev` 和 `libxdo-dev`，而缺少 `-lgbm` 也常被误归因到 `libdrm-dev`。这三个在这里都用不到：没有 `openssl-sys` (TLS 走 rustls 与内置静态加密库)，没有 `libxdo` (输入模拟走纯 Rust 的 `x11rb`)，`drm-sys` 用的是预生成绑定、不会产出 `-ldrm`。已经装了也无害。**`libasound2-dev` 是必需的**——会议音频采集经 `cpal` / `alsa-sys` 链接 ALSA。
 - 首次构建需要网络：`ort-sys` 会下载预编译的 ONNX Runtime (参见[首次构建需要访问 pyke 的 CDN](../contributing/development.zh.md#首次构建需要访问-pyke-的-cdn))，`bun run build` 还会从 GitHub 拉取 linuxdeploy 及其插件。
 - `lsof` 是可选的。`bun run dev` 用它来释放 5173 端口 ([`scripts/free-ports.mjs`](../../scripts/free-ports.mjs))，缺失时会静默跳过这一步清理。
 

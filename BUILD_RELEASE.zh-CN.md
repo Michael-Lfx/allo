@@ -75,8 +75,13 @@ apps/desktop/tauri.channel.windows.conf.json   # 写入 Windows endpoint
 ## 发版前： bump 版本号
 
 ```bash
-bun run bump 0.4.2
+bun run bump 1.0.7            # 只改文件：Cargo.toml + package.json/ui + Cargo.lock
+bun run bump 1.0.7 --tag      # 改文件 + commit + 打 tag v1.0.7（需干净工作树）
+git push origin HEAD v1.0.7   # 推送 commit 与 tag，触发 ModelScope CI
 ```
+
+注意：`bump` 不加 `--tag` 时**不会**自动 commit/打 tag。若手动 `git tag v1.0.7`
+时工作区 bump 未提交，CI 会报 tag 版本与 Cargo.toml 不一致。
 
 发版前在同一 commit 上 bump 到目标版本；CI 用单个 `vX.Y.Z` tag 并行发三端。
 
