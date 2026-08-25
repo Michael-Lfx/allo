@@ -14,6 +14,8 @@ Flowy 围绕一个核心原则构建：**一份 Rust 后端、两种宿主形态
 - [`communication.md`](communication.zh.md) —— HTTP / WebSocket / Tauri IPC / ACP / MCP。
 - [`data-and-storage.md`](data-and-storage.zh.md) —— SQLite、工作区、运行时。
 - [`id-system.md`](id-system.zh.md) —— v3 技术主键、业务 ID、内部技术行与逻辑关联契约。
+- [`browser-platform.zh.md`](browser-platform.zh.md) —— 托管式 Chromium Lane、调度与生命周期权威。
+- 领域文档：[`media-creation.zh.md`](media-creation.zh.md)（创意工坊 / 视频生成 / 模型调用层）、[`cloud-billing.zh.md`](cloud-billing.zh.md)（云登录、目录同步、积分与 Airwallex 内购）、[`learning.zh.md`](learning.zh.md)（知识库课程引擎）、[`poi-insights.zh.md`](poi-insights.zh.md)（本地兴趣话题与去标识化贡献）、[`customer-service.zh.md`](customer-service.zh.md)（IM 客服独立域）、[`robot-gateway.zh.md`](robot-gateway.zh.md)（小智机器人化身）、[`ssh-sessions.zh.md`](ssh-sessions.zh.md)（russh 远程主机）。
 
 ## 双宿主模型
 

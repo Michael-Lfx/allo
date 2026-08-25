@@ -20,6 +20,17 @@ This document is the map. The sibling documents drill into the parts:
 - [`data-and-storage.md`](data-and-storage.md) — SQLite, workspaces, runtimes.
 - [`id-system.md`](id-system.md) — the v3 technical-key, business-ID, internal-row, and
   logical-reference contract.
+- [`browser-platform.md`](browser-platform.zh.md) — managed Chromium lanes, scheduling,
+  and lifecycle authority.
+- Domain docs: [`media-creation.zh.md`](media-creation.zh.md) (workshop / video
+  generation / model-invocation layer), [`cloud-billing.zh.md`](cloud-billing.zh.md)
+  (cloud login, catalog sync, credits & Airwallex checkout),
+  [`learning.zh.md`](learning.zh.md) (knowledge-base course engine),
+  [`poi-insights.zh.md`](poi-insights.zh.md) (local interest topics &
+  de-identified contribution), [`customer-service.zh.md`](customer-service.zh.md)
+  (standalone IM customer-service domain),
+  [`robot-gateway.zh.md`](robot-gateway.zh.md) (xiaozhi robots as companion bodies),
+  [`ssh-sessions.zh.md`](ssh-sessions.zh.md) (russh remote hosts).
 
 ## The two-host model
 

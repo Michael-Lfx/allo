@@ -18,11 +18,11 @@ web) and one React 19 SPA.
 | --- | --- |
 | `apps/web/` | Standalone `nomifun-web` server (API + SPA). |
 | `apps/desktop/` | Tauri desktop shell with embedded backend. |
-| `crates/agent/` | Independent AI agent engine (`nomi-*`; includes `nomi-agent-trace` for Session Logs). No `nomifun-*` deps. |
-| `crates/backend/` | 32 `nomifun-*` crates: HTTP/WS server, data, auth, features. |
-| `crates/shared/` | 2 cross-layer utility crates. Keep new shared crates rare. |
+| `crates/agent/` | Independent AI agent engine (24 crates: 23 `nomi-*` + `flowy-web`; includes `nomi-agent-trace` for Session Logs). Largely self-contained; a few documented deps on backend utility crates. |
+| `crates/backend/` | 44 `nomifun-*` crates: HTTP/WS server, data, auth, features. |
+| `crates/shared/` | 5 cross-layer utility crates (`flowy-ssh`, `nomi-process-runtime`, `nomi-redact`, `nomifun-models-dev`, `nomifun-net`). Keep new shared crates rare. |
 | `ui/src/common/` | Cross-host code: API clients, types, adapters, utils. |
-| `ui/src/platform/` | Host bridge: storage, logger, theme. Never import Tauri directly in renderer. |
+| `ui/src/platform/` | Host bridge: runtime bridge + theme tokens. Never import Tauri directly in renderer. |
 | `ui/src/renderer/` | Pages, components, hooks, services, styles. |
 | `docs/` | User guides, architecture, contributor docs, specs. |
 | `scripts/` | Build helpers, quality gate checkers, release tooling. |
@@ -138,6 +138,7 @@ committer, co-author, or other credited contributor.
 - [docs/architecture/agent-engine.md](docs/architecture/agent-engine.md) — agent engine crates
 - [docs/architecture/frontend.md](docs/architecture/frontend.md) — React SPA routes and adapters
 - [docs/architecture/agent-observability-and-eval.zh.md](docs/architecture/agent-observability-and-eval.zh.md) — Session Logs and Agent Eval
+- Domain docs: [media-creation](docs/architecture/media-creation.zh.md), [cloud & billing](docs/architecture/cloud-billing.zh.md), [learning](docs/architecture/learning.zh.md), [POI/insights](docs/architecture/poi-insights.zh.md), [customer service](docs/architecture/customer-service.zh.md), [robot gateway](docs/architecture/robot-gateway.zh.md), [SSH sessions](docs/architecture/ssh-sessions.zh.md)
 - [docs/contributing/development.md](docs/contributing/development.md) — dev loops, data dirs, CLI
 - [docs/contributing/building-and-packaging.md](docs/contributing/building-and-packaging.md) — release artifacts
 - [docs/reference/configuration.md](docs/reference/configuration.md) — env vars and config
