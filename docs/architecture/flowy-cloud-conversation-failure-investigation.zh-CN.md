@@ -730,3 +730,59 @@ attempt、子会话和 turn ID，确认：协作栏不再触发会话状态不�
 路径；子任务失败会在主会话摘要中保留原因；主会话删除、Attempt 审计保留、后台删除和
 orphan 保护分别符合上述契约。ReactFlow 仍只以完成 `bun install` 为前置条件复核，不属于
 本次代码修复范围。
+
+## 14. 计费错误弹窗恢复入口修复
+
+### 14.1 已确认的错误映射
+
+后端对 `402`、`Insufficient credits` 等响应正确分类为：
+
+```text
+code = USER_LLM_PROVIDER_BILLING_REQUIRED
+resolution.kind = check_provider_billing
+```
+
+此前前端把 `check_provider_billing` 放入 `MODEL_RECOVERY_KINDS`，因此错误卡统一显示
+“更换模型”，并导航到 `/models?section=models`。该页面是通用模型/Provider 配置页，不是
+Flowy Cloud 计费页；`/settings/model` 也只会重定向到同一个页面。
+
+### 14.2 当前修复
+
+`check_provider_billing` 现在始终显示“购买积分”，并使用已有 `/billing` 路由，不根据
+Provider 类型或 `SERVER_MANAGED_MODELS` 判断。该路由已有 Flowy Cloud 登录回跳、套餐/积分包
+加载和支付流程，不新增支付 API，也不改变后端 402 分类。
+
+恢复动作已抽取为可测试的纯映射：
+
+```text
+check_provider_billing
+  -> open_billing
+  -> /billing
+
+change_model
+  -> change_model
+  -> /models?section=models
+```
+
+错误卡仍保留技术详情、复制诊断、反馈问题和不可重试状态；计费动作埋点使用
+`prerequisite_resolved.kind = open_billing`，不再伪装成 `change_model`。
+
+### 14.3 策略边界
+
+计费不足被定义为 Flowy Cloud 账户积分前置条件，因此错误卡不再尝试推断 Provider 身份；
+`check_provider_billing` 永远进入 Flowy Cloud `/billing`。`SERVER_MANAGED_MODELS` 仍只负责
+隐藏侧栏模型管理入口；`/models` 路由、通用 Provider CRUD、`GuidAddProviderModal` 和会话中的
+模型不可用链接是否继续存在，属于独立的 Provider 权限治理问题，不影响本次计费错误动作契约。
+
+### 14.4 测试与验收边界
+
+- 新增 `messageErrorRecovery` 纯函数测试，覆盖计费错误、真实换模型、Agent 配置和未知错误；
+- `MessageTips` 渲染测试验证计费错误显示“购买积分”、不显示“更换模型”、不使用模型设置
+  路由，并保留复制/反馈；
+- 错误预览页复用同一恢复动作映射，新增计费 fixture；
+- 原有非重试配置错误测试不再错误要求编辑按钮；
+- 路由和积分入口既有测试继续作为 `/billing` 可达性的自动化证据；
+- 自动化测试、静态类型/i18n 门禁、真实 Flowy Cloud 实测和人工验收分别记录，不能互相替代；
+- 当前 Bun 脚本存在 `Operation not permitted` 环境阻塞，必须在恢复 Bun 执行权限后重新运行
+  `bun run typecheck`、`bun run check:i18n` 和完整 `bun run check`；
+- 本次没有真实调用 Flowy Cloud，也没有宣称购买、登录回跳和实际 402 弹窗已完成线上验收。

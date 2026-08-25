@@ -13,6 +13,7 @@ import { MemoryRouter } from 'react-router-dom';
 
 import ErrorDiagnosticContent from '@renderer/components/base/ErrorDiagnosticContent';
 import MessageTips from '@renderer/pages/conversation/Messages/components/MessageTips';
+import { resolveMessageErrorRecoveryAction } from '@renderer/pages/conversation/Messages/components/messageErrorRecovery';
 import { MessageListProvider } from '@renderer/pages/conversation/Messages/hooks';
 import { PRESET_THEMES } from '@renderer/pages/settings/DisplaySettings/presets';
 import { ConversationProvider } from '@renderer/hooks/context/ConversationContext';
@@ -111,6 +112,16 @@ const fixtures: ErrorSurfaceFixture[] = [
     retryable: false,
     resolution: { kind: 'change_model', target: 'provider_settings' },
     detail: 'The selected provider is unavailable for this request.',
+  },
+  {
+    id: 'provider-billing',
+    title: '模型服务商需要开通计费',
+    body: '所选服务商需要有效的计费、余额或额度后才能完成请求。请处理后重试。',
+    code: 'USER_LLM_PROVIDER_BILLING_REQUIRED',
+    ownership: 'user_llm_provider',
+    retryable: false,
+    resolution: { kind: 'check_provider_billing', target: 'provider_settings' },
+    detail: 'Nomi agent error: Provider error: API error 402: Insufficient credits.',
   },
 ];
 
@@ -216,14 +227,25 @@ const ErrorSurfaceProbe: React.FC = () => {
       const actionLabels = actionElements
         .map((element) => element.textContent?.trim() || element.getAttribute('aria-label') || '')
         .filter(Boolean);
+      const recoveryAction = resolveMessageErrorRecoveryAction(probeMessages.error.content.error);
+      const recoveryActionLabel = recoveryAction
+        ? t(recoveryAction.labelKey, {
+            defaultValue:
+              recoveryAction.source === 'open_billing'
+                ? 'Buy credits'
+                : recoveryAction.source === 'change_model'
+                  ? 'Change model'
+                  : 'Fix setup',
+          })
+        : null;
       const expectedActionLabels = [
         ...(selectedFixture.id === 'legacy-message' || selectedFixture.retryable !== false
           ? [t('conversation.agentError.retryAction', { defaultValue: 'Retry' })]
           : []),
-        ...(selectedFixture.resolution?.kind === 'change_model' || selectedFixture.code === 'PROVIDER_UNAVAILABLE'
-          ? [t('conversation.agentError.changeModelAction', { defaultValue: 'Change model' })]
+        ...(recoveryActionLabel ? [recoveryActionLabel] : []),
+        ...(selectedFixture.id === 'legacy-message' || selectedFixture.retryable !== false
+          ? [t('common.edit', { defaultValue: 'Edit' })]
           : []),
-        t('common.edit', { defaultValue: 'Edit' }),
         t('conversation.agentError.copyDiagnostic'),
         t('settings.oneClickFeedback'),
       ];

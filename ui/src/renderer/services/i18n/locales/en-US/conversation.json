@@ -162,6 +162,7 @@
     "retryAction": "Retry",
     "fixConfigAction": "Fix setup",
     "changeModelAction": "Change model",
+    "openBillingAction": "Buy credits",
     "resolutionPrefix": "Suggestion: ",
     "resolution": {
       "retry": "Retry later, or send this message again.",

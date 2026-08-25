@@ -19,6 +19,7 @@ import { emitter } from '@/renderer/utils/emitter';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { useMessageList } from '../hooks';
 import { parseMessageFileMarker } from './messageFileMarker';
+import { resolveMessageErrorRecoveryAction } from './messageErrorRecovery';
 import { MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 import { useNavigate } from 'react-router-dom';
 import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
@@ -29,21 +30,6 @@ import {
   formatErrorDiagnosticText,
   getErrorDiagnosticLabels,
 } from '@/renderer/utils/ui/errorDiagnostics';
-
-const MODEL_RECOVERY_KINDS = new Set([
-  'change_model',
-  'check_provider_credentials',
-  'check_provider_billing',
-  'check_provider_base_url',
-]);
-
-const AGENT_RECOVERY_KINDS = new Set([
-  'reconnect_agent',
-  'check_agent_login',
-  'check_agent_installation',
-  'check_agent_version',
-  'check_local_command',
-]);
 
 const icon = {
   success: <CheckOne theme='filled' size='16' fill={theme.Color.FunctionalColor.success} className='m-t-2px' />,
@@ -246,25 +232,20 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
     return null;
   }, [message.id, messageList, structuredError, type]);
 
-  const recoveryAction = useMemo(() => {
-    const kind = structuredError?.resolution?.kind;
-    if (!kind) return null;
-    if (MODEL_RECOVERY_KINDS.has(kind) || structuredError?.code === 'PROVIDER_UNAVAILABLE') {
-      return {
-        label: t('conversation.agentError.changeModelAction', { defaultValue: 'Change model' }),
-        href: '/models?section=models',
-        source: 'change_model',
-      };
-    }
-    if (AGENT_RECOVERY_KINDS.has(kind)) {
-      return {
-        label: t('conversation.agentError.fixConfigAction', { defaultValue: 'Fix setup' }),
-        href: '/models?section=agents',
-        source: 'fix_agent_config',
-      };
-    }
-    return null;
-  }, [structuredError?.code, structuredError?.resolution?.kind, t]);
+  const recoveryAction = useMemo(
+    () => resolveMessageErrorRecoveryAction(structuredError),
+    [structuredError?.code, structuredError?.resolution?.kind]
+  );
+  const recoveryActionLabel = recoveryAction
+    ? t(recoveryAction.labelKey, {
+        defaultValue:
+          recoveryAction.source === 'open_billing'
+            ? 'Buy credits'
+            : recoveryAction.source === 'change_model'
+              ? 'Change model'
+              : 'Fix setup',
+      })
+    : null;
 
   if (type === 'error') {
     const diagnostic = structuredError
@@ -393,7 +374,7 @@ const MessageTips: React.FC<{ message: IMessageTips }> = ({ message }) => {
                           navigate(recoveryAction.href);
                         }}
                       >
-                        {recoveryAction.label}
+                        {recoveryActionLabel}
                       </Button>
                     )}
                     {editButton}

@@ -1225,6 +1225,7 @@ export type I18nKey =
   | 'conversation.agentError.httpStatus'
   | 'conversation.agentError.incidentId'
   | 'conversation.agentError.notRetryable'
+  | 'conversation.agentError.openBillingAction'
   | 'conversation.agentError.ownership.nomifun'
   | 'conversation.agentError.ownership.unknown_upstream'
   | 'conversation.agentError.ownership.user_agent'
