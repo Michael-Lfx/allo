@@ -57,8 +57,10 @@ pub use recorder::{
 pub use routes::{MeetingRouterState, meeting_routes};
 pub use runtime::MeetingRuntime;
 pub use session::{
-    CreateMeetingSessionRequest, MeetingEvent, MeetingSegmentSnapshot, MeetingSessionService,
-    MeetingSessionSnapshot, MeetingSessionStatus, SttBackendChoice,
+    CreateMeetingSessionRequest, GenerateMeetingNotesResult, MeetingEvent, MeetingNoteTodo,
+    MeetingNotes, MeetingNotesCompleter, MeetingNotesConversationSink, MeetingNotesSource,
+    MeetingNotesStatus, MeetingNotesView, MeetingSegmentSnapshot, MeetingSessionService,
+    MeetingSessionSnapshot, MeetingSessionStatus, MeetingSpeakerHighlight, SttBackendChoice,
 };
 pub use stt::{
     CloudSttCallback, FakeSttCallback, MeetingCloudStt, NullSttCallback, SHERPA_ASR_MODEL_DIR_ENV,

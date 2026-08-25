@@ -16,8 +16,8 @@ use crate::devices::{AudioDeviceManager, DeviceKind};
 use crate::process_watch::detect_meeting_process;
 use crate::runtime::MeetingRuntime;
 use crate::session::{
-    CreateMeetingSessionRequest, MeetingSegmentSnapshot, MeetingSessionService,
-    MeetingSessionSnapshot, SttBackendChoice,
+    CreateMeetingSessionRequest, GenerateMeetingNotesResult, MeetingNotesView,
+    MeetingSegmentSnapshot, MeetingSessionService, MeetingSessionSnapshot, SttBackendChoice,
 };
 use crate::voiceprint::{FakeVoiceprintEncoder, VoiceprintStore, embedding_from_blob};
 
@@ -57,6 +57,14 @@ pub fn meeting_routes(state: MeetingRouterState) -> Router {
         .route(
             "/api/meetings/{id}/segments/{segment_id}",
             patch(edit_segment),
+        )
+        .route(
+            "/api/meetings/{id}/notes",
+            get(get_notes),
+        )
+        .route(
+            "/api/meetings/{id}/notes/generate",
+            post(generate_notes),
         )
         .with_state(state)
 }
@@ -253,7 +261,50 @@ async fn stop_session(
         .stop(&id)
         .await
         .map_err(map_service_err)?;
+    // N3: auto-generate notes after stop (best-effort; explicit regenerate also available).
+    let service = state.service.clone();
+    let session_id = id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = service.generate_notes(&session_id).await {
+            tracing::warn!(error = %e, session_id, "auto meeting notes generation failed");
+        }
+    });
     Ok(Json(ApiResponse::ok(snap)))
+}
+
+async fn get_notes(
+    State(state): State<MeetingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<MeetingNotesView>>, AppError> {
+    let _ = require_owned(&state.service, user.id.as_str(), &id).await?;
+    let view = state
+        .service
+        .get_notes(&id)
+        .await
+        .map_err(map_service_err)?;
+    Ok(Json(ApiResponse::ok(view)))
+}
+
+#[derive(Debug, Serialize)]
+struct GenerateNotesDto {
+    session: MeetingSessionSnapshot,
+    #[serde(flatten)]
+    result: GenerateMeetingNotesResult,
+}
+
+async fn generate_notes(
+    State(state): State<MeetingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<GenerateNotesDto>>, AppError> {
+    let _ = require_owned(&state.service, user.id.as_str(), &id).await?;
+    let (session, result) = state
+        .service
+        .generate_notes(&id)
+        .await
+        .map_err(map_service_err)?;
+    Ok(Json(ApiResponse::ok(GenerateNotesDto { session, result })))
 }
 
 async fn bind_conversation(
@@ -510,6 +561,8 @@ mod tests {
                 stt_backend: params.stt_backend.clone(),
                 started_at: params.started_at,
                 ended_at: params.ended_at,
+                notes_json: None,
+                notes_status: "none".into(),
                 created_at: params.created_at,
                 updated_at: params.updated_at,
             };
@@ -537,6 +590,12 @@ mod tests {
             }
             if let Some(bound) = &params.bound_conversation_id {
                 row.bound_conversation_id = bound.clone();
+            }
+            if let Some(notes_json) = &params.notes_json {
+                row.notes_json = notes_json.clone();
+            }
+            if let Some(notes_status) = &params.notes_status {
+                row.notes_status = notes_status.clone();
             }
             row.updated_at = params.updated_at;
             Ok(Some(row.clone()))

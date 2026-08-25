@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::frame::AudioChannel;
+use crate::session::notes::{MeetingNotes, MeetingNotesStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,6 +81,8 @@ pub struct MeetingSessionSnapshot {
     pub stt_backend: SttBackendChoice,
     pub started_at_ms: Option<i64>,
     pub ended_at_ms: Option<i64>,
+    pub notes_status: MeetingNotesStatus,
+    pub notes: Option<MeetingNotes>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }

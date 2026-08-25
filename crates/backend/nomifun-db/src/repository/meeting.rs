@@ -30,6 +30,8 @@ pub struct UpdateMeetingSessionParams {
     pub stt_backend: Option<String>,
     pub started_at: Option<Option<i64>>,
     pub ended_at: Option<Option<i64>>,
+    pub notes_json: Option<Option<String>>,
+    pub notes_status: Option<String>,
     pub updated_at: i64,
 }
 

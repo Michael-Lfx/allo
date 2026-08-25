@@ -147,6 +147,8 @@ mod tests {
                 stt_backend: params.stt_backend.clone(),
                 started_at: params.started_at,
                 ended_at: params.ended_at,
+                notes_json: None,
+                notes_status: "none".into(),
                 created_at: params.created_at,
                 updated_at: params.updated_at,
             };
@@ -165,6 +167,12 @@ mod tests {
             };
             if let Some(status) = &params.status {
                 row.status = status.clone();
+            }
+            if let Some(notes_json) = &params.notes_json {
+                row.notes_json = notes_json.clone();
+            }
+            if let Some(notes_status) = &params.notes_status {
+                row.notes_status = notes_status.clone();
             }
             row.updated_at = params.updated_at;
             Ok(Some(row.clone()))

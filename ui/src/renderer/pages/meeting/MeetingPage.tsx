@@ -73,6 +73,7 @@ const MeetingPage: React.FC = () => {
     bindConversation,
     enrollVoiceprint,
     deleteVoiceprint,
+    generateNotes,
   } = useMeetings();
 
   const [title, setTitle] = useState('');
@@ -189,6 +190,28 @@ const MeetingPage: React.FC = () => {
       setActionBusy(false);
     }
   }, [bindConversation, bindId, selected, t]);
+
+  const handleGenerateNotes = useCallback(async () => {
+    if (!selected) return;
+    setActionBusy(true);
+    try {
+      const result = await generateNotes(selected.session_id);
+      const parts = [t('meeting.notes.generateSuccess')];
+      if (result.posted_to_conversation) {
+        parts.push(t('meeting.notes.posted'));
+      }
+      if (result.created_requirement_ids.length > 0) {
+        parts.push(
+          t('meeting.notes.tasksCreated', { count: result.created_requirement_ids.length })
+        );
+      }
+      Message.success(parts.join(' · '));
+    } catch (err) {
+      Message.error(String(err));
+    } finally {
+      setActionBusy(false);
+    }
+  }, [generateNotes, selected, t]);
 
   useEffect(() => {
     setBindId(selected?.bound_conversation_id ?? '');
@@ -384,6 +407,15 @@ const MeetingPage: React.FC = () => {
                         {t('meeting.stop')}
                       </Button>
                     ) : null}
+                    {selected.status === 'stopped' || selected.status === 'failed' ? (
+                      <Button
+                        type='primary'
+                        loading={actionBusy || selected.notes_status === 'generating'}
+                        onClick={() => void handleGenerateNotes()}
+                      >
+                        {t('meeting.notes.generate')}
+                      </Button>
+                    ) : null}
                   </div>
 
                   <div className='flex flex-wrap items-center gap-8px'>
@@ -397,6 +429,79 @@ const MeetingPage: React.FC = () => {
                     <Button loading={actionBusy} onClick={() => void handleBind()}>
                       {bindId.trim() ? t('meeting.bind') : t('meeting.unbind')}
                     </Button>
+                  </div>
+
+                  <div className='flex flex-col gap-8px'>
+                    <div className='flex flex-wrap items-center gap-8px'>
+                      <div className='text-13px font-medium text-t-primary'>{t('meeting.notes.title')}</div>
+                      <Tag size='small'>{t(`meeting.notes.status.${selected.notes_status}`)}</Tag>
+                      {selected.notes ? (
+                        <span className='text-12px text-t-tertiary'>
+                          {t(`meeting.notes.source.${selected.notes.source}`)}
+                        </span>
+                      ) : null}
+                    </div>
+                    {selected.notes_status === 'generating' ? (
+                      <div className='text-13px text-t-secondary'>{t('meeting.notes.generating')}</div>
+                    ) : selected.notes ? (
+                      <div className='flex flex-col gap-10px text-13px text-t-primary'>
+                        <div>
+                          <div className='mb-4px text-12px text-t-tertiary'>{t('meeting.notes.summary')}</div>
+                          <div className='whitespace-pre-wrap leading-20px'>{selected.notes.summary}</div>
+                        </div>
+                        {selected.notes.decisions.length > 0 ? (
+                          <div>
+                            <div className='mb-4px text-12px text-t-tertiary'>{t('meeting.notes.decisions')}</div>
+                            <ul className='m-0 flex list-disc flex-col gap-2px pl-18px'>
+                              {selected.notes.decisions.map((item) => (
+                                <li key={item}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {selected.notes.todos.length > 0 ? (
+                          <div>
+                            <div className='mb-4px text-12px text-t-tertiary'>{t('meeting.notes.todos')}</div>
+                            <ul className='m-0 flex list-disc flex-col gap-2px pl-18px'>
+                              {selected.notes.todos.map((item) => (
+                                <li key={item.title}>
+                                  {item.title}
+                                  {item.detail ? (
+                                    <span className='text-t-secondary'> — {item.detail}</span>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {selected.notes.risks.length > 0 ? (
+                          <div>
+                            <div className='mb-4px text-12px text-t-tertiary'>{t('meeting.notes.risks')}</div>
+                            <ul className='m-0 flex list-disc flex-col gap-2px pl-18px'>
+                              {selected.notes.risks.map((item) => (
+                                <li key={item}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {selected.notes.speaker_highlights.length > 0 ? (
+                          <div>
+                            <div className='mb-4px text-12px text-t-tertiary'>
+                              {t('meeting.notes.speakerHighlights')}
+                            </div>
+                            <ul className='m-0 flex list-disc flex-col gap-2px pl-18px'>
+                              {selected.notes.speaker_highlights.map((item) => (
+                                <li key={`${item.speaker}-${item.highlight}`}>
+                                  <span className='font-medium'>{item.speaker}</span>: {item.highlight}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className='text-13px text-t-secondary'>{t('meeting.notes.empty')}</div>
+                    )}
                   </div>
 
                   <div className='flex flex-col gap-8px'>

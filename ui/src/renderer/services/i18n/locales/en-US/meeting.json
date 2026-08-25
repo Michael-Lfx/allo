@@ -80,5 +80,29 @@
   },
   "speaker": "Speaker",
   "time": "Time",
-  "text": "Text"
+  "text": "Text",
+  "notes": {
+    "title": "Meeting notes",
+    "generate": "Generate notes",
+    "generateSuccess": "Notes generated",
+    "generating": "Generating notes…",
+    "empty": "No notes yet",
+    "summary": "Summary",
+    "decisions": "Decisions",
+    "todos": "Todos",
+    "risks": "Risks",
+    "speakerHighlights": "Speaker highlights",
+    "source": {
+      "llm": "LLM",
+      "template": "Template fallback"
+    },
+    "status": {
+      "none": "None",
+      "generating": "Generating",
+      "ready": "Ready",
+      "failed": "Failed"
+    },
+    "posted": "Posted to bound conversation",
+    "tasksCreated": "Created {{count}} tasks"
+  }
 }

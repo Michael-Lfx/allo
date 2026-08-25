@@ -242,6 +242,12 @@ export function useMeetings() {
     setVoiceprints((prev) => prev.filter((v) => v.voiceprint_id !== voiceprintId));
   }, []);
 
+  const generateNotes = useCallback(async (sessionId: string) => {
+    const result = await ipcBridge.meeting.generateNotes.invoke({ session_id: sessionId });
+    setSessions((prev) => upsertSession(prev, result.session));
+    return result;
+  }, []);
+
   return {
     sessions,
     selected,
@@ -264,6 +270,7 @@ export function useMeetings() {
     bindConversation,
     enrollVoiceprint,
     deleteVoiceprint,
+    generateNotes,
     refreshVoiceprints,
   };
 }

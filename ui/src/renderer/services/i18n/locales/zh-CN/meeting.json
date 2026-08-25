@@ -80,5 +80,29 @@
   },
   "speaker": "说话人",
   "time": "时间",
-  "text": "文本"
+  "text": "文本",
+  "notes": {
+    "title": "会议纪要",
+    "generate": "生成纪要",
+    "generateSuccess": "纪要已生成",
+    "generating": "正在生成纪要…",
+    "empty": "尚未生成纪要",
+    "summary": "摘要",
+    "decisions": "决策",
+    "todos": "待办",
+    "risks": "风险",
+    "speakerHighlights": "发言要点",
+    "source": {
+      "llm": "模型生成",
+      "template": "模板回退"
+    },
+    "status": {
+      "none": "未生成",
+      "generating": "生成中",
+      "ready": "已就绪",
+      "failed": "失败"
+    },
+    "posted": "已写入绑定会话",
+    "tasksCreated": "已创建 {{count}} 个待办任务"
+  }
 }

@@ -7849,8 +7849,47 @@ export interface MeetingSession {
   stt_backend: SttBackendChoice;
   started_at_ms: number | null;
   ended_at_ms: number | null;
+  notes_status: MeetingNotesStatus;
+  notes: MeetingNotes | null;
   created_at_ms: number;
   updated_at_ms: number;
+}
+
+export type MeetingNotesStatus = 'none' | 'generating' | 'ready' | 'failed';
+
+export type MeetingNotesSource = 'llm' | 'template';
+
+export interface MeetingNoteTodo {
+  title: string;
+  detail: string;
+  assignee: string | null;
+}
+
+export interface MeetingSpeakerHighlight {
+  speaker: string;
+  highlight: string;
+}
+
+export interface MeetingNotes {
+  summary: string;
+  decisions: string[];
+  todos: MeetingNoteTodo[];
+  risks: string[];
+  speaker_highlights: MeetingSpeakerHighlight[];
+  source: MeetingNotesSource;
+  generated_at_ms: number;
+}
+
+export interface MeetingNotesView {
+  status: MeetingNotesStatus;
+  notes: MeetingNotes | null;
+}
+
+export interface GenerateMeetingNotesResult {
+  session: MeetingSession;
+  notes: MeetingNotes;
+  posted_to_conversation: boolean;
+  created_requirement_ids: string[];
 }
 
 export interface MeetingSegment {
@@ -7933,6 +7972,13 @@ export const meeting = {
   ),
   listSegments: httpGet<MeetingSegment[], { session_id: string }>(
     (p) => `/api/meetings/${p.session_id}/segments`
+  ),
+  getNotes: httpGet<MeetingNotesView, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/notes`
+  ),
+  generateNotes: httpPost<GenerateMeetingNotesResult, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/notes/generate`,
+    () => ({})
   ),
   listDevices: httpGet<MeetingDevice[], void>('/api/meetings/devices'),
   detectedApps: httpGet<MeetingDetectedApps, void>('/api/meetings/detected-apps'),

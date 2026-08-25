@@ -11,7 +11,7 @@ use crate::repository::meeting::{
 
 const SESSION_COLUMNS: &str = "id, session_id, user_id, title, status, \
      bound_conversation_id, data_dir, mic_available, loopback_available, stt_backend, \
-     started_at, ended_at, created_at, updated_at";
+     started_at, ended_at, notes_json, notes_status, created_at, updated_at";
 
 const SEGMENT_COLUMNS: &str = "id, session_id, segment_id, channel, speaker_id, speaker_label, \
      text, is_partial, is_manual_edit, start_ms, end_ms, created_at, updated_at";
@@ -43,8 +43,8 @@ impl IMeetingRepository for SqliteMeetingRepository {
             "INSERT INTO meeting_sessions (\
                 session_id, user_id, title, status, bound_conversation_id, data_dir, \
                 mic_available, loopback_available, stt_backend, started_at, ended_at, \
-                created_at, updated_at\
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                notes_json, notes_status, created_at, updated_at\
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
             RETURNING {SESSION_COLUMNS}"
         );
         let row = sqlx::query_as::<_, MeetingSessionRow>(&sql)
@@ -59,6 +59,8 @@ impl IMeetingRepository for SqliteMeetingRepository {
             .bind(&params.stt_backend)
             .bind(params.started_at)
             .bind(params.ended_at)
+            .bind(Option::<String>::None)
+            .bind("none")
             .bind(params.created_at)
             .bind(params.updated_at)
             .fetch_one(&self.pool)
@@ -102,12 +104,20 @@ impl IMeetingRepository for SqliteMeetingRepository {
             Some(v) => v,
             None => existing.ended_at,
         };
+        let notes_json = match &params.notes_json {
+            Some(v) => v.clone(),
+            None => existing.notes_json,
+        };
+        let notes_status = params
+            .notes_status
+            .clone()
+            .unwrap_or(existing.notes_status);
 
         let sql = format!(
             "UPDATE meeting_sessions SET \
                 title = ?, status = ?, bound_conversation_id = ?, mic_available = ?, \
                 loopback_available = ?, stt_backend = ?, started_at = ?, ended_at = ?, \
-                updated_at = ? \
+                notes_json = ?, notes_status = ?, updated_at = ? \
              WHERE session_id = ? \
              RETURNING {SESSION_COLUMNS}"
         );
@@ -120,6 +130,8 @@ impl IMeetingRepository for SqliteMeetingRepository {
             .bind(stt)
             .bind(started)
             .bind(ended)
+            .bind(notes_json)
+            .bind(notes_status)
             .bind(params.updated_at)
             .bind(session_id)
             .fetch_optional(&self.pool)
