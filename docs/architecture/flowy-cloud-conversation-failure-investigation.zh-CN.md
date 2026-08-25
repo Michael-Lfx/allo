@@ -684,39 +684,43 @@ React/ReactDOM/ReactFlow 实际版本、`ui/node_modules/.vite/deps/_metadata.js
 掩盖，失败项保持在列表中并按原因汇总提示。失败请求不会伪造 `conversation.deleted`，
 最终成功仍以 `conversation.listChanged(deleted)` 为准。
 
-### 13.4 已执行的自动化验证
+### 13.4 自动化验证记录（2026-08-25）
 
-已通过：
+#### 已完成并通过
 
 - `cargo test -p nomifun-conversation --lib empty_text`；
 - `cargo test -p nomifun-conversation --lib tool_first_uses_hidden_text_placeholder_until_final_text`；
 - `cargo test -p nomi-providers --lib sse_`；
 - `cargo test -p nomi-providers --lib eof_before_finish_reason`；
-- `cargo test -p nomifun-common --lib error::tests`（新增 HTTP 响应体测试前的既有 16 项通过）；
+- `cargo test -p nomifun-common --lib error::tests`（17 passed）；
 - `cargo test -p nomifun-common stage_direction`（13 passed）；
 - `cargo test -p nomifun-agent-execution --lib aggregate_summary_preserves_stream_failure_reason`；
 - `cargo test -p nomifun-agent-execution --lib failed_or_textless_agent_outcome_can_never_complete`；
 - `cargo test -p nomifun-conversation --lib cold_running_orphan_rejects_user_stop_and_delete_without_mutation`；
-- `bun test --cwd ui src/renderer/pages/conversation/SessionList/hooks/conversationDeleteErrors.test.ts`；
-- 前端删除结构/分类测试合计 5 passed；
-- `bun run check:i18n`、`bun run check:error-surface-contract`；
+- `bun test --cwd ui src/renderer/pages/conversation/SessionList/hooks/conversationDeleteErrors.test.ts src/renderer/pages/conversation/authoritativeConversationDeletion.structure.test.ts`
+  （7 passed, 0 failed）；
 - `cargo fmt --all -- --check`、`git diff --check`。
 
-`cargo test -p nomi-providers --test provider_openai_test` 已三次尝试执行（其中一次使用 C 盘临时
-Cargo target），但 workspace 编译阶段仍因 D 盘剩余空间不足（`os error 112`，`No space left
-on device`）无法写入 `build.noindex`，因此本轮不能把该集成测试宣称为最终通过；provider 的
-SSE 单元/捕获测试已通过。新增的 `conversation_delete_response_body_exposes_stable_contract`
-已在 C 盘临时 Cargo target 中随 common 错误测试通过，`17 passed, 0 failed`。
+本次前端修复补齐了 `classifyConversationDeleteError` 导入，并将可见的
+`BatchActionBar` 删除入口接入 hook 中的 `Promise.allSettled` 和稳定错误分类逻辑。上述前端
+定向测试已验证该真实接线；但完整 TypeScript 编译仍需见下方环境阻塞记录。
 
-`cargo test -p nomifun-conversation --lib delete_rejects_soft_deleted_execution_attempt_transcript`
-仍被 Windows `runtime-locks` authority file 的拒绝访问拦截，失败发生在测试夹具初始化，
-没有到达删除断言，因此不能视为产品行为失败。
+#### 当前环境阻塞
 
-`bun run typecheck` 被仓库已有的 Markdown、Preview、视频画布和其他组件类型错误拦截；
-输出中没有新增删除错误分类文件或 `useConversationActions.ts` 的类型错误。完整 `bun run check`
-和 `cargo check --workspace` 仍需在清理这些环境/基线问题后再作为发布门禁执行。本轮实际
-启动 `cargo check --workspace` 时，D 盘仅剩约 84 KiB，最终因 `build.noindex` 写入
-`os error 112`（磁盘空间不足）中断；这属于验证环境阻塞，不是本次代码编译错误。
+- `bun run typecheck` 当前在启动阶段返回 `bun: Operation not permitted`，没有进入 TypeScript
+  编译，因此不能据此宣称整个前端类型检查通过；也不能复用此前“没有新增类型错误”的历史描述。
+- `bun run check:i18n` 当前同样在 Bun 启动阶段返回 `bun: Operation not permitted`，尚未完成本轮
+  i18n 校验。
+- `bun run check:error-surface-contract` 当前也在 Bun 启动阶段返回 `bun: Operation not permitted`，
+  尚未完成本轮错误契约校验。
+- `cargo test -p nomi-providers --test provider_openai_test` 曾因 D 盘空间不足（`os error 112`，
+  `No space left on device`）无法写入 `build.noindex`，因此不宣称该集成测试最终通过；provider
+  的 SSE 单元/捕获测试已通过。
+- `cargo test -p nomifun-conversation --lib delete_rejects_soft_deleted_execution_attempt_transcript`
+  仍被 Windows `runtime-locks` authority file 拒绝访问拦截，失败发生在测试夹具初始化，没有到达
+  删除断言，不能视为产品行为失败。
+- 完整 `bun run check` 和 `cargo check --workspace` 仍需在恢复 Bun 执行权限、清理磁盘空间并
+  处理既有 workspace 基线问题后，才能作为发布门禁执行。
 
 ### 13.5 尚待真实验收的内容
 
