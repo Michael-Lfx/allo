@@ -6799,6 +6799,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomifun-audio"
+version = "1.0.5"
+dependencies = [
+ "async-trait",
+ "ort",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nomifun-auth"
 version = "1.0.5"
 dependencies = [

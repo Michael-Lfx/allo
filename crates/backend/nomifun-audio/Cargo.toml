@@ -1,0 +1,22 @@
+[package]
+name = "nomifun-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Desktop meeting dual-track capture, VAD, and recorder abstractions"
+
+[features]
+default = []
+silero-vad = ["dep:ort"]
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+ort = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

@@ -53,6 +53,7 @@ nomifun-vimax = { path = "crates/backend/nomifun-vimax" }
 nomifun-canvas = { path = "crates/backend/nomifun-canvas" }
 nomifun-browser-platform = { path = "crates/backend/nomifun-browser-platform" }
 nomifun-robot = { path = "crates/backend/nomifun-robot" }
+nomifun-audio = { path = "crates/backend/nomifun-audio" }
 nomifun-ssh = { path = "crates/backend/nomifun-ssh" }
 
 # --- Internal crates: shared ---
