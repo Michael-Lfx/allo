@@ -234,8 +234,10 @@ git push origin v1.0.6
 
 - Windows：在 `windows-latest` 上依次打 `x64` + `arm64`（arm64 交叉编译）。
 - macOS：在 `macos-14` 上打 `universal`（一份产物写入 `darwin-aarch64` 与
-  `darwin-x86_64`）。Intel 切片不链接 Silero/ort（微软已停供该目标 ONNX Runtime
-  预编译库），robot VAD 回退 energy。
+  `darwin-x86_64`）。CI 先单独构建 UI（`NODE_OPTIONS=3072`），再叠加
+  `tauri.ci-skip-ui.conf.json` 避免 beforeBuildCommand 再跑一遍 Vite（标准
+  runner ~7GB，4GB heap 易 SIGABRT / exit 134）。Intel 切片不链接 Silero/ort，
+  robot VAD 回退 energy。
 - Linux：当前 CI 只打 `linux-x86_64`。
 
 Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（可选）、

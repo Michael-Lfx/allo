@@ -5,8 +5,9 @@
  * Vite's bin shebang is `#!/usr/bin/env node`, so `bun run` still launches V8.
  * GitHub-hosted Node defaults to ~2GB old-space; this SPA OOMs there during
  * transform (see v0.0.4-linux / v0.0.4-macos). Raising the cap does not pin
- * that much RAM — it only raises the ceiling. macos-14 has ~7GB, so stay at
- * 4096 there; ubuntu/windows runners have ~16GB and can use 8192.
+ * that much RAM — it only raises the ceiling. Standard macOS runners have ~7GB,
+ * where a 4GB heap on top of the OS + Bun ends as SIGABRT (exit 134), so stay at
+ * 3072 there; ubuntu/windows runners have ~16GB and can use 8192.
  *
  * `NODE_OPTIONS=--max-old-space-size=N` still wins when already set.
  */
@@ -22,7 +23,7 @@ function resolveHeapMb() {
   const fromEnv = /(?:^|\s)--max-old-space-size=(\d+)/.exec(process.env.NODE_OPTIONS ?? '');
   if (fromEnv) return Number(fromEnv[1]);
   const totalGb = os.totalmem() / 1024 ** 3;
-  return totalGb < 10 ? 4096 : 8192;
+  return totalGb < 10 ? 3072 : 8192;
 }
 
 const heapMb = resolveHeapMb();

@@ -177,9 +177,17 @@ jobs:
           bun install --frozen-lockfile
           python -m pip install modelscope
 
+      # macos-14 has ~7GB RAM. Building the SPA under tauri beforeBuildCommand with
+      # a 4GB V8 heap often SIGABRTs (exit 134). Build UI once here at 3GB, then
+      # skip the vite step inside tauri via tauri.ci-skip-ui.conf.json.
+      - name: Build UI
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
+        run: bun run --filter=./ui build
+
       - name: Build macOS updater (universal)
         env:
-          NODE_OPTIONS: --max-old-space-size=4096
+          NODE_OPTIONS: --max-old-space-size=3072
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -190,7 +198,10 @@ jobs:
           # Universal covers darwin-aarch64 + darwin-x86_64 with one updater
           # artifact (avoids Flowy.app.tar.gz basename collisions). The Intel
           # slice omits ort; robot VAD falls back to energy there.
-          bun run build:mac universal --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json
+          bun run build:mac universal \
+            --config apps/desktop/tauri.updater.conf.json \
+            --config apps/desktop/tauri.channel.macos.conf.json \
+            --config apps/desktop/tauri.ci-skip-ui.conf.json
           bun run make:latest --host modelscope --channel macos --collect
 
       - name: Upload macOS release
