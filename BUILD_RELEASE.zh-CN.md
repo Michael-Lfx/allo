@@ -233,10 +233,12 @@ git push origin v1.0.6
 说明：
 
 - Windows：在 `windows-latest` 上依次打 `x64` + `arm64`（arm64 交叉编译）。
+- SPA：`build-ui` job 在 `ubuntu-24.04`（~16GB）上构建 `ui/dist` 并上传为
+  `ui-dist` artifact。macOS runner 只有 ~7GB，Vite 在那里会 JS heap OOM
+  （SIGABRT / exit 134），而 `ui/dist` 与平台无关，因此只构建一次。
 - macOS：在 `macos-14` 上打 `universal`（一份产物写入 `darwin-aarch64` 与
-  `darwin-x86_64`）。CI 先单独构建 UI（`NODE_OPTIONS=3072`），再叠加
-  `tauri.ci-skip-ui.conf.json` 避免 beforeBuildCommand 再跑一遍 Vite（标准
-  runner ~7GB，4GB heap 易 SIGABRT / exit 134）。Intel 切片不链接 Silero/ort，
+  `darwin-x86_64`）。先下载 `ui-dist`，再叠加 `tauri.ci-skip-ui.conf.json`
+  让 beforeBuildCommand 不再重跑 Vite。Intel 切片不链接 Silero/ort，
   robot VAD 回退 energy。
 - Linux：当前 CI 只打 `linux-x86_64`。
 

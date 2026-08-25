@@ -83,6 +83,37 @@ jobs:
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+  # ui/dist is platform-independent (JS/CSS + nomifun-build.json), and the SPA
+  # needs more than the ~3-4GB V8 heap a 7GB macOS runner can spare. Build it
+  # once on a 16GB runner and hand it to the macOS job as an artifact.
+  build-ui:
+    name: Build SPA
+    needs: release-context
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-context.outputs.tag }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build UI
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: bun run build:ui
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
+          retention-days: 1
+          if-no-files-found: error
+
   release-windows:
     name: Build and publish Windows
     needs: release-context
@@ -152,7 +183,7 @@ jobs:
 
   release-macos:
     name: Build and publish macOS
-    needs: release-context
+    needs: [release-context, build-ui]
     runs-on: macos-14
     environment: modelscope-alpha
     steps:
@@ -177,17 +208,16 @@ jobs:
           bun install --frozen-lockfile
           python -m pip install modelscope
 
-      # macos-14 has ~7GB RAM. Building the SPA under tauri beforeBuildCommand with
-      # a 4GB V8 heap often SIGABRTs (exit 134). Build UI once here at 3GB, then
-      # skip the vite step inside tauri via tauri.ci-skip-ui.conf.json.
-      - name: Build UI
-        env:
-          NODE_OPTIONS: --max-old-space-size=3072
-        run: bun run --filter=./ui build
+      # Reuse the SPA built on the 16GB runner; tauri.ci-skip-ui.conf.json keeps
+      # beforeBuildCommand from re-running vite here, where the heap it needs
+      # does not fit (JS heap OOM -> SIGABRT, exit 134).
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
 
       - name: Build macOS updater (universal)
         env:
-          NODE_OPTIONS: --max-old-space-size=3072
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
