@@ -14,6 +14,7 @@ nomi-types.workspace = true
 nomi-protocol.workspace = true
 nomi-tools.workspace = true
 nomi-mcp.workspace = true
+nomifun-net.workspace = true
 
 async-trait.workspace = true
 serde.workspace = true

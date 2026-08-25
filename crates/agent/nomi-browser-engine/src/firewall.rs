@@ -35,7 +35,7 @@
 //! - **预览绝不含字段值**（[`build_post_preview`] 单测断言）。
 
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -128,50 +128,13 @@ pub struct PostPreview {
 /// 云元数据 `169.254.169.254`）/ CGNAT / IPv6 ULA / link-local / 其它非公网 → 应封禁。`false` =
 /// 公网 IP → 放行。
 ///
-/// 用 std `IpAddr`/`Ipv4Addr`/`Ipv6Addr` 的方法（`is_private` 覆盖 10/172.16-31/192.168，
-/// `is_loopback` 覆盖 127.0.0.0/8 与 `::1`，`is_link_local` 覆盖 `169.254.0.0/16` **含
-/// 169.254.169.254 元数据**，`is_unspecified` 覆盖 `0.0.0.0`/`::`，`is_multicast`/`is_broadcast`/
-/// `is_documentation`）。CGNAT `100.64.0.0/10`、IPv6 ULA `fc00::/7`、IPv6 link-local `fe80::/10`
-/// 无 stable std 谓词，按本仓 `nomifun-knowledge::source_url::forbidden_ip` 同款最小位掩码补。
-/// IPv4-mapped IPv6（`::ffff:a.b.c.d`）继承其 v4 裁决（防绕过）。
+/// 判定委托给 [`nomifun_net::ssrf`]——全仓所有出口路径（浏览器防火墙、`flowy-web` 抓取、
+/// `nomifun-knowledge` URL 源）共用同一份名单，避免各处副本漂移。IPv4-mapped/兼容 IPv6
+/// （`::ffff:a.b.c.d` / `::a.b.c.d`）继承其 v4 裁决（防绕过）。
 ///
 /// **这是硬封禁**（无审批语义）：访问云元数据 / 内网不存在合法的「批准」场景——直接 `failRequest`。
 pub fn is_blocked_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => is_blocked_ipv4(v4),
-        IpAddr::V6(v6) => is_blocked_ipv6(v6),
-    }
-}
-
-/// IPv4 封禁谓词（见 [`is_blocked_ip`]）。
-fn is_blocked_ipv4(v4: Ipv4Addr) -> bool {
-    let octets = v4.octets();
-    v4.is_loopback()           // 127.0.0.0/8
-        || v4.is_private()      // 10/8, 172.16/12, 192.168/16（RFC1918）
-        || v4.is_link_local()   // 169.254.0.0/16（含 169.254.169.254 云元数据）
-        || v4.is_unspecified()  // 0.0.0.0
-        || v4.is_broadcast()    // 255.255.255.255
-        || v4.is_multicast()    // 224.0.0.0/4
-        || v4.is_documentation()// 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24
-        || octets[0] == 0       // 0.0.0.0/8「本网络」
-        // CGNAT 100.64.0.0/10（运营商级 NAT，常落内网拓扑）。
-        || (octets[0] == 100 && (64..128).contains(&octets[1]))
-        // IETF 协议分配 192.0.0.0/24（含 192.0.0.x 特殊用途）。
-        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-}
-
-/// IPv6 封禁谓词（见 [`is_blocked_ip`]）。IPv4-mapped 继承 v4 裁决。
-fn is_blocked_ipv6(v6: Ipv6Addr) -> bool {
-    let seg0 = v6.segments()[0];
-    v6.is_loopback()            // ::1
-        || v6.is_unspecified()  // ::
-        || v6.is_multicast()    // ff00::/8
-        // Unique-local（ULA）fc00::/7（fc00:: 与 fd00::）。
-        || (seg0 & 0xfe00) == 0xfc00
-        // Link-local fe80::/10。
-        || (seg0 & 0xffc0) == 0xfe80
-        // IPv4-mapped（::ffff:a.b.c.d）/ 兼容地址继承其 v4 裁决，防经 v6 字面量绕过。
-        || v6.to_ipv4_mapped().is_some_and(is_blocked_ipv4)
+    nomifun_net::ssrf::is_blocked_target(&ip)
 }
 
 /// **跨域判定**（裁决⑪）：`true` = 请求目标 host 与当前页 origin **不同 eTLD+1**（跨域）。

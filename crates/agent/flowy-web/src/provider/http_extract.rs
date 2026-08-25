@@ -225,7 +225,7 @@ impl HttpExtractProvider {
     async fn send(&self, url: &Url, addrs: &[SocketAddr]) -> Result<reqwest::Response, WebError> {
         // Fresh Client per hop: `resolve_to_addrs` pins one host's pre-validated
         // addresses; each redirect hop may need its own pinning.
-        let mut builder = reqwest::Client::builder()
+        let mut builder = nomifun_net::proxy::apply_detected_proxy(reqwest::Client::builder())
             .redirect(reqwest::redirect::Policy::none())
             .timeout(self.timeout)
             .user_agent(USER_AGENT);

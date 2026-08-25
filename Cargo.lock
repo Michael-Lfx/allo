@@ -3555,6 +3555,7 @@ dependencies = [
  "nomi-protocol",
  "nomi-tools",
  "nomi-types",
+ "nomifun-net",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

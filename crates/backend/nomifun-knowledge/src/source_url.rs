@@ -279,37 +279,10 @@ fn host_ip(host: Host<&str>) -> Option<IpAddr> {
     }
 }
 
-/// SSRF address policy: anything not unambiguously public is forbidden.
+/// SSRF address policy, owned by [`nomifun_net::ssrf`] so every outbound fetch
+/// path in the workspace shares one list.
 fn forbidden_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || v4.is_documentation()
-                || octets[0] == 0
-                // CGNAT 100.64.0.0/10
-                || (octets[0] == 100 && (64..128).contains(&octets[1]))
-                // IETF protocol assignments 192.0.0.0/24
-                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-        }
-        IpAddr::V6(v6) => {
-            let seg0 = v6.segments()[0];
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                // Unique-local fc00::/7
-                || (seg0 & 0xfe00) == 0xfc00
-                // Link-local fe80::/10
-                || (seg0 & 0xffc0) == 0xfe80
-                // v4-mapped/compatible addresses inherit the v4 verdict.
-                || v6.to_ipv4_mapped().is_some_and(|v4| forbidden_ip(&IpAddr::V4(v4)))
-        }
-    }
+    nomifun_net::ssrf::is_blocked_target(ip)
 }
 
 /// Decide whether a response body should go through HTML→MD conversion.

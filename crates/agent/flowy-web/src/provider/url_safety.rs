@@ -137,41 +137,7 @@ pub(crate) fn is_forbidden_domain(domain: &str) -> bool {
 }
 
 pub(crate) fn is_forbidden_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || v4.is_documentation()
-                || octets[0] == 0
-                || (octets[0] == 100 && (64..128).contains(&octets[1]))
-                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-                || (octets[0] == 198 && (18..20).contains(&octets[1]))
-                || octets[0] >= 240
-        }
-        IpAddr::V6(v6) => {
-            let segment = v6.segments()[0];
-            let documentation = segment == 0x2001 && v6.segments()[1] == 0x0db8;
-            let benchmarking = segment == 0x2001 && v6.segments()[1] == 0x0002;
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || documentation
-                || benchmarking
-                || (segment & 0xfe00) == 0xfc00
-                || (segment & 0xffc0) == 0xfe80
-                || v6
-                    .to_ipv4_mapped()
-                    .is_some_and(|v4| is_forbidden_ip(&IpAddr::V4(v4)))
-                || v6
-                    .to_ipv4()
-                    .is_some_and(|v4| is_forbidden_ip(&IpAddr::V4(v4)))
-        }
-    }
+    nomifun_net::ssrf::is_blocked_target(ip)
 }
 
 fn has_sensitive_query(url: &Url) -> bool {
@@ -279,8 +245,6 @@ mod tests {
             "https://127.0.0.1/file.pdf",
             "https://100.64.0.1/file.pdf",
             "https://192.0.0.1/file.pdf",
-            "https://198.18.0.1/file.pdf",
-            "https://240.0.0.1/file.pdf",
             "https://[::ffff:127.0.0.1]/file.pdf",
             "https://[2001:db8::1]/file.pdf",
             "https://[2001:2::1]/file.pdf",
@@ -290,6 +254,18 @@ mod tests {
                 prepare_remote_url(url, false),
                 Err(RemoteForbiddenReason::PrivateOrLocalAddress),
                 "{url} must remain local-only"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_tunnel_fake_ip_literals() {
+        // TUN-mode VPN clients map DNS answers into these ranges; blocking them
+        // makes every fetch fail on a machine behind such a tunnel.
+        for url in ["https://198.18.0.24/file.pdf", "https://240.0.0.1/file.pdf"] {
+            assert!(
+                prepare_remote_url(url, false).is_ok(),
+                "{url} must remain reachable"
             );
         }
     }

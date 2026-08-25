@@ -10,7 +10,7 @@ pub struct DuckDuckGoSearchProvider {
 
 impl DuckDuckGoSearchProvider {
     pub fn try_new() -> Result<Self, WebError> {
-        let client = reqwest::Client::builder()
+        let client = nomifun_net::proxy::apply_detected_proxy(reqwest::Client::builder())
             .user_agent("FlowyWeb/0.1 (+https://github.com/flowy)")
             .build()
             .map_err(|error| WebError::Network(format!("failed to build DuckDuckGo client: {error}")))?;
