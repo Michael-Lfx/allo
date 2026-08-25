@@ -31,6 +31,12 @@
   "timeline": "转写时间线",
   "noSegments": "暂无转写片段",
   "partial": "识别中",
+  "edited": "已编辑",
+  "edit": "编辑",
+  "editPlaceholder": "编辑字幕文本",
+  "saveEdit": "保存",
+  "cancelEdit": "取消",
+  "editSuccess": "字幕已更新",
   "channel": {
     "mic": "麦克风",
     "loopback": "系统音频",
@@ -104,5 +110,12 @@
     },
     "posted": "已写入绑定会话",
     "tasksCreated": "已创建 {{count}} 个待办任务"
+  },
+  "listen": {
+    "title": "旁听",
+    "hint": "向绑定会话注入近期转写与滚动摘要，不主动打断",
+    "enabled": "已开启旁听",
+    "disabled": "已关闭旁听",
+    "windowCount": "窗口 {{count}} 段"
   }
 }

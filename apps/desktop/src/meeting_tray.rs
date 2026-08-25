@@ -220,11 +220,31 @@ fn apply_tray_status(app: &AppHandle, status: &MeetingTrayStatus) {
     let _ = items.pause.set_enabled(recording);
     let _ = items.resume.set_enabled(paused);
     let _ = items.stop.set_enabled(recording || paused);
+
+    let caption_text = status.latest_caption.clone().unwrap_or_default();
+    let visible = !idle && !caption_text.trim().is_empty();
+    crate::meeting_captions::update_meeting_captions(
+        app,
+        crate::meeting_captions::MeetingCaptionsPayload {
+            visible,
+            text: caption_text,
+            speaker: String::new(),
+            is_partial: status.latest_caption_partial,
+            phase: match status.phase {
+                MeetingTrayPhase::Idle => "idle".into(),
+                MeetingTrayPhase::Recording => "recording".into(),
+                MeetingTrayPhase::Paused => "paused".into(),
+            },
+        },
+    );
+    if idle {
+        crate::meeting_captions::hide_meeting_captions(app);
+    }
 }
 
 fn spawn_status_poller(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(3));
+        let mut ticker = tokio::time::interval(Duration::from_millis(800));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;

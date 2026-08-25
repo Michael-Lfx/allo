@@ -51,6 +51,7 @@ const VideoCanvasProjectPage = React.lazy(() => import('@renderer/pages/videoCan
 const CompanionPage = React.lazy(() => import('@renderer/pages/companion'));
 const MemoryPanelPage = React.lazy(() => import('@renderer/pages/memoryPanel'));
 const CompletionToastPage = React.lazy(() => import('@renderer/pages/completionToast'));
+const MeetingCaptionsPage = React.lazy(() => import('@renderer/pages/meetingCaptions'));
 const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
 const LearningSettings = React.lazy(() => import('@renderer/pages/settings/LearningSettings'));
 const InsightsSettings = React.lazy(() => import('@renderer/pages/settings/InsightsSettings'));
@@ -295,6 +296,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
         <Route path='/companion' element={withRouteFallback(CompanionPage, { fullscreen: true })} />
         <Route path='/nomi-memory-panel' element={withRouteFallback(MemoryPanelPage, { fullscreen: true })} />
         <Route path='/completion-toast' element={withRouteFallback(CompletionToastPage, { fullscreen: true })} />
+        <Route path='/meeting-captions' element={withRouteFallback(MeetingCaptionsPage, { fullscreen: true })} />
         {/* Isolated UI catalog — public so the first-cut preview works without login. */}
         <Route path='/test/beautiful-ui' element={withRouteFallback(BeautifulUiPreviewPage, { fullscreen: true })} />
         <Route path='/test/color-lab' element={withRouteFallback(ColorLabPage, { fullscreen: true })} />

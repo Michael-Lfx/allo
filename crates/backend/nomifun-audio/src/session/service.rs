@@ -1,6 +1,7 @@
 //! Meeting session service: persist + in-process E1 event fan-out.
 
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
 
 use nomifun_common::RequirementCreator;
 use nomifun_db::{
@@ -20,6 +21,15 @@ use crate::session::types::{
     MeetingSessionStatus, SttBackendChoice,
 };
 
+/// Latest caption line for tray tooltip / floating overlay (in-memory).
+#[derive(Debug, Clone, Default)]
+pub struct LatestMeetingCaption {
+    pub session_id: String,
+    pub text: String,
+    pub speaker_label: String,
+    pub is_partial: bool,
+}
+
 #[derive(Clone)]
 pub struct MeetingSessionService {
     repo: Arc<dyn IMeetingRepository>,
@@ -27,6 +37,7 @@ pub struct MeetingSessionService {
     notes_completer: Arc<RwLock<Option<Arc<dyn MeetingNotesCompleter>>>>,
     conversation_sink: Arc<RwLock<Option<Arc<dyn MeetingNotesConversationSink>>>>,
     requirement_creator: Arc<RwLock<Option<Arc<dyn RequirementCreator>>>>,
+    latest_captions: Arc<Mutex<HashMap<String, LatestMeetingCaption>>>,
 }
 
 impl MeetingSessionService {
@@ -38,6 +49,7 @@ impl MeetingSessionService {
             notes_completer: Arc::new(RwLock::new(None)),
             conversation_sink: Arc::new(RwLock::new(None)),
             requirement_creator: Arc::new(RwLock::new(None)),
+            latest_captions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -226,10 +238,51 @@ impl MeetingSessionService {
             .await
             .map_err(|e| e.to_string())?;
         let snap = segment_from_row(row)?;
+        self.remember_caption(&snap);
         self.publish(MeetingEvent::SegmentUpserted {
             segment: snap.clone(),
         });
         Ok(snap)
+    }
+
+    fn remember_caption(&self, segment: &MeetingSegmentSnapshot) {
+        if segment.text.trim().is_empty() {
+            return;
+        }
+        if let Ok(mut map) = self.latest_captions.lock() {
+            map.insert(
+                segment.session_id.clone(),
+                LatestMeetingCaption {
+                    session_id: segment.session_id.clone(),
+                    text: segment.text.clone(),
+                    speaker_label: segment.speaker_label.clone(),
+                    is_partial: segment.is_partial,
+                },
+            );
+        }
+    }
+
+    /// Latest caption line for a session (tray / floating overlay).
+    pub fn latest_caption(&self, session_id: &str) -> Option<LatestMeetingCaption> {
+        self.latest_captions
+            .lock()
+            .ok()
+            .and_then(|m| m.get(session_id).cloned())
+    }
+
+    /// Recent transcript lines including live partials (newest last).
+    pub async fn captions_recent(
+        &self,
+        session_id: &str,
+        limit: i64,
+    ) -> Result<Vec<MeetingSegmentSnapshot>, String> {
+        let mut items = self.list_segments(session_id).await?;
+        items.sort_by(|a, b| a.start_ms.cmp(&b.start_ms).then(a.end_ms.cmp(&b.end_ms)));
+        let limit = limit.max(1) as usize;
+        if items.len() > limit {
+            items = items.split_off(items.len() - limit);
+        }
+        Ok(items)
     }
 
     pub async fn list_segments(

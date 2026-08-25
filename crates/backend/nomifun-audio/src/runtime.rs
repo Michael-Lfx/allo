@@ -8,7 +8,6 @@ use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
-use uuid::Uuid;
 
 use crate::capture::AudioCaptureSource;
 use crate::diarization::{SpeakerAssigner, SpeakerSpan};
@@ -313,13 +312,13 @@ async fn persist_transcript_segment(
             .map_err(|_| "speaker assigner lock poisoned".to_string())?;
         guard.bind_keys([key], &HashMap::new());
         let base = MeetingSegmentSnapshot {
-            segment_id: Uuid::now_v7().to_string(),
+            segment_id: seg.segment_id,
             session_id: session_id.to_string(),
             channel: Some(channel),
             speaker_id: None,
             speaker_label: String::new(),
             text: seg.text,
-            is_partial: false,
+            is_partial: seg.is_partial,
             is_manual_edit: false,
             start_ms,
             end_ms,

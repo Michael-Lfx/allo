@@ -95,6 +95,7 @@ fn resolve_main_window_geometry(
 mod memory_panel_window;
 mod companion_pointer;
 mod completion_toast;
+mod meeting_captions;
 mod meeting_tray;
 mod system_notify;
 mod taskbar_badge;
@@ -3027,6 +3028,7 @@ fn main() -> std::process::ExitCode {
         .manage(Arc::new(ExitCoordinator::default()))
         .manage(memory_panel_window::MemoryPanelWindowState::default())
         .manage(completion_toast::CompletionToastState::default())
+        .manage(meeting_captions::MeetingCaptionsState::default())
         .manage(taskbar_badge::TaskCompletionBadge::default())
         .manage(DownloadedUpdateState::default())
         .invoke_handler(tauri::generate_handler![

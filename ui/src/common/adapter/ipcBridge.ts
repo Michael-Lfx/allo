@@ -7892,6 +7892,15 @@ export interface GenerateMeetingNotesResult {
   created_requirement_ids: string[];
 }
 
+export interface MeetingListenStatus {
+  enabled: boolean;
+  session_id: string;
+  conversation_id: string | null;
+  window_segment_count: number;
+  rolling_summary: string | null;
+  last_compacted_at_ms: number | null;
+}
+
 export interface MeetingSegment {
   segment_id: string;
   session_id: string;
@@ -7973,12 +7982,30 @@ export const meeting = {
   listSegments: httpGet<MeetingSegment[], { session_id: string }>(
     (p) => `/api/meetings/${p.session_id}/segments`
   ),
+  editSegment: httpPatch<MeetingSegment, { session_id: string; segment_id: string; text: string }>(
+    (p) => `/api/meetings/${p.session_id}/segments/${p.segment_id}`,
+    (p) => ({ text: p.text })
+  ),
   getNotes: httpGet<MeetingNotesView, { session_id: string }>(
     (p) => `/api/meetings/${p.session_id}/notes`
   ),
   generateNotes: httpPost<GenerateMeetingNotesResult, { session_id: string }>(
     (p) => `/api/meetings/${p.session_id}/notes/generate`,
     () => ({})
+  ),
+  listenStart: httpPost<
+    MeetingListenStatus,
+    { session_id: string; conversation_id?: string | null }
+  >(
+    (p) => `/api/meetings/${p.session_id}/listen/start`,
+    (p) => ({ conversation_id: p.conversation_id ?? null })
+  ),
+  listenStop: httpPost<MeetingListenStatus, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/listen/stop`,
+    () => ({})
+  ),
+  listenStatus: httpGet<MeetingListenStatus, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/listen/status`
   ),
   listDevices: httpGet<MeetingDevice[], void>('/api/meetings/devices'),
   detectedApps: httpGet<MeetingDetectedApps, void>('/api/meetings/detected-apps'),

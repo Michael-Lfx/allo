@@ -32,6 +32,9 @@ pub struct MeetingTrayStatus {
     pub title: Option<String>,
     /// Y1 tip-only: human-readable meeting app name when detected.
     pub detected_app: Option<String>,
+    /// U4: latest caption line while recording (partial or final).
+    pub latest_caption: Option<String>,
+    pub latest_caption_partial: bool,
 }
 
 impl MeetingTrayStatus {
@@ -41,6 +44,8 @@ impl MeetingTrayStatus {
             session_id: None,
             title: None,
             detected_app,
+            latest_caption: None,
+            latest_caption_partial: false,
         }
     }
 
@@ -50,11 +55,18 @@ impl MeetingTrayStatus {
             MeetingTrayPhase::Recording => Some("Recording"),
             MeetingTrayPhase::Paused => Some("Paused"),
         };
-        match (status, self.detected_app.as_deref()) {
+        let base = match (status, self.detected_app.as_deref()) {
             (None, None) => "Flowy".to_string(),
             (None, Some(app)) => format!("Flowy — {app} detected"),
             (Some(phase), None) => format!("Flowy — {phase}"),
             (Some(phase), Some(app)) => format!("Flowy — {phase} ({app})"),
+        };
+        match self.latest_caption.as_deref() {
+            Some(line) if !line.trim().is_empty() && status.is_some() => {
+                let clipped: String = line.chars().take(80).collect();
+                format!("{base}: {clipped}")
+            }
+            _ => base,
         }
     }
 }
@@ -198,6 +210,15 @@ async fn resolve_status(ctx: &MeetingTrayCtx, detected_app: Option<String>) -> M
             .ok()
             .flatten()
             .map(|s| s.title);
+        let latest = ctx.service.latest_caption(&session_id);
+        let latest_caption_partial = latest.as_ref().map(|c| c.is_partial).unwrap_or(false);
+        let latest_caption = latest.map(|c| {
+            if c.speaker_label.trim().is_empty() {
+                c.text
+            } else {
+                format!("{}: {}", c.speaker_label, c.text)
+            }
+        });
         return MeetingTrayStatus {
             phase: if paused {
                 MeetingTrayPhase::Paused
@@ -207,6 +228,8 @@ async fn resolve_status(ctx: &MeetingTrayCtx, detected_app: Option<String>) -> M
             session_id: Some(session_id),
             title,
             detected_app,
+            latest_caption,
+            latest_caption_partial,
         };
     }
 
@@ -219,6 +242,16 @@ async fn resolve_status(ctx: &MeetingTrayCtx, detected_app: Option<String>) -> M
                     MeetingSessionStatus::Recording | MeetingSessionStatus::Paused
                 )
             }) {
+                let latest = ctx.service.latest_caption(&snap.session_id);
+                let latest_caption_partial =
+                    latest.as_ref().map(|c| c.is_partial).unwrap_or(false);
+                let latest_caption = latest.map(|c| {
+                    if c.speaker_label.trim().is_empty() {
+                        c.text
+                    } else {
+                        format!("{}: {}", c.speaker_label, c.text)
+                    }
+                });
                 return MeetingTrayStatus {
                     phase: match snap.status {
                         MeetingSessionStatus::Paused => MeetingTrayPhase::Paused,
@@ -227,6 +260,8 @@ async fn resolve_status(ctx: &MeetingTrayCtx, detected_app: Option<String>) -> M
                     session_id: Some(snap.session_id),
                     title: Some(snap.title),
                     detected_app,
+                    latest_caption,
+                    latest_caption_partial,
                 };
             }
         }

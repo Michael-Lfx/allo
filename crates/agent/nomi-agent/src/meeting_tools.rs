@@ -68,8 +68,25 @@ pub trait MeetingSink: Send + Sync {
 
     async fn stop(&self, session_id: &str) -> Result<MeetingSessionSummary, String>;
 
-    /// Answer a question from recent transcript (P1: search+concat; P4 later).
+    /// Answer a question from recent transcript + listen window when enabled.
     async fn ask(&self, session_id: &str, question: &str) -> Result<String, String>;
+
+    /// Recent caption lines including live partials (oldest → newest).
+    async fn captions_recent(
+        &self,
+        session_id: &str,
+        limit: i64,
+    ) -> Result<Vec<MeetingTranscriptHit>, String>;
+
+    /// Start agent listen mode for a meeting (passive context injection only).
+    async fn listen_start(
+        &self,
+        session_id: &str,
+        conversation_id: Option<&str>,
+    ) -> Result<String, String>;
+
+    /// Stop agent listen mode for a meeting.
+    async fn listen_stop(&self, session_id: &str) -> Result<String, String>;
 }
 
 fn ok(content: String) -> ToolResult {
@@ -115,11 +132,14 @@ pub const MEETING_TOOL_NAMES: &[&str] = &[
     "meeting.get",
     "meeting.search_transcript",
     "meeting.get_notes",
+    "meeting.captions_recent",
     "meeting.start",
     "meeting.pause",
     "meeting.resume",
     "meeting.stop",
     "meeting.ask",
+    "meeting.listen_start",
+    "meeting.listen_stop",
 ];
 
 /// `meeting.list` — list this owner's meeting sessions.
@@ -201,7 +221,9 @@ impl Tool for MeetingGetTool {
     }
 
     fn description(&self) -> &str {
-        "Get one meeting session by session_id (status, title, device flags, timestamps)."
+        "Get one meeting session by session_id (status, title, device flags, timestamps). \
+         Also returns a short preview of the latest captions when available via \
+         meeting.captions_recent."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -223,7 +245,19 @@ impl Tool for MeetingGetTool {
             return err("meeting.get requires: session_id".into());
         };
         match self.sink.get(session_id).await {
-            Ok(s) => ok(format_session(&s)),
+            Ok(s) => {
+                let mut out = format_session(&s);
+                if let Ok(hits) = self.sink.captions_recent(session_id, 5).await {
+                    if !hits.is_empty() {
+                        out.push_str("\nRecent captions:\n");
+                        for h in hits {
+                            out.push_str(&format_hit(&h));
+                            out.push('\n');
+                        }
+                    }
+                }
+                ok(out)
+            }
             Err(e) => err(format!("meeting.get failed: {e}")),
         }
     }
@@ -346,6 +380,73 @@ impl Tool for MeetingGetNotesTool {
         match self.sink.get_notes(session_id).await {
             Ok(notes) => ok(notes),
             Err(e) => err(format!("meeting.get_notes failed: {e}")),
+        }
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Info
+    }
+}
+
+/// `meeting.captions_recent` — recent transcript lines including live partials.
+pub struct MeetingCaptionsRecentTool {
+    sink: Arc<dyn MeetingSink>,
+}
+
+impl MeetingCaptionsRecentTool {
+    pub fn new(sink: Arc<dyn MeetingSink>) -> Self {
+        Self { sink }
+    }
+}
+
+#[async_trait]
+impl Tool for MeetingCaptionsRecentTool {
+    fn name(&self) -> &str {
+        "meeting.captions_recent"
+    }
+
+    fn description(&self) -> &str {
+        "Fetch the most recent meeting caption / transcript lines for a session, including \
+         live partial (in-progress) captions. Use this to poll streaming captions while a \
+         meeting is recording."
+    }
+
+    fn input_schema(&self) -> JsonSchema {
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string", "description": "Meeting session id" },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Max lines to return (default 20)"
+                }
+            },
+            "required": ["session_id"]
+        })
+    }
+
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        true
+    }
+
+    async fn execute(&self, input: Value) -> ToolResult {
+        let Some(session_id) = input.get("session_id").and_then(|v| v.as_str()) else {
+            return err("meeting.captions_recent requires: session_id".into());
+        };
+        let limit = input
+            .get("limit")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(20)
+            .clamp(1, 100);
+        match self.sink.captions_recent(session_id, limit).await {
+            Ok(hits) if hits.is_empty() => ok("No captions yet.".into()),
+            Ok(hits) => {
+                let lines: Vec<String> = hits.iter().map(format_hit).collect();
+                ok(lines.join("\n"))
+            }
+            Err(e) => err(format!("meeting.captions_recent failed: {e}")),
         }
     }
 
@@ -580,7 +681,7 @@ impl Tool for MeetingAskTool {
 
     fn description(&self) -> &str {
         "Ask a question about a meeting session's transcript. Returns matching segments \
-         concatenated as context (full P4 listen-window answer comes later)."
+         and, when listen mode is on, the recent listen window plus rolling summary."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -613,6 +714,147 @@ impl Tool for MeetingAskTool {
 
     fn category(&self) -> ToolCategory {
         ToolCategory::Info
+    }
+}
+
+/// `meeting.listen_start` — enable passive listen context for the bound conversation.
+pub struct MeetingListenStartTool {
+    sink: Arc<dyn MeetingSink>,
+}
+
+impl MeetingListenStartTool {
+    pub fn new(sink: Arc<dyn MeetingSink>) -> Self {
+        Self { sink }
+    }
+}
+
+#[async_trait]
+impl Tool for MeetingListenStartTool {
+    fn name(&self) -> &str {
+        "meeting.listen_start"
+    }
+
+    fn description(&self) -> &str {
+        "Start Agent listen mode for a meeting session. Injects a rolling transcript \
+         window + summary into the bound conversation on each user turn. Does NOT \
+         proactively interrupt or start turns. Pass conversation_id or use the \
+         session's already-bound conversation (same binding as meeting notes)."
+    }
+
+    fn input_schema(&self) -> JsonSchema {
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string", "description": "Meeting session id" },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Optional conversation to bind/listen; defaults to session bound conversation"
+                }
+            },
+            "required": ["session_id"]
+        })
+    }
+
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        false
+    }
+
+    async fn execute(&self, input: Value) -> ToolResult {
+        let Some(session_id) = input.get("session_id").and_then(|v| v.as_str()) else {
+            return err("meeting.listen_start requires: session_id".into());
+        };
+        let conversation_id = input.get("conversation_id").and_then(|v| v.as_str());
+        match self.sink.listen_start(session_id, conversation_id).await {
+            Ok(msg) => ok(msg),
+            Err(e) => err(format!("meeting.listen_start failed: {e}")),
+        }
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Exec
+    }
+}
+
+/// `meeting.listen_stop` — disable listen mode for a meeting session.
+pub struct MeetingListenStopTool {
+    sink: Arc<dyn MeetingSink>,
+}
+
+impl MeetingListenStopTool {
+    pub fn new(sink: Arc<dyn MeetingSink>) -> Self {
+        Self { sink }
+    }
+}
+
+#[async_trait]
+impl Tool for MeetingListenStopTool {
+    fn name(&self) -> &str {
+        "meeting.listen_stop"
+    }
+
+    fn description(&self) -> &str {
+        "Stop Agent listen mode for a meeting session. Removes listen context injection \
+         from the bound conversation."
+    }
+
+    fn input_schema(&self) -> JsonSchema {
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string", "description": "Meeting session id" }
+            },
+            "required": ["session_id"]
+        })
+    }
+
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        false
+    }
+
+    async fn execute(&self, input: Value) -> ToolResult {
+        let Some(session_id) = input.get("session_id").and_then(|v| v.as_str()) else {
+            return err("meeting.listen_stop requires: session_id".into());
+        };
+        match self.sink.listen_stop(session_id).await {
+            Ok(msg) => ok(msg),
+            Err(e) => err(format!("meeting.listen_stop failed: {e}")),
+        }
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Exec
+    }
+}
+
+/// Per-turn listen context for a bound conversation (turn-tail injection).
+#[async_trait]
+pub trait MeetingListenContextSink: Send + Sync {
+    async fn resolve_context(&self) -> Option<String>;
+    async fn retrieve_for_question(&self, question: &str) -> Option<String>;
+}
+
+/// ContextContributor that injects listen window + rolling summary when enabled.
+pub struct MeetingListenContributor {
+    sink: Arc<dyn MeetingListenContextSink>,
+}
+
+impl MeetingListenContributor {
+    pub fn new(sink: Arc<dyn MeetingListenContextSink>) -> Self {
+        Self { sink }
+    }
+}
+
+#[async_trait]
+impl crate::context_contributor::ContextContributor for MeetingListenContributor {
+    async fn pre_turn_context(&self) -> Option<String> {
+        self.sink
+            .resolve_context()
+            .await
+            .filter(|s| !s.trim().is_empty())
+    }
+
+    fn label(&self) -> &str {
+        "meeting_listen"
     }
 }
 
@@ -721,6 +963,36 @@ mod tests {
                 "Question: {question}\nRelevant transcript:\n{}",
                 body.join("\n")
             ))
+        }
+
+        async fn captions_recent(
+            &self,
+            _session_id: &str,
+            limit: i64,
+        ) -> Result<Vec<MeetingTranscriptHit>, String> {
+            let hits = self.hits.lock().unwrap();
+            let limit = limit.max(1) as usize;
+            if hits.len() <= limit {
+                Ok(hits.clone())
+            } else {
+                Ok(hits[hits.len() - limit..].to_vec())
+            }
+        }
+
+        async fn listen_start(
+            &self,
+            session_id: &str,
+            conversation_id: Option<&str>,
+        ) -> Result<String, String> {
+            let _ = self.get(session_id).await?;
+            Ok(format!(
+                "Listen started for {session_id} conversation={conversation_id:?}"
+            ))
+        }
+
+        async fn listen_stop(&self, session_id: &str) -> Result<String, String> {
+            let _ = self.get(session_id).await?;
+            Ok(format!("Listen stopped for {session_id}"))
         }
     }
 

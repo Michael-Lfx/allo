@@ -29,6 +29,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use crate::frame::{AudioChannel, TaggedFrame};
 use crate::keepawake::KeepAwakeGuard;
@@ -127,6 +128,8 @@ impl StatsHandle {
 /// the user clicks a transcript line.
 #[derive(Debug, Clone)]
 pub struct TranscriptSegment {
+    /// Stable id reused for partial → final updates of one utterance.
+    pub segment_id: String,
     /// "Speaker A" (mic) or "Speaker B" (loopback).
     pub speaker: String,
     pub text: String,
@@ -140,6 +143,8 @@ pub struct TranscriptSegment {
     /// audio clips (e.g. `segment_audio_dir` is provided).  `None` when only
     /// streaming transcript is needed and no audio files are kept.
     pub audio_file: Option<String>,
+    /// `true` while speech is still open or STT text is still streaming in.
+    pub is_partial: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +174,10 @@ struct ChannelState {
     buffer: Vec<f32>,
     recording: bool,
     silence_start: Option<std::time::Instant>,
+    /// Active utterance id while speech is buffered (partial captions).
+    active_segment_id: Option<String>,
+    utterance_start_s: f32,
+    last_partial_emit: Option<Instant>,
 }
 
 impl ChannelState {
@@ -178,8 +187,31 @@ impl ChannelState {
             buffer: Vec::new(),
             recording: false,
             silence_start: None,
+            active_segment_id: None,
+            utterance_start_s: 0.0,
+            last_partial_emit: None,
         }
     }
+
+    fn clear_utterance(&mut self) {
+        self.active_segment_id = None;
+        self.utterance_start_s = 0.0;
+        self.last_partial_emit = None;
+    }
+}
+
+/// How often to emit `is_partial` placeholders while speech buffers grow.
+const PARTIAL_EMIT_INTERVAL: Duration = Duration::from_millis(280);
+
+/// Placeholder preview while waiting for STT (grows with buffer length).
+fn speech_buffer_preview(buf_len: usize, sample_rate: u32) -> String {
+    let secs = if sample_rate == 0 {
+        0.0
+    } else {
+        buf_len as f32 / sample_rate as f32
+    };
+    let dots = ((secs * 4.0).ceil() as usize).clamp(1, 16);
+    "·".repeat(dots)
 }
 
 // ---------------------------------------------------------------------------
@@ -359,13 +391,22 @@ impl MeetingRecorder {
                     for (ch, state) in channels.iter_mut() {
                         if !state.buffer.is_empty() {
                             let pcm = std::mem::take(&mut state.buffer);
+                            let segment_id = state
+                                .active_segment_id
+                                .take()
+                                .unwrap_or_else(|| Uuid::now_v7().to_string());
+                            let start_s = state.utterance_start_s;
                             state.recording = false;
+                            state.clear_utterance();
                             let sr = frame.sample_rate;
+                            let end_s = start.elapsed().as_secs_f32();
                             Self::spawn_stt(
                                 *ch,
                                 pcm,
                                 sr,
-                                start.elapsed().as_secs_f32(),
+                                start_s,
+                                end_s,
+                                segment_id,
                                 Arc::clone(&stt),
                                 seg_tx.clone(),
                                 stats.clone(),
@@ -401,22 +442,59 @@ impl MeetingRecorder {
                 stats.with(|s| s.vad.record(vad_t0.elapsed()));
 
                 if is_speech {
+                    let was_recording = state.recording;
+                    if !was_recording {
+                        state.active_segment_id = Some(Uuid::now_v7().to_string());
+                        state.utterance_start_s = elapsed_s;
+                        state.last_partial_emit = None;
+                    }
                     state.recording = true;
                     state.silence_start = None;
                     state.buffer.extend_from_slice(&frame.samples);
+
+                    let should_emit_partial = state
+                        .last_partial_emit
+                        .map(|t| t.elapsed() >= PARTIAL_EMIT_INTERVAL)
+                        .unwrap_or(true);
+                    if should_emit_partial {
+                        if let Some(segment_id) = state.active_segment_id.clone() {
+                            let preview =
+                                speech_buffer_preview(state.buffer.len(), sample_rate);
+                            let start_s = state.utterance_start_s;
+                            state.last_partial_emit = Some(Instant::now());
+                            let _ = seg_tx
+                                .try_send(TranscriptSegment {
+                                    segment_id,
+                                    speaker: ch.speaker_label().to_string(),
+                                    text: preview,
+                                    start_s,
+                                    end_s: elapsed_s,
+                                    audio_file: None,
+                                    is_partial: true,
+                                });
+                        }
+                    }
 
                     // Safety cap: flush if segment grows too long
                     let seg_secs = state.buffer.len() as f32 / sample_rate as f32;
                     if seg_secs >= max_secs {
                         debug!("MeetingRecorder: max_segment_secs reached on {ch:?}, flushing");
                         let pcm = std::mem::take(&mut state.buffer);
+                        let segment_id = state
+                            .active_segment_id
+                            .take()
+                            .unwrap_or_else(|| Uuid::now_v7().to_string());
+                        let start_s = state.utterance_start_s;
                         state.recording = false;
+                        state.clear_utterance();
                         state.vad.reset();
                         Self::spawn_stt(
                             ch,
                             pcm,
                             sample_rate,
+                            start_s,
                             elapsed_s,
+                            segment_id,
                             Arc::clone(&stt),
                             seg_tx.clone(),
                             stats.clone(),
@@ -434,8 +512,14 @@ impl MeetingRecorder {
 
                     if silence_ms >= vad_cfg.silence_timeout_ms {
                         let pcm = std::mem::take(&mut state.buffer);
+                        let segment_id = state
+                            .active_segment_id
+                            .take()
+                            .unwrap_or_else(|| Uuid::now_v7().to_string());
+                        let start_s = state.utterance_start_s;
                         state.recording = false;
                         state.silence_start = None;
+                        state.clear_utterance();
 
                         if pcm.len() > sample_rate as usize / 4 {
                             let speech_secs = pcm.len() as f32 / sample_rate as f32;
@@ -447,7 +531,9 @@ impl MeetingRecorder {
                                 ch,
                                 pcm,
                                 sample_rate,
+                                start_s,
                                 elapsed_s,
+                                segment_id,
                                 Arc::clone(&stt),
                                 seg_tx.clone(),
                                 stats.clone(),
@@ -467,11 +553,19 @@ impl MeetingRecorder {
                         s.segments_flushed += 1;
                         s.speech_secs += speech_secs;
                     });
+                    let segment_id = state
+                        .active_segment_id
+                        .take()
+                        .unwrap_or_else(|| Uuid::now_v7().to_string());
+                    let start_s = state.utterance_start_s;
+                    let end_s = start.elapsed().as_secs_f32();
                     Self::spawn_stt(
                         ch,
                         pcm,
                         sr,
-                        0.0,
+                        start_s,
+                        end_s,
+                        segment_id,
                         Arc::clone(&stt),
                         seg_tx.clone(),
                         stats.clone(),
@@ -498,33 +592,61 @@ impl MeetingRecorder {
         (seg_rx, handle)
     }
 
-    /// Spawn a background task that calls STT and sends the result, recording
-    /// STT latency into `stats`.
+    /// Spawn a background task that calls STT, streams character partials, then
+    /// emits the final segment (same `segment_id`).
     fn spawn_stt(
         ch: AudioChannel,
         pcm: Vec<f32>,
         sample_rate: u32,
-        offset_s: f32,
+        start_s: f32,
+        end_s: f32,
+        segment_id: String,
         stt: Arc<dyn SttCallback>,
         tx: mpsc::Sender<TranscriptSegment>,
         stats: StatsHandle,
     ) {
         tokio::spawn(async move {
             let t0 = Instant::now();
-            if let Some(text) = stt.transcribe(ch, pcm, sample_rate).await {
-                stats.with(|s| s.stt.record(t0.elapsed()));
-                let _ = tx
-                    .send(TranscriptSegment {
-                        speaker: ch.speaker_label().to_string(),
-                        text,
-                        start_s: offset_s,
-                        end_s: offset_s, // precise end_s set by caller when audio file is saved
-                        audio_file: None,
-                    })
-                    .await;
-            } else {
-                stats.with(|s| s.stt.record(t0.elapsed()));
+            let speaker = ch.speaker_label().to_string();
+            let text = stt.transcribe(ch, pcm, sample_rate).await;
+            stats.with(|s| s.stt.record(t0.elapsed()));
+
+            let final_text = text.unwrap_or_default();
+            if !final_text.is_empty() {
+                // Character-by-character streaming feel for batch STT results.
+                let mut acc = String::new();
+                for ch_unit in final_text.chars() {
+                    acc.push(ch_unit);
+                    if tx
+                        .send(TranscriptSegment {
+                            segment_id: segment_id.clone(),
+                            speaker: speaker.clone(),
+                            text: acc.clone(),
+                            start_s,
+                            end_s,
+                            audio_file: None,
+                            is_partial: true,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
             }
+
+            let _ = tx
+                .send(TranscriptSegment {
+                    segment_id,
+                    speaker,
+                    text: final_text,
+                    start_s,
+                    end_s,
+                    audio_file: None,
+                    is_partial: false,
+                })
+                .await;
         });
     }
 }

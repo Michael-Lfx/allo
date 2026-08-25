@@ -1,7 +1,7 @@
 import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Button, Empty, Input, Select, Spin, Tag } from '@arco-design/web-react';
+import { Alert, Button, Empty, Input, Select, Spin, Switch, Tag } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import type { MeetingSegment, MeetingSession, SttBackendChoice } from '@/common/adapter/ipcBridge';
@@ -74,6 +74,10 @@ const MeetingPage: React.FC = () => {
     enrollVoiceprint,
     deleteVoiceprint,
     generateNotes,
+    editSegment,
+    startListen,
+    stopListen,
+    listenStatus,
   } = useMeetings();
 
   const [title, setTitle] = useState('');
@@ -84,6 +88,9 @@ const MeetingPage: React.FC = () => {
   const [actionBusy, setActionBusy] = useState(false);
   const [voiceprintOpen, setVoiceprintOpen] = useState(false);
   const [pendingStartId, setPendingStartId] = useState<string | null>(null);
+  const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
 
   const activeDegrade =
     capabilityDegrade && selected && capabilityDegrade.session_id === selected.session_id
@@ -212,6 +219,53 @@ const MeetingPage: React.FC = () => {
       setActionBusy(false);
     }
   }, [generateNotes, selected, t]);
+
+  const handleListenToggle = useCallback(
+    async (checked: boolean) => {
+      if (!selected) return;
+      setActionBusy(true);
+      try {
+        if (checked) {
+          const conversationId = bindId.trim() || selected.bound_conversation_id;
+          await startListen(selected.session_id, conversationId);
+          Message.success(t('meeting.listen.enabled'));
+        } else {
+          await stopListen(selected.session_id);
+          Message.success(t('meeting.listen.disabled'));
+        }
+      } catch (err) {
+        Message.error(String(err));
+      } finally {
+        setActionBusy(false);
+      }
+    },
+    [bindId, selected, startListen, stopListen, t]
+  );
+
+  const beginEditSegment = useCallback((segment: MeetingSegment) => {
+    setEditingSegmentId(segment.segment_id);
+    setEditingText(segment.text);
+  }, []);
+
+  const cancelEditSegment = useCallback(() => {
+    setEditingSegmentId(null);
+    setEditingText('');
+  }, []);
+
+  const saveEditSegment = useCallback(async () => {
+    if (!selected || !editingSegmentId) return;
+    setEditSaving(true);
+    try {
+      await editSegment(selected.session_id, editingSegmentId, editingText);
+      Message.success(t('meeting.editSuccess'));
+      setEditingSegmentId(null);
+      setEditingText('');
+    } catch (err) {
+      Message.error(String(err));
+    } finally {
+      setEditSaving(false);
+    }
+  }, [editSegment, editingSegmentId, editingText, selected, t]);
 
   useEffect(() => {
     setBindId(selected?.bound_conversation_id ?? '');
@@ -431,6 +485,23 @@ const MeetingPage: React.FC = () => {
                     </Button>
                   </div>
 
+                  <div className='flex flex-wrap items-center gap-8px'>
+                    <span className='text-13px font-medium text-t-primary'>{t('meeting.listen.title')}</span>
+                    <Switch
+                      checked={Boolean(listenStatus?.enabled)}
+                      loading={actionBusy}
+                      onChange={(checked) => void handleListenToggle(checked)}
+                    />
+                    <span className='text-12px text-t-tertiary'>{t('meeting.listen.hint')}</span>
+                    {listenStatus?.enabled ? (
+                      <Tag size='small' color='arcoblue'>
+                        {t('meeting.listen.windowCount', {
+                          count: listenStatus.window_segment_count,
+                        })}
+                      </Tag>
+                    ) : null}
+                  </div>
+
                   <div className='flex flex-col gap-8px'>
                     <div className='flex flex-wrap items-center gap-8px'>
                       <div className='text-13px font-medium text-t-primary'>{t('meeting.notes.title')}</div>
@@ -519,7 +590,7 @@ const MeetingPage: React.FC = () => {
                             key={segment.segment_id}
                             className={classNames(
                               'border-b border-b-solid border-b-[var(--color-border-2)] pb-8px',
-                              segment.is_partial && 'opacity-70'
+                              segment.is_partial && 'opacity-70 italic'
                             )}
                           >
                             <div className='mb-4px flex flex-wrap items-center gap-8px text-12px text-t-tertiary'>
@@ -530,11 +601,61 @@ const MeetingPage: React.FC = () => {
                                 {formatMs(segment.start_ms)}–{formatMs(segment.end_ms)}
                               </span>
                               <span>{t(channelLabelKey(segment.channel))}</span>
-                              {segment.is_partial ? <Tag size='small'>{t('meeting.partial')}</Tag> : null}
+                              {segment.is_partial ? (
+                                <Tag size='small' color='orangered'>
+                                  {t('meeting.partial')}
+                                </Tag>
+                              ) : null}
+                              {segment.is_manual_edit ? (
+                                <Tag size='small'>{t('meeting.edited')}</Tag>
+                              ) : null}
+                              {editingSegmentId !== segment.segment_id ? (
+                                <Button
+                                  size='mini'
+                                  type='text'
+                                  disabled={editSaving}
+                                  onClick={() => beginEditSegment(segment)}
+                                >
+                                  {t('meeting.edit')}
+                                </Button>
+                              ) : null}
                             </div>
-                            <div className='text-13px leading-20px text-t-primary whitespace-pre-wrap'>
-                              {segment.text || '…'}
-                            </div>
+                            {editingSegmentId === segment.segment_id ? (
+                              <div className='flex flex-col gap-8px'>
+                                <Input.TextArea
+                                  autoSize={{ minRows: 2, maxRows: 8 }}
+                                  value={editingText}
+                                  onChange={setEditingText}
+                                  placeholder={t('meeting.editPlaceholder')}
+                                />
+                                <div className='flex gap-8px'>
+                                  <Button
+                                    size='mini'
+                                    type='primary'
+                                    loading={editSaving}
+                                    onClick={() => void saveEditSegment()}
+                                  >
+                                    {t('meeting.saveEdit')}
+                                  </Button>
+                                  <Button
+                                    size='mini'
+                                    disabled={editSaving}
+                                    onClick={cancelEditSegment}
+                                  >
+                                    {t('meeting.cancelEdit')}
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div
+                                className={classNames(
+                                  'text-13px leading-20px text-t-primary whitespace-pre-wrap',
+                                  segment.is_partial && 'text-t-secondary'
+                                )}
+                              >
+                                {segment.text || '…'}
+                              </div>
+                            )}
                           </li>
                         ))}
                       </ul>

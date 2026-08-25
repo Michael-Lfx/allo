@@ -3,6 +3,7 @@ import { ipcBridge } from '@/common';
 import type {
   MeetingDevice,
   MeetingEvent,
+  MeetingListenStatus,
   MeetingSegment,
   MeetingSession,
   MeetingVoiceprint,
@@ -36,6 +37,7 @@ export function useMeetings() {
   const [detectedApp, setDetectedApp] = useState<string | null>(null);
   const [voiceprints, setVoiceprints] = useState<MeetingVoiceprint[]>([]);
   const [capabilityDegrade, setCapabilityDegrade] = useState<CapabilityDegrade>(null);
+  const [listenStatus, setListenStatus] = useState<MeetingListenStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [segmentsLoading, setSegmentsLoading] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
@@ -87,17 +89,28 @@ export function useMeetings() {
     }
   }, []);
 
+  const loadListenStatus = useCallback(async (sessionId: string) => {
+    try {
+      const status = await ipcBridge.meeting.listenStatus.invoke({ session_id: sessionId });
+      setListenStatus(status);
+    } catch {
+      setListenStatus(null);
+    }
+  }, []);
+
   const selectSession = useCallback(
     (sessionId: string | null) => {
       setSelectedId(sessionId);
       setCapabilityDegrade((prev) => (prev && prev.session_id === sessionId ? prev : null));
       if (sessionId) {
         void loadSegments(sessionId);
+        void loadListenStatus(sessionId);
       } else {
         setSegments([]);
+        setListenStatus(null);
       }
     },
-    [loadSegments]
+    [loadListenStatus, loadSegments]
   );
 
   const bootstrap = useCallback(async () => {
@@ -109,11 +122,12 @@ export function useMeetings() {
         const first = list[0];
         setSelectedId(first.session_id);
         await loadSegments(first.session_id);
+        await loadListenStatus(first.session_id);
       }
     } finally {
       setLoading(false);
     }
-  }, [loadSegments, refreshDetectedApps, refreshDevices, refreshSessions, refreshVoiceprints]);
+  }, [loadListenStatus, loadSegments, refreshDetectedApps, refreshDevices, refreshSessions, refreshVoiceprints]);
 
   useEffect(() => {
     void bootstrap();
@@ -248,6 +262,40 @@ export function useMeetings() {
     return result;
   }, []);
 
+  const editSegment = useCallback(async (sessionId: string, segmentId: string, text: string) => {
+    const segment = await ipcBridge.meeting.editSegment.invoke({
+      session_id: sessionId,
+      segment_id: segmentId,
+      text,
+    });
+    setSegments((prev) => upsertSegment(prev, segment));
+    return segment;
+  }, []);
+
+  const startListen = useCallback(async (sessionId: string, conversationId?: string | null) => {
+    const status = await ipcBridge.meeting.listenStart.invoke({
+      session_id: sessionId,
+      conversation_id: conversationId,
+    });
+    setListenStatus(status);
+    if (status.conversation_id) {
+      setSessions((prev) =>
+        prev.map((session) =>
+          session.session_id === sessionId
+            ? { ...session, bound_conversation_id: status.conversation_id }
+            : session
+        )
+      );
+    }
+    return status;
+  }, []);
+
+  const stopListen = useCallback(async (sessionId: string) => {
+    const status = await ipcBridge.meeting.listenStop.invoke({ session_id: sessionId });
+    setListenStatus(status);
+    return status;
+  }, []);
+
   return {
     sessions,
     selected,
@@ -259,6 +307,7 @@ export function useMeetings() {
     detectedApp,
     voiceprints,
     capabilityDegrade,
+    listenStatus,
     loading,
     lastError,
     setLastError,
@@ -271,6 +320,9 @@ export function useMeetings() {
     enrollVoiceprint,
     deleteVoiceprint,
     generateNotes,
+    editSegment,
+    startListen,
+    stopListen,
     refreshVoiceprints,
   };
 }
