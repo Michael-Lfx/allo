@@ -1,3 +1,4 @@
+import type { CanvasColorGrade } from "@oc/lib/canvas/canvas-color-grade";
 import type { PortraitTextureSettings } from "@oc/lib/canvas/canvas-portrait-texture";
 import type { SrtEntry, SubtitleHighlight, SubtitleStyle } from "@oc/types/timeline";
 
@@ -22,6 +23,14 @@ export enum CanvasNodeType {
     Video = "video",
     Audio = "audio",
     Frame = "frame",
+    // 扩展节点：展示与加工。新增成员后需同步 NODE_DEFAULT_SIZE / NODE_SPECS / 注册表 / nodeContentRenderers。
+    Markdown = "markdown",
+    Svg = "svg",
+    Html = "html",
+    Panorama = "panorama",
+    Compare = "compare",
+    Chart = "chart",
+    ColorGrade = "colorgrade",
 }
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
@@ -136,6 +145,11 @@ export type CanvasNodeMetadata = {
     errorDetails?: string;
     generationErrorCode?: string;
     failedPromptFingerprint?: string;
+    /**
+     * 生成任务已在服务端成功，但结果下载/落盘到本地或现有 OSS 失败。
+     * 可基于同一 taskId 向当前服务端重新拉取，无需重新计费生成。
+     */
+    resourceReloadAvailable?: boolean;
     fontSize?: number;
     generationMode?: CanvasGenerationMode;
     generationType?: CanvasImageGenerationType;
@@ -158,6 +172,8 @@ export type CanvasNodeMetadata = {
     naturalWidth?: number;
     naturalHeight?: number;
     freeResize?: boolean;
+    /** 用户手动拉伸过尺寸；图片按真实比例自动适配时避让它。 */
+    manualSize?: boolean;
     isBatchRoot?: boolean;
     batchRootId?: string;
     batchChildIds?: string[];
@@ -297,6 +313,10 @@ export type CanvasNodeMetadata = {
         maskStorageKey?: string;
     };
     portraitTexture?: PortraitTextureSettings;
+    /** 图表节点的图形类型，缺省柱状图。 */
+    chartKind?: "bar" | "line";
+    /** 调色节点的参数；缺省视为未调色。 */
+    colorGrade?: CanvasColorGrade;
     /** ViMax materialization sidecar — preserved across regenerations / sync. */
     alloVimax?: Record<string, unknown>;
 };

@@ -1,5 +1,8 @@
 /**
- * Skills API stub for allo canvas (remote skill catalog disabled).
+ * Canvas-facing skills API.
+ *
+ * 视频画布不读取 allo「设置 → 技能」通用技能库（那是给 Agent / 对话用的）。
+ * 预设里的「技能」仅来自画布技能节点（见 canvas-skill-mentions / collectCanvasSkills）。
  */
 
 export type SkillSort = 'popular' | 'new' | 'updated';
@@ -85,37 +88,38 @@ export function listSkills(input: ListSkillsInput = {}) {
 }
 
 export function getSkill(_id: string) {
-  return Promise.reject(new Error('Skills are not available in allo canvas'));
+  return Promise.reject(new Error('Remote skill catalog is not available in allo canvas'));
 }
 
+/** 不接通用技能库；画布技能由节点侧 collectCanvasSkills 提供。 */
 export function listAddedSkills() {
   return Promise.resolve({ skills: [] as Skill[] });
 }
 
 export function createSkill(_input: SkillMutationInput) {
-  return Promise.reject(new Error('Skills are not available in allo canvas'));
+  return Promise.reject(new Error('Remote skill catalog is not available in allo canvas'));
 }
 
 export function updateSkill(_id: string, _input: SkillMutationInput) {
-  return Promise.reject(new Error('Skills are not available in allo canvas'));
+  return Promise.reject(new Error('Remote skill catalog is not available in allo canvas'));
 }
 
 export function deleteSkill(_id: string) {
-  return Promise.reject(new Error('Skills are not available in allo canvas'));
+  return Promise.reject(new Error('Remote skill catalog is not available in allo canvas'));
 }
 
 export function addSkill(_id: string) {
-  return Promise.reject(new Error('Skills are not available in allo canvas'));
+  return Promise.reject(new Error('Remote skill catalog is not available in allo canvas'));
 }
 
 export function removeSkill(_id: string) {
-  return Promise.reject(new Error('Skills are not available in allo canvas'));
+  return Promise.reject(new Error('Remote skill catalog is not available in allo canvas'));
 }
 
 export function likeSkill(_id: string) {
-  return Promise.reject(new Error('Skills are not available in allo canvas'));
+  return Promise.reject(new Error('Remote skill catalog is not available in allo canvas'));
 }
 
 export function unlikeSkill(_id: string) {
-  return Promise.reject(new Error('Skills are not available in allo canvas'));
+  return Promise.reject(new Error('Remote skill catalog is not available in allo canvas'));
 }

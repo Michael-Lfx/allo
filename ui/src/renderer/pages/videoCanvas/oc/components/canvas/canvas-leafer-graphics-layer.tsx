@@ -326,7 +326,6 @@ function syncOverlayContent(scene: OverlayScene, props: ResolvedLeaferProps, vie
                 props.mouseWorld,
                 props.connectionTargetNodeId ? props.nodeById.get(props.connectionTargetNodeId) : undefined,
                 props.scriptScrollTopById[connecting.nodeId] || 0,
-                props.connectionTargetAnchorRatio,
             ),
             stroke: props.theme.accent.primary,
             strokeCap: "round",
@@ -345,7 +344,7 @@ function syncOverlayContent(scene: OverlayScene, props: ResolvedLeaferProps, vie
         if (!source) return;
         const handle: ConnectionHandle = { nodeId: source.id, handleType: "source" };
         scene.batchDrafts.add(new Path({
-            path: activeConnectionPath(source, handle, batch.mouseWorld, target, props.scriptScrollTopById[source.id] || 0, batch.targetAnchorRatio),
+            path: activeConnectionPath(source, handle, batch.mouseWorld, target, props.scriptScrollTopById[source.id] || 0),
             stroke,
             strokeWidth: 1.4,
             strokeScaleFixed: true,

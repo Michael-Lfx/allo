@@ -358,7 +358,7 @@ function createInlineMentionChip(reference: CanvasResourceReference, token: stri
     const chip = document.createElement("span");
     chip.contentEditable = "false";
     chip.dataset.mentionToken = token;
-    chip.className = "mx-[0.06em] inline-flex h-[1.68em] translate-y-[0.08em] select-none items-center gap-[0.18em] rounded-[0.38em] bg-black/[0.06] px-[0.22em] text-[0.92em] font-medium leading-none text-current align-baseline dark:bg-white/[0.1]";
+    chip.className = "canvas-resource-inline-mention";
 
     const at = document.createElement("span");
     at.className = "shrink-0 opacity-90";

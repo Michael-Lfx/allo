@@ -1,6 +1,7 @@
 import { imageReferenceLabel } from "@oc/lib/image-reference-prompt";
 import { seedanceReferenceLabel } from "@oc/lib/seedance-video";
 import { getNodeResourceKind } from "@oc/lib/canvas/node-registry";
+import { skillFromCanvasNode } from "@oc/lib/canvas/canvas-skill-mentions";
 import type { Skill } from "@oc/services/api/skills";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@oc/types/canvas";
 
@@ -63,7 +64,7 @@ export function getGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData
     return [];
 }
 
-function getContextResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+export function getContextResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
     return connections
         .filter((connection) => connection.toNodeId === nodeId)
         .map((connection) => nodes.find((node) => node.id === connection.fromNodeId))
@@ -84,18 +85,20 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {
         if (!kind) return [];
         const index = node.type === CanvasNodeType.Drawing ? drawingCount++ : counts[kind]++;
         const label = node.type === CanvasNodeType.Drawing ? `绘图${index + 1}` : labelForKind(kind, index);
+        const skill = kind === "skill" ? skillFromCanvasNode(node) || undefined : undefined;
         return [
             {
-                id: node.id,
+                id: skill ? `skill:${skill.skill_id}` : node.id,
                 nodeId: node.id,
                 kind,
-                label,
-                title: node.title || label,
+                label: skill?.skill_name || label,
+                title: skill?.skill_name || node.title || label,
                 previewUrl: node.metadata?.workflowKind === "character" ? node.metadata.characterCoverUrl : node.type === CanvasNodeType.Drawing ? node.metadata?.drawingPreviewUrl : node.metadata?.content,
                 storageKey: node.metadata?.storageKey,
                 text: node.metadata?.workflowKind === "character" ? node.metadata.characterPrompt : node.type === CanvasNodeType.Text ? node.metadata?.content || node.metadata?.prompt : node.type === CanvasNodeType.Skill ? skillResourceText(node) : undefined,
                 active,
                 sourceType: node.type,
+                skill,
             },
         ];
     });

@@ -15,7 +15,7 @@ import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes, type CanvasBackgroundMode, type CanvasColorTheme, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { defaultToolbarPrefs, readToolbarPrefs, resolveAddNodeMenuCommands, resolveToolbarEntries, type ResolvedAddNodeMenuCommand, type ToolContext, type ToolbarHandlers, type ToolbarPrefs } from "@oc/lib/canvas/tool-registry";
 import { useThemeStore } from "@oc/stores/use-theme-store";
-import type { CanvasToolMode, CanvasWorkspaceMode } from "@oc/types/canvas";
+import type { CanvasNodeType, CanvasToolMode, CanvasWorkspaceMode } from "@oc/types/canvas";
 
 export function CanvasToolbar({
     selectedCount,
@@ -37,6 +37,7 @@ export function CanvasToolbar({
     onAddFolder,
     onAddDrawing,
     onOpenDirector,
+    onAddExtensionNode,
     onUndo,
     onRedo,
     onUpload,
@@ -67,6 +68,7 @@ export function CanvasToolbar({
     onAddFolder: () => void;
     onAddDrawing: () => void;
     onOpenDirector: () => void;
+    onAddExtensionNode: (type: CanvasNodeType) => void;
     onUndo: () => void;
     onRedo: () => void;
     onUpload: () => void;
@@ -131,6 +133,7 @@ export function CanvasToolbar({
         onAddDrawing,
         onChooseStyle,
         onOpenDirector,
+        onAddExtensionNode,
         onUpload,
         onOpenMyAssets,
         onOpenProjectCharacters,

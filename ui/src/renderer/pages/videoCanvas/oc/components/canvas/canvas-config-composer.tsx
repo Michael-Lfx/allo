@@ -174,7 +174,7 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
                     <div className="truncate text-[var(--fs-label)] opacity-55">{simpleMode ? canvasT("videoCanvas.config.simpleHint", "已连接素材会自动带入") : canvasT("videoCanvas.config.assembleHint", "@ 引用已连接素材或已激活技能，发送前自动组装")}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                    {simpleMode ? null : <CanvasPresetPicker mode={generationMode || "image"} skillReferences={skillReferences} open={presetOpen} onOpenChange={setPresetOpen} onSelect={insertPreset} />}
+                    {(simpleMode && generationMode !== "image" && generationMode !== "video") ? null : <CanvasPresetPicker mode={generationMode || "image"} skillReferences={skillReferences} open={presetOpen} onOpenChange={setPresetOpen} onSelect={insertPreset} />}
                     <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<X className="size-3.5" />} onClick={onClose} />
                 </div>
             </div>

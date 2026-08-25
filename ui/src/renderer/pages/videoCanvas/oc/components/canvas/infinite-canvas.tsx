@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { canvasThemes, type CanvasBackgroundMode } from "@oc/lib/canvas-theme";
+import { canvasDotGridSizePx, canvasDotSizePx } from "@oc/lib/canvas/canvas-live-viewport";
 import { applyCanvasLiveViewport, subscribeCanvasViewportPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { ViewportTransform } from "@oc/types/canvas";
@@ -386,7 +387,10 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
                 "--canvas-grid-size": `${48 * viewport.k}px`,
                 "--canvas-grid-x": `${viewport.x % (48 * viewport.k)}px`,
                 "--canvas-grid-y": `${viewport.y % (48 * viewport.k)}px`,
-                "--canvas-dot-size": viewport.k < 0.12 ? "0.8px" : "1.15px",
+                "--canvas-dot-grid-size": `${canvasDotGridSizePx(viewport.k)}px`,
+                "--canvas-dot-grid-x": `${viewport.x % canvasDotGridSizePx(viewport.k)}px`,
+                "--canvas-dot-grid-y": `${viewport.y % canvasDotGridSizePx(viewport.k)}px`,
+                "--canvas-dot-size": canvasDotSizePx(viewport.k),
             } as React.CSSProperties}
             onPointerDown={handlePointerDown}
             onDoubleClick={(event) => {
@@ -418,7 +422,9 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
 
 function CanvasGrid({ mode }: { mode: CanvasBackgroundMode }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const backgroundImage = mode === "dots" ? `radial-gradient(circle, ${theme.canvas.dot} var(--canvas-dot-size), transparent calc(var(--canvas-dot-size) + 0.2px))` : `linear-gradient(${theme.canvas.line} 1px, transparent 1px), linear-gradient(90deg, ${theme.canvas.line} 1px, transparent 1px)`;
+    const backgroundImage = mode === "dots"
+        ? `radial-gradient(circle, ${theme.canvas.dot} var(--canvas-dot-size), transparent calc(var(--canvas-dot-size) + 0.2px))`
+        : `linear-gradient(${theme.canvas.line} 1px, transparent 1px), linear-gradient(90deg, ${theme.canvas.line} 1px, transparent 1px)`;
     if (mode === "blank") return null;
 
     return (
@@ -426,11 +432,14 @@ function CanvasGrid({ mode }: { mode: CanvasBackgroundMode }) {
             data-canvas-grid-layer
             className="pointer-events-none absolute"
             style={{
-                inset: "calc(-1 * var(--canvas-grid-size))",
+                inset: mode === "dots" ? "calc(-1 * var(--canvas-dot-grid-size))" : "calc(-1 * var(--canvas-grid-size))",
                 backgroundImage,
-                backgroundSize: "var(--canvas-grid-size) var(--canvas-grid-size)",
-                transform: "translate3d(var(--canvas-grid-x), var(--canvas-grid-y), 0)",
-                opacity: mode === "dots" ? 0.52 : 0.36,
+                backgroundSize: mode === "dots" ? "var(--canvas-dot-grid-size) var(--canvas-dot-grid-size)" : "var(--canvas-grid-size) var(--canvas-grid-size)",
+                transform: mode === "dots"
+                    ? "translate3d(var(--canvas-dot-grid-x), var(--canvas-dot-grid-y), 0)"
+                    : "translate3d(var(--canvas-grid-x), var(--canvas-grid-y), 0)",
+                // 点阵略降不透明度，避免与内容抢视觉权重。
+                opacity: mode === "dots" ? 0.34 : 0.46,
                 willChange: "transform",
             }}
         />

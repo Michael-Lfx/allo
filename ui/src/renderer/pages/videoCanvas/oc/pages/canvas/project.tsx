@@ -222,7 +222,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     }, [linkedProjectQuery.data, projectLoaded, setNodes]);
     const canvasContext = useMemo(() => summarizeCanvasContext(nodes, selectedNodeIds, linkedProjectQuery.data?.units), [linkedProjectQuery.data?.units, nodes, selectedNodeIds]);
 
-    const { bindGenerationTask, cancelNodeTask, confirmStopGeneration, finishGenerationRequest, openNodeTaskDetails, runningNodeId, setRunningNodeId, setTaskDetail, startGenerationRequest, taskDetail, taskDetailLoading, taskDetailLogs } =
+    const { bindGenerationTask, cancelNodeTask, confirmStopGeneration, finishGenerationRequest, openNodeTaskDetails, reloadCanvasNodeResource, runningNodeId, setRunningNodeId, setTaskDetail, startGenerationRequest, taskDetail, taskDetailLoading, taskDetailLogs } =
         useCanvasGeneration({ projectId, domainProjectId: linkedProjectId, projectLoaded, nodes, nodesRef, setNodes });
 
 
@@ -736,6 +736,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         onToggleBatch: toggleBatchExpanded,
         onSetBatchPrimary: setBatchPrimary,
         onRetry: retryCanvasNode,
+        onReloadResource: (node) => { void reloadCanvasNodeResource(node); },
         onCancelTask: cancelNodeTask,
         onOpenTaskDetails: openCanvasNodeTaskDetails,
         onOpenVersions: openCanvasNodeVersions,
@@ -881,6 +882,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                             deleteNodes={deleteNodes}
                             openAssetsAtPosition={openAssetsAtPosition}
                             openProjectAssets={openProjectAssets}
+                            updateNodeMetadata={(nodeId, patch) => setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...patch } } : node)))}
                         />
                         <CanvasProjectAssistantColumn
                         {...dialogState}
