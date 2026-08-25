@@ -23,8 +23,8 @@ use nomifun_common::AppError;
 
 use crate::state::VimaxRouterState;
 
-/// Cameo upload body limit (matches nomi-vimax `CAMEO_MAX_BYTES` + multipart overhead).
-const CAMEO_UPLOAD_BODY_LIMIT: usize = 11 * 1024 * 1024;
+/// Cameo / reference-image upload body limit (matches nomi-vimax `CAMEO_MAX_BYTES` + multipart overhead).
+const CAMEO_UPLOAD_BODY_LIMIT: usize = 28 * 1024 * 1024;
 /// Action-imitation character + reference video (80MB video + 10MB image + overhead).
 const ACTION_UPLOAD_BODY_LIMIT: usize = 92 * 1024 * 1024;
 /// Artifact binary replace body limit (matches nomi-vimax `MAX_BINARY_BYTES` + overhead).
@@ -629,11 +629,7 @@ async fn extract_cameo_multipart(mut multipart: Multipart) -> Result<CameoUpload
     }
 
     let bytes = bytes.ok_or_else(|| AppError::BadRequest("missing 'file' field".into()))?;
-    if character_name.trim().is_empty() {
-        return Err(AppError::BadRequest(
-            "character_name is required".into(),
-        ));
-    }
+    // Label is optional; nomi-vimax fills「参考图N」when empty.
     Ok(CameoUploadFields {
         bytes,
         character_name,

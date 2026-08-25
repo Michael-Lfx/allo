@@ -7,6 +7,7 @@ mod event_extractor;
 mod film_cover;
 mod global_information_planner;
 mod novel_compressor;
+mod reference_image_classifier;
 mod reference_image_selector;
 mod scene_extractor;
 mod screenwriter;
@@ -24,6 +25,11 @@ pub use event_extractor::EventExtractor;
 pub use film_cover::{ensure_cover_from_final_video, ensure_film_cover, COVER_FILENAME};
 pub use global_information_planner::GlobalInformationPlanner;
 pub use novel_compressor::NovelCompressor;
+pub use reference_image_classifier::{
+    load_classification_report, heuristic_classification, ReferenceClassificationReport,
+    ReferenceImageCategory, ReferenceImageClassification, ReferenceImageClassifier,
+    CLASSIFICATION_CACHE_REL,
+};
 pub use reference_image_selector::{ReferenceImageSelector, SelectorOutput};
 pub use scene_extractor::{SceneExtractor, rank_chunks_by_keyword_overlap};
 pub use screenwriter::Screenwriter;
@@ -58,6 +64,10 @@ CRITICAL: camera_parent_items MUST have exactly the same length as the number of
     pub const REF_IMAGES: &str = r#"Return a JSON object:
 {"ref_image_indices":[0,2],"text_prompt":"string"}
 ref_image_indices: 0-based indices into the provided image list (max 8). text_prompt describes the image to generate and which Image N to reference. Prefer English in text_prompt when writing image-model prompts; otherwise match user language for explanations."#;
+
+    pub const REF_IMAGE_CLASSIFY: &str = r#"Return a JSON object:
+{"classifications":[{"photo_id":"string","category":"character|environment|prop|style","summary":"string","suggested_label":"string"}]}
+One entry per input image. category MUST be exactly one of: character, environment, prop, style. photo_id MUST match the provided id. summary = one short visual description. suggested_label may be empty. Prose MUST match the user's label language when Chinese."#;
 
     pub const SCRIPT_SCENES: &str = r#"Return a JSON object:
 {"scenes":["scene script string", "..."]}

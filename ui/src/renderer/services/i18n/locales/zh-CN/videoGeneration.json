@@ -194,11 +194,13 @@
       "ideaPlaceholderSlash": "输入一个想法、故事或产品画面，支持 / 切换 Mode…"
     },
     "upload": {
-      "aria": "上传角色参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）",
+      "aria": "上传参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）",
       "removeDocument": "移除文档",
       "removeReference": "移除 {{name}}",
       "unsupported": "部分文件格式暂不支持，请上传图片、DOCX 或纯文本文档。",
-      "cameoNameRequired": "请为每张角色参考图填写角色名。",
+      "imageTooLarge": "参考图不能超过 25 MB（剧照请先压缩后再上传）。",
+      "cameoNameRequired": "请为每张参考图填写标签（可选；人物可用角色名）。",
+      "cameoFileMissing": "参考图文件已失效（刷新页面后需重新选择图片），请重新添加后再发送。",
       "docUnsupported": "暂不支持该文档格式，请上传 DOCX、TXT、Markdown、JSON、CSV、SRT 或 VTT。",
       "docTooLarge": "文档不能超过 5 MB。",
       "docEmpty": "文档内容为空。",
@@ -240,16 +242,16 @@
       "brand": "用电影感镜头讲述一双跑鞋的一天"
     },
     "cameo": {
-      "title": "角色参考图（Cameo）",
-      "hint": "可选：上传人物照片并填写角色名。规划时会自动把人脸替换为不可识别的通用脸，保留服装体态与整体外貌，降低真人肖像风控。",
-      "add": "添加照片",
+      "title": "参考图",
+      "hint": "可上传人物、场景、道具或画风参考；规划时自动识别类型并用于全局资产。人物图会做隐私安全处理。",
+      "add": "添加参考图",
       "dropHint": "拖拽或点击上传 PNG / JPEG / WEBP（最多 8 张）",
-      "namePlaceholder": "角色名（需与故事中角色对应）",
-      "descPlaceholder": "可选描述（身份/服装提示）",
+      "namePlaceholder": "标签（可选；人物可用角色名）",
+      "descPlaceholder": "可选描述（场景/道具/身份提示）",
       "remove": "移除",
-      "uploading": "正在上传角色参考图…",
-      "uploadFailed": "角色参考图上传失败",
-      "defaultName": "角色{{n}}"
+      "uploading": "正在上传参考图…",
+      "uploadFailed": "参考图上传失败",
+      "defaultName": "参考图{{n}}"
     }
   },
   "workflow": {
@@ -366,8 +368,10 @@
     "refresh": "刷新",
     "workflowLocked": "工作流在创建后已锁定，不可更改。",
     "cameo": {
-      "title": "已绑定角色参考图",
-      "empty": "暂无 Cameo。可在创建时上传，删除后请重新规划以更新绑定。",
+      "title": "参考图",
+      "empty": "当前任务还没有参考图。可点右上角「添加」，或返回首页重新选择图片后发送。规划完成后也会按类型出现在「技术产物 → 参考图」。",
+      "add": "添加",
+      "loadFailed": "参考图列表加载失败：{{error}}",
       "delete": "删除"
     },
     "action": {

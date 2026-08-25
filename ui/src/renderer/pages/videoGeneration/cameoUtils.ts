@@ -1,10 +1,10 @@
 import i18n from 'i18next';
 
 function defaultCameoName(n: number): string {
-  const fallback = `角色${n}`;
+  const fallback = `参考图${n}`;
   const translated = i18n.t('videoGeneration.create.cameo.defaultName', {
     n,
-    defaultValue: '角色{{n}}',
+    defaultValue: '参考图{{n}}',
   });
   return typeof translated === 'string' && translated.length > 0
     ? translated

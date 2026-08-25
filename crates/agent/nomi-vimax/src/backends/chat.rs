@@ -55,6 +55,48 @@ impl FlowyChat {
             &catalog.cloud,
         ))
     }
+
+    /// Prefer OSS HTTPS `publicUrl` for vision; fall back to a small JPEG data-URL.
+    ///
+    /// Uploading avoids megabyte base64 chat bodies that stall `classify_references`.
+    async fn vision_image_url(&self, path: &Path, index: usize) -> VimaxResult<String> {
+        let raw = tokio::fs::read(path).await?;
+        let thumb = crate::media_local::jpeg_thumb_bytes_for_vision(&raw).unwrap_or(raw);
+        let tmp = std::env::temp_dir().join(format!(
+            "vimax_vision_{}_{}_{}.jpg",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            index
+        ));
+        tokio::fs::write(&tmp, &thumb).await?;
+        let upload = self
+            .services
+            .upload_image_public_url(&tmp, &format!("vision_{index}"))
+            .await;
+        let _ = tokio::fs::remove_file(&tmp).await;
+        match upload {
+            Ok(url) => {
+                tracing::debug!(
+                    path = %path.display(),
+                    url = %url,
+                    "vision image uploaded to OSS"
+                );
+                Ok(url)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "OSS upload for vision image failed; using JPEG data-URL fallback"
+                );
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&thumb);
+                Ok(format!("data:image/jpeg;base64,{b64}"))
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -101,13 +143,11 @@ impl VimaxChat for FlowyChat {
         );
 
         let mut user_parts = vec![json!({"type": "text", "text": user_text})];
-        for path in image_paths {
-            let bytes = tokio::fs::read(path).await?;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            let mime = mime_for_path(path);
+        for (i, path) in image_paths.iter().enumerate() {
+            let url = self.vision_image_url(path, i).await?;
             user_parts.push(json!({
                 "type": "image_url",
-                "image_url": { "url": format!("data:{mime};base64,{b64}") }
+                "image_url": { "url": url }
             }));
         }
         let user_parts = json!(user_parts);
@@ -120,6 +160,10 @@ impl VimaxChat for FlowyChat {
                     .into(),
             ));
         }
+
+        // Cap fan-out: each failed candidate can burn a full LLM HTTP timeout (~120s).
+        const MAX_VISION_CANDIDATES: usize = 3;
+        let candidates: Vec<String> = candidates.into_iter().take(MAX_VISION_CANDIDATES).collect();
 
         if let Some(plan) = self.model_arg() {
             if !candidates
@@ -233,21 +277,6 @@ fn nonempty(model: Option<String>) -> Option<String> {
         let t = s.trim().to_string();
         if t.is_empty() { None } else { Some(t) }
     })
-}
-
-fn mime_for_path(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        _ => "image/png",
-    }
 }
 
 #[cfg(test)]

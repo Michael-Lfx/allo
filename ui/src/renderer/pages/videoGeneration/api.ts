@@ -511,7 +511,11 @@ export function uploadCameo(
     }
     xhr.addEventListener('load', () => {
       if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new Error(`Cameo upload failed: ${xhr.status} ${xhr.statusText}`));
+        const hint =
+          xhr.status === 413
+            ? ' (file too large; reference images must be ≤ 25 MB)'
+            : '';
+        reject(new Error(`Cameo upload failed: ${xhr.status} ${xhr.statusText}${hint}`));
         return;
       }
       try {

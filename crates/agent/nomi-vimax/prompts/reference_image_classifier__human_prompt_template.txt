@@ -1,0 +1,7 @@
+Classify each reference image below. Images are indexed from 0 and appear in the same order as the photo list.
+
+<PHOTO_META>
+{photo_meta}
+</PHOTO_META>
+
+For each Image N, return category + summary + suggested_label using the matching photo_id.

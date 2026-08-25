@@ -28,12 +28,11 @@ import {
   deleteSession,
   importSession,
   listSessions,
-  planSession,
   renderSession,
   uploadActionAssets,
   uploadCameo,
 } from './api';
-import type { PlanBody, SessionSummary } from './types';
+import type { SessionSummary } from './types';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
 import { parseVideoHomeMode } from './home/types';
@@ -69,45 +68,6 @@ type ListTab = 'recent' | 'tvShow';
 const CanvasProjectGallery = lazy(() => import('./home/CanvasProjectGallery'));
 const TvShowPanel = lazy(() => import('./components/TvShowPanel'));
 const SessionCard = lazy(() => import('./components/SessionCard'));
-
-function sourceBodyForDraft(draft: VideoCreateDraft): PlanBody {
-  const prefs = draft.preferences;
-  const common: PlanBody = {
-    user_requirement: draft.requirement.trim() || undefined,
-    style: draft.style.trim() || undefined,
-    vertical_skill_ids:
-      draft.verticalSkillIds.length > 0 ? draft.verticalSkillIds : undefined,
-    aspect_ratio: prefs.aspectRatio,
-    resolution: prefs.resolution,
-    fps: prefs.fps,
-    llm_model: prefs.models.llm_model,
-    image_model: prefs.models.image_model || undefined,
-    video_model: prefs.models.video_model || undefined,
-    // Omit when unset so nomi-vimax planning sizes the film from the story.
-    target_duration_secs:
-      prefs.mediaKind === 'video' && prefs.specifyTargetDuration
-        ? clampDuration(prefs.targetDurationSecs)
-        : undefined,
-  };
-  switch (draft.workflow) {
-    case 'idea2video':
-      return { ...common, idea: draft.sourceText };
-    case 'script2video':
-      return { ...common, script: draft.sourceText };
-    case 'novel2video':
-      return { ...common, novel_text: draft.sourceText };
-    case 'action2video':
-      return {
-        video_model: draft.preferences.models.video_model || undefined,
-        resolution: draft.preferences.resolution,
-        fps: draft.preferences.fps,
-      };
-    default: {
-      const exhaustive: never = draft.workflow;
-      return exhaustive;
-    }
-  }
-}
 
 function titleForDraft(draft: VideoCreateDraft): string {
   if (draft.workflow === 'action2video') {
@@ -248,16 +208,25 @@ const VideoGenerationListPage: React.FC = () => {
               fps: draft.preferences.fps,
             });
           } else {
-            const pendingCameos = draft.cameos.filter((c) => c.file && c.characterName.trim());
-            for (const cameo of pendingCameos) {
+            // Upload refs here; planning starts on the workspace so the detail
+            // page always enters the planning UI via the same path as「生成分镜」.
+            const pendingCameos = draft.cameos.filter((c) => c.file);
+            if (draft.cameos.length > 0 && pendingCameos.length === 0) {
+              throw new Error(
+                t('videoGeneration.create.upload.cameoFileMissing', {
+                  defaultValue:
+                    '参考图文件已失效（刷新页面后需重新选择图片），请重新添加后再发送。',
+                })
+              );
+            }
+            for (const [index, cameo] of pendingCameos.entries()) {
               await uploadCameo(
                 created.id,
                 cameo.file!,
-                cameo.characterName.trim(),
+                cameo.characterName.trim() || `参考图${index + 1}`,
                 cameo.description.trim()
               );
             }
-            await planSession(created.id, sourceBodyForDraft(draft));
           }
           trackFunnelEvent('first_task_started', {
             feature: 'video_generation',
@@ -265,12 +234,14 @@ const VideoGenerationListPage: React.FC = () => {
             session_id: created.id,
           });
           clearVideoHomeDraft();
-        } catch (planError) {
-          const raw = planError instanceof Error ? planError.message : String(planError);
+        } catch (launchError) {
+          const raw = launchError instanceof Error ? launchError.message : String(launchError);
           const failedLabel =
             draft.workflow === 'action2video'
               ? t('videoGeneration.workspace.renderFailed', { defaultValue: '渲染失败' })
-              : t('videoGeneration.workspace.planFailed', { defaultValue: '规划失败' });
+              : t('videoGeneration.workspace.uploadFailed', {
+                  defaultValue: '上传参考图失败',
+                });
           message.error(
             isInsufficientCreditsError(raw)
               ? t('videoGeneration.workspace.failure.creditsToast', {
@@ -285,7 +256,12 @@ const VideoGenerationListPage: React.FC = () => {
           return;
         }
         rememberVideoGenerationSession(created.id, titleForDraft(draft));
-        navigate(`/video-generation/${created.id}`);
+        navigate(`/video-generation/${created.id}`, {
+          state:
+            draft.workflow === 'action2video'
+              ? undefined
+              : { launchDraft: draft, autoPlan: true },
+        });
       } catch (e) {
         message.error(
           `${t('videoGeneration.actions.createFailed', { defaultValue: '创建失败' })}: ${

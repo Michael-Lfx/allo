@@ -22,7 +22,8 @@ use crate::progress::ProgressCallback;
 use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
 
 use super::cameo_bind::{
-    apply_session_cameos, cameo_extractor_hint, resolve_session_root, world_cameo_context,
+    apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
+    world_cameo_context,
 };
 use super::script2video::{resolve_scene_tail_continuity, PlanArtifacts, Script2VideoPipeline};
 use super::script_scene_split::{
@@ -195,6 +196,17 @@ impl ScriptFilmPipeline {
 
         emit_pct(&progress, "extract_characters", "正在从选定场次提取角色", 12.0);
         let session_root = resolve_session_root(&self.working_dir);
+        emit_pct(
+            &progress,
+            "classify_references",
+            "正在识别用户上传参考图类型",
+            10.0,
+        );
+        let _ = classify_session_references(
+            &session_root,
+            Arc::clone(&self.backends.chat),
+        )
+        .await?;
         let cameo_hint = cameo_extractor_hint(&session_root);
         let mut characters = load_or_write_json(&self.working_dir.join("characters.json"), || async {
             let text = format!("{corpus}{cameo_hint}");
@@ -218,13 +230,14 @@ impl ScriptFilmPipeline {
         emit_pct(
             &progress,
             "cameo_bind",
-            "正在绑定用户角色参考图并做隐私安全换脸",
+            "正在绑定用户角色参考图（有真人脸才做隐私换脸）",
             18.0,
         );
         apply_session_cameos(
             &self.working_dir,
             &characters,
             Arc::clone(&self.backends.image),
+            Arc::clone(&self.backends.chat),
         )
         .await?;
 
@@ -435,6 +448,7 @@ impl ScriptFilmPipeline {
             &self.working_dir,
             &characters,
             Arc::clone(&self.backends.image),
+            Arc::clone(&self.backends.chat),
         )
         .await?;
 

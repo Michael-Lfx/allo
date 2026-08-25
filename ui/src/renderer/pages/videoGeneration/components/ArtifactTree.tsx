@@ -1,7 +1,6 @@
-
-
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { FolderOpen, FileText, Pic, VideoOne } from '@icon-park/react';
 import type { ArtifactNode } from '../types';
 
@@ -14,8 +13,44 @@ function guessKind(node: ArtifactNode): 'dir' | 'image' | 'video' | 'text' {
   return 'text';
 }
 
+function displayNodeName(node: ArtifactNode, t: TFunction): string {
+  if (!node.is_dir) return node.name;
+  if (node.name === 'cameo' || node.name === 'references') {
+    return t('videoGeneration.workspace.artifactDir.references', {
+      defaultValue: '参考图',
+    });
+  }
+  if (node.name === 'by_category') {
+    return t('videoGeneration.workspace.artifactDir.byCategory', {
+      defaultValue: '分类结果',
+    });
+  }
+  if (node.name === 'character') {
+    return t('videoGeneration.workspace.artifactDir.character', { defaultValue: '人物' });
+  }
+  if (node.name === 'environment') {
+    return t('videoGeneration.workspace.artifactDir.environment', { defaultValue: '环境' });
+  }
+  if (node.name === 'prop') {
+    return t('videoGeneration.workspace.artifactDir.prop', { defaultValue: '道具' });
+  }
+  if (node.name === 'style') {
+    return t('videoGeneration.workspace.artifactDir.style', { defaultValue: '画风' });
+  }
+  if (node.name === 'photos') {
+    return t('videoGeneration.workspace.artifactDir.photos', { defaultValue: '原图' });
+  }
+  return node.name;
+}
+
 function NodeIcon({ kind }: { kind: ReturnType<typeof guessKind> }) {
-  const props = { theme: 'outline' as const, size: 14, fill: 'currentColor', className: 'block shrink-0', style: { lineHeight: 0 } };
+  const props = {
+    theme: 'outline' as const,
+    size: 14,
+    fill: 'currentColor',
+    className: 'block shrink-0',
+    style: { lineHeight: 0 },
+  };
   switch (kind) {
     case 'dir':
       return <FolderOpen {...props} />;
@@ -36,6 +71,7 @@ interface TreeRowProps {
 }
 
 const TreeRow: React.FC<TreeRowProps> = ({ node, depth, selectedPath, onSelect }) => {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(depth < 1);
   const kind = guessKind(node);
   const selected = !node.is_dir && selectedPath === node.path;
@@ -63,9 +99,11 @@ const TreeRow: React.FC<TreeRowProps> = ({ node, depth, selectedPath, onSelect }
         <span className='opacity-70'>
           <NodeIcon kind={kind} />
         </span>
-        <span className='truncate'>{node.name}</span>
+        <span className='truncate'>{displayNodeName(node, t)}</span>
         {node.is_dir && (
-          <span className='ml-auto text-10px text-[var(--color-text-4)] shrink-0'>{open ? '▾' : '▸'}</span>
+          <span className='ml-auto text-10px text-[var(--color-text-4)] shrink-0'>
+            {open ? '▾' : '▸'}
+          </span>
         )}
       </button>
       {node.is_dir && open && node.children?.length

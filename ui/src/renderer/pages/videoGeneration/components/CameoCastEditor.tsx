@@ -4,8 +4,9 @@ import { Button, Input } from '@arco-design/web-react';
 import { Delete, Plus, Peoples } from '@icon-park/react';
 import type { CameoDraftItem } from '../types';
 import { suggestCameoCharacterName } from '../cameoUtils';
+import { isSupportedImageFile } from '../home/documentUpload';
 
-const ACCEPT = 'image/png,image/jpeg,image/jpg,image/webp';
+const ACCEPT = 'image/png,image/jpeg,image/jpg,image/webp,.png,.jpg,.jpeg,.webp';
 const MAX_CAMEOS = 8;
 
 export interface CameoCastEditorProps {
@@ -34,7 +35,7 @@ const CameoCastEditor: React.FC<CameoCastEditorProps> = ({ value, onChange, disa
 
   const addFiles = useCallback(
     (files: FileList | File[]) => {
-      const list = Array.from(files).filter((f) => /^image\/(png|jpeg|jpg|webp)$/i.test(f.type));
+      const list = Array.from(files).filter(isSupportedImageFile);
       if (list.length === 0) return;
       const room = Math.max(0, MAX_CAMEOS - value.length);
       const slice = list.slice(0, room);
@@ -67,11 +68,12 @@ const CameoCastEditor: React.FC<CameoCastEditorProps> = ({ value, onChange, disa
         <div>
           <div className='inline-flex items-center gap-6px text-13px font-650 text-[var(--color-text-1)]'>
             <Peoples theme='outline' size={15} />
-            {t('videoGeneration.create.cameo.title', { defaultValue: '角色参考图（Cameo）' })}
+            {t('videoGeneration.create.cameo.title', { defaultValue: '参考图' })}
           </div>
           <p className='m-0 mt-4px text-12px leading-18px text-[var(--color-text-3)]'>
             {t('videoGeneration.create.cameo.hint', {
-              defaultValue: '可选：上传人物照片并填写角色名，成片会尽量保持外貌一致。',
+              defaultValue:
+                '可上传人物、场景、道具或画风参考；规划时自动识别类型并用于全局资产。',
             })}
           </p>
         </div>
@@ -83,7 +85,7 @@ const CameoCastEditor: React.FC<CameoCastEditorProps> = ({ value, onChange, disa
         >
           <span className='inline-flex items-center gap-4px'>
             <Plus theme='outline' size={14} />
-            {t('videoGeneration.create.cameo.add', { defaultValue: '添加照片' })}
+            {t('videoGeneration.create.cameo.add', { defaultValue: '添加参考图' })}
           </span>
         </Button>
         <input
@@ -141,7 +143,7 @@ const CameoCastEditor: React.FC<CameoCastEditorProps> = ({ value, onChange, disa
                   value={item.characterName}
                   disabled={disabled}
                   placeholder={t('videoGeneration.create.cameo.namePlaceholder', {
-                    defaultValue: '角色名（请改成故事里的名字，如「小」）',
+                    defaultValue: '标签（可选；人物可用角色名）',
                   })}
                   onChange={(characterName) => patch(item.localId, { characterName })}
                 />

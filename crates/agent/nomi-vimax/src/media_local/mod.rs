@@ -54,6 +54,27 @@ pub fn is_usable_image_file(path: &Path) -> bool {
     image::load_from_memory(&bytes).is_ok()
 }
 
+/// Longest side for multimodal payloads — full film stills (10–25MB) hang or OOM vision calls.
+pub const VISION_THUMB_MAX_SIDE: u32 = 768;
+/// Skip re-encode when the source is already a small JPEG/WebP/PNG.
+const VISION_SKIP_REENCODE_BYTES: usize = 400 * 1024;
+
+/// Decode + JPEG-thumbnail bytes for vision chat (keeps payloads small and fast).
+pub fn jpeg_thumb_bytes_for_vision(bytes: &[u8]) -> VimaxResult<Vec<u8>> {
+    if bytes.len() <= VISION_SKIP_REENCODE_BYTES && image_magic_kind(bytes) == Some("jpeg") {
+        return Ok(bytes.to_vec());
+    }
+    let img = image::load_from_memory(bytes).map_err(|e| {
+        VimaxError::Media(format!("decode image for vision thumb: {e}"))
+    })?;
+    let thumb = img.thumbnail(VISION_THUMB_MAX_SIDE, VISION_THUMB_MAX_SIDE);
+    let mut out = std::io::Cursor::new(Vec::new());
+    thumb
+        .write_to(&mut out, image::ImageFormat::Jpeg)
+        .map_err(|e| VimaxError::Media(format!("encode vision jpeg thumb: {e}")))?;
+    Ok(out.into_inner())
+}
+
 /// Decode arbitrary image bytes (JPEG/PNG/WEBP) and write a real PNG to `out_path`.
 /// Seedream often returns JPEG URLs while callers always use `.png` destinations.
 pub fn write_image_bytes_as_png(bytes: &[u8], out_path: &Path) -> VimaxResult<()> {
@@ -1457,5 +1478,27 @@ mod tests {
 
         let short = normalize_audio_filter(0.2);
         assert!(!short.contains("afade"), "too-short clips skip edge fade");
+    }
+
+    #[test]
+    fn vision_thumb_shrinks_large_png() {
+        let mut img = image::RgbaImage::new(2000, 1500);
+        for px in img.pixels_mut() {
+            *px = image::Rgba([10, 20, 30, 255]);
+        }
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut png),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        assert!(png.len() > 400 * 1024 || png.len() > 10_000);
+        let thumb = jpeg_thumb_bytes_for_vision(&png).unwrap();
+        assert!(image_magic_kind(&thumb) == Some("jpeg"));
+        assert!(thumb.len() < png.len());
+        let decoded = image::load_from_memory(&thumb).unwrap();
+        assert!(decoded.width() <= VISION_THUMB_MAX_SIDE);
+        assert!(decoded.height() <= VISION_THUMB_MAX_SIDE);
     }
 }

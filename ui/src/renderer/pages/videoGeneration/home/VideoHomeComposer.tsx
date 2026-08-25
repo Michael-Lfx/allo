@@ -406,19 +406,17 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       openPreferences(true);
       return;
     }
-    if (
-      mode === 'agent' &&
-      draft.cameos.some((cameo) => cameo.file && !cameo.characterName.trim())
-    ) {
-      setUploadError(
-        t('videoGeneration.create.upload.cameoNameRequired', {
-          defaultValue: '请为每张角色参考图填写角色名。',
-        })
-      );
-      return;
-    }
+    const cameosWithLabels =
+      mode === 'agent'
+        ? draft.cameos.map((cameo, index) =>
+            cameo.file && !cameo.characterName.trim()
+              ? { ...cameo, characterName: `参考图${index + 1}` }
+              : cameo
+          )
+        : draft.cameos;
     const normalized = {
       ...draft,
+      cameos: cameosWithLabels,
       sourceText: draft.sourceText.trim(),
       creationPrompt: draft.creationPrompt.trim(),
       style:

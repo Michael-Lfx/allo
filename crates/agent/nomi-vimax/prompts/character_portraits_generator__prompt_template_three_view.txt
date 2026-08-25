@@ -1,7 +1,7 @@
 Generate a full-body three-view turnaround of character {identifier} based on the following description, with a pure white background. Use a wide 16:9 landscape canvas, not a vertical portrait canvas. The character should be centered in each panel, occupying the middle of the frame with enough empty space. Standing with arms relaxed at sides. Natural expression.
 Features: {features}
 Style: {style}
-人物安全约束：仅限原创虚构角色，**不得套用现实真人、明星长相**。后台渲染时，对人物面部添加蓝色拓扑网格，成片后自动隐藏网格。
+人物安全约束：一定要使用AI人脸，仅限原创虚构人物，**不得套用现实真人、明星长相**。后台渲染时，对人物面部添加蓝色拓扑网格，成片后自动隐藏网格。
 
 Output ONE wide 16:9 three-panel sheet of this SAME person (not three different people). Panels left → right:
 1) FRONT — gazing straight ahead, full body

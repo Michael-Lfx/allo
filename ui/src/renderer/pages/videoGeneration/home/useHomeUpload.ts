@@ -5,6 +5,7 @@ import { suggestCameoCharacterName } from '../cameoUtils';
 import {
   ACTION_CHARACTER_MAX_BYTES,
   ACTION_VIDEO_MAX_BYTES,
+  REFERENCE_IMAGE_MAX_BYTES,
   isSupportedImageFile,
   isSupportedTextFile,
   isSupportedVideoFile,
@@ -157,8 +158,19 @@ export function useHomeUpload({
       (file) => !isSupportedImageFile(file) && !isSupportedTextFile(file)
     );
     if (images.length > 0) {
-      if (usesCanvasReferences(mode)) addCanvasImages(images);
-      else addAgentImages(images);
+      const oversized = images.filter((file) => file.size > REFERENCE_IMAGE_MAX_BYTES);
+      const ok = images.filter((file) => file.size <= REFERENCE_IMAGE_MAX_BYTES);
+      if (oversized.length > 0) {
+        setUploadError(
+          t('videoGeneration.create.upload.imageTooLarge', {
+            defaultValue: '参考图不能超过 25 MB（剧照请先压缩后再上传）。',
+          })
+        );
+      }
+      if (ok.length > 0) {
+        if (usesCanvasReferences(mode)) addCanvasImages(ok);
+        else addAgentImages(ok);
+      }
     }
     if (documents[0]) {
       try {
