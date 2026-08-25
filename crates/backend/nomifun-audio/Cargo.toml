@@ -1,0 +1,52 @@
+[package]
+name = "nomifun-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Desktop meeting dual-track capture, VAD, and recorder abstractions"
+
+[features]
+default = ["aac-encode"]
+# Windows: AAC-LC via Media Foundation → .m4a. Elsewhere falls back to WAV.
+aac-encode = []
+silero-vad = ["dep:ort"]
+# Local sherpa-onnx ASR (native link). Auto/cloud STT work without this.
+local-stt = ["dep:sherpa-onnx"]
+# Offline speaker diarization / voiceprint via sherpa-onnx (same native dep as local-stt).
+diarization = ["dep:sherpa-onnx"]
+
+[dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true }
+cpal = { workspace = true }
+dashmap = { workspace = true }
+nomifun-api-types = { workspace = true }
+nomifun-auth = { workspace = true }
+nomifun-common = { workspace = true }
+nomifun-db = { workspace = true }
+nomifun-realtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+ort = { workspace = true, optional = true }
+sherpa-onnx = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true }
+serde_json = { workspace = true }

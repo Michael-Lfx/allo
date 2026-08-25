@@ -15,6 +15,7 @@ export { default as SiderOpenCapabilitiesEntry } from './SiderOpenCapabilitiesEn
 export { default as SiderCustomerServiceEntry } from './SiderCustomerServiceEntry';
 export { default as SiderRequirementsEntry } from './SiderRequirementsEntry';
 export { default as SiderScheduledEntry } from './SiderScheduledEntry';
+export { default as SiderMeetingEntry } from './SiderMeetingEntry';
 export { default as SiderSearchEntry } from './SiderSearchEntry';
 export { default as SiderSectionHeader } from './SiderSectionHeader';
 export { default as SiderWorkshopEntry } from './SiderWorkshopEntry';

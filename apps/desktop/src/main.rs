@@ -28,8 +28,6 @@ use nomifun_app::{
     DesktopKeepAlive, DesktopServer, StartupCleanupDisposition, WebUiAsset, WebUiAssetSource,
     WebUiStatus,
 };
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
@@ -97,6 +95,8 @@ fn resolve_main_window_geometry(
 mod memory_panel_window;
 mod companion_pointer;
 mod completion_toast;
+mod meeting_captions;
+mod meeting_tray;
 mod system_notify;
 mod taskbar_badge;
 #[cfg(windows)]
@@ -1172,7 +1172,7 @@ mod keep_awake_tests {
 /// 因此一律隐藏到托盘而非退出进程。
 /// Set true just before a real quit so the main window's CloseRequested handler stops
 /// intercepting; default close gestures leave it false and therefore hide to tray.
-struct QuitFlag(AtomicBool);
+pub(crate) struct QuitFlag(AtomicBool);
 
 const EXIT_PHASE_RUNNING: u8 = 0;
 const EXIT_PHASE_SHUTTING_DOWN: u8 = 1;
@@ -2329,56 +2329,10 @@ fn complete_main_thread_setup(
     }
     win_builder.build()?;
 
-    // System tray. Closing the main window HIDES it here instead of
-    // quitting (see the CloseRequested handler in on_window_event); the
-    // process truly exits only via the tray's "退出" item. Left-click the
-    // icon to bring the window back; right-click for the Show/Quit menu.
-    // Labels are English fallbacks, adopted from the renderer's locale via
-    // `set_tray_labels` once it mounts (the renderer always loads before
-    // the user can close, so the first menu open is already localized).
-    let tray_show = MenuItem::with_id(&app, "tray-show", "Show Flowy", true, None::<&str>)?;
-    let tray_quit = MenuItem::with_id(&app, "tray-quit", "Quit", true, None::<&str>)?;
-    let tray_menu = Menu::with_items(&app, &[&tray_show, &tray_quit])?;
-    if !app.manage(TrayMenuItems {
-        show: tray_show.clone(),
-        quit: tray_quit.clone(),
-    }) {
-        return Err(anyhow::anyhow!(
-            "tray menu state was already registered"
-        ));
-    }
-    let mut tray_builder = TrayIconBuilder::with_id("nomi-tray")
-        .tooltip("Flowy")
-        .menu(&tray_menu)
-        // Left-click is reserved for "surface the window"; the menu is
-        // right-click only (otherwise a left-click would both pop the menu
-        // AND try to show the window).
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "tray-show" => show_main_window(app),
-            "tray-quit" => {
-                // Arm the quit guard FIRST, then exit — the CloseRequested
-                // handler checks this flag and stops hiding-to-tray.
-                app.state::<QuitFlag>().0.store(true, Ordering::SeqCst);
-                app.exit(0);
-            }
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                show_main_window(tray.app_handle());
-            }
-        });
-    // Reuse the app's bundled window icon for the tray (no extra asset).
-    if let Some(icon) = app.default_window_icon() {
-        tray_builder = tray_builder.icon(icon.clone());
-    }
-    tray_builder.build(&app)?;
+    // System tray + Y1 meeting controls / global shortcuts. Closing the main
+    // window HIDES it (CloseRequested) instead of quitting; capture continues
+    // while the process lives. Process exits only via tray Quit.
+    meeting_tray::install_tray_and_shortcuts(&app)?;
 
     // Desktop-companion windows are NOT created here anymore. They are
     // multi-companion and dynamic: the main window's useCompanionWindowsSync hook
@@ -2399,16 +2353,6 @@ fn complete_main_thread_setup(
     Ok(())
 }
 
-/// 托盘菜单两项的句柄,留存以便前端在 UI 语言就绪后本地化标签(见 `set_tray_labels`)。
-/// 创建时用英文兜底,确保渲染层挂载前托盘已可用。
-/// Handles to the two tray menu items so the renderer can localize their labels once the
-/// UI locale is known; built with English fallbacks so the tray works before the UI mounts.
-struct TrayMenuItems {
-    show: MenuItem<tauri::Wry>,
-    quit: MenuItem<tauri::Wry>,
-}
-
-/// 把主窗口从托盘(或其他窗口背后)唤回:隐藏则显示、最小化则还原,并聚焦。
 /// Bring the main window back from the tray: show if hidden, restore if minimized, then focus.
 fn show_main_window(app: &tauri::AppHandle) {
     taskbar_badge::clear_badge(app);
@@ -2515,21 +2459,6 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             let _ = app;
         }
     }
-}
-
-/// 本地化原生托盘菜单。渲染层在挂载时及语言切换时调用,传入翻译后的 `tray.showWindow` /
-/// `tray.quit` 文案——Rust 侧无法自行解析 i18n,故创建时用英文兜底,随后采纳这些标签。
-/// Localize the native tray menu: the renderer hands over translated labels on mount and on
-/// language change (Rust can't resolve i18n itself, so it ships English fallbacks first).
-#[tauri::command]
-fn set_tray_labels(
-    show: String,
-    quit: String,
-    items: tauri::State<'_, TrayMenuItems>,
-) -> Result<(), String> {
-    items.show.set_text(show).map_err(|e| e.to_string())?;
-    items.quit.set_text(quit).map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 /// Reconcile the native desktop-companion window set (labels `companion-{companion_id}`) against
@@ -2769,6 +2698,7 @@ fn main() -> std::process::ExitCode {
             None::<Vec<&str>>,
         ))
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(meeting_tray::global_shortcut_plugin())
         .setup(move |app| {
             // Register AUMID before any toast can fire so Action Center brands
             // notifications as Flowy instead of Windows PowerShell (dev + install).
@@ -3098,6 +3028,7 @@ fn main() -> std::process::ExitCode {
         .manage(Arc::new(ExitCoordinator::default()))
         .manage(memory_panel_window::MemoryPanelWindowState::default())
         .manage(completion_toast::CompletionToastState::default())
+        .manage(meeting_captions::MeetingCaptionsState::default())
         .manage(taskbar_badge::TaskCompletionBadge::default())
         .manage(DownloadedUpdateState::default())
         .invoke_handler(tauri::generate_handler![
@@ -3115,7 +3046,7 @@ fn main() -> std::process::ExitCode {
             webui_start,
             webui_stop,
             set_keep_awake,
-            set_tray_labels,
+            meeting_tray::set_tray_labels,
             restart_application,
             system_notify::show_os_notification_cmd,
             completion_toast::activate_completion_toast,

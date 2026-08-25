@@ -21,6 +21,7 @@ import {
   SiderModelHubEntry,
   SiderRequirementsEntry,
   SiderScheduledEntry,
+  SiderMeetingEntry,
   SiderSectionHeader,
   SiderVideoGenerationGroup,
 } from './SiderNav';
@@ -141,6 +142,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     [navTo]
   );
   const handleScheduledClick = () => navTo('/scheduled');
+  const handleMeetingClick = () => navTo('/meeting');
   const handleKnowledgeClick = () => navTo('/knowledge');
   const handleNomiClick = () => navTo('/nomi');
   const handleLearningClick = () => navTo('/learn');
@@ -286,6 +288,13 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
               onClick={handleScheduledClick}
+            />
+            <SiderMeetingEntry
+              isMobile={isMobile}
+              isActive={pathname.startsWith('/meeting')}
+              collapsed={collapsed}
+              siderTooltipProps={siderTooltipProps}
+              onClick={handleMeetingClick}
             />
           </div>
           {/* 项目/工作路径树 — 独立滚动，一级菜单保持固定 */}

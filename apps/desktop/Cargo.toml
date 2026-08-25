@@ -39,6 +39,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-global-shortcut = "2"
 
 # 跨平台保持唤醒:阻止系统空闲休眠(macOS=IOPMAssertion via objc2-io-kit,
 # Windows=SetThreadExecutionState via windows crate)。仅阻止系统休眠,不阻止显示器息屏。

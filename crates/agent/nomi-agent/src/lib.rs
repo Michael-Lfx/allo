@@ -11,6 +11,7 @@ pub mod context;
 pub mod context_contributor;
 pub mod context_usage;
 pub mod cron_tools;
+pub mod meeting_tools;
 pub mod memory_tools;
 pub mod engine;
 pub mod goal;

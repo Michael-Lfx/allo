@@ -97,6 +97,8 @@ fn make_factory_with_summon(
         search_provider: nomi_agent::SearchProviderBinding::DefaultDdg,
         extract_coordinator: nomi_agent::ExtractCoordinatorBinding::LocalDefault,
         cron_sink_factory: None,
+        meeting_sink_factory: None,
+        meeting_listen_context_factory: None,
         gateway_mcp_config: None,
         open_mcp_config: None,
         computer_mcp_config: None,

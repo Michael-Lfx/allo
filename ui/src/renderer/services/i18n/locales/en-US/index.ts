@@ -18,6 +18,7 @@ import codex from './codex.json';
 import tools from './tools.json';
 import google from './google.json';
 import cron from './cron.json';
+import meeting from './meeting.json';
 import requirements from './requirements.json';
 import idmm from './idmm.json';
 import starOffice from './starOffice.json';
@@ -72,6 +73,7 @@ export default {
   tools,
   google,
   cron,
+  meeting,
   requirements,
   idmm,
   starOffice,

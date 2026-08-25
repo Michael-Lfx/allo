@@ -46,7 +46,15 @@ pub use models::{
     UpsertProviderConnectionParams,
 };
 pub use models::GoalRow;
+pub use models::{
+    MeetingSegmentRow, MeetingSessionRow, MeetingSpeakerRow, MeetingVoiceprintRow,
+};
 pub use repository::{IGoalRepository, SqliteGoalRepository, UpsertGoalParams};
+pub use repository::{
+    IMeetingRepository, InsertMeetingSessionParams, SqliteMeetingRepository,
+    UpdateMeetingSessionParams, UpsertMeetingSegmentParams, UpsertMeetingSpeakerParams,
+    UpsertMeetingVoiceprintParams,
+};
 pub use repository::channel::UpdatePluginStatusParams;
 pub use repository::customer_service::{
     CsDialogueKey, ICustomerServiceRepository, UpdateCsAgentParams,

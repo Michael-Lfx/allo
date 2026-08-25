@@ -1214,8 +1214,20 @@ export const application = {
   applyKeepAwake: shellProvider<void, { enabled: boolean }>(({ enabled }) => tauriSetKeepAwake(enabled), undefined),
   // Localize the native system-tray menu. Desktop-only OS effect (no-op on web),
   // mirroring applyKeepAwake — the renderer calls it on mount / language change.
-  setTrayLabels: shellProvider<void, { show: string; quit: string }>(
-    ({ show, quit }) => tauriSetTrayLabels(show, quit),
+  setTrayLabels: shellProvider<
+    void,
+    {
+      show: string;
+      quit: string;
+      start?: string;
+      pause?: string;
+      resume?: string;
+      stop?: string;
+      open?: string;
+    }
+  >(
+    ({ show, quit, start, pause, resume, stop, open }) =>
+      tauriSetTrayLabels(show, quit, { start, pause, resume, stop, open }),
     undefined
   ),
   getStartOnBootStatus: shellProvider<IBridgeResponse<IStartOnBootStatus>, void>(
@@ -7808,3 +7820,203 @@ export const cloudIm = {
     '/api/system/support-logs/pack'
   ),
 };
+
+// ---------------------------------------------------------------------------
+// Meeting — routed to /api/meetings* ; WS `meeting:event`
+// ---------------------------------------------------------------------------
+
+export type MeetingSessionStatus =
+  | 'created'
+  | 'recording'
+  | 'paused'
+  | 'stopping'
+  | 'stopped'
+  | 'failed';
+
+export type SttBackendChoice = 'auto' | 'local_sherpa' | 'cloud_model_invoke';
+
+export type MeetingAudioChannel = 'mic' | 'loopback';
+
+export interface MeetingSession {
+  session_id: string;
+  user_id: string;
+  title: string;
+  status: MeetingSessionStatus;
+  bound_conversation_id: string | null;
+  data_dir: string;
+  mic_available: boolean;
+  loopback_available: boolean;
+  stt_backend: SttBackendChoice;
+  started_at_ms: number | null;
+  ended_at_ms: number | null;
+  notes_status: MeetingNotesStatus;
+  notes: MeetingNotes | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export type MeetingNotesStatus = 'none' | 'generating' | 'ready' | 'failed';
+
+export type MeetingNotesSource = 'llm' | 'template';
+
+export interface MeetingNoteTodo {
+  title: string;
+  detail: string;
+  assignee: string | null;
+}
+
+export interface MeetingSpeakerHighlight {
+  speaker: string;
+  highlight: string;
+}
+
+export interface MeetingNotes {
+  summary: string;
+  decisions: string[];
+  todos: MeetingNoteTodo[];
+  risks: string[];
+  speaker_highlights: MeetingSpeakerHighlight[];
+  source: MeetingNotesSource;
+  generated_at_ms: number;
+}
+
+export interface MeetingNotesView {
+  status: MeetingNotesStatus;
+  notes: MeetingNotes | null;
+}
+
+export interface GenerateMeetingNotesResult {
+  session: MeetingSession;
+  notes: MeetingNotes;
+  posted_to_conversation: boolean;
+  created_requirement_ids: string[];
+}
+
+export interface MeetingListenStatus {
+  enabled: boolean;
+  session_id: string;
+  conversation_id: string | null;
+  window_segment_count: number;
+  rolling_summary: string | null;
+  last_compacted_at_ms: number | null;
+}
+
+export interface MeetingSegment {
+  segment_id: string;
+  session_id: string;
+  channel: MeetingAudioChannel | null;
+  speaker_id: string | null;
+  speaker_label: string;
+  text: string;
+  is_partial: boolean;
+  is_manual_edit: boolean;
+  start_ms: number;
+  end_ms: number;
+}
+
+export type MeetingEvent =
+  | { type: 'session_updated'; session: MeetingSession }
+  | { type: 'segment_upserted'; segment: MeetingSegment }
+  | {
+      type: 'capability_degraded';
+      session_id: string;
+      mic_available: boolean;
+      loopback_available: boolean;
+      message: string;
+    }
+  | { type: 'error'; session_id: string; message: string };
+
+export interface MeetingDevice {
+  id: string;
+  name: string;
+  kind: string;
+  is_default: boolean;
+}
+
+export interface MeetingDetectedApps {
+  app: string | null;
+}
+
+export interface MeetingVoiceprint {
+  voiceprint_id: string;
+  display_name: string;
+  embedding_dims: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface CreateMeetingParams {
+  title?: string;
+  bound_conversation_id?: string | null;
+  stt_backend?: SttBackendChoice;
+}
+
+export const meeting = {
+  listSessions: httpGet<MeetingSession[], void>('/api/meetings'),
+  createSession: httpPost<MeetingSession, CreateMeetingParams>('/api/meetings', (p) => ({
+    title: p.title,
+    bound_conversation_id: p.bound_conversation_id,
+    stt_backend: p.stt_backend,
+  })),
+  getSession: httpGet<MeetingSession, { session_id: string }>((p) => `/api/meetings/${p.session_id}`),
+  start: httpPost<MeetingSession, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/start`,
+    () => ({})
+  ),
+  pause: httpPost<MeetingSession, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/pause`,
+    () => ({})
+  ),
+  resume: httpPost<MeetingSession, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/resume`,
+    () => ({})
+  ),
+  stop: httpPost<MeetingSession, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/stop`,
+    () => ({})
+  ),
+  bind: httpPost<MeetingSession, { session_id: string; conversation_id: string | null }>(
+    (p) => `/api/meetings/${p.session_id}/bind`,
+    (p) => ({ conversation_id: p.conversation_id })
+  ),
+  listSegments: httpGet<MeetingSegment[], { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/segments`
+  ),
+  editSegment: httpPatch<MeetingSegment, { session_id: string; segment_id: string; text: string }>(
+    (p) => `/api/meetings/${p.session_id}/segments/${p.segment_id}`,
+    (p) => ({ text: p.text })
+  ),
+  getNotes: httpGet<MeetingNotesView, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/notes`
+  ),
+  generateNotes: httpPost<GenerateMeetingNotesResult, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/notes/generate`,
+    () => ({})
+  ),
+  listenStart: httpPost<
+    MeetingListenStatus,
+    { session_id: string; conversation_id?: string | null }
+  >(
+    (p) => `/api/meetings/${p.session_id}/listen/start`,
+    (p) => ({ conversation_id: p.conversation_id ?? null })
+  ),
+  listenStop: httpPost<MeetingListenStatus, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/listen/stop`,
+    () => ({})
+  ),
+  listenStatus: httpGet<MeetingListenStatus, { session_id: string }>(
+    (p) => `/api/meetings/${p.session_id}/listen/status`
+  ),
+  listDevices: httpGet<MeetingDevice[], void>('/api/meetings/devices'),
+  detectedApps: httpGet<MeetingDetectedApps, void>('/api/meetings/detected-apps'),
+  listVoiceprints: httpGet<MeetingVoiceprint[], void>('/api/meetings/voiceprints'),
+  enrollVoiceprint: httpPost<MeetingVoiceprint, { display_name: string }>(
+    '/api/meetings/voiceprints',
+    (p) => ({ display_name: p.display_name })
+  ),
+  deleteVoiceprint: httpDelete<void, { voiceprint_id: string }>(
+    (p) => `/api/meetings/voiceprints/${p.voiceprint_id}`
+  ),
+  onEvent: wsEmitter<MeetingEvent>('meeting:event'),
+};
+

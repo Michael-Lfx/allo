@@ -28,6 +28,7 @@ const LoginPage = React.lazy(() => import('@renderer/pages/login'));
 const ComponentsShowcase = React.lazy(() => import('@renderer/pages/TestShowcase'));
 const ScheduledTasksPage = React.lazy(() => import('@renderer/pages/cron/ScheduledTasksPage'));
 const TaskDetailPage = React.lazy(() => import('@renderer/pages/cron/ScheduledTasksPage/TaskDetailPage'));
+const MeetingPage = React.lazy(() => import('@renderer/pages/meeting'));
 const RequirementsLayout = React.lazy(() => import('@renderer/pages/requirements/RequirementsLayout'));
 const WorkspacePage = React.lazy(() => import('@renderer/pages/requirements/WorkspacePage'));
 const ExtensionsPage = React.lazy(() => import('@renderer/pages/requirements/ExtensionsPage'));
@@ -51,6 +52,7 @@ const VideoCanvasProjectPage = React.lazy(loadVideoCanvasProjectPage);
 const CompanionPage = React.lazy(() => import('@renderer/pages/companion'));
 const MemoryPanelPage = React.lazy(() => import('@renderer/pages/memoryPanel'));
 const CompletionToastPage = React.lazy(() => import('@renderer/pages/completionToast'));
+const MeetingCaptionsPage = React.lazy(() => import('@renderer/pages/meetingCaptions'));
 const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
 const LearningSettings = React.lazy(() => import('@renderer/pages/settings/LearningSettings'));
 const InsightsSettings = React.lazy(() => import('@renderer/pages/settings/InsightsSettings'));
@@ -176,6 +178,7 @@ const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) =
   return (
     <>
       <CompanionNavigateListener />
+      <MeetingOpenListener />
       <CompanionWindowsSyncMount />
       <TrayLabelsMount />
       {React.cloneElement(layout)}
@@ -212,6 +215,33 @@ const CompanionNavigateListener: React.FC = () => {
         if (typeof event.payload === 'string' && event.payload.startsWith('/')) {
           void navigate(event.payload);
         }
+      }).then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+    );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [navigate]);
+  return null;
+};
+
+// Tray / global-shortcut "Open Meeting Page" → `/meeting`.
+const MeetingOpenListener: React.FC = () => {
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen<string>('meeting-open', (event) => {
+        const path =
+          typeof event.payload === 'string' && event.payload.startsWith('/')
+            ? event.payload
+            : '/meeting';
+        void navigate(path);
       }).then((fn) => {
         if (disposed) fn();
         else unlisten = fn;
@@ -267,6 +297,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
         <Route path='/companion' element={withRouteFallback(CompanionPage, { fullscreen: true })} />
         <Route path='/nomi-memory-panel' element={withRouteFallback(MemoryPanelPage, { fullscreen: true })} />
         <Route path='/completion-toast' element={withRouteFallback(CompletionToastPage, { fullscreen: true })} />
+        <Route path='/meeting-captions' element={withRouteFallback(MeetingCaptionsPage, { fullscreen: true })} />
         {/* Isolated UI catalog — public so the first-cut preview works without login. */}
         <Route path='/test/beautiful-ui' element={withRouteFallback(BeautifulUiPreviewPage, { fullscreen: true })} />
         <Route path='/test/color-lab' element={withRouteFallback(ColorLabPage, { fullscreen: true })} />
@@ -332,6 +363,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/test/commercial-slice' element={withRouteFallback(CommercialSlicePage)} />
           <Route path='/scheduled' element={withRouteFallback(ScheduledTasksPage)} />
           <Route path='/scheduled/:cron_job_id' element={withRouteFallback(TaskDetailPage)} />
+          <Route path='/meeting' element={withRouteFallback(MeetingPage)} />
           <Route path='/billing' element={withRouteFallback(BillingPage)} />
           {/* Requirements platform — nested shell (ContentSider persists across sections) */}
           <Route path='/requirements' element={withRouteFallback(RequirementsLayout)}>

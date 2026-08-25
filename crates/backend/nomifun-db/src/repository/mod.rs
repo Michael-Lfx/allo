@@ -15,6 +15,7 @@ pub mod idmm_intervention;
 pub mod companion_token;
 pub mod knowledge;
 pub mod mcp_server;
+pub mod meeting;
 pub mod oauth_token;
 pub mod provider;
 pub mod provider_connection;
@@ -41,6 +42,7 @@ mod sqlite_idmm_intervention;
 mod sqlite_companion_token;
 mod sqlite_knowledge;
 mod sqlite_mcp_server;
+mod sqlite_meeting;
 mod sqlite_oauth_token;
 mod sqlite_provider;
 mod sqlite_provider_connection;
@@ -90,6 +92,10 @@ pub use idmm_intervention::{
 pub use companion_token::ICompanionTokenRepository;
 pub use knowledge::IKnowledgeRepository;
 pub use mcp_server::IMcpServerRepository;
+pub use meeting::{
+    IMeetingRepository, InsertMeetingSessionParams, UpdateMeetingSessionParams,
+    UpsertMeetingSegmentParams, UpsertMeetingSpeakerParams, UpsertMeetingVoiceprintParams,
+};
 pub use oauth_token::IOAuthTokenRepository;
 pub use provider::IProviderRepository;
 pub use provider_connection::IProviderConnectionRepository;
@@ -118,6 +124,7 @@ pub use sqlite_idmm_intervention::SqliteIdmmInterventionRepository;
 pub use sqlite_companion_token::SqliteCompanionTokenRepository;
 pub use sqlite_knowledge::SqliteKnowledgeRepository;
 pub use sqlite_mcp_server::SqliteMcpServerRepository;
+pub use sqlite_meeting::SqliteMeetingRepository;
 pub use sqlite_oauth_token::SqliteOAuthTokenRepository;
 pub use sqlite_provider::SqliteProviderRepository;
 pub use sqlite_provider_connection::SqliteProviderConnectionRepository;

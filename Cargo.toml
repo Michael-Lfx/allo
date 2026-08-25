@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "apps/web", "apps/desktop"]
+members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/web", "apps/desktop"]
 
 [workspace.package]
 version = "1.0.5"
@@ -53,6 +53,9 @@ nomifun-vimax = { path = "crates/backend/nomifun-vimax" }
 nomifun-canvas = { path = "crates/backend/nomifun-canvas" }
 nomifun-browser-platform = { path = "crates/backend/nomifun-browser-platform" }
 nomifun-robot = { path = "crates/backend/nomifun-robot" }
+nomifun-audio = { path = "crates/backend/nomifun-audio" }
+sherpa-onnx = { path = "crates/vendor/sherpa-onnx", default-features = false, features = ["static"] }
+sherpa-onnx-sys = { path = "crates/vendor/sherpa-onnx-sys", default-features = false, features = ["static"] }
 nomifun-ssh = { path = "crates/backend/nomifun-ssh" }
 
 # --- Internal crates: shared ---
@@ -126,6 +129,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "regis
 # libopus and nothing extra has to be shipped beside the binary. The safe
 # wrappers live in `nomifun-robot/src/audio/opus.rs` and are the only FFI here.
 opusic-sys = "0.7.5"
+
+# Desktop mic capture (WASAPI/CoreAudio/ALSA via cpal). Used by nomifun-audio.
+cpal = "0.15"
 
 # Container decode for TTS audio that does not come back as raw PCM. Features are
 # exactly the formats providers actually return; `all-codecs` would pull video

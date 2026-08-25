@@ -835,6 +835,18 @@ impl AgentEngine {
         &mut self.tools
     }
 
+    /// Grant per-tool approval bypass after engine construction (host-injected
+    /// tools registered via `register_*_sink`). Updates both the engine
+    /// allow-list and the confirmer.
+    pub fn allow_named_tools(&mut self, names: &[&str]) {
+        for name in names {
+            if !self.allow_list.iter().any(|existing| existing == *name) {
+                self.allow_list.push((*name).to_owned());
+            }
+            self.confirmer.lock().unwrap().add_to_allow_list(name);
+        }
+    }
+
     /// Enable goal-driven continuation (opt-in). Registers the `update_goal`
     /// tool and installs a `GoalRuntime` that injects a continuation prompt at
     /// each natural-termination point until the goal is proven complete /

@@ -1147,6 +1147,15 @@ pub struct AppServices {
     /// Process-level SSH connection pool: host book + live links. Shared by the
     /// agent factory, host-book routes, and conversation-delete cascade.
     pub ssh_pool: nomifun_ssh::SshConnectionPool,
+    /// Desktop meeting sessions (L1) + live capture runtime (E1 start pipeline).
+    pub meeting_service: nomifun_audio::MeetingSessionService,
+    pub meeting_runtime: Arc<nomifun_audio::MeetingRuntime>,
+    /// Agent listen windows (P4 A2) shared by HTTP + meeting tools.
+    pub meeting_listen: Arc<nomifun_audio::MeetingListenService>,
+    /// Fan-out `meeting:event` → `UserEventSink` (retained so Drop aborts it).
+    pub(crate) _meeting_event_fanout: tokio::task::JoinHandle<()>,
+    /// Feed `SegmentUpserted` into listen windows (retained so Drop aborts it).
+    pub(crate) _meeting_listen_fanout: tokio::task::JoinHandle<()>,
     /// LAN robot gateway: device registry, live status, tool registry, loopback
     /// MCP front and the speech stack. `None` when the registry could not be
     /// loaded — every robot entry point is then simply absent, which is a better
@@ -2859,6 +2868,22 @@ impl AppServices {
             )
         };
 
+        // Meeting audio (L1 + E1): SQLite-backed session service, live capture
+        // runtime, and in-process event fan-out onto the owner's WS channel.
+        let meeting_repo = Arc::new(nomifun_db::SqliteMeetingRepository::new(
+            database.pool().clone(),
+        )) as Arc<dyn nomifun_db::IMeetingRepository>;
+        let meeting_service = nomifun_audio::MeetingSessionService::new(meeting_repo);
+        let meeting_runtime =
+            Arc::new(nomifun_audio::MeetingRuntime::new(meeting_service.clone()));
+        let meeting_listen = Arc::new(nomifun_audio::MeetingListenService::new());
+        let _meeting_event_fanout = nomifun_audio::spawn_meeting_event_bridge(
+            meeting_service.clone(),
+            event_bus.clone(),
+        );
+        let _meeting_listen_fanout =
+            meeting_listen.spawn_event_loop(meeting_service.subscribe());
+
         // LAN robot gateway. Everything that does not need a
         // `ConversationService` is built here so the device face and the OTA
         // response are live the moment a listener comes up; the accept loop is
@@ -2954,6 +2979,49 @@ impl AppServices {
                     conversation_id.to_string(),
                 )
             })),
+            // G3 meeting tools: same MeetingSession as HTTP / tray. Capture start
+            // is Desktop-only (`capture_allowed`); headless/web still get list/get/
+            // search but meeting.start rejects.
+            meeting_sink_factory: {
+                let meeting_service = meeting_service.clone();
+                let meeting_runtime = meeting_runtime.clone();
+                let meeting_listen = meeting_listen.clone();
+                let meetings_root = data_dir.join("meetings");
+                let capture_allowed = matches!(
+                    capabilities.runtime_capabilities.runtime,
+                    nomifun_api_types::RuntimeKind::Desktop
+                );
+                Some(Arc::new(move |user_id: &str, conversation_id: &str| {
+                    nomifun_ai_agent::LiveMeetingSink::new(
+                        meeting_service.clone(),
+                        meeting_runtime.clone(),
+                        meeting_listen.clone(),
+                        meetings_root.clone(),
+                        user_id,
+                        conversation_id,
+                        capture_allowed,
+                    )
+                    .into_arc()
+                })
+                    as Arc<
+                        dyn Fn(&str, &str) -> Arc<dyn nomifun_ai_agent::MeetingSink> + Send + Sync,
+                    >)
+            },
+            meeting_listen_context_factory: {
+                let meeting_listen = meeting_listen.clone();
+                Some(Arc::new(move |conversation_id: &str| {
+                    nomifun_ai_agent::LiveMeetingListenContextSink::new(
+                        meeting_listen.clone(),
+                        conversation_id,
+                    )
+                    .into_arc()
+                })
+                    as Arc<
+                        dyn Fn(&str) -> Arc<dyn nomifun_ai_agent::MeetingListenContextSink>
+                            + Send
+                            + Sync,
+                    >)
+            },
             companion_sink: Some(companion_service.memory_sink()),
             // Companion self-evolved skill auto-use (`companion_skill` tool + per-turn
             // when_to_use injection). Only registered for companion sessions (factory gates).
@@ -3109,6 +3177,11 @@ impl AppServices {
             system_notifier_slot,
             terminal_service,
             ssh_pool,
+            meeting_service,
+            meeting_runtime,
+            meeting_listen,
+            _meeting_event_fanout,
+            _meeting_listen_fanout,
             robot,
             acp_session_sync: acp_agent_service,
             jwt_secret_raw: secret,

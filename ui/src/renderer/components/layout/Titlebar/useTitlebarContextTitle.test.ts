@@ -18,6 +18,7 @@ describe('titlebar context title', () => {
     expect(resolveTitlebarStaticTitleKey('/learn/abc')).toBe('common.titlebar.learning');
     expect(resolveTitlebarStaticTitleKey('/eval')).toBe('common.titlebar.eval');
     expect(resolveTitlebarStaticTitleKey('/scheduled/abc')).toBe('common.titlebar.scheduled');
+    expect(resolveTitlebarStaticTitleKey('/meeting')).toBe('common.titlebar.meeting');
     expect(resolveTitlebarStaticTitleKey('/requirements/extensions')).toBe('common.titlebar.workspace');
     expect(resolveTitlebarStaticTitleKey('/models')).toBe('common.titlebar.models');
     expect(resolveTitlebarStaticTitleKey('/mcp')).toBe('common.titlebar.capabilityHub');

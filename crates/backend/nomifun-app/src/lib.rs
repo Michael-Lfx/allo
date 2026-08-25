@@ -18,6 +18,7 @@ pub mod browser_resource;
 mod browser_inventory_events;
 mod provider_deletion;
 mod robot_wiring;
+mod meeting_notes_wiring;
 mod router;
 mod services;
 mod workshop_bridge;
@@ -30,6 +31,7 @@ pub mod channel;
 pub mod cli;
 pub mod commands;
 pub mod desktop;
+pub mod meeting_tray;
 // Public because a non-desktop host (`nomifun-web`) has to publish its own
 // LAN-reachable address to the robot endpoint advertiser.
 pub mod lan_endpoint;
@@ -39,6 +41,7 @@ pub use desktop::{
     DesktopKeepAlive, DesktopServer, DesktopStartError, LanRestoreOutcome,
     StartupCleanupDisposition, WebUiAsset, WebUiAssetSource, WebUiStatus,
 };
+pub use meeting_tray::{MeetingTrayPhase, MeetingTrayStatus};
 pub use nomifun_auth::AuthPolicy;
 // Re-export so the desktop shell can implement / attach without depending on
 // the notify crate directly beyond what AppServices already exposes.
