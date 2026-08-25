@@ -27,6 +27,7 @@ const LoginPage = React.lazy(() => import('@renderer/pages/login'));
 const ComponentsShowcase = React.lazy(() => import('@renderer/pages/TestShowcase'));
 const ScheduledTasksPage = React.lazy(() => import('@renderer/pages/cron/ScheduledTasksPage'));
 const TaskDetailPage = React.lazy(() => import('@renderer/pages/cron/ScheduledTasksPage/TaskDetailPage'));
+const MeetingPage = React.lazy(() => import('@renderer/pages/meeting'));
 const RequirementsLayout = React.lazy(() => import('@renderer/pages/requirements/RequirementsLayout'));
 const WorkspacePage = React.lazy(() => import('@renderer/pages/requirements/WorkspacePage'));
 const ExtensionsPage = React.lazy(() => import('@renderer/pages/requirements/ExtensionsPage'));
@@ -175,6 +176,7 @@ const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) =
   return (
     <>
       <CompanionNavigateListener />
+      <MeetingOpenListener />
       <CompanionWindowsSyncMount />
       <TrayLabelsMount />
       {React.cloneElement(layout)}
@@ -211,6 +213,33 @@ const CompanionNavigateListener: React.FC = () => {
         if (typeof event.payload === 'string' && event.payload.startsWith('/')) {
           void navigate(event.payload);
         }
+      }).then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+    );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [navigate]);
+  return null;
+};
+
+// Tray / global-shortcut "Open Meeting Page" → `/meeting`.
+const MeetingOpenListener: React.FC = () => {
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen<string>('meeting-open', (event) => {
+        const path =
+          typeof event.payload === 'string' && event.payload.startsWith('/')
+            ? event.payload
+            : '/meeting';
+        void navigate(path);
       }).then((fn) => {
         if (disposed) fn();
         else unlisten = fn;
@@ -331,6 +360,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/test/commercial-slice' element={withRouteFallback(CommercialSlicePage)} />
           <Route path='/scheduled' element={withRouteFallback(ScheduledTasksPage)} />
           <Route path='/scheduled/:cron_job_id' element={withRouteFallback(TaskDetailPage)} />
+          <Route path='/meeting' element={withRouteFallback(MeetingPage)} />
           <Route path='/billing' element={withRouteFallback(BillingPage)} />
           {/* Requirements platform — nested shell (ContentSider persists across sections) */}
           <Route path='/requirements' element={withRouteFallback(RequirementsLayout)}>

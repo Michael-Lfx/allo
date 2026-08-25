@@ -1,0 +1,84 @@
+{
+  "title": "Meeting Audio",
+  "description": "Record mic and system loopback, transcribe live, and organize a speaker timeline.",
+  "newSession": "New meeting",
+  "sessionTitle": "Title",
+  "sessionTitlePlaceholder": "e.g. Weekly sync",
+  "sttBackend": "STT backend",
+  "stt": {
+    "auto": "Auto",
+    "local_sherpa": "Local Sherpa",
+    "cloud_model_invoke": "Cloud model"
+  },
+  "bindConversation": "Bind conversation ID",
+  "bindConversationPlaceholder": "Optional conversation UUID",
+  "bind": "Bind",
+  "unbind": "Unbind",
+  "create": "Create",
+  "createSuccess": "Meeting created",
+  "start": "Start",
+  "pause": "Pause",
+  "resume": "Resume",
+  "stop": "Stop",
+  "startSuccess": "Recording started",
+  "pauseSuccess": "Paused",
+  "resumeSuccess": "Resumed",
+  "stopSuccess": "Stopped",
+  "bindSuccess": "Conversation bound",
+  "noSessions": "No meetings yet",
+  "selectSession": "Select a meeting to view the timeline and controls",
+  "sessions": "Meetings",
+  "timeline": "Transcript timeline",
+  "noSegments": "No segments yet",
+  "partial": "Partial",
+  "channel": {
+    "mic": "Mic",
+    "loopback": "System audio",
+    "unknown": "Unknown"
+  },
+  "status": {
+    "created": "Ready",
+    "recording": "Recording",
+    "paused": "Paused",
+    "stopping": "Stopping",
+    "stopped": "Stopped",
+    "failed": "Failed"
+  },
+  "capability": {
+    "banner": "Capture degraded: {{message}}",
+    "micMissing": "Microphone unavailable",
+    "loopbackMissing": "System loopback unavailable",
+    "bothMissing": "Microphone and loopback unavailable"
+  },
+  "devices": {
+    "title": "Audio devices",
+    "empty": "No devices detected",
+    "input": "Input",
+    "output": "Output",
+    "default": "Default"
+  },
+  "detectedApps": {
+    "tip": "Detected meeting app: {{app}}",
+    "none": "No common meeting apps detected"
+  },
+  "voiceprint": {
+    "title": "Voiceprint (optional)",
+    "description": "Optionally enroll your voiceprint before recording for speaker ID. You can skip.",
+    "name": "Display name",
+    "namePlaceholder": "e.g. Me",
+    "enroll": "Enroll",
+    "enrollSuccess": "Voiceprint enrolled",
+    "skip": "Skip and start",
+    "start": "Start after enroll",
+    "list": "Enrolled voiceprints",
+    "empty": "No voiceprints yet",
+    "delete": "Delete"
+  },
+  "error": {
+    "generic": "Action failed",
+    "event": "Meeting event: {{message}}"
+  },
+  "speaker": "Speaker",
+  "time": "Time",
+  "text": "Text"
+}
