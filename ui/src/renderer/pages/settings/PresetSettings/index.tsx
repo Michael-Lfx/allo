@@ -18,7 +18,10 @@
  * but every editing control (including Save) is disabled.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useLocation, useSearchParams } from 'react-router-dom';
+import { Button } from '@arco-design/web-react';
+import { Plus } from '@icon-park/react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import coworkSvg from '@/renderer/assets/icons/cowork.svg';
 import { useDetectedAgents, usePresetEditor, usePresetList, usePresetTags } from '@/renderer/hooks/preset';
@@ -108,6 +111,7 @@ const PresetHubBody: React.FC<PresetHubBodyProps> = ({
 };
 
 const PresetSettings: React.FC = () => {
+  const { t } = useTranslation();
   const [message, messageContext] = useArcoMessage({ maxCount: 10 });
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -193,7 +197,22 @@ const PresetSettings: React.FC = () => {
   }, [presets, editor, navigationState]);
 
   return (
-    <CapabilityHubShell hub='presets' installedCount={presets.length}>
+    <CapabilityHubShell
+      hub='presets'
+      installedCount={presets.length}
+      extraActions={
+        <Button
+          size='small'
+          type='outline'
+          className='flowy-icon-text-btn capability-hub-action-btn'
+          icon={<Plus size={14} fill='currentColor' />}
+          onClick={() => void editor.handleCreate()}
+          data-testid='btn-create-preset'
+        >
+          {t('settings.createPreset', { defaultValue: 'Create Preset' })}
+        </Button>
+      }
+    >
       {messageContext}
       <PresetHubBody
         presets={presets}

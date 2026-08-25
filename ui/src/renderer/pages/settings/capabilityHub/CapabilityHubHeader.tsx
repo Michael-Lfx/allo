@@ -67,73 +67,76 @@ const CapabilityHubHeader: React.FC<CapabilityHubHeaderProps> = ({
 
   return (
     <div className='capability-hub-header' data-testid='capability-hub-header'>
-      <div className='capability-hub-tabs' role='tablist' aria-label={t('settings.groupCapabilityExtensions')}>
-        {CAPABILITY_HUB_IDS.map((id) => {
-          const Icon = TAB_ICONS[id];
-          const selected = id === hub;
-          return (
-            <button
-              key={id}
-              type='button'
-              role='tab'
-              aria-selected={selected}
-              data-testid={`capability-hub-tab-${id}`}
-              className={classNames('capability-hub-tab', { 'capability-hub-tab--active': selected })}
-              onClick={() => onHubChange(id)}
-            >
-              <Icon theme='outline' size={16} fill='currentColor' />
-              <span>{t(TAB_LABEL_KEYS[id], { defaultValue: TAB_LABEL_DEFAULTS[id] })}</span>
-            </button>
-          );
-        })}
+      <div className='capability-hub-tabs-row'>
+        <div className='capability-hub-tabs' role='tablist' aria-label={t('settings.groupCapabilityExtensions')}>
+          {CAPABILITY_HUB_IDS.map((id) => {
+            const Icon = TAB_ICONS[id];
+            const selected = id === hub;
+            return (
+              <button
+                key={id}
+                type='button'
+                role='tab'
+                aria-selected={selected}
+                data-testid={`capability-hub-tab-${id}`}
+                className={classNames('capability-hub-tab', { 'capability-hub-tab--active': selected })}
+                onClick={() => onHubChange(id)}
+              >
+                <Icon theme='outline' size={16} fill='currentColor' />
+                <span>{t(TAB_LABEL_KEYS[id], { defaultValue: TAB_LABEL_DEFAULTS[id] })}</span>
+              </button>
+            );
+          })}
+        </div>
+        {extraActions ? <div className='capability-hub-actions'>{extraActions}</div> : null}
       </div>
 
       <div className='capability-hub-toolbar'>
-        <NomiInput
-          allowClear
-          height={40}
-          value={searchQuery}
-          onChange={onSearchQueryChange}
-          data-testid='capability-hub-search'
-          className='capability-hub-search'
-          placeholder={t(SEARCH_PLACEHOLDER_KEYS[hub], { defaultValue: SEARCH_PLACEHOLDER_DEFAULTS[hub] })}
-          prefix={<Search size={16} fill='currentColor' />}
-        />
+        <div className='capability-hub-toolbar-pair'>
+          <NomiInput
+            allowClear
+            height={36}
+            value={searchQuery}
+            onChange={onSearchQueryChange}
+            data-testid='capability-hub-search'
+            className='capability-hub-search w-full'
+            placeholder={t(SEARCH_PLACEHOLDER_KEYS[hub], { defaultValue: SEARCH_PLACEHOLDER_DEFAULTS[hub] })}
+            prefix={<Search size={16} fill='currentColor' />}
+          />
 
-        <div className='capability-hub-segment' role='group' aria-label={t('settings.capabilityHub.navLabel')}>
-          <button
-            type='button'
-            className={classNames('capability-hub-segment-btn', {
-              'capability-hub-segment-btn--active': view === 'market',
-            })}
-            aria-pressed={view === 'market'}
-            onClick={() => {
-              if (view === 'installed') onToggleInstalled();
-            }}
-          >
-            {t('settings.capabilityHub.discover', { defaultValue: 'Discover' })}
-          </button>
-          <button
-            type='button'
-            className={classNames('capability-hub-segment-btn', {
-              'capability-hub-segment-btn--active': view === 'installed',
-            })}
-            aria-pressed={view === 'installed'}
-            data-testid='capability-hub-installed'
-            onClick={() => {
-              if (view === 'market') onToggleInstalled();
-            }}
-          >
-            <span>{t('settings.capabilityHub.installed', { defaultValue: 'Installed' })}</span>
-            {typeof installedCount === 'number' && (
-              <span className='capability-hub-count' data-testid='capability-hub-installed-count'>
-                {installedCount}
-              </span>
-            )}
-          </button>
+          <div className='capability-hub-segment' role='group' aria-label={t('settings.capabilityHub.navLabel')}>
+            <button
+              type='button'
+              className={classNames('capability-hub-segment-btn', {
+                'capability-hub-segment-btn--active': view === 'market',
+              })}
+              aria-pressed={view === 'market'}
+              onClick={() => {
+                if (view === 'installed') onToggleInstalled();
+              }}
+            >
+              {t('settings.capabilityHub.discover', { defaultValue: 'Discover' })}
+            </button>
+            <button
+              type='button'
+              className={classNames('capability-hub-segment-btn', {
+                'capability-hub-segment-btn--active': view === 'installed',
+              })}
+              aria-pressed={view === 'installed'}
+              data-testid='capability-hub-installed'
+              onClick={() => {
+                if (view === 'market') onToggleInstalled();
+              }}
+            >
+              <span>{t('settings.capabilityHub.installed', { defaultValue: 'Installed' })}</span>
+              {typeof installedCount === 'number' && (
+                <span className='capability-hub-count' data-testid='capability-hub-installed-count'>
+                  {installedCount}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
-
-        {extraActions ? <div className='capability-hub-actions'>{extraActions}</div> : null}
       </div>
     </div>
   );
