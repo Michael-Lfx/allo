@@ -109,7 +109,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     defaultValue: '视频生成',
   });
   const agentModeLabel = t('videoGeneration.mode.agentLabel', {
-    defaultValue: 'Agent 模式',
+    defaultValue: '短剧模式',
   });
   const creationModeLabel = t('videoGeneration.mode.creationLabel', {
     defaultValue: '创作模式',

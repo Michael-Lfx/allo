@@ -125,15 +125,18 @@ async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAud
 async function prepareBackendImageReference(image: ReferenceImage) {
     if (resourceIdFromStorageKey(image.storageKey)) return backendImageReference(image, { storageKey: image.storageKey });
     const sourceUrl = image.url || image.dataUrl;
-    if (/^https?:\/\//i.test(sourceUrl)) return backendImageReference(image, { url: sourceUrl });
     // Relative allo media URLs (e.g. /api/video-canvas/media/{id}) are already on the server.
     if (typeof sourceUrl === "string" && sourceUrl.includes("/api/video-canvas/media/")) {
         const mediaId = sourceUrl.split("/api/video-canvas/media/")[1]?.split(/[?#]/)[0];
         if (mediaId) return backendImageReference(image, { storageKey: resourceStorageKey(mediaId) });
     }
+    // Allo generation tasks only accept canvas media ids. Materialize any local /
+    // remote / data-URL reference into resource storage so img2img refs survive
+    // the task-center → /api/video-canvas/tasks adapter (URLs alone are dropped).
     let blob: Blob | null = null;
     try {
-        blob = image.storageKey ? await getImageBlob(image.storageKey) : sourceUrl ? await (await fetch(sourceUrl)).blob() : null;
+        blob = image.storageKey ? await getImageBlob(image.storageKey) : null;
+        if (!blob && sourceUrl) blob = await (await fetch(sourceUrl)).blob();
     } catch (error) {
         throw new Error(error instanceof Error ? `读取参考图片失败：${error.message}` : "读取参考图片失败");
     }

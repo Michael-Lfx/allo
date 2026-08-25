@@ -8,14 +8,14 @@ export interface ModeMenuProps {
   onSelect: (mode: VideoHomeMode) => void;
 }
 
-/** Mode-switch menu shown from the composer toolbar (视频生成 / Agent / 动作模仿 / 创作). */
+/** Mode-switch menu shown from the composer toolbar (视频生成 / 短剧 / 动作模仿 / 创作). */
 export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
   const { t } = useTranslation();
   const generateModeLabel = t('videoGeneration.mode.generateLabel', {
     defaultValue: '视频生成',
   });
   const agentModeLabel = t('videoGeneration.mode.agentLabel', {
-    defaultValue: 'Agent 模式',
+    defaultValue: '短剧模式',
   });
   const creationModeLabel = t('videoGeneration.mode.creationLabel', {
     defaultValue: '创作模式',
