@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "apps/web", "apps/desktop"]
+members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/web", "apps/desktop"]
 
 [workspace.package]
 version = "1.0.5"
@@ -54,6 +54,8 @@ nomifun-canvas = { path = "crates/backend/nomifun-canvas" }
 nomifun-browser-platform = { path = "crates/backend/nomifun-browser-platform" }
 nomifun-robot = { path = "crates/backend/nomifun-robot" }
 nomifun-audio = { path = "crates/backend/nomifun-audio" }
+sherpa-onnx = { path = "crates/vendor/sherpa-onnx", default-features = false, features = ["static"] }
+sherpa-onnx-sys = { path = "crates/vendor/sherpa-onnx-sys", default-features = false, features = ["static"] }
 nomifun-ssh = { path = "crates/backend/nomifun-ssh" }
 
 # --- Internal crates: shared ---
