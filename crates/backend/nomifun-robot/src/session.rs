@@ -1051,6 +1051,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
     #[tokio::test]
     async fn silero_from_the_profile_ignores_a_plain_tone() {
         if crate::vad::silero::SileroVad::new(crate::vad::VadTuning::default()).is_err() {

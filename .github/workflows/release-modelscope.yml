@@ -3,20 +3,19 @@ name: Release platform to ModelScope
 on:
   push:
     tags:
-      - "v*-windows"
-      - "v*-macos"
-      - "v*-linux"
+      - "v*.*.*"
+      - "!v*.*.*-*"
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing vX.Y.Z-windows, vX.Y.Z-macos, or vX.Y.Z-linux tag
+        description: Existing vX.Y.Z tag (builds Windows, macOS, and Linux)
         required: true
         type: string
 
 permissions:
   contents: read
 
-# Platform channels are independent; different tags may run in parallel.
+# One release tag runs all platforms; do not cancel a sibling platform mid-upload.
 concurrency:
   group: modelscope-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
   cancel-in-progress: false
@@ -27,12 +26,11 @@ defaults:
 
 jobs:
   release-context:
-    name: Validate platform tag
+    name: Validate release tag
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
-      platform: ${{ steps.release.outputs.platform }}
     steps:
       - name: Resolve tag
         id: tag
@@ -46,13 +44,14 @@ jobs:
           else
             tag="$PUSH_TAG"
           fi
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(windows|macos|linux)$ ]]; then
-            echo "Invalid platform release tag: $tag" >&2
+          # Accept only vX.Y.Z — reject legacy vX.Y.Z-{windows,macos,linux} tags.
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: $tag (expected vX.Y.Z)" >&2
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Check out platform tag
+      - name: Check out release tag
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.tag.outputs.tag }}
@@ -63,12 +62,11 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-(windows|macos|linux)$ ]]; then
-            echo "Invalid platform release tag: $RELEASE_TAG" >&2
+          if [[ ! "$RELEASE_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG" >&2
             exit 1
           fi
           version="${BASH_REMATCH[1]}"
-          platform="${BASH_REMATCH[2]}"
 
           git_tag="$(git describe --tags --exact-match --match "$RELEASE_TAG")"
           if [[ "$git_tag" != "$RELEASE_TAG" ]]; then
@@ -84,11 +82,9 @@ jobs:
 
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "platform=$platform" >> "$GITHUB_OUTPUT"
 
   release-windows:
     name: Build and publish Windows
-    if: needs.release-context.outputs.platform == 'windows'
     needs: release-context
     runs-on: windows-latest
     environment: modelscope-alpha
@@ -105,6 +101,8 @@ jobs:
           bun-version: 1.3.13
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
 
       - uses: actions/setup-python@v5
         with:
@@ -115,7 +113,7 @@ jobs:
           bun install --frozen-lockfile
           python -m pip install modelscope
 
-      - name: Build Windows updater
+      - name: Build Windows updater (x64 + arm64)
         env:
           NODE_OPTIONS: --max-old-space-size=8192
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -124,7 +122,7 @@ jobs:
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
             throw 'TAURI_SIGNING_PRIVATE_KEY is not configured'
           }
-          bun run build:win --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.windows.conf.json
+          bun run build:win x64 arm64 --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.windows.conf.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           bun run make:latest --host modelscope --channel windows --collect
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -141,7 +139,7 @@ jobs:
           bun run upload:modelscope -- --channel windows
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Verify Windows channel entry
+      - name: Verify Windows channel entries
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.release-context.outputs.version }}
@@ -149,11 +147,11 @@ jobs:
           python scripts/verify-modelscope-release.py \
             --channel windows \
             --version "$EXPECTED_VERSION" \
-            --platform windows-x86_64
+            --platform windows-x86_64 \
+            --platform windows-aarch64
 
   release-macos:
     name: Build and publish macOS
-    if: needs.release-context.outputs.platform == 'macos'
     needs: release-context
     runs-on: macos-14
     environment: modelscope-alpha
@@ -167,6 +165,8 @@ jobs:
           bun-version: 1.3.13
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: actions/setup-python@v5
         with:
@@ -177,7 +177,7 @@ jobs:
           bun install --frozen-lockfile
           python -m pip install modelscope
 
-      - name: Build macOS updater
+      - name: Build macOS updater (universal)
         env:
           NODE_OPTIONS: --max-old-space-size=4096
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -187,10 +187,10 @@ jobs:
             echo "TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
             exit 1
           }
-          # Apple Silicon only. Universal/Intel needs x86_64-apple-darwin, and
-          # ort-sys 2.0 (Silero VAD) has no ONNX Runtime prebuilt for that
-          # target after Microsoft dropped Intel macOS binaries.
-          bun run build:mac arm --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json
+          # Universal covers darwin-aarch64 + darwin-x86_64 with one updater
+          # artifact (avoids Flowy.app.tar.gz basename collisions). The Intel
+          # slice omits ort; robot VAD falls back to energy there.
+          bun run build:mac universal --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json
           bun run make:latest --host modelscope --channel macos --collect
 
       - name: Upload macOS release
@@ -210,11 +210,11 @@ jobs:
           python scripts/verify-modelscope-release.py \
             --channel macos \
             --version "$EXPECTED_VERSION" \
-            --platform darwin-aarch64
+            --platform darwin-aarch64 \
+            --platform darwin-x86_64
 
   release-linux:
     name: Build and publish Linux
-    if: needs.release-context.outputs.platform == 'linux'
     needs: release-context
     runs-on: ubuntu-24.04
     environment: modelscope-alpha

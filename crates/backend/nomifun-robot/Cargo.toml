@@ -48,8 +48,12 @@ uuid = { workspace = true, features = ["v4"] }
 # not `audiopus`/`opus`); the FFI is wrapped in `src/audio/opus.rs`.
 opusic-sys = { workspace = true }
 symphonia = { workspace = true }
+
 # Silero VAD (ONNX Runtime). Loading is fallible at runtime and every failure
-# path degrades to the energy VAD, so this is never a hard requirement.
+# path degrades to the energy VAD. Microsoft no longer ships ONNX Runtime
+# prebuilts for x86_64-apple-darwin (ort-sys 2.x), so Intel Mac builds omit
+# ort and always use the energy VAD.
+[target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
 ort = { workspace = true }
 
 [dev-dependencies]

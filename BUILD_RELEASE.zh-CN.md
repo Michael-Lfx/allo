@@ -78,13 +78,13 @@ apps/desktop/tauri.channel.windows.conf.json   # 写入 Windows endpoint
 bun run bump 0.4.2
 ```
 
-三端版本可不同：在 **不同 commit** 上 bump 到不同版本，再打对应平台 tag。
+发版前在同一 commit 上 bump 到目标版本；CI 用单个 `vX.Y.Z` tag 并行发三端。
 
 ---
 
-## 标准发版流程（单平台）
+## 标准发版流程（本地单平台）
 
-各平台**不能交叉编译**。每次只发一个平台渠道。
+各平台**不能交叉编译**可靠安装包。本地调试时仍可只打一个平台渠道。
 
 ### 步骤 1：构建（必须叠加 channel config）
 
@@ -157,17 +157,21 @@ bun run upload:modelscope -- --channel windows
 
 ---
 
-## 三端独立发版（版本可分叉）
+## CI：一个 tag 打三端
+
+打 **一个** `vX.Y.Z` tag 即可并行构建并上传 Windows / macOS / Linux 渠道。
+不要再使用 `vX.Y.Z-windows` / `-macos` / `-linux` 这类分平台 tag。
 
 ```text
-Windows 0.4.2:
-  bump 0.4.2 → commit → tag v0.4.2-windows → push tag
-  → 只更新 channels/windows/latest.json
-
-一周后 macOS 0.1.8:
-  bump 0.1.8 → commit → tag v0.1.8-macos → push tag
-  → 只更新 channels/macos/latest.json（windows 清单不受影响）
+bump 1.0.6 → commit → tag v1.0.6 → push tag
+  → 并行：
+     windows → windows-x86_64 + windows-aarch64
+     macos   → darwin-aarch64 + darwin-x86_64（universal 包）
+     linux   → linux-x86_64
 ```
+
+三端渠道清单仍彼此独立（各有一份 `latest.json`），但版本号由同一 tag / 同一
+`Cargo.toml` version 对齐。
 
 ---
 
@@ -203,26 +207,31 @@ Windows 0.4.2:
 
 工作流：`.github/workflows/release-modelscope.yml`。
 
-| tag | 渠道 | 发布平台键 |
+| tag | 触发 | 发布平台键 |
 |------|------|-----------|
-| `v0.4.2-windows` | `windows` | `windows-x86_64` |
-| `v0.1.8-macos` | `macos` | `darwin-x86_64`、`darwin-aarch64` |
-| `v0.3.1-linux` | `linux` | `linux-x86_64` |
+| `v1.0.6` | Windows + macOS + Linux 三 job 并行 | `windows-x86_64`、`windows-aarch64`、`darwin-aarch64`、`darwin-x86_64`、`linux-x86_64` |
 
-tag 中的版本必须与**该 tag 指向 commit** 的 `Cargo.toml` version 一致。
+tag 必须是 `vX.Y.Z`（无平台后缀），且版本与**该 tag 指向 commit** 的
+`Cargo.toml` `[workspace.package].version` 一致。
 
-三端可并行（concurrency 按 tag ref 分组）。构建命令叠加对应
-`tauri.channel.*.conf.json`，上传到独立渠道清单。
+也可在 Actions 里 `workflow_dispatch`，填同一个 `vX.Y.Z` tag 重跑。
 
 ```bash
-bun run bump 0.4.2
+bun run bump 1.0.6
 git add Cargo.toml Cargo.lock package.json ui/package.json
-git commit -m "chore(release): v0.4.2"
+git commit -m "chore(release): v1.0.6"
 git push origin HEAD
-git tag v0.4.2-windows
-git push origin v0.4.2-windows
-# macOS / Linux 可在其他版本 commit 上另行打 tag，无需等待
+git tag v1.0.6
+git push origin v1.0.6
 ```
+
+说明：
+
+- Windows：在 `windows-latest` 上依次打 `x64` + `arm64`（arm64 交叉编译）。
+- macOS：在 `macos-14` 上打 `universal`（一份产物写入 `darwin-aarch64` 与
+  `darwin-x86_64`）。Intel 切片不链接 Silero/ort（微软已停供该目标 ONNX Runtime
+  预编译库），robot VAD 回退 energy。
+- Linux：当前 CI 只打 `linux-x86_64`。
 
 Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（可选）、
 `MODELSCOPE_TOKEN`（推荐放在 `modelscope-alpha` environment）。

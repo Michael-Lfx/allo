@@ -71,8 +71,8 @@ resolve_triple() {
 
 TRIPLES=()
 if [[ "${#SELECT[@]}" -eq 0 ]]; then
-  # 默认只打 Apple Silicon。Universal/Intel 需要 x86_64-apple-darwin,而 ort-sys
-  # 2.0(Silero VAD)已无该目标的 ONNX Runtime 预编译库(微软停更 Intel macOS 二进制)。
+  # 默认只打 Apple Silicon。Intel/universal 可显式指定；x86_64-apple-darwin 切片
+  # 不链接 ort（微软已停供该目标 ONNX Runtime 预编译库），robot VAD 回退 energy。
   TRIPLES=(aarch64-apple-darwin)
 else
   for s in "${SELECT[@]}"; do
@@ -82,8 +82,7 @@ fi
 
 for t in "${TRIPLES[@]}"; do
   if [[ "$t" == "x86_64-apple-darwin" || "$t" == "universal-apple-darwin" ]]; then
-    echo "⚠️  $t 需要 Intel Mac 的 ONNX Runtime 预编译库；ort-sys 2.0 已不再提供，构建很可能会失败。" >&2
-    echo "   发版与本地默认请用 Apple Silicon: bun run build:mac / bun run build:mac arm" >&2
+    echo "ℹ️  $t：Intel 切片不链接 Silero/ort（无 ONNX Runtime 预编译库），VAD 使用 energy。" >&2
   fi
 done
 

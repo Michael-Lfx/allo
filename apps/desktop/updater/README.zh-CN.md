@@ -87,7 +87,7 @@ macOS：
 export TAURI_SIGNING_PRIVATE_KEY="$(cat apps/desktop/signing/nomifun-updater.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 
-bun run build:mac arm --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json
+bun run build:mac universal --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json
 bun run make:latest --host modelscope --channel macos --collect
 bun run upload:modelscope -- --channel macos
 ```
@@ -98,7 +98,7 @@ Windows：
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content apps/desktop/signing/nomifun-updater.key -Raw
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
-bun run build:win --signed --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.windows.conf.json
+bun run build:win x64 arm64 --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.windows.conf.json
 bun run make:latest --host modelscope --channel windows --collect
 bun run upload:modelscope -- --channel windows
 ```

@@ -2,6 +2,7 @@
 //! so `mode=auto` sessions end **only** when this decides they did.
 
 pub mod energy;
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 pub mod silero;
 
 pub use energy::EnergyVad;
@@ -76,13 +77,25 @@ pub fn frame_ms(samples: usize, sample_rate: u32) -> u32 {
 /// rather than breaking the voice link. Any name other than `"silero"` — including
 /// one this build does not know — resolves to the energy engine, so a profile
 /// written by a newer build still talks.
+///
+/// Intel macOS builds never link `ort` (no ONNX Runtime prebuilt for
+/// `x86_64-apple-darwin`), so Silero is compile-time unavailable there.
 pub fn build_engine(engine: &str, tuning: VadTuning) -> Box<dyn VadEngine> {
     if engine == DEFAULT_VAD_ENGINE {
-        match silero::SileroVad::new(tuning) {
-            Ok(vad) => return Box::new(vad),
-            Err(error) => {
-                tracing::warn!(%error, "robot: silero VAD unavailable, falling back to energy VAD");
+        #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+        {
+            match silero::SileroVad::new(tuning) {
+                Ok(vad) => return Box::new(vad),
+                Err(error) => {
+                    tracing::warn!(%error, "robot: silero VAD unavailable, falling back to energy VAD");
+                }
             }
+        }
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        {
+            tracing::warn!(
+                "robot: silero VAD not linked on Intel macOS (ONNX Runtime unavailable), using energy VAD"
+            );
         }
     }
     Box::new(EnergyVad::new(tuning))
@@ -209,6 +222,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
     #[test]
     fn silero_ends_an_utterance_on_real_speech_then_silence() {
         let Ok(mut vad) = crate::vad::silero::SileroVad::new(VadTuning {
@@ -246,6 +260,7 @@ mod tests {
     /// on a vibrato-modulated fundamental) shaped by two sweeping formants and an
     /// amplitude envelope. Static tone mixes read as ~1% speech probability — the
     /// model keys on the *motion* of the formants, not just their presence.
+    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
     fn speech_like_frame(offset: usize) -> Vec<i16> {
         use crate::audio::UPLINK_FRAME_SAMPLES;
         let tau = std::f32::consts::TAU;
