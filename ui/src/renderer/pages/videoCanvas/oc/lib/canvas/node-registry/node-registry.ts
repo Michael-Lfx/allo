@@ -13,6 +13,13 @@ const NODE_LABEL_KEYS: Record<CanvasNodeType, [key: string, fallback: string]> =
     [CanvasNodeType.Video]: ["videoCanvas.node.video", "视频"],
     [CanvasNodeType.Audio]: ["videoCanvas.node.audio", "音频"],
     [CanvasNodeType.Frame]: ["videoCanvas.node.frame", "背板"],
+    [CanvasNodeType.Markdown]: ["videoCanvas.node.markdown", "Markdown"],
+    [CanvasNodeType.Svg]: ["videoCanvas.node.svg", "SVG"],
+    [CanvasNodeType.Html]: ["videoCanvas.node.html", "HTML"],
+    [CanvasNodeType.Panorama]: ["videoCanvas.node.panorama", "全景"],
+    [CanvasNodeType.Compare]: ["videoCanvas.node.compare", "对比"],
+    [CanvasNodeType.Chart]: ["videoCanvas.node.chart", "图表"],
+    [CanvasNodeType.ColorGrade]: ["videoCanvas.node.colorgrade", "调色"],
 };
 
 /** 模块级注册表 */

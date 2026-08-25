@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Clock3, FileText, Image as ImageIcon, LoaderCircle, Lock, Maximize2, Music2, Pencil, Play, Plus, RefreshCw, Replace, Settings2, Square, Star, Type, Video } from "lucide-react";
+import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Clock3, FileText, Image as ImageIcon, LoaderCircle, Lock, Maximize2, Music2, Pencil, Play, Download, Plus, RefreshCw, Replace, Settings2, Square, Star, Type, Video } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
@@ -19,6 +19,15 @@ import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-ref
 import { loadCanvasDrawingPreview } from "@oc/lib/canvas/canvas-drawing-storage";
 import { getNodeMinSize, shouldKeepAspectRatio } from "@oc/lib/canvas/node-registry";
 import { readCanvasScaleFromElement } from "@oc/lib/canvas/canvas-live-viewport";
+import { fitNodeSize } from "@oc/lib/canvas/canvas-node-size";
+import { useCanvasNodeActions } from "@oc/components/canvas/canvas-node-action-context";
+import { ChartNodeContent } from "@oc/components/canvas/nodes/chart-node";
+import { ColorGradeNodeContent } from "@oc/components/canvas/nodes/color-grade-node";
+import { CompareNodeContent } from "@oc/components/canvas/nodes/compare-node";
+import { HtmlNodeContent } from "@oc/components/canvas/nodes/html-node";
+import { MarkdownNodeContent } from "@oc/components/canvas/nodes/markdown-node";
+import { PanoramaNodeContent } from "@oc/components/canvas/nodes/panorama-node";
+import { SvgNodeContent } from "@oc/components/canvas/nodes/svg-node";
 
 const VideoPlayer = React.lazy(() =>
     import("@oc/components/video-player").then((mod) => ({ default: mod.VideoPlayer }))
@@ -64,6 +73,7 @@ type CanvasNodeProps = {
     onToggleBatch?: (nodeId: string) => void;
     onSetBatchPrimary?: (node: CanvasNodeData) => void;
     onRetry?: (node: CanvasNodeData) => void;
+    onReloadResource?: (node: CanvasNodeData) => void;
     onCancelTask?: (node: CanvasNodeData) => void;
     onOpenTaskDetails?: (node: CanvasNodeData) => void;
     onOpenVersions?: (node: CanvasNodeData) => void;
@@ -91,6 +101,7 @@ type NodeContentRendererProps = {
     onStopEditing: () => void;
     mentionReferences: CanvasResourceReference[];
     onRetry?: (node: CanvasNodeData) => void;
+    onReloadResource?: (node: CanvasNodeData) => void;
     onCancelTask?: (node: CanvasNodeData) => void;
     onOpenTaskDetails?: (node: CanvasNodeData) => void;
     onOpenDrawing?: (node: CanvasNodeData) => void;
@@ -130,6 +141,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onToggleBatch,
     onSetBatchPrimary,
     onRetry,
+    onReloadResource,
     onCancelTask,
     onOpenTaskDetails,
     onOpenVersions,
@@ -420,6 +432,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onContentChange={onContentChange}
                         onStopEditing={() => setIsEditingContent(false)}
                         onRetry={onRetry}
+                        onReloadResource={onReloadResource}
                         onCancelTask={onCancelTask}
                         onOpenTaskDetails={onOpenTaskDetails}
                         onOpenDrawing={onOpenDrawing}
@@ -536,7 +549,7 @@ function NodeContent(props: NodeContentRendererProps) {
     if (hasCustomContent && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent node={props.node} theme={props.theme} onCancelTask={props.onCancelTask} onOpenTaskDetails={props.onOpenTaskDetails} />;
-    if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />;
+    if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} />;
 
     const Renderer = nodeContentRenderers[props.node.type];
     return Renderer ? <Renderer {...props} /> : <UnknownNodeContent theme={props.theme} />;
@@ -552,6 +565,13 @@ const nodeContentRenderers = {
     [CanvasNodeType.Audio]: AudioNodeContent,
     [CanvasNodeType.Drawing]: DrawingContent,
     [CanvasNodeType.Frame]: UnknownNodeContent,
+    [CanvasNodeType.Markdown]: MarkdownNodeContent,
+    [CanvasNodeType.Svg]: SvgNodeContent,
+    [CanvasNodeType.Html]: HtmlNodeContent,
+    [CanvasNodeType.Panorama]: PanoramaNodeContent,
+    [CanvasNodeType.Compare]: CompareNodeContent,
+    [CanvasNodeType.Chart]: ChartNodeContent,
+    [CanvasNodeType.ColorGrade]: ColorGradeNodeContent,
 } satisfies Record<CanvasNodeType, (props: NodeContentRendererProps) => ReactNode>;
 
 function DrawingContent({ node, theme, drawingProjectId }: NodeContentRendererProps) {
@@ -664,7 +684,7 @@ function shortTaskId(id: string) {
     return `${id.slice(0, 14)}...${id.slice(-4)}`;
 }
 
-function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "node" | "theme" | "onRetry">) {
+function ErrorContent({ node, theme, onRetry, onReloadResource }: Pick<NodeContentRendererProps, "node" | "theme" | "onRetry" | "onReloadResource">) {
     const moderationFailure = node.metadata?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(node.metadata?.errorDetails);
     return (
         <div className="flex max-w-[260px] flex-col items-center gap-3 px-5 text-center">
@@ -672,6 +692,35 @@ function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "
             {moderationFailure ? (
                 <div className="rounded-md border px-3 py-2 text-[var(--fs-label)] leading-4" style={{ background: theme.node.fill, borderColor: theme.toolbar.border, color: theme.node.muted }}>
                     {canvasT("videoCanvas.nodeUi.retryHint", "修改节点提示词后，可重新点击生成。")}
+                </div>
+            ) : node.metadata?.resourceReloadAvailable ? (
+                <div className="flex flex-wrap justify-center gap-2">
+                    <button
+                        type="button"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition hover:scale-[1.02]"
+                        style={{ background: theme.accent.primary, borderColor: theme.accent.primary, color: "#fff" }}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onReloadResource?.(node);
+                        }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        <Download className="size-3.5" />
+                        {canvasT("videoCanvas.nodeUi.reloadResource", "重新加载资源")}
+                    </button>
+                    <button
+                        type="button"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition hover:scale-[1.02]"
+                        style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onRetry?.(node);
+                        }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        <RefreshCw className="size-3.5" />
+                        {canvasT("videoCanvas.nodeUi.regenerate", "重新生成")}
+                    </button>
                 </div>
             ) : (
                 <button
@@ -687,7 +736,7 @@ function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "
                     <RefreshCw className="size-3.5" />
                     {canvasT("videoCanvas.nodeUi.retry", "重试")}
                 </button>
-            )}
+                        )}
         </div>
     );
 }
@@ -871,7 +920,7 @@ function ImageNodeContent(props: NodeContentRendererProps) {
             props.node.metadata?.status === "loading" ? (
                 <LoadingContent node={props.node} theme={props.theme} />
             ) : props.node.metadata?.status === "error" ? (
-                <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />
+                <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} />
             ) : (
                 <EmptyImageContent {...props} isBatchRoot={false} />
             );
@@ -1012,6 +1061,26 @@ function ImageContent({
     const imageContainerRef = useRef<HTMLDivElement>(null);
     const nearViewport = useNearViewport(imageContainerRef);
     const { url, loading } = useNodeResourceUrl(node, nearViewport);
+    const { updateMetadata, resizeNode } = useCanvasNodeActions();
+
+    /**
+     * 让节点跟随图片真实比例。
+     *
+     * 上传接口的宽高是可选的，拿不到时节点会落到默认横向比例，竖图就被放进宽盒子两侧留黑。
+     * 判据是「用户有没有手动定过尺寸」，不是「有没有量过尺寸」——后者会让已存 naturalWidth 的旧节点永远得不到修正。
+     */
+    const fitToImage = (element: HTMLImageElement) => {
+        const naturalWidth = element.naturalWidth;
+        const naturalHeight = element.naturalHeight;
+        if (!naturalWidth || !naturalHeight) return;
+        if (node.metadata?.naturalWidth !== naturalWidth || node.metadata?.naturalHeight !== naturalHeight) {
+            updateMetadata?.(node.id, { naturalWidth, naturalHeight });
+        }
+        if (node.metadata?.freeResize || node.metadata?.manualSize) return;
+        const size = fitNodeSize(naturalWidth, naturalHeight);
+        if (Math.abs(size.width - node.width) < 1 && Math.abs(size.height - node.height) < 1) return;
+        resizeNode?.(node.id, size);
+    };
 
     return (
         <BatchFrame batchCount={isBatchRoot ? batchCount : 0} batchExpanded={batchExpanded} batchOpening={batchOpening} batchRecovering={batchRecovering} theme={theme} onToggleBatch={onToggleBatch}>
@@ -1024,6 +1093,7 @@ function ImageContent({
                         decoding="async"
                         draggable={false}
                         onDragStart={(event) => event.preventDefault()}
+                        onLoad={(event) => fitToImage(event.currentTarget)}
                         className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`}
                     />
                 ) : <div className="grid size-full place-items-center" style={{ color: theme.node.muted }}>{loading ? <LoaderCircle className="size-5 animate-spin" /> : <ImageIcon className="size-5 opacity-45" />}</div>}

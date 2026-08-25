@@ -58,6 +58,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const [paramsExpanded, setParamsExpanded] = useState(false); // #98 决策2：B区参数区折叠状态（手风琴）
     const activeReferenceCount = mentionReferences.filter((item) => item.active && item.kind !== "skill").length;
     const videoFrameOptions = mentionReferences.filter((item) => item.active && item.kind === "image").map((item) => ({ nodeId: item.nodeId, label: item.label, title: item.title, previewUrl: item.previewUrl }));
+    // 无可用参考帧时不渲染空参数壳，避免 B 区占位却没有可操作内容。
+    const hasVideoPromptTools = mode === "video" && !simpleMode && videoFrameOptions.length > 0;
     const darkSurface = themeName === "dark";
     const monochromeAccent = theme.node.activeStroke;
     const shellBorder = darkSurface ? "rgba(255,255,255,.08)" : "rgba(15,23,42,.08)";
@@ -144,7 +146,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     <span className="truncate text-[var(--fs-tiny)] font-medium">{canvasT("videoCanvas.prompt.creation", "{{mode}}创作", { mode: modeDisplayName(mode) })}</span>
                 </div>
             )}
-            {!simpleMode ? <CanvasPresetPicker mode={mode} skillReferences={skillReferences} open={expanded ? expandedPresetOpen : presetOpen} onOpenChange={expanded ? setExpandedPresetOpen : setPresetOpen} onSelect={applyPreset} dense /> : null}
+            {( !simpleMode || mode === "image" || mode === "video") ? <CanvasPresetPicker mode={mode} skillReferences={skillReferences} open={expanded ? expandedPresetOpen : presetOpen} onOpenChange={expanded ? setExpandedPresetOpen : setPresetOpen} onSelect={applyPreset} dense /> : null}
             <div className="ml-auto flex shrink-0 items-center justify-end gap-1">
                 {activeReferenceCount ? <ComposerPill theme={theme} borderColor={insetBorder} icon={<Boxes className="size-2.5" />} label={canvasT("videoCanvas.prompt.connected", "已连接 {{count}} 个", { count: activeReferenceCount })} /> : null}
                 {!expanded && canExpandPrompt ? (
@@ -260,8 +262,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                 />
             </div>
 
-            {/* B区 参数区（对应 #98 决策2：默认折叠，手风琴展开）*/}
-            {mode === "video" && !simpleMode ? (
+            {/* B区 参数区（对应 #98 决策2：默认折叠，手风琴展开；无参考帧时整区隐藏）*/}
+            {hasVideoPromptTools ? (
                 <div className="mt-1.5 overflow-hidden rounded-md border" style={{ background: controlSurface, borderColor: insetBorder }}>
                     <button
                         type="button"
@@ -317,7 +319,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                             aria-label={`${modeDisplayName(mode)}提示词`}
                         />
                     </div>
-                    {mode === "video" && !simpleMode ? (
+                    {hasVideoPromptTools ? (
                         <div className="shrink-0 rounded-md border p-0.5" style={{ background: controlSurface, borderColor: insetBorder }}>
                             <CanvasVideoPromptTools metadata={node.metadata} frameOptions={videoFrameOptions} onMetadataChange={(patch) => onConfigChange(node.id, patch)} />
                         </div>

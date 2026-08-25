@@ -6,7 +6,7 @@ import type { CanvasNodeGenerationMode } from "@oc/components/canvas/canvas-node
 import { buildGenerationConfig, isGenerationCanceled, supportsVideoReferenceAudio } from "@oc/lib/canvas/canvas-project-generation";
 import { isGenerationTaskCapacityError } from "@oc/lib/canvas/canvas-generation-batch";
 import { buildPortraitTexturePrompt } from "@oc/lib/canvas/canvas-portrait-texture";
-import { expandSkillMentions } from "@oc/lib/canvas/canvas-skill-mentions";
+import { collectCanvasSkills, expandSkillMentions, mergeSkillLists } from "@oc/lib/canvas/canvas-skill-mentions";
 import { generationErrorMessage, generationFailureMetadata, localizeGenerationErrorText } from "@oc/lib/generation-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import type { Skill } from "@oc/services/api/skills";
@@ -115,7 +115,7 @@ export function useCanvasGenerationExecutor({
                                       taskCreatedAt: new Date().toISOString(),
                                       errorDetails: undefined,
                                       generationErrorCode: undefined,
-                                      failedPromptFingerprint: undefined,
+                                      failedPromptFingerprint: undefined, resourceReloadAvailable: undefined,
                                   },
                               }
                             : node,
@@ -143,7 +143,7 @@ export function useCanvasGenerationExecutor({
                 return;
             }
 
-            const expandedPrompt = expandSkillMentions(rawGenerationContext.prompt, addedSkills);
+            const expandedPrompt = expandSkillMentions(rawGenerationContext.prompt, mergeSkillLists(addedSkills, collectCanvasSkills(nodesRef.current)));
             let effectivePrompt = expandedPrompt.trim();
             if (mode === "video") {
                 effectivePrompt = enrichPromptWithVimaxVoiceGuards(
@@ -183,7 +183,7 @@ export function useCanvasGenerationExecutor({
                 setRunningNodeId(null);
                 return;
             }
-            if (markSourceStatus) setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: statusPrompt, status: NODE_STATUS_LOADING, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined } } : node)));
+            if (markSourceStatus) setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: statusPrompt, status: NODE_STATUS_LOADING, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined } } : node)));
 
             let pendingNodeIds: string[] = [];
             const execution = {
@@ -235,7 +235,7 @@ export function useCanvasGenerationExecutor({
                     return;
                 }
                 message.error(localizeGenerationErrorText(failure.errorDetails));
-                setNodes((current) => current.map((node) => (node.id === nodeId || pendingNodeIds.includes(node.id) ? (node.id === nodeId && !markSourceStatus ? node : { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, ...failure } }) : node)));
+                setNodes((current) => current.map((node) => (node.id === nodeId || pendingNodeIds.includes(node.id) ? (node.id === nodeId && !markSourceStatus ? node : { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, ...failure, ...((mode === "image" || mode === "video" || mode === "audio") && node.metadata?.taskStatus === "succeeded" ? { resourceReloadAvailable: true } : {}) } }) : node)));
             } finally {
                 finishGenerationRequest(nodeId, controller);
                 setRunningNodeId(null);

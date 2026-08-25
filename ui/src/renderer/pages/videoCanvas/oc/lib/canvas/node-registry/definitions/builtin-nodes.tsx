@@ -1,4 +1,4 @@
-import { Clapperboard, Image as ImageIcon, Music2, PanelTop, Pencil, Settings2, Sparkles, Type, Video } from "lucide-react";
+import { ChartColumn, Clapperboard, Code, Columns2, FileText, Globe, Image as ImageIcon, Music2, PanelTop, Palette, Pencil, Settings2, Shapes, Sparkles, Type, Video } from "lucide-react";
 
 import { NODE_SPECS } from "@oc/constant/canvas";
 import { MEDIA_NODE_MIN_SIZE } from "@oc/lib/canvas/canvas-node-size";
@@ -61,10 +61,10 @@ const BUILTIN_NODE_TRAITS = {
         label: "技能",
         icon: <Sparkles />,
         minSize: DEFAULT_MIN_SIZE,
-        // 技能节点由技能库插入，不占创建菜单格位。
+        // 技能节点不占创建菜单；由首页风格启动等视频模块入口写入画布。
         showInCreateMenu: false,
-        // 技能注入的是提示词文本，故按文本素材计。
-        resourceKind: (node: CanvasNodeData) => (node.metadata?.skillSnapshot || node.metadata?.content ? "text" : null),
+        // 与 OA 一致：技能作为 skill 引用出现在预设 / @提及；连线生成时仍按文本指令注入。
+        resourceKind: (node: CanvasNodeData) => (node.metadata?.skillSnapshot || node.metadata?.content ? "skill" : null),
         inputKind: "text",
     },
     [CanvasNodeType.Config]: {
@@ -104,6 +104,60 @@ const BUILTIN_NODE_TRAITS = {
         minSize: DEFAULT_MIN_SIZE,
         showInCreateMenu: true,
         // 背板只是视觉容器，既不是素材也不参与计数。
+    },
+    [CanvasNodeType.Markdown]: {
+        label: "Markdown",
+        icon: <FileText />,
+        minSize: DEFAULT_MIN_SIZE,
+        showInCreateMenu: true,
+        resourceKind: (node: CanvasNodeData) => (node.metadata?.content ? "text" : null),
+        inputKind: "text",
+    },
+    [CanvasNodeType.Svg]: {
+        label: "SVG",
+        icon: <Shapes />,
+        minSize: DEFAULT_MIN_SIZE,
+        showInCreateMenu: true,
+        resourceKind: (node: CanvasNodeData) => (node.metadata?.content ? "text" : null),
+        inputKind: "text",
+    },
+    [CanvasNodeType.Html]: {
+        label: "HTML",
+        icon: <Code />,
+        minSize: DEFAULT_MIN_SIZE,
+        showInCreateMenu: true,
+        resourceKind: (node: CanvasNodeData) => (node.metadata?.content ? "text" : null),
+        inputKind: "text",
+    },
+    [CanvasNodeType.Panorama]: {
+        label: "全景",
+        icon: <Globe />,
+        minSize: MEDIA_NODE_MIN_SIZE,
+        showInCreateMenu: true,
+        inputKind: "image",
+    },
+    [CanvasNodeType.Compare]: {
+        label: "对比",
+        icon: <Columns2 />,
+        minSize: MEDIA_NODE_MIN_SIZE,
+        showInCreateMenu: true,
+        inputKind: "image",
+    },
+    [CanvasNodeType.Chart]: {
+        label: "图表",
+        icon: <ChartColumn />,
+        minSize: DEFAULT_MIN_SIZE,
+        showInCreateMenu: true,
+        inputKind: "text",
+    },
+    [CanvasNodeType.ColorGrade]: {
+        label: "调色",
+        icon: <Palette />,
+        minSize: MEDIA_NODE_MIN_SIZE,
+        showInCreateMenu: true,
+        // 无条件返回 image：图来自上游而不是自身 metadata。
+        resourceKind: () => "image",
+        inputKind: "image",
     },
 } satisfies Record<CanvasNodeType, Omit<CanvasNodeDefinition, "type" | "defaultTitle" | "defaultSize" | "defaultMetadata">>;
 

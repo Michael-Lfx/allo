@@ -88,7 +88,7 @@ export async function executeImageGeneration({
             ...generationMetadata,
             imageBatchExpanded: count > 1 ? true : undefined,
             generationErrorCode: undefined,
-            failedPromptFingerprint: undefined,
+            failedPromptFingerprint: undefined, resourceReloadAvailable: undefined,
         },
     };
     const childNodes: CanvasNodeData[] = childIds.map((id, index) => ({
@@ -98,7 +98,7 @@ export async function executeImageGeneration({
         position: imageGenerationChildPosition(rootNode.position, rootNode.width, outputNodeSize, index),
         width: outputNodeSize.width,
         height: outputNodeSize.height,
-        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, size: generationConfig.size, batchRootId: count > 1 && !directCopiedBatch ? rootId : undefined, ...generationMetadata, generationErrorCode: undefined, failedPromptFingerprint: undefined },
+        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, size: generationConfig.size, batchRootId: count > 1 && !directCopiedBatch ? rootId : undefined, ...generationMetadata, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined },
     }));
     const batchConnections = directCopiedBatch
         ? childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))
@@ -171,7 +171,7 @@ export async function executeImageGeneration({
                 const failure = generationFailureMetadata(error, prompt);
                 if (!representativeFailure || failure.generationErrorCode === CONTENT_MODERATION_ERROR_CODE) representativeFailure = failure;
                 hasFailure = true;
-                setNodes((current) => current.map((node) => (node.id === targetId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, ...failure } } : node)));
+                setNodes((current) => current.map((node) => (node.id === targetId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, ...failure, ...(node.metadata?.taskStatus === "succeeded" ? { resourceReloadAvailable: true } : {}) } } : node)));
                 return false;
             } finally {
                 finishGenerationRequest(targetId, controller);
@@ -195,7 +195,7 @@ export async function executeImageGeneration({
                       metadata: {
                           ...node.metadata,
                           status: hasSuccess ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR,
-                          ...(hasSuccess ? { errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined } : representativeFailure || { errorDetails: "全部图片生成失败" }),
+                          ...(hasSuccess ? { errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined } : representativeFailure || { errorDetails: "全部图片生成失败" }),
                       },
                   }
                 : !directCopiedBatch && node.id === rootId && !hasSuccess

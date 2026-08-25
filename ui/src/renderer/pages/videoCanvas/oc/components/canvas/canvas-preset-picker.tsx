@@ -96,8 +96,8 @@ export function CanvasPresetPicker({
         setInternalOpen(next);
         onOpenChange?.(next);
     };
-    const presets = useMemo(() => {
-        const skills = skillReferences.flatMap((reference): CanvasPromptPreset[] => {
+    const skillPresets = useMemo(() => {
+        return skillReferences.flatMap((reference): CanvasPromptPreset[] => {
             if (!reference.skill) return [];
             return [
                 {
@@ -110,9 +110,12 @@ export function CanvasPresetPicker({
                 },
             ];
         });
+    }, [skillReferences]);
+
+    const presets = useMemo(() => {
         const normalized = query.trim().toLowerCase();
-        return [...BUILTIN_PRESETS.filter((preset) => preset.modes.includes(mode)), ...skills].filter((preset) => !normalized || `${preset.name} ${preset.description}`.toLowerCase().includes(normalized));
-    }, [mode, query, skillReferences]);
+        return [...BUILTIN_PRESETS.filter((preset) => preset.modes.includes(mode)), ...skillPresets].filter((preset) => !normalized || `${preset.name} ${preset.description}`.toLowerCase().includes(normalized));
+    }, [mode, query, skillPresets]);
 
     const content = (
         <div data-canvas-no-zoom className="canvas-preset-picker-menu w-[var(--panel-width-compact)] max-w-[calc(100vw-24px)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
@@ -160,6 +163,11 @@ export function CanvasPresetPicker({
                         {canvasT("videoCanvas.preset.noMatch", "没有匹配的预设")}
                     </div>
                 )}
+                {!query.trim() && !skillPresets.length ? (
+                    <div className="mt-1 border-t border-foreground/8 px-2 py-2 text-[var(--fs-tiny)] leading-4" style={{ color: theme.node.muted }}>
+                        {canvasT("videoCanvas.preset.skillsHint", "画布上的技能节点会出现在这里（例如从首页带风格进入创作时）。")}
+                    </div>
+                ) : null}
             </div>
         </div>
     );

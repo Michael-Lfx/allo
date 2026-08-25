@@ -40,6 +40,10 @@ export type ToolbarHandlers = {
     onAddDrawing: () => void;
     onChooseStyle: () => void;
     onOpenDirector: () => void;
+    /**
+     * 扩展节点（Markdown / SVG / HTML / 全景 / 对比 / 图表 / 调色）统一走这一个入口。
+     */
+    onAddExtensionNode: (type: CanvasNodeType) => void;
     // 主工具栏——资源
     onUpload: () => void;
     onOpenMyAssets: () => void;
@@ -131,6 +135,7 @@ export type AddNodeMenuContext = {
         | "onAddDrawing"
         | "onChooseStyle"
         | "onOpenDirector"
+        | "onAddExtensionNode"
         | "onUpload"
         | "onOpenMyAssets"
         | "onOpenProjectCharacters"
@@ -168,7 +173,7 @@ export type AddNodeMenuCommand = {
     label: string | (() => string);
     icon: ReactNode;
     badge?: string | (() => string);
-    section: "node" | "project" | "resource";
+    section: "node" | "extension" | "project" | "resource";
     defaultOrder: number;
     applicable?: (ctx: AddNodeMenuContext) => boolean;
     run: (ctx: AddNodeMenuContext) => void;

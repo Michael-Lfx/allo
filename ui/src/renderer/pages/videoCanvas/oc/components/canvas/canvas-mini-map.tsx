@@ -125,7 +125,7 @@ export function Minimap({ nodes, viewport, viewportSize, canvasContainerRef, onV
     };
 
     return (
-        <div className="absolute bottom-24 left-6 z-[var(--z-panel)] overflow-hidden rounded-lg border shadow-2xl backdrop-blur-sm" style={{ width, height, background: theme.toolbar.panel, borderColor: theme.toolbar.border }}>
+        <div className="absolute bottom-[calc(var(--canvas-inset-y)+var(--space-16)+var(--space-10))] left-6 z-[var(--z-panel)] overflow-hidden rounded-lg shadow-2xl backdrop-blur-sm lg:bottom-[calc(var(--canvas-inset-y)+var(--space-12))]" style={{ width, height, background: theme.toolbar.panel }}>
             <div
                 ref={containerRef}
                 className="relative h-full w-full cursor-crosshair"

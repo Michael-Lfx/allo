@@ -1,13 +1,17 @@
 import type { ComponentProps, Dispatch, ReactNode, RefObject, SetStateAction } from "react";
+import { useMemo } from "react";
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, DragEvent as ReactDragEvent } from "react";
 import { InfiniteCanvas } from "@oc/components/canvas/infinite-canvas";
 import { CanvasLeaferGraphicsLayer } from "@oc/components/canvas/canvas-leafer-graphics-layer";
+import { CanvasNodeActionContext } from "@oc/components/canvas/canvas-node-action-context";
+import { CanvasNodeGraphContext } from "@oc/components/canvas/canvas-node-graph-context";
 import { CanvasProjectWorldLayers } from "./canvas-project-world-layers";
 import { CanvasActiveTaskPanel } from "@oc/components/canvas/canvas-active-task-panel";
 import { CanvasFocusModeBar } from "@oc/components/canvas/canvas-focus-mode-bar";
 import { CanvasFileDropOverlay } from "@oc/components/canvas/canvas-file-drop-overlay";
 import { CanvasToolbar } from "@oc/components/canvas/canvas-toolbar";
-import { CanvasNodeType, type CanvasNodeData, type CanvasToolMode, type CanvasWorkspaceMode, type Position, type ViewportTransform } from "@oc/types/canvas";
+import { getContextResourceNodes } from "@oc/lib/canvas/canvas-resource-references";
+import { CanvasNodeType, type CanvasNodeMetadata, type CanvasToolMode, type CanvasWorkspaceMode, type Position, type ViewportTransform } from "@oc/types/canvas";
 import type { CanvasBackgroundMode, CanvasTheme } from "@oc/lib/canvas-theme";
 import type { GenerationTask } from "@oc/services/api/task-center";
 import type { useCanvasAssistantVisibility } from "./use-canvas-assistant-visibility";
@@ -64,6 +68,7 @@ type CanvasProjectStageProps = Omit<ComponentProps<typeof CanvasProjectWorldLaye
     renderModel: CanvasRenderModel;
     historyActions: CanvasHistoryActions;
     assistant: CanvasAssistantState;
+    updateNodeMetadata: (nodeId: string, patch: CanvasNodeMetadata) => void;
 };
 
 export function CanvasProjectStage(props: CanvasProjectStageProps) {
@@ -95,6 +100,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         onToggleBatch,
         onSetBatchPrimary,
         onRetry,
+        onReloadResource,
         onCancelTask,
         onOpenTaskDetails,
         onOpenVersions,
@@ -147,10 +153,32 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         renderModel,
         historyActions,
         assistant,
+        updateNodeMetadata,
     } = props;
     const { historyState, undoCanvas, redoCanvas } = historyActions;
     const { assistantOpen, closeAgent, openAgent } = assistant;
     const { connectionLayerBounds, displayConnections, nodeById, visibleNodes, frameChildrenById, batchChildCountById, batchMotionById, reduceMediaEffects, resourceReferenceByNodeId, mentionReferencesByNodeId, selectedNodeBounds } = renderModel;
+    const graphNodes = useMemo(() => Array.from(nodeById.values()), [nodeById]);
+    const nodeGraphContext = useMemo(
+        () => ({ getUpstreamNodes: (nodeId: string) => getContextResourceNodes(nodeId, graphNodes, connections) }),
+        [connections, graphNodes],
+    );
+    const nodeActionContext = useMemo(
+        () => ({
+            updateMetadata: updateNodeMetadata,
+            // 图片 onLoad 比例校正：经 onNodeResize 但 markManual:false，避免写成 manualSize。
+            resizeNode: (nodeId: string, size: { width: number; height: number }) => {
+                const node = nodeById.get(nodeId);
+                if (!node || node.metadata?.locked) return;
+                if (Math.abs(node.width - size.width) < 1 && Math.abs(node.height - size.height) < 1) return;
+                onNodeResize(nodeId, size.width, size.height, {
+                    x: node.position.x + node.width / 2 - size.width / 2,
+                    y: node.position.y + node.height / 2 - size.height / 2,
+                }, { markManual: false });
+            },
+        }),
+        [nodeById, onNodeResize, updateNodeMetadata],
+    );
     return (
         <>
                         <div className="relative min-w-0 flex-1 overflow-hidden">
@@ -185,6 +213,8 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                 onFileDragLeave={handleFileDragLeave}
                                 onFileDragOver={handleFileDragOver}
                             >
+                                <CanvasNodeActionContext.Provider value={nodeActionContext}>
+                                <CanvasNodeGraphContext.Provider value={nodeGraphContext}>
                                 <CanvasProjectWorldLayers
                                     projectId={projectId}
                                     connectionLayerBounds={connectionLayerBounds}
@@ -224,6 +254,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                     onToggleBatch={onToggleBatch}
                                     onSetBatchPrimary={onSetBatchPrimary}
                                     onRetry={onRetry}
+                                    onReloadResource={onReloadResource}
                                     onCancelTask={onCancelTask}
                                     onOpenTaskDetails={onOpenTaskDetails}
                                     onOpenVersions={onOpenVersions}
@@ -234,6 +265,8 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                     onOpenDrawing={onOpenDrawing}
                                     onStartBatchConnection={onStartBatchConnection}
                                 />
+                                </CanvasNodeGraphContext.Provider>
+                                </CanvasNodeActionContext.Provider>
                             </InfiniteCanvas>
 
                             <CanvasActiveTaskPanel tasks={activeTasks} />
@@ -277,6 +310,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                     onAddFolder={createFolder}
                                     onAddDrawing={() => createNode(CanvasNodeType.Drawing)}
                                     onOpenDirector={() => createDirectorShot()}
+                                    onAddExtensionNode={(type) => createNode(type)}
                                     onUndo={undoCanvas}
                                     onRedo={redoCanvas}
                                     onUpload={() => handleUploadRequest()}

@@ -22,7 +22,7 @@ import {
     sourceNodeReferenceImages,
     supportsVideoReferenceAudio,
 } from "@oc/lib/canvas/canvas-project-generation";
-import { expandSkillMentions } from "@oc/lib/canvas/canvas-skill-mentions";
+import { collectCanvasSkills, expandSkillMentions, mergeSkillLists } from "@oc/lib/canvas/canvas-skill-mentions";
 import { buildPortraitTexturePrompt } from "@oc/lib/canvas/canvas-portrait-texture";
 import { generationFailureMetadata, localizeGenerationErrorText, unchangedModeratedPrompt } from "@oc/lib/generation-error";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
@@ -91,10 +91,10 @@ export function useCanvasGenerationRetry({ projectId, domainProjectId, addedSkil
             } catch (error) {
                 const failure = generationFailureMetadata(error, retryPromptSource);
                 message.error(localizeGenerationErrorText(failure.errorDetails));
-                setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...failure } } : item)));
+                setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...failure, ...(item.metadata?.taskStatus === "succeeded" ? { resourceReloadAvailable: true } : {}) } } : item)));
                 return;
             }
-            const context = rawContext ? { ...rawContext, prompt: expandSkillMentions(rawContext.prompt, addedSkills) } : null;
+            const context = rawContext ? { ...rawContext, prompt: expandSkillMentions(rawContext.prompt, mergeSkillLists(addedSkills, collectCanvasSkills(nodesRef.current))) } : null;
             const prompt = (context?.characterReferences.length ? context.prompt : savedImageMetadata?.prompt || context?.prompt || "").trim();
             if (!prompt) {
                 message.warning("找不到提示词，无法重试");

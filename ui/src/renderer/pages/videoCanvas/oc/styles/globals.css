@@ -177,12 +177,12 @@
 
 /* infinite 装饰动画在 reduced-motion / no-motion 下降级（对应 #99 三级降级）*/
 @media (prefers-reduced-motion: reduce) {
-    .canvas-connection-flow, .canvas-task-progress-shimmer {
+    .canvas-connection-flow, .canvas-connection-comet, .canvas-task-progress-shimmer {
         animation-duration: 0.01ms;
         animation-iteration-count: 1;
     }
 }
-.no-motion .canvas-connection-flow, .no-motion .canvas-task-progress-shimmer {
+.no-motion .canvas-connection-flow, .no-motion .canvas-connection-comet, .no-motion .canvas-task-progress-shimmer {
     animation: none;
 }
 
@@ -3228,7 +3228,7 @@
         box-shadow: none !important;
     }
 
-    [data-canvas-viewport-interacting="true"] :where(.canvas-node-shell-generating::before, .canvas-connection-flow, .canvas-connection-draft) {
+    [data-canvas-viewport-interacting="true"] :where(.canvas-node-shell-generating::before, .canvas-connection-flow, .canvas-connection-comet, .canvas-connection-draft) {
         animation: none !important;
     }
 
@@ -3275,7 +3275,10 @@
         animation: canvas-connection-flow 1.25s var(--motion-ease-linear) infinite;
     }
 
-    
+    /* 流光：一小段高亮沿连线跑。周期与虚线流动刻意错开，同频会锁成整体平移的虚线。 */
+    .canvas-connection-comet {
+        animation: canvas-connection-comet 2.1s var(--motion-ease-linear) infinite;
+    }
 
     @keyframes canvas-panel-in {
         from {
@@ -3293,6 +3296,57 @@
         to {
             stroke-dashoffset: -44;
         }
+    }
+
+    /* 位移量必须等于 dasharray 之和（16 + 118），否则循环处会跳一下 */
+    @keyframes canvas-connection-comet {
+        to {
+            stroke-dashoffset: -134;
+        }
+    }
+
+    /*
+     * 提示词里的资源 mention 芯片。
+     * 关键：用 baseline 对齐 + 固定行盒高度，避免视频缩略图把行高撑开、遮挡后续文本（对应 open-ai-canvas b809d1f）。
+     */
+    .canvas-resource-inline-mention {
+        display: inline-flex;
+        min-width: 0;
+        max-width: 100%;
+        height: 1.68em;
+        align-items: center;
+        gap: 0.18em;
+        margin-inline: 0.06em;
+        overflow: hidden;
+        border-radius: 0.38em;
+        background: color-mix(in srgb, var(--foreground) 6%, transparent);
+        padding-inline: 0.22em;
+        color: inherit;
+        font-size: 0.92em;
+        font-weight: 500;
+        line-height: 1;
+        vertical-align: baseline;
+        user-select: none;
+        transform: translateY(0.08em);
+    }
+
+    .dark .canvas-resource-inline-mention {
+        background: color-mix(in srgb, var(--foreground) 10%, transparent);
+    }
+
+    .canvas-resource-inline-mention > * {
+        flex: 0 0 auto;
+    }
+
+    .canvas-resource-inline-mention img,
+    .canvas-resource-inline-mention video {
+        display: block;
+        width: 1.18em;
+        min-width: 1.18em;
+        max-width: 1.18em;
+        height: 1.18em;
+        object-fit: cover;
+        border-radius: 0.24em;
     }
 
     @keyframes canvas-generation-border-flow {

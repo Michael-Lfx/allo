@@ -41,7 +41,8 @@ export function useCanvasNodeEditor({
     const [collapsingBatchIds, setCollapsingBatchIds] = useState<Set<string>>(new Set());
     const [openingBatchIds, setOpeningBatchIds] = useState<Set<string>>(new Set());
 
-    const handleNodeResize = useCallback((nodeId: string, width: number, height: number, position?: Position) => {
+    const handleNodeResize = useCallback((nodeId: string, width: number, height: number, position?: Position, options?: { markManual?: boolean }) => {
+        const markManual = options?.markManual !== false;
         setNodes((current) => {
             let changed = false;
             const next = current.map((node) => {
@@ -49,9 +50,17 @@ export function useCanvasNodeEditor({
                 const nextPosition = position || node.position;
                 if (node.width === width && node.height === height && node.position.x === nextPosition.x && node.position.y === nextPosition.y) return node;
                 changed = true;
-                const resized = { ...node, width, height, position: nextPosition };
+                // markManual 默认 true：用户拖尺寸后，图片 onLoad 比例校正不再覆盖。
+                // 图片真实比例自适应传 { markManual: false }，避免一次校正就锁死。
+                const resized = {
+                    ...node,
+                    width,
+                    height,
+                    position: nextPosition,
+                    metadata: markManual ? { ...node.metadata, manualSize: true } : node.metadata,
+                };
                 if (!isFrameNode(node) || node.metadata?.frame?.collapsed) return resized;
-                return { ...resized, metadata: { ...node.metadata, frame: { collapsed: false, expandedWidth: width, expandedHeight: height } } };
+                return { ...resized, metadata: { ...resized.metadata, frame: { collapsed: false, expandedWidth: width, expandedHeight: height } } };
             });
             return changed ? next : current;
         });

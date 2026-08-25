@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateA
 import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 
-import { applyGenerationTaskResultToNodes, generationTaskNodeId } from "@oc/lib/canvas/canvas-generation-task-sync";
+import { applyGenerationTaskResultToNodes, generationTaskCanReloadResource, generationTaskNodeId } from "@oc/lib/canvas/canvas-generation-task-sync";
 import { ensureCanvasNodeAsset } from "@oc/services/project-asset-sync";
 import { cancelGenerationTask, listGenerationTasks, listTaskLogs, queryGenerationTask, waitForGenerationTask, type GenerationTask, type TaskLog } from "@oc/services/api/task-center";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
@@ -141,7 +141,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                     ...node.metadata,
                     ...generationTaskMetadata(task),
                     status: failed ? NODE_STATUS_ERROR : hasCompletedContent ? NODE_STATUS_SUCCESS : NODE_STATUS_LOADING,
-                    ...(failure || { errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined }),
+                    ...(failure || { errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined }),
                 },
             };
         }));
@@ -154,10 +154,32 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
     }, [domainProjectId, projectId, queryClient, setNodes]);
 
     const applyGenerationTaskResult = useCallback(async (nodeId: string, task: GenerationTask) => {
-        const applied = await applyGenerationTaskResultToNodes(nodesRef.current, task, nodeId);
-        if (!applied.updated || !applied.node) throw new Error("画布中找不到对应任务节点");
-        setNodes((current) => current.map((node) => node.id === applied.nodeId ? applied.node! : node));
+        try {
+            const applied = await applyGenerationTaskResultToNodes(nodesRef.current, task, nodeId);
+            if (!applied.updated || !applied.node) throw new Error("画布中找不到对应任务节点");
+            setNodes((current) => current.map((node) => node.id === applied.nodeId ? applied.node! : node));
+        } catch (error) {
+            // 任务已在当前服务端成功时，落盘失败可按原 taskId 重拉，不新建生成任务。
+            if (generationTaskCanReloadResource(task)) {
+                setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, resourceReloadAvailable: true } } : node)));
+            }
+            throw error;
+        }
     }, [nodesRef, setNodes]);
+
+    /** 仅查询已接入服务端的原任务并重新物化，不重新计费生成。 */
+    const reloadCanvasNodeResource = useCallback(async (node: CanvasNodeData) => {
+        const taskId = node.metadata?.taskId;
+        if (!taskId || !node.metadata?.resourceReloadAvailable) return;
+        setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, taskStage: "正在重新加载资源", errorDetails: undefined } } : item)));
+        try {
+            const task = await queryGenerationTask(taskId);
+            if (!generationTaskCanReloadResource(task)) throw new Error("原生成任务尚未成功，无法重新加载资源");
+            await applyGenerationTaskResult(node.id, task);
+        } catch (error) {
+            setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: error instanceof Error ? error.message : "资源重新加载失败", resourceReloadAvailable: true } } : item)));
+        }
+    }, [applyGenerationTaskResult, setNodes]);
 
     const recoverInterruptedGenerationTasks = useCallback(async () => {
         const recoveryNodes = nodesRef.current.filter((node) => {
@@ -197,14 +219,20 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                 if (generationRequestsRef.current.has(node.id)) return;
                 if (node.type === CanvasNodeType.Script && completed.type === "agent_storyboard_rows") {
                     const result = storyboardRowsFromTask(completed);
-                    setNodes((current) => current.map((item) => item.id === node.id ? { ...item, title: result.title || item.title, metadata: { ...item.metadata, ...generationTaskMetadata(completed), status: NODE_STATUS_SUCCESS, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, storyboard: { rows: result.rows, visibleColumns: cinematicStoryboardColumns(item.metadata?.storyboard?.visibleColumns), referenceNodeIds: item.metadata?.storyboard?.referenceNodeIds || [] } } } : item));
+                    setNodes((current) => current.map((item) => item.id === node.id ? { ...item, title: result.title || item.title, metadata: { ...item.metadata, ...generationTaskMetadata(completed), status: NODE_STATUS_SUCCESS, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined, storyboard: { rows: result.rows, visibleColumns: cinematicStoryboardColumns(item.metadata?.storyboard?.visibleColumns), referenceNodeIds: item.metadata?.storyboard?.referenceNodeIds || [] } } } : item));
                 } else {
                     await applyGenerationTaskResult(node.id, completed);
                 }
             } catch (error) {
                 if (generationRequestsRef.current.has(node.id)) return;
                 const failure = generationFailureMetadata(error, node.metadata?.composerContent || node.metadata?.prompt || task.prompt || "");
-                setNodes((current) => current.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...failure } } : item));
+                // 服务端任务已成功但本地/OSS 物化失败时，允许按原 taskId 重载。
+                let reloadAvailable = task.status === "succeeded" && generationTaskCanReloadResource(task);
+                if (!reloadAvailable && task.status !== "failed" && task.status !== "cancelled") {
+                    const latest = await queryGenerationTask(task.id).catch(() => null);
+                    reloadAvailable = Boolean(latest && generationTaskCanReloadResource(latest));
+                }
+                setNodes((current) => current.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...failure, ...(reloadAvailable ? { resourceReloadAvailable: true } : {}) } } : item));
             } finally {
                 recoveringTaskIdsRef.current.delete(task.id);
             }
@@ -263,11 +291,13 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
     }, [domainProjectId, message, nodes, projectLoaded, saveGeneratedAsset]);
 
     return {
+        applyGenerationTaskResult,
         bindGenerationTask,
         cancelNodeTask,
         confirmStopGeneration,
         finishGenerationRequest,
         openNodeTaskDetails,
+        reloadCanvasNodeResource,
         runningNodeId,
         setRunningNodeId,
         setTaskDetail,
