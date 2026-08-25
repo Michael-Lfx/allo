@@ -239,7 +239,18 @@ export function mapAlloTask(view: GenerationTaskView, extra?: Partial<Generation
   return task;
 }
 
-function collectMediaIds(input?: Record<string, unknown>): {
+/**
+ * Map task-center reference payloads onto allo generation media ids.
+ *
+ * Video image-to-video may promote the first reference image to `first_frame`
+ * when no explicit frame media id is set. Image / img2img must keep every
+ * reference in `reference_media_ids` — the canvas image runner only reads that
+ * field, so treating the first ref as a video frame would silently drop it.
+ */
+export function collectMediaIds(
+  input?: Record<string, unknown>,
+  options?: { promoteFirstImageToFrame?: boolean },
+): {
   referenceIds: string[];
   firstFrameId?: string;
   lastFrameId?: string;
@@ -261,11 +272,17 @@ function collectMediaIds(input?: Record<string, unknown>): {
     input.metadata && typeof input.metadata === 'object'
       ? (input.metadata as Record<string, unknown>)
       : {};
-  const firstFrameId =
+  const explicitFirstFrame =
     (typeof metadata.firstFrameMediaId === 'string' && metadata.firstFrameMediaId) ||
     (typeof metadata.first_frame_media_id === 'string' && metadata.first_frame_media_id) ||
-    (images[0] && typeof images[0] === 'object'
-      ? resourceIdFromStorageKey((images[0] as { storageKey?: string }).storageKey) || undefined
+    undefined;
+  const firstFrameId =
+    explicitFirstFrame ||
+    (options?.promoteFirstImageToFrame &&
+    images[0] &&
+    typeof images[0] === 'object'
+      ? resourceIdFromStorageKey((images[0] as { storageKey?: string }).storageKey) ||
+        undefined
       : undefined);
   const lastFrameId =
     (typeof metadata.lastFrameMediaId === 'string' && metadata.lastFrameMediaId) ||
@@ -275,7 +292,7 @@ function collectMediaIds(input?: Record<string, unknown>): {
   return { referenceIds, firstFrameId: firstFrameId || undefined, lastFrameId: lastFrameId || undefined };
 }
 
-function alloBodyFromCreateInput(input: CreateTaskInput): CreateGenerationBody {
+export function resolveAlloGenerationMode(input: CreateTaskInput): string {
   const payload = input.input || {};
   const modeRaw = String(payload.mode || input.type || 'image').replace(/^canvas_/, '');
   const operation = String(input.operation || payload.operation || modeRaw);
@@ -283,6 +300,13 @@ function alloBodyFromCreateInput(input: CreateTaskInput): CreateGenerationBody {
   if (mode === 't2i' || mode === 'i2i' || mode.includes('image')) mode = 'image';
   if (mode === 't2v' || mode === 'i2v' || mode.includes('video')) mode = 'video';
   if (operation === 'image_to_video' || operation === 'text_to_video') mode = 'video';
+  return mode;
+}
+
+export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGenerationBody {
+  const payload = input.input || {};
+  const mode = resolveAlloGenerationMode(input);
+  const isVideo = mode === 'video';
 
   const config =
     payload.config && typeof payload.config === 'object'
@@ -292,7 +316,10 @@ function alloBodyFromCreateInput(input: CreateTaskInput): CreateGenerationBody {
     payload.metadata && typeof payload.metadata === 'object'
       ? (payload.metadata as Record<string, unknown>)
       : {};
-  const { referenceIds, firstFrameId, lastFrameId } = collectMediaIds(payload);
+  const { referenceIds, firstFrameId, lastFrameId } = collectMediaIds(payload, {
+    // Only video tasks use first/last frame slots. Image edit must keep refs.
+    promoteFirstImageToFrame: isVideo,
+  });
   const modelValue = String(input.model || config.model || '');
   const model = modelValue ? modelOptionName(modelValue) : undefined;
   const durationRaw = Number(config.videoSeconds ?? metadata.durationSecs ?? 5);
