@@ -1,11 +1,16 @@
 //! Cloud presence heartbeat and startup device telemetry.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use nomi_config::ServerConfig;
 use tracing::{debug, warn};
 
+use crate::activation::DeviceActivation;
+use crate::flowy::FlowyApiClient;
 use crate::http_service::CloudService;
+use crate::session::ServerSession;
 
 /// Best-effort device activation + client package report for an existing session.
 ///
@@ -37,6 +42,36 @@ pub async fn ensure_device_telemetry(service: &CloudService) {
     if let Err(err) = mgr.api().report_client_package(mgr.session()).await {
         warn!(error = %err, "client package report on startup failed");
     }
+}
+
+/// Best-effort device activation + client package report for a freshly logged-in
+/// session, spawned off the login request path so `loginContinue` returns as soon
+/// as tokens and profile are saved. Startup `ensure_device_telemetry` backfills
+/// if the process exits before this task finishes.
+pub fn spawn_post_login_telemetry(
+    config: ServerConfig,
+    data_dir: PathBuf,
+    session: ServerSession,
+    user_id: i64,
+) {
+    tokio::spawn(async move {
+        let api = match FlowyApiClient::new(&config) {
+            Ok(api) => api,
+            Err(err) => {
+                warn!(error = %err, "skip post-login telemetry — api client unavailable");
+                return;
+            }
+        };
+        if let Err(err) = DeviceActivation::new(&data_dir)
+            .try_activate_for_user(&api, &session, user_id)
+            .await
+        {
+            warn!(error = %err, "device activation failed after login");
+        }
+        if let Err(err) = api.report_client_package(&session).await {
+            warn!(error = %err, "client package report failed after login");
+        }
+    });
 }
 
 async fn send_presence_heartbeat(service: &CloudService) {

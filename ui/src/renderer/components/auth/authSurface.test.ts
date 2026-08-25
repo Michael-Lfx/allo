@@ -409,7 +409,12 @@ describe('Flowy auth surface contract', () => {
     expect(cloudLoginCss).toContain('.cloud-login-transition__spinner');
     expect(cloudSource).toContain('<CloudLoginFlow');
     expect(cloudSource).toContain('justLoggedInRef.current = false');
-    expect(cloudSource).toContain('navigate(\'/guid\', { replace: true })');
+    expect(cloudSource).toContain("refresh({ forceModelSync: true, waitForModels: false })");
+    // Navigation happens as soon as auth is confirmed; the guid chunk preload
+    // stays fire-and-forget instead of gating navigate().
+    expect(cloudSource).not.toMatch(/preloadGuidPathChunk\(\)[\s\S]{0,120}\.then\(/);
+    expect(cloudSource).toContain('navigate(resolvePostCloudLoginPath(location.search), { replace: true })');
+    expect(cloudSource).toContain('if (!showOtp) return;');
     expect(cloudSource).not.toContain('cloudLogin.footerPrimary');
     expect(cloudSource).not.toContain('cloudLogin.footerSecondary');
     expect(cloudSource).not.toContain('cloud-login-page--checking');

@@ -10,7 +10,9 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-pub use fingerprint::{DeviceFingerprint, build_activate_request, collect_fingerprint};
+pub use fingerprint::{
+    DeviceFingerprint, PersistedFingerprint, build_activate_request, collect_fingerprint,
+};
 pub use geoip::{GeoIpInfo, resolve_geo_ip};
 
 use crate::error::{CloudError, ServerClientError};
@@ -30,8 +32,15 @@ struct GeoIpCacheEntry {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct DeviceStateFile {
+    /// Persisted serial number; avoids re-spawning platform readers.
     #[serde(default)]
     sn: String,
+    /// Persisted MAC address (normalized); avoids re-spawning platform readers.
+    #[serde(default)]
+    mac: String,
+    /// Persisted CPU chip id (or hashed fallback); avoids re-spawning platform readers.
+    #[serde(default)]
+    cpu_chip_id: String,
     /// user_id → app versions already reported successfully for that user.
     #[serde(default)]
     activations_by_user: HashMap<String, HashSet<String>>,
@@ -96,15 +105,15 @@ impl DeviceActivation {
         let app_version = env!("CARGO_PKG_VERSION");
         let mut state = self.load_state().await?;
 
-        let persisted_sn = if state.sn.is_empty() {
-            None
-        } else {
-            Some(state.sn.as_str())
+        let persisted = PersistedFingerprint {
+            mac: state.mac.clone(),
+            sn: state.sn.clone(),
+            cpu_chip_id: state.cpu_chip_id.clone(),
         };
-        let fingerprint = collect_fingerprint(persisted_sn)?;
-        if state.sn.is_empty() {
-            state.sn = fingerprint.sn.clone();
-        }
+        let fingerprint = collect_fingerprint(&persisted)?;
+        state.mac = fingerprint.mac.clone();
+        state.sn = fingerprint.sn.clone();
+        state.cpu_chip_id = fingerprint.cpu_chip_id.clone();
 
         // When already activated for this version, bypass geo cache so we can detect IP changes.
         let force_fresh_geo = already_activated(&state, user_id, app_version);
@@ -359,6 +368,22 @@ mod tests {
 
         let other = activation.status_for_user(99).await.expect("status");
         assert!(!other.activated_for_version);
+    }
+
+    #[tokio::test]
+    async fn state_round_trips_fingerprint_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let activation = DeviceActivation::new(dir.path());
+        let mut state = DeviceStateFile::default();
+        state.sn = "SN-TEST".into();
+        state.mac = "AA:BB:CC:DD:EE:FF".into();
+        state.cpu_chip_id = "CPU-TEST".into();
+        activation.save_state(&state).await.expect("save");
+
+        let loaded = activation.load_state().await.expect("load");
+        assert_eq!(loaded.sn, "SN-TEST");
+        assert_eq!(loaded.mac, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(loaded.cpu_chip_id, "CPU-TEST");
     }
 
     #[test]

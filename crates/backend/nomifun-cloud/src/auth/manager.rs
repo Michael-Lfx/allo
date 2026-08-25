@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nomi_config::ServerConfig;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::email_otp::EmailOtpAuthProvider;
 use super::provider::{AuthContext, AuthProvider};
@@ -15,6 +15,7 @@ use crate::error::ServerClientError;
 use crate::flowy::{CreditsBalance, CreditsCheckinResponse, FlowyApiClient, UserMe};
 use crate::profile::ProfileStore;
 use crate::session::{ServerSession, ServerTokens, TokenSource};
+use crate::telemetry::spawn_post_login_telemetry;
 
 /// Coordinates remote server login flows.
 pub struct AuthManager {
@@ -112,17 +113,15 @@ impl AuthManager {
         self.profile_store.save(&profile).await?;
         debug!(user_id = profile.id, "cached user profile after login");
 
-        let activation = DeviceActivation::new(&self.data_dir);
-        if let Err(err) = activation
-            .try_activate_for_user(&self.api, &self.session, profile.id)
-            .await
-        {
-            warn!(error = %err, "device activation failed after login");
-        }
-
-        if let Err(err) = self.api.report_client_package(&self.session).await {
-            warn!(error = %err, "client package report failed after login");
-        }
+        // Activation and client-package reporting are best-effort and must not
+        // hold the login HTTP response. Startup `ensure_device_telemetry`
+        // backfills if the task loses the race with process exit.
+        spawn_post_login_telemetry(
+            self.config.clone(),
+            self.data_dir.clone(),
+            self.session.clone(),
+            profile.id,
+        );
         Ok(())
     }
 
@@ -235,5 +234,58 @@ impl WhoamiStatus {
             .as_ref()
             .map(|t| t.is_expired(0))
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `finish_login` must keep only session-critical work on the login request
+    /// path; device activation and client-package reporting move to
+    /// `spawn_post_login_telemetry` after the profile is saved.
+    #[test]
+    fn finish_login_spawns_telemetry_after_profile_save() {
+        let source = include_str!("manager.rs");
+        let start = source.find("async fn finish_login").expect("finish_login fn");
+        let end = source.find("pub async fn logout").expect("logout fn");
+        let body = &source[start..end];
+
+        assert!(
+            body.contains("self.session.save_tokens(tokens).await?;"),
+            "tokens must be saved on the request path"
+        );
+        assert!(
+            body.contains("self.api.get_user_me(&self.session).await?;"),
+            "profile fetch stays on the request path"
+        );
+        assert!(
+            body.contains("self.profile_store.save(&profile).await?;"),
+            "profile save stays on the request path"
+        );
+        assert!(
+            body.contains("spawn_post_login_telemetry("),
+            "telemetry must be spawned inside finish_login"
+        );
+
+        let after_profile_save = body
+            .split("self.profile_store.save(&profile).await?;")
+            .nth(1)
+            .expect("profile save line");
+        assert!(
+            after_profile_save.contains("spawn_post_login_telemetry("),
+            "telemetry must be spawned after the profile save"
+        );
+        assert!(
+            !after_profile_save.contains(".await"),
+            "nothing may block the request path after the profile save"
+        );
+
+        assert!(
+            !body.contains("try_activate_for_user(&self.api"),
+            "activation must not run on the request path"
+        );
+        assert!(
+            !body.contains("report_client_package(&self.session).await"),
+            "client package report must not run on the request path"
+        );
     }
 }
