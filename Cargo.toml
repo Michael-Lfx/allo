@@ -130,6 +130,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "regis
 # wrappers live in `nomifun-robot/src/audio/opus.rs` and are the only FFI here.
 opusic-sys = "0.7.5"
 
+# Desktop mic capture (WASAPI/CoreAudio/ALSA via cpal). Used by nomifun-audio.
+cpal = "0.15"
+
 # Container decode for TTS audio that does not come back as raw PCM. Features are
 # exactly the formats providers actually return; `all-codecs` would pull video
 # and subtitle decoders we never touch.

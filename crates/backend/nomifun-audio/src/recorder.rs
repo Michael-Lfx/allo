@@ -529,52 +529,9 @@ impl MeetingRecorder {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PCM → WAV helper (for SttCallback implementations)
-// ---------------------------------------------------------------------------
-
-/// Encode mono f32 PCM as a minimal WAV byte vector (16-bit LE, 1 channel).
-pub fn pcm_to_wav(samples: &[f32], sample_rate: u32) -> Vec<u8> {
-    let pcm_i16: Vec<i16> = samples
-        .iter()
-        .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-        .collect();
-    let data_bytes: Vec<u8> = pcm_i16.iter().flat_map(|s| s.to_le_bytes()).collect();
-    let data_len = data_bytes.len() as u32;
-    let channels: u16 = 1;
-    let bits: u16 = 16;
-    let byte_rate = sample_rate * channels as u32 * bits as u32 / 8;
-
-    let mut wav = Vec::with_capacity(44 + data_bytes.len());
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
-    wav.extend_from_slice(b"WAVE");
-    wav.extend_from_slice(b"fmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    wav.extend_from_slice(&channels.to_le_bytes());
-    wav.extend_from_slice(&sample_rate.to_le_bytes());
-    wav.extend_from_slice(&byte_rate.to_le_bytes());
-    wav.extend_from_slice(&(channels * bits / 8).to_le_bytes());
-    wav.extend_from_slice(&bits.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_len.to_le_bytes());
-    wav.extend_from_slice(&data_bytes);
-    wav
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pcm_to_wav_produces_valid_header() {
-        let samples = vec![0.0f32; 160];
-        let wav = pcm_to_wav(&samples, 16_000);
-        assert_eq!(&wav[0..4], b"RIFF");
-        assert_eq!(&wav[8..12], b"WAVE");
-        assert_eq!(&wav[12..16], b"fmt ");
-    }
 
     struct NullStt;
     #[async_trait::async_trait]

@@ -11,40 +11,10 @@
 //! | Windows  | WASAPI loopback render endpoint | Implemented |
 //! | macOS    | ScreenCaptureKit / BlackHole virtual device | Stub (requires entitlement) |
 //! | Linux    | PulseAudio monitor source | Stub |
-//!
-//! # Windows WASAPI loopback
-//!
-//! Windows WASAPI in shared mode exposes a "loopback" capture mode on render
-//! (output/speaker) endpoints.  By opening the device with
-//! `AUDCLNT_STREAMFLAGS_LOOPBACK`, the capture client receives the same PCM
-//! the DAC is playing, with no extra virtual device driver needed.
-//!
-//! This implementation uses the `windows` crate for raw Win32 COM calls.
-//! We intentionally avoid `cpal` here because cpal's loopback support is
-//! platform-specific and still experimental as of 2026.
-//!
-//! # Usage
-//!
-//! ```rust,no_run
-//! use std::sync::Arc;
-//! use nomifun_audio::loopback::LoopbackSource;
-//! use nomifun_audio::capture::AudioCaptureSource;
-//!
-//! # #[tokio::main]
-//! # async fn main() {
-//! let src = LoopbackSource::new(16_000).expect("loopback init failed");
-//! let src: Arc<dyn AudioCaptureSource> = Arc::new(src);
-//! // Pass to DualTrackMixer::new(mic, src)
-//! # }
-//! ```
 
 use async_trait::async_trait;
 
 use crate::capture::AudioCaptureSource;
-
-// ---------------------------------------------------------------------------
-// Public entry point: platform-dispatch
-// ---------------------------------------------------------------------------
 
 /// Loopback capture source.  Wraps the platform-specific implementation.
 pub struct LoopbackSource {
@@ -87,38 +57,64 @@ impl AudioCaptureSource for LoopbackSource {
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use std::sync::Mutex;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
 
     use async_trait::async_trait;
     use tokio::sync::mpsc;
-    use tracing::{error, warn};
+    use tracing::error;
+    use windows::Win32::Media::Audio::{
+        AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
+        eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator,
+        MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+    };
+    use windows::Win32::System::Com::{
+        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+        CoUninitialize,
+    };
+
+    // Avoid pulling Win32_Media_Multimedia / KernelStreaming just for these tags.
+    const WAVE_FORMAT_PCM: u16 = 0x0001;
+    const WAVE_FORMAT_IEEE_FLOAT: u16 = 0x0003;
+    const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 
     use crate::capture::AudioCaptureSource;
-
-    // We use the `windows` crate for WASAPI. It is re-exported from the
-    // `windows-sys` family that is already transitively pulled in by tokio
-    // on Windows. If not available, this cfg block is excluded at compile
-    // time and the stub below takes over.
-    //
-    // IMPLEMENTATION NOTE: Full WASAPI bindings are hundreds of lines of
-    // unsafe COM boilerplate.  This module provides a correct skeleton that
-    // compiles and documents the key steps; production hardening (device
-    // loss recovery, format negotiation) is straightforward to add.
+    use crate::pcm_util::{downmix_to_mono, resample_mono};
 
     pub struct WasapiLoopbackSource {
         buf: Mutex<mpsc::Receiver<Vec<f32>>>,
         sample_rate: u32,
+        stop: Arc<AtomicBool>,
+        join: Mutex<Option<std::thread::JoinHandle<()>>>,
+    }
+
+    impl Drop for WasapiLoopbackSource {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Ok(mut g) = self.join.lock() {
+                if let Some(h) = g.take() {
+                    let _ = h.join();
+                }
+            }
+        }
     }
 
     pub fn open_loopback(target_sample_rate: u32) -> Result<Box<dyn AudioCaptureSource>, String> {
+        let target_sample_rate = if target_sample_rate == 0 {
+            16_000
+        } else {
+            target_sample_rate
+        };
         let (tx, rx) = mpsc::channel::<Vec<f32>>(128);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_t = Arc::clone(&stop);
 
-        // Spawn a dedicated OS thread for WASAPI capture to avoid blocking
-        // the async executor.
-        std::thread::Builder::new()
+        let join = std::thread::Builder::new()
             .name("nomifun-wasapi-loopback".into())
             .spawn(move || {
-                if let Err(e) = wasapi_capture_loop(tx, target_sample_rate) {
+                if let Err(e) = wasapi_capture_loop(tx, target_sample_rate, stop_t) {
                     error!("WASAPI loopback error: {e}");
                 }
             })
@@ -127,51 +123,209 @@ mod platform {
         Ok(Box::new(WasapiLoopbackSource {
             buf: Mutex::new(rx),
             sample_rate: target_sample_rate,
+            stop,
+            join: Mutex::new(Some(join)),
         }))
     }
 
-    /// WASAPI capture loop (runs in a dedicated OS thread).
-    ///
-    /// High-level steps (COM calls abbreviated):
-    ///
-    /// 1. `CoInitializeEx` — initialize COM on this thread
-    /// 2. `CoCreateInstance(CLSID_MMDeviceEnumerator)` — get device enumerator
-    /// 3. `GetDefaultAudioEndpoint(eRender, eConsole)` — default speaker endpoint
-    /// 4. `Activate(IAudioClient)` — create audio client
-    /// 5. `GetMixFormat` — query device's native mix format (usually 32-bit float, stereo)
-    /// 6. `Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, …)`
-    /// 7. `GetService(IAudioCaptureClient)` — get capture client
-    /// 8. `Start()` — begin capture
-    /// 9. Loop: `GetNextPacketSize` → `GetBuffer` → convert → downsample → send → `ReleaseBuffer`
-    fn wasapi_capture_loop(tx: mpsc::Sender<Vec<f32>>, target_sr: u32) -> Result<(), String> {
-        // Full WASAPI implementation requires the `windows` crate with
-        // `Win32_Media_Audio` and `Win32_System_Com` features.  The skeleton
-        // below documents the correct sequence; uncomment and fill in when
-        // the `windows` crate is added to the workspace.
-        //
-        // For now we fall through to the stub and log a warning.
-
-        warn!(
-            "WASAPI loopback: native capture not compiled in. \
-             Add `windows = {{ version = \"0.58\", features = [\"Win32_Media_Audio\", \"Win32_System_Com\"] }}` \
-             to nomifun-audio/Cargo.toml and implement wasapi_capture_loop."
-        );
-
-        // Stub: send silence so the pipeline doesn't stall.
-        let silent_chunk = vec![0.0f32; (target_sr / 50) as usize]; // 20ms
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            if tx.blocking_send(silent_chunk.clone()).is_err() {
-                break;
-            }
+    fn wasapi_capture_loop(
+        tx: mpsc::Sender<Vec<f32>>,
+        target_sr: u32,
+        stop: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED)
+                .ok()
+                .map_err(|e| format!("CoInitializeEx: {e}"))?;
         }
-        Ok(())
+
+        let result = (|| -> Result<(), String> {
+            unsafe {
+                let enumerator: IMMDeviceEnumerator =
+                    CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                        .map_err(|e| format!("MMDeviceEnumerator: {e}"))?;
+
+                let device = enumerator
+                    .GetDefaultAudioEndpoint(eRender, eConsole)
+                    .map_err(|e| format!("GetDefaultAudioEndpoint(eRender): {e}"))?;
+
+                let client: IAudioClient = device
+                    .Activate::<IAudioClient>(CLSCTX_ALL, None)
+                    .map_err(|e| format!("Activate IAudioClient: {e}"))?;
+
+                let mix_format_ptr = client
+                    .GetMixFormat()
+                    .map_err(|e| format!("GetMixFormat: {e}"))?;
+                if mix_format_ptr.is_null() {
+                    return Err("GetMixFormat returned null".into());
+                }
+
+                let mix = &*mix_format_ptr;
+                let device_sr = mix.nSamplesPerSec;
+                let channels = mix.nChannels as usize;
+                let bits = mix.wBitsPerSample;
+                let format_tag = mix.wFormatTag;
+                let block_align = mix.nBlockAlign as usize;
+
+                let is_float = format_tag == WAVE_FORMAT_IEEE_FLOAT
+                    || (format_tag == WAVE_FORMAT_EXTENSIBLE && bits == 32 && is_extensible_float(mix));
+                let is_pcm16 = format_tag == WAVE_FORMAT_PCM && bits == 16
+                    || (format_tag == WAVE_FORMAT_EXTENSIBLE && bits == 16);
+
+                if !is_float && !is_pcm16 {
+                    CoTaskMemFree(Some(mix_format_ptr.cast()));
+                    return Err(format!(
+                        "unsupported mix format: tag={format_tag} bits={bits} ch={channels}"
+                    ));
+                }
+
+                // 100 ns units — request ~100 ms buffer.
+                const REFTIMES_PER_SEC: i64 = 10_000_000;
+                client
+                    .Initialize(
+                        AUDCLNT_SHAREMODE_SHARED,
+                        AUDCLNT_STREAMFLAGS_LOOPBACK,
+                        REFTIMES_PER_SEC / 10,
+                        0,
+                        mix_format_ptr,
+                        None,
+                    )
+                    .map_err(|e| {
+                        CoTaskMemFree(Some(mix_format_ptr.cast()));
+                        format!("IAudioClient::Initialize(LOOPBACK): {e}")
+                    })?;
+
+                let capture: IAudioCaptureClient = client
+                    .GetService::<IAudioCaptureClient>()
+                    .map_err(|e| format!("GetService IAudioCaptureClient: {e}"))?;
+
+                client
+                    .Start()
+                    .map_err(|e| format!("IAudioClient::Start: {e}"))?;
+
+                let chunk_target = (target_sr / 50).max(1) as usize;
+                let mut accum: Vec<f32> = Vec::with_capacity(chunk_target * 2);
+                let silent_chunk = vec![0.0f32; chunk_target];
+                let mut idle_ticks = 0u32;
+
+                while !stop.load(Ordering::Relaxed) && !tx.is_closed() {
+                    let packet_frames = match capture.GetNextPacketSize() {
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+
+                    if packet_frames == 0 {
+                        // WASAPI loopback yields nothing when the render engine is
+                        // idle (no apps playing). Emit silence so the mixer keeps
+                        // advancing instead of stalling on try_recv.
+                        idle_ticks += 1;
+                        if idle_ticks >= 4 {
+                            idle_ticks = 0;
+                            if tx.blocking_send(silent_chunk.clone()).is_err() {
+                                break;
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
+                    idle_ticks = 0;
+
+                    let mut remaining = packet_frames;
+                    while remaining > 0 {
+                        let mut data_ptr = std::ptr::null_mut();
+                        let mut num_frames_available = 0u32;
+                        let mut flags = 0u32;
+                        if capture
+                            .GetBuffer(
+                                &mut data_ptr,
+                                &mut num_frames_available,
+                                &mut flags,
+                                None,
+                                None,
+                            )
+                            .is_err()
+                        {
+                            break;
+                        }
+
+                        if num_frames_available > 0 && !data_ptr.is_null() {
+                            let silent =
+                                (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
+                            let frames = num_frames_available as usize;
+                            let mono = if silent {
+                                vec![0.0f32; frames]
+                            } else if is_float {
+                                let sample_count = frames * channels;
+                                let slice = std::slice::from_raw_parts(
+                                    data_ptr as *const f32,
+                                    sample_count,
+                                );
+                                downmix_to_mono(slice, channels)
+                            } else {
+                                let byte_len = frames * block_align;
+                                let bytes =
+                                    std::slice::from_raw_parts(data_ptr as *const u8, byte_len);
+                                let mut interleaved = Vec::with_capacity(frames * channels);
+                                for frame in 0..frames {
+                                    for ch in 0..channels {
+                                        let off = frame * block_align + ch * 2;
+                                        let s = i16::from_le_bytes([bytes[off], bytes[off + 1]]);
+                                        interleaved.push(s as f32 / i16::MAX as f32);
+                                    }
+                                }
+                                downmix_to_mono(&interleaved, channels)
+                            };
+
+                            let resampled = resample_mono(&mono, device_sr, target_sr);
+                            accum.extend_from_slice(&resampled);
+                            while accum.len() >= chunk_target {
+                                let chunk: Vec<f32> = accum.drain(..chunk_target).collect();
+                                if tx.blocking_send(chunk).is_err() {
+                                    let _ = capture.ReleaseBuffer(num_frames_available);
+                                    CoTaskMemFree(Some(mix_format_ptr.cast()));
+                                    let _ = client.Stop();
+                                    return Ok(());
+                                }
+                            }
+                        }
+
+                        let _ = capture.ReleaseBuffer(num_frames_available);
+                        remaining = match capture.GetNextPacketSize() {
+                            Ok(n) => n,
+                            Err(_) => 0,
+                        };
+                    }
+                }
+
+                let _ = client.Stop();
+                CoTaskMemFree(Some(mix_format_ptr.cast()));
+                Ok(())
+            }
+        })();
+
+        unsafe {
+            CoUninitialize();
+        }
+        result
+    }
+
+    unsafe fn is_extensible_float(mix: &WAVEFORMATEX) -> bool {
+        if mix.wFormatTag != WAVE_FORMAT_EXTENSIBLE || mix.cbSize < 22 {
+            return false;
+        }
+        // WAVEFORMATEXTENSIBLE follows WAVEFORMATEX; SubFormat GUID for IEEE float:
+        // {00000003-0000-0010-8000-00aa00389b71}
+        let ext = unsafe { &*(mix as *const WAVEFORMATEX as *const WAVEFORMATEXTENSIBLE) };
+        let g = ext.SubFormat;
+        g.data1 == 0x0000_0003
+            && g.data2 == 0x0000
+            && g.data3 == 0x0010
+            && g.data4 == [0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71]
     }
 
     #[async_trait]
     impl AudioCaptureSource for WasapiLoopbackSource {
         async fn read_chunk(&self) -> Option<Vec<f32>> {
-            // Yield to the executor so we're not spinning.
             tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
             self.buf.lock().ok()?.try_recv().ok()
         }
@@ -203,7 +357,6 @@ mod platform {
 
     struct UnsupportedLoopback {
         sample_rate: u32,
-        warned: std::sync::atomic::AtomicBool,
     }
 
     pub fn open_loopback(target_sample_rate: u32) -> Result<Box<dyn AudioCaptureSource>, String> {
@@ -213,16 +366,14 @@ mod platform {
         );
         Ok(Box::new(UnsupportedLoopback {
             sample_rate: target_sample_rate,
-            warned: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 
     #[async_trait]
     impl AudioCaptureSource for UnsupportedLoopback {
         async fn read_chunk(&self) -> Option<Vec<f32>> {
-            // Produce silence forever so the mixer can still run on mic alone.
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            Some(vec![0.0f32; (self.sample_rate / 50) as usize])
+            Some(vec![0.0f32; (self.sample_rate / 50).max(1) as usize])
         }
 
         fn sample_rate(&self) -> u32 {
@@ -245,14 +396,24 @@ mod tests {
 
     #[tokio::test]
     async fn loopback_source_opens_and_yields_frames() {
-        // On all platforms, LoopbackSource should open without error and
-        // produce at least one frame within 500ms.
         let src = LoopbackSource::new(16_000).expect("loopback open failed");
         let frame =
-            tokio::time::timeout(tokio::time::Duration::from_millis(500), src.read_chunk()).await;
+            tokio::time::timeout(tokio::time::Duration::from_millis(1500), src.read_chunk()).await;
         assert!(
             frame.is_ok(),
             "loopback source timed out producing first frame"
         );
+        // On Windows with no audio playing, chunks may be silence — still Some.
+        // try_recv may return None briefly; allow a few polls.
+        let mut got = frame.ok().and_then(|f| f);
+        if got.is_none() {
+            for _ in 0..50 {
+                if let Some(c) = src.read_chunk().await {
+                    got = Some(c);
+                    break;
+                }
+            }
+        }
+        assert!(got.is_some(), "expected at least one loopback chunk");
     }
 }

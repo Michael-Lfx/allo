@@ -18,10 +18,13 @@
 
 pub mod capture;
 pub mod devices;
+pub mod encode;
 pub mod frame;
 pub mod keepawake;
 pub mod loopback;
+pub mod mic;
 pub mod mixer;
+pub(crate) mod pcm_util;
 pub mod process_watch;
 pub mod recorder;
 pub mod session;
@@ -29,14 +32,16 @@ pub mod vad;
 
 pub use capture::AudioCaptureSource;
 pub use devices::{AudioDeviceInfo, AudioDeviceManager, DeviceKind};
+pub use encode::{encode_track_default, pcm_to_m4a, pcm_to_wav, write_track_m4a};
 pub use frame::{AudioChannel, TaggedFrame};
 pub use keepawake::KeepAwakeGuard;
 pub use loopback::LoopbackSource;
+pub use mic::MicSource;
 pub use mixer::DualTrackMixer;
 pub use process_watch::{ProcessWatcher, detect_meeting_process};
 pub use recorder::{
     MeetingRecorder, NodeStats, PipelineStats, SilenceGuard, StatsHandle, SttCallback,
-    TranscriptSegment, pcm_to_wav,
+    TranscriptSegment,
 };
 pub use session::{
     CreateMeetingSessionRequest, MeetingEvent, MeetingSegmentSnapshot, MeetingSessionService,
