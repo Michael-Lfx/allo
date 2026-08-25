@@ -70,6 +70,9 @@ const BUILD_DIR = join(ROOT, 'build.noindex');
 const TARGET_DIR = join(ROOT, 'target');
 const isWin = process.platform === 'win32';
 const KNOWN_TARGET_TRIPLE_RE = /^(x86_64|aarch64)-unknown-linux-gnu$|^(x86_64|aarch64)-pc-windows-msvc$|^(x86_64|aarch64|universal)-apple-darwin$/;
+// Set to '1' by the desktop build scripts once a multi-target session has
+// produced its first bundle. See removeStaleBundleDirs().
+const KEEP_BUNDLES_ENV = 'NOMI_PRUNE_KEEP_BUNDLES';
 
 // ── Tunables ───────────────────────────────────────────────────────────────
 // The full cross-platform dependency baseline is currently ~17G before the
@@ -177,8 +180,21 @@ function incrementalCacheDirs() {
   return [...incrementalCacheDirsUnder(BUILD_DIR), ...incrementalCacheDirsUnder(TARGET_DIR)];
 }
 
-/** Remove stale bundle outputs across default and known target-triple release dirs. */
+/**
+ * Remove stale bundle outputs across default and known target-triple release dirs.
+ *
+ * A multi-arch session (`build:win x64 arm64`) invokes `tauri build` once per
+ * target, and every invocation reruns this via beforeBuildCommand. Wiping every
+ * triple would delete the sibling arch's installers and `.sig` files, leaving
+ * `make:latest` unable to record that platform key. The build scripts set
+ * KEEP_BUNDLES_ENV from the second target onwards so only the first build of a
+ * session drops stale installers.
+ */
 function removeStaleBundleDirs() {
+  if (process.env[KEEP_BUNDLES_ENV] === '1') {
+    log(`  kept existing release/bundle dirs (${KEEP_BUNDLES_ENV}=1: multi-target session)`);
+    return;
+  }
   rmDir(join(TARGET_DIR, 'release', 'bundle'), 'target/release/bundle (stale installers)');
   for (const { name, dir } of knownTargetTripleDirs()) {
     rmDir(join(dir, 'release', 'bundle'), `target/${name}/release/bundle (stale installers)`);

@@ -128,9 +128,13 @@ echo "产物汇总目录: $DIST"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 COLLECTED=()
+BUILT_ANY=0
 for t in "${TRIPLES[@]}"; do
   echo ""
   echo "▶▶▶ 构建 $t ..."
+  # beforeBuildCommand 每次 tauri build 都会跑 prune-build --pre;不加这个变量,
+  # 第二个 target 会连带删掉第一个 target 的安装包与 .sig,make:latest 就只剩一个架构。
+  [[ "$BUILT_ANY" -eq 1 ]] && export NOMI_PRUNE_KEEP_BUNDLES=1
   # bundle.targets 在 tauri.conf.json 里被钉成 ["nsis"](仅给 Windows 用),
   # macOS 上那是无效目标 —— 不覆盖的话 tauri 只编出二进制、不产 .app/.dmg。
   # 用第二个 --config 覆盖成 macOS 的 app+dmg(与 build:updater 同款叠加写法)。
@@ -140,6 +144,8 @@ for t in "${TRIPLES[@]}"; do
 
   # tauri 把 DMG 放在 target/<triple>/release/bundle/dmg/*.dmg
   dmg_dir="$ROOT/target/$t/release/bundle/dmg"
+
+  BUILT_ANY=1
 
   # 先公证(staple 会原地改写 DMG),再拷贝到汇总目录,保证收的是带票据的包
   notarize_dmg_dir "$dmg_dir"

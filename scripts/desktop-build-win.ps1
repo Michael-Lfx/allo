@@ -173,6 +173,7 @@ Write-Host "产物汇总目录: $Dist"
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 $collected = @()
+$builtAny = $false
 foreach ($t in $triples) {
   Ensure-Target $t
   if ($t -ne $hostTriple) {
@@ -181,10 +182,14 @@ foreach ($t in $triples) {
   Write-Host ""
   Write-Host "▶▶▶ 构建 $t ..."
   $env:CI = 'true'
+  # beforeBuildCommand 每次 tauri build 都会跑 prune-build --pre;不加这个变量,
+  # 第二个 target 会连带删掉第一个 target 的安装包与 .sig,make:latest 就只剩一个架构。
+  if ($builtAny) { $env:NOMI_PRUNE_KEEP_BUNDLES = '1' }
   # 第二个 --config 把 bundle.targets 锁成单一 NSIS(tauri.conf.json 里是全平台全列表)。
   # 用配置文件而非内联 JSON:PowerShell 5.1 会剥掉传给原生程序的双引号,内联 JSON 必坏。
   & bun x tauri build --config $Conf --config $WinConf --target $t @signConfig @passthru
   if ($LASTEXITCODE -ne 0) { Write-Error "构建 $t 失败"; exit $LASTEXITCODE }
+  $builtAny = $true
 
   # Windows 产物在 target\<triple>\release\bundle\{msi,nsis}\
   $bundleDir = Join-Path $Root "target/$t/release/bundle"
