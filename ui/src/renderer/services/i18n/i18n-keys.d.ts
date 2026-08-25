@@ -2981,6 +2981,7 @@ export type I18nKey =
   | 'learning.checkinLegendDue'
   | 'learning.checkinLegendIntensity'
   | 'learning.checkinLegendLessons'
+  | 'learning.checkinLegendToday'
   | 'learning.checkinMonthLabel'
   | 'learning.checkinNoActivity'
   | 'learning.checkinRemaining'

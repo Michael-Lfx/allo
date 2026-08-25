@@ -215,6 +215,7 @@
   "checkinTooltipDue": "到期 {{count}} 张",
   "checkinDueBadge": "到期{{count}}",
   "checkinLegendDue": "当日到期卡片",
+  "checkinLegendToday": "今日",
   "checkinExpand": "展开打卡统计",
   "checkinCollapse": "收起打卡统计",
   "checkinTooltipCheckin": "已打卡",

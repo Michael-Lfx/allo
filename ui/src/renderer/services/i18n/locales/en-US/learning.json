@@ -215,6 +215,7 @@
   "checkinTooltipDue": "{{count}} due",
   "checkinDueBadge": "{{count}} due",
   "checkinLegendDue": "Cards due",
+  "checkinLegendToday": "Today",
   "checkinExpand": "Expand check-in stats",
   "checkinCollapse": "Collapse check-in stats",
   "checkinTooltipCheckin": "Checked in",

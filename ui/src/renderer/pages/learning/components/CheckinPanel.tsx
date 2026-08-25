@@ -350,9 +350,9 @@ export function CheckinPanel({
                 return (
                   <Tooltip key={reviewDay} content={dayTooltip(statsDay, t)} position='top'>
                     <div
-                      className={`flex min-h-40px flex-col items-center justify-between rounded-4px px-2px py-1px ${
-                        heatClass(statsDay?.reviewed_count ?? 0)
-                      } ${isToday ? 'ring-1 ring-[var(--color-primary-6)]' : ''}`}
+                      className={`flex min-h-40px flex-col items-center justify-between rounded-4px px-2px py-1px ${heatClass(
+                        statsDay?.reviewed_count ?? 0
+                      )}`}
                     >
                       <div className='flex max-w-full flex-wrap items-center gap-3px'>
                         {dayDue > 0 && (
@@ -369,7 +369,18 @@ export function CheckinPanel({
                           </span>
                         ))}
                       </div>
-                      <Text className='text-12px leading-16px'>{day}</Text>
+                      <Text className='text-12px leading-16px'>
+                        {isToday ? (
+                          <span
+                            className='inline-flex h-20px w-20px items-center justify-center rounded-full'
+                            style={{ boxShadow: '0 0 0 1.5px rgb(var(--primary-6))' }}
+                          >
+                            {day}
+                          </span>
+                        ) : (
+                          day
+                        )}
+                      </Text>
                     </div>
                   </Tooltip>
                 );
@@ -392,6 +403,10 @@ export function CheckinPanel({
                 <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-[var(--color-primary-light-3)]' />
                 <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-[var(--color-primary-light-4)]' />
                 <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-[var(--color-primary-6)]' />
+              </span>
+              <span className='flex items-center gap-4px'>
+                <span className='inline-block h-12px w-12px rounded-full bg-[var(--color-fill-1)]' style={{ boxShadow: '0 0 0 1.5px rgb(var(--primary-6))' }} />
+                {t('learning.checkinLegendToday')}
               </span>
             </div>
           </div>
@@ -421,6 +436,7 @@ export function CheckinPanel({
                       const reviewDay =
                         date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
                       const statsDay = dayMap.get(reviewDay);
+                      const isToday = reviewDay === todayReviewDay;
                       // 深色热力格（≥10 次复习）上打勾转白字，保证可读
                       const onDark = (statsDay?.reviewed_count ?? 0) >= 10;
                       return (
@@ -428,7 +444,14 @@ export function CheckinPanel({
                           <div
                             className={`flex h-14px w-14px cursor-pointer items-center justify-center rounded-2px ${heatClass(
                               statsDay?.reviewed_count ?? 0
-                            )} ${statsDay?.checkin_completed ? 'ring-1 ring-[var(--color-success-6)]' : ''}`}
+                            )}`}
+                            style={
+                              isToday
+                                ? { boxShadow: '0 0 0 1px rgb(var(--primary-6))' }
+                                : statsDay?.checkin_completed
+                                  ? { boxShadow: '0 0 0 1px rgb(var(--success-6))' }
+                                  : undefined
+                            }
                             onClick={() => pickHeatDay(day)}
                           >
                             {statsDay?.checkin_completed && (
