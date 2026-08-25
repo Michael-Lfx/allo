@@ -161,6 +161,8 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
 
     const recoverInterruptedGenerationTasks = useCallback(async () => {
         const recoveryNodes = nodesRef.current.filter((node) => {
+            // Skip nodes with an in-flight local request (e.g. user just hit Retry).
+            if (generationRequestsRef.current.has(node.id)) return false;
             const aggregateBatchRoot = node.metadata?.isBatchRoot && node.metadata.batchChildIds?.length && !node.metadata.taskId;
             if (aggregateBatchRoot) return false;
             return node.metadata?.status === NODE_STATUS_LOADING || node.metadata?.errorDetails === "页面刷新后生成已中断，请重新生成。" || Boolean(node.metadata?.taskId && node.metadata.status !== NODE_STATUS_SUCCESS);
@@ -173,10 +175,18 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
         }
         const projectTasks = tasks.filter((task) => task.projectId === projectId && (task.type.startsWith("canvas_") || task.type === "agent_storyboard_rows"));
         await Promise.all(recoveryNodes.map(async (node) => {
+            // Re-check: retry may have started while we were listing tasks.
+            if (generationRequestsRef.current.has(node.id)) return;
             let task = projectTasks.find((item) => item.id === node.metadata?.taskId) || projectTasks.find((item) => generationTaskNodeId(item) === node.id);
             if (!task && node.metadata?.taskId) task = await queryGenerationTask(node.metadata.taskId).catch(() => undefined);
+            if (generationRequestsRef.current.has(node.id)) return;
             if (!task) {
-                setNodes((current) => current.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: "页面刷新后找不到对应任务，请重新生成。" } } : item));
+                setNodes((current) => current.map((item) => {
+                    if (item.id !== node.id) return item;
+                    if (generationRequestsRef.current.has(item.id)) return item;
+                    if (item.metadata?.status === NODE_STATUS_SUCCESS && item.metadata?.content) return item;
+                    return { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: "页面刷新后找不到对应任务，请重新生成。" } };
+                }));
                 return;
             }
             if (recoveringTaskIdsRef.current.has(task.id)) return;
@@ -184,6 +194,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             bindGenerationTask(node.id, task);
             try {
                 const completed = task.status === "succeeded" ? task : await waitForGenerationTask(task.id, { initialTask: task });
+                if (generationRequestsRef.current.has(node.id)) return;
                 if (node.type === CanvasNodeType.Script && completed.type === "agent_storyboard_rows") {
                     const result = storyboardRowsFromTask(completed);
                     setNodes((current) => current.map((item) => item.id === node.id ? { ...item, title: result.title || item.title, metadata: { ...item.metadata, ...generationTaskMetadata(completed), status: NODE_STATUS_SUCCESS, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, storyboard: { rows: result.rows, visibleColumns: cinematicStoryboardColumns(item.metadata?.storyboard?.visibleColumns), referenceNodeIds: item.metadata?.storyboard?.referenceNodeIds || [] } } } : item));
@@ -191,6 +202,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                     await applyGenerationTaskResult(node.id, completed);
                 }
             } catch (error) {
+                if (generationRequestsRef.current.has(node.id)) return;
                 const failure = generationFailureMetadata(error, node.metadata?.composerContent || node.metadata?.prompt || task.prompt || "");
                 setNodes((current) => current.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...failure } } : item));
             } finally {
@@ -223,10 +235,17 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
         }));
     }, [applyGenerationTaskResult, bindGenerationTask, nodesRef, projectId, setNodes]);
 
+    const recoveredProjectIdRef = useRef<string | null>(null);
     useEffect(() => {
-        if (!projectLoaded) return;
+        if (!projectLoaded) {
+            recoveredProjectIdRef.current = null;
+            return;
+        }
+        // Run once per project load — re-running on callback identity churn races with Retry.
+        if (recoveredProjectIdRef.current === projectId) return;
+        recoveredProjectIdRef.current = projectId;
         void recoverInterruptedGenerationTasks();
-    }, [projectLoaded, recoverInterruptedGenerationTasks]);
+    }, [projectId, projectLoaded, recoverInterruptedGenerationTasks]);
 
     useEffect(() => {
         if (!projectLoaded) return;

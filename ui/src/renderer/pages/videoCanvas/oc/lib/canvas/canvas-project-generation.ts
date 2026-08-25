@@ -5,7 +5,8 @@ import { resolveImageUrl, uploadImage } from "@oc/services/image-storage";
 import { resolveMediaUrl } from "@oc/services/file-storage";
 import { resourceIdFromStorageKey } from "@oc/services/api/resources";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
-import { normalizeVideoDuration, normalizeVideoResolution } from "@oc/lib/video-generation-options";
+import { canonicalizeVideoResolution } from "@oc/lib/canvas-video-resolution";
+import { normalizeVideoDuration } from "@oc/lib/video-generation-options";
 import { isSeedanceVideoConfig } from "@oc/lib/seedance-video";
 import { imageMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
 import { ensureMediaNodeMinimumSize } from "@oc/lib/canvas/canvas-node-size";
@@ -291,7 +292,7 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         size: node?.metadata?.size || config.size || defaultConfig.size,
         transparentBackground: (node?.metadata?.transparentBackground || config.transparentBackground) === "true" ? "true" : "false",
         videoSeconds: normalizeVideoDuration(node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds),
-        vquality: normalizeVideoResolution(node?.metadata?.vquality || config.vquality || defaultConfig.vquality),
+        vquality: canonicalizeVideoResolution(model, node?.metadata?.vquality || config.vquality || defaultConfig.vquality),
         videoGenerateAudio: node?.metadata?.generateAudio || config.videoGenerateAudio || defaultConfig.videoGenerateAudio,
         videoWatermark: node?.metadata?.watermark || config.videoWatermark || defaultConfig.videoWatermark,
         audioVoice: node?.metadata?.audioVoice || config.audioVoice || defaultConfig.audioVoice,

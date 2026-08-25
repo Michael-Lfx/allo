@@ -89,7 +89,13 @@ export function normalizeVideoResolution(model: string, resolution: string): Vid
   if (isMiniMaxH3VideoModel(model)) {
     return normalizeMiniMaxH3Resolution(resolution);
   }
-  const raw = resolution.trim().toLowerCase();
+  // Canvas UI may store bare heights (`1080`); Seedance / Flowy expect `1080p`.
+  let raw = resolution.trim().toLowerCase().replace(/[_\s]/g, '');
+  if (raw === 'low') raw = '480p';
+  else if (raw === 'auto' || raw === 'medium' || raw === 'high') raw = '720p';
+  else if (raw === '4k' || raw === '2160' || raw === '2160p') raw = '2160p';
+  else if (raw && !raw.endsWith('p') && /^\d+$/.test(raw)) raw = `${raw}p`;
+
   const caps = videoModelCapabilities(model);
   if (caps.resolutions.includes(raw as SeedanceVideoResolution)) {
     return raw as SeedanceVideoResolution;

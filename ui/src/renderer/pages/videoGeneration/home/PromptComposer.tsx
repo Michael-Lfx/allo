@@ -5,6 +5,7 @@ import { CloseSmall, FileText } from '@icon-park/react';
 import { SlantedDocIcon } from './ComposerIcons';
 import { displayFileStem, VIDEO_HOME_UPLOAD_ACCEPT } from './documentUpload';
 import type { CanvasReferenceDraft, VideoHomeMode } from './types';
+import { usesCanvasReferences } from './types';
 import styles from './home.module.css';
 
 const TextArea = Input.TextArea;
@@ -102,7 +103,7 @@ export function PromptComposer({
       <div className={styles.promptArea}>
         <div className={styles.promptInner}>
           {(documentName ||
-            (mode === 'creation' && canvasReferences.length > 0)) && (
+            (usesCanvasReferences(mode) && canvasReferences.length > 0)) && (
             <div className={styles.inlineAttachments}>
               {documentName ? (
                 <span className={styles.documentChip}>
@@ -122,7 +123,7 @@ export function PromptComposer({
                   </button>
                 </span>
               ) : null}
-              {mode === 'creation'
+              {usesCanvasReferences(mode)
                 ? canvasReferences.slice(0, 4).map((reference) => (
                     <span key={reference.localId} className={styles.referenceThumb}>
                       <img src={reference.previewUrl} alt={reference.file.name} />

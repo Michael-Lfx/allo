@@ -1,7 +1,14 @@
 import type { ModelProtocol } from "@oc/lib/model-protocols";
 import { MINIMAX_H3_DURATION_DEFAULT, MINIMAX_H3_DURATION_MAX, MINIMAX_H3_DURATION_MIN } from "@oc/lib/minimax-h3-video";
-import { DEFAULT_MINIMAX_H3_RESOLUTION, isMiniMaxH3VideoModel, MINIMAX_H3_RESOLUTIONS } from "@renderer/services/videoModelCapabilities";
+import {
+    DEFAULT_MINIMAX_H3_RESOLUTION,
+    DEFAULT_VIDEO_RESOLUTION,
+    isMiniMaxH3VideoModel,
+    MINIMAX_H3_RESOLUTIONS,
+    videoModelCapabilities,
+} from "@renderer/services/videoModelCapabilities";
 import { DEFAULT_SEEDANCE_ASPECT_RATIO, SEEDANCE_ASPECT_RATIOS } from "@renderer/pages/videoGeneration/aspectRatios";
+import { isSeedanceFastModel, isSeedanceVideoModel } from "@oc/lib/seedance-video";
 
 export type ModelCapabilityConfig = {
     version: number;
@@ -120,7 +127,22 @@ export function modelCapabilityConfigFor(config: { channels: Array<{ id: string;
     }
     const channel = config.channels.find((item) => item.id === channelId) || config.channels.find((item) => item.models.includes(modelName));
     const cost = channel?.modelCosts?.find((item) => item.model === modelName);
-    return cost?.capabilityConfig || defaultModelCapabilityConfig(cost?.protocol);
+    const base = cost?.capabilityConfig || defaultModelCapabilityConfig(cost?.protocol);
+    // Overlay per-model resolution allow-list (Seedance fast/mini drop 1080p, etc.).
+    if (base.video && (isSeedanceVideoModel(modelName) || isSeedanceFastModel(modelName))) {
+        const caps = videoModelCapabilities(modelName);
+        return {
+            ...base,
+            video: {
+                ...base.video,
+                resolutions: caps.resolutions.map(String),
+                defaultResolution: caps.resolutions.includes(DEFAULT_VIDEO_RESOLUTION)
+                    ? DEFAULT_VIDEO_RESOLUTION
+                    : (caps.resolutions[caps.resolutions.length - 1] || DEFAULT_VIDEO_RESOLUTION),
+            },
+        };
+    }
+    return base;
 }
 
 export function normalizeVideoValue(profile: VideoCapabilityConfig, value: { seconds?: string; ratio?: string; resolution?: string }) {
@@ -128,8 +150,23 @@ export function normalizeVideoValue(profile: VideoCapabilityConfig, value: { sec
         ? (profile.duration.values || []).includes(Number(value.seconds)) ? Number(value.seconds) : profile.duration.default
         : normalizeRangeDuration(profile, Number(value.seconds));
     const ratio = profile.ratios.includes(value.ratio || "") ? value.ratio! : profile.defaultRatio;
-    const resolution = profile.resolutions.includes(value.resolution || "") ? value.resolution! : profile.defaultResolution;
+    const resolution = matchProfileResolution(profile.resolutions, value.resolution) || profile.defaultResolution;
     return { seconds: String(duration), ratio, resolution };
+}
+
+/** Match stored `vquality` against profile allow-list (case / `p` suffix tolerant). */
+function matchProfileResolution(allowed: string[], value: string | undefined): string | undefined {
+    const raw = String(value || "").trim();
+    if (!raw) return undefined;
+    const exact = allowed.find((item) => item === raw);
+    if (exact) return exact;
+    const needle = raw.toLowerCase().replace(/[_\s]/g, "");
+    const needleBare = needle.replace(/p$/i, "");
+    return allowed.find((item) => {
+        const candidate = item.toLowerCase().replace(/[_\s]/g, "");
+        if (candidate === needle) return true;
+        return candidate.replace(/p$/i, "") === needleBare;
+    });
 }
 
 function normalizeRangeDuration(profile: VideoCapabilityConfig, value: number) {

@@ -1071,6 +1071,7 @@
     "ratio": "Ratio",
     "t2vRatioHint": "Text-to-video needs a ratio; image-to-video adapts on the server",
     "duration": "Duration",
+    "durationHint": "Drag or tap a tick",
     "adaptive": "Adaptive",
     "seedanceFastHint": "Fast model uses 720P automatically",
     "durationAria": "Video duration (seconds)",

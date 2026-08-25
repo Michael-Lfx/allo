@@ -21,12 +21,22 @@ import type { CanvasNodeData, CanvasConnection, ViewportTransform } from '@oc/ty
 import { CanvasNodeType } from '@oc/types/canvas';
 import { createCanvasNode } from '@oc/lib/canvas/canvas-project-domain';
 import { encodeChannelModel } from '@oc/stores/use-config-store';
+import { canonicalizeVideoResolution } from '@oc/lib/canvas-video-resolution';
+import { isMiniMaxH3VideoModel } from '@renderer/services/videoModelCapabilities';
+import { isMiniMaxH3ResolutionToken } from '@oc/lib/video-generation-options';
 
 export type CanvasHomeLaunch = {
   prompt: string;
   requirement?: string;
   mediaKind: 'image' | 'video';
-  skill: {
+  /**
+   * `generate` = ordinary T2V/I2V from home (no style skill, may auto-start).
+   * `creation` (default) = styleboard launch with skill node.
+   */
+  intent?: 'creation' | 'generate';
+  /** When true, canvas opens and fires one video generation on the config node. */
+  autoGenerate?: boolean;
+  skill?: {
     id: string;
     label: string;
     description: string;
@@ -53,63 +63,90 @@ function connection(fromNodeId: string, toNodeId: string): CanvasConnection {
 }
 
 function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLaunch): CanvasProject {
+  const intent = launch.intent ?? 'creation';
+  const isGenerate = intent === 'generate';
+  const skill = launch.skill;
   const promptNode = {
     ...createCanvasNode(CanvasNodeType.Text, { x: 220, y: 190 }, {
       content: launch.prompt,
       prompt: launch.prompt,
       status: 'success',
       workflowKind: 'story_input',
-      workflowTitle: '创作输入',
+      workflowTitle: isGenerate ? '视频提示' : '创作输入',
       workflowDescription: launch.requirement,
     }),
-    title: '创作提示',
+    title: isGenerate ? '生成提示' : '创作提示',
   };
-  const skillNode = {
-    ...createCanvasNode(CanvasNodeType.Skill, { x: 220, y: 500 }, {
-      content: launch.skill.stylePrompt,
-      prompt: launch.skill.stylePrompt,
-      status: 'success',
-      skillId: launch.skill.id,
-      skillVersion: 1,
-      stylePresetId: launch.skill.id,
-      skillSnapshot: {
-        id: launch.skill.id,
-        name: launch.skill.label,
-        description: launch.skill.description,
-        category: launch.mediaKind,
-        template: launch.skill.stylePrompt,
-        outputMode: launch.mediaKind === 'image' ? 'image_prompt' : 'workflow',
-        outputContract: 'Apply the selected visual style to the connected generation node.',
-        version: 1,
-        tags: ['video-home', 'style'],
-      },
-    }),
-    title: launch.skill.label,
-  };
+  const skillNode =
+    !isGenerate && skill
+      ? {
+          ...createCanvasNode(CanvasNodeType.Skill, { x: 220, y: 500 }, {
+            content: skill.stylePrompt,
+            prompt: skill.stylePrompt,
+            status: 'success',
+            skillId: skill.id,
+            skillVersion: 1,
+            stylePresetId: skill.id,
+            skillSnapshot: {
+              id: skill.id,
+              name: skill.label,
+              description: skill.description,
+              category: launch.mediaKind,
+              template: skill.stylePrompt,
+              outputMode: launch.mediaKind === 'image' ? 'image_prompt' : 'workflow',
+              outputContract: 'Apply the selected visual style to the connected generation node.',
+              version: 1,
+              tags: ['video-home', 'style'],
+            },
+          }),
+          title: skill.label,
+        }
+      : null;
   const selectedModel =
     launch.mediaKind === 'image'
       ? launch.preferences.imageModel
       : launch.preferences.videoModel;
+  const videoModel = selectedModel || '';
+  const canonicalVquality = canonicalizeVideoResolution(
+    videoModel,
+    launch.preferences.resolution,
+  );
+  const storedVquality =
+    isMiniMaxH3VideoModel(videoModel) || isMiniMaxH3ResolutionToken(canonicalVquality)
+      ? canonicalVquality
+      : String(canonicalVquality).replace(/p$/i, '');
+  const composedPrompt = [
+    launch.prompt,
+    !isGenerate ? skill?.stylePrompt : undefined,
+    launch.requirement,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
   const configNode = {
     ...createCanvasNode(CanvasNodeType.Config, { x: 1050, y: 310 }, {
       content: launch.requirement ?? '',
       composerContent: launch.prompt,
-      prompt: [launch.prompt, launch.skill.stylePrompt, launch.requirement]
-        .filter(Boolean)
-        .join('\n\n'),
+      prompt: composedPrompt,
       status: 'idle',
       generationMode: launch.mediaKind,
+      // Ordinary generate always targets a video clip (T2V / I2V).
+      videoEditOperation: isGenerate
+        ? (launch.references?.length ? 'image_to_video' : 'text_to_video')
+        : undefined,
       model: selectedModel
         ? encodeChannelModel('allo-media', selectedModel)
         : undefined,
       size: launch.preferences.aspectRatio,
       seconds: String(launch.preferences.targetDurationSecs),
-      vquality: launch.preferences.resolution.replace(/p$/i, ''),
-      workflowKind: 'styleboard',
-      workflowTitle: `${launch.skill.label}创作`,
+      vquality: storedVquality,
+      workflowKind: isGenerate ? 'shot' : 'styleboard',
+      workflowTitle: isGenerate
+        ? '视频生成'
+        : `${skill?.label ?? '创作'}创作`,
       workflowDescription: launch.requirement,
-      stylePresetId: launch.skill.id,
-      skillId: launch.skill.id,
+      ...(skill && !isGenerate
+        ? { stylePresetId: skill.id, skillId: skill.id }
+        : {}),
     }),
     title: launch.mediaKind === 'image' ? '图片生成配置' : '视频生成配置',
   };
@@ -130,10 +167,15 @@ function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLau
     ),
     title: reference.title || `参考图 ${index + 1}`,
   }));
-  const nodes = [promptNode, skillNode, ...referenceNodes, configNode];
+  const nodes = [
+    promptNode,
+    ...(skillNode ? [skillNode] : []),
+    ...referenceNodes,
+    configNode,
+  ];
   const connections = [
     connection(promptNode.id, configNode.id),
-    connection(skillNode.id, configNode.id),
+    ...(skillNode ? [connection(skillNode.id, configNode.id)] : []),
     ...referenceNodes.map((node) => connection(node.id, configNode.id)),
   ];
   return {
@@ -145,10 +187,12 @@ function initializeProjectFromHome(project: CanvasProject, launch: CanvasHomeLau
       ...(project.alloCreative ?? {}),
       homeLaunch: {
         schema: 1,
+        intent,
+        autoGenerate: Boolean(launch.autoGenerate),
         prompt: launch.prompt,
         requirement: launch.requirement,
         mediaKind: launch.mediaKind,
-        skill: launch.skill,
+        skill: skill,
         preferences: launch.preferences,
         referenceMediaIds: (launch.references ?? []).map((item) => item.media_id),
         createdAt: new Date().toISOString(),

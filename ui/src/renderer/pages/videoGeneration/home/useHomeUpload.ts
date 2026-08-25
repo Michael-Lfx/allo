@@ -16,6 +16,7 @@ import type {
   VideoCreateDraft,
   VideoHomeMode,
 } from './types';
+import { usesCanvasReferences } from './types';
 
 const MAX_REFERENCES = 8;
 
@@ -156,7 +157,7 @@ export function useHomeUpload({
       (file) => !isSupportedImageFile(file) && !isSupportedTextFile(file)
     );
     if (images.length > 0) {
-      if (mode === 'creation') addCanvasImages(images);
+      if (usesCanvasReferences(mode)) addCanvasImages(images);
       else addAgentImages(images);
     }
     if (documents[0]) {

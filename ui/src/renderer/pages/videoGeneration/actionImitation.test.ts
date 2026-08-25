@@ -18,6 +18,8 @@ describe('parseVideoHomeMode', () => {
     expect(parseVideoHomeMode('action')).toBe('action');
     expect(parseVideoHomeMode('creation')).toBe('creation');
     expect(parseVideoHomeMode('canvas')).toBe('creation');
+    expect(parseVideoHomeMode('generate')).toBe('generate');
+    expect(parseVideoHomeMode('video')).toBe('generate');
     expect(parseVideoHomeMode('agent')).toBe('agent');
     expect(parseVideoHomeMode(null)).toBe('agent');
   });
