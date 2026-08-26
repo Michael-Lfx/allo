@@ -24,42 +24,45 @@ photorealistic photograph, real person, selfie, realistic skin texture, \
 phone camera look, documentary snapshot, anime, cartoon, manga, comic, \
 cel shading, 2d illustration, chibi, flat illustration";
 
-/// Soft pass: denoise ~0.38 — preserve facial features / live-action look, fictionalize photo fingerprint.
+/// Soft pass: denoise ~0.42 — keep rough look (age/gender/hair/wardrobe), fictionalize the face.
+///
+/// Do **not** say "preserve facial features" — that fights identity softening and leaves
+/// Seedance-detectable real-person fingerprints.
 pub(crate) const FACE_PRIVACY_SOFT_PROMPT: &str = "\
-Mild img2img edit of this reference. Preserve facial features, bone structure, age cues, \
-gender presentation, hair silhouette, wardrobe, pose, framing, set, and lighting. \
-Keep cinematic live-action realism as a movie still — do NOT convert to anime, cartoon, \
-manga, comic, or flat illustration. \
+Mild img2img edit of this reference into a fictional movie character. \
+Keep age band, gender presentation, hair silhouette, wardrobe, pose, framing, set, and lighting. \
+Rewrite the face as a cinematic AI-generated film character: soften and replace photographic \
+identity cues (pores, selfie microtexture, exact likeness) so it is clearly not a real-person still. \
 cinematic film look, fictional character, movie character, film grain, soft stylization. \
-Slightly fictionalize the face so it reads as an AI-generated film character rather than a \
-real-person phone/selfie photograph; soften photographic identity fingerprints while keeping \
-the same character look. Avoid: photorealistic photograph, real person, selfie, realistic skin texture. \
-No text, watermark, or logo.";
-
-/// Stronger pass still in the mild band (~0.45): more fictionalization, still cinematic live-action.
-pub(crate) const FACE_PRIVACY_STRONG_PROMPT: &str = "\
-Stronger mild img2img edit of this reference (still low denoise). Preserve overall facial likeness, \
-hair, wardrobe, pose, framing, set, and lighting. \
-cinematic film look, fictional character, movie character, film grain, soft stylization. \
-Further reduce real-person photographic fingerprints and selfie/skin-microtexture cues while \
-keeping a cinematic live-action film face. Do NOT turn the face into anime, cartoon, manga, \
-comic, or flat illustration — output must remain a realistic movie character still. \
+Stay live-action movie-still — do NOT convert to anime, cartoon, manga, comic, or flat illustration. \
 Avoid: photorealistic photograph, real person, selfie, realistic skin texture. \
 No text, watermark, or logo.";
 
-const MARKER_SOFT: &str = "soft_cinematic_v1";
-const MARKER_STRONG: &str = "strong_cinematic_v1";
+/// Stronger pass (~0.48): more face fictionalization, still cinematic live-action (not cartoon).
+pub(crate) const FACE_PRIVACY_STRONG_PROMPT: &str = "\
+Stronger mild img2img edit of this reference into a fictional movie character. \
+Keep hair silhouette, wardrobe, pose, framing, set, lighting, and rough character look. \
+Aggressively fictionalize the face: erase real-person photographic fingerprints and exact \
+likeness while outputting a cinematic live-action film face (AI / movie character, not a selfie). \
+cinematic film look, fictional character, movie character, film grain, soft stylization. \
+Do NOT turn the face into anime, cartoon, manga, comic, or flat illustration. \
+Avoid: photorealistic photograph, real person, selfie, realistic skin texture. \
+No text, watermark, or logo.";
 
-/// Soft ≈ 0.38, Strong ≈ 0.45 (within the 0.35–0.45 mild-edit band).
-const DENOISE_SOFT: f32 = 0.38;
-const DENOISE_STRONG: f32 = 0.45;
+/// Bump when denoise/prompt recipe changes so stale weak edits are re-run.
+const MARKER_SOFT: &str = "soft_cinematic_v2";
+const MARKER_STRONG: &str = "strong_cinematic_v2";
+
+/// Soft ≈ 0.42, Strong ≈ 0.48 (recommended 0.42–0.48 band for Seedance privacy).
+const DENOISE_SOFT: f32 = 0.42;
+const DENOISE_STRONG: f32 = 0.48;
 
 /// How aggressively to rewrite faces on a flagged reference image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PrivacyFaceTier {
-    /// Mild cinematic fictionalization; keep likeness and live-action look.
+    /// Denoise ~0.42: keep wardrobe/hair/pose; fictionalize face identity.
     Soft,
-    /// Stronger mild pass in the same band; still not cartoon/illustration.
+    /// Denoise ~0.48: stronger face fictionalization; still cinematic live-action.
     Strong,
 }
 
@@ -464,14 +467,18 @@ InputImageSensitiveContentDetected.PrivacyInformation (The request failed becaus
             assert!(lower.contains("film grain"));
             // Must not positively ask for illustration (trips style safety → cartoon).
             assert!(!lower.contains("illustrated"));
+            // "Preserve facial features" fights fictionalization — must stay out.
+            assert!(!lower.contains("preserve facial"));
+            assert!(!lower.contains("preserve overall facial"));
             // "anime" may appear only as a negation ("do NOT … anime").
             assert!(
                 !crate::planning::wants_stylized_non_photoreal(p),
                 "privacy prompt must stay cinematic live-action: {p}"
             );
         }
-        assert!((0.35..=0.45).contains(&PrivacyFaceTier::Soft.denoise()));
-        assert!((0.35..=0.45).contains(&PrivacyFaceTier::Strong.denoise()));
+        assert!((0.42..=0.48).contains(&PrivacyFaceTier::Soft.denoise()));
+        assert!((0.42..=0.48).contains(&PrivacyFaceTier::Strong.denoise()));
+        assert!(PrivacyFaceTier::Soft.denoise() < PrivacyFaceTier::Strong.denoise());
         assert!(FACE_PRIVACY_LOOK_CLAUSE.contains("movie character"));
         let neg = FACE_PRIVACY_NEGATIVE.to_ascii_lowercase();
         assert!(neg.contains("photorealistic photograph"));

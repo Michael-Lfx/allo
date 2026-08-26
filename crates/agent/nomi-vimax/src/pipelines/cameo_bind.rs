@@ -29,17 +29,16 @@ use crate::session::cameo::{self, CameoPhotoEntry};
 
 use super::{resolve_film_root, safe_component};
 
-/// Img2img edit: keep live-action plate, fictionalize face (mild cinematic — not cartoon).
+/// Img2img edit: cinematic fictional face (mild denoise) — not cartoon, not exact real-person still.
 /// Only used after [`image_has_real_human_face`] returns true.
 pub(crate) const CAMEO_FACE_PRIVACY_PROMPT: &str = "\
-Mild img2img edit of this reference. Preserve facial features, bone structure, age cues, \
-gender presentation, hair silhouette, wardrobe, pose, framing, set, and lighting. \
-Keep cinematic live-action realism as a movie still — do NOT convert to anime, cartoon, \
-manga, comic, or flat illustration. \
+Mild img2img edit of this reference into a fictional movie character. \
+Keep age band, gender presentation, hair silhouette, wardrobe, pose, framing, set, and lighting. \
+Rewrite the face as a cinematic AI-generated film character: soften and replace photographic \
+identity cues (pores, selfie microtexture, exact likeness) so it is clearly not a real-person still. \
 cinematic film look, fictional character, movie character, film grain, soft stylization. \
-Slightly fictionalize the face so it reads as an AI-generated film character rather than a \
-real-person phone/selfie photograph; soften photographic identity fingerprints while keeping \
-the same character look. Avoid: photorealistic photograph, real person, selfie, realistic skin texture. \
+Stay live-action movie-still — do NOT convert to anime, cartoon, manga, comic, or flat illustration. \
+Avoid: photorealistic photograph, real person, selfie, realistic skin texture. \
 No text, watermark, or logo.";
 
 /// Marker payload when face swap is skipped (no real human face in the upload).
@@ -310,7 +309,7 @@ async fn anonymize_bound_cameo_faces(
                 "photorealistic photograph, real person, selfie, realistic skin texture, anime, cartoon, manga"
                     .into(),
             ),
-            denoising_strength: Some(0.38),
+            denoising_strength: Some(0.42),
         };
         if let Err(err) = image
             .generate_with_opts(CAMEO_FACE_PRIVACY_PROMPT, &[raw_path.as_path()], &tmp, opts)
@@ -1764,6 +1763,7 @@ mod tests {
         assert!(lower.contains("fictional character"));
         assert!(lower.contains("wardrobe"));
         assert!(lower.contains("do not convert to anime"));
+        assert!(!lower.contains("preserve facial"));
         assert!(!lower.contains("illustrated"));
         assert!(!crate::planning::wants_stylized_non_photoreal(CAMEO_FACE_PRIVACY_PROMPT));
         assert!(CAMEO_ATMOSPHERE_PROMPT.contains("people-free"));
