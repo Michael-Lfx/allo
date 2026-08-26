@@ -4,6 +4,7 @@ mod action2video;
 mod cameo_bind;
 mod idea2video;
 mod novel2video;
+mod privacy_face;
 mod script_film;
 mod script_scene_split;
 mod script2video;

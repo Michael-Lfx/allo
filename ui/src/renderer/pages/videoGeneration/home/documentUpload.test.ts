@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { strToU8, zipSync } from 'fflate';
 import {
   displayFileStem,
+  filesFromClipboardData,
   isSupportedImageFile,
   isSupportedTextFile,
   isSupportedVideoFile,
@@ -69,5 +70,29 @@ describe('video home document uploads', () => {
 
   test('creates a concise display name', () => {
     expect(displayFileStem('chapter-one.script.md')).toBe('chapter-one.script');
+  });
+
+  test('reads pasted files from DataTransfer.files', () => {
+    const image = new File(['png'], 'image.png', { type: 'image/png' });
+    const data = {
+      files: [image] as unknown as FileList,
+      items: [] as unknown as DataTransferItemList,
+    } as DataTransfer;
+    expect(filesFromClipboardData(data)).toEqual([image]);
+  });
+
+  test('falls back to DataTransfer.items when files is empty', () => {
+    const image = new File(['png'], 'clipboard.png', { type: 'image/png' });
+    const item = {
+      kind: 'file',
+      type: 'image/png',
+      getAsFile: () => image,
+    } as DataTransferItem;
+    const data = {
+      files: [] as unknown as FileList,
+      items: [item] as unknown as DataTransferItemList,
+    } as DataTransfer;
+    expect(filesFromClipboardData(data)).toEqual([image]);
+    expect(filesFromClipboardData(null)).toEqual([]);
   });
 });

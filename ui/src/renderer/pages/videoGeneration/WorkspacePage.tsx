@@ -326,15 +326,27 @@ const WorkspacePage: React.FC = () => {
       if (!prev) return prev;
       const final_video = st.final_video ?? prev.final_video;
       const cover = st.cover ?? prev.cover;
+      const credits_consumed = Math.max(
+        Number(prev.credits_consumed ?? 0) || 0,
+        Number(st.credits_consumed ?? 0) || 0
+      );
       if (
         prev.status === st.status &&
         prev.stage === st.stage &&
         prev.final_video === final_video &&
-        prev.cover === cover
+        prev.cover === cover &&
+        (Number(prev.credits_consumed ?? 0) || 0) === credits_consumed
       ) {
         return prev;
       }
-      return { ...prev, status: st.status, stage: st.stage, final_video, cover };
+      return {
+        ...prev,
+        status: st.status,
+        stage: st.stage,
+        final_video,
+        cover,
+        credits_consumed,
+      };
     });
     if (document.hidden) return;
 
@@ -1114,6 +1126,11 @@ const WorkspacePage: React.FC = () => {
 
   const busy = statusFlags.busy || planning || rendering;
   const isAction = isActionImitationWorkflow(session?.workflow);
+  const videoCreditsConsumed = Math.max(
+    0,
+    statusFlags.creditsConsumed,
+    Number(session?.credits_consumed ?? 0) || 0
+  );
   const hasStoryboard =
     !isAction &&
     (Boolean(findStoryboardPath(artifacts)) ||
@@ -1403,13 +1420,24 @@ const WorkspacePage: React.FC = () => {
           <section className={`${styles.studioPanel} overflow-hidden`}>
             <div className='flex flex-wrap items-center justify-between gap-10px px-16px py-13px'>
               <div>
-                <div className='flex items-center gap-7px text-14px font-650 text-[var(--color-text-1)]'>
+                <div className='flex flex-wrap items-center gap-7px text-14px font-650 text-[var(--color-text-1)]'>
                   <VideoOne
                     theme='outline'
                     size={16}
                     className='text-[rgb(var(--primary-6))]'
                   />
                   {t('videoGeneration.studio.filmReady', { defaultValue: '成片已就绪' })}
+                  {videoCreditsConsumed > 0 ? (
+                    <span
+                      data-testid='session-video-credits'
+                      className='text-12px font-500 tabular-nums text-[var(--color-text-3)]'
+                    >
+                      {t('videoGeneration.studio.creditsConsumed', {
+                        credits: videoCreditsConsumed,
+                        defaultValue: '消耗 {{credits}} 积分',
+                      })}
+                    </span>
+                  ) : null}
                 </div>
                 <div className='mt-2px text-11px text-[var(--color-text-3)]'>
                   {t('videoGeneration.studio.filmReadyHint', {
@@ -1454,6 +1482,7 @@ const WorkspacePage: React.FC = () => {
               onCancel={() => void handleCancel()}
               cancelling={cancelling}
               models={models}
+              creditsConsumed={videoCreditsConsumed}
             />
           </section>
         ) : null}

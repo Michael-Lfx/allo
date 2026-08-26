@@ -7,7 +7,7 @@ mod video;
 
 pub use chat::FlowyChat;
 pub use image::FlowyImage;
-pub use traits::{VimaxChat, VimaxImage, VimaxVideo};
+pub use traits::{ImageGenerateOpts, VimaxChat, VimaxImage, VimaxVideo};
 pub use video::FlowyVideo;
 
 use std::path::PathBuf;
@@ -523,7 +523,11 @@ pub(crate) fn map_model_err(
         || lower.contains("inputimagesensitivecontent")
         || lower.contains("may contain real person")
     {
-        "Input frame/reference was flagged as a real-person likeness. A stylized redraw retry is available; if it still fails, use a more illustrated style and resume."
+        "Input frame/reference was flagged as a real-person likeness. The client auto-locates content[N], swaps faces to an AI face (or erases face details), and retries; if it still fails, use a more illustrated style and resume."
+    } else if lower.contains("reference_audio cannot be the only")
+        || (lower.contains("reference_audio") && lower.contains("only reference"))
+    {
+        "Seedance rejects reference_audio without an image/video reference. The client omits voice refs on pure text-to-video fallbacks; resume to continue."
     } else if lower.contains("401") || lower.contains("unauthorized") {
         "Auth failed — confirm you are signed in to Flowy cloud."
     } else if lower.contains("402")

@@ -20,11 +20,19 @@ use super::cameo_bind::{
     apply_session_cameos, cameo_extractor_hint, classify_session_references, resolve_session_root,
     world_cameo_context,
 };
+use super::privacy_face::{
+    content_index_to_image_slot, ensure_seedance_privacy_face, is_seedance_privacy_image_err_text,
+    next_privacy_tier_for_path, parse_seedance_flagged_content_index, privacy_repair_targets,
+    PrivacyFaceOutcome, PrivacyFaceTier,
+};
 use super::{
     PipelineBackends, emit, emit_meta, emit_pct, emit_pct_meta, group_shots_into_cameras,
     load_or_write_json,
     resolve_film_root, safe_component, sanitize_camera_tree,
 };
+
+/// Max times we rewrite flagged input images per shot before dropping continuity / T2V.
+const MAX_PRIVACY_FACE_REPAIRS_PER_SHOT: usize = 3;
 
 pub struct Script2VideoPipeline {
     backends: PipelineBackends,
@@ -1770,38 +1778,120 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             Err(err) => return Err(err),
         };
 
-        if let Some(err) = first_err {
-            // Drop continuity still (may still trip privacy on rare gateways) and retry
-            // with T2I cast/env/prop refs only; then pure T2V.
-            let asset_pairs: Vec<(PathBuf, String)> = ref_pairs
-                .iter()
-                .filter(|(p, _)| {
-                    continuity_source
-                        .as_ref()
-                        .map(|c| p != c)
-                        .unwrap_or(true)
-                })
-                .cloned()
-                .collect();
-            if using_video_continuity && !asset_pairs.is_empty() {
+        if let Some(mut err) = first_err {
+            // 1) Privacy repair: locate content[N] or sweep face-bearing subject refs,
+            //    force re-edit from privacy_raw (do not trust prior markers after reject).
+            // 2) If still blocked, drop continuity still, then pure T2V.
+            let working_pairs = ref_pairs.clone();
+            let mut privacy_attempts: Vec<(PathBuf, PrivacyFaceTier)> = Vec::new();
+            let mut privacy_resolved = false;
+
+            for repair_i in 0..MAX_PRIVACY_FACE_REPAIRS_PER_SHOT {
+                if !should_retry_seedance_without_photoreal_frame(&err)
+                    && !is_seedance_privacy_image_err(&err)
+                {
+                    break;
+                }
+                let err_text = err.to_string();
+                let targets = privacy_repair_targets(&err_text, &working_pairs);
+                if targets.is_empty() {
+                    tracing::info!(
+                        shot = shot.idx,
+                        repair_i,
+                        "privacy reject with no repairable image refs; skipping face repair"
+                    );
+                    break;
+                }
+
+                let targeted = parse_seedance_flagged_content_index(&err_text).is_some()
+                    && targets.len() == 1;
+                let labels: Vec<String> = targets
+                    .iter()
+                    .filter_map(|&i| working_pairs.get(i))
+                    .map(|(p, _)| {
+                        p.file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("ref.png")
+                            .to_string()
+                    })
+                    .collect();
                 emit(
                     progress,
                     "video_clip_start",
                     &format!(
-                        "Shot {}: possible privacy block ({}). Retrying multi-ref without continuity still…",
+                        "Shot {}: Seedance 图片风控。正在重新检测并电影化虚构脸（{}：{}）…",
                         shot.idx,
-                        truncate_err(&err, 120)
+                        if targeted { "定位" } else { "主体图扫描" },
+                        labels.join(", ")
                     ),
                 );
-                let asset_paths: Vec<&Path> =
-                    asset_pairs.iter().map(|(p, _)| p.as_path()).collect();
+
+                let mut any_rewrite = false;
+                let mut all_exhausted = true;
+                for &slot in &targets {
+                    let flagged_path = working_pairs[slot].0.clone();
+                    let Some(tier) =
+                        next_privacy_tier_for_path(&flagged_path, &privacy_attempts)
+                    else {
+                        continue;
+                    };
+                    all_exhausted = false;
+                    // Seedance just rejected (or we are sweeping after reject) — force
+                    // re-run from privacy_raw; do not skip because of a stale marker.
+                    match ensure_seedance_privacy_face(
+                        self.backends.image.as_ref(),
+                        &flagged_path,
+                        tier,
+                        true,
+                    )
+                    .await
+                    {
+                        Ok(outcome) => {
+                            tracing::info!(
+                                shot = shot.idx,
+                                path = %flagged_path.display(),
+                                ?tier,
+                                ?outcome,
+                                "privacy face repair applied"
+                            );
+                            if matches!(outcome, PrivacyFaceOutcome::Rewritten) {
+                                any_rewrite = true;
+                            }
+                            privacy_attempts.push((flagged_path, tier));
+                        }
+                        Err(repair_err) => {
+                            tracing::warn!(
+                                shot = shot.idx,
+                                path = %flagged_path.display(),
+                                error = %repair_err,
+                                "privacy face repair failed for one ref; continuing others"
+                            );
+                            // Still record the attempt so we escalate / don't loop forever.
+                            privacy_attempts.push((flagged_path, tier));
+                        }
+                    }
+                }
+
+                if all_exhausted && !any_rewrite {
+                    tracing::warn!(
+                        shot = shot.idx,
+                        "privacy face tiers exhausted for all targeted refs"
+                    );
+                    break;
+                }
+
+                let retry_paths: Vec<&Path> =
+                    working_pairs.iter().map(|(p, _)| p.as_path()).collect();
                 let retry_prompt = i2v_motion_prompt(
                     shot,
                     characters,
                     style,
-                    &asset_pairs,
+                    &working_pairs,
                     duration_secs,
-                    false,
+                    using_video_continuity
+                        && continuity_source
+                            .as_ref()
+                            .is_some_and(|c| working_pairs.iter().any(|(p, _)| p == c)),
                     scene_bgm,
                     use_voice_audio_ref,
                     speaker_name.as_deref(),
@@ -1814,7 +1904,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                         &retry_prompt,
                         None,
                         None,
-                        &asset_paths,
+                        &retry_paths,
                         duration_secs,
                         &video_path,
                         Some(&video_last_frame_path),
@@ -1824,89 +1914,160 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                     .await
                 {
                     Ok(()) => {
-                        // success
+                        privacy_resolved = true;
+                        break;
                     }
                     Err(retry_err)
                         if should_retry_seedance_without_photoreal_frame(&retry_err)
                             || is_seedance_privacy_image_err(&retry_err) =>
                     {
-                        emit(
-                            progress,
-                            "video_clip_start",
-                            &format!(
-                                "Shot {}: refs still blocked; falling back to text-to-video…",
-                                shot.idx
-                            ),
-                        );
-                        let t2v_prompt = format!(
-                            "{}\n{}\nOpening scene: {}",
-                            crate::planning::style_prompt_clause(style),
-                            retry_prompt,
-                            shot.ff_desc
-                        );
-                        let t2v_prompt = crate::prompt_safety::sanitize_video_prompt(&t2v_prompt);
-                        self.backends
-                            .video
-                            .generate(
-                                &t2v_prompt,
-                                None,
-                                None,
-                                &[],
-                                duration_secs,
-                                &video_path,
-                                Some(&video_last_frame_path),
-                                None,
-                                ref_audio,
-                            )
-                            .await
-                            .map_err(|t2v_err| {
-                                VimaxError::Video(format!(
-                                    "Shot {} video failed (multi-ref → drop continuity → text-to-video). First: {}; Final: {t2v_err}",
-                                    shot.idx,
-                                    truncate_err(&err, 160)
-                                ))
-                            })?;
+                        err = retry_err;
                     }
                     Err(retry_err) => return Err(retry_err),
                 }
-            } else {
-                emit(
-                    progress,
-                    "video_clip_start",
-                    &format!(
-                        "Shot {}: possible privacy block ({}). Falling back to text-to-video…",
-                        shot.idx,
-                        truncate_err(&err, 120)
-                    ),
-                );
-                let t2v_prompt = format!(
-                    "{}\n{}\nOpening scene: {}",
-                    crate::planning::style_prompt_clause(style),
-                    prompt,
-                    shot.ff_desc
-                );
-                let t2v_prompt = crate::prompt_safety::sanitize_video_prompt(&t2v_prompt);
-                self.backends
-                    .video
-                    .generate(
-                        &t2v_prompt,
-                        None,
-                        None,
-                        &[],
-                        duration_secs,
-                        &video_path,
-                        Some(&video_last_frame_path),
-                        None,
-                        ref_audio,
-                    )
-                    .await
-                    .map_err(|t2v_err| {
-                        VimaxError::Video(format!(
-                            "Shot {} video failed (multi-ref → text-to-video). First: {}; Final: {t2v_err}",
+            }
+
+            if !privacy_resolved {
+                // Drop continuity still (may still trip privacy on rare gateways) and retry
+                // with T2I cast/env/prop refs only; then pure T2V.
+                let asset_pairs: Vec<(PathBuf, String)> = working_pairs
+                    .iter()
+                    .filter(|(p, _)| {
+                        continuity_source
+                            .as_ref()
+                            .map(|c| p != c)
+                            .unwrap_or(true)
+                    })
+                    .cloned()
+                    .collect();
+                if using_video_continuity && !asset_pairs.is_empty() {
+                    emit(
+                        progress,
+                        "video_clip_start",
+                        &format!(
+                            "Shot {}: possible privacy block ({}). Retrying multi-ref without continuity still…",
                             shot.idx,
-                            truncate_err(&err, 160)
-                        ))
-                    })?;
+                            truncate_err(&err, 120)
+                        ),
+                    );
+                    let asset_paths: Vec<&Path> =
+                        asset_pairs.iter().map(|(p, _)| p.as_path()).collect();
+                    let retry_prompt = i2v_motion_prompt(
+                        shot,
+                        characters,
+                        style,
+                        &asset_pairs,
+                        duration_secs,
+                        false,
+                        scene_bgm,
+                        use_voice_audio_ref,
+                        speaker_name.as_deref(),
+                    );
+                    let retry_prompt = crate::prompt_safety::sanitize_video_prompt(&retry_prompt);
+                    match self
+                        .backends
+                        .video
+                        .generate(
+                            &retry_prompt,
+                            None,
+                            None,
+                            &asset_paths,
+                            duration_secs,
+                            &video_path,
+                            Some(&video_last_frame_path),
+                            None,
+                            ref_audio,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            // success
+                        }
+                        Err(retry_err)
+                            if should_retry_seedance_without_photoreal_frame(&retry_err)
+                                || is_seedance_privacy_image_err(&retry_err) =>
+                        {
+                            emit(
+                                progress,
+                                "video_clip_start",
+                                &format!(
+                                    "Shot {}: refs still blocked; falling back to text-to-video…",
+                                    shot.idx
+                                ),
+                            );
+                            let t2v_prompt = format!(
+                                "{}\n{}\nOpening scene: {}",
+                                crate::planning::style_prompt_clause(style),
+                                retry_prompt,
+                                shot.ff_desc
+                            );
+                            let t2v_prompt =
+                                crate::prompt_safety::sanitize_video_prompt(&t2v_prompt);
+                            self.backends
+                                .video
+                                .generate(
+                                    &t2v_prompt,
+                                    None,
+                                    None,
+                                    &[],
+                                    duration_secs,
+                                    &video_path,
+                                    Some(&video_last_frame_path),
+                                    None,
+                                    // Seedance: audio cannot be the sole reference input.
+                                    None,
+                                )
+                                .await
+                                .map_err(|t2v_err| {
+                                    VimaxError::Video(format!(
+                                        "Shot {} video failed (multi-ref → privacy-face → drop continuity → text-to-video). First: {}; Final: {t2v_err}",
+                                        shot.idx,
+                                        truncate_err(&err, 160)
+                                    ))
+                                })?;
+                        }
+                        Err(retry_err) => return Err(retry_err),
+                    }
+                } else {
+                    emit(
+                        progress,
+                        "video_clip_start",
+                        &format!(
+                            "Shot {}: possible privacy block ({}). Falling back to text-to-video…",
+                            shot.idx,
+                            truncate_err(&err, 120)
+                        ),
+                    );
+                    let t2v_prompt = format!(
+                        "{}\n{}\nOpening scene: {}",
+                        crate::planning::style_prompt_clause(style),
+                        prompt,
+                        shot.ff_desc
+                    );
+                    let t2v_prompt = crate::prompt_safety::sanitize_video_prompt(&t2v_prompt);
+                    self.backends
+                        .video
+                        .generate(
+                            &t2v_prompt,
+                            None,
+                            None,
+                            &[],
+                            duration_secs,
+                            &video_path,
+                            Some(&video_last_frame_path),
+                            None,
+                            // Seedance: audio cannot be the sole reference input.
+                            None,
+                        )
+                        .await
+                        .map_err(|t2v_err| {
+                            VimaxError::Video(format!(
+                                "Shot {} video failed (multi-ref → privacy-face → text-to-video). First: {}; Final: {t2v_err}",
+                                shot.idx,
+                                truncate_err(&err, 160)
+                            ))
+                        })?;
+                }
             }
         }
 
@@ -2998,12 +3159,7 @@ fn inject_voice_into_audio_text(
 }
 
 fn is_seedance_privacy_image_err(err: &VimaxError) -> bool {
-    let s = err.to_string().to_ascii_lowercase();
-    s.contains("privacyinformation")
-        || s.contains("inputimagesensitivecontent")
-        || s.contains("may contain real person")
-        || (s.contains("real person") && s.contains("sensitive"))
-        || s.contains("含真人")
+    is_seedance_privacy_image_err_text(&err.to_string())
 }
 
 /// True when the video backend rejected the **prompt text** for content safety
@@ -3011,10 +3167,19 @@ fn is_seedance_privacy_image_err(err: &VimaxError) -> bool {
 /// to rejecting an input frame. Retrying the same wording cannot pass; the client
 /// retries once with a strict-softened prompt, then fails fast instead of burning
 /// the multi-ref → drop-continuity → T2V cascade on the same risky text.
+///
+/// Important: `InputImageSensitiveContentDetected` also contains the substring
+/// `sensitivecontent` — those must be classified as image privacy, not text.
 fn is_video_sensitive_text_err(err: &VimaxError) -> bool {
+    if is_seedance_privacy_image_err(err) {
+        return false;
+    }
     let s = err.to_string().to_ascii_lowercase();
-    s.contains("sensitivecontent")
-        || s.contains("inputtextsensitive")
+    if s.contains("inputimagesensitive") {
+        return false;
+    }
+    s.contains("inputtextsensitive")
+        || s.contains("sensitivecontent")
         || s.contains("sensitive content")
         || s.contains("inappropriate content")
         || s.contains("datainspectionfailed")
@@ -3106,6 +3271,44 @@ mod continuity_tests {
         assert_eq!(
             frame_i2v_stylized_path(&canonical),
             PathBuf::from("shots/0/first_frame.i2v_stylized.png")
+        );
+    }
+
+    #[test]
+    fn image_privacy_err_is_not_classified_as_text_sensitive() {
+        let img = VimaxError::Video(
+            "API error 48: InputImageSensitiveContentDetected.PrivacyInformation \
+(content[2] may contain real person)"
+                .into(),
+        );
+        assert!(is_seedance_privacy_image_err(&img));
+        assert!(!is_video_sensitive_text_err(&img));
+        assert!(should_retry_seedance_without_photoreal_frame(&img));
+
+        let text = VimaxError::Video(
+            "InputTextSensitiveContentDetected: prompt violates content policy".into(),
+        );
+        assert!(!is_seedance_privacy_image_err(&text));
+        assert!(is_video_sensitive_text_err(&text));
+    }
+
+    #[test]
+    fn flagged_content_index_maps_onto_ref_strip() {
+        let msg = "seedance upstream status 400: InputImageSensitiveContentDetected.\
+PrivacyInformation (input image 'content[2]' may contain real person)";
+        let idx = parse_seedance_flagged_content_index(msg).expect("idx");
+        // content[0]=text → content[2] is the second reference image (slot 1)
+        assert_eq!(content_index_to_image_slot(idx, 3), Some(1));
+        let refs = vec![
+            (PathBuf::from("a.png"), String::new()),
+            (PathBuf::from("character_portraits/0/front.png"), String::new()),
+            (PathBuf::from("env.png"), String::new()),
+        ];
+        assert_eq!(privacy_repair_targets(msg, &refs), vec![1]);
+        // No content[N] → sweep face-bearing subject plates.
+        assert_eq!(
+            privacy_repair_targets("opaque seedance upstream status 400", &refs),
+            vec![1]
         );
     }
 

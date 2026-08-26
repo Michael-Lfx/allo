@@ -144,15 +144,33 @@ impl FlowyVideo {
     fn poll_progress_hook(&self) -> Option<Box<dyn FnMut(&VideoTaskRecord, u64) + Send>> {
         let cb = self.progress.clone()?;
         Some(Box::new(move |record: &VideoTaskRecord, elapsed: u64| {
-            cb(
-                "video_poll",
-                &format!("elapsed {elapsed}s"),
-                Some(serde_json::json!({
-                    "elapsed_secs": elapsed,
-                    "status": record.status,
-                })),
-            );
+            let mut meta = serde_json::json!({
+                "elapsed_secs": elapsed,
+                "status": record.status,
+                "task_id": record.id,
+                "credits_consumed": record.credits_consumed,
+            });
+            if let Some(obj) = meta.as_object_mut() {
+                if let Some(tid) = record.task_id.as_ref() {
+                    obj.insert("upstream_task_id".into(), serde_json::json!(tid));
+                }
+            }
+            cb("video_poll", &format!("elapsed {elapsed}s"), Some(meta));
         }))
+    }
+
+    fn emit_video_credits(&self, record: &VideoTaskRecord) {
+        if record.credits_consumed <= 0 {
+            return;
+        }
+        self.emit_progress(
+            "video_credits",
+            &format!("credits {}", record.credits_consumed),
+            Some(serde_json::json!({
+                "task_id": record.id,
+                "credits_consumed": record.credits_consumed,
+            })),
+        );
     }
 }
 
@@ -294,18 +312,29 @@ impl VimaxVideo for FlowyVideo {
         }
 
         let mut reference_audio_url = None;
+        // Seedance: reference_audio cannot be the only reference input — need ≥1
+        // image or reference_video. Pure T2V must omit voice refs.
+        let has_visual_ref = !images.is_empty() || reference_video_url.is_some();
         if let Some(path) = ref_audio.filter(|p| crate::media_local::is_usable_audio_file(p)) {
-            local_frame_notes.push(format!(
-                "reference_audio←{}",
-                path.file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("?")
-            ));
-            reference_audio_url = Some(
-                self.services
-                    .upload_audio_public_url(path, "reference_audio")
-                    .await?,
-            );
+            if has_visual_ref {
+                local_frame_notes.push(format!(
+                    "reference_audio←{}",
+                    path.file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("?")
+                ));
+                reference_audio_url = Some(
+                    self.services
+                        .upload_audio_public_url(path, "reference_audio")
+                        .await?,
+                );
+            } else {
+                tracing::info!(
+                    path = %path.display(),
+                    "omitting reference_audio: Seedance forbids audio as the only reference input"
+                );
+                local_frame_notes.push("reference_audio_omitted_no_visual_ref".into());
+            }
         }
 
         let aspect = self.resolved_aspect();
@@ -390,6 +419,52 @@ impl VimaxVideo for FlowyVideo {
 
         let record = match first {
             Ok(r) => r,
+            Err(e)
+                if !is_h3
+                    && is_seedance_audio_only_ref_err(&e)
+                    && params.reference_audio_url.is_some() =>
+            {
+                // Upstream sometimes strips rejected images then complains that audio
+                // is the only remaining reference — drop voice ref and retry once.
+                tracing::warn!(
+                    model = %model_for_err,
+                    error = %e,
+                    "Seedance rejected audio-only reference; retrying without reference_audio"
+                );
+                let mut no_audio = params.clone();
+                no_audio.reference_audio_url = None;
+                let mut notes = local_frame_notes.clone();
+                notes.push("reference_audio_dropped_after_audio_only_reject".into());
+                log_video_create_params(&no_audio, &notes, out_path);
+                if self.is_cancelled() {
+                    return Err(VimaxError::Cancelled);
+                }
+                if is_usable_video_file(out_path) {
+                    return Ok(());
+                }
+                self.services
+                    .api
+                    .generate_video_with_timeout_and_progress_cancellable(
+                        &self.services.session,
+                        no_audio.to_json(),
+                        timeout,
+                        self.poll_progress_hook(),
+                        should_cancel.clone(),
+                        None,
+                    )
+                    .await
+                    .map_err(|e2| {
+                        if self.is_cancelled() {
+                            return VimaxError::Cancelled;
+                        }
+                        map_model_err(
+                            "video",
+                            Some(model_for_err.as_str()),
+                            "video_generate_drop_ref_audio",
+                            e2,
+                        )
+                    })?
+            }
             Err(e) if !is_h3 && is_seedance_caption_empty_err(&e) => {
                 // First reinforce captions (keep audio on); only then fall back to silent.
                 tracing::warn!(
@@ -500,6 +575,7 @@ impl VimaxVideo for FlowyVideo {
 
         self.emit_progress("video_download", "downloading video", None);
         download_video(&url, out_path).await?;
+        self.emit_video_credits(&record);
 
         if let Some(lf_out) = last_frame_out {
             if let Some(lf_url) = record.last_frame_url() {
@@ -532,6 +608,15 @@ fn is_seedance_caption_empty_err(err: &nomifun_cloud::ServerClientError) -> bool
         || s.contains("captions are not enough or empty")
         || (s.contains("caption") && s.contains("empty"))
         || (s.contains("caption") && s.contains("not enough"))
+}
+
+/// `reference_audio` without any image/video reference is rejected by Seedance.
+fn is_seedance_audio_only_ref_err(err: &nomifun_cloud::ServerClientError) -> bool {
+    let s = err.to_string().to_ascii_lowercase();
+    s.contains("reference_audio cannot be the only")
+        || (s.contains("reference_audio")
+            && s.contains("only reference")
+            && (s.contains("invalidparameter") || s.contains("not valid")))
 }
 
 /// Append a strong ambient/BGM caption block so a second attempt can keep `generate_audio=true`.
@@ -639,4 +724,22 @@ async fn download_image_still(url: &str, out_path: &Path) -> VimaxResult<()> {
         .map_err(|e| VimaxError::Video(e.to_string()))?;
     write_image_bytes_atomic(&bytes, out_path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nomifun_cloud::ServerClientError;
+
+    #[test]
+    fn detects_audio_only_reference_reject() {
+        let err = ServerClientError::Api {
+            code: 400,
+            msg: "InvalidParameter (The parameter `content` specified in the request is not valid: \
+reference_audio cannot be the only reference input. Request id: abc)"
+                .into(),
+        };
+        assert!(is_seedance_audio_only_ref_err(&err));
+        assert!(!is_seedance_caption_empty_err(&err));
+    }
 }

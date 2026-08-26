@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 nomi-config.workspace = true
+nomi-providers.workspace = true
 nomifun-cloud.workspace = true
 async-trait.workspace = true
 base64.workspace = true

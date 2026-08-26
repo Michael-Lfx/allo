@@ -999,6 +999,7 @@ fn session_summary_from(summary: SessionSummary) -> VimaxSessionSummary {
         status: summary.status.as_str().to_string(),
         final_video: summary.final_video,
         cover: summary.cover,
+        credits_consumed: summary.credits_consumed,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
     }

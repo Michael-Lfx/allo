@@ -35,6 +35,8 @@ export interface RunStatusFlags {
   coverPath: string | null;
   /** Terminal failure whose error matches the insufficient-credits shape. */
   creditsFailed: boolean;
+  /** Aggregate Flowy video-task credits for this session (changes as clips bill). */
+  creditsConsumed: number;
 }
 
 const EMPTY_FLAGS: RunStatusFlags = {
@@ -48,6 +50,7 @@ const EMPTY_FLAGS: RunStatusFlags = {
   finalVideoPath: null,
   coverPath: null,
   creditsFailed: false,
+  creditsConsumed: 0,
 };
 
 const FLAG_KEYS = [
@@ -61,6 +64,7 @@ const FLAG_KEYS = [
   'finalVideoPath',
   'coverPath',
   'creditsFailed',
+  'creditsConsumed',
 ] as const;
 
 interface FeedState {
@@ -98,6 +102,7 @@ function computeFlags(next: SessionStatus | null, prev: RunStatusFlags): RunStat
     coverPath: next?.cover ?? null,
     creditsFailed:
       status === 'failed' && typeof next?.error === 'string' && isInsufficientCreditsError(next.error),
+    creditsConsumed: Math.max(0, Number(next?.credits_consumed ?? 0) || 0),
   };
   for (const key of FLAG_KEYS) {
     if (!Object.is(flags[key], prev[key])) return flags;

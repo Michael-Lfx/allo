@@ -434,6 +434,8 @@ mod tests {
             stale: BTreeMap::new(),
             final_video: Some("script2video/final_video.mp4".into()),
             cover: None,
+            credits_consumed: 0,
+            billed_video_task_ids: Vec::new(),
             created_at: "2026-01-01T00:00:00+08:00".into(),
             updated_at: "2026-01-01T00:00:00+08:00".into(),
         }

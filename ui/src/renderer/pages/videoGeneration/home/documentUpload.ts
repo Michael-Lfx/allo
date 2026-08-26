@@ -145,3 +145,23 @@ export function displayFileStem(fileName: string): string {
     uploadMessage('videoGeneration.create.upload.untitledAsset', '未命名素材')
   );
 }
+
+/**
+ * Collect File objects from paste / drop DataTransfer.
+ * Prefer `files`; fall back to `items` — screenshots often only appear there.
+ */
+export function filesFromClipboardData(
+  data: DataTransfer | null | undefined
+): File[] {
+  if (!data) return [];
+  const fromList = Array.from(data.files ?? []);
+  if (fromList.length > 0) return fromList;
+
+  const fromItems: File[] = [];
+  for (const item of Array.from(data.items ?? [])) {
+    if (item.kind !== 'file') continue;
+    const file = item.getAsFile();
+    if (file) fromItems.push(file);
+  }
+  return fromItems;
+}

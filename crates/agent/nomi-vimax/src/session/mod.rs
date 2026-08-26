@@ -89,6 +89,12 @@ pub struct SessionRecord {
     /// Relative path to film poster (`…/cover.png`). Display-only; not muxed into the film.
     #[serde(default)]
     pub cover: Option<String>,
+    /// Sum of Flowy `credits_consumed` from video generation tasks in this session.
+    #[serde(default)]
+    pub credits_consumed: i64,
+    /// Local Flowy video-task ids already folded into [`Self::credits_consumed`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub billed_video_task_ids: Vec<i64>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -111,8 +117,15 @@ pub struct SessionSummary {
     pub final_video: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cover: Option<String>,
+    /// Sum of Flowy video-task credits billed for this project.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub credits_consumed: i64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
 }
 
 impl From<SessionRecord> for SessionSummary {
@@ -125,6 +138,7 @@ impl From<SessionRecord> for SessionSummary {
             status: record.status,
             final_video: record.final_video,
             cover: record.cover,
+            credits_consumed: record.credits_consumed,
             created_at: record.created_at,
             updated_at: record.updated_at,
         }
@@ -327,6 +341,8 @@ impl SessionIndex {
             stale: STALE_KEYS.iter().map(|k| ((*k).to_string(), false)).collect(),
             final_video: None,
             cover: None,
+            credits_consumed: 0,
+            billed_video_task_ids: Vec::new(),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -795,6 +811,28 @@ pub fn apply_status_to_record(record: &mut SessionRecord, status: &RenderStatus)
     if let Some(v) = &status.cover {
         record.cover = Some(v.clone());
     }
+    if status.credits_consumed > record.credits_consumed {
+        record.credits_consumed = status.credits_consumed;
+    }
+}
+
+/// Fold a Flowy video-task credit into the session ledger (idempotent per task id).
+///
+/// Returns `true` when the session total changed.
+pub fn apply_video_task_credits(
+    record: &mut SessionRecord,
+    task_id: i64,
+    credits: i64,
+) -> bool {
+    if task_id <= 0 || credits <= 0 {
+        return false;
+    }
+    if record.billed_video_task_ids.contains(&task_id) {
+        return false;
+    }
+    record.billed_video_task_ids.push(task_id);
+    record.credits_consumed = record.credits_consumed.saturating_add(credits);
+    true
 }
 
 /// Convenience: empty metadata object for progress events.
@@ -1019,5 +1057,46 @@ mod import_export_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn apply_video_task_credits_is_idempotent_per_task() {
+        let mut record = SessionRecord {
+            session_id: "s1".into(),
+            working_dir: ".working_dir/s1".into(),
+            title: "t".into(),
+            workflow: WorkflowKind::Idea2Video,
+            idea: String::new(),
+            script: String::new(),
+            novel_text: String::new(),
+            user_requirement: String::new(),
+            style: String::new(),
+            vertical_skill_ids: vec![],
+            llm_model: String::new(),
+            image_model: String::new(),
+            video_model: String::new(),
+            target_duration_secs: 0,
+            aspect_ratio: String::new(),
+            resolution: String::new(),
+            fps: 0,
+            stage: "created".into(),
+            summary: String::new(),
+            status: RunStatus::Idle,
+            stale: Default::default(),
+            final_video: None,
+            cover: None,
+            credits_consumed: 0,
+            billed_video_task_ids: vec![],
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        assert!(apply_video_task_credits(&mut record, 10, 5200));
+        assert_eq!(record.credits_consumed, 5200);
+        assert!(!apply_video_task_credits(&mut record, 10, 5200));
+        assert_eq!(record.credits_consumed, 5200);
+        assert!(apply_video_task_credits(&mut record, 11, 800));
+        assert_eq!(record.credits_consumed, 6000);
+        assert!(!apply_video_task_credits(&mut record, 12, 0));
+        assert_eq!(record.credits_consumed, 6000);
     }
 }
