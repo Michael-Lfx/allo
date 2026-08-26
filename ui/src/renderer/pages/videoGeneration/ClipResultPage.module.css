@@ -1,0 +1,460 @@
+.page {
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 420px at 50% -80px, rgba(var(--primary-6), 0.07), transparent 70%),
+    var(--color-bg-1);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+/* Header */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 32px;
+  max-width: 960px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.backBtn {
+  flex-shrink: 0;
+}
+
+.titleSection {
+  flex: 1;
+  min-width: 0;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-1);
+  margin: 0 0 4px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt {
+  font-size: 14px;
+  color: var(--color-text-3);
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskIdBadge {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--color-fill-2);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.taskIdLabel {
+  color: var(--color-text-4);
+}
+
+.taskIdValue {
+  color: var(--color-text-3);
+  font-family: monospace;
+}
+
+/* Main Content */
+.content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 960px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Loading State */
+.loadingState {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 80px 0;
+}
+
+.loadingPulse {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.loadingText {
+  color: var(--color-text-1);
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.loadingHint {
+  color: var(--color-text-3);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* Error State */
+.errorState {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 0;
+  gap: 24px;
+}
+
+.errorActions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+/* Status Card */
+.statusCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  padding: 32px;
+  background: var(--color-bg-2);
+  border: 1px solid var(--color-border-2);
+  border-radius: 16px;
+  width: 100%;
+  box-sizing: border-box;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+  transition: all 0.3s ease;
+}
+
+.statusCardDefault {
+  border-color: var(--color-border-2);
+}
+
+.statusCardRunning {
+  border-color: rgba(var(--primary-6), 0.3);
+  background: linear-gradient(135deg, var(--color-bg-2) 0%, rgba(var(--primary-6), 0.05) 100%);
+}
+
+.statusCardSuccess {
+  border-color: rgba(var(--success-6), 0.3);
+  background: linear-gradient(135deg, var(--color-bg-2) 0%, rgba(var(--success-6), 0.05) 100%);
+}
+
+.statusCardError {
+  border-color: rgba(var(--danger-6), 0.3);
+  background: linear-gradient(135deg, var(--color-bg-2) 0%, rgba(var(--danger-6), 0.05) 100%);
+}
+
+.statusIconWrapper {
+  flex-shrink: 0;
+}
+
+.statusIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  background: var(--color-fill-1);
+  color: var(--color-text-3);
+  transition: all 0.3s ease;
+}
+
+.statusCardSuccess .statusIcon {
+  background: rgba(var(--success-6), 0.1);
+  color: rgb(var(--success-6));
+}
+
+.statusCardError .statusIcon {
+  background: rgba(var(--danger-6), 0.1);
+  color: rgb(var(--danger-6));
+}
+
+.statusCardRunning .statusIcon {
+  background: rgba(var(--primary-6), 0.1);
+  color: rgb(var(--primary-6));
+}
+
+.statusIconPulse {
+  animation: iconPulse 2s ease-in-out infinite;
+}
+
+@keyframes iconPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+.statusInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.statusTitle {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-1);
+  margin: 0 0 8px 0;
+}
+
+.statusSubtitle {
+  font-size: 14px;
+  color: var(--color-text-3);
+  margin: 0 0 16px 0;
+}
+
+/* Progress Section */
+.progressSection {
+  margin-bottom: 12px;
+}
+
+.progressBar {
+  margin: 0;
+}
+
+.progressLabels {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.progressPercent {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgb(var(--primary-6));
+}
+
+.progressTime {
+  font-size: 12px;
+  color: var(--color-text-4);
+}
+
+/* Step Indicator */
+.stepIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(var(--primary-6), 0.08);
+  border-radius: 20px;
+  margin-top: 8px;
+}
+
+.stepDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgb(var(--primary-6));
+  animation: stepDotPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes stepDotPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.8); }
+}
+
+.stepText {
+  font-size: 13px;
+  color: rgb(var(--primary-6));
+  font-weight: 500;
+}
+
+/* Spinning animation for loading icon */
+.spinning {
+  animation: spin 1.5s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Video Container */
+.videoContainer {
+  width: 100%;
+  margin-top: 24px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.15);
+}
+
+.videoWrapper {
+  position: relative;
+  width: 100%;
+}
+
+.videoPlayer {
+  display: block;
+  width: 100%;
+  max-height: 540px;
+  object-fit: contain;
+}
+
+.videoOverlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.6));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.videoWrapper:hover .videoOverlay {
+  opacity: 1;
+}
+
+.videoControlBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.videoControlBtn:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: scale(1.1);
+}
+
+/* Error Banner */
+.errorBanner {
+  width: 100%;
+  margin-top: 24px;
+}
+
+.errorBannerContent {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  background: rgba(var(--danger-6), 0.1);
+  border: 1px solid rgba(var(--danger-6), 0.2);
+  border-radius: 12px;
+  color: rgb(var(--danger-6));
+  font-size: 14px;
+}
+
+.errorBannerIcon {
+  flex-shrink: 0;
+}
+
+/* Actions */
+.actions {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  margin-top: 32px;
+  flex-wrap: nowrap;
+}
+
+.actionBtn {
+  /* Prevent button text wrapping */
+  white-space: nowrap;
+}
+
+.btnIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.btnText {
+  display: inline;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .page {
+    padding: 16px;
+  }
+
+  .header {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .backBtn {
+    order: -1;
+  }
+
+  .titleSection {
+    width: 100%;
+    order: 1;
+  }
+
+  .taskIdBadge {
+    order: 2;
+    margin-left: auto;
+  }
+
+  .statusCard {
+    padding: 20px;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+
+  .statusTitle {
+    font-size: 18px;
+  }
+
+  .statusSubtitle {
+    font-size: 13px;
+  }
+
+  .actions {
+    flex-direction: column;
+    width: 100%;
+    gap: 12px;
+  }
+
+  .actionBtn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .errorActions {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .errorActions button {
+    width: 100%;
+    justify-content: center;
+  }
+}

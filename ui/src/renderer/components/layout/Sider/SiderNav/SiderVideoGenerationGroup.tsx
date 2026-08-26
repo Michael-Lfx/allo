@@ -16,9 +16,12 @@ import {
   RECENT_VIDEO_GENERATION_VISIBLE,
   mergeRecentVideoGenerationProjects,
   readRecentVideoGenerationSessions,
+  readRecentVideoGenerationTasks,
   rememberVideoGenerationSession,
   updateRecentVideoGenerationTitle,
+  type RecentVideoGenerationEntry,
 } from '@renderer/pages/videoGeneration/routeMemory';
+import { listGenerationTasks } from '@renderer/pages/videoCanvas/api';
 import { prefetchVideoGenerationHome } from '@renderer/pages/videoGeneration/prefetch';
 
 const NAV_EXPANDED_KEY = 'flowy.videoGeneration.navExpanded';
@@ -29,6 +32,8 @@ type RecentNavItem = {
   id: string;
   title: string;
   status?: string | null;
+  /** Source kind: long-lived session or one-shot clip task. */
+  source: 'session' | 'task';
 };
 
 function readNavExpandedDefault(fallback: boolean): boolean {
@@ -57,28 +62,184 @@ function truncateTitle(title: string, maxChars = 18): string {
   return `${[...t].slice(0, maxChars - 1).join('')}…`;
 }
 
+/** Format a task's prompt into a short sider-friendly title. */
+function taskTitleFromPrompt(prompt: string | null | undefined): string {
+  return (prompt ?? '').trim().slice(0, 48);
+}
+
+function buildFallbackItems(
+  localSessions: RecentVideoGenerationEntry[],
+  localTasks: RecentVideoGenerationEntry[]
+): RecentNavItem[] {
+  const items: RecentNavItem[] = [];
+  for (const entry of localSessions.slice(0, RECENT_VIDEO_GENERATION_VISIBLE)) {
+    items.push({
+      id: entry.id,
+      title: entry.title?.trim() || '',
+      status: null,
+      source: 'session',
+    });
+  }
+  for (const entry of localTasks.slice(0, Math.max(0, RECENT_VIDEO_GENERATION_VISIBLE - items.length))) {
+    items.push({
+      id: entry.id,
+      title: entry.title?.trim() || '',
+      status: null,
+      source: 'task',
+    });
+  }
+  return items.slice(0, RECENT_VIDEO_GENERATION_VISIBLE);
+}
+
+function navItemsEqual(prev: RecentNavItem[], next: RecentNavItem[]): boolean {
+  if (prev.length !== next.length) return false;
+  return prev.every(
+    (row, i) =>
+      row.id === next[i]?.id &&
+      row.title === next[i]?.title &&
+      row.source === next[i]?.source &&
+      (row.status ?? null) === (next[i]?.status ?? null)
+  );
+}
+
+type SessionItem = { id: string; title?: string | null; status?: string | null; updated_at?: number | string | null };
+type TaskItem = { task_id: string; prompt?: string | null; status?: string | null; updated_at?: number };
+
+/**
+ * Merge: local MRU (sessions + tasks) → server sessions → server tasks.
+ * Stable insertion order keeps recently-opened items at the top while ensuring
+ * historical items the user did not pin still surface up to the visible limit.
+ */
+function mergeRecentNavItems(
+  localSessions: RecentVideoGenerationEntry[],
+  localTasks: RecentVideoGenerationEntry[],
+  sessions: SessionItem[],
+  tasks: TaskItem[],
+  limit: number
+): RecentNavItem[] {
+  const sessionById = new Map(
+    sessions.map((s) => [
+      s.id,
+      {
+        title: (s.title ?? '').trim() || '',
+        status: s.status ?? null,
+        source: 'session' as const,
+        updatedAt: typeof s.updated_at === 'number' ? s.updated_at : 0,
+      },
+    ])
+  );
+  const taskById = new Map(
+    tasks.map((t) => [
+      t.task_id,
+      {
+        title: taskTitleFromPrompt(t.prompt),
+        status: t.status ?? null,
+        source: 'task' as const,
+        updatedAt: t.updated_at ?? 0,
+      },
+    ])
+  );
+
+  const out: RecentNavItem[] = [];
+  const used = new Set<string>();
+
+  const pushIfKnown = (id: string, cachedTitle?: string) => {
+    if (out.length >= limit || used.has(id)) return;
+    const sessionHit = sessionById.get(id);
+    if (sessionHit) {
+      used.add(id);
+      out.push({
+        id,
+        title: sessionHit.title || cachedTitle || '',
+        status: sessionHit.status,
+        source: 'session',
+      });
+      return;
+    }
+    const taskHit = taskById.get(id);
+    if (taskHit) {
+      used.add(id);
+      out.push({
+        id,
+        title: taskHit.title || cachedTitle || '',
+        status: taskHit.status,
+        source: 'task',
+      });
+    }
+  };
+
+  for (const entry of localSessions) pushIfKnown(entry.id, entry.title);
+  for (const entry of localTasks) pushIfKnown(entry.id, entry.title);
+
+  // Fill with remaining server-side entries ordered by recency (the server
+  // returns them most-recent-first; fall back to a stable sort if missing).
+  const sessionRest = [...sessions]
+    .filter((s) => !used.has(s.id))
+    .sort((a, b) => {
+      const av = typeof a.updated_at === 'number' ? a.updated_at : 0;
+      const bv = typeof b.updated_at === 'number' ? b.updated_at : 0;
+      return bv - av;
+    });
+  for (const s of sessionRest) {
+    if (out.length >= limit) break;
+    used.add(s.id);
+    out.push({
+      id: s.id,
+      title: (s.title ?? '').trim(),
+      status: s.status ?? null,
+      source: 'session',
+    });
+  }
+
+  const taskRest = [...tasks]
+    .filter((t) => !used.has(t.task_id))
+    .sort((a, b) => {
+      const av = typeof a.updated_at === 'number' ? a.updated_at : 0;
+      const bv = typeof b.updated_at === 'number' ? b.updated_at : 0;
+      return bv - av;
+    });
+  for (const t of taskRest) {
+    if (out.length >= limit) break;
+    used.add(t.task_id);
+    out.push({
+      id: t.task_id,
+      title: taskTitleFromPrompt(t.prompt),
+      status: t.status ?? null,
+      source: 'task',
+    });
+  }
+
+  return out;
+}
+
 export interface SiderVideoGenerationGroupProps {
   isMobile: boolean;
   /** True when pathname is under `/video-generation`. */
   moduleActive: boolean;
   /** Current workspace session id, if any. */
   activeSessionId: string | null;
+  /** Current clip task id, if any. */
+  activeClipTaskId: string | null;
   collapsed: boolean;
   siderTooltipProps: SiderTooltipProps;
   /** Open the video-generation home (list). */
   onEnterHome: () => void;
   /** Open a recent project workspace. */
   onOpenProject: (sessionId: string) => void;
+  /** Open a recent clip task. */
+  onOpenClipTask: (taskId: string) => void;
 }
 
 const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
   isMobile,
   moduleActive,
   activeSessionId,
+  activeClipTaskId,
   collapsed,
   siderTooltipProps,
   onEnterHome,
   onOpenProject,
+  onOpenClipTask,
 }) => {
   const { t } = useTranslation();
   const label = t('videoGeneration.nav.entry', { defaultValue: '视频生成' });
@@ -87,40 +248,29 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
   const syncedActiveRouteRef = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const local = readRecentVideoGenerationSessions();
+    const localSessions = readRecentVideoGenerationSessions();
+    const localTasks = readRecentVideoGenerationTasks();
     try {
-      const sessions = await listSessions();
-      const merged = mergeRecentVideoGenerationProjects(
-        local,
+      const [sessions, taskList] = await Promise.all([
+        listSessions().catch(() => []),
+        listGenerationTasks(20, 0).then((r) => r.tasks).catch(() => []),
+      ]);
+      const merged = mergeRecentNavItems(
+        localSessions,
+        localTasks,
         sessions,
+        taskList,
         RECENT_VIDEO_GENERATION_VISIBLE
       );
       setItems((prev) => {
-        // Avoid needless re-renders when ids/titles/status are unchanged.
-        if (
-          prev.length === merged.length &&
-          prev.every(
-            (row, i) =>
-              row.id === merged[i]?.id &&
-              row.title === merged[i]?.title &&
-              (row.status ?? null) === (merged[i]?.status ?? null)
-          )
-        ) {
-          return prev;
-        }
+        if (navItemsEqual(prev, merged)) return prev;
         return merged;
       });
       for (const row of merged) {
         if (row.title) updateRecentVideoGenerationTitle(row.id, row.title);
       }
     } catch {
-      setItems(
-        local.slice(0, RECENT_VIDEO_GENERATION_VISIBLE).map((e) => ({
-          id: e.id,
-          title: e.title?.trim() || '',
-          status: null,
-        }))
-      );
+      setItems(buildFallbackItems(localSessions, localTasks));
     }
   }, []);
 
@@ -167,16 +317,16 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
 
   // Mirror workpath: when a project route is active, force-expand once per route.
   useEffect(() => {
-    if (!activeSessionId) {
+    const routeKey = activeSessionId ?? activeClipTaskId;
+    if (!routeKey) {
       syncedActiveRouteRef.current = null;
       return;
     }
-    const routeKey = activeSessionId;
     if (syncedActiveRouteRef.current === routeKey) return;
     syncedActiveRouteRef.current = routeKey;
     setExpanded(true);
     writeNavExpanded(true);
-  }, [activeSessionId]);
+  }, [activeSessionId, activeClipTaskId]);
 
   const handleParentClick = useCallback(() => {
     setExpanded((prev) => {
@@ -270,20 +420,38 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
               item.title.trim() ||
               t('videoGeneration.list.untitled', { defaultValue: '未命名任务' });
             const short = truncateTitle(fullTitle);
-            const active = activeSessionId === item.id;
+            const active =
+              item.source === 'task'
+                ? activeClipTaskId === item.id
+                : activeSessionId === item.id;
             const busy = isActiveStatus(item.status);
             const busyHint =
               item.status === 'planning'
                 ? t('videoGeneration.status.planning', { defaultValue: '规划中' })
                 : item.status === 'rendering'
                   ? t('videoGeneration.status.rendering', { defaultValue: '生成中' })
-                  : '';
+                  : item.status === 'queued'
+                    ? t('videoGeneration.clip.status.queued', { defaultValue: '排队中' })
+                    : item.status === 'running'
+                      ? t('videoGeneration.clip.status.running', { defaultValue: '生成中' })
+                      : '';
+            const isTask = item.source === 'task';
+            const openItem = () => {
+              if (isTask) {
+                rememberVideoGenerationSession(item.id, fullTitle);
+                onOpenClipTask(item.id);
+              } else {
+                rememberVideoGenerationSession(item.id, fullTitle);
+                onOpenProject(item.id);
+              }
+            };
             const row = (
                 <div
                   role='button'
                   tabIndex={0}
                   data-testid={`sider-video-generation-recent-${item.id}`}
                   data-busy={busy ? 'true' : 'false'}
+                  data-source={item.source}
                   className={classNames(
                     // Match ConversationRow (dimIcon) — use div, not <button>, to avoid UA black borders.
                     'chat-history__item conversation-item h-34px rd-10px flex items-center group cursor-pointer relative overflow-hidden shrink-0 min-w-0 transition-colors justify-start gap-8px pl-42px pr-16px',
@@ -297,14 +465,12 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    rememberVideoGenerationSession(item.id, fullTitle);
-                    onOpenProject(item.id);
+                    openItem();
                   }}
                   onKeyDown={(event) => {
                     if (event.key !== 'Enter' && event.key !== ' ') return;
                     event.preventDefault();
-                    rememberVideoGenerationSession(item.id, fullTitle);
-                    onOpenProject(item.id);
+                    openItem();
                   }}
                 >
                   {busy ? (

@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { People, Platte, RobotOne, VideoOne } from '@icon-park/react';
+import { Platte, RobotOne, VideoOne } from '@icon-park/react';
 import type { VideoHomeMode } from './types';
 import styles from './home.module.css';
 
@@ -8,7 +8,7 @@ export interface ModeMenuProps {
   onSelect: (mode: VideoHomeMode) => void;
 }
 
-/** Mode-switch menu shown from the composer toolbar (视频生成 / 短剧 / 动作模仿 / 创作). */
+/** Mode-switch menu shown from the composer toolbar (视频生成 / 短剧 / 创作). */
 export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
   const { t } = useTranslation();
   const generateModeLabel = t('videoGeneration.mode.generateLabel', {
@@ -19,9 +19,6 @@ export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
   });
   const creationModeLabel = t('videoGeneration.mode.creationLabel', {
     defaultValue: '创作模式',
-  });
-  const actionModeLabel = t('videoGeneration.mode.actionLabel', {
-    defaultValue: '动作模仿',
   });
 
   return (
@@ -60,6 +57,7 @@ export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
           </small>
         </span>
       </button>
+      {/* TODO: Re-enable action mode when feature is ready
       <button
         type='button'
         className={`${styles.modeMenuItem} ${
@@ -77,6 +75,7 @@ export function ModeMenu({ mode, onSelect }: ModeMenuProps) {
           </small>
         </span>
       </button>
+      */}
       <button
         type='button'
         className={`${styles.modeMenuItem} ${

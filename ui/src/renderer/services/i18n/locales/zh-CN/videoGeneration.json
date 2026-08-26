@@ -29,6 +29,10 @@
     "createFirst": "新建第一个任务",
     "recentTitle": "最近创作",
     "recentSubtitle": "继续分镜、渲染或查看已经完成的影片。",
+    "generateRecentTitle": "最近视频",
+    "generateRecentSubtitle": "继续视频创作。",
+    "actionRecentTitle": "动作模仿",
+    "actionRecentSubtitle": "继续动作模仿项目。",
     "loadError": "加载失败",
     "retry": "重试",
     "filterEmpty": "没有匹配的任务",
@@ -40,6 +44,10 @@
     "empty": {
       "title": "你的第一支影片从上方开始",
       "desc": "写下一个画面或故事，Flowy 会先给你一版可编辑分镜。"
+    },
+    "generateEmpty": {
+      "title": "你的第一个视频从这里开始",
+      "desc": "输入描述，上方开始生成视频。"
     },
     "card": {
       "updatedAt": "{{time}} 更新",
@@ -235,6 +243,18 @@
       "deleteOk": "画布已删除",
       "createFailed": "创建失败：{{error}}",
       "deleteFailed": "删除失败：{{error}}"
+    },
+    "generate": {
+      "gallery": {
+        "title": "最近视频",
+        "subtitle": "继续编辑已有视频项目。"
+      }
+    },
+    "action": {
+      "gallery": {
+        "title": "动作模仿项目",
+        "subtitle": "继续编辑动作模仿项目。"
+      }
     },
     "examples": {
       "product": "为一款极简咖啡机制作 30 秒发布短片",
@@ -776,6 +796,42 @@
       "style": "光影、构图、调色、镜头语言关键词…",
       "playbook": "Markdown：结构 / 镜头语法 / 资产规范…"
     }
+  },
+  "clip": {
+    "defaultTitle": "视频生成",
+    "back": "返回",
+    "loading": "加载中...",
+    "loadingHint": "正在连接到服务器...",
+    "download": "下载视频",
+    "regenerate": "重新生成",
+    "refresh": "刷新状态",
+    "retry": "重试",
+    "taskNotFound": "未找到任务",
+    "generationFailed": "视频生成失败",
+    "generationCanceled": "视频生成已取消",
+    "generationTimeout": "视频生成超时",
+    "errorTitle": "生成出错",
+    "elapsed": "已用时 {{time}}",
+    "status": {
+      "queued": "排队中",
+      "queuedDesc": "正在等待服务器处理...",
+      "running": "生成中",
+      "runningDesc": "正在渲染你的视频，请稍候...",
+      "succeeded": "生成完成",
+      "succeededDesc": "视频已生成，可以下载或重新生成",
+      "failed": "生成失败",
+      "failedDesc": "处理过程中遇到问题",
+      "canceled": "已取消",
+      "canceledDesc": "任务已被取消"
+    },
+    "step": {
+      "queued": "排队中",
+      "initializing": "初始化",
+      "processing": "处理中",
+      "rendering": "渲染中",
+      "finalizing": "完成中"
+    },
+    "progress": "进度: {{percent}}%"
   },
   "time": {
     "justNow": "刚刚",

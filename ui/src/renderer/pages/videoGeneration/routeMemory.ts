@@ -6,6 +6,8 @@
 const LAST_SESSION_KEY = 'flowy.videoGeneration.lastSessionId';
 /** Survives app restarts — used for the sider "recent 3" strip. */
 const RECENT_SESSIONS_KEY = 'flowy.videoGeneration.recentSessions';
+/** Survives app restarts — direct-video generation tasks (clips). */
+const RECENT_TASKS_KEY = 'flowy.videoGeneration.recentTasks';
 
 /** How many recent projects the sider shows. */
 export const RECENT_VIDEO_GENERATION_VISIBLE = 3;
@@ -18,6 +20,8 @@ export interface RecentVideoGenerationEntry {
   title?: string;
   /** Epoch ms when last opened / remembered. */
   at: number;
+  /** Source kind: long-lived session or one-shot clip task. */
+  source?: 'session' | 'task';
 }
 
 function readStorage(key: string): string | null {
@@ -74,8 +78,12 @@ function normalizeTitle(title: string | null | undefined): string | undefined {
 }
 
 export function readRecentVideoGenerationSessions(): RecentVideoGenerationEntry[] {
+  return readRecentEntries(RECENT_SESSIONS_KEY);
+}
+
+function readRecentEntries(storageKey: string): RecentVideoGenerationEntry[] {
   try {
-    const raw = readStorage(RECENT_SESSIONS_KEY);
+    const raw = readStorage(storageKey);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
@@ -94,7 +102,8 @@ export function readRecentVideoGenerationSessions(): RecentVideoGenerationEntry[
         Number.isFinite((item as { at: number }).at)
           ? (item as { at: number }).at
           : Date.now();
-      out.push(title ? { id, title, at } : { id, at });
+      const source = (item as { source?: unknown }).source === 'task' ? 'task' as const : 'session' as const;
+      out.push(title ? { id, title, at, source } : { id, at, source });
     }
     return out;
   } catch {
@@ -162,10 +171,66 @@ export function clearVideoGenerationSessionMemory(sessionId?: string | null): vo
     writeRecentVideoGenerationSessions(
       readRecentVideoGenerationSessions().filter((e) => e.id !== id)
     );
+    writeRecentVideoGenerationTasks(
+      readRecentVideoGenerationTasks().filter((e) => e.id !== id)
+    );
     return;
   }
   removeSessionStorage(LAST_SESSION_KEY);
   removeStorage(RECENT_SESSIONS_KEY);
+  removeStorage(RECENT_TASKS_KEY);
+}
+
+export function readRecentVideoGenerationTasks(): RecentVideoGenerationEntry[] {
+  return readRecentEntries(RECENT_TASKS_KEY);
+}
+
+function writeRecentVideoGenerationTasks(entries: RecentVideoGenerationEntry[]): void {
+  writeStorage(
+    RECENT_TASKS_KEY,
+    JSON.stringify(entries.slice(0, RECENT_VIDEO_GENERATION_STORE_LIMIT))
+  );
+}
+
+/**
+ * Remember a direct clip-generation task so the sider can list it as a recent
+ * workspace entry without forcing the server roundtrip.
+ */
+export function rememberVideoGenerationTask(
+  taskId: string | null | undefined,
+  title?: string | null
+): void {
+  const id = (taskId ?? '').trim();
+  if (!id) return;
+  // Tasks are also tracked by `rememberVideoGenerationSession` so the LAST_SESSION
+  // restore path keeps working — keep its dedupe semantics intact.
+  rememberVideoGenerationSession(id, title);
+
+  const cachedTitle = normalizeTitle(title);
+  const now = Date.now();
+  const prevAll = readRecentVideoGenerationTasks();
+  const existingIdx = prevAll.findIndex((e) => e.id === id);
+
+  if (existingIdx >= 0 && existingIdx < RECENT_VIDEO_GENERATION_VISIBLE) {
+    const next = prevAll.map((entry, idx) => {
+      if (idx !== existingIdx) return entry;
+      return {
+        ...entry,
+        at: now,
+        title: cachedTitle ?? entry.title,
+        source: 'task' as const,
+      };
+    });
+    writeRecentVideoGenerationTasks(next);
+    return;
+  }
+
+  const rest = prevAll.filter((e) => e.id !== id);
+  const previous = existingIdx >= 0 ? prevAll[existingIdx] : undefined;
+  const next: RecentVideoGenerationEntry = { id, at: now, source: 'task' };
+  if (cachedTitle) next.title = cachedTitle;
+  else if (previous?.title) next.title = previous.title;
+  writeRecentVideoGenerationTasks([next, ...rest]);
 }
 
 /** Update a cached title without changing MRU order (sider refresh). */

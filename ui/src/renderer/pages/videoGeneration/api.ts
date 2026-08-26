@@ -458,7 +458,12 @@ function looksLikeJson(s: string): boolean {
 
 /** True while the backend is actively working (poll every 2s). */
 export function isActiveStatus(status: string | null | undefined): boolean {
-  return status === 'planning' || status === 'rendering';
+  return (
+    status === 'planning' ||
+    status === 'rendering' ||
+    status === 'queued' ||
+    status === 'running'
+  );
 }
 
 export async function listCameos(sessionId: string): Promise<CameoPhoto[]> {

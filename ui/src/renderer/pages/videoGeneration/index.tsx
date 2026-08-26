@@ -32,6 +32,8 @@ import {
   uploadActionAssets,
   uploadCameo,
 } from './api';
+import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
+import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import type { SessionSummary } from './types';
 import VideoHomeComposer, { clearVideoHomeDraft } from './home/VideoHomeComposer';
 import { loadVideoCanvasProjectPage } from '../videoCanvas/loadProjectPage';
@@ -47,9 +49,16 @@ import {
 import {
   clearVideoGenerationSessionMemory,
   rememberVideoGenerationSession,
+  rememberVideoGenerationTask,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
+import { listGenerationTasks, type GenerationTaskView } from '../videoCanvas/api';
 import styles from './index.module.css';
+
+/**
+ * Video generation mode ("视频生成") uses Canvas direct video generation API
+ * and navigates to a dedicated clip result page instead of the agent workspace.
+ */
 
 /** Lazily load OC bridge so the list page chunk does not pull @oc/stores. */
 async function createServerBackedCanvasProject(
@@ -68,6 +77,7 @@ type ListTab = 'recent' | 'tvShow';
 const CanvasProjectGallery = lazy(() => import('./home/CanvasProjectGallery'));
 const TvShowPanel = lazy(() => import('./components/TvShowPanel'));
 const SessionCard = lazy(() => import('./components/SessionCard'));
+const GenerationTaskCard = lazy(() => import('./components/GenerationTaskCard'));
 
 function titleForDraft(draft: VideoCreateDraft): string {
   if (draft.workflow === 'action2video') {
@@ -84,12 +94,15 @@ const VideoGenerationListPage: React.FC = () => {
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const [message, messageHolder] = useArcoMessage();
+  const { logout } = useCloudAuth();
 
   const workMode: VideoHomeMode = parseVideoHomeMode(searchParams.get('mode'));
 
   const [listTab, setListTab] = useState<ListTab>('tvShow');
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [generationTasks, setGenerationTasks] = useState<GenerationTaskView[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingTasks, setLoadingTasks] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [creating, setCreating] = useState(false);
@@ -144,11 +157,41 @@ const VideoGenerationListPage: React.FC = () => {
     }
   }, []);
 
+  const refreshTasks = useCallback(async () => {
+    setLoadingTasks(true);
+    try {
+      const result = await listGenerationTasks(30, 0);
+      setGenerationTasks(result.tasks);
+      setError(null);
+    } catch (e) {
+      console.error('[videoGeneration] failed to load generation tasks', e);
+      // Don't show error for tasks - it's optional
+      setGenerationTasks([]);
+    } finally {
+      setLoadingTasks(false);
+    }
+  }, []);
+
   useEffect(() => {
-    if (workMode !== 'creation' && workMode !== 'generate' && listTab === 'recent') {
+    if (workMode !== 'creation' && listTab === 'recent') {
       void refresh();
     }
-  }, [listTab, refresh, workMode]);
+    if (workMode === 'generate' && listTab === 'recent') {
+      void refreshTasks();
+    }
+  }, [listTab, refresh, refreshTasks, workMode]);
+
+  // Keep generation-task polling going while the home is visible — recent
+  // tasks need to keep ticking even when the user switches between
+  // TvShow / recent tabs, and when generation is in-flight.
+  useEffect(() => {
+    if (workMode !== 'generate') return;
+    void refreshTasks();
+    const timer = window.setInterval(() => {
+      void refreshTasks();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [refreshTasks, workMode]);
 
   useEffect(() => {
     const prefetchGallery = () => {
@@ -182,6 +225,16 @@ const VideoGenerationListPage: React.FC = () => {
         (s.stage ?? '').toLowerCase().includes(q)
     );
   }, [sessions, searchQuery]);
+
+  const displayedTasks = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return generationTasks;
+    return generationTasks.filter(
+      (t) =>
+        (t.prompt ?? '').toLowerCase().includes(q) ||
+        t.task_id.toLowerCase().includes(q)
+    );
+  }, [generationTasks, searchQuery]);
 
   const handleCreate = useCallback(
     async (draft: VideoCreateDraft) => {
@@ -288,6 +341,11 @@ const VideoGenerationListPage: React.FC = () => {
               : { launchDraft: draft, autoPlan: true },
         });
       } catch (e) {
+        if (isInvalidCloudSessionError(e)) {
+          await logout();
+          navigate('/cloud-login');
+          return;
+        }
         message.error(
           `${t('videoGeneration.actions.createFailed', { defaultValue: '创建失败' })}: ${
             e instanceof Error ? e.message : String(e)
@@ -297,7 +355,7 @@ const VideoGenerationListPage: React.FC = () => {
         setCreating(false);
       }
     },
-    [creating, navigate, message, t]
+    [creating, logout, navigate, message, t]
   );
 
   const handleModeChange = useCallback(
@@ -383,6 +441,11 @@ const VideoGenerationListPage: React.FC = () => {
         clearVideoHomeDraft();
         navigate(`/video-generation/canvas/${encodeURIComponent(id)}`);
       } catch (cause) {
+        if (isInvalidCloudSessionError(cause)) {
+          await logout();
+          navigate('/cloud-login');
+          return;
+        }
         if (!canvasCreated && references.length > 0) {
           const { deleteCanvasMedia } = await import('../videoCanvas/api');
           await Promise.allSettled(
@@ -398,28 +461,51 @@ const VideoGenerationListPage: React.FC = () => {
         setCreating(false);
       }
     },
-    [creating, message, navigate, t]
+    [creating, logout, message, navigate, t]
   );
 
-  /** Ordinary clip generate: prompt + optional refs → canvas video node, auto-start. */
+  /**
+   * Clip generation mode: prompt + optional refs → Canvas video generation task
+   * → dedicated clip result page.
+   *
+   * Uses Canvas API for direct video generation (no Vimax planning workflow).
+   */
   const handleCreateGenerate = useCallback(
     async (draft: VideoCreateDraft) => {
       if (creating) return;
       setCreating(true);
-      const references: import('../videoCanvas/api').CanvasMediaMeta[] = [];
-      let canvasCreated = false;
+
+      // Store refs to clean up on error
+      const uploadedMediaIds: string[] = [];
+
       try {
-        const { uploadCanvasMedia } = await import('../videoCanvas/api');
-        for (const reference of draft.canvasReferences) {
-          references.push(
-            await uploadCanvasMedia(reference.file, reference.file.name)
-          );
-        }
         const title =
           draft.creationPrompt.split(/\r?\n/, 1)[0]?.trim().slice(0, 36) ||
           t('videoGeneration.create.generateTitle', {
             defaultValue: '视频生成',
           });
+
+        // 1. Upload reference images to Canvas media storage
+        const { uploadCanvasMedia } = await import('../videoCanvas/api');
+        const pendingReferences = draft.canvasReferences.filter((ref) => ref.file);
+        if (draft.canvasReferences.length > 0 && pendingReferences.length === 0) {
+          throw new Error(
+            t('videoGeneration.create.upload.referenceFileMissing', {
+              defaultValue: '参考图文件已失效（刷新页面后需重新选择图片），请重新添加后再发送。',
+            })
+          );
+        }
+
+        for (const reference of pendingReferences) {
+          const media = await uploadCanvasMedia(
+            reference.file,
+            reference.file.name.replace(/\.[^.]+$/, '').trim() || `参考图${pendingReferences.indexOf(reference) + 1}`
+          );
+          uploadedMediaIds.push(media.media_id);
+        }
+
+        // 2. Create video generation task via Canvas API
+        const { createGenerationTask } = await import('../videoCanvas/api');
         const durationSecs =
           clampDuration(
             draft.preferences.targetDurationSecs,
@@ -427,43 +513,61 @@ const VideoGenerationListPage: React.FC = () => {
             CLIP_DURATION_MAX_SECS,
             CLIP_DURATION_STEP_SECS
           ) || CLIP_DURATION_DEFAULT_SECS;
-        const id = await createServerBackedCanvasProject(title, {
+
+        const task = await createGenerationTask({
+          mode: 'video',
           prompt: draft.creationPrompt,
-          requirement: draft.requirement.trim() || undefined,
-          mediaKind: 'video',
-          intent: 'generate',
-          autoGenerate: true,
-          preferences: {
-            automatic: false,
-            aspectRatio: draft.preferences.aspectRatio,
-            resolution: draft.preferences.resolution,
-            fps: draft.preferences.fps,
-            targetDurationSecs: durationSecs,
-            videoModel: draft.preferences.models.video_model || undefined,
-          },
-          references,
+          model: draft.preferences.models.video_model || undefined,
+          resolution: draft.preferences.resolution,
+          duration_secs: durationSecs,
+          reference_media_ids: uploadedMediaIds,
         });
-        canvasCreated = true;
+
         trackFunnelEvent('task_accepted', {
           feature: 'video_generation',
           mode: 'generate',
-          project_id: id,
-          duration_secs: durationSecs,
-          has_references: references.length > 0,
+          task_id: task.task_id,
         });
-        trackFunnelEvent('first_task_started', {
+
+        trackFunnelEvent('render_started', {
           feature: 'video_generation',
-          mode: 'generate',
-          project_id: id,
+          workflow: 'canvas_clip',
+          task_id: task.task_id,
+          source: 'generate_create',
+          duration_secs: durationSecs,
+          has_references: pendingReferences.length > 0,
         });
+
+        // Track this direct clip task so the sider can list it. Titles cached
+        // now paint the MRU strip before the network resolves.
+        rememberVideoGenerationTask(task.task_id, title);
+
         clearVideoHomeDraft();
-        navigate(`/video-generation/canvas/${encodeURIComponent(id)}`);
+
+        // Navigate to clip result page with task info
+        navigate(
+          `/video-generation/clip/${encodeURIComponent(task.task_id)}`,
+          {
+            state: {
+              title,
+              prompt: draft.creationPrompt,
+              taskId: task.task_id,
+            },
+          }
+        );
       } catch (cause) {
-        if (!canvasCreated && references.length > 0) {
+        // Clean up uploaded media on error
+        if (uploadedMediaIds.length > 0) {
           const { deleteCanvasMedia } = await import('../videoCanvas/api');
           await Promise.allSettled(
-            references.map((reference) => deleteCanvasMedia(reference.media_id))
+            uploadedMediaIds.map((id) => deleteCanvasMedia(id))
           );
+        }
+
+        if (isInvalidCloudSessionError(cause)) {
+          await logout();
+          navigate('/cloud-login');
+          return;
         }
         message.error(
           `${t('videoGeneration.create.generateFailed', {
@@ -474,7 +578,7 @@ const VideoGenerationListPage: React.FC = () => {
         setCreating(false);
       }
     },
-    [creating, message, navigate, t]
+    [creating, logout, message, navigate, t]
   );
 
   const openSession = useCallback(
@@ -583,7 +687,7 @@ const VideoGenerationListPage: React.FC = () => {
           onSubmitGenerate={(draft) => void handleCreateGenerate(draft)}
         />
 
-        {workMode === 'creation' || workMode === 'generate' ? (
+        {workMode === 'creation' ? (
           <Suspense
             fallback={
               <div className='flex justify-center py-38px'>
@@ -608,6 +712,14 @@ const VideoGenerationListPage: React.FC = () => {
                 <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
                   {listTab === 'tvShow'
                     ? t('videoGeneration.tvShow.title', { defaultValue: 'Flowy TV' })
+                    : workMode === 'generate'
+                    ? t('videoGeneration.list.generateRecentTitle', {
+                        defaultValue: '最近视频',
+                      })
+                    : workMode === 'action'
+                    ? t('videoGeneration.list.actionRecentTitle', {
+                        defaultValue: '动作模仿',
+                      })
                     : t('videoGeneration.list.recentTitle', {
                         defaultValue: '最近创作',
                       })}
@@ -616,6 +728,14 @@ const VideoGenerationListPage: React.FC = () => {
                   {listTab === 'tvShow'
                     ? t('videoGeneration.tvShow.subtitle', {
                         defaultValue: '浏览社区已上架的作品，或查看你的发布审核状态。',
+                      })
+                    : workMode === 'generate'
+                    ? t('videoGeneration.list.generateRecentSubtitle', {
+                        defaultValue: '继续视频创作。',
+                      })
+                    : workMode === 'action'
+                    ? t('videoGeneration.list.actionRecentSubtitle', {
+                        defaultValue: '继续动作模仿项目。',
                       })
                     : t('videoGeneration.list.recentSubtitle', {
                         defaultValue: '继续分镜、渲染或查看已经完成的影片。',
@@ -670,7 +790,65 @@ const VideoGenerationListPage: React.FC = () => {
                 >
                   <TvShowPanel enabled />
                 </Suspense>
+              ) : workMode === 'generate' ? (
+                // Video generation mode - show generation tasks
+                loadingTasks ? (
+                  <div className='flex justify-center py-38px'>
+                    <Spin />
+                  </div>
+                ) : generationTasks.length === 0 ? (
+                  <div className='flex items-center gap-12px rd-14px border border-dashed border-[var(--color-border-2)] bg-[var(--color-fill-1)] px-16px py-18px'>
+                    <span className='flex h-38px w-38px shrink-0 items-center justify-center rd-11px bg-[rgba(var(--primary-6),0.1)] text-[rgb(var(--primary-6))]'>
+                      <VideoOne theme='outline' size={19} fill='currentColor' />
+                    </span>
+                    <div>
+                      <div className='text-13px font-600 text-[var(--color-text-1)]'>
+                        {t('videoGeneration.list.generateEmpty.title', {
+                          defaultValue: '你的第一个视频从这里开始',
+                        })}
+                      </div>
+                      <div className='mt-2px text-12px text-[var(--color-text-3)]'>
+                        {t('videoGeneration.list.generateEmpty.desc', {
+                          defaultValue: '输入描述，上方开始生成视频。',
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <Suspense
+                      fallback={
+                        <div className='flex justify-center py-38px'>
+                          <Spin />
+                        </div>
+                      }
+                    >
+                      <div
+                        className='grid gap-12px'
+                        style={{
+                          gridTemplateColumns:
+                            'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',
+                        }}
+                      >
+                        {displayedTasks.map((task) => (
+                          <GenerationTaskCard
+                            key={task.task_id}
+                            task={task}
+                          />
+                        ))}
+                      </div>
+                    </Suspense>
+                    {displayedTasks.length === 0 && (
+                      <div className='flex flex-col items-center gap-8px py-40px text-[var(--color-text-3)] text-13px'>
+                        {t('videoGeneration.list.filterEmpty', {
+                          defaultValue: '没有匹配的任务',
+                        })}
+                      </div>
+                    )}
+                  </>
+                )
               ) : (
+                // Agent/Action modes - show sessions
                 <div>
                   {error ? (
                     <Result

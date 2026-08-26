@@ -135,9 +135,23 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     return m?.[1] ? decodeURIComponent(m[1]) : null;
   }, [pathname]);
 
+  // Match clip task route: /video-generation/clip/:taskId — must NOT match the
+  // bare /video-generation or any videoGeneration workspace session routes.
+  const activeClipTaskId = useMemo(() => {
+    const m = pathname.match(/^\/video-generation\/clip\/([^/]+)\/?$/);
+    return m?.[1] ? decodeURIComponent(m[1]) : null;
+  }, [pathname]);
+
   const handleOpenRecentVideoGeneration = useCallback(
     (sessionId: string) => {
       navTo(`/video-generation/${encodeURIComponent(sessionId)}`);
+    },
+    [navTo]
+  );
+
+  const handleOpenRecentClipTask = useCallback(
+    (taskId: string) => {
+      navTo(`/video-generation/clip/${encodeURIComponent(taskId)}`);
     },
     [navTo]
   );
@@ -251,10 +265,12 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
               isMobile={isMobile}
               moduleActive={pathname.startsWith('/video-generation')}
               activeSessionId={activeVideoGenerationSessionId}
+              activeClipTaskId={activeClipTaskId}
               collapsed={collapsed}
               siderTooltipProps={siderTooltipProps}
               onEnterHome={handleVideoGenerationHome}
               onOpenProject={handleOpenRecentVideoGeneration}
+              onOpenClipTask={handleOpenRecentClipTask}
             />
 
             <SiderSectionHeader label={t('common.titlebar.sections.resources')} collapsed={collapsed} />
