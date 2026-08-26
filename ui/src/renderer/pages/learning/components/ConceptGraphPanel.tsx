@@ -19,7 +19,7 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Button, Empty, Input, Message, Popconfirm, Radio, Spin, Tag, Typography } from '@arco-design/web-react';
+import { Button, Empty, Input, Message, Popconfirm, Spin, Tag, Typography } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';
@@ -39,31 +39,31 @@ const { Text } = Typography;
 const NODE_WIDTH = 176;
 const NODE_HEIGHT = 64;
 
-/** 视图模式：全部 / 仅里程碑 / 仅原子概念 */
-type GraphViewMode = 'all' | 'milestones' | 'atoms';
+/** 单个学习单元的分钟预算硬上限（与后端 audit 的 UNIT_MINUTE_CAP 一致）。 */
+const UNIT_MINUTE_CAP = 25;
 
-type ConceptFlowNode = Node<{ title: string; level: 0 | 1; isAnchor: boolean }, 'concept'>;
+type ConceptFlowNode = Node<{ title: string; min?: number; isAnchor: boolean }, 'concept'>;
 
 /**
- * Ellipse-styled atomic-concept node, mirroring the reference rendering.
- * Milestones render as rounded rectangles with the primary tint so the two
- * levels read apart in the "all" view. Handles are required by React Flow for
- * edges to exist at all; with the BT layout the source (toward dependents)
- * sits on top and the target (from prerequisites) on the bottom. They are
- * visually hidden — this graph is read-only and the connecting dots would
- * only add noise.
+ * Ellipse-styled learning-unit node, mirroring the reference rendering.
+ * The minute budget renders under the title; a unit over the 25-minute cap
+ * is tinted with the danger palette so the workload violation reads at a
+ * glance. Handles are required by React Flow for edges to exist at all;
+ * with the BT layout the source (toward dependents) sits on top and the
+ * target (from prerequisites) on the bottom. They are visually hidden —
+ * this graph is read-only and the connecting dots would only add noise.
  */
 const ConceptNode: React.FC<NodeProps<ConceptFlowNode>> = ({ data }) => {
   const { t } = useTranslation();
-  const milestone = data.level === 0;
-  const shape = milestone
-    ? 'rd-8px border-[var(--color-primary-3)] bg-[var(--color-primary-light-1)]'
+  const overBudget = (data.min ?? 0) > UNIT_MINUTE_CAP;
+  const shape = overBudget
+    ? 'rd-9999px border-danger-4 bg-danger-light-1'
     : 'rd-9999px border-[var(--color-border-2)] bg-[var(--color-bg-2)]';
   return (
     <div
-      className={`flex h-full w-full items-center justify-center overflow-hidden border-1 border-solid px-14px py-6px text-center text-12px leading-16px text-[var(--color-text-1)] ${shape}`}
+      className={`flex h-full w-full flex-col items-center justify-center gap-2px overflow-hidden border-1 border-solid px-14px py-6px text-center text-12px leading-16px text-[var(--color-text-1)] ${shape}`}
     >
-      <span className='line-clamp-3'>
+      <span className='line-clamp-2'>
         {data.isAnchor && (
           <span className='mr-2px shrink-0 text-[var(--color-primary-6)]'>
             {t('learning.conceptGraphAnchorMark')}
@@ -71,6 +71,13 @@ const ConceptNode: React.FC<NodeProps<ConceptFlowNode>> = ({ data }) => {
         )}
         {data.title}
       </span>
+      {data.min !== undefined && (
+        <span
+          className={`shrink-0 text-10px leading-12px ${overBudget ? 'text-danger-6' : 'text-t-tertiary'}`}
+        >
+          {t('learning.conceptGraphNodeMinutes', { min: data.min })}
+        </span>
+      )}
       <Handle
         type='target'
         id='concept-target'
@@ -117,7 +124,7 @@ function layoutConceptGraph(graph: {
       },
       data: {
         title: node.title,
-        level: node.level ?? 1,
+        min: node.min,
         isAnchor: node.is_anchor ?? false,
       },
     };
@@ -142,9 +149,11 @@ function layoutConceptGraph(graph: {
 }
 
 /**
- * Experimental learning feature: decompose a broad learning goal into atomic
- * concepts and render the prerequisite DAG. Generation is one backend model
- * call (1-2 minutes); results persist as rough JSON files server-side.
+ * Experimental learning feature: decompose a broad learning goal into a
+ * network of learning units (each a 25-minute study session with a minute
+ * budget) and render the dependency DAG. Generation is one full backend
+ * model call plus light audit-gate repair rounds; results persist as rough
+ * JSON files server-side.
  */
 const ConceptGraphPanel: React.FC = () => {
   const { t } = useTranslation();
@@ -152,7 +161,6 @@ const ConceptGraphPanel: React.FC = () => {
   const [topic, setTopic] = useState('');
   const [summaries, setSummaries] = useState<ConceptGraphSummary[]>([]);
   const [selected, setSelected] = useState<ConceptGraphView | null>(null);
-  const [mode, setMode] = useState<GraphViewMode>('all');
   const [generating, setGenerating] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [loadingList, setLoadingList] = useState(true);
@@ -237,29 +245,27 @@ const ConceptGraphPanel: React.FC = () => {
     }
   }, [refreshList, selected, t]);
 
-  // View filtering: milestone view keeps level-0 nodes and their edges;
-  // atom view keeps level-1 nodes (missing level reads as an atom) with the
-  // edges whose endpoints survive. Edges touching a filtered node vanish.
-  const visibleGraph = useMemo(() => {
-    if (!selected) return null;
-    const visible = new Set(
-      selected.nodes
-        .filter((node) => {
-          const level = node.level ?? 1;
-          return mode === 'all' || (mode === 'milestones' ? level === 0 : level === 1);
-        })
-        .map((node) => node.id)
-    );
-    return {
-      nodes: selected.nodes.filter((node) => visible.has(node.id)),
-      edges: selected.edges.filter((edge) => visible.has(edge.from) && visible.has(edge.to)),
-    };
-  }, [mode, selected]);
-
+  // The whole graph renders as-is: every node is a learning unit, there is
+  // no milestone/atom split anymore.
   const { nodes, edges } = useMemo(
-    () => (visibleGraph ? layoutConceptGraph(visibleGraph) : { nodes: [], edges: [] }),
-    [visibleGraph]
+    () => (selected ? layoutConceptGraph(selected) : { nodes: [], edges: [] }),
+    [selected]
   );
+
+  // Total promised workload: the sum of every unit's minute budget. Units
+  // without a budget are skipped, so the figure is a lower bound at worst.
+  const totalMinutes = useMemo(
+    () => selected?.nodes.reduce((sum, node) => sum + (node.min ?? 0), 0) ?? 0,
+    [selected]
+  );
+  const workloadLabel = useMemo(() => {
+    if (totalMinutes === 0) return null;
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return hours > 0
+      ? t('learning.conceptGraphWorkloadHours', { hours, minutes })
+      : t('learning.conceptGraphWorkloadMinutes', { minutes });
+  }, [t, totalMinutes]);
 
   // Findings sorted by severity (danger → warning → info) so the worst
   // issues read first in the audit panel.
@@ -366,20 +372,6 @@ const ConceptGraphPanel: React.FC = () => {
         </div>
 
         <div className='relative min-w-0 flex-1 rd-8px border-1 border-solid border-[var(--color-border-2)]'>
-          {selected && (
-            <div className='absolute left-12px top-12px z-10'>
-              <Radio.Group
-                size='small'
-                type='button'
-                value={mode}
-                onChange={(value) => setMode(value as GraphViewMode)}
-              >
-                <Radio value='all'>{t('learning.conceptGraphViewAll')}</Radio>
-                <Radio value='milestones'>{t('learning.conceptGraphViewMilestones')}</Radio>
-                <Radio value='atoms'>{t('learning.conceptGraphViewAtoms')}</Radio>
-              </Radio.Group>
-            </div>
-          )}
           {selected ? (
             <ReactFlow
               nodes={nodes}
@@ -429,6 +421,12 @@ const ConceptGraphPanel: React.FC = () => {
                   nodes: selected.nodes.length,
                   edges: selected.edges.length,
                 })}
+                {workloadLabel && (
+                  <>
+                    {' · '}
+                    <Text className='text-12px'>{workloadLabel}</Text>
+                  </>
+                )}
               </Text>
             </div>
             <Button

@@ -1,17 +1,23 @@
-//! Experimental concept-graph feature: decompose a broad learning goal (e.g.
-//! "from zero to university mathematics") into atomic concepts linked by
-//! prerequisite edges — a complete DAG.
+//! Experimental concept-graph feature: decompose a broad learning goal into a
+//! network of LEARNING UNITS linked by task-dependency edges — a complete DAG.
+//! A unit is one human study session of at most 25 minutes: a small organic
+//! combination of atomic concepts, or a single atomic concept rich enough to
+//! fill a session. Unit names are action sentences ("用配方法解一元二次方程"),
+//! never concept nouns or whole sub-domains ("概率基础" is meaningless as a unit).
 //!
-//! Generation follows the "audit-gate loop" pattern: ONE model call produces
-//! the whole graph in a deliberately symbolic shape (concept names + their
-//! direct prerequisite names — the same minimal schema as hand-maintained
-//! YAML graphs), the program normalizes it tolerantly (dedupe, drop unknown
-//! references, break cycles), then a deterministic audit grades the result.
-//! Danger-grade findings are fed back to the model as a report and the model
-//! regenerates the COMPLETE graph, for at most three rounds; a graph that
-//! still fails the gate is rejected instead of published half-broken. The
-//! normalized graph is persisted by [`crate::service::LearningService`] as
-//! JSON files so the UI can revisit it without regenerating.
+//! Generation follows the "audit-gate loop" pattern: a small SCOPE call first
+//! resolves what the user's goal description actually covers (sub-domains +
+//! backbone concepts + a size estimate — the backbone is reference material
+//! only, never scaffolding), then ONE full model call enumerates the whole
+//! network in a deliberately symbolic shape (unit name + direct dependency
+//! names + minute budget), the program normalizes it tolerantly (dedupe, drop
+//! unknown references, break cycles), then a deterministic audit grades the
+//! result. Danger-grade findings are fixed by LIGHT local patch calls
+//! (add/link/reverse/split/merge — never a full rewrite), for at most three
+//! rounds; a graph that still fails the gate is rejected with the full report
+//! so a human can repair it. The normalized graph is persisted by
+//! [`crate::service::LearningService`] as JSON files so the UI can revisit it
+//! without regenerating.
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,22 +27,26 @@ use serde::{Deserialize, Serialize};
 use crate::completer::LearningCompleter;
 
 mod audit;
+mod log;
 mod repair;
 
-pub(crate) use audit::{SEV_DANGER, audit_concept_graph};
-pub(crate) use repair::repair_graph;
+pub(crate) use audit::{SEV_DANGER, audit_concept_graph, audit_concept_graph_with_scope};
+pub(crate) use log::ConceptGraphLogger;
+pub(crate) use repair::{auto_repair, repair_graph};
 
-/// One node in the graph. `level` splits the two generation layers of the
-/// retired multi-stage pipeline; it stays in the model for file
-/// compatibility (old stored graphs carry it) but new single-call graphs
-/// never set it.
+/// One node in the graph — a LEARNING UNIT: one human study session of at
+/// most 25 minutes. The name is an action sentence describing what the
+/// learner does in the session ("用配方法解一元二次方程"), never a concept
+/// noun. `min` carries the estimated workload; the audit enforces the cap.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConceptGraphNode {
     pub id: String,
     pub title: String,
+    /// Estimated study time in minutes (the prompt asks for 5/10/15/20/25;
+    /// the audit treats any value above 25 as a hard-cap violation).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub level: Option<u8>,
-    /// Sub-domain group label (atomic concepts only).
+    pub min: Option<u16>,
+    /// Sub-domain group label (legacy field, never set by new graphs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     /// Why the concept is indispensable ("缺了它不行").
@@ -65,7 +75,13 @@ pub struct ConceptGraphAudit {
     /// cycle edges dropped during normalization/merge.
     #[serde(default)]
     pub ref_drop_count: usize,
-    /// `ref_drop_count` over the total prerequisite entries the model emitted.
+    /// Total prerequisite entries the model emitted, accumulated across the
+    /// initial generation and every repair merge — the drop-rate
+    /// denominator. Persisted so a merged graph keeps an honest rate
+    /// instead of resetting to the last patch batch's own statistics.
+    #[serde(default)]
+    pub raw_ref_count: usize,
+    /// `ref_drop_count` over `raw_ref_count`.
     #[serde(default)]
     pub ref_drop_rate: f64,
     /// Every dropped reference with its reason, so the report is evidence-led.
@@ -156,37 +172,64 @@ pub struct RepairConceptGraphRequest {
     pub kinds: Vec<String>,
 }
 
-/// The audit gate gives the model at most this many regeneration rounds
-/// after the first attempt (total attempts = MAX_REPAIR_ROUNDS + 1).
+/// Tolerate `"min": "15"` (or `null`/absence/non-numeric) where the shape
+/// asks for a number; an unusable value becomes `None` rather than failing
+/// the whole reply.
+fn de_min<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumOrStr {
+        Num(u16),
+        Str(String),
+    }
+    Ok(match Option::<NumOrStr>::deserialize(deserializer)? {
+        Some(NumOrStr::Num(n)) => Some(n),
+        Some(NumOrStr::Str(s)) => s.trim().parse::<u16>().ok(),
+        None => None,
+    })
+}
+
+/// The audit gate gives the model at most this many repair rounds after the
+/// first full generation call (total model calls = MAX_REPAIR_ROUNDS + 1;
+/// every round after the first is a LIGHT patch call, never a full rewrite).
 pub(crate) const MAX_REPAIR_ROUNDS: usize = 3;
 
-/// One generation call writes the WHOLE graph (60-120 concepts plus their
-/// prerequisite names) in a single reply — far heavier than a course-stage
-/// call, and a re-generation round must rewrite everything again. The
-/// course-generation ceiling of 180s is too tight for that, so concept
-/// graphs get their own bound.
+/// One generation call writes the WHOLE network (30-60 learning units plus
+/// their dependency names) in a single reply — far heavier than a
+/// course-stage call. Patch calls in the repair loop are much lighter and
+/// get a shorter bound. The course-generation ceiling of 180s is too tight
+/// for the full call, so concept graphs get their own bound.
 const CONCEPT_GRAPH_CALL_TIMEOUT_SECS: u64 = 600;
 
 // ── Raw model output types ────────────────────────────────────────────────
 
-/// Raw per-concept model output — deliberately symbolic and minimal, the
-/// same shape as a hand-maintained YAML graph: a concept NAME plus its direct
-/// prerequisite names. The program derives ids, edges, and all optional
-/// fields, and tolerates the usual LLM habits (a single string where an
-/// array is expected, duplicate names, unknown references, cycles).
-#[derive(Debug, Clone, Deserialize)]
+/// Raw per-unit model output — deliberately symbolic and minimal, the same
+/// shape as a hand-maintained YAML graph: a unit ACTION NAME plus its direct
+/// dependency names plus an optional minute budget. The program derives ids,
+/// edges, and all optional fields, and tolerates the usual LLM habits (a
+/// single string where an array is expected, duplicate names, unknown
+/// references, cycles, non-numeric minutes).
+#[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct RawConcept {
     #[serde(default)]
     pub name: String,
     #[serde(default, deserialize_with = "de_pre_list")]
     pub pre: Vec<String>,
+    /// Estimated study minutes; tolerated as a number or a digit string.
+    #[serde(default, deserialize_with = "de_min")]
+    pub min: Option<u16>,
 }
 
 /// The whole generation reply: one flat concept list. No milestones, no
-/// groups, no anchors — the graph itself is the deliverable.
+/// groups, no anchors — the graph itself is the deliverable. `concepts` is
+/// REQUIRED (no default) so a bare array of unit objects — a shape models
+/// sometimes emit instead of the wrapper — fails the object parse and falls
+/// through to the array fallback instead of silently yielding an empty graph.
 #[derive(Debug, Deserialize)]
 pub(crate) struct RawGraph {
-    #[serde(default)]
     pub concepts: Vec<RawConcept>,
 }
 
@@ -223,6 +266,9 @@ pub(crate) struct NormalizedBatch {
     pub raw_refs: usize,
     /// References dropped during normalization (unknown/self/duplicate).
     pub dropped: Vec<DroppedEdge>,
+    /// Near-miss references resolved to their unique nearest unit — kept as
+    /// (emitted, resolved) pairs for the diagnosis log.
+    pub fuzzy_resolved: Vec<(String, String)>,
 }
 
 /// Repair and validate a batch of raw concepts into nodes and legal edges:
@@ -250,7 +296,7 @@ pub(crate) fn normalize_batch(
         nodes.push(ConceptGraphNode {
             id: name.to_owned(),
             title: name.to_owned(),
-            level: None,
+            min: concept.min,
             group: None,
             necessity: None,
             is_anchor: None,
@@ -260,6 +306,7 @@ pub(crate) fn normalize_batch(
     let mut seen_edges: HashSet<(String, String)> = HashSet::new();
     let mut edges: Vec<ConceptGraphEdge> = Vec::new();
     let mut dropped: Vec<DroppedEdge> = Vec::new();
+    let mut fuzzy_resolved: Vec<(String, String)> = Vec::new();
     for (concept, is_kept) in raw.iter().zip(&kept) {
         let to = concept.name.trim();
         if !is_kept || !seen_names.contains(to) {
@@ -267,7 +314,6 @@ pub(crate) fn normalize_batch(
         }
         for prereq in &concept.pre {
             let from = prereq.trim();
-            let pair = (from.to_owned(), to.to_owned());
             if from.is_empty() {
                 dropped.push(DroppedEdge {
                     from: from.to_owned(),
@@ -276,32 +322,46 @@ pub(crate) fn normalize_batch(
                 });
                 continue;
             }
-            if from == to {
+            // Exact reference first; a near-miss name (one insertion or
+            // deletion away from exactly one defined unit) resolves instead
+            // of dropping — a single dropped reference can orphan a whole
+            // subtree and turn its head into a fake entry point.
+            let resolved = if seen_names.contains(from) || allowed.contains(from) {
+                from.to_owned()
+            } else {
+                match fuzzy_resolve_reference(from, &seen_names, allowed) {
+                    Some(name) => {
+                        fuzzy_resolved.push((from.to_owned(), name.clone()));
+                        name
+                    }
+                    None => {
+                        dropped.push(DroppedEdge {
+                            from: from.to_owned(),
+                            to: to.to_owned(),
+                            reason: "unknown reference".into(),
+                        });
+                        continue;
+                    }
+                }
+            };
+            if resolved == to {
                 dropped.push(DroppedEdge {
-                    from: from.to_owned(),
+                    from: resolved,
                     to: to.to_owned(),
                     reason: "self loop".into(),
                 });
                 continue;
             }
-            if !seen_names.contains(from) && !allowed.contains(from) {
+            if !seen_edges.insert((resolved.clone(), to.to_owned())) {
                 dropped.push(DroppedEdge {
-                    from: from.to_owned(),
-                    to: to.to_owned(),
-                    reason: "unknown reference".into(),
-                });
-                continue;
-            }
-            if !seen_edges.insert(pair) {
-                dropped.push(DroppedEdge {
-                    from: from.to_owned(),
+                    from: resolved,
                     to: to.to_owned(),
                     reason: "duplicate edge".into(),
                 });
                 continue;
             }
             edges.push(ConceptGraphEdge {
-                from: from.to_owned(),
+                from: resolved,
                 to: to.to_owned(),
                 reason: None,
             });
@@ -312,7 +372,72 @@ pub(crate) fn normalize_batch(
         edges,
         raw_refs,
         dropped,
+        fuzzy_resolved,
     }
+}
+
+/// Fuzzy reference resolution ceiling: a "pre" entry that missed exact
+/// lookup resolves to a defined unit when it sits within this many
+/// insertions/deletions of EXACTLY ONE candidate. One, not two: a
+/// substitution (一元一次 vs 一元二次) costs two indel steps and must never
+/// resolve — swapped characters usually mark a genuinely different unit,
+/// while a stray function word or a repeated character is a slip.
+const FUZZY_REF_MAX_DISTANCE: usize = 1;
+
+/// Resolve a near-miss "pre" name against the batch keys plus the allowlist:
+/// the unique nearest candidate within [`FUZZY_REF_MAX_DISTANCE`]
+/// insertions/deletions wins; a tie resolves to nothing (the model meant
+/// something between the candidates, and guessing would mis-wire the edge).
+/// Also used by the repair stage to resolve link/reverse/split/merge
+/// endpoints — a repair model copying names out of a 100+-unit list slips
+/// exactly the way the generator does.
+pub(crate) fn fuzzy_resolve_reference(
+    reference: &str,
+    names: &HashSet<String>,
+    allowed: &HashSet<String>,
+) -> Option<String> {
+    let reference: Vec<char> = reference.chars().collect();
+    let mut best: Option<(usize, String)> = None;
+    let mut tie = false;
+    for candidate in names.iter().chain(allowed.iter()) {
+        let distance = indel_distance(&reference, &candidate.chars().collect::<Vec<_>>());
+        if distance > FUZZY_REF_MAX_DISTANCE {
+            continue;
+        }
+        match &best {
+            Some((best_distance, _)) if *best_distance < distance => {}
+            Some((best_distance, best_name)) if best_distance == &distance => {
+                if best_name != candidate {
+                    tie = true;
+                }
+            }
+            _ => {
+                best = Some((distance, candidate.clone()));
+                tie = false;
+            }
+        }
+    }
+    if tie {
+        None
+    } else {
+        best.map(|(_, name)| name)
+    }
+}
+
+/// Insert/delete edit distance (a substitution costs two): the number of
+/// character insertions and deletions turning `a` into `b`.
+fn indel_distance(a: &[char], b: &[char]) -> usize {
+    let mut lcs = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            lcs[i][j] = if a[i - 1] == b[j - 1] {
+                lcs[i - 1][j - 1] + 1
+            } else {
+                lcs[i - 1][j].max(lcs[i][j - 1])
+            };
+        }
+    }
+    a.len() + b.len() - 2 * lcs[a.len()][b.len()]
 }
 
 /// Keep every edge except those that close a cycle: iterative DFS coloring
@@ -409,6 +534,7 @@ fn finalize_graph(
     }
     let audit = ConceptGraphAudit {
         ref_drop_count: dropped.len(),
+        raw_ref_count: raw_refs,
         ref_drop_rate: if raw_refs == 0 {
             0.0
         } else {
@@ -426,7 +552,10 @@ fn finalize_graph(
 
 /// Incrementally merge a normalized repair batch into an existing graph:
 /// existing keys win, new edges are unioned, cycles are removed globally, and
-/// the audit counters are recomputed from the batch's own statistics.
+/// the audit drop statistics ACCUMULATE (previous drops stay dropped — a
+/// patch cannot re-add an edge whose endpoint never existed — because the
+/// orphaned-units audit keys on those entries; resetting them would blind
+/// the re-audit to exactly the units the repair was supposed to reconnect).
 pub(crate) fn merge_batch(graph: &ConceptGraphData, batch: &NormalizedBatch) -> ConceptGraphData {
     let mut nodes = graph.nodes.clone();
     let mut node_keys: HashSet<&str> = graph.nodes.iter().map(|node| node.id.as_str()).collect();
@@ -437,125 +566,384 @@ pub(crate) fn merge_batch(graph: &ConceptGraphData, batch: &NormalizedBatch) -> 
     }
     let mut edges = graph.edges.clone();
     edges.extend(batch.edges.iter().cloned());
-    finalize_graph(nodes, edges, batch.dropped.clone(), batch.raw_refs)
+    let mut dropped = graph.audit.dropped_edges.clone();
+    dropped.extend(batch.dropped.iter().cloned());
+    finalize_graph(
+        nodes,
+        edges,
+        dropped,
+        graph.audit.raw_ref_count + batch.raw_refs,
+    )
 }
 
 // ── Generation prompt ──────────────────────────────────────────────────────
 
-/// Generation prompt: one call, one flat list of symbolic concept entries —
-/// the same shape as a hand-maintained YAML prerequisite graph. Structural
-/// quality (coverage, connectivity, chains) is enforced by the audit gate
-/// loop, not by asking the model for more scaffolding.
-const GENERATE_SYSTEM: &str = r#"You decompose a broad learning goal into a complete graph of atomic concepts linked by prerequisite edges.
+/// Generation prompt: one call, one flat list of symbolic LEARNING UNIT
+/// entries — the same shape as a hand-maintained YAML prerequisite graph,
+/// plus a minute budget per unit. The prompt carries the non-negotiable
+/// semantic contracts (prerequisite sufficiency, real entry points only,
+/// convergence between sub-domains); the audit gate loop enforces the
+/// structural side (coverage, connectivity, multi-parent share, workload
+/// cap).
+const GENERATE_SYSTEM: &str = r#"You decompose a broad learning goal into a complete network of LEARNING UNITS linked by task-dependency edges.
+A learning unit is ONE human study session of AT MOST 25 minutes: a small organic combination of simple atomic concepts, or a single atomic concept rich enough to fill a session on its own. It is NEVER a whole sub-domain — "概率基础" is a whole small field and meaningless as a unit.
 Reply with ONLY one JSON object matching this shape:
 {
   "concepts": [
-    {"name": "概念名", "pre": ["前置概念名"]}
+    {"name": "单元名", "pre": ["前置单元名"], "min": 15}
   ]
 }
 Rules:
-- "name" is the standard textbook name of an atomic concept — one skill or idea a learner masters in a single study step. Never a chapter, module, course, or overview label.
-- "pre" lists the DIRECT prerequisites: concepts that must be mastered before this one. List at most 3 — only what is strictly needed. Use "pre": [] for foundational concepts.
-- Produce 60-120 concepts covering the WHOLE path from the starting point to the goal: every significant sub-domain of the topic must be decomposed. Missing concepts are the worst failure — decompose generously.
+- "name" is an ACTION describing what the learner does in this unit — the knowledge point is the core and the sentence form serves it, never the reverse. Varied good names: "用配方法解一元二次方程", "理解导数的极限定义", "证明可导函数必连续", "比较二分法与牛顿法的收敛速度", "构造素数筛", "推导等比数列求和公式", "辨析充分条件与必要条件". Never the bare concept noun "一元二次方程求解". Start with an action verb (解/求/证明/推导/比较/判定/构造/区分/计算/应用/理解/辨析/建立/验证...). Do NOT reuse one sentence template across units (e.g. every name starting with "用"): vary the verb and the sentence structure so each name carries its knowledge point distinctly.
+- "min" is the estimated study time in minutes, one of 5/10/15/20/25. The 25-minute budget is a HARD CAP: less is always fine, more is not.
+- SUFFICIENCY CONTRACT: "pre" is the COMPLETE set of direct prerequisites. The invariant: a learner who has finished EXACTLY the units listed in "pre" (and nothing else) can fully understand this unit without any other background. For every unit ask "what must the learner already master to understand this?" and list EVERY such unit — omitting one makes the unit incomprehensible at its position in the path. Do NOT trim "pre" to shorten the reply.
+- "pre": [] is allowed ONLY for units a complete beginner understands from daily intuition or school arithmetic (数数、四则运算、直观图形). Anything above that level — limits, integrals, proofs, vectors, equations — MUST list its real prerequisites. A unit about calculus with an empty "pre" is a hard error: it would strand the learner mid-path.
+- CONVERGENCE IS EXPECTED: real knowledge is a DAG, not a chain. Units where two earlier threads meet legitimately depend on 2-4 prerequisites: 解析几何 depends on BOTH geometry AND equations; 微积分 depends on BOTH functions AND limits; 数列 depends on BOTH functions AND arithmetic patterns. Produce such converging units deliberately — a network where nearly every unit has exactly one prerequisite is a forest of chains, not a graph.
+- SPIRAL LEARNING: the same topic legitimately appears at several depths with different viewpoints — "用配方法解一元二次方程" then "用求根公式解一元二次方程" then "用判别式判定一元二次方程根的性质". Every unit name must make its depth and viewpoint clear; never emit two units with the same name, and never emit two nearly identical units.
+- Produce a COMPLETE network covering the WHOLE path from the starting point to the goal: every significant sub-domain of the topic must be decomposed. Missing sub-domains are the worst failure — decompose generously. The unit count follows the goal's true breadth: a whole field like "数学零基础到本科结业" needs well over 60 units; never stop early just to finish quickly.
+- If the user message includes a reference scope analysis, treat it as the COVERAGE CHECKLIST: every listed sub-domain must be realized as units, and every listed backbone concept must be realized as one or more units (reworded into action sentences as needed).
 - Every name in any "pre" list MUST also appear as a "name" in this same reply (self-contained reference space). Reuse the exact name string — no aliases, no paraphrases.
-- The graph must be ONE connected structure: every concept is reachable from the foundational concepts along prerequisite chains.
-- Concepts must form learning chains: most concepts depend on one or two earlier ones; avoid star-shaped hubs where everything depends directly on a single concept.
+- The network must be ONE connected structure: every unit is reachable from the true entry units along dependency chains. Sub-domains MUST cross-link where they genuinely depend on each other — geometry and algebra meet in 解析几何; functions and limits meet in 微积分. Two sub-domains forming two separate disconnected trees is a hard failure.
+- No star-shaped hubs: no single unit should carry more than ~12 direct dependents — spread dependencies across intermediate units instead.
 - Write names in the language of the learning goal.
 - Output JSON only, without Markdown fences or commentary."#;
 
+// ── Scope analysis (pre-generation reference) ──────────────────────────────
+
+/// Scope call: ONE light call that resolves what the goal description
+/// actually covers before the heavy generation call. The output is REFERENCE
+/// material only — sub-domains act as the generation call's coverage
+/// checklist and backbone concepts as its milestone list; neither is
+/// scaffolding the pipeline builds on. Failure degrades to no-scope
+/// generation (the pre-scope behavior), never to a hard error.
+const SCOPE_SYSTEM: &str = r#"You resolve the exact coverage of a broad learning goal BEFORE it is decomposed into units.
+Reply with ONLY one JSON object matching this shape:
+{
+  "scope": "one sentence delimiting what this goal covers and where it starts",
+  "subdomains": ["子域一", "子域二"],
+  "backbone": ["里程碑概念一", "里程碑概念二"],
+  "expected_units": 120
+}
+Rules:
+- "scope": a crisp one-sentence boundary of the goal — the starting point, the target level, and the subject breadth.
+- "subdomains": 5-15 names of the significant sub-domains the goal genuinely covers, ordered from foundational to advanced, together spanning the WHOLE path from the starting point to the goal. Under-listing is the worst failure — list every sub-domain a complete curriculum would include.
+- "backbone": the milestone concepts that a complete path MUST contain — roughly 3-10 per sub-domain, phrased as action sentences the learner performs ("用配方法解一元二次方程", "理解极限的 ε-δ 定义", "证明微积分基本定理", "比较两种排序算法的复杂度"), same convention as learning units. Vary the sentence templates across entries; these are a coverage checklist, not an exact final list.
+- "expected_units": how many learning units a complete decomposition would reasonably need, between 30 and 200.
+- Write names in the language of the learning goal.
+- Output JSON only, without Markdown fences or commentary."#;
+
+/// Resolved scope reference fed into the generation call. `backbone` is
+/// deliberately advisory: the generator rewrites it into final unit names.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ScopeAnalysis {
+    pub scope: String,
+    pub subdomains: Vec<String>,
+    pub backbone: Vec<String>,
+    pub expected_units: Option<u16>,
+}
+
+/// Raw scope reply — same tolerant parsing philosophy as [`RawConcept`]: a
+/// bare string where a list is expected, or a missing field, degrades
+/// instead of failing the whole analysis.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct RawScope {
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default, deserialize_with = "de_pre_list")]
+    pub subdomains: Vec<String>,
+    #[serde(default, deserialize_with = "de_pre_list")]
+    pub backbone: Vec<String>,
+    #[serde(default, deserialize_with = "de_min")]
+    pub expected_units: Option<u16>,
+}
+
+/// Size reference bounds: below the audit floor is pointless, above the
+/// ceiling would push the generation call past its token budget.
+const SCOPE_UNITS_MIN: u16 = 30;
+const SCOPE_UNITS_MAX: u16 = 200;
+
+fn clamp_expected_units(n: u16) -> u16 {
+    n.clamp(SCOPE_UNITS_MIN, SCOPE_UNITS_MAX)
+}
+
+/// Parse the scope reply; `None` means "no usable scope" and degrades to
+/// scope-free generation.
+fn parse_scope_reply(raw: &str) -> Option<ScopeAnalysis> {
+    let parsed = crate::generation::parse_json_object::<RawScope>(raw).ok()?;
+    Some(ScopeAnalysis {
+        scope: parsed.scope.trim().to_owned(),
+        subdomains: parsed.subdomains,
+        backbone: parsed.backbone,
+        expected_units: parsed.expected_units.map(clamp_expected_units),
+    })
+}
+
+/// One scope call, best-effort: any failure is logged and degrades to `None`
+/// so the generation call still runs without a reference (pre-scope
+/// behavior).
+async fn analyze_scope(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    topic: &str,
+    log: Option<&ConceptGraphLogger>,
+) -> Option<ScopeAnalysis> {
+    if let Some(log) = log {
+        log.log("scope_start", serde_json::json!({ "topic": topic }));
+    }
+    let user = format!("Learning goal: {topic}");
+    let started = std::time::Instant::now();
+    let raw = match crate::generation::complete(
+        completer,
+        model_override,
+        SCOPE_SYSTEM,
+        &user,
+        crate::generation::CONCEPT_GRAPH_SCOPE_MAX_TOKENS,
+    )
+    .await
+    {
+        Ok(raw) => raw,
+        Err(error) => {
+            if let Some(log) = log {
+                log.log("scope_error", serde_json::json!({ "error": error.to_string() }));
+            }
+            return None;
+        }
+    };
+    if let Some(log) = log {
+        log.log(
+            "scope_reply",
+            serde_json::json!({ "duration_ms": started.elapsed().as_millis(), "reply": raw, "shape": log::reply_shape(&raw) }),
+        );
+    }
+    match parse_scope_reply(&raw) {
+        Some(scope) => {
+            if let Some(log) = log {
+                log.log(
+                    "scope_parsed",
+                    serde_json::json!({
+                        "subdomains": scope.subdomains.len(),
+                        "backbone": scope.backbone.len(),
+                        "expected_units": scope.expected_units,
+                    }),
+                );
+            }
+            Some(scope)
+        }
+        None => {
+            if let Some(log) = log {
+                log.log("scope_failed", serde_json::json!({ "reply_head": raw.chars().take(200).collect::<String>() }));
+            }
+            None
+        }
+    }
+}
+
 // ── Audit-gate generation loop ─────────────────────────────────────────────
 
-/// Single-call generation with an audit gate: generate the whole graph in
-/// one model call, normalize it tolerantly, audit it deterministically; if
-/// any danger-grade finding remains, the audit report is fed back to the
-/// model and it regenerates the COMPLETE graph — for at most
-/// [`MAX_REPAIR_ROUNDS`] rounds. A graph that still fails the gate is
-/// rejected: a half-broken graph is never published.
+/// Full first generation + light local repair rounds: ONE full call
+/// enumerates the whole network (enumeration is the model's strength); if
+/// danger-grade findings remain, [`auto_repair`] issues LIGHT patch calls
+/// (add/link/reverse/split/merge) against the findings — never a full rewrite,
+/// which is where attention decays on long outputs. At most
+/// [`MAX_REPAIR_ROUNDS`] repair rounds; a graph that still fails the gate is
+/// rejected with the full report so a human can repair it. `log` receives
+/// the full model replies and every stage result as JSON-lines events for
+/// offline diagnosis (see [`ConceptGraphLogger`]); `None` disables logging.
 pub(crate) async fn generate_concept_graph(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     topic: &str,
+    log: Option<&ConceptGraphLogger>,
 ) -> Result<ConceptGraphData, AppError> {
-    let mut last_report = String::new();
-    let mut last_error = String::new();
-    for round in 0..=MAX_REPAIR_ROUNDS {
-        let user = build_generate_user(topic, round, &last_report, &last_error);
-        let raw = crate::generation::complete_with_timeout(
-            completer,
-            model_override,
-            GENERATE_SYSTEM,
-            &user,
-            crate::generation::CONCEPT_GRAPH_MAX_TOKENS,
-            std::time::Duration::from_secs(CONCEPT_GRAPH_CALL_TIMEOUT_SECS),
-        )
-        .await?;
-        match crate::generation::parse_json_object::<RawGraph>(&raw) {
-            Ok(parsed) => {
-                let mut graph = assemble_graph(&parsed);
-                graph.audit.findings = audit_concept_graph(&graph);
-                if graph
-                    .audit
-                    .findings
-                    .iter()
-                    .all(|finding| finding.severity != SEV_DANGER)
-                {
-                    return Ok(graph);
-                }
-                last_report = format_audit_report(&graph);
-                last_error.clear();
+    if let Some(log) = log {
+        log.log(
+            "session_start",
+            serde_json::json!({
+                "topic": topic,
+                "provider_id": model_override.map(|(id, _)| id.as_str()),
+                "model": model_override.map(|(_, model)| model),
+                "max_tokens": crate::generation::CONCEPT_GRAPH_MAX_TOKENS,
+                "timeout_secs": CONCEPT_GRAPH_CALL_TIMEOUT_SECS,
+            }),
+        );
+    }
+    // Scope first: resolve what the goal covers, feed it to the generation
+    // call as a coverage checklist. Best-effort — failure degrades to
+    // scope-free generation.
+    let scope = analyze_scope(completer, model_override, topic, log).await;
+    let user = build_generate_user(topic, scope.as_ref());
+    let started = std::time::Instant::now();
+    let raw = crate::generation::complete_with_timeout(
+        completer,
+        model_override,
+        GENERATE_SYSTEM,
+        &user,
+        crate::generation::CONCEPT_GRAPH_MAX_TOKENS,
+        std::time::Duration::from_secs(CONCEPT_GRAPH_CALL_TIMEOUT_SECS),
+    )
+    .await?;
+    if let Some(log) = log {
+        log.log(
+            "generate_reply",
+            serde_json::json!({
+                "duration_ms": started.elapsed().as_millis(),
+                "reply": &raw,
+                "shape": log::reply_shape(&raw),
+            }),
+        );
+    }
+    let parsed = match parse_graph_reply(&raw) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            if let Some(log) = log {
+                log.log("parse_failed", serde_json::json!({ "error": error }));
             }
-            Err(error) => {
-                last_error = format!("the previous reply could not be parsed as JSON: {error}");
-            }
+            return Err(AppError::UnprocessableEntity(format!(
+                "concept graph reply could not be parsed as JSON: {error}"
+            )));
         }
+    };
+    if let Some(log) = log {
+        log.log("parsed", serde_json::json!({ "concepts": parsed.concepts.len() }));
+    }
+    let expected_units = scope.as_ref().and_then(|scope| scope.expected_units);
+    let (mut graph, fuzzy_resolved) = assemble_graph(&parsed);
+    // The scope content checklists (sub-domains, backbone concepts) rejoin
+    // the audit as coverage contracts of their own — not just its size
+    // estimate — so skipped concepts are caught and repairable by name.
+    graph.audit.findings = audit_concept_graph_with_scope(
+        &graph,
+        expected_units,
+        scope.as_ref().map(|scope| scope.subdomains.as_slice()),
+        scope.as_ref().map(|scope| scope.backbone.as_slice()),
+    );
+    if let Some(log) = log {
+        // Near-miss references that were resolved instead of dropped are a
+        // diagnosis signal on their own: each one was a would-be orphan.
+        if !fuzzy_resolved.is_empty() {
+            log.log(
+                "fuzzy_resolved",
+                serde_json::json!({
+                    "count": fuzzy_resolved.len(),
+                    "pairs": &fuzzy_resolved,
+                }),
+            );
+        }
+        log.log(
+            "audit",
+            serde_json::json!({
+                "nodes": graph.nodes.len(),
+                "edges": graph.edges.len(),
+                "dropped_refs": graph.audit.ref_drop_count,
+                "findings": &graph.audit.findings,
+            }),
+        );
+    }
+
+    for _ in 0..MAX_REPAIR_ROUNDS {
+        if graph
+            .audit
+            .findings
+            .iter()
+            .all(|finding| finding.severity != SEV_DANGER)
+        {
+            if let Some(log) = log {
+                log.log(
+                    "session_end",
+                    serde_json::json!({
+                        "ok": true,
+                        "nodes": graph.nodes.len(),
+                        "edges": graph.edges.len(),
+                    }),
+                );
+            }
+            return Ok(graph);
+        }
+        match auto_repair(topic, &graph, completer, model_override, scope.as_ref(), log).await {
+            Ok(Some(fixed)) => graph = fixed,
+            // Repair made no progress (or the model produced nothing usable):
+            // stop patching and report the surviving failures honestly.
+            Ok(None) => break,
+            Err(error) => return Err(error),
+        }
+    }
+    let report = format_audit_report(&graph);
+    if let Some(log) = log {
+        log.log("session_end", serde_json::json!({ "ok": false, "error": report }));
     }
     Err(AppError::UnprocessableEntity(format!(
         "concept graph still fails the audit gate after {} rounds: {}",
         MAX_REPAIR_ROUNDS + 1,
-        if last_report.is_empty() {
-            last_error
-        } else {
-            last_report
-        }
+        report
     )))
 }
 
 /// Normalize one flat concept list into a graph, breaking cycles and folding
-/// the drop statistics into the audit shell.
-fn assemble_graph(raw: &RawGraph) -> ConceptGraphData {
+/// the drop statistics into the audit shell. Also returns the near-miss
+/// references that were fuzzy-resolved instead of dropped — each one is a
+/// would-be orphan, worth a diagnosis-log line.
+fn assemble_graph(raw: &RawGraph) -> (ConceptGraphData, Vec<(String, String)>) {
     let batch = normalize_batch(&raw.concepts, &HashSet::new());
-    finalize_graph(batch.nodes, batch.edges, batch.dropped, batch.raw_refs)
+    let graph = finalize_graph(batch.nodes, batch.edges, batch.dropped, batch.raw_refs);
+    (graph, batch.fuzzy_resolved)
 }
 
-/// The first round asks for the graph; later rounds attach the previous
-/// attempt's audit report (or parse error) and demand a COMPLETE rewrite.
-fn build_generate_user(
-    topic: &str,
-    round: usize,
-    last_report: &str,
-    last_error: &str,
-) -> String {
-    let mut lines = vec![format!("Learning goal: {topic}")];
-    if round > 0 {
-        lines.push(String::new());
-        lines.push(
-            "The previous attempt failed the structural audit gate. Fix EVERY issue listed below \
-             and return the COMPLETE revised concept graph — every concept again, not just the fixes."
-                .into(),
-        );
-        if !last_report.is_empty() {
-            lines.push(last_report.to_owned());
-        }
-        if !last_error.is_empty() {
-            lines.push(format!("JSON problem: {last_error}"));
+/// Parse the generation reply: the documented `{"concepts": [...]}` object
+/// first; a model that answered with the bare concepts array (with or without
+/// code fences) is tolerated as a fallback. When both shapes fail, the object
+/// error plus the reply diagnostic is returned so the failure is
+/// self-explanatory.
+fn parse_graph_reply(raw: &str) -> Result<RawGraph, String> {
+    match crate::generation::parse_json_object::<RawGraph>(raw) {
+        Ok(graph) => Ok(graph),
+        Err(object_error) => {
+            let stripped = crate::generation::strip_code_fences(raw);
+            match serde_json::from_str::<Vec<RawConcept>>(&stripped) {
+                Ok(concepts) => Ok(RawGraph { concepts }),
+                Err(array_error) => Err(format!(
+                    "{object_error}; bare array fallback failed: {array_error}"
+                )),
+            }
         }
     }
-    lines.join("\n")
+}
+
+/// The generation call only ever asks for the whole network once. A resolved
+/// scope (when present) is embedded as the coverage checklist: sub-domains
+/// that must all be realized, backbone concepts that must all become units,
+/// and a size reference — the model still produces the single flat list.
+fn build_generate_user(topic: &str, scope: Option<&ScopeAnalysis>) -> String {
+    let Some(scope) = scope else {
+        return format!("Learning goal: {topic}");
+    };
+    let mut parts = vec![format!("Learning goal: {topic}")];
+    if !scope.scope.is_empty() {
+        parts.push(format!("范围界定：{}", scope.scope));
+    }
+    if !scope.subdomains.is_empty() {
+        parts.push(format!(
+            "必须覆盖的子域（每个都必须分解为单元）：{}",
+            scope.subdomains.join("、")
+        ));
+    }
+    if !scope.backbone.is_empty() {
+        parts.push(format!(
+            "子域骨干概念（覆盖清单，每个需落实为一个或多个单元，可改写为动作句）：{}",
+            scope.backbone.join("；")
+        ));
+    }
+    if let Some(expected) = scope.expected_units {
+        parts.push(format!(
+            "预期单元规模：约 {expected} 个。这不是软性参考：最终单元数显著少于该数，意味着整块子域被遗漏，必须补全。"
+        ));
+    }
+    parts.join("\n")
 }
 
 /// Render the audit state as a model-readable report: size, dropped
 /// references with their names, and every finding with its evidence.
-fn format_audit_report(graph: &ConceptGraphData) -> String {
+/// Also used by the repair stages, so it is crate-visible.
+pub(crate) fn format_audit_report(graph: &ConceptGraphData) -> String {
     let mut lines = vec![format!(
         "Generated graph: {} concepts, {} edges",
         graph.nodes.len(),
@@ -594,6 +982,7 @@ mod tests {
         RawConcept {
             name: name.to_owned(),
             pre: pre.iter().map(|s| (*s).to_owned()).collect(),
+            min: None,
         }
     }
 
@@ -631,7 +1020,7 @@ mod tests {
         // The concept name IS the id and title (symbolic, YAML-like).
         assert_eq!(batch.nodes[0].id, "A");
         assert_eq!(batch.nodes[0].title, "A");
-        assert_eq!(batch.nodes[0].level, None);
+        assert_eq!(batch.nodes[0].min, None);
     }
 
     #[test]
@@ -642,6 +1031,43 @@ mod tests {
         assert_eq!(batch.dropped.len(), 1);
         assert_eq!(batch.dropped[0].reason, "unknown reference");
         assert_eq!(batch.edges[0].from, "anchor");
+    }
+
+    #[test]
+    fn normalize_batch_resolves_near_miss_references() {
+        // One stray character ("的") against exactly one candidate resolves
+        // instead of dropping — the dropped edge would have orphaned its head
+        // and turned it into a fake entry point.
+        let batch = normalize_batch(
+            &[
+                concept("用导数定义求切线斜率", &[]),
+                concept("用极限理解逼近过程", &["用导数定义求切线斜率的"]),
+            ],
+            &HashSet::new(),
+        );
+        assert_eq!(batch.edges.len(), 1, "the near-miss reference resolves");
+        assert_eq!(batch.edges[0].from, "用导数定义求切线斜率");
+        assert_eq!(
+            batch.fuzzy_resolved,
+            vec![
+                ("用导数定义求切线斜率的".to_owned(), "用导数定义求切线斜率".to_owned())
+            ]
+        );
+        assert!(batch.dropped.is_empty());
+    }
+
+    #[test]
+    fn normalize_batch_never_resolves_a_substitution() {
+        // 解一元一次方程 vs 解一元二次方程: one swapped character, indel
+        // distance 2 — a genuinely different unit, never a fuzzy match.
+        let batch = normalize_batch(
+            &[concept("解一元一次方程", &[]), concept("解应用题", &["解一元二次方程"])],
+            &HashSet::new(),
+        );
+        assert!(batch.edges.is_empty());
+        assert!(batch.fuzzy_resolved.is_empty());
+        assert_eq!(batch.dropped.len(), 1);
+        assert_eq!(batch.dropped[0].reason, "unknown reference");
     }
 
     #[test]
@@ -693,7 +1119,8 @@ mod tests {
         let raw = RawGraph {
             concepts: vec![concept("a", &["b"]), concept("b", &["a"])],
         };
-        let graph = assemble_graph(&raw);
+        let (graph, fuzzy) = assemble_graph(&raw);
+        assert!(fuzzy.is_empty());
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.edges.len(), 1, "one of the two cycle edges is dropped");
         assert_eq!(graph.audit.ref_drop_count, 1);
@@ -702,7 +1129,7 @@ mod tests {
 
     #[test]
     fn merge_batch_keeps_existing_keys_and_recomputes_audit() {
-        let graph = assemble_graph(&RawGraph {
+        let (graph, _) = assemble_graph(&RawGraph {
             concepts: vec![concept("a", &[]), concept("b", &["a"])],
         });
         let batch = normalize_batch(&[concept("a", &[]), concept("c", &["a"])], &HashSet::new());
@@ -713,9 +1140,149 @@ mod tests {
     }
 
     #[test]
-    fn old_single_call_json_still_deserializes() {
-        // A pre-pipeline stored graph has no level/group/necessity/reason/audit;
-        // every new field must default so old files keep loading.
+    fn merge_batch_accumulates_drop_statistics() {
+        // b's prerequisite "ghost" is dropped: b is an orphan candidate the
+        // repair is supposed to reconnect. A patch that adds c (no drops of
+        // its own) must NOT wipe that evidence — the re-audit keys on it.
+        let (graph, _) = assemble_graph(&RawGraph {
+            concepts: vec![concept("a", &[]), concept("b", &["ghost"])],
+        });
+        assert_eq!(graph.audit.ref_drop_count, 1);
+        assert_eq!(graph.audit.raw_ref_count, 1);
+        let allowed: HashSet<String> = ["a".to_owned(), "b".to_owned()]
+            .into_iter()
+            .collect();
+        let batch = normalize_batch(&[concept("c", &["a"])], &allowed);
+        let merged = merge_batch(&graph, &batch);
+        assert_eq!(merged.audit.ref_drop_count, 1, "the old drop survives");
+        assert_eq!(
+            merged
+                .audit
+                .dropped_edges
+                .iter()
+                .map(|edge| (edge.from.as_str(), edge.to.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("ghost", "b")],
+            "the dropped entry keeps its names for the repair prompt"
+        );
+        assert_eq!(merged.audit.raw_ref_count, 2, "1 old + 1 new reference");
+        assert_eq!(merged.audit.ref_drop_rate, 0.5);
+    }
+
+    #[test]
+    fn raw_min_parses_numbers_and_digit_strings_tolerantly() {
+        let raw = serde_json::from_str::<RawConcept>(
+            r#"{"name": "用配方法解一元二次方程", "pre": [], "min": 15}"#,
+        )
+        .unwrap();
+        assert_eq!(raw.min, Some(15));
+        let raw =
+            serde_json::from_str::<RawConcept>(r#"{"name": "X", "min": "20"}"#).unwrap();
+        assert_eq!(raw.min, Some(20));
+        let raw =
+            serde_json::from_str::<RawConcept>(r#"{"name": "Y", "min": "many"}"#).unwrap();
+        assert_eq!(raw.min, None, "non-numeric minutes degrade to None");
+        let raw = serde_json::from_str::<RawConcept>(r#"{"name": "Z"}"#).unwrap();
+        assert_eq!(raw.min, None);
+    }
+
+    #[test]
+    fn parse_graph_reply_accepts_the_documented_object_shape() {
+        let raw = r#"{"concepts": [{"name": "A", "pre": [], "min": 10}]}"#;
+        let parsed = parse_graph_reply(raw).unwrap();
+        assert_eq!(parsed.concepts.len(), 1);
+        assert_eq!(parsed.concepts[0].min, Some(10));
+    }
+
+    #[test]
+    fn parse_graph_reply_accepts_a_bare_concept_array() {
+        let raw = r#"[{"name": "A", "pre": [], "min": 10}, {"name": "B", "pre": ["A"]}]"#;
+        let parsed = parse_graph_reply(raw).unwrap();
+        assert_eq!(parsed.concepts.len(), 2);
+        assert_eq!(parsed.concepts[1].pre, vec!["A".to_owned()]);
+    }
+
+    #[test]
+    fn parse_graph_reply_accepts_a_fenced_bare_concept_array() {
+        let raw = "```json\n[{\"name\": \"A\", \"min\": 5}]\n```";
+        let parsed = parse_graph_reply(raw).unwrap();
+        assert_eq!(parsed.concepts.len(), 1);
+        assert_eq!(parsed.concepts[0].min, Some(5));
+    }
+
+    #[test]
+    fn parse_graph_reply_reports_both_shapes_failing_with_diagnostics() {
+        let err =
+            parse_graph_reply("learning plan: 1. 学配方法 2. 学求根公式 3. 学判别式").unwrap_err();
+        assert!(err.contains("no complete JSON object found"), "{err}");
+        assert!(err.contains("head:"), "{err}");
+        assert!(err.contains("bare array fallback failed"), "{err}");
+    }
+
+    // ── scope analysis ─────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_scope_reply_accepts_the_documented_shape() {
+        let raw = r#"{"scope":"零基础到本科","subdomains":["算术","代数"],"backbone":["用配方法解一元二次方程"],"expected_units":120}"#;
+        let scope = parse_scope_reply(raw).unwrap();
+        assert_eq!(scope.scope, "零基础到本科");
+        assert_eq!(scope.subdomains, vec!["算术", "代数"]);
+        assert_eq!(scope.backbone, vec!["用配方法解一元二次方程"]);
+        assert_eq!(scope.expected_units, Some(120));
+    }
+
+    #[test]
+    fn parse_scope_reply_returns_none_for_garbage_degrading_gracefully() {
+        assert!(parse_scope_reply("sure, here is the plan...").is_none());
+        assert!(parse_scope_reply("").is_none());
+    }
+
+    #[test]
+    fn parse_scope_reply_tolerates_string_lists_and_missing_fields() {
+        let raw = r#"{"scope":"x","subdomains":"算术","expected_units":"999"}"#;
+        let scope = parse_scope_reply(raw).unwrap();
+        assert_eq!(scope.subdomains, vec!["算术"]);
+        assert!(scope.backbone.is_empty());
+        // "999" clamps to the ceiling: a runaway size reference must not
+        // push the generation call past its token budget.
+        assert_eq!(scope.expected_units, Some(SCOPE_UNITS_MAX));
+    }
+
+    #[test]
+    fn clamp_expected_units_bounds_the_size_reference() {
+        assert_eq!(clamp_expected_units(10), SCOPE_UNITS_MIN);
+        assert_eq!(clamp_expected_units(60), 60);
+        assert_eq!(clamp_expected_units(5000), SCOPE_UNITS_MAX);
+    }
+
+    #[test]
+    fn build_generate_user_without_scope_stays_minimal() {
+        assert_eq!(build_generate_user("数学", None), "Learning goal: 数学");
+    }
+
+    #[test]
+    fn build_generate_user_embeds_scope_as_coverage_checklist() {
+        let scope = ScopeAnalysis {
+            scope: "零基础到本科结业".into(),
+            subdomains: vec!["算术".into(), "代数".into()],
+            backbone: vec!["用配方法解一元二次方程".into()],
+            expected_units: Some(120),
+        };
+        let user = build_generate_user("数学-零基础到本科结业", Some(&scope));
+        assert!(user.contains("范围界定：零基础到本科结业"), "{user}");
+        assert!(user.contains("必须覆盖的子域"), "{user}");
+        assert!(user.contains("算术、代数"), "{user}");
+        assert!(user.contains("骨干概念"), "{user}");
+        assert!(user.contains("约 120 个"), "{user}");
+        assert!(user.starts_with("Learning goal: 数学-零基础到本科结业"), "{user}");
+    }
+
+    #[test]
+    fn legacy_json_without_min_still_deserializes() {
+        // A stored graph may lack min; the field must default so old files
+        // keep loading. (Old level/group-era files are not migrated — the
+        // feature is deliberately incompatible with retired semantics — but
+        // deserialization stays tolerant.)
         let json = r#"{
             "id": "01J00000000000000000000000",
             "user_id": "u",
@@ -725,7 +1292,7 @@ mod tests {
             "created_at": 1
         }"#;
         let record: ConceptGraphRecord = serde_json::from_str(json).unwrap();
-        assert_eq!(record.graph.nodes[0].level, None);
+        assert_eq!(record.graph.nodes[0].min, None);
         assert_eq!(record.graph.nodes[0].group, None);
         assert_eq!(record.graph.audit.ref_drop_count, 0);
         assert!(record.graph.audit.findings.is_empty());

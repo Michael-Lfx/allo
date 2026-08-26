@@ -14,9 +14,10 @@ use super::*;
 // | single activity           |  4096  | exactly one question                           |
 // | figure repair             |  4096  | corrected figure code                          |
 // | reflection grading        |  2048  | tiny {score, feedback} JSON                    |
-// | concept graph             | 16384  | whole 60-120-concept graph in one reply; a     |
-// |                           |        | regeneration round rewrites EVERYTHING again   |
-// | concept graph repair      |  4096  | additive 1-10 concepts only                    |
+// | concept graph             | 16384  | whole 60-200-concept graph in one reply; a  |
+// |                           |        | regeneration round rewrites EVERYTHING again |
+// | concept graph scope       |  4096  | coverage/backbone analysis before the graph  |
+// | concept graph repair      |  4096  | additive 1-10 concepts only                  |
 //
 // All budgets are output ceilings, not targets: a budget too small truncates
 // a reply mid-JSON (guaranteed-unparseable), so heavy stages get headroom;
@@ -35,10 +36,13 @@ pub(crate) const SINGLE_ACTIVITY_MAX_TOKENS: u32 = 4096;
 pub(crate) const FIGURE_REPAIR_MAX_TOKENS: u32 = 4096;
 /// Reflection grading: tiny `{score, feedback}` JSON.
 pub(crate) const REFLECTION_GRADING_MAX_TOKENS: u32 = 2048;
-/// Whole concept graph (60-120 concepts) in one reply; regeneration rounds
+/// Whole concept graph (60-200 concepts) in one reply; regeneration rounds
 /// rewrite everything again.
 pub(crate) const CONCEPT_GRAPH_MAX_TOKENS: u32 = 16 * 1024;
-/// Manual concept-graph repair: additive 1-10 concepts only.
+/// Pre-generation scope analysis: small coverage/backbone JSON only.
+pub(crate) const CONCEPT_GRAPH_SCOPE_MAX_TOKENS: u32 = 4096;
+/// Light concept-graph repair (manual or automatic in the generation loop):
+/// local patch calls with add/reverse/split/merge operations only.
 pub(crate) const CONCEPT_GRAPH_REPAIR_MAX_TOKENS: u32 = 4096;
 
 

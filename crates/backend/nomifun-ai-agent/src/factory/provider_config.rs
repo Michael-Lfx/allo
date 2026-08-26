@@ -513,6 +513,36 @@ pub async fn one_shot_completion_text_or_reasoning(
     streaming_completion_text_or_reasoning(cfg, system, messages, max_tokens, |_, _| {}).await
 }
 
+/// Like [`one_shot_completion_no_thinking`] but drains with the reasoning
+/// fallback: providers that IGNORE `thinking=Disabled` may still answer in
+/// `reasoning_content`, and this recovers that channel from the same response
+/// without issuing another request.
+pub async fn one_shot_completion_no_thinking_text_or_reasoning(
+    cfg: &Config,
+    system: &str,
+    messages: Vec<Message>,
+    max_tokens: u32,
+) -> Result<String, AppError> {
+    let provider: Arc<dyn LlmProvider> = create_provider(cfg);
+
+    let request = LlmRequest {
+        model: cfg.model.clone(),
+        system: system.to_owned(),
+        messages,
+        tools: vec![],
+        max_tokens,
+        thinking: Some(ThinkingConfig::Disabled),
+        reasoning_effort: None,
+        temperature: None,
+    };
+
+    let rx = provider
+        .stream(&request)
+        .await
+        .map_err(provider_error_to_app_error)?;
+    drain_text_or_reasoning(rx, |_, _| {}).await
+}
+
 /// Perform exactly one title-generation stream request. Providers that ignore
 /// `thinking=Disabled` may still place their answer in the reasoning channel;
 /// that channel is recovered from the same response without issuing another

@@ -342,13 +342,13 @@ export interface CourseJobView {
 export interface ConceptGraphNode {
   id: string;
   title: string;
-  /** 0=里程碑，1=原子概念（旧数据缺失时视为原子） */
-  level?: 0 | 1;
-  /** 子领域分组名（里程碑无分组） */
+  /** 估计学习分钟数（5/10/15/20/25 档；超过 25 视为硬上限违例） */
+  min?: number;
+  /** 子领域分组名（旧字段，新图不再设置） */
   group?: string;
-  /** 为什么不可或缺 */
+  /** 为什么不可或缺（旧字段，新图不再设置） */
   necessity?: string;
-  /** 是否为锚点（跨组引用的唯一许可目标） */
+  /** 是否为锚点（旧字段，新图不再设置） */
   is_anchor?: boolean;
 }
 

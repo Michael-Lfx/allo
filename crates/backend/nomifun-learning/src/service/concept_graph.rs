@@ -2,7 +2,7 @@ use super::*;
 
 impl LearningService {
 
-    // ── Experimental concept graph (rough file persistence) ─────────────
+    // ── Experimental learning-unit network (rough file persistence) ─────
     // JSON files under `{data_dir}/learning-concept-graphs/`; expected to
     // move into the database once the feature matures.
 
@@ -25,8 +25,9 @@ impl LearningService {
         Ok(self.concept_graph_dir()?.join(format!("{}.json", id.as_str())))
     }
 
-    /// Decompose a learning goal into an atomic-concept prerequisite DAG via
-    /// one model call (plus one validation retry) and persist it as JSON.
+    /// Decompose a learning goal into a learning-unit network (one full
+    /// generation call plus light audit-gate repair rounds) and persist it
+    /// as JSON.
     pub async fn generate_concept_graph(
         &self,
         user_id: &UserId,
@@ -49,14 +50,20 @@ impl LearningService {
             .ok_or_else(|| {
                 AppError::Conflict("concept graph generation is not configured".into())
             })?;
-        let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
-        let graph =
-            crate::concept_graph::generate_concept_graph(completer.as_ref(), model_override, topic)
-                .await?;
         let dir = self.concept_graph_dir()?;
         tokio::fs::create_dir_all(&dir).await.map_err(|error| {
             AppError::Internal(format!("failed to create concept graph dir: {error}"))
         })?;
+        let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
+        let session = LearningConceptGraphId::new().as_str().to_owned();
+        let logger = crate::concept_graph::ConceptGraphLogger::new(&dir, &session);
+        let graph = crate::concept_graph::generate_concept_graph(
+            completer.as_ref(),
+            model_override,
+            topic,
+            Some(&logger),
+        )
+        .await?;
         let record = crate::concept_graph::ConceptGraphRecord {
             id: LearningConceptGraphId::new().as_str().to_owned(),
             user_id: user_id.as_str().to_owned(),
@@ -145,8 +152,9 @@ impl LearningService {
     }
 
     /// Manually triggered repair: the stored audit report is the decision
-    /// basis, the model adds concepts, and the merged graph is re-audited
-    /// and persisted over the same record.
+    /// basis, the model applies local patch operations (add/reverse/
+    /// split/merge), and the merged graph is re-audited and persisted over
+    /// the same record.
     pub async fn repair_concept_graph(
         &self,
         user_id: &UserId,

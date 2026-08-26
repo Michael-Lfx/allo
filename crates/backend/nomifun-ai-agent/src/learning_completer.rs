@@ -8,6 +8,18 @@
 //! `max_tokens` budget: the learning pipeline's stages differ wildly in
 //! output size (a tiny grading JSON vs. a whole concept graph in one reply),
 //! so each stage passes the budget it needs instead of a fixed cap.
+//!
+//! Completion disables thinking and drains with the reasoning fallback,
+//! matching the project's side-task JSON convention: `llm_chat` / `image_analyze` /
+//! title / auxiliary completions all send `thinking=Disabled` — "side-task JSON
+//! generation does not need chain-of-thought" — because thinking-mode models
+//! (deepseek-v4-flash, Minimax-M3) spend the whole budget drafting in
+//! `reasoning_content` and leave `content` empty (observed: 65 KB of "We need…"
+//! prose, not one `{`). The reasoning fallback only kicks in when `content`
+//! stays empty after disabling (providers that ignore `thinking=Disabled`, e.g.
+//! step-*), so normal models are unaffected. `text_or_reasoning` WITHOUT
+//! disabling is reserved for the Agent Execution planner, where reasoning-as-
+//! answer is acceptable.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,7 +28,9 @@ use nomifun_common::AppError;
 use nomifun_db::{IProviderModelRepository, IProviderRepository};
 use nomifun_learning::LearningCompleter;
 
-use crate::factory::provider_config::{one_shot_completion, resolve_provider_config, user_message};
+use crate::factory::provider_config::{
+    one_shot_completion_no_thinking_text_or_reasoning, resolve_provider_config, user_message,
+};
 use crate::knowledge_completer::resolve_default_model;
 
 /// Provider-backed completer for the learning pipeline (course generation,
@@ -57,7 +71,13 @@ impl LearningCompleter for LiveLearningCompleter {
             &self.workspace,
         )
         .await?;
-        one_shot_completion(&cfg, system, vec![user_message(user)], max_tokens).await
+        one_shot_completion_no_thinking_text_or_reasoning(
+            &cfg,
+            system,
+            vec![user_message(user)],
+            max_tokens,
+        )
+        .await
     }
 }
 

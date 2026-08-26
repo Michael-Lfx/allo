@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use nomi_config::compat::{self, ProviderCompat};
-use nomi_types::llm::{LlmEvent, LlmRequest};
+use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 use nomi_types::tool::{ToolDef, truncate_deferred_description};
 
@@ -455,6 +455,19 @@ impl OpenAIProvider {
 
         if let Some(effort) = &request.reasoning_effort {
             body["reasoning_effort"] = json!(effort);
+        }
+
+        if let Some(thinking) = &request.thinking {
+            // DeepSeek / Minimax-style gateways default to chain-of-thought and
+            // only emit `content` after thinking is disabled; without this field
+            // the request silently leaves thinking ON and the answer may never
+            // land in `content` (empty completions). Mirrors `llm_chat.rs`.
+            body["thinking"] = json!(match thinking {
+                ThinkingConfig::Enabled { budget_tokens } => {
+                    json!({ "type": "enabled", "budget_tokens": budget_tokens })
+                }
+                ThinkingConfig::Disabled => json!({ "type": "disabled" }),
+            });
         }
 
         body
@@ -1966,7 +1979,7 @@ mod tests {
         StreamState,
     };
     use crate::failed_sse_capture::FailedSseCaptureContext;
-    use nomi_types::llm::LlmEvent;
+    use nomi_types::llm::{LlmEvent, ThinkingConfig};
     use nomi_types::message::StopReason;
     use serde_json::json;
 
@@ -3427,6 +3440,37 @@ mod tests {
         let req = simple_request();
         let with_none = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
         assert!(with_none.get("temperature").is_none());
+    }
+
+    // --- thinking ---
+
+    #[test]
+    fn test_thinking_disabled_is_serialized() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let mut req = simple_request();
+        req.thinking = Some(ThinkingConfig::Disabled);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        assert_eq!(body["thinking"], json!({ "type": "disabled" }));
+    }
+
+    #[test]
+    fn test_thinking_enabled_carries_budget() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let mut req = simple_request();
+        req.thinking = Some(ThinkingConfig::Enabled { budget_tokens: 8000 });
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        assert_eq!(
+            body["thinking"],
+            json!({ "type": "enabled", "budget_tokens": 8000 })
+        );
+    }
+
+    #[test]
+    fn test_thinking_none_is_omitted() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let req = simple_request();
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true);
+        assert!(body.get("thinking").is_none());
     }
 
     // --- merge_assistant_messages ---
