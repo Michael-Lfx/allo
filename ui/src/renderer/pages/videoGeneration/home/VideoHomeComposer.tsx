@@ -19,6 +19,7 @@ import { ActionUploadSlots } from './ActionUploadSlots';
 import { ModeMenu } from './ModeMenu';
 import { PromptComposer } from './PromptComposer';
 import { SlashSkillMenu } from './SlashSkillMenu';
+import { filesFromClipboardData } from './documentUpload';
 import { agentModesFor, creationSkillsFor } from './modeCatalog';
 import { useHomeDraft } from './useHomeDraft';
 import { useHomeUpload } from './useHomeUpload';
@@ -548,7 +549,16 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
         onDragOver={(event) => event.preventDefault()}
         onDrop={(event) => {
           event.preventDefault();
-          void handleFiles(Array.from(event.dataTransfer.files ?? []));
+          void handleFiles(filesFromClipboardData(event.dataTransfer));
+        }}
+        // Capture so pasted images are treated as uploads before the textarea
+        // inserts a filename / binary placeholder as text.
+        onPasteCapture={(event) => {
+          const files = filesFromClipboardData(event.clipboardData);
+          if (files.length === 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          void handleFiles(files);
         }}
       >
         {isAction ? (

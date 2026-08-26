@@ -28,6 +28,8 @@ export interface SessionSummary {
   final_video?: string | null;
   /** Relative path of film poster (display-only, not muxed into the video). */
   cover?: string | null;
+  /** Sum of Flowy video-task credits billed for this project. */
+  credits_consumed?: number | null;
 }
 
 /** Full session payload from `GET /api/vimax/sessions/:id`. */
@@ -57,6 +59,8 @@ export interface VimaxSession extends SessionSummary {
   final_video?: string | null;
   /** Relative path of film poster image (display-only). */
   cover?: string | null;
+  /** Sum of Flowy video-task `credits_consumed` values billed for this session. */
+  credits_consumed?: number | null;
   /** Relative working dir under data_dir/vimax (e.g. `.working_dir/<id>`). */
   working_dir?: string | null;
 }
@@ -321,6 +325,8 @@ export interface SessionStatus {
   final_video?: string | null;
   /** Relative path of film poster image (display-only). */
   cover?: string | null;
+  /** Live aggregate of Flowy video-task credits for this session. */
+  credits_consumed?: number | null;
   /** Absolute path of the session working directory on disk. */
   working_dir_abs?: string | null;
   /** RFC3339 timestamp of last progress update. */

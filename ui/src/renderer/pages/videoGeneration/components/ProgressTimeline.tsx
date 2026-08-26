@@ -20,6 +20,8 @@ interface ProgressTimelineProps {
     image_model?: string;
     video_model?: string;
   };
+  /** Live aggregate of Flowy video-task credits for this session. */
+  creditsConsumed?: number;
 }
 
 type FailureKind = 'credits' | 'llm' | 'image' | 'video' | 'unknown';
@@ -174,7 +176,12 @@ function classifyFailure(
   };
 }
 
-const ProgressTimeline: React.FC<ProgressTimelineProps> = ({ onCancel, cancelling, models }) => {
+const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
+  onCancel,
+  cancelling,
+  models,
+  creditsConsumed,
+}) => {
   const { t } = useTranslation();
   const status = useRunStatusFull();
   const hidden = useDocumentHidden();
@@ -186,6 +193,10 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({ onCancel, cancellin
     return coalesced.slice(windowStart).reverse();
   }, [status?.events]);
   const busy = status?.status === 'planning' || status?.status === 'rendering';
+  const liveCredits = Math.max(
+    0,
+    Number(creditsConsumed ?? status?.credits_consumed ?? 0) || 0
+  );
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
     if (!busy || hidden) return;
@@ -253,6 +264,17 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({ onCancel, cancellin
             {statusLabel(status.status, t)}
           </Tag>
           {busy ? <Spin size={14} /> : null}
+          {liveCredits > 0 ? (
+            <span
+              data-testid='session-video-credits-live'
+              className='text-12px tabular-nums text-[var(--color-text-3)]'
+            >
+              {t('videoGeneration.studio.creditsConsumed', {
+                credits: liveCredits,
+                defaultValue: '消耗 {{credits}} 积分',
+              })}
+            </span>
+          ) : null}
         </div>
         {busy && onCancel ? (
           <Button size='mini' status='danger' loading={cancelling} onClick={onCancel}>

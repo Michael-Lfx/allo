@@ -1004,6 +1004,7 @@ mod tests {
         assert!(content.len() >= 4);
         assert_eq!(body["generate_audio"], true);
         assert_eq!(body["return_last_frame"], true);
+        assert_eq!(body["app"], "flowymes");
     }
 
     #[test]
@@ -1012,6 +1013,7 @@ mod tests {
             id: 1,
             task_id: None,
             status: 4,
+            credits_consumed: 0,
             result: Some(serde_json::json!({
                 "content": {
                     "video_url": "https://cdn.example/v.mp4",
@@ -1048,6 +1050,7 @@ mod tests {
         assert_eq!(body["duration"], 5);
         assert_eq!(body["ratio"], "16:9");
         assert!(body["content"].is_array());
+        assert_eq!(body["app"], "flowymes");
     }
 
     #[test]
@@ -1076,6 +1079,7 @@ mod tests {
         assert_eq!(body["duration"], 5);
         assert_eq!(body["ratio"], "16:9");
         assert_eq!(body["aigc_watermark"], true);
+        assert_eq!(body["app"], "flowymes");
         assert!(body.get("watermark").is_none());
         assert!(body.get("generate_audio").is_none());
         assert!(body.get("return_last_frame").is_none());
@@ -1115,6 +1119,7 @@ mod tests {
             id: 1,
             task_id: None,
             status: 4,
+            credits_consumed: 0,
             result: Some(serde_json::json!({
                 "content": { "url": "https://cdn.example/h3.mp4" }
             })),
@@ -1195,11 +1200,26 @@ mod tests {
     }
 
     #[test]
+    fn video_task_record_parses_credits_consumed() {
+        let rec: VideoTaskRecord = serde_json::from_value(serde_json::json!({
+            "id": 12345,
+            "task_id": "abc",
+            "status": 4,
+            "credits_consumed": 5200,
+            "result": { "content": { "video_url": "https://cdn.example/v.mp4" } }
+        }))
+        .expect("parse");
+        assert_eq!(rec.credits_consumed, 5200);
+        assert_eq!(rec.id, 12345);
+    }
+
+    #[test]
     fn video_task_record_terminal_detection() {
         let mut rec = VideoTaskRecord {
             id: 1,
             task_id: None,
             status: 2,
+            credits_consumed: 0,
             result: None,
             created_at: None,
             updated_at: None,

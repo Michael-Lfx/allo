@@ -2,17 +2,16 @@
  * Editable artifact preview for Technical artifacts & run files.
  *
  * - Text / JSON: inline edit + save
- * - Images: replace from disk, or regenerate via inline prompt edit
+ * - Images: regenerate via inline prompt edit
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Modal, Spin } from '@arco-design/web-react';
-import { Edit, Refresh, Upload } from '@icon-park/react';
+import { Edit, Refresh } from '@icon-park/react';
 import ErrorDiagnosticContent from '@/renderer/components/base/ErrorDiagnosticContent';
 import { buildUnknownErrorDiagnostic } from '@/renderer/utils/ui/errorDiagnostics';
 import {
   getArtifactImagePrompt,
-  replaceArtifactFile,
   updateArtifactImagePrompt,
   writeArtifactText,
 } from '../api';
@@ -53,7 +52,6 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
   onRequestRegenerate,
 }) => {
   const { t } = useTranslation();
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -63,7 +61,6 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
   const [promptDraft, setPromptDraft] = useState('');
   const [promptLoading, setPromptLoading] = useState(false);
   const [promptSaving, setPromptSaving] = useState(false);
-  const [replacing, setReplacing] = useState(false);
 
   const path = selectedPath ?? '';
   const canEditText =
@@ -113,38 +110,6 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
       setSaving(false);
     }
   }, [disabled, draft, onChanged, path, sessionId, t]);
-
-  const handleReplaceClick = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
-
-  const handleFilePicked = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      event.target.value = '';
-      if (!file || !path || disabled) return;
-      setReplacing(true);
-      try {
-        await replaceArtifactFile(sessionId, path, file);
-        onChanged();
-      } catch (e) {
-        Modal.error({
-          title: t('videoGeneration.artifacts.replaceFailed', { defaultValue: '替换失败' }),
-          content: (
-            <ErrorDiagnosticContent
-              diagnostic={buildUnknownErrorDiagnostic(
-                e,
-                t('videoGeneration.artifacts.replaceFailed', { defaultValue: '替换失败' })
-              )}
-            />
-          ),
-        });
-      } finally {
-        setReplacing(false);
-      }
-    },
-    [disabled, onChanged, path, sessionId, t]
-  );
 
   const startRegenerate = useCallback(async () => {
     if (!path || disabled) return;
@@ -262,20 +227,12 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
     }
     if (canEditImage) {
       return (
-        <div className='flex flex-wrap items-center gap-6px'>
-          <Button size='mini' type='outline' loading={replacing} onClick={handleReplaceClick}>
-            <span className='inline-flex items-center gap-4px'>
-              <Upload theme='outline' size={12} />
-              {t('videoGeneration.artifacts.replaceImage', { defaultValue: '本地替换' })}
-            </span>
-          </Button>
-          <Button size='mini' type='outline' onClick={() => void startRegenerate()}>
-            <span className='inline-flex items-center gap-4px'>
-              <Refresh theme='outline' size={12} />
-              {t('videoGeneration.artifacts.regenerate', { defaultValue: '重新生成' })}
-            </span>
-          </Button>
-        </div>
+        <Button size='mini' type='outline' onClick={() => void startRegenerate()}>
+          <span className='inline-flex items-center gap-4px'>
+            <Refresh theme='outline' size={12} />
+            {t('videoGeneration.artifacts.regenerate', { defaultValue: '重新生成' })}
+          </span>
+        </Button>
       );
     }
     return null;
@@ -287,14 +244,12 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
     disabled,
     editing,
     handleRegenerate,
-    handleReplaceClick,
     handleSaveText,
     onRequestRegenerate,
     path,
     promptDraft,
     promptSaving,
     regenMode,
-    replacing,
     saving,
     startEdit,
     startRegenerate,
@@ -376,14 +331,6 @@ const ArtifactPreviewPanel: React.FC<ArtifactPreviewPanelProps> = ({
           </div>
         )}
       </div>
-
-      <input
-        ref={fileInputRef}
-        type='file'
-        accept='image/png,image/jpeg,image/webp,image/gif,image/bmp,.png,.jpg,.jpeg,.webp,.gif,.bmp'
-        className='hidden'
-        onChange={(e) => void handleFilePicked(e)}
-      />
     </div>
   );
 };

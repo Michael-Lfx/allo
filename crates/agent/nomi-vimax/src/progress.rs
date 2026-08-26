@@ -64,6 +64,9 @@ pub struct RenderStatus {
     /// Relative path to film poster image (not part of the muxed video).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<String>,
+    /// Aggregate Flowy video-task credits for this session (persisted).
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub credits_consumed: i64,
     /// Absolute session working directory (for UI / debugging).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_dir_abs: Option<String>,
@@ -72,6 +75,10 @@ pub struct RenderStatus {
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<ProgressEvent>,
+}
+
+fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

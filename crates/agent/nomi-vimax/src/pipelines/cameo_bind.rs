@@ -29,16 +29,18 @@ use crate::session::cameo::{self, CameoPhotoEntry};
 
 use super::{resolve_film_root, safe_component};
 
-/// Img2img edit: keep photoreal plate, swap **human** face to a generic unrecognizable one.
+/// Img2img edit: keep live-action plate, fictionalize face (mild cinematic — not cartoon).
 /// Only used after [`image_has_real_human_face`] returns true.
 pub(crate) const CAMEO_FACE_PRIVACY_PROMPT: &str = "\
-Keep the original photorealistic style, human pose, clothing, scene, lighting and composition unchanged. \
-Only replace the human face with an unrecognizable generic virtual face whose features look natural but do not \
-correspond to any real person. Weaken real portrait identity cues; do not preserve identifiable facial identity. \
-Keep skin texture, light direction, perspective, and overall photorealism consistent. \
-Do not change the image style, body shape, hair silhouette, wardrobe, props, or background. \
-Do not turn animals or non-human subjects into humans. Single subject. Photorealistic photography. \
-No text, watermark, logo, or extra people.";
+Mild img2img edit of this reference. Preserve facial features, bone structure, age cues, \
+gender presentation, hair silhouette, wardrobe, pose, framing, set, and lighting. \
+Keep cinematic live-action realism as a movie still — do NOT convert to anime, cartoon, \
+manga, comic, or flat illustration. \
+cinematic film look, fictional character, movie character, film grain, soft stylization. \
+Slightly fictionalize the face so it reads as an AI-generated film character rather than a \
+real-person phone/selfie photograph; soften photographic identity fingerprints while keeping \
+the same character look. Avoid: photorealistic photograph, real person, selfie, realistic skin texture. \
+No text, watermark, or logo.";
 
 /// Marker payload when face swap is skipped (no real human face in the upload).
 const PRIVACY_SKIP_NO_FACE_PREFIX: &str = "skip_no_human_face:";
@@ -303,8 +305,15 @@ async fn anonymize_bound_cameo_faces(
             "anonymizing human face on Cameo for Seedance privacy"
         );
         let tmp = plate.with_extension("privacy_tmp.png");
+        let opts = crate::backends::ImageGenerateOpts {
+            negative_prompt: Some(
+                "photorealistic photograph, real person, selfie, realistic skin texture, anime, cartoon, manga"
+                    .into(),
+            ),
+            denoising_strength: Some(0.38),
+        };
         if let Err(err) = image
-            .generate(CAMEO_FACE_PRIVACY_PROMPT, &[raw_path.as_path()], &tmp)
+            .generate_with_opts(CAMEO_FACE_PRIVACY_PROMPT, &[raw_path.as_path()], &tmp, opts)
             .await
         {
             let _ = std::fs::remove_file(&tmp);
@@ -1749,11 +1758,14 @@ mod tests {
     }
 
     #[test]
-    fn privacy_prompt_keeps_photoreal_and_swaps_face() {
-        assert!(CAMEO_FACE_PRIVACY_PROMPT.contains("unrecognizable generic virtual face"));
-        assert!(CAMEO_FACE_PRIVACY_PROMPT.contains("clothing"));
-        assert!(CAMEO_FACE_PRIVACY_PROMPT.contains("photorealistic"));
-        assert!(CAMEO_FACE_PRIVACY_PROMPT.contains("Do not turn animals"));
+    fn privacy_prompt_keeps_cinematic_live_action() {
+        let lower = CAMEO_FACE_PRIVACY_PROMPT.to_ascii_lowercase();
+        assert!(lower.contains("cinematic film look"));
+        assert!(lower.contains("fictional character"));
+        assert!(lower.contains("wardrobe"));
+        assert!(lower.contains("do not convert to anime"));
+        assert!(!lower.contains("illustrated"));
+        assert!(!crate::planning::wants_stylized_non_photoreal(CAMEO_FACE_PRIVACY_PROMPT));
         assert!(CAMEO_ATMOSPHERE_PROMPT.contains("people-free"));
         assert!(CAMEO_ATMOSPHERE_PROMPT.contains("Erase every person"));
     }

@@ -36,7 +36,10 @@ pub use video_quality::{
 };
 
 pub use artifact_edit::ImagePromptInfo;
-pub use backends::{FlowyChat, FlowyImage, FlowyVideo, FlowyVimaxServices, VimaxChat, VimaxImage, VimaxVideo};
+pub use backends::{
+    FlowyChat, FlowyImage, FlowyVideo, FlowyVimaxServices, ImageGenerateOpts, VimaxChat, VimaxImage,
+    VimaxVideo,
+};
 pub use domain::WorkflowKind;
 pub use error::{VimaxError, VimaxResult};
 pub use progress::{
@@ -46,7 +49,7 @@ pub use revise::ReviseResult;
 pub use service::VimaxService;
 pub use session::{
     ARCHIVE_EXTENSION, ActionAssetsInfo, ArtifactNode, CameoManifest, CameoPhotoEntry, CameoUpdate,
-    SessionIndex, SessionRecord, SessionSummary,
+    SessionIndex, SessionRecord, SessionSummary, apply_video_task_credits,
 };
 pub use skills::{
     pack_skill_dir, SkillCatalog, SkillId, SkillOverlay, SkillSource, SkillVisibility,

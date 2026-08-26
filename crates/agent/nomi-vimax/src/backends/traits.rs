@@ -5,6 +5,16 @@ use std::path::Path;
 
 use crate::error::VimaxResult;
 
+/// Optional controls for img2img-style edits (privacy face repair, mild restyle).
+///
+/// Upstream may ignore unknown fields; callers should also bake constraints into the prompt.
+#[derive(Debug, Clone, Default)]
+pub struct ImageGenerateOpts {
+    pub negative_prompt: Option<String>,
+    /// Mild rewrite strength in `[0, 1]` when the channel supports it (e.g. 0.35–0.45).
+    pub denoising_strength: Option<f32>,
+}
+
 #[async_trait]
 pub trait VimaxChat: Send + Sync {
     async fn complete_text(&self, system: &str, user: &str) -> VimaxResult<String>;
@@ -26,6 +36,18 @@ pub trait VimaxImage: Send + Sync {
         ref_image_paths: &[&Path],
         out_path: &Path,
     ) -> VimaxResult<()>;
+
+    /// Like [`Self::generate`], with optional negative prompt / denoise strength.
+    async fn generate_with_opts(
+        &self,
+        prompt: &str,
+        ref_image_paths: &[&Path],
+        out_path: &Path,
+        opts: ImageGenerateOpts,
+    ) -> VimaxResult<()> {
+        let _ = opts;
+        self.generate(prompt, ref_image_paths, out_path).await
+    }
 }
 
 #[async_trait]

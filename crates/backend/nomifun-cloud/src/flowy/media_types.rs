@@ -27,6 +27,9 @@ pub const VIDEO_TASK_STATUS_EXPIRED: i32 = 6;
 /// Local `tb_video_task.status` — cancelled.
 pub const VIDEO_TASK_STATUS_CANCELLED: i32 = 3;
 
+/// Client app id sent on `POST /video/generations/tasks` (Flowy multi-client billing).
+pub const VIDEO_CREATE_APP: &str = "flowymes";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateVideoTaskResponse {
     pub id: i64,
@@ -38,6 +41,9 @@ pub struct VideoTaskRecord {
     #[serde(default)]
     pub task_id: Option<String>,
     pub status: i32,
+    /// Credits billed for this task (`0` when unpaid / billing incomplete).
+    #[serde(default)]
+    pub credits_consumed: i64,
     #[serde(default)]
     pub result: Option<Value>,
     #[serde(default)]
@@ -309,6 +315,7 @@ impl VideoCreateParams {
         body.insert("resolution".into(), json!(resolution));
         body.insert("duration".into(), json!(duration));
         body.insert("ratio".into(), json!(ratio));
+        body.insert("app".into(), json!(VIDEO_CREATE_APP));
         // Prefer MiniMax `aigc_watermark`; never send Ark `watermark`.
         if self.watermark {
             body.insert("aigc_watermark".into(), json!(true));
@@ -325,6 +332,7 @@ impl VideoCreateParams {
         body.insert("content".into(), Value::Array(content));
         body.insert("ratio".into(), json!(self.aspect_ratio));
         body.insert("watermark".into(), json!(self.watermark));
+        body.insert("app".into(), json!(VIDEO_CREATE_APP));
         if let Some(d) = self.duration {
             body.insert("duration".into(), json!(d));
         }

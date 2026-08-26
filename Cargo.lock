@@ -6696,6 +6696,7 @@ dependencies = [
  "futures",
  "image",
  "nomi-config",
+ "nomi-providers",
  "nomifun-cloud",
  "regex",
  "reqwest 0.12.28",

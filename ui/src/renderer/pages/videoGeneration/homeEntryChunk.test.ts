@@ -18,6 +18,8 @@ describe('video generation home entry chunk', () => {
     expect(composer.includes("import VerticalSkillMenu from")).toBe(false);
     expect(composer.includes("import VerticalSkillCreateModal from")).toBe(false);
     expect(composer.includes("import CameoCastEditor from")).toBe(false);
+    expect(composer.includes('onPasteCapture')).toBe(true);
+    expect(composer.includes('filesFromClipboardData')).toBe(true);
     expect(upload.includes("from 'fflate'")).toBe(false);
   });
 });

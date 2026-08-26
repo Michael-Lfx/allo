@@ -8,7 +8,7 @@ use nomifun_cloud::{
     ImageGenerationRequest, MODEL_CATEGORY_IMAGE, resolve_model_in_catalog,
 };
 
-use super::{FlowyVimaxServices, VimaxImage, map_model_err, map_server_err};
+use super::{FlowyVimaxServices, ImageGenerateOpts, VimaxImage, map_model_err, map_server_err};
 use crate::error::{VimaxError, VimaxResult};
 use crate::prompt_safety::{
     finalize_llm_rewrite, is_image_content_inspection_err, llm_rewrite_system_message,
@@ -98,15 +98,17 @@ impl FlowyImage {
         prompt: &str,
         image_urls: &[String],
         out_path: &Path,
+        opts: &ImageGenerateOpts,
     ) -> Result<(), nomifun_cloud::ServerClientError> {
         // Only poster/cover paths set `aspect_ratio`. Portraits / world plates must
         // keep the default Seedream `2K` canvas — forcing video aspect (e.g. 1280x720)
         // fails Seedream 5.0's ≥3.6M pixel floor and warps three-view sheets.
-        let extra = if self.aspect_ratio.is_some() {
+        let mut extra = if self.aspect_ratio.is_some() {
             crate::aspect::image_request_extra_for_aspect(&self.resolved_aspect())
         } else {
             Value::Null
         };
+        extra = merge_image_edit_opts(extra, opts);
         let req = ImageGenerationRequest {
             model: model.to_string(),
             prompt: prompt.to_string(),
@@ -224,6 +226,17 @@ impl VimaxImage for FlowyImage {
         ref_image_paths: &[&Path],
         out_path: &Path,
     ) -> VimaxResult<()> {
+        self.generate_with_opts(prompt, ref_image_paths, out_path, ImageGenerateOpts::default())
+            .await
+    }
+
+    async fn generate_with_opts(
+        &self,
+        prompt: &str,
+        ref_image_paths: &[&Path],
+        out_path: &Path,
+        opts: ImageGenerateOpts,
+    ) -> VimaxResult<()> {
         self.services.require_token().await?;
         let model = self.resolve_model().await?;
         let image_urls = self
@@ -233,7 +246,7 @@ impl VimaxImage for FlowyImage {
         // Tier 1: lexical soften + positive safety prefix (keep refs).
         let tier1 = sanitize_image_prompt(prompt);
         let err1 = match self
-            .generate_once(&model, &tier1, &image_urls, out_path)
+            .generate_once(&model, &tier1, &image_urls, out_path, &opts)
             .await
         {
             Ok(()) => return Ok(()),
@@ -261,7 +274,7 @@ impl VimaxImage for FlowyImage {
         );
         let tier2 = sanitize_image_prompt_strict(prompt);
         if let Err(err2) = self
-            .generate_once(&model, &tier2, &image_urls, out_path)
+            .generate_once(&model, &tier2, &image_urls, out_path, &opts)
             .await
         {
             let raw2 = err2.to_string();
@@ -285,7 +298,7 @@ impl VimaxImage for FlowyImage {
                 None => sanitize_image_prompt_strict(&tier2),
             };
             if let Err(err3) = self
-                .generate_once(&model, &tier3, &image_urls, out_path)
+                .generate_once(&model, &tier3, &image_urls, out_path, &opts)
                 .await
             {
                 let raw3 = err3.to_string();
@@ -305,7 +318,7 @@ impl VimaxImage for FlowyImage {
                     "image content inspection failed after LLM rewrite; tier4 ultra-safe fallback"
                 );
                 let tier4 = ultra_safe_fallback_prompt(prompt);
-                self.generate_once(&model, &tier4, &image_urls, out_path)
+                self.generate_once(&model, &tier4, &image_urls, out_path, &opts)
                     .await
                     .map_err(|err4| {
                         map_model_err(
@@ -325,6 +338,29 @@ impl VimaxImage for FlowyImage {
 
         Ok(())
     }
+}
+
+/// Merge mild img2img controls into the Flowy image `extra` object.
+fn merge_image_edit_opts(base: Value, opts: &ImageGenerateOpts) -> Value {
+    let mut map = match base {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    if let Some(neg) = opts
+        .negative_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        map.insert("negative_prompt".into(), serde_json::json!(neg));
+    }
+    if let Some(strength) = opts.denoising_strength {
+        let s = strength.clamp(0.0, 1.0);
+        // Alias both names — Seedream/gateway variants differ.
+        map.insert("denoising_strength".into(), serde_json::json!(s));
+        map.insert("strength".into(), serde_json::json!(s));
+    }
+    Value::Object(map)
 }
 
 async fn path_to_data_url(path: &Path) -> VimaxResult<String> {

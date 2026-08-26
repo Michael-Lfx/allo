@@ -20,7 +20,7 @@ use crate::pipelines::{
 use crate::progress::{INTERRUPTED_SUMMARY, RenderStatus, RunStatus};
 use crate::session::{
     ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, SessionSummary,
-    apply_status_to_record, cameo,
+    apply_status_to_record, apply_video_task_credits, cameo,
 };
 use crate::skills::{SkillCatalog, VerticalSkillDraft, VerticalSkillSummary};
 
@@ -274,6 +274,12 @@ impl VimaxService {
             if out.final_video.is_none() {
                 out.final_video = record.final_video.clone();
             }
+            // Prefer live ledger; fall back to persisted session total.
+            if out.credits_consumed <= 0 {
+                out.credits_consumed = record.credits_consumed;
+            } else if record.credits_consumed > out.credits_consumed {
+                out.credits_consumed = record.credits_consumed;
+            }
             return Ok(out);
         }
         Ok(RenderStatus {
@@ -284,6 +290,7 @@ impl VimaxService {
             error: None,
             final_video: record.final_video,
             cover: record.cover,
+            credits_consumed: record.credits_consumed,
             working_dir_abs: working_abs,
             updated_at: record.updated_at,
             events: vec![],
@@ -550,31 +557,36 @@ impl VimaxService {
         let svc = Arc::clone(self);
         let id = id.to_string();
         tokio::spawn(async move {
-            let result = match std::panic::AssertUnwindSafe(
-                svc.run_plan(
-                    &id,
-                    idea,
-                    script,
-                    novel_text,
-                    user_requirement,
-                    style,
-                    vertical_skill_ids,
-                    llm_model,
-                    image_model,
-                    video_model,
-                    target_duration_secs,
-                    aspect_ratio,
-                    resolution,
-                    fps,
-                    token.clone(),
-                ),
-            )
-            .catch_unwind()
-            .await
-            {
-                Ok(r) => r,
-                Err(payload) => Err(VimaxError::from_panic_payload("planning task", payload)),
-            };
+            // Attribute every Flowy LLM / image / video call in this plan run to the
+            // session id so GET /credits/usageByTurn can aggregate the full flow.
+            let result = nomi_providers::with_flowy_billing_turn_id(id.clone(), async {
+                match std::panic::AssertUnwindSafe(
+                    svc.run_plan(
+                        &id,
+                        idea,
+                        script,
+                        novel_text,
+                        user_requirement,
+                        style,
+                        vertical_skill_ids,
+                        llm_model,
+                        image_model,
+                        video_model,
+                        target_duration_secs,
+                        aspect_ratio,
+                        resolution,
+                        fps,
+                        token.clone(),
+                    ),
+                )
+                .catch_unwind()
+                .await
+                {
+                    Ok(r) => r,
+                    Err(payload) => Err(VimaxError::from_panic_payload("planning task", payload)),
+                }
+            })
+            .await;
             svc.finish_job(&id, result, &token, JobKind::Plan).await;
         });
         Ok(())
@@ -641,13 +653,17 @@ impl VimaxService {
         let svc = Arc::clone(self);
         let id = id.to_string();
         tokio::spawn(async move {
-            let result = match std::panic::AssertUnwindSafe(svc.run_render(&id, token.clone()))
-                .catch_unwind()
-                .await
-            {
-                Ok(r) => r,
-                Err(payload) => Err(VimaxError::from_panic_payload("render task", payload)),
-            };
+            // Same billing turn as plan: session UUID aggregates plan + render spend.
+            let result = nomi_providers::with_flowy_billing_turn_id(id.clone(), async {
+                match std::panic::AssertUnwindSafe(svc.run_render(&id, token.clone()))
+                    .catch_unwind()
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(payload) => Err(VimaxError::from_panic_payload("render task", payload)),
+                }
+            })
+            .await;
             svc.finish_job(&id, result, &token, JobKind::Render).await;
         });
         Ok(())
@@ -785,6 +801,11 @@ impl VimaxService {
     }
 
     async fn set_run_status(&self, id: &str, status: RunStatus, message: &str) -> VimaxResult<()> {
+        let prior_credits = self
+            .index
+            .get(id)
+            .map(|r| r.credits_consumed)
+            .unwrap_or(0);
         {
             let mut map = self
                 .statuses
@@ -796,6 +817,10 @@ impl VimaxService {
             st.message = message.into();
             st.error = None;
             st.progress = 0.0;
+            // Keep previously billed video credits visible across plan/render runs.
+            if prior_credits > st.credits_consumed {
+                st.credits_consumed = prior_credits;
+            }
             st.emit(status.as_str(), message, None);
         }
         self.index.update_fields(id, |r| {
@@ -1439,6 +1464,23 @@ fn resolve_fps_for_session(record: &SessionRecord, media: &nomi_config::MediaGen
 fn progress_callback(svc: Arc<VimaxService>, id: &str) -> crate::progress::ProgressCallback {
     let id = id.to_string();
     Arc::new(move |stage, message, meta| {
+        let credit_delta = meta.as_ref().and_then(|m| {
+            let credits = m.get("credits_consumed")?.as_i64().filter(|c| *c > 0)?;
+            let task_id = m.get("task_id")?.as_i64().filter(|t| *t > 0)?;
+            Some((task_id, credits))
+        });
+
+        let mut session_total: Option<i64> = None;
+        if let Some((task_id, credits)) = credit_delta {
+            let _ = svc.index.update_fields(&id, |r| {
+                if apply_video_task_credits(r, task_id, credits) {
+                    session_total = Some(r.credits_consumed);
+                } else {
+                    session_total = Some(r.credits_consumed);
+                }
+            });
+        }
+
         {
             let mut map = svc.statuses.lock().unwrap_or_else(|e| e.into_inner());
             let st = map.entry(id.clone()).or_default();
@@ -1448,6 +1490,9 @@ fn progress_callback(svc: Arc<VimaxService>, id: &str) -> crate::progress::Progr
                 .and_then(|v| v.as_f64())
             {
                 st.progress = pct.clamp(0.0, 100.0) as f32;
+            }
+            if let Some(total) = session_total {
+                st.credits_consumed = total;
             }
             st.emit(stage, message, meta.clone());
         }
