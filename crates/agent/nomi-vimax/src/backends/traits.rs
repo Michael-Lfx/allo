@@ -11,7 +11,7 @@ use crate::error::VimaxResult;
 #[derive(Debug, Clone, Default)]
 pub struct ImageGenerateOpts {
     pub negative_prompt: Option<String>,
-    /// Mild rewrite strength in `[0, 1]` when the channel supports it (e.g. 0.35–0.45).
+    /// Mild rewrite strength in `[0, 1]` when the channel supports it (e.g. 0.42–0.48).
     pub denoising_strength: Option<f32>,
 }
 

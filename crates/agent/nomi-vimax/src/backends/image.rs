@@ -356,9 +356,8 @@ fn merge_image_edit_opts(base: Value, opts: &ImageGenerateOpts) -> Value {
     }
     if let Some(strength) = opts.denoising_strength {
         let s = strength.clamp(0.0, 1.0);
-        // Alias both names — Seedream/gateway variants differ.
+        // Seedream / Flowy img2img only honors `denoising_strength` (not `strength`).
         map.insert("denoising_strength".into(), serde_json::json!(s));
-        map.insert("strength".into(), serde_json::json!(s));
     }
     Value::Object(map)
 }
