@@ -47,6 +47,10 @@ const SNAPSHOT_SIG_NAME: &str = "nomifun";
 const SNAPSHOT_SIG_EMAIL: &str = "snapshot@nomifun.local";
 /// Commit message for the initial snapshot baseline.
 const SNAPSHOT_INITIAL_MSG: &str = "Initial snapshot";
+/// Commit message prefix for coding-mode turn checkpoints.
+const TURN_CHECKPOINT_MSG_PREFIX: &str = "nomifun turn checkpoint";
+/// Ref namespace for turn checkpoints (never the user's branch HEAD).
+const TURN_CHECKPOINT_REF_PREFIX: &str = "refs/nomifun/turns";
 
 // ---------------------------------------------------------------------------
 // Snapshot-branch safety guard
@@ -640,6 +644,139 @@ fn checkout_path_from_head(repo: &Repository, rel_path: &str) -> Result<(), AppE
     repo.checkout_head(Some(&mut cb))
         .map_err(|e| AppError::Internal(format!("Failed to checkout {} from HEAD: {}", rel_path, e)))?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Turn checkpoints (coding-mode rollback)
+// ---------------------------------------------------------------------------
+
+/// Sanitize one id segment for use inside a git ref name.
+fn sanitize_ref_segment(raw: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::BadRequest(
+            "turn checkpoint id must be non-empty".to_owned(),
+        ));
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.contains("..") || out.starts_with('.') || out.ends_with('.') {
+        return Err(AppError::BadRequest(
+            "turn checkpoint id produced an invalid git ref segment".to_owned(),
+        ));
+    }
+    Ok(out)
+}
+
+/// Build `refs/nomifun/turns/{conversation_id}/{message_id}`.
+pub(super) fn turn_checkpoint_ref(conversation_id: &str, message_id: &str) -> Result<String, AppError> {
+    let conv = sanitize_ref_segment(conversation_id)?;
+    let msg = sanitize_ref_segment(message_id)?;
+    Ok(format!("{TURN_CHECKPOINT_REF_PREFIX}/{conv}/{msg}"))
+}
+
+/// Capture the current worktree into a commit under the turn checkpoint ref.
+///
+/// Stages into the in-memory index only (`write_tree` without `index.write`),
+/// then reloads the on-disk index so GitRepo mode does not leave the user's
+/// staging area dirty. Never updates `HEAD`.
+pub(super) fn create_turn_checkpoint_commit(
+    repo: &Repository,
+    conversation_id: &str,
+    message_id: &str,
+) -> Result<crate::types::TurnCheckpoint, AppError> {
+    let ref_name = turn_checkpoint_ref(conversation_id, message_id)?;
+
+    let mut index = repo
+        .index()
+        .map_err(|e| AppError::Internal(format!("Failed to open index for turn checkpoint: {e}")))?;
+    index
+        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+        .map_err(|e| AppError::Internal(format!("Failed to stage worktree for turn checkpoint: {e}")))?;
+    // Pick up deletions of previously tracked paths.
+    index
+        .update_all(["*"].iter(), None)
+        .map_err(|e| AppError::Internal(format!("Failed to update index for turn checkpoint: {e}")))?;
+    let tree_oid = index
+        .write_tree()
+        .map_err(|e| AppError::Internal(format!("Failed to write turn checkpoint tree: {e}")))?;
+    // Discard in-memory staging; leave the on-disk index untouched.
+    index
+        .read(true)
+        .map_err(|e| AppError::Internal(format!("Failed to reload index after turn checkpoint: {e}")))?;
+
+    let tree = repo
+        .find_tree(tree_oid)
+        .map_err(|e| AppError::Internal(format!("Failed to find turn checkpoint tree: {e}")))?;
+    let sig = Signature::now(SNAPSHOT_SIG_NAME, SNAPSHOT_SIG_EMAIL)
+        .map_err(|e| AppError::Internal(format!("Failed to create turn checkpoint signature: {e}")))?;
+
+    let parents: Vec<git2::Commit<'_>> = match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
+        Some(head) => vec![head],
+        None => Vec::new(),
+    };
+    let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
+    let message = format!("{TURN_CHECKPOINT_MSG_PREFIX} {conversation_id}/{message_id}");
+    let oid = repo
+        .commit(None, &sig, &sig, &message, &tree, &parent_refs)
+        .map_err(|e| AppError::Internal(format!("Failed to create turn checkpoint commit: {e}")))?;
+
+    repo.reference(&ref_name, oid, true, "nomifun turn checkpoint")
+        .map_err(|e| AppError::Internal(format!("Failed to update turn checkpoint ref {ref_name}: {e}")))?;
+
+    Ok(crate::types::TurnCheckpoint {
+        oid: oid.to_string(),
+        ref_name,
+    })
+}
+
+/// Restore the worktree to the tree of a turn checkpoint commit.
+///
+/// Uses force checkout without updating the index so GitRepo staging stays
+/// intact. Removes worktree paths that are absent from the checkpoint tree.
+pub(super) fn restore_turn_checkpoint_tree(
+    repo: &Repository,
+    conversation_id: &str,
+    message_id: &str,
+) -> Result<(), AppError> {
+    let ref_name = turn_checkpoint_ref(conversation_id, message_id)?;
+    let reference = repo.find_reference(&ref_name).map_err(|e| {
+        AppError::BadRequest(format!(
+            "Turn checkpoint not found for this message ({ref_name}): {e}"
+        ))
+    })?;
+    let commit = reference.peel_to_commit().map_err(|e| {
+        AppError::Internal(format!("Failed to peel turn checkpoint {ref_name}: {e}"))
+    })?;
+    let tree = commit
+        .tree()
+        .map_err(|e| AppError::Internal(format!("Failed to read turn checkpoint tree: {e}")))?;
+
+    let mut cb = git2::build::CheckoutBuilder::new();
+    cb.force()
+        .remove_untracked(true)
+        .update_index(false)
+        .recreate_missing(true);
+
+    repo.checkout_tree(tree.as_object(), Some(&mut cb))
+        .map_err(|e| AppError::Internal(format!("Failed to restore turn checkpoint worktree: {e}")))?;
+    Ok(())
+}
+
+/// Whether the turn checkpoint ref exists.
+pub(super) fn turn_checkpoint_exists(
+    repo: &Repository,
+    conversation_id: &str,
+    message_id: &str,
+) -> Result<bool, AppError> {
+    let ref_name = turn_checkpoint_ref(conversation_id, message_id)?;
+    Ok(repo.find_reference(&ref_name).is_ok())
 }
 
 // ---------------------------------------------------------------------------

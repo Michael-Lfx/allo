@@ -40,8 +40,11 @@ mod windows_shell_tests {
     }
 
     #[test]
-    fn tty_shell_uses_pty_transport() {
+    fn tty_shell_uses_pty_transport_on_unix_only() {
         let transport = shell_transport(true);
+        #[cfg(windows)]
+        assert_eq!(transport, Transport::Pipe);
+        #[cfg(not(windows))]
         assert_eq!(transport, Transport::Pty { cols: 120, rows: 30 });
     }
 

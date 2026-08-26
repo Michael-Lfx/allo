@@ -835,6 +835,14 @@
     "resetSuccess": "Conversation reset",
     "resetFailed": "Couldn't reset the conversation. Please try again."
   },
+  "codingRollback": {
+    "action": "Roll back turn",
+    "confirmTitle": "Roll back this turn?",
+    "confirmContent": "Workspace files will be restored to before this turn, and this turn plus later messages will be removed. Nothing is resent automatically.",
+    "confirmOk": "Roll back",
+    "success": "Turn rolled back",
+    "failed": "Couldn't roll back this turn. Please try again."
+  },
   "slashCommands": {
     "compact": {
       "description": "Compress conversation context"

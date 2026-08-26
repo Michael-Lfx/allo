@@ -3222,7 +3222,12 @@ impl NomiAgentManager {
             conversation_id = %self.runtime.conversation_id(),
             "Rewinding last Nomi turn"
         );
-        self.request_stop(None, "rewind_last_turn", false);
+        // Idle rewinds must not call request_stop: that path emits synthetic
+        // terminal events and can invalidate the editable-turn checkpoint that
+        // coding rollback / edit-resubmit rely on.
+        if self.runtime.status() == Some(ConversationStatus::Running) {
+            self.request_stop(None, "rewind_last_turn", false);
+        }
         let mut engine = self.engine.lock().await;
         if !engine.rewind_last_turn(expected_source_message_id) {
             return Err(AppError::BadRequest(

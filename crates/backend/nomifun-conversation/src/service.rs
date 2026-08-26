@@ -1470,6 +1470,9 @@ pub struct ConversationService {
     /// pattern as `cron_service`). Wired by `nomifun-app`; `None` in tests
     /// and hosts that do not record traces.
     agent_trace_hub: Arc<RwLock<Option<Arc<nomifun_ai_agent::AgentTraceHub>>>>,
+    /// Workspace snapshot service for coding-mode turn checkpoints (rollback).
+    /// Same post-construction slot pattern as `cron_service`.
+    snapshot_service: Arc<RwLock<Option<nomifun_file::SnapshotServiceRef>>>,
 }
 
 // ── Construction & Dependency Injection ──────────────────────────────
@@ -2840,6 +2843,7 @@ impl ConversationService {
             execution_conversation_boundary,
             terminal_proof_provider: Arc::new(RwLock::new(None)),
             agent_trace_hub: Arc::new(RwLock::new(None)),
+            snapshot_service: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -2862,6 +2866,103 @@ impl ConversationService {
         if let Ok(mut guard) = self.agent_trace_hub.write() {
             *guard = Some(hub);
         }
+    }
+
+    pub fn with_snapshot_service(&self, service: nomifun_file::SnapshotServiceRef) {
+        if let Ok(mut guard) = self.snapshot_service.write() {
+            *guard = Some(service);
+        }
+    }
+
+    fn snapshot_service(&self) -> Option<nomifun_file::SnapshotServiceRef> {
+        self.snapshot_service
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Soft-create a coding turn checkpoint after the user message is durable.
+    /// Failures are logged and never block the turn.
+    async fn maybe_create_coding_turn_checkpoint(
+        &self,
+        row: &ConversationRow,
+        user_message_id: &str,
+    ) {
+        let Some(snapshot) = self.snapshot_service() else {
+            return;
+        };
+        let Ok(extra) = serde_json::from_str::<serde_json::Value>(&row.extra) else {
+            return;
+        };
+        if !extra
+            .get("task_profile")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| p.eq_ignore_ascii_case("coding"))
+        {
+            return;
+        }
+        let Ok(workspace) = history_artifact_workspace(&self.workspace_root, row) else {
+            return;
+        };
+        let workspace = workspace.to_string_lossy().to_string();
+        match snapshot
+            .create_turn_checkpoint(&workspace, &row.conversation_id, user_message_id)
+            .await
+        {
+            Ok(cp) => {
+                tracing::info!(
+                    conversation_id = %row.conversation_id,
+                    message_id = %user_message_id,
+                    ref_name = %cp.ref_name,
+                    "coding turn checkpoint created"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %row.conversation_id,
+                    message_id = %user_message_id,
+                    error = %ErrorChain(&error),
+                    "coding turn checkpoint skipped"
+                );
+            }
+        }
+    }
+
+    /// Restore coding turn files when a checkpoint exists. Missing checkpoints
+    /// are a no-op so edit-resubmit still works for sessions started before
+    /// this feature.
+    async fn maybe_restore_coding_turn_checkpoint(
+        &self,
+        row: &ConversationRow,
+        user_message_id: &str,
+    ) -> Result<(), AppError> {
+        let Some(snapshot) = self.snapshot_service() else {
+            return Ok(());
+        };
+        let Ok(extra) = serde_json::from_str::<serde_json::Value>(&row.extra) else {
+            return Ok(());
+        };
+        if !extra
+            .get("task_profile")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| p.eq_ignore_ascii_case("coding"))
+        {
+            return Ok(());
+        }
+        let Ok(workspace) = history_artifact_workspace(&self.workspace_root, row) else {
+            return Ok(());
+        };
+        let workspace = workspace.to_string_lossy().to_string();
+        let has = snapshot
+            .has_turn_checkpoint(&workspace, &row.conversation_id, user_message_id)
+            .await?;
+        if !has {
+            return Ok(());
+        }
+        snapshot
+            .restore_turn_checkpoint(&workspace, &row.conversation_id, user_message_id)
+            .await?;
+        Ok(())
     }
 
     pub fn with_mcp_server_repo(&self, repo: Arc<dyn IMcpServerRepository>) {
@@ -9778,6 +9879,8 @@ impl ConversationService {
 
             if user_msg.is_some() {
                 info!(msg_id = %user_msg_id, "User message persisted");
+                self.maybe_create_coding_turn_checkpoint(&row, &user_msg_id)
+                    .await;
             }
         }
 
@@ -11980,6 +12083,220 @@ impl ConversationService {
     /// explicit reset, so a crash after rewind or transcript truncation cannot
     /// be followed by an unrelated fresh turn.
     #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %conversation_id, message_id = %message_id))]
+    pub async fn coding_turn_rollback_availability(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
+    ) -> Result<nomifun_api_types::CodingTurnRollbackAvailability, AppError> {
+        match self
+            .prepare_coding_turn_rollback(user_id, conversation_id, message_id, runtime_registry)
+            .await
+        {
+            Ok(_) => Ok(nomifun_api_types::CodingTurnRollbackAvailability {
+                can_rollback: true,
+                reason: None,
+            }),
+            Err(AppError::BadRequest(reason)) => Ok(nomifun_api_types::CodingTurnRollbackAvailability {
+                can_rollback: false,
+                reason: Some(reason),
+            }),
+            Err(AppError::Conflict(reason)) => Ok(nomifun_api_types::CodingTurnRollbackAvailability {
+                can_rollback: false,
+                reason: Some(reason),
+            }),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Restore workspace files + truncate transcript for the latest coding
+    /// user turn. Does **not** start a replacement generation.
+    #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %conversation_id, message_id = %message_id))]
+    pub async fn rollback_last_coding_turn(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
+    ) -> Result<nomifun_api_types::CodingTurnRollbackResponse, AppError> {
+        let prepared = self
+            .prepare_coding_turn_rollback(user_id, conversation_id, message_id, runtime_registry)
+            .await?;
+        let (row, conv_id, message_id, agent, from_created_at, from_id, workspace) = prepared;
+
+        let snapshot = self.snapshot_service().ok_or_else(|| {
+            AppError::Internal("Snapshot service is not wired for coding rollback".into())
+        })?;
+        snapshot
+            .restore_turn_checkpoint(&workspace, &row.conversation_id, &message_id)
+            .await?;
+
+        self.cancel_and_wait_for_turn_writebacks(&conv_id).await?;
+
+        // Idle coding rollback is not an admitted edit/resubmit fence — detach
+        // receipt projections and truncate the suffix atomically.
+        self.conversation_repo
+            .truncate_messages_for_coding_rollback(
+                user_id,
+                &conv_id,
+                from_created_at,
+                &from_id,
+                now_ms(),
+            )
+            .await?;
+
+        if let Some(agent) = &agent {
+            if let Err(error) = agent.rewind_last_turn(&message_id).await {
+                tracing::warn!(
+                    conversation_id = %conv_id,
+                    message_id = %message_id,
+                    error = %ErrorChain(&error),
+                    "coding rollback in-memory rewind failed before runtime teardown"
+                );
+            }
+        }
+
+        Self::terminate_runtime_until_confirmed(
+            runtime_registry,
+            &conv_id,
+            AgentKillReason::UserCancelled,
+            "coding turn rollback",
+        )
+        .await;
+
+        let mut retry_delay = Duration::from_millis(25);
+        loop {
+            match runtime_registry
+                .rewind_persisted_nomi_session(&conv_id, row.created_at, &message_id)
+                .await
+            {
+                Ok(
+                    nomifun_ai_agent::NomiSessionRewindOutcome::Rewound
+                    | nomifun_ai_agent::NomiSessionRewindOutcome::AlreadyAbsent,
+                ) => break,
+                Ok(nomifun_ai_agent::NomiSessionRewindOutcome::NotRewindable) => {
+                    tracing::warn!(
+                        conversation_id = %conv_id,
+                        message_id = %message_id,
+                        "persisted Nomi session had no matching rewind checkpoint after coding rollback"
+                    );
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = %conv_id,
+                        message_id = %message_id,
+                        error = %ErrorChain(&error),
+                        "failed to rewind persisted Nomi session after coding rollback; retrying"
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(Duration::from_secs(2));
+                }
+            }
+        }
+        self.runtime_state.clear_turn_tokens(&conv_id);
+
+        Ok(nomifun_api_types::CodingTurnRollbackResponse {
+            restored_workspace: true,
+            truncated_transcript: true,
+        })
+    }
+
+    async fn prepare_coding_turn_rollback(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
+    ) -> Result<
+        (
+            ConversationRow,
+            String,
+            String,
+            Option<AgentRuntimeHandle>,
+            i64,
+            String,
+            String,
+        ),
+        AppError,
+    > {
+        let conv_id = parse_conv_id(conversation_id)?;
+        let message_id = parse_message_id(message_id)?;
+        let row = self
+            .conversation_repo
+            .get(conv_id)
+            .await?
+            .filter(|row| row.user_id == user_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Conversation {conversation_id} not found"))
+            })?;
+        if row.r#type != "nomi" {
+            return Err(AppError::BadRequest(
+                "Coding turn rollback is only supported for Nomi conversations".into(),
+            ));
+        }
+        let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
+        if !extra
+            .get("task_profile")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| p.eq_ignore_ascii_case("coding"))
+        {
+            return Err(AppError::BadRequest(
+                "Coding turn rollback requires task_profile=coding".into(),
+            ));
+        }
+        if row.status.as_deref() == Some("running")
+            || self.runtime_state.has_active_turn(conv_id)
+        {
+            return Err(AppError::Conflict(
+                "Coding turn rollback requires an idle conversation".to_owned(),
+            ));
+        }
+        let target = self
+            .conversation_repo
+            .get_latest_user_text_message(conv_id)
+            .await?
+            .ok_or_else(|| AppError::BadRequest("No editable user message found".into()))?;
+        if target.message_id != message_id {
+            return Err(AppError::BadRequest(
+                "Only the most recent user message can be rolled back".into(),
+            ));
+        }
+        let workspace = history_artifact_workspace(&self.workspace_root, &row)
+            .map_err(AppError::BadRequest)?;
+        let workspace = workspace.to_string_lossy().to_string();
+        let snapshot = self.snapshot_service().ok_or_else(|| {
+            AppError::BadRequest("Coding turn rollback is unavailable (no snapshot service)".into())
+        })?;
+        if !snapshot
+            .has_turn_checkpoint(&workspace, &row.conversation_id, message_id)
+            .await?
+        {
+            return Err(AppError::BadRequest(
+                "No coding turn checkpoint exists for this message".into(),
+            ));
+        }
+        let agent = runtime_registry.get_runtime(conv_id);
+        Ok((
+            row,
+            conv_id.to_owned(),
+            message_id.to_owned(),
+            agent,
+            target.created_at,
+            target.message_id.clone(),
+            workspace,
+        ))
+    }
+
+    /// Durable at-most-once edit/rewind/truncate/resubmit workflow.
+    ///
+    /// The receipt is claimed before the first destructive step. Every
+    /// existing accepted receipt is absorbing across process restart. It also
+    /// acts as a Conversation-wide send fence until terminal settlement or an
+    /// explicit reset, so a crash after rewind or transcript truncation cannot
+    /// be followed by an unrelated fresh turn.
+    #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %conversation_id, message_id = %message_id))]
     pub async fn edit_and_resubmit_with_idempotency_key(
         &self,
         user_id: &str,
@@ -12318,6 +12635,10 @@ impl ConversationService {
             runtime_build_lease.ensure_active()?;
             runtime_build_lease.promote_to_turn_execution()?;
             edit_admission_custodian.mark_destructive_runtime_mutation()?;
+            // Coding mode: restore workspace to the pre-turn checkpoint before
+            // transcript rewind so edit-resubmit does not replay on dirty files.
+            self.maybe_restore_coding_turn_checkpoint(&row, message_id)
+                .await?;
             agent.rewind_last_turn(message_id).await?;
             runtime_build_lease.ensure_active()?;
             self.cancel_and_wait_for_turn_writebacks(conv_id).await?;

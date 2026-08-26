@@ -18,7 +18,7 @@ pub use traits::{
 };
 pub use types::{
     CompareResult, ContentUpdateEvent, ContentUpdateOperation, CopyResult, DirOrFile, FileChangeInfo, FileMetadata,
-    FileWatchEvent, OfficeFileAddedEvent, SnapshotInfo, SnapshotMode, WorkspaceFlatFile, ZipEntry,
+    FileWatchEvent, OfficeFileAddedEvent, SnapshotInfo, SnapshotMode, TurnCheckpoint, WorkspaceFlatFile, ZipEntry,
 };
 pub use watch_service::FileWatchService;
 pub use workspace_listing::{MAX_DIR_DEPTH, list_workspace_level};

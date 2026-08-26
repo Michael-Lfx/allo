@@ -1000,3 +1000,81 @@ async fn guard_does_not_affect_git_repo_dir() {
 
     assert_eq!(info.mode, SnapshotMode::GitRepo, ".git dir must be GitRepo (guard bypassed)");
 }
+
+// =======================================================================
+// Turn checkpoints (coding-mode rollback)
+// =======================================================================
+
+#[tokio::test]
+async fn turn_checkpoint_create_restore_round_trip_git_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_file(tmp.path(), "a.txt", "before");
+
+    let svc = SnapshotService::new();
+    let ws = tmp.path().to_str().unwrap();
+    let conv = "01jf0000000000000000000000";
+    let msg = "01jf0000000000000000000001";
+
+    let head_before = {
+        let repo = Repository::open(tmp.path()).unwrap();
+        repo.head().unwrap().peel_to_commit().unwrap().id()
+    };
+
+    let cp = svc
+        .create_turn_checkpoint(ws, conv, msg)
+        .await
+        .expect("create checkpoint");
+    assert!(svc.has_turn_checkpoint(ws, conv, msg).await.unwrap());
+    assert!(cp.ref_name.contains("refs/nomifun/turns"));
+
+    std::fs::write(tmp.path().join("a.txt"), "after").unwrap();
+    std::fs::write(tmp.path().join("b.txt"), "new").unwrap();
+
+    svc.restore_turn_checkpoint(ws, conv, msg)
+        .await
+        .expect("restore checkpoint");
+
+    assert_eq!(std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(), "before");
+    assert!(!tmp.path().join("b.txt").exists(), "post-checkpoint file must be removed");
+
+    let head_after = {
+        let repo = Repository::open(tmp.path()).unwrap();
+        repo.head().unwrap().peel_to_commit().unwrap().id()
+    };
+    assert_eq!(head_before, head_after, "turn checkpoint must not move HEAD");
+}
+
+#[tokio::test]
+async fn turn_checkpoint_create_restore_round_trip_snapshot_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("a.txt"), "v1").unwrap();
+
+    let svc = SnapshotService::new();
+    let ws = tmp.path().to_str().unwrap();
+    let info = svc.init(ws).await.unwrap();
+    assert_eq!(info.mode, SnapshotMode::Snapshot);
+
+    let conv = "conv-snap";
+    let msg = "msg-snap";
+    svc.create_turn_checkpoint(ws, conv, msg).await.expect("create");
+
+    std::fs::write(tmp.path().join("a.txt"), "v2").unwrap();
+    svc.restore_turn_checkpoint(ws, conv, msg).await.expect("restore");
+    assert_eq!(std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(), "v1");
+}
+
+#[tokio::test]
+async fn turn_checkpoint_missing_ref_is_bad_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_file(tmp.path(), "a.txt", "x");
+    let svc = SnapshotService::new();
+    let ws = tmp.path().to_str().unwrap();
+    let err = svc
+        .restore_turn_checkpoint(ws, "c", "missing")
+        .await
+        .expect_err("missing checkpoint");
+    assert!(
+        matches!(err, nomifun_common::AppError::BadRequest(_)),
+        "got {err:?}"
+    );
+}

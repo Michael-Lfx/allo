@@ -6,11 +6,10 @@ import { toDisplayText } from '@/common/chat/displayText';
 import type { TurnCreditUsageData } from '@/common/config/storage';
 import type { MessageId } from '@/common/types/ids';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
-import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { iconColors } from '@/renderer/styles/colors';
-import { Alert, Button, Tooltip } from '@arco-design/web-react';
+import { Alert, Button, Modal, Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { CheckOne, CloseOne, Copy, Edit, Info, Loading } from '@icon-park/react';
+import { CheckOne, CloseOne, Copy, Edit, Info, Loading, Undo } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -373,8 +372,6 @@ const MessageText: React.FC<{
   const writebackState = !isUserMessage ? message.content.knowledge_writeback : undefined;
   const shouldRenderPlainText = isUserMessage;
   const conversationContext = useConversationContextSafe();
-  const layout = useLayoutContext();
-  const isMobile = layout?.isMobile ?? false;
   const shouldShowActions = !hideActions;
 
   const turnCreditKey =
@@ -525,12 +522,29 @@ const MessageText: React.FC<{
   // 编辑（仅 Nomi 原生、且为最近一条用户文本消息）：把原文回填输入框并截断本地后续消息。
   const canEdit =
     conversationContext?.type === 'nomi' &&
+    conversationContext.readOnly !== true &&
     conversationContext.isProcessing !== true &&
     isUserMessage &&
     message.type === 'text' &&
     editableMessageId != null &&
     message.created_at != null &&
     isLatestUserMessage;
+
+  const isCodingProfile =
+    typeof conversation?.extra?.task_profile === 'string' &&
+    conversation.extra.task_profile.toLowerCase() === 'coding';
+
+  const { data: codingRollbackAvailability } = useSWR(
+    canEdit && isCodingProfile && conversationId && editableMessageId
+      ? `coding-rollback/${conversationId}/${editableMessageId}`
+      : null,
+    () =>
+      ipcBridge.conversation.codingTurnRollbackAvailability.invoke({
+        conversation_id: conversationId!,
+        msg_id: editableMessageId!,
+      })
+  );
+  const canCodingRollback = canEdit && isCodingProfile && codingRollbackAvailability?.can_rollback === true;
 
   const handleEdit = () => {
     if (!editableMessageId || message.created_at == null) return;
@@ -539,21 +553,67 @@ const MessageText: React.FC<{
     emitter.emit('sendbox.edit', { msgId: editableMessageId, createdAt: message.created_at, content: editText });
   };
 
+  const handleCodingRollback = () => {
+    if (!conversationId || !editableMessageId || !canCodingRollback) return;
+    Modal.confirm({
+      title: t('conversation.codingRollback.confirmTitle', { defaultValue: 'Roll back this turn?' }),
+      content: t('conversation.codingRollback.confirmContent', {
+        defaultValue:
+          'Workspace files will be restored to before this turn, and this turn plus later messages will be removed. Nothing is resent automatically.',
+      }),
+      okText: t('conversation.codingRollback.confirmOk', { defaultValue: 'Roll back' }),
+      okButtonProps: { status: 'danger' },
+      onOk: async () => {
+        try {
+          await ipcBridge.conversation.codingTurnRollback.invoke({
+            conversation_id: conversationId,
+            msg_id: editableMessageId,
+          });
+          emitter.emit('conversation.messages.refresh', {
+            conversationId,
+            reason: 'coding-rollback',
+          });
+          emitter.emit('nomi.workspace.refresh');
+          Message.success(t('conversation.codingRollback.success', { defaultValue: 'Turn rolled back' }));
+        } catch (error) {
+          const detail =
+            error instanceof Error && error.message.trim().length > 0
+              ? error.message
+              : t('conversation.codingRollback.failed', {
+                  defaultValue: "Couldn't roll back this turn. Please try again.",
+                });
+          Message.error(detail);
+          throw new Error('coding-rollback-failed');
+        }
+      },
+    });
+  };
+
   const editButton = canEdit ? (
     <Tooltip content={t('conversation.editMessage.action', { defaultValue: 'Edit' })}>
       <button
         type='button'
-        className={classNames(
-          'p-4px rd-6px cursor-pointer hover:bg-3 border-0 bg-transparent',
-          isMobile
-            ? 'opacity-100'
-            : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
-        )}
+        className='p-4px rd-6px cursor-pointer hover:bg-3 border-0 bg-transparent'
         onClick={handleEdit}
         style={{ lineHeight: 0 }}
         aria-label={t('conversation.editMessage.action', { defaultValue: 'Edit' })}
       >
         <Edit theme='outline' size='16' fill={iconColors.secondary} />
+      </button>
+    </Tooltip>
+  ) : null;
+
+  const codingRollbackButton = canCodingRollback ? (
+    <Tooltip content={t('conversation.codingRollback.action', { defaultValue: 'Roll back turn' })}>
+      <button
+        type='button'
+        data-testid='message-coding-rollback-action'
+        className='p-4px rd-6px cursor-pointer hover:bg-3 border-0 bg-transparent'
+        onClick={handleCodingRollback}
+        style={{ lineHeight: 0 }}
+        aria-label={t('conversation.codingRollback.action', { defaultValue: 'Roll back turn' })}
+      >
+        <Undo theme='outline' size='16' fill={iconColors.secondary} />
       </button>
     </Tooltip>
   ) : null;
@@ -573,6 +633,7 @@ const MessageText: React.FC<{
     >
       {copyButton}
       {editButton}
+      {codingRollbackButton}
       {message.created_at && (
         <time
           className='message-text-actions__time text-12px leading-20px text-inherit select-none'
@@ -627,7 +688,7 @@ const MessageText: React.FC<{
 
   return (
     <>
-      <div className={classNames('min-w-0 flex flex-col group', isUserMessage ? 'items-end' : 'items-start')}>
+      <div className={classNames('min-w-0 flex w-full flex-col', isUserMessage ? 'items-end' : 'items-start')}>
         {cronMeta && <MessageCronBadge meta={cronMeta} />}
         {isAgentMessage && senderName && (
           <div className='flex items-center gap-6px mb-4px'>

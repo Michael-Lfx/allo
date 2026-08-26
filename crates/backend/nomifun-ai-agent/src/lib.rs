@@ -134,7 +134,9 @@ pub use managed_search::ManagedSearchHandle;
 #[cfg(feature = "managed-search")]
 pub use managed_web::ManagedWebHandle;
 pub use conversation_title_completer::{ConversationTitleCompleter, LiveConversationTitleCompleter};
-pub use nomi_session_persistence::{NomiSessionPersistence, NomiSessionResetOutcome};
+pub use nomi_session_persistence::{
+    NomiSessionPersistence, NomiSessionResetOutcome, NomiSessionRewindOutcome,
+};
 pub use terminal_title_completer::LiveTerminalTitleCompleter;
 pub use nomifun_api_types::{
     AcpBuildExtra, AcpModelInfo, NomiBuildExtra, OpenClawBuildExtra, OpenClawGatewayConfig, RemoteBuildExtra,

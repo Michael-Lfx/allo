@@ -19,7 +19,11 @@ async fn conversation_workspace_uses_work_dir() {
         ..Default::default()
     };
     let services = AppServices::from_config(db, &config).await.unwrap();
-    let state = build_conversation_state(&services, None);
+    let state = build_conversation_state(
+        &services,
+        None,
+        std::sync::Arc::new(nomifun_file::SnapshotService::new()),
+    );
 
     let request = CreateConversationRequest {
         r#type: AgentType::Acp,
@@ -66,7 +70,11 @@ async fn user_specified_workspace_is_not_overridden() {
         ..Default::default()
     };
     let services = AppServices::from_config(db, &config).await.unwrap();
-    let state = build_conversation_state(&services, None);
+    let state = build_conversation_state(
+        &services,
+        None,
+        std::sync::Arc::new(nomifun_file::SnapshotService::new()),
+    );
 
     let request = CreateConversationRequest {
         r#type: AgentType::Acp,
@@ -107,7 +115,11 @@ async fn workspace_defaults_to_data_dir_when_work_dir_equals_data_dir() {
         ..Default::default()
     };
     let services = AppServices::from_config(db, &config).await.unwrap();
-    let state = build_conversation_state(&services, None);
+    let state = build_conversation_state(
+        &services,
+        None,
+        std::sync::Arc::new(nomifun_file::SnapshotService::new()),
+    );
 
     let request = CreateConversationRequest {
         r#type: AgentType::Acp,

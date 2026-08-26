@@ -6,11 +6,12 @@ use axum::routing::{get, patch, post, put};
 
 use nomifun_api_types::{
     ActiveCountResponse, ApiResponse, ApprovalCheckQuery, ApprovalCheckResponse, CloneConversationRequest,
-    ConfirmRequest, ConfirmationListResponse, ConversationArtifactListResponse, ConversationArtifactResponse,
-    ConversationListResponse, ConversationResponse, CreateConversationRequest, ListConversationsQuery,
-    EditResubmitReceiptState, EditResubmitStateResponse, ListMessagesQuery, MessageListResponse,
-    MessageResponse, MessageSearchResponse, SearchMessagesQuery, SendMessageRequest,
-    SendMessageResponse, UpdateConversationArtifactRequest, UpdateConversationRequest,
+    CodingTurnRollbackAvailability, CodingTurnRollbackResponse, ConfirmRequest, ConfirmationListResponse,
+    ConversationArtifactListResponse, ConversationArtifactResponse, ConversationListResponse,
+    ConversationResponse, CreateConversationRequest, ListConversationsQuery, EditResubmitReceiptState,
+    EditResubmitStateResponse, ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchResponse,
+    SearchMessagesQuery, SendMessageRequest, SendMessageResponse, UpdateConversationArtifactRequest,
+    UpdateConversationRequest,
 };
 use nomifun_auth::CurrentUser;
 use nomifun_common::{AppError, ConversationId, MessageId};
@@ -49,6 +50,10 @@ pub fn conversation_routes(state: ConversationRouterState) -> Router {
         .route(
             "/api/conversations/{conversation_id}/messages/{message_id}/edit-resubmit/state",
             get(edit_resubmit_state),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/messages/{message_id}/coding-rollback",
+            get(coding_rollback_availability).post(coding_rollback),
         )
         .route(
             "/api/conversations/{conversation_id}/messages/{message_id}/continue-truncated",
@@ -391,6 +396,40 @@ async fn edit_resubmit_state(
         replacement_exists: observation.replacement_exists,
         requires_reset: observation.requires_reset,
     })))
+}
+
+async fn coding_rollback_availability(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(params): Path<MessagePathParams>,
+) -> Result<Json<ApiResponse<CodingTurnRollbackAvailability>>, AppError> {
+    let availability = state
+        .service
+        .coding_turn_rollback_availability(
+            &user.id,
+            params.conversation_id.as_str(),
+            params.message_id.as_str(),
+            &state.runtime_registry,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(availability)))
+}
+
+async fn coding_rollback(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(params): Path<MessagePathParams>,
+) -> Result<Json<ApiResponse<CodingTurnRollbackResponse>>, AppError> {
+    let result = state
+        .service
+        .rollback_last_coding_turn(
+            &user.id,
+            params.conversation_id.as_str(),
+            params.message_id.as_str(),
+            &state.runtime_registry,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(result)))
 }
 
 async fn continue_truncated(

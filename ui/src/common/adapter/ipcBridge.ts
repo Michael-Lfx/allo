@@ -791,6 +791,14 @@ export const conversation = {
       return fromApiEditResubmitObservation(result);
     },
   },
+  codingTurnRollbackAvailability: httpGet<
+    { can_rollback: boolean; reason?: string },
+    { conversation_id: ConversationId; msg_id: MessageId }
+  >((p) => `/api/conversations/${p.conversation_id}/messages/${p.msg_id}/coding-rollback`),
+  codingTurnRollback: httpPost<
+    { restored_workspace: boolean; truncated_transcript: boolean },
+    { conversation_id: ConversationId; msg_id: MessageId }
+  >((p) => `/api/conversations/${p.conversation_id}/messages/${p.msg_id}/coding-rollback`, () => ({})),
   continueTruncated: {
     provider: () => {},
     invoke: async (p: {

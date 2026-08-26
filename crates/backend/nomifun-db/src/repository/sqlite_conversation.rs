@@ -5683,6 +5683,136 @@ impl IConversationRepository for SqliteConversationRepository {
         Ok(deleted.rows_affected())
     }
 
+    async fn truncate_messages_for_coding_rollback(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        from_created_at: i64,
+        from_message_id: &str,
+        updated_at: TimestampMs,
+    ) -> Result<u64, DbError> {
+        if from_message_id.trim().is_empty() {
+            return Err(DbError::Conflict(
+                "invalid coding rollback transcript authority".to_owned(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let authority = sqlx::query(
+            "UPDATE conversations SET updated_at = ? \
+             WHERE conversation_id = ? AND user_id = ? \
+               AND COALESCE(status, 'finished') != 'running' \
+               AND COALESCE(json_extract(extra, '$._edit_resubmit_fence.phase'), '') != 'accepted' \
+               AND EXISTS( \
+                   SELECT 1 FROM messages target \
+                   WHERE target.conversation_id = conversations.conversation_id \
+                     AND target.message_id = ? AND target.created_at = ? \
+                     AND target.position = 'right' AND target.type = 'text' \
+                     AND target.message_id = ( \
+                         SELECT latest.message_id FROM messages latest \
+                         WHERE latest.conversation_id = conversations.conversation_id \
+                           AND latest.position = 'right' AND latest.type = 'text' \
+                         ORDER BY latest.created_at DESC, latest.message_id DESC LIMIT 1 \
+                     ) \
+               )",
+        )
+        .bind(updated_at)
+        .bind(conversation_id)
+        .bind(user_id)
+        .bind(from_message_id)
+        .bind(from_created_at)
+        .execute(&mut *tx)
+        .await?;
+        if authority.rows_affected() != 1 {
+            return Err(DbError::Conflict(
+                "coding rollback transcript authority changed before truncation".to_owned(),
+            ));
+        }
+
+        sqlx::query(
+            "UPDATE conversation_delivery_receipts \
+             SET projected_conversation_id = NULL, projected_message_id = NULL, \
+                 updated_at = MAX(updated_at, ?) \
+             WHERE status = 'completed' \
+               AND conversation_id = ? AND user_id = ? \
+               AND projected_conversation_id = ? \
+               AND projected_message_id IN ( \
+                 SELECT message_id FROM messages \
+                 WHERE conversation_id = ? \
+                   AND (created_at > ? OR (created_at = ? AND message_id >= ?)) \
+             )",
+        )
+        .bind(updated_at)
+        .bind(conversation_id)
+        .bind(user_id)
+        .bind(conversation_id)
+        .bind(conversation_id)
+        .bind(from_created_at)
+        .bind(from_created_at)
+        .bind(from_message_id)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "DELETE FROM message_correlations \
+             WHERE conversation_id = ? AND message_id IN ( \
+                 SELECT message_id FROM messages \
+                 WHERE conversation_id = ? \
+                   AND (created_at > ? OR (created_at = ? AND message_id >= ?)) \
+             )",
+        )
+        .bind(conversation_id)
+        .bind(conversation_id)
+        .bind(from_created_at)
+        .bind(from_created_at)
+        .bind(from_message_id)
+        .execute(&mut *tx)
+        .await?;
+
+        ensure_messages_are_not_retained(
+            &mut tx,
+            conversation_id,
+            Some(from_created_at),
+            Some(from_message_id),
+        )
+        .await?;
+
+        sqlx::query(
+            "UPDATE channel_inbound_receipts SET message_id = NULL \
+             WHERE message_id IN ( \
+                 SELECT message_id FROM messages \
+                 WHERE conversation_id = ? \
+                   AND (created_at > ? OR (created_at = ? AND message_id >= ?)) \
+             )",
+        )
+        .bind(conversation_id)
+        .bind(from_created_at)
+        .bind(from_created_at)
+        .bind(from_message_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let deleted = sqlx::query(
+            "DELETE FROM messages \
+             WHERE conversation_id = ? \
+               AND (created_at > ? OR (created_at = ? AND message_id >= ?))",
+        )
+        .bind(conversation_id)
+        .bind(from_created_at)
+        .bind(from_created_at)
+        .bind(from_message_id)
+        .execute(&mut *tx)
+        .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(DbError::Conflict(
+                "coding rollback target disappeared before transcript truncation".to_owned(),
+            ));
+        }
+
+        tx.commit().await?;
+        Ok(deleted.rows_affected())
+    }
+
     async fn get_message_by_msg_id(
         &self,
         conversation_id: &str,

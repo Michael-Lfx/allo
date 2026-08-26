@@ -29,7 +29,8 @@ import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
 
-const RESET_REQUEST_FILE = '.dataset-v3.reset.request.json';
+// Must match `nomifun_common::factory_reset::V3_DATASET_RESET_REQUEST_FILE`.
+const RESET_REQUEST_FILE = '.dataset-v3-reset.request.json';
 const DIR_CONFIG_FILE = 'dir-config.json';
 const DATABASE_LEAVES = ['flowy-backend.db', 'nomifun-backend.db'];
 

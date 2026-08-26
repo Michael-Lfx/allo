@@ -11,12 +11,13 @@ use dashmap::DashMap;
 use git2::Repository;
 use nomifun_common::{AppError, FileChangeOperation};
 
-use crate::types::{CompareResult, SnapshotInfo, SnapshotMode};
+use crate::types::{CompareResult, SnapshotInfo, SnapshotMode, TurnCheckpoint};
 
 use helpers::{
-    SNAPSHOT_DIR_PREFIX, WorkspaceState, build_info, discard_single_file, init_snapshot_repo, open_repo,
-    parse_statuses, read_baseline, reset_single_file, resolve_workspace, snapshot_guard, stage_all_with_deletions,
-    stage_single_file, temp_repo_path, unstage_all_files, unstage_single_file,
+    SNAPSHOT_DIR_PREFIX, WorkspaceState, build_info, create_turn_checkpoint_commit, discard_single_file,
+    init_snapshot_repo, open_repo, parse_statuses, read_baseline, reset_single_file, resolve_workspace,
+    restore_turn_checkpoint_tree, snapshot_guard, stage_all_with_deletions, stage_single_file, temp_repo_path,
+    turn_checkpoint_exists, unstage_all_files, unstage_single_file,
 };
 
 // ---------------------------------------------------------------------------
@@ -359,5 +360,88 @@ impl crate::traits::ISnapshotService for SnapshotService {
             // git-repo mode: nothing to clean up
             Ok(())
         }
+    }
+
+    async fn create_turn_checkpoint(
+        &self,
+        workspace: &str,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<TurnCheckpoint, AppError> {
+        self.ensure_ready_for_turn_checkpoint(workspace).await?;
+        let state = get_state(&self.workspaces, workspace)?;
+        let conversation_id = conversation_id.to_owned();
+        let message_id = message_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let repo = open_repo(&state)?;
+            create_turn_checkpoint_commit(&repo, &conversation_id, &message_id)
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("Blocking task failed: {e}")))?
+    }
+
+    async fn restore_turn_checkpoint(
+        &self,
+        workspace: &str,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<(), AppError> {
+        self.ensure_ready_for_turn_checkpoint(workspace).await?;
+        let state = get_state(&self.workspaces, workspace)?;
+        let conversation_id = conversation_id.to_owned();
+        let message_id = message_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let repo = open_repo(&state)?;
+            restore_turn_checkpoint_tree(&repo, &conversation_id, &message_id)
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("Blocking task failed: {e}")))?
+    }
+
+    async fn has_turn_checkpoint(
+        &self,
+        workspace: &str,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<bool, AppError> {
+        match self.ensure_ready_for_turn_checkpoint(workspace).await {
+            Ok(()) => {}
+            Err(AppError::BadRequest(_)) => return Ok(false),
+            Err(e) => return Err(e),
+        }
+        let state = get_state(&self.workspaces, workspace)?;
+        let conversation_id = conversation_id.to_owned();
+        let message_id = message_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let repo = open_repo(&state)?;
+            turn_checkpoint_exists(&repo, &conversation_id, &message_id)
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("Blocking task failed: {e}")))?
+    }
+}
+
+impl SnapshotService {
+    /// Init once if needed; refuse Disabled workspaces without bumping refcount
+    /// on every coding turn.
+    async fn ensure_ready_for_turn_checkpoint(&self, workspace: &str) -> Result<(), AppError> {
+        use crate::traits::ISnapshotService as _;
+
+        if !self.is_tracked(workspace) {
+            let info = self.init(workspace).await?;
+            if let SnapshotMode::Disabled { reason } = info.mode {
+                return Err(AppError::BadRequest(format!(
+                    "Turn checkpoint unavailable: {reason}"
+                )));
+            }
+            return Ok(());
+        }
+        let state = get_state(&self.workspaces, workspace)?;
+        if matches!(state.mode, SnapshotMode::Disabled { .. }) {
+            return Err(AppError::BadRequest(
+                "Turn checkpoint unavailable: snapshot disabled".to_owned(),
+            ));
+        }
+        Ok(())
     }
 }

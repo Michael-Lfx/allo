@@ -12,6 +12,12 @@ const AGENT_WEB_OPEN_ERROR: &str =
      Browser tool (browser navigate) to read or interact with web pages";
 
 pub(crate) fn shell_transport(requested_tty: bool) -> Transport {
+    // Windows GUI hosts: ConPTY briefly flashes a console host ("black window").
+    // Agent Bash/exec_command are non-interactive captures — always use pipes +
+    // CREATE_NO_WINDOW. Interactive user terminals use a separate PTY path.
+    if cfg!(windows) {
+        return Transport::Pipe;
+    }
     if requested_tty {
         Transport::Pty {
             cols: SHELL_PTY_COLS,
