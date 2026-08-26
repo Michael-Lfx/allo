@@ -3,7 +3,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -50,8 +50,8 @@ pub fn video_canvas_routes(state: CanvasRouterState) -> Router {
             "/api/video-canvas/media/{media_id}",
             axum::routing::delete(delete_media),
         )
-        .route("/api/video-canvas/tasks", post(create_task))
-        .route("/api/video-canvas/tasks/{task_id}", get(get_task))
+        .route("/api/video-canvas/tasks", post(create_task).get(list_tasks))
+        .route("/api/video-canvas/tasks/{task_id}", get(get_task).delete(delete_task))
         .route(
             "/api/video-canvas/tasks/{task_id}/cancel",
             post(cancel_task),
@@ -331,6 +331,48 @@ async fn get_task(
 ) -> Result<Json<ApiResponse<GenerationTaskView>>, AppError> {
     let view = state.service.get_task(&task_id).await?;
     Ok(Json(ApiResponse::ok(view)))
+}
+
+#[derive(serde::Deserialize)]
+struct ListTasksQuery {
+    #[serde(default = "default_task_limit")]
+    limit: usize,
+    #[serde(default)]
+    offset: usize,
+}
+
+fn default_task_limit() -> usize {
+    30
+}
+
+#[derive(serde::Serialize)]
+struct TaskListResponse {
+    tasks: Vec<GenerationTaskView>,
+    total: usize,
+}
+
+async fn list_tasks(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(params): Query<ListTasksQuery>,
+) -> Result<Json<ApiResponse<TaskListResponse>>, AppError> {
+    // Cap to a sane upper bound so a runaway client can't enumerate everything
+    // in one request — the in-memory store is small today, but this keeps the
+    // contract honest if the persistence layer changes later.
+    let limit = params.limit.clamp(1, 200);
+    let offset = params.offset.min(10_000);
+    let tasks = state.service.list_tasks(limit, offset).await;
+    let total = state.service.task_count().await;
+    Ok(Json(ApiResponse::ok(TaskListResponse { tasks, total })))
+}
+
+async fn delete_task(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(task_id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    state.service.delete_task(&task_id).await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 async fn cancel_task(

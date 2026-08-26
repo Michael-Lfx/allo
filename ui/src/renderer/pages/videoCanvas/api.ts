@@ -147,6 +147,14 @@ export async function cancelGenerationTask(taskId: string): Promise<GenerationTa
   );
 }
 
+export async function listGenerationTasks(limit = 30, offset = 0): Promise<{ tasks: GenerationTaskView[]; total: number }> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return httpRequest<{ tasks: GenerationTaskView[]; total: number }>(
+    'GET',
+    `/api/video-canvas/tasks?${params.toString()}`
+  );
+}
+
 export async function concatCanvasMedia(
   mediaIds: string[],
   title?: string

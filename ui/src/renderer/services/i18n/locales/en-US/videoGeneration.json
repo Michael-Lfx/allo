@@ -29,6 +29,10 @@
     "createFirst": "Create your first session",
     "recentTitle": "Recent projects",
     "recentSubtitle": "Continue storyboarding, rendering, or revisit a finished film.",
+    "generateRecentTitle": "Recent Videos",
+    "generateRecentSubtitle": "Continue video creation.",
+    "actionRecentTitle": "Action Imitation",
+    "actionRecentSubtitle": "Continue action imitation projects.",
     "loadError": "Failed to load",
     "retry": "Retry",
     "filterEmpty": "No matching sessions",
@@ -40,6 +44,10 @@
     "empty": {
       "title": "Your first film starts above",
       "desc": "Describe a scene or story and Flowy will create an editable storyboard first."
+    },
+    "generateEmpty": {
+      "title": "Your first video starts here",
+      "desc": "Enter a prompt above to generate a video."
     },
     "card": {
       "updatedAt": "Updated {{time}}",
@@ -235,6 +243,18 @@
       "deleteOk": "Canvas deleted",
       "createFailed": "Failed to create: {{error}}",
       "deleteFailed": "Failed to delete: {{error}}"
+    },
+    "generate": {
+      "gallery": {
+        "title": "Recent Videos",
+        "subtitle": "Continue editing existing video projects."
+      }
+    },
+    "action": {
+      "gallery": {
+        "title": "Action Imitation Projects",
+        "subtitle": "Continue editing action imitation projects."
+      }
     },
     "examples": {
       "product": "Create a 30-second launch film for a minimal coffee machine",
@@ -776,6 +796,42 @@
       "style": "Light, framing, grade, camera keywords…",
       "playbook": "Markdown: structure / camera grammar / asset rules…"
     }
+  },
+  "clip": {
+    "defaultTitle": "Video Generation",
+    "back": "Back",
+    "loading": "Loading...",
+    "loadingHint": "Connecting to server...",
+    "download": "Download",
+    "regenerate": "Regenerate",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "taskNotFound": "Task not found",
+    "generationFailed": "Video generation failed",
+    "generationCanceled": "Video generation canceled",
+    "generationTimeout": "Video generation timed out",
+    "errorTitle": "Generation Error",
+    "elapsed": "Elapsed: {{time}}",
+    "status": {
+      "queued": "Queued",
+      "queuedDesc": "Waiting for server to process...",
+      "running": "Generating",
+      "runningDesc": "Rendering your video, please wait...",
+      "succeeded": "Completed",
+      "succeededDesc": "Video is ready, download or regenerate",
+      "failed": "Failed",
+      "failedDesc": "Something went wrong during processing",
+      "canceled": "Canceled",
+      "canceledDesc": "Task was canceled"
+    },
+    "step": {
+      "queued": "Queued",
+      "initializing": "Initializing",
+      "processing": "Processing",
+      "rendering": "Rendering",
+      "finalizing": "Finalizing"
+    },
+    "progress": "Progress: {{percent}}%"
   },
   "time": {
     "justNow": "just now",

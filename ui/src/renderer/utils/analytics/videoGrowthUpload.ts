@@ -51,6 +51,10 @@ let memoryQueue: VideoGrowthEvent[] = [];
 let cloudAuthenticated = false;
 let flushPromise: Promise<void> | null = null;
 let retryListenersInstalled = false;
+// Backoff after the upstream rejects — keeps the error log from spamming the
+// dev console every few seconds when Flowy is unreachable.
+let lastFailureAt = 0;
+const MIN_RETRY_INTERVAL_MS = 60_000;
 
 function canUseStorage(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
@@ -119,25 +123,45 @@ export function enqueueVideoGrowthEvent(event: FunnelEvent): void {
 
 export function flushVideoGrowthEvents(): Promise<void> {
   if (!cloudAuthenticated || flushPromise) return flushPromise ?? Promise.resolve();
+  if (lastFailureAt && Date.now() - lastFailureAt < MIN_RETRY_INTERVAL_MS) {
+    return Promise.resolve();
+  }
   flushPromise = (async () => {
     while (cloudAuthenticated) {
       const batch = readQueue().slice(0, BATCH_SIZE);
-      if (batch.length === 0) return;
+      if (batch.length === 0) {
+        lastFailureAt = 0;
+        return;
+      }
       const response = await httpRequest<VideoGrowthUploadResponse>(
         'POST',
         '/api/cloud/growth/video/events',
         { events: batch },
-        { silentStatuses: [401, 403] }
-      );
+        // Growth-event ingestion is fire-and-forget telemetry; do not surface
+        // auth/transport failures (the backend may be slow to retry, or the
+        // request may be rejected mid-deploy). We just retry the batch later.
+        { silentStatuses: [400, 401, 403, 404, 502, 503, 504] }
+      ).catch(() => {
+        // Upstream is currently unhappy — defer the next attempt so we don't
+        // flood the dev console with the same backend error log.
+        lastFailureAt = Date.now();
+        return null;
+      });
+      if (!response) {
+        lastFailureAt = Date.now();
+        return;
+      }
       if (response.accepted + response.duplicates !== batch.length) {
         throw new Error('video growth upload acknowledgement mismatch');
       }
       const sentIds = new Set(batch.map((event) => event.eventId));
       writeQueue(readQueue().filter((event) => !sentIds.has(event.eventId)));
+      lastFailureAt = 0;
     }
   })()
     .catch(() => {
       // Retain the queue for the next authenticated or online retry.
+      lastFailureAt = Date.now();
     })
     .finally(() => {
       flushPromise = null;

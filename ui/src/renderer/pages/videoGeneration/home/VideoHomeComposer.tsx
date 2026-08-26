@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Popover } from '@arco-design/web-react';
 import {
   Down,
@@ -90,6 +90,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   });
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [prefsModuleReady, setPrefsModuleReady] = useState(false);
+  const pendingOpenRef = useRef(false); // Track if panel should open after module loads
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [skillHubOpen, setSkillHubOpen] = useState(false);
@@ -360,11 +361,26 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setActiveText(activeText.replace(/\/\s*$/, '').trimEnd());
   };
 
+  // Sync panel open state after lazy module loads
+  useLayoutEffect(() => {
+    if (prefsModuleReady && pendingOpenRef.current) {
+      pendingOpenRef.current = false;
+      setPreferencesOpen(true);
+    }
+  }, [prefsModuleReady]);
+
   const openPreferences = (open: boolean) => {
     if (open) {
       setModeMenuOpen(false);
       setSlashMenuOpen(false);
-      setPrefsModuleReady(true);
+      pendingOpenRef.current = true;
+      // Trigger lazy module load; open state will be set after module is ready.
+      if (!prefsModuleReady) {
+        setPrefsModuleReady(true);
+        return;
+      }
+    } else {
+      pendingOpenRef.current = false;
     }
     setPreferencesOpen(open);
   };

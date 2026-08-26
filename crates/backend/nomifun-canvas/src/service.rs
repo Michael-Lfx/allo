@@ -771,6 +771,44 @@ impl CanvasService {
             .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))
     }
 
+    /// List generation tasks ordered by most-recently-updated first.
+    ///
+    /// `limit` and `offset` paginate a stable, descending sort so callers can
+    /// render the first page immediately and stream older items on demand.
+    pub async fn list_tasks(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Vec<GenerationTaskView> {
+        let guard = self.tasks.read().await;
+        let mut tasks: Vec<&InternalTask> = guard.values().collect();
+        tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        tasks
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(InternalTask::to_view)
+            .collect()
+    }
+
+    /// Total count of tasks currently tracked in memory. Used by the UI to
+    /// decide whether more pages can be loaded.
+    pub async fn task_count(&self) -> usize {
+        self.tasks.read().await.len()
+    }
+
+    /// Drop a finished task from the in-memory index. The result media file
+    /// (if any) is intentionally kept on disk so the URL stays resolvable for
+    /// callers that already cached it.
+    pub async fn delete_task(&self, task_id: &str) -> Result<(), AppError> {
+        let mut guard = self.tasks.write().await;
+        guard
+            .remove(task_id)
+            .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
+        self.cancels.write().await.remove(task_id);
+        Ok(())
+    }
+
     pub async fn set_task_status(
         &self,
         task_id: &str,
