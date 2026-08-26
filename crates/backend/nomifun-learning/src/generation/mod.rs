@@ -428,9 +428,9 @@ pub(crate) use self::assemble::{assemble_outline_pack, assemble_pack, validate_g
 pub(crate) use self::blueprint::{build_blueprint_prompt, generate_blueprint};
 pub(crate) use self::completer::{
     complete, complete_with_timeout, repair_figure, ACTIVITIES_MAX_TOKENS, BLUEPRINT_MAX_TOKENS,
-    CONCEPT_GRAPH_MAX_TOKENS, CONCEPT_GRAPH_REPAIR_MAX_TOKENS, LESSON_DOCUMENT_MAX_TOKENS,
-    REFLECTION_GRADING_MAX_TOKENS, SINGLE_ACTIVITY_MAX_TOKENS,
+    CONCEPT_GRAPH_MAX_TOKENS, CONCEPT_GRAPH_REPAIR_MAX_TOKENS, CONCEPT_GRAPH_SCOPE_MAX_TOKENS,
+    LESSON_DOCUMENT_MAX_TOKENS, REFLECTION_GRADING_MAX_TOKENS, SINGLE_ACTIVITY_MAX_TOKENS,
 };
 pub(crate) use self::lesson::generate_lesson;
-pub(crate) use self::parser::parse_json_object;
+pub(crate) use self::parser::{parse_json_object, strip_code_fences};
 pub(crate) use self::sample::sample_base_files;
