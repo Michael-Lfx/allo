@@ -89,7 +89,10 @@ const modelOption = (
     label: formatModelLabelForProvider(provider, model),
     family,
     autoTier,
-    reasoningLevels: catalogReasoningEffortForModel(provider, model),
+    // Auto switches real model ids through its tier selector; it never
+    // exposes Cloud's reasoning-effort control, even while stale catalog
+    // metadata is being cleared by the next provider sync.
+    reasoningLevels: family === 'auto' ? [] : catalogReasoningEffortForModel(provider, model),
     creditRate: catalogCreditRateForModel(provider, model),
     supportsVision,
     supportsTools,

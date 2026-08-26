@@ -181,4 +181,28 @@ describe('Nomi sendbox control layout', () => {
       '.actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover),\n    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible) {\n      overflow: visible !important;\n      flex: 0 0 auto !important;',
     );
   });
+
+  test('uses grouped mobile model options with keyboard-accessible sheet rows', () => {
+    const nomiSource = readSource(new URL('./NomiSendBox.tsx', import.meta.url));
+    const sheetSource = readSource(
+      new URL('../../../../components/chat/MobileActionSheet/MobileActionSheet.tsx', import.meta.url),
+    );
+    const sheetTypes = readSource(new URL('../../../../components/chat/MobileActionSheet/types.ts', import.meta.url));
+    const sheetCss = readSource(
+      new URL('../../../../components/chat/MobileActionSheet/MobileActionSheet.module.css', import.meta.url),
+    );
+
+    expect(nomiSource.includes('type MobileActionSheetOptionGroup')).toBe(true);
+    expect(nomiSource.includes('const modelGroups: MobileActionSheetOptionGroup[]')).toBe(true);
+    expect(nomiSource.includes("option.family === 'cloud'")).toBe(true);
+    expect(nomiSource.includes('otherProviderGroups')).toBe(true);
+    expect(nomiSource.includes('groups: modelGroups')).toBe(true);
+    expect(nomiSource.includes('const modelOptions: MobileActionSheetOption[]')).toBe(false);
+    expect(sheetTypes.includes('groups?: MobileActionSheetOptionGroup[]')).toBe(true);
+    expect(sheetSource.includes("role='button'")).toBe(true);
+    expect(sheetSource.includes('activateOnKeyboard')).toBe(true);
+    expect(sheetSource.includes('aria-pressed')).toBe(true);
+    expect(sheetCss.includes('.groupHeader')).toBe(true);
+    expect(sheetCss.includes('@media (prefers-reduced-motion: reduce)')).toBe(true);
+  });
 });

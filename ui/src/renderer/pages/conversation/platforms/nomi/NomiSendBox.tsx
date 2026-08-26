@@ -14,6 +14,7 @@ import GoalModeChip from '@/renderer/components/chat/GoalModeChip';
 import MobileActionSheet, {
   type MobileActionSheetEntry,
   type MobileActionSheetOption,
+  type MobileActionSheetOptionGroup,
   useAttachEntry,
 } from '@/renderer/components/chat/MobileActionSheet';
 import SendBox from '@/renderer/components/chat/SendBox';
@@ -1388,25 +1389,7 @@ const NomiSendBox: React.FC<{
       { hasImageAttachments }
     );
     const autoFamilyOption = modelSelection.modelPicker.autoModels[0];
-    const modelOptions: MobileActionSheetOption[] = [
-      ...(autoFamilyOption
-        ? [
-            {
-              key: 'flowy-auto-family',
-              label: t('conversation.modelPicker.auto', { defaultValue: 'Auto' }),
-              description: hasImageAttachments
-                ? t('conversation.modelPicker.autoTextOnly', {
-                    defaultValue: 'Auto models currently support text only',
-                  })
-                : `${t('conversation.modelPicker.autoTierTitle', { defaultValue: 'Auto tier' })} · ${autoTierLabel(
-                    currentCatalogOption?.family === 'auto' ? currentCatalogOption.autoTier : 'balance'
-                  )}`,
-              active: currentCatalogOption?.family === 'auto',
-              disabled: hasImageAttachments,
-            },
-          ]
-        : []),
-      ...catalogOptions.filter((option) => option.family !== 'auto').map((option) => {
+    const toMobileModelOption = (option: (typeof catalogOptions)[number]): MobileActionSheetOption => {
       const providerName = providerLabel(option.provider);
       const creditRate = formatCreditRateMultiplier(option.creditRate);
       return {
@@ -1422,7 +1405,56 @@ const NomiSendBox: React.FC<{
           modelSelection.current_model?.use_model === option.model,
         disabled: option.disabled,
       };
-      }),
+    };
+    const autoModelOptions: MobileActionSheetOption[] = autoFamilyOption
+      ? [
+          {
+            key: 'flowy-auto-family',
+            label: t('conversation.modelPicker.auto', { defaultValue: 'Auto' }),
+            description: hasImageAttachments
+              ? t('conversation.modelPicker.autoTextOnly', {
+                  defaultValue: 'Auto models currently support text only',
+                })
+              : `${t('conversation.modelPicker.autoTierTitle', { defaultValue: 'Auto tier' })} · ${autoTierLabel(
+                  currentCatalogOption?.family === 'auto' ? currentCatalogOption.autoTier : 'balance'
+                )}`,
+            active: currentCatalogOption?.family === 'auto',
+            disabled: hasImageAttachments,
+          },
+        ]
+      : [];
+    const cloudModelOptions = catalogOptions
+      .filter((option) => option.family === 'cloud')
+      .map(toMobileModelOption);
+    const otherProviderGroups: MobileActionSheetOptionGroup[] = modelSelection.modelPicker.otherProviderGroups
+      .map((group) => ({
+        key: `provider:${group.provider.id}`,
+        title: providerLabel(group.provider),
+        options: catalogOptions
+          .filter((option) => option.family === 'provider' && option.provider.id === group.provider.id)
+          .map(toMobileModelOption),
+      }))
+      .filter((group) => group.options.length > 0);
+    const modelGroups: MobileActionSheetOptionGroup[] = [
+      ...(autoModelOptions.length > 0
+        ? [
+            {
+              key: 'auto',
+              title: t('conversation.modelPicker.autoModels', { defaultValue: 'Auto models' }),
+              options: autoModelOptions,
+            },
+          ]
+        : []),
+      ...(cloudModelOptions.length > 0
+        ? [
+            {
+              key: 'cloud',
+              title: `${t('conversation.modelPicker.cloudModels', { defaultValue: 'Cloud models' })} · ${cloudModelOptions.length}`,
+              options: cloudModelOptions,
+            },
+          ]
+        : []),
+      ...otherProviderGroups,
     ];
 
     const currentModeLabel =
@@ -1500,7 +1532,7 @@ const NomiSendBox: React.FC<{
               meta: currentModelLabel,
               submenu: {
                 title: t('common.model', { defaultValue: 'Model' }),
-                options: modelOptions,
+                groups: modelGroups,
                 onSelect: handleSheetModelSelect,
                 emptyText: t('conversation.welcome.selectModel'),
               },

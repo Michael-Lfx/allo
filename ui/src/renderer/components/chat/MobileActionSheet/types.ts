@@ -10,9 +10,18 @@ export interface MobileActionSheetOption {
   disabled?: boolean;
 }
 
-export interface MobileActionSheetSubMenu {
+export interface MobileActionSheetOptionGroup {
+  key: string;
   title: ReactNode;
   options: MobileActionSheetOption[];
+}
+
+export interface MobileActionSheetSubMenu {
+  title: ReactNode;
+  /** Flat options for existing submenus that do not need grouping. */
+  options?: MobileActionSheetOption[];
+  /** Optional lightweight groups for dense selectors such as chat models. */
+  groups?: MobileActionSheetOptionGroup[];
   onSelect: (key: string) => void;
   emptyText?: ReactNode;
   /** When false, options behave as plain action rows (no radio). Default: true. */

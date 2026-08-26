@@ -207,7 +207,14 @@ fn build_profile_seeds(
         let extra = entry.model_extra();
         let is_asr = entry.category == MODEL_CATEGORY_ASR;
         let is_tts = entry.category == MODEL_CATEGORY_TTS;
-        let (mut tasks, mut traits) = if is_asr {
+        let is_auto = !is_asr
+            && !is_tts
+            && entry.catalog_family.as_deref() == Some(CATALOG_FAMILY_AUTO);
+        let (mut tasks, mut traits) = if is_auto {
+            // Auto is a chat family even if a future model id does not match
+            // the current name-based task inference rules.
+            (vec![ModelTask::Chat], Vec::new())
+        } else if is_asr {
             (vec![ModelTask::SpeechRecognition], Vec::new())
         } else if is_tts {
             (vec![ModelTask::SpeechSynthesis], Vec::new())
@@ -223,7 +230,7 @@ fn build_profile_seeds(
             if extra.tools && !traits.contains(&nomifun_api_types::ModelTrait::FunctionCalling) {
                 traits.push(nomifun_api_types::ModelTrait::FunctionCalling);
             }
-            let supports_vision = extra.supports_vision();
+            let supports_vision = !is_auto && extra.supports_vision();
             traits.retain(|trait_value| *trait_value != ModelTrait::VisionInput);
             if supports_vision {
                 traits.push(nomifun_api_types::ModelTrait::VisionInput);
@@ -235,7 +242,7 @@ fn build_profile_seeds(
         let catalog_vision = if is_asr || is_tts {
             None
         } else {
-            Some(extra.supports_vision())
+            Some(!is_auto && extra.supports_vision())
         };
         profiles.push(ProviderModelProfileSeed {
             model,
@@ -244,7 +251,14 @@ fn build_profile_seeds(
             traits: serde_json::to_string(&traits)
                 .map_err(|error| format!("serialize Flowy model traits: {error}"))?,
             catalog_max_tokens: extra.max_output_tokens(),
-            catalog_reasoning_effort: extra.reasoning_effort_levels(),
+            // Auto owns the strategy selector, so even an upstream payload
+            // that advertises reasoning levels must not leak a selectable
+            // effort list into the local model profile.
+            catalog_reasoning_effort: if is_auto {
+                None
+            } else {
+                extra.reasoning_effort_levels()
+            },
             catalog_credit_rate: extra.credit_rate_multiplier(),
             catalog_vision,
             catalog_family: if is_asr || is_tts {
@@ -746,7 +760,10 @@ mod tests {
         let entries = merge_chat_catalogs(
             vec![
                 catalog_entry("AIPC-auto-intelligence", r#"{"input":["text"],"tools":true}"#),
-                catalog_entry("AIPC-auto-balance", r#"{"input":["text"],"tools":true}"#),
+                catalog_entry(
+                    "AIPC-auto-balance",
+                    r#"{"input":["text","image"],"tools":true,"reasoning":true,"reasoning_effort":["low","medium","xhigh"],"credit_rate":2,"max_tokens":128000}"#,
+                ),
                 catalog_entry("AIPC-auto-cost", r#"{"input":["text"],"tools":true}"#),
             ],
             Vec::new(),
@@ -767,6 +784,13 @@ mod tests {
             assert_eq!(seed.catalog_family.as_deref(), Some(CATALOG_FAMILY_AUTO));
             assert_eq!(seed.catalog_auto_tier.as_deref(), Some(tier));
         }
+
+        let balance = seeds
+            .iter()
+            .find(|seed| seed.model == AUTO_MODEL_BALANCE)
+            .unwrap();
+        assert_eq!(balance.catalog_credit_rate, Some(2.0));
+        assert_eq!(balance.catalog_max_tokens, Some(128_000));
     }
 
     #[test]

@@ -6,7 +6,12 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNotificationBlocker } from '@/renderer/components/notifications';
 import styles from './MobileActionSheet.module.css';
-import type { MobileActionSheetEntry, MobileActionSheetProps, MobileActionSheetSubMenu } from './types';
+import type {
+  MobileActionSheetEntry,
+  MobileActionSheetOption,
+  MobileActionSheetProps,
+  MobileActionSheetSubMenu,
+} from './types';
 
 const TRANSITION_MS = 260;
 
@@ -121,6 +126,47 @@ const MobileActionSheet: React.FC<MobileActionSheetProps> = ({ open, onClose, ti
     onClose();
   };
 
+  const activateOnKeyboard = (event: React.KeyboardEvent, action: () => void) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    action();
+  };
+
+  const renderSubmenuOption = (option: MobileActionSheetOption) => {
+    const showRadio = renderedSub?.selectable !== false;
+    return (
+      <div
+        key={option.key}
+        className={`${styles.item} ${option.disabled ? styles.disabled : ''}`}
+        role='button'
+        tabIndex={subPhase === 'shown' && !option.disabled ? 0 : -1}
+        aria-disabled={option.disabled || undefined}
+        aria-pressed={showRadio ? option.active || false : undefined}
+        onClick={() => {
+          if (option.disabled) return;
+          handleSubSelect(option.key);
+        }}
+        onKeyDown={(event) => {
+          if (option.disabled) return;
+          activateOnKeyboard(event, () => handleSubSelect(option.key));
+        }}
+        data-testid={`mobile-action-sheet-option-${option.key}`}
+      >
+        <div className={styles.body}>
+          <div className={styles.label}>{option.label}</div>
+          {option.description && <div className={styles.desc}>{option.description}</div>}
+        </div>
+        {showRadio && (
+          <div className={`${styles.radio} ${option.active ? styles.checked : ''}`} aria-hidden='true' />
+        )}
+      </div>
+    );
+  };
+
+  const submenuOptions = renderedSub?.options ?? [];
+  const submenuGroups = renderedSub?.groups?.filter((group) => group.options.length > 0) ?? [];
+  const hasSubmenuOptions = submenuOptions.length > 0 || submenuGroups.length > 0;
+
   return createPortal(
     <Fragment>
       <div className={`${styles.mask} ${visible ? styles.visible : ''}`} onClick={onClose} />
@@ -144,7 +190,16 @@ const MobileActionSheet: React.FC<MobileActionSheetProps> = ({ open, onClose, ti
                   {entry.dividerBefore && index !== 0 && <div className={styles.divider} />}
                   <div
                     className={`${styles.item} ${entry.disabled ? styles.disabled : ''}`}
+                    role='button'
+                    tabIndex={subPhase === 'shown' || entry.disabled ? -1 : 0}
+                    aria-disabled={entry.disabled || undefined}
+                    aria-haspopup={entry.submenu ? 'dialog' : undefined}
+                    aria-expanded={entry.submenu ? activeSubKey === entry.key : undefined}
                     onClick={() => handleEntryClick(entry)}
+                    onKeyDown={(event) => {
+                      if (entry.disabled) return;
+                      activateOnKeyboard(event, () => handleEntryClick(entry));
+                    }}
                     data-testid={`mobile-action-sheet-${entry.key}`}
                   >
                     {entry.icon && (
@@ -176,42 +231,32 @@ const MobileActionSheet: React.FC<MobileActionSheetProps> = ({ open, onClose, ti
               aria-hidden={subPhase !== 'shown'}
             >
               <div className={styles.subbar}>
-                <button className={styles.back} onClick={() => setActiveSubKey(null)} type='button'>
+                <button
+                  className={styles.back}
+                  onClick={() => setActiveSubKey(null)}
+                  tabIndex={subPhase === 'shown' ? 0 : -1}
+                  type='button'
+                >
                   <Left theme='outline' size='16' />
                   <span>{t('common.back', { defaultValue: 'Back' })}</span>
                 </button>
                 <div className={styles.subtitle}>{renderedSub.title}</div>
               </div>
               <div className={styles.list}>
-                {renderedSub.options.length === 0 ? (
+                {!hasSubmenuOptions ? (
                   <div className={styles.empty}>{renderedSub.emptyText}</div>
                 ) : (
-                  renderedSub.options.map((option) => {
-                    const showRadio = renderedSub.selectable !== false;
-                    return (
-                      <div
-                        key={option.key}
-                        className={`${styles.item} ${option.disabled ? styles.disabled : ''}`}
-                        aria-disabled={option.disabled || undefined}
-                        onClick={() => {
-                          if (option.disabled) return;
-                          handleSubSelect(option.key);
-                        }}
-                        data-testid={`mobile-action-sheet-option-${option.key}`}
-                      >
-                        <div className={styles.body}>
-                          <div className={styles.label}>{option.label}</div>
-                          {option.description && <div className={styles.desc}>{option.description}</div>}
+                  <>
+                    {submenuOptions.map(renderSubmenuOption)}
+                    {submenuGroups.map((group) => (
+                      <Fragment key={group.key}>
+                        <div className={styles.groupHeader} role='heading' aria-level={3}>
+                          {group.title}
                         </div>
-                        {showRadio && (
-                          <div
-                            className={`${styles.radio} ${option.active ? styles.checked : ''}`}
-                            aria-hidden='true'
-                          />
-                        )}
-                      </div>
-                    );
-                  })
+                        {group.options.map(renderSubmenuOption)}
+                      </Fragment>
+                    ))}
+                  </>
                 )}
               </div>
             </div>

@@ -28,7 +28,11 @@ describe('chat model picker view model', () => {
     const flowy = provider(FLOWY_BUILTIN_PROVIDER_ID, [
       {
         model: 'AIPC-auto-cost',
-        params: { _flowy_catalog_family: 'auto', _flowy_catalog_auto_tier: 'cost' },
+        params: {
+          _flowy_catalog_family: 'auto',
+          _flowy_catalog_auto_tier: 'cost',
+          _flowy_catalog_reasoning_effort: ['low', 'medium', 'xhigh'],
+        },
         traits: ['function_calling'],
       },
       {
@@ -80,6 +84,7 @@ describe('chat model picker view model', () => {
       'balance',
       'cost',
     ]);
+    expect(viewModel.autoModels.find((option) => option.autoTier === 'cost')?.reasoningLevels).toEqual([]);
     expect(viewModel.cloudModels.map((option) => option.model)).toEqual([
       'AIPC-cloud',
       'AIPC-auto-like-but-legacy',

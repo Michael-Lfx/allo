@@ -232,6 +232,7 @@ mod catalog_param_tests {
     fn catalog_family_and_auto_tier_preserve_user_params_and_clear_stale_values() {
         let existing = serde_json::json!({
             "temperature": 0.2,
+            FLOWY_CATALOG_REASONING_EFFORT_PARAM: ["low", "medium"],
             FLOWY_CATALOG_FAMILY_PARAM: "cloud",
             FLOWY_CATALOG_AUTO_TIER_PARAM: "balance",
         })
@@ -250,6 +251,9 @@ mod catalog_param_tests {
         assert_eq!(updated_value["temperature"], serde_json::json!(0.2));
         assert_eq!(updated_value[FLOWY_CATALOG_FAMILY_PARAM], "auto");
         assert_eq!(updated_value[FLOWY_CATALOG_AUTO_TIER_PARAM], "intelligence");
+        assert!(updated_value
+            .get(FLOWY_CATALOG_REASONING_EFFORT_PARAM)
+            .is_none());
 
         let cleared = merge_catalog_params(&updated, None, None, None, None, None)
             .expect("stale catalog metadata should be removed");
@@ -257,6 +261,9 @@ mod catalog_param_tests {
         assert_eq!(cleared_value["temperature"], serde_json::json!(0.2));
         assert!(cleared_value.get(FLOWY_CATALOG_FAMILY_PARAM).is_none());
         assert!(cleared_value.get(FLOWY_CATALOG_AUTO_TIER_PARAM).is_none());
+        assert!(cleared_value
+            .get(FLOWY_CATALOG_REASONING_EFFORT_PARAM)
+            .is_none());
     }
 }
 
