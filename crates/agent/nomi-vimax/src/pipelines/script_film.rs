@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::agents::{
-    CharacterExtractor, CharacterPortraitsGenerator, VoiceProfileGenerator, WorldAssetsPlanner,
-    ensure_film_cover, has_usable_portrait,
+    CharacterExtractor, CharacterPortraitsGenerator, VoiceProfileGenerator, VoiceReferenceGenerator,
+    WorldAssetsPlanner, ensure_film_cover, has_usable_portrait,
 };
 use crate::error::VimaxResult;
 use crate::media_local;
@@ -245,13 +245,6 @@ impl ScriptFilmPipeline {
             Arc::clone(&self.backends.chat),
             Arc::clone(&self.backends.image),
         );
-        let look_theme = crate::planning::portrait_theme_excerpt(&corpus);
-        emit_pct(&progress, "look_plate_start", "正在锁定全片画风", 20.0);
-        let look_refs = world_planner
-            .look_style_refs(&self.working_dir, &style, &look_theme)
-            .await;
-        let look_ref_paths: Vec<&Path> = look_refs.iter().map(|p| p.as_path()).collect();
-
         emit_pct(
             &progress,
             "character_portraits_start",
@@ -281,7 +274,7 @@ impl ScriptFilmPipeline {
                 ));
                 let entry = self
                     .portraits
-                    .generate_all_views(character, &style, &corpus, &dir, &look_ref_paths)
+                    .generate_all_views(character, &style, &corpus, &dir, &[])
                     .await?;
                 registry.extend(entry);
                 write_json_artifact(&registry_path, &registry).await?;
@@ -289,6 +282,39 @@ impl ScriptFilmPipeline {
             write_json_artifact(&registry_path, &registry).await?;
         }
 
+        emit_pct(
+            &progress,
+            "voice_references_start",
+            "正在生成角色音色参考音频",
+            24.0,
+        );
+        if let Some(flowy) = self.backends.flowy.clone() {
+            let registry_path = self.working_dir.join("character_portraits_registry.json");
+            let mut registry: HashMap<String, HashMap<String, HashMap<String, String>>> =
+                if registry_path.exists() {
+                    read_json_artifact(&registry_path).await.unwrap_or_default()
+                } else {
+                    HashMap::new()
+                };
+            let portraits_dir = self.working_dir.join("character_portraits");
+            let voice_gen = VoiceReferenceGenerator::new(flowy);
+            if let Ok(n) = voice_gen
+                .ensure_voice_references(&characters, &portraits_dir, &mut registry)
+                .await
+            {
+                let _ = write_json_artifact(&registry_path, &registry).await;
+                if n > 0 {
+                    emit_pct(
+                        &progress,
+                        "voice_references_done",
+                        &format!("已生成 {n} 条音色参考"),
+                        26.0,
+                    );
+                }
+            }
+        }
+
+        emit_pct(&progress, "look_plate_start", "正在锁定全片画风", 28.0);
         emit_pct(
             &progress,
             "world_assets_start",

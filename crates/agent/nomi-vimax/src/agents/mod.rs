@@ -13,6 +13,7 @@ mod scene_extractor;
 mod screenwriter;
 mod storyboard_artist;
 mod voice_profile_generator;
+mod voice_reference_generator;
 mod world_assets;
 
 pub use camera_image_generator::CameraImageGenerator;
@@ -35,6 +36,9 @@ pub use scene_extractor::{SceneExtractor, rank_chunks_by_keyword_overlap};
 pub use screenwriter::Screenwriter;
 pub use storyboard_artist::StoryboardArtist;
 pub use voice_profile_generator::VoiceProfileGenerator;
+pub use voice_reference_generator::{
+    has_usable_voice_ref, voice_ref_abs_path, VoiceReferenceGenerator,
+};
 pub use world_assets::{
     WorldAssetRegistry, WorldAssetsPlanner, rank_world_pairs_for_frame, world_asset_pairs,
 };

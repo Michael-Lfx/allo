@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::domain::{Camera, CharacterInScene, ShotBriefDescription, ShotDescription, WorkflowKind};
 use crate::error::{VimaxError, VimaxResult};
+use crate::media_local;
 use crate::pipelines::resolve_film_root;
 use crate::session::{SessionRecord, read_json_artifact, resolve_stored_asset_path};
 
@@ -350,13 +351,23 @@ async fn load_characters_with_portraits(dir: &Path) -> VimaxResult<Vec<CreativeC
                 if !abs.is_file() {
                     continue;
                 }
+                let kind = if view == "voice_ref" || media_local::is_usable_audio_file(&abs) {
+                    CreativeMediaKind::Audio
+                } else {
+                    CreativeMediaKind::Image
+                };
+                let title = if kind == CreativeMediaKind::Audio {
+                    format!("{} · 音色参考", c.identifier_in_scene)
+                } else {
+                    format!("{} · {view}", c.identifier_in_scene)
+                };
                 creative.portraits.insert(
                     view.clone(),
                     media_file(
                         dir,
                         &abs,
-                        CreativeMediaKind::Image,
-                        &format!("{} · {view}", c.identifier_in_scene),
+                        kind,
+                        &title,
                     ),
                 );
             }

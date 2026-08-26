@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use crate::agents::{
     CameraImageGenerator, CharacterExtractor, CharacterPortraitsGenerator, ReferenceImageSelector,
-    StoryboardArtist, VoiceProfileGenerator, WorldAssetsPlanner, ensure_film_cover,
-    has_usable_portrait, rank_world_pairs_for_frame, world_asset_pairs,
+    StoryboardArtist, VoiceProfileGenerator, VoiceReferenceGenerator, WorldAssetsPlanner,
+    ensure_film_cover, has_usable_portrait, rank_world_pairs_for_frame, voice_ref_abs_path,
+    world_asset_pairs,
 };
 use crate::domain::{Camera, CharacterInScene, ShotBriefDescription, ShotDescription};
 use crate::error::{VimaxError, VimaxResult};
@@ -118,24 +119,7 @@ impl Script2VideoPipeline {
         )
         .await?;
 
-        emit_pct(
-            &progress,
-            "look_plate_start",
-            "正在锁定全片画风",
-            20.0,
-        );
-        let film_root = resolve_film_root(&self.working_dir);
-        let world_planner = WorldAssetsPlanner::new(
-            Arc::clone(&self.backends.chat),
-            Arc::clone(&self.backends.image),
-        );
-        let look_theme = crate::planning::portrait_theme_excerpt(script);
-        let look_refs = world_planner
-            .look_style_refs(&film_root, &style, &look_theme)
-            .await;
-
-        // Global cast bible during planning (ViMax generates before frames; we also
-        // expose portraits as plan artifacts so users can review identity early).
+        // Global cast bible during planning (text-to-image only — style via prompt, not look plate).
         emit_pct(
             &progress,
             "character_portraits_start",
@@ -143,9 +127,24 @@ impl Script2VideoPipeline {
             22.0,
         );
         let _ = self
-            .generate_character_portraits(&characters, &style, script, &look_refs, &progress)
+            .generate_character_portraits(&characters, &style, script, &progress)
             .await?;
 
+        emit_pct(
+            &progress,
+            "voice_references_start",
+            "正在生成角色音色参考音频",
+            24.0,
+        );
+        self.ensure_character_voice_references(&characters, &progress).await?;
+
+        let film_root = resolve_film_root(&self.working_dir);
+        emit_pct(
+            &progress,
+            "look_plate_start",
+            "正在锁定全片画风",
+            28.0,
+        );
         emit_pct(
             &progress,
             "world_assets_start",
@@ -153,6 +152,10 @@ impl Script2VideoPipeline {
             30.0,
         );
         {
+            let world_planner = WorldAssetsPlanner::new(
+                Arc::clone(&self.backends.chat),
+                Arc::clone(&self.backends.image),
+            );
             let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
             let _ = world_planner
                 .ensure(
@@ -297,20 +300,24 @@ impl Script2VideoPipeline {
             "character_portraits_start",
             "正在确认全局角色定妆图",
         );
-        let film_root = resolve_film_root(&self.working_dir);
-        let world_planner = WorldAssetsPlanner::new(
-            Arc::clone(&self.backends.chat),
-            Arc::clone(&self.backends.image),
-        );
-        let look_theme = crate::planning::portrait_theme_excerpt(script);
-        let look_refs = world_planner
-            .look_style_refs(&film_root, &style, &look_theme)
-            .await;
-        let registry = self
-            .generate_character_portraits(&plan.characters, &style, script, &look_refs, &progress)
+        let mut registry = self
+            .generate_character_portraits(&plan.characters, &style, script, &progress)
             .await?;
 
+        self.ensure_character_voice_references(&plan.characters, &progress)
+            .await?;
+        // Refresh registry after voice refs may have been added.
+        let film_root = resolve_film_root(&self.working_dir);
+        let registry_path = film_root.join("character_portraits_registry.json");
+        if registry_path.exists() {
+            registry = read_json_artifact(&registry_path).await?;
+        }
+
         let world_pairs = {
+            let world_planner = WorldAssetsPlanner::new(
+                Arc::clone(&self.backends.chat),
+                Arc::clone(&self.backends.image),
+            );
             let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
             let reg = world_planner
                 .ensure(
@@ -578,7 +585,6 @@ impl Script2VideoPipeline {
         characters: &[CharacterInScene],
         style: &str,
         theme_source: &str,
-        look_refs: &[PathBuf],
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<HashMap<String, HashMap<String, HashMap<String, String>>>> {
         let film_root = resolve_film_root(&self.working_dir);
@@ -623,16 +629,14 @@ impl Script2VideoPipeline {
             let character = character.clone();
             let style = style.to_string();
             let theme = theme.clone();
-            let look_refs = look_refs.to_vec();
             let permit = Arc::clone(&sem);
             set.spawn(async move {
                 let _permit = permit
                     .acquire()
                     .await
                     .map_err(|_| VimaxError::msg("semaphore closed"))?;
-                let refs: Vec<&Path> = look_refs.iter().map(|p| p.as_path()).collect();
                 portraits
-                    .generate_all_views(&character, &style, &theme, &dir, &refs)
+                    .generate_all_views(&character, &style, &theme, &dir, &[])
                     .await
             });
         }
@@ -657,6 +661,47 @@ impl Script2VideoPipeline {
             }
         }
         Ok(registry)
+    }
+
+    /// TTS voice-reference clips for cast members (category=8 models).
+    async fn ensure_character_voice_references(
+        &self,
+        characters: &[CharacterInScene],
+        progress: &Option<ProgressCallback>,
+    ) -> VimaxResult<()> {
+        let Some(flowy) = self.backends.flowy.clone() else {
+            tracing::warn!("Flowy services unavailable — skipping voice reference TTS");
+            return Ok(());
+        };
+        let film_root = resolve_film_root(&self.working_dir);
+        let portraits_dir = film_root.join("character_portraits");
+        let registry_path = film_root.join("character_portraits_registry.json");
+        let mut registry: HashMap<String, HashMap<String, HashMap<String, String>>> =
+            if registry_path.exists() {
+                read_json_artifact(&registry_path).await?
+            } else {
+                HashMap::new()
+            };
+        let voice_gen = VoiceReferenceGenerator::new(flowy);
+        let n = voice_gen
+            .ensure_voice_references(characters, &portraits_dir, &mut registry)
+            .await?;
+        write_json_artifact(&registry_path, &registry).await?;
+        if film_root != self.working_dir {
+            write_json_artifact(
+                &self.working_dir.join("character_portraits_registry.json"),
+                &registry,
+            )
+            .await?;
+        }
+        if n > 0 {
+            emit(
+                progress,
+                "voice_references_done",
+                &format!("generated {n} voice reference clip(s)"),
+            );
+        }
+        Ok(())
     }
 
     /// Generate frames camera-by-camera in dependency order (parent before child).
@@ -1607,6 +1652,11 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
         }
 
         let ref_paths: Vec<&Path> = ref_pairs.iter().map(|(p, _)| p.as_path()).collect();
+        let film_root = resolve_film_root(&self.working_dir);
+        let voice_ref_path = shot_speaker_voice_ref_path(shot, characters, registry, &film_root);
+        let speaker_name = shot_primary_speaker_name(shot, characters, registry, &film_root);
+        let use_voice_audio_ref = voice_ref_path.is_some();
+        let ref_audio = voice_ref_path.as_deref();
         let prompt = i2v_motion_prompt(
             shot,
             characters,
@@ -1615,6 +1665,8 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             duration_secs,
             using_video_continuity,
             scene_bgm,
+            use_voice_audio_ref,
+            speaker_name.as_deref(),
         );
         // P0-3: soften risky wording (motion / plot / audio captions) before the
         // first submission so Seedance content filters don't reject the prompt text.
@@ -1632,11 +1684,12 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             progress,
             "video_clip_start",
             &format!(
-                "Generating shot {} video ({}s; multi-ref ×{}; continuity={}; refs=[{}])",
+                "Generating shot {} video ({}s; multi-ref ×{}; continuity={}; voice_ref={}; refs=[{}])",
                 shot.idx,
                 duration_secs,
                 ref_paths.len(),
                 using_video_continuity,
+                use_voice_audio_ref,
                 ref_names.join(", ")
             ),
             serde_json::json!({ "shot_idx": shot.idx }),
@@ -1660,6 +1713,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                 &video_path,
                 Some(&video_last_frame_path),
                 None,
+                ref_audio,
             )
             .await
         {
@@ -1693,6 +1747,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                         &video_path,
                         Some(&video_last_frame_path),
                         None,
+                        ref_audio,
                     )
                     .await
                 {
@@ -1748,6 +1803,8 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                     duration_secs,
                     false,
                     scene_bgm,
+                    use_voice_audio_ref,
+                    speaker_name.as_deref(),
                 );
                 let retry_prompt = crate::prompt_safety::sanitize_video_prompt(&retry_prompt);
                 match self
@@ -1762,6 +1819,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                         &video_path,
                         Some(&video_last_frame_path),
                         None,
+                        ref_audio,
                     )
                     .await
                 {
@@ -1798,6 +1856,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                                 &video_path,
                                 Some(&video_last_frame_path),
                                 None,
+                                ref_audio,
                             )
                             .await
                             .map_err(|t2v_err| {
@@ -1838,6 +1897,7 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                         &video_path,
                         Some(&video_last_frame_path),
                         None,
+                        ref_audio,
                     )
                     .await
                     .map_err(|t2v_err| {
@@ -2443,6 +2503,8 @@ fn i2v_motion_prompt(
     duration_secs: u32,
     from_prev_video_tail: bool,
     scene_bgm: &str,
+    use_voice_audio_ref: bool,
+    speaker_name: Option<&str>,
 ) -> String {
     let motion = shot.motion_desc.trim();
     let style_clause = crate::planning::style_prompt_clause(style);
@@ -2483,32 +2545,167 @@ seamless match-cut continuation into this beat (camera/angle may already differ;
         ""
     };
     let speaker_idxs = speaker_idxs_for_shot(shot, characters);
-    let voice_lock = character_voice_lock_clause(characters, &speaker_idxs);
-    let audio_block = seedance_audio_caption_block(
-        shot.audio_desc.as_deref(),
-        &shot.motion_desc,
-        &shot.visual_desc,
-        characters,
-        &speaker_idxs,
-        scene_bgm,
-    );
+    let voice_lock = if use_voice_audio_ref {
+        String::new()
+    } else {
+        character_voice_lock_clause(characters, &speaker_idxs)
+    };
+    let audio_block = if use_voice_audio_ref {
+        seedance_audio_caption_essential_only(
+            shot.audio_desc.as_deref(),
+            &shot.motion_desc,
+            &shot.visual_desc,
+        )
+    } else {
+        seedance_audio_caption_block(
+            shot.audio_desc.as_deref(),
+            &shot.motion_desc,
+            &shot.visual_desc,
+            characters,
+            &speaker_idxs,
+            scene_bgm,
+        )
+    };
+    let audio_ref_clause = if use_voice_audio_ref {
+        let who = speaker_name.unwrap_or("the speaking character");
+        format!(
+            "REFERENCE AUDIO: reference_audio is the voice timbre bible for {who} — \
+match speaker identity for any dialogue exactly; do NOT invent a new voice. \
+NO background music or underscore — only dialogue and essential on-screen foley. "
+        )
+    } else {
+        String::new()
+    };
+    let voice_continuity = if use_voice_audio_ref {
+        String::new()
+    } else {
+        "VOICE CONTINUITY: copy each speaker's FIXED SPEAKER VOICE from VOICE LOCK verbatim. \
+Emotion intensity may shift slightly; NEVER reinvent timbre, pitch band, age, or gender between shots. \
+Ignore any conflicting voice-color stage directions in the audio line — VOICE LOCK wins.\n"
+            .to_string()
+    };
+    let music_continuity = if use_voice_audio_ref {
+        String::new()
+    } else {
+        "MUSIC CONTINUITY: keep the SAME underscore motif/tempo/instrumentation as adjacent shots \
+(use the scene BGM caption exactly; do not invent a new track per cut).\n"
+            .to_string()
+    };
     format!(
-        "{style_clause} {identity}{voice_lock}{ref_clause}{continuity_clause}\
+        "{style_clause} {identity}{voice_lock}{audio_ref_clause}{ref_clause}{continuity_clause}\
 DURATION: target length is about {duration_secs}s. Speak clearly at a natural conversational pace — \
 do NOT rush, speed-read, chipmunk, swallow syllables, or time-compress dialogue to cram lines in. \
 Leave a short breath before the first word; finish the last syllable cleanly, then land on a visible \
 reaction/action beat (no empty static hold after speech). Keep motion purposeful for the full clip.\n\
-VOICE CONTINUITY: copy each speaker's FIXED SPEAKER VOICE from VOICE LOCK verbatim. \
-Emotion intensity may shift slightly; NEVER reinvent timbre, pitch band, age, or gender between shots. \
-Ignore any conflicting voice-color stage directions in the audio line — VOICE LOCK wins.\n\
-MUSIC CONTINUITY: keep the SAME underscore motif/tempo/instrumentation as adjacent shots \
-(use the scene BGM caption exactly; do not invent a new track per cut).\n\
+{voice_continuity}{music_continuity}\
 PLOT LOCK: stay on this scene — {plot}.{end_plot} \
 Do not invent new characters, locations, outfits, or story beats.\n\
 Motion: {motion}\n\
 Throughout: {audio_block}\n\
 Keep it subtitle-free. Do not generate on-screen captions, logos, or watermarks."
     )
+}
+
+fn shot_speaker_voice_ref_path(
+    shot: &ShotDescription,
+    characters: &[CharacterInScene],
+    registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+    film_root: &Path,
+) -> Option<PathBuf> {
+    let idxs = speaker_idxs_for_shot(shot, characters);
+    for &ci in &idxs {
+        if let Some(ch) = characters.iter().find(|c| c.idx == ci) {
+            if let Some(p) = voice_ref_abs_path(registry, &ch.identifier_in_scene, film_root) {
+                return Some(p);
+            }
+        }
+    }
+    for ch in characters {
+        if idxs.contains(&ch.idx) || shot.ff_vis_char_idxs.contains(&ch.idx) {
+            if let Some(p) = voice_ref_abs_path(registry, &ch.identifier_in_scene, film_root) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+fn shot_primary_speaker_name(
+    shot: &ShotDescription,
+    characters: &[CharacterInScene],
+    registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+    film_root: &Path,
+) -> Option<String> {
+    let idxs = speaker_idxs_for_shot(shot, characters);
+    for &ci in &idxs {
+        if let Some(ch) = characters.iter().find(|c| c.idx == ci) {
+            if voice_ref_abs_path(registry, &ch.identifier_in_scene, film_root).is_some() {
+                return Some(ch.identifier_in_scene.clone());
+            }
+        }
+    }
+    characters
+        .iter()
+        .find(|ch| voice_ref_abs_path(registry, &ch.identifier_in_scene, film_root).is_some())
+        .map(|ch| ch.identifier_in_scene.clone())
+}
+
+/// Dialogue + essential foley only — no BGM, no text voice-color locks (reference_audio carries timbre).
+fn seedance_audio_caption_essential_only(
+    audio_desc: Option<&str>,
+    motion_desc: &str,
+    visual_desc: &str,
+) -> String {
+    let audio = audio_desc.unwrap_or("").trim();
+    let raw = if !audio.is_empty() {
+        strip_conflicting_voice_color_cues(audio)
+    } else if crate::planning::text_looks_like_dialogue(motion_desc) {
+        strip_conflicting_voice_color_cues(motion_desc.trim())
+    } else if crate::planning::text_looks_like_dialogue(visual_desc) {
+        strip_conflicting_voice_color_cues(&visual_desc.trim().chars().take(280).collect::<String>())
+    } else {
+        String::new()
+    };
+
+    if raw.is_empty() {
+        return "<environmental ambience and essential on-screen foley only — no music underscore>"
+            .to_string();
+    }
+
+    let has_typed = raw.contains('{')
+        || raw.contains('}')
+        || raw.contains('<')
+        || raw.contains('>')
+        || (raw.contains('(') && raw.contains(')'));
+
+    if has_typed {
+        return strip_music_paren_segments(&raw);
+    }
+
+    let looks_dialogue = crate::planning::text_looks_like_dialogue(&raw);
+    if looks_dialogue {
+        format!("{{{raw}}} <essential on-screen foley only — no music>")
+    } else {
+        format!("<{raw}>")
+    }
+}
+
+fn strip_music_paren_segments(s: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0u32;
+    for ch in s.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out.trim().to_string()
 }
 
 /// Multi-ref strip for Seedance R2V: optional previous video_last_frame + cast + env/prop.
@@ -2925,7 +3122,7 @@ mod continuity_tests {
                 "Cast bible".into(),
             ),
         ];
-        let prompt = i2v_motion_prompt(&s, &[], "cinematic", &refs, 5, true, "");
+        let prompt = i2v_motion_prompt(&s, &[], "cinematic", &refs, 5, true, "", false, None);
         assert!(prompt.contains("Image 1 (video_last_frame.png)"));
         assert!(prompt.contains("Image 2 (alice_three_view.png)"));
         assert!(prompt.contains("CONTINUITY: Image 1"));
@@ -3039,6 +3236,8 @@ mod continuity_tests {
             10,
             false,
             "",
+            false,
+            None,
         );
         assert!(prompt.contains("VOICE LOCK"));
         assert!(prompt.contains("FIXED SPEAKER VOICE"));
@@ -3058,6 +3257,36 @@ mod continuity_tests {
         assert!(!cleaned.contains("用低沉的声音"));
         assert!(cleaned.contains("今晚别等我"));
         assert!(cleaned.contains("李薇"));
+    }
+
+    #[test]
+    fn audio_ref_mode_skips_voice_lock_and_bgm() {
+        let s = shot(1, 0);
+        let prompt = i2v_motion_prompt(
+            &s,
+            &[],
+            "cinematic",
+            &[],
+            8,
+            false,
+            "(piano motif)",
+            true,
+            Some("阿琳"),
+        );
+        assert!(prompt.contains("REFERENCE AUDIO"));
+        assert!(prompt.contains("阿琳"));
+        assert!(!prompt.contains("VOICE LOCK"));
+        assert!(!prompt.contains("MUSIC CONTINUITY"));
+        assert!(!prompt.contains("piano motif"));
+        assert!(prompt.contains("no music"));
+
+        let essential = seedance_audio_caption_essential_only(
+            Some("李薇说：「走吧」"),
+            "walks",
+            "street",
+        );
+        assert!(essential.contains("走吧"));
+        assert!(!essential.contains("piano"));
     }
 
     #[test]

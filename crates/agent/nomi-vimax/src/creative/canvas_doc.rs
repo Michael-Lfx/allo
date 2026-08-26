@@ -13,7 +13,8 @@ use serde_json::{json, Value};
 use crate::domain::{Camera, ShotBriefDescription, ShotDescription};
 
 use super::ir::{
-    CreativeCharacter, CreativeFilm, CreativeMediaFile, CreativeScene, CreativeWorldKind,
+    CreativeCharacter, CreativeFilm, CreativeMediaFile, CreativeMediaKind, CreativeScene,
+    CreativeWorldKind,
 };
 
 /// Ingested canvas media reference: media_id plus lookup hints so the frontend
@@ -110,6 +111,11 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
             meta["characterVoiceInstructions"] = json!(voice_clause);
             meta["characterVoiceStatus"] = json!("ready");
         }
+        if let Some(voice_media) = ch.portraits.get("voice_ref") {
+            if let Some(entry) = media_ids.get(&voice_media.rel_path) {
+                meta["sampleResourceId"] = json!(entry.media_id);
+            }
+        }
         nodes.push(json!({
             "id": node_id,
             "type": if content.is_some() { "image" } else { "text" },
@@ -135,26 +141,50 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
             let (_, Some((_, entry)), st) = media_content(Some(media), media_ids) else {
                 continue;
             };
-            nodes.push(image_node(
-                &vid,
-                &format!("{} · {view}", ch.identifier_in_scene),
-                X_CAST + 260.0,
-                view_y,
-                entry,
-                st,
-                json!({
-                    "workflowKind": "character",
-                    "characterName": ch.identifier_in_scene,
-                    "characterView": view,
-                    "assetCategory": "character",
-                    "alloVimax": {
-                        "kind": "portrait",
-                        "sessionId": film.session_id,
-                        "characterIdx": ch.idx,
-                        "view": view,
-                    }
-                }),
-            ));
+            let node = if media.kind == CreativeMediaKind::Audio {
+                audio_node(
+                    &vid,
+                    &format!("{} · 音色参考", ch.identifier_in_scene),
+                    X_CAST + 260.0,
+                    view_y,
+                    entry,
+                    st,
+                    json!({
+                        "workflowKind": "character",
+                        "characterName": ch.identifier_in_scene,
+                        "characterView": view,
+                        "assetCategory": "character_voice",
+                        "alloVimax": {
+                            "kind": "voice_ref",
+                            "sessionId": film.session_id,
+                            "characterIdx": ch.idx,
+                            "view": view,
+                        }
+                    }),
+                )
+            } else {
+                image_node(
+                    &vid,
+                    &format!("{} · {view}", ch.identifier_in_scene),
+                    X_CAST + 260.0,
+                    view_y,
+                    entry,
+                    st,
+                    json!({
+                        "workflowKind": "character",
+                        "characterName": ch.identifier_in_scene,
+                        "characterView": view,
+                        "assetCategory": "character",
+                        "alloVimax": {
+                            "kind": "portrait",
+                            "sessionId": film.session_id,
+                            "characterIdx": ch.idx,
+                            "view": view,
+                        }
+                    }),
+                )
+            };
+            nodes.push(node);
             connections.push(conn(
                 &format!("conn-char-{}-{view}", ch.idx),
                 &node_id,
@@ -431,14 +461,29 @@ fn build_scene_block(
             })
             .collect();
 
-        let voice_clauses: Vec<String> = char_idxs
-            .iter()
-            .filter_map(|idx| cast_for_scene.iter().find(|c| c.idx == *idx))
-            .filter_map(|c| c.seedance_voice_clause())
-            .collect();
+        let voice_clauses: Vec<String> = if char_idxs.iter().any(|idx| {
+            cast_for_scene
+                .iter()
+                .find(|c| c.idx == *idx)
+                .is_some_and(|c| c.portraits.contains_key("voice_ref"))
+        }) {
+            Vec::new()
+        } else {
+            char_idxs
+                .iter()
+                .filter_map(|idx| cast_for_scene.iter().find(|c| c.idx == *idx))
+                .filter_map(|c| c.seedance_voice_clause())
+                .collect()
+        };
 
         let camera_label = format_camera_label(cam_idx, camera);
         let image_prompt = compose_image_prompt(visual, ff_desc, &cast_for_scene, &char_idxs);
+        let use_voice_ref = char_idxs.iter().any(|idx| {
+            cast_for_scene
+                .iter()
+                .find(|c| c.idx == *idx)
+                .is_some_and(|c| c.portraits.contains_key("voice_ref"))
+        });
         let video_prompt = compose_video_prompt(
             visual,
             motion,
@@ -447,6 +492,7 @@ fn build_scene_block(
             lf_desc,
             &voice_clauses,
             film,
+            use_voice_ref,
         );
 
         let mut reference_node_ids: Vec<String> = char_idxs
@@ -920,6 +966,7 @@ fn compose_video_prompt(
     lf_desc: &str,
     voice_clauses: &[String],
     film: &CreativeFilm,
+    use_voice_audio_ref: bool,
 ) -> String {
     let mut parts = Vec::new();
     if !visual.trim().is_empty() {
@@ -934,12 +981,19 @@ fn compose_video_prompt(
     if !lf_desc.trim().is_empty() {
         parts.push(format!("Ends on: {}", lf_desc.trim()));
     }
-    if !audio.trim().is_empty() {
+    if use_voice_audio_ref {
+        parts.push(
+            "REFERENCE AUDIO: match reference_audio for speaker timbre; no background music — only dialogue and essential on-screen foley."
+                .into(),
+        );
+    } else if !audio.trim().is_empty() {
         parts.push(format!("Audio / dialogue: {}", audio.trim()));
     }
-    for clause in voice_clauses {
-        if !parts.iter().any(|p| p.contains(clause)) {
-            parts.push(clause.clone());
+    if !use_voice_audio_ref {
+        for clause in voice_clauses {
+            if !parts.iter().any(|p| p.contains(clause)) {
+                parts.push(clause.clone());
+            }
         }
     }
     if !film.aspect_ratio.trim().is_empty() {
@@ -976,10 +1030,14 @@ fn estimate_shot_duration(film: &CreativeFilm, scene: &CreativeScene) -> u32 {
 fn preferred_portrait(ch: &CreativeCharacter) -> Option<&CreativeMediaFile> {
     for key in ["cameo", "sheet", "front", "side", "back"] {
         if let Some(m) = ch.portraits.get(key) {
-            return Some(m);
+            if m.kind != CreativeMediaKind::Audio {
+                return Some(m);
+            }
         }
     }
-    ch.portraits.values().next()
+    ch.portraits
+        .values()
+        .find(|m| m.kind != CreativeMediaKind::Audio)
 }
 
 fn media_content<'a>(
@@ -1054,6 +1112,40 @@ fn image_node(
         "position": { "x": x, "y": y },
         "width": 220.0,
         "height": 200.0,
+        "metadata": meta,
+    })
+}
+
+fn audio_node(
+    id: &str,
+    title: &str,
+    x: f64,
+    y: f64,
+    entry: &IngestedMedia,
+    status: &str,
+    extra: Value,
+) -> Value {
+    let mut meta = extra;
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert(
+            "content".into(),
+            json!(format!("/api/video-canvas/media/{}", entry.media_id)),
+        );
+        obj.insert(
+            "storageKey".into(),
+            json!(format!("resource:{}", entry.media_id)),
+        );
+        obj.insert("mimeType".into(), json!(entry.mime));
+        obj.insert("bytes".into(), json!(entry.bytes));
+        obj.insert("status".into(), json!(status));
+    }
+    json!({
+        "id": id,
+        "type": "audio",
+        "title": title,
+        "position": { "x": x, "y": y },
+        "width": 220.0,
+        "height": 120.0,
         "metadata": meta,
     })
 }
