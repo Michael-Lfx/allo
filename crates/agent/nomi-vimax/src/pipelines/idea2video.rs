@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::agents::{
     CharacterExtractor, CharacterPortraitsGenerator, Screenwriter, VoiceProfileGenerator,
-    WorldAssetsPlanner, ensure_film_cover, has_usable_portrait,
+    VoiceReferenceGenerator, WorldAssetsPlanner, ensure_film_cover, has_usable_portrait,
 };
 use crate::error::VimaxResult;
 use crate::media_local;
@@ -243,6 +243,38 @@ impl Idea2VideoPipeline {
                 "全局角色定妆图已就绪",
                 42.0,
             );
+        }
+
+        emit_pct(
+            &progress,
+            "voice_references_start",
+            "正在生成角色音色参考音频",
+            43.0,
+        );
+        if let Some(flowy) = self.backends.flowy.clone() {
+            let registry_path = self.working_dir.join("character_portraits_registry.json");
+            let mut registry: HashMap<String, HashMap<String, HashMap<String, String>>> =
+                if registry_path.exists() {
+                    read_json_artifact(&registry_path).await.unwrap_or_default()
+                } else {
+                    HashMap::new()
+                };
+            let portraits_dir = self.working_dir.join("character_portraits");
+            let voice_gen = VoiceReferenceGenerator::new(flowy);
+            if let Ok(n) = voice_gen
+                .ensure_voice_references(&characters, &portraits_dir, &mut registry)
+                .await
+            {
+                let _ = write_json_artifact(&registry_path, &registry).await;
+                if n > 0 {
+                    emit_pct(
+                        &progress,
+                        "voice_references_done",
+                        &format!("已生成 {n} 条音色参考"),
+                        44.0,
+                    );
+                }
+            }
         }
 
         emit_pct(

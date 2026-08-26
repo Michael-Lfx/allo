@@ -298,6 +298,87 @@ impl FlowyVimaxServices {
         }
         Ok(url)
     }
+
+    /// Upload a local audio clip via OSS presign PUT and return the HTTPS `publicUrl`.
+    pub async fn upload_audio_public_url(
+        &self,
+        path: &std::path::Path,
+        role: &str,
+    ) -> Result<String, crate::error::VimaxError> {
+        use tracing::debug;
+
+        let meta = tokio::fs::metadata(path).await.ok();
+        let size = meta.as_ref().map(|m| m.len());
+        let modified = meta.and_then(|m| m.modified().ok());
+        if let Some(size) = size
+            && let Some(url) = oss_url_cache_get(path, size, modified)
+        {
+            debug!(path = %path.display(), "OSS publicUrl cache hit (audio)");
+            return Ok(url);
+        }
+
+        let bytes = tokio::fs::read(path).await?;
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("wav")
+            .to_ascii_lowercase();
+        let (mime, ext) = match ext.as_str() {
+            "mp3" => ("audio/mpeg", "mp3"),
+            "m4a" => ("audio/mp4", "m4a"),
+            "ogg" => ("audio/ogg", "ogg"),
+            "aac" => ("audio/aac", "aac"),
+            "flac" => ("audio/flac", "flac"),
+            _ => ("audio/wav", "wav"),
+        };
+
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(role);
+        let safe_stem: String = stem
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let safe_stem = {
+            let t = safe_stem.trim_matches('_');
+            if t.is_empty() {
+                role.to_string()
+            } else {
+                t.chars().take(64).collect()
+            }
+        };
+        let file_name = format!("{safe_stem}.{ext}");
+
+        debug!(
+            role = %safe_stem,
+            path = %path.display(),
+            bytes = bytes.len(),
+            mime,
+            "uploading media audio to OSS"
+        );
+
+        let url = self
+            .api
+            .upload_bytes_via_oss(&self.session, &bytes, &file_name, mime)
+            .await
+            .map_err(|e| {
+                crate::error::VimaxError::msg(format!(
+                    "OSS audio upload failed ({safe_stem}): {e}"
+                ))
+            })?;
+        if let Some(size) = size {
+            oss_url_cache_put(path, size, modified, &url);
+        }
+        Ok(url)
+    }
 }
 
 /// Cache key: canonical path + file size + mtime (cheap content fingerprint).

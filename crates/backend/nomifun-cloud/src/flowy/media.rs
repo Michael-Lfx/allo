@@ -312,6 +312,64 @@ impl FlowyApiClient {
             .await
     }
 
+    /// `POST {LLM根}/audio/speech` — non-streaming TTS (`category=8` models).
+    pub async fn speech_synthesis(
+        &self,
+        session: &ServerSession,
+        model: &str,
+        input: &str,
+        voice: Option<&str>,
+        response_format: &str,
+        language_type: &str,
+    ) -> Result<(Vec<u8>, String), ServerClientError> {
+        let voice = voice
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Cherry");
+        let format = response_format
+            .trim()
+            .is_empty()
+            .then_some("wav")
+            .unwrap_or(response_format);
+        let language_type = language_type
+            .trim()
+            .is_empty()
+            .then_some("Chinese")
+            .unwrap_or(language_type);
+        let body = json!({
+            "model": model,
+            "input": input,
+            "voice": voice,
+            "response_format": format,
+            "language_type": language_type,
+        });
+        let resp = self
+            .llm_transport
+            .post_json("/audio/speech", Some(session), body)
+            .await?;
+        let status = resp.status().as_u16();
+        let mime_hint = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.split(';').next().unwrap_or(v).trim().to_ascii_lowercase());
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ServerClientError::Http(e.to_string()))?;
+        if !(200..300).contains(&status) {
+            let text = String::from_utf8_lossy(&bytes);
+            if let Ok(env) = FlowyEnvelope::parse_body(&text) {
+                return Err(ServerClientError::Api {
+                    code: env.code,
+                    msg: env.msg,
+                });
+            }
+            return Err(ServerClientError::Http(format!("HTTP {status}: {text}")));
+        }
+        decode_speech_response_bytes(&bytes, mime_hint.as_deref(), format)
+    }
+
     /// `POST {业务根}/video/generations/tasks`
     pub async fn create_video_task(
         &self,
@@ -595,6 +653,59 @@ impl FlowyApiClient {
 
         Err(ServerClientError::Http(format!("HTTP {status}: {text}")))
     }
+}
+
+fn mime_for_speech_format(format: &str) -> &'static str {
+    match format.trim().to_ascii_lowercase().as_str() {
+        "wav" => "audio/wav",
+        "opus" => "audio/ogg",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "pcm" | "pcm16" => "audio/pcm",
+        _ => "audio/mpeg",
+    }
+}
+
+fn decode_speech_response_bytes(
+    bytes: &[u8],
+    content_type: Option<&str>,
+    format: &str,
+) -> Result<(Vec<u8>, String), ServerClientError> {
+    let looks_json = content_type.is_some_and(|m| m.contains("json"))
+        || bytes.first().is_some_and(|b| *b == b'{');
+    if !looks_json {
+        let mime = content_type
+            .filter(|m| m.starts_with("audio/"))
+            .unwrap_or_else(|| mime_for_speech_format(format))
+            .to_owned();
+        return Ok((bytes.to_vec(), mime));
+    }
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|e| ServerClientError::InvalidResponse(format!("TTS JSON: {e}")))?;
+    if let Some(data) = value
+        .get("data")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        use base64::Engine;
+        let audio = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| ServerClientError::InvalidResponse(format!("TTS base64: {e}")))?;
+        return Ok((audio, mime_for_speech_format(format).to_owned()));
+    }
+    if let Some(url) = value
+        .pointer("/audio/url")
+        .or_else(|| value.get("url"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return Err(ServerClientError::InvalidResponse(format!(
+            "TTS returned URL instead of inline audio: {url}"
+        )));
+    }
+    Err(ServerClientError::InvalidResponse(
+        "TTS response missing audio payload".into(),
+    ))
 }
 
 /// Map local video task status to a human-readable label.

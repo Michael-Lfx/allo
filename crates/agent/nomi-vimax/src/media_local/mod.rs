@@ -4,6 +4,7 @@
 //! the first frame of scene 2. We approximate that with ffmpeg's built-in
 //! `scene` filter; if no second scene is found we fall back to the last frame.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -1101,6 +1102,75 @@ pub fn is_usable_video_file(path: &Path) -> bool {
         return false;
     }
     video_file_has_magic(path)
+}
+
+const MIN_USABLE_AUDIO_BYTES: u64 = 256;
+
+/// True when `path` exists and is a non-trivial audio file (wav/mp3/ogg/m4a).
+pub fn is_usable_audio_file(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() < MIN_USABLE_AUDIO_BYTES {
+        return false;
+    }
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(ext.as_str(), "wav" | "mp3" | "m4a" | "ogg" | "aac" | "flac") {
+        return true;
+    }
+    let mut head = [0u8; 12];
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(n) = f.read(&mut head) else {
+        return false;
+    };
+    audio_magic_kind(&head[..n]).is_some()
+}
+
+fn audio_magic_kind(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 12 && bytes[0..4] == *b"RIFF" && bytes[8..12] == *b"WAVE" {
+        return Some("wav");
+    }
+    if bytes.len() >= 3 && bytes[0..3] == *b"ID3" {
+        return Some("mp3");
+    }
+    if bytes.len() >= 2 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0 {
+        return Some("mp3");
+    }
+    if bytes.len() >= 4 && bytes[0..4] == *b"OggS" {
+        return Some("ogg");
+    }
+    None
+}
+
+/// Write audio bytes atomically (voice reference clips).
+pub async fn write_audio_bytes_atomic(out_path: &Path, bytes: &[u8]) -> VimaxResult<()> {
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    if bytes.len() < MIN_USABLE_AUDIO_BYTES as usize {
+        return Err(VimaxError::msg(format!(
+            "audio too small ({} bytes) for {}",
+            bytes.len(),
+            out_path.display()
+        )));
+    }
+    let part = {
+        let mut s = out_path.as_os_str().to_owned();
+        s.push(".part");
+        PathBuf::from(s)
+    };
+    tokio::fs::write(&part, bytes).await?;
+    if out_path.exists() {
+        let _ = tokio::fs::remove_file(out_path).await;
+    }
+    tokio::fs::rename(&part, out_path).await?;
+    Ok(())
 }
 
 /// Sidecar path used for atomic downloads (`video.mp4` → `video.mp4.part`).

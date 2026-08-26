@@ -168,6 +168,7 @@ impl VimaxVideo for FlowyVideo {
         out_path: &Path,
         last_frame_out: Option<&Path>,
         ref_video: Option<&Path>,
+        ref_audio: Option<&Path>,
     ) -> VimaxResult<()> {
         if self.is_cancelled() {
             return Err(VimaxError::Cancelled);
@@ -292,6 +293,21 @@ impl VimaxVideo for FlowyVideo {
             );
         }
 
+        let mut reference_audio_url = None;
+        if let Some(path) = ref_audio.filter(|p| crate::media_local::is_usable_audio_file(p)) {
+            local_frame_notes.push(format!(
+                "reference_audio←{}",
+                path.file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("?")
+            ));
+            reference_audio_url = Some(
+                self.services
+                    .upload_audio_public_url(path, "reference_audio")
+                    .await?,
+            );
+        }
+
         let aspect = self.resolved_aspect();
         let resolution = Some(self.resolved_resolution(&model));
         // Seedance 2.0 / 2.0-fast I2V accepts [4, 15]; MiniMax-H3 accepts [4, 15].
@@ -331,7 +347,7 @@ impl VimaxVideo for FlowyVideo {
             return_last_frame: if is_h3 { None } else { Some(want_last_frame) },
             images,
             reference_video_url,
-            reference_audio_url: None,
+            reference_audio_url,
         };
 
         log_video_create_params(&params, &local_frame_notes, out_path);

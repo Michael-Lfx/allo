@@ -197,6 +197,7 @@ async fn run_video(
             &out_path,
             None,
             None,
+            None,
         )
         .await
         .map_err(map_vimax_err)?;
