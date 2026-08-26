@@ -14,6 +14,7 @@ pub mod continuation;
 pub mod edit_converge;
 pub mod edit_hints;
 pub mod env;
+pub mod finalize;
 pub mod harness;
 pub mod patch;
 pub mod profile;
@@ -31,6 +32,10 @@ pub use edit_converge::{
 };
 pub use edit_hints::{EditFailureKind, append_edit_recovery_hint, infer_edit_failure_kind};
 pub use env::{CodingEnvContext, format_env_context};
+pub use finalize::{
+    FRIENDLY_FINALIZE_FALLBACK, finalize_reply_or_fallback, forced_finalize_instruction,
+    sanitize_user_facing_reply,
+};
 pub use harness::{
     CodingConfig, CodingHarness, CompactPolicyOverrides, FinishDecision, ToolCallOutcome,
     ToolSuccessFlags, ToolTurnNudge, VerificationMode,

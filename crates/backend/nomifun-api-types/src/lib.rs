@@ -156,7 +156,8 @@ pub use conversation::{
     ConversationListResponse, ConversationMcpStatus, ConversationMcpStatusKind,
     ConversationResponse, ConversationRuntimeStateKind,
     ConversationRuntimeSummary, CreateConversationRequest, ListConversationsQuery,
-    EditResubmitReceiptState, EditResubmitStateResponse, ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchItem,
+    EditResubmitReceiptState, EditResubmitStateResponse, CodingTurnRollbackAvailability,
+    CodingTurnRollbackResponse, ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchItem,
     MessageSearchResponse, SearchMessagesQuery, SendMessageRequest, SendMessageResponse,
     UpdateConversationArtifactRequest, UpdateConversationRequest,
 };

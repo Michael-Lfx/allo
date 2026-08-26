@@ -291,9 +291,25 @@ pub async fn inspect_supported_migration_lineage(
 
 /// Rewrite applied checksums that only differ by LF/CRLF so sqlx's migrator
 /// accepts the same SQL content the probe already authenticated.
+///
+/// Fresh databases have no `_sqlx_migrations` table yet — sqlx creates it on
+/// the first migrate pass — so this heal is a no-op until rows exist.
 async fn heal_eol_only_migration_checksums(
     conn: &mut sqlx::SqliteConnection,
 ) -> Result<(), DbError> {
+    let table_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(\
+             SELECT 1 FROM sqlite_schema \
+             WHERE type = 'table' AND name = '_sqlx_migrations'\
+         )",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(DbError::Query)?;
+    if !table_exists {
+        return Ok(());
+    }
+
     let expected = DB_MIGRATOR.iter().collect::<Vec<_>>();
     let rows = sqlx::query("SELECT version, success, checksum FROM _sqlx_migrations ORDER BY version")
         .fetch_all(&mut *conn)

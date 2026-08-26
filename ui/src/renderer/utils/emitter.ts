@@ -65,7 +65,10 @@ interface EventTypes {
   // synthetic): on success, rebuild the transcript from the truncated DB and let
   // every consumer ack its barrier; on failure, restore the un-truncated history.
   'conversation.messages.refresh': [
-    { conversationId: ConversationId; reason: 'edit-resubmit-reconcile' | 'edit-resubmit-failed' },
+    {
+      conversationId: ConversationId;
+      reason: 'edit-resubmit-reconcile' | 'edit-resubmit-failed' | 'coding-rollback';
+    },
   ];
   // Guid→会话页转场揭示信号：目标页首条用户气泡已提交（或无需首条消息的入口
   // 已完成挂载）,PendingConversationOverlay 据此握手退出。无转场时发射无副作用。

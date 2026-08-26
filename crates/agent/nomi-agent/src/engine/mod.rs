@@ -1626,9 +1626,7 @@ impl AgentEngine {
                 if let Some(reason) = harness.forced_finalize_reason() {
                     tools.clear();
                     tool_authority = ProviderToolAuthority::from_request_tools(&tools);
-                    turn_tail_extras.push(format!(
-                        "{reason}\n\nWrite a concise final reply for the user now. Do not call tools."
-                    ));
+                    turn_tail_extras.push(nomi_coding::forced_finalize_instruction(reason));
                 }
                 let last_user_has_text = self.messages.last().is_some_and(|m| {
                     m.role == Role::User
@@ -1879,8 +1877,19 @@ impl AgentEngine {
                 }
                 match event {
                     LlmEvent::TextDelta(text) => {
-                        self.output.emit_text_delta(&text, &self.current_msg_id);
-                        assistant_text.push_str(&text);
+                        // Forced finalize buffers prose so we can strip tool/ML
+                        // markup before the host ever sees it (models often emit
+                        // `<tool_call>` as text once tools are cleared).
+                        if self
+                            .coding_harness
+                            .as_ref()
+                            .is_some_and(|h| h.is_forced_finalize())
+                        {
+                            assistant_text.push_str(&text);
+                        } else {
+                            self.output.emit_text_delta(&text, &self.current_msg_id);
+                            assistant_text.push_str(&text);
+                        }
                     }
                     LlmEvent::ToolUse {
                         id,
@@ -2346,7 +2355,7 @@ impl AgentEngine {
                 .coding_harness
                 .as_mut()
                 .and_then(|h| h.take_forced_finalize());
-            if let Some(reason) = coding_finalize.as_ref() {
+            if let Some(_reason) = coding_finalize.as_ref() {
                 if !tool_calls.is_empty() {
                     tracing::warn!(
                         target: "nomi_agent",
@@ -2356,11 +2365,12 @@ impl AgentEngine {
                     tool_calls.clear();
                 }
                 stop_reason = StopReason::EndTurn;
-                if assistant_text.trim().is_empty() {
-                    assistant_text = reason.clone();
-                    self.output
-                        .emit_text_delta(&assistant_text, &self.current_msg_id);
-                }
+                // Sanitize buffered finalize prose (strip `<tool_call>` / compact
+                // `<summary>` ML) and emit once — never dump internal hard-stop
+                // English as the user-visible closing message.
+                assistant_text = nomi_coding::finalize_reply_or_fallback(&assistant_text);
+                self.output
+                    .emit_text_delta(&assistant_text, &self.current_msg_id);
             }
 
             if !assistant_text.is_empty() {

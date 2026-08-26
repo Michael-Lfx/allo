@@ -530,7 +530,9 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
     // is not process-tree terminal proof, so unresolved current backends remain
     // quarantined. This awaited boundary must stay above cron.init, AutoWork
     // persisted resume, channel/plugin receive loops, and router publication.
-    let conversation = build_conversation_state(services, Some(cron.cron_service.clone()));
+    let snapshot_service = Arc::new(SnapshotService::new());
+    let conversation =
+        build_conversation_state(services, Some(cron.cron_service.clone()), snapshot_service.clone());
     conversation.service.with_preset_service(preset.service.clone());
     if let Err(error) = conversation.service.recover_pending_auto_titles().await {
         tracing::warn!(
@@ -633,7 +635,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             )),
         },
         connection_test: build_connection_test_state(),
-        file: build_file_state(services),
+        file: build_file_state(services, snapshot_service),
         mcp: build_mcp_state(services),
         extension: ext_state,
         hub: hub_state,
@@ -794,6 +796,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
 pub fn build_conversation_state(
     services: &AppServices,
     cron_service: Option<Arc<nomifun_cron::service::CronService>>,
+    snapshot_service: Arc<SnapshotService>,
 ) -> ConversationRouterState {
     let pool = services.database.pool().clone();
     let conversaion_repo = Arc::new(SqliteConversationRepository::new(pool.clone()));
@@ -815,6 +818,7 @@ pub fn build_conversation_state(
         services.execution_conversation_boundary.clone(),
     )
     .with_runtime_state(services.conversation_runtime_state.clone());
+    conversation_service.with_snapshot_service(snapshot_service);
     conversation_service.with_mcp_server_repo(Arc::new(nomifun_db::SqliteMcpServerRepository::new(
         services.database.pool().clone(),
     )));
@@ -949,7 +953,10 @@ pub fn build_connection_test_state() -> ConnectionTestRouterState {
 }
 
 /// Build the default `FileRouterState` from application services.
-pub fn build_file_state(services: &AppServices) -> FileRouterState {
+pub fn build_file_state(
+    services: &AppServices,
+    snapshot_service: Arc<SnapshotService>,
+) -> FileRouterState {
     let broadcaster = services.event_bus.clone();
     let mut allowed_roots = default_allowed_roots(Some(services.work_dir.as_path()));
     // Requirement attachments live under the data dir; include it so the
@@ -961,7 +968,6 @@ pub fn build_file_state(services: &AppServices) -> FileRouterState {
     let browse_roots = nomifun_file::browse::default_browse_roots();
     let file_service = Arc::new(FileService::new(broadcaster.clone(), allowed_roots.clone()));
     let watch_service = Arc::new(FileWatchService::new(broadcaster).expect("file watch service initialization"));
-    let snapshot_service = Arc::new(SnapshotService::new());
     FileRouterState {
         file_service,
         watch_service,

@@ -24,6 +24,8 @@ for tiny text/config edits, a short confirmation is enough — then stop.
 1. Finish outstanding tools, plan steps, and needed verification first.
 2. Only then write the final user-facing answer.
 3. Once you start the final answer, do **not** call more tools on this request.
+4. Final answers are plain user-facing prose (markdown ok). Never wrap them in \
+`<summary>`, `<tool_call>`, or other XML/HTML protocol tags.
 
 ## Change discipline
 - Smallest correct diff. Do not rewrite unrelated files or reformat untouched code.
@@ -80,11 +82,12 @@ mod tests {
     fn constitution_covers_completion_and_anchors() {
         let text = coding_overlay_instructions();
         assert!(text.contains("Final answer order"));
+        assert!(text.contains("plain user-facing prose"));
         assert!(text.contains("anchor"));
         assert!(text.contains("Stopping"));
         assert!(!text.contains("Prefer ApplyPatch"));
         assert!(text.len() > 800);
-        assert!(text.len() < 6_000);
+        assert!(text.len() < 6_500);
     }
 
     #[test]

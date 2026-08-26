@@ -54,3 +54,7 @@ pub use state::ConversationRouterState;
 #[cfg(test)]
 #[path = "service_test.rs"]
 mod service_test;
+
+#[cfg(test)]
+#[path = "coding_rollback_structure_test.rs"]
+mod coding_rollback_structure_test;

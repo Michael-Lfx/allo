@@ -835,6 +835,14 @@
     "resetSuccess": "会话已重置",
     "resetFailed": "重置会话失败，请稍后重试。"
   },
+  "codingRollback": {
+    "action": "回退本轮",
+    "confirmTitle": "回退本轮？",
+    "confirmContent": "将恢复工作区文件到本轮开始前，并删除本轮及之后的对话。不会自动重新发送。",
+    "confirmOk": "回退",
+    "success": "已回退本轮",
+    "failed": "回退失败，请稍后重试。"
+  },
   "slashCommands": {
     "compact": {
       "description": "压缩会话上下文"

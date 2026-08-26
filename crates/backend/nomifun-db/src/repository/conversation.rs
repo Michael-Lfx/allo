@@ -1203,6 +1203,23 @@ pub trait IConversationRepository: Send + Sync {
         ))
     }
 
+    /// Atomically detach receipt projections and truncate the suffix owned by an
+    /// idle coding turn rollback. Unlike [`Self::delete_messages_from`], this may
+    /// remove messages that were projected by completed delivery receipts.
+    async fn truncate_messages_for_coding_rollback(
+        &self,
+        _user_id: &str,
+        _conversation_id: &str,
+        _from_created_at: i64,
+        _from_message_id: &str,
+        _updated_at: TimestampMs,
+    ) -> Result<u64, DbError> {
+        Err(DbError::Init(
+            "conversation repository cannot atomically truncate a coding rollback"
+                .to_owned(),
+        ))
+    }
+
     /// Finds a message by (conversation_id, msg_id, type) triple.
     async fn get_message_by_msg_id(
         &self,

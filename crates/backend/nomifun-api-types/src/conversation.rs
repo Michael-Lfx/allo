@@ -210,6 +210,21 @@ pub struct EditResubmitStateResponse {
     pub requires_reset: bool,
 }
 
+/// Whether the latest coding user turn can be rolled back (files + transcript).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodingTurnRollbackAvailability {
+    pub can_rollback: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Result of rolling back the latest coding turn (no new generation).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodingTurnRollbackResponse {
+    pub restored_workspace: bool,
+    pub truncated_transcript: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationRuntimeStateKind {

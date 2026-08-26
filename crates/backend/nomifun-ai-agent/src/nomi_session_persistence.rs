@@ -12,6 +12,17 @@ use std::path::{Path, PathBuf};
 use nomi_agent::session::{Session, SessionIndex, SessionMeta, session_belongs_to};
 use nomifun_common::{AppError, ConversationId};
 
+/// Result of rewinding one exact persisted Nomi conversation generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NomiSessionRewindOutcome {
+    /// The owned session was truncated to the exact editable-turn checkpoint.
+    Rewound,
+    /// Neither an index entry nor a transcript exists for this conversation.
+    AlreadyAbsent,
+    /// A session exists but does not expose a matching rewind checkpoint.
+    NotRewindable,
+}
+
 /// Result of clearing one exact persisted Nomi conversation generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NomiSessionResetOutcome {
@@ -211,6 +222,199 @@ impl NomiSessionPersistence {
 
         Ok(NomiSessionResetOutcome::Cleared)
     }
+
+    /// Truncate the persisted transcript back to the checkpoint for one user
+    /// turn. Mirrors the in-memory [`nomi_agent::Engine::rewind_last_turn`]
+    /// contract so coding rollback can erase model context after the database
+    /// suffix is cut.
+    pub fn rewind_owned_session(
+        &self,
+        conversation_id: &str,
+        conversation_created_at: i64,
+        source_message_id: &str,
+    ) -> Result<NomiSessionRewindOutcome, AppError> {
+        ConversationId::parse(conversation_id).map_err(|error| {
+            AppError::BadRequest(format!(
+                "invalid conversation id for Nomi session rewind: {error}"
+            ))
+        })?;
+        if conversation_created_at <= 0 {
+            return Err(AppError::BadRequest(
+                "conversation_created_at must be positive for Nomi session rewind".to_owned(),
+            ));
+        }
+        if source_message_id.trim().is_empty() {
+            return Err(AppError::BadRequest(
+                "source_message_id must be non-empty for Nomi session rewind".to_owned(),
+            ));
+        }
+
+        let directory_metadata = match std::fs::symlink_metadata(&self.session_directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(NomiSessionRewindOutcome::AlreadyAbsent);
+            }
+            Err(error) => {
+                return Err(io_error(
+                    "inspect Nomi session directory",
+                    &self.session_directory,
+                    error,
+                ));
+            }
+        };
+        if directory_metadata.file_type().is_symlink() || !directory_metadata.is_dir() {
+            return Err(AppError::Internal(format!(
+                "Nomi session directory is not a real directory: {}",
+                self.session_directory.display()
+            )));
+        }
+
+        let index_path = self.session_directory.join("index.json");
+        let index = load_optional_index(&index_path)?;
+        let indexed_matches: Vec<SessionMeta> = index
+            .as_ref()
+            .map(|index| {
+                index
+                    .sessions
+                    .iter()
+                    .filter(|meta| meta.id == conversation_id)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if indexed_matches.len() > 1 {
+            return Err(AppError::Internal(format!(
+                "Nomi session index contains duplicate entries for conversation {conversation_id}"
+            )));
+        }
+
+        let candidates = session_candidates(&self.session_directory, conversation_id)?;
+        if candidates.len() > 1 {
+            return Err(AppError::Internal(format!(
+                "Nomi session storage contains ambiguous transcript files for conversation {conversation_id}"
+            )));
+        }
+
+        let Some(path) = candidates.first() else {
+            return Ok(NomiSessionRewindOutcome::AlreadyAbsent);
+        };
+
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| io_error("inspect Nomi session transcript", path, error))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(AppError::Internal(format!(
+                "Nomi session transcript is not a real file: {}",
+                path.display()
+            )));
+        }
+
+        let raw = std::fs::read(path)
+            .map_err(|error| io_error("read Nomi session transcript", path, error))?;
+        let mut session: Session = serde_json::from_slice(&raw).map_err(|error| {
+            AppError::Internal(format!(
+                "parse Nomi session transcript {}: {error}",
+                path.display()
+            ))
+        })?;
+        if session.id != conversation_id {
+            return Err(AppError::Internal(format!(
+                "Nomi session transcript {} contains unexpected id {}",
+                path.display(),
+                session.id
+            )));
+        }
+
+        if let Some(meta) = indexed_matches.first()
+            && meta.created_at != session.created_at
+        {
+            return Err(AppError::Internal(format!(
+                "Nomi session index timestamp does not match transcript for conversation {conversation_id}"
+            )));
+        }
+
+        let expected_owner = conversation_created_at.to_string();
+        if !session_belongs_to(
+            session.owner_token.as_deref(),
+            session.created_at.timestamp_millis(),
+            &expected_owner,
+            conversation_created_at,
+        ) {
+            return Err(AppError::Conflict(format!(
+                "persisted Nomi session does not belong to the current generation of conversation {conversation_id}"
+            )));
+        }
+
+        if !rewind_session_transcript(&mut session, source_message_id) {
+            return Ok(NomiSessionRewindOutcome::NotRewindable);
+        }
+
+        session.updated_at = chrono::Utc::now();
+        save_json_atomic(path, &session)?;
+
+        let mut repaired_index = index.unwrap_or(SessionIndex {
+            sessions: Vec::new(),
+        });
+        if let Some(meta) = repaired_index
+            .sessions
+            .iter_mut()
+            .find(|meta| meta.id == conversation_id)
+        {
+            meta.updated_at = session.updated_at;
+            meta.model = session.model.clone();
+            meta.message_count = session.messages.len();
+            meta.summary = session_summary(&session.messages);
+        } else {
+            repaired_index.sessions.push(SessionMeta {
+                id: session.id.clone(),
+                created_at: session.created_at,
+                updated_at: session.updated_at,
+                model: session.model.clone(),
+                summary: session_summary(&session.messages),
+                message_count: session.messages.len(),
+            });
+        }
+        save_json_atomic(&index_path, &repaired_index)?;
+
+        Ok(NomiSessionRewindOutcome::Rewound)
+    }
+}
+
+fn rewind_session_transcript(session: &mut Session, source_message_id: &str) -> bool {
+    if let Some(checkpoint) = session.editable_turn.as_ref() {
+        if source_message_id.is_empty()
+            || checkpoint.source_message_id != source_message_id
+            || checkpoint.start_len > session.messages.len()
+        {
+            return false;
+        }
+        session.messages.truncate(checkpoint.start_len);
+        session.editable_turn = None;
+        return true;
+    }
+
+    !source_message_id.is_empty() && session.messages.is_empty()
+}
+
+fn session_summary(messages: &[nomi_types::message::Message]) -> String {
+    use nomi_types::message::{ContentBlock, Role};
+    messages
+        .iter()
+        .find(|message| message.role == Role::User)
+        .and_then(|message| {
+            message.content.iter().find_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+        })
+        .map(|text| {
+            let trimmed = text.trim();
+            if trimmed.chars().count() > 80 {
+                trimmed.chars().take(80).collect()
+            } else {
+                trimmed.to_owned()
+            }
+        })
+        .unwrap_or_default()
 }
 
 fn load_optional_index(path: &Path) -> Result<Option<SessionIndex>, AppError> {
@@ -560,6 +764,97 @@ mod tests {
             .expect("target remains indexed");
         assert!(repaired.summary.is_empty());
         assert_eq!(repaired.message_count, 0);
+    }
+
+    #[test]
+    fn editable_turn_checkpoint_is_rewound_without_touching_unrelated_sessions() {
+        let root = tempfile::tempdir().expect("temp root");
+        let session_dir = root.path().join("nomi-sessions");
+        let manager = SessionManager::new(session_dir.clone(), 100);
+        let target_id = ConversationId::new().into_string();
+        let sibling_id = ConversationId::new().into_string();
+        let owner = chrono::Utc::now().timestamp_millis() - 1_000;
+        let sibling_owner = owner - 10_000;
+        let source_message_id = "turn-user-message".to_owned();
+
+        let mut target = manager
+            .create("openai", "model", "/target", Some(&target_id))
+            .expect("create target");
+        add_context(&manager, &mut target, "prior context", owner);
+        target.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "rolled-back turn".to_owned(),
+            }],
+        ));
+        target.messages.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: "assistant reply to roll back".to_owned(),
+            }],
+        ));
+        target.editable_turn = Some(EditableTurnCheckpoint {
+            source_message_id: source_message_id.clone(),
+            start_len: 1,
+        });
+        manager.save(&target).expect("save target with checkpoint");
+
+        let mut sibling = manager
+            .create("openai", "model", "/sibling", Some(&sibling_id))
+            .expect("create sibling");
+        add_context(
+            &manager,
+            &mut sibling,
+            "unrelated context must survive",
+            sibling_owner,
+        );
+
+        let persistence = NomiSessionPersistence::new(session_dir.clone());
+        assert_eq!(
+            persistence
+                .rewind_owned_session(&target_id, owner, &source_message_id)
+                .expect("rewind exact generation"),
+            NomiSessionRewindOutcome::Rewound
+        );
+
+        let rewound = manager.load(&target_id).expect("load rewound target");
+        assert_eq!(rewound.messages.len(), 1);
+        assert!(matches!(
+            rewound.messages[0].content.as_slice(),
+            [ContentBlock::Text { text }] if text == "prior context"
+        ));
+        assert!(rewound.editable_turn.is_none());
+
+        let preserved = manager
+            .load(&sibling_id)
+            .expect("load unrelated sibling");
+        assert_eq!(preserved.messages.len(), 1);
+    }
+
+    #[test]
+    fn rewind_without_matching_checkpoint_is_not_rewindable() {
+        let root = tempfile::tempdir().expect("temp root");
+        let session_dir = root.path().join("nomi-sessions");
+        let manager = SessionManager::new(session_dir.clone(), 100);
+        let conversation_id = ConversationId::new().into_string();
+        let owner = chrono::Utc::now().timestamp_millis() - 1_000;
+        let mut session = manager
+            .create("openai", "model", "/target", Some(&conversation_id))
+            .expect("create target");
+        add_context(&manager, &mut session, "must remain", owner);
+
+        let outcome = NomiSessionPersistence::new(session_dir)
+            .rewind_owned_session(&conversation_id, owner, "missing-checkpoint")
+            .expect("missing checkpoint is reported without error");
+        assert_eq!(outcome, NomiSessionRewindOutcome::NotRewindable);
+        assert_eq!(
+            manager
+                .load(&conversation_id)
+                .expect("session remains unchanged")
+                .messages
+                .len(),
+            1
+        );
     }
 
     #[test]

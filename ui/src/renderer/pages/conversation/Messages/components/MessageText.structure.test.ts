@@ -12,7 +12,7 @@ const typographySource = readFileSync(new URL('../typography.ts', import.meta.ur
 const messagesCss = readFileSync(new URL('../messages.css', import.meta.url), 'utf8');
 
 describe('MessageText process action chrome', () => {
-  test('keeps copy and time visible while allowing active process text to hide the row', () => {
+  test('keeps copy, edit, and rollback actions always visible', () => {
     expect(source.includes('hideActions?: boolean')).toBe(true);
     expect(source.includes('const shouldShowActions = !hideActions;')).toBe(true);
     expect(source.includes("data-testid='message-copy-action'")).toBe(true);
@@ -21,7 +21,10 @@ describe('MessageText process action chrome', () => {
       source.match(/const copyButton = \([\s\S]*?const canEdit =/)?.[0] ?? '';
     expect(copyButtonSource.includes('opacity-0')).toBe(false);
     expect(copyButtonSource.includes('pointer-events-none')).toBe(false);
-    expect(source.includes('text-t-secondary opacity-0 group-hover:opacity-100')).toBe(false);
+    expect(copyButtonSource.includes('message-text-actions__reveal')).toBe(false);
+    expect(copyButtonSource.includes('hoverRevealActionClass')).toBe(false);
+    expect(source.includes('message-text-hover-root')).toBe(false);
+    expect(messagesCss.includes('message-text-actions__reveal')).toBe(false);
     expect(
       source.includes("className='message-text-actions__time text-12px leading-20px text-inherit select-none'")
     ).toBe(true);
@@ -120,6 +123,15 @@ describe('MessageText process action chrome', () => {
     expect(source.includes("className='block shrink-0'")).toBe(true);
   });
 
+  test('offers coding turn rollback on the latest editable user message when available', () => {
+    expect(source.includes("data-testid='message-coding-rollback-action'")).toBe(true);
+    expect(source.includes('ipcBridge.conversation.codingTurnRollbackAvailability.invoke')).toBe(true);
+    expect(source.includes('ipcBridge.conversation.codingTurnRollback.invoke')).toBe(true);
+    expect(source.includes("reason: 'coding-rollback'")).toBe(true);
+    expect(source.includes("emitter.emit('nomi.workspace.refresh')")).toBe(true);
+    expect(source.includes("t('conversation.codingRollback.confirmTitle'")).toBe(true);
+  });
+
   test('offers one explicit retry action only for retryable terminal writeback state', () => {
     expect(source.includes('displayState.retryable === true')).toBe(true);
     expect(source.includes('!RUNNING_WRITEBACK_STATUSES.has(displayState.status)')).toBe(true);
@@ -142,7 +154,7 @@ describe('MessageText process action chrome', () => {
   });
 
   test('offers only same-key confirmation continuation while confirming an edit', () => {
-    expect(source.includes("import { Alert, Button, Tooltip } from '@arco-design/web-react';")).toBe(true);
+    expect(source.includes("import { Alert, Button, Modal, Tooltip } from '@arco-design/web-react';")).toBe(true);
     expect(source.includes("import { AppMessage as Message } from '@/renderer/components/notifications';")).toBe(true);
     expect(source.includes("editingState?.phase === 'confirming' && editingState.continueConfirmation")).toBe(true);
     expect(source.includes('editingState.continueConfirmation?.();')).toBe(true);

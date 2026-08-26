@@ -115,6 +115,18 @@ pub struct SnapshotInfo {
     pub branch: Option<String>,
 }
 
+/// A turn-scoped workspace checkpoint (coding-mode rollback).
+///
+/// Stored as a git commit under `refs/nomifun/turns/{conversation_id}/{message_id}`
+/// so restore survives process restarts without rewriting the user's branch HEAD.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnCheckpoint {
+    /// Commit object id (hex).
+    pub oid: String,
+    /// Full ref name under `refs/nomifun/turns/…`.
+    pub ref_name: String,
+}
+
 /// A single file change detected by the snapshot system.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileChangeInfo {

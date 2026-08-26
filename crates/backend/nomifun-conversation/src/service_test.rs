@@ -12,7 +12,8 @@ use nomifun_ai_agent::protocol::events::{
 };
 use nomifun_ai_agent::types::{AgentRuntimeBuildOptions, SendMessageData};
 use nomifun_ai_agent::{
-    AgentRuntimeRegistry, AgentSendError, NomiSessionResetOutcome, TurnStopReason,
+    AgentRuntimeRegistry, AgentSendError, NomiSessionResetOutcome, NomiSessionRewindOutcome,
+    TurnStopReason,
 };
 
 use crate::response_middleware::{CronCommandResult, CronCreateParams, CronUpdateParams, ICronService};
@@ -5393,6 +5394,7 @@ struct MockAgentRuntimeRegistry {
     fail_next_termination_wait: Mutex<Option<String>>,
     block_termination_wait: AtomicBool,
     nomi_reset_records: Mutex<Vec<(String, TimestampMs)>>,
+    nomi_rewind_records: Mutex<Vec<(String, TimestampMs, String)>>,
     persisted_nomi_context:
         Mutex<std::collections::HashMap<(String, TimestampMs), Vec<String>>>,
     fail_next_nomi_reset: Mutex<Option<String>>,
@@ -5410,6 +5412,7 @@ impl MockAgentRuntimeRegistry {
             fail_next_termination_wait: Mutex::new(None),
             block_termination_wait: AtomicBool::new(false),
             nomi_reset_records: Mutex::new(Vec::new()),
+            nomi_rewind_records: Mutex::new(Vec::new()),
             persisted_nomi_context: Mutex::new(std::collections::HashMap::new()),
             fail_next_nomi_reset: Mutex::new(None),
         }
@@ -5442,6 +5445,10 @@ impl MockAgentRuntimeRegistry {
 
     fn nomi_reset_records(&self) -> Vec<(String, TimestampMs)> {
         self.nomi_reset_records.lock().unwrap().clone()
+    }
+
+    fn nomi_rewind_records(&self) -> Vec<(String, TimestampMs, String)> {
+        self.nomi_rewind_records.lock().unwrap().clone()
     }
 
     fn build_count(&self) -> usize {
@@ -5618,6 +5625,39 @@ impl AgentRuntimeRegistry for MockAgentRuntimeRegistry {
         Box::pin(std::future::ready(Ok(
             NomiSessionResetOutcome::AlreadyAbsent,
         )))
+    }
+
+    fn rewind_persisted_nomi_session(
+        &self,
+        conversation_id: &str,
+        conversation_created_at: TimestampMs,
+        source_message_id: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<NomiSessionRewindOutcome, AppError>>
+                + Send,
+        >,
+    > {
+        self.nomi_rewind_records.lock().unwrap().push((
+            conversation_id.to_owned(),
+            conversation_created_at,
+            source_message_id.to_owned(),
+        ));
+        if let Some(messages) = self
+            .persisted_nomi_context
+            .lock()
+            .unwrap()
+            .get_mut(&(conversation_id.to_owned(), conversation_created_at))
+        {
+            if messages.len() > 1 {
+                messages.truncate(1);
+            }
+            Box::pin(std::future::ready(Ok(NomiSessionRewindOutcome::Rewound)))
+        } else {
+            Box::pin(std::future::ready(Ok(
+                NomiSessionRewindOutcome::AlreadyAbsent,
+            )))
+        }
     }
 
     fn terminate_all(&self) {

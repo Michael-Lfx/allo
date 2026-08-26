@@ -49,8 +49,8 @@ use windows_sys::Win32::{
             GetProcessId, GetProcessTimes, OpenProcess, OpenThread, PROCESS_INFORMATION,
             PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
             PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, QueryFullProcessImageNameW, ResumeThread,
-            STARTF_USESTDHANDLES, STARTUPINFOEXW, THREAD_SUSPEND_RESUME, TerminateProcess,
-            WaitForSingleObject,
+            STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW, THREAD_SUSPEND_RESUME,
+            TerminateProcess, WaitForSingleObject,
         },
     },
 };
@@ -1475,7 +1475,8 @@ impl PreparedIo {
     }
 
     fn configure_startup(&self, startup: &mut STARTUPINFOEXW) {
-        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        // Pipe transport: hide any console window the CRT might still flash
+        // (CREATE_NO_WINDOW alone is not enough for every PowerShell child).
         match self {
             Self::Pipe {
                 child_stdin,
@@ -1483,6 +1484,8 @@ impl PreparedIo {
                 child_stderr,
                 ..
             } => {
+                startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+                startup.StartupInfo.wShowWindow = 0; // SW_HIDE
                 startup.StartupInfo.hStdInput =
                     child_stdin.as_ref().expect("child stdin is owned").as_raw();
                 startup.StartupInfo.hStdOutput = child_stdout
@@ -1495,6 +1498,7 @@ impl PreparedIo {
                     .as_raw();
             }
             Self::Pty { .. } => {
+                startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
                 startup.StartupInfo.hStdInput = -1isize as HANDLE;
                 startup.StartupInfo.hStdOutput = -1isize as HANDLE;
                 startup.StartupInfo.hStdError = -1isize as HANDLE;
@@ -2511,6 +2515,10 @@ fn command_argv(spec: &CommandSpec) -> Result<(OsString, Vec<OsString>), Process
                 OsString::from("-NoLogo"),
                 OsString::from("-NoProfile"),
                 OsString::from("-NonInteractive"),
+                // Belt-and-suspenders with CREATE_NO_WINDOW: some hosts still
+                // flash a console without an explicit hidden window style.
+                OsString::from("-WindowStyle"),
+                OsString::from("Hidden"),
                 OsString::from("-ExecutionPolicy"),
                 OsString::from("Bypass"),
                 OsString::from("-Command"),
@@ -2526,6 +2534,8 @@ fn command_argv(spec: &CommandSpec) -> Result<(OsString, Vec<OsString>), Process
                 OsString::from("-NoLogo"),
                 OsString::from("-NoProfile"),
                 OsString::from("-NonInteractive"),
+                OsString::from("-WindowStyle"),
+                OsString::from("Hidden"),
                 OsString::from("-ExecutionPolicy"),
                 OsString::from("Bypass"),
                 OsString::from("-Command"),

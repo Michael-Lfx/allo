@@ -4,7 +4,10 @@ use std::sync::Arc;
 use nomifun_common::{AppError, FileChangeOperation};
 
 use crate::path_safety::PathAuthority;
-use crate::types::{CompareResult, CopyResult, DirOrFile, FileMetadata, SnapshotInfo, WorkspaceFlatFile, ZipEntry};
+use crate::types::{
+    CompareResult, CopyResult, DirOrFile, FileMetadata, SnapshotInfo, TurnCheckpoint, WorkspaceFlatFile,
+    ZipEntry,
+};
 
 /// Core file operations: directory browsing, file read/write, management,
 /// image processing, and ZIP packaging.
@@ -242,6 +245,34 @@ pub trait ISnapshotService: Send + Sync {
     /// Clean up snapshot resources.
     /// For snapshot mode, deletes the temporary git repository.
     async fn dispose(&self, workspace: &str) -> Result<(), AppError>;
+
+    /// Capture the current worktree as a turn checkpoint (coding rollback).
+    ///
+    /// Ensures the workspace is initialized first. Does **not** move `HEAD` or
+    /// the user's current branch. Returns [`AppError::BadRequest`] when
+    /// snapshot tracking is disabled for the workspace.
+    async fn create_turn_checkpoint(
+        &self,
+        workspace: &str,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<TurnCheckpoint, AppError>;
+
+    /// Restore the worktree to a previously created turn checkpoint.
+    async fn restore_turn_checkpoint(
+        &self,
+        workspace: &str,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<(), AppError>;
+
+    /// Whether a turn checkpoint ref exists for this conversation message.
+    async fn has_turn_checkpoint(
+        &self,
+        workspace: &str,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<bool, AppError>;
 }
 
 /// Convenience alias for an Arc-wrapped file service.
