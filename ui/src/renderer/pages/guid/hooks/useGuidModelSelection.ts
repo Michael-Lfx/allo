@@ -8,6 +8,7 @@ import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import type { ConfigKeyMap } from '@/common/config/configKeys';
 import { configService } from '@/common/config/configService';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
+import { buildChatModelPickerViewModel, type ChatModelPickerViewModel } from '@/renderer/utils/model/chatModelPicker';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -49,6 +50,10 @@ export type GuidModelSelectionResult = {
   /** True when a persisted default exists but is no longer in the catalog. */
   defaultModelUnavailable: boolean;
   setCurrentModel: (model_info: TProviderWithModel) => Promise<void>;
+  modelPicker: ChatModelPickerViewModel;
+  isModelCatalogLoading: boolean;
+  modelCatalogError?: Error;
+  refreshModelCatalog: () => void;
 };
 
 /**
@@ -58,7 +63,14 @@ export type GuidModelSelectionResult = {
 export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): GuidModelSelectionResult => {
   // Chat-capable catalog from the unified backend resolve — replaces the old
   // duplicate guid/utils/modelUtils name-heuristic implementation.
-  const { groups } = useModelsForTask('chat');
+  const {
+    groups,
+    isLoading: isModelCatalogLoading,
+    error: modelCatalogError,
+    refresh: refreshModelCatalog,
+  } = useModelsForTask('chat');
+
+  const modelPicker = useMemo(() => buildChatModelPickerViewModel(groups), [groups]);
 
   const modelList = useMemo(() => groups.map((group) => group.provider), [groups]);
   const modelsByProvider = useMemo(
@@ -182,5 +194,9 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
     current_model,
     defaultModelUnavailable,
     setCurrentModel,
+    modelPicker,
+    isModelCatalogLoading,
+    modelCatalogError,
+    refreshModelCatalog,
   };
 };

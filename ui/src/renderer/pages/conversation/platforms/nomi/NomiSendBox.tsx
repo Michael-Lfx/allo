@@ -7,6 +7,7 @@ import type { IEditResubmitObservation, ISendMessageResult } from '@/common/adap
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { uuid, uuidv7 } from '@/common/utils';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
+import AutoTierSelector from '@/renderer/components/agent/AutoTierSelector';
 import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
 import CommandQueuePanel from '@/renderer/components/chat/CommandQueuePanel';
 import GoalModeChip from '@/renderer/components/chat/GoalModeChip';
@@ -95,6 +96,10 @@ import {
   hasTooManyImageAttachments,
   isImageAttachment,
 } from '@/renderer/utils/file/imageAttachments';
+import {
+  allChatModelOptions,
+  findChatModelOption,
+} from '@/renderer/utils/model/chatModelPicker';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
 import {
   clearEditingMessageByOperation,
@@ -113,7 +118,7 @@ import {
 } from './editResubmitRecovery';
 import { Alert, Button, Tag } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { Brain, Shield } from '@icon-park/react';
+import { Brain, Lightning, Shield } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { NomiMessageRuntime } from './useNomiMessage';
@@ -122,7 +127,7 @@ import { runConversationResetSingleFlight } from './resetSingleFlight';
 import { ContextUsageRing } from './ContextUsageRing';
 import type { NomiModelSelection } from './useNomiModelSelection';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
-import { catalogReasoningEffortForModel } from '@/renderer/utils/model/reasoningEffort';
+import { catalogReasoningEffortForModel, defaultReasoningEffort } from '@/renderer/utils/model/reasoningEffort';
 import { formatCreditRateMultiplier, catalogCreditRateForModel } from '@/renderer/utils/model/creditRate';
 import { catalogContextLimitForModel, resolveDisplayContextWindow } from '@/renderer/utils/model/contextWindow';
 
@@ -269,6 +274,11 @@ const NomiSendBox: React.FC<{
     return catalogReasoningEffortForModel(liveCatalogProvider, current_model.use_model);
   }, [current_model, liveCatalogProvider]);
 
+  const selectedChatModelOption = useMemo(
+    () => findChatModelOption(modelSelection.modelPicker, current_model?.id, current_model?.use_model),
+    [current_model?.id, current_model?.use_model, modelSelection.modelPicker]
+  );
+
   const displayContextWindow = useMemo(
     () =>
       resolveDisplayContextWindow(
@@ -305,6 +315,18 @@ const NomiSendBox: React.FC<{
   const hasContextUsage = typeof tokenUsage?.context_tokens === 'number';
 
   const { atPath, uploadFile, setAtPath, setUploadFile, content, contentRevision, setContent } = useSendBoxDraft(conversation_id);
+  const hasImageAttachments = useMemo(
+    () => collectSelectedFiles(uploadFile, atPath).some(isImageAttachment),
+    [atPath, uploadFile]
+  );
+  const autoModelHasImageAttachments = selectedChatModelOption?.family === 'auto' && hasImageAttachments;
+
+  const handleAutoTierSelect = useCallback(
+    async (option: Parameters<React.ComponentProps<typeof AutoTierSelector>['onSelect']>[0]) => {
+      await modelSelection.handleSelectModel(option.provider, option.model);
+    },
+    [modelSelection.handleSelectModel]
+  );
   const contentRevisionRef = useLatestRef(contentRevision);
   const { skills: skillChips, setSkills: setSkillChips } = useComposerSkillChips();
 
@@ -682,6 +704,13 @@ const NomiSendBox: React.FC<{
   const onSendHandler = async (message: string) => {
     const filesToSend = collectSelectedFiles(uploadFile, atPath);
 
+    if (autoModelHasImageAttachments) {
+      Message.warning(t('conversation.modelPicker.autoTextOnly', {
+        defaultValue: 'Auto models currently support text only',
+      }));
+      return;
+    }
+
     if (
       shouldEnqueueConversationCommand({
         enabled: true,
@@ -708,6 +737,13 @@ const NomiSendBox: React.FC<{
     async (message: string, injectSkills: string[]) => {
       const filesToSend = collectSelectedFiles(uploadFile, atPath);
 
+      if (autoModelHasImageAttachments) {
+        Message.warning(t('conversation.modelPicker.autoTextOnly', {
+          defaultValue: 'Auto models currently support text only',
+        }));
+        throw new Error('Auto models do not support image attachments');
+      }
+
       // The queue stores plain commands only. A selected Skill is an atomic
       // snapshot load for this turn, so reject it while a turn is busy and let
       // SendBox restore both the draft and its chips for an explicit retry.
@@ -726,7 +762,7 @@ const NomiSendBox: React.FC<{
       clearFiles();
       emitter.emit('nomi.selected.file.clear');
     },
-    [atPath, clearFiles, executeCommand, hasPendingCommands, isBusy, t, uploadFile]
+    [atPath, autoModelHasImageAttachments, clearFiles, executeCommand, hasPendingCommands, isBusy, t, uploadFile]
   );
 
   // 编辑最近一条用户消息并截断重跑。每一个结果都先经过后端 receipt +
@@ -1270,13 +1306,56 @@ const NomiSendBox: React.FC<{
 
   const handleSheetModelSelect = useCallback(
     (value: string) => {
-      // value format: `${providerId}::${modelName}`
-      const [providerId, modelName] = value.split('::');
-      const provider = modelSelection.providers.find((p) => p.id === providerId);
-      if (!provider || !modelName) return;
-      void modelSelection.handleSelectModel(provider, modelName);
+      const catalogOptions = allChatModelOptions(modelSelection.modelPicker, { hasImageAttachments });
+      const selected =
+        value === 'flowy-auto-family'
+          ? findChatModelOption(
+              modelSelection.modelPicker,
+              modelSelection.current_model?.id,
+              modelSelection.current_model?.use_model,
+              { hasImageAttachments }
+            )?.family === 'auto'
+            ? findChatModelOption(
+                modelSelection.modelPicker,
+                modelSelection.current_model?.id,
+                modelSelection.current_model?.use_model,
+                { hasImageAttachments }
+              )
+            : modelSelection.modelPicker.autoModels.find((option) => option.autoTier === 'balance') ??
+              modelSelection.modelPicker.autoModels[0]
+          : catalogOptions.find((option) => option.key === value);
+      const safeSelected =
+        value === 'flowy-auto-family' && hasImageAttachments && selected?.family === 'auto'
+          ? undefined
+          : selected;
+      if (!safeSelected || safeSelected.disabled) return;
+      void modelSelection.handleSelectModel(safeSelected.provider, safeSelected.model);
     },
-    [modelSelection]
+    [
+      hasImageAttachments,
+      modelSelection.current_model?.id,
+      modelSelection.current_model?.use_model,
+      modelSelection.handleSelectModel,
+      modelSelection.modelPicker,
+    ]
+  );
+
+  const handleSheetReasoningSelect = useCallback(
+    async (effort: string) => {
+      if (!reasoningEffortLevels.includes(effort)) return;
+      try {
+        const ok = await ipcBridge.conversation.update.invoke({
+          conversation_id,
+          updates: { extra: { reasoning_effort: effort } },
+        });
+        if (!ok) throw new Error('reasoning effort update rejected');
+        setCurrentReasoningEffort(effort);
+      } catch (error) {
+        console.error('[NomiSendBox] Failed to update reasoning effort from mobile sheet:', error);
+        Message.error(t('conversation.reasoningEffort.switchFailed'));
+      }
+    },
+    [conversation_id, reasoningEffortLevels, t]
   );
 
   const sheetEntries = useMemo<MobileActionSheetEntry[]>(() => {
@@ -1297,26 +1376,116 @@ const NomiSendBox: React.FC<{
       active: currentMode === mode.value,
     }));
 
-    const modelOptions: MobileActionSheetOption[] = modelSelection.providers.flatMap((provider) =>
-      modelSelection.getAvailableModels(provider).map((modelName) => {
-        const creditRate = formatCreditRateMultiplier(catalogCreditRateForModel(provider, modelName));
-        const providerName = providerLabel(provider);
-        return {
-          key: `${provider.id}::${modelName}`,
-          label: modelSelection.formatModelLabel(provider, modelName),
-          description: creditRate ? `${providerName} · ${creditRate}` : providerName,
-          active:
-            modelSelection.current_model?.id === provider.id &&
-            modelSelection.current_model?.use_model === modelName,
-        };
-      })
+    const catalogOptions = allChatModelOptions(modelSelection.modelPicker, { hasImageAttachments });
+    const autoTierLabel = (tier: string | undefined) =>
+      t(`conversation.modelPicker.autoTier.${tier ?? 'unknown'}`, {
+        defaultValue: tier === 'intelligence' ? 'Intelligence' : tier === 'cost' ? 'Cost' : 'Balance',
+      });
+    const currentCatalogOption = findChatModelOption(
+      modelSelection.modelPicker,
+      modelSelection.current_model?.id,
+      modelSelection.current_model?.use_model,
+      { hasImageAttachments }
     );
+    const autoFamilyOption = modelSelection.modelPicker.autoModels[0];
+    const modelOptions: MobileActionSheetOption[] = [
+      ...(autoFamilyOption
+        ? [
+            {
+              key: 'flowy-auto-family',
+              label: t('conversation.modelPicker.auto', { defaultValue: 'Auto' }),
+              description: hasImageAttachments
+                ? t('conversation.modelPicker.autoTextOnly', {
+                    defaultValue: 'Auto models currently support text only',
+                  })
+                : `${t('conversation.modelPicker.autoTierTitle', { defaultValue: 'Auto tier' })} · ${autoTierLabel(
+                    currentCatalogOption?.family === 'auto' ? currentCatalogOption.autoTier : 'balance'
+                  )}`,
+              active: currentCatalogOption?.family === 'auto',
+              disabled: hasImageAttachments,
+            },
+          ]
+        : []),
+      ...catalogOptions.filter((option) => option.family !== 'auto').map((option) => {
+      const providerName = providerLabel(option.provider);
+      const creditRate = formatCreditRateMultiplier(option.creditRate);
+      return {
+        key: option.key,
+        label: option.label,
+        description: option.disabled
+          ? t('conversation.modelPicker.visionRequired', { defaultValue: 'This model does not accept images' })
+          : creditRate
+            ? `${providerName} · ${creditRate}`
+            : providerName,
+        active:
+          modelSelection.current_model?.id === option.provider.id &&
+          modelSelection.current_model?.use_model === option.model,
+        disabled: option.disabled,
+      };
+      }),
+    ];
 
     const currentModeLabel =
       modeOptions.find((opt) => opt.active)?.label ?? t('agentMode.default', { defaultValue: 'Default' });
     const currentModelLabel =
-      modelSelection.getDisplayModelName(modelSelection.current_model?.use_model) ||
+      (currentCatalogOption?.family === 'auto'
+        ? `${t('conversation.modelPicker.auto', { defaultValue: 'Auto' })} · ${autoTierLabel(
+            currentCatalogOption.autoTier
+          )}`
+        : modelSelection.getDisplayModelName(modelSelection.current_model?.use_model)) ||
       t('conversation.welcome.selectModel');
+
+    const selectedAutoTier = currentCatalogOption?.family === 'auto' ? currentCatalogOption.autoTier : undefined;
+    const strategyOptions: MobileActionSheetOption[] =
+      currentCatalogOption?.family === 'auto'
+        ? modelSelection.modelPicker.autoModels.map((option) => ({
+            key: option.key,
+            label: autoTierLabel(option.autoTier),
+            description: option.model,
+            active: option.autoTier === selectedAutoTier,
+            disabled: hasImageAttachments,
+          }))
+        : reasoningEffortLevels.map((effort) => ({
+            key: effort,
+            label: t(`conversation.reasoningEffort.level.${effort}`, { defaultValue: effort }),
+            active: effort === (currentReasoningEffort ?? defaultReasoningEffort(reasoningEffortLevels)),
+          }));
+    const strategyEntry: MobileActionSheetEntry | null =
+      strategyOptions.length > 0 && currentCatalogOption
+        ? {
+            key: 'model-policy',
+            icon: <Lightning theme='filled' size='16' />,
+            label:
+              currentCatalogOption.family === 'auto'
+                ? t('conversation.modelPicker.autoTierTitle', { defaultValue: 'Auto tier' })
+                : t('conversation.reasoningEffort.ariaLabel', { defaultValue: 'Reasoning depth' }),
+            meta:
+              currentCatalogOption.family === 'auto'
+                ? autoTierLabel(selectedAutoTier)
+                : t(`conversation.reasoningEffort.level.${currentReasoningEffort ?? defaultReasoningEffort(reasoningEffortLevels)}`, {
+                    defaultValue: currentReasoningEffort ?? defaultReasoningEffort(reasoningEffortLevels) ?? '',
+                  }),
+            submenu: {
+              title:
+                currentCatalogOption.family === 'auto'
+                  ? t('conversation.modelPicker.autoTierTitle', { defaultValue: 'Auto tier' })
+                  : t('conversation.reasoningEffort.ariaLabel', { defaultValue: 'Reasoning depth' }),
+              options: strategyOptions,
+              onSelect: (key) => {
+                if (currentCatalogOption.family === 'auto') {
+                  if (hasImageAttachments) return;
+                  const option = strategyOptions.find((item) => item.key === key);
+                  const autoOption = modelSelection.modelPicker.autoModels.find((item) => item.key === option?.key);
+                  if (autoOption && !autoOption.disabled) {
+                    void modelSelection.handleSelectModel(autoOption.provider, autoOption.model);
+                  }
+                } else {
+                  void handleSheetReasoningSelect(key);
+                }
+              },
+            },
+          }
+        : null;
 
     const entries: MobileActionSheetEntry[] = [
       // Locked surfaces (companion) hide the model + permission entries: model is
@@ -1336,6 +1505,7 @@ const NomiSendBox: React.FC<{
                 emptyText: t('conversation.welcome.selectModel'),
               },
             },
+            ...(strategyEntry ? [strategyEntry] : []),
             {
               key: 'permission',
               icon: <Shield theme='outline' size='16' />,
@@ -1383,10 +1553,14 @@ const NomiSendBox: React.FC<{
     dynamicModes,
     handleSheetModeChange,
     handleSheetModelSelect,
+    handleSheetReasoningSelect,
     hideModeSelector,
     isMobile,
     loadedMcpStatuses,
     modelSelection,
+    hasImageAttachments,
+    reasoningEffortLevels,
+    currentReasoningEffort,
     providerLabel,
     setContent,
     t,
@@ -1536,6 +1710,16 @@ const NomiSendBox: React.FC<{
           }
         />
       )}
+      {autoModelHasImageAttachments && (
+        <Alert
+          className='mb-8px'
+          type='warning'
+          data-testid='nomi-auto-image-warning'
+          content={t('conversation.modelPicker.autoTextOnly', {
+            defaultValue: 'Auto models currently support text only',
+          })}
+        />
+      )}
       {editTargetChangedNotice && (
         <Alert
           className='mb-8px'
@@ -1644,7 +1828,15 @@ const NomiSendBox: React.FC<{
                   reasoningTokens={tokenUsage?.reasoning_tokens}
                 />
               )}
-              {reasoningEffortLevels.length > 0 && (
+              {selectedChatModelOption?.family === 'auto' && (
+                <AutoTierSelector
+                  options={modelSelection.modelPicker.autoModels}
+                  selected={selectedChatModelOption}
+                  hasImageAttachments={hasImageAttachments}
+                  onSelect={handleAutoTierSelect}
+                />
+              )}
+              {selectedChatModelOption?.family !== 'auto' && reasoningEffortLevels.length > 0 && (
                 <ReasoningEffortSelector
                   conversation_id={conversation_id}
                   levels={reasoningEffortLevels}
@@ -1654,7 +1846,13 @@ const NomiSendBox: React.FC<{
                   onEffortChanged={setCurrentReasoningEffort}
                 />
               )}
-              {!hideModeSelector && <NomiModelSelector selection={modelSelection} className='nomi-sendbox-model-btn' />}
+              {!hideModeSelector && (
+                <NomiModelSelector
+                  selection={modelSelection}
+                  hasImageAttachments={hasImageAttachments}
+                  className='nomi-sendbox-model-btn'
+                />
+              )}
             </div>
           ) : undefined
         }

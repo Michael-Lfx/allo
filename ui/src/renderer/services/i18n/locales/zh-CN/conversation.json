@@ -1013,6 +1013,23 @@
       "none": "关闭"
     }
   },
+  "modelPicker": {
+    "auto": "自动",
+    "autoModels": "自动模型",
+    "cloudModels": "云端模型",
+    "autoTierTitle": "自动档位",
+    "autoTierLabel": "档位",
+    "autoTier": {
+      "intelligence": "智能",
+      "balance": "平衡",
+      "cost": "经济",
+      "unknown": "自动"
+    },
+    "search": "搜索模型",
+    "noResults": "未找到模型",
+    "autoTextOnly": "自动模型当前仅支持文本",
+    "visionRequired": "该模型不支持图片输入"
+  },
   "taskProfile": {
     "label": "工作模式",
     "office": "日常办公",

@@ -3,16 +3,16 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// `tb_model.category` for image models (`GET .../model/availableListClaw?category=6`).
+/// `tb_model.category` for image models (`GET .../api/v2/model/availableListClaw?category=6`).
 pub const MODEL_CATEGORY_IMAGE: i32 = 6;
 
-/// `tb_model.category` for video models (`GET .../model/availableListClaw?category=4`).
+/// `tb_model.category` for video models (`GET .../api/v2/model/availableListClaw?category=4`).
 pub const MODEL_CATEGORY_VIDEO: i32 = 4;
 
-/// `tb_model.category` for ASR models (`GET .../model/availableListClaw?category=7`).
+/// `tb_model.category` for ASR models (`GET .../api/v2/model/availableListClaw?category=7`).
 pub const MODEL_CATEGORY_ASR: i32 = 7;
 
-/// `tb_model.category` for TTS models (`GET .../model/availableListClaw?category=8`).
+/// `tb_model.category` for TTS models (`GET .../api/v2/model/availableListClaw?category=8`).
 pub const MODEL_CATEGORY_TTS: i32 = 8;
 
 /// Local `tb_video_task.status` — succeeded.

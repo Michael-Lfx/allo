@@ -327,10 +327,12 @@ pub struct DeviceActivateRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AvailableModelsClaw {
     #[serde(default)]
+    pub auto: Vec<ClawModelEntry>,
+    #[serde(default)]
     pub cloud: Vec<ClawModelEntry>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ClawModelEntry {
     pub id: String,
@@ -345,6 +347,13 @@ pub struct ClawModelEntry {
     pub icon: String,
     #[serde(default)]
     pub category: i32,
+    /// Set by the catalog synchronizer after decoding the chat response. This
+    /// is deliberately not part of the upstream wire shape.
+    #[serde(skip)]
+    pub catalog_family: Option<String>,
+    /// Canonical Auto tier derived from the upstream Auto entry ID.
+    #[serde(skip)]
+    pub catalog_auto_tier: Option<String>,
 }
 
 /// Capability payload inside `ClawModelEntry.extra` (JSON string from model_dev).

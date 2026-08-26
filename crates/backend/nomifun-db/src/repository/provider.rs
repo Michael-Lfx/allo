@@ -17,6 +17,12 @@ pub const FLOWY_CATALOG_REASONING_EFFORT_PARAM: &str = "_flowy_catalog_reasoning
 /// Maintained during catalog sync; not a user-authored model parameter.
 pub const FLOWY_CATALOG_CREDIT_RATE_PARAM: &str = "_flowy_catalog_credit_rate";
 
+/// Reserved `provider_models.params` key for the Flowy catalog family.
+pub const FLOWY_CATALOG_FAMILY_PARAM: &str = "_flowy_catalog_family";
+
+/// Reserved `provider_models.params` key for the Flowy Auto tier.
+pub const FLOWY_CATALOG_AUTO_TIER_PARAM: &str = "_flowy_catalog_auto_tier";
+
 /// Inferred capability data for a catalog model.
 ///
 /// Cloud catalog reconciliation uses this small owned value so the provider
@@ -40,12 +46,18 @@ pub struct ProviderModelProfileSeed {
     /// Whether the authoritative catalog declares image input. `None` means
     /// this seed has no catalog-owned vision capability.
     pub catalog_vision: Option<bool>,
+    /// Flowy catalog family (`auto` or `cloud`). `None` removes the managed key.
+    pub catalog_family: Option<String>,
+    /// Canonical Auto tier (`intelligence`, `balance`, or `cost`).
+    pub catalog_auto_tier: Option<String>,
 }
 
 pub(crate) fn initial_catalog_params(
     max_tokens: Option<u32>,
     reasoning_effort: Option<&[String]>,
     credit_rate: Option<f64>,
+    family: Option<&str>,
+    auto_tier: Option<&str>,
 ) -> String {
     let mut object = serde_json::Map::new();
     if let Some(max_tokens) = max_tokens {
@@ -64,6 +76,18 @@ pub(crate) fn initial_catalog_params(
         object.insert(
             FLOWY_CATALOG_CREDIT_RATE_PARAM.to_string(),
             serde_json::json!(rate),
+        );
+    }
+    if let Some(family) = family {
+        object.insert(
+            FLOWY_CATALOG_FAMILY_PARAM.to_string(),
+            serde_json::json!(family),
+        );
+    }
+    if let Some(auto_tier) = auto_tier {
+        object.insert(
+            FLOWY_CATALOG_AUTO_TIER_PARAM.to_string(),
+            serde_json::json!(auto_tier),
         );
     }
     serde_json::Value::Object(object).to_string()
@@ -85,6 +109,8 @@ pub(crate) fn merge_catalog_params(
     max_tokens: Option<u32>,
     reasoning_effort: Option<&[String]>,
     credit_rate: Option<f64>,
+    family: Option<&str>,
+    auto_tier: Option<&str>,
 ) -> Option<String> {
     let mut value: serde_json::Value = serde_json::from_str(params).ok()?;
     let object = value.as_object_mut()?;
@@ -146,6 +172,36 @@ pub(crate) fn merge_catalog_params(
         }
     }
 
+    match family {
+        Some(family) => {
+            let next = serde_json::json!(family);
+            if object.get(FLOWY_CATALOG_FAMILY_PARAM) != Some(&next) {
+                object.insert(FLOWY_CATALOG_FAMILY_PARAM.to_string(), next);
+                changed = true;
+            }
+        }
+        None => {
+            if object.remove(FLOWY_CATALOG_FAMILY_PARAM).is_some() {
+                changed = true;
+            }
+        }
+    }
+
+    match auto_tier {
+        Some(auto_tier) => {
+            let next = serde_json::json!(auto_tier);
+            if object.get(FLOWY_CATALOG_AUTO_TIER_PARAM) != Some(&next) {
+                object.insert(FLOWY_CATALOG_AUTO_TIER_PARAM.to_string(), next);
+                changed = true;
+            }
+        }
+        None => {
+            if object.remove(FLOWY_CATALOG_AUTO_TIER_PARAM).is_some() {
+                changed = true;
+            }
+        }
+    }
+
     if !changed {
         return None;
     }
@@ -166,6 +222,42 @@ pub(crate) fn merge_catalog_vision_trait(traits: &str, supports_vision: bool) ->
         traits.retain(|trait_name| trait_name != "vision_input");
     }
     serde_json::to_string(&traits).ok()
+}
+
+#[cfg(test)]
+mod catalog_param_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_family_and_auto_tier_preserve_user_params_and_clear_stale_values() {
+        let existing = serde_json::json!({
+            "temperature": 0.2,
+            FLOWY_CATALOG_FAMILY_PARAM: "cloud",
+            FLOWY_CATALOG_AUTO_TIER_PARAM: "balance",
+        })
+        .to_string();
+
+        let updated = merge_catalog_params(
+            &existing,
+            None,
+            None,
+            None,
+            Some("auto"),
+            Some("intelligence"),
+        )
+        .expect("family metadata should change");
+        let updated_value: serde_json::Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(updated_value["temperature"], serde_json::json!(0.2));
+        assert_eq!(updated_value[FLOWY_CATALOG_FAMILY_PARAM], "auto");
+        assert_eq!(updated_value[FLOWY_CATALOG_AUTO_TIER_PARAM], "intelligence");
+
+        let cleared = merge_catalog_params(&updated, None, None, None, None, None)
+            .expect("stale catalog metadata should be removed");
+        let cleared_value: serde_json::Value = serde_json::from_str(&cleared).unwrap();
+        assert_eq!(cleared_value["temperature"], serde_json::json!(0.2));
+        assert!(cleared_value.get(FLOWY_CATALOG_FAMILY_PARAM).is_none());
+        assert!(cleared_value.get(FLOWY_CATALOG_AUTO_TIER_PARAM).is_none());
+    }
 }
 
 async fn reconcile_inferred_model_profiles(
@@ -196,6 +288,8 @@ async fn reconcile_inferred_model_profiles(
             seed.catalog_max_tokens,
             seed.catalog_reasoning_effort.as_deref(),
             seed.catalog_credit_rate,
+            seed.catalog_family.as_deref(),
+            seed.catalog_auto_tier.as_deref(),
         );
         let inserted = model_repo
             .insert_if_absent(
@@ -236,6 +330,8 @@ async fn reconcile_inferred_model_profiles(
             seed.catalog_max_tokens,
             seed.catalog_reasoning_effort.as_deref(),
             seed.catalog_credit_rate,
+            seed.catalog_family.as_deref(),
+            seed.catalog_auto_tier.as_deref(),
         );
         let promote_catalog_source = seed.catalog_vision.is_some() && row.source == "inferred";
         let traits = seed

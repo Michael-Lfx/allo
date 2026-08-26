@@ -286,7 +286,7 @@ impl FlowyApiClient {
         category: Option<i32>,
     ) -> Result<AvailableModelsClaw, ServerClientError> {
         let category = category.unwrap_or(1);
-        let path = format!("/model/availableListClaw?category={category}");
+        let path = format!("/api/v2/model/availableListClaw?category={category}");
         self.get_data(&path, Some(session)).await
     }
 
@@ -477,5 +477,42 @@ mod api_tests {
             .await
             .expect("exchange");
         assert_eq!(jwt, "jwt-wechat-open");
+    }
+
+    #[tokio::test]
+    async fn available_models_claw_v2_decodes_reasoning_effort_payload() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/model/availableListClaw"))
+            .and(query_param("category", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"code":200,"msg":"ok","data":{"auto":[{"id":"AIPC-auto-balance","name":"平衡","extra":"{\"input\":[\"text\"],\"tools\":true,\"context_window\":500000}","category":1}],"cloud":[{"id":"AIPC-glm-5","name":"GLM 5","extra":"{\"reasoning\":true,\"reasoning_effort\":[\"low\",\"high\"],\"max_tokens\":16384}","category":1}]}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let config = test_config(&server.uri());
+        let api = FlowyApiClient::new(&config).expect("client");
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        unsafe { std::env::set_var("NOMIFUN_SERVER_TOKEN", "jwt-test-catalog-v2") };
+        let session = ServerSession::from_config(&config, tmp.path());
+
+        let response = api
+            .get_available_models_claw(&session, None)
+            .await
+            .expect("catalog response");
+        let auto = response.auto.first().expect("auto model");
+        assert_eq!(auto.api_model_id(), "AIPC-auto-balance");
+        assert!(auto.model_extra().tools);
+        assert!(auto.model_extra().reasoning_effort.is_empty());
+        let entry = response.cloud.first().expect("model");
+        let extra = entry.model_extra();
+
+        assert_eq!(entry.api_model_id(), "AIPC-glm-5");
+        assert!(extra.reasoning);
+        assert_eq!(extra.reasoning_effort, vec!["low", "high"]);
+        assert_eq!(extra.reasoning_effort_levels(), Some(vec!["low".into(), "high".into()]));
     }
 }

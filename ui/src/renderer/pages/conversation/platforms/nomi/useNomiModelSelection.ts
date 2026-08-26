@@ -8,6 +8,7 @@ import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import { isManagedModelProvider } from '@/common/types/provider/managedModelService';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
+import { buildChatModelPickerViewModel, type ChatModelPickerViewModel } from '@/renderer/utils/model/chatModelPicker';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 export type NomiModelSelection = {
@@ -24,6 +25,7 @@ export type NomiModelSelection = {
     modelName?: string
   ) => string;
   getDisplayModelName: (modelName?: string) => string;
+  modelPicker: ChatModelPickerViewModel;
 };
 
 export type UseNomiModelSelectionOptions = {
@@ -58,6 +60,18 @@ export const useNomiModelSelection = ({
         .filter((p) => !isManagedModelProvider(p)),
     [groups]
   );
+
+  const visibleGroups = useMemo(
+    () =>
+      groups.filter(
+        (group) =>
+          !group.provider.platform?.toLowerCase().includes('gemini-with-google-auth') &&
+          !isManagedModelProvider(group.provider)
+      ),
+    [groups]
+  );
+
+  const modelPicker = useMemo(() => buildChatModelPickerViewModel(visibleGroups), [visibleGroups]);
 
   const modelsByProvider = useMemo(
     () => new Map(groups.map((group) => [group.provider.id, group.models])),
@@ -114,5 +128,6 @@ export const useNomiModelSelection = ({
     handleSelectModel,
     formatModelLabel,
     getDisplayModelName,
+    modelPicker,
   };
 };

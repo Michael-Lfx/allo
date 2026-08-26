@@ -35,6 +35,7 @@ import type {
 import GuidModelSelector from './components/GuidModelSelector';
 import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import GuidResourceCards from './components/GuidResourceCards';
+import AutoTierSelector from '@/renderer/components/agent/AutoTierSelector';
 import { createWorkspaceDialogGate } from './workspaceDialogGate';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import QuickActionButtons from './components/QuickActionButtons';
@@ -60,13 +61,15 @@ import { usePendingConversation } from '@/renderer/pages/conversation/components
 import { preloadCommercialPathChunks } from '@/renderer/utils/motion/flowyMotion';
 import { ensureBackendMcpCatalog } from '@/renderer/hooks/mcp/catalog';
 import { resolveAgentLogo } from '@/renderer/utils/model/agentLogo';
+import { findChatModelOption } from '@/renderer/utils/model/chatModelPicker';
+import { isImageAttachment } from '@/renderer/utils/file/imageAttachments';
 import { addRecentWorkspace } from '@/renderer/components/workspace';
 import { trackFunnelEvent, hasFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import {
   resolveGuidReadiness,
   type GuidTaskIntentId,
 } from './readiness/guidReadiness';
-import { ConfigProvider } from '@arco-design/web-react';
+import { Alert, ConfigProvider } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Aiming, Paperclip } from '@icon-park/react';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -74,6 +77,7 @@ import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { mutate as swrMutate } from 'swr';
 import type { Preset } from '@/common/types/agent/presetTypes';
+import type { TProviderWithModel } from '@/common/config/storage';
 import { replaceActiveSlashToken, type SlashLauncherItem } from '@/common/chat/slash/launcher';
 import { PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
 import styles from './index.module.css';
@@ -221,6 +225,18 @@ const GuidPage: React.FC = () => {
   const { openFileSelector: openHomeFileSelector } = useOpenFileSelector({
     onFilesSelected: guidInput.handleFilesUploaded,
   });
+  const hasImageAttachments = useMemo(() => guidInput.files.some(isImageAttachment), [guidInput.files]);
+  const selectedChatModelOption = useMemo(
+    () =>
+      findChatModelOption(
+        modelSelection.modelPicker,
+        modelSelection.current_model?.id,
+        modelSelection.current_model?.use_model,
+        { hasImageAttachments }
+      ),
+    [hasImageAttachments, modelSelection.current_model?.id, modelSelection.current_model?.use_model, modelSelection.modelPicker]
+  );
+  const autoModelHasImageAttachments = selectedChatModelOption?.family === 'auto' && hasImageAttachments;
 
   const supportsHomeSkillLoading = ['nomi', 'acp'].includes(
     agentSelection.currentEffectiveAgentInfo.agent_type,
@@ -875,6 +891,11 @@ const GuidPage: React.FC = () => {
       current_model={modelSelection.current_model}
       defaultModelUnavailable={modelSelection.defaultModelUnavailable}
       setCurrentModel={modelSelection.setCurrentModel}
+      modelPicker={modelSelection.modelPicker}
+      hasImageAttachments={hasImageAttachments}
+      isModelCatalogLoading={modelSelection.isModelCatalogLoading}
+      modelCatalogError={modelSelection.modelCatalogError}
+      refreshModelCatalog={modelSelection.refreshModelCatalog}
       currentAcpCachedModelInfo={agentSelection.currentAcpCachedModelInfo}
       selectedAcpModel={agentSelection.selectedAcpModel}
       setSelectedAcpModel={agentSelection.setSelectedAcpModel}
@@ -902,8 +923,23 @@ const GuidPage: React.FC = () => {
     }
   }, []);
 
+  const autoTierSelectorNode =
+    selectedChatModelOption?.family === 'auto' ? (
+      <AutoTierSelector
+        options={modelSelection.modelPicker.autoModels}
+        selected={selectedChatModelOption}
+        hasImageAttachments={hasImageAttachments}
+        onSelect={(option) =>
+          modelSelection.setCurrentModel({
+            ...option.provider,
+            use_model: option.model,
+          } as TProviderWithModel)
+        }
+      />
+    ) : null;
+
   const reasoningEffortSelectorNode =
-    reasoningEffortLevels.length > 0 ? (
+    selectedChatModelOption?.family !== 'auto' && reasoningEffortLevels.length > 0 ? (
       <ReasoningEffortSelector
         levels={reasoningEffortLevels}
         modelKey={`${modelSelection.current_model?.id ?? ''}:${modelSelection.current_model?.use_model ?? ''}`}
@@ -921,7 +957,7 @@ const GuidPage: React.FC = () => {
     <GuidActionRow
       onOpenAddMenu={handleOpenHomeAddMenu}
       modelSelectorNode={modelSelectorNode}
-      reasoningEffortSelectorNode={reasoningEffortSelectorNode}
+      reasoningEffortSelectorNode={autoTierSelectorNode ?? reasoningEffortSelectorNode}
       selectedAgent={agentSelection.selectedAgent}
       effectiveModeAgent={agentSelection.currentEffectiveAgentInfo.agent_type}
       selectedMode={agentSelection.selectedMode}
@@ -1004,6 +1040,15 @@ const GuidPage: React.FC = () => {
                 guidInput.setInput(text);
               }}
             />
+
+            {autoModelHasImageAttachments && (
+              <Alert
+                className={styles.guidAutoImageWarning}
+                type="warning"
+                data-testid="guid-auto-image-warning"
+                content={t('conversation.modelPicker.autoTextOnly')}
+              />
+            )}
 
             <GuidInputCard
               containerRef={guidInputCardRef}

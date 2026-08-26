@@ -15,7 +15,10 @@ use std::sync::Arc;
 
 use nomifun_api_types::ModelTask;
 use nomifun_common::AppError;
-use nomifun_db::{IProviderModelRepository, IProviderRepository, ProviderModelRow, models::Provider};
+use nomifun_db::{
+    FLOWY_CATALOG_FAMILY_PARAM, IProviderModelRepository, IProviderRepository, ProviderModelRow,
+    models::Provider,
+};
 use nomifun_knowledge::KnowledgeCompleter;
 
 use crate::factory::provider_config::{one_shot_completion, resolve_provider_config, user_message};
@@ -107,6 +110,35 @@ where
         .find(|model| !model.is_empty())
 }
 
+/// Whether a provider-model row was tagged by the Flowy catalog as one of the
+/// automatic routing models. Auto models are valid for an explicit chat choice
+/// but should not become an implicit background default.
+pub(crate) fn is_auto_catalog_model(row: &ProviderModelRow) -> bool {
+    serde_json::from_str::<serde_json::Value>(&row.params)
+        .ok()
+        .and_then(|value| {
+            value
+                .get(FLOWY_CATALOG_FAMILY_PARAM)
+                .and_then(serde_json::Value::as_str)
+                .map(|family| family == "auto")
+        })
+        .unwrap_or(false)
+}
+
+/// First enabled non-Auto model in catalog order.
+pub(crate) fn first_enabled_cloud_model<'a, I>(rows: I) -> Option<String>
+where
+    I: IntoIterator<Item = &'a ProviderModelRow>,
+{
+    rows.into_iter()
+        .filter(|row| !is_auto_catalog_model(row))
+        .find_map(|row| {
+            row.enabled
+                .then(|| row.model.trim().to_owned())
+                .filter(|model| !model.is_empty())
+        })
+}
+
 /// Resolve the app's DEFAULT `(provider_id, model)`: the first enabled provider
 /// (creation order) and its first enabled model (row `sort_order` order).
 /// `None` when no enabled provider/model is configured. The shared "what model
@@ -129,8 +161,12 @@ pub async fn resolve_default_model(
     };
     let select = |provider: &Provider| {
         let provider_rows = grouped.get(provider.provider_id.as_str())?;
-        first_enabled_model(provider_rows.iter().copied())
-            .map(|model| (provider.provider_id.clone(), model))
+        let model = if provider.provider_id == nomifun_common::FLOWY_BUILTIN_PROVIDER_ID {
+            first_enabled_cloud_model(provider_rows.iter().copied())
+        } else {
+            first_enabled_model(provider_rows.iter().copied())
+        }?;
+        Some((provider.provider_id.clone(), model))
     };
 
     // Flowy Cloud is the product default when it is configured; retain the
@@ -167,6 +203,9 @@ pub async fn resolve_flowy_cloud_model(
         .ok()?;
     rows.into_iter().find_map(|row| {
         if !row.enabled || row.model.trim().is_empty() {
+            return None;
+        }
+        if is_auto_catalog_model(&row) {
             return None;
         }
         let tasks = serde_json::from_str::<Vec<ModelTask>>(&row.tasks).unwrap_or_default();
@@ -367,6 +406,18 @@ pub(crate) mod tests {
         assert_eq!(first_enabled_model(&rows), None);
     }
 
+    #[test]
+    fn first_enabled_cloud_model_skips_implicit_auto_catalog_rows() {
+        let mut auto = model_row("flowy", "AIPC-auto-balance", true, 0);
+        auto.params = r#"{"_flowy_catalog_family":"auto","_flowy_catalog_auto_tier":"balance"}"#.into();
+        let cloud = model_row("flowy", "AIPC-glm-5", true, 1);
+        assert_eq!(
+            first_enabled_cloud_model([&auto, &cloud].into_iter()).as_deref(),
+            Some("AIPC-glm-5")
+        );
+        assert!(is_auto_catalog_model(&auto));
+    }
+
     #[tokio::test]
     async fn default_model_skips_disabled_providers_and_models() {
         // Disabled provider first, then an enabled one whose first model row
@@ -421,6 +472,37 @@ pub(crate) mod tests {
         let none_rows: Arc<dyn IProviderModelRepository> =
             Arc::new(ListOnlyModelRepo(vec![model_row("p", "m", true, 0)]));
         assert_eq!(resolve_default_model(&none, &none_rows).await, None);
+    }
+
+    #[tokio::test]
+    async fn flowy_default_model_does_not_promote_auto_to_background_default() {
+        let cloud = provider(nomifun_common::FLOWY_BUILTIN_PROVIDER_ID, true);
+        let mut auto = model_row(
+            nomifun_common::FLOWY_BUILTIN_PROVIDER_ID,
+            "AIPC-auto-balance",
+            true,
+            0,
+        );
+        auto.tasks = r#"["chat"]"#.into();
+        auto.params = r#"{"_flowy_catalog_family":"auto","_flowy_catalog_auto_tier":"balance"}"#.into();
+        let mut cloud_model = model_row(
+            nomifun_common::FLOWY_BUILTIN_PROVIDER_ID,
+            "AIPC-glm-5",
+            true,
+            1,
+        );
+        cloud_model.tasks = r#"["chat"]"#.into();
+
+        let provider_repo: Arc<dyn IProviderRepository> = Arc::new(ListOnlyRepo(vec![cloud]));
+        let model_repo: Arc<dyn IProviderModelRepository> =
+            Arc::new(ListOnlyModelRepo(vec![auto, cloud_model]));
+        assert_eq!(
+            resolve_default_model(&provider_repo, &model_repo).await,
+            Some((
+                nomifun_common::FLOWY_BUILTIN_PROVIDER_ID.to_owned(),
+                "AIPC-glm-5".to_owned()
+            ))
+        );
     }
 
     #[tokio::test]
