@@ -125,29 +125,44 @@ pub fn detect_meeting_process() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 mod platform {
+    use std::mem;
+
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
     /// Return all currently running executable base-names (lower-cased).
     pub fn running_process_names() -> Vec<String> {
-        // Use the Windows `tasklist` command as a dependency-free fallback.
-        // A proper implementation would use `CreateToolhelp32Snapshot` /
-        // `Process32Next`, but that requires unsafe COM calls.  `tasklist`
-        // is always present on Windows and is sufficient for a 5-second poll.
-        let output = std::process::Command::new("tasklist")
-            .args(["/FO", "CSV", "/NH"])
-            .output()
-            .unwrap_or_else(|_| std::process::Output {
-                status: std::process::ExitStatus::default(),
-                stdout: vec![],
-                stderr: vec![],
-            });
+        let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+            return Vec::new();
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: u32::try_from(mem::size_of::<PROCESSENTRY32W>())
+                .expect("PROCESSENTRY32W size fits in u32"),
+            ..PROCESSENTRY32W::default()
+        };
+        let mut names = Vec::new();
 
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| {
-                // CSV format: "ImageName","PID","Session","SessionNum","MemUsage"
-                let name = line.trim_matches('"').split('"').next()?;
-                Some(name.to_lowercase())
-            })
-            .collect()
+        if unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok() {
+            loop {
+                let end = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&unit| unit == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                if end > 0 {
+                    names.push(String::from_utf16_lossy(&entry.szExeFile[..end]).to_lowercase());
+                }
+                if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
+                    break;
+                }
+            }
+        }
+
+        let _ = unsafe { CloseHandle(snapshot) };
+        names
     }
 }
 
@@ -168,5 +183,17 @@ mod tests {
         // In CI / test environments there should be no meeting app running.
         // We just ensure the function doesn't panic.
         let _ = detect_meeting_process();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn native_process_scan_finds_current_process() {
+        let current = std::env::current_exe()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_lowercase();
+        assert!(platform::running_process_names().contains(&current));
     }
 }
