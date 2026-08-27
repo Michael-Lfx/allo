@@ -148,6 +148,33 @@ describe('transformMessage runtime field normalization', () => {
     ]);
   });
 
+  test('routes Confirmation-shaped ACP events to the legacy renderer and preserves option values', () => {
+    const message = transformMessage(
+      baseWire({
+        type: 'acp_permission',
+        data: {
+          id: 'confirmation-1',
+          call_id: 'tool-1',
+          title: 'Write file',
+          description: 'Write /tmp/a.txt',
+          options: [
+            { label: 'messages.confirmation.yesAllowOnce', value: 'allow-once' },
+            { label: 'messages.confirmation.yesAllowAlways', value: 'allow-always' },
+            { label: 'messages.confirmation.rejectOnce', value: 'deny' },
+          ],
+        },
+      })
+    );
+
+    expect(message?.type).toBe('permission');
+    if (message?.type !== 'permission') throw new Error('expected legacy permission message');
+    expect(message.content.options).toEqual([
+      { label: 'messages.confirmation.yesAllowOnce', value: 'allow-once' },
+      { label: 'messages.confirmation.yesAllowAlways', value: 'allow-always' },
+      { label: 'messages.confirmation.rejectOnce', value: 'deny' },
+    ]);
+  });
+
   test('normalizes persisted-style Skill load stream events into a center history entry', () => {
     const message = transformMessage(
       baseWire({

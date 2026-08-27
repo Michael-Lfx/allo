@@ -989,6 +989,16 @@ const normalizePermissionParams = (params: unknown): Record<string, string> | un
   return Object.fromEntries(Object.entries(params).map(([key, value]) => [key, toDisplayText(value)]));
 };
 
+const isLegacyConfirmationContent = (value: unknown): boolean => {
+  // Nomi/OpenClaw currently serialize their generic Confirmation under the
+  // `acp_permission` event name. Native ACP requests have a `tool_call` and
+  // must keep the native renderer/confirmation endpoint.
+  if (!isObject(value) || typeof value.call_id !== 'string' || isObject(value.tool_call)) {
+    return false;
+  }
+  return Array.isArray(value.options);
+};
+
 const normalizePermissionContent = (value: unknown): IConfirmation => {
   const data = isObject(value) ? value : {};
   const options = Array.isArray(data.options)
@@ -1476,6 +1486,18 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
       };
     }
     case 'acp_permission': {
+      if (isLegacyConfirmationContent(message.data)) {
+        return {
+          id: uuid(),
+          type: 'permission',
+          msg_id: message.msg_id,
+          ...turnIdentity,
+          position: 'left',
+          conversation_id: message.conversation_id,
+          created_at,
+          content: normalizePermissionContent(message.data),
+        };
+      }
       return {
         id: uuid(),
         type: 'acp_permission',

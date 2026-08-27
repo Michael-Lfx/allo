@@ -2651,7 +2651,27 @@ mod tests {
             ],
         );
 
-        let event = AgentStreamEvent::AcpPermission(permission_request_to_event_data(&request));
+        let permission = permission_request_to_event_data(&request);
+        let confirmation = permission.as_confirmation().unwrap();
+        assert_eq!(
+            confirmation.options.iter().map(|option| option.label.as_str()).collect::<Vec<_>>(),
+            vec![
+                "messages.confirmation.yesAllowOnce",
+                "messages.confirmation.yesAllowAlways",
+                "messages.confirmation.rejectOnce",
+                "messages.confirmation.rejectAlways",
+            ]
+        );
+        assert_eq!(
+            confirmation
+                .options
+                .iter()
+                .map(|option| option.value.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["allow", "allow-always", "reject", "reject-always"]
+        );
+
+        let event = AgentStreamEvent::AcpPermission(permission);
         let json = serde_json::to_value(&event).unwrap();
 
         assert_eq!(json["type"], "acp_permission");
@@ -2723,6 +2743,20 @@ mod tests {
             missing_kind.tool_call.kind,
             Some(AcpToolCallKind::Execute)
         ));
+    }
+
+    #[test]
+    fn permission_option_without_kind_stays_raw_for_recovery() {
+        let request: AcpPermissionRequestData = serde_json::from_value(json!({
+            "tool_call": { "tool_call_id": "unknown-call", "title": "Provider action" },
+            "options": [{ "option_id": "custom", "name": "Custom provider action" }]
+        }))
+        .unwrap();
+
+        assert!(request.options[0].kind.is_none());
+        let confirmation = request.to_confirmation();
+        assert_eq!(confirmation.options[0].label, "Custom provider action");
+        assert_eq!(confirmation.options[0].value, json!("custom"));
     }
 
     #[test]
