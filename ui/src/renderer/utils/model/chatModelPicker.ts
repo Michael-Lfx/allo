@@ -22,6 +22,12 @@ export type AutoTier = 'intelligence' | 'balance' | 'cost';
 
 export const AUTO_TIER_ORDER: readonly AutoTier[] = ['intelligence', 'balance', 'cost'];
 
+export const AUTO_TIER_LABEL_FALLBACK: Record<AutoTier, string> = {
+  intelligence: 'Smart',
+  balance: 'Balanced',
+  cost: 'Economy',
+};
+
 export interface ChatModelOption {
   key: string;
   provider: IProvider;

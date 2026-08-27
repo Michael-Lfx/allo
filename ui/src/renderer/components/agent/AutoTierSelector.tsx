@@ -7,10 +7,10 @@
 import { Button, Dropdown, Menu } from '@arco-design/web-react';
 import { Down, Lightning } from '@icon-park/react';
 import classNames from 'classnames';
-import React, { useMemo } from 'react';
+import React, { useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AutoTier, ChatModelOption } from '@/renderer/utils/model/chatModelPicker';
-import { AUTO_TIER_ORDER } from '@/renderer/utils/model/chatModelPicker';
+import { AUTO_TIER_LABEL_FALLBACK, AUTO_TIER_ORDER } from '@/renderer/utils/model/chatModelPicker';
 
 export interface AutoTierSelectorProps {
   options: readonly ChatModelOption[];
@@ -18,14 +18,11 @@ export interface AutoTierSelectorProps {
   hasImageAttachments?: boolean;
   disabled?: boolean;
   className?: string;
+  /** Optional parent-owned popup state for mutually exclusive chat controls. */
+  popupVisible?: boolean;
+  onPopupVisibleChange?: (visible: boolean) => void;
   onSelect: (option: ChatModelOption) => Promise<void> | void;
 }
-
-const tierLabelFallback: Record<AutoTier, string> = {
-  intelligence: 'Intelligence',
-  balance: 'Balance',
-  cost: 'Cost',
-};
 
 const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
   options,
@@ -33,9 +30,14 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
   hasImageAttachments = false,
   disabled = false,
   className,
+  popupVisible: popupVisibleProp,
+  onPopupVisibleChange,
   onSelect,
 }) => {
   const { t } = useTranslation();
+  const [localPopupVisible, setLocalPopupVisible] = useState(false);
+  const popupVisible = popupVisibleProp ?? localPopupVisible;
+  const popupInstanceId = useId().replace(/:/g, '');
   const orderedOptions = useMemo(() => {
     const order = new Map(AUTO_TIER_ORDER.map((tier, index) => [tier, index]));
     return [...options].sort(
@@ -49,7 +51,7 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
   const labelForTier = (tier?: AutoTier): string =>
     tier
       ? t(`conversation.modelPicker.autoTier.${tier}`, {
-          defaultValue: tierLabelFallback[tier],
+          defaultValue: AUTO_TIER_LABEL_FALLBACK[tier],
         })
       : t('conversation.modelPicker.autoTier.unknown', { defaultValue: 'Auto' });
 
@@ -59,15 +61,21 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
       : orderedOptions.find((option) => option.autoTier === 'balance') ?? orderedOptions[0];
   if (!current) return null;
 
-  const autoTierLabel = t('conversation.modelPicker.autoTierLabel', { defaultValue: 'Tier' });
-  const autoTierTitle = t('conversation.modelPicker.autoTierTitle', { defaultValue: 'Auto tier' });
+  const autoTierLabel = t('conversation.modelPicker.autoTierLabel', { defaultValue: 'Auto mode' });
+  const autoTierTitle = t('conversation.modelPicker.autoTierTitle', { defaultValue: 'Auto mode' });
   const currentLabel = labelForTier(current.autoTier);
-  const popupId = 'auto-tier-selector-popup';
+  const popupId = `auto-tier-selector-popup-${popupInstanceId}`;
+  const handlePopupVisibleChange = (visible: boolean) => {
+    if (popupVisibleProp === undefined) setLocalPopupVisible(visible);
+    onPopupVisibleChange?.(visible);
+  };
 
   return (
     <Dropdown
       trigger='click'
       getPopupContainer={() => document.body}
+      popupVisible={popupVisible}
+      onVisibleChange={handlePopupVisibleChange}
       droplist={
         <div
           id={popupId}
@@ -119,16 +127,37 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
         size='small'
         shape='round'
         disabled={disabled}
-        className={classNames('sendbox-responsive-reasoning-btn', className)}
+        className={classNames(
+          'sendbox-responsive-reasoning-btn flowy-icon-text-btn',
+          popupVisible && 'sendbox-responsive-control-open',
+          className,
+        )}
         aria-label={`${autoTierLabel}: ${currentLabel}`}
         aria-haspopup='dialog'
         aria-controls={popupId}
+        aria-expanded={popupVisible}
+        data-popup-open={popupVisible ? 'true' : undefined}
         data-testid='auto-tier-selector'
         title={`${autoTierLabel}: ${currentLabel}`}
       >
-        <Lightning theme='filled' size='14' fill='currentColor' aria-hidden='true' />
-        <span className='sendbox-responsive-label'>{currentLabel}</span>
-        <Down theme='outline' size='11' fill='currentColor' aria-hidden='true' />
+        <span className='sendbox-responsive-leading-icon' data-layout-part='leading-icon'>
+          <Lightning theme='filled' size='14' fill='currentColor' aria-hidden='true' />
+        </span>
+        <span className='sendbox-responsive-label auto-tier-trigger-label-slot'>
+          <span className='auto-tier-trigger-label-reserve' aria-hidden='true'>
+            {AUTO_TIER_ORDER.map((tier) => labelForTier(tier)).join(' / ')}
+          </span>
+          <span className='auto-tier-trigger-label-current'>{currentLabel}</span>
+        </span>
+        <span className='sendbox-responsive-chevron-slot' data-layout-part='chevron'>
+          <Down
+            theme='outline'
+            size='11'
+            fill='currentColor'
+            className='sendbox-responsive-chevron shrink-0'
+            aria-hidden='true'
+          />
+        </span>
       </Button>
     </Dropdown>
   );

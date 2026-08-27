@@ -1,14 +1,24 @@
 import { Button } from '@arco-design/web-react';
 import { ArrowUp, Brain, Down, Lightning, LinkOne, More, Search } from '@icon-park/react';
 import React, { useEffect, useMemo, useState } from 'react';
+import type { IProvider, TProviderWithModel } from '@/common/config/storage';
+import { FLOWY_BUILTIN_PROVIDER_ID } from '@/common/types/ids';
 import { LayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { PreviewProvider } from '@renderer/pages/conversation/Preview';
 import NomiModelSelector from '@renderer/pages/conversation/platforms/nomi/NomiModelSelector';
+import type { NomiModelSelection } from '@renderer/pages/conversation/platforms/nomi/useNomiModelSelection';
+import { ContextUsageRing } from '@renderer/pages/conversation/platforms/nomi/ContextUsageRing';
 import AgentModeSelector from '@renderer/components/agent/AgentModeSelector';
+import AutoTierSelector from '@renderer/components/agent/AutoTierSelector';
 import ReasoningEffortSelector from '@renderer/components/agent/ReasoningEffortSelector';
+import SpeechInputButton from '@renderer/components/chat/SpeechInputButton';
 import { GuidModelSelectorButton } from '@renderer/pages/guid/components/GuidModelSelector';
 import guidStyles from '@renderer/pages/guid/index.module.css';
 import KnowledgeDetailActionBar from '@renderer/pages/knowledge/KnowledgeDetailPage/KnowledgeDetailActionBar';
+import type {
+  ChatModelOption,
+  ChatModelPickerViewModel,
+} from '@renderer/utils/model/chatModelPicker';
 import { ensureThemeControlContract } from '@renderer/utils/theme/themeControlContract';
 import { processCustomCss } from '@renderer/utils/theme/customCssProcessor';
 import { PRESET_THEMES } from '@renderer/pages/settings/DisplaySettings/presets';
@@ -31,6 +41,7 @@ type ProbeButtonReport = {
   centerDeltaY: number | null;
   visible: boolean;
   clipped: boolean;
+  outOfViewport: boolean;
   iconOnly: boolean;
   circle: boolean;
   displaySources: Array<{ selector: string; value: string; important: string }>;
@@ -47,6 +58,135 @@ type ProbeReport = {
   userAgent: string;
   styleOrder: string[];
   buttons: ProbeButtonReport[];
+  missingChatFixtures: string[];
+  chatScenarios: ProbeChatScenarioReport[];
+  chatCoordinateStability: ProbeChatCoordinateStability[];
+};
+
+type ProbeLayoutElement = {
+  rect: NonNullable<ReturnType<typeof rectOf>>;
+  centerY: number;
+  style: {
+    display: string;
+    overflow: string;
+    position: string;
+    visibility: string;
+    pointerEvents: string;
+    textOverflow: string;
+    whiteSpace: string;
+  };
+  scrollWidth: number | null;
+  clientWidth: number | null;
+};
+
+type ProbeChatScenarioReport = {
+  id: string;
+  pair: string;
+  state: string;
+  collapsed: boolean;
+  rect: NonNullable<ReturnType<typeof rectOf>>;
+  slots: Record<string, ProbeLayoutElement | null>;
+  controls: Record<string, ProbeLayoutElement | null>;
+  parts: Record<string, ProbeLayoutElement | null>;
+  labels: Record<string, ProbeLayoutElement | null>;
+  centerSpreadY: number | null;
+  iconChevronGaps: Record<string, number | null>;
+  clipping: {
+    strategyIcon: boolean;
+    strategyChevron: boolean;
+    modelIcon: boolean;
+    modelChevron: boolean;
+  };
+  accessibleNames: Record<string, { title: string | null; ariaLabel: string | null }>;
+  pass: boolean;
+  failures: string[];
+};
+
+type ProbeChatCoordinateStability = {
+  pair: string;
+  anchors: Record<string, number>;
+  deltas: Record<string, number>;
+  pass: boolean;
+};
+
+const CHAT_PROBE_SCENARIOS = [
+  'auto-collapsed',
+  'auto-expanded',
+  'cloud-collapsed',
+  'cloud-expanded',
+  'cloud-short',
+  'cloud-single',
+  'auto-image-disabled',
+  'model-popup',
+  'strategy-popup',
+  'context-popup',
+] as const;
+
+const CHAT_PROBE_PROVIDER: IProvider = {
+  id: FLOWY_BUILTIN_PROVIDER_ID,
+  platform: 'flowy',
+  name: 'Flowy',
+  base_url: '',
+  api_key: '',
+  models: [
+    'AIPC-auto-intelligence',
+    'AIPC-auto-balance',
+    'AIPC-auto-cost',
+    'Deepseek-v4-flash',
+    'Deepseek-v4-flash-vision-exp',
+    'GLM-5',
+  ],
+};
+
+const chatProbeOption = (
+  model: string,
+  family: ChatModelOption['family'],
+  config: Partial<Pick<ChatModelOption, 'autoTier' | 'reasoningLevels' | 'supportsVision' | 'supportsTools'>> = {},
+): ChatModelOption => ({
+  key: `button-layout-probe:${model}`,
+  provider: CHAT_PROBE_PROVIDER,
+  model,
+  label: model,
+  family,
+  reasoningLevels: [],
+  supportsVision: false,
+  supportsTools: true,
+  ...config,
+});
+
+const CHAT_PROBE_PICKER: ChatModelPickerViewModel = {
+  autoModels: [
+    chatProbeOption('AIPC-auto-intelligence', 'auto', { autoTier: 'intelligence' }),
+    chatProbeOption('AIPC-auto-balance', 'auto', { autoTier: 'balance' }),
+    chatProbeOption('AIPC-auto-cost', 'auto', { autoTier: 'cost' }),
+  ],
+  cloudModels: [
+    chatProbeOption('Deepseek-v4-flash', 'cloud', {
+      reasoningLevels: ['low', 'medium', 'xhigh'],
+    }),
+    chatProbeOption('Deepseek-v4-flash-vision-exp', 'cloud', {
+      reasoningLevels: ['low', 'medium', 'xhigh'],
+      supportsVision: true,
+    }),
+    chatProbeOption('GLM-5', 'cloud', { reasoningLevels: ['medium'] }),
+  ],
+  otherProviderGroups: [],
+};
+
+const chatProbeSelection = (model: string): NomiModelSelection => {
+  const currentModel = { ...CHAT_PROBE_PROVIDER, use_model: model } as TProviderWithModel;
+  return {
+    current_model: currentModel,
+    isCurrentModelAvailable: true,
+    isModelCatalogLoading: false,
+    refreshModelCatalog: () => undefined,
+    providers: [CHAT_PROBE_PROVIDER],
+    getAvailableModels: () => CHAT_PROBE_PROVIDER.models,
+    handleSelectModel: async () => true,
+    formatModelLabel: (_provider, modelName) => modelName ?? '',
+    getDisplayModelName: (modelName) => modelName ?? '',
+    modelPicker: CHAT_PROBE_PICKER,
+  };
 };
 
 const readProbeParams = (): URLSearchParams => {
@@ -93,10 +233,26 @@ const findLabelRect = (button: HTMLButtonElement): ReturnType<typeof rectOf> => 
 };
 
 const markProductionButtons = () => {
-  const targets = [
-    { selector: '[data-testid="nomi-model-selector"]', id: 'production-nomi-model-selector', labelRequired: false },
+  const targets: Array<{
+    selector: string;
+    id: string;
+    labelRequired: boolean;
+    iconOnly?: boolean;
+    allowTruncate?: boolean;
+  }> = [
+    {
+      selector: '[data-testid="nomi-model-selector"]',
+      id: 'production-nomi-model-selector',
+      labelRequired: false,
+      allowTruncate: true,
+    },
     { selector: '[data-testid^="agent-mode-selector"]', id: 'production-agent-mode-selector', labelRequired: false },
-    { selector: '[data-testid="guid-model-selector"]', id: 'production-guid-model-selector', labelRequired: false },
+    {
+      selector: '[data-testid="guid-model-selector"]',
+      id: 'production-guid-model-selector',
+      labelRequired: false,
+      allowTruncate: true,
+    },
     {
       selector: '[data-testid="reasoning-effort-compact-trigger"]',
       id: 'production-reasoning-effort',
@@ -119,6 +275,7 @@ const markProductionButtons = () => {
       button.dataset.buttonProbe = target.id;
       button.dataset.buttonProbeLabelRequired = String(target.labelRequired);
       if (target.iconOnly) button.dataset.buttonIconOnly = 'true';
+      if (target.allowTruncate) button.dataset.buttonAllowTruncate = 'true';
     });
   }
 };
@@ -132,6 +289,250 @@ const requiredProductionProbeIds = [
   'production-knowledge-mount',
   'production-knowledge-more',
 ] as const;
+
+const layoutElementOf = (element: Element | null): ProbeLayoutElement | null => {
+  const rect = rectOf(element);
+  if (!element || !rect) return null;
+  const style = getComputedStyle(element);
+  const htmlElement = element instanceof HTMLElement ? element : null;
+  return {
+    rect,
+    centerY: rect.y + rect.height / 2,
+    style: {
+      display: style.display,
+      overflow: style.overflow,
+      position: style.position,
+      visibility: style.visibility,
+      pointerEvents: style.pointerEvents,
+      textOverflow: style.textOverflow,
+      whiteSpace: style.whiteSpace,
+    },
+    scrollWidth: htmlElement?.scrollWidth ?? null,
+    clientWidth: htmlElement?.clientWidth ?? null,
+  };
+};
+
+const firstLayoutElement = (root: Element | null, selector: string): ProbeLayoutElement | null =>
+  layoutElementOf(root?.querySelector(selector) ?? null);
+
+const getControlElement = (slot: Element | null): Element | null => {
+  if (!slot) return null;
+  return (
+    slot.querySelector('button') ??
+    slot.querySelector("[data-static='true'] .sendbox-responsive-static-value") ??
+    slot.querySelector("[data-static='true']")
+  );
+};
+
+const partIsOutsideControl = (part: ProbeLayoutElement | null, control: ProbeLayoutElement | null): boolean => {
+  if (!part || !control) return false;
+  const tolerance = 0.5;
+  return (
+    part.rect.x < control.rect.x - tolerance ||
+    part.rect.x + part.rect.width > control.rect.x + control.rect.width + tolerance ||
+    part.rect.y < control.rect.y - tolerance ||
+    part.rect.y + part.rect.height > control.rect.y + control.rect.height + tolerance
+  );
+};
+
+const measureChatScenario = (row: HTMLElement): ProbeChatScenarioReport => {
+  const pair = row.dataset.chatProbePair ?? row.dataset.chatProbeId ?? 'unknown';
+  const state = row.dataset.chatProbeState ?? 'unknown';
+  const collapsed = row.dataset.chatProbeCollapsed === 'true';
+  const rowRect = rectOf(row) ?? { x: 0, y: 0, width: 0, height: 0 };
+  const slots = Object.fromEntries(
+    ['strategy', 'model', 'context', 'submit'].map((name) => [
+      name,
+      layoutElementOf(row.querySelector(`[data-layout-slot='${name}']`)),
+    ]),
+  );
+  const strategySlot = row.querySelector("[data-layout-slot='strategy']");
+  const modelSlot = row.querySelector("[data-layout-slot='model']");
+  const contextSlot = row.querySelector("[data-layout-slot='context']");
+  const strategyControlElement = getControlElement(strategySlot);
+  const modelControlElement = getControlElement(modelSlot);
+  const strategySlotStyle = strategySlot ? getComputedStyle(strategySlot) : null;
+  const controls = {
+    strategy: layoutElementOf(strategyControlElement),
+    model: layoutElementOf(modelControlElement),
+    context: firstLayoutElement(contextSlot, "[data-layout-part='context-ring']"),
+    microphone: layoutElementOf(row.querySelector("[data-layout-part='microphone']")),
+    send: layoutElementOf(row.querySelector("[data-layout-part='send']")),
+  };
+  const parts = {
+    strategyLeading: firstLayoutElement(strategySlot, "[data-layout-part='leading-icon']"),
+    strategyChevron: firstLayoutElement(strategySlot, "[data-layout-part='chevron']"),
+    modelLeading: firstLayoutElement(modelSlot, "[data-layout-part='leading-icon']"),
+    modelChevron: firstLayoutElement(modelSlot, "[data-layout-part='chevron']"),
+    contextRing: controls.context,
+    microphone: controls.microphone,
+    send: controls.send,
+  };
+  const labels = {
+    strategy: layoutElementOf(
+      strategySlot?.querySelector('.sendbox-responsive-label, .sendbox-responsive-static-value > span:last-child') ?? null,
+    ),
+    model: firstLayoutElement(modelSlot, '.sendbox-responsive-label'),
+  };
+  const centerCandidates = [
+    slots.strategy,
+    slots.model,
+    slots.context,
+    controls.microphone,
+    controls.send,
+  ].filter((value): value is ProbeLayoutElement => Boolean(value));
+  const centerValues = centerCandidates.map((value) => value.centerY);
+  const centerSpreadY = centerValues.length > 1 ? Math.max(...centerValues) - Math.min(...centerValues) : null;
+  const iconChevronGaps = {
+    strategy:
+      parts.strategyLeading && parts.strategyChevron && !visibleRect(labels.strategy?.rect ?? null)
+        ? parts.strategyChevron.rect.x - (parts.strategyLeading.rect.x + parts.strategyLeading.rect.width)
+        : null,
+    model:
+      parts.modelLeading && parts.modelChevron && !visibleRect(labels.model?.rect ?? null)
+        ? parts.modelChevron.rect.x - (parts.modelLeading.rect.x + parts.modelLeading.rect.width)
+        : null,
+  };
+  const clipping = {
+    strategyIcon: partIsOutsideControl(parts.strategyLeading, controls.strategy),
+    strategyChevron: partIsOutsideControl(parts.strategyChevron, controls.strategy),
+    modelIcon: partIsOutsideControl(parts.modelLeading, controls.model),
+    modelChevron: partIsOutsideControl(parts.modelChevron, controls.model),
+  };
+  const accessibleNames = Object.fromEntries(
+    ['strategy', 'model'].map((name) => {
+      const element = name === 'strategy' ? strategyControlElement : modelControlElement;
+      return [
+        name,
+        {
+          title: element?.getAttribute('title') ?? null,
+          ariaLabel: element?.getAttribute('aria-label') ?? null,
+        },
+      ];
+    }),
+  );
+  const failures: string[] = [];
+  const expectChevron = row.dataset.chatProbeStrategy !== 'single';
+  const modelOverlayOpen = state === 'expanded' || state === 'model-popup';
+  const strategyOverlayOpen = state === 'expanded' || state === 'strategy-popup';
+  const within = (value: number | undefined, expected: number, tolerance = 0.5) =>
+    value !== undefined && Math.abs(value - expected) <= tolerance;
+
+  for (const [name, expectedHeight] of [
+    ['strategy', 28],
+    ['model', 28],
+    ['context', 28],
+  ] as const) {
+    const measured = slots[name]?.rect.height;
+    if (measured === undefined || !within(measured, expectedHeight)) {
+      failures.push(`${name}-slot-height=${measured?.toFixed(2) ?? 'missing'}`);
+    }
+  }
+
+  if (controls.microphone && !within(controls.microphone.rect.width, 26)) {
+    failures.push(`microphone-width=${controls.microphone.rect.width.toFixed(2)}`);
+  }
+  if (controls.send && !within(controls.send.rect.width, 26)) {
+    failures.push(`send-width=${controls.send.rect.width.toFixed(2)}`);
+  }
+  const expectedStrategyWidth =
+    row.dataset.chatProbeStrategy === 'single' || modelOverlayOpen ? 28 : strategyOverlayOpen ? 108 : 28;
+  const expectedModelWidth = modelOverlayOpen ? 176 : 28;
+  if (!modelOverlayOpen && controls.strategy && !within(controls.strategy.rect.width, expectedStrategyWidth)) {
+    failures.push(`strategy-width=${controls.strategy.rect.width.toFixed(2)} expected=${expectedStrategyWidth}`);
+  }
+  if (controls.model && !within(controls.model.rect.width, expectedModelWidth)) {
+    failures.push(`model-width=${controls.model.rect.width.toFixed(2)} expected=${expectedModelWidth}`);
+  }
+  if (centerSpreadY !== null && centerSpreadY > 0.5) {
+    failures.push(`center-spread-y=${centerSpreadY.toFixed(2)}`);
+  }
+  if (modelOverlayOpen) {
+    if (strategySlotStyle?.visibility !== 'hidden') failures.push('strategy-not-hidden-behind-model');
+    if (strategySlotStyle?.pointerEvents !== 'none') failures.push('strategy-hit-target-not-disabled');
+  }
+  if (!modelOverlayOpen && strategySlotStyle?.visibility === 'hidden') {
+    failures.push('strategy-hidden-without-model-overlay');
+  }
+  if (expectChevron && !modelOverlayOpen && !visibleRect(parts.strategyChevron?.rect ?? null)) {
+    failures.push('strategy-chevron-not-visible');
+  }
+  if (!expectChevron && parts.strategyChevron) failures.push('single-strategy-has-chevron');
+  for (const [name, gap] of Object.entries(iconChevronGaps)) {
+    if (gap !== null && Math.abs(gap - 2) > 1) failures.push(`${name}-icon-chevron-gap=${gap.toFixed(2)}`);
+  }
+  if (clipping.strategyIcon) failures.push('strategy-icon-clipped');
+  if (clipping.strategyChevron) failures.push('strategy-chevron-clipped');
+  if (clipping.modelIcon) failures.push('model-icon-clipped');
+  if (clipping.modelChevron) failures.push('model-chevron-clipped');
+  if (collapsed && controls.model?.style.overflow === 'hidden') failures.push('collapsed-model-overflow-hidden');
+  if (collapsed && parts.modelLeading && !controls.model) failures.push('missing-model-control');
+  for (const name of ['strategy', 'model']) {
+    const names = accessibleNames[name];
+    if (!names.title || !names.ariaLabel) failures.push(`${name}-missing-accessible-name`);
+  }
+
+  return {
+    id: row.dataset.chatProbeId ?? 'unknown',
+    pair,
+    state,
+    collapsed,
+    rect: rowRect,
+    slots,
+    controls,
+    parts,
+    labels,
+    centerSpreadY,
+    iconChevronGaps,
+    clipping,
+    accessibleNames,
+    pass: failures.length === 0,
+    failures,
+  };
+};
+
+const measureChatScenarios = () =>
+  Array.from(document.querySelectorAll<HTMLElement>('[data-chat-probe-id]')).map(measureChatScenario);
+
+const measureChatCoordinateStability = (
+  scenarios: ProbeChatScenarioReport[],
+): ProbeChatCoordinateStability[] => {
+  const anchors = ['context', 'microphone', 'send'] as const;
+  const grouped = new Map<string, ProbeChatScenarioReport[]>();
+  scenarios.forEach((scenario) => {
+    const group = grouped.get(scenario.pair) ?? [];
+    group.push(scenario);
+    grouped.set(scenario.pair, group);
+  });
+
+  return [...grouped.entries()]
+    .filter(([, group]) => group.length > 1)
+    .map(([pair, group]) => {
+      const values = Object.fromEntries(
+        anchors.map((anchor) => [
+          anchor,
+          group
+            .map((scenario) => {
+              const element = scenario.controls[anchor];
+              return element ? element.rect.x - scenario.rect.x : undefined;
+            })
+            .filter((value): value is number => typeof value === 'number'),
+        ]),
+      ) as Record<(typeof anchors)[number], number[]>;
+      const deltas = Object.fromEntries(
+        anchors.map((anchor) => [
+          anchor,
+          values[anchor].length > 1 ? Math.max(...values[anchor]) - Math.min(...values[anchor]) : 0,
+        ]),
+      ) as Record<(typeof anchors)[number], number>;
+      return {
+        pair,
+        anchors: Object.fromEntries(anchors.map((anchor) => [anchor, values[anchor][0] ?? 0])),
+        deltas,
+        pass: anchors.every((anchor) => deltas[anchor] <= 0.5),
+      };
+    });
+};
 
 const collectProbeReport = (theme: string, locale: string): ProbeReport => {
   const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('button[data-button-probe]')).map((button) => {
@@ -149,12 +550,14 @@ const collectProbeReport = (theme: string, locale: string): ProbeReport => {
     const iconOnly = button.dataset.buttonIconOnly === 'true';
     const labelRequired = button.dataset.buttonProbeLabelRequired !== 'false';
     const circle = style.borderRadius === '50%' || button.classList.contains('arco-btn-shape-circle');
-    const clipped =
+    const outOfViewport =
       buttonRect.left < -0.5 ||
       buttonRect.top < -0.5 ||
       buttonRect.right > window.innerWidth + 0.5 ||
-      buttonRect.bottom > window.innerHeight + 0.5 ||
-      (!button.dataset.buttonAllowTruncate && button.scrollWidth > button.clientWidth + 1);
+      buttonRect.bottom > window.innerHeight + 0.5;
+    const clipped =
+      !button.dataset.buttonAllowTruncate &&
+      (button.scrollWidth > button.clientWidth + 1 || button.scrollHeight > button.clientHeight + 1);
     const displaySources: Array<{ selector: string; value: string; important: string }> = [];
     const inspectRules = (rules: CSSRuleList) => {
       Array.from(rules).forEach((rule) => {
@@ -231,6 +634,7 @@ const collectProbeReport = (theme: string, locale: string): ProbeReport => {
       centerDeltaY,
       visible: buttonRect.width > 0 && buttonRect.height > 0,
       clipped,
+      outOfViewport,
       iconOnly,
       circle,
       displaySources,
@@ -241,10 +645,22 @@ const collectProbeReport = (theme: string, locale: string): ProbeReport => {
 
   const presentIds = new Set(buttons.map((button) => button.id));
   const missingFixtures = requiredProductionProbeIds.filter((id) => !presentIds.has(id));
+  const chatScenarios = measureChatScenarios();
+  const chatCoordinateStability = measureChatCoordinateStability(chatScenarios);
+  const missingChatFixtures = CHAT_PROBE_SCENARIOS.filter(
+    (id) => !chatScenarios.some((scenario) => scenario.id === id),
+  );
 
   return {
-    ok: buttons.length > 0 && missingFixtures.length === 0 && buttons.every((button) => button.pass),
+    ok:
+      buttons.length > 0 &&
+      missingFixtures.length === 0 &&
+      buttons.every((button) => button.pass) &&
+      missingChatFixtures.length === 0 &&
+      chatScenarios.every((scenario) => scenario.pass) &&
+      chatCoordinateStability.every((scenario) => scenario.pass),
     missingFixtures,
+    missingChatFixtures,
     viewport: { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio },
     theme,
     locale,
@@ -253,6 +669,8 @@ const collectProbeReport = (theme: string, locale: string): ProbeReport => {
       .filter((element) => element.tagName === 'STYLE' || element.tagName === 'LINK')
       .map((element) => element.id || element.getAttribute('href') || element.tagName.toLowerCase()),
     buttons,
+    chatScenarios,
+    chatCoordinateStability,
   };
 };
 
@@ -284,6 +702,96 @@ const copy = {
     more: 'More',
   },
 } as const;
+
+type ProbeChatControlRowProps = {
+  id: (typeof CHAT_PROBE_SCENARIOS)[number];
+  pair: string;
+  state: 'collapsed' | 'expanded' | 'model-popup' | 'strategy-popup' | 'context-popup';
+  strategy: 'auto' | 'cloud' | 'single';
+  model: string;
+  hasImageAttachments?: boolean;
+};
+
+const ProbeChatControlRow: React.FC<ProbeChatControlRowProps> = ({
+  id,
+  pair,
+  state,
+  strategy,
+  model,
+  hasImageAttachments = false,
+}) => {
+  const modelOverlayOpen = state === 'expanded' || state === 'model-popup';
+  const strategyOverlayOpen = state === 'expanded' || state === 'strategy-popup';
+  const expanded = modelOverlayOpen || strategyOverlayOpen;
+  const strategyNode =
+    strategy === 'auto' ? (
+      <AutoTierSelector
+        options={CHAT_PROBE_PICKER.autoModels}
+        selected={CHAT_PROBE_PICKER.autoModels[1]}
+        hasImageAttachments={hasImageAttachments}
+        popupVisible={state === 'strategy-popup'}
+        onPopupVisibleChange={() => undefined}
+        className={strategyOverlayOpen ? 'sendbox-responsive-control-open' : undefined}
+        onSelect={() => undefined}
+      />
+    ) : (
+      <ReasoningEffortSelector
+        levels={strategy === 'single' ? ['medium'] : ['low', 'medium', 'xhigh']}
+        modelKey={`button-layout-probe:${model}`}
+        initialEffort='medium'
+        popupVisible={strategy !== 'single' && state === 'strategy-popup'}
+        onPopupVisibleChange={() => undefined}
+        className={strategyOverlayOpen && strategy !== 'single' ? 'sendbox-responsive-control-open' : undefined}
+        onEffortChanged={() => undefined}
+      />
+    );
+
+  return (
+    <div
+      className={`button-layout-probe__chat-row sendbox-actions sendbox-actions--nomi ${expanded ? 'button-layout-probe__chat-row--expanded' : ''}`}
+      data-chat-probe-id={id}
+      data-chat-probe-pair={pair}
+      data-chat-probe-state={state}
+      data-chat-probe-collapsed={state === 'collapsed' ? 'true' : 'false'}
+      data-chat-probe-strategy={strategy}
+    >
+      <div className='sendbox-responsive-config-group chat-model-picker-config-group'>
+        <div className='sendbox-strategy-slot' data-layout-slot='strategy'>
+          {strategyNode}
+        </div>
+        <div className='chat-model-picker-slot' data-layout-slot='model'>
+          <NomiModelSelector
+            selection={chatProbeSelection(model)}
+            hasImageAttachments={hasImageAttachments}
+            popupVisible={state === 'model-popup'}
+            onPopupVisibleChange={() => undefined}
+            className={modelOverlayOpen ? 'sendbox-responsive-control-open' : undefined}
+          />
+        </div>
+        <div className='nomi-context-usage-slot' data-layout-slot='context'>
+          <ContextUsageRing
+            used={4200}
+            max={16000}
+            popupVisible={state === 'context-popup'}
+            onPopupVisibleChange={() => undefined}
+          />
+        </div>
+      </div>
+      <div className='composer-submit-cluster flex items-center' data-layout-slot='submit'>
+        <SpeechInputButton variant='inline' onTranscript={() => undefined} />
+        <Button
+          shape='circle'
+          type='primary'
+          className='send-button-custom'
+          icon={<ArrowUp theme='filled' size='14' fill='white' strokeWidth={5} />}
+          aria-label='Send'
+          title='Send'
+          data-layout-part='send'
+        />
+      </div>
+    </div>
+  );
+};
 
 const ButtonLayoutProbe: React.FC = () => {
   const params = useMemo(readProbeParams, []);
@@ -373,6 +881,80 @@ const ButtonLayoutProbe: React.FC = () => {
           <PreviewProvider persistNamespace='button-layout-probe' subscribeGlobalOpen={false}>
             <LayoutContext.Provider value={{ isMobile: false, siderCollapsed: false, setSiderCollapsed: () => undefined }}>
               <div className='button-layout-probe__production-stack'>
+                <section className='button-layout-probe__chat-scenarios' aria-label='chat control geometry'>
+                  <h3>Chat control geometry</h3>
+                  <ProbeChatControlRow
+                    id='auto-collapsed'
+                    pair='auto'
+                    state='collapsed'
+                    strategy='auto'
+                    model='AIPC-auto-balance'
+                  />
+                  <ProbeChatControlRow
+                    id='auto-expanded'
+                    pair='auto'
+                    state='expanded'
+                    strategy='auto'
+                    model='AIPC-auto-balance'
+                  />
+                  <ProbeChatControlRow
+                    id='cloud-collapsed'
+                    pair='cloud'
+                    state='collapsed'
+                    strategy='cloud'
+                    model='Deepseek-v4-flash-vision-exp'
+                  />
+                  <ProbeChatControlRow
+                    id='cloud-expanded'
+                    pair='cloud'
+                    state='expanded'
+                    strategy='cloud'
+                    model='Deepseek-v4-flash-vision-exp'
+                  />
+                  <ProbeChatControlRow
+                    id='cloud-short'
+                    pair='cloud-short'
+                    state='collapsed'
+                    strategy='cloud'
+                    model='Deepseek-v4-flash'
+                  />
+                  <ProbeChatControlRow
+                    id='cloud-single'
+                    pair='cloud-single'
+                    state='collapsed'
+                    strategy='single'
+                    model='GLM-5'
+                  />
+                  <ProbeChatControlRow
+                    id='auto-image-disabled'
+                    pair='auto-image-disabled'
+                    state='collapsed'
+                    strategy='auto'
+                    model='AIPC-auto-balance'
+                    hasImageAttachments
+                  />
+                  <ProbeChatControlRow
+                    id='model-popup'
+                    pair='model-popup'
+                    state='model-popup'
+                    strategy='cloud'
+                    model='Deepseek-v4-flash-vision-exp'
+                  />
+                  <ProbeChatControlRow
+                    id='strategy-popup'
+                    pair='strategy-popup'
+                    state='strategy-popup'
+                    strategy='auto'
+                    model='AIPC-auto-balance'
+                  />
+                  <ProbeChatControlRow
+                    id='context-popup'
+                    pair='context-popup'
+                    state='context-popup'
+                    strategy='cloud'
+                    model='Deepseek-v4-flash'
+                  />
+                </section>
                 <div className='button-layout-probe__production-sendbox sendbox-actions'>
                   <div className='sendbox-responsive-config-group'>
                     <NomiModelSelector compact selection={undefined} />

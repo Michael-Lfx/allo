@@ -120,6 +120,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
   return (
     <div
       className={`composer-submit-cluster flex items-center gap-2${showSecondarySpeech ? ' composer-submit-cluster--with-secondary-speech' : ''}`}
+      data-layout-slot='submit'
     >
       {showSecondarySpeech ? (
         <div className='composer-submit-cluster__speech-secondary'>
@@ -176,6 +177,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
           icon={<ArrowUp theme='filled' size='14' fill='white' strokeWidth={5} />}
           onClick={onSend}
           data-testid={sendTestId}
+          data-layout-part='send'
           aria-label={
             showSteer
               ? t('conversation.chat.queueNext', { defaultValue: 'Queue as next step' })

@@ -33,6 +33,15 @@
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .sendbox-actions .sendbox-strategy-slot .sendbox-responsive-reasoning-btn,
+  .sendbox-actions .chat-model-picker-slot .chat-model-picker-trigger,
+  .sendbox-actions .nomi-context-usage-slot [data-testid='nomi-context-usage-ring'],
+  .sendbox-responsive-config-group .nomi-sendbox-policy-btn {
+    transition-duration: 0.01ms !important;
+  }
+}
+
 .sendbox-composer-plus-btn,
 .sendbox-composer-plus-btn.arco-btn,
 .sendbox-composer-plus-btn.arco-btn-secondary,
@@ -218,6 +227,20 @@
 .sendbox-tools .arco-btn:hover,
 .sendbox-tools .arco-btn:active,
 .sendbox-tools .arco-btn:focus {
+  transform: none !important;
+}
+
+/* The right-side chat configuration controls are part of the composer
+ * geometry, so pressing them must never move the row vertically. Their
+ * feedback is expressed through surface/color states instead. */
+.sendbox-actions .chat-model-picker-trigger.arco-btn,
+.sendbox-actions .sendbox-responsive-reasoning-btn.arco-btn,
+.sendbox-actions .chat-model-picker-trigger.arco-btn:active,
+.sendbox-actions .sendbox-responsive-reasoning-btn.arco-btn:active,
+.sendbox-actions .chat-model-picker-trigger.arco-btn:hover,
+.sendbox-actions .sendbox-responsive-reasoning-btn.arco-btn:hover,
+.sendbox-actions .chat-model-picker-trigger.arco-btn:focus,
+.sendbox-actions .sendbox-responsive-reasoning-btn.arco-btn:focus {
   transform: none !important;
 }
 
@@ -517,7 +540,12 @@
  * a query container, so it responds to split panes/sidebars as well as the
  * outer window size. Keep min-height stable during voice recording. */
 .sendbox-actions {
+  --chat-action-slot-size: 28px;
+  --chat-action-gap: 6px;
+  --chat-action-icon-size: 14px;
+  --chat-action-chevron-size: 11px;
   flex: 1 1 auto;
+  isolation: isolate;
   min-width: 0;
   min-height: 28px;
   margin-left: auto;
@@ -526,21 +554,253 @@
   container-type: inline-size;
 }
 
-/* Nomi's model trigger owns the 5px separation before Send. Keeping this
- * action row gap-free avoids stacking it with the generic 8px flex gap. */
-.sendbox-actions--nomi [data-testid='nomi-context-usage-ring'] {
-  margin-right: 8px;
+.sendbox-actions--nomi {
+  column-gap: var(--chat-action-gap);
+  row-gap: 0;
+}
+
+.sendbox-actions--nomi .composer-submit-cluster {
+  align-items: center;
+  column-gap: var(--chat-action-gap) !important;
+  min-height: var(--chat-action-slot-size);
+}
+
+/* Nomi uses one explicit gap token for the configuration group and the
+ * submit controls. The context slot itself must not add another margin. */
+.sendbox-actions--nomi .nomi-context-usage-slot {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 var(--chat-action-slot-size);
+  height: var(--chat-action-slot-size);
+  justify-content: center;
+  max-height: var(--chat-action-slot-size);
+  min-height: var(--chat-action-slot-size);
+  min-width: var(--chat-action-slot-size);
+  position: relative;
+  width: var(--chat-action-slot-size);
 }
 
 .sendbox-responsive-config-group {
-  /* Flatten model controls into `.sendbox-actions`: one Flex layout box is
-   * sufficient for the context ring, model selector, and submit action. */
-  display: contents;
+  --chat-action-slot-size: 28px;
+  --chat-action-gap: 6px;
+  --chat-action-icon-size: 14px;
+  --chat-action-chevron-size: 11px;
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--chat-action-gap);
+  isolation: isolate;
+  min-width: 0;
+  overflow: visible;
+  position: relative;
 }
 
 .sendbox-responsive-config-group > * {
   min-width: 0;
   flex-shrink: 0;
+}
+
+/* Real slots keep conditional Auto/Cloud controls and the model selector in
+ * the same flex geometry. The controls inside may change, but the row item
+ * does not appear/disappear while a catalog response is settling. */
+.sendbox-strategy-slot,
+.chat-model-picker-slot {
+  align-items: center;
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 28px;
+  max-height: 28px;
+  min-height: 28px;
+  min-width: 0;
+  position: relative;
+  z-index: 0;
+}
+
+.sendbox-strategy-slot {
+  --sendbox-strategy-trigger-width: 108px;
+  --sendbox-strategy-label-width: 56px;
+  flex-basis: var(--sendbox-strategy-trigger-width);
+  max-width: var(--sendbox-strategy-trigger-width);
+  min-width: var(--sendbox-strategy-trigger-width);
+  width: var(--sendbox-strategy-trigger-width);
+}
+
+.chat-model-picker-slot {
+  --chat-model-picker-slot-width: 176px;
+  flex-basis: var(--chat-model-picker-slot-width);
+  max-width: var(--chat-model-picker-slot-width);
+  min-width: var(--chat-model-picker-slot-width);
+  width: var(--chat-model-picker-slot-width);
+}
+
+.chat-model-picker-slot:has(.chat-model-picker-trigger--compact) {
+  --chat-model-picker-slot-width: 136px;
+}
+
+.sendbox-strategy-slot-placeholder {
+  display: block;
+  height: 28px;
+  width: 100%;
+}
+
+/* Auto tiers and Cloud reasoning share one strategy slot. This prevents the
+ * Arco Button defaults used by Auto from becoming wider than the custom Cloud
+ * trigger, and keeps Smart/Balanced/Economy changes from moving the toolbar. */
+.sendbox-responsive-reasoning-btn {
+  --sendbox-strategy-trigger-width: 108px;
+  --sendbox-strategy-label-width: 56px;
+  align-items: center !important;
+  align-self: center !important;
+  box-sizing: border-box !important;
+  flex: 0 0 var(--sendbox-strategy-trigger-width) !important;
+  height: 28px !important;
+  max-width: var(--sendbox-strategy-trigger-width) !important;
+  max-height: 28px !important;
+  min-width: var(--sendbox-strategy-trigger-width) !important;
+  min-height: 28px !important;
+  padding: 0 7px !important;
+  line-height: 1 !important;
+  width: var(--sendbox-strategy-trigger-width) !important;
+}
+
+.sendbox-responsive-reasoning-btn .sendbox-responsive-label {
+  flex: 0 0 var(--sendbox-strategy-label-width) !important;
+  max-width: var(--sendbox-strategy-label-width) !important;
+  min-width: var(--sendbox-strategy-label-width) !important;
+  width: var(--sendbox-strategy-label-width) !important;
+}
+
+/* Chat model selectors use a reserved slot. The model label may truncate
+ * inside this slot, but it must never resize the composer when the selection
+ * changes from a short id to a long catalog label. */
+.chat-model-picker-trigger,
+.chat-model-picker-trigger.arco-btn {
+  --chat-model-picker-slot-width: 176px;
+  align-items: center !important;
+  align-self: center !important;
+  box-sizing: border-box !important;
+  flex-basis: var(--chat-model-picker-slot-width) !important;
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+  height: 28px !important;
+  max-width: var(--chat-model-picker-slot-width) !important;
+  max-height: 28px !important;
+  min-width: var(--chat-model-picker-slot-width) !important;
+  min-height: 28px !important;
+  overflow: hidden !important;
+  line-height: 1 !important;
+  width: var(--chat-model-picker-slot-width) !important;
+}
+
+.chat-model-picker-trigger.chat-model-picker-trigger--compact,
+.chat-model-picker-trigger.chat-model-picker-trigger--compact.arco-btn {
+  --chat-model-picker-slot-width: 136px;
+}
+
+.chat-model-picker-trigger .flowy-button-inline-content {
+  display: flex !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  width: 100% !important;
+}
+
+.chat-model-picker-trigger .sendbox-responsive-label {
+  flex: 1 1 auto !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+/* Every compact chat trigger uses the same measured icon boxes. Wrapping the
+ * Icon Park output prevents a provider logo's intrinsic width or SVG line box
+ * from changing the 28px slot geometry. */
+.sendbox-responsive-leading-icon,
+.sendbox-responsive-chevron-slot {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  line-height: 0;
+  overflow: visible;
+}
+
+.sendbox-responsive-leading-icon {
+  height: var(--chat-action-icon-size, 14px);
+  width: var(--chat-action-icon-size, 14px);
+}
+
+.sendbox-responsive-chevron-slot {
+  height: var(--chat-action-chevron-size, 11px);
+  width: var(--chat-action-chevron-size, 11px);
+}
+
+.sendbox-responsive-leading-icon > .i-icon,
+.sendbox-responsive-leading-icon > .arco-icon,
+.sendbox-responsive-leading-icon > svg,
+.sendbox-responsive-chevron-slot > .i-icon,
+.sendbox-responsive-chevron-slot > .arco-icon,
+.sendbox-responsive-chevron-slot > svg {
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 100%;
+  width: 100%;
+  line-height: 0;
+  overflow: visible;
+}
+
+.auto-tier-trigger-label-slot {
+  align-items: center;
+  display: inline-grid !important;
+  flex: 0 0 var(--sendbox-strategy-label-width) !important;
+  grid-template-columns: minmax(0, 1fr);
+  height: 18px;
+  max-width: var(--sendbox-strategy-label-width) !important;
+  min-width: var(--sendbox-strategy-label-width) !important;
+  overflow: hidden !important;
+  width: var(--sendbox-strategy-label-width) !important;
+}
+
+.auto-tier-trigger-label-reserve,
+.auto-tier-trigger-label-current {
+  grid-area: 1 / 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auto-tier-trigger-label-reserve {
+  visibility: hidden;
+}
+
+.chat-model-picker-menu {
+  box-sizing: border-box;
+  max-width: calc(100vw - 24px);
+}
+
+.chat-model-picker-menu-list {
+  min-height: 0;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  scrollbar-gutter: stable;
+}
+
+.chat-model-picker-menu-item {
+  box-sizing: border-box;
+  min-height: 40px;
+  height: 40px;
+}
+
+.chat-model-picker-menu-meta {
+  min-width: 52px;
+}
+
+.chat-model-picker-menu-status {
+  min-height: 40px;
+  text-align: center;
 }
 
 /* The collaboration policy is intentionally an icon in the normal toolbar,
@@ -555,9 +815,10 @@
   flex: 0 1 auto !important;
   overflow: hidden !important;
   transition:
-    max-width 160ms ease,
-    padding 160ms ease,
-    opacity 160ms ease !important;
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    color 120ms ease !important;
 }
 
 .sendbox-responsive-config-group .nomi-sendbox-policy-btn .sendbox-responsive-label {
@@ -567,14 +828,11 @@
 /* When the remaining toolbar slot cannot fit the text pills, preserve every
  * action in place and collapse all variable-width controls to their icons. */
 @container sendbox-config (max-width: 560px) {
-  .sendbox-responsive-config-group .sendbox-responsive-label,
-  .sendbox-responsive-config-group .sendbox-responsive-chevron {
+  .sendbox-responsive-config-group .sendbox-responsive-label {
     display: none !important;
   }
 
-  .sendbox-responsive-config-group .nomi-sendbox-model-btn,
   .sendbox-responsive-config-group .nomi-sendbox-policy-btn,
-  .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn,
   .sendbox-actions .sendbox-responsive-config-group .agent-mode-compact-pill {
     width: auto !important;
     min-width: 28px !important;
@@ -585,26 +843,17 @@
     flex: 0 1 auto !important;
     overflow: hidden !important;
     transition:
-      max-width 160ms ease,
-      padding 160ms ease,
-      opacity 160ms ease !important;
+      background-color 120ms ease,
+      border-color 120ms ease,
+      box-shadow 120ms ease,
+      color 120ms ease !important;
   }
 
-  .sendbox-responsive-config-group .nomi-sendbox-model-btn .flowy-button-inline-content,
   .sendbox-responsive-config-group .nomi-sendbox-policy-btn .flowy-button-inline-content,
   .sendbox-responsive-config-group .agent-mode-compact-pill .flowy-button-inline-content {
     width: 100% !important;
     min-width: 0 !important;
     overflow: visible !important;
-  }
-
-  .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn > .i-icon,
-  .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn > svg {
-    flex: 0 0 auto !important;
-    height: 14px !important;
-    overflow: visible !important;
-    transform: none !important;
-    width: 14px !important;
   }
 
 }
@@ -627,12 +876,8 @@
   }
 
   @container sendbox-config (max-width: 560px) {
-    .sendbox-responsive-config-group .nomi-sendbox-model-btn:hover,
-    .sendbox-responsive-config-group .nomi-sendbox-model-btn:focus-visible,
     .sendbox-responsive-config-group .nomi-sendbox-policy-btn:hover,
     .sendbox-responsive-config-group .nomi-sendbox-policy-btn:focus-visible,
-    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:hover,
-    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:focus-visible,
     .sendbox-responsive-config-group .agent-mode-compact-pill:hover,
     .sendbox-responsive-config-group .agent-mode-compact-pill:focus-visible {
       width: auto !important;
@@ -644,16 +889,8 @@
       z-index: 2;
     }
 
-    .sendbox-responsive-config-group .nomi-sendbox-model-btn:hover .sendbox-responsive-label,
-    .sendbox-responsive-config-group .nomi-sendbox-model-btn:hover .sendbox-responsive-chevron,
-    .sendbox-responsive-config-group .nomi-sendbox-model-btn:focus-visible .sendbox-responsive-label,
-    .sendbox-responsive-config-group .nomi-sendbox-model-btn:focus-visible .sendbox-responsive-chevron,
     .sendbox-responsive-config-group .nomi-sendbox-policy-btn:hover .sendbox-responsive-label,
     .sendbox-responsive-config-group .nomi-sendbox-policy-btn:focus-visible .sendbox-responsive-label,
-    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label,
-    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label,
-    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:hover .sendbox-responsive-chevron,
-    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-chevron,
     .sendbox-responsive-config-group .agent-mode-compact-pill:hover .sendbox-responsive-label,
     .sendbox-responsive-config-group .agent-mode-compact-pill:hover .sendbox-responsive-chevron,
     .sendbox-responsive-config-group .agent-mode-compact-pill:focus-visible .sendbox-responsive-label,
@@ -661,16 +898,6 @@
       display: inline-flex !important;
     }
 
-    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:hover,
-    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:focus-visible {
-      overflow: visible !important;
-      flex: 0 0 auto !important;
-    }
-
-    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label,
-    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label {
-      display: grid !important;
-    }
   }
 }
 
@@ -875,5 +1102,253 @@
 
   .speech-input-feedback__label {
     min-width: 28px;
+  }
+}
+
+/* Stable chat-control overlay contract. The slot remains in the flex row at
+ * all times. In a narrow composer only the control inside the slot changes
+ * from an icon to a left-anchored overlay, so neighboring actions keep their
+ * coordinates while the current value remains readable. */
+.sendbox-strategy-slot .sendbox-responsive-reasoning-btn,
+.chat-model-picker-slot .chat-model-picker-trigger {
+  align-items: center !important;
+  align-self: center !important;
+  box-sizing: border-box !important;
+  height: 28px !important;
+  max-height: 28px !important;
+  min-height: 28px !important;
+  line-height: 1 !important;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    color 120ms ease !important;
+}
+
+.sendbox-strategy-slot .sendbox-responsive-static-value {
+  align-items: center;
+  box-sizing: border-box;
+  display: inline-flex;
+  height: 28px;
+  max-height: 28px;
+  min-height: 28px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* A single-level Cloud strategy is still rendered inside the same reserved
+ * strategy slot as the interactive Auto/Cloud controls. Fill that slot so
+ * the visible value is centered instead of leaving an unexplained gap before
+ * the model control. */
+.sendbox-strategy-slot > [data-static='true'] {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: center;
+  min-width: 0;
+  width: 100%;
+}
+
+.sendbox-actions .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:active,
+.sendbox-actions .chat-model-picker-slot .chat-model-picker-trigger:active {
+  transform: none !important;
+}
+
+.sendbox-strategy-slot,
+.chat-model-picker-slot {
+  overflow: visible;
+}
+
+@container sendbox-config (max-width: 560px) {
+  .sendbox-responsive-config-group .sendbox-strategy-slot,
+  .sendbox-responsive-config-group .chat-model-picker-slot {
+    flex: 0 0 28px !important;
+    flex-basis: 28px !important;
+    height: 28px !important;
+    max-height: 28px !important;
+    max-width: 28px !important;
+    min-height: 28px !important;
+    min-width: 28px !important;
+    overflow: visible !important;
+    position: relative !important;
+    width: 28px !important;
+  }
+
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger {
+    flex: 0 0 28px !important;
+    flex-basis: 28px !important;
+    height: 28px !important;
+    max-height: 28px !important;
+    max-width: 28px !important;
+    min-height: 28px !important;
+    min-width: 28px !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    position: absolute !important;
+    inset-inline-end: 0 !important;
+    inset-inline-start: auto !important;
+    top: 0 !important;
+    width: 28px !important;
+    z-index: 1;
+  }
+
+  /* ReasoningEffortSelector has a positioned root around its Popover trigger.
+   * In a collapsed slot that root must not become a second 108px positioning
+   * surface, otherwise the absolute trigger is anchored away from the 28px
+   * strategy slot and leaves a false gap before the model control. */
+  .sendbox-responsive-config-group .sendbox-strategy-slot > .sendbox-responsive-strategy-root:not([data-static='true']) {
+    flex: 0 0 28px !important;
+    height: 28px !important;
+    max-height: 28px !important;
+    max-width: 28px !important;
+    min-height: 28px !important;
+    min-width: 28px !important;
+    overflow: visible !important;
+    position: static !important;
+    width: 28px !important;
+  }
+
+  .sendbox-responsive-config-group .sendbox-strategy-slot > [data-static='true'] {
+    height: 28px !important;
+    max-height: 28px !important;
+    min-height: 28px !important;
+    min-width: 28px !important;
+    overflow: visible !important;
+    position: absolute !important;
+    inset-inline-end: 0 !important;
+    inset-inline-start: auto !important;
+    top: 0 !important;
+    width: 28px !important;
+    z-index: 1;
+  }
+
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-static-value {
+    gap: 0 !important;
+    justify-content: center !important;
+    padding: 0 !important;
+    width: 28px !important;
+  }
+
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-static-value > span:last-child {
+    display: none !important;
+  }
+
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover,
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible,
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn.sendbox-responsive-control-open {
+    flex: 0 0 var(--sendbox-strategy-trigger-width) !important;
+    flex-basis: var(--sendbox-strategy-trigger-width) !important;
+    max-width: var(--sendbox-strategy-trigger-width) !important;
+    min-width: var(--sendbox-strategy-trigger-width) !important;
+    padding: 0 7px !important;
+    inset-inline-end: 0 !important;
+    inset-inline-start: auto !important;
+    background-color: var(--color-bg-2) !important;
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-1) 14%, transparent);
+    width: var(--sendbox-strategy-trigger-width) !important;
+    z-index: 3;
+  }
+
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:hover,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:focus-visible,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger.sendbox-responsive-control-open {
+    flex: 0 0 var(--chat-model-picker-slot-width) !important;
+    flex-basis: var(--chat-model-picker-slot-width) !important;
+    max-width: var(--chat-model-picker-slot-width) !important;
+    min-width: var(--chat-model-picker-slot-width) !important;
+    overflow: hidden !important;
+    padding: 0 10px !important;
+    inset-inline-end: 0 !important;
+    inset-inline-start: auto !important;
+    background-color: var(--color-bg-2) !important;
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-1) 18%, transparent);
+    width: var(--chat-model-picker-slot-width) !important;
+    z-index: 3;
+  }
+
+  /* In the collapsed state each control is a real 28px icon slot. Do not let
+   * Arco's button padding, the inline-content gap, or the icon's intrinsic
+   * wrapper push the icon into the slot edge. Expanded controls are excluded
+   * so their fixed label geometry and opaque overlay remain unchanged. */
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:not(:hover):not(:focus-visible):not(.sendbox-responsive-control-open),
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:not(:hover):not(:focus-visible):not(.sendbox-responsive-control-open) {
+    gap: 2px !important;
+    justify-content: center !important;
+    overflow: visible !important;
+  }
+
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:not(:hover):not(:focus-visible):not(.sendbox-responsive-control-open) .flowy-button-inline-content {
+    flex: 0 0 auto !important;
+    gap: 2px !important;
+    justify-content: center !important;
+    overflow: visible !important;
+    width: auto !important;
+  }
+
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger .flowy-button-inline-content > .i-icon:first-child,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger .flowy-button-inline-content > svg:first-child,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger .flowy-button-inline-content > .arco-icon:first-child {
+    flex: 0 0 14px !important;
+    height: 14px !important;
+    overflow: visible !important;
+    width: 14px !important;
+  }
+
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label,
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label,
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn.sendbox-responsive-control-open .sendbox-responsive-label {
+    display: inline-grid !important;
+  }
+
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover .sendbox-responsive-chevron,
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-chevron,
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn.sendbox-responsive-control-open .sendbox-responsive-chevron,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:hover .sendbox-responsive-label,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:focus-visible .sendbox-responsive-label,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger.sendbox-responsive-control-open .sendbox-responsive-label,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:hover .sendbox-responsive-chevron,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:focus-visible .sendbox-responsive-chevron,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger.sendbox-responsive-control-open .sendbox-responsive-chevron {
+    display: inline-flex !important;
+  }
+
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger .flowy-button-inline-content {
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+    width: 100% !important;
+  }
+
+  /* This rule intentionally comes after the expanded-content rule above.
+   * Without it, the later `width: 100%`/`overflow: hidden` declarations win
+   * again and clip the leading model icon in the 28px state. */
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:not(:hover):not(:focus-visible):not(.sendbox-responsive-control-open) .flowy-button-inline-content {
+    flex: 0 0 auto !important;
+    gap: 2px !important;
+    max-width: none !important;
+    min-width: 27px !important;
+    overflow: visible !important;
+    width: 27px !important;
+  }
+
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger .sendbox-responsive-label {
+    flex: 1 1 auto !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    width: auto !important;
+  }
+
+  .chat-model-picker-config-group[data-chat-popup='model'] .sendbox-strategy-slot,
+  .chat-model-picker-config-group:has(
+      .chat-model-picker-trigger:hover,
+      .chat-model-picker-trigger:focus-visible,
+      .chat-model-picker-trigger.sendbox-responsive-control-open
+    ) .sendbox-strategy-slot {
+    visibility: hidden;
+    pointer-events: none;
   }
 }

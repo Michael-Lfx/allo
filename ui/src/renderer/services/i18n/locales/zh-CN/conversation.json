@@ -1025,8 +1025,7 @@
       "cost": "经济",
       "unknown": "自动"
     },
-    "search": "搜索模型",
-    "noResults": "未找到模型",
+    "empty": "暂无可用模型",
     "autoTextOnly": "自动模型当前仅支持文本",
     "visionRequired": "该模型不支持图片输入"
   },

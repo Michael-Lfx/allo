@@ -3,6 +3,7 @@ import type { IProvider } from '@/common/config/storage';
 import { FLOWY_BUILTIN_PROVIDER_ID } from '@/common/types/ids';
 import type { TaskModelGroup } from '@/renderer/hooks/agent/useModelsForTask';
 import {
+  AUTO_TIER_LABEL_FALLBACK,
   allChatModelOptions,
   buildChatModelPickerViewModel,
   findChatModelOption,
@@ -24,6 +25,14 @@ const group = (providerValue: IProvider, models: string[]): TaskModelGroup => ({
 });
 
 describe('chat model picker view model', () => {
+  test('keeps the user-facing Auto tier fallback labels stable', () => {
+    expect(AUTO_TIER_LABEL_FALLBACK).toEqual({
+      intelligence: 'Smart',
+      balance: 'Balanced',
+      cost: 'Economy',
+    });
+  });
+
   test('groups Auto, Cloud, and other providers without model-name heuristics', () => {
     const flowy = provider(FLOWY_BUILTIN_PROVIDER_ID, [
       {

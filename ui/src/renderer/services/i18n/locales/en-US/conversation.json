@@ -1017,16 +1017,15 @@
     "auto": "Auto",
     "autoModels": "Auto models",
     "cloudModels": "Cloud models",
-    "autoTierTitle": "Auto tier",
-    "autoTierLabel": "Tier",
+    "autoTierTitle": "Auto mode",
+    "autoTierLabel": "Auto mode",
     "autoTier": {
-      "intelligence": "Intelligence",
-      "balance": "Balance",
-      "cost": "Cost",
+      "intelligence": "Smart",
+      "balance": "Balanced",
+      "cost": "Economy",
       "unknown": "Auto"
     },
-    "search": "Search models",
-    "noResults": "No models found",
+    "empty": "No models available",
     "autoTextOnly": "Auto models currently support text only",
     "visionRequired": "This model does not accept images"
   },

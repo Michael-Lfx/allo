@@ -41,7 +41,10 @@ import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropd
 import QuickActionButtons from './components/QuickActionButtons';
 import PresetPickerDrawer from './components/PresetPickerDrawer';
 import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
-import { catalogReasoningEffortForModel } from '@/renderer/utils/model/reasoningEffort';
+import {
+  catalogReasoningEffortForModel,
+  resolveReasoningEffortForLevels,
+} from '@/renderer/utils/model/reasoningEffort';
 import {
   readPreferredReasoningEffort,
   savePreferredReasoningEffort,
@@ -82,6 +85,8 @@ import { replaceActiveSlashToken, type SlashLauncherItem } from '@/common/chat/s
 import { PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
 import styles from './index.module.css';
 
+type ActiveChatPopup = 'model' | 'strategy' | null;
+
 const GuidPage: React.FC = () => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -121,6 +126,18 @@ const GuidPage: React.FC = () => {
   const [goalMode, setGoalMode] = useState(false);
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | undefined>(() =>
     readPreferredReasoningEffort()
+  );
+  const [activeChatPopup, setActiveChatPopup] = useState<ActiveChatPopup>(null);
+  const handleChatPopupVisibleChange = useCallback((popup: Exclude<ActiveChatPopup, null>, visible: boolean) => {
+    setActiveChatPopup((current) => (visible ? popup : current === popup ? null : current));
+  }, []);
+  const handleModelPopupVisibleChange = useCallback(
+    (visible: boolean) => handleChatPopupVisibleChange('model', visible),
+    [handleChatPopupVisibleChange]
+  );
+  const handleStrategyPopupVisibleChange = useCallback(
+    (visible: boolean) => handleChatPopupVisibleChange('strategy', visible),
+    [handleChatPopupVisibleChange]
   );
   const [selectedTaskProfile, setSelectedTaskProfile] = useState<'office' | 'coding'>('office');
   const [isHomeAddMenuOpen, setIsHomeAddMenuOpen] = useState(false);
@@ -218,6 +235,16 @@ const GuidPage: React.FC = () => {
     locationKey: location.key,
   });
 
+  // Only the Nomi provider-based agent owns the FlowY model catalog. ACP
+  // agents keep their own model surface and must not inherit Auto controls.
+  const effectiveAgentType = agentSelection.is_presetAgent
+    ? agentSelection.currentEffectiveAgentInfo.agent_type
+    : agentSelection.selectedAgent;
+  const isNomiAgent = effectiveAgentType === 'nomi';
+  const isGeminiMode =
+    isNomiAgent &&
+    (!agentSelection.is_presetAgent || agentSelection.currentEffectiveAgentInfo.isAvailable);
+
   const guidInput = useGuidInput({
     locationState: location.state as { workspace?: string } | null,
     containerRef: guidInputCardRef,
@@ -236,7 +263,47 @@ const GuidPage: React.FC = () => {
       ),
     [hasImageAttachments, modelSelection.current_model?.id, modelSelection.current_model?.use_model, modelSelection.modelPicker]
   );
-  const autoModelHasImageAttachments = selectedChatModelOption?.family === 'auto' && hasImageAttachments;
+  const chatModelContextKey = `${modelSelection.current_model?.id ?? ''}\0${modelSelection.current_model?.use_model ?? ''}`;
+  const previousChatModelContextKeyRef = useRef(chatModelContextKey);
+  const autoModelHasImageAttachments =
+    isNomiAgent && selectedChatModelOption?.family === 'auto' && hasImageAttachments;
+
+  const reasoningEffortResolution = useMemo(() => {
+    if (!isGeminiMode || !modelSelection.current_model?.use_model) {
+      return { levels: [], effort: undefined };
+    }
+    const provider =
+      modelSelection.modelList.find((entry) => entry.id === modelSelection.current_model?.id) ??
+      modelSelection.current_model;
+    return resolveReasoningEffortForLevels(
+      catalogReasoningEffortForModel(provider, modelSelection.current_model.use_model),
+      selectedReasoningEffort,
+    );
+  }, [
+    isGeminiMode,
+    modelSelection.current_model,
+    modelSelection.modelList,
+    selectedReasoningEffort,
+  ]);
+  const reasoningEffortLevels = reasoningEffortResolution.levels;
+  const effectiveReasoningEffort = reasoningEffortResolution.effort;
+
+  useEffect(() => {
+    if (modelSelection.isModelCatalogLoading || !modelSelection.current_model?.use_model || !selectedChatModelOption) {
+      return;
+    }
+    if (selectedReasoningEffort === effectiveReasoningEffort) return;
+    setSelectedReasoningEffort(effectiveReasoningEffort);
+    if (effectiveReasoningEffort) {
+      void savePreferredReasoningEffort(effectiveReasoningEffort);
+    }
+  }, [
+    effectiveReasoningEffort,
+    modelSelection.current_model?.use_model,
+    modelSelection.isModelCatalogLoading,
+    selectedChatModelOption,
+    selectedReasoningEffort,
+  ]);
 
   const supportsHomeSkillLoading = ['nomi', 'acp'].includes(
     agentSelection.currentEffectiveAgentInfo.agent_type,
@@ -521,7 +588,8 @@ const GuidPage: React.FC = () => {
     selectedMode: agentSelection.selectedMode,
     selectedAcpModel: agentSelection.selectedAcpModel,
     current_model: modelSelection.current_model,
-    reasoningEffort: selectedReasoningEffort,
+    reasoningEffort: effectiveReasoningEffort,
+    autoModelHasImageAttachments,
     taskProfile: selectedTaskProfile,
 
     // Agent helpers
@@ -861,18 +929,6 @@ const GuidPage: React.FC = () => {
     [agentSelection, currentPresetAgentId, selectedPresetRecord, t],
   );
 
-  // Resolve the effective agent type once — covers both direct selection and preset presets
-  const effectiveAgentType = agentSelection.is_presetAgent
-    ? agentSelection.currentEffectiveAgentInfo.agent_type
-    : agentSelection.selectedAgent;
-
-  // Agents that use configured model providers instead of ACP probe-based models.
-  // Only nomi now — Gemini runs as a regular ACP backend with ACP-cached models.
-  const PROVIDER_BASED_AGENTS = new Set(['nomi']);
-  const isGeminiMode =
-    PROVIDER_BASED_AGENTS.has(effectiveAgentType) &&
-    (!agentSelection.is_presetAgent || agentSelection.currentEffectiveAgentInfo.isAvailable);
-
   // Build the mention dropdown node
   const mentionDropdownNode = (
     <MentionDropdown
@@ -896,25 +952,13 @@ const GuidPage: React.FC = () => {
       isModelCatalogLoading={modelSelection.isModelCatalogLoading}
       modelCatalogError={modelSelection.modelCatalogError}
       refreshModelCatalog={modelSelection.refreshModelCatalog}
+      popupVisible={activeChatPopup === 'model'}
+      onPopupVisibleChange={handleModelPopupVisibleChange}
       currentAcpCachedModelInfo={agentSelection.currentAcpCachedModelInfo}
       selectedAcpModel={agentSelection.selectedAcpModel}
       setSelectedAcpModel={agentSelection.setSelectedAcpModel}
     />
   );
-
-  const reasoningEffortLevels = useMemo(() => {
-    if (!isGeminiMode || !modelSelection.current_model?.use_model) return [];
-    const provider =
-      modelSelection.modelList.find((entry) => entry.id === modelSelection.current_model?.id) ??
-      modelSelection.current_model;
-    return catalogReasoningEffortForModel(provider, modelSelection.current_model.use_model);
-  }, [isGeminiMode, modelSelection.current_model, modelSelection.modelList]);
-
-  useEffect(() => {
-    if (reasoningEffortLevels.length === 0 && selectedReasoningEffort) {
-      setSelectedReasoningEffort(undefined);
-    }
-  }, [reasoningEffortLevels.length, selectedReasoningEffort]);
 
   const handleReasoningEffortChanged = useCallback((effort: string | undefined) => {
     setSelectedReasoningEffort(effort);
@@ -924,11 +968,13 @@ const GuidPage: React.FC = () => {
   }, []);
 
   const autoTierSelectorNode =
-    selectedChatModelOption?.family === 'auto' ? (
+    isGeminiMode && selectedChatModelOption?.family === 'auto' ? (
       <AutoTierSelector
         options={modelSelection.modelPicker.autoModels}
         selected={selectedChatModelOption}
         hasImageAttachments={hasImageAttachments}
+        popupVisible={activeChatPopup === 'strategy'}
+        onPopupVisibleChange={handleStrategyPopupVisibleChange}
         onSelect={(option) =>
           modelSelection.setCurrentModel({
             ...option.provider,
@@ -944,9 +990,35 @@ const GuidPage: React.FC = () => {
         levels={reasoningEffortLevels}
         modelKey={`${modelSelection.current_model?.id ?? ''}:${modelSelection.current_model?.use_model ?? ''}`}
         initialEffort={selectedReasoningEffort}
+        popupVisible={activeChatPopup === 'strategy'}
+        onPopupVisibleChange={handleStrategyPopupVisibleChange}
         onEffortChanged={handleReasoningEffortChanged}
       />
     ) : null;
+
+  const strategySelectorNode =
+    isGeminiMode &&
+    (selectedChatModelOption?.family === 'auto' ||
+      reasoningEffortLevels.length > 0 ||
+      modelSelection.isModelCatalogLoading ||
+      Boolean(modelSelection.modelCatalogError))
+      ? autoTierSelectorNode ??
+        reasoningEffortSelectorNode ??
+        <span className='sendbox-strategy-slot-placeholder' aria-hidden='true' />
+      : null;
+
+  useEffect(() => {
+    if (previousChatModelContextKeyRef.current !== chatModelContextKey) {
+      previousChatModelContextKeyRef.current = chatModelContextKey;
+      setActiveChatPopup(null);
+      return;
+    }
+    setActiveChatPopup((current) => {
+      if (!isGeminiMode) return null;
+      if (current === 'strategy' && !strategySelectorNode) return null;
+      return current;
+    });
+  }, [chatModelContextKey, isGeminiMode, strategySelectorNode]);
 
   // Build the action row
   // When AutoWork is enabled (with a tag) the primary button becomes a
@@ -957,7 +1029,9 @@ const GuidPage: React.FC = () => {
     <GuidActionRow
       onOpenAddMenu={handleOpenHomeAddMenu}
       modelSelectorNode={modelSelectorNode}
-      reasoningEffortSelectorNode={autoTierSelectorNode ?? reasoningEffortSelectorNode}
+      modelSelectorIsChat={isGeminiMode}
+      activeChatPopup={activeChatPopup}
+      reasoningEffortSelectorNode={strategySelectorNode}
       selectedAgent={agentSelection.selectedAgent}
       effectiveModeAgent={agentSelection.currentEffectiveAgentInfo.agent_type}
       selectedMode={agentSelection.selectedMode}
@@ -1177,6 +1251,8 @@ const GuidPage: React.FC = () => {
                   send.sendMessageHandler();
                 }, 0);
               }
+            }).catch((error) => {
+              console.error('[GuidPage] Failed to persist configured model:', error);
             });
           }}
         />

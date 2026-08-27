@@ -79,6 +79,8 @@ export type GuidSendDeps = {
   current_model: TProviderWithModel | undefined;
   /** User-selected OpenAI-style reasoning effort for Nomi create. */
   reasoningEffort?: string;
+  /** Auto is text-only; block image-bearing Guid submissions before handoff. */
+  autoModelHasImageAttachments?: boolean;
   /** Session work mode for Nomi create (`office` | `coding`). */
   taskProfile?: 'office' | 'coding';
 
@@ -181,6 +183,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     selectedAcpModel,
     current_model,
     reasoningEffort,
+    autoModelHasImageAttachments = false,
     taskProfile,
     findAgentByKey,
     getEffectiveAgentType,
@@ -664,6 +667,12 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
   const sendMessageHandler = useCallback(() => {
     if (loading || sendingRef.current) return;
     if (!isAutoWorkEntry(autoWork) && !hasGuidInitialPayload(input, initialSkillIds)) return;
+    if (autoModelHasImageAttachments) {
+      Message.warning(t('conversation.modelPicker.autoTextOnly', {
+        defaultValue: 'Auto models currently support text only',
+      }));
+      return;
+    }
     if (readinessBlocker === 'model' || needsModelBeforeSend) {
       trackFunnelEvent('task_drafted', { blocker: 'model' });
       Message.warning(t('conversation.noModelConfigured'));
@@ -726,6 +735,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       });
   }, [
     loading,
+    autoModelHasImageAttachments,
     handleSend,
     setLoading,
     setInput,

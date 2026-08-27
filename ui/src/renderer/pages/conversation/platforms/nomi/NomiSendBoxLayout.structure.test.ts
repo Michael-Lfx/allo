@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('Nomi sendbox control layout', () => {
-  test('renders context usage as a click ring before the model selector and removes turn metrics copy', () => {
+  test('renders strategy, model, and context slots without turn metrics copy', () => {
     const source = readSource(new URL('./NomiSendBox.tsx', import.meta.url));
     const sendBoxSource = readSource(new URL('../../../../components/chat/SendBox/index.tsx', import.meta.url));
     const contextRingSource = readSource(new URL('./ContextUsageRing.tsx', import.meta.url));
@@ -23,14 +23,16 @@ describe('Nomi sendbox control layout', () => {
     expect(sendBoxIndex).toBeGreaterThan(-1);
     expect(rightToolsIndex).toBeGreaterThan(sendBoxIndex);
     expect(contextRingIndex).toBeGreaterThan(rightToolsIndex);
-    expect(modelIndex).toBeGreaterThan(contextRingIndex);
     const reasoningIndex = source.indexOf('<ReasoningEffortSelector', rightToolsIndex);
-    expect(reasoningIndex).toBeGreaterThan(contextRingIndex);
+    expect(reasoningIndex).toBeGreaterThan(rightToolsIndex);
     expect(modelIndex).toBeGreaterThan(reasoningIndex);
+    expect(contextRingIndex).toBeGreaterThan(modelIndex);
     expect(source.includes('collaboratorSelectorNode')).toBe(false);
     expect(source.includes('topRightTools={')).toBe(false);
     expect(source.includes('ContextUsagePill')).toBe(false);
-    expect(source.includes("data-testid='nomi-context-usage-slot'")).toBe(false);
+    expect(source.includes("data-testid='nomi-context-usage-slot'")).toBe(true);
+    expect(source.includes("type ActiveChatPopup = 'model' | 'strategy' | 'context' | null")).toBe(true);
+    expect(source.includes('data-chat-popup={activeChatPopup ?? undefined}')).toBe(true);
     expect(source.includes("data-testid='nomi-turn-metrics'")).toBe(false);
     expect(source.includes('formatTurnDuration')).toBe(false);
     expect(source.includes('formatTokenCount(tokenUsage.total_tokens)')).toBe(false);
@@ -38,6 +40,7 @@ describe('Nomi sendbox control layout', () => {
     expect(sendBoxSource.includes("data-testid='sendbox-top-right-tools'")).toBe(false);
     expect(contextRingSource.includes("data-testid='nomi-context-usage-ring'")).toBe(true);
     expect(contextRingSource.includes("data-testid='nomi-context-usage-popover'")).toBe(true);
+    expect(contextRingSource.includes('getPopupContainer={() => document.body}')).toBe(true);
     expect(contextRingSource.includes("data-testid='nomi-context-usage-bar'")).toBe(true);
     expect(contextRingSource.includes("data-testid='nomi-context-usage-summarized-props'")).toBe(true);
     expect(contextRingSource.includes("trigger='click'")).toBe(true);
@@ -76,7 +79,10 @@ describe('Nomi sendbox control layout', () => {
     const modelIndex = sendBoxSource.indexOf('<NomiModelSelector', rightToolsIndex);
 
     expect(contextRingIndex).toBeGreaterThan(rightToolsIndex);
-    expect(modelIndex).toBeGreaterThan(contextRingIndex);
+    const reasoningIndex = sendBoxSource.indexOf('<ReasoningEffortSelector', rightToolsIndex);
+    expect(reasoningIndex).toBeGreaterThan(rightToolsIndex);
+    expect(modelIndex).toBeGreaterThan(reasoningIndex);
+    expect(contextRingIndex).toBeGreaterThan(modelIndex);
     const toolsIndex = sendBoxSource.indexOf('tools={');
     const modeIndex = sendBoxSource.indexOf('<AgentModeSelector', toolsIndex);
     const fileAttachIndex = sendBoxSource.indexOf('<FileAttachButton', toolsIndex);
@@ -127,15 +133,55 @@ describe('Nomi sendbox control layout', () => {
     expect(sendBoxSource.includes('sendbox-responsive-config-group')).toBe(true);
     expect(sendBoxCss.includes('container-name: sendbox-config')).toBe(true);
     expect(composerSource.includes("'sendbox-actions--nomi' : 'gap-2'")).toBe(true);
-    expect(sendBoxCss.includes(".sendbox-actions--nomi [data-testid='nomi-context-usage-ring']")).toBe(true);
-    expect(sendBoxCss.includes('.sendbox-responsive-config-group {\n  /* Flatten model controls')).toBe(true);
-    expect(sendBoxCss.includes('display: contents;')).toBe(true);
-    expect(sendBoxSource.includes("className='sendbox-responsive-config-group'")).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-actions--nomi .nomi-context-usage-slot')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-config-group {\n  --chat-action-slot-size: 28px;')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-config-group {\n  --chat-action-slot-size: 28px;\n  --chat-action-gap: 6px;')).toBe(true);
+    expect(sendBoxCss.includes('display: flex;')).toBe(true);
+    expect(sendBoxCss.includes('gap: var(--chat-action-gap);')).toBe(true);
+    expect(sendBoxCss.includes('isolation: isolate;')).toBe(true);
+    expect(sendBoxSource.includes('chat-model-picker-config-group')).toBe(true);
     expect(sendBoxCss.includes('@container sendbox-config (max-width: 560px)')).toBe(true);
     expect(sendBoxCss.includes('.sendbox-responsive-label')).toBe(true);
-    expect(sendBoxCss.includes('max-width 160ms ease')).toBe(true);
+    expect(sendBoxCss.includes('max-width 160ms ease')).toBe(false);
     expect(sendBoxCss.includes('@media (hover: hover) and (pointer: fine)')).toBe(true);
-    expect(sendBoxCss.includes('.nomi-sendbox-model-btn:hover')).toBe(true);
+    expect(sendBoxCss.includes('.nomi-sendbox-model-btn:hover')).toBe(false);
+    expect(sendBoxCss.includes('.chat-model-picker-trigger')).toBe(true);
+    expect(sendBoxCss.includes('.chat-model-picker-trigger:hover')).toBe(true);
+    expect(sendBoxCss.includes('.chat-model-picker-trigger .flowy-button-inline-content')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-control-open')).toBe(true);
+    expect(sendBoxCss.includes('.chat-model-picker-slot .chat-model-picker-trigger.sendbox-responsive-control-open')).toBe(true);
+    expect(sendBoxCss.includes('--chat-model-picker-slot-width: 176px')).toBe(true);
+    expect(sendBoxCss.includes('--chat-model-picker-slot-width: 136px')).toBe(true);
+    expect(sendBoxCss.includes('flex-basis: var(--chat-model-picker-slot-width) !important;')).toBe(true);
+    expect(sendBoxCss.includes('width: var(--chat-model-picker-slot-width) !important;')).toBe(true);
+    expect(sendBoxCss.includes('flex-basis: 28px !important;')).toBe(true);
+    expect(sendBoxCss.includes('--sendbox-strategy-trigger-width: 108px')).toBe(true);
+    expect(sendBoxCss.includes('--sendbox-strategy-label-width: 56px')).toBe(true);
+    expect(sendBoxCss.includes(".sendbox-strategy-slot > [data-static='true']")).toBe(true);
+    expect(sendBoxCss.includes('sendbox-responsive-strategy-root:not([data-static=\'true\'])')).toBe(true);
+    expect(sendBoxCss.includes('position: static !important;')).toBe(true);
+    expect(sendBoxCss.includes('justify-content: center !important;')).toBe(true);
+    expect(sendBoxCss.includes('overflow: visible !important;')).toBe(true);
+    expect(sendBoxCss.includes('flex: 0 0 14px !important;')).toBe(true);
+    expect(sendBoxCss.includes('flex-basis: var(--sendbox-strategy-trigger-width) !important;')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-strategy-slot')).toBe(true);
+    expect(sendBoxCss.includes('.chat-model-picker-slot')).toBe(true);
+    expect(sendBoxCss.includes('position: absolute !important;')).toBe(true);
+    expect(sendBoxCss.includes('visibility: hidden;')).toBe(true);
+    expect(sendBoxCss.includes('pointer-events: none;')).toBe(true);
+    expect(sendBoxCss.includes('margin-inline: 8px')).toBe(false);
+    expect(sendBoxCss.includes('.sendbox-responsive-leading-icon')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-chevron-slot')).toBe(true);
+    expect(sendBoxCss.includes('width: 27px !important;')).toBe(true);
+    expect(sendBoxCss.includes('width: 100% !important;\n  }\n\n  /* This rule intentionally comes after')).toBe(true);
+    expect(sendBoxSource.includes("data-layout-slot='strategy'")).toBe(true);
+    expect(sendBoxSource.includes("data-layout-slot='model'")).toBe(true);
+    expect(sendBoxSource.includes("data-layout-slot='context'")).toBe(true);
+    expect(sendBoxSource.includes("data-testid='nomi-strategy-slot'")).toBe(true);
+    expect(sendBoxSource.includes("data-testid='nomi-chat-model-slot'")).toBe(true);
+    expect(modelSource.includes('ChatModelPickerMenu')).toBe(true);
+    expect(modelSource.includes('conversation.modelPicker.search')).toBe(false);
+    expect(modelSource.includes('title={label}')).toBe(true);
     expect(sendBoxCss.includes('.composer-toolbar-tools .agent-mode-compact-pill:hover')).toBe(true);
     expect(arcoOverrideSource.includes(".sendbox-actions [data-testid='nomi-model-selector'].arco-btn:hover")).toBe(true);
     expect(sendBoxCss.includes('display: inline-flex !important')).toBe(true);
@@ -152,6 +198,13 @@ describe('Nomi sendbox control layout', () => {
     }
   });
 
+  test('leaves model labels complete for the fixed CSS trigger and mobile sheet', () => {
+    const selectionSource = readSource(new URL('./useNomiModelSelection.ts', import.meta.url));
+    expect(selectionSource.includes('return formatModelLabel(liveCurrentProvider, modelName);')).toBe(true);
+    expect(selectionSource.includes('maxLength = 20')).toBe(false);
+    expect(selectionSource.includes('slice(0, maxLength)')).toBe(false);
+  });
+
   test('keeps the compact reasoning trigger icon at full size when a narrow sendbox expands on hover', () => {
     const sendBoxCss = readSource(new URL('../../../../components/chat/SendBox/sendbox.css', import.meta.url));
     const guidCss = readSource(new URL('../../../guid/index.module.css', import.meta.url));
@@ -164,22 +217,21 @@ describe('Nomi sendbox control layout', () => {
     expect(selectorCss.includes('flex: 0 0 auto')).toBe(true);
     expect(selectorCss.includes('transform: translateY(2px)')).toBe(false);
 
-    expect(sendBoxCss.includes('.sendbox-responsive-reasoning-btn > .i-icon')).toBe(true);
-    expect(sendBoxCss.includes('.sendbox-responsive-reasoning-btn:hover')).toBe(true);
-    expect(sendBoxCss.includes('.sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label')).toBe(true);
-    expect(sendBoxCss).toContain(
-      '.sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label,\n    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label {\n      display: grid !important;',
-    );
-    expect(sendBoxCss).toContain(
-      '.sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:hover,\n    .sendbox-responsive-config-group .sendbox-responsive-reasoning-btn:focus-visible {\n      overflow: visible !important;\n      flex: 0 0 auto !important;',
-    );
+    expect(sendBoxCss.includes('.sendbox-strategy-slot .sendbox-responsive-reasoning-btn')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn.sendbox-responsive-control-open')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover,')).toBe(true);
+    expect(sendBoxCss.includes('.sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible,')).toBe(true);
+    expect(selectorSource.includes('sendbox-responsive-control-open')).toBe(true);
 
-    expect(guidCss).toContain(
-      '.actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label),\n    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label) {\n      display: grid !important;',
-    );
-    expect(guidCss).toContain(
-      '.actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover),\n    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible) {\n      overflow: visible !important;\n      flex: 0 0 auto !important;',
-    );
+    expect(guidCss.includes('.actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label)')).toBe(true);
+    expect(guidCss.includes('.actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label)')).toBe(true);
+    expect(guidCss.includes('.actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn.sendbox-responsive-control-open)')).toBe(true);
+    expect(guidCss.includes('.actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover)')).toBe(true);
+    expect(guidCss.includes('.actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible)')).toBe(true);
+    expect(guidCss.includes('.actionConfigGroup :global(.sendbox-strategy-slot)')).toBe(true);
   });
 
   test('uses grouped mobile model options with keyboard-accessible sheet rows', () => {
@@ -202,6 +254,9 @@ describe('Nomi sendbox control layout', () => {
     expect(sheetSource.includes("role='button'")).toBe(true);
     expect(sheetSource.includes('activateOnKeyboard')).toBe(true);
     expect(sheetSource.includes('aria-pressed')).toBe(true);
+    expect(sheetSource.includes("key === 'Escape'")).toBe(true);
+    expect(sheetSource.includes("event.key !== 'Tab'")).toBe(true);
+    expect(sheetSource.includes('previouslyFocusedRef')).toBe(true);
     expect(sheetCss.includes('.groupHeader')).toBe(true);
     expect(sheetCss.includes('@media (prefers-reduced-motion: reduce)')).toBe(true);
   });

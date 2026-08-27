@@ -9,7 +9,9 @@ import { isManagedModelProvider } from '@/common/types/provider/managedModelServ
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { buildChatModelPickerViewModel, type ChatModelPickerViewModel } from '@/renderer/utils/model/chatModelPicker';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export type NomiModelSelection = {
   current_model?: TProviderWithModel;
@@ -19,7 +21,7 @@ export type NomiModelSelection = {
   refreshModelCatalog: () => void;
   providers: IProvider[];
   getAvailableModels: (provider: IProvider) => string[];
-  handleSelectModel: (provider: IProvider, modelName: string) => Promise<void>;
+  handleSelectModel: (provider: IProvider, modelName: string) => Promise<boolean>;
   formatModelLabel: (
     provider: { model_descriptions?: Record<string, string> } | undefined,
     modelName?: string
@@ -38,6 +40,7 @@ export const useNomiModelSelection = ({
   onSelectModel,
 }: UseNomiModelSelectionOptions): NomiModelSelection => {
   const [current_model, setCurrentModel] = useState<TProviderWithModel | undefined>(initialModel);
+  const { t } = useTranslation();
 
   useEffect(() => {
     setCurrentModel(initialModel);
@@ -89,17 +92,26 @@ export const useNomiModelSelection = ({
   }, [current_model?.id, current_model?.use_model, modelsByProvider]);
 
   const handleSelectModel = useCallback(
-    async (provider: IProvider, modelName: string) => {
+    async (provider: IProvider, modelName: string): Promise<boolean> => {
       const selected = {
         ...(provider as unknown as TProviderWithModel),
         use_model: modelName,
       } as TProviderWithModel;
-      const ok = await onSelectModel(provider, modelName);
-      if (ok) {
+      try {
+        const ok = await onSelectModel(provider, modelName);
+        if (!ok) {
+          Message.error(t('agent.model.switchFailed'));
+          return false;
+        }
         setCurrentModel(selected);
+        return true;
+      } catch (error) {
+        console.error('[useNomiModelSelection] Failed to switch model:', error);
+        Message.error(t('agent.model.switchFailed'));
+        return false;
       }
     },
-    [onSelectModel]
+    [onSelectModel, t]
   );
 
   const liveCurrentProvider = useMemo(() => {
@@ -110,9 +122,7 @@ export const useNomiModelSelection = ({
   const getDisplayModelName = useCallback(
     (modelName?: string) => {
       if (!modelName) return '';
-      const label = formatModelLabel(liveCurrentProvider, modelName);
-      const maxLength = 20;
-      return label.length > maxLength ? `${label.slice(0, maxLength)}...` : label;
+      return formatModelLabel(liveCurrentProvider, modelName);
     },
     [formatModelLabel, liveCurrentProvider]
   );

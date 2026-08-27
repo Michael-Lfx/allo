@@ -64,6 +64,85 @@
   margin-top: 14px;
 }
 
+.button-layout-probe__chat-scenarios {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px dashed var(--color-border-2);
+  border-radius: 10px;
+}
+
+.button-layout-probe__chat-scenarios h3 {
+  margin: 0 0 2px;
+  color: var(--color-text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* This is a real production control composition, kept in a bounded container
+ * so the browser probe can exercise both the 28px collapsed slots and the
+ * leftward overlay without relying on a viewport-specific screenshot. */
+.button-layout-probe__chat-row {
+  --chat-action-slot-size: 28px;
+  --chat-action-gap: 6px;
+  align-items: center !important;
+  box-sizing: border-box;
+  display: flex !important;
+  flex: 0 0 auto !important;
+  gap: var(--chat-action-gap) !important;
+  justify-content: flex-start !important;
+  min-height: var(--chat-action-slot-size);
+  min-width: 0;
+  overflow: visible !important;
+  padding: 4px 6px;
+  position: relative;
+  width: min(360px, 100%);
+}
+
+.button-layout-probe__chat-row .sendbox-responsive-config-group {
+  align-items: center;
+  flex: 0 0 auto;
+  gap: var(--chat-action-gap);
+  min-width: 0;
+  overflow: visible;
+}
+
+.button-layout-probe__chat-row .composer-submit-cluster {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: var(--chat-action-gap) !important;
+  margin-inline-start: auto;
+  min-height: var(--chat-action-slot-size);
+}
+
+.button-layout-probe__chat-row .speech-input-control,
+.button-layout-probe__chat-row .speech-input-control--inline {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 26px;
+  height: 28px;
+  min-width: 26px;
+}
+
+.button-layout-probe__chat-row .sendbox-responsive-leading-icon,
+.button-layout-probe__chat-row .sendbox-responsive-chevron-slot {
+  flex: 0 0 auto;
+}
+
+.button-layout-probe__chat-row [data-layout-part='microphone'],
+.button-layout-probe__chat-row [data-layout-part='send'] {
+  flex: 0 0 26px;
+}
+
+.button-layout-probe__chat-row[data-chat-probe-state='expanded'] .chat-model-picker-trigger,
+.button-layout-probe__chat-row[data-chat-probe-state='model-popup'] .chat-model-picker-trigger,
+.button-layout-probe__chat-row[data-chat-probe-state='strategy-popup'] .sendbox-responsive-reasoning-btn {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-border-2) 80%, transparent);
+}
+
 .button-layout-probe__production-sendbox {
   display: flex !important;
   align-items: center;

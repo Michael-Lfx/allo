@@ -200,6 +200,7 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
           disabled={disabled || isProcessing}
           onClick={handleClick}
           aria-label={ariaLabel}
+          data-layout-part='microphone'
           icon={icon}
         />
       </Tooltip>

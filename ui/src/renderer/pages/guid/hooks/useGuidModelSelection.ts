@@ -10,7 +10,9 @@ import { configService } from '@/common/config/configService';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { buildChatModelPickerViewModel, type ChatModelPickerViewModel } from '@/renderer/utils/model/chatModelPicker';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 /**
  * Build a unique key for a provider/model pair.
@@ -61,6 +63,7 @@ export type GuidModelSelectionResult = {
  * @param agentKey - current provider-based agent (currently only 'nomi')
  */
 export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): GuidModelSelectionResult => {
+  const { t } = useTranslation();
   // Chat-capable catalog from the unified backend resolve — replaces the old
   // duplicate guid/utils/modelUtils name-heuristic implementation.
   const {
@@ -112,17 +115,22 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
     async (model_info: TProviderWithModel, persist = true) => {
       selectedModelKeyRef.current = buildModelKey(model_info.id, model_info.use_model);
       if (persist) {
-        await configService.set(storageKey, {
-          provider_id: model_info.id,
-          model: model_info.use_model,
-        }).catch((error) => {
+        try {
+          await configService.set(storageKey, {
+            provider_id: model_info.id,
+            model: model_info.use_model,
+          });
+        } catch (error) {
+          selectedModelKeyRef.current = null;
           console.error('Failed to save default model:', error);
-        });
+          Message.error(t('agent.model.switchFailed'));
+          throw error;
+        }
       }
       setDefaultModelUnavailable(false);
       _setCurrentModel(model_info);
     },
-    [storageKey]
+    [storageKey, t]
   );
 
   // Set default model when modelList or agent changes
