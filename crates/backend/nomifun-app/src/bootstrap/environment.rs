@@ -1042,6 +1042,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_install_init_data_layer_bootstraps_database() {
+        let _env = env_guard().await;
+        let data = tempfile::tempdir().unwrap();
+        let config = test_config(data.path(), data.path());
+        assert!(!config.database_path().exists());
+
+        let database = init_data_layer(&config).await.unwrap();
+        assert!(config.database_path().is_file());
+        let applied: i64 = nomifun_db::sqlx::query_scalar(
+            "SELECT COUNT(*) FROM _sqlx_migrations",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert!(applied > 0, "first boot must record embedded migrations");
+        database.close().await;
+    }
+
+    #[tokio::test]
     async fn probe_accepts_database_created_from_all_embedded_migrations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nomifun-backend.db");

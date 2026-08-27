@@ -235,6 +235,20 @@ fn migration_checksum_compatible(
 /// Line-ending-only checksum drift (LF vs CRLF of the same SQL) is treated as
 /// compatible; [`heal_eol_only_migration_checksums`] rewrites those rows before
 /// sqlx's migrator runs so VersionMismatch cannot fire on the same drift.
+async fn sqlx_migrations_table_exists(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+) -> Result<bool, DbError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(\
+             SELECT 1 FROM sqlite_schema \
+             WHERE type = 'table' AND name = '_sqlx_migrations'\
+         )",
+    )
+    .fetch_one(executor)
+    .await
+    .map_err(DbError::Query)
+}
+
 pub async fn inspect_supported_migration_lineage(
     pool: &SqlitePool,
 ) -> Result<MigrationLineageStatus, DbError> {
@@ -246,6 +260,10 @@ pub async fn inspect_supported_migration_lineage(
         return Err(DbError::Init(
             "v3 migration lineage must begin with the published baseline".into(),
         ));
+    }
+
+    if !sqlx_migrations_table_exists(pool).await? {
+        return Ok(MigrationLineageStatus::UpgradeRequired);
     }
 
     let rows = sqlx::query("SELECT version, success, checksum FROM _sqlx_migrations ORDER BY version")
@@ -297,16 +315,7 @@ pub async fn inspect_supported_migration_lineage(
 async fn heal_eol_only_migration_checksums(
     conn: &mut sqlx::SqliteConnection,
 ) -> Result<(), DbError> {
-    let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(\
-             SELECT 1 FROM sqlite_schema \
-             WHERE type = 'table' AND name = '_sqlx_migrations'\
-         )",
-    )
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(DbError::Query)?;
-    if !table_exists {
+    if !sqlx_migrations_table_exists(&mut *conn).await? {
         return Ok(());
     }
 
@@ -712,6 +721,46 @@ mod tests {
             sql,
             lf_sum.as_slice()
         ));
+    }
+
+    #[tokio::test]
+    async fn fresh_file_database_init_applies_migrations_without_prior_migrations_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("flowy-backend.db");
+        assert!(!path.exists());
+
+        let database = init_database(&path).await.unwrap();
+        let table_exists: bool = sqlx_migrations_table_exists(database.pool())
+            .await
+            .unwrap();
+        assert!(table_exists, "fresh bootstrap must create _sqlx_migrations");
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+        assert!(applied > 0, "embedded migrations must be recorded on first boot");
+        database.close().await;
+    }
+
+    #[tokio::test]
+    async fn inspect_supported_migration_lineage_treats_missing_table_as_upgrade_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.db");
+        let pool = PoolOptions::<Sqlite>::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            inspect_supported_migration_lineage(&pool).await.unwrap(),
+            MigrationLineageStatus::UpgradeRequired
+        );
+        pool.close().await;
     }
 
     #[tokio::test]
