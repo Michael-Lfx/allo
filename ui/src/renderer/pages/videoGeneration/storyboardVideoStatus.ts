@@ -93,9 +93,21 @@ export function activeVideoGenerationTarget(
     ) ??
     parseSceneFromMessage(status.message);
 
-  // Clip just finished — wait for the next video_clip_start.
+  // When a clip finishes, report its shot index so the UI can briefly highlight
+  // the just-completed shot before the next one starts.
   if (status.stage === 'video_clip_done' || status.stage === 'video_clip_exists') {
-    return { shotIndex: null, sceneIndex };
+    let shotIndex: number | null = null;
+    for (const ev of events) {
+      if (ev.stage === 'video_clip_done' || ev.stage === 'video_clip_exists') {
+        const fromMeta = metaNumber(ev.metadata, 'shot_idx');
+        const fromMsg = parseShotFromMessage(ev.message);
+        if (fromMeta != null || fromMsg != null) {
+          shotIndex = fromMeta ?? fromMsg ?? null;
+          break;
+        }
+      }
+    }
+    return { shotIndex, sceneIndex };
   }
 
   const generatingStages = new Set([

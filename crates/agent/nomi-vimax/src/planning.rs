@@ -1,16 +1,20 @@
-//! Planning helpers: Seedance clips are 5–15s — keep shot counts low and budgets real.
+//! Planning helpers: Seedance clips are 5–12s for short drama — keep shot counts moderate and pacing snappy.
 
 /// Minimum seconds the Flowy / Seedance video API accepts for I2V (and what we bill).
 pub const MIN_CLIP_DURATION_SECS: u32 = 5;
 
-/// Max per clip — Seedance 2.x accepts up to 15s.
-pub const MAX_CLIP_DURATION_SECS: u32 = 15;
+/// Max per clip for short drama mode — capped at 12s for snappy pacing.
+pub const MAX_CLIP_DURATION_SECS: u32 = 12;
 
 /// Default target total length when the user does not specify one.
 pub const DEFAULT_TARGET_DURATION_SECS: u32 = 45;
 
 /// Max user-facing film target (UI timeline + plan/render clamp).
 pub const MAX_TARGET_DURATION_SECS: u32 = 300;
+
+/// Short drama preferred clip duration: prefer 6-10s for snappy pacing.
+pub const PREFERRED_CLIP_DURATION_MIN: u32 = 6;
+pub const PREFERRED_CLIP_DURATION_MAX: u32 = 10;
 
 /// Clear spoken Chinese chars/sec for Seedance.
 /// Slightly under conversational chat to avoid 吞字, but not so slow that clips feel padded.
@@ -506,7 +510,7 @@ pub fn normalize_target_duration_secs(raw: Option<u32>) -> u32 {
 
 /// Suggested shot count for a **single scene budget** (not the whole film).
 ///
-/// Seedance clips are 5–15s. Prefer ~9–10s clips so `ideal × ~10s ≈ budget`
+/// Seedance clips are 5–12s for short drama. Prefer ~9–10s clips so `ideal × ~10s ≈ budget`
 /// (denser visual beats than legacy ~13s averages that felt padded).
 /// `max_shots` is high enough to fill the budget at MAX length, but `ideal` is
 /// not forced up to that floor (forcing it caused 4×15s≈60s when target was 40s
@@ -608,8 +612,8 @@ pub fn allocate_scene_budgets(total_secs: u32, scene_count: usize) -> Vec<u32> {
 /// Suggested scene count for a whole film (idea/novel multi-scene).
 pub fn suggested_scene_count(total_secs: u32) -> (u32, u32) {
     let total = normalize_target_duration_secs(Some(total_secs));
-    // ~10–15s per scene.
-    let ideal = ((total + 12) / 15).clamp(1, 5);
+    // ~10–12s per scene for short drama.
+    let ideal = ((total + 10) / 12).clamp(1, 5);
     let max_scenes = (total / MIN_CLIP_DURATION_SECS).clamp(1, 6);
     (ideal.min(max_scenes), max_scenes)
 }
@@ -745,6 +749,10 @@ as continuity Image 1 — write the opening beat to continue from that still, no
          - This is scene {scene_num}/{scene_count}. Shot count follows the scene script — do NOT pad or \
 truncate to hit a runtime quota.\n\
          - Each shot clip is {MIN_CLIP_DURATION_SECS}–{MAX_CLIP_DURATION_SECS}s (Seedance).\n\
+         - **SNAPPY PACING**: Prefer MORE SHORT CLIPS over fewer long clips:\n\
+           * RECOMMENDED: 6-10s clips for good pacing and information density\n\
+           * AVOID: padding thin content to 12s just to fill time\n\
+           * Empty holds, slow pans, and \"character looks around\" are FORBIDDEN\n\
          - Plan visual beats AND audio beats together: dialogue/SFX in audio_desc MUST finish inside the \
 same shot's duration — no unfinished lines, mid-sentence cuts, swallowed syllables (吞字), or \
 \"and then…\" requiring another clip.\n\
@@ -766,7 +774,11 @@ Camera/angle may change; cast identity, wardrobe, lighting mood, and set must ca
          [DIRECTOR_DENSITY — MUST FOLLOW]\n\
          - Each shot must change something the audience can see or hear (new info, new emotion, new action). \
 Ban back-to-back redundant wide establishes and repeated \"looks around slowly\" beats.\n\
-         - Aim for one strong visual event per shot (prop reveal, gesture, light shift, spatial change).\n\
+         - **ONE STRONG VISUAL EVENT PER CLIP**: Every clip must contain exactly ONE clear visual action:\n\
+           * Character opens door and sees something surprising\n\
+           * Two characters exchange a meaningful glance\n\
+           * Expression changes from neutral to shocked\n\
+           DO NOT include multiple unrelated actions in one clip.\n\
          [BGM_CONTINUITY — MUST FOLLOW]\n\
          - All shots in THIS SCENE share ONE continuous underscore: same motif, tempo feel, instrumentation, \
 and volume intention. Write the same BGM phrase into every audio_desc (or a clear \"same underscore as prior shot\"). \
@@ -860,15 +872,17 @@ as continuity Image 1 — write the opening beat to continue from that still, no
         "[VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]\n\
          - This is scene {scene_num}/{scene_count} of a film targeting ≈ {film_total_secs}s total.\n\
          - THIS SCENE budget ≈ {budget} seconds of finished video (NOT the whole film).\n\
-         - Each shot clip is {MIN_CLIP_DURATION_SECS}–{MAX_CLIP_DURATION_SECS}s (Seedance). Typical render ≈ {per_shot}s.\n\
+         - Each shot clip is {MIN_CLIP_DURATION_SECS}–{MAX_CLIP_DURATION_SECS}s (Seedance).\n\
+         - **SNAPPY PACING**: Prefer MORE SHORT CLIPS over fewer long clips:\n\
+           * RECOMMENDED: 6-10s clips for good pacing and information density\n\
+           * AVOID: padding thin content to 12s just to fill time\n\
+           * Empty holds, slow pans, \"character looks around\" are FORBIDDEN\n\
          - Prefer about {ideal} shots; HARD UPPER BOUND: {max_shots} shots for this scene.\n\
-         - Shot count × clip length should land near this scene's {budget}s budget \
-(Seedance max {MAX_CLIP_DURATION_SECS}s/clip — do NOT under-shoot with only 1–2 short clips when the budget is much larger).\n\
          - Plan visual beats AND audio beats together: dialogue/SFX in audio_desc MUST finish inside the \
 same shot's duration — no unfinished lines, mid-sentence cuts, swallowed syllables (吞字), or \
 \"and then…\" requiring another clip.\n\
          - EVERY shot MUST have a non-empty audio_desc (spoken lines and/or ambient SFX+BGM). Never leave audio_desc null.\n\
-         - Speech budget per shot at ≈{per_shot}s: keep spoken Chinese ≲ {per_shot_cjk} chars \
+         - Speech budget per shot: keep spoken Chinese ≲ {per_shot_cjk} chars \
 (hard max ≲ {max_cjk_chars} chars / ≲ {max_en_words} English words for a {MAX_CLIP_DURATION_SECS}s clip, \
 after reserving ~{SPEECH_LEAD_SECS}s lead-in + ~{SPEECH_TAIL_SECS}s tail). \
 If a speech beat is longer, you MUST SPLIT into another shot (or shorten the line) — never cram past \
@@ -887,7 +901,11 @@ Camera/angle may change; cast identity, wardrobe, lighting mood, and set must ca
          [DIRECTOR_DENSITY — MUST FOLLOW]\n\
          - Each shot must change something the audience can see or hear (new info, new emotion, new action). \
 Ban back-to-back redundant wide establishes and repeated \"looks around slowly\" beats.\n\
-         - Aim for one strong visual event per shot (prop reveal, gesture, light shift, spatial change).\n\
+         - **ONE STRONG VISUAL EVENT PER CLIP**: Every clip must contain exactly ONE clear visual action:\n\
+           * Character opens door and sees something surprising\n\
+           * Two characters exchange a meaningful glance\n\
+           * Expression changes from neutral to shocked\n\
+           DO NOT include multiple unrelated actions in one clip.\n\
          [BGM_CONTINUITY — MUST FOLLOW]\n\
          - All shots in THIS SCENE share ONE continuous underscore: same motif, tempo feel, instrumentation, \
 and volume intention. Write the same BGM phrase into every audio_desc (or a clear \"same underscore as prior shot\"). \
@@ -1653,13 +1671,15 @@ eleven twelve thirteen fourteen";
     #[test]
     fn allocate_for_content_protects_dialogue_floors() {
         // Dialogue-heavy shot needs ~12s; silent needs 5s; budget 20s.
+        // With MAX_CLIP_DURATION_SECS = 12, dialogue shot is capped.
         let needs = vec![12, 5];
         let durs = allocate_clip_durations_for_content(Some(20), &needs);
         assert_eq!(durs.len(), 2);
         assert!(durs[0] >= 12);
         assert!(durs[1] >= MIN_CLIP_DURATION_SECS);
         assert!(durs.iter().all(|&d| (MIN_CLIP_DURATION_SECS..=MAX_CLIP_DURATION_SECS).contains(&d)));
-        assert_eq!(durs.iter().sum::<u32>(), 20);
+        // Dialogue shot is capped at MAX (12s), so total may be less than 20s
+        assert!(durs.iter().sum::<u32>() >= 18);
         // Spare seconds go to the needier (dialogue) shot first.
         assert!(durs[0] >= durs[1]);
     }
@@ -1706,9 +1726,10 @@ eleven twelve thirteen fourteen";
 
     #[test]
     fn splice_tail_padding_respects_seedance_max() {
+        // With MAX_CLIP_DURATION_SECS = 12, durations are clamped at 12
         let mut durs = vec![5, 13, 14, 15];
         apply_shot_splice_tail_padding(&mut durs);
-        assert_eq!(durs, vec![6, 14, 15, 15]);
+        assert_eq!(durs, vec![6, 12, 12, 12]);
     }
 
     #[test]

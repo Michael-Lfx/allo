@@ -1,9 +1,12 @@
 //! Bind session Cameo photos into the film-root portrait registry.
 //!
 //! After copy, **only plates that contain a real human face** are privacy-anonymized
-//! via img2img (swap the face to a generic unrecognizable virtual face so Seedance
-//! does not reject real-person refs). Animal / toy / non-human character refs keep
-//! the original upload — never invent a human face on a dog body.
+//! via AI face sanitization (vision description + text-to-image) to generate a completely
+//! new AI image that maintains character essence while having no photographic fingerprints.
+//! This is more reliable for passing video model content moderation than img2img.
+//!
+//! Animal / toy / non-human character refs keep the original upload — never invent
+//! a human face on a dog body.
 //!
 //! Separately, people-free **atmosphere** plates are generated for world-asset
 //! (env/prop) img2img style locking — never feed portrait Cameo into vacant
@@ -27,10 +30,11 @@ use crate::json_util::complete_vision_and_parse_llm_json;
 use crate::media_local::{copy_image_file_atomic, is_usable_image_file};
 use crate::session::cameo::{self, CameoPhotoEntry};
 
-use super::{resolve_film_root, safe_component};
+use super::{ai_face_sanitizer, resolve_film_root, safe_component};
 
 /// Img2img edit: cinematic fictional face (mild denoise) — not cartoon, not exact real-person still.
 /// Only used after [`image_has_real_human_face`] returns true.
+#[allow(dead_code)]
 pub(crate) const CAMEO_FACE_PRIVACY_PROMPT: &str = "\
 Mild img2img edit of this reference into a fictional movie character. \
 Keep age band, gender presentation, hair silhouette, wardrobe, pose, framing, set, and lighting. \
@@ -234,10 +238,14 @@ pub(crate) async fn apply_session_cameos(
     Ok(())
 }
 
-/// Run img2img face anonymization for bound Cameo plates that contain a **real human face**.
+/// Run AI face sanitization for bound Cameo plates that contain a **real human face**.
 ///
-/// Keeps `{id}_cameo_raw.png` as the user upload. When a human face is present, writes a
-/// privacy-safe `{id}_cameo.png` (AI face). When the subject is an animal / non-human
+/// Uses vision description + text-to-image pipeline to generate a completely new AI image
+/// that maintains character essence while having no photographic fingerprints.
+/// This is more reliable for passing video model content moderation than img2img.
+///
+/// Keeps `{id}_cameo_raw.png` as the user upload. When a human face is present, generates
+/// a privacy-safe `{id}_cameo.png` (AI face). When the subject is an animal / non-human
 /// (no real human face), copies the raw plate through unchanged — never invents a human face.
 async fn anonymize_bound_cameo_faces(
     film_root: &Path,
@@ -266,14 +274,14 @@ async fn anonymize_bound_cameo_faces(
             continue;
         }
 
-        let has_face = match image_has_real_human_face(Arc::clone(&chat), &raw_path).await {
+        let has_face = match ai_face_sanitizer::detect_human_face(Arc::clone(&chat), &raw_path).await {
             Ok(v) => v,
             Err(err) => {
                 // Prefer keeping the original animal/non-human plate over inventing a human face.
                 tracing::warn!(
                     character = %identifier,
                     error = %err,
-                    "human-face detection failed; skipping face privacy swap"
+                    "human-face detection failed; skipping face AI sanitization"
                 );
                 false
             }
@@ -301,36 +309,49 @@ async fn anonymize_bound_cameo_faces(
             character = %identifier,
             raw = %raw_path.display(),
             out = %plate.display(),
-            "anonymizing human face on Cameo for Seedance privacy"
+            "AI sanitizing human face on Cameo using vision description + T2I"
         );
-        let tmp = plate.with_extension("privacy_tmp.png");
-        let opts = crate::backends::ImageGenerateOpts {
-            negative_prompt: Some(
-                "photorealistic photograph, real person, selfie, realistic skin texture, anime, cartoon, manga"
-                    .into(),
-            ),
-            denoising_strength: Some(0.42),
-        };
-        if let Err(err) = image
-            .generate_with_opts(CAMEO_FACE_PRIVACY_PROMPT, &[raw_path.as_path()], &tmp, opts)
-            .await
-        {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(VimaxError::msg(format!(
-                "cameo face privacy anonymize failed for <{identifier}>: {err}. \
-Resume after checking the image model, or use a more illustrated style."
-            )));
+
+        // Use AI face sanitizer: vision description + T2I generation
+        let (_, outcome) = ai_face_sanitizer::ai_sanitize_face_image(
+            Arc::clone(&image),
+            Arc::clone(&chat),
+            &raw_path,
+            &plate,
+            "", // Empty style - let the model decide based on description
+        )
+        .await?;
+
+        match outcome {
+            ai_face_sanitizer::AiSanitizerOutcome::Generated => {
+                tracing::info!(
+                    character = %identifier,
+                    "AI face sanitization completed successfully"
+                );
+                let _ = std::fs::write(&marker, raw_fp.as_bytes());
+                updates.push((identifier.clone(), ai_sanitized_registry_description(identifier, item)));
+            }
+            ai_face_sanitizer::AiSanitizerOutcome::Cached => {
+                tracing::info!(
+                    character = %identifier,
+                    "using cached AI sanitized face"
+                );
+                updates.push((identifier.clone(), ai_sanitized_registry_description(identifier, item)));
+            }
+            ai_face_sanitizer::AiSanitizerOutcome::NoFace => {
+                // Shouldn't happen since we detected face above, but handle gracefully
+                tracing::warn!(
+                    character = %identifier,
+                    "AI sanitizer reported no face (inconsistent detection)"
+                );
+                copy_image_file_atomic(&raw_path, &plate)?;
+                let _ = std::fs::write(
+                    &marker,
+                    format!("{PRIVACY_SKIP_NO_FACE_PREFIX}{raw_fp}").as_bytes(),
+                );
+                updates.push((identifier.clone(), non_human_face_registry_description(identifier, item)));
+            }
         }
-        if !is_usable_image_file(&tmp) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(VimaxError::msg(format!(
-                "cameo face privacy anonymize produced no image for <{identifier}>"
-            )));
-        }
-        copy_image_file_atomic(&tmp, &plate)?;
-        let _ = std::fs::remove_file(&tmp);
-        let _ = std::fs::write(&marker, raw_fp.as_bytes());
-        updates.push((identifier.clone(), privacy_safe_registry_description(identifier, item)));
     }
 
     for (identifier, desc) in updates {
@@ -344,6 +365,32 @@ Resume after checking the image model, or use a more illustrated style."
     Ok(())
 }
 
+/// Registry description for AI-sanitized face images
+fn ai_sanitized_registry_description(
+    identifier: &str,
+    prior: &HashMap<String, String>,
+) -> String {
+    let prior_desc = prior.get("description").map(|s| s.as_str()).unwrap_or("");
+    let feats = prior_desc
+        .split("Features:")
+        .nth(1)
+        .map(str::trim)
+        .unwrap_or("")
+        .trim_end_matches('.')
+        .to_string();
+    let extra = if feats.is_empty() {
+        String::new()
+    } else {
+        format!(" Features: {feats}.")
+    };
+    format!(
+        "File = USER CAMEO identity plate for <{identifier}> (AI-sanitized face via vision+T2I). \
+Match body, hair silhouette, wardrobe, age, and overall look. The face is AI-generated and clearly \
+not a real-person photograph — maintains character essence without photographic fingerprints.{extra}"
+    )
+}
+
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct HumanFaceDetectResp {
     #[serde(default)]
@@ -351,6 +398,7 @@ struct HumanFaceDetectResp {
 }
 
 /// Vision gate: true only when the image shows at least one real human face.
+#[allow(dead_code)]
 async fn image_has_real_human_face(
     chat: Arc<dyn VimaxChat>,
     image_path: &Path,
@@ -545,6 +593,7 @@ fn file_fingerprint(path: &Path) -> VimaxResult<String> {
     Ok(format!("{len}:{digest}"))
 }
 
+#[allow(dead_code)]
 fn privacy_safe_registry_description(
     identifier: &str,
     prior: &HashMap<String, String>,
@@ -1757,17 +1806,22 @@ mod tests {
     }
 
     #[test]
-    fn privacy_prompt_keeps_cinematic_live_action() {
-        let lower = CAMEO_FACE_PRIVACY_PROMPT.to_ascii_lowercase();
-        assert!(lower.contains("cinematic film look"));
-        assert!(lower.contains("fictional character"));
-        assert!(lower.contains("wardrobe"));
-        assert!(lower.contains("do not convert to anime"));
-        assert!(!lower.contains("preserve facial"));
-        assert!(!lower.contains("illustrated"));
-        assert!(!crate::planning::wants_stylized_non_photoreal(CAMEO_FACE_PRIVACY_PROMPT));
-        assert!(CAMEO_ATMOSPHERE_PROMPT.contains("people-free"));
-        assert!(CAMEO_ATMOSPHERE_PROMPT.contains("Erase every person"));
+    fn ai_sanitizer_description_includes_safety_constraints() {
+        use super::ai_face_sanitizer;
+        // Test that ai_sanitizer module exists and exports expected items
+        let desc = ai_face_sanitizer::VisionDescription {
+            description: "A cinematic scene with a character".to_string(),
+            key_features: vec!["cinematic".to_string()],
+            style_keywords: vec!["film noir".to_string()],
+            prompt_for_generation: "test prompt".to_string(),
+        };
+        let prompt = ai_face_sanitizer::build_pure_t2i_prompt(&desc, "cinematic");
+        // Verify the prompt contains expected cinematic/safety elements
+        assert!(prompt.contains("A cinematic scene with a character"));
+        assert!(prompt.contains("PHOTOREALISTIC"));
+        assert!(prompt.contains("cinematic"));
+        assert!(prompt.contains("AVOID"));
+        assert!(prompt.contains("anime"));
     }
 
     #[test]

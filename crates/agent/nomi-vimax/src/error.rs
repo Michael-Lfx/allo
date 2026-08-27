@@ -43,6 +43,11 @@ impl VimaxError {
         Self::Message(s.into())
     }
 
+    /// True when this error is a user-initiated cancellation.
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, VimaxError::Cancelled)
+    }
+
     /// Turn a `catch_unwind` payload into a readable error (panics often hide the cause).
     pub fn from_panic_payload(ctx: &str, payload: Box<dyn std::any::Any + Send>) -> Self {
         let detail = panic_payload_message(payload);

@@ -21,7 +21,7 @@ use crate::transport::HttpTransport;
 use super::FlowyApiClient;
 
 const DEFAULT_VIDEO_POLL_INTERVAL_SECS: u64 = 5;
-const DEFAULT_VIDEO_POLL_TIMEOUT_SECS: u64 = 600;
+const DEFAULT_VIDEO_POLL_TIMEOUT_SECS: u64 = 1200; // 20 minutes for video generation
 const VIDEO_CREATE_MAX_ATTEMPTS: u32 = 4;
 
 /// True when the upstream rejected the prompt/input for content safety.
