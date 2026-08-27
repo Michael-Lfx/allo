@@ -342,7 +342,7 @@ export interface CourseJobView {
 export interface ConceptGraphNode {
   id: string;
   title: string;
-  /** 估计学习分钟数（5/10/15/20/25 档；超过 25 视为硬上限违例） */
+  /** 估计学习分钟数（5 分钟档；30 为软上限，60 为硬上限，超过 60 视为硬上限违例） */
   min?: number;
   /** 子领域分组名（旧字段，新图不再设置） */
   group?: string;

@@ -4,11 +4,14 @@
 //! combination of atomic concepts, or a single atomic concept rich enough to
 //! fill a session. Unit names are action sentences ("用配方法解一元二次方程"),
 //! never concept nouns or whole sub-domains ("概率基础" is meaningless as a unit).
+//! Units usually fit within 30 minutes (soft cap); genuinely hard single
+//! lessons may go up to 60 (hard cap).
 //!
 //! Generation follows the "audit-gate loop" pattern: a small SCOPE call first
-//! resolves what the user's goal description actually covers (sub-domains +
-//! backbone concepts + a size estimate — the backbone is reference material
-//! only, never scaffolding), then ONE full model call enumerates the whole
+//! resolves what the user's goal description actually covers — a strictly
+//! complete checklist of large-block concepts (reference material only,
+//! never scaffolding; no fixed count, a complex goal gets more blocks), then
+//! ONE full model call enumerates the whole
 //! network in a deliberately symbolic shape (unit name + direct dependency
 //! names + minute budget), the program normalizes it tolerantly (dedupe, drop
 //! unknown references, break cycles), then a deterministic audit grades the
@@ -21,12 +24,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nomifun_common::AppError;
+use nomifun_common::{AppError, UserId};
 use serde::{Deserialize, Serialize};
 
 use crate::completer::LearningCompleter;
 
 mod audit;
+pub mod draft;
 mod log;
 mod repair;
 
@@ -34,16 +38,18 @@ pub(crate) use audit::{SEV_DANGER, audit_concept_graph, audit_concept_graph_with
 pub(crate) use log::ConceptGraphLogger;
 pub(crate) use repair::{auto_repair, repair_graph};
 
-/// One node in the graph — a LEARNING UNIT: one human study session of at
-/// most 25 minutes. The name is an action sentence describing what the
+/// One node in the graph — a LEARNING UNIT: one human study session,
+/// usually within 30 minutes (soft cap), at most 60 for a genuinely hard
+/// single lesson. The name is an action sentence describing what the
 /// learner does in the session ("用配方法解一元二次方程"), never a concept
-/// noun. `min` carries the estimated workload; the audit enforces the cap.
+/// noun. `min` carries the estimated workload; the audit enforces the caps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConceptGraphNode {
     pub id: String,
     pub title: String,
-    /// Estimated study time in minutes (the prompt asks for 5/10/15/20/25;
-    /// the audit treats any value above 25 as a hard-cap violation).
+    /// Estimated study time in minutes (the prompt asks for 5-minute steps
+    /// up to the 30-minute soft cap; the audit warns above 30 and treats
+    /// any value above 60 as a hard-cap violation).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<u16>,
     /// Sub-domain group label (legacy field, never set by new graphs).
@@ -131,6 +137,23 @@ pub struct ConceptGraphRecord {
     #[serde(flatten)]
     pub graph: ConceptGraphData,
     pub created_at: i64,
+}
+
+/// Agent-driven concept graph generation seam — mirrors [`LearningCompleter`]:
+/// the learning crate holds only the trait; the two-loop agent engine is
+/// implemented in nomifun-ai-agent. When injected, `generate_concept_graph`
+/// routes through the agent tool set (draft + `cg_*` tools, audit-gated
+/// publish) instead of the one-shot legacy pipeline, which stays as the
+/// fallback so tests and direct calls keep working unconfigured.
+#[async_trait::async_trait]
+pub trait ConceptGraphAgentEngine: Send + Sync {
+    /// Run the two-loop agent generation; returns the published record.
+    async fn generate(
+        &self,
+        user_id: &UserId,
+        topic: &str,
+        model_override: Option<(&str, &str)>,
+    ) -> Result<ConceptGraphRecord, AppError>;
 }
 
 /// List entry without the full node/edge payload.
@@ -586,7 +609,7 @@ pub(crate) fn merge_batch(graph: &ConceptGraphData, batch: &NormalizedBatch) -> 
 /// structural side (coverage, connectivity, multi-parent share, workload
 /// cap).
 const GENERATE_SYSTEM: &str = r#"You decompose a broad learning goal into a complete network of LEARNING UNITS linked by task-dependency edges.
-A learning unit is ONE human study session of AT MOST 25 minutes: a small organic combination of simple atomic concepts, or a single atomic concept rich enough to fill a session on its own. It is NEVER a whole sub-domain — "概率基础" is a whole small field and meaningless as a unit.
+A learning unit is ONE human study session, usually within 30 minutes (the soft cap): a small organic combination of simple atomic concepts, or a single atomic concept rich enough to fill a session on its own. A genuinely hard single lesson may go up to 60 minutes (the hard cap). It is NEVER a whole sub-domain — "概率基础" is a whole small field and meaningless as a unit.
 Reply with ONLY one JSON object matching this shape:
 {
   "concepts": [
@@ -595,13 +618,13 @@ Reply with ONLY one JSON object matching this shape:
 }
 Rules:
 - "name" is an ACTION describing what the learner does in this unit — the knowledge point is the core and the sentence form serves it, never the reverse. Varied good names: "用配方法解一元二次方程", "理解导数的极限定义", "证明可导函数必连续", "比较二分法与牛顿法的收敛速度", "构造素数筛", "推导等比数列求和公式", "辨析充分条件与必要条件". Never the bare concept noun "一元二次方程求解". Start with an action verb (解/求/证明/推导/比较/判定/构造/区分/计算/应用/理解/辨析/建立/验证...). Do NOT reuse one sentence template across units (e.g. every name starting with "用"): vary the verb and the sentence structure so each name carries its knowledge point distinctly.
-- "min" is the estimated study time in minutes, one of 5/10/15/20/25. The 25-minute budget is a HARD CAP: less is always fine, more is not.
+- "min" is the estimated study time in minutes, in 5-minute steps: keep units within 5-30 whenever possible (the soft cap); a genuinely hard single lesson may go up to 60 (the hard cap). The 60-minute budget is a HARD CAP: less is always fine, more is not.
 - SUFFICIENCY CONTRACT: "pre" is the COMPLETE set of direct prerequisites. The invariant: a learner who has finished EXACTLY the units listed in "pre" (and nothing else) can fully understand this unit without any other background. For every unit ask "what must the learner already master to understand this?" and list EVERY such unit — omitting one makes the unit incomprehensible at its position in the path. Do NOT trim "pre" to shorten the reply.
 - "pre": [] is allowed ONLY for units a complete beginner understands from daily intuition or school arithmetic (数数、四则运算、直观图形). Anything above that level — limits, integrals, proofs, vectors, equations — MUST list its real prerequisites. A unit about calculus with an empty "pre" is a hard error: it would strand the learner mid-path.
 - CONVERGENCE IS EXPECTED: real knowledge is a DAG, not a chain. Units where two earlier threads meet legitimately depend on 2-4 prerequisites: 解析几何 depends on BOTH geometry AND equations; 微积分 depends on BOTH functions AND limits; 数列 depends on BOTH functions AND arithmetic patterns. Produce such converging units deliberately — a network where nearly every unit has exactly one prerequisite is a forest of chains, not a graph.
 - SPIRAL LEARNING: the same topic legitimately appears at several depths with different viewpoints — "用配方法解一元二次方程" then "用求根公式解一元二次方程" then "用判别式判定一元二次方程根的性质". Every unit name must make its depth and viewpoint clear; never emit two units with the same name, and never emit two nearly identical units.
 - Produce a COMPLETE network covering the WHOLE path from the starting point to the goal: every significant sub-domain of the topic must be decomposed. Missing sub-domains are the worst failure — decompose generously. The unit count follows the goal's true breadth: a whole field like "数学零基础到本科结业" needs well over 60 units; never stop early just to finish quickly.
-- If the user message includes a reference scope analysis, treat it as the COVERAGE CHECKLIST: every listed sub-domain must be realized as units, and every listed backbone concept must be realized as one or more units (reworded into action sentences as needed).
+- If the user message includes a reference scope analysis, treat it as the COVERAGE CHECKLIST: every listed block must be realized as one or more units (reworded into action sentences as needed).
 - Every name in any "pre" list MUST also appear as a "name" in this same reply (self-contained reference space). Reuse the exact name string — no aliases, no paraphrases.
 - The network must be ONE connected structure: every unit is reachable from the true entry units along dependency chains. Sub-domains MUST cross-link where they genuinely depend on each other — geometry and algebra meet in 解析几何; functions and limits meet in 微积分. Two sub-domains forming two separate disconnected trees is a hard failure.
 - No star-shaped hubs: no single unit should carry more than ~12 direct dependents — spread dependencies across intermediate units instead.
@@ -612,76 +635,71 @@ Rules:
 
 /// Scope call: ONE light call that resolves what the goal description
 /// actually covers before the heavy generation call. The output is REFERENCE
-/// material only — sub-domains act as the generation call's coverage
-/// checklist and backbone concepts as its milestone list; neither is
-/// scaffolding the pipeline builds on. Failure degrades to no-scope
-/// generation (the pre-scope behavior), never to a hard error.
+/// material only — a STRICTLY COMPLETE list of large-block concepts that a
+/// complete network must cover (no fixed count: a complex goal gets more
+/// blocks, a simple goal fewer); the generation stage decomposes each block
+/// into learning units on its own, and the audit re-checks every block
+/// against the final graph. Nothing else (unit-level naming, expected size)
+/// is the scope's job — the audit owns completeness. Failure degrades to
+/// no-scope generation (the pre-scope behavior), never to a hard error.
 const SCOPE_SYSTEM: &str = r#"You resolve the exact coverage of a broad learning goal BEFORE it is decomposed into units.
 Reply with ONLY one JSON object matching this shape:
 {
   "scope": "one sentence delimiting what this goal covers and where it starts",
-  "subdomains": ["子域一", "子域二"],
-  "backbone": ["里程碑概念一", "里程碑概念二"],
-  "expected_units": 120
+  "blocks": ["骨干概念一", "骨干概念二"]
 }
 Rules:
-- "scope": a crisp one-sentence boundary of the goal — the starting point, the target level, and the subject breadth.
-- "subdomains": 5-15 names of the significant sub-domains the goal genuinely covers, ordered from foundational to advanced, together spanning the WHOLE path from the starting point to the goal. Under-listing is the worst failure — list every sub-domain a complete curriculum would include.
-- "backbone": the milestone concepts that a complete path MUST contain — roughly 3-10 per sub-domain, phrased as action sentences the learner performs ("用配方法解一元二次方程", "理解极限的 ε-δ 定义", "证明微积分基本定理", "比较两种排序算法的复杂度"), same convention as learning units. Vary the sentence templates across entries; these are a coverage checklist, not an exact final list.
-- "expected_units": how many learning units a complete decomposition would reasonably need, between 30 and 200.
+- "scope": a crisp one-sentence boundary of the goal — the starting point, the target level, and the subject breadth. When the learner's baseline is unclear and no explicit starting point is requested, default to absolute zero: assume the learner has NO prior knowledge or skills in the subject, and set the starting point accordingly.
+- "blocks": the large-block concepts the goal genuinely covers, ordered from foundational to advanced, together spanning the WHOLE path from the starting point to the goal. This is a strictly complete checklist — every significant block a complete curriculum would include; under-listing is the worst failure, so when in doubt, split a block rather than merge two. No fixed count: a complex goal gets more blocks, a simple goal fewer.
 - Write names in the language of the learning goal.
 - Output JSON only, without Markdown fences or commentary."#;
 
-/// Resolved scope reference fed into the generation call. `backbone` is
-/// deliberately advisory: the generator rewrites it into final unit names.
+/// Resolved scope reference fed into the generation call. `blocks` is
+/// deliberately coarse: large-block concepts the generator decomposes into
+/// final unit names, never exact unit names themselves.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ScopeAnalysis {
     pub scope: String,
-    pub subdomains: Vec<String>,
-    pub backbone: Vec<String>,
-    pub expected_units: Option<u16>,
+    pub blocks: Vec<String>,
 }
 
 /// Raw scope reply — same tolerant parsing philosophy as [`RawConcept`]: a
 /// bare string where a list is expected, or a missing field, degrades
-/// instead of failing the whole analysis.
+/// instead of failing the whole analysis. `blocks` is the only field the
+/// current prompt asks for; legacy two-list replies (subdomains + backbone)
+/// are still accepted and merged into one checklist.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct RawScope {
     #[serde(default)]
     pub scope: String,
     #[serde(default, deserialize_with = "de_pre_list")]
+    pub blocks: Vec<String>,
+    #[serde(default, deserialize_with = "de_pre_list")]
     pub subdomains: Vec<String>,
     #[serde(default, deserialize_with = "de_pre_list")]
     pub backbone: Vec<String>,
-    #[serde(default, deserialize_with = "de_min")]
-    pub expected_units: Option<u16>,
-}
-
-/// Size reference bounds: below the audit floor is pointless, above the
-/// ceiling would push the generation call past its token budget.
-const SCOPE_UNITS_MIN: u16 = 30;
-const SCOPE_UNITS_MAX: u16 = 200;
-
-fn clamp_expected_units(n: u16) -> u16 {
-    n.clamp(SCOPE_UNITS_MIN, SCOPE_UNITS_MAX)
 }
 
 /// Parse the scope reply; `None` means "no usable scope" and degrades to
 /// scope-free generation.
 fn parse_scope_reply(raw: &str) -> Option<ScopeAnalysis> {
     let parsed = crate::generation::parse_json_object::<RawScope>(raw).ok()?;
+    let mut blocks = parsed.blocks;
+    if blocks.is_empty() {
+        // Legacy two-list replies merge into the single block checklist.
+        blocks.extend(parsed.subdomains.into_iter());
+        blocks.extend(parsed.backbone.into_iter());
+    }
     Some(ScopeAnalysis {
         scope: parsed.scope.trim().to_owned(),
-        subdomains: parsed.subdomains,
-        backbone: parsed.backbone,
-        expected_units: parsed.expected_units.map(clamp_expected_units),
+        blocks,
     })
 }
 
 /// One scope call, best-effort: any failure is logged and degrades to `None`
 /// so the generation call still runs without a reference (pre-scope
-/// behavior).
-async fn analyze_scope(
+/// behavior). Also the draft store's scope resolver (`cg_start`).
+pub(crate) async fn analyze_scope(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     topic: &str,
@@ -721,9 +739,7 @@ async fn analyze_scope(
                 log.log(
                     "scope_parsed",
                     serde_json::json!({
-                        "subdomains": scope.subdomains.len(),
-                        "backbone": scope.backbone.len(),
-                        "expected_units": scope.expected_units,
+                        "blocks": scope.blocks.len(),
                     }),
                 );
             }
@@ -806,16 +822,13 @@ pub(crate) async fn generate_concept_graph(
     if let Some(log) = log {
         log.log("parsed", serde_json::json!({ "concepts": parsed.concepts.len() }));
     }
-    let expected_units = scope.as_ref().and_then(|scope| scope.expected_units);
     let (mut graph, fuzzy_resolved) = assemble_graph(&parsed);
-    // The scope content checklists (sub-domains, backbone concepts) rejoin
-    // the audit as coverage contracts of their own — not just its size
-    // estimate — so skipped concepts are caught and repairable by name.
+    // The scope content checklist (large-block concepts) rejoins the audit
+    // as a coverage contract of its own — so skipped blocks are caught and
+    // repairable by name.
     graph.audit.findings = audit_concept_graph_with_scope(
         &graph,
-        expected_units,
-        scope.as_ref().map(|scope| scope.subdomains.as_slice()),
-        scope.as_ref().map(|scope| scope.backbone.as_slice()),
+        scope.as_ref().map(|scope| scope.blocks.as_slice()),
     );
     if let Some(log) = log {
         // Near-miss references that were resolved instead of dropped are a
@@ -909,9 +922,9 @@ fn parse_graph_reply(raw: &str) -> Result<RawGraph, String> {
 }
 
 /// The generation call only ever asks for the whole network once. A resolved
-/// scope (when present) is embedded as the coverage checklist: sub-domains
-/// that must all be realized, backbone concepts that must all become units,
-/// and a size reference — the model still produces the single flat list.
+/// scope (when present) is embedded as the coverage checklist: large-block
+/// concepts that must all be covered — the model still produces the single
+/// flat list and decomposes each block into units itself.
 fn build_generate_user(topic: &str, scope: Option<&ScopeAnalysis>) -> String {
     let Some(scope) = scope else {
         return format!("Learning goal: {topic}");
@@ -920,21 +933,10 @@ fn build_generate_user(topic: &str, scope: Option<&ScopeAnalysis>) -> String {
     if !scope.scope.is_empty() {
         parts.push(format!("范围界定：{}", scope.scope));
     }
-    if !scope.subdomains.is_empty() {
+    if !scope.blocks.is_empty() {
         parts.push(format!(
-            "必须覆盖的子域（每个都必须分解为单元）：{}",
-            scope.subdomains.join("、")
-        ));
-    }
-    if !scope.backbone.is_empty() {
-        parts.push(format!(
-            "子域骨干概念（覆盖清单，每个需落实为一个或多个单元，可改写为动作句）：{}",
-            scope.backbone.join("；")
-        ));
-    }
-    if let Some(expected) = scope.expected_units {
-        parts.push(format!(
-            "预期单元规模：约 {expected} 个。这不是软性参考：最终单元数显著少于该数，意味着整块子域被遗漏，必须补全。"
+            "必须覆盖的大块概念（严格完备清单，每个需落实为一个或多个单元，可改写为动作句）：{}",
+            scope.blocks.join("；")
         ));
     }
     parts.join("\n")
@@ -1223,12 +1225,10 @@ mod tests {
 
     #[test]
     fn parse_scope_reply_accepts_the_documented_shape() {
-        let raw = r#"{"scope":"零基础到本科","subdomains":["算术","代数"],"backbone":["用配方法解一元二次方程"],"expected_units":120}"#;
+        let raw = r#"{"scope":"零基础到本科","blocks":["算术","配方法"]}"#;
         let scope = parse_scope_reply(raw).unwrap();
         assert_eq!(scope.scope, "零基础到本科");
-        assert_eq!(scope.subdomains, vec!["算术", "代数"]);
-        assert_eq!(scope.backbone, vec!["用配方法解一元二次方程"]);
-        assert_eq!(scope.expected_units, Some(120));
+        assert_eq!(scope.blocks, vec!["算术", "配方法"]);
     }
 
     #[test]
@@ -1238,21 +1238,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_scope_reply_tolerates_string_lists_and_missing_fields() {
-        let raw = r#"{"scope":"x","subdomains":"算术","expected_units":"999"}"#;
+    fn parse_scope_reply_tolerates_string_lists_missing_fields_and_legacy_two_lists() {
+        let raw = r#"{"scope":"x","blocks":"算术"}"#;
         let scope = parse_scope_reply(raw).unwrap();
-        assert_eq!(scope.subdomains, vec!["算术"]);
-        assert!(scope.backbone.is_empty());
-        // "999" clamps to the ceiling: a runaway size reference must not
-        // push the generation call past its token budget.
-        assert_eq!(scope.expected_units, Some(SCOPE_UNITS_MAX));
-    }
-
-    #[test]
-    fn clamp_expected_units_bounds_the_size_reference() {
-        assert_eq!(clamp_expected_units(10), SCOPE_UNITS_MIN);
-        assert_eq!(clamp_expected_units(60), 60);
-        assert_eq!(clamp_expected_units(5000), SCOPE_UNITS_MAX);
+        assert_eq!(scope.blocks, vec!["算术"]);
+        // Legacy two-list replies (subdomains + backbone) merge into blocks.
+        let legacy =
+            parse_scope_reply(r#"{"scope":"x","subdomains":["算术"],"backbone":["配方法"]}"#)
+                .unwrap();
+        assert_eq!(legacy.blocks, vec!["算术", "配方法"]);
     }
 
     #[test]
@@ -1264,16 +1258,13 @@ mod tests {
     fn build_generate_user_embeds_scope_as_coverage_checklist() {
         let scope = ScopeAnalysis {
             scope: "零基础到本科结业".into(),
-            subdomains: vec!["算术".into(), "代数".into()],
-            backbone: vec!["用配方法解一元二次方程".into()],
-            expected_units: Some(120),
+            blocks: vec!["算术".into(), "代数".into(), "配方法".into()],
         };
         let user = build_generate_user("数学-零基础到本科结业", Some(&scope));
         assert!(user.contains("范围界定：零基础到本科结业"), "{user}");
-        assert!(user.contains("必须覆盖的子域"), "{user}");
-        assert!(user.contains("算术、代数"), "{user}");
-        assert!(user.contains("骨干概念"), "{user}");
-        assert!(user.contains("约 120 个"), "{user}");
+        assert!(user.contains("必须覆盖的大块概念"), "{user}");
+        assert!(user.contains("算术；代数；配方法"), "{user}");
+        assert!(!user.contains("预期单元规模"), "{user}");
         assert!(user.starts_with("Learning goal: 数学-零基础到本科结业"), "{user}");
     }
 

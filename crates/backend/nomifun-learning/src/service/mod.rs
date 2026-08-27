@@ -17,6 +17,8 @@ pub(super) use serde_json::Value;
 pub(super) use sqlx::{Row, Sqlite, Transaction};
 
 pub(super) use crate::completer::LearningCompleter;
+pub(super) use crate::concept_graph::draft::DraftGraph;
+pub(super) use crate::concept_graph::ConceptGraphAgentEngine;
 pub(super) use crate::generation::{Blueprint, generate_lesson, generate_lesson_activity};
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
@@ -38,6 +40,14 @@ pub struct LearningService {
     knowledge_service: Arc<RwLock<Option<Arc<KnowledgeService>>>>,
     course_completer: Arc<RwLock<Option<Arc<dyn LearningCompleter>>>>,
     concept_graph_dir: Arc<RwLock<Option<PathBuf>>>,
+    /// In-memory draft store backing the agent tool set (`cg_start` ..
+    /// `cg_finish`). Generation is a short-lived operation, so drafts do
+    /// not survive restarts; only `cg_finish` publishes to disk.
+    concept_graph_drafts: Arc<RwLock<HashMap<String, DraftGraph>>>,
+    /// Two-loop agent engine; when present, `generate_concept_graph` routes
+    /// through it (draft + `cg_*` tools), otherwise the legacy one-shot
+    /// pipeline runs.
+    concept_graph_engine: Arc<RwLock<Option<Arc<dyn ConceptGraphAgentEngine>>>>,
 }
 
 impl LearningService {
@@ -47,6 +57,8 @@ impl LearningService {
             knowledge_service: Arc::new(RwLock::new(None)),
             course_completer: Arc::new(RwLock::new(None)),
             concept_graph_dir: Arc::new(RwLock::new(None)),
+            concept_graph_drafts: Arc::new(RwLock::new(HashMap::new())),
+            concept_graph_engine: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -63,6 +75,29 @@ impl LearningService {
             .course_completer
             .write()
             .expect("learning course completer lock poisoned") = Some(completer);
+    }
+
+    /// Inject the two-loop concept graph agent engine (wiring-time, before
+    /// any request). Absent, concept graph generation falls back to the
+    /// legacy one-shot pipeline.
+    pub fn set_concept_graph_engine(&self, engine: Arc<dyn ConceptGraphAgentEngine>) {
+        *self
+            .concept_graph_engine
+            .write()
+            .expect("learning concept graph engine lock poisoned") = Some(engine);
+    }
+
+    /// Best-effort session log for concept graph generation: appends one
+    /// event to the same `concept-graph-generation.log` the legacy pipeline
+    /// writes, so agent-engine sessions stay diagnosable offline. Logging
+    /// never fails the caller — every failure is swallowed by contract.
+    pub fn log_concept_graph_event(&self, session: &str, event: &str, fields: serde_json::Value) {
+        let dir = match self.concept_graph_dir.read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => return,
+        };
+        let Some(dir) = dir else { return };
+        crate::concept_graph::ConceptGraphLogger::new(&dir, session).log(event, fields);
     }
 
     /// Test-only access to the underlying pool (e.g. to simulate a stale

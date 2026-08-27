@@ -12,8 +12,13 @@ mod tutorial;
 pub use completer::LearningCompleter;
 
 pub use concept_graph::{
-    ConceptGraphData, ConceptGraphEdge, ConceptGraphNode, ConceptGraphRecord, ConceptGraphSummary,
-    GenerateConceptGraphRequest,
+    ConceptGraphAgentEngine, ConceptGraphData, ConceptGraphEdge, ConceptGraphNode,
+    ConceptGraphRecord, ConceptGraphSummary, GenerateConceptGraphRequest,
+};
+
+pub use concept_graph::draft::{
+    DraftView, GraphOp, InspectView, NodeListView, NodeQuery, PatchReport, SplitUnit,
+    SubgraphDirection, SubgraphView,
 };
 
 pub use models::{

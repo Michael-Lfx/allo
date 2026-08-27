@@ -39,8 +39,10 @@ pub(crate) const REFLECTION_GRADING_MAX_TOKENS: u32 = 2048;
 /// Whole concept graph (60-200 concepts) in one reply; regeneration rounds
 /// rewrite everything again.
 pub(crate) const CONCEPT_GRAPH_MAX_TOKENS: u32 = 16 * 1024;
-/// Pre-generation scope analysis: small coverage/backbone JSON only.
-pub(crate) const CONCEPT_GRAPH_SCOPE_MAX_TOKENS: u32 = 4096;
+/// Pre-generation scope analysis: a coarse block checklist JSON. Generous
+/// budget so a complex goal can enumerate a long, strictly-complete
+/// checklist without the reply being cut off mid-array.
+pub(crate) const CONCEPT_GRAPH_SCOPE_MAX_TOKENS: u32 = 8192;
 /// Light concept-graph repair (manual or automatic in the generation loop):
 /// local patch calls with add/reverse/split/merge operations only.
 pub(crate) const CONCEPT_GRAPH_REPAIR_MAX_TOKENS: u32 = 4096;
