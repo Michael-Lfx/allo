@@ -1142,7 +1142,8 @@ const WorkspacePage: React.FC = () => {
   const canRender = isAction
     ? !busy && actionAssetsReady
     : !busy && (hasStoryboard || isFailed);
-  const canContinue = isFailed && !busy;
+  /** Resume is only needed when continuing as plan (render button handles resume-as-render). */
+  const canContinue = isFailed && !busy && !continueAsRender;
   const currentStatus = liveStatus;
   /** Plan finished (idle + `planned`) but the film is not rendered yet. */
   const plannedIdle =

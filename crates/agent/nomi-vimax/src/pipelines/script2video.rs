@@ -21,7 +21,8 @@ use super::cameo_bind::{
     world_cameo_context,
 };
 use super::privacy_face::{
-    content_index_to_image_slot, ensure_seedance_privacy_face, is_seedance_privacy_image_err_text,
+    content_index_to_image_slot, ensure_seedance_privacy_face, ensure_ai_sanitized_privacy_face,
+    is_seedance_privacy_image_err_text,
     next_privacy_tier_for_path, parse_seedance_flagged_content_index, privacy_repair_targets,
     PrivacyFaceOutcome, PrivacyFaceTier,
 };
@@ -282,15 +283,8 @@ impl Script2VideoPipeline {
         let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
         let final_path = self.working_dir.join("final_video.mp4");
         media_local::scrub_unusable_video(&final_path).await?;
-        if media_local::is_usable_video_file(&final_path) {
-            emit(
-                &progress,
-                "final_video_exists",
-                "场景成片已存在，跳过本场景渲染",
-            );
-            return Ok(final_path);
-        }
 
+        // Load plan to check shot completeness before deciding to skip.
         let plan = if self.plan_artifacts_complete().await {
             emit(
                 &progress,
@@ -302,6 +296,31 @@ impl Script2VideoPipeline {
             self.plan_text_artifacts(script, user_requirement, &style, progress.clone())
                 .await?
         };
+
+        // Only skip if final_video exists AND all shot videos are present.
+        if media_local::is_usable_video_file(&final_path) {
+            let all_shots_complete = plan.shot_descriptions.iter().all(|shot| {
+                let shot_video = self
+                    .working_dir
+                    .join("shots")
+                    .join(shot.idx.to_string())
+                    .join("video.mp4");
+                media_local::is_usable_video_file(&shot_video)
+            });
+            if all_shots_complete {
+                emit(
+                    &progress,
+                    "final_video_exists",
+                    "场景成片及所有镜头视频均已存在，跳过本场景渲染",
+                );
+                return Ok(final_path);
+            }
+            // final_video exists but some shot videos are missing — continue generating missing shots.
+            tracing::warn!(
+                shots = plan.shot_descriptions.len(),
+                "final_video exists but some shot videos missing — resuming"
+            );
+        }
 
         emit(
             &progress,
@@ -1117,6 +1136,10 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                         ),
                         pct,
                     );
+                    // User cancelled — stop gracefully without an error message.
+                    if VimaxError::is_cancelled(&e) {
+                        return Err(e);
+                    }
                     break;
                 }
             }
@@ -1830,19 +1853,14 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                 let mut all_exhausted = true;
                 for &slot in &targets {
                     let flagged_path = working_pairs[slot].0.clone();
-                    let Some(tier) =
-                        next_privacy_tier_for_path(&flagged_path, &privacy_attempts)
-                    else {
-                        continue;
-                    };
-                    all_exhausted = false;
-                    // Seedance just rejected (or we are sweeping after reject) — force
-                    // re-run from privacy_raw; do not skip because of a stale marker.
-                    match ensure_seedance_privacy_face(
-                        self.backends.image.as_ref(),
+                    
+                    // Use AI Sanitization strategy for better video model compliance
+                    // This uses vision description + T2I instead of img2img
+                    match ensure_ai_sanitized_privacy_face(
+                        Arc::clone(&self.backends.image),
+                        Arc::clone(&self.backends.chat),
                         &flagged_path,
-                        tier,
-                        true,
+                        style,
                     )
                     .await
                     {
@@ -1850,24 +1868,52 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                             tracing::info!(
                                 shot = shot.idx,
                                 path = %flagged_path.display(),
-                                ?tier,
                                 ?outcome,
-                                "privacy face repair applied"
+                                "AI sanitization privacy repair applied"
                             );
                             if matches!(outcome, PrivacyFaceOutcome::Rewritten) {
                                 any_rewrite = true;
                             }
-                            privacy_attempts.push((flagged_path, tier));
+                            privacy_attempts.push((flagged_path, PrivacyFaceTier::Soft));
                         }
                         Err(repair_err) => {
                             tracing::warn!(
                                 shot = shot.idx,
                                 path = %flagged_path.display(),
                                 error = %repair_err,
-                                "privacy face repair failed for one ref; continuing others"
+                                "AI sanitization failed; falling back to traditional img2img"
                             );
-                            // Still record the attempt so we escalate / don't loop forever.
-                            privacy_attempts.push((flagged_path, tier));
+                            // Fallback to traditional img2img
+                            let Some(tier) =
+                                next_privacy_tier_for_path(&flagged_path, &privacy_attempts)
+                            else {
+                                continue;
+                            };
+                            all_exhausted = false;
+                            match ensure_seedance_privacy_face(
+                                self.backends.image.as_ref(),
+                                &flagged_path,
+                                tier,
+                                true,
+                            )
+                            .await
+                            {
+                                Ok(outcome) => {
+                                    if matches!(outcome, PrivacyFaceOutcome::Rewritten) {
+                                        any_rewrite = true;
+                                    }
+                                    privacy_attempts.push((flagged_path, tier));
+                                }
+                                Err(fallback_err) => {
+                                    tracing::warn!(
+                                        shot = shot.idx,
+                                        path = %flagged_path.display(),
+                                        error = %fallback_err,
+                                        "privacy face repair failed for one ref; continuing"
+                                    );
+                                    privacy_attempts.push((flagged_path, tier));
+                                }
+                            }
                         }
                     }
                 }
@@ -2077,10 +2123,12 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
                 shot.idx
             )));
         }
-        emit(
+        emit_pct_meta(
             progress,
             "video_clip_done",
             &format!("Shot {} video saved", shot.idx),
+            99.0,
+            serde_json::json!({ "shot_idx": shot.idx }),
         );
         Ok(())
     }
