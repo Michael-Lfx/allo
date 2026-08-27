@@ -188,7 +188,7 @@ fn default_video_resolution() -> String {
 }
 
 fn default_video_poll_timeout() -> u64 {
-    600
+    1200 // 20 minutes for video generation
 }
 
 fn default_workflow_max_retries() -> u32 {

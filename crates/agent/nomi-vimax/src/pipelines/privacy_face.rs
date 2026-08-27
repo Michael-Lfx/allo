@@ -1,20 +1,31 @@
 //! Seedance input-image privacy repair.
 //!
-//! When video create fails with `InputImageSensitiveContentDetected.PrivacyInformation`
-//! naming `content[N]`, map that index back to a local reference image, run mild
-//! cinematic img2img (keep likeness, drop real-photo fingerprints), then retry R2V.
+//! Provides two strategies for handling human face images that fail video model content moderation:
+//!
+//! 1. **Traditional img2img**: Run mild cinematic img2img to fictionalize faces (Soft/Strong tiers)
+//! 2. **AI Sanitization (recommended)**: Use vision description + text-to-image to generate completely
+//!    new AI images that maintain character essence without photographic fingerprints.
+//!
+//! AI sanitization is preferred because:
+//! - Vision model provides detailed character descriptions
+//! - T2I generates images with no real-person fingerprints
+//! - More reliable for passing video model content moderation
 //!
 //! Content layout matches [`nomifun_cloud::VideoCreateParams::build_content_array`]:
 //! `content[0]` = text prompt; `content[1..]` = images in submission order; then optional
 //! reference video / audio.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use crate::backends::{ImageGenerateOpts, VimaxImage};
+use crate::backends::{ImageGenerateOpts, VimaxChat, VimaxImage};
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local::{copy_image_file_atomic, is_usable_image_file};
 
+use super::ai_face_sanitizer;
+
 /// Forced positive look: cinematic fictional character, not a phone selfie / real-person still.
+#[allow(dead_code)]
 pub(crate) const FACE_PRIVACY_LOOK_CLAUSE: &str =
     "cinematic film look, fictional character, movie character, film grain, soft stylization";
 
@@ -354,6 +365,162 @@ pub(crate) fn next_privacy_tier_for_path(
     match last {
         None => Some(PrivacyFaceTier::Soft),
         Some(t) => t.escalate(),
+    }
+}
+
+// =============================================================================
+// AI Sanitization Strategy (Recommended)
+// =============================================================================
+
+/// Marker for AI sanitized images (more aggressive than traditional img2img)
+const MARKER_AI_SANITIZED: &str = "ai_sanitized_v1";
+
+/// Ensure image passes video model content moderation using AI sanitization.
+///
+/// This is the recommended strategy for handling human face images in video generation:
+/// 1. Uses vision model to detect faces and generate detailed descriptions
+/// 2. Generates completely new AI image via T2I
+/// 3. Result has no photographic fingerprints and maintains character essence
+///
+/// This approach is more reliable than img2img because:
+/// - T2I generates from scratch, not modifying the original
+/// - No residual photographic artifacts from the original
+/// - Character identity preserved through detailed description
+pub async fn ensure_ai_sanitized_privacy_face(
+    image: Arc<dyn VimaxImage>,
+    chat: Arc<dyn VimaxChat>,
+    path: &Path,
+    style: &str,
+) -> VimaxResult<PrivacyFaceOutcome> {
+    if !is_usable_image_file(path) {
+        return Err(VimaxError::msg(format!(
+            "AI privacy sanitizer: image missing or unreadable: {}",
+            path.display()
+        )));
+    }
+
+    // Check if already sanitized (cache by file fingerprint)
+    let raw = ai_sanitized_raw_path(path);
+    if !is_usable_image_file(&raw) {
+        copy_image_file_atomic(path, &raw)?;
+    }
+    let raw_fp = file_fingerprint(&raw).unwrap_or_default();
+    let marker = ai_sanitized_marker_path(path);
+
+    if let Some(cached) = read_ai_sanitized_marker(&marker, &raw_fp) {
+        if cached && is_usable_image_file(path) {
+            tracing::info!(
+                path = %path.display(),
+                "AI privacy sanitizer: using cached result"
+            );
+            return Ok(PrivacyFaceOutcome::Unchanged);
+        }
+    }
+
+    // Step 1: Check if image has human face
+    let has_face = match ai_face_sanitizer::detect_human_face(Arc::clone(&chat), path).await {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "AI privacy sanitizer: face detection failed, keeping original"
+            );
+            return Ok(PrivacyFaceOutcome::Unchanged);
+        }
+    };
+
+    if !has_face {
+        tracing::info!(
+            path = %path.display(),
+            "AI privacy sanitizer: no human face detected, keeping original"
+        );
+        let _ = std::fs::write(&marker, format!("{}|no_face", raw_fp));
+        return Ok(PrivacyFaceOutcome::Unchanged);
+    }
+
+    // Step 2: Generate AI sanitized version
+    tracing::info!(
+        path = %path.display(),
+        "AI privacy sanitizer: generating sanitized version"
+    );
+
+    let (_result_path, outcome) = ai_face_sanitizer::ai_sanitize_face_image(
+        Arc::clone(&image),
+        Arc::clone(&chat),
+        path,
+        path, // Overwrite in place
+        style,
+    )
+    .await?;
+
+    match outcome {
+        ai_face_sanitizer::AiSanitizerOutcome::Generated
+        | ai_face_sanitizer::AiSanitizerOutcome::Cached => {
+            let _ = std::fs::write(&marker, format!("{}|{}", raw_fp, MARKER_AI_SANITIZED));
+            Ok(PrivacyFaceOutcome::Rewritten)
+        }
+        ai_face_sanitizer::AiSanitizerOutcome::NoFace => {
+            // Inconsistent detection, keep original
+            let _ = std::fs::write(&marker, format!("{}|no_face", raw_fp));
+            Ok(PrivacyFaceOutcome::Unchanged)
+        }
+    }
+}
+
+/// Sanitize multiple images in batch (for privacy repair targets)
+#[allow(dead_code)]
+pub async fn batch_ai_sanitize_privacy_faces(
+    image: Arc<dyn VimaxImage>,
+    chat: Arc<dyn VimaxChat>,
+    paths: &[PathBuf],
+    style: &str,
+    progress_callback: impl Fn(usize, usize) + Send + 'static,
+) -> Vec<VimaxResult<PrivacyFaceOutcome>> {
+    let total = paths.len();
+    let mut results = Vec::with_capacity(total);
+
+    for (idx, path) in paths.iter().enumerate() {
+        let result = ensure_ai_sanitized_privacy_face(
+            Arc::clone(&image),
+            Arc::clone(&chat),
+            path,
+            style,
+        )
+        .await;
+        progress_callback(idx + 1, total);
+        results.push(result);
+    }
+
+    results
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+fn ai_sanitized_raw_path(path: &Path) -> PathBuf {
+    path.with_extension("ai_sanitized_raw.png")
+}
+
+fn ai_sanitized_marker_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.ai_privacy_safe", path.display()))
+}
+
+fn read_ai_sanitized_marker(marker: &Path, raw_fp: &str) -> Option<bool> {
+    let Ok(raw) = std::fs::read_to_string(marker) else {
+        return None;
+    };
+    let s = raw.trim();
+    if !s.starts_with(raw_fp) {
+        return None;
+    }
+    if s.contains(MARKER_AI_SANITIZED) {
+        Some(true)
+    } else if s.contains("no_face") {
+        Some(false)
+    } else {
+        None
     }
 }
 

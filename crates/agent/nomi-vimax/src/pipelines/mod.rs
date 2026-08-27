@@ -1,6 +1,7 @@
 //! Script2Video / Idea2Video / Novel2Video pipeline entrypoints.
 
 mod action2video;
+mod ai_face_sanitizer;
 mod cameo_bind;
 mod idea2video;
 mod novel2video;
@@ -10,6 +11,7 @@ mod script_scene_split;
 mod script2video;
 
 pub use action2video::{model_supports_action_imitation, Action2VideoPipeline};
+pub use ai_face_sanitizer::{ai_sanitize_face_image, ensure_ai_sanitized_face, AiSanitizerOutcome, detect_human_face, VisionDescription};
 pub use idea2video::Idea2VideoPipeline;
 pub use novel2video::Novel2VideoPipeline;
 pub use script_film::ScriptFilmPipeline;

@@ -580,6 +580,10 @@ impl Idea2VideoPipeline {
                     );
                 }
                 Err(e) => {
+                    // User cancelled — stop gracefully without an error message.
+                    if crate::error::VimaxError::is_cancelled(&e) {
+                        return Err(e);
+                    }
                     emit_pct(
                         &progress,
                         "render_scene_failed",
