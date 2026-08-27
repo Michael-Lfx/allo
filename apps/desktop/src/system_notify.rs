@@ -47,6 +47,15 @@ pub fn show_os_notification(
     body: &str,
     click_target: Option<&str>,
 ) -> Result<(), NotifyError> {
+    // Shutdown in progress: a toast now outlives nothing, and its badge/toast-window
+    // work only races the exiting event loop. Suppress it on both entry paths
+    // (renderer command and backend notifier).
+    if app
+        .try_state::<crate::QuitFlag>()
+        .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+    {
+        return Ok(());
+    }
     #[cfg(windows)]
     let result = show_windows_toast(app, title, body, click_target);
     #[cfg(not(windows))]
@@ -66,8 +75,11 @@ pub fn show_os_notification(
     result
 }
 
+// Async so the WinRT toast / taskbar-badge COM calls run on the async runtime
+// instead of blocking the main-thread event loop (a stalled shell RPC there
+// wedges every queued event — including the final exit request on quit).
 #[tauri::command]
-pub fn show_os_notification_cmd(
+pub async fn show_os_notification_cmd(
     app: AppHandle,
     title: String,
     body: String,
