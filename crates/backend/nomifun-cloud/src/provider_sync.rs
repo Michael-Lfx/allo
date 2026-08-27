@@ -433,10 +433,14 @@ struct BuiltModelFields {
 
 fn build_model_fields(entries: &[ClawModelEntry], server: &ServerConfig) -> BuiltModelFields {
     let default_model = server.effective_default_llm_model();
-    let mut model_ids: Vec<String> = entries.iter().map(|e| e.api_model_id()).collect();
-    model_ids.sort();
-    model_ids.dedup();
-    model_ids.retain(|m| !m.trim().is_empty());
+    let mut seen_model_ids = HashSet::new();
+    let mut model_ids = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let model_id = entry.api_model_id();
+        if !model_id.trim().is_empty() && seen_model_ids.insert(model_id.clone()) {
+            model_ids.push(model_id);
+        }
+    }
 
     promote_default_model(&mut model_ids, &default_model);
 
@@ -582,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn build_model_fields_drops_ids_not_in_server_catalog() {
+    fn build_model_fields_preserves_catalog_order_and_drops_empty_or_duplicate_ids() {
         let server = ServerConfig {
             llm: nomi_config::ServerLlmConfig {
                 default_model: "AIPC-delisted".into(),
@@ -611,11 +615,31 @@ mod tests {
                 category: 1,
                 ..Default::default()
             },
+            ClawModelEntry {
+                id: "AIPC-keep".into(),
+                name: "Duplicate keep".into(),
+                extra: String::new(),
+                endpoint: String::new(),
+                anthropic_endpoint: String::new(),
+                icon: String::new(),
+                category: 1,
+                ..Default::default()
+            },
+            ClawModelEntry {
+                id: "  ".into(),
+                name: "Empty id".into(),
+                extra: String::new(),
+                endpoint: String::new(),
+                anthropic_endpoint: String::new(),
+                icon: String::new(),
+                category: 1,
+                ..Default::default()
+            },
         ];
         let fields = build_model_fields(&entries, &server);
         assert_eq!(
             fields.model_ids,
-            vec!["AIPC-also".to_string(), "AIPC-keep".to_string()]
+            vec!["AIPC-keep".to_string(), "AIPC-also".to_string()]
         );
         assert!(!fields.model_ids.iter().any(|id| id == "AIPC-delisted"));
         assert_eq!(fields.context_limits_json, "{}");
