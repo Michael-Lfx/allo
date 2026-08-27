@@ -430,9 +430,9 @@ pub mod tool {
 
     #[async_trait]
     impl Tool for LspTool {
-        fn name(&self) -> &str {
-            "Lsp"
-        }
+    fn name(&self) -> &str {
+        "Lsp"
+    }
 
         fn description(&self) -> &str {
             "Code navigation via a language server (experimental).\n\n\
