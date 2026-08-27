@@ -16,8 +16,13 @@ pub(crate) const SEV_WARNING: &str = "warning";
 pub(crate) const SEV_DANGER: &str = "danger";
 
 /// Hard cap on one unit's estimated study time (minutes) — the feature's
-/// workload budget: less is always fine, more is not.
-pub(crate) const UNIT_MINUTE_CAP: u16 = 25;
+/// workload budget: less is always fine, more is not. Reserved for
+/// genuinely hard single lessons; everything else should stay within
+/// [`UNIT_MINUTE_SOFT`].
+pub(crate) const UNIT_MINUTE_CAP: u16 = 60;
+/// Soft cap (minutes): most units should fit within it; 30-60 minute units
+/// are legal (hard lessons) but flagged with a warning.
+pub(crate) const UNIT_MINUTE_SOFT: u16 = 30;
 /// Below this estimated minutes a unit is probably too thin to be a
 /// standalone study session (info-level reference only).
 const UNIT_MINUTE_FLOOR: u16 = 5;
@@ -52,109 +57,65 @@ const MIN_UNITS: usize = 30;
 /// — the naming is inconsistent, so the whole graph gets regenerated.
 const REF_DROP_RATE_LIMIT: f64 = 0.15;
 const REF_DROP_COUNT_LIMIT: usize = 12;
-/// Coverage-vs-scope gate: when the scope analysis estimated a size, a graph
-/// below this share of that estimate skipped sub-domains even though it
-/// clears MIN_UNITS. The scope estimate, not the absolute floor, is the
-/// contract the model was handed.
-const COVERAGE_RATIO_FLOOR: f64 = 0.8;
 /// Share of units expected to converge 2+ direct prerequisites; below this
 /// the network is effectively a forest of chains, not a graph.
 const MIN_MULTI_PARENT_SHARE: f64 = 0.1;
 /// The tree check only applies to broad goals — small chains are
 /// legitimately linear.
 const MULTI_PARENT_MIN_NODES: usize = 30;
-/// Backbone concepts are exact milestone contracts phrased like units; a
-/// unit covers a backbone entry when it shares at least this many
-/// consecutive characters (action-sentence names run 8-15 chars, so 4 is a
-/// strong overlap — the same bar as the spiral check).
-const BACKBONE_MIN_SHARED: usize = 4;
-/// Sub-domains are broad nouns, hard to match against action sentences;
-/// two shared characters is a weak signal, so the finding is a warning
-/// for a human to rule on, never a gate.
-const SUBDOMAIN_MIN_SHARED: usize = 2;
+/// Scope blocks are large-block concepts (broad nouns / theme phrases,
+/// e.g. "透视与空间", "几何概括临摹"), not exact unit names; a unit covers
+/// a block when it shares at least this many consecutive characters (block
+/// words run 2-6 chars, so 2 is a deliberately weak bar — the coverage
+/// contract is completeness, and the repair loop adds units by block name,
+/// rewritten into action sentences).
+pub(crate) const BLOCK_MIN_SHARED: usize = 2;
 
-/// Run every deterministic structural check. `expected_units` is the scope
-/// analysis' size estimate (when one ran); the coverage-shortfall gate
-/// compares the graph against it. The graph is assumed acyclic (merge
-/// removes cycles), but a defensive cycle check guards hand-edited files:
-/// on a cycle the depth-based indicators are skipped.
-pub(crate) fn audit_concept_graph(
-    graph: &ConceptGraphData,
-    expected_units: Option<u16>,
-) -> Vec<AuditFinding> {
-    audit_concept_graph_with_scope(graph, expected_units, None, None)
+/// Run every deterministic structural check. The graph is assumed acyclic
+/// (merge removes cycles), but a defensive cycle check guards hand-edited
+/// files: on a cycle the depth-based indicators are skipped.
+pub(crate) fn audit_concept_graph(graph: &ConceptGraphData) -> Vec<AuditFinding> {
+    audit_concept_graph_with_scope(graph, None)
 }
 
-/// Structural audit plus the scope content checklists: the scope analysis'
-/// sub-domains and backbone concepts become coverage contracts of their
-/// own — every backbone concept must have become a unit (danger, so the
-/// repair loop can add it by its exact name), and every sub-domain should
-/// show at least a weak name overlap (warning — broad nouns cannot be
-/// matched reliably against action sentences, so a human rules). `None`
-/// subdomains/backbone skip the content checks, matching the pre-scope
-/// behavior.
+/// Structural audit plus the scope content checklist: the scope analysis'
+/// large-block concepts become a coverage contract of their own — every
+/// block must show up in at least one unit (danger, so the repair loop can
+/// add units by block name). `None` skips the content check, matching the
+/// pre-scope behavior.
 pub(crate) fn audit_concept_graph_with_scope(
     graph: &ConceptGraphData,
-    expected_units: Option<u16>,
-    subdomains: Option<&[String]>,
-    backbone: Option<&[String]>,
+    blocks: Option<&[String]>,
 ) -> Vec<AuditFinding> {
-    let mut findings = audit_graph_core(graph, expected_units);
+    let mut findings = audit_graph_core(graph);
 
-    // Scope content contracts: the scope analysis handed the generation
-    // call a sub-domain checklist and a backbone-concept checklist, but
-    // until now only its SIZE estimate reached the audit — a model could
-    // skip half the backbone concepts and still pass by padding unrelated
-    // units. These two checks close that gap deterministically (zero model
-    // calls, like every check here).
-    if let Some(backbone) = backbone {
-        let missing: Vec<&String> = backbone
+    // Scope content contract: the scope analysis handed the generation call
+    // a block checklist, and the audit verifies every block is actually
+    // covered — a model could skip half the blocks and still pass by padding
+    // unrelated units. This check closes that gap deterministically (zero
+    // model calls, like every check here).
+    if let Some(blocks) = blocks {
+        let missing: Vec<&String> = blocks
             .iter()
-            .filter(|concept| {
+            .filter(|block| {
                 !graph
                     .nodes
                     .iter()
-                    .any(|node| common_substring_len(&node.title, concept) >= BACKBONE_MIN_SHARED)
+                    .any(|node| common_substring_len(&node.title, block) >= BLOCK_MIN_SHARED)
             })
             .collect();
         if !missing.is_empty() {
             findings.push(AuditFinding {
-                kind: "missing_backbone_concepts".into(),
+                kind: "missing_block_coverage".into(),
                 severity: SEV_DANGER.into(),
                 message: format!(
-                    "{} backbone concept(s) from the scope analysis never became units — add a unit for each: {}",
+                    "{} large-block concept(s) from the scope analysis are not covered by any unit — add a unit for each (rewrite the theme into an action sentence): {}",
                     missing.len(),
                     missing
                         .iter()
-                        .map(|concept| concept.as_str())
+                        .map(|block| block.as_str())
                         .collect::<Vec<_>>()
                         .join("；")
-                ),
-                node_ids: Vec::new(),
-            });
-        }
-    }
-    if let Some(subdomains) = subdomains {
-        let missing: Vec<&String> = subdomains
-            .iter()
-            .filter(|subdomain| {
-                !graph.nodes.iter().any(|node| {
-                    common_substring_len(&node.title, subdomain) >= SUBDOMAIN_MIN_SHARED
-                })
-            })
-            .collect();
-        if !missing.is_empty() {
-            findings.push(AuditFinding {
-                kind: "missing_subdomain_coverage".into(),
-                severity: SEV_WARNING.into(),
-                message: format!(
-                    "{} sub-domain(s) from the scope analysis show no naming overlap with any unit — confirm whether they are genuinely uncovered: {}",
-                    missing.len(),
-                    missing
-                        .iter()
-                        .map(|subdomain| subdomain.as_str())
-                        .collect::<Vec<_>>()
-                        .join("、")
                 ),
                 node_ids: Vec::new(),
             });
@@ -165,14 +126,21 @@ pub(crate) fn audit_concept_graph_with_scope(
 }
 
 /// All structural checks (see [`audit_concept_graph`]).
-fn audit_graph_core(
-    graph: &ConceptGraphData,
-    expected_units: Option<u16>,
-) -> Vec<AuditFinding> {
+fn audit_graph_core(graph: &ConceptGraphData) -> Vec<AuditFinding> {
     let mut findings = Vec::new();
     let n = graph.nodes.len();
+    // Empty graph is a hard failure, not a pass: the network was never
+    // built (the model skipped construction or every patch was rejected).
+    // Zero findings would let `cg_finish`/the legacy pipeline publish a
+    // blank graph the UI renders as nothing — grade it danger so the
+    // repair loop is handed the report and must build the units.
     if n == 0 {
-        return findings;
+        return vec![AuditFinding {
+            kind: "empty_graph".into(),
+            severity: SEV_DANGER.into(),
+            message: "the graph has no learning units — the network was never built; add units covering the whole scope before finishing".into(),
+            node_ids: Vec::new(),
+        }];
     }
 
     // Coverage gate: fewer units than a broad goal demands means whole
@@ -189,28 +157,12 @@ fn audit_graph_core(
         });
     }
 
-    // Coverage-vs-scope gate: the scope analysis sized the goal; a graph far
-    // below that estimate skipped sub-domains even though it clears the
-    // absolute floor above. Danger so the repair round adds the missing
-    // units instead of publishing a quietly thinned network.
-    if let Some(expected) = expected_units {
-        let floor = (expected as f64 * COVERAGE_RATIO_FLOOR) as usize;
-        if n < floor {
-            findings.push(AuditFinding {
-                kind: "coverage_shortfall".into(),
-                severity: SEV_DANGER.into(),
-                message: format!(
-                    "only {n} learning units against the ~{expected} the scope analysis promised — whole sub-domains are likely missing"
-                ),
-                node_ids: Vec::new(),
-            });
-        }
-    }
-
-    // Workload cap: a unit must fit a 25-minute study session — the hard
-    // budget the whole feature is built on. Anything above it is a
-    // hard-cap violation (danger): the model must split the unit, never
-    // quietly raise the cap.
+    // Workload cap: a unit must fit at most 60 minutes — the hard budget
+    // the whole feature is built on. Anything above it is a hard-cap
+    // violation (danger): the model must split the unit, never quietly
+    // raise the cap. 30 minutes is the SOFT cap: units up to 60 are
+    // permitted for genuinely hard lessons, but anything above the soft
+    // cap gets a warning so the repair loop knows a split is an option.
     let overloaded: Vec<usize> = graph
         .nodes
         .iter()
@@ -223,10 +175,39 @@ fn audit_graph_core(
             kind: "unit_overload".into(),
             severity: SEV_DANGER.into(),
             message: format!(
-                "{} learning unit(s) exceed the {UNIT_MINUTE_CAP}-minute budget — split them into smaller units",
+                "{} learning unit(s) exceed the {UNIT_MINUTE_CAP}-minute hard budget — split them into smaller units",
                 overloaded.len()
             ),
             node_ids: overloaded
+                .iter()
+                .take(MAX_EVIDENCE)
+                .map(|&node| graph.nodes[node].id.clone())
+                .collect(),
+        });
+    }
+
+    // Soft-cap warning: 30-60 minute units are legal (genuinely hard
+    // lessons), but most units should stay within the soft cap. Warning
+    // only — publishing is never blocked on it.
+    let above_soft: Vec<usize> = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| {
+            node.min
+                .map_or(false, |min| min > UNIT_MINUTE_SOFT && min <= UNIT_MINUTE_CAP)
+        })
+        .map(|(position, _)| position)
+        .collect();
+    if !above_soft.is_empty() {
+        findings.push(AuditFinding {
+            kind: "unit_above_soft_cap".into(),
+            severity: SEV_WARNING.into(),
+            message: format!(
+                "{} learning unit(s) exceed the {UNIT_MINUTE_SOFT}-minute soft cap — fine for genuinely hard lessons, but consider splitting when possible",
+                above_soft.len()
+            ),
+            node_ids: above_soft
                 .iter()
                 .take(MAX_EVIDENCE)
                 .map(|&node| graph.nodes[node].id.clone())
@@ -695,7 +676,7 @@ fn audit_graph_core(
 }
 
 /// Longest common contiguous substring length (char-based).
-fn common_substring_len(a: &str, b: &str) -> usize {
+pub(crate) fn common_substring_len(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let mut best = 0usize;
@@ -777,7 +758,7 @@ mod tests {
             ],
             vec![edge("b", "c"), edge("c", "d"), edge("d", "e")],
         );
-        let findings = audit_concept_graph(&g, None);
+        let findings = audit_concept_graph(&g);
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind.as_str()).collect();
         assert!(kinds.contains(&"disconnected_components"), "{kinds:?}");
         let disconnected = findings
@@ -801,7 +782,7 @@ mod tests {
             vec![node("a", None), node("b", None)],
             vec![edge("a", "b")],
         );
-        let findings = audit_concept_graph(&thin, None);
+        let findings = audit_concept_graph(&thin);
         let coverage = findings
             .iter()
             .find(|f| f.kind == "coverage")
@@ -820,7 +801,7 @@ mod tests {
             to: "b".into(),
             reason: "unknown reference".into(),
         });
-        let findings = audit_concept_graph(&sloppy, None);
+        let findings = audit_concept_graph(&sloppy);
         let drops = findings
             .iter()
             .find(|f| f.kind == "excessive_reference_drops")
@@ -836,7 +817,7 @@ mod tests {
             vec![node("b", None), node("c", None)],
             vec![edge("b", "c"), edge("c", "b")],
         );
-        let findings = audit_concept_graph(&g, None);
+        let findings = audit_concept_graph(&g);
         assert!(findings.iter().any(|f| f.kind == "cycle"), "{findings:?}");
         // Depth-based checks are skipped, so no shallow_depth finding.
         assert!(!findings.iter().any(|f| f.kind == "shallow_depth"));
@@ -856,7 +837,7 @@ mod tests {
         let mut g = g;
         g.nodes[1].title = "Same Title".into();
         g.nodes[2].title = "same   title".into();
-        let findings = audit_concept_graph(&g, None);
+        let findings = audit_concept_graph(&g);
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind.as_str()).collect();
         assert!(kinds.contains(&"near_duplicate_titles"), "{kinds:?}");
         let duplicates = findings
@@ -869,19 +850,19 @@ mod tests {
 
     #[test]
     fn audit_flags_unit_overload_as_danger() {
-        // A unit above the 25-minute cap is a hard-budget violation.
+        // A unit above the 60-minute hard cap is a hard-budget violation.
         let g = graph(
             vec![
                 node("用配方法解一元二次方程", Some(15)),
-                node("用判别式判定一元二次方程根的性质", Some(30)),
+                node("用判别式判定一元二次方程根的性质", Some(70)),
             ],
             vec![],
         );
-        let findings = audit_concept_graph(&g, None);
+        let findings = audit_concept_graph(&g);
         let overload = findings
             .iter()
             .find(|f| f.kind == "unit_overload")
-            .expect("30-minute unit must be flagged");
+            .expect("70-minute unit must be flagged");
         assert_eq!(overload.severity, SEV_DANGER);
         assert_eq!(
             overload.node_ids,
@@ -889,6 +870,29 @@ mod tests {
         );
         // The 15-minute unit stays clean.
         assert!(!findings.iter().any(|f| f.kind == "unit_fragment"));
+    }
+
+    #[test]
+    fn audit_flags_units_above_soft_cap_as_warning_only() {
+        // 30-60 minute units are legal (hard lessons): warning, never a gate.
+        let g = graph(
+            vec![
+                node("用配方法解一元二次方程", Some(15)),
+                node("构造三元组求不定方程整数解", Some(45)),
+            ],
+            vec![],
+        );
+        let findings = audit_concept_graph(&g);
+        let soft = findings
+            .iter()
+            .find(|f| f.kind == "unit_above_soft_cap")
+            .expect("45-minute unit must hit the soft-cap warning");
+        assert_eq!(soft.severity, SEV_WARNING);
+        assert_eq!(soft.node_ids, vec!["构造三元组求不定方程整数解".to_owned()]);
+        assert!(
+            !findings.iter().any(|f| f.kind == "unit_overload"),
+            "45 minutes is within the 60-minute hard cap"
+        );
     }
 
     #[test]
@@ -901,7 +905,7 @@ mod tests {
             ],
             vec![edge("通分", "比较两个分数的大小")],
         );
-        let findings = audit_concept_graph(&g, None);
+        let findings = audit_concept_graph(&g);
         let fragment = findings
             .iter()
             .find(|f| f.kind == "unit_fragment")
@@ -920,7 +924,7 @@ mod tests {
             ],
             vec![],
         );
-        let findings = audit_concept_graph(&clash, None);
+        let findings = audit_concept_graph(&clash);
         let spiral = findings
             .iter()
             .find(|f| f.kind == "spiral_clash")
@@ -936,7 +940,7 @@ mod tests {
             ],
             vec![edge("用配方法解一元二次方程", "用求根公式解一元二次方程")],
         );
-        let findings = audit_concept_graph(&chain, None);
+        let findings = audit_concept_graph(&chain);
         assert!(
             !findings.iter().any(|f| f.kind == "spiral_clash"),
             "{findings:?}"
@@ -960,7 +964,7 @@ mod tests {
                 edge("a", "d"),
             ],
         );
-        let findings = audit_concept_graph(&g, None);
+        let findings = audit_concept_graph(&g);
         let redundant = findings
             .iter()
             .find(|f| f.kind == "redundant_edges")
@@ -972,33 +976,6 @@ mod tests {
     }
 
     #[test]
-    fn audit_gates_coverage_against_the_scope_estimate() {
-        // 10 units against a promised 100: both the absolute floor and the
-        // shortfall gate fire.
-        let nodes: Vec<ConceptGraphNode> =
-            (0..10).map(|i| node(&format!("u{i}"), Some(10))).collect();
-        let g = graph(nodes, vec![]);
-        let findings = audit_concept_graph(&g, Some(100));
-        assert!(findings.iter().any(|f| f.kind == "coverage"), "{findings:?}");
-        let shortfall = findings
-            .iter()
-            .find(|f| f.kind == "coverage_shortfall")
-            .expect("10 of ~100 must fail the shortfall gate");
-        assert_eq!(shortfall.severity, SEV_DANGER);
-
-        // 10 units against a promised 12 clear the 80% floor: only the
-        // absolute floor (MIN_UNITS) fires, not the shortfall gate.
-        let nodes: Vec<ConceptGraphNode> =
-            (0..10).map(|i| node(&format!("v{i}"), Some(10))).collect();
-        let g = graph(nodes, vec![]);
-        let findings = audit_concept_graph(&g, Some(12));
-        assert!(
-            !findings.iter().any(|f| f.kind == "coverage_shortfall"),
-            "{findings:?}"
-        );
-    }
-
-    #[test]
     fn audit_flags_tree_structured_networks() {
         // 30 chained units, every unit single-parent: the tree gate fires.
         let nodes: Vec<ConceptGraphNode> =
@@ -1007,7 +984,7 @@ mod tests {
             .map(|i| edge(&format!("u{i}"), &format!("u{}", i + 1)))
             .collect();
         let g = graph(nodes, edges);
-        let findings = audit_concept_graph(&g, None);
+        let findings = audit_concept_graph(&g);
         let tree = findings
             .iter()
             .find(|f| f.kind == "tree_structure")
@@ -1024,7 +1001,7 @@ mod tests {
             edges.push(edge("w0", &format!("w{target}")));
         }
         let g = graph(nodes, edges);
-        let findings = audit_concept_graph(&g, None);
+        let findings = audit_concept_graph(&g);
         assert!(!findings.iter().any(|f| f.kind == "tree_structure"), "{findings:?}");
     }
 
@@ -1044,7 +1021,7 @@ mod tests {
         });
         g.audit.ref_drop_count = 1;
         g.audit.ref_drop_rate = 0.05;
-        let findings = audit_concept_graph(&g, None);
+        let findings = audit_concept_graph(&g);
         let orphaned = findings
             .iter()
             .find(|f| f.kind == "orphaned_units")
@@ -1054,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn audit_gates_missing_backbone_concepts_as_danger() {
+    fn audit_gates_missing_blocks_as_danger() {
         let g = graph(
             vec![
                 node("用配方法解一元二次方程", Some(15)),
@@ -1062,52 +1039,32 @@ mod tests {
             ],
             vec![edge("用配方法解一元二次方程", "用求根公式解一元二次方程")],
         );
-        // Backbone entries the graph never realized: danger, and the repair
-        // loop must see the exact names to add units for them. (A backbone
-        // sharing only a theme word — e.g. "一元二次方程" — counts as
-        // covered by design; the fuzzy overlap bar is 4 chars.)
-        let backbone = vec![
-            "用拉格朗日乘数法求条件极值".to_owned(),
-            "证明可导函数必连续".to_owned(),
-        ];
-        let findings = audit_concept_graph_with_scope(&g, None, None, Some(&backbone));
+        // Scope blocks are large-block concepts, not unit names: a block
+        // that appears in no unit title is flagged (the repair loop adds a
+        // unit by block name, rewritten into an action sentence). Sharing
+        // only a theme word — e.g. "配方法" — counts as covered by design;
+        // the fuzzy overlap bar is 2 chars.
+        let blocks = vec!["拉格朗日乘数法".to_owned(), "可导与连续".to_owned()];
+        let findings = audit_concept_graph_with_scope(&g, Some(&blocks));
         let missing = findings
             .iter()
-            .find(|f| f.kind == "missing_backbone_concepts")
-            .expect("unrealized backbone concepts must be flagged");
+            .find(|f| f.kind == "missing_block_coverage")
+            .expect("uncovered blocks must be flagged");
         assert_eq!(missing.severity, SEV_DANGER);
-        assert!(missing.message.contains("用拉格朗日乘数法求条件极值"), "{}", missing.message);
-        assert!(missing.message.contains("证明可导函数必连续"), "{}", missing.message);
+        assert!(missing.message.contains("拉格朗日乘数法"), "{}", missing.message);
+        assert!(missing.message.contains("可导与连续"), "{}", missing.message);
 
-        // A backbone entry with a near-miss unit name (reworded by the
-        // generator) clears the gate: strong name overlap counts as covered.
-        let backbone = vec!["用配方法求解一元二次方程".to_owned()];
-        let findings = audit_concept_graph_with_scope(&g, None, None, Some(&backbone));
+        // A block with a near-miss unit name (reworded by the generator)
+        // clears the gate: theme-word overlap counts as covered.
+        let blocks = vec!["配方法".to_owned()];
+        let findings = audit_concept_graph_with_scope(&g, Some(&blocks));
         assert!(
-            !findings.iter().any(|f| f.kind == "missing_backbone_concepts"),
+            !findings.iter().any(|f| f.kind == "missing_block_coverage"),
             "{findings:?}"
         );
 
-        // The plain audit entry point carries no content checklists.
-        let findings = audit_concept_graph(&g, None);
-        assert!(!findings.iter().any(|f| f.kind == "missing_backbone_concepts"), "{findings:?}");
-    }
-
-    #[test]
-    fn audit_warns_on_subdomains_without_naming_overlap() {
-        let g = graph(
-            vec![node("计算古典概率", Some(15)), node("用集合运算求概率", Some(15))],
-            vec![edge("计算古典概率", "用集合运算求概率")],
-        );
-        // "概率论" overlaps "概率" in both units; "解析几何" matches nothing.
-        let subdomains = vec!["概率论".to_owned(), "解析几何".to_owned()];
-        let findings = audit_concept_graph_with_scope(&g, None, Some(&subdomains), None);
-        let missing = findings
-            .iter()
-            .find(|f| f.kind == "missing_subdomain_coverage")
-            .expect("a sub-domain with no naming overlap must be flagged");
-        assert_eq!(missing.severity, SEV_WARNING);
-        assert!(missing.message.contains("解析几何"), "{}", missing.message);
-        assert!(!missing.message.contains("概率论"), "{}", missing.message);
+        // The plain audit entry point carries no content checklist.
+        let findings = audit_concept_graph(&g);
+        assert!(!findings.iter().any(|f| f.kind == "missing_block_coverage"), "{findings:?}");
     }
 }

@@ -19,7 +19,7 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Button, Empty, Input, Message, Popconfirm, Spin, Tag, Typography } from '@arco-design/web-react';
+import { Alert, Button, Empty, Input, Message, Popconfirm, Spin, Tag, Typography } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';
@@ -40,15 +40,15 @@ const NODE_WIDTH = 176;
 const NODE_HEIGHT = 64;
 
 /** 单个学习单元的分钟预算硬上限（与后端 audit 的 UNIT_MINUTE_CAP 一致）。 */
-const UNIT_MINUTE_CAP = 25;
+const UNIT_MINUTE_CAP = 60;
 
 type ConceptFlowNode = Node<{ title: string; min?: number; isAnchor: boolean }, 'concept'>;
 
 /**
  * Ellipse-styled learning-unit node, mirroring the reference rendering.
- * The minute budget renders under the title; a unit over the 25-minute cap
- * is tinted with the danger palette so the workload violation reads at a
- * glance. Handles are required by React Flow for edges to exist at all;
+ * The minute budget renders under the title; a unit over the 60-minute hard
+ * cap is tinted with the danger palette so the workload violation reads at
+ * a glance. Handles are required by React Flow for edges to exist at all;
  * with the BT layout the source (toward dependents) sits on top and the
  * target (from prerequisites) on the bottom. They are visually hidden —
  * this graph is read-only and the connecting dots would only add noise.
@@ -293,6 +293,15 @@ const ConceptGraphPanel: React.FC = () => {
 
   return (
     <div className='flex flex-col gap-12px'>
+      <Alert
+        type='warning'
+        content={
+          <div className='flex flex-col gap-2px'>
+            <Text className='text-12px'>{t('learning.conceptGraphExperimentalNotice')}</Text>
+            <Text className='text-12px'>{t('learning.conceptGraphTimeScopeNote')}</Text>
+          </div>
+        }
+      />
       <div className='flex flex-wrap items-center gap-8px'>
         <Input
           className='!w-360px'

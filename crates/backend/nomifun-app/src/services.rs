@@ -2515,6 +2515,22 @@ impl AppServices {
         // Experimental concept-graph feature: rough JSON-file persistence
         // under the data dir until the feature graduates to the database.
         learning_service.set_concept_graph_dir(data_dir.join("learning-concept-graphs"));
+        // Concept-graph agent engine: the two-loop tool-driven pipeline
+        // (generation loop + audit-gated repair loops, `cg_*` tool set).
+        // Injected so concept graph generation routes through the agent;
+        // the legacy one-shot pipeline stays as the no-engine fallback.
+        learning_service.set_concept_graph_engine(Arc::new(
+            nomifun_ai_agent::LiveConceptGraphAgentEngine {
+                service: learning_service.clone(),
+                deps: nomifun_ai_agent::OneShotDeps {
+                    provider_repo: provider_repo.clone()
+                        as Arc<dyn nomifun_db::IProviderRepository>,
+                    provider_model_repo: provider_model_repo.clone(),
+                    encryption_key,
+                    workspace: data_dir.clone(),
+                },
+            },
+        ));
         // Tutorial seed is TEMPORARILY DISABLED: first-boot creation of the
         // "Flowy 使用指南" knowledge base and the "学习模块上手指南" example
         // course is paused while its value is under review (uncertain the

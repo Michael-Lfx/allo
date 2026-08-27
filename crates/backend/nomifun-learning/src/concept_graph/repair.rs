@@ -53,7 +53,7 @@ Reply with ONLY one JSON object matching this shape:
 }
 Rules:
 - Unit names are ACTION SENTENCES describing what the learner does in one study session ("用配方法解一元二次方程"), never concept nouns or sub-domain labels.
-- "min" is the estimated study minutes: pick one of 5/10/15/20/25. A unit over 25 minutes is the hard-cap violation — SPLIT it into 2-4 chained sub-units that fit the budget. Never lower a "min" to fake compliance.
+- "min" is the estimated study minutes: 5-minute steps, most units within 5-30 (the soft cap), a genuinely hard single lesson up to 60. A unit over 60 minutes is the hard-cap violation — SPLIT it into 2-4 chained sub-units that fit the budget. Never lower a "min" to fake compliance.
 - LINK is the primary fix for disconnected components, orphaned units (units that lost their only prerequisite) and tree-shaped networks: add the genuinely missing dependency edge between two EXISTING units — including cross-sub-domain edges (解析几何 depends on BOTH geometry AND equations). Ask "must the learner finish the source unit first to understand the target?" and only link when the answer is yes.
 - Split semantics: "into" is an ordered chain. The first sub-unit inherits the target's prerequisites; each later sub-unit depends on the one before it (the program enforces this); the last sub-unit takes over the target's dependents.
 - Merge semantics: "targets" (2+ existing units with no prerequisite relation between them) collapse into one "into" unit. Every prerequisite of the merged units points at the new unit, and everything that depended on them depends on it.
@@ -115,12 +115,12 @@ const AUTO_REPAIR_CALL_TIMEOUT_SECS: u64 = 180;
 
 /// Automatic repair inside the generation loop: one LIGHT patch call driven
 /// only by danger-grade findings. The patched graph is re-audited — against
-/// the same scope reference (size estimate plus content checklists) the
-/// first audit used, so the gate cannot loosen between rounds — and
-/// accepted only when the danger count went DOWN; a no-progress patch is
-/// reported as `None` so the loop stops patching honestly instead of
-/// hammering the model. `log` records the patch reply verbatim and the
-/// accept/reject decision for offline diagnosis (see [`ConceptGraphLogger`]).
+/// the same scope reference (content checklists) the first audit used, so
+/// the gate cannot loosen between rounds — and accepted only when the danger
+/// count went DOWN; a no-progress patch is reported as `None` so the loop
+/// stops patching honestly instead of hammering the model. `log` records the
+/// patch reply verbatim and the accept/reject decision for offline diagnosis
+/// (see [`ConceptGraphLogger`]).
 pub(crate) async fn auto_repair(
     topic: &str,
     graph: &ConceptGraphData,
@@ -129,7 +129,6 @@ pub(crate) async fn auto_repair(
     scope: Option<&ScopeAnalysis>,
     log: Option<&ConceptGraphLogger>,
 ) -> Result<Option<ConceptGraphData>, AppError> {
-    let expected_units = scope.and_then(|scope| scope.expected_units);
     let findings: Vec<&AuditFinding> = graph
         .audit
         .findings
@@ -196,9 +195,7 @@ pub(crate) async fn auto_repair(
     fixed = apply_merges(&fixed, &normalized.merges);
     fixed.audit.findings = audit_concept_graph_with_scope(
         &fixed,
-        expected_units,
-        scope.map(|scope| scope.subdomains.as_slice()),
-        scope.map(|scope| scope.backbone.as_slice()),
+        scope.map(|scope| scope.blocks.as_slice()),
     );
     let danger_after = fixed
         .audit
@@ -266,9 +263,9 @@ pub(crate) async fn repair_graph(
                     graph = apply_reversals(&graph, &normalized.reversals);
                     graph = apply_splits(&graph, &normalized.splits);
                     graph = apply_merges(&graph, &normalized.merges);
-                    // The stored record carries no scope estimate, so the
+                    // The stored record carries no scope reference, so the
                     // manual repair re-audits against the absolute floors only.
-                    graph.audit.findings = audit_concept_graph(&graph, None);
+                    graph.audit.findings = audit_concept_graph(&graph);
                     return Ok(graph);
                 }
                 Err(error) => last_error = error,
@@ -1431,16 +1428,16 @@ mod tests {
         }
     }
 
-    /// A tiny chain with one unit over the 25-minute cap: unit_overload is
-    /// the only danger finding (coverage stays danger too, but the overload
-    /// is what the split patch targets).
+    /// A tiny chain with one unit over the 60-minute hard cap:
+    /// unit_overload is the only danger finding (coverage stays danger too,
+    /// but the overload is what the split patch targets).
     fn overloaded_graph() -> ConceptGraphData {
         let mut graph = ConceptGraphData {
-            nodes: vec![unit("a", Some(10)), unit("big", Some(40)), unit("z", Some(10))],
+            nodes: vec![unit("a", Some(10)), unit("big", Some(70)), unit("z", Some(10))],
             edges: vec![edge("a", "big"), edge("big", "z")],
             audit: ConceptGraphAudit::default(),
         };
-        graph.audit.findings = audit_concept_graph(&graph, None);
+        graph.audit.findings = audit_concept_graph(&graph);
         graph
     }
 
@@ -1561,7 +1558,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        graph.audit.findings = audit_concept_graph(&graph, None);
+        graph.audit.findings = audit_concept_graph(&graph);
         graph
     }
 
