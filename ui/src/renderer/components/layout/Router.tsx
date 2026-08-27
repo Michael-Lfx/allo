@@ -29,6 +29,7 @@ const ComponentsShowcase = React.lazy(() => import('@renderer/pages/TestShowcase
 const ScheduledTasksPage = React.lazy(() => import('@renderer/pages/cron/ScheduledTasksPage'));
 const TaskDetailPage = React.lazy(() => import('@renderer/pages/cron/ScheduledTasksPage/TaskDetailPage'));
 const MeetingPage = React.lazy(() => import('@renderer/pages/meeting'));
+const MeetingDetailPage = React.lazy(() => import('@renderer/pages/meeting/MeetingDetailPage'));
 const RequirementsLayout = React.lazy(() => import('@renderer/pages/requirements/RequirementsLayout'));
 const WorkspacePage = React.lazy(() => import('@renderer/pages/requirements/WorkspacePage'));
 const ExtensionsPage = React.lazy(() => import('@renderer/pages/requirements/ExtensionsPage'));
@@ -365,6 +366,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/scheduled' element={withRouteFallback(ScheduledTasksPage)} />
           <Route path='/scheduled/:cron_job_id' element={withRouteFallback(TaskDetailPage)} />
           <Route path='/meeting' element={withRouteFallback(MeetingPage)} />
+          <Route path='/meeting/:sessionId' element={withRouteFallback(MeetingDetailPage)} />
           <Route path='/billing' element={withRouteFallback(BillingPage)} />
           {/* Requirements platform — nested shell (ContentSider persists across sections) */}
           <Route path='/requirements' element={withRouteFallback(RequirementsLayout)}>

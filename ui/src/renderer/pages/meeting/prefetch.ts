@@ -3,4 +3,5 @@
  */
 export function prefetchMeetingPage(): void {
   void import('./MeetingPage');
+  void import('./MeetingDetailPage');
 }

@@ -7967,6 +7967,10 @@ export const meeting = {
     stt_backend: p.stt_backend,
   })),
   getSession: httpGet<MeetingSession, { session_id: string }>((p) => `/api/meetings/${p.session_id}`),
+  updateSession: httpPatch<MeetingSession, { session_id: string; title: string }>(
+    (p) => `/api/meetings/${p.session_id}`,
+    (p) => ({ title: p.title })
+  ),
   start: httpPost<MeetingSession, { session_id: string }>(
     (p) => `/api/meetings/${p.session_id}/start`,
     () => ({})
@@ -7989,6 +7993,13 @@ export const meeting = {
   ),
   listSegments: httpGet<MeetingSegment[], { session_id: string }>(
     (p) => `/api/meetings/${p.session_id}/segments`
+  ),
+  searchSegments: httpGet<MeetingSegment[], { session_id: string; q: string; limit?: number }>(
+    (p) => {
+      const qs = new URLSearchParams({ q: p.q });
+      if (p.limit != null) qs.set('limit', String(p.limit));
+      return `/api/meetings/${p.session_id}/segments/search?${qs.toString()}`;
+    }
   ),
   editSegment: httpPatch<MeetingSegment, { session_id: string; segment_id: string; text: string }>(
     (p) => `/api/meetings/${p.session_id}/segments/${p.segment_id}`,

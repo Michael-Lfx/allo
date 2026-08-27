@@ -6,16 +6,18 @@ import type { MeetingVoiceprint } from '@/common/adapter/ipcBridge';
 
 type VoiceprintModalProps = {
   visible: boolean;
+  mode?: 'start' | 'manage';
   voiceprints: MeetingVoiceprint[];
   onCancel: () => void;
-  onSkipAndStart: () => void | Promise<void>;
-  onEnrollAndStart: (displayName: string) => void | Promise<void>;
+  onSkipAndStart?: () => void | Promise<void>;
+  onEnrollAndStart?: (displayName: string) => void | Promise<void>;
   onEnroll: (displayName: string) => Promise<void>;
   onDelete: (voiceprintId: string) => Promise<void>;
 };
 
 const VoiceprintModal: React.FC<VoiceprintModalProps> = ({
   visible,
+  mode = 'start',
   voiceprints,
   onCancel,
   onSkipAndStart,
@@ -50,9 +52,9 @@ const VoiceprintModal: React.FC<VoiceprintModalProps> = ({
     const trimmed = name.trim();
     setBusy(true);
     try {
-      if (trimmed) {
+      if (trimmed && onEnrollAndStart) {
         await onEnrollAndStart(trimmed);
-      } else {
+      } else if (onSkipAndStart) {
         await onSkipAndStart();
       }
     } catch (err) {
@@ -65,7 +67,7 @@ const VoiceprintModal: React.FC<VoiceprintModalProps> = ({
   const handleSkip = useCallback(async () => {
     setBusy(true);
     try {
-      await onSkipAndStart();
+      await onSkipAndStart?.();
     } catch (err) {
       Message.error(String(err));
     } finally {
@@ -127,14 +129,26 @@ const VoiceprintModal: React.FC<VoiceprintModalProps> = ({
           )}
         </div>
 
-        <div className='mt-12px flex justify-end gap-8px'>
-          <Button onClick={() => void handleSkip()} loading={busy}>
-            {t('meeting.voiceprint.skip')}
-          </Button>
-          <Button type='primary' onClick={() => void handleEnrollAndStart()} loading={busy}>
-            {t('meeting.voiceprint.start')}
-          </Button>
-        </div>
+        {mode === 'start' ? (
+          <div className='mt-12px flex justify-end gap-8px'>
+            <Button
+              onClick={() => void handleSkip()}
+              loading={busy}
+              disabled={!onSkipAndStart}
+            >
+              {t('meeting.voiceprint.skip')}
+            </Button>
+            <Button type='primary' onClick={() => void handleEnrollAndStart()} loading={busy}>
+              {t('meeting.voiceprint.start')}
+            </Button>
+          </div>
+        ) : (
+          <div className='mt-12px flex justify-end'>
+            <Button type='primary' onClick={onCancel}>
+              {t('meeting.voiceprint.done')}
+            </Button>
+          </div>
+        )}
       </div>
     </Modal>
   );

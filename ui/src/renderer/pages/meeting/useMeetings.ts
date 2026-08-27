@@ -29,9 +29,17 @@ export type CapabilityDegrade = {
   message: string;
 } | null;
 
-export function useMeetings() {
+export type UseMeetingsOptions = {
+  sessionId?: string | null;
+  autoSelectFirst?: boolean;
+};
+
+export function useMeetings(options: UseMeetingsOptions = {}) {
+  const autoSelectFirst = options.autoSelectFirst ?? false;
+  const preferredId = options.sessionId ?? null;
+
   const [sessions, setSessions] = useState<MeetingSession[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(preferredId);
   const [segments, setSegments] = useState<MeetingSegment[]>([]);
   const [devices, setDevices] = useState<MeetingDevice[]>([]);
   const [detectedApp, setDetectedApp] = useState<string | null>(null);
@@ -118,20 +126,54 @@ export function useMeetings() {
     try {
       const list = await refreshSessions();
       await Promise.all([refreshDevices(), refreshDetectedApps(), refreshVoiceprints()]);
-      if (list.length > 0) {
-        const first = list[0];
-        setSelectedId(first.session_id);
-        await loadSegments(first.session_id);
-        await loadListenStatus(first.session_id);
+      let nextId =
+        preferredId && list.some((item) => item.session_id === preferredId) ? preferredId : null;
+      if (preferredId && !nextId) {
+        try {
+          const remote = await ipcBridge.meeting.getSession.invoke({ session_id: preferredId });
+          if (remote) {
+            setSessions((prev) => upsertSession(prev, remote));
+            nextId = remote.session_id;
+          }
+        } catch {
+          nextId = null;
+        }
+      }
+      if (!nextId && autoSelectFirst) {
+        nextId = list[0]?.session_id ?? null;
+      }
+      if (nextId) {
+        setSelectedId(nextId);
+        await loadSegments(nextId);
+        await loadListenStatus(nextId);
+      } else {
+        setSelectedId(preferredId);
+        setSegments([]);
+        setListenStatus(null);
       }
     } finally {
       setLoading(false);
     }
-  }, [loadListenStatus, loadSegments, refreshDetectedApps, refreshDevices, refreshSessions, refreshVoiceprints]);
+  }, [
+    autoSelectFirst,
+    loadListenStatus,
+    loadSegments,
+    preferredId,
+    refreshDetectedApps,
+    refreshDevices,
+    refreshSessions,
+    refreshVoiceprints,
+  ]);
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  useEffect(() => {
+    if (preferredId && preferredId !== selectedId) {
+      selectSession(preferredId);
+    }
+  }, [preferredId, selectSession, selectedId]);
 
   useEffect(() => {
     const offEvent = ipcBridge.meeting.onEvent.on((event: MeetingEvent) => {
@@ -186,23 +228,17 @@ export function useMeetings() {
       offEvent();
       offReconnected();
     };
-  }, [
-    loadSegments,
-    refreshDetectedApps,
-    refreshDevices,
-    refreshSessions,
-    selectedId,
-  ]);
+  }, [loadSegments, refreshDetectedApps, refreshDevices, refreshSessions, selectedId]);
 
   const createSession = useCallback(
     async (params: {
       title: string;
-      stt_backend: SttBackendChoice;
+      stt_backend?: SttBackendChoice;
       bound_conversation_id?: string | null;
     }) => {
       const session = await ipcBridge.meeting.createSession.invoke({
         title: params.title.trim() || undefined,
-        stt_backend: params.stt_backend,
+        stt_backend: params.stt_backend ?? 'auto',
         bound_conversation_id: params.bound_conversation_id || null,
       });
       setSessions((prev) => upsertSession(prev, session));
@@ -245,6 +281,15 @@ export function useMeetings() {
     return session;
   }, []);
 
+  const updateTitle = useCallback(async (sessionId: string, title: string) => {
+    const session = await ipcBridge.meeting.updateSession.invoke({
+      session_id: sessionId,
+      title,
+    });
+    setSessions((prev) => upsertSession(prev, session));
+    return session;
+  }, []);
+
   const enrollVoiceprint = useCallback(async (displayName: string) => {
     const row = await ipcBridge.meeting.enrollVoiceprint.invoke({ display_name: displayName });
     setVoiceprints((prev) => [row, ...prev.filter((v) => v.voiceprint_id !== row.voiceprint_id)]);
@@ -271,6 +316,26 @@ export function useMeetings() {
     setSegments((prev) => upsertSegment(prev, segment));
     return segment;
   }, []);
+
+  const searchSegments = useCallback(async (sessionId: string, q: string) => {
+    if (!q.trim()) {
+      await loadSegments(sessionId);
+      return;
+    }
+    setSegmentsLoading(true);
+    try {
+      const list = await ipcBridge.meeting.searchSegments.invoke({
+        session_id: sessionId,
+        q,
+        limit: 200,
+      });
+      setSegments((list ?? []).slice().sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms));
+    } catch {
+      setSegments([]);
+    } finally {
+      setSegmentsLoading(false);
+    }
+  }, [loadSegments]);
 
   const startListen = useCallback(async (sessionId: string, conversationId?: string | null) => {
     const status = await ipcBridge.meeting.listenStart.invoke({
@@ -317,12 +382,15 @@ export function useMeetings() {
     resumeSession,
     stopSession,
     bindConversation,
+    updateTitle,
     enrollVoiceprint,
     deleteVoiceprint,
     generateNotes,
     editSegment,
+    searchSegments,
     startListen,
     stopListen,
     refreshVoiceprints,
+    refreshDetectedApps,
   };
 }

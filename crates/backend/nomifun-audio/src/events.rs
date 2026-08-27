@@ -165,6 +165,9 @@ mod tests {
             let Some(row) = sessions.iter_mut().find(|s| s.session_id == session_id) else {
                 return Ok(None);
             };
+            if let Some(title) = &params.title {
+                row.title = title.clone();
+            }
             if let Some(status) = &params.status {
                 row.status = status.clone();
             }

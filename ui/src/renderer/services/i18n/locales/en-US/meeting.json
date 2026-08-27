@@ -1,9 +1,21 @@
 {
-  "title": "Meeting Audio",
-  "description": "Record mic and system loopback, transcribe live, and organize a speaker timeline.",
+  "title": "Meetings",
+  "description": "Capture meetings, transcribe live, and keep notes you can actually reuse.",
   "newSession": "New meeting",
+  "newMeeting": "New meeting",
   "sessionTitle": "Title",
   "sessionTitlePlaceholder": "e.g. Weekly sync",
+  "titlePlaceholder": "Meeting title",
+  "untitled": "Untitled meeting",
+  "searchPlaceholder": "Search meetings",
+  "searchEmpty": "No matching meetings",
+  "back": "All meetings",
+  "notFound": "This meeting could not be found",
+  "edited": "Updated {{date}}",
+  "copyNotes": "Copy notes",
+  "copyTranscript": "Copy transcript",
+  "copySuccess": "Copied",
+  "copyFailed": "Could not copy",
   "sttBackend": "STT backend",
   "stt": {
     "auto": "Auto",
@@ -26,12 +38,12 @@
   "stopSuccess": "Stopped",
   "bindSuccess": "Conversation bound",
   "noSessions": "No meetings yet",
-  "selectSession": "Select a meeting to view the timeline and controls",
+  "selectSession": "Select a meeting to view notes and transcript",
   "sessions": "Meetings",
   "timeline": "Transcript timeline",
   "noSegments": "No segments yet",
-  "partial": "Partial",
-  "edited": "Edited",
+  "partial": "Listening",
+  "editedLabel": "Edited",
   "edit": "Edit",
   "editPlaceholder": "Edit caption text",
   "saveEdit": "Save",
@@ -47,8 +59,49 @@
     "recording": "Recording",
     "paused": "Paused",
     "stopping": "Stopping",
-    "stopped": "Stopped",
+    "stopped": "Ended",
     "failed": "Failed"
+  },
+  "groups": {
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "thisWeek": "This week",
+    "earlier": "Earlier"
+  },
+  "empty": {
+    "title": "No meetings yet",
+    "description": "Start recording and the transcript and notes will land here.",
+    "cta": "Start your first meeting"
+  },
+  "detected": {
+    "title": "{{app}}",
+    "banner": "Detected {{app}}",
+    "hint": "Start capturing this meeting?",
+    "cta": "Take notes",
+    "dismiss": "Dismiss"
+  },
+  "liveBanner": {
+    "open": "Open"
+  },
+  "dock": {
+    "start": "Start recording",
+    "pause": "Pause",
+    "resume": "Resume",
+    "stop": "Stop recording"
+  },
+  "transcript": {
+    "title": "Transcript",
+    "emptyLive": "Transcript will appear here.",
+    "emptyIdle": "Start recording to capture a transcript.",
+    "listening": "Listening and transcribing",
+    "searchPlaceholder": "Search transcript",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "hide": "Hide transcript",
+    "show": "Show transcript"
+  },
+  "advanced": {
+    "title": "Advanced"
   },
   "capability": {
     "banner": "Capture degraded: {{message}}",
@@ -68,8 +121,8 @@
     "none": "No common meeting apps detected"
   },
   "voiceprint": {
-    "title": "Voiceprint (optional)",
-    "description": "Optionally enroll your voiceprint before recording for speaker ID. You can skip.",
+    "title": "Voiceprint",
+    "description": "Optionally enroll your voiceprint so speakers are easier to tell apart.",
     "name": "Display name",
     "namePlaceholder": "e.g. Me",
     "enroll": "Enroll",
@@ -77,6 +130,9 @@
     "skip": "Skip and start",
     "start": "Start after enroll",
     "list": "Enrolled voiceprints",
+    "listCount": "{{count}} enrolled",
+    "manage": "Manage voiceprints",
+    "done": "Done",
     "empty": "No voiceprints yet",
     "delete": "Delete"
   },
@@ -88,11 +144,13 @@
   "time": "Time",
   "text": "Text",
   "notes": {
-    "title": "Meeting notes",
+    "title": "Notes",
     "generate": "Generate notes",
     "generateSuccess": "Notes generated",
     "generating": "Generating notes…",
     "empty": "No notes yet",
+    "emptyLive": "This meeting is in progress. Generate notes when it ends.",
+    "emptyIdle": "After the meeting, generate notes to get a summary, decisions, and todos.",
     "summary": "Summary",
     "decisions": "Decisions",
     "todos": "Todos",

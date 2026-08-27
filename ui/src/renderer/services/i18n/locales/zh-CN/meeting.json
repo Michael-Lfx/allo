@@ -1,9 +1,21 @@
 {
-  "title": "会议录音",
-  "description": "录制本地麦克风与系统回环音频，实时转写并按说话人整理时间线。",
+  "title": "会议",
+  "description": "记录会议、实时转写，并生成可回顾的纪要。",
   "newSession": "新建会议",
+  "newMeeting": "新建会议",
   "sessionTitle": "会议标题",
   "sessionTitlePlaceholder": "例如：周会",
+  "titlePlaceholder": "会议标题",
+  "untitled": "未命名会议",
+  "searchPlaceholder": "搜索会议",
+  "searchEmpty": "没有匹配的会议",
+  "back": "全部会议",
+  "notFound": "找不到这场会议",
+  "edited": "更新于 {{date}}",
+  "copyNotes": "复制纪要",
+  "copyTranscript": "复制转写",
+  "copySuccess": "已复制",
+  "copyFailed": "复制失败",
   "sttBackend": "转写后端",
   "stt": {
     "auto": "自动",
@@ -26,12 +38,12 @@
   "stopSuccess": "已结束",
   "bindSuccess": "已绑定会话",
   "noSessions": "暂无会议",
-  "selectSession": "选择左侧会议以查看时间线与控制",
+  "selectSession": "选择一场会议查看纪要与转写",
   "sessions": "会议列表",
   "timeline": "转写时间线",
   "noSegments": "暂无转写片段",
   "partial": "识别中",
-  "edited": "已编辑",
+  "editedLabel": "已编辑",
   "edit": "编辑",
   "editPlaceholder": "编辑字幕文本",
   "saveEdit": "保存",
@@ -49,6 +61,47 @@
     "stopping": "结束中",
     "stopped": "已结束",
     "failed": "失败"
+  },
+  "groups": {
+    "today": "今天",
+    "yesterday": "昨天",
+    "thisWeek": "本周",
+    "earlier": "更早"
+  },
+  "empty": {
+    "title": "还没有会议",
+    "description": "开始记录后，转写和纪要会出现在这里。",
+    "cta": "开始第一次会议"
+  },
+  "detected": {
+    "title": "{{app}}",
+    "banner": "检测到 {{app}}",
+    "hint": "现在开始记录这次会议？",
+    "cta": "开始记录",
+    "dismiss": "忽略"
+  },
+  "liveBanner": {
+    "open": "打开"
+  },
+  "dock": {
+    "start": "开始录音",
+    "pause": "暂停",
+    "resume": "继续",
+    "stop": "结束录音"
+  },
+  "transcript": {
+    "title": "转写",
+    "emptyLive": "转写会出现在这里。",
+    "emptyIdle": "开始录音后，转写会出现在这里。",
+    "listening": "正在听写",
+    "searchPlaceholder": "搜索转写",
+    "expand": "展开",
+    "collapse": "收起",
+    "hide": "隐藏转写",
+    "show": "显示转写"
+  },
+  "advanced": {
+    "title": "高级选项"
   },
   "capability": {
     "banner": "采集能力降级：{{message}}",
@@ -68,8 +121,8 @@
     "none": "未检测到常见会议应用"
   },
   "voiceprint": {
-    "title": "声纹登记（可选）",
-    "description": "开始录音前可为自己登记声纹，便于说话人识别。可跳过。",
+    "title": "声纹登记",
+    "description": "登记声纹后，转写更容易区分说话人。可随时跳过。",
     "name": "显示名称",
     "namePlaceholder": "例如：我",
     "enroll": "登记",
@@ -77,6 +130,9 @@
     "skip": "跳过并开始",
     "start": "登记后开始",
     "list": "已登记声纹",
+    "listCount": "已登记 {{count}} 个声纹",
+    "manage": "管理声纹",
+    "done": "完成",
     "empty": "尚未登记声纹",
     "delete": "删除"
   },
@@ -93,6 +149,8 @@
     "generateSuccess": "纪要已生成",
     "generating": "正在生成纪要…",
     "empty": "尚未生成纪要",
+    "emptyLive": "会议进行中。结束后可生成纪要。",
+    "emptyIdle": "结束后点「生成纪要」，摘要、决策和待办会出现在这里。",
     "summary": "摘要",
     "decisions": "决策",
     "todos": "待办",

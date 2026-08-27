@@ -181,6 +181,43 @@ impl MeetingSessionService {
         Ok(snap)
     }
 
+    pub async fn update_title(
+        &self,
+        session_id: &str,
+        title: String,
+    ) -> Result<MeetingSessionSnapshot, String> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Err("meeting title is required".into());
+        }
+        let row = self
+            .repo
+            .update_session(
+                session_id,
+                &UpdateMeetingSessionParams {
+                    title: Some(title),
+                    status: None,
+                    bound_conversation_id: None,
+                    mic_available: None,
+                    loopback_available: None,
+                    stt_backend: None,
+                    started_at: None,
+                    ended_at: None,
+                    notes_json: None,
+                    notes_status: None,
+                    updated_at: now_ms(),
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("meeting session not found: {session_id}"))?;
+        let snap = snapshot_from_row(row)?;
+        self.publish(MeetingEvent::SessionUpdated {
+            session: snap.clone(),
+        });
+        Ok(snap)
+    }
+
     pub async fn bind_conversation(
         &self,
         session_id: &str,

@@ -1,0 +1,88 @@
+.meeting-waveform-bar {
+  height: 6px;
+}
+
+.meeting-waveform-bar--live {
+  animation: meeting-waveform 720ms ease-in-out infinite;
+}
+
+@keyframes meeting-waveform {
+  0%,
+  100% {
+    height: 6px;
+  }
+  50% {
+    height: 16px;
+  }
+}
+
+.meeting-session-row {
+  transition: background-color 120ms ease;
+}
+
+.meeting-session-row:hover {
+  background: var(--color-fill-2);
+}
+
+.meeting-live-banner {
+  background: color-mix(in srgb, rgb(var(--success-6)) 10%, var(--color-fill-2));
+}
+
+.meeting-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgb(var(--success-6));
+  box-shadow: 0 0 0 0 rgb(var(--success-6));
+  animation: meeting-live-pulse 1.6s ease-out infinite;
+}
+
+@keyframes meeting-live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, rgb(var(--success-6)) 45%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.meeting-app-mark {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, rgb(45, 140, 255), rgb(30, 111, 217));
+}
+
+.meeting-title-input {
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 0;
+}
+
+.meeting-title-input::placeholder {
+  color: var(--color-text-3);
+}
+
+.meeting-advanced .arco-collapse-item-header {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.meeting-advanced .arco-collapse-item-content-box {
+  padding-left: 0;
+  padding-right: 0;
+}
