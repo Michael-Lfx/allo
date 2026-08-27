@@ -1877,7 +1877,7 @@ fn spawn_deferred_exit_shutdown(app: tauri::AppHandle, coordinator: Arc<ExitCoor
             return;
         }
         if coordinator.is_exit_allowed() {
-            app.exit(coordinator.original_code());
+            request_final_exit(&app, coordinator.original_code());
             return;
         }
         tracing::error!(
@@ -1886,7 +1886,7 @@ fn spawn_deferred_exit_shutdown(app: tauri::AppHandle, coordinator: Arc<ExitCoor
              backend cleanup"
         );
         let code = allow_exit_without_backend_cleanup(&coordinator);
-        app.exit(code);
+        request_final_exit(&app, code);
     });
 }
 
@@ -1896,6 +1896,39 @@ fn spawn_deferred_exit_shutdown(app: tauri::AppHandle, coordinator: Arc<ExitCoor
 fn allow_exit_without_backend_cleanup(coordinator: &ExitCoordinator) -> i32 {
     coordinator.mark_cleanup_verified();
     coordinator.original_code()
+}
+
+/// Bound for the final-exit watchdog: how long a posted `app.exit` may go
+/// unprocessed before the process is force-terminated. Normal turnaround is
+/// under 100 ms; the observed tray-quit wedge blocked the main thread for
+/// 10-17s+ behind a shell RPC.
+const FINAL_EXIT_WATCHDOG_DELAY: Duration = Duration::from_secs(5);
+
+/// Post the final process exit and arm a watchdog that force-terminates the
+/// process if the main thread fails to process the request in time (e.g. an
+/// event loop wedged behind a shell RPC from a notification code path).
+///
+/// Only for "cleanup resolved, deliver the final exit" call sites: backend
+/// cleanup is already verified (or explicitly abandoned after bounded
+/// retries) there, and tao's Windows event loop itself ends via
+/// `process::exit` without running destructors, so a forced exit loses
+/// nothing. The watchdog is armed BEFORE `app.exit` so even a panicking exit
+/// post cannot strand the process; it holds only the exit code, and a
+/// normally-exiting process takes the thread with it. The eprintln mirrors
+/// the tracing line because the non-blocking log appender is not flushed by
+/// `process::exit`.
+fn request_final_exit(app: &tauri::AppHandle, code: i32) {
+    std::thread::spawn(move || {
+        std::thread::sleep(FINAL_EXIT_WATCHDOG_DELAY);
+        tracing::error!(
+            code,
+            wait_secs = FINAL_EXIT_WATCHDOG_DELAY.as_secs(),
+            "final exit was not processed in time; forcing process termination"
+        );
+        eprintln!("final exit watchdog fired; forcing exit({code})");
+        std::process::exit(code);
+    });
+    app.exit(code);
 }
 
 fn start_shutdown_if_needed(
@@ -1920,7 +1953,7 @@ fn start_shutdown_if_needed(
                 callback_coordinator.mark_cleanup_verified();
                 callback_coordinator.mark_backend_stopped_verified();
                 if !restart {
-                    app.exit(original_code);
+                    request_final_exit(&app, original_code);
                 }
             }
             Err(error) => {
@@ -1935,7 +1968,7 @@ fn start_shutdown_if_needed(
                             retry_coordinator.mark_cleanup_verified();
                             retry_coordinator.mark_backend_stopped_verified();
                             if !restart {
-                                retry_app.exit(retry_coordinator.original_code());
+                                request_final_exit(&retry_app, retry_coordinator.original_code());
                             }
                         }
                         Err(retry_error) => {
@@ -1996,7 +2029,7 @@ fn retry_shutdown_until_verified(
             coordinator.mark_cleanup_verified();
             coordinator.mark_backend_failed_verified();
             if !restart {
-                app.exit(code);
+                request_final_exit(&app, code);
             }
             coordinator.release_backend_runtimes();
             return;
@@ -2013,7 +2046,7 @@ fn retry_shutdown_until_verified(
         let restart = coordinator.is_restart_requested();
         let code = allow_handoff_without_verified_cleanup(&coordinator);
         if !restart {
-            app.exit(code);
+            request_final_exit(&app, code);
         }
     });
 }
