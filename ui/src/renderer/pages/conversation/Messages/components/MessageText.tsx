@@ -655,7 +655,7 @@ const MessageText: React.FC<{
               ? t('messages.turnCredits.consumedBy', {
                   credits: turnCredits.creditsConsumed,
                   model: turnCreditModels,
-                  defaultValue: '消耗{{credits}}积分 {{model}}',
+                  defaultValue: '{{model}}消耗{{credits}}积分',
                 })
               : t('messages.turnCredits.consumed', {
                   credits: turnCredits.creditsConsumed,
