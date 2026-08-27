@@ -33,7 +33,7 @@ export const FLOWY_AUTO_FAMILY_MENU_KEY = 'flowy-auto-family';
 
 const menuStyle: CSSProperties = {
   width: 'min(300px, calc(100vw - 24px))',
-  maxHeight: 'min(480px, max(160px, calc(100dvh - 96px)))',
+  maxHeight: 'min(360px, max(160px, calc(100dvh - 96px)))',
 };
 
 const labelForTier = (
@@ -166,7 +166,6 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
                     {labelForTier(autoTierForDisplay, t)}
                   </span>
                   {selectedOption?.family === 'auto' && <span aria-hidden='true'>✓</span>}
-                  <span aria-hidden='true'>›</span>
                 </span>
               </div>
             </Menu.Item>

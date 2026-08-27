@@ -778,6 +778,7 @@
 
 .chat-model-picker-menu {
   box-sizing: border-box;
+  max-height: min(360px, max(160px, calc(100dvh - 96px)));
   max-width: calc(100vw - 24px);
 }
 
