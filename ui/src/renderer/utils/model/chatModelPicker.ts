@@ -108,6 +108,30 @@ const modelOption = (
   };
 };
 
+/**
+ * Apply the only option-level state that can change after the view model has
+ * been built. Keeping this as a shallow update preserves catalog metadata
+ * (especially Auto family/tier) when a provider snapshot is incomplete.
+ */
+const withAttachmentRestriction = (
+  option: ChatModelOption,
+  options: ChatModelPickerOptions,
+): ChatModelOption => {
+  if (options.hasImageAttachments === undefined) return option;
+
+  const requiresVision = options.hasImageAttachments && !option.supportsVision;
+  const disabledForAnotherReason = option.disabled === true && option.disabledReason !== 'vision_required';
+  return {
+    ...option,
+    disabled: requiresVision || disabledForAnotherReason,
+    disabledReason: requiresVision
+      ? 'vision_required'
+      : option.disabledReason === 'vision_required'
+        ? undefined
+        : option.disabledReason,
+  };
+};
+
 export const buildChatModelPickerViewModel = (
   groups: readonly TaskModelGroup[],
   options: ChatModelPickerOptions = {}
@@ -145,12 +169,8 @@ export const allChatModelOptions = (
   viewModel: ChatModelPickerViewModel,
   options: ChatModelPickerOptions = {}
 ): ChatModelOption[] => [
-  ...viewModel.autoModels.map((option) =>
-    options.hasImageAttachments === undefined ? option : modelOption(option.provider, option.model, options)
-  ),
-  ...viewModel.cloudModels.map((option) =>
-    options.hasImageAttachments === undefined ? option : modelOption(option.provider, option.model, options)
-  ),
+  ...viewModel.autoModels.map((option) => withAttachmentRestriction(option, options)),
+  ...viewModel.cloudModels.map((option) => withAttachmentRestriction(option, options)),
   ...viewModel.otherProviderGroups.flatMap((group) =>
     group.models.map((model) => modelOption(group.provider, model, options))
   ),

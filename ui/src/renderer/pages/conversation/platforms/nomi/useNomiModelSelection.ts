@@ -10,7 +10,7 @@ import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderLis
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { buildChatModelPickerViewModel, type ChatModelPickerViewModel } from '@/renderer/utils/model/chatModelPicker';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 export type NomiModelSelection = {
@@ -40,9 +40,16 @@ export const useNomiModelSelection = ({
   onSelectModel,
 }: UseNomiModelSelectionOptions): NomiModelSelection => {
   const [current_model, setCurrentModel] = useState<TProviderWithModel | undefined>(initialModel);
+  const selectionRequestIdRef = useRef(0);
+  const pendingModelKeyRef = useRef<string | null>(null);
   const { t } = useTranslation();
 
   useEffect(() => {
+    // A conversation update can replace the initial model while an older
+    // selection is still resolving. That older request must not write its
+    // stale family/strategy back into the toolbar.
+    selectionRequestIdRef.current += 1;
+    pendingModelKeyRef.current = null;
     setCurrentModel(initialModel);
   }, [initialModel?.id, initialModel?.use_model]);
 
@@ -93,12 +100,21 @@ export const useNomiModelSelection = ({
 
   const handleSelectModel = useCallback(
     async (provider: IProvider, modelName: string): Promise<boolean> => {
+      const modelKey = `${provider.id}:${modelName}`;
+      if (pendingModelKeyRef.current === modelKey) return false;
+      if (current_model?.id === provider.id && current_model.use_model === modelName) return true;
+
+      const requestId = ++selectionRequestIdRef.current;
+      pendingModelKeyRef.current = modelKey;
       const selected = {
         ...(provider as unknown as TProviderWithModel),
         use_model: modelName,
       } as TProviderWithModel;
       try {
         const ok = await onSelectModel(provider, modelName);
+        // A later click owns the UI now. Do not show an error for an older
+        // request that was intentionally superseded by the user.
+        if (requestId !== selectionRequestIdRef.current) return false;
         if (!ok) {
           Message.error(t('agent.model.switchFailed'));
           return false;
@@ -106,12 +122,17 @@ export const useNomiModelSelection = ({
         setCurrentModel(selected);
         return true;
       } catch (error) {
+        if (requestId !== selectionRequestIdRef.current) return false;
         console.error('[useNomiModelSelection] Failed to switch model:', error);
         Message.error(t('agent.model.switchFailed'));
         return false;
+      } finally {
+        if (pendingModelKeyRef.current === modelKey && requestId === selectionRequestIdRef.current) {
+          pendingModelKeyRef.current = null;
+        }
       }
     },
-    [onSelectModel, t]
+    [current_model?.id, current_model?.use_model, onSelectModel, t]
   );
 
   const liveCurrentProvider = useMemo(() => {

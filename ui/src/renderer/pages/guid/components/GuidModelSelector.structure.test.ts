@@ -38,11 +38,11 @@ describe('GuidModelSelector popup host', () => {
     expect(source.includes('const catalogGroups = modelPicker ? pickerGroups : chatGroups')).toBe(true);
   });
 
-  test('reveals the compact chat model value toward the left on hover or focus', () => {
+  test('reveals the compact chat model value within the available horizontal boundary', () => {
     expect(cssSource.includes('.chat-model-picker-trigger:hover')).toBe(true);
     expect(cssSource.includes('.chat-model-picker-slot .chat-model-picker-trigger .flowy-button-inline-content')).toBe(true);
-    expect(cssSource.includes('flex-basis: var(--chat-model-picker-slot-width) !important;')).toBe(true);
-    expect(cssSource.includes('width: var(--chat-model-picker-slot-width) !important;')).toBe(true);
+    expect(cssSource.includes('flex-basis: 176px;')).toBe(true);
+    expect(cssSource.includes('width: 176px;')).toBe(true);
     expect(cssSource.includes('sendbox-responsive-control-open')).toBe(true);
     expect(cssSource.includes(':global(.chat-model-picker-slot .chat-model-picker-trigger.sendbox-responsive-control-open)')).toBe(true);
     expect(cssSource.includes('overflow: hidden !important;')).toBe(true);
@@ -53,5 +53,19 @@ describe('GuidModelSelector popup host', () => {
     expect(cssSource.includes("data-chat-popup='model'")).toBe(true);
     expect(cssSource.includes('visibility: hidden;')).toBe(true);
     expect(cssSource.includes('pointer-events: none;')).toBe(true);
+    expect(source.includes('useChatModelTriggerExpansion')).toBe(true);
+    expect(source.includes('data-chat-model-expand-side')).toBe(true);
+    expect(cssSource.includes('--chat-model-picker-expanded-width')).toBe(true);
+    expect(cssSource.includes('--chat-model-picker-expanded-inline-start')).toBe(true);
+    expect(cssSource.includes('--chat-model-picker-expanded-inline-end')).toBe(true);
+  });
+
+  test('keeps Guid model selection writes serialized and latest-wins', () => {
+    const selectionSource = readFileSync(new URL('../hooks/useGuidModelSelection.ts', import.meta.url), 'utf8');
+
+    expect(selectionSource.includes('modelSelectionRequestIdRef')).toBe(true);
+    expect(selectionSource.includes('modelSelectionQueueRef')).toBe(true);
+    expect(selectionSource.includes('if (requestId !== modelSelectionRequestIdRef.current) return')).toBe(true);
+    expect(selectionSource.includes('modelSelectionQueueRef.current.then(run, run)')).toBe(true);
   });
 });

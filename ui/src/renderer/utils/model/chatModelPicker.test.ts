@@ -151,4 +151,33 @@ describe('chat model picker view model', () => {
     expect(withImages.find((option) => option.model === 'AIPC-text-cloud')?.disabled).toBe(true);
     expect(withImages.find((option) => option.model === 'AIPC-vision-cloud')?.disabled).toBe(false);
   });
+
+  test('preserves normalized Auto metadata when provider details are temporarily unavailable', () => {
+    const completeProvider = provider(FLOWY_BUILTIN_PROVIDER_ID, [
+      {
+        model: 'AIPC-auto-balance',
+        params: { _flowy_catalog_family: 'auto', _flowy_catalog_auto_tier: 'balance' },
+        traits: ['function_calling'],
+      },
+    ]);
+    const normalized = buildChatModelPickerViewModel([
+      group(completeProvider, ['AIPC-auto-balance']),
+    ]).autoModels[0];
+    const incompleteProvider = { ...completeProvider, models_detail: undefined } as IProvider;
+    const viewModel = {
+      autoModels: [{ ...normalized, provider: incompleteProvider }],
+      cloudModels: [],
+      otherProviderGroups: [],
+    };
+
+    const options = allChatModelOptions(viewModel, { hasImageAttachments: true });
+
+    expect(options[0]).toMatchObject({
+      family: 'auto',
+      autoTier: 'balance',
+      reasoningLevels: [],
+      supportsTools: true,
+      disabled: true,
+    });
+  });
 });

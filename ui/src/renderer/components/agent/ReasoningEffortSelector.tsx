@@ -8,6 +8,7 @@ import type { ConversationId } from '@/common/types/ids';
 
 import { ipcBridge } from '@/common';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
+import { useChatModelTriggerExpansion } from '@/renderer/components/model/useChatModelTriggerExpansion';
 import {
   normalizeReasoningEffortLevels,
   pendingReasoningEffortCommitIndex,
@@ -260,6 +261,24 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
   );
   const statusId = `reasoning-effort-status-${conversation_id ?? 'guid'}-${popupInstanceId}`;
   const popoverId = `reasoning-effort-popover-${conversation_id ?? 'guid'}-${popupInstanceId}`;
+  const {
+    ref: strategyTriggerRef,
+    style: strategyTriggerStyle,
+    side: strategyTriggerSide,
+  } = useChatModelTriggerExpansion({
+    enabled: !disabled && normalizedLevels.length > 1,
+    expandedWidth: 108,
+    cssVariablePrefix: 'strategy',
+    slotSelector: '.sendbox-strategy-slot',
+    open: popoverVisible,
+  });
+  const setTriggerRef = useCallback(
+    (element: HTMLButtonElement | null) => {
+      triggerRef.current = element;
+      strategyTriggerRef(element);
+    },
+    [strategyTriggerRef],
+  );
 
   const setPopupVisibility = useCallback(
     (visible: boolean) => {
@@ -652,7 +671,8 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
       >
         <button
           type='button'
-          ref={triggerRef}
+          ref={setTriggerRef}
+          style={strategyTriggerStyle}
           className={classNames(
             styles.compactTrigger,
             'sendbox-responsive-reasoning-btn',
@@ -665,6 +685,7 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
           aria-expanded={popoverVisible}
           aria-busy={isSaving || undefined}
           title={reasoningHint}
+          data-chat-strategy-expand-side={strategyTriggerSide}
           data-testid='reasoning-effort-compact-trigger'
         >
           <span className='sendbox-responsive-leading-icon' data-layout-part='leading-icon'>

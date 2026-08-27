@@ -18,6 +18,8 @@ import { useTranslation } from 'react-i18next';
 import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask, type TaskModelGroup } from '@/renderer/hooks/agent/useModelsForTask';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { mergeRefs } from '@/renderer/components/notifications';
+import { useChatModelTriggerExpansion } from '@/renderer/components/model/useChatModelTriggerExpansion';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
 import {
   AUTO_TIER_LABEL_FALLBACK,
@@ -69,38 +71,55 @@ export const GuidModelSelectorButton = React.forwardRef<HTMLButtonElement, GuidM
       ...rest
     },
     ref,
-  ) => (
-    <Button
-      ref={ref}
-      {...rest}
-      className={`sendbox-model-btn guid-config-btn flowy-icon-text-btn ${
-        chatModelTrigger ? 'chat-model-picker-trigger' : ''
-      } ${className ?? ''}`.trim()}
-      shape='round'
-      size='small'
-      data-testid='guid-model-selector'
-      style={readOnly ? { cursor: 'default', ...style } : style}
-      aria-label={label}
-      title={label}
-    >
-      <span className='flowy-button-inline-content flex items-center gap-6px min-w-0'>
-        <span className='sendbox-responsive-leading-icon' data-layout-part='leading-icon'>
-          <Brain theme='outline' size='14' fill={iconColors.secondary} />
-        </span>
-        <span className={`sendbox-responsive-label ${labelClassName ?? ''}`.trim()}>{label}</span>
-        {includeChevron && (
-          <span className='sendbox-responsive-chevron-slot' data-layout-part='chevron'>
-            <Down
-              theme='outline'
-              size='11'
-              fill={iconColors.secondary}
-              className='sendbox-responsive-chevron shrink-0'
-            />
+  ) => {
+    const modelTriggerExpansion = useChatModelTriggerExpansion({
+      enabled: chatModelTrigger,
+      open: rest['aria-expanded'] === true,
+    });
+    const buttonRef = chatModelTrigger
+      ? mergeRefs(ref ?? undefined, modelTriggerExpansion.ref)
+      : ref;
+
+    return (
+      <Button
+        ref={buttonRef}
+        {...rest}
+        className={`sendbox-model-btn guid-config-btn flowy-icon-text-btn ${
+          chatModelTrigger ? 'chat-model-picker-trigger' : ''
+        } ${className ?? ''}`.trim()}
+        shape='round'
+        size='small'
+        data-testid='guid-model-selector'
+        style={
+          chatModelTrigger
+            ? { ...(readOnly ? { cursor: 'default' } : {}), ...style, ...modelTriggerExpansion.style }
+            : readOnly
+              ? { cursor: 'default', ...style }
+              : style
+        }
+        data-chat-model-expand-side={chatModelTrigger ? modelTriggerExpansion.side : undefined}
+        aria-label={label}
+        title={label}
+      >
+        <span className='flowy-button-inline-content flex items-center gap-6px min-w-0'>
+          <span className='sendbox-responsive-leading-icon' data-layout-part='leading-icon'>
+            <Brain theme='outline' size='14' fill={iconColors.secondary} />
           </span>
-        )}
-      </span>
-    </Button>
-  ),
+          <span className={`sendbox-responsive-label ${labelClassName ?? ''}`.trim()}>{label}</span>
+          {includeChevron && (
+            <span className='sendbox-responsive-chevron-slot' data-layout-part='chevron'>
+              <Down
+                theme='outline'
+                size='11'
+                fill={iconColors.secondary}
+                className='sendbox-responsive-chevron shrink-0'
+              />
+            </span>
+          )}
+        </span>
+      </Button>
+    );
+  },
 );
 GuidModelSelectorButton.displayName = 'GuidModelSelectorButton';
 

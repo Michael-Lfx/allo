@@ -97,6 +97,8 @@ type ProbeChatScenarioReport = {
     modelIcon: boolean;
     modelChevron: boolean;
   };
+  modelOutsideVisibleBoundary: boolean;
+  strategyOutsideVisibleBoundary: boolean;
   accessibleNames: Record<string, { title: string | null; ariaLabel: string | null }>;
   pass: boolean;
   failures: string[];
@@ -335,6 +337,32 @@ const partIsOutsideControl = (part: ProbeLayoutElement | null, control: ProbeLay
   );
 };
 
+const isHorizontalClip = (value: string): boolean =>
+  value === 'hidden' || value === 'clip' || value === 'auto' || value === 'scroll' || value === 'overlay';
+
+const visibleHorizontalBoundaryOf = (element: Element): { left: number; right: number } => {
+  const visualViewport = window.visualViewport;
+  let left = visualViewport?.offsetLeft ?? 0;
+  let right = left + (visualViewport?.width ?? window.innerWidth);
+
+  for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+    const style = getComputedStyle(ancestor);
+    if (!isHorizontalClip(style.overflowX) && !isHorizontalClip(style.overflowY)) continue;
+    const rect = ancestor.getBoundingClientRect();
+    left = Math.max(left, rect.left);
+    right = Math.min(right, rect.right);
+  }
+
+  return { left: left + 12, right: right - 12 };
+};
+
+const isOutsideVisibleHorizontalBoundary = (element: Element | null): boolean => {
+  if (!element) return false;
+  const rect = element.getBoundingClientRect();
+  const boundary = visibleHorizontalBoundaryOf(element);
+  return rect.left < boundary.left - 0.5 || rect.right > boundary.right + 0.5;
+};
+
 const measureChatScenario = (row: HTMLElement): ProbeChatScenarioReport => {
   const pair = row.dataset.chatProbePair ?? row.dataset.chatProbeId ?? 'unknown';
   const state = row.dataset.chatProbeState ?? 'unknown';
@@ -415,6 +443,9 @@ const measureChatScenario = (row: HTMLElement): ProbeChatScenarioReport => {
   const expectChevron = row.dataset.chatProbeStrategy !== 'single';
   const modelOverlayOpen = state === 'expanded' || state === 'model-popup';
   const strategyOverlayOpen = state === 'expanded' || state === 'strategy-popup';
+  const modelOutsideVisibleBoundary = modelOverlayOpen && isOutsideVisibleHorizontalBoundary(modelControlElement);
+  const strategyOutsideVisibleBoundary =
+    strategyOverlayOpen && row.dataset.chatProbeStrategy !== 'single' && isOutsideVisibleHorizontalBoundary(strategyControlElement);
   const within = (value: number | undefined, expected: number, tolerance = 0.5) =>
     value !== undefined && Math.abs(value - expected) <= tolerance;
 
@@ -450,12 +481,17 @@ const measureChatScenario = (row: HTMLElement): ProbeChatScenarioReport => {
   if (modelOverlayOpen) {
     if (strategySlotStyle?.visibility !== 'hidden') failures.push('strategy-not-hidden-behind-model');
     if (strategySlotStyle?.pointerEvents !== 'none') failures.push('strategy-hit-target-not-disabled');
+    if (modelOutsideVisibleBoundary) failures.push('model-out-of-visible-boundary');
   }
+  if (strategyOutsideVisibleBoundary) failures.push('strategy-out-of-visible-boundary');
   if (!modelOverlayOpen && strategySlotStyle?.visibility === 'hidden') {
     failures.push('strategy-hidden-without-model-overlay');
   }
   if (expectChevron && !modelOverlayOpen && !visibleRect(parts.strategyChevron?.rect ?? null)) {
     failures.push('strategy-chevron-not-visible');
+  }
+  if (!modelOverlayOpen && !visibleRect(parts.modelChevron?.rect ?? null)) {
+    failures.push('model-chevron-not-visible');
   }
   if (!expectChevron && parts.strategyChevron) failures.push('single-strategy-has-chevron');
   for (const [name, gap] of Object.entries(iconChevronGaps)) {
@@ -485,6 +521,8 @@ const measureChatScenario = (row: HTMLElement): ProbeChatScenarioReport => {
     centerSpreadY,
     iconChevronGaps,
     clipping,
+    modelOutsideVisibleBoundary,
+    strategyOutsideVisibleBoundary,
     accessibleNames,
     pass: failures.length === 0,
     failures,

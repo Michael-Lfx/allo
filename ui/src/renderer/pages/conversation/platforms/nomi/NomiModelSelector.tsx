@@ -12,6 +12,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import classNames from 'classnames';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
+import { useChatModelTriggerExpansion } from '@/renderer/components/model/useChatModelTriggerExpansion';
 import {
   AUTO_TIER_LABEL_FALLBACK,
   findChatModelOption,
@@ -56,6 +57,11 @@ const NomiModelSelector: React.FC<{
   const isCatalogLoading = Boolean(selection?.isModelCatalogLoading);
   const getDisplayModelName = selection?.getDisplayModelName;
   const handleSelectModel = selection?.handleSelectModel ?? (async () => false);
+  const modelTriggerExpansion = useChatModelTriggerExpansion({
+    enabled: !disabled && Boolean(selection),
+    compact,
+    open: modelPickerOpen,
+  });
 
   const handleModelPickerVisibleChange = (visible: boolean) => {
     if (popupVisibleProp === undefined) {
@@ -90,6 +96,7 @@ const NomiModelSelector: React.FC<{
   if (disabled || !selection) {
     return (
       <Button
+        ref={modelTriggerExpansion.ref}
         data-testid='nomi-model-selector'
         className={classNames(
           'sendbox-model-btn header-model-btn min-w-0',
@@ -101,7 +108,7 @@ const NomiModelSelector: React.FC<{
         shape='round'
         size='small'
         loading={selection?.isModelCatalogLoading}
-        style={{ cursor: 'default' }}
+        style={{ cursor: 'default', ...modelTriggerExpansion.style }}
         aria-label={
           selection?.isModelCatalogLoading
             ? t('common.loading')
@@ -112,6 +119,7 @@ const NomiModelSelector: React.FC<{
             ? t('common.loading')
             : t('conversation.welcome.useCliModel')
         }
+        data-chat-model-expand-side={modelTriggerExpansion.side}
       >
         <span className='flowy-button-inline-content flex items-center gap-6px min-w-0'>
           <span className='sendbox-responsive-leading-icon' data-layout-part='leading-icon'>
@@ -145,6 +153,7 @@ const NomiModelSelector: React.FC<{
       }
     >
       <Button
+        ref={modelTriggerExpansion.ref}
         data-testid='nomi-model-selector'
         className={classNames(
           'sendbox-model-btn header-model-btn min-w-0',
@@ -160,6 +169,8 @@ const NomiModelSelector: React.FC<{
         aria-expanded={modelPickerOpen}
         data-popup-open={modelPickerOpen ? 'true' : undefined}
         title={label}
+        style={modelTriggerExpansion.style}
+        data-chat-model-expand-side={modelTriggerExpansion.side}
       >
         <span className='flowy-button-inline-content flex items-center gap-6px min-w-0'>
           <span className='sendbox-responsive-leading-icon' data-layout-part='leading-icon'>

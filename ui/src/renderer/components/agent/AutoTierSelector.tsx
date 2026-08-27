@@ -9,6 +9,7 @@ import { Down, Lightning } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useChatModelTriggerExpansion } from '@/renderer/components/model/useChatModelTriggerExpansion';
 import type { AutoTier, ChatModelOption } from '@/renderer/utils/model/chatModelPicker';
 import { AUTO_TIER_LABEL_FALLBACK, AUTO_TIER_ORDER } from '@/renderer/utils/model/chatModelPicker';
 
@@ -59,6 +60,13 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
     selected?.family === 'auto'
       ? selected
       : orderedOptions.find((option) => option.autoTier === 'balance') ?? orderedOptions[0];
+  const strategyTriggerExpansion = useChatModelTriggerExpansion({
+    enabled: !disabled && orderedOptions.length > 1,
+    expandedWidth: 108,
+    cssVariablePrefix: 'strategy',
+    slotSelector: '.sendbox-strategy-slot',
+    open: popupVisible,
+  });
   if (!current) return null;
 
   const autoTierLabel = t('conversation.modelPicker.autoTierLabel', { defaultValue: 'Auto mode' });
@@ -126,6 +134,8 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
         type='text'
         size='small'
         shape='round'
+        ref={strategyTriggerExpansion.ref}
+        style={strategyTriggerExpansion.style}
         disabled={disabled}
         className={classNames(
           'sendbox-responsive-reasoning-btn flowy-icon-text-btn',
@@ -137,6 +147,7 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
         aria-controls={popupId}
         aria-expanded={popupVisible}
         data-popup-open={popupVisible ? 'true' : undefined}
+        data-chat-strategy-expand-side={strategyTriggerExpansion.side}
         data-testid='auto-tier-selector'
         title={`${autoTierLabel}: ${currentLabel}`}
       >

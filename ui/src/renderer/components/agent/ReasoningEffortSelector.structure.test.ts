@@ -117,6 +117,11 @@ describe('ReasoningEffortSelector structure', () => {
     expect(selectorSource.includes("data-layout-part='leading-icon'")).toBe(true);
     expect(selectorSource.includes("data-layout-part='chevron'")).toBe(true);
     expect(selectorSource.includes("normalizedLevels.length === 1")).toBe(true);
+    expect(selectorSource.includes('useChatModelTriggerExpansion')).toBe(true);
+    expect(selectorSource.includes("cssVariablePrefix: 'strategy'")).toBe(true);
+    expect(selectorSource.includes("slotSelector: '.sendbox-strategy-slot'")).toBe(true);
+    expect(selectorSource.includes('style={strategyTriggerStyle}')).toBe(true);
+    expect(selectorSource.includes('data-chat-strategy-expand-side')).toBe(true);
   });
 
   test('keeps the trigger hint localized in both supported locales', () => {

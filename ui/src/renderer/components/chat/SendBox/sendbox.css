@@ -1237,33 +1237,33 @@
   .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover,
   .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible,
   .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn.sendbox-responsive-control-open {
-    flex: 0 0 var(--sendbox-strategy-trigger-width) !important;
-    flex-basis: var(--sendbox-strategy-trigger-width) !important;
-    max-width: var(--sendbox-strategy-trigger-width) !important;
-    min-width: var(--sendbox-strategy-trigger-width) !important;
+    flex: 0 0 var(--chat-strategy-expanded-width, var(--sendbox-strategy-trigger-width)) !important;
+    flex-basis: var(--chat-strategy-expanded-width, var(--sendbox-strategy-trigger-width)) !important;
+    max-width: var(--chat-strategy-expanded-width, var(--sendbox-strategy-trigger-width)) !important;
+    min-width: var(--chat-strategy-expanded-width, var(--sendbox-strategy-trigger-width)) !important;
     padding: 0 7px !important;
-    inset-inline-end: 0 !important;
-    inset-inline-start: auto !important;
+    inset-inline-end: var(--chat-strategy-expanded-inline-end, 0px) !important;
+    inset-inline-start: var(--chat-strategy-expanded-inline-start, auto) !important;
     background-color: var(--color-bg-2) !important;
     box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-1) 14%, transparent);
-    width: var(--sendbox-strategy-trigger-width) !important;
+    width: var(--chat-strategy-expanded-width, var(--sendbox-strategy-trigger-width)) !important;
     z-index: 3;
   }
 
   .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:hover,
   .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:focus-visible,
   .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger.sendbox-responsive-control-open {
-    flex: 0 0 var(--chat-model-picker-slot-width) !important;
-    flex-basis: var(--chat-model-picker-slot-width) !important;
-    max-width: var(--chat-model-picker-slot-width) !important;
-    min-width: var(--chat-model-picker-slot-width) !important;
+    flex: 0 0 var(--chat-model-picker-expanded-width, var(--chat-model-picker-slot-width)) !important;
+    flex-basis: var(--chat-model-picker-expanded-width, var(--chat-model-picker-slot-width)) !important;
+    max-width: var(--chat-model-picker-expanded-width, var(--chat-model-picker-slot-width)) !important;
+    min-width: var(--chat-model-picker-expanded-width, var(--chat-model-picker-slot-width)) !important;
     overflow: hidden !important;
     padding: 0 10px !important;
-    inset-inline-end: 0 !important;
-    inset-inline-start: auto !important;
+    inset-inline-end: var(--chat-model-picker-expanded-inline-end, 0px) !important;
+    inset-inline-start: var(--chat-model-picker-expanded-inline-start, auto) !important;
     background-color: var(--color-bg-2) !important;
     box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-1) 18%, transparent);
-    width: var(--chat-model-picker-slot-width) !important;
+    width: var(--chat-model-picker-expanded-width, var(--chat-model-picker-slot-width)) !important;
     z-index: 3;
   }
 
@@ -1310,6 +1310,14 @@
   .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:hover .sendbox-responsive-chevron,
   .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger:focus-visible .sendbox-responsive-chevron,
   .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger.sendbox-responsive-control-open .sendbox-responsive-chevron {
+    display: inline-flex !important;
+  }
+
+  /* A chat strategy/model trigger remains actionable in the collapsed state,
+   * so its arrow is part of the 28px affordance. The single-level static
+   * strategy branch has no chevron element and stays non-interactive. */
+  .sendbox-responsive-config-group .sendbox-strategy-slot .sendbox-responsive-reasoning-btn .sendbox-responsive-chevron,
+  .sendbox-responsive-config-group .chat-model-picker-slot .chat-model-picker-trigger .sendbox-responsive-chevron {
     display: inline-flex !important;
   }
 

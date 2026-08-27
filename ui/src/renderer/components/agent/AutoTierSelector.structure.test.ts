@@ -28,6 +28,11 @@ describe('AutoTierSelector structure', () => {
     expect(source.includes('AUTO_TIER_LABEL_FALLBACK')).toBe(true);
     expect(source.includes('auto-tier-trigger-label-slot')).toBe(true);
     expect(source.includes("className='sendbox-responsive-chevron shrink-0'")).toBe(true);
+    expect(source.includes('useChatModelTriggerExpansion')).toBe(true);
+    expect(source.includes("cssVariablePrefix: 'strategy'")).toBe(true);
+    expect(source.includes("slotSelector: '.sendbox-strategy-slot'")).toBe(true);
+    expect(source.includes('style={strategyTriggerExpansion.style}')).toBe(true);
+    expect(source.includes('data-chat-strategy-expand-side')).toBe(true);
     expect(source.includes('Smart')).toBe(false);
     expect(source.includes('Intelligence')).toBe(false);
     expect(source.includes('Balance')).toBe(false);

@@ -108,27 +108,50 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
   const [defaultModelUnavailable, setDefaultModelUnavailable] = useState(false);
   const selectedModelKeyRef = useRef<string | null>(null);
   const prevStorageKeyRef = useRef<string | null>(null);
+  const modelSelectionRequestIdRef = useRef(0);
+  const modelSelectionQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const storageKey = MODEL_STORAGE_KEY[agentKey];
 
   const setCurrentModel = useCallback(
     async (model_info: TProviderWithModel, persist = true) => {
-      selectedModelKeyRef.current = buildModelKey(model_info.id, model_info.use_model);
-      if (persist) {
-        try {
-          await configService.set(storageKey, {
-            provider_id: model_info.id,
-            model: model_info.use_model,
-          });
-        } catch (error) {
-          selectedModelKeyRef.current = null;
-          console.error('Failed to save default model:', error);
-          Message.error(t('agent.model.switchFailed'));
-          throw error;
+      const requestId = ++modelSelectionRequestIdRef.current;
+      const modelKey = buildModelKey(model_info.id, model_info.use_model);
+      selectedModelKeyRef.current = modelKey;
+
+      const run = async (): Promise<void> => {
+        // A newer explicit selection or agent change owns the result. Skip
+        // queued stale work before it can write the preference or UI state.
+        if (requestId !== modelSelectionRequestIdRef.current) return;
+
+        if (persist) {
+          try {
+            await configService.set(storageKey, {
+              provider_id: model_info.id,
+              model: model_info.use_model,
+            });
+          } catch (error) {
+            if (requestId !== modelSelectionRequestIdRef.current) return;
+            selectedModelKeyRef.current = null;
+            console.error('Failed to save default model:', error);
+            Message.error(t('agent.model.switchFailed'));
+            throw error;
+          }
         }
-      }
-      setDefaultModelUnavailable(false);
-      _setCurrentModel(model_info);
+
+        if (requestId !== modelSelectionRequestIdRef.current) return;
+        setDefaultModelUnavailable(false);
+        _setCurrentModel(model_info);
+      };
+
+      // Serialize storage writes so an older async write cannot finish after
+      // the latest selection and restore the wrong model on the next reload.
+      const operation = modelSelectionQueueRef.current.then(run, run);
+      modelSelectionQueueRef.current = operation.then(
+        () => undefined,
+        () => undefined,
+      );
+      await operation;
     },
     [storageKey, t]
   );
@@ -144,6 +167,9 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
       prevStorageKeyRef.current = storageKey;
       if (agentChanged) {
         selectedModelKeyRef.current = null;
+        // Invalidate a queued default from the previous agent before reading
+        // the new storage key.
+        modelSelectionRequestIdRef.current += 1;
       }
 
       const currentKey = selectedModelKeyRef.current || buildModelKey(current_model?.id, current_model?.use_model);

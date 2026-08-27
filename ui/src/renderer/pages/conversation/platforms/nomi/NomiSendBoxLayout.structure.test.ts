@@ -163,15 +163,19 @@ describe('Nomi sendbox control layout', () => {
     expect(sendBoxCss.includes('justify-content: center !important;')).toBe(true);
     expect(sendBoxCss.includes('overflow: visible !important;')).toBe(true);
     expect(sendBoxCss.includes('flex: 0 0 14px !important;')).toBe(true);
-    expect(sendBoxCss.includes('flex-basis: var(--sendbox-strategy-trigger-width) !important;')).toBe(true);
+    expect(sendBoxCss.includes('flex-basis: var(--chat-strategy-expanded-width, var(--sendbox-strategy-trigger-width)) !important;')).toBe(true);
     expect(sendBoxCss.includes('.sendbox-strategy-slot')).toBe(true);
     expect(sendBoxCss.includes('.chat-model-picker-slot')).toBe(true);
     expect(sendBoxCss.includes('position: absolute !important;')).toBe(true);
     expect(sendBoxCss.includes('visibility: hidden;')).toBe(true);
     expect(sendBoxCss.includes('pointer-events: none;')).toBe(true);
+    expect(sendBoxCss.includes('sendbox-strategy-slot .sendbox-responsive-reasoning-btn .sendbox-responsive-chevron')).toBe(true);
+    expect(sendBoxCss.includes('chat-model-picker-slot .chat-model-picker-trigger .sendbox-responsive-chevron')).toBe(true);
     expect(sendBoxCss.includes('margin-inline: 8px')).toBe(false);
     expect(sendBoxCss.includes('.sendbox-responsive-leading-icon')).toBe(true);
     expect(sendBoxCss.includes('.sendbox-responsive-chevron-slot')).toBe(true);
+    expect(sendBoxCss.includes('--chat-strategy-expanded-inline-start')).toBe(true);
+    expect(sendBoxCss.includes('--chat-strategy-expanded-inline-end')).toBe(true);
     expect(sendBoxCss.includes('width: 27px !important;')).toBe(true);
     expect(sendBoxCss.includes('width: 100% !important;\n  }\n\n  /* This rule intentionally comes after')).toBe(true);
     expect(sendBoxSource.includes("data-layout-slot='strategy'")).toBe(true);
@@ -205,6 +209,20 @@ describe('Nomi sendbox control layout', () => {
     expect(selectionSource.includes('slice(0, maxLength)')).toBe(false);
   });
 
+  test('guards model selection writes against duplicate and stale async results', () => {
+    const selectionSource = readSource(new URL('./useNomiModelSelection.ts', import.meta.url));
+    const chatSource = readSource(new URL('../../components/ChatConversation.tsx', import.meta.url));
+
+    expect(selectionSource.includes('selectionRequestIdRef')).toBe(true);
+    expect(selectionSource.includes('pendingModelKeyRef')).toBe(true);
+    expect(selectionSource.includes('if (pendingModelKeyRef.current === modelKey) return false')).toBe(true);
+    expect(selectionSource.includes('if (requestId !== selectionRequestIdRef.current) return false')).toBe(true);
+    expect(chatSource.includes('modelSelectionRequestIdRef')).toBe(true);
+    expect(chatSource.includes('modelSelectionQueueRef')).toBe(true);
+    expect(chatSource.includes('modelSelectionQueueRef.current.then(run, run)')).toBe(true);
+    expect(chatSource.includes('await saveNomiDefaultModel(_provider.id, modelName)')).toBe(true);
+  });
+
   test('keeps the compact reasoning trigger icon at full size when a narrow sendbox expands on hover', () => {
     const sendBoxCss = readSource(new URL('../../../../components/chat/SendBox/sendbox.css', import.meta.url));
     const guidCss = readSource(new URL('../../../guid/index.module.css', import.meta.url));
@@ -232,6 +250,17 @@ describe('Nomi sendbox control layout', () => {
     expect(guidCss.includes('.actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover)')).toBe(true);
     expect(guidCss.includes('.actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible)')).toBe(true);
     expect(guidCss.includes('.actionConfigGroup :global(.sendbox-strategy-slot)')).toBe(true);
+  });
+
+  test('probes the visible boundary of expanded model controls', () => {
+    const probeSource = readFileSync(new URL('../../../../pages/test/ButtonLayoutProbe.tsx', import.meta.url), 'utf8');
+
+    expect(probeSource.includes('visibleHorizontalBoundaryOf')).toBe(true);
+    expect(probeSource.includes('isOutsideVisibleHorizontalBoundary')).toBe(true);
+    expect(probeSource.includes('modelOutsideVisibleBoundary')).toBe(true);
+    expect(probeSource.includes('model-out-of-visible-boundary')).toBe(true);
+    expect(probeSource.includes('strategyOutsideVisibleBoundary')).toBe(true);
+    expect(probeSource.includes('strategy-out-of-visible-boundary')).toBe(true);
   });
 
   test('uses grouped mobile model options with keyboard-accessible sheet rows', () => {
