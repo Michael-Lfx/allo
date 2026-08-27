@@ -2641,7 +2641,13 @@ mod tests {
             ),
             vec![
                 PermissionOption::new("allow", "Allow", SdkPermissionOptionKind::AllowOnce),
+                PermissionOption::new("allow-always", "Allow always", SdkPermissionOptionKind::AllowAlways),
                 PermissionOption::new("reject", "Reject", SdkPermissionOptionKind::RejectOnce),
+                PermissionOption::new(
+                    "reject-always",
+                    "Reject always",
+                    SdkPermissionOptionKind::RejectAlways,
+                ),
             ],
         );
 
@@ -2654,6 +2660,9 @@ mod tests {
         assert_eq!(json["data"]["tool_call"]["raw_input"]["file_path"], "/tmp/a.txt");
         assert_eq!(json["data"]["options"][0]["option_id"], "allow");
         assert_eq!(json["data"]["options"][0]["kind"], "allow_once");
+        assert_eq!(json["data"]["options"][1]["kind"], "allow_always");
+        assert_eq!(json["data"]["options"][2]["kind"], "reject_once");
+        assert_eq!(json["data"]["options"][3]["kind"], "reject_always");
         assert!(json["data"].get("toolCall").is_none());
         assert!(json["data"]["options"][0].get("optionId").is_none());
     }

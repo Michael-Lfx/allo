@@ -117,6 +117,37 @@ describe('knowledge writeback attempt ordering', () => {
 });
 
 describe('transformMessage runtime field normalization', () => {
+  test('keeps ACP permission option kinds for localized labels and omits unknown kinds', () => {
+    const message = transformMessage(
+      baseWire({
+        type: 'acp_permission',
+        data: {
+          session_id: 'session-1',
+          options: [
+            { option_id: 'allow', name: 'Allow once', kind: 'allow_once' },
+            { option_id: 'allow-always', name: 'Allow always', kind: 'allow_always' },
+            { option_id: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+            { option_id: 'reject-always', name: 'Reject always', kind: 'reject_always' },
+            { option_id: 'custom', name: 'Custom provider action', kind: 'provider_extension' },
+            { option_id: 'missing', name: 'Missing kind' },
+          ],
+          tool_call: { tool_call_id: 'tool-1' },
+        },
+      })
+    );
+
+    expect(message?.type).toBe('acp_permission');
+    if (message?.type !== 'acp_permission') throw new Error('expected ACP permission message');
+    expect(message.content.options).toEqual([
+      { option_id: 'allow', name: 'Allow once', kind: 'allow_once' },
+      { option_id: 'allow-always', name: 'Allow always', kind: 'allow_always' },
+      { option_id: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+      { option_id: 'reject-always', name: 'Reject always', kind: 'reject_always' },
+      { option_id: 'custom', name: 'Custom provider action' },
+      { option_id: 'missing', name: 'Missing kind' },
+    ]);
+  });
+
   test('normalizes persisted-style Skill load stream events into a center history entry', () => {
     const message = transformMessage(
       baseWire({
