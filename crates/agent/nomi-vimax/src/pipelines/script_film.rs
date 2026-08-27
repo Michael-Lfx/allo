@@ -31,7 +31,8 @@ use super::script_scene_split::{
     split_screenplay, ScriptSelection, ScreenplayUnit,
 };
 use super::{
-    PipelineBackends, emit_pct, emit_pct_meta, load_or_write_json, safe_component,
+    artifact_cache::{artifact_fingerprint, load_or_write_json_cached},
+    PipelineBackends, emit_pct, emit_pct_meta, safe_component,
 };
 
 pub struct ScriptFilmPipeline {
@@ -208,12 +209,17 @@ impl ScriptFilmPipeline {
         )
         .await?;
         let cameo_hint = cameo_extractor_hint(&session_root);
-        let mut characters = load_or_write_json(&self.working_dir.join("characters.json"), || async {
-            let text = format!("{corpus}{cameo_hint}");
-            self.character_extractor
-                .extract_characters(&text, &style)
-                .await
-        })
+        let chars_fp = artifact_fingerprint(&[&corpus, &style, &cameo_hint]);
+        let mut characters = load_or_write_json_cached(
+            &self.working_dir.join("characters.json"),
+            &chars_fp,
+            || async {
+                let text = format!("{corpus}{cameo_hint}");
+                self.character_extractor
+                    .extract_characters(&text, &style)
+                    .await
+            },
+        )
         .await?;
 
         emit_pct(&progress, "voice_profiles", "正在标定角色声音特征", 15.0);

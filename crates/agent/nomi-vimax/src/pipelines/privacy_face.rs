@@ -327,6 +327,55 @@ pub(crate) fn is_likely_face_bearing_ref(path: &Path) -> bool {
         || s.contains("portrait")
 }
 
+fn cameo_privacy_marker_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.privacy_safe", path.display()))
+}
+
+fn has_cameo_privacy_marker(path: &Path) -> bool {
+    cameo_privacy_marker_path(path).is_file()
+}
+
+fn is_continuity_ref(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|n| n == "video_last_frame.png")
+}
+
+fn has_seedance_privacy_at_least_soft(path: &Path) -> bool {
+    let marker = privacy_marker_path(path);
+    let raw = privacy_raw_path(path);
+    let raw_fp = file_fingerprint(&raw)
+        .or_else(|_| file_fingerprint(path))
+        .unwrap_or_default();
+    read_marker_tier(&marker, &raw_fp).is_some()
+}
+
+pub(crate) fn should_preflight_video_ref(path: &Path) -> bool {
+    if has_cameo_privacy_marker(path) {
+        return false;
+    }
+    if has_seedance_privacy_at_least_soft(path) {
+        return false;
+    }
+    if is_continuity_ref(path) {
+        return true;
+    }
+    is_likely_face_bearing_ref(path)
+}
+
+/// Soft-tier privacy pass on refs before the first video create (and per-shot refs).
+pub(crate) async fn preflight_video_ref_privacy(
+    image: &dyn VimaxImage,
+    ref_paths: &[&Path],
+) -> VimaxResult<()> {
+    for path in ref_paths {
+        if should_preflight_video_ref(path) && is_usable_image_file(path) {
+            let _ = ensure_seedance_privacy_face(image, path, PrivacyFaceTier::Soft, false).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Resolve which ref slots to privacy-repair for this reject.
 ///
 /// Prefer the Seedance `content[N]` hit; if missing/unmappable, sweep all face-bearing
@@ -668,5 +717,136 @@ InputImageSensitiveContentDetected.PrivacyInformation (The request failed becaus
             },
             None
         ));
+    }
+
+    #[test]
+    fn preflight_skips_cameo_privacy_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let plate = dir.path().join("Alice_cameo.png");
+        std::fs::write(&plate, b"png").unwrap();
+        std::fs::write(
+            super::cameo_privacy_marker_path(&plate),
+            b"fp",
+        )
+        .unwrap();
+        assert!(!should_preflight_video_ref(&plate));
+    }
+
+    #[test]
+    fn preflight_includes_continuity_without_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let frame = dir.path().join("video_last_frame.png");
+        std::fs::write(&frame, b"png").unwrap();
+        assert!(should_preflight_video_ref(&frame));
+    }
+
+    fn write_test_png(path: &Path) {
+        use image::{ImageBuffer, Rgb};
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_raw(2, 2, vec![255; 12]).expect("buffer");
+        img.save(path).expect("save png");
+    }
+
+    #[tokio::test]
+    async fn preflight_calls_image_for_bare_continuity() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        use async_trait::async_trait;
+
+        use crate::backends::{ImageGenerateOpts, VimaxImage};
+        use crate::error::VimaxResult;
+
+        struct CountingImage(Arc<AtomicUsize>);
+
+        #[async_trait]
+        impl VimaxImage for CountingImage {
+            async fn generate(
+                &self,
+                _prompt: &str,
+                ref_image_paths: &[&Path],
+                out_path: &Path,
+            ) -> VimaxResult<()> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                if let Some(src) = ref_image_paths.first() {
+                    std::fs::copy(src, out_path)?;
+                } else {
+                    write_test_png(out_path);
+                }
+                Ok(())
+            }
+
+            async fn generate_with_opts(
+                &self,
+                _prompt: &str,
+                ref_image_paths: &[&Path],
+                out_path: &Path,
+                _opts: ImageGenerateOpts,
+            ) -> VimaxResult<()> {
+                self.generate("", ref_image_paths, out_path).await
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let frame = dir.path().join("video_last_frame.png");
+        write_test_png(&frame);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let image = CountingImage(Arc::clone(&calls));
+        preflight_video_ref_privacy(&image, &[frame.as_path()])
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn preflight_skips_when_cameo_marker_present() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        use async_trait::async_trait;
+
+        use crate::backends::{ImageGenerateOpts, VimaxImage};
+        use crate::error::VimaxResult;
+
+        struct CountingImage(Arc<AtomicUsize>);
+
+        #[async_trait]
+        impl VimaxImage for CountingImage {
+            async fn generate(
+                &self,
+                _prompt: &str,
+                ref_image_paths: &[&Path],
+                out_path: &Path,
+            ) -> VimaxResult<()> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                if let Some(src) = ref_image_paths.first() {
+                    std::fs::copy(src, out_path)?;
+                } else {
+                    write_test_png(out_path);
+                }
+                Ok(())
+            }
+
+            async fn generate_with_opts(
+                &self,
+                _prompt: &str,
+                ref_image_paths: &[&Path],
+                out_path: &Path,
+                _opts: ImageGenerateOpts,
+            ) -> VimaxResult<()> {
+                self.generate("", ref_image_paths, out_path).await
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let plate = dir.path().join("hero_cameo.png");
+        write_test_png(&plate);
+        std::fs::write(super::cameo_privacy_marker_path(&plate), b"fp").unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let image = CountingImage(Arc::clone(&calls));
+        preflight_video_ref_privacy(&image, &[plate.as_path()])
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

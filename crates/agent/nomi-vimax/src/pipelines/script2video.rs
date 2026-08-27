@@ -21,14 +21,17 @@ use super::cameo_bind::{
     world_cameo_context,
 };
 use super::privacy_face::{
-    content_index_to_image_slot, ensure_seedance_privacy_face, ensure_ai_sanitized_privacy_face,
-    is_seedance_privacy_image_err_text,
-    next_privacy_tier_for_path, parse_seedance_flagged_content_index, privacy_repair_targets,
+    content_index_to_image_slot, ensure_ai_sanitized_privacy_face, ensure_seedance_privacy_face,
+    is_seedance_privacy_image_err_text, next_privacy_tier_for_path,
+    parse_seedance_flagged_content_index, preflight_video_ref_privacy, privacy_repair_targets,
     PrivacyFaceOutcome, PrivacyFaceTier,
 };
 use super::{
+    artifact_cache::{
+        load_or_write_json_cached, plan_artifacts_sidecar_complete,
+        script2video_plan_fingerprint, sidecar_matches,
+    },
     PipelineBackends, emit, emit_meta, emit_pct, emit_pct_meta, group_shots_into_cameras,
-    load_or_write_json,
     resolve_film_root, safe_component, sanitize_camera_tree,
 };
 
@@ -76,14 +79,27 @@ impl Script2VideoPipeline {
         progress: Option<ProgressCallback>,
     ) -> VimaxResult<PlanArtifacts> {
         tokio::fs::create_dir_all(&self.working_dir).await?;
-        write_text_artifact(&self.working_dir.join("script.txt"), script).await?;
         let style = crate::planning::resolve_visual_style(style);
-        let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
+        let plan_fp =
+            script2video_plan_fingerprint(&self.working_dir, script, user_requirement, &style)
+                .await;
 
-        // Resume/checkpoint fast path: multi-scene parents call this for every
-        // scene; skip the expensive portrait/world/storyboard path when all
-        // text artifacts are already on disk.
-        if self.plan_artifacts_complete().await {
+        // Resume/checkpoint fast path: skip expensive planning when all artifacts
+        // exist **and** sidecars match current script / requirement / style inputs.
+        if plan_artifacts_sidecar_complete(
+            &self.working_dir,
+            &[
+                "characters.json",
+                "storyboard.json",
+                "shot_descriptions.json",
+                "camera_tree.json",
+            ],
+            &plan_fp,
+        )
+        .await
+        {
+            write_text_artifact(&self.working_dir.join("script.txt"), script).await?;
+            let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
             emit_pct(
                 &progress,
                 "reuse_plan",
@@ -92,6 +108,9 @@ impl Script2VideoPipeline {
             );
             return self.load_plan_artifacts().await;
         }
+
+        write_text_artifact(&self.working_dir.join("script.txt"), script).await?;
+        let _ = write_text_artifact(&self.working_dir.join("style.txt"), &style).await;
 
         let plan_started = std::time::Instant::now();
 
@@ -109,7 +128,9 @@ impl Script2VideoPipeline {
         .await?;
 
         emit_pct(&progress, "extract_characters", "正在从剧本提取角色", 12.0);
-        let characters = self.extract_characters(script, &style).await?;
+        let characters = self
+            .extract_characters(script, user_requirement, &style, &plan_fp)
+            .await?;
 
         emit_pct(&progress, "voice_profiles", "正在标定角色声音特征", 15.0);
         let characters = self.ensure_character_voices(characters, script, &style).await?;
@@ -180,16 +201,18 @@ impl Script2VideoPipeline {
 
         emit_pct(&progress, "design_storyboard", "正在设计分镜表", 40.0);
         let storyboard = self
-            .design_storyboard(script, &characters, user_requirement)
+            .design_storyboard(script, &characters, user_requirement, &plan_fp)
             .await?;
 
         emit_pct(&progress, "decompose_shots", "正在分解镜头视觉描述", 62.0);
         let shot_descriptions = self
-            .decompose_visual_descriptions(&storyboard, &characters)
+            .decompose_visual_descriptions(&storyboard, &characters, &plan_fp)
             .await?;
 
         emit_pct(&progress, "construct_camera_tree", "正在构建机位树", 85.0);
-        let camera_tree = self.construct_camera_tree(&shot_descriptions).await?;
+        let camera_tree = self
+            .construct_camera_tree(&shot_descriptions, &plan_fp)
+            .await?;
 
         // Poster is display-only (not muxed). Prefer film root so multi-scene shares one cover.
         let film_root = resolve_film_root(&self.working_dir);
@@ -219,15 +242,26 @@ impl Script2VideoPipeline {
         })
     }
 
-    /// True when every text-planning artifact already exists on disk, so render can
-    /// skip the (mostly cached) plan pipeline — character extract, voice profiles,
-    /// storyboard, per-shot decomposition, camera tree.
-    /// `shot_descriptions.json` is only written after ALL shots decompose, so its
-    /// presence implies every per-shot cache file exists too.
-    async fn plan_artifacts_complete(&self) -> bool {
-        ["characters.json", "storyboard.json", "shot_descriptions.json", "camera_tree.json"]
-            .iter()
-            .all(|name| self.working_dir.join(name).is_file())
+    /// True when every text-planning artifact exists with a matching input sidecar.
+    async fn plan_artifacts_complete(
+        &self,
+        script: &str,
+        user_requirement: &str,
+        style: &str,
+    ) -> bool {
+        let plan_fp =
+            script2video_plan_fingerprint(&self.working_dir, script, user_requirement, style).await;
+        plan_artifacts_sidecar_complete(
+            &self.working_dir,
+            &[
+                "characters.json",
+                "storyboard.json",
+                "shot_descriptions.json",
+                "camera_tree.json",
+            ],
+            &plan_fp,
+        )
+        .await
     }
 
     /// Load cached plan artifacts without re-running any LLM work. Cameo bindings
@@ -285,7 +319,10 @@ impl Script2VideoPipeline {
         media_local::scrub_unusable_video(&final_path).await?;
 
         // Load plan to check shot completeness before deciding to skip.
-        let plan = if self.plan_artifacts_complete().await {
+        let plan = if self
+            .plan_artifacts_complete(script, user_requirement, &style)
+            .await
+        {
             emit(
                 &progress,
                 "reuse_plan",
@@ -416,7 +453,9 @@ impl Script2VideoPipeline {
     async fn extract_characters(
         &self,
         script: &str,
+        _user_requirement: &str,
         style: &str,
+        plan_fp: &str,
     ) -> VimaxResult<Vec<CharacterInScene>> {
         let film_root = resolve_film_root(&self.working_dir);
         let film_chars = film_root.join("characters.json");
@@ -425,6 +464,8 @@ impl Script2VideoPipeline {
         if film_chars.exists() {
             if film_chars != path {
                 tokio::fs::copy(&film_chars, &path).await?;
+                super::artifact_cache::write_sidecar(&path, plan_fp).await?;
+                return read_json_artifact(&path).await;
             }
         } else if !path.exists() {
             if let Some(parent) = self.working_dir.parent() {
@@ -437,7 +478,7 @@ impl Script2VideoPipeline {
         let style = style.to_string();
         let session_root = resolve_session_root(&self.working_dir);
         let script = format!("{script}{}", cameo_extractor_hint(&session_root));
-        load_or_write_json(&path, || async {
+        load_or_write_json_cached(&path, plan_fp, || async {
             self.character_extractor
                 .extract_characters(&script, &style)
                 .await
@@ -477,9 +518,10 @@ impl Script2VideoPipeline {
         script: &str,
         characters: &[CharacterInScene],
         user_requirement: &str,
+        plan_fp: &str,
     ) -> VimaxResult<Vec<ShotBriefDescription>> {
         let path = self.working_dir.join("storyboard.json");
-        let mut storyboard = load_or_write_json(&path, || async {
+        let mut storyboard = load_or_write_json_cached(&path, plan_fp, || async {
             self.storyboard
                 .design_storyboard(script, characters, user_requirement)
                 .await
@@ -535,7 +577,12 @@ impl Script2VideoPipeline {
         &self,
         briefs: &[ShotBriefDescription],
         characters: &[CharacterInScene],
+        plan_fp: &str,
     ) -> VimaxResult<Vec<ShotDescription>> {
+        let aggregate = self.working_dir.join("shot_descriptions.json");
+        if aggregate.is_file() && sidecar_matches(&aggregate, plan_fp).await {
+            return read_json_artifact(&aggregate).await;
+        }
         let shots_root = self.working_dir.join("shots");
         tokio::fs::create_dir_all(&shots_root).await?;
 
@@ -581,16 +628,18 @@ impl Script2VideoPipeline {
             out.push(desc);
         }
 
-        write_json_artifact(&self.working_dir.join("shot_descriptions.json"), &out).await?;
+        write_json_artifact(&aggregate, &out).await?;
+        super::artifact_cache::write_sidecar(&aggregate, plan_fp).await?;
         Ok(out)
     }
 
     async fn construct_camera_tree(
         &self,
         shot_descriptions: &[ShotDescription],
+        plan_fp: &str,
     ) -> VimaxResult<Vec<Camera>> {
         let path = self.working_dir.join("camera_tree.json");
-        let mut cameras = load_or_write_json(&path, || async {
+        let mut cameras = load_or_write_json_cached(&path, plan_fp, || async {
             let cameras = group_shots_into_cameras(shot_descriptions);
             self.camera_gen
                 .construct_camera_tree(&cameras, shot_descriptions)
@@ -600,6 +649,7 @@ impl Script2VideoPipeline {
         // Always sanitize — cached trees from earlier LLM output may self-reference.
         sanitize_camera_tree(&mut cameras);
         write_json_artifact(&path, &cameras).await?;
+        super::artifact_cache::write_sidecar(&path, plan_fp).await?;
         Ok(cameras)
     }
 
@@ -1731,6 +1781,8 @@ Evolve framing/pose for the new beat while keeping identity, wardrobe, lighting,
             continuity = using_video_continuity,
             "video multi-ref R2V binding"
         );
+
+        preflight_video_ref_privacy(self.backends.image.as_ref(), &ref_paths).await?;
 
         let first_err = match self
             .backends

@@ -2,6 +2,7 @@
 
 mod action2video;
 mod ai_face_sanitizer;
+pub(crate) mod artifact_cache;
 mod cameo_bind;
 mod idea2video;
 mod novel2video;
@@ -23,9 +24,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::backends::{VimaxChat, VimaxImage, VimaxVideo};
-use crate::error::VimaxResult;
 use crate::progress::ProgressCallback;
-use crate::session::{read_json_artifact, write_json_artifact, write_text_artifact};
 
 /// Shared backend handles for pipelines.
 #[derive(Clone)]
@@ -100,36 +99,6 @@ pub(crate) fn emit_pct_meta(
         obj.insert("progress".into(), serde_json::json!(pct));
     }
     emit_meta(progress, stage, message, meta);
-}
-
-pub(crate) async fn load_or_write_json<T, F, Fut>(
-    path: &Path,
-    generate: F,
-) -> VimaxResult<T>
-where
-    T: serde::Serialize + serde::de::DeserializeOwned,
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = VimaxResult<T>>,
-{
-    if path.exists() {
-        return read_json_artifact(path).await;
-    }
-    let value = generate().await?;
-    write_json_artifact(path, &value).await?;
-    Ok(value)
-}
-
-pub(crate) async fn load_or_write_text<F, Fut>(path: &Path, generate: F) -> VimaxResult<String>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = VimaxResult<String>>,
-{
-    if path.exists() {
-        return Ok(tokio::fs::read_to_string(path).await?);
-    }
-    let value = generate().await?;
-    write_text_artifact(path, &value).await?;
-    Ok(value)
 }
 
 pub(crate) fn group_shots_into_cameras(

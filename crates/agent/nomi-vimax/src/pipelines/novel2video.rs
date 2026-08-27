@@ -14,7 +14,13 @@ use crate::rag;
 use crate::session::{write_json_artifact, write_text_artifact};
 
 use super::script2video::{resolve_scene_tail_continuity, Script2VideoPipeline};
-use super::{PipelineBackends, emit, emit_meta, emit_pct, load_or_write_text};
+use super::{
+    artifact_cache::{
+        artifact_fingerprint, load_or_write_json_cached, load_or_write_text_cached,
+        sidecar_matches,
+    },
+    PipelineBackends, emit, emit_meta, emit_pct,
+};
 
 pub struct Novel2VideoPipeline {
     backends: PipelineBackends,
@@ -66,13 +72,18 @@ impl Novel2VideoPipeline {
             5.0,
         );
         let progress_for_compress = progress.clone();
-        let compressed = load_or_write_text(&novel_dir.join("novel_compressed.txt"), || async {
-            let (_, agg) = self
-                .compressor
-                .compress_novel(novel_text, progress_for_compress.as_ref())
-                .await?;
-            Ok(agg)
-        })
+        let compressed_fp = artifact_fingerprint(&[novel_text]);
+        let compressed = load_or_write_text_cached(
+            &novel_dir.join("novel_compressed.txt"),
+            &compressed_fp,
+            || async {
+                let (_, agg) = self
+                    .compressor
+                    .compress_novel(novel_text, progress_for_compress.as_ref())
+                    .await?;
+                Ok(agg)
+            },
+        )
         .await?;
 
         emit_pct(&progress, "extract_events", "正在从压缩文本提取事件", 58.0);
@@ -80,9 +91,8 @@ impl Novel2VideoPipeline {
         tokio::fs::create_dir_all(&events_dir).await?;
         let events: Vec<Event> = {
             let list_path = events_dir.join("events.json");
-            if list_path.exists() {
-                serde_json::from_str(&tokio::fs::read_to_string(&list_path).await?)?
-            } else {
+            let events_fp = artifact_fingerprint(&[&compressed]);
+            load_or_write_json_cached(&list_path, &events_fp, || async {
                 let events = self.events.extract_all(&compressed).await?;
                 for e in &events {
                     write_json_artifact(
@@ -91,9 +101,9 @@ impl Novel2VideoPipeline {
                     )
                     .await?;
                 }
-                write_json_artifact(&list_path, &events).await?;
-                events
-            }
+                Ok(events)
+            })
+            .await?
         };
 
         let event_count = events.len().max(1);
@@ -106,16 +116,12 @@ impl Novel2VideoPipeline {
         tokio::fs::create_dir_all(gi_dir.join("novel_level")).await?;
 
         for (event_i, event) in events.iter().enumerate() {
-            // P1-6 fast path: this event's RAG / scene / character-merge artifacts
-            // already exist — re-running the per-event LLM work (rerank + merge)
-            // would only repeat cached results. Scene-level Script2Video plans are
-            // rebuilt lazily by render if any are missing.
-            let scenes_ready = self
+            // P1-6 fast path: skip per-event LLM when scenes + novel-level chars exist.
+            let scenes_path = self
                 .working_dir
                 .join("scenes")
                 .join(format!("event_{}", event.index))
-                .join("scenes.json")
-                .is_file();
+                .join("scenes.json");
             let chars_ready = gi_dir
                 .join("novel_level")
                 .join(format!(
@@ -123,7 +129,22 @@ impl Novel2VideoPipeline {
                     event.index
                 ))
                 .is_file();
-            if scenes_ready && chars_ready {
+            let relevant = rag::retrieve_relevant_chunks(
+                &self.backends.chat,
+                self.backends.flowy.as_ref(),
+                &event.description,
+                &chunks,
+                5,
+            )
+            .await?;
+            let chunks_fp = artifact_fingerprint(
+                &relevant
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>(),
+            );
+            let scenes_fp = artifact_fingerprint(&[&event.description, &chunks_fp]);
+            if chars_ready && sidecar_matches(&scenes_path, &scenes_fp).await {
                 continue;
             }
             let base = 60.0 + 35.0 * (event_i as f32 / event_count as f32);
@@ -137,15 +158,6 @@ impl Novel2VideoPipeline {
                 ),
                 base,
             );
-            // BM25 + optional Flowy embeddings + LLM rerank (ViMax FAISS+BGE analogue).
-            let relevant = rag::retrieve_relevant_chunks(
-                &self.backends.chat,
-                self.backends.flowy.as_ref(),
-                &event.description,
-                &chunks,
-                5,
-            )
-            .await?;
             let rel_dir = self
                 .working_dir
                 .join("relevant_chunks")
@@ -176,9 +188,7 @@ impl Novel2VideoPipeline {
             tokio::fs::create_dir_all(&scenes_dir).await?;
             let scenes: Vec<Scene> = {
                 let list = scenes_dir.join("scenes.json");
-                if list.exists() {
-                    serde_json::from_str(&tokio::fs::read_to_string(&list).await?)?
-                } else {
+                load_or_write_json_cached(&list, &scenes_fp, || async {
                     let scenes = self
                         .scenes
                         .extract_all_for_event(event, &relevant)
@@ -190,9 +200,9 @@ impl Novel2VideoPipeline {
                         )
                         .await?;
                     }
-                    write_json_artifact(&list, &scenes).await?;
-                    scenes
-                }
+                    Ok(scenes)
+                })
+                .await?
             };
 
             emit_pct(

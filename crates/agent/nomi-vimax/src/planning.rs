@@ -1132,7 +1132,7 @@ fn extract_spoken_payload(audio_desc: &str) -> String {
     }
 }
 
-fn is_cjk_speech_char(ch: char) -> bool {
+pub(crate) fn is_cjk_speech_char(ch: char) -> bool {
     matches!(ch,
         '\u{4E00}'..='\u{9FFF}'   // CJK Unified
         | '\u{3400}'..='\u{4DBF}' // Extension A

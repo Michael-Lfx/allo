@@ -23,7 +23,8 @@ use super::cameo_bind::{
 };
 use super::script2video::{resolve_scene_tail_continuity, Script2VideoPipeline};
 use super::{
-    PipelineBackends, emit_pct, emit_pct_meta, load_or_write_json, load_or_write_text, safe_component,
+    artifact_cache::{artifact_fingerprint, load_or_write_json_cached, load_or_write_text_cached},
+    PipelineBackends, emit_pct, emit_pct_meta, safe_component,
 };
 
 pub struct Idea2VideoPipeline {
@@ -132,11 +133,16 @@ impl Idea2VideoPipeline {
         let film_total = self.film_target_secs().await;
 
         emit_pct(&progress, "develop_story", "正在根据灵感扩写故事", 10.0);
-        let story = load_or_write_text(&self.working_dir.join("story.txt"), || async {
-            self.screenwriter
-                .develop_story(idea, user_requirement)
-                .await
-        })
+        let story_fp = artifact_fingerprint(&[idea, user_requirement]);
+        let story = load_or_write_text_cached(
+            &self.working_dir.join("story.txt"),
+            &story_fp,
+            || async {
+                self.screenwriter
+                    .develop_story(idea, user_requirement)
+                    .await
+            },
+        )
         .await?;
 
         let style = crate::planning::resolve_visual_style(style);
@@ -157,12 +163,17 @@ impl Idea2VideoPipeline {
 
         emit_pct(&progress, "extract_characters", "正在从故事中提取角色", 25.0);
         let cameo_hint = cameo_extractor_hint(&session_root);
-        let mut characters = load_or_write_json(&self.working_dir.join("characters.json"), || async {
-            let story_for_extract = format!("{story}{cameo_hint}");
-            self.character_extractor
-                .extract_characters(&story_for_extract, &style)
-                .await
-        })
+        let chars_fp = artifact_fingerprint(&[&story, &style, &cameo_hint]);
+        let mut characters = load_or_write_json_cached(
+            &self.working_dir.join("characters.json"),
+            &chars_fp,
+            || async {
+                let story_for_extract = format!("{story}{cameo_hint}");
+                self.character_extractor
+                    .extract_characters(&story_for_extract, &style)
+                    .await
+            },
+        )
         .await?;
 
         emit_pct(&progress, "voice_profiles", "正在标定角色声音特征", 28.0);
@@ -306,13 +317,17 @@ impl Idea2VideoPipeline {
         }
 
         emit_pct(&progress, "write_script", "正在撰写分场剧本", 52.0);
-        let mut scenes: Vec<String> =
-            load_or_write_json(&self.working_dir.join("script.json"), || async {
+        let script_fp = artifact_fingerprint(&[&story, user_requirement]);
+        let mut scenes: Vec<String> = load_or_write_json_cached(
+            &self.working_dir.join("script.json"),
+            &script_fp,
+            || async {
                 self.screenwriter
                     .write_script_based_on_story(&story, user_requirement)
                     .await
-            })
-            .await?;
+            },
+        )
+        .await?;
 
         if let Some(film_total) = film_total {
             let max_scenes = crate::planning::max_scenes_for_budget(film_total);
