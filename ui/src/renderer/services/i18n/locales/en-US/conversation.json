@@ -1013,6 +1013,22 @@
       "none": "Off"
     }
   },
+  "modelPicker": {
+    "auto": "Auto",
+    "autoModels": "Auto models",
+    "cloudModels": "Cloud models",
+    "autoTierTitle": "Auto mode",
+    "autoTierLabel": "Auto mode",
+    "autoTier": {
+      "intelligence": "Smart",
+      "balance": "Balanced",
+      "cost": "Economy",
+      "unknown": "Auto"
+    },
+    "empty": "No models available",
+    "autoTextOnly": "Auto models currently support text only",
+    "visionRequired": "This model does not accept images"
+  },
   "taskProfile": {
     "label": "Work mode",
     "office": "Daily office",

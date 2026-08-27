@@ -22,19 +22,25 @@ describe('GuidActionRow MCP checkbox selection treatment', () => {
   test('collapses model configuration labels to hover-expand icons in a narrow action slot', () => {
     expect(actionRowSource.includes('styles.actionConfigGroupResponsive')).toBe(true);
     expect(actionRowSource.includes('styles.actionSubmitResponsive')).toBe(true);
+    expect(actionRowSource.includes('modelSelectorIsChat')).toBe(true);
+    expect(actionRowSource.includes('chat-model-picker-slot')).toBe(true);
+    expect(actionRowSource.includes('sendbox-strategy-slot')).toBe(true);
     expect(modelSelectorSource.includes('sendbox-responsive-label')).toBe(true);
     expect(modelSelectorSource.includes('sendbox-responsive-chevron')).toBe(true);
     expect(modelSelectorSource.includes('<Tooltip')).toBe(false);
     expect(guidCss.includes('container-name: guid-action-config')).toBe(true);
     expect(guidCss.includes('@container guid-action-config (max-width: 440px)')).toBe(true);
-    expect(guidCss.includes(':global(.guid-config-btn:hover)')).toBe(true);
+    expect(guidCss.includes(':global(.guid-config-btn:not(.chat-model-picker-trigger):hover)')).toBe(true);
     expect(modelSelectorSource.includes('flowy-icon-text-btn')).toBe(true);
     expect(modelSelectorSource.includes('flowy-button-inline-content')).toBe(true);
     expect(actionRowSource.includes('flowy-icon-text-btn')).toBe(true);
     expect(actionRowSource.includes('flowy-button-inline-content')).toBe(true);
     expect(guidCss.includes('.flowy-button-inline-content')).toBe(true);
     expect(guidCss.includes('@media (hover: hover) and (pointer: fine)')).toBe(true);
-  });
+    const stableSlotCss = guidCss.slice(guidCss.indexOf('/* Keep the FlowY chat controls'));
+    expect(stableSlotCss.includes('height: 28px')).toBe(true);
+    expect(stableSlotCss.includes('position: absolute !important')).toBe(true);
+});
 
   test('places the mode selector immediately after the add button', () => {
     const addButtonIndex = actionRowSource.indexOf("data-testid='file-upload-btn'");

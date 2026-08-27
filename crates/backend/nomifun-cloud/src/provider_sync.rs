@@ -1,7 +1,7 @@
 //! Sync the logged-in Flowy JWT and server model catalog into the built-in provider row.
 //!
 //! The local `providers.models` JSON is a **projection** of the upstream
-//! `availableListClaw` catalog (chat `category=1`, ASR `category=7`, TTS
+//! `/api/v2/model/availableListClaw` catalog (chat `category=1`, ASR `category=7`, TTS
 //! `category=8`).
 //! On a successful chat catalog fetch it is fully replaced (delisted models
 //! must disappear). Transient chat-catalog failures must **not** wipe or invent
@@ -23,6 +23,13 @@ use tracing::{info, warn};
 use crate::config_defaults::FLOWY_BUILTIN_PROVIDER_ID;
 use crate::flowy::{ClawModelEntry, FlowyApiClient, MODEL_CATEGORY_ASR, MODEL_CATEGORY_TTS};
 use crate::session::ServerSession;
+
+const CATALOG_FAMILY_AUTO: &str = "auto";
+const CATALOG_FAMILY_CLOUD: &str = "cloud";
+
+const AUTO_MODEL_INTELLIGENCE: &str = "AIPC-auto-intelligence";
+const AUTO_MODEL_BALANCE: &str = "AIPC-auto-balance";
+const AUTO_MODEL_COST: &str = "AIPC-auto-cost";
 
 /// Upsert Flowy Cloud provider with JWT + server model catalog for the model
 /// selector. The boolean reports whether the upstream catalog request
@@ -167,10 +174,20 @@ pub async fn sync_flowy_builtin_provider(
         .as_ref()
         .map(|fields| fields.model_ids.len())
         .unwrap_or(0);
+    let reasoning_effort_model_count = profile_seeds
+        .iter()
+        .filter(|seed| seed.catalog_reasoning_effort.is_some())
+        .count();
+    let auto_model_count = profile_seeds
+        .iter()
+        .filter(|seed| seed.catalog_family.as_deref() == Some(CATALOG_FAMILY_AUTO))
+        .count();
     info!(
         flowy_models = model_count,
+        auto_models = auto_model_count,
         catalog_replaced = catalog_fields.is_some(),
-        "Synced Flowy Cloud provider from server catalog"
+        reasoning_effort_models = reasoning_effort_model_count,
+        "[reasoning-effort-diagnosis] Synced Flowy Cloud provider from server catalog"
     );
     Ok(catalog_synced)
 }
@@ -190,7 +207,14 @@ fn build_profile_seeds(
         let extra = entry.model_extra();
         let is_asr = entry.category == MODEL_CATEGORY_ASR;
         let is_tts = entry.category == MODEL_CATEGORY_TTS;
-        let (mut tasks, mut traits) = if is_asr {
+        let is_auto = !is_asr
+            && !is_tts
+            && entry.catalog_family.as_deref() == Some(CATALOG_FAMILY_AUTO);
+        let (mut tasks, mut traits) = if is_auto {
+            // Auto is a chat family even if a future model id does not match
+            // the current name-based task inference rules.
+            (vec![ModelTask::Chat], Vec::new())
+        } else if is_asr {
             (vec![ModelTask::SpeechRecognition], Vec::new())
         } else if is_tts {
             (vec![ModelTask::SpeechSynthesis], Vec::new())
@@ -206,7 +230,7 @@ fn build_profile_seeds(
             if extra.tools && !traits.contains(&nomifun_api_types::ModelTrait::FunctionCalling) {
                 traits.push(nomifun_api_types::ModelTrait::FunctionCalling);
             }
-            let supports_vision = extra.supports_vision();
+            let supports_vision = !is_auto && extra.supports_vision();
             traits.retain(|trait_value| *trait_value != ModelTrait::VisionInput);
             if supports_vision {
                 traits.push(nomifun_api_types::ModelTrait::VisionInput);
@@ -218,7 +242,7 @@ fn build_profile_seeds(
         let catalog_vision = if is_asr || is_tts {
             None
         } else {
-            Some(extra.supports_vision())
+            Some(!is_auto && extra.supports_vision())
         };
         profiles.push(ProviderModelProfileSeed {
             model,
@@ -227,9 +251,33 @@ fn build_profile_seeds(
             traits: serde_json::to_string(&traits)
                 .map_err(|error| format!("serialize Flowy model traits: {error}"))?,
             catalog_max_tokens: extra.max_output_tokens(),
-            catalog_reasoning_effort: extra.reasoning_effort_levels(),
+            // Auto owns the strategy selector, so even an upstream payload
+            // that advertises reasoning levels must not leak a selectable
+            // effort list into the local model profile.
+            catalog_reasoning_effort: if is_auto {
+                None
+            } else {
+                extra.reasoning_effort_levels()
+            },
             catalog_credit_rate: extra.credit_rate_multiplier(),
             catalog_vision,
+            catalog_family: if is_asr || is_tts {
+                None
+            } else {
+                Some(
+                    entry
+                        .catalog_family
+                        .clone()
+                        .unwrap_or_else(|| CATALOG_FAMILY_CLOUD.to_string()),
+                )
+            },
+            catalog_auto_tier: if is_asr || is_tts {
+                None
+            } else if entry.catalog_family.as_deref() == Some(CATALOG_FAMILY_AUTO) {
+                entry.catalog_auto_tier.clone()
+            } else {
+                None
+            },
         });
     }
 
@@ -249,11 +297,36 @@ async fn fetch_catalog_models(
         api.get_available_models_claw(session, Some(MODEL_CATEGORY_TTS)),
     );
     let chat = chat_res.map_err(|e| e.to_string())?;
-    for entry in &chat.cloud {
+    for entry in chat.auto.iter().chain(chat.cloud.iter()) {
+        let raw_extra = serde_json::from_str::<serde_json::Value>(&entry.extra).ok();
+        let raw_reasoning_effort = raw_extra
+            .as_ref()
+            .and_then(|value| value.get("reasoning_effort"));
+        let raw_reasoning_effort_kind = raw_reasoning_effort.map_or("missing", |value| match value {
+            serde_json::Value::Array(_) => "array",
+            serde_json::Value::Null => "null",
+            serde_json::Value::String(_) => "string",
+            serde_json::Value::Bool(_) => "boolean",
+            serde_json::Value::Number(_) => "number",
+            serde_json::Value::Object(_) => "object",
+        });
+        let extra = entry.model_extra();
         info!(
+            diagnosis = "reasoning_effort",
             model = %entry.api_model_id(),
-            max_tokens = ?entry.model_extra().max_output_tokens(),
-            "Flowy cloud catalog model output limit"
+            max_tokens = ?extra.max_output_tokens(),
+            raw_extra_present = !entry.extra.trim().is_empty(),
+            raw_extra_json_valid = raw_extra.is_some(),
+            raw_reasoning_present = raw_extra
+                .as_ref()
+                .and_then(|value| value.get("reasoning"))
+                .is_some(),
+            parsed_reasoning = extra.reasoning,
+            raw_reasoning_effort_present = raw_reasoning_effort.is_some(),
+            raw_reasoning_effort_kind,
+            parsed_reasoning_effort = ?extra.reasoning_effort,
+            catalog_reasoning_effort = ?extra.reasoning_effort_levels(),
+            "[reasoning-effort-diagnosis] Flowy cloud catalog model capabilities"
         );
     }
     let asr = match asr_res {
@@ -270,7 +343,42 @@ async fn fetch_catalog_models(
             Vec::new()
         }
     };
-    Ok(merge_catalog_modalities(chat.cloud, asr, tts))
+    let chat_entries = merge_chat_catalogs(chat.auto, chat.cloud);
+    Ok(merge_catalog_modalities(chat_entries, asr, tts))
+}
+
+fn merge_chat_catalogs(auto: Vec<ClawModelEntry>, cloud: Vec<ClawModelEntry>) -> Vec<ClawModelEntry> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+
+    for mut entry in auto {
+        entry.category = 1;
+        entry.catalog_family = Some(CATALOG_FAMILY_AUTO.to_string());
+        entry.catalog_auto_tier = auto_tier_for_model_id(&entry.api_model_id()).map(str::to_owned);
+        if seen.insert(entry.api_model_id()) {
+            out.push(entry);
+        }
+    }
+
+    for mut entry in cloud {
+        entry.category = 1;
+        entry.catalog_family = Some(CATALOG_FAMILY_CLOUD.to_string());
+        entry.catalog_auto_tier = None;
+        if seen.insert(entry.api_model_id()) {
+            out.push(entry);
+        }
+    }
+
+    out
+}
+
+fn auto_tier_for_model_id(model_id: &str) -> Option<&'static str> {
+    match model_id.trim() {
+        AUTO_MODEL_INTELLIGENCE => Some("intelligence"),
+        AUTO_MODEL_BALANCE => Some("balance"),
+        AUTO_MODEL_COST => Some("cost"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -325,10 +433,14 @@ struct BuiltModelFields {
 
 fn build_model_fields(entries: &[ClawModelEntry], server: &ServerConfig) -> BuiltModelFields {
     let default_model = server.effective_default_llm_model();
-    let mut model_ids: Vec<String> = entries.iter().map(|e| e.api_model_id()).collect();
-    model_ids.sort();
-    model_ids.dedup();
-    model_ids.retain(|m| !m.trim().is_empty());
+    let mut seen_model_ids = HashSet::new();
+    let mut model_ids = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let model_id = entry.api_model_id();
+        if !model_id.trim().is_empty() && seen_model_ids.insert(model_id.clone()) {
+            model_ids.push(model_id);
+        }
+    }
 
     promote_default_model(&mut model_ids, &default_model);
 
@@ -431,6 +543,7 @@ mod tests {
             anthropic_endpoint: String::new(),
             icon: String::new(),
             category,
+            ..Default::default()
         }
     }
 
@@ -473,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn build_model_fields_drops_ids_not_in_server_catalog() {
+    fn build_model_fields_preserves_catalog_order_and_drops_empty_or_duplicate_ids() {
         let server = ServerConfig {
             llm: nomi_config::ServerLlmConfig {
                 default_model: "AIPC-delisted".into(),
@@ -490,6 +603,7 @@ mod tests {
                 anthropic_endpoint: String::new(),
                 icon: String::new(),
                 category: 1,
+                ..Default::default()
             },
             ClawModelEntry {
                 id: "AIPC-also".into(),
@@ -499,12 +613,33 @@ mod tests {
                 anthropic_endpoint: String::new(),
                 icon: String::new(),
                 category: 1,
+                ..Default::default()
+            },
+            ClawModelEntry {
+                id: "AIPC-keep".into(),
+                name: "Duplicate keep".into(),
+                extra: String::new(),
+                endpoint: String::new(),
+                anthropic_endpoint: String::new(),
+                icon: String::new(),
+                category: 1,
+                ..Default::default()
+            },
+            ClawModelEntry {
+                id: "  ".into(),
+                name: "Empty id".into(),
+                extra: String::new(),
+                endpoint: String::new(),
+                anthropic_endpoint: String::new(),
+                icon: String::new(),
+                category: 1,
+                ..Default::default()
             },
         ];
         let fields = build_model_fields(&entries, &server);
         assert_eq!(
             fields.model_ids,
-            vec!["AIPC-also".to_string(), "AIPC-keep".to_string()]
+            vec!["AIPC-keep".to_string(), "AIPC-also".to_string()]
         );
         assert!(!fields.model_ids.iter().any(|id| id == "AIPC-delisted"));
         assert_eq!(fields.context_limits_json, "{}");
@@ -522,6 +657,7 @@ mod tests {
                 anthropic_endpoint: String::new(),
                 icon: String::new(),
                 category: 1,
+                ..Default::default()
             },
             ClawModelEntry {
                 id: "AIPC-tiny".into(),
@@ -531,6 +667,7 @@ mod tests {
                 anthropic_endpoint: String::new(),
                 icon: String::new(),
                 category: 1,
+                ..Default::default()
             },
             ClawModelEntry {
                 id: "AIPC-no-extra".into(),
@@ -540,6 +677,7 @@ mod tests {
                 anthropic_endpoint: String::new(),
                 icon: String::new(),
                 category: 1,
+                ..Default::default()
             },
         ];
         let fields = build_model_fields(&entries, &server);
@@ -611,6 +749,72 @@ mod tests {
         assert_eq!(seeds[1].catalog_reasoning_effort, None);
         let traits_no: Vec<String> = serde_json::from_str(&seeds[1].traits).unwrap();
         assert!(!traits_no.iter().any(|t| t == "reasoning"));
+    }
+
+    #[test]
+    fn merge_chat_catalogs_keeps_auto_first_and_auto_wins_duplicate_ids() {
+        let auto = vec![
+            catalog_entry("AIPC-auto-intelligence", r#"{"input":["text"],"tools":true}"#),
+            catalog_entry("AIPC-auto-balance", r#"{"input":["text"],"tools":true}"#),
+            catalog_entry("AIPC-auto-cost", r#"{"input":["text"],"tools":true}"#),
+        ];
+        let mut cloud = vec![catalog_entry("AIPC-auto-balance", r#"{"reasoning":true}"#)];
+        cloud.extend((0..11).map(|index| catalog_entry(&format!("AIPC-cloud-{index}"), "{}")));
+
+        let merged = merge_chat_catalogs(auto, cloud);
+        assert_eq!(merged.len(), 14);
+        assert_eq!(
+            merged[..3]
+                .iter()
+                .map(ClawModelEntry::api_model_id)
+                .collect::<Vec<_>>(),
+            vec![
+                AUTO_MODEL_INTELLIGENCE.to_owned(),
+                AUTO_MODEL_BALANCE.to_owned(),
+                AUTO_MODEL_COST.to_owned(),
+            ]
+        );
+        assert_eq!(merged[1].catalog_family.as_deref(), Some(CATALOG_FAMILY_AUTO));
+        assert_eq!(merged[1].catalog_auto_tier.as_deref(), Some("balance"));
+        assert!(!merged.iter().skip(3).any(|entry| entry.api_model_id() == AUTO_MODEL_BALANCE));
+    }
+
+    #[test]
+    fn auto_profile_seeds_are_chat_tool_capable_text_only_and_have_no_reasoning_effort() {
+        let entries = merge_chat_catalogs(
+            vec![
+                catalog_entry("AIPC-auto-intelligence", r#"{"input":["text"],"tools":true}"#),
+                catalog_entry(
+                    "AIPC-auto-balance",
+                    r#"{"input":["text","image"],"tools":true,"reasoning":true,"reasoning_effort":["low","medium","xhigh"],"credit_rate":2,"max_tokens":128000}"#,
+                ),
+                catalog_entry("AIPC-auto-cost", r#"{"input":["text"],"tools":true}"#),
+            ],
+            Vec::new(),
+        );
+        let seeds = build_profile_seeds(&entries, "openai").unwrap();
+
+        for (model, tier) in [
+            (AUTO_MODEL_INTELLIGENCE, "intelligence"),
+            (AUTO_MODEL_BALANCE, "balance"),
+            (AUTO_MODEL_COST, "cost"),
+        ] {
+            let seed = seeds.iter().find(|seed| seed.model == model).unwrap();
+            assert_eq!(seed_tasks(seed), vec!["chat"]);
+            let traits: Vec<String> = serde_json::from_str(&seed.traits).unwrap();
+            assert!(traits.iter().any(|trait_name| trait_name == "function_calling"));
+            assert!(!traits.iter().any(|trait_name| trait_name == "vision_input"));
+            assert_eq!(seed.catalog_reasoning_effort, None);
+            assert_eq!(seed.catalog_family.as_deref(), Some(CATALOG_FAMILY_AUTO));
+            assert_eq!(seed.catalog_auto_tier.as_deref(), Some(tier));
+        }
+
+        let balance = seeds
+            .iter()
+            .find(|seed| seed.model == AUTO_MODEL_BALANCE)
+            .unwrap();
+        assert_eq!(balance.catalog_credit_rate, Some(2.0));
+        assert_eq!(balance.catalog_max_tokens, Some(128_000));
     }
 
     #[test]
@@ -745,7 +949,7 @@ mod tests {
 
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/model/availableListClaw"))
+            .and(path("/api/v2/model/availableListClaw"))
             .and(query_param("category", "1"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-glm-4.7","name":"GLM 4.7"}]}}"#,
@@ -753,7 +957,7 @@ mod tests {
             .mount(&mock)
             .await;
         Mock::given(method("GET"))
-            .and(path("/model/availableListClaw"))
+            .and(path("/api/v2/model/availableListClaw"))
             .and(query_param("category", "7"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-qwen3-asr-flash","name":"Qwen3 ASR Flash"}]}}"#,
@@ -805,7 +1009,7 @@ mod tests {
 
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/model/availableListClaw"))
+            .and(path("/api/v2/model/availableListClaw"))
             .and(query_param("category", "1"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-glm-4.7","name":"GLM 4.7"}]}}"#,
@@ -813,7 +1017,7 @@ mod tests {
             .mount(&mock)
             .await;
         Mock::given(method("GET"))
-            .and(path("/model/availableListClaw"))
+            .and(path("/api/v2/model/availableListClaw"))
             .and(query_param("category", "7"))
             .respond_with(ResponseTemplate::new(500).set_body_string("nope"))
             .mount(&mock)
@@ -842,7 +1046,7 @@ mod tests {
 
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/model/availableListClaw"))
+            .and(path("/api/v2/model/availableListClaw"))
             .and(query_param("category", "1"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-glm-4.7","name":"GLM 4.7"}]}}"#,
@@ -850,7 +1054,7 @@ mod tests {
             .mount(&mock)
             .await;
         Mock::given(method("GET"))
-            .and(path("/model/availableListClaw"))
+            .and(path("/api/v2/model/availableListClaw"))
             .and(query_param("category", "7"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"code":200,"msg":"ok","data":{"cloud":[]}}"#,
@@ -858,7 +1062,7 @@ mod tests {
             .mount(&mock)
             .await;
         Mock::given(method("GET"))
-            .and(path("/model/availableListClaw"))
+            .and(path("/api/v2/model/availableListClaw"))
             .and(query_param("category", "8"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-qwen3-tts","name":"qwen3-tts","category":8}]}}"#,

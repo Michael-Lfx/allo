@@ -8,6 +8,7 @@ import type { ConversationId } from '@/common/types/ids';
 
 import { ipcBridge } from '@/common';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
+import { useChatModelTriggerExpansion } from '@/renderer/components/model/useChatModelTriggerExpansion';
 import {
   normalizeReasoningEffortLevels,
   pendingReasoningEffortCommitIndex,
@@ -26,6 +27,7 @@ import React, {
   useMemo,
   useRef,
   useState,
+  useId,
   type CSSProperties,
 } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -44,6 +46,8 @@ export interface ReasoningEffortSelectorProps {
   isProcessing?: boolean;
   disabled?: boolean;
   className?: string;
+  popupVisible?: boolean;
+  onPopupVisibleChange?: (visible: boolean) => void;
   /** Fired after a successful local change (and after conversation persist when applicable). */
   onEffortChanged?: (effort: string | undefined) => void;
 }
@@ -199,6 +203,8 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
   isProcessing = false,
   disabled = false,
   className,
+  popupVisible: popupVisibleProp,
+  onPopupVisibleChange,
   onEffortChanged,
 }) => {
   const { t } = useTranslation();
@@ -218,7 +224,9 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [pendingForNextTurn, setPendingForNextTurn] = useState(false);
   const [lastStatus, setLastStatus] = useState<ReasoningStatus>('idle');
-  const [popoverVisible, setPopoverVisible] = useState(false);
+  const [localPopoverVisible, setLocalPopoverVisible] = useState(false);
+  const popoverVisible = popupVisibleProp ?? localPopoverVisible;
+  const popupInstanceId = useId().replace(/:/g, '');
 
   const confirmedEffortRef = useRef<string | undefined>(viewModel.effort);
   const draftIndexRef = useRef(viewModel.index);
@@ -231,6 +239,7 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
   const pointerCommitRef = useRef(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const previousPopoverVisibleRef = useRef(false);
+  const restoreFocusOnCloseRef = useRef(false);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const reasoningLabel = t('conversation.reasoningEffort.ariaLabel', {
@@ -250,8 +259,36 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
       draftIndex === normalizedLevels.length - 1 &&
       confirmedEffort === maximumEffort
   );
-  const statusId = `reasoning-effort-status-${conversation_id ?? 'guid'}`;
-  const popoverId = `reasoning-effort-popover-${conversation_id ?? 'guid'}`;
+  const statusId = `reasoning-effort-status-${conversation_id ?? 'guid'}-${popupInstanceId}`;
+  const popoverId = `reasoning-effort-popover-${conversation_id ?? 'guid'}-${popupInstanceId}`;
+  const {
+    ref: strategyTriggerRef,
+    style: strategyTriggerStyle,
+    side: strategyTriggerSide,
+  } = useChatModelTriggerExpansion({
+    enabled: !disabled && normalizedLevels.length > 1,
+    expandedWidth: 108,
+    cssVariablePrefix: 'strategy',
+    slotSelector: '.sendbox-strategy-slot',
+    open: popoverVisible,
+  });
+  const setTriggerRef = useCallback(
+    (element: HTMLButtonElement | null) => {
+      triggerRef.current = element;
+      strategyTriggerRef(element);
+    },
+    [strategyTriggerRef],
+  );
+
+  const setPopupVisibility = useCallback(
+    (visible: boolean) => {
+      if (popupVisibleProp === undefined) {
+        setLocalPopoverVisible(visible);
+      }
+      onPopupVisibleChange?.(visible);
+    },
+    [onPopupVisibleChange, popupVisibleProp]
+  );
 
   const statusText =
     pendingForNextTurn || lastStatus === 'nextTurn'
@@ -454,7 +491,7 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
       setPendingForNextTurn(false);
       setLastStatus('idle');
       clearStatusTimer();
-      setPopoverVisible(false);
+      setPopupVisibility(false);
     }
 
     const contextGeneration = contextGenerationRef.current;
@@ -500,7 +537,7 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
     // `persistEffort` and `flushCommit` are stable for one conversation/model
     // context. Deliberately react to the catalog/value identity only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clearStatusTimer, contextKey, initialEffort, viewModel.effort, viewModel.index]);
+  }, [clearStatusTimer, contextKey, initialEffort, setPopupVisibility, viewModel.effort, viewModel.index]);
 
   useEffect(() => {
     if (!isProcessing) {
@@ -510,9 +547,10 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
   }, [isProcessing]);
 
   useEffect(() => {
-    if (previousPopoverVisibleRef.current && !popoverVisible) {
+    if (previousPopoverVisibleRef.current && !popoverVisible && restoreFocusOnCloseRef.current) {
       window.requestAnimationFrame(() => triggerRef.current?.focus());
     }
+    restoreFocusOnCloseRef.current = false;
     previousPopoverVisibleRef.current = popoverVisible;
   }, [popoverVisible]);
 
@@ -555,7 +593,8 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
 
   const handlePopoverVisibleChange = (visible: boolean) => {
     if (!visible && pointerDownRef.current) cancelPointerInteraction();
-    setPopoverVisible(visible);
+    restoreFocusOnCloseRef.current = !visible;
+    setPopupVisibility(visible);
   };
 
   const sliderProps = {
@@ -576,17 +615,19 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
   if (normalizedLevels.length === 1) {
     return (
       <div
-        className={classNames(styles.root, className)}
+        className={classNames(styles.root, 'sendbox-responsive-strategy-root', className)}
         data-testid='reasoning-effort-selector'
         data-static='true'
         data-saving={isSaving ? 'true' : 'false'}
       >
         <span
-          className={styles.staticValue}
+          className={classNames(styles.staticValue, 'sendbox-responsive-static-value')}
           aria-label={`${reasoningLabel}: ${currentLabel}`}
           title={reasoningHint}
         >
-          <Lightning theme='filled' size='14' fill='currentColor' aria-hidden='true' />
+          <span className='sendbox-responsive-leading-icon' data-layout-part='leading-icon'>
+            <Lightning theme='filled' size='14' fill='currentColor' aria-hidden='true' />
+          </span>
           <span>{currentLabel}</span>
         </span>
         <span id={statusId} className={styles.srOnly} aria-live='polite'>
@@ -613,7 +654,7 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
 
   return (
     <div
-      className={classNames(styles.root, className)}
+      className={classNames(styles.root, 'sendbox-responsive-strategy-root', className)}
       data-testid='reasoning-effort-selector'
       data-dragging={isDragging ? 'true' : 'false'}
       data-saving={isSaving ? 'true' : 'false'}
@@ -630,8 +671,13 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
       >
         <button
           type='button'
-          ref={triggerRef}
-          className={classNames(styles.compactTrigger, 'sendbox-responsive-reasoning-btn')}
+          ref={setTriggerRef}
+          style={strategyTriggerStyle}
+          className={classNames(
+            styles.compactTrigger,
+            'sendbox-responsive-reasoning-btn',
+            popoverVisible && 'sendbox-responsive-control-open',
+          )}
           disabled={disabled}
           aria-label={`${reasoningLabel}: ${currentLabel}`}
           aria-haspopup='dialog'
@@ -639,15 +685,18 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
           aria-expanded={popoverVisible}
           aria-busy={isSaving || undefined}
           title={reasoningHint}
+          data-chat-strategy-expand-side={strategyTriggerSide}
           data-testid='reasoning-effort-compact-trigger'
         >
-          <Lightning
-            className={classNames(styles.triggerIcon, 'shrink-0')}
-            theme='filled'
-            size='14'
-            fill='currentColor'
-            aria-hidden='true'
-          />
+          <span className='sendbox-responsive-leading-icon' data-layout-part='leading-icon'>
+            <Lightning
+              className={classNames(styles.triggerIcon, 'shrink-0')}
+              theme='filled'
+              size='14'
+              fill='currentColor'
+              aria-hidden='true'
+            />
+          </span>
           <span className={classNames(styles.triggerLabelSlot, 'sendbox-responsive-label')} aria-hidden='true'>
             {normalizedLevels.map((level) => (
               <span key={level} className={styles.triggerLabelReserve}>
@@ -656,13 +705,15 @@ const ReasoningEffortSelector: React.FC<ReasoningEffortSelectorProps> = ({
             ))}
             <span className={styles.triggerLabelCurrent}>{currentLabel}</span>
           </span>
-          <Down
-            className={classNames(styles.triggerChevron, 'sendbox-responsive-chevron')}
-            theme='outline'
-            size='11'
-            fill='currentColor'
-            aria-hidden='true'
-          />
+          <span className='sendbox-responsive-chevron-slot' data-layout-part='chevron'>
+            <Down
+              className={classNames(styles.triggerChevron, 'sendbox-responsive-chevron')}
+              theme='outline'
+              size='11'
+              fill='currentColor'
+              aria-hidden='true'
+            />
+          </span>
         </button>
       </Popover>
 

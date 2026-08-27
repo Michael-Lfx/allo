@@ -407,6 +407,10 @@
   box-sizing: border-box;
 }
 
+.guidAutoImageWarning {
+  margin-bottom: 8px;
+}
+
 .guidInputCardWrap {
   width: 100%;
   box-sizing: border-box;
@@ -1797,14 +1801,66 @@ button.guidResourceCard:focus-visible {
   max-width: 100%;
 }
 
+.actionConfigGroup:global(.chat-model-picker-config-group) {
+  --chat-action-slot-size: 28px;
+  --chat-action-gap: 6px;
+  --chat-action-icon-size: 14px;
+  --chat-action-chevron-size: 11px;
+  align-items: center;
+  display: inline-flex;
+  gap: var(--chat-action-gap);
+  isolation: isolate;
+  overflow: visible;
+  position: relative;
+}
+
+.actionConfigGroup:global(.chat-model-picker-config-group) :global(.sendbox-responsive-leading-icon),
+.actionConfigGroup:global(.chat-model-picker-config-group) :global(.sendbox-responsive-chevron-slot) {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  line-height: 0;
+  overflow: visible;
+}
+
+.actionConfigGroup:global(.chat-model-picker-config-group) :global(.sendbox-responsive-leading-icon) {
+  height: var(--chat-action-icon-size);
+  width: var(--chat-action-icon-size);
+}
+
+.actionConfigGroup:global(.chat-model-picker-config-group) :global(.sendbox-responsive-chevron-slot) {
+  height: var(--chat-action-chevron-size);
+  width: var(--chat-action-chevron-size);
+}
+
+.actionConfigGroup:global(.chat-model-picker-config-group) :global(.sendbox-responsive-leading-icon) > :global(.i-icon),
+.actionConfigGroup:global(.chat-model-picker-config-group) :global(.sendbox-responsive-leading-icon) > svg,
+.actionConfigGroup:global(.chat-model-picker-config-group) :global(.sendbox-responsive-chevron-slot) > :global(.i-icon),
+.actionConfigGroup:global(.chat-model-picker-config-group) :global(.sendbox-responsive-chevron-slot) > svg {
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 100%;
+  width: 100%;
+  line-height: 0;
+  overflow: visible;
+}
+
 @container guid-action-config (max-width: 440px) {
   .actionConfigGroup :global(.sendbox-responsive-label),
   .actionConfigGroup :global(.sendbox-responsive-chevron) {
     display: none !important;
   }
 
-  .actionConfigGroup :global(.guid-config-btn),
-  .actionConfigGroup :global(.sendbox-responsive-reasoning-btn),
+  /* Chat selectors keep their arrow as the collapsed affordance. The generic
+   * rule above remains for ACP controls, which intentionally keep their old
+   * responsive behavior. */
+  .actionConfigGroup:global(.chat-model-picker-config-group) :global(.sendbox-responsive-chevron),
+  .actionConfigGroup:global(.chat-model-picker-config-group) :global(.sendbox-responsive-chevron-slot) {
+    display: inline-flex !important;
+  }
+
+  .actionConfigGroup :global(.guid-config-btn:not(.chat-model-picker-trigger)),
   .actionConfigGroup :global(.agent-mode-compact-pill) {
     width: auto !important;
     min-width: 28px !important;
@@ -1815,9 +1871,10 @@ button.guidResourceCard:focus-visible {
     flex: 0 1 auto !important;
     overflow: hidden !important;
     transition:
-      max-width 160ms ease,
-      padding 160ms ease,
-      opacity 160ms ease !important;
+      background-color 120ms ease,
+      border-color 120ms ease,
+      box-shadow 120ms ease,
+      color 120ms ease !important;
   }
 
   .actionConfigGroup :global(.guid-config-btn .flowy-button-inline-content),
@@ -1829,22 +1886,12 @@ button.guidResourceCard:focus-visible {
     overflow: visible !important;
   }
 
-  .actionConfigGroup :global(.sendbox-responsive-reasoning-btn > .i-icon),
-  .actionConfigGroup :global(.sendbox-responsive-reasoning-btn > svg) {
-    flex: 0 0 auto !important;
-    height: 14px !important;
-    overflow: visible !important;
-    transform: none !important;
-    width: 14px !important;
-  }
 }
 
 @media (hover: hover) and (pointer: fine) {
   @container guid-action-config (max-width: 440px) {
-    .actionConfigGroup :global(.guid-config-btn:hover),
-    .actionConfigGroup :global(.guid-config-btn:focus-visible),
-    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover),
-    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible),
+    .actionConfigGroup :global(.guid-config-btn:not(.chat-model-picker-trigger):hover),
+    .actionConfigGroup :global(.guid-config-btn:not(.chat-model-picker-trigger):focus-visible),
     .actionConfigGroup :global(.agent-mode-compact-pill:hover),
     .actionConfigGroup :global(.agent-mode-compact-pill:focus-visible) {
       width: auto !important;
@@ -1856,14 +1903,10 @@ button.guidResourceCard:focus-visible {
       z-index: 2;
     }
 
-    .actionConfigGroup :global(.guid-config-btn:hover .sendbox-responsive-label),
-    .actionConfigGroup :global(.guid-config-btn:hover .sendbox-responsive-chevron),
-    .actionConfigGroup :global(.guid-config-btn:focus-visible .sendbox-responsive-label),
-    .actionConfigGroup :global(.guid-config-btn:focus-visible .sendbox-responsive-chevron),
-    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label),
-    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label),
-    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover .sendbox-responsive-chevron),
-    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-chevron),
+    .actionConfigGroup :global(.guid-config-btn:not(.chat-model-picker-trigger):hover .sendbox-responsive-label),
+    .actionConfigGroup :global(.guid-config-btn:not(.chat-model-picker-trigger):hover .sendbox-responsive-chevron),
+    .actionConfigGroup :global(.guid-config-btn:not(.chat-model-picker-trigger):focus-visible .sendbox-responsive-label),
+    .actionConfigGroup :global(.guid-config-btn:not(.chat-model-picker-trigger):focus-visible .sendbox-responsive-chevron),
     .actionConfigGroup :global(.agent-mode-compact-pill:hover .sendbox-responsive-label),
     .actionConfigGroup :global(.agent-mode-compact-pill:hover .sendbox-responsive-chevron),
     .actionConfigGroup :global(.agent-mode-compact-pill:focus-visible .sendbox-responsive-label),
@@ -1871,16 +1914,6 @@ button.guidResourceCard:focus-visible {
       display: inline-flex !important;
     }
 
-    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover),
-    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible) {
-      overflow: visible !important;
-      flex: 0 0 auto !important;
-    }
-
-    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label),
-    .actionConfigGroup :global(.sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label) {
-      display: grid !important;
-    }
   }
 }
 
@@ -2742,5 +2775,259 @@ button.guidResourceCard:focus-visible {
 
   .presetAgentTagName {
     max-width: 100px;
+  }
+}
+
+/* Keep the FlowY chat controls in stable flex slots. ACP keeps its existing
+ * selector path and is intentionally excluded by GuidActionRow. */
+.actionConfigGroup :global(.sendbox-strategy-slot),
+.actionConfigGroup :global(.chat-model-picker-slot) {
+  align-items: center;
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 28px;
+  max-height: 28px;
+  min-height: 28px;
+  min-width: 0;
+  overflow: visible;
+  position: relative;
+  z-index: 0;
+}
+
+.actionConfigGroup :global(.sendbox-strategy-slot) {
+  flex-basis: 108px;
+  max-width: 108px;
+  min-width: 108px;
+  width: 108px;
+}
+
+.actionConfigGroup :global(.chat-model-picker-slot) {
+  flex-basis: 176px;
+  max-width: 176px;
+  min-width: 176px;
+  width: 176px;
+}
+
+.actionConfigGroup :global(.sendbox-strategy-slot-placeholder) {
+  display: block;
+  height: 28px;
+  width: 100%;
+}
+
+.actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn),
+.actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger) {
+  align-items: center !important;
+  align-self: center !important;
+  box-sizing: border-box !important;
+  height: 28px !important;
+  max-height: 28px !important;
+  min-height: 28px !important;
+  line-height: 1 !important;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    color 120ms ease !important;
+}
+
+.actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:active),
+.actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger:active) {
+  transform: none !important;
+}
+
+@container guid-action-config (max-width: 440px) {
+  .actionConfigGroup :global(.sendbox-strategy-slot),
+  .actionConfigGroup :global(.chat-model-picker-slot) {
+    flex: 0 0 28px !important;
+    flex-basis: 28px !important;
+    height: 28px !important;
+    max-height: 28px !important;
+    max-width: 28px !important;
+    min-height: 28px !important;
+    min-width: 28px !important;
+    overflow: visible !important;
+    position: relative !important;
+    width: 28px !important;
+  }
+
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger) {
+    flex: 0 0 28px !important;
+    flex-basis: 28px !important;
+    height: 28px !important;
+    max-height: 28px !important;
+    max-width: 28px !important;
+    min-height: 28px !important;
+    min-width: 28px !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    position: absolute !important;
+    inset-inline-end: 0 !important;
+    inset-inline-start: auto !important;
+    top: 0 !important;
+    width: 28px !important;
+    z-index: 1;
+  }
+
+  /* The reasoning selector owns a positioned root around its Popover. Keep
+   * that wrapper inside the same 28px slot so its collapsed trigger anchors
+   * to the slot, matching Auto's direct Arco button geometry. */
+  .actionConfigGroup :global(.sendbox-strategy-slot > .sendbox-responsive-strategy-root:not([data-static='true'])) {
+    flex: 0 0 28px !important;
+    height: 28px !important;
+    max-height: 28px !important;
+    max-width: 28px !important;
+    min-height: 28px !important;
+    min-width: 28px !important;
+    overflow: visible !important;
+    position: static !important;
+    width: 28px !important;
+  }
+
+  .actionConfigGroup :global(.sendbox-strategy-slot > [data-static='true']) {
+    height: 28px !important;
+    max-height: 28px !important;
+    min-height: 28px !important;
+    min-width: 28px !important;
+    overflow: visible !important;
+    position: absolute !important;
+    inset-inline-end: 0 !important;
+    inset-inline-start: auto !important;
+    top: 0 !important;
+    width: 28px !important;
+    z-index: 1;
+  }
+
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-static-value) {
+    gap: 0 !important;
+    justify-content: center !important;
+    padding: 0 !important;
+    width: 28px !important;
+  }
+
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-static-value > span:last-child) {
+    display: none !important;
+  }
+
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover),
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible),
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn.sendbox-responsive-control-open) {
+    flex: 0 0 var(--chat-strategy-expanded-width, var(--sendbox-strategy-trigger-width)) !important;
+    flex-basis: var(--chat-strategy-expanded-width, var(--sendbox-strategy-trigger-width)) !important;
+    max-width: var(--chat-strategy-expanded-width, var(--sendbox-strategy-trigger-width)) !important;
+    min-width: var(--chat-strategy-expanded-width, var(--sendbox-strategy-trigger-width)) !important;
+    padding: 0 7px !important;
+    inset-inline-end: var(--chat-strategy-expanded-inline-end, 0px) !important;
+    inset-inline-start: var(--chat-strategy-expanded-inline-start, auto) !important;
+    background-color: var(--color-bg-2) !important;
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-1) 14%, transparent);
+    width: var(--chat-strategy-expanded-width, var(--sendbox-strategy-trigger-width)) !important;
+    z-index: 3;
+  }
+
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger:hover),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger:focus-visible),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger.sendbox-responsive-control-open) {
+    flex: 0 0 var(--chat-model-picker-expanded-width, var(--chat-model-picker-slot-width)) !important;
+    flex-basis: var(--chat-model-picker-expanded-width, var(--chat-model-picker-slot-width)) !important;
+    max-width: var(--chat-model-picker-expanded-width, var(--chat-model-picker-slot-width)) !important;
+    min-width: var(--chat-model-picker-expanded-width, var(--chat-model-picker-slot-width)) !important;
+    overflow: hidden !important;
+    padding: 0 10px !important;
+    inset-inline-end: var(--chat-model-picker-expanded-inline-end, 0px) !important;
+    inset-inline-start: var(--chat-model-picker-expanded-inline-start, auto) !important;
+    background-color: var(--color-bg-2) !important;
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-1) 18%, transparent);
+    width: var(--chat-model-picker-expanded-width, var(--chat-model-picker-slot-width)) !important;
+    z-index: 3;
+  }
+
+  /* Keep the collapsed icon centered in its reserved slot. The expanded
+   * selector is intentionally excluded so its leftward overlay can retain
+   * the readable model label without changing neighboring geometry. */
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:not(:hover):not(:focus-visible):not(.sendbox-responsive-control-open)),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger:not(:hover):not(:focus-visible):not(.sendbox-responsive-control-open)) {
+    gap: 2px !important;
+    justify-content: center !important;
+    overflow: visible !important;
+  }
+
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger:not(:hover):not(:focus-visible):not(.sendbox-responsive-control-open) .flowy-button-inline-content) {
+    flex: 0 0 auto !important;
+    gap: 2px !important;
+    justify-content: center !important;
+    overflow: visible !important;
+    width: auto !important;
+  }
+
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger .flowy-button-inline-content > .i-icon:first-child),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger .flowy-button-inline-content > svg:first-child),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger .flowy-button-inline-content > .arco-icon:first-child) {
+    flex: 0 0 14px !important;
+    height: 14px !important;
+    overflow: visible !important;
+    width: 14px !important;
+  }
+
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover .sendbox-responsive-label),
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-label),
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn.sendbox-responsive-control-open .sendbox-responsive-label) {
+    display: inline-grid !important;
+  }
+
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:hover .sendbox-responsive-chevron),
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn:focus-visible .sendbox-responsive-chevron),
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn.sendbox-responsive-control-open .sendbox-responsive-chevron),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger:hover .sendbox-responsive-label),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger:focus-visible .sendbox-responsive-label),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger.sendbox-responsive-control-open .sendbox-responsive-label),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger:hover .sendbox-responsive-chevron),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger:focus-visible .sendbox-responsive-chevron),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger.sendbox-responsive-control-open .sendbox-responsive-chevron) {
+    display: inline-flex !important;
+  }
+
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger .flowy-button-inline-content) {
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+    width: 100% !important;
+  }
+
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger:not(:hover):not(:focus-visible):not(.sendbox-responsive-control-open) .flowy-button-inline-content) {
+    flex: 0 0 auto !important;
+    gap: 2px !important;
+    max-width: none !important;
+    min-width: 27px !important;
+    overflow: visible !important;
+    width: 27px !important;
+  }
+
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger .sendbox-responsive-label) {
+    flex: 1 1 auto !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    width: auto !important;
+  }
+
+  .actionConfigGroup[data-chat-popup='model'] :global(.sendbox-strategy-slot),
+  .actionConfigGroup:has(
+      :global(.chat-model-picker-trigger:hover),
+      :global(.chat-model-picker-trigger:focus-visible),
+      :global(.chat-model-picker-trigger.sendbox-responsive-control-open)
+    ) :global(.sendbox-strategy-slot) {
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .actionConfigGroup :global(.sendbox-strategy-slot .sendbox-responsive-reasoning-btn),
+  .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger) {
+    transition-duration: 0.01ms !important;
   }
 }

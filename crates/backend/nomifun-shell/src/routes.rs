@@ -680,7 +680,7 @@ mod tests {
 
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/model/availableListClaw"))
+            .and(path("/api/v2/model/availableListClaw"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-qwen3-asr-flash","name":"Qwen3 ASR Flash"}]}}"#,
             ))

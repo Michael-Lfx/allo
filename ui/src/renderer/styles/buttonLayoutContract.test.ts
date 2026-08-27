@@ -80,6 +80,13 @@ describe('global icon-text button layout contract', () => {
     expect(probeSource).toContain('<AgentModeSelector');
     expect(probeSource).toContain('<GuidModelSelectorButton');
     expect(probeSource).toContain('<KnowledgeDetailActionBar');
+    expect(probeSource).toContain('CHAT_PROBE_SCENARIOS');
+    expect(probeSource).toContain('measureChatCoordinateStability');
+    expect(probeSource).toContain("data-layout-part='leading-icon'");
+    expect(probeSource).toContain("data-layout-part='chevron'");
+    expect(probeSource).toContain("data-layout-part='context-ring'");
+    expect(probeSource).toContain("data-layout-part='microphone'");
+    expect(probeSource).toContain("data-layout-part='send'");
     expect(probeSource).toContain("scenario === 'adversarial'");
     expect(probeEntrySource).toContain("import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/button-layout'");
   });

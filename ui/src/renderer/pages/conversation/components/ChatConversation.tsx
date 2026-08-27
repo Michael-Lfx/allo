@@ -283,33 +283,59 @@ const NomiConversationPanel: React.FC<{
   );
 
   const { t } = useTranslation();
+  const modelSelectionRequestIdRef = useRef(0);
+  const modelSelectionQueueRef = useRef<Promise<void>>(Promise.resolve());
   const onSelectModel = useCallback(
     async (_provider: IProvider, modelName: string) => {
-      const selected = {
-        ..._provider,
-        use_model: modelName,
-      } as TProviderWithModel;
-      // Kill the running agent on model switch; it will be rebuilt with the
-      // new model on the next message.
-      await ipcBridge.conversation.stop.invoke({
-        conversation_id: conversation.id,
-      });
-      const execution_model_pool = buildConversationModelPool(
-        { provider_id: _provider.id, model: modelName },
-        activeCollaborators,
+      const requestId = ++modelSelectionRequestIdRef.current;
+      const run = async (): Promise<boolean> => {
+        // Newer selections supersede queued work before it can stop the
+        // conversation or persist a stale model.
+        if (requestId !== modelSelectionRequestIdRef.current) return false;
+
+        const selected = {
+          ..._provider,
+          use_model: modelName,
+        } as TProviderWithModel;
+        // Kill the running agent on model switch; it will be rebuilt with the
+        // new model on the next message.
+        await ipcBridge.conversation.stop.invoke({
+          conversation_id: conversation.id,
+        });
+        if (requestId !== modelSelectionRequestIdRef.current) return false;
+
+        const execution_model_pool = buildConversationModelPool(
+          { provider_id: _provider.id, model: modelName },
+          activeCollaborators,
+        );
+        if (!execution_model_pool) return false;
+
+        const ok = await ipcBridge.conversation.update.invoke({
+          conversation_id: conversation.id,
+          // The lead model and its collaboration authority are one atomic
+          // Conversation preference update; never expose a mixed intermediate
+          // state to Gateway delegation.
+          updates: { model: selected, execution_model_pool, execution_template_id: null },
+        });
+        if (requestId !== modelSelectionRequestIdRef.current) return false;
+        if (ok) {
+          // Keep the default-model write inside the same serialized operation.
+          // Otherwise an older fire-and-forget write could finish after a
+          // newer selection and restore the wrong model on the next session.
+          await saveNomiDefaultModel(_provider.id, modelName);
+        }
+        return Boolean(ok);
+      };
+
+      // Serialize the actual IPC updates. A latest-request check alone is not
+      // enough: two IPC writes could otherwise complete in the opposite order
+      // and leave the older model persisted after the newer selection.
+      const operation = modelSelectionQueueRef.current.then(run, run);
+      modelSelectionQueueRef.current = operation.then(
+        () => undefined,
+        () => undefined,
       );
-      if (!execution_model_pool) return false;
-      const ok = await ipcBridge.conversation.update.invoke({
-        conversation_id: conversation.id,
-        // The lead model and its collaboration authority are one atomic
-        // Conversation preference update; never expose a mixed intermediate
-        // state to Gateway delegation.
-        updates: { model: selected, execution_model_pool, execution_template_id: null },
-      });
-      if (ok) {
-        void saveNomiDefaultModel(_provider.id, modelName);
-      }
-      return Boolean(ok);
+      return operation;
     },
     [activeCollaborators, conversation.id],
   );

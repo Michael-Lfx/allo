@@ -8,7 +8,10 @@ import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import { isManagedModelProvider } from '@/common/types/provider/managedModelService';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { buildChatModelPickerViewModel, type ChatModelPickerViewModel } from '@/renderer/utils/model/chatModelPicker';
+import { AppMessage as Message } from '@/renderer/components/notifications';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export type NomiModelSelection = {
   current_model?: TProviderWithModel;
@@ -18,12 +21,13 @@ export type NomiModelSelection = {
   refreshModelCatalog: () => void;
   providers: IProvider[];
   getAvailableModels: (provider: IProvider) => string[];
-  handleSelectModel: (provider: IProvider, modelName: string) => Promise<void>;
+  handleSelectModel: (provider: IProvider, modelName: string) => Promise<boolean>;
   formatModelLabel: (
     provider: { model_descriptions?: Record<string, string> } | undefined,
     modelName?: string
   ) => string;
   getDisplayModelName: (modelName?: string) => string;
+  modelPicker: ChatModelPickerViewModel;
 };
 
 export type UseNomiModelSelectionOptions = {
@@ -36,8 +40,16 @@ export const useNomiModelSelection = ({
   onSelectModel,
 }: UseNomiModelSelectionOptions): NomiModelSelection => {
   const [current_model, setCurrentModel] = useState<TProviderWithModel | undefined>(initialModel);
+  const selectionRequestIdRef = useRef(0);
+  const pendingModelKeyRef = useRef<string | null>(null);
+  const { t } = useTranslation();
 
   useEffect(() => {
+    // A conversation update can replace the initial model while an older
+    // selection is still resolving. That older request must not write its
+    // stale family/strategy back into the toolbar.
+    selectionRequestIdRef.current += 1;
+    pendingModelKeyRef.current = null;
     setCurrentModel(initialModel);
   }, [initialModel?.id, initialModel?.use_model]);
 
@@ -59,6 +71,18 @@ export const useNomiModelSelection = ({
     [groups]
   );
 
+  const visibleGroups = useMemo(
+    () =>
+      groups.filter(
+        (group) =>
+          !group.provider.platform?.toLowerCase().includes('gemini-with-google-auth') &&
+          !isManagedModelProvider(group.provider)
+      ),
+    [groups]
+  );
+
+  const modelPicker = useMemo(() => buildChatModelPickerViewModel(visibleGroups), [visibleGroups]);
+
   const modelsByProvider = useMemo(
     () => new Map(groups.map((group) => [group.provider.id, group.models])),
     [groups]
@@ -75,17 +99,40 @@ export const useNomiModelSelection = ({
   }, [current_model?.id, current_model?.use_model, modelsByProvider]);
 
   const handleSelectModel = useCallback(
-    async (provider: IProvider, modelName: string) => {
+    async (provider: IProvider, modelName: string): Promise<boolean> => {
+      const modelKey = `${provider.id}:${modelName}`;
+      if (pendingModelKeyRef.current === modelKey) return false;
+      if (current_model?.id === provider.id && current_model.use_model === modelName) return true;
+
+      const requestId = ++selectionRequestIdRef.current;
+      pendingModelKeyRef.current = modelKey;
       const selected = {
         ...(provider as unknown as TProviderWithModel),
         use_model: modelName,
       } as TProviderWithModel;
-      const ok = await onSelectModel(provider, modelName);
-      if (ok) {
+      try {
+        const ok = await onSelectModel(provider, modelName);
+        // A later click owns the UI now. Do not show an error for an older
+        // request that was intentionally superseded by the user.
+        if (requestId !== selectionRequestIdRef.current) return false;
+        if (!ok) {
+          Message.error(t('agent.model.switchFailed'));
+          return false;
+        }
         setCurrentModel(selected);
+        return true;
+      } catch (error) {
+        if (requestId !== selectionRequestIdRef.current) return false;
+        console.error('[useNomiModelSelection] Failed to switch model:', error);
+        Message.error(t('agent.model.switchFailed'));
+        return false;
+      } finally {
+        if (pendingModelKeyRef.current === modelKey && requestId === selectionRequestIdRef.current) {
+          pendingModelKeyRef.current = null;
+        }
       }
     },
-    [onSelectModel]
+    [current_model?.id, current_model?.use_model, onSelectModel, t]
   );
 
   const liveCurrentProvider = useMemo(() => {
@@ -96,9 +143,7 @@ export const useNomiModelSelection = ({
   const getDisplayModelName = useCallback(
     (modelName?: string) => {
       if (!modelName) return '';
-      const label = formatModelLabel(liveCurrentProvider, modelName);
-      const maxLength = 20;
-      return label.length > maxLength ? `${label.slice(0, maxLength)}...` : label;
+      return formatModelLabel(liveCurrentProvider, modelName);
     },
     [formatModelLabel, liveCurrentProvider]
   );
@@ -114,5 +159,6 @@ export const useNomiModelSelection = ({
     handleSelectModel,
     formatModelLabel,
     getDisplayModelName,
+    modelPicker,
   };
 };

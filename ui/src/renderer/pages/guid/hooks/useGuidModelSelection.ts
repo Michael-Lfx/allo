@@ -8,8 +8,11 @@ import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import type { ConfigKeyMap } from '@/common/config/configKeys';
 import { configService } from '@/common/config/configService';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
+import { buildChatModelPickerViewModel, type ChatModelPickerViewModel } from '@/renderer/utils/model/chatModelPicker';
 import { formatModelLabelForProvider } from '@/renderer/utils/model/cloudModelLabel';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 /**
  * Build a unique key for a provider/model pair.
@@ -49,6 +52,10 @@ export type GuidModelSelectionResult = {
   /** True when a persisted default exists but is no longer in the catalog. */
   defaultModelUnavailable: boolean;
   setCurrentModel: (model_info: TProviderWithModel) => Promise<void>;
+  modelPicker: ChatModelPickerViewModel;
+  isModelCatalogLoading: boolean;
+  modelCatalogError?: Error;
+  refreshModelCatalog: () => void;
 };
 
 /**
@@ -56,9 +63,17 @@ export type GuidModelSelectionResult = {
  * @param agentKey - current provider-based agent (currently only 'nomi')
  */
 export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): GuidModelSelectionResult => {
+  const { t } = useTranslation();
   // Chat-capable catalog from the unified backend resolve — replaces the old
   // duplicate guid/utils/modelUtils name-heuristic implementation.
-  const { groups } = useModelsForTask('chat');
+  const {
+    groups,
+    isLoading: isModelCatalogLoading,
+    error: modelCatalogError,
+    refresh: refreshModelCatalog,
+  } = useModelsForTask('chat');
+
+  const modelPicker = useMemo(() => buildChatModelPickerViewModel(groups), [groups]);
 
   const modelList = useMemo(() => groups.map((group) => group.provider), [groups]);
   const modelsByProvider = useMemo(
@@ -93,24 +108,52 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
   const [defaultModelUnavailable, setDefaultModelUnavailable] = useState(false);
   const selectedModelKeyRef = useRef<string | null>(null);
   const prevStorageKeyRef = useRef<string | null>(null);
+  const modelSelectionRequestIdRef = useRef(0);
+  const modelSelectionQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const storageKey = MODEL_STORAGE_KEY[agentKey];
 
   const setCurrentModel = useCallback(
     async (model_info: TProviderWithModel, persist = true) => {
-      selectedModelKeyRef.current = buildModelKey(model_info.id, model_info.use_model);
-      if (persist) {
-        await configService.set(storageKey, {
-          provider_id: model_info.id,
-          model: model_info.use_model,
-        }).catch((error) => {
-          console.error('Failed to save default model:', error);
-        });
-      }
-      setDefaultModelUnavailable(false);
-      _setCurrentModel(model_info);
+      const requestId = ++modelSelectionRequestIdRef.current;
+      const modelKey = buildModelKey(model_info.id, model_info.use_model);
+      selectedModelKeyRef.current = modelKey;
+
+      const run = async (): Promise<void> => {
+        // A newer explicit selection or agent change owns the result. Skip
+        // queued stale work before it can write the preference or UI state.
+        if (requestId !== modelSelectionRequestIdRef.current) return;
+
+        if (persist) {
+          try {
+            await configService.set(storageKey, {
+              provider_id: model_info.id,
+              model: model_info.use_model,
+            });
+          } catch (error) {
+            if (requestId !== modelSelectionRequestIdRef.current) return;
+            selectedModelKeyRef.current = null;
+            console.error('Failed to save default model:', error);
+            Message.error(t('agent.model.switchFailed'));
+            throw error;
+          }
+        }
+
+        if (requestId !== modelSelectionRequestIdRef.current) return;
+        setDefaultModelUnavailable(false);
+        _setCurrentModel(model_info);
+      };
+
+      // Serialize storage writes so an older async write cannot finish after
+      // the latest selection and restore the wrong model on the next reload.
+      const operation = modelSelectionQueueRef.current.then(run, run);
+      modelSelectionQueueRef.current = operation.then(
+        () => undefined,
+        () => undefined,
+      );
+      await operation;
     },
-    [storageKey]
+    [storageKey, t]
   );
 
   // Set default model when modelList or agent changes
@@ -124,6 +167,9 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
       prevStorageKeyRef.current = storageKey;
       if (agentChanged) {
         selectedModelKeyRef.current = null;
+        // Invalidate a queued default from the previous agent before reading
+        // the new storage key.
+        modelSelectionRequestIdRef.current += 1;
       }
 
       const currentKey = selectedModelKeyRef.current || buildModelKey(current_model?.id, current_model?.use_model);
@@ -182,5 +228,9 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
     current_model,
     defaultModelUnavailable,
     setCurrentModel,
+    modelPicker,
+    isModelCatalogLoading,
+    modelCatalogError,
+    refreshModelCatalog,
   };
 };
