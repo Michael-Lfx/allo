@@ -191,7 +191,8 @@ impl SessionManager {
     fn update_index(&self, session: &Session) -> anyhow::Result<()> {
         let mut index = self.load_index()?;
 
-        // Extract summary from first user message
+        // Extract summary from first user message, skipping persisted
+        // turn-tail `[Context]` so the index shows what the user typed.
         let summary = session
             .messages
             .iter()
@@ -199,6 +200,9 @@ impl SessionManager {
             .and_then(|m| {
                 m.content.iter().find_map(|c| {
                     if let nomi_types::message::ContentBlock::Text { text } = c {
+                        if crate::context_contributor::is_turn_tail_context_text(text) {
+                            return None;
+                        }
                         Some(truncate_str(text, 80))
                     } else {
                         None

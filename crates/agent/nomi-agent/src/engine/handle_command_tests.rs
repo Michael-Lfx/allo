@@ -64,6 +64,7 @@ fn make_engine() -> super::AgentEngine {
         context_contributors: Vec::new(),
         steering_inbox: None,
         system_resource_inbox: None,
+        frozen_provider_tools: None,
         process_supervisor: None,
         editable_turn: None,
         observation: None,

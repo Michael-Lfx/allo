@@ -15,7 +15,10 @@ use nomi_types::message::ContentBlock;
 use nomi_types::skill_types::ContextModifier;
 use nomi_types::tool::{ToolDef, ToolResult};
 
-use nomi_tools::{ToolExecutionContext, registry::ToolRegistry};
+use nomi_tools::{
+    MAX_PROVIDER_TOOL_OUTPUT_BYTES, ToolExecutionContext, TruncationBudget, registry::ToolRegistry,
+    truncate_middle,
+};
 
 pub(crate) const SKIPPED_AFTER_PRIOR_ERROR: &str = "\
 Skipped because a previous tool call in this assistant turn failed. Inspect the failed result first, then decide whether to retry with a larger timeout, use exec_command/write_stdin for long-running commands, or choose a different next step. Do not assume this step ran.";
@@ -70,6 +73,7 @@ pub struct ToolCallOutcome {
 pub struct ProviderToolAuthority {
     advertised: BTreeSet<String>,
     deferred: BTreeSet<String>,
+    pub(crate) plan_mode_read_only: bool,
 }
 
 impl ProviderToolAuthority {
@@ -81,6 +85,7 @@ impl ProviderToolAuthority {
                 .filter(|tool| tool.deferred)
                 .map(|tool| tool.name.clone())
                 .collect(),
+            plan_mode_read_only: false,
         }
     }
 
@@ -90,6 +95,18 @@ impl ProviderToolAuthority {
 
     pub(crate) fn is_deferred(&self, name: &str) -> bool {
         self.deferred.contains(name)
+    }
+
+    /// Frozen wire schemas may stay stubs (prefix cache). After a prior-turn
+    /// ToolSearch, drop activated names from the deferred gate so the next
+    /// request can dispatch without rewriting the advertised table.
+    pub(crate) fn overlay_live_activation(&mut self, registry: &ToolRegistry) {
+        let state = registry.deferred_state();
+        self.deferred.retain(|name| {
+            registry.get(name).is_some_and(|tool| {
+                tool.is_deferred() && !state.is_activated(tool.activation_identity())
+            })
+        });
     }
 }
 
@@ -372,9 +389,9 @@ fn deferred_gate_result(
 }
 
 /// Validate an invocation before any tool-specific policy method, approval UI,
-/// hook, running event, or dispatch. Deferred authority is checked first so a
-/// provider that only saw a schema stub is told to activate it instead of being
-/// asked to guess required parameters it was never shown.
+/// hook, running event, or dispatch. Advertised names and plan-mode read-only
+/// run before the deferred stub gate so a writer is refused as read-only
+/// rather than told to ToolSearch.
 fn invocation_gate_result(
     registry: &ToolRegistry,
     call: &ContentBlock,
@@ -397,6 +414,31 @@ fn invocation_gate_result(
             is_error: true,
             images: Vec::new(),
         });
+    }
+    if authority.plan_mode_read_only {
+        let ContentBlock::ToolUse { input, .. } = call else {
+            unreachable!("tool-use shape checked above")
+        };
+        let category = registry
+            .get(name)
+            .map(|tool| {
+                if input.is_object() {
+                    tool.category_for(input)
+                } else {
+                    tool.category()
+                }
+            })
+            .unwrap_or(ToolCategory::Info);
+        if category != ToolCategory::Info {
+            return Some(ContentBlock::ToolResult {
+                tool_use_id: id.clone(),
+                content: format!(
+                    "Plan mode is read-only. Tool '{name}' was not executed. Use ExitPlanMode when the plan is ready."
+                ),
+                is_error: true,
+                images: Vec::new(),
+            });
+        }
     }
     if let Some(gated) = deferred_gate_result(call, authority) {
         return Some(gated);
@@ -561,7 +603,7 @@ async fn execute_single_without_deadline(
 
     let (result, modifier) = match registry.get(name) {
         Some(tool) => {
-            let max_size = tool.max_result_size();
+            let max_size = tool.max_result_size().min(MAX_PROVIDER_TOOL_OUTPUT_BYTES);
             // `input` passed the strict object/schema preflight before
             // partitioning or approval. Hooks, policy, context modifiers, and
             // dispatch all see the exact provider-supplied value.
@@ -1095,31 +1137,8 @@ fn block_is_error(block: &ContentBlock) -> bool {
     matches!(block, ContentBlock::ToolResult { is_error: true, .. })
 }
 
-fn truncate_result(content: &str, max_chars: usize) -> String {
-    if content.len() <= max_chars {
-        return content.to_string();
-    }
-    let half = max_chars / 2;
-    // Find char boundaries to avoid panicking on multi-byte characters
-    let head_end = content
-        .char_indices()
-        .nth(half)
-        .map(|(i, _)| i)
-        .unwrap_or(content.len());
-    let tail_start = content
-        .char_indices()
-        .rev()
-        .nth(half - 1)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    let head = &content[..head_end];
-    let tail = &content[tail_start..];
-    format!(
-        "{}\n\n... [truncated {} chars] ...\n\n{}",
-        head,
-        content.len() - max_chars,
-        tail
-    )
+fn truncate_result(content: &str, max_bytes: usize) -> String {
+    truncate_middle(content, TruncationBudget::Bytes(max_bytes))
 }
 
 struct Batch<'a> {
@@ -1846,6 +1865,78 @@ mod tests {
 
     fn make_registry_with_deferred() -> (ToolRegistry, Arc<std::sync::atomic::AtomicUsize>) {
         make_registry_with_deferred_safety(true)
+    }
+
+    #[tokio::test]
+    async fn plan_mode_read_only_refuses_write_without_execute() {
+        let (registry, calls) = make_registry_with_deferred();
+        let mut authority = ProviderToolAuthority::from_request_tools(&registry.to_tool_defs());
+        authority.plan_mode_read_only = true;
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(true, vec![])));
+
+        let outcome = execute_tool_calls_scoped(
+            &registry,
+            &[deferred_call("plan-write")],
+            &authority,
+            "",
+            &confirmer,
+            None,
+            nomi_compact::CompactionLevel::Off,
+            false,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            &outcome.results[0],
+            ContentBlock::ToolResult { content, is_error: true, .. }
+                if content.contains("Plan mode is read-only") && content.contains("MockDeferred")
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn overlay_live_activation_allows_dispatch_after_prior_search() {
+        let (registry, calls) = make_registry_with_deferred();
+        let frozen = registry.to_tool_defs();
+        assert!(
+            frozen
+                .iter()
+                .any(|def| def.name == "MockDeferred" && def.deferred)
+        );
+
+        let search = nomi_tools::tool_search::ToolSearchTool::new(registry.deferred_state());
+        assert!(!search
+            .execute(json!({"query": "MockDeferred"}))
+            .await
+            .is_error);
+
+        let mut authority = ProviderToolAuthority::from_request_tools(&frozen);
+        assert!(authority.is_deferred("MockDeferred"));
+        authority.overlay_live_activation(&registry);
+        assert!(!authority.is_deferred("MockDeferred"));
+
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(true, vec![])));
+        let outcome = execute_tool_calls_scoped(
+            &registry,
+            &[deferred_call("after-search")],
+            &authority,
+            "",
+            &confirmer,
+            None,
+            nomi_compact::CompactionLevel::Off,
+            false,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            &outcome.results[0],
+            ContentBlock::ToolResult { is_error: false, .. }
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     fn deferred_call(id: &str) -> ContentBlock {

@@ -4701,21 +4701,22 @@ mod tests {
         let requests = provider.requests();
         assert_eq!(requests.len(), 1);
         assert!(
-            requests[0]
+            !requests[0]
                 .system
-                .contains("terminal term-idle transitioned to exited (exit_code=0)")
+                .contains("terminal term-idle transitioned to exited (exit_code=0)"),
+            "resource notices must not mutate the cached system prefix"
         );
         assert!(
-            requests[0].messages.iter().all(|message| {
-                message.content.iter().all(|block| {
-                    !matches!(
+            requests[0].messages.iter().any(|message| {
+                message.content.iter().any(|block| {
+                    matches!(
                         block,
                         ContentBlock::Text { text }
                             if text.contains("terminal term-idle transitioned to exited")
                     )
                 })
             }),
-            "resource state must not be presented as a user message"
+            "resource state rides the persisted turn tail"
         );
     }
 

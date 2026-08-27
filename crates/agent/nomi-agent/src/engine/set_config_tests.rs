@@ -995,6 +995,7 @@ fn make_engine(model: &str) -> super::AgentEngine {
         context_contributors: Vec::new(),
         steering_inbox: None,
         system_resource_inbox: None,
+        frozen_provider_tools: None,
         process_supervisor: None,
         editable_turn: None,
         observation: None,
@@ -1010,7 +1011,49 @@ fn context_accessors_report_window_and_last_input() {
 }
 
 #[tokio::test]
-async fn system_resource_notice_is_system_context_not_a_user_message() {
+async fn provider_tools_stay_frozen_after_live_registry_growth() {
+    let provider = Arc::new(RecordingProvider::successful());
+    let mut engine = make_engine("freeze-tools");
+    engine.provider = provider.clone();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    engine.tools.register(Box::new(ConstantResultTool {
+        name: "alpha",
+        polling: false,
+        category: ToolCategory::Info,
+        calls: Arc::clone(&calls),
+        steer_on_call: None,
+    }));
+
+    engine
+        .execute_turn("first", "m1")
+        .await
+        .expect("first turn should succeed");
+
+    engine.tools.register(Box::new(ConstantResultTool {
+        name: "beta_late",
+        polling: false,
+        category: ToolCategory::Info,
+        calls: Arc::clone(&calls),
+        steer_on_call: None,
+    }));
+
+    engine
+        .execute_turn("second", "m2")
+        .await
+        .expect("second turn should succeed");
+
+    let reqs = provider.requests();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(
+        reqs[0].tools, reqs[1].tools,
+        "mid-session registry growth must not rewrite the advertised tools JSON"
+    );
+    assert!(reqs[1].tools.iter().any(|tool| tool.name == "alpha"));
+    assert!(!reqs[1].tools.iter().any(|tool| tool.name == "beta_late"));
+}
+
+#[tokio::test]
+async fn system_resource_notice_rides_turn_tail_not_system_prompt() {
     let mut engine = make_engine("resource-notice");
     let provider = Arc::new(RecordingProvider::successful());
     engine.provider = provider.clone();
@@ -1027,23 +1070,27 @@ async fn system_resource_notice_is_system_context_not_a_user_message() {
 
     let requests = provider.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].system.contains(SYSTEM_RESOURCE_CONTEXT_HEADER));
     assert!(
-        requests[0]
+        !requests[0].system.contains(SYSTEM_RESOURCE_CONTEXT_HEADER),
+        "resource notices must not mutate the cached system prefix"
+    );
+    assert!(
+        !requests[0]
             .system
             .contains("terminal term-1 was closed by the user")
     );
     assert!(
-        requests[0].messages.iter().all(|message| {
-            message.content.iter().all(|block| {
-                !matches!(
+        requests[0].messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
                     block,
                     ContentBlock::Text { text }
-                        if text.contains("terminal term-1 was closed by the user")
+                        if text.contains(SYSTEM_RESOURCE_CONTEXT_HEADER)
+                            && text.contains("terminal term-1 was closed by the user")
                 )
             })
         }),
-        "trusted resource state must never be serialized as a conversation message"
+        "trusted resource state rides the persisted turn tail"
     );
     assert!(inbox.lock().unwrap().is_empty());
 
@@ -2164,9 +2211,13 @@ async fn failed_tool_diagnostic_images_are_not_replayed_to_the_provider() {
     );
     let ContentBlock::ToolResult {
         is_error, images, ..
-    } = &engine.messages[2].content[0]
+    } = engine.messages[2]
+        .content
+        .iter()
+        .find(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        .expect("the third message should contain the failed tool result")
     else {
-        panic!("the third message should contain the failed tool result");
+        unreachable!("filter matched ToolResult");
     };
     assert!(*is_error);
     assert!(images.is_empty());
@@ -2214,9 +2265,13 @@ async fn bounded_mcp_alias_uses_untruncated_export_identity_and_rejects_text_onl
             images,
             content,
             ..
-        } = &engine.messages[2].content[0]
+        } = engine.messages[2]
+            .content
+            .iter()
+            .find(|block| matches!(block, ContentBlock::ToolResult { .. }))
+            .expect("the third message should contain the exporter result")
         else {
-            panic!("the third message should contain the exporter result");
+            unreachable!("filter matched ToolResult");
         };
         assert!(*is_error, "text-only {semantic_tool} must not remain successful");
         assert!(images.is_empty());

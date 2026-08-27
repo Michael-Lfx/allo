@@ -56,7 +56,7 @@ const MAX_BATCH_IMAGES: usize = 20;
 const MAX_BATCH_FILES: usize = 32;
 
 /// Batch sections share the same result budget advertised by `ReadTool`.
-const MAX_RESULT_BYTES: usize = 100_000;
+const MAX_RESULT_BYTES: usize = crate::MAX_PROVIDER_TOOL_OUTPUT_BYTES;
 
 #[derive(Clone, Copy)]
 struct BatchImageBudget {

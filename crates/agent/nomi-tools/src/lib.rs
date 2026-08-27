@@ -67,6 +67,10 @@ mod windows_shell_tests {
 pub(crate) mod test_support;
 
 pub use output_truncation::{TruncationBudget, truncate_middle};
+
+/// Provider-visible tool output cap. Head/tail snip at creation so later
+/// requests never rewrite already-sent Content (Reasonix `maxToolOutputBytes`).
+pub const MAX_PROVIDER_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
 pub use anchors::{
     ANCHOR_SEPARATOR, AnchorValidation, ParsedAnchor, anchor_line_hash, parse_anchor,
     render_anchor_region, render_anchored_lines, validate_anchor_default,
@@ -258,9 +262,9 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// Max result size in chars before truncation
+    /// Max result size in bytes before truncation
     fn max_result_size(&self) -> usize {
-        50_000
+        MAX_PROVIDER_TOOL_OUTPUT_BYTES
     }
 
     /// Tool category for protocol classification

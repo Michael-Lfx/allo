@@ -268,7 +268,7 @@ async fn assert_provider_protocol_rejected_without_dispatch(
 }
 
 #[tokio::test]
-async fn plan_mode_rejects_registered_write_tool_omitted_from_provider_request() {
+async fn plan_mode_refuses_write_tool_without_executing() {
     let provider = Arc::new(MockLlmProvider::with_turns(vec![
         vec![
             LlmEvent::ToolUse {
@@ -288,9 +288,14 @@ async fn plan_mode_rejects_registered_write_tool_omitted_from_provider_request()
             },
             done(StopReason::ToolUse),
         ],
+        vec![
+            LlmEvent::TextDelta("planning".to_string()),
+            done(StopReason::EndTurn),
+        ],
     ]));
     let calls = Arc::new(AtomicUsize::new(0));
     let plan_active = Arc::new(AtomicBool::new(false));
+    let output = Arc::new(RecordingOutputSink::default());
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(
         nomi_agent::plan::tools::EnterPlanModeTool::new(Arc::clone(&plan_active)),
@@ -311,7 +316,7 @@ async fn plan_mode_rejects_registered_write_tool_omitted_from_provider_request()
         provider,
         test_config(),
         registry,
-        silent_output(),
+        output.clone(),
         std::env::temp_dir(),
     );
     engine.set_plan_active_flag(plan_active);
@@ -319,41 +324,67 @@ async fn plan_mode_rejects_registered_write_tool_omitted_from_provider_request()
     let result = engine.execute_turn("plan first", "plan-hidden-write").await;
 
     assert!(
-        matches!(&result, Err(AgentError::ApiError(message)) if message.contains("hidden_write") && message.contains("not advertised")),
-        "expected the plan-hidden write call to fail at the provider boundary, got {result:?}"
+        result.is_ok(),
+        "plan-mode write refuse is a tool error result, not a protocol abort: {result:?}"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let results = output.tool_results.lock().unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|(id, name, is_error)| id == "hidden-write" && name == "hidden_write" && *is_error),
+        "expected a plan-mode read-only error result, got {results:?}"
+    );
 }
 
 #[tokio::test]
-async fn normal_mode_rejects_registered_exit_plan_tool_omitted_from_provider_request() {
-    let provider = Arc::new(MockLlmProvider::with_tool_use(
-        "hidden-exit",
-        "ExitPlanMode",
-        json!({}),
-    ));
-    let calls = Arc::new(AtomicUsize::new(0));
+async fn normal_mode_exit_plan_mode_returns_error_without_aborting() {
+    let provider = Arc::new(MockLlmProvider::with_turns(vec![
+        vec![
+            LlmEvent::ToolUse {
+                id: "hidden-exit".to_string(),
+                name: "ExitPlanMode".to_string(),
+                input: json!({}),
+                extra: None,
+            },
+            done(StopReason::ToolUse),
+        ],
+        vec![
+            LlmEvent::TextDelta("staying".to_string()),
+            done(StopReason::EndTurn),
+        ],
+    ]));
+    let plan_active = Arc::new(AtomicBool::new(false));
+    let output = Arc::new(RecordingOutputSink::default());
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(FilteredCountingTool {
-        name: "ExitPlanMode",
-        category: ToolCategory::Info,
-        calls: Arc::clone(&calls),
-    }));
+    registry.register(Box::new(
+        nomi_agent::plan::tools::ExitPlanModeTool::new(Arc::clone(&plan_active)),
+    ));
     let mut engine = AgentEngine::new_with_provider(
         provider,
         test_config(),
         registry,
-        silent_output(),
+        output.clone(),
         std::env::temp_dir(),
     );
+    engine.set_plan_active_flag(plan_active.clone());
 
-    let result = engine.execute_turn("stay in normal mode", "normal-hidden-exit").await;
+    let result = engine
+        .execute_turn("stay in normal mode", "normal-hidden-exit")
+        .await;
 
     assert!(
-        matches!(&result, Err(AgentError::ApiError(message)) if message.contains("ExitPlanMode") && message.contains("not advertised")),
-        "expected the normal-mode ExitPlanMode call to fail at the provider boundary, got {result:?}"
+        result.is_ok(),
+        "ExitPlanMode stays advertised; not-in-plan-mode is a tool error, got {result:?}"
     );
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(!plan_active.load(Ordering::SeqCst));
+    let results = output.tool_results.lock().unwrap();
+    assert!(
+        results.iter().any(|(id, name, is_error)| {
+            id == "hidden-exit" && name == "ExitPlanMode" && *is_error
+        }),
+        "expected a not-in-plan-mode error result, got {results:?}"
+    );
 }
 
 #[tokio::test]
@@ -1684,14 +1715,16 @@ async fn plan_mode_instructions_ride_turn_tail_not_system_prompt() {
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
 
-    // Plan mode must be active on the second request: it filters the tool
-    // list down to Info tools, hiding EnterPlanMode itself.
+    assert_eq!(
+        requests[0].tools, requests[1].tools,
+        "plan mode must not swap the advertised tool table"
+    );
     assert!(
         requests[1]
             .tools
             .iter()
-            .all(|tool| tool.name != "EnterPlanMode"),
-        "plan mode tool filtering should be active on the second request"
+            .any(|tool| tool.name == "EnterPlanMode"),
+        "EnterPlanMode stays advertised after entering plan mode"
     );
 
     // Prefix-cache invariant: toggling plan mode must NOT change the system
@@ -1716,6 +1749,61 @@ async fn plan_mode_instructions_ride_turn_tail_not_system_prompt() {
     assert!(
         text.contains("# Plan Mode"),
         "plan mode instructions must ride the turn tail, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn persisted_turn_tail_is_replayed_as_the_next_request_prefix() {
+    let provider = Arc::new(FullRequestRecordingProvider::new(vec![
+        vec![
+            LlmEvent::TextDelta("first-reply".to_string()),
+            done(StopReason::EndTurn),
+        ],
+        vec![
+            LlmEvent::TextDelta("second-reply".to_string()),
+            done(StopReason::EndTurn),
+        ],
+    ]));
+    let requests = provider.requests();
+
+    let mut engine = AgentEngine::new_with_provider(
+        provider,
+        test_config(),
+        ToolRegistry::new(),
+        silent_output(),
+        std::env::temp_dir(),
+    );
+
+    engine
+        .execute_turn("first", "")
+        .await
+        .expect("first turn should succeed");
+    engine
+        .execute_turn("second", "")
+        .await
+        .expect("second turn should succeed");
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].system, requests[1].system,
+        "system prompt must stay byte-stable across turns"
+    );
+
+    let first_turn_user = message_text(&requests[0].messages[0]);
+    let replayed_user = message_text(&requests[1].messages[0]);
+    assert_eq!(
+        replayed_user, first_turn_user,
+        "next request must replay the persisted turn-tail user as prefix, got {replayed_user:?} vs {first_turn_user:?}"
+    );
+    assert!(
+        first_turn_user.contains("[Context]") && first_turn_user.contains("first"),
+        "first turn user must keep the persisted tail and the original text, got: {first_turn_user}"
+    );
+    assert_eq!(
+        requests[1].messages.len(),
+        requests[0].messages.len() + 2,
+        "second request should append assistant + new user onto the first request's messages"
     );
 }
 

@@ -93,16 +93,6 @@ impl OpenAIProvider {
     ) -> Vec<Value> {
         let mut result: Vec<Value> = Vec::new();
 
-        // Check if any assistant message in the conversation has thinking content.
-        // If so, DeepSeek API requires ALL assistant messages to include
-        // reasoning_content (even if empty string).
-        let has_any_thinking = messages.iter().any(|m| {
-            m.role == Role::Assistant
-                && m.content
-                    .iter()
-                    .any(|b| matches!(b, ContentBlock::Thinking { .. }))
-        });
-
         // System message first
         if !system.is_empty() {
             result.push(json!({
@@ -245,10 +235,10 @@ impl OpenAIProvider {
                 Role::Assistant => {
                     let mut msg_json = json!({ "role": "assistant" });
 
-                    // Preserve reasoning_content for models with thinking mode
-                    // (e.g. DeepSeek Reasoner, Kimi K2.5). The API requires
-                    // ALL assistant messages to include reasoning_content once
-                    // any message in the conversation has it.
+                    // Include reasoning_content only for this message (or when
+                    // the provider requires a placeholder on every assistant).
+                    // Conversation-wide backfill would rewrite earlier assistant
+                    // JSON and bust the prefix cache from the first assistant.
                     let thinking: String = msg
                         .content
                         .iter()
@@ -262,7 +252,7 @@ impl OpenAIProvider {
                         .collect::<Vec<_>>()
                         .join("");
 
-                    if has_any_thinking || require_reasoning_content {
+                    if !thinking.is_empty() || require_reasoning_content {
                         // OpenCode's DeepSeek free endpoint rejects some
                         // multi-turn tool histories when an assistant turn has
                         // no reasoning_content. A single space is intentional:
@@ -1485,9 +1475,17 @@ fn update_stream_usage(json: &Value, state: &mut StreamState) -> Result<(), Stri
 
     let base_prompt = optional_usage_u64(usage, "prompt_tokens")?.unwrap_or(state.input_tokens);
     let cache_hit = optional_usage_u64(usage, "prompt_cache_hit_tokens")?.unwrap_or(0);
-    state.input_tokens = base_prompt.checked_add(cache_hit).ok_or_else(|| {
-        "OpenAI-compatible provider returned overflowing prompt token usage".to_string()
-    })?;
+    // DeepSeek reports `prompt_tokens` as the full input (hit + miss) and
+    // `prompt_cache_hit_tokens` as a breakdown. Adding them double-counts
+    // cache hits and reports ~50% on a 99% prefix. Only add when hit is
+    // larger than prompt_tokens, which is the miss-only gateway shape.
+    state.input_tokens = if cache_hit > base_prompt {
+        base_prompt.checked_add(cache_hit).ok_or_else(|| {
+            "OpenAI-compatible provider returned overflowing prompt token usage".to_string()
+        })?
+    } else {
+        base_prompt
+    };
     state.output_tokens =
         optional_usage_u64(usage, "completion_tokens")?.unwrap_or(state.output_tokens);
 
@@ -3240,6 +3238,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn thinking_does_not_backfill_reasoning_on_earlier_plain_assistants() {
+        use nomi_types::message::{ContentBlock, Message, Role};
+
+        let messages = vec![
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text {
+                    text: "plain".into(),
+                }],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text { text: "ok".into() }],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![
+                    ContentBlock::Thinking {
+                        thinking: "secret".into(),
+                        signature: None,
+                    },
+                    ContentBlock::Text {
+                        text: "answer".into(),
+                    },
+                ],
+            ),
+        ];
+        let out = OpenAIProvider::build_messages(&messages, "", &openai_compat(), false);
+        let assistants: Vec<_> = out
+            .iter()
+            .filter(|message| message["role"] == "assistant")
+            .collect();
+        assert_eq!(assistants.len(), 2);
+        assert!(
+            assistants[0].get("reasoning_content").is_none(),
+            "earlier plain assistants must keep their original JSON shape"
+        );
+        assert_eq!(assistants[1]["reasoning_content"], "secret");
+    }
+
     #[tokio::test]
     async fn stream_reuses_shared_http_client() {
         use crate::http_client_build_count;
@@ -3674,14 +3713,27 @@ mod tests {
 
     #[test]
     fn usage_includes_prompt_cache_hit_tokens() {
-        // DeepSeek reports prompt_cache_hit_tokens separately;
-        // input_tokens should be the sum of prompt_tokens + prompt_cache_hit_tokens
+        // DeepSeek reports prompt_tokens as the full input (hit + miss).
+        // prompt_cache_hit_tokens is a breakdown, not an extra addend.
+        let mut state = StreamState::new();
+
+        let chunk = r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000000,"completion_tokens":100,"prompt_cache_hit_tokens":999500,"prompt_cache_miss_tokens":500}}"#;
+        let _ = parse_sse_chunk(chunk, &mut state, false);
+
+        assert_eq!(state.input_tokens, 1_000_000);
+        assert_eq!(state.cache_read_tokens, 999_500);
+        assert_eq!(state.output_tokens, 100);
+    }
+
+    #[test]
+    fn usage_adds_cache_hit_when_prompt_tokens_are_miss_only() {
         let mut state = StreamState::new();
 
         let chunk = r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":500,"completion_tokens":100,"prompt_cache_hit_tokens":999500}}"#;
         let _ = parse_sse_chunk(chunk, &mut state, false);
 
         assert_eq!(state.input_tokens, 1_000_000);
+        assert_eq!(state.cache_read_tokens, 999_500);
         assert_eq!(state.output_tokens, 100);
     }
 

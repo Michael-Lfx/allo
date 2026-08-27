@@ -142,6 +142,7 @@ fn make_compact_engine_with_output(
         context_contributors: Vec::new(),
         steering_inbox: None,
         system_resource_inbox: None,
+        frozen_provider_tools: None,
         process_supervisor: None,
         editable_turn: None,
         observation: None,
@@ -496,11 +497,12 @@ async fn emergency_silent_below_limit() {
     assert!(engine.run_compaction(CompactReason::TurnEnd).await.is_ok());
 }
 
-// -- Microcompact runs when count trigger fires --
+// -- Microcompact primitive still clears old results when invoked directly --
 
-#[tokio::test]
-async fn microcompact_clears_old_results() {
-    // 12 tool results with keep_recent=3 (threshold=6) → should clear 9
+#[test]
+fn microcompact_clears_old_results() {
+    // TurnEnd no longer microcompacts until the autocompact watermark.
+    // This hits the primitive: 12 tool results, keep_recent=3 → clear 9.
     let mut messages = Vec::new();
     for i in 0..12 {
         let id = format!("t{i}");
@@ -516,7 +518,7 @@ async fn microcompact_clears_old_results() {
 
     let mut engine = make_compact_engine(config, state, messages);
     engine.messages[0].provider_round_id = Some("resp_before_microcompact".to_owned());
-    engine.run_compaction(CompactReason::TurnEnd).await.unwrap();
+    engine.run_microcompact();
 
     // Last 3 tool results should be preserved
     let cleared_count = engine
@@ -533,6 +535,36 @@ async fn microcompact_clears_old_results() {
         engine.messages.iter().all(|message| message.provider_round_id.is_none()),
         "microcompact rewrites the full provider snapshot"
     );
+}
+
+#[tokio::test]
+async fn turn_end_does_not_microcompact_below_autocompact_watermark() {
+    let mut messages = Vec::new();
+    for i in 0..12 {
+        let id = format!("t{i}");
+        messages.push(tool_use_msg(&id, "Read"));
+        messages.push(tool_result_msg(&id, &format!("data-{i}")));
+    }
+
+    let config = CompactConfig {
+        micro_keep_recent: 3,
+        ..Default::default()
+    };
+    let mut engine = make_compact_engine(config, CompactState::new(), messages);
+    engine
+        .run_compaction(CompactReason::TurnEnd)
+        .await
+        .unwrap();
+
+    let cleared_count = engine
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter(|b| {
+            matches!(b, ContentBlock::ToolResult { content, .. } if content == "[Tool result cleared]")
+        })
+        .count();
+    assert_eq!(cleared_count, 0);
 }
 
 // -- Disabled config skips micro and auto but not emergency --

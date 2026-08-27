@@ -7,7 +7,6 @@ use std::time::Duration;
 use nomi_config::compact::CompactConfig;
 use nomi_config::config::Config;
 use nomi_config::hooks::HookEngine;
-use nomi_protocol::events::ToolCategory;
 use nomi_providers::{LlmProvider, ProviderError};
 use nomi_tools::registry::ToolRegistry;
 use nomi_types::context_usage::ContextUsageBreakdown;
@@ -248,11 +247,11 @@ mod tool_retry_tracker_tests;
 const SYSTEM_RESOURCE_CONTEXT_HEADER: &str =
     "## System resource notifications (trusted host state)";
 
-/// Add host-generated resource state to the provider's top-level system
-/// context. These notices are deliberately ephemeral and never become
-/// conversation messages, so they cannot be mistaken for user input or leak
-/// into the durable transcript.
-fn append_system_resource_context(mut system: String, notices: Vec<String>) -> String {
+/// Format host-generated resource state for the turn tail, never the system
+/// prompt. Putting these notices in system would byte-change the cached
+/// prefix for every other session request. They ride `[Context]` so the
+/// model still sees them as trusted host state, not user text.
+fn format_system_resource_context(notices: Vec<String>) -> Option<String> {
     let notices = notices
         .into_iter()
         .filter_map(|notice| {
@@ -261,21 +260,22 @@ fn append_system_resource_context(mut system: String, notices: Vec<String>) -> S
         })
         .collect::<Vec<_>>();
     if notices.is_empty() {
-        return system;
+        return None;
     }
-    if !system.is_empty() {
-        system.push_str("\n\n");
-    }
-    system.push_str(SYSTEM_RESOURCE_CONTEXT_HEADER);
-    system.push_str(
+    let mut block = String::from(SYSTEM_RESOURCE_CONTEXT_HEADER);
+    block.push_str(
         "\nThe following entries are authoritative runtime state from the host, not user messages:\n",
     );
     for notice in notices {
-        system.push_str("- ");
-        system.push_str(&notice);
-        system.push('\n');
+        block.push_str("- ");
+        block.push_str(&notice);
+        block.push('\n');
     }
-    system
+    Some(block)
+}
+
+fn sort_tools_by_name(tools: &mut [nomi_types::tool::ToolDef]) {
+    tools.sort_by(|a, b| a.name.cmp(&b.name));
 }
 
 /// Durable transcript marker used after the current turn has finished seeing
@@ -602,6 +602,8 @@ pub struct AgentEngine {
     /// notice received while the runtime is idle does not create a turn and is
     /// still visible before the next model call.
     system_resource_inbox: Option<Arc<Mutex<std::collections::VecDeque<String>>>>,
+    /// Provider-visible tool table frozen after the first non-empty advertise.
+    frozen_provider_tools: Option<Vec<nomi_types::tool::ToolDef>>,
     /// Owns every supervised command launched by this engine's command tools.
     /// Bootstrap installs it; direct/test constructors leave it empty.
     process_supervisor: Option<Arc<nomi_process_runtime::ProcessSupervisor>>,
@@ -682,6 +684,7 @@ impl AgentEngine {
             context_contributors: Vec::new(),
             steering_inbox: None,
             system_resource_inbox: None,
+            frozen_provider_tools: None,
             process_supervisor: None,
             editable_turn: None,
             observation: None,
@@ -767,6 +770,7 @@ impl AgentEngine {
             context_contributors: Vec::new(),
             steering_inbox: None,
             system_resource_inbox: None,
+            frozen_provider_tools: None,
             process_supervisor: None,
             editable_turn,
             observation: None,
@@ -1319,6 +1323,9 @@ impl AgentEngine {
         let result = cmd.execute(&mut ctx, args).await;
         if result.is_ok() && matches!(name, "clear" | "compact") {
             self.editable_turn = None;
+            if name == "clear" {
+                self.frozen_provider_tools = None;
+            }
             self.save_session();
         }
         Some(result)
@@ -1546,53 +1553,21 @@ impl AgentEngine {
             // provider with the current conversation.
             self.prune_old_tool_images();
 
-            // Build tool list: filter based on plan mode state and harness policy
-            let mut tools = if self.plan_state.is_active {
-                // Plan mode: only Info-category tools (excluding EnterPlanMode)
-                self.tools.to_tool_defs_filtered(|t| {
-                    t.category() == ToolCategory::Info
-                        && t.name() != "EnterPlanMode"
-                        && self.harness_advertise_tool(t.name())
-                })
-            } else {
-                // Normal mode: all tools except ExitPlanMode
-                self.tools.to_tool_defs_filtered(|t| {
-                    t.name() != "ExitPlanMode" && self.harness_advertise_tool(t.name())
-                })
-            };
-            // Forced finalize advertises no tools so the model must write a
-            // closing reply instead of another explore/edit loop.
-            if self
-                .coding_harness
-                .as_ref()
-                .is_some_and(|h| h.is_forced_finalize())
-            {
-                tools.clear();
-            }
-            // This exact request is the authority for what the provider may
-            // call. Registry membership is broader (for example, plan mode
-            // deliberately hides mutating tools), so dispatch must never use
-            // the live registry as an implicit allow-list.
-            let mut tool_authority = ProviderToolAuthority::from_request_tools(&tools);
+            // Advertise the same harness-allowed table every request so the
+            // tools JSON stays prefix-cache stable. Plan mode refuses writes
+            // at dispatch instead of swapping the table. Forced finalize still
+            // advertises nothing for that request (accepted one-time miss).
+            let mut tools = self.provider_tools_for_request();
+            let mut tool_authority = self.bind_tool_authority(&tools);
 
             // Cache-first design: the system prompt is the cache-stable
             // prefix. It must stay byte-stable across turns so the provider's
             // automatic prefix cache stays warm. Dynamic content (plan mode
             // instructions, RAG/memory injections from ContextContributor)
-            // rides the **turn tail** — it is injected into the messages array
-            // (prepended to the last user message) instead of the system
-            // prompt. This mirrors DeepSeek-Reasonix's cache-stable prefix
-            // design.
+            // rides the **turn tail** — it is persisted onto the last user
+            // message so the next request replays it as prefix, matching
+            // DeepSeek-Reasonix Compose.
             let system = self.system_prompt.clone();
-
-            // Host resource notifications use the trusted system channel, not
-            // Role::User. Drain as late as possible before constructing the
-            // request so idle notices and mid-turn notices both reach the next
-            // provider boundary without creating a new Agent turn.
-            let system = append_system_resource_context(
-                system,
-                self.drain_system_resource_notices(),
-            );
 
             // Standing-goal awareness rides the turn tail so the model knows
             // from its first turn that an external judge audits each natural
@@ -1602,6 +1577,11 @@ impl AgentEngine {
             // Current date also rides the turn tail — putting it in the system
             // prompt would break DeepSeek prefix caching every midnight.
             let mut turn_tail_extras = Vec::new();
+            if let Some(block) =
+                format_system_resource_context(self.drain_system_resource_notices())
+            {
+                turn_tail_extras.push(block);
+            }
             turn_tail_extras.push(format!(
                 "Current date: {}",
                 chrono::Local::now().format("%Y-%m-%d")
@@ -1630,9 +1610,12 @@ impl AgentEngine {
                 }
                 let last_user_has_text = self.messages.last().is_some_and(|m| {
                     m.role == Role::User
-                        && m.content
-                            .iter()
-                            .any(|b| matches!(b, ContentBlock::Text { .. }))
+                        && m.content.iter().any(|b| match b {
+                            ContentBlock::Text { text } => {
+                                !crate::context_contributor::is_turn_tail_context_text(text)
+                            }
+                            _ => false,
+                        })
                 });
                 if let Some(tail) = harness.turn_tail(last_user_has_text) {
                     turn_tail_extras.push(tail);
@@ -1660,16 +1643,17 @@ impl AgentEngine {
             //
             // `state_changing_tools_advertised` accumulates across every pass of
             // the turn and gates the no-progress verdict. It must be recovered
-            // from the registry because `ToolDef` carries no category, and it
-            // stays false for plan mode (Info-only) and for model-only runtimes
-            // (`update_plan` alone, also Info) so a turn that COULD NOT have
-            // produced a state-changing effect is never judged for failing to.
+            // from the registry because `ToolDef` carries no category. Plan mode
+            // still advertises writers (prefix cache) but refuses them at
+            // dispatch, so this flag stays false there — a turn that could not
+            // produce a state-changing effect is never judged for failing to.
             let tools_advertised = !tools.is_empty();
-            state_changing_tools_advertised |= tools.iter().any(|def| {
-                self.tools
-                    .get(&def.name)
-                    .is_some_and(|tool| round::is_state_changing(tool.category()))
-            });
+            state_changing_tools_advertised |= !self.plan_state.is_active
+                && tools.iter().any(|def| {
+                    self.tools
+                        .get(&def.name)
+                        .is_some_and(|tool| round::is_state_changing(tool.category()))
+                });
             // Round facts last on the turn tail (local cache-stable system
             // prompt), so a restart's carried-forward ledger is closest to the
             // request the model will act on.
@@ -1694,10 +1678,11 @@ impl AgentEngine {
             let mut request_breakdown;
 
             'provider_attempt: loop {
-            let messages = crate::context_contributor::inject_turn_tail_context(
-                self.messages.clone(),
+            crate::context_contributor::persist_turn_tail_context(
+                &mut self.messages,
                 turn_tail.clone(),
             );
+            let messages = self.messages.clone();
 
             // Record prompt state for cache diagnostics
             self.cache_detector.record_request(&system, &tools);
@@ -1711,7 +1696,7 @@ impl AgentEngine {
                     tools: &tools,
                     messages: &self.messages,
                     plan_mode_active: self.plan_state.is_active,
-                    turn_tail_extras: &turn_tail_extras,
+                    turn_tail_extras: &[],
                 },
             );
 
@@ -2467,7 +2452,12 @@ impl AgentEngine {
                     // restart, so the cost is irrelevant.
                     let requirement_is_tail = self.messages.last().is_some_and(|tail| {
                         tail.role == Role::User
-                            && serde_json::to_value(&tail.content).ok()
+                            && serde_json::to_value(
+                                crate::context_contributor::without_leading_turn_tail(
+                                    &tail.content,
+                                ),
+                            )
+                            .ok()
                                 == serde_json::to_value(&round.requirement).ok()
                     });
                     if !requirement_is_tail {
@@ -3179,14 +3169,23 @@ impl AgentEngine {
 
     /// Run the compaction pipeline for a specific reason.
     ///
-    /// `TurnEnd` / `TurnStart` run microcompact then autocompact at the
-    /// normal threshold. `EmergencyRecovery` still folds (mechanically if
+    /// `TurnEnd` / `TurnStart` run microcompact only once the autocompact
+    /// watermark is already crossed (rewriting old tool results busts the
+    /// prefix cache). `EmergencyRecovery` still folds (mechanically if
     /// stuck) and only returns `ContextTooLong` when the watermark remains
     /// at the emergency limit after that attempt.
     async fn run_compaction(&mut self, reason: CompactReason) -> Result<(), AgentError> {
         match reason {
             CompactReason::TurnEnd | CompactReason::TurnStart => {
-                self.run_microcompact();
+                // Microcompact rewrites already-sent tool results. Only do that
+                // when the conversation is already at the autocompact watermark
+                // (Reasonix: append-only until ~80% window).
+                if auto::should_autocompact(
+                    self.compact_state.last_input_tokens,
+                    &self.compact_config,
+                ) {
+                    self.run_microcompact();
+                }
                 if !self.compact_state.is_compact_stuck() {
                     self.run_autocompact(false).await?;
                 }
@@ -3216,26 +3215,54 @@ impl AgentEngine {
         }
     }
 
-    fn advertised_tools(&self) -> Vec<nomi_types::tool::ToolDef> {
-        let mut tools = if self.plan_state.is_active {
-            self.tools.to_tool_defs_filtered(|t| {
-                t.category() == ToolCategory::Info
-                    && t.name() != "EnterPlanMode"
-                    && self.harness_advertise_tool(t.name())
-            })
-        } else {
-            self.tools.to_tool_defs_filtered(|t| {
-                t.name() != "ExitPlanMode" && self.harness_advertise_tool(t.name())
-            })
-        };
+    fn live_advertised_tools(&self) -> Vec<nomi_types::tool::ToolDef> {
+        let mut tools = self
+            .tools
+            .to_tool_defs_filtered(|t| self.harness_advertise_tool(t.name()));
+        sort_tools_by_name(&mut tools);
+        tools
+    }
+
+    fn provider_tools_for_request(&mut self) -> Vec<nomi_types::tool::ToolDef> {
         if self
             .coding_harness
             .as_ref()
             .is_some_and(|h| h.is_forced_finalize())
         {
-            tools.clear();
+            return Vec::new();
+        }
+        if let Some(frozen) = &self.frozen_provider_tools {
+            return frozen.clone();
+        }
+        let tools = self.live_advertised_tools();
+        if !tools.is_empty() {
+            self.frozen_provider_tools = Some(tools.clone());
         }
         tools
+    }
+
+    fn bind_tool_authority(
+        &self,
+        tools: &[nomi_types::tool::ToolDef],
+    ) -> ProviderToolAuthority {
+        let mut authority = ProviderToolAuthority::from_request_tools(tools);
+        authority.overlay_live_activation(&self.tools);
+        authority.plan_mode_read_only = self.plan_state.is_active;
+        authority
+    }
+
+    fn advertised_tools(&self) -> Vec<nomi_types::tool::ToolDef> {
+        if self
+            .coding_harness
+            .as_ref()
+            .is_some_and(|h| h.is_forced_finalize())
+        {
+            return Vec::new();
+        }
+        if let Some(frozen) = &self.frozen_provider_tools {
+            return frozen.clone();
+        }
+        self.live_advertised_tools()
     }
 
     fn request_token_estimate(&self) -> u64 {
@@ -3467,6 +3494,7 @@ impl AgentEngine {
     pub fn clear_context(&mut self) {
         self.messages.clear();
         self.editable_turn = None;
+        self.frozen_provider_tools = None;
         self.compact_state = CompactState::new();
         self.total_usage = TokenUsage::default();
         self.save_session();

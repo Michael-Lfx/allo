@@ -855,17 +855,17 @@ impl AgentBootstrap {
         // exec tool exists at all. Rendering that path as "Working directory"
         // would name somewhere none of the model's tools can reach, on a machine
         // it is not operating. Seed the section so `build_system_prompt`'s
-        // `or_insert_with` default never runs; the date still comes along, since
-        // that is the other half of what this section owes the model.
+        // `or_insert_with` default never runs. Date stays on the turn tail so
+        // the system prefix does not change at midnight.
         if ssh_backend.is_some() {
-            prompt_cache.set_environment(format!(
+            prompt_cache.set_environment(
                 "This session runs entirely on a remote host over SSH. Read, Write, Edit, Bash, \
                  Grep and Glob all act on that host, and no tool here can reach the local machine. \
                  There is no local working directory: the remote shell starts in the login user's \
                  default directory on the host (run `pwd` to see it), and paths from the local \
-                 machine do not exist there.\nCurrent date: {}",
-                chrono::Local::now().format("%Y-%m-%d")
-            ));
+                 machine do not exist there."
+                    .to_string(),
+            );
         }
         let system_prompt = crate::context::build_system_prompt(
             &mut prompt_cache,
