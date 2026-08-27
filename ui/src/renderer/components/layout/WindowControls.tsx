@@ -74,12 +74,22 @@ const WindowControls: React.FC = () => {
     }
   };
 
+  const stopDragPlaneCapture = (event: React.PointerEvent) => {
+    event.stopPropagation();
+  };
+
   return (
-    <div className='app-window-controls' data-tauri-no-drag data-tauri-drag-region='false'>
+    <div
+      className='app-window-controls'
+      data-tauri-no-drag
+      data-tauri-drag-region='false'
+      onPointerDown={stopDragPlaneCapture}
+    >
       <button
         type='button'
         className='app-window-controls__button'
         onClick={handleMinimize}
+        onPointerDown={stopDragPlaneCapture}
         aria-label='Minimize'
         data-tauri-no-drag
         data-tauri-drag-region='false'
@@ -90,6 +100,7 @@ const WindowControls: React.FC = () => {
         type='button'
         className='app-window-controls__button'
         onClick={handleToggleMaximize}
+        onPointerDown={stopDragPlaneCapture}
         aria-label={isMaximized ? 'Restore' : 'Maximize'}
         data-tauri-no-drag
         data-tauri-drag-region='false'
@@ -100,6 +111,7 @@ const WindowControls: React.FC = () => {
         type='button'
         className='app-window-controls__button app-window-controls__button--close'
         onClick={handleClose}
+        onPointerDown={stopDragPlaneCapture}
         aria-label='Close'
         data-tauri-no-drag
         data-tauri-drag-region='false'

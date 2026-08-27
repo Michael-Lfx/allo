@@ -61,6 +61,9 @@ describe('Titlebar instant icon tooltips', () => {
     expect(titlebarStyles).not.toMatch(/^\.app-titlebar__menu\s*\{\s*-webkit-app-region:\s*no-drag;/m);
     expect(titlebarStyles).not.toMatch(/^\.app-titlebar__toolbar\s*\{\s*[^}]*-webkit-app-region:\s*no-drag;/m);
     expect(titlebarStyles).toMatch(
+      /\.app-titlebar--desktop:not\(\.app-titlebar--mac\)\s+\.app-titlebar__toolbar\s*\{[\s\S]*?-webkit-app-region:\s*no-drag;/,
+    );
+    expect(titlebarStyles).toMatch(
       /\.app-titlebar__tooltip-anchor\s*\{[\s\S]*?-webkit-app-region:\s*no-drag;/,
     );
     expect(titlebarStyles).toMatch(
@@ -70,7 +73,7 @@ describe('Titlebar instant icon tooltips', () => {
       /\.app-titlebar--mac\s+\.app-titlebar__menu,[\s\S]*?\.app-titlebar--mac\s+\.app-titlebar__toolbar\s*\{[\s\S]*?-webkit-app-region:\s*no-drag;/,
     );
     expect(titlebarStyles).toMatch(
-      /\.app-window-controls__button,[\s\S]*?\.app-window-controls__button \* \{[\s\S]*?-webkit-app-region:\s*no-drag;/,
+      /\.app-window-controls,[\s\S]*?\.app-window-controls \* \{[\s\S]*?-webkit-app-region:\s*no-drag;/,
     );
   });
 
