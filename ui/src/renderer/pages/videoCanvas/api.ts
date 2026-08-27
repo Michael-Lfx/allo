@@ -72,6 +72,19 @@ export function canvasMediaUrl(mediaId: string): string {
   return `${getBaseUrl()}/api/video-canvas/media/${encodeURIComponent(mediaId)}`;
 }
 
+/**
+ * Extract the media id from a `/api/video-canvas/media/{id}` style path
+ * (absolute or relative). Returns null if the path doesn't match.
+ *
+ * Useful for materialised Canvas nodes whose `mediaId` metadata may be missing
+ * in older documents but whose `content` URL still encodes the id.
+ */
+export function extractMediaIdFromCanvasMediaUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  const match = path.match(/\/api\/video-canvas\/media\/([^/?#]+)/);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
 export async function listCanvasProjects(): Promise<CanvasProjectMeta[]> {
   const data = await httpRequest<{ projects: CanvasProjectMeta[] }>(
     'GET',

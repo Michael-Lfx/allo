@@ -1101,6 +1101,7 @@ fn image_node(
             "storageKey".into(),
             json!(format!("resource:{}", entry.media_id)),
         );
+        obj.insert("mediaId".into(), json!(entry.media_id));
         obj.insert("mimeType".into(), json!(entry.mime));
         obj.insert("bytes".into(), json!(entry.bytes));
         obj.insert("status".into(), json!(status));
@@ -1135,6 +1136,7 @@ fn audio_node(
             "storageKey".into(),
             json!(format!("resource:{}", entry.media_id)),
         );
+        obj.insert("mediaId".into(), json!(entry.media_id));
         obj.insert("mimeType".into(), json!(entry.mime));
         obj.insert("bytes".into(), json!(entry.bytes));
         obj.insert("status".into(), json!(status));
@@ -1167,6 +1169,7 @@ fn video_node(
             "storageKey".into(),
             json!(format!("resource:{}", entry.media_id)),
         );
+        obj.insert("mediaId".into(), json!(entry.media_id));
         obj.insert("mimeType".into(), json!(entry.mime));
         obj.insert("bytes".into(), json!(entry.bytes));
     }

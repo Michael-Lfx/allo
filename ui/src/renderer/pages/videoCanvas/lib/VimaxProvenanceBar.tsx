@@ -32,11 +32,23 @@ export default function VimaxProvenanceBar({ projectId }: Props) {
         project_id: projectId,
         reconcat: true,
       });
+      if (result.updated_shots === 0) {
+        Message.info('Canvas 中暂无需要写回的视频更新');
+        return;
+      }
       const warn =
         result.warnings?.length > 0
           ? `（${result.warnings.slice(0, 2).join('；')}）`
           : '';
-      Message.success(`已写回 Agent 工程：更新 ${result.updated_shots} 镜${warn}`);
+      // 区分两种结果：写入成功但 concat 被跳过（部分 shot 还没就绪） vs 全部完成。
+      const concatBlocked = result.warnings?.some((w) =>
+        w.includes('concat skipped') || w.includes('concat失败')
+      );
+      if (concatBlocked) {
+        Message.warning(`已写回 ${result.updated_shots} 镜，但部分 shot 未生成，成片暂不拼接${warn}`);
+      } else {
+        Message.success(`已写回 Agent 工程：更新 ${result.updated_shots} 镜${warn}`);
+      }
     } catch (e) {
       Message.error(`写回失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
