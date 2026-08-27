@@ -177,6 +177,8 @@
     "allowMCPTool": "Allow execution of MCP tool \"{{toolName}}\" from server \"{{serverName}}\"?",
     "yesAllowOnce": "Yes, allow once",
     "yesAllowAlways": "Yes, allow always",
+    "rejectOnce": "No, reject once",
+    "rejectAlways": "No, always reject",
     "yesAlwaysAllowTool": "Yes, always allow tool \"{{toolName}}\" from server \"{{serverName}}\"",
     "yesAlwaysAllowServer": "Yes, always allow all tools from server \"{{serverName}}\"",
     "no": "No (esc)"

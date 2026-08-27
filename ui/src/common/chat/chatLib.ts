@@ -2,6 +2,7 @@
 
 import type {
   AcpPermissionRequest,
+  AcpPermissionOptionKind,
   PlanUpdate,
   PersistedToolArtifact,
   ToolCallContentItem,
@@ -1015,7 +1016,7 @@ const normalizePermissionContent = (value: unknown): IConfirmation => {
 
 const normalizeAcpPermissionOptionKind = (
   value: unknown
-): AcpPermissionRequest['options'][number]['kind'] => {
+): AcpPermissionOptionKind | undefined => {
   switch (value) {
     case 'allow_once':
     case 'allow_always':
@@ -1023,7 +1024,7 @@ const normalizeAcpPermissionOptionKind = (
     case 'reject_always':
       return value;
     default:
-      return 'allow_once';
+      return undefined;
   }
 };
 
@@ -1037,11 +1038,14 @@ const normalizeAcpPermissionContent = (value: unknown): AcpPermissionRequest => 
   return {
     session_id: toDisplayText(data.session_id),
     options: Array.isArray(data.options)
-      ? data.options.filter(isObject).map((option, index) => ({
-          option_id: toDisplayText(option.option_id, `option_${index}`),
-          name: toDisplayText(option.name ?? option.label, `Option ${index + 1}`),
-          kind: normalizeAcpPermissionOptionKind(option.kind),
-        }))
+      ? data.options.filter(isObject).map((option, index) => {
+          const kind = normalizeAcpPermissionOptionKind(option.kind);
+          return {
+            option_id: toDisplayText(option.option_id, `option_${index}`),
+            name: toDisplayText(option.name ?? option.label, `Option ${index + 1}`),
+            ...(kind ? { kind } : {}),
+          };
+        })
       : [],
     tool_call: {
       tool_call_id: toDisplayText(toolCall.tool_call_id ?? data.call_id),
