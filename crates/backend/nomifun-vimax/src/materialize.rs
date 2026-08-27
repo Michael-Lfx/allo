@@ -194,10 +194,15 @@ pub async fn sync_canvas_shots_to_session(
     } else {
         req.shots
     };
+
+    // No updates means nothing changed in Canvas — return early without error.
     if updates.is_empty() {
-        return Err(AppError::BadRequest(
-            "no shot updates found — regenerate a shot in Canvas first, or pass shots[]".into(),
-        ));
+        return Ok(SyncFromCanvasResult {
+            session_id: session_id.to_string(),
+            updated_shots: 0,
+            final_video: session.final_video.clone(),
+            warnings: vec![],
+        });
     }
 
     let mut warnings = Vec::new();
@@ -232,18 +237,27 @@ pub async fn sync_canvas_shots_to_session(
                 Ok(path) => {
                     info!(%scene_key, path = %path.display(), "re-concatenated scene after canvas sync");
                 }
-                Err(e) => warnings.push(format!("scene `{scene_key}` concat failed: {e}")),
+                Err(e) => {
+                    // 拼接失败不阻断写回（Canvas 写回的 shot 已落盘），但要把
+                    // "为什么没拼成片" 透传给前端，便于用户在画布里继续补齐缺失
+                    // 的 shot 后再触发一次写回。
+                    warnings.push(format!("scene `{scene_key}` concat skipped: {e}"))
+                }
             }
         }
-        // Film-level concat for multi-scene or single scene final.
+        // Film-level concat for multi-scene or single scene final. 单 scene 情况下
+        // reconcat_film 内部会复用 reconcat_scene 的「所有 shot 必须齐备」校验，
+        // 任何缺失都不会污染 final_video。
         match reconcat_film(&working_dir, &session).await {
             Ok(Some(rel)) => {
                 final_video = Some(rel);
                 vimax
                     .set_session_final_video(session_id, final_video.clone())?;
             }
-            Ok(None) => {}
-            Err(e) => warnings.push(format!("film concat failed: {e}")),
+            Ok(None) => {
+                // 无 scene final 且无 shots/，保持现有 final_video 不动
+            }
+            Err(e) => warnings.push(format!("film concat skipped: {e}")),
         }
     }
 
@@ -333,50 +347,98 @@ fn collect_shot_updates_from_doc(doc: &serde_json::Value) -> Result<Vec<SyncShot
         .and_then(|n| n.as_array())
         .ok_or_else(|| AppError::BadRequest("canvas doc missing nodes".into()))?;
     let mut out = Vec::new();
+
     for node in nodes {
         let meta = node.get("metadata").unwrap_or(&serde_json::Value::Null);
         let allo = meta.get("alloVimax").unwrap_or(&serde_json::Value::Null);
-        if allo.get("kind").and_then(|v| v.as_str()) != Some("shot_video") {
-            continue;
+
+        // Only consider nodes with explicit alloVimax.kind === "shot_video"
+        // that have been regenerated in Canvas (identified by versionOfNodeId).
+        //
+        // Note: videoStartFrameNodeId / videoEndFrameNodeId are set during initial
+        // materialization, so they are NOT indicators of Canvas-side changes.
+        if allo.get("kind").and_then(|v| v.as_str()) == Some("shot_video") {
+            let version_of = meta.get("versionOfNodeId");
+
+            // Skip if this is the original shot from Agent materialization
+            // (no versionOfNodeId means it hasn't been regenerated in Canvas)
+            if version_of.is_none() {
+                continue;
+            }
+
+            let scene_key = allo
+                .get("sceneKey")
+                .and_then(|v| v.as_str())
+                .unwrap_or("main")
+                .to_string();
+            let shot_idx = allo
+                .get("shotIdx")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| AppError::BadRequest("shot node missing shotIdx".into()))?
+                as i32;
+            let media_id = extract_media_id(meta);
+            if !media_id.is_empty() {
+                out.push(SyncShotUpdate {
+                    scene_key,
+                    shot_idx,
+                    media_id,
+                });
+            }
         }
-        let scene_key = allo
-            .get("sceneKey")
-            .and_then(|v| v.as_str())
-            .unwrap_or("main")
-            .to_string();
-        let shot_idx = allo
-            .get("shotIdx")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| AppError::BadRequest("shot node missing shotIdx".into()))?
-            as i32;
-        let storage = meta
-            .get("storageKey")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let media_id = if let Some(rest) = storage.strip_prefix("resource:") {
-            rest.to_string()
-        } else if let Some(content) = meta.get("content").and_then(|v| v.as_str()) {
-            content
-                .rsplit('/')
-                .next()
-                .unwrap_or("")
-                .split('?')
-                .next()
-                .unwrap_or("")
-                .to_string()
-        } else {
-            String::new()
-        };
-        if media_id.is_empty() {
-            continue;
-        }
-        out.push(SyncShotUpdate {
-            scene_key,
-            shot_idx,
-            media_id,
-        });
     }
+
     Ok(out)
+}
+
+/// Extract media_id from node metadata, checking multiple possible sources.
+fn extract_media_id(meta: &serde_json::Value) -> String {
+    // Try storageKey first (preferred format: "resource:{media_id}")
+    if let Some(storage) = meta.get("storageKey").and_then(|v| v.as_str()) {
+        if let Some(rest) = storage.strip_prefix("resource:") {
+            if !rest.is_empty() {
+                return rest.to_string();
+            }
+        }
+    }
+
+    // Try content field (may contain URL or just media_id)
+    if let Some(content) = meta.get("content").and_then(|v| v.as_str()) {
+        if !content.is_empty() {
+            // If it's a URL, extract the media_id from the path
+            // URLs like "/api/video-canvas/media/{media_id}" or "{media_id}?..."
+            if content.starts_with('/') {
+                // Extract from URL path
+                let media_id = content
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("")
+                    .split('?')
+                    .next()
+                    .unwrap_or("")
+                    .split('#')
+                    .next()
+                    .unwrap_or("");
+                if !media_id.is_empty() {
+                    return media_id.to_string();
+                }
+            } else {
+                // Might be just the media_id
+                let media_id = content.split(|c| c == '?' || c == '#').next().unwrap_or("");
+                if !media_id.is_empty() && media_id.len() >= 8 {
+                    return media_id.to_string();
+                }
+            }
+        }
+    }
+
+    // Try resourceReloadAvailable if it contains media info
+    if let Some(reload) = meta.get("resourceReloadAvailable").and_then(|v| v.as_bool()) {
+        if reload {
+            // Try to get from storageKey or content (already checked above)
+        }
+    }
+
+    String::new()
 }
 
 fn resolve_scene_dir(
@@ -418,13 +480,47 @@ async fn reconcat_scene(scene_dir: &Path) -> Result<PathBuf, String> {
         }
     }
     idxs.sort_unstable();
-    let paths: Vec<PathBuf> = idxs
-        .iter()
-        .map(|i| shots_dir.join(i.to_string()).join("video.mp4"))
-        .filter(|p| p.is_file())
-        .collect();
-    if paths.len() < 1 {
-        return Err("no shot videos to concat".into());
+
+    // 拼接成片前必须确认所有 shot 视频都已生成且有效。
+    // 通过 shot_descriptions.json（如果存在）锁定"应该有几个 shot"，
+    // 没产物文件则保守地要求 shots/ 下每一个 idx 子目录都产出可用的 video.mp4，
+    // 缺失或损坏的 shot 不允许拼成成片。
+    let expected_shot_idxs: Vec<i32> = match read_shot_description_idxs(scene_dir).await {
+        Ok(v) => v,
+        Err(_) => idxs.clone(),
+    };
+    let target_idxs: &[i32] = if expected_shot_idxs.is_empty() {
+        &idxs
+    } else {
+        &expected_shot_idxs
+    };
+    if target_idxs.is_empty() {
+        return Err("no shots defined for scene".into());
+    }
+    let mut missing: Vec<i32> = Vec::new();
+    let mut paths: Vec<PathBuf> = Vec::with_capacity(target_idxs.len());
+    for idx in target_idxs {
+        let video = shots_dir.join(idx.to_string()).join("video.mp4");
+        if media_local::is_usable_video_file(&video) {
+            paths.push(video);
+        } else {
+            missing.push(*idx);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "skip concat: scene `{scene}` has {missing_count} incomplete shot(s) [{missing_list}]",
+            scene = scene_dir.display(),
+            missing_count = missing.len(),
+            missing_list = missing
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if paths.len() < 2 {
+        return Err("skip concat: fewer than 2 usable shots".into());
     }
     let out = scene_dir.join("final_video.mp4");
     let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
@@ -432,6 +528,29 @@ async fn reconcat_scene(scene_dir: &Path) -> Result<PathBuf, String> {
         .await
         .map_err(|e| e.to_string())?;
     Ok(out)
+}
+
+/// Read shot idxs from `shot_descriptions.json` when present so the canonical
+/// shot count comes from the planner (not from whatever happens to be on disk).
+async fn read_shot_description_idxs(scene_dir: &Path) -> Result<Vec<i32>, String> {
+    let path = scene_dir.join("shot_descriptions.json");
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let raw = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let arr = parsed
+        .as_array()
+        .ok_or_else(|| "shot_descriptions.json is not an array".to_string())?;
+    let mut idxs: Vec<i32> = arr
+        .iter()
+        .filter_map(|s| s.get("idx").and_then(|v| v.as_i64()).map(|n| n as i32))
+        .collect();
+    idxs.sort_unstable();
+    idxs.dedup();
+    Ok(idxs)
 }
 
 async fn reconcat_film(
@@ -460,13 +579,22 @@ async fn reconcat_film(
     scene_names.sort();
     for name in &scene_names {
         let p = film.join(name).join("final_video.mp4");
-        if p.is_file() {
+        if media_local::is_usable_video_file(&p) {
             scene_finals.push(p);
         }
     }
 
     let out = film.join("final_video.mp4");
-    if scene_finals.len() >= 2 {
+    // Multi-scene: 每个 scene final 都已就绪才允许拼成成片；任何缺失的 scene final
+    // 视为未完成，跳过 film 级别的拼接，避免半成片。
+    if scene_names.len() >= 2 {
+        if scene_finals.len() < scene_names.len() {
+            return Err(format!(
+                "skip film concat: {}/{} scene finals are usable",
+                scene_finals.len(),
+                scene_names.len()
+            ));
+        }
         let refs: Vec<&Path> = scene_finals.iter().map(|p| p.as_path()).collect();
         media_local::concat_videos(&refs, &out)
             .await
@@ -475,9 +603,12 @@ async fn reconcat_film(
         // script2video / single scene at film root
         reconcat_scene(&film).await?;
     } else if scene_finals.len() == 1 {
-        tokio::fs::copy(&scene_finals[0], &out)
-            .await
-            .map_err(|e| e.to_string())?;
+        // 单 scene 且 final_video 不存在：从唯一 scene final 拷贝。
+        if !media_local::is_usable_video_file(&out) {
+            tokio::fs::copy(&scene_finals[0], &out)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
     } else if !out.is_file() {
         return Ok(None);
     }

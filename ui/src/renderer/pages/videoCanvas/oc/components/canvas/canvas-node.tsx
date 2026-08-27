@@ -10,6 +10,7 @@ import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } f
 import { formatBytes } from "@oc/lib/image-utils";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError, localizeGenerationErrorText } from "@oc/lib/generation-error";
 import { resourceIdFromStorageKey } from "@oc/services/api/resources";
+import { canvasMediaUrl, extractMediaIdFromCanvasMediaUrl, resolveCanvasUrl } from "@renderer/pages/videoCanvas/api";
 import { cacheResourceObjectUrl, getCachedResourceObjectUrl, type ResourceCacheHint } from "@oc/services/resource-blob-cache";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
@@ -1118,37 +1119,43 @@ function nodeResourceCacheHint(mimeType?: string, bytes?: number): ResourceCache
 
 function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
     const storageKey = node.metadata?.storageKey || "";
-    const fallback = node.metadata?.content || "";
+    const contentPath = node.metadata?.content || "";
+    // 优先用绝对化的 content（让 Electron/桌面壳在 origin-less 环境也能解析）。
+    const fallback = resolveCanvasUrl(contentPath) || contentPath;
     const mimeType = node.metadata?.mimeType;
     const bytes = node.metadata?.bytes;
     const isRemoteResource = Boolean(resourceIdFromStorageKey(storageKey));
     // 视频/音频保持「点按再加载」；图片直接用 HTTP content URL 出图
     // （后端 Cache-Control: max-age=3600），不等 IndexedDB blob。
     const deferUntilInteraction = node.type !== CanvasNodeType.Image;
-    const [url, setUrl] = useState(() => (isRemoteResource && deferUntilInteraction ? "" : fallback));
+    // 构建媒体 URL：优先用 content；若无则用 mediaId（物化节点特有字段）生成；
+    // 旧物化文档可能没有 mediaId 但 content 仍携带 media id，从 URL 兜底提取。
+    const mediaIdFromMeta = node.metadata?.mediaId || extractMediaIdFromCanvasMediaUrl(contentPath);
+    const mediaUrl = fallback || (mediaIdFromMeta ? canvasMediaUrl(mediaIdFromMeta) : "");
+    const [url, setUrl] = useState(() => (isRemoteResource && deferUntilInteraction ? "" : mediaUrl));
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
         if (!isRemoteResource) {
-            setUrl(fallback);
+            setUrl(mediaUrl);
             return;
         }
         let cancelled = false;
         // 点按型媒体（视频/音频）保持空 URL，等用户点击 load() 或命中缓存。
-        if (!deferUntilInteraction) setUrl(fallback);
+        if (!deferUntilInteraction) setUrl(mediaUrl);
         const hint = nodeResourceCacheHint(mimeType, bytes);
         const resolve = eager ? cacheResourceObjectUrl(storageKey, hint) : getCachedResourceObjectUrl(storageKey, hint);
         void resolve
             .then((cached) => {
                 // 后台缓存不得扰动已展示的 HTTP 图（避免 src 闪换）；只有
                 // 点按型媒体、或节点没有可展示的 content 时才提升 blob URL。
-                if (!cancelled && cached && (deferUntilInteraction || !fallback)) setUrl(cached);
+                if (!cancelled && cached && (deferUntilInteraction || !mediaUrl)) setUrl(cached);
             })
             .catch(() => undefined);
         return () => {
             cancelled = true;
         };
-    }, [bytes, deferUntilInteraction, eager, fallback, isRemoteResource, mimeType, storageKey]);
+    }, [bytes, deferUntilInteraction, eager, fallback, isRemoteResource, mediaUrl, mimeType, mediaIdFromMeta, storageKey]);
 
     const load = useCallback(async () => {
         if (url) return url;
