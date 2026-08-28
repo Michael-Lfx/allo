@@ -30,6 +30,8 @@ const REQUIRED_TOKENS = [
   '--flowy-interactive',
   '--flowy-selected-bg',
   '--flowy-text-primary',
+  '--flowy-attention',
+  '--flowy-attention-fg',
   '--flowy-border-structural',
   '--flowy-shadow-focus',
 ];

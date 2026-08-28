@@ -222,7 +222,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
           {t('common.userMenu.contactSupport', { defaultValue: '联系客服' })}
         </span>
         {hasUnread ? (
-          <span className='min-w-16px h-16px px-4px rd-full bg-danger text-white text-10px leading-16px text-center tabular-nums'>
+          <span className='min-w-18px h-18px px-5px rd-full bg-[var(--flowy-attention)] text-[var(--flowy-attention-fg)] text-10px font-600 leading-18px text-center tabular-nums'>
             {unreadBadge}
           </span>
         ) : null}
@@ -274,7 +274,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         />
         {hasUnread ? (
           <span
-            className='absolute top-0 right-0 size-8px rd-full bg-danger border-2 border-solid border-[var(--color-bg-1)]'
+            className='absolute top-0 right-0 size-8px rd-full bg-[var(--flowy-attention)] border-2 border-solid border-[var(--color-bg-1)]'
             aria-hidden
           />
         ) : null}

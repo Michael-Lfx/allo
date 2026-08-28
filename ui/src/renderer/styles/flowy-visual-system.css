@@ -96,6 +96,9 @@
   --flowy-text-primary: var(--text-primary, var(--color-text-1, var(--flowy-text-1)));
   --flowy-text-secondary: var(--text-secondary, var(--color-text-2, var(--flowy-text-2)));
   --flowy-text-muted: var(--color-text-3, var(--flowy-text-3));
+  /* Attention is a neutral pending-work signal, not an error state. */
+  --flowy-attention: oklch(45% 0.04 240);
+  --flowy-attention-fg: oklch(98% 0.01 95);
   --flowy-border-subtle: var(--border-light, var(--color-border-2, var(--flowy-border)));
   --flowy-border-structural: var(--border-base, var(--color-border-3, var(--flowy-border-strong-color)));
   --flowy-focus: var(--control-focus-ring, var(--flowy-focus-ring));
