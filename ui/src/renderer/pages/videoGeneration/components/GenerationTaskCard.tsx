@@ -6,8 +6,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Tag } from '@arco-design/web-react';
-import { Delete, VideoOne, Refresh, LoadingOne } from '@icon-park/react';
+import { Popconfirm, Tag } from '@arco-design/web-react';
+import { Delete, VideoOne, LoadingOne } from '@icon-park/react';
 import { canvasMediaUrl, type GenerationTaskView } from '../../videoCanvas/api';
 import styles from '../index.module.css';
 
@@ -192,42 +192,40 @@ const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({ task, onDelete,
             </div>
             <div className='flex items-center gap-6px shrink-0'>
               {onDelete ? (
-                <button
-                  type='button'
-                  aria-label={t('videoGeneration.actions.delete', { defaultValue: '删除' })}
-                  title={t('videoGeneration.actions.delete', { defaultValue: '删除' })}
-                  className={[
-                    'inline-flex items-center justify-center w-24px h-24px rd-6px',
-                    'text-[var(--color-text-3)] hover:text-[rgb(var(--danger-6))]',
-                    'hover:bg-[var(--color-fill-2)] transition-colors',
-                    deleting ? 'opacity-40 pointer-events-none' : '',
-                  ].join(' ')}
-                  onClick={(e) => {
-                    e.stopPropagation();
+                <Popconfirm
+                  title={t('videoGeneration.actions.deleteConfirm', {
+                    defaultValue: '确定删除该任务？产物将一并清除。',
+                  })}
+                  disabled={deleting}
+                  onOk={(e) => {
+                    e?.stopPropagation?.();
                     onDelete(task);
                   }}
-                  disabled={deleting}
                 >
-                  <Delete theme='outline' size={14} fill='currentColor' />
-                </button>
-              ) : (
-                <button
-                  type='button'
-                  aria-label={t('videoGeneration.clip.regenerate', { defaultValue: '重新生成' })}
-                  title={t('videoGeneration.clip.regenerate', { defaultValue: '重新生成' })}
-                  className={[
-                    'inline-flex items-center justify-center w-24px h-24px rd-6px',
-                    'text-[var(--color-text-3)] hover:text-[rgb(var(--primary-6))]',
-                    'hover:bg-[var(--color-fill-2)] transition-colors',
-                  ].join(' ')}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleOpen();
-                  }}
-                >
-                  <Refresh theme='outline' size={14} fill='currentColor' />
-                </button>
-              )}
+                  <span
+                    role='button'
+                    tabIndex={0}
+                    aria-label={t('videoGeneration.actions.delete', { defaultValue: '删除' })}
+                    title={t('videoGeneration.actions.delete', { defaultValue: '删除' })}
+                    className={[
+                      'inline-flex items-center justify-center w-24px h-24px rd-6px',
+                      'text-[var(--color-text-3)] hover:text-[rgb(var(--danger-6))]',
+                      'hover:bg-[var(--color-fill-2)] transition-colors',
+                      deleting ? 'opacity-40 pointer-events-none' : '',
+                    ].join(' ')}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === ' ') {
+                        e.preventDefault();
+                        (e.currentTarget as HTMLElement).click();
+                      }
+                    }}
+                  >
+                    <Delete theme='outline' size={14} fill='currentColor' />
+                  </span>
+                </Popconfirm>
+              ) : null}
             </div>
           </div>
           {task.status === 'running' && task.progress != null && (

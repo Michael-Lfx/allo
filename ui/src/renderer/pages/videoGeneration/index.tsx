@@ -52,7 +52,7 @@ import {
   rememberVideoGenerationTask,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
-import { listGenerationTasks, type GenerationTaskView } from '../videoCanvas/api';
+import { listGenerationTasks, deleteGenerationTask, type GenerationTaskView } from '../videoCanvas/api';
 import styles from './index.module.css';
 
 /**
@@ -623,6 +623,37 @@ const VideoGenerationListPage: React.FC = () => {
     void handleDeleteRef.current(session);
   }, []);
 
+  const handleDeleteTask = useCallback(
+    async (task: GenerationTaskView) => {
+      if (deletingId) return;
+      setDeletingId(task.task_id);
+      try {
+        await deleteGenerationTask(task.task_id);
+        clearVideoGenerationSessionMemory(task.task_id);
+        setGenerationTasks((prev) => prev.filter((item) => item.task_id !== task.task_id));
+        message.success(t('videoGeneration.actions.deleteOk', { defaultValue: '已删除任务' }));
+      } catch (e) {
+        message.error(
+          `${t('videoGeneration.actions.deleteFailed', { defaultValue: '删除失败' })}: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [deletingId, message, t]
+  );
+
+  const handleDeleteTaskRef = useRef<(task: GenerationTaskView) => void>(() => {});
+  useEffect(() => {
+    handleDeleteTaskRef.current = handleDeleteTask;
+  }, [handleDeleteTask]);
+
+  const onDeleteTask = useCallback((task: GenerationTaskView) => {
+    void handleDeleteTaskRef.current(task);
+  }, []);
+
   const handleImportProject = useCallback(async () => {
     if (importing || creating) return;
     if (!isDesktopShell()) {
@@ -834,6 +865,8 @@ const VideoGenerationListPage: React.FC = () => {
                           <GenerationTaskCard
                             key={task.task_id}
                             task={task}
+                            onDelete={onDeleteTask}
+                            deleting={deletingId === task.task_id}
                           />
                         ))}
                       </div>
