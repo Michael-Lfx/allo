@@ -5,13 +5,14 @@ import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import { FLOWY_BUILTIN_PROVIDER_ID } from '@/common/types/ids';
 import { LayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { PreviewProvider } from '@renderer/pages/conversation/Preview';
+import { CloudAuthContext, type CloudAuthContextValue } from '@renderer/hooks/context/CloudAuthContext';
 import NomiModelSelector from '@renderer/pages/conversation/platforms/nomi/NomiModelSelector';
 import type { NomiModelSelection } from '@renderer/pages/conversation/platforms/nomi/useNomiModelSelection';
 import { ContextUsageRing } from '@renderer/pages/conversation/platforms/nomi/ContextUsageRing';
 import AgentModeSelector from '@renderer/components/agent/AgentModeSelector';
 import AutoTierSelector from '@renderer/components/agent/AutoTierSelector';
 import ReasoningEffortSelector from '@renderer/components/agent/ReasoningEffortSelector';
-import SpeechInputButton from '@renderer/components/chat/SpeechInputButton';
+import ComposerSubmitCluster from '@renderer/components/chat/ComposerSubmitCluster';
 import { GuidModelSelectorButton } from '@renderer/pages/guid/components/GuidModelSelector';
 import guidStyles from '@renderer/pages/guid/index.module.css';
 import KnowledgeDetailActionBar from '@renderer/pages/knowledge/KnowledgeDetailPage/KnowledgeDetailActionBar';
@@ -90,6 +91,7 @@ type ProbeChatScenarioReport = {
   parts: Record<string, ProbeLayoutElement | null>;
   labels: Record<string, ProbeLayoutElement | null>;
   centerSpreadY: number | null;
+  microphoneSendCenterDeltaY: number | null;
   iconChevronGaps: Record<string, number | null>;
   clipping: {
     strategyIcon: boolean;
@@ -113,6 +115,7 @@ type ProbeChatCoordinateStability = {
 
 const CHAT_PROBE_SCENARIOS = [
   'auto-collapsed',
+  'auto-sending',
   'auto-expanded',
   'cloud-collapsed',
   'cloud-expanded',
@@ -174,6 +177,43 @@ const CHAT_PROBE_PICKER: ChatModelPickerViewModel = {
   ],
   otherProviderGroups: [],
 };
+
+const CHAT_PROBE_CLOUD_AUTH: CloudAuthContextValue = {
+  ready: true,
+  authState: { phase: 'authenticated', accountId: 'button-layout-probe' },
+  status: 'authenticated',
+  whoami: null,
+  modelEnvironment: { phase: 'ready', usableModelCount: 0, canRetry: false },
+  modelStatus: 'ready',
+  modelError: null,
+  refresh: async () => 'authenticated',
+  retryModelEnvironment: async () => undefined,
+  logout: async () => undefined,
+};
+
+const ProbeCloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children }) => (
+  <CloudAuthContext.Provider value={CHAT_PROBE_CLOUD_AUTH}>{children}</CloudAuthContext.Provider>
+);
+
+const ProbeGuidSubmitSurface: React.FC<{ sending?: boolean }> = ({ sending = false }) => (
+  <ProbeCloudAuthProvider>
+    <div
+      className={`${guidStyles.actionSubmit} ${guidStyles.actionSubmitResponsive} button-layout-probe__guid-submit-surface`}
+      data-guid-submit-probe-state={sending ? 'sending' : 'idle'}
+    >
+      <ComposerSubmitCluster
+        hasDraft
+        loading={sending}
+        onSend={() => undefined}
+        onSpeechTranscript={() => undefined}
+        showStop={sending}
+        onStop={() => undefined}
+        sendTestId={`probe-guid-send-${sending ? 'sending' : 'idle'}`}
+        stopTestId={`probe-guid-stop-${sending ? 'sending' : 'idle'}`}
+      />
+    </div>
+  </ProbeCloudAuthProvider>
+);
 
 const chatProbeSelection = (model: string): NomiModelSelection => {
   const currentModel = { ...CHAT_PROBE_PROVIDER, use_model: model } as TProviderWithModel;
@@ -411,6 +451,8 @@ const measureChatScenario = (row: HTMLElement): ProbeChatScenarioReport => {
   ].filter((value): value is ProbeLayoutElement => Boolean(value));
   const centerValues = centerCandidates.map((value) => value.centerY);
   const centerSpreadY = centerValues.length > 1 ? Math.max(...centerValues) - Math.min(...centerValues) : null;
+  const microphoneSendCenterDeltaY =
+    controls.microphone && controls.send ? controls.microphone.centerY - controls.send.centerY : null;
   const iconChevronGaps = {
     strategy:
       parts.strategyLeading && parts.strategyChevron && !visibleRect(labels.strategy?.rect ?? null)
@@ -478,6 +520,9 @@ const measureChatScenario = (row: HTMLElement): ProbeChatScenarioReport => {
   if (centerSpreadY !== null && centerSpreadY > 0.5) {
     failures.push(`center-spread-y=${centerSpreadY.toFixed(2)}`);
   }
+  if (microphoneSendCenterDeltaY !== null && Math.abs(microphoneSendCenterDeltaY) > 0.25) {
+    failures.push(`microphone-send-center-delta-y=${microphoneSendCenterDeltaY.toFixed(2)}`);
+  }
   if (modelOverlayOpen) {
     if (strategySlotStyle?.visibility !== 'hidden') failures.push('strategy-not-hidden-behind-model');
     if (strategySlotStyle?.pointerEvents !== 'none') failures.push('strategy-hit-target-not-disabled');
@@ -519,6 +564,7 @@ const measureChatScenario = (row: HTMLElement): ProbeChatScenarioReport => {
     parts,
     labels,
     centerSpreadY,
+    microphoneSendCenterDeltaY,
     iconChevronGaps,
     clipping,
     modelOutsideVisibleBoundary,
@@ -748,6 +794,7 @@ type ProbeChatControlRowProps = {
   strategy: 'auto' | 'cloud' | 'single';
   model: string;
   hasImageAttachments?: boolean;
+  sending?: boolean;
 };
 
 const ProbeChatControlRow: React.FC<ProbeChatControlRowProps> = ({
@@ -757,6 +804,7 @@ const ProbeChatControlRow: React.FC<ProbeChatControlRowProps> = ({
   strategy,
   model,
   hasImageAttachments = false,
+  sending = false,
 }) => {
   const modelOverlayOpen = state === 'expanded' || state === 'model-popup';
   const strategyOverlayOpen = state === 'expanded' || state === 'strategy-popup';
@@ -785,49 +833,49 @@ const ProbeChatControlRow: React.FC<ProbeChatControlRowProps> = ({
     );
 
   return (
-    <div
-      className={`button-layout-probe__chat-row sendbox-actions sendbox-actions--nomi ${expanded ? 'button-layout-probe__chat-row--expanded' : ''}`}
-      data-chat-probe-id={id}
-      data-chat-probe-pair={pair}
-      data-chat-probe-state={state}
-      data-chat-probe-collapsed={state === 'collapsed' ? 'true' : 'false'}
-      data-chat-probe-strategy={strategy}
-    >
-      <div className='sendbox-responsive-config-group chat-model-picker-config-group'>
-        <div className='sendbox-strategy-slot' data-layout-slot='strategy'>
-          {strategyNode}
+    <ProbeCloudAuthProvider>
+      <div
+        className={`button-layout-probe__chat-row sendbox-actions sendbox-actions--nomi ${expanded ? 'button-layout-probe__chat-row--expanded' : ''}`}
+        data-chat-probe-id={id}
+        data-chat-probe-pair={pair}
+        data-chat-probe-state={sending ? 'sending' : state}
+        data-chat-probe-collapsed={state === 'collapsed' ? 'true' : 'false'}
+        data-chat-probe-strategy={strategy}
+      >
+        <div className='sendbox-responsive-config-group chat-model-picker-config-group'>
+          <div className='sendbox-strategy-slot' data-layout-slot='strategy'>
+            {strategyNode}
+          </div>
+          <div className='chat-model-picker-slot' data-layout-slot='model'>
+            <NomiModelSelector
+              selection={chatProbeSelection(model)}
+              hasImageAttachments={hasImageAttachments}
+              popupVisible={state === 'model-popup'}
+              onPopupVisibleChange={() => undefined}
+              className={modelOverlayOpen ? 'sendbox-responsive-control-open' : undefined}
+            />
+          </div>
+          <div className='nomi-context-usage-slot' data-layout-slot='context'>
+            <ContextUsageRing
+              used={4200}
+              max={16000}
+              popupVisible={state === 'context-popup'}
+              onPopupVisibleChange={() => undefined}
+            />
+          </div>
         </div>
-        <div className='chat-model-picker-slot' data-layout-slot='model'>
-          <NomiModelSelector
-            selection={chatProbeSelection(model)}
-            hasImageAttachments={hasImageAttachments}
-            popupVisible={state === 'model-popup'}
-            onPopupVisibleChange={() => undefined}
-            className={modelOverlayOpen ? 'sendbox-responsive-control-open' : undefined}
-          />
-        </div>
-        <div className='nomi-context-usage-slot' data-layout-slot='context'>
-          <ContextUsageRing
-            used={4200}
-            max={16000}
-            popupVisible={state === 'context-popup'}
-            onPopupVisibleChange={() => undefined}
-          />
-        </div>
-      </div>
-      <div className='composer-submit-cluster flex items-center' data-layout-slot='submit'>
-        <SpeechInputButton variant='inline' onTranscript={() => undefined} />
-        <Button
-          shape='circle'
-          type='primary'
-          className='send-button-custom'
-          icon={<ArrowUp theme='filled' size='14' fill='white' strokeWidth={5} />}
-          aria-label='Send'
-          title='Send'
-          data-layout-part='send'
+        <ComposerSubmitCluster
+          hasDraft
+          loading={sending}
+          onSend={() => undefined}
+          onSpeechTranscript={() => undefined}
+          showStop={sending}
+          onStop={() => undefined}
+          sendTestId={`probe-send-${id}`}
+          stopTestId={`probe-stop-${id}`}
         />
       </div>
-    </div>
+    </ProbeCloudAuthProvider>
   );
 };
 
@@ -929,6 +977,14 @@ const ButtonLayoutProbe: React.FC = () => {
                     model='AIPC-auto-balance'
                   />
                   <ProbeChatControlRow
+                    id='auto-sending'
+                    pair='auto'
+                    state='collapsed'
+                    strategy='auto'
+                    model='AIPC-auto-balance'
+                    sending
+                  />
+                  <ProbeChatControlRow
                     id='auto-expanded'
                     pair='auto'
                     state='expanded'
@@ -992,6 +1048,11 @@ const ButtonLayoutProbe: React.FC = () => {
                     strategy='cloud'
                     model='Deepseek-v4-flash'
                   />
+                </section>
+                <section className='button-layout-probe__chat-scenarios' aria-label='guid submit geometry'>
+                  <h3>Guid submit geometry</h3>
+                  <ProbeGuidSubmitSurface />
+                  <ProbeGuidSubmitSurface sending />
                 </section>
                 <div className='button-layout-probe__production-sendbox sendbox-actions'>
                   <div className='sendbox-responsive-config-group'>

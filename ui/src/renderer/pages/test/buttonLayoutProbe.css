@@ -137,6 +137,14 @@
   flex: 0 0 26px;
 }
 
+.button-layout-probe__guid-submit-surface {
+  align-items: center;
+  display: flex;
+  justify-content: flex-end;
+  min-height: 32px;
+  width: 100%;
+}
+
 .button-layout-probe__chat-row[data-chat-probe-state='expanded'] .chat-model-picker-trigger,
 .button-layout-probe__chat-row[data-chat-probe-state='model-popup'] .chat-model-picker-trigger,
 .button-layout-probe__chat-row[data-chat-probe-state='strategy-popup'] .sendbox-responsive-reasoning-btn {
