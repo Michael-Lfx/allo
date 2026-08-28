@@ -10,10 +10,11 @@ import {
 } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Button, Dropdown, Menu, Typography } from '@arco-design/web-react';
-import { CornerDownRight, Delete, Drag, MoreOne } from '@icon-park/react';
+import { Dropdown, Menu } from '@arco-design/web-react';
+import { CornerDownLeft, Delete, Down, Drag, Edit } from '@icon-park/react';
 import React, { useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import styles from './commandQueuePanel.module.css';
 
 const getCommandPreview = (input: string): string => input.replace(/\s+/g, ' ').trim();
 
@@ -51,19 +52,11 @@ type CommandQueuePanelProps = {
   onResume: () => void;
   onInteractionLock: () => void;
   onInteractionUnlock: () => void;
-  onUpdate?: (commandId: string, input: string) => boolean;
   onEdit?: (item: ConversationCommandQueueItem) => void;
+  onSendNow: (commandId: string) => void;
   onReorder: (activeCommandId: string, overCommandId: string) => void;
   onRemove: (commandId: string) => void;
   onClear: () => void;
-};
-
-type RenderActionIconButtonArgs = {
-  ariaLabel: string;
-  disabled?: boolean;
-  onClick?: () => void;
-  icon: React.ReactNode;
-  danger?: boolean;
 };
 
 type SortableQueueItemProps = {
@@ -74,8 +67,8 @@ type SortableQueueItemProps = {
   fileCountLabel: string | null;
   t: (key: string, options?: Record<string, unknown>) => string;
   onEdit?: (item: ConversationCommandQueueItem) => void;
+  onSendNow: (commandId: string) => void;
   onRemove: (commandId: string) => void;
-  onClear: () => void;
   onDragHandlePointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
 };
 
@@ -88,40 +81,12 @@ type QueueItemCardProps = {
   fileCountLabel: string | null;
   t: (key: string, options?: Record<string, unknown>) => string;
   onEdit?: (item: ConversationCommandQueueItem) => void;
+  onSendNow: (commandId: string) => void;
   onRemove: (commandId: string) => void;
-  onClear: () => void;
   onDragHandlePointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
   dragHandleButtonProps: React.ButtonHTMLAttributes<HTMLButtonElement>;
   dragHandleRef: (element: HTMLButtonElement | null) => void;
 };
-
-const renderQueueActionIconButton = ({
-  ariaLabel,
-  disabled = false,
-  onClick,
-  icon,
-  danger = false,
-}: RenderActionIconButtonArgs) => (
-  <Button
-    size='mini'
-    type='text'
-    shape='circle'
-    className='w-22px h-22px min-w-22px p-0 opacity-72 hover:opacity-100'
-    disabled={disabled}
-    status={danger ? 'danger' : 'default'}
-    aria-label={ariaLabel}
-    onClick={onClick}
-  >
-    <span
-      className='inline-flex items-center justify-center'
-      style={{
-        color: danger ? 'rgb(var(--danger-6))' : disabled ? 'var(--color-text-4)' : 'var(--color-text-3)',
-      }}
-    >
-      {icon}
-    </span>
-  </Button>
-);
 
 const QueueItemCard: React.FC<QueueItemCardProps> = ({
   item,
@@ -132,8 +97,8 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
   fileCountLabel,
   t,
   onEdit,
+  onSendNow,
   onRemove,
-  onClear,
   onDragHandlePointerDown,
   dragHandleButtonProps,
   dragHandleRef,
@@ -141,19 +106,14 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
   const { onPointerDown: onSortableDragHandlePointerDown, ...restDragHandleButtonProps } = dragHandleButtonProps ?? {};
   return (
     <div
-      className='group flex items-center justify-between gap-6px rd-10px px-8px py-5px transition-[background-color,opacity] duration-180 ease-out'
+      className={isDragging ? `${styles.item} ${styles.itemDragging}` : styles.item}
       data-command-id={item.id}
       data-sortable={dragDisabled ? 'disabled' : 'enabled'}
       aria-grabbed={isDragging}
       aria-label={preview}
-      style={{
-        background: isDragging
-          ? 'color-mix(in srgb, var(--color-fill-2) 88%, var(--color-bg-1))'
-          : 'color-mix(in srgb, var(--color-fill-1) 76%, transparent)',
-      }}
     >
-      <div className='flex items-center gap-6px min-w-0 flex-1 relative pl-4px'>
-        <div className='flex items-center gap-5px w-18px shrink-0 relative'>
+      <div className={styles.body}>
+        <div className={styles.dragSlot}>
           <button
             {...restDragHandleButtonProps}
             ref={dragHandleRef}
@@ -161,86 +121,52 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
             aria-label={dragHandleLabel}
             disabled={dragDisabled}
             data-drag-handle={dragDisabled ? 'disabled' : 'enabled'}
-            data-floating-handle='visible'
-            className={`absolute inline-flex h-16px w-12px items-center justify-center border-none bg-transparent p-0 outline-none transition-[opacity,color] duration-160 ease-out ${
-              dragDisabled
-                ? 'cursor-default opacity-0'
-                : isDragging
-                  ? 'cursor-grabbing opacity-100'
-                  : 'cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
-            }`}
-            style={{
-              left: '-9px',
-              top: '50%',
-              transform: 'translateY(-50%)',
-              color: 'var(--color-text-3)',
-              touchAction: dragDisabled ? undefined : 'none',
-            }}
+            data-dragging={isDragging ? 'true' : 'false'}
+            className={styles.dragHandle}
+            style={{ touchAction: dragDisabled ? undefined : 'none' }}
             onPointerDown={(event) => {
               onDragHandlePointerDown(event);
               onSortableDragHandlePointerDown?.(event);
             }}
           >
-            <Drag theme='outline' size='12' strokeWidth={2.5} />
+            <Drag theme='outline' size='12' strokeWidth={1.5} aria-hidden='true' />
           </button>
-          <span
-            aria-hidden='true'
-            data-queue-arrow='true'
-            className='inline-flex h-16px w-16px items-center justify-center shrink-0'
-            style={{
-              color: 'var(--color-text-3)',
-            }}
-          >
-            <CornerDownRight theme='outline' size='12' strokeWidth={2.3} />
-          </span>
         </div>
-        <div className='min-w-0 flex-1 flex items-center gap-6px'>
-          <Typography.Ellipsis rows={1} showTooltip className='min-w-0 flex-1 text-11px leading-16px text-t-secondary'>
+        <div className={styles.preview}>
+          <span className={styles.previewText} title={preview}>
             {preview}
-          </Typography.Ellipsis>
-          {fileCountLabel ? (
-            <span
-              className='inline-flex items-center rd-999px px-5px py-1px text-9px leading-none shrink-0'
-              style={{
-                color: 'var(--color-text-3)',
-                background: 'color-mix(in srgb, var(--color-fill-2) 72%, transparent)',
-              }}
-            >
-              {fileCountLabel}
-            </span>
-          ) : null}
+          </span>
+          {fileCountLabel ? <span className={styles.fileCount}>{fileCountLabel}</span> : null}
         </div>
       </div>
-      <div className='flex items-center gap-0.5 shrink-0'>
-        {renderQueueActionIconButton({
-          ariaLabel: t('conversation.commandQueue.remove', { defaultValue: 'Remove' }),
-          onClick: () => onRemove(item.id),
-          icon: <Delete theme='outline' size='14' strokeWidth={2.5} />,
-          danger: true,
-        })}
-        <Dropdown
-          trigger='click'
-          droplist={
-            <Menu>
-              <Menu.Item
-                key='edit'
-                onClick={() => {
-                  onEdit?.(item);
-                }}
-              >
-                {t('conversation.commandQueue.edit', { defaultValue: 'Edit' })}
-              </Menu.Item>
-              <Menu.Item key='clear-queue' onClick={onClear}>
-                {t('conversation.commandQueue.clear', { defaultValue: 'Clear queue' })}
-              </Menu.Item>
-            </Menu>
-          }
+      <div className={styles.actions}>
+        <button
+          type='button'
+          className={styles.sendNow}
+          data-testid='command-queue-send-now'
+          onClick={() => onSendNow(item.id)}
         >
-          {renderQueueActionIconButton({
-            ariaLabel: t('conversation.commandQueue.moreActions', { defaultValue: 'More actions' }),
-            icon: <MoreOne theme='outline' size='14' strokeWidth={2.5} />,
-          })}
-        </Dropdown>
+          <span>{t('conversation.commandQueue.sendNow', { defaultValue: 'Send now' })}</span>
+          <CornerDownLeft theme='outline' size='12' strokeWidth={1.5} aria-hidden='true' />
+        </button>
+        {onEdit ? (
+          <button
+            type='button'
+            className={styles.iconBtn}
+            aria-label={t('conversation.commandQueue.edit', { defaultValue: 'Edit' })}
+            onClick={() => onEdit(item)}
+          >
+            <Edit theme='outline' size='13' strokeWidth={1.5} aria-hidden='true' />
+          </button>
+        ) : null}
+        <button
+          type='button'
+          className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
+          aria-label={t('conversation.commandQueue.remove', { defaultValue: 'Remove' })}
+          onClick={() => onRemove(item.id)}
+        >
+          <Delete theme='outline' size='13' strokeWidth={1.5} aria-hidden='true' />
+        </button>
       </div>
     </div>
   );
@@ -254,8 +180,8 @@ const SortableQueueItem: React.FC<SortableQueueItemProps> = ({
   fileCountLabel,
   t,
   onEdit,
+  onSendNow,
   onRemove,
-  onClear,
   onDragHandlePointerDown,
 }) => {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
@@ -266,7 +192,6 @@ const SortableQueueItem: React.FC<SortableQueueItemProps> = ({
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.58 : 1,
     zIndex: isDragging ? 2 : undefined,
     position: 'relative',
   };
@@ -282,8 +207,8 @@ const SortableQueueItem: React.FC<SortableQueueItemProps> = ({
         fileCountLabel={fileCountLabel}
         t={t}
         onEdit={onEdit}
+        onSendNow={onSendNow}
         onRemove={onRemove}
-        onClear={onClear}
         onDragHandlePointerDown={onDragHandlePointerDown}
         dragHandleRef={setActivatorNodeRef}
         dragHandleButtonProps={{
@@ -297,10 +222,14 @@ const SortableQueueItem: React.FC<SortableQueueItemProps> = ({
 
 const CommandQueuePanel: React.FC<CommandQueuePanelProps> = ({
   items,
+  paused,
   interactionLocked,
+  onPause,
+  onResume,
   onInteractionLock,
   onInteractionUnlock,
   onEdit,
+  onSendNow,
   onReorder,
   onRemove,
   onClear,
@@ -352,21 +281,51 @@ const CommandQueuePanel: React.FC<CommandQueuePanelProps> = ({
     () => [restrictQueueDragToVerticalAxis, createRestrictToQueueContainerModifier(queueContainerRef)],
     []
   );
+  const headerActionLabel = paused
+    ? t('conversation.commandQueue.resume', { defaultValue: 'Resume' })
+    : t('conversation.commandQueue.pause', { defaultValue: 'Pause' });
 
   if (items.length === 0) {
     return null;
   }
 
   return (
-    <div className='relative z-1 mb--12px px-8px pt-8px pb-12px'>
+    <div className={styles.root} data-testid='command-queue-panel'>
       <div
         aria-label={t('conversation.commandQueue.title', { defaultValue: 'Queued Commands' })}
-        className='overflow-hidden rd-t-18px border b-solid'
-        style={{
-          borderColor: 'color-mix(in srgb, var(--color-border-2) 56%, transparent)',
-          background: 'color-mix(in srgb, var(--color-fill-1) 84%, var(--color-bg-1))',
-        }}
+        className={styles.card}
       >
+        <div className={styles.header}>
+          <span className={styles.count} data-testid='command-queue-count'>
+            {t('conversation.commandQueue.queuedCount', {
+              count: items.length,
+              defaultValue: `${items.length} Queued`,
+            })}
+          </span>
+          <Dropdown
+            trigger='click'
+            droplist={
+              <Menu>
+                <Menu.Item key='pause-resume' onClick={paused ? onResume : onPause}>
+                  {headerActionLabel}
+                </Menu.Item>
+                <Menu.Item key='clear-queue' onClick={onClear}>
+                  {t('conversation.commandQueue.clear', { defaultValue: 'Clear queue' })}
+                </Menu.Item>
+              </Menu>
+            }
+          >
+            <button
+              type='button'
+              className={styles.headerAction}
+              aria-haspopup='menu'
+              data-testid='command-queue-actions'
+            >
+              <span>{headerActionLabel}</span>
+              <Down theme='outline' size='10' strokeWidth={1.5} aria-hidden='true' />
+            </button>
+          </Dropdown>
+        </div>
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -381,7 +340,7 @@ const CommandQueuePanel: React.FC<CommandQueuePanelProps> = ({
               data-command-queue-list='true'
               data-drag-axis='vertical'
               data-drag-bounds='queue'
-              className='p-6px flex flex-col gap-4px'
+              className={styles.list}
             >
               {items.map((item) => {
                 const preview = getCommandPreview(item.input);
@@ -403,8 +362,8 @@ const CommandQueuePanel: React.FC<CommandQueuePanelProps> = ({
                     fileCountLabel={fileCountLabel}
                     t={t}
                     onEdit={onEdit}
+                    onSendNow={onSendNow}
                     onRemove={onRemove}
-                    onClear={onClear}
                     onDragHandlePointerDown={(event) => {
                       activeDragHandleRef.current = event.currentTarget;
                     }}

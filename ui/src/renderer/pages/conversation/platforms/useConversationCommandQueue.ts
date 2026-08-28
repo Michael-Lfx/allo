@@ -18,8 +18,11 @@ import {
   shouldDispatchConversationCommandQueue,
   type CommandQueueExecutionGate,
 } from './commandQueueExecutionGate';
+import { promoteQueuedCommand, reorderQueuedCommand } from './commandQueueItems';
 import { isAuthoritativeCompletionRuntimeIdle } from './authoritativeTurnLifecyclePolicy';
 import type { PublicMessageDeliveryDisposition } from './publicMessageDelivery';
+
+export { promoteQueuedCommand, reorderQueuedCommand };
 
 export {
   reduceCommandQueueExecutionGate,
@@ -296,24 +299,6 @@ export const removeQueuedCommand = (
   items: ConversationCommandQueueItem[],
   commandId: string
 ): ConversationCommandQueueItem[] => items.filter((item) => item.id !== commandId);
-
-export const reorderQueuedCommand = (
-  items: ConversationCommandQueueItem[],
-  activeCommandId: string,
-  overCommandId: string
-): ConversationCommandQueueItem[] => {
-  const fromIndex = items.findIndex((item) => item.id === activeCommandId);
-  const targetIndex = items.findIndex((item) => item.id === overCommandId);
-
-  if (fromIndex === -1 || targetIndex === -1 || fromIndex === targetIndex) {
-    return items;
-  }
-
-  const nextItems = [...items];
-  const [movedItem] = nextItems.splice(fromIndex, 1);
-  nextItems.splice(targetIndex, 0, movedItem);
-  return nextItems;
-};
 
 export const restoreQueuedCommand = (
   items: ConversationCommandQueueItem[],
@@ -773,6 +758,24 @@ export const useConversationCommandQueue = ({
     [conversation_id, enabled, updateState]
   );
 
+  const sendNow = useCallback(
+    (commandId: string) => {
+      if (!enabled) {
+        return;
+      }
+
+      pausedRef.current = false;
+      logCommandQueue(conversationKey, 'send-now', {
+        commandId,
+      });
+      void updateState((state) => ({
+        isPaused: state.items.length > 0 ? false : state.isPaused,
+        items: promoteQueuedCommand(state.items, commandId),
+      }));
+    },
+    [conversation_id, enabled, updateState]
+  );
+
   const pause = useCallback(() => {
     if (!enabled) {
       return;
@@ -984,6 +987,7 @@ export const useConversationCommandQueue = ({
     remove,
     clear,
     reorder,
+    sendNow,
     pause,
     resume,
     lockInteraction,

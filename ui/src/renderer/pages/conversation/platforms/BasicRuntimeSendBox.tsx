@@ -536,6 +536,7 @@ const BasicRuntimeSendBox: React.FC<{
     remove,
     clear,
     reorder,
+    sendNow,
     pause,
     resume,
     lockInteraction,
@@ -815,6 +816,7 @@ const BasicRuntimeSendBox: React.FC<{
         onInteractionLock={lockInteraction}
         onInteractionUnlock={unlockInteraction}
         onEdit={handleEditQueuedCommand}
+        onSendNow={sendNow}
         onReorder={reorder}
         onRemove={remove}
         onClear={clear}

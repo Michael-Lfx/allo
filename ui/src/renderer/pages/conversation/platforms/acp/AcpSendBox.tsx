@@ -387,6 +387,7 @@ Please check your local CLI tool authentication status`,
     remove,
     clear,
     reorder,
+    sendNow,
     pause,
     resume,
     lockInteraction,
@@ -643,6 +644,7 @@ Please check your local CLI tool authentication status`,
         onInteractionLock={lockInteraction}
         onInteractionUnlock={unlockInteraction}
         onEdit={handleEditQueuedCommand}
+        onSendNow={sendNow}
         onReorder={reorder}
         onRemove={remove}
         onClear={clear}
