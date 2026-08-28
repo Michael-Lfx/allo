@@ -72,6 +72,61 @@ describe('edit/resubmit pipeline structure', () => {
   });
 });
 
+describe('edit resubmit composer presentation', () => {
+  test('hides the banner after operation admission without clearing the durable edit target', () => {
+    expect(sendBoxSource).toContain(
+      'const [isEditResubmitting, setIsEditResubmitting] = useState(false);'
+    );
+
+    const editSubmitBranch = sendBoxSource.slice(
+      sendBoxSource.indexOf('if (editingMsgId && onEditResubmit) {'),
+      sendBoxSource.indexOf('// Cancel any pending warmup:')
+    );
+    const admission = editSubmitBranch.indexOf('beginEditResubmitOperation({');
+    const hideBanner = editSubmitBranch.indexOf('setIsEditResubmitting(true);');
+    const request = editSubmitBranch.indexOf('onEditResubmit(');
+
+    expect(admission).toBeGreaterThan(-1);
+    expect(hideBanner).toBeGreaterThan(admission);
+    expect(hideBanner).toBeLessThan(request);
+    expect(sendBoxSource).toContain('{editingMsgId && !isEditResubmitting && (');
+    expect(sendBoxSource).not.toContain('{editingMsgId && !isLoading && (');
+  });
+
+  test('restores the banner only for a fresh edit, safe failure, or explicit cancel', () => {
+    const editListener = sendBoxSource.slice(
+      sendBoxSource.indexOf("'sendbox.edit'"),
+      sendBoxSource.indexOf("'sendbox.retry'")
+    );
+    expect(editListener.indexOf('setIsEditResubmitting(false);')).toBeGreaterThan(
+      editListener.indexOf('setEditingMsgId(payload.msgId);')
+    );
+
+    const editSubmitBranch = sendBoxSource.slice(
+      sendBoxSource.indexOf('if (editingMsgId && onEditResubmit) {'),
+      sendBoxSource.indexOf('// Cancel any pending warmup:')
+    );
+    const terminal = editSubmitBranch.slice(
+      editSubmitBranch.indexOf('const commitTerminalResolution = ('),
+      editSubmitBranch.indexOf('setIsLoading(true);')
+    );
+    expect(terminal).toContain('setIsEditResubmitting(false);');
+
+    const catchStart = editSubmitBranch.lastIndexOf('.catch(() => {');
+    const finallyStart = editSubmitBranch.indexOf('.finally(() => {', catchStart);
+    const safeFailure = editSubmitBranch.slice(catchStart, finallyStart);
+    expect(safeFailure.indexOf('if (outcome.stale) return;')).toBeLessThan(
+      safeFailure.indexOf('setIsEditResubmitting(false);')
+    );
+
+    const cancelEdit = sendBoxSource.slice(
+      sendBoxSource.indexOf('const cancelEdit = () => {'),
+      sendBoxSource.indexOf('const submitGoalObjective =')
+    );
+    expect(cancelEdit).toContain('setIsEditResubmitting(false);');
+  });
+});
+
 describe('retry operation mutex (P1-1)', () => {
   test('the retry branch rejects re-entry and gates its callbacks on an operation token', () => {
     // The error-popup retry shares the composer with the edit path: without its
