@@ -27,6 +27,7 @@ import {
   type SettingsNavItem,
   useSettingsNavigation,
 } from './settingsNavigation';
+import { prefetchSettingsPages } from '../prefetch';
 import './settings.css';
 
 const iconByName: Record<Exclude<SettingsNavIcon, 'extension'>, React.ComponentType<any>> = {
@@ -91,6 +92,12 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
     },
     [measureElement]
   );
+
+  // Footer idle prefetch is skipped while pathname is under /settings; warm the
+  // sibling panels again on mount so intelligence-group clicks are not cold.
+  useEffect(() => {
+    prefetchSettingsPages();
+  }, []);
 
   useEffect(() => {
     navigationRef.current

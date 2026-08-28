@@ -54,6 +54,12 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
     }
   }
 
+  private isDynamicImportFailure(): boolean {
+    return /Failed to fetch dynamically imported module|Importing a module script failed|dynamically imported module/i.test(
+      this.state.error?.message ?? ''
+    );
+  }
+
   private handleReset = (): void => {
     this.setState({ error: null, componentStack: null });
   };
@@ -66,6 +72,7 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
     const { error, componentStack } = this.state;
     if (!error) return this.props.children;
     const isApplicationFailure = this.props.scope === 'application';
+    const requiresReload = isApplicationFailure || this.isDynamicImportFailure();
 
     return (
       <div
@@ -86,14 +93,16 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
         <div style={{ fontSize: '15px', fontWeight: 700, color: '#ff6b6b', marginBottom: '12px' }}>
           {isApplicationFailure
             ? '应用渲染出错（已捕获，未显示空白窗口）'
-            : '页面渲染出错（已被路由错误边界捕获，未影响其它页面）'}
+            : requiresReload
+              ? '页面资源加载失败（通常是更新后旧缓存），请重新加载应用'
+              : '页面渲染出错（已被路由错误边界捕获，未影响其它页面）'}
         </div>
         <div style={{ fontWeight: 700, marginBottom: '8px', userSelect: 'text' }}>
           {error.name}: {error.message}
         </div>
         <button
           type='button'
-          onClick={isApplicationFailure ? this.handleApplicationReload : this.handleReset}
+          onClick={requiresReload ? this.handleApplicationReload : this.handleReset}
           style={{
             marginBottom: '16px',
             padding: '4px 12px',
@@ -104,7 +113,7 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
             cursor: 'pointer',
           }}
         >
-          {isApplicationFailure ? '重新加载应用' : '重试'}
+          {requiresReload ? '重新加载应用' : '重试'}
         </button>
         {error.stack ? (
           <>

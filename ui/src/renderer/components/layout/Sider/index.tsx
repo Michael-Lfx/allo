@@ -28,6 +28,7 @@ import {
 import SiderFooter from './SiderFooter';
 import styles from './Sider.module.css';
 import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
+import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
 
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
 
@@ -160,6 +161,23 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleKnowledgeClick = () => navTo('/knowledge');
   const handleNomiClick = () => navTo('/nomi');
   const handleLearningClick = () => navTo('/learn');
+
+  useEffect(() => {
+    if (isSettings) return;
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      const idleId = idleWindow.requestIdleCallback(() => prefetchLearningPage(), {
+        timeout: 1800,
+      });
+      return () => idleWindow.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(() => prefetchLearningPage(), 250);
+    return () => window.clearTimeout(timer);
+  }, [isSettings]);
+
   const handleEvalClick = () => navTo('/eval');
   const handleRequirementsClick = () => navTo('/requirements');
   const handlePresetClick = () => navTo('/presets');

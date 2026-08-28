@@ -4,6 +4,7 @@ import { Tooltip } from '@arco-design/web-react';
 import { BookOpen } from '@icon-park/react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
+import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
 
 interface SiderLearningEntryProps {
   isMobile: boolean;
@@ -46,6 +47,7 @@ const SiderLearningEntry: React.FC<SiderLearningEntryProps> = ({
           isActive ? '!bg-primary-1 !text-primary-6' : 'hover:bg-fill-2 active:bg-fill-3'
         )}
         onClick={onClick}
+        onPointerEnter={() => prefetchLearningPage()}
         aria-current={isActive ? 'page' : undefined}
         data-sider-nav-entry
         data-active={isActive ? 'true' : 'false'}

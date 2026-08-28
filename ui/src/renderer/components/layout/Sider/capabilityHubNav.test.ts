@@ -47,6 +47,23 @@ describe('capability hub navigation', () => {
     expect(learningEntrySource.includes("t('learning.dev.navTooltip')")).toBe(true);
   });
 
+  test('warms the learning page chunk on hover and idle before the sider click', () => {
+    const siderSource = readSource(new URL('./index.tsx', import.meta.url));
+    const learningEntrySource = readSource(new URL('./SiderNav/SiderLearningEntry.tsx', import.meta.url));
+    const learningPrefetchSource = readSource(
+      new URL('../../../pages/learning/prefetch.ts', import.meta.url)
+    );
+
+    expect(learningPrefetchSource.includes("void import('./index')")).toBe(true);
+    expect(learningPrefetchSource.includes("from './index'")).toBe(false);
+    expect(
+      siderSource.includes("import { prefetchLearningPage } from '@renderer/pages/learning/prefetch'")
+    ).toBe(true);
+    expect(siderSource.includes('prefetchLearningPage()')).toBe(true);
+    expect(learningEntrySource.includes('onPointerEnter')).toBe(true);
+    expect(learningEntrySource.includes('prefetchLearningPage')).toBe(true);
+  });
+
   test('places Eval below Learning and gates it on developer mode', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
     const evalEntrySource = readSource(new URL('./SiderNav/SiderEvalEntry.tsx', import.meta.url));

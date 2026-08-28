@@ -282,12 +282,25 @@ impl WebUiAssetSource {
         let path = path.strip_prefix('/').unwrap_or(path);
         let path = if path.is_empty() { "index.html" } else { path };
 
+        // Hashed Vite assets are content-addressed. A miss must stay a miss so
+        // React.lazy fails fast (and the route error boundary can offer reload)
+        // instead of receiving index.html with a text/html MIME as a "module".
+        let is_hashed_asset = path.starts_with("assets/");
+
         self.assets
             .get(path)
-            .or_else(|| self.assets.get(&format!("{path}.html")))
-            .or_else(|| self.assets.get(&format!("{path}/index.html")))
-            .or_else(|| self.assets.get("index.html"))
             .cloned()
+            .or_else(|| {
+                if is_hashed_asset {
+                    None
+                } else {
+                    self.assets
+                        .get(&format!("{path}.html"))
+                        .or_else(|| self.assets.get(&format!("{path}/index.html")))
+                        .or_else(|| self.assets.get("index.html"))
+                        .cloned()
+                }
+            })
     }
 }
 
@@ -2013,6 +2026,13 @@ mod tests {
         assert_eq!(
             source.resolve("/unknown/client-route").unwrap().bytes,
             Bytes::from_static(b"index")
+        );
+        // Missing hashed assets must NOT fall through to index.html — that
+        // poisons React.lazy with a text/html module and looks like "click
+        // navigated but the page never rendered".
+        assert!(
+            source.resolve("/assets/LearningSettings-missing.js").is_none(),
+            "missing /assets/* must 404 instead of SPA-falling back to index.html"
         );
     }
 

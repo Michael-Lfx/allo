@@ -13,6 +13,11 @@ const footerSource = readFileSync(
   'utf8'
 );
 
+const settingsSiderSource = readFileSync(
+  new URL('./components/SettingsSider.tsx', import.meta.url),
+  'utf8'
+);
+
 describe('settings route prefetch', () => {
   test('warms the settings page, sider, and default system panel chunks', () => {
     expect(prefetchSource.includes("void import('./SystemSettings')")).toBe(true);
@@ -25,11 +30,27 @@ describe('settings route prefetch', () => {
     expect(prefetchSource.includes("from './SystemSettings'")).toBe(false);
   });
 
+  test('warms intelligence-group settings panels before the sider click', () => {
+    expect(prefetchSource.includes("void import('./PoiSettings')")).toBe(true);
+    expect(prefetchSource.includes("void import('./LearningSettings')")).toBe(true);
+    expect(prefetchSource.includes("void import('./InsightsSettings')")).toBe(true);
+    expect(prefetchSource.includes("void import('./MoaSettings')")).toBe(true);
+    expect(prefetchSource.includes("void import('./MediaSettings')")).toBe(true);
+    expect(prefetchSource.includes("from './LearningSettings'")).toBe(false);
+  });
+
   test('the sider settings button prefetches on hover and idle', () => {
     expect(
       footerSource.includes("import { prefetchSettingsPages } from '@renderer/pages/settings/prefetch'")
     ).toBe(true);
     expect(footerSource.includes('onPointerEnter={() => prefetchSettingsPages()}')).toBe(true);
     expect(footerSource.includes('prefetchSettingsPages()')).toBe(true);
+  });
+
+  test('settings sider remount also warms route chunks (idle skip while in settings)', () => {
+    expect(settingsSiderSource.includes("import { prefetchSettingsPages } from '../prefetch'")).toBe(
+      true
+    );
+    expect(settingsSiderSource.includes('prefetchSettingsPages()')).toBe(true);
   });
 });
