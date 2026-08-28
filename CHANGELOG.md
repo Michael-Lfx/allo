@@ -5,6 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.1.2 - 2026-08-29
+
+- Fix Windows ARM ModelScope publish: NSIS `_arm64-setup.exe` maps to `windows-aarch64`.
+- Video home composer attach matches stacked-card UX; custom/skill popovers open faster.
+- Meeting recording dock stays pinned. Safari 15.5 WebKit and real macOS versions report correctly.
+
 ## v1.0.6 - 2026-08-25
 
 - Meetings record with switchable local or cloud STT, live captions, speaker labels, and notes that land in bound chats and tasks. Tray and global shortcuts start or join a session; Agent listen mode keeps a rolling transcript.
