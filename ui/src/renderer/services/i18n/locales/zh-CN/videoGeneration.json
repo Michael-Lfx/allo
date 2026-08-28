@@ -598,7 +598,7 @@
     "renderTitle": "分镜确认了吗？",
     "renderHint": "渲染会生成关键帧、镜头视频并自动拼接成片。",
     "portraitReviewTitle": "规划完成——渲染前可先审阅定妆图",
-    "portraitReviewHint": "规划阶段已生成全局角色定妆图与环境/道具参考图。建议先在上方「技术产物与运行文件」中检查它们，满意后再生成成片（高成本、不可逆）。",
+    "portraitReviewHint": "规划阶段已生成全局角色定妆图与环境/道具参考图。建议先在下方「技术产物与运行文件」中检查它们，满意后再生成成片（高成本、不可逆）。",
     "renderCta": "生成成片",
     "technicalDetails": "技术产物与运行文件",
     "technicalDetailsHint": "审阅并编辑定妆图、环境/道具参考与工程文件，再生成成片。",
