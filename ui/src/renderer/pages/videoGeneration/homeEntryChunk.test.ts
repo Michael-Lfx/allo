@@ -15,7 +15,22 @@ describe('video generation home entry chunk', () => {
     expect(page.includes("from './components/TvShowPanel'")).toBe(false);
     expect(page.includes("from '@/common'")).toBe(false);
     expect(composer.includes("import GenerationPreferencesPopover from")).toBe(false);
+    expect(composer.includes('loadGenerationPreferencesPopover')).toBe(true);
+    expect(composer.includes('prefetchGenerationPreferencesPanel')).toBe(true);
+    expect(composer.includes('prefetchVerticalSkillMenu')).toBe(true);
+    expect(composer.includes("from '../components/ModelSelectors'")).toBe(false);
     expect(composer.includes("import VerticalSkillMenu from")).toBe(false);
+
+    const popover = source('./home/GenerationPreferencesPopover.tsx');
+    expect(popover.includes("from '../components/ModelSelectors'")).toBe(false);
+    expect(popover.includes('useGeneratorModels')).toBe(false);
+    expect(popover.includes('warmGenerationPreferences')).toBe(true);
+
+    const prefetch = source('./prefetch.ts');
+    expect(prefetch.includes('prefetchGenerationPreferencesPanel')).toBe(true);
+    expect(prefetch.includes('prefetchVerticalSkillMenu')).toBe(true);
+    expect(prefetch.includes('./home/GenerationPreferencesPopover')).toBe(true);
+    expect(prefetch.includes('./home/VerticalSkillMenu')).toBe(true);
     expect(composer.includes("import VerticalSkillCreateModal from")).toBe(false);
     expect(composer.includes("import CameoCastEditor from")).toBe(false);
     expect(composer.includes('onPasteCapture')).toBe(true);

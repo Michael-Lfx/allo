@@ -1,0 +1,277 @@
+﻿.durationTimeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--color-fill-1);
+}
+
+.durationTimelineWide {
+  grid-column: 1 / -1;
+}
+
+.durationTimelineCompact {
+  padding: 10px 12px 12px;
+}
+
+.durationTimelineDisabled {
+  opacity: 0.55;
+}
+
+.durationTimelineDisabled .durationTimelineScrub,
+.durationTimelineDisabled .durationTimelineTick {
+  pointer-events: none;
+  cursor: default;
+}
+
+.durationTimelineHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+}
+
+.durationTimelineLabel,
+.durationTimelineHint {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-text-3);
+}
+
+.durationTimelineHint {
+  font-weight: 500;
+}
+
+.durationTimelineValue {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 4px 9px 4px 10px;
+  border-radius: 999px;
+  background: var(--color-bg-2);
+  box-shadow: inset 0 0 0 1px var(--color-border-2);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.durationTimelineValueNum {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--color-text-1);
+}
+
+.durationTimelineUnit {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--color-text-3);
+}
+
+.durationTimelineBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Dedicated drag surface 鈥?ticks live in a separate row so they never steal scrubbing. */
+.durationTimelineScrub {
+  position: relative;
+  height: 28px;
+  margin: 0 -4px;
+  padding: 0 4px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.durationTimelineScrub:active {
+  cursor: grabbing;
+}
+
+.durationTimelineRail {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  left: 4px;
+  height: 6px;
+  overflow: visible;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fill-3) 82%, var(--color-bg-2));
+  box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.06);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.durationTimelineFill {
+  height: 100%;
+  border-radius: inherit;
+  background: color-mix(in srgb, rgb(var(--primary-6)) 88%, #fff 12%);
+  pointer-events: none;
+}
+
+.durationTimelineThumb {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-bg-2);
+  border-radius: 50%;
+  background: rgb(var(--primary-6));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, rgb(var(--primary-6)) 28%, transparent),
+    0 2px 6px rgba(15, 23, 42, 0.14);
+  transform: translate(-50%, -50%);
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease;
+  pointer-events: none;
+}
+
+.durationTimelineScrub:hover .durationTimelineThumb,
+.durationTimelineScrub:active .durationTimelineThumb {
+  transform: translate(-50%, -50%) scale(1.08);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, rgb(var(--primary-6)) 16%, transparent),
+    0 3px 8px rgba(15, 23, 42, 0.16);
+}
+
+.durationTimelineTicks {
+  position: relative;
+  height: 28px;
+  margin: 0 4px;
+}
+
+.durationTimelineTick {
+  position: absolute;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-4);
+  font: inherit;
+  transform: translateX(-50%);
+  cursor: pointer;
+}
+
+.durationTimelineTick:disabled {
+  cursor: default;
+}
+
+.durationTimelineTickMark {
+  width: 1px;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text-4) 55%, transparent);
+  transition:
+    height 120ms ease,
+    background 120ms ease;
+}
+
+.durationTimelineTickActive .durationTimelineTickMark {
+  background: color-mix(in srgb, rgb(var(--primary-6)) 45%, var(--color-text-4));
+}
+
+.durationTimelineTickCurrent .durationTimelineTickMark {
+  height: 8px;
+  background: rgb(var(--primary-6));
+}
+
+.durationTimelineTickLabel {
+  padding: 1px 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 550;
+  line-height: 14px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  color: var(--color-text-4);
+  font-variant-numeric: tabular-nums;
+  transition:
+    color 120ms ease,
+    background 120ms ease,
+    font-weight 120ms ease;
+}
+
+.durationTimelineTick:hover:not(:disabled) .durationTimelineTickLabel {
+  color: var(--color-text-2);
+}
+
+.durationTimelineTickCurrent .durationTimelineTickLabel {
+  color: rgb(var(--primary-6));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 12%, transparent);
+  font-weight: 700;
+}
+
+.durationTimelineRange {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  margin: 0;
+  appearance: none;
+  opacity: 0;
+  cursor: inherit;
+  pointer-events: none;
+}
+
+.durationTimelineRange:focus-visible {
+  outline: none;
+  pointer-events: auto;
+  opacity: 1;
+}
+
+.durationTimelineRange::-webkit-slider-runnable-track,
+.durationTimelineRange::-moz-range-track {
+  height: 6px;
+  background: transparent;
+  border: none;
+}
+
+.durationTimelineRange::-webkit-slider-thumb,
+.durationTimelineRange::-moz-range-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+}
+
+.durationTimelineFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 18px;
+}
+
+.durationTimelineCredits {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-3);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.durationTimelineRangeHint {
+  flex-shrink: 0;
+  color: var(--color-text-4);
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}

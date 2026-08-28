@@ -7,7 +7,7 @@
  * - Hub: community plaza (others’ published skills; own listings stay in 我的)
  * - 我的: local user skills + cloud publish status
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Input, Spin } from '@arco-design/web-react';
 import { CheckSmall, Plus, Upload } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
@@ -47,6 +47,8 @@ export interface VerticalSkillMenuProps {
   onCatalogChange?: (skills: VerticalSkillSummary[]) => void;
   /** Bump from parent after create so the list refreshes when reopened. */
   reloadToken?: number;
+  /** Catalog already fetched for chips; skip the empty-state spinner on first paint. */
+  initialSkills?: VerticalSkillSummary[];
 }
 
 function cloudStatusLabel(
@@ -82,6 +84,7 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
   onRequestCreate,
   onCatalogChange,
   reloadToken = 0,
+  initialSkills,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -89,7 +92,9 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
   const [message, messageHolder] = useArcoMessage();
   const [tab, setTab] = useState<MenuTab>('all');
   const [loading, setLoading] = useState(false);
-  const [skills, setSkills] = useState<VerticalSkillSummary[]>([]);
+  const [skills, setSkills] = useState<VerticalSkillSummary[]>(() => initialSkills ?? []);
+  const skillsRef = useRef(skills);
+  skillsRef.current = skills;
   const [cloudPlaza, setCloudPlaza] = useState<VimaxCloudSkill[]>([]);
   const [myCloudByName, setMyCloudByName] = useState<Map<string, VimaxCloudSkill>>(new Map());
   const [query, setQuery] = useState('');
@@ -107,11 +112,32 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    const showSpinner = skillsRef.current.length === 0;
+    if (showSpinner) setLoading(true);
 
     const load = async () => {
       try {
-        const localAll = await listVerticalSkills();
+        const localPromise = listVerticalSkills();
+        const minePromise = cloudReady
+          ? listMyCloudSkills({ page: 1, pageSize: 50 }).catch(() => ({
+              list: [] as VimaxCloudSkill[],
+            }))
+          : Promise.resolve({ list: [] as VimaxCloudSkill[] });
+        const plazaPromise =
+          tab === 'hub' && cloudReady
+            ? listCloudSkills({
+                page: 1,
+                pageSize: 50,
+                keyword: query.trim() || undefined,
+                sort: 'new',
+              })
+            : Promise.resolve({ list: [] as VimaxCloudSkill[] });
+
+        const [localAll, mine, plaza] = await Promise.all([
+          localPromise,
+          minePromise,
+          plazaPromise,
+        ]);
         if (cancelled) return;
 
         // Prefer user: over hub: for the same name (avoid duplicate after local hub copy).
@@ -130,39 +156,19 @@ const VerticalSkillMenu: React.FC<VerticalSkillMenuProps> = ({
         setSkills(deduped);
         onCatalogChange?.(deduped);
 
-        let mineMap = new Map<string, VimaxCloudSkill>();
-        if (cloudReady) {
-          try {
-            const mine = await listMyCloudSkills({ page: 1, pageSize: 50 });
-            for (const item of mine.list ?? []) {
-              if (!item?.name) continue;
-              mineMap.set(item.name, item);
-              if (item.clientSkillId?.includes(':')) {
-                const bare = item.clientSkillId.split(':').slice(1).join(':');
-                if (bare) mineMap.set(bare, item);
-              }
-            }
-          } catch {
-            // Mine status is optional enrichment; keep local list usable offline.
+        const mineMap = new Map<string, VimaxCloudSkill>();
+        for (const item of mine.list ?? []) {
+          if (!item?.name) continue;
+          mineMap.set(item.name, item);
+          if (item.clientSkillId?.includes(':')) {
+            const bare = item.clientSkillId.split(':').slice(1).join(':');
+            if (bare) mineMap.set(bare, item);
           }
         }
-        if (cancelled) return;
         setMyCloudByName(mineMap);
 
         if (tab === 'hub') {
-          if (!cloudReady) {
-            setCloudPlaza([]);
-            return;
-          }
-          const plaza = await listCloudSkills({
-            page: 1,
-            pageSize: 50,
-            keyword: query.trim() || undefined,
-            sort: 'new',
-          });
-          if (cancelled) return;
-          // Show all published skills from plaza API (including own).
-          setCloudPlaza(plaza.list ?? []);
+          setCloudPlaza(cloudReady ? plaza.list ?? [] : []);
         } else {
           setCloudPlaza([]);
         }

@@ -39,6 +39,48 @@ export function SlantedDocIcon({
   );
 }
 
+/** Circular plus used by the Jimeng-style attach trigger. */
+export function AttachPlusIcon({
+  size = 16,
+  className,
+}: {
+  size?: number;
+  className?: string;
+}): React.ReactElement {
+  return (
+    <svg
+      className={className}
+      width={size}
+      height={size}
+      viewBox='0 0 16 16'
+      fill='none'
+      xmlns='http://www.w3.org/2000/svg'
+      aria-hidden='true'
+    >
+      <path
+        d='M8 3.1v9.8M3.1 8h9.8'
+        stroke='currentColor'
+        strokeWidth='1.8'
+        strokeLinecap='round'
+      />
+    </svg>
+  );
+}
+
+/** White close mark for the Jimeng-style thumbnail corner chip. */
+export function AttachCloseIcon(): React.ReactElement {
+  return (
+    <svg width='8' height='8' viewBox='0 0 8 8' fill='none' aria-hidden='true'>
+      <path
+        d='M1.15 1.15 6.85 6.85M6.85 1.15 1.15 6.85'
+        stroke='currentColor'
+        strokeWidth='1.45'
+        strokeLinecap='round'
+      />
+    </svg>
+  );
+}
+
 /** Bold circular send arrow for the home composer submit control. */
 export function BoldSendArrowIcon({
   size = 18,

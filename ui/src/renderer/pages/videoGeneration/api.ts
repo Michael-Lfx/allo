@@ -692,6 +692,15 @@ function encodeSkillId(id: string): string {
   return encodeURIComponent(id);
 }
 
+const VERTICAL_SKILL_LIST_TTL_MS = 15_000;
+let verticalSkillListCache: { at: number; data: VerticalSkillSummary[] } | null = null;
+let verticalSkillListInflight: Promise<VerticalSkillSummary[]> | null = null;
+
+function invalidateVerticalSkillListCache(): void {
+  verticalSkillListCache = null;
+  verticalSkillListInflight = null;
+}
+
 export async function listVerticalSkills(params?: {
   mode?: VimaxWorkflow | string;
   source?: 'builtin' | 'user' | 'hub' | string;
@@ -700,11 +709,30 @@ export async function listVerticalSkills(params?: {
   if (params?.mode) query.set('mode', params.mode);
   if (params?.source) query.set('source', params.source);
   const qs = query.toString();
-  const data = await httpRequest<
+  const unfiltered = !params?.mode && !params?.source;
+  if (unfiltered) {
+    const now = Date.now();
+    if (verticalSkillListCache && now - verticalSkillListCache.at < VERTICAL_SKILL_LIST_TTL_MS) {
+      return verticalSkillListCache.data;
+    }
+    if (verticalSkillListInflight) return verticalSkillListInflight;
+  }
+  const request = httpRequest<
     VerticalSkillSummary[] | { skills: VerticalSkillSummary[] }
-  >('GET', `${BASE}/skills${qs ? `?${qs}` : ''}`);
-  if (Array.isArray(data)) return data;
-  return data?.skills ?? [];
+  >('GET', `${BASE}/skills${qs ? `?${qs}` : ''}`).then((data) => {
+    const skills = Array.isArray(data) ? data : data?.skills ?? [];
+    if (unfiltered) {
+      verticalSkillListCache = { at: Date.now(), data: skills };
+    }
+    return skills;
+  });
+  if (unfiltered) {
+    verticalSkillListInflight = request.finally(() => {
+      verticalSkillListInflight = null;
+    });
+    return verticalSkillListInflight;
+  }
+  return request;
 }
 
 export async function getVerticalSkill(id: string): Promise<VerticalSkillDetail> {
@@ -754,6 +782,7 @@ export async function createVerticalSkill(
   draft: VerticalSkillDraft
 ): Promise<VerticalSkillSummary> {
   const skill = await httpRequest<RawVerticalSkill>('POST', `${BASE}/skills`, draft);
+  invalidateVerticalSkillListCache();
   return normalizeSkillSummary(skill);
 }
 
@@ -761,15 +790,18 @@ export async function updateVerticalSkill(
   id: string,
   draft: VerticalSkillDraft
 ): Promise<VerticalSkillSummary> {
-  return httpRequest<VerticalSkillSummary>(
+  const skill = await httpRequest<VerticalSkillSummary>(
     'PUT',
     `${BASE}/skills/${encodeSkillId(id)}`,
     draft
   );
+  invalidateVerticalSkillListCache();
+  return skill;
 }
 
 export async function deleteVerticalSkill(id: string): Promise<void> {
   await httpRequest<unknown>('DELETE', `${BASE}/skills/${encodeSkillId(id)}`);
+  invalidateVerticalSkillListCache();
 }
 
 export async function publishVerticalSkill(id: string): Promise<VerticalSkillSummary> {
@@ -790,6 +822,7 @@ export async function unpublishVerticalSkill(id: string): Promise<void> {
 
 export async function importVerticalSkill(path: string): Promise<VerticalSkillSummary> {
   const skill = await httpRequest<RawVerticalSkill>('POST', `${BASE}/skills/import`, { path });
+  invalidateVerticalSkillListCache();
   return normalizeSkillSummary(skill);
 }
 
@@ -862,6 +895,7 @@ export async function installCloudSkill(id: number): Promise<VerticalSkillSummar
     `${BASE}/skill-hub/${id}/install`,
     {}
   );
+  invalidateVerticalSkillListCache();
   return normalizeSkillSummary(skill);
 }
 
