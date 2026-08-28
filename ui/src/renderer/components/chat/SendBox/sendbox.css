@@ -408,6 +408,7 @@
   width: 26px;
   min-width: 26px;
   height: 26px;
+  line-height: 1 !important;
   padding: 0 !important;
   border: none !important;
   box-shadow: none !important;
@@ -601,10 +602,43 @@
   row-gap: 0;
 }
 
-.sendbox-actions--nomi .composer-submit-cluster {
+.sendbox-toolbar {
+  /* Keep the whole bottom icon row at the 28px slot height. Send/stop
+   * swap used to let Arco's default 32px circle grow the flex row, and
+   * the bottom-anchored composer could only expand upward. */
+  --chat-action-slot-size: 28px;
   align-items: center;
-  column-gap: var(--chat-action-gap) !important;
   min-height: var(--chat-action-slot-size);
+}
+
+.sendbox-actions--nomi .composer-submit-cluster,
+.composer-submit-cluster {
+  align-items: center;
+  box-sizing: border-box;
+  column-gap: var(--chat-action-gap, 6px) !important;
+  height: var(--chat-action-slot-size, 28px);
+  max-height: var(--chat-action-slot-size, 28px);
+  min-height: var(--chat-action-slot-size, 28px);
+  overflow: visible;
+}
+
+.composer-submit-cluster__speech-secondary,
+.composer-submit-cluster__primary {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: var(--chat-action-slot-size, 28px);
+  justify-content: center;
+  max-height: var(--chat-action-slot-size, 28px);
+  min-height: var(--chat-action-slot-size, 28px);
+}
+
+.composer-submit-cluster__speech-secondary {
+  width: 26px;
+}
+
+.composer-submit-cluster__primary {
+  gap: var(--chat-action-gap, 6px);
 }
 
 /* Nomi uses one explicit gap token for the configuration group and the

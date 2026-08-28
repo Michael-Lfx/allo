@@ -129,72 +129,74 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
         </div>
       ) : null}
 
-      {showStopButton && onStop ? (
-        <ComposerStopButton
-          onStop={onStop}
-          pending={stopPending}
-          testId={stopTestId}
-          label={t('conversation.chat.stop', { defaultValue: 'Stop' })}
-          title={t('conversation.chat.stop', { defaultValue: 'Stop generating' })}
-        />
-      ) : null}
+      <div className='composer-submit-cluster__primary'>
+        {showStopButton && onStop ? (
+          <ComposerStopButton
+            onStop={onStop}
+            pending={stopPending}
+            testId={stopTestId}
+            label={t('conversation.chat.stop', { defaultValue: 'Stop' })}
+            title={t('conversation.chat.stop', { defaultValue: 'Stop generating' })}
+          />
+        ) : null}
 
-      {showSteerButton && steerAvailable && onSteer && hasDraft ? (
-        <Button
-          shape='circle'
-          type='primary'
-          disabled={sendDisabled}
-          className='send-button-custom sendbox-steer-button'
-          title={t('conversation.steer.button')}
-          aria-label={t('conversation.steer.button')}
-          icon={<Lightning theme='filled' size='14' fill='white' strokeWidth={5} />}
-          onClick={onSteer}
-          data-testid='composer-steer-btn'
-        />
-      ) : null}
+        {showSteerButton && steerAvailable && onSteer && hasDraft ? (
+          <Button
+            shape='circle'
+            type='primary'
+            disabled={sendDisabled}
+            className='send-button-custom sendbox-steer-button'
+            title={t('conversation.steer.button')}
+            aria-label={t('conversation.steer.button')}
+            icon={<Lightning theme='filled' size='14' fill='white' strokeWidth={5} />}
+            onClick={onSteer}
+            data-testid='composer-steer-btn'
+          />
+        ) : null}
 
-      {showAutoWorkButton ? (
-        <Tooltip content={t('requirements.autowork.startSession')}>
+        {showAutoWorkButton ? (
+          <Tooltip content={t('requirements.autowork.startSession')}>
+            <Button
+              shape='circle'
+              type='primary'
+              loading={loading}
+              disabled={autoWorkDisabled}
+              className='send-button-custom'
+              icon={<Robot theme='filled' size='14' fill='white' strokeWidth={5} />}
+              onClick={onSend}
+              data-testid='composer-autowork-btn'
+            />
+          </Tooltip>
+        ) : null}
+
+        {showSendButton ? (
           <Button
             shape='circle'
             type='primary'
             loading={loading}
-            disabled={autoWorkDisabled}
+            disabled={sendDisabled}
             className='send-button-custom'
-            icon={<Robot theme='filled' size='14' fill='white' strokeWidth={5} />}
+            icon={<ArrowUp theme='filled' size='14' fill='white' strokeWidth={5} />}
             onClick={onSend}
-            data-testid='composer-autowork-btn'
+            data-testid={sendTestId}
+            data-layout-part='send'
+            aria-label={
+              showSteer
+                ? t('conversation.chat.queueNext', { defaultValue: 'Queue as next step' })
+                : t('conversation.chat.send', { defaultValue: 'Send' })
+            }
+            title={
+              showSteer
+                ? t('conversation.chat.queueNext', { defaultValue: 'Queue as next step' })
+                : t('conversation.chat.send', { defaultValue: 'Send' })
+            }
           />
-        </Tooltip>
-      ) : null}
+        ) : null}
 
-      {showSendButton ? (
-        <Button
-          shape='circle'
-          type='primary'
-          loading={loading}
-          disabled={sendDisabled}
-          className='send-button-custom'
-          icon={<ArrowUp theme='filled' size='14' fill='white' strokeWidth={5} />}
-          onClick={onSend}
-          data-testid={sendTestId}
-          data-layout-part='send'
-          aria-label={
-            showSteer
-              ? t('conversation.chat.queueNext', { defaultValue: 'Queue as next step' })
-              : t('conversation.chat.send', { defaultValue: 'Send' })
-          }
-          title={
-            showSteer
-              ? t('conversation.chat.queueNext', { defaultValue: 'Queue as next step' })
-              : t('conversation.chat.send', { defaultValue: 'Send' })
-          }
-        />
-      ) : null}
-
-      {showPrimaryFilledSpeech ? (
-        <SpeechInputButton {...speechButtonProps} variant='filled' />
-      ) : null}
+        {showPrimaryFilledSpeech ? (
+          <SpeechInputButton {...speechButtonProps} variant='filled' />
+        ) : null}
+      </div>
     </div>
   );
 };

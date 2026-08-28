@@ -2416,14 +2416,14 @@ const SendBox: React.FC<{
             />
           </div>
           {isSingleLine && (
-            <div className='flex items-center gap-2'>
+            <div className='sendbox-toolbar flex items-center gap-2'>
               {sendButtonPrefix}
               {composerSubmitCluster}
             </div>
           )}
         </div>
         {!isSingleLine && (
-          <div className='flex items-center justify-between gap-2 w-full'>
+          <div className='sendbox-toolbar flex items-center justify-between gap-2 w-full'>
             <div
               className={
                 isMobileCompact
