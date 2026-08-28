@@ -46,7 +46,7 @@ export type ModelEnvironmentState = {
   error?: Error;
 };
 
-interface CloudAuthContextValue {
+export interface CloudAuthContextValue {
   ready: boolean;
   authState: CloudAuthState;
   /** @deprecated Use authState.phase and its account identity. */
@@ -61,7 +61,7 @@ interface CloudAuthContextValue {
   logout: () => Promise<void>;
 }
 
-const CloudAuthContext = createContext<CloudAuthContextValue | undefined>(undefined);
+export const CloudAuthContext = createContext<CloudAuthContextValue | undefined>(undefined);
 
 const emptyModelEnvironment = (): ModelEnvironmentState => ({
   phase: 'restoring',

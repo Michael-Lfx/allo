@@ -59,6 +59,7 @@ export const ComposerStopButton: React.FC<ComposerStopButtonProps> = ({
     disabled={pending}
     loading={pending}
     data-testid={testId}
+    data-layout-part='send'
     aria-label={label}
     title={title}
   />

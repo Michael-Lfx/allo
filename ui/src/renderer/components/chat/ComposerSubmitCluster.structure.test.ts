@@ -24,6 +24,7 @@ describe('ComposerSubmitCluster', () => {
     expect(source.includes('const showStopButton = showStop && Boolean(onStop)')).toBe(true);
     expect(source.includes('const showSendButton = !autoWorkMode && !showStopButton')).toBe(true);
     expect(source.includes('const showSteerButton = showSteer && !showStopButton')).toBe(true);
+    expect(source.includes("data-layout-part='send'")).toBe(true);
   });
 
   test('forwards React click detail 0, 1, and 2 through the rendered stop button', () => {
@@ -70,5 +71,14 @@ describe('ComposerSubmitCluster', () => {
     expect(source.includes("variant='inline'")).toBe(true);
     expect(source.includes("variant='filled'")).toBe(true);
     expect(source.includes('composer-submit-cluster__speech-secondary')).toBe(true);
+  });
+
+  test('passes the running state to the secondary microphone before rendering the cluster', () => {
+    const source = readSource(new URL('./ComposerSubmitCluster.tsx', import.meta.url));
+
+    expect(source.includes('const speechDisabled = disabled || loading || isUploading || (showStop && !hasDraft)')).toBe(true);
+    expect(source.includes('const speechButtonProps = {')).toBe(true);
+    expect(source.includes('disabled: speechDisabled')).toBe(true);
+    expect(source.includes("<SpeechInputButton {...speechButtonProps} variant='inline' />")).toBe(true);
   });
 });

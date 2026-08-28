@@ -11,6 +11,7 @@ const read = (url: URL) => readFileSync(url, 'utf8');
 const contractCss = read(new URL('./theme-control-contract.css', import.meta.url));
 const contractRuntime = read(new URL('../utils/theme/themeControlContract.ts', import.meta.url));
 const probeSource = read(new URL('../pages/test/ButtonLayoutProbe.tsx', import.meta.url));
+const speechInputSource = read(new URL('../components/chat/SpeechInputButton.tsx', import.meta.url));
 const probeEntrySource = read(new URL('../main.tsx', import.meta.url));
 const contractAuditSource = read(new URL('../../../../scripts/check-button-layout-contract.mjs', import.meta.url));
 const packageSource = read(new URL('../../../../package.json', import.meta.url));
@@ -77,6 +78,10 @@ describe('global icon-text button layout contract', () => {
     expect(probeSource).toContain("id: 'production-agent-mode-selector'");
     expect(probeSource).toContain("id: 'production-reasoning-effort'");
     expect(probeSource).toContain('<NomiModelSelector');
+    expect(probeSource).toContain('<ComposerSubmitCluster');
+    expect(probeSource).toContain('<ProbeGuidSubmitSurface');
+    expect(probeSource).toContain('guidStyles.actionSubmit');
+    expect(probeSource).toContain('showStop={sending}');
     expect(probeSource).toContain('<AgentModeSelector');
     expect(probeSource).toContain('<GuidModelSelectorButton');
     expect(probeSource).toContain('<KnowledgeDetailActionBar');
@@ -87,6 +92,8 @@ describe('global icon-text button layout contract', () => {
     expect(probeSource).toContain("data-layout-part='context-ring'");
     expect(probeSource).toContain("data-layout-part='microphone'");
     expect(probeSource).toContain("data-layout-part='send'");
+    expect(probeSource).toContain("id='auto-sending'");
+    expect(probeSource).toContain('microphoneSendCenterDeltaY');
     expect(probeSource).toContain("scenario === 'adversarial'");
     expect(probeEntrySource).toContain("import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/button-layout'");
   });
@@ -105,6 +112,48 @@ describe('global icon-text button layout contract', () => {
     expect(guidCss).toContain('@container guid-action-config (max-width: 440px)');
     expect(sendboxCss).toContain('.flowy-button-inline-content');
     expect(guidCss).toContain('.flowy-button-inline-content');
+  });
+
+  test('pins the secondary speech control to the same centered slot as Send and Stop', () => {
+    const sendboxCss = read(new URL('../components/chat/SendBox/sendbox.css', import.meta.url));
+    const clusterRuleIndex = sendboxCss.indexOf('.composer-submit-cluster {');
+    const secondaryRuleIndex = sendboxCss.indexOf('.composer-submit-cluster__speech-secondary {');
+    const inactiveSpeechRuleIndex = sendboxCss.indexOf(
+      '.composer-submit-cluster__speech-secondary > .speech-input-control:not(.speech-input-control--active)',
+    );
+
+    expect(clusterRuleIndex).toBeGreaterThanOrEqual(0);
+    expect(secondaryRuleIndex).toBeGreaterThan(clusterRuleIndex);
+    expect(inactiveSpeechRuleIndex).toBeGreaterThan(secondaryRuleIndex);
+    expect(sendboxCss.slice(clusterRuleIndex, sendboxCss.indexOf('}', clusterRuleIndex))).toContain(
+      'height: var(--chat-action-slot-size, 28px);',
+    );
+    const secondaryRule = sendboxCss.slice(secondaryRuleIndex, sendboxCss.indexOf('}', secondaryRuleIndex));
+    expect(secondaryRule).toContain('display: flex;');
+    expect(secondaryRule).toContain('align-items: center;');
+    expect(secondaryRule).toContain('justify-content: center;');
+    const inactiveSpeechRule = sendboxCss.slice(
+      inactiveSpeechRuleIndex,
+      sendboxCss.indexOf('}', inactiveSpeechRuleIndex),
+    );
+    expect(inactiveSpeechRule).toContain('flex: 0 0 26px;');
+    expect(inactiveSpeechRule).toContain('height: 26px;');
+
+    const disabledRuleIndex = contractCss.indexOf('.arco-btn[disabled],');
+    const speechDisabledRuleIndex = contractCss.indexOf('.arco-btn.speech-input-button[disabled]');
+    expect(speechDisabledRuleIndex).toBeGreaterThan(disabledRuleIndex);
+    expect(contractCss.slice(speechDisabledRuleIndex, contractCss.indexOf('}', speechDisabledRuleIndex))).toContain(
+      'opacity: 1 !important;',
+    );
+  });
+
+  test('keeps the disabled mic button class when Arco Tooltip would otherwise clone it', () => {
+    expect(speechInputSource).toContain('const isButtonDisabled = disabled || isProcessing;');
+    expect(speechInputSource).toContain(
+      "<span className='speech-input-button-tooltip-target'>{speechButton}</span>",
+    );
+    expect(speechInputSource).toContain('<Tooltip content={ariaLabel} mini>{speechButtonTarget}</Tooltip>');
+    expect(speechInputSource).toContain('className={`speech-input-button flowy-button-icon');
   });
 
   test('injects the structural guard after user/preset CSS', () => {

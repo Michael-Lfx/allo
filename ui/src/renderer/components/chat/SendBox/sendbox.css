@@ -303,6 +303,48 @@
   height: 26px;
 }
 
+/* Keep the submit row and its secondary speech slot on explicit flex boxes.
+ * The wrapper is a flex item in the Send/Stop cluster; leaving it as a
+ * default block lets its inline child contribute a line box and introduces a
+ * half-pixel vertical offset when the primary button changes state. */
+.composer-submit-cluster {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: var(--chat-action-slot-size, 28px);
+  min-height: var(--chat-action-slot-size, 28px);
+}
+
+.composer-submit-cluster__speech-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+}
+
+.composer-submit-cluster__speech-secondary > .speech-input-control:not(.speech-input-control--active) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 26px;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+}
+
+.speech-input-button-tooltip-target {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+}
+
 .speech-input-feedback {
   height: 100%;
   display: grid;
