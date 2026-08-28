@@ -251,9 +251,9 @@
 }
 
 .projectCoverVideo {
-  opacity: 0;
-  transition: opacity 160ms ease;
-  background: #000;
+  opacity: 1;
+  background: #0c0f14;
+  object-fit: cover;
 }
 
 .projectCoverVideoVisible {
@@ -584,14 +584,148 @@
   }
 }
 
+.storyboardPanel {
+  --storyboard-edge: 8px;
+  --storyboard-gutter: 18px;
+  --storyboard-gutter-gap: 6px;
+  padding: 18px var(--storyboard-edge) 18px;
+}
+
+.storyboardHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-inline: calc(var(--storyboard-gutter) + var(--storyboard-gutter-gap));
+}
+
+.storyboardLayout {
+  display: grid;
+  grid-template-columns: var(--storyboard-gutter, 18px) minmax(0, 1fr) var(--storyboard-gutter, 18px);
+  column-gap: var(--storyboard-gutter-gap, 6px);
+  row-gap: 12px;
+  min-width: 0;
+}
+
+.storyboardLayout .storyStage {
+  grid-column: 2;
+}
+
+.filmstripNav {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 0;
+  align-self: stretch;
+  margin: 4px 0 9px;
+  padding: 0;
+  border: 1px solid var(--color-border-2);
+  border-radius: 8px;
+  color: var(--color-text-2);
+  background: var(--color-fill-1);
+  cursor: pointer;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    opacity 160ms ease;
+}
+
+.filmstripNavPrev {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.filmstripNavNext {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.filmstripGutter {
+  grid-row: 2;
+}
+
+.filmstripGutterPrev {
+  grid-column: 1;
+}
+
+.filmstripGutterNext {
+  grid-column: 3;
+}
+
+.filmstripNav:hover:not(:disabled) {
+  border-color: rgba(var(--primary-6), 0.38);
+  color: rgb(var(--primary-6));
+  background: rgba(var(--primary-6), 0.06);
+}
+
+.filmstripNav:active:not(:disabled) {
+  background: rgba(var(--primary-6), 0.1);
+}
+
+.filmstripNav:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.filmstripNav:focus-visible {
+  outline: 2px solid rgba(var(--primary-6), 0.55);
+  outline-offset: 2px;
+}
+
 .filmstrip {
+  grid-column: 2;
+  grid-row: 2;
   display: grid;
   grid-auto-columns: minmax(156px, 190px);
   grid-auto-flow: column;
   gap: 9px;
+  min-width: 0;
   overflow-x: auto;
-  padding: 4px 2px 9px;
+  overscroll-behavior-x: contain;
+  padding: 4px 0 9px;
   scroll-snap-type: x proximity;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+}
+
+.studioCtaPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.studioCtaRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+}
+
+.studioCtaCopy {
+  min-width: min(100%, 240px);
+  flex: 1 1 220px;
+}
+
+.studioCtaActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.studioCtaActions :global(.arco-btn) {
+  height: 36px;
+  padding: 0 16px;
+  white-space: nowrap;
+}
+
+.studioCtaActions :global(.arco-btn-outline) {
+  background: var(--color-bg-1);
 }
 
 .shotCard {
@@ -1149,6 +1283,22 @@
   .storyInspector {
     max-height: 280px;
   }
+
+  .storyboardPanel {
+    --storyboard-edge: 5px;
+    --storyboard-gutter: 16px;
+    padding: 14px var(--storyboard-edge) 14px;
+  }
+
+  .studioCtaActions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .studioCtaActions :global(.arco-btn) {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1156,7 +1306,8 @@
   .composer,
   .exampleChip,
   .projectCard,
-  .shotCard {
+  .shotCard,
+  .filmstripNav {
     transition: none;
   }
 
@@ -1178,5 +1329,9 @@
 
   .progressGlow::after {
     animation: none;
+  }
+
+  .filmstrip {
+    scroll-behavior: auto;
   }
 }

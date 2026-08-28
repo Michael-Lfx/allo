@@ -620,7 +620,9 @@
       "audioPending": "暂无音频或台词描述",
       "audioEditPlaceholder": "背景音乐、环境音或台词…",
       "reviseShot": "修改这个镜头",
-      "filmstrip": "分镜胶片"
+      "filmstrip": "分镜胶片",
+      "filmstripPrev": "向左查看镜头",
+      "filmstripNext": "向右查看镜头"
     }
   },
   "artifacts": {

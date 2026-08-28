@@ -50,6 +50,18 @@ pub struct GenerationTaskView {
     pub progress: f32,
     pub error: Option<String>,
     pub result_media_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect_ratio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reference_media_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_frame_media_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_frame_media_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

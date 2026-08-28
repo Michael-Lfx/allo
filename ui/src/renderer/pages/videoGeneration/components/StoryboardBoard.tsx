@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Spin } from '@arco-design/web-react';
-import { Edit, LoadingFour, Music, VideoOne } from '@icon-park/react';
+import { Edit, Left, LoadingFour, Music, Right, VideoOne } from '@icon-park/react';
 import { getArtifact, loadArtifactMediaUrlCached } from '../api';
 import {
   buildStoryboardScenesFromStoryboards,
@@ -300,6 +300,68 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     [generatingTarget, rendering]
   );
 
+  const filmstripRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const updateFilmstripOverflow = useCallback(() => {
+    const el = filmstripRef.current;
+    if (!el) {
+      setCanScrollLeft(false);
+      setCanScrollRight(false);
+      return;
+    }
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    const epsilon = 2;
+    setCanScrollLeft(el.scrollLeft > epsilon);
+    setCanScrollRight(maxScroll - el.scrollLeft > epsilon);
+  }, []);
+
+  const scrollFilmstrip = useCallback((direction: -1 | 1) => {
+    const el = filmstripRef.current;
+    if (!el) return;
+    const distance = Math.max(el.clientWidth * 0.72, 176);
+    el.scrollBy({ left: direction * distance, behavior: 'smooth' });
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = filmstripRef.current;
+    if (!el) return;
+    updateFilmstripOverflow();
+    const observer = new ResizeObserver(updateFilmstripOverflow);
+    observer.observe(el);
+    for (const child of Array.from(el.children)) {
+      observer.observe(child);
+    }
+    el.addEventListener('scroll', updateFilmstripOverflow, { passive: true });
+    window.addEventListener('resize', updateFilmstripOverflow);
+    return () => {
+      observer.disconnect();
+      el.removeEventListener('scroll', updateFilmstripOverflow);
+      window.removeEventListener('resize', updateFilmstripOverflow);
+    };
+  }, [scenes.length, updateFilmstripOverflow]);
+
+  useEffect(() => {
+    const strip = filmstripRef.current;
+    if (!strip || !activeScene) return;
+    const card = strip.querySelector<HTMLElement>(
+      `[data-scene-id="${CSS.escape(activeScene.id)}"]`
+    );
+    if (!card) return;
+    const cardLeft = card.offsetLeft;
+    const cardRight = cardLeft + card.offsetWidth;
+    const viewLeft = strip.scrollLeft;
+    const viewRight = viewLeft + strip.clientWidth;
+    if (cardLeft < viewLeft) {
+      strip.scrollTo({ left: cardLeft, behavior: 'smooth' });
+    } else if (cardRight > viewRight) {
+      strip.scrollTo({ left: cardRight - strip.clientWidth, behavior: 'smooth' });
+    }
+  }, [activeScene?.id]);
+
+  const showFilmstripNav = scenes.length > 1;
+
   if (!activeScene) {
     return (
       <div className='flex min-h-240px flex-col items-center justify-center gap-8px rd-14px border border-dashed border-[var(--color-border-2)] text-center'>
@@ -326,7 +388,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   const sceneNumber = activeScene.index + 1;
 
   return (
-    <div className='flex flex-col gap-12px'>
+    <div className={styles.storyboardLayout}>
       <div className={styles.storyStage}>
         <div className={styles.storyMedia}>
           <SceneMedia
@@ -460,24 +522,57 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
         </aside>
       </div>
 
-      <div className={styles.filmstrip} aria-label={t('videoGeneration.studio.storyboard.filmstrip', { defaultValue: '分镜胶片' })}>
-        {scenes.map((scene) => {
-          const number = scene.index + 1;
-          const active = scene.id === activeScene.id;
-          const status = videoStatusFor(scene);
-          // Compact thumbs prefer the first-frame still so a ready shot never
-          // downloads its whole clip just to render a thumbnail.
-          const thumbPath = scene.imagePath ?? scene.videoPath;
-          return (
-            <button
-              key={scene.id}
-              type='button'
-              className={`${styles.shotCard} ${active ? styles.shotCardActive : ''} ${
-                status === 'generating' ? styles.shotCardGenerating : ''
-              }`}
-              aria-pressed={active}
-              onClick={() => setActiveSceneId(scene.id)}
-            >
+      {showFilmstripNav ? (
+        <button
+          type='button'
+          className={`${styles.filmstripNav} ${styles.filmstripNavPrev}`}
+          disabled={!canScrollLeft}
+          aria-label={t('videoGeneration.studio.storyboard.filmstripPrev', {
+            defaultValue: '向左查看镜头',
+          })}
+          title={t('videoGeneration.studio.storyboard.filmstripPrev', {
+            defaultValue: '向左查看镜头',
+          })}
+          onClick={() => scrollFilmstrip(-1)}
+        >
+          <Left theme='outline' size={12} />
+        </button>
+      ) : (
+        <span className={`${styles.filmstripGutter} ${styles.filmstripGutterPrev}`} aria-hidden />
+      )}
+      <div
+        ref={filmstripRef}
+        className={styles.filmstrip}
+        aria-label={t('videoGeneration.studio.storyboard.filmstrip', { defaultValue: '分镜胶片' })}
+        tabIndex={showFilmstripNav ? 0 : undefined}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowLeft') {
+            event.preventDefault();
+            scrollFilmstrip(-1);
+          } else if (event.key === 'ArrowRight') {
+            event.preventDefault();
+            scrollFilmstrip(1);
+          }
+        }}
+      >
+          {scenes.map((scene) => {
+            const number = scene.index + 1;
+            const active = scene.id === activeScene.id;
+            const status = videoStatusFor(scene);
+            // Compact thumbs prefer the first-frame still so a ready shot never
+            // downloads its whole clip just to render a thumbnail.
+            const thumbPath = scene.imagePath ?? scene.videoPath;
+            return (
+              <button
+                key={scene.id}
+                type='button'
+                data-scene-id={scene.id}
+                className={`${styles.shotCard} ${active ? styles.shotCardActive : ''} ${
+                  status === 'generating' ? styles.shotCardGenerating : ''
+                }`}
+                aria-pressed={active}
+                onClick={() => setActiveSceneId(scene.id)}
+              >
               <span className={styles.shotThumb}>
                 <SceneMedia
                   sessionId={sessionId}
@@ -502,9 +597,27 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                   })}
               </span>
             </button>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      {showFilmstripNav ? (
+        <button
+          type='button'
+          className={`${styles.filmstripNav} ${styles.filmstripNavNext}`}
+          disabled={!canScrollRight}
+          aria-label={t('videoGeneration.studio.storyboard.filmstripNext', {
+            defaultValue: '向右查看镜头',
+          })}
+          title={t('videoGeneration.studio.storyboard.filmstripNext', {
+            defaultValue: '向右查看镜头',
+          })}
+          onClick={() => scrollFilmstrip(1)}
+        >
+          <Right theme='outline' size={12} />
+        </button>
+      ) : (
+        <span className={`${styles.filmstripGutter} ${styles.filmstripGutterNext}`} aria-hidden />
+      )}
     </div>
   );
 };

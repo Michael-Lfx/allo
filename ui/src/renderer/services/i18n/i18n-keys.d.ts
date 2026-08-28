@@ -8962,6 +8962,8 @@ export type I18nKey =
   | 'videoGeneration.studio.storyboard.audioPending'
   | 'videoGeneration.studio.storyboard.editable'
   | 'videoGeneration.studio.storyboard.filmstrip'
+  | 'videoGeneration.studio.storyboard.filmstripNext'
+  | 'videoGeneration.studio.storyboard.filmstripPrev'
   | 'videoGeneration.studio.storyboard.firstFramePending'
   | 'videoGeneration.studio.storyboard.firstFramePendingHint'
   | 'videoGeneration.studio.storyboard.hint'

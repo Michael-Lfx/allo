@@ -45,6 +45,12 @@ export type GenerationTaskView = {
   progress: number;
   error: string | null;
   result_media_id: string | null;
+  aspect_ratio?: string | null;
+  resolution?: string | null;
+  duration_secs?: number | null;
+  reference_media_ids?: string[];
+  first_frame_media_id?: string | null;
+  last_frame_media_id?: string | null;
   created_at: number;
   updated_at: number;
 };
@@ -229,5 +235,15 @@ export async function deleteCanvasMedia(mediaId: string): Promise<void> {
     'DELETE',
     `/api/video-canvas/media/${encodeURIComponent(mediaId)}`
   );
+}
+
+/** Fetch the local filesystem path for a media item so the renderer can
+ *  open its containing folder via `ipcBridge.shell.showItemInFolder`. */
+export async function getMediaPath(mediaId: string): Promise<string> {
+  const data = await httpRequest<{ path: string }>(
+    'GET',
+    `/api/video-canvas/media/${encodeURIComponent(mediaId)}/path`
+  );
+  return data.path;
 }
 

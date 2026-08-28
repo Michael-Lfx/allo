@@ -50,6 +50,10 @@ pub fn video_canvas_routes(state: CanvasRouterState) -> Router {
             "/api/video-canvas/media/{media_id}",
             axum::routing::delete(delete_media),
         )
+        .route(
+            "/api/video-canvas/media/{media_id}/path",
+            get(get_media_path),
+        )
         .route("/api/video-canvas/tasks", post(create_task).get(list_tasks))
         .route("/api/video-canvas/tasks/{task_id}", get(get_task).delete(delete_task))
         .route(
@@ -230,6 +234,22 @@ async fn delete_media(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     state.service.delete_media(&media_id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+/// `GET /api/video-canvas/media/{media_id}/path` — returns the local filesystem path
+/// so the renderer can open the containing folder via Tauri.
+async fn get_media_path(
+    State(state): State<CanvasRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(media_id): Path<String>,
+) -> Result<Json<ApiResponse<MediaPathResponse>>, AppError> {
+    let path = state.service.media_file_path(&media_id).await?;
+    Ok(Json(ApiResponse::ok(MediaPathResponse { path: path.to_string_lossy().into_owned() })))
+}
+
+#[derive(serde::Serialize)]
+struct MediaPathResponse {
+    path: String,
 }
 
 #[derive(Deserialize)]

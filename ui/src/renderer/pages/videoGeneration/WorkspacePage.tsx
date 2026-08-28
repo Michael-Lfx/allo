@@ -1729,7 +1729,7 @@ const WorkspacePage: React.FC = () => {
         )}
 
         {!isAction && hasStoryboard ? (
-          <section className={`${styles.studioPanel} flex flex-wrap items-center justify-between gap-14px p-16px`}>
+          <section className={`${styles.studioPanel} ${styles.studioCtaPanel}`}>
             {plannedIdle ? (
               <div className='w-full rd-8px px-12px py-10px border border-solid border-[rgba(var(--primary-6),0.35)] bg-[rgba(var(--primary-6),0.06)]'>
                 <div className='flex items-center gap-6px text-13px font-600 text-[var(--color-text-1)]'>
@@ -1746,51 +1746,57 @@ const WorkspacePage: React.FC = () => {
                 </div>
               </div>
             ) : null}
-            <div>
-              <div className='text-14px font-650 text-[var(--color-text-1)]'>
-                {t('videoGeneration.studio.renderTitle', { defaultValue: '分镜确认了吗？' })}
+            <div className={styles.studioCtaRow}>
+              <div className={styles.studioCtaCopy}>
+                <div className='text-14px font-650 text-[var(--color-text-1)]'>
+                  {t('videoGeneration.studio.renderTitle', { defaultValue: '分镜确认了吗？' })}
+                </div>
+                <div className='mt-3px text-12px leading-18px text-[var(--color-text-3)]'>
+                  {t('videoGeneration.studio.renderHint', {
+                    defaultValue: '渲染会生成关键帧、镜头视频并自动拼接成片。',
+                  })}
+                </div>
               </div>
-              <div className='mt-3px text-12px text-[var(--color-text-3)]'>
-                {t('videoGeneration.studio.renderHint', {
-                  defaultValue: '渲染会生成关键帧、镜头视频并自动拼接成片。',
-                })}
-              </div>
-            </div>
-            <div className='flex flex-wrap items-center gap-8px'>
-              {canContinue ? (
+              <div className={styles.studioCtaActions}>
+                {canContinue ? (
+                  <Button
+                    type='outline'
+                    loading={planning || rendering}
+                    onClick={() => void handleContinue()}
+                  >
+                    <span className='inline-flex items-center gap-7px'>
+                      <Refresh theme='outline' size={15} fill='currentColor' />
+                      {t('videoGeneration.workspace.continue', { defaultValue: '从断点继续' })}
+                    </span>
+                  </Button>
+                ) : null}
                 <Button
                   type='primary'
-                  status='warning'
-                  size='large'
-                  loading={planning || rendering}
-                  onClick={() => void handleContinue()}
+                  loading={rendering}
+                  disabled={!canRender || busy}
+                  onClick={() => void handleRender()}
                 >
-                  {t('videoGeneration.workspace.continue', { defaultValue: '从断点继续' })}
+                  <span className='inline-flex items-center gap-7px'>
+                    {isFailed && continueAsRender ? (
+                      <Refresh theme='outline' size={15} fill='currentColor' />
+                    ) : (
+                      <Play theme='outline' size={15} fill='currentColor' />
+                    )}
+                    {isFailed && continueAsRender
+                      ? t('videoGeneration.workspace.renderContinue', {
+                          defaultValue: '从断点继续渲染',
+                        })
+                      : t('videoGeneration.studio.renderCta', { defaultValue: '生成成片' })}
+                  </span>
                 </Button>
-              ) : null}
-              <Button
-                type='primary'
-                size='large'
-                loading={rendering}
-                disabled={!canRender || busy}
-                onClick={() => void handleRender()}
-              >
-                <span className='inline-flex items-center gap-7px'>
-                  <Play theme='outline' size={15} fill='currentColor' />
-                  {isFailed && continueAsRender
-                    ? t('videoGeneration.workspace.renderContinue', {
-                        defaultValue: '继续生成成片',
-                      })
-                    : t('videoGeneration.studio.renderCta', { defaultValue: '生成成片' })}
-                </span>
-              </Button>
+              </div>
             </div>
           </section>
         ) : null}
 
         {!isAction && hasStoryboard ? (
-          <section className={`${styles.studioPanel} p-14px md:p-18px`}>
-            <div className='mb-12px flex items-end justify-between gap-10px'>
+          <section className={`${styles.studioPanel} ${styles.storyboardPanel}`}>
+            <div className={styles.storyboardHeader}>
               <div>
                 <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
                   {t('videoGeneration.studio.storyboard.title', { defaultValue: '故事分镜' })}
