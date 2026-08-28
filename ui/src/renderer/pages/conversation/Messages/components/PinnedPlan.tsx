@@ -1,20 +1,18 @@
 
-
-import { IconCheckCircle } from '@arco-design/web-react/icon';
-import { Loading } from '@icon-park/react';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
+import { ThinkingOrb } from 'thinking-orbs';
 import { useMessageList } from '@renderer/pages/conversation/Messages/hooks';
+import { useConversationPlan } from './conversationPlanContext';
+import PlanTodoList from './PlanTodoList';
 import { derivePinnedPlan, type PinnedPlanData } from './pinnedPlanModel';
-
-const DESKTOP_CLOSE_DELAY_MS = 300;
 
 /**
  * Pinned plan bar: centered above the composer, it surfaces the conversation's
  * current plan (the latest `plan` message) without competing with the command
- * queue. It shows the checklist on desktop hover or keyboard focus, and after
- * explicit activation on mobile. Renders nothing when there is no active plan.
+ * queue. Desktop (with a workspace) opens the right-rail plan tab; mobile and
+ * workspace-less surfaces expand the compact checklist in place. Renders
+ * nothing when there is no active plan.
  */
 const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; className?: string }> = ({
   plan: suppliedPlan,
@@ -22,8 +20,7 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
   className = 'w-fit max-w-[calc(100vw-32px)]',
 }) => {
   const { t } = useTranslation();
-  const layout = useLayoutContext();
-  const isMobile = layout?.isMobile ?? false;
+  const { canOpenPlanTab, openPlanTab } = useConversationPlan();
   const list = useMessageList();
   const derivedPlan = useMemo(
     () => (suppliedPlan === undefined ? derivePinnedPlan(list) : null),
@@ -31,62 +28,33 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
   );
   const plan = suppliedPlan === undefined ? derivedPlan : suppliedPlan;
   const [expanded, setExpanded] = useState(false);
-  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (closeTimerRef.current !== null) {
-        clearTimeout(closeTimerRef.current);
-      }
-    };
-  }, []);
 
   if (!plan) return null;
 
   const { entries, done, total } = plan;
   const active = suppliedActive ?? plan.active;
-  const handleSummaryClick = () => {
-    if (!isMobile) return;
-    setExpanded((value) => !value);
-  };
-  const handleDesktopOpen = () => {
-    if (isMobile) return;
-    if (closeTimerRef.current !== null) {
-      clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
+  const showInPlaceList = !canOpenPlanTab && expanded;
+
+  const handleSummaryActivate = () => {
+    if (canOpenPlanTab) {
+      openPlanTab();
+      return;
     }
-    setExpanded(true);
-  };
-  const handleDesktopClose = () => {
-    if (isMobile) return;
-    if (closeTimerRef.current !== null) {
-      clearTimeout(closeTimerRef.current);
-    }
-    closeTimerRef.current = setTimeout(() => {
-      setExpanded(false);
-      closeTimerRef.current = null;
-    }, DESKTOP_CLOSE_DELAY_MS);
-  };
-  const handleSummaryKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
     setExpanded((value) => !value);
   };
 
+  const handleSummaryKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    handleSummaryActivate();
+  };
+
   return (
-    <div
-      data-testid='pinned-plan-bar'
-      className={`relative ${className}`}
-      onMouseEnter={handleDesktopOpen}
-      onMouseLeave={handleDesktopClose}
-      onFocus={handleDesktopOpen}
-      onBlur={handleDesktopClose}
-    >
-      {/* Summary row — toggles expand/collapse */}
+    <div data-testid='pinned-plan-bar' className={`relative ${className}`}>
       <div
         role='button'
         tabIndex={0}
-        aria-expanded={expanded}
+        aria-expanded={canOpenPlanTab ? undefined : expanded}
         data-testid='pinned-plan-summary'
         className='flex h-28px items-center gap-6px rd-full px-10px cursor-pointer select-none'
         style={{
@@ -95,17 +63,17 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
           boxShadow: 'none',
           color: 'var(--text-secondary)',
         }}
-        onClick={handleSummaryClick}
+        onClick={handleSummaryActivate}
         onKeyDown={handleSummaryKeyDown}
       >
         {active && done < total && (
-          <Loading
+          <ThinkingOrb
             aria-hidden='true'
             data-testid='pinned-plan-progress-indicator'
-            theme='outline'
-            size='14'
-            className='shrink-0 animate-spin'
-            style={{ color: 'var(--color-text-3)' }}
+            state='working'
+            size={20}
+            theme='auto'
+            className='block shrink-0'
           />
         )}
         <span className='min-w-0 truncate text-12px font-600 leading-none'>
@@ -117,47 +85,12 @@ const PinnedPlan: React.FC<{ plan?: PinnedPlanData | null; active?: boolean; cla
         </span>
       </div>
 
-      {/* Full checklist — expanded only */}
-      {expanded && (
+      {showInPlaceList && (
         <div
           data-testid='pinned-plan-popover'
           className='absolute left-1/2 w-[min(320px,calc(100vw-32px))] -translate-x-1/2 bottom-full z-10 pb-4px'
         >
-          <div
-            data-testid='pinned-plan-list'
-            className='flex max-h-[164px] flex-col overflow-y-auto rd-10px p-4px'
-            style={{
-              background: 'var(--color-bg-1)',
-              border: '1px solid color-mix(in srgb, var(--color-border-2) 88%, transparent)',
-              boxShadow: '0 10px 28px rgba(15, 23, 42, 0.12)',
-            }}
-          >
-            {entries.map((item, index) => {
-              const itemClassName =
-                item.status === 'in_progress'
-                  ? 'bg-[rgba(var(--primary-6),0.07)] text-t-primary font-500'
-                  : item.status === 'completed'
-                    ? 'text-t-tertiary'
-                    : 'text-t-secondary';
-
-              return (
-                <div key={index} className={`flex min-h-24px flex-row items-center gap-8px rd-6px px-6px py-3px text-12px leading-18px ${itemClassName}`}>
-                  {item.status === 'completed' ? (
-                    <IconCheckCircle fontSize={16} strokeWidth={4} className='flex shrink-0 text-[rgb(var(--success-6))]' />
-                  ) : item.status === 'in_progress' ? (
-                    <div className='size-16px flex shrink-0 items-center justify-center'>
-                      <div className='size-8px rd-full b-2px b-solid' style={{ borderColor: 'var(--primary-6)' }}></div>
-                    </div>
-                  ) : (
-                    <div className='size-16px flex shrink-0 items-center justify-center'>
-                      <div className='size-8px rd-full b-2px b-solid b-[rgba(201,205,212,1)]'></div>
-                    </div>
-                  )}
-                  <span className='min-w-0 flex-1 line-clamp-2'>{item.content}</span>
-                </div>
-              );
-            })}
-          </div>
+          <PlanTodoList entries={entries} variant='compact' listTestId='pinned-plan-list' />
         </div>
       )}
     </div>

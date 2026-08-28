@@ -427,6 +427,13 @@
       "noStaged": "没有已暂存的更改",
       "disabled": "此目录过大或受限，未建变更快照"
     },
+    "plan": {
+      "tab": "待办队列",
+      "empty": "暂无计划",
+      "emptyDescription": "Agent 开始执行计划后，待办会显示在这里",
+      "inProgress": "进行中",
+      "completed": "已完成"
+    },
     "openWorkspace": "打开项目文件夹",
     "openWith": {
       "vscode": "VS Code",

@@ -142,6 +142,7 @@ const WorkspaceToolRail: React.FC<WorkspaceToolRailProps> = ({
         }
         label={tab.title}
         icon={tab.icon ?? <ChartHistogram size={18} />}
+        badge={tab.badge}
         statusColor={
           tab.key === 'agent-execution' ? collaboration?.statusColor : undefined
         }

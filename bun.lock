@@ -11,7 +11,7 @@
     },
     "ui": {
       "name": "@nomifun-tauri/ui",
-      "version": "1.0.4",
+      "version": "1.1.0",
       "dependencies": {
         "@airwallex/components-sdk": "1.28.3",
         "@arco-design/web-react": "^2.66.1",
@@ -104,6 +104,7 @@
         "swr": "^2.3.6",
         "tailwind-merge": "^3.6.0",
         "tailwindcss": "^4.3.3",
+        "thinking-orbs": "^0.3.1",
         "three": "^0.185.1",
         "three-stdlib": "^2.36.0",
         "tldraw": "^5.3.0",
@@ -2417,6 +2418,8 @@
     "tailwindcss": ["tailwindcss@4.3.3", "https://registry.npmmirror.com/tailwindcss/-/tailwindcss-4.3.3.tgz", {}, "sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ=="],
 
     "tapable": ["tapable@2.3.3", "https://registry.npmmirror.com/tapable/-/tapable-2.3.3.tgz", {}, "sha512-uxc/zpqFg6x7C8vOE7lh6Lbda8eEL9zmVm/PLeTPBRhh1xCgdWaQ+J1CUieGpIfm2HdtsUpRv+HshiasBMcc6A=="],
+
+    "thinking-orbs": ["thinking-orbs@0.3.1", "https://registry.npmmirror.com/thinking-orbs/-/thinking-orbs-0.3.1.tgz", { "peerDependencies": { "react": ">=18.0.0" } }, "sha512-3BG1aeB1RUTxItCml/BBuIz5JRM4kZqGuyx+vouv0fXTtcR9ZNoKjWGneHPx94y74GxgArwJZ1qbJR5dt54kSw=="],
 
     "three": ["three@0.185.1", "https://registry.npmmirror.com/three/-/three-0.185.1.tgz", {}, "sha512-5aojFCXKwnjBRZvUnt3WFfEcvUJgkN5LlijRFN95hMy8WVkG4I0QNcJE+OuWvuJ0bOdStrbfXn0pkd6/QyiAlg=="],
 

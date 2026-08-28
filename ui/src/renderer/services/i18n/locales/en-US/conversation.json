@@ -427,6 +427,13 @@
       "noStaged": "No staged changes",
       "disabled": "Workspace too large or restricted; change snapshot disabled."
     },
+    "plan": {
+      "tab": "Task queue",
+      "empty": "No plan yet",
+      "emptyDescription": "When the agent starts a plan, its tasks will show up here",
+      "inProgress": "In progress",
+      "completed": "Completed"
+    },
     "openWorkspace": "Open project folder",
     "openWith": {
       "vscode": "VS Code",

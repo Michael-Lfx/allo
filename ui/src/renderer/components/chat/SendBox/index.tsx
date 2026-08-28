@@ -89,6 +89,7 @@ import {
 } from '@/renderer/pages/conversation/Messages/editResubmitOperationController';
 import { markRetrySucceeded } from '@/renderer/utils/analytics/productFunnel';
 import PinnedPlan from '@renderer/pages/conversation/Messages/components/PinnedPlan';
+import { useConversationPlan } from '@renderer/pages/conversation/Messages/components/conversationPlanContext';
 import { derivePinnedPlan } from '@renderer/pages/conversation/Messages/components/pinnedPlanModel';
 import './sendbox.css';
 
@@ -354,6 +355,15 @@ const SendBox: React.FC<{
   const setInputRef = useLatestRef(setInput);
   const messageList = useMessageList();
   const pinnedPlan = useMemo(() => (showPinnedPlan ? derivePinnedPlan(messageList) : null), [messageList, showPinnedPlan]);
+  const { setPlan: setConversationPlan } = useConversationPlan();
+  useEffect(() => {
+    if (!showPinnedPlan) {
+      setConversationPlan(null);
+      return;
+    }
+    setConversationPlan(pinnedPlan);
+    return () => setConversationPlan(null);
+  }, [pinnedPlan, setConversationPlan, showPinnedPlan]);
   const hasInternalStatusRow = Boolean(topRightTools);
   const [historyNavigationIndex, setHistoryNavigationIndex] = useState<number | null>(null);
   const historyDraftRef = useRef<string | null>(null);
