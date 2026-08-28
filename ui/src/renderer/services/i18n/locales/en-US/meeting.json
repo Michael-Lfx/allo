@@ -92,13 +92,15 @@
   "transcript": {
     "title": "Transcript",
     "emptyLive": "Transcript will appear here.",
-    "emptyIdle": "Start recording to capture a transcript.",
-    "listening": "Listening and transcribing",
+    "emptyIdle": "Start a meeting from the dock to capture transcript here.",
+    "listening": "Listening and transcribing…",
     "searchPlaceholder": "Search transcript",
     "expand": "Expand",
     "collapse": "Collapse",
     "hide": "Hide transcript",
-    "show": "Show transcript"
+    "show": "Show transcript",
+    "you": "You",
+    "them": "Them"
   },
   "advanced": {
     "title": "Advanced"
@@ -150,9 +152,7 @@
     "generateSuccess": "Notes generated",
     "generating": "Generating notes…",
     "empty": "No notes yet",
-    "emptyLive": "This meeting is in progress. Notes are generated when it ends.",
-    "emptyIdle": "Tap the mic below to start recording. Notes are generated when it ends.",
-    "emptyStopped": "Notes are generated after the meeting ends. You can also generate them here.",
+    "emptyLive": "This meeting is in progress.",
     "summary": "Summary",
     "decisions": "Decisions",
     "todos": "Todos",

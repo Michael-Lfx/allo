@@ -92,13 +92,15 @@
   "transcript": {
     "title": "转写",
     "emptyLive": "转写会出现在这里。",
-    "emptyIdle": "开始录音后，转写会出现在这里。",
-    "listening": "正在听写",
+    "emptyIdle": "点底部麦克风开始录音后，转写会出现在这里。",
+    "listening": "正在听写…",
     "searchPlaceholder": "搜索转写",
     "expand": "展开",
     "collapse": "收起",
     "hide": "隐藏转写",
-    "show": "显示转写"
+    "show": "显示转写",
+    "you": "我",
+    "them": "对方"
   },
   "advanced": {
     "title": "高级选项"
@@ -150,9 +152,7 @@
     "generateSuccess": "纪要已生成",
     "generating": "正在生成纪要…",
     "empty": "尚未生成纪要",
-    "emptyLive": "会议进行中。结束后会自动生成纪要。",
-    "emptyIdle": "点底部麦克风开始录音。结束后会自动生成纪要。",
-    "emptyStopped": "结束后会自动生成纪要，也可以手动生成。",
+    "emptyLive": "会议进行中。",
     "summary": "摘要",
     "decisions": "决策",
     "todos": "待办",

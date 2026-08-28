@@ -7,35 +7,37 @@ const transcript = readFileSync(new URL('./MeetingTranscriptPanel.tsx', import.m
 const list = readFileSync(new URL('./MeetingPage.tsx', import.meta.url), 'utf8');
 const notes = readFileSync(new URL('./MeetingNotesPane.tsx', import.meta.url), 'utf8');
 
-describe('meeting layout contract', () => {
-  test('detail fills the content pane and keeps the dock outside the notes scroller', () => {
-    expect(detail.includes("className='meeting-detail")).toBe(true);
-    expect(detail.includes('size-full')).toBe(true);
+describe('meeting granola surface', () => {
+  test('detail keeps the dock overlayed on a full-height notes scroller', () => {
     expect(detail.includes('meeting-cluster')).toBe(true);
     expect(detail.includes('meeting-detail-scroll')).toBe(true);
+    expect(detail.includes('size-full')).toBe(true);
     expect(detail.includes('w-360px')).toBe(false);
-    expect(detail.includes('w-520px')).toBe(false);
+    expect(detail.includes('meeting-back-link')).toBe(false);
   });
 
-  test('dock treats failed as idle and only shows start on created sessions', () => {
-    expect(dock.includes('isLiveSession')).toBe(true);
-    expect(dock.includes("session.status === 'failed'")).toBe(false);
-    expect(dock.includes("session.status === 'created'")).toBe(true);
+  test('dock is an idle mic pill and a recording stop control without pause', () => {
+    expect(dock.includes('meeting-dock')).toBe(true);
+    expect(dock.includes('meeting.dock.pause')).toBe(false);
+    expect(dock.includes('formatDurationMs')).toBe(false);
+    expect(dock.includes('meeting.dock.start')).toBe(true);
+    expect(dock.includes("session.status === 'created'")).toBe(false);
   });
 
-  test('transcript overlay does not use a light Arco search field or channel labels', () => {
-    expect(transcript.includes("from '@arco-design/web-react'")).toBe(false);
+  test('transcript is a dark overlay without search or channel labels', () => {
+    expect(transcript.includes('meeting-transcript-search')).toBe(false);
     expect(transcript.includes('meeting.channel.mic')).toBe(false);
-    expect(transcript.includes('meeting-transcript-search')).toBe(true);
+    expect(transcript.includes('meeting.transcript.you')).toBe(true);
   });
 
-  test('list rows are notes cards without status tags', () => {
+  test('list rows are title plus date, not a control console', () => {
     expect(list.includes('<Tag')).toBe(false);
-    expect(list.includes('size-full')).toBe(true);
+    expect(list.includes('notesPreview')).toBe(false);
+    expect(list.includes('meeting-live-banner')).toBe(false);
   });
 
-  test('notes pane does not surface admin status tags', () => {
+  test('notes pane is the note body, not an admin header', () => {
+    expect(notes.includes('meeting.notes.title')).toBe(false);
     expect(notes.includes('<Tag')).toBe(false);
-    expect(notes.includes('meeting.notes.source')).toBe(false);
   });
 });

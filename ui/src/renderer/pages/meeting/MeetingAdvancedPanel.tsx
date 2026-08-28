@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Collapse, Input, Switch } from '@arco-design/web-react';
+import { Button, Input, Switch } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import type { MeetingListenStatus, MeetingSession, MeetingVoiceprint } from '@/common/adapter/ipcBridge';
 
@@ -52,43 +52,39 @@ const MeetingAdvancedPanel: React.FC<MeetingAdvancedPanelProps> = ({
   );
 
   return (
-    <Collapse bordered={false} className='meeting-advanced'>
-      <Collapse.Item header={t('meeting.advanced.title')} name='advanced'>
-        <div className='flex flex-col gap-14px'>
-          <div className='flex flex-wrap items-center gap-8px'>
-            <Input
-              className='min-w-220px flex-1'
-              value={bindId}
-              onChange={setBindId}
-              placeholder={t('meeting.bindConversationPlaceholder')}
-              addBefore={t('meeting.bindConversation')}
-            />
-            <Button loading={busy} onClick={() => void handleBind()}>
-              {bindId.trim() ? t('meeting.bind') : t('meeting.unbind')}
-            </Button>
-          </div>
+    <div className='flex flex-col gap-14px'>
+      <div className='flex flex-wrap items-center gap-8px'>
+        <Input
+          className='min-w-220px flex-1'
+          value={bindId}
+          onChange={setBindId}
+          placeholder={t('meeting.bindConversationPlaceholder')}
+          addBefore={t('meeting.bindConversation')}
+        />
+        <Button loading={busy} onClick={() => void handleBind()}>
+          {bindId.trim() ? t('meeting.bind') : t('meeting.unbind')}
+        </Button>
+      </div>
 
-          <div className='flex flex-wrap items-center gap-8px'>
-            <span className='text-13px text-t-primary'>{t('meeting.listen.title')}</span>
-            <Switch
-              checked={Boolean(listenStatus?.enabled)}
-              loading={busy}
-              onChange={(checked) => void handleListen(checked)}
-            />
-            <span className='text-12px text-t-tertiary'>{t('meeting.listen.hint')}</span>
-          </div>
+      <div className='flex flex-wrap items-center gap-8px'>
+        <span className='text-13px text-t-primary'>{t('meeting.listen.title')}</span>
+        <Switch
+          checked={Boolean(listenStatus?.enabled)}
+          loading={busy}
+          onChange={(checked) => void handleListen(checked)}
+        />
+        <span className='text-12px text-t-tertiary'>{t('meeting.listen.hint')}</span>
+      </div>
 
-          <div className='flex items-center justify-between gap-8px'>
-            <div className='text-13px text-t-secondary'>
-              {t('meeting.voiceprint.listCount', { count: voiceprints.length })}
-            </div>
-            <Button size='small' onClick={onOpenVoiceprint}>
-              {t('meeting.voiceprint.manage')}
-            </Button>
-          </div>
+      <div className='flex items-center justify-between gap-8px'>
+        <div className='text-13px text-t-secondary'>
+          {t('meeting.voiceprint.listCount', { count: voiceprints.length })}
         </div>
-      </Collapse.Item>
-    </Collapse>
+        <Button size='small' onClick={onOpenVoiceprint}>
+          {t('meeting.voiceprint.manage')}
+        </Button>
+      </div>
+    </div>
   );
 };
 

@@ -1,120 +1,48 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { Pause, Play, Up, Voice } from '@icon-park/react';
+import { Up, Voice } from '@icon-park/react';
 import classNames from 'classnames';
 import type { MeetingSession } from '@/common/adapter/ipcBridge';
 import MeetingWaveform from './MeetingWaveform';
-import { formatDurationMs, isLiveSession } from './format';
 
 type MeetingRecordingDockProps = {
   session: MeetingSession;
-  elapsedMs: number;
   busy: boolean;
   transcriptOpen: boolean;
   onToggleTranscript: () => void;
   onStart: () => void;
-  onPause: () => void;
-  onResume: () => void;
   onStop: () => void;
 };
 
-const TranscriptToggle: React.FC<{
-  open: boolean;
-  onToggle: () => void;
-  label: string;
-}> = ({ open, onToggle, label }) => (
-  <Tooltip content={label}>
-    <button
-      type='button'
-      className='flex h-32px w-32px items-center justify-center rounded-full text-white/55 transition-colors hover:bg-white/12 hover:text-white/85'
-      aria-label={label}
-      onClick={onToggle}
-    >
-      <span className={classNames('inline-flex transition-transform duration-200', open && 'rotate-180')}>
-        <Up theme='outline' size={14} fill='currentColor' />
-      </span>
-    </button>
-  </Tooltip>
-);
-
 const MeetingRecordingDock: React.FC<MeetingRecordingDockProps> = ({
   session,
-  elapsedMs,
   busy,
   transcriptOpen,
   onToggleTranscript,
   onStart,
-  onPause,
-  onResume,
   onStop,
 }) => {
   const { t } = useTranslation();
-  const isLive = isLiveSession(session);
-  const canStart = session.status === 'created';
-  const isRecording = session.status === 'recording';
-  const isPaused = session.status === 'paused';
+  const isCapturing = session.status === 'recording' || session.status === 'paused';
   const isBusyState = busy || session.status === 'stopping';
   const transcriptLabel = transcriptOpen ? t('meeting.transcript.hide') : t('meeting.transcript.show');
 
   return (
     <div
-      className={classNames(
-        'pointer-events-auto flex h-42px items-center gap-4px rounded-28px px-6px',
-        'bg-[rgba(12,14,18,0.82)] shadow-[0_8px_28px_rgba(0,0,0,0.35)] backdrop-blur-12px',
-        'ring-1 ring-[rgba(255,255,255,0.12)]'
-      )}
+      className={classNames('meeting-dock pointer-events-auto relative select-none', isCapturing && 'meeting-dock--live')}
     >
-      {isLive ? (
-        <>
-          <div className='flex items-center gap-10px pl-10px pr-4px'>
-            <MeetingWaveform active={isRecording} />
-            <span className='min-w-42px text-12px tabular-nums text-white/80'>
-              {formatDurationMs(elapsedMs)}
-            </span>
-          </div>
-          {isPaused ? (
-            <Tooltip content={t('meeting.dock.resume')}>
-              <button
-                type='button'
-                className='flex h-32px w-32px items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/12 hover:text-white disabled:opacity-50'
-                aria-label={t('meeting.dock.resume')}
-                disabled={isBusyState}
-                onClick={onResume}
-              >
-                <Play theme='filled' size={16} fill='currentColor' />
-              </button>
-            </Tooltip>
-          ) : (
-            <Tooltip content={t('meeting.dock.pause')}>
-              <button
-                type='button'
-                className='flex h-32px w-32px items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/12 hover:text-white disabled:opacity-50'
-                aria-label={t('meeting.dock.pause')}
-                disabled={!isRecording || isBusyState}
-                onClick={onPause}
-              >
-                <Pause theme='filled' size={16} fill='currentColor' />
-              </button>
-            </Tooltip>
-          )}
-          <Tooltip content={t('meeting.dock.stop')}>
-            <button
-              type='button'
-              className='flex h-32px w-32px items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/12 disabled:opacity-50'
-              aria-label={t('meeting.dock.stop')}
-              disabled={isBusyState}
-              onClick={onStop}
-            >
-              <span className='block size-12px rounded-2px bg-[#ef4444]' />
-            </button>
-          </Tooltip>
-        </>
-      ) : canStart ? (
+      <div
+        className={classNames(
+          'absolute inset-0 flex items-center justify-center gap-4px p-5px',
+          isCapturing ? 'pointer-events-none opacity-0' : 'opacity-100'
+        )}
+        aria-hidden={isCapturing}
+      >
         <Tooltip content={t('meeting.dock.start')}>
           <button
             type='button'
-            className='flex h-32px w-32px items-center justify-center rounded-full text-white/75 transition-colors hover:bg-white/12 hover:text-white disabled:opacity-50'
+            className='flex h-32px w-32px shrink-0 items-center justify-center rounded-full text-white/70 transition-colors hover:bg-white/15 hover:text-white disabled:opacity-60'
             aria-label={t('meeting.dock.start')}
             disabled={isBusyState}
             onClick={onStart}
@@ -122,8 +50,40 @@ const MeetingRecordingDock: React.FC<MeetingRecordingDockProps> = ({
             <Voice theme='outline' size={18} fill='currentColor' />
           </button>
         </Tooltip>
-      ) : null}
-      <TranscriptToggle open={transcriptOpen} onToggle={onToggleTranscript} label={transcriptLabel} />
+        <Tooltip content={transcriptLabel}>
+          <button
+            type='button'
+            className='flex h-32px w-32px shrink-0 items-center justify-center rounded-full text-white/50 transition-colors hover:bg-white/15 hover:text-white/80'
+            aria-label={transcriptLabel}
+            onClick={onToggleTranscript}
+          >
+            <span className={classNames('inline-flex transition-transform duration-200', transcriptOpen && 'rotate-180')}>
+              <Up theme='outline' size={14} fill='currentColor' />
+            </span>
+          </button>
+        </Tooltip>
+      </div>
+
+      <div
+        className={classNames(
+          'flex h-full w-full items-center justify-center gap-12px pl-28px pr-20px',
+          isCapturing ? 'opacity-100' : 'pointer-events-none opacity-0'
+        )}
+        aria-hidden={!isCapturing}
+      >
+        <MeetingWaveform active={session.status === 'recording'} />
+        <Tooltip content={t('meeting.dock.stop')}>
+          <button
+            type='button'
+            className='flex shrink-0 items-center justify-center rounded-full p-6px text-[#ef4444] transition-colors hover:bg-white/15 disabled:opacity-60'
+            aria-label={t('meeting.dock.stop')}
+            disabled={isBusyState}
+            onClick={onStop}
+          >
+            <span className='block size-14px rounded-2px bg-current' />
+          </button>
+        </Tooltip>
+      </div>
     </div>
   );
 };
