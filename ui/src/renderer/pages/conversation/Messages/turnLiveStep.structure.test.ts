@@ -24,9 +24,18 @@ describe('turn live step strip', () => {
     expect(messageListSource.includes("data-testid='turn-live-step'")).toBe(true);
   });
 
-  test('renders through the existing receipt row without detail expansion', () => {
+  test('renders the live step with the same task-row chrome as the turn header', () => {
+    const liveStepRender =
+      messageListSource.match(
+        /if \('type' in item && item\.type === 'turn_live_step'\) \{[\s\S]*?if \('type' in item && \['file_summary'/
+      )?.[0] ?? '';
+
     expect(messageListSource.includes("type: 'turn_live_step'")).toBe(true);
-    expect(messageListSource.includes('hasDetail: false')).toBe(true);
+    expect(messageListSource.includes("from '@renderer/components/beautifulUi/taskRows/TaskRows'")).toBe(true);
+    expect(messageListSource.includes("from '@renderer/components/beautifulUi/taskRows/taskRowModel'")).toBe(true);
+    expect(liveStepRender.includes('<TaskGroup')).toBe(true);
+    expect(liveStepRender.includes('resolveTaskGroupStatus(item.state)')).toBe(true);
+    expect(liveStepRender.includes('TurnProcessReceipt')).toBe(false);
   });
 
   test('does not add a breathing pulse on top of live-step state', () => {
@@ -56,7 +65,25 @@ describe('turn live step strip', () => {
       cssSource.indexOf('}', cssSource.indexOf('.turn_live_step {'))
     );
     expect(liveStepRule.includes('display: none')).toBe(false);
-    expect(liveStepRule.includes('min-height: 26px')).toBe(true);
+    expect(liveStepRule.includes('min-height: 30px')).toBe(true);
+  });
+
+  test('matches the disclosure header inset so live-step icons line up', () => {
+    const headerRule = cssSource.slice(
+      cssSource.indexOf('.turn-process-disclosure__header {'),
+      cssSource.indexOf('}', cssSource.indexOf('.turn-process-disclosure__header {'))
+    );
+    const liveStepInnerRule = cssSource.slice(
+      cssSource.indexOf('.turn-live-step {'),
+      cssSource.indexOf('}', cssSource.indexOf('.turn-live-step {'))
+    );
+
+    expect(headerRule.includes('min-height: 30px')).toBe(true);
+    expect(headerRule.includes('padding: 2px 2px 6px')).toBe(true);
+    expect(liveStepInnerRule.includes('min-height: 30px')).toBe(true);
+    expect(liveStepInnerRule.includes('padding: 2px 2px 6px')).toBe(true);
+    expect(liveStepInnerRule.includes('font-size: 13px')).toBe(true);
+    expect(liveStepInnerRule.includes('line-height: 20px')).toBe(true);
   });
 
   test('ships bilingual live-step copy', () => {

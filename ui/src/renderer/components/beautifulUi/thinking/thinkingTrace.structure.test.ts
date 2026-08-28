@@ -31,7 +31,9 @@ describe('ThinkingTrace', () => {
     expect(cssSource.includes('border: 1px solid var(--color-border-2')).toBe(true);
     expect(cssSource.includes('max-height: 320px')).toBe(true);
     expect(cssSource.includes('@media (prefers-reduced-motion: reduce)')).toBe(true);
-    expect(cssSource.includes('.shimmer')).toBe(true);
+    expect(source.includes("from '../textShimmer.module.css'")).toBe(true);
+    expect(source.includes('shimmerStyles.shimmer')).toBe(true);
+    expect(source.includes('<span className={styles.label} title={summary}>')).toBe(true);
     expect(cssSource.includes('.headerProcess')).toBe(true);
     expect(cssSource.includes('.bodyProcess')).toBe(true);
     expect(cssSource.includes('.rootWaiting')).toBe(true);

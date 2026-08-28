@@ -1,4 +1,5 @@
 import React from 'react';
+import shimmerStyles from '../textShimmer.module.css';
 import { formatLoadingElapsed } from './loadingStateModel';
 import styles from './loadingState.module.css';
 
@@ -60,7 +61,7 @@ const LoadingState: React.FC<LoadingStateProps> = ({ variant, label, elapsedSeco
     aria-live='polite'
   >
     <span className={styles.glyph}>{variantGlyph(variant)}</span>
-    <span className={styles.label}>{label}</span>
+    <span className={`${styles.label} ${shimmerStyles.shimmer}`}>{label}</span>
     {elapsedSeconds !== undefined ? (
       <span className={styles.elapsed}>{formatLoadingElapsed(elapsedSeconds)}</span>
     ) : null}

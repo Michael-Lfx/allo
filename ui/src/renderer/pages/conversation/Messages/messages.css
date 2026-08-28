@@ -1018,7 +1018,23 @@ body[arco-theme='dark'] .message-error-note {
 
 .turn_live_step {
   margin-top: 6px;
-  min-height: 26px;
+  min-height: 30px;
+}
+
+.turn-live-step {
+  box-sizing: border-box;
+  display: flex;
+  width: 100%;
+  min-height: 30px;
+  align-items: center;
+  padding: 2px 2px 6px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--color-text-2, #4e5969);
+}
+
+.turn-live-step__row {
+  width: 100%;
 }
 
 .turn-process-trace__row--running .turn-process-trace__row-icon,

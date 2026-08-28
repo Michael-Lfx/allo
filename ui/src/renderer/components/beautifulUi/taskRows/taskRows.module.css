@@ -167,20 +167,6 @@ button.group:hover {
   text-decoration: line-through;
 }
 
-.shimmer {
-  background: linear-gradient(
-    90deg,
-    currentColor 0%,
-    var(--color-text-1, #1d2129) 40%,
-    currentColor 80%
-  );
-  background-size: 180% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: transparent;
-  animation: task-row-shimmer 1.6s ease-in-out infinite;
-}
-
 .spin {
   box-sizing: border-box;
   display: inline-block;
@@ -193,15 +179,6 @@ button.group:hover {
   animation: task-row-spin 0.7s linear infinite;
 }
 
-@keyframes task-row-shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: -80% 0;
-  }
-}
-
 @keyframes task-row-spin {
   to {
     transform: rotate(360deg);
@@ -209,17 +186,9 @@ button.group:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .shimmer,
   .spin,
   .arrow {
     animation: none;
     transition: none;
-  }
-
-  .shimmer {
-    background: none;
-    color: inherit;
-    -webkit-background-clip: unset;
-    background-clip: unset;
   }
 }

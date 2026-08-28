@@ -66,20 +66,6 @@
   font-weight: 400;
 }
 
-.shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--color-text-3, #86909c) 0%,
-    var(--color-text-1, #1d2129) 40%,
-    var(--color-text-3, #86909c) 80%
-  );
-  background-size: 180% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: transparent;
-  animation: thinking-shimmer 1.6s ease-in-out infinite;
-}
-
 .elapsed {
   flex-shrink: 0;
   min-width: 4ch;
@@ -263,15 +249,6 @@
   }
 }
 
-@keyframes thinking-shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: -80% 0;
-  }
-}
-
 @keyframes thinking-body-enter {
   from {
     opacity: 0;
@@ -284,17 +261,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .shimmer,
   .body,
   .arrow {
     animation: none;
     transition: none;
-  }
-
-  .shimmer {
-    background: none;
-    color: inherit;
-    -webkit-background-clip: unset;
-    background-clip: unset;
   }
 }

@@ -126,20 +126,6 @@ button.chip:hover {
   color: var(--color-warning-6, #ff7d00);
 }
 
-.shimmer {
-  background: linear-gradient(
-    90deg,
-    currentColor 0%,
-    var(--color-text-1, #1d2129) 40%,
-    currentColor 80%
-  );
-  background-size: 180% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: transparent;
-  animation: tool-chip-shimmer 1.6s ease-in-out infinite;
-}
-
 .spin {
   box-sizing: border-box;
   display: inline-block;
@@ -152,15 +138,6 @@ button.chip:hover {
   animation: tool-chip-spin 0.7s linear infinite;
 }
 
-@keyframes tool-chip-shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: -80% 0;
-  }
-}
-
 @keyframes tool-chip-spin {
   to {
     transform: rotate(360deg);
@@ -168,17 +145,9 @@ button.chip:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .shimmer,
   .spin,
   .arrow {
     animation: none;
     transition: none;
-  }
-
-  .shimmer {
-    background: none;
-    color: inherit;
-    -webkit-background-clip: unset;
-    background-clip: unset;
   }
 }
