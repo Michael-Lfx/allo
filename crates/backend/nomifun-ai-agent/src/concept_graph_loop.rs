@@ -475,6 +475,7 @@ fn stop_reason_name(reason: Option<StopReason>) -> String {
         Some(StopReason::ToolUse) => "tool_use",
         Some(StopReason::MaxTokens) => "max_tokens",
         Some(StopReason::MaxTurns) => "max_turns",
+        Some(StopReason::Refusal) => "refusal",
         None => "none",
     }
     .to_owned()
@@ -823,7 +824,7 @@ async fn run_agent_loop(
             system: system.to_owned(),
             messages: messages.clone(),
             tools: tool_defs.clone(),
-            max_tokens,
+            max_tokens: Some(max_tokens),
             // DeepSeek-style gateways default to chain-of-thought and only
             // emit `content` after thinking is disabled; without this field
             // the whole token budget is silently consumed by reasoning and
@@ -832,6 +833,7 @@ async fn run_agent_loop(
             thinking: Some(ThinkingConfig::Disabled),
             reasoning_effort: None,
             temperature: None,
+            retain_provider_round: false,
         };
         let mut rx = provider
             .stream(&request)
