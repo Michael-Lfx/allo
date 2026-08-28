@@ -161,6 +161,25 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
   const tooltipKey = getTooltipKey(availability, isRecording, isProcessing);
   const ariaLabel = t(tooltipKey);
   const icon = isRecording ? <SpeechStopIcon /> : isProcessing ? <SpeechLoaderIcon /> : <SpeechMicIcon />;
+  const isButtonDisabled = disabled || isProcessing;
+  const speechButton = (
+    <Button
+      type='text'
+      size='small'
+      shape='circle'
+      className={`speech-input-button flowy-button-icon speech-input-button--${variant} ${isRecording ? 'speech-input-button--listening' : ''} ${isProcessing ? 'speech-input-button--processing' : ''}`}
+      disabled={isButtonDisabled}
+      onClick={handleClick}
+      aria-label={ariaLabel}
+      data-layout-part='microphone'
+      icon={icon}
+    />
+  );
+  const speechButtonTarget = isButtonDisabled ? (
+    <span className='speech-input-button-tooltip-target'>{speechButton}</span>
+  ) : (
+    speechButton
+  );
 
   return (
     <div
@@ -191,19 +210,7 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
           </span>
         </div>
       )}
-      <Tooltip content={ariaLabel} mini>
-        <Button
-          type='text'
-          size='small'
-          shape='circle'
-          className={`speech-input-button flowy-button-icon speech-input-button--${variant} ${isRecording ? 'speech-input-button--listening' : ''} ${isProcessing ? 'speech-input-button--processing' : ''}`}
-          disabled={disabled || isProcessing}
-          onClick={handleClick}
-          aria-label={ariaLabel}
-          data-layout-part='microphone'
-          icon={icon}
-        />
-      </Tooltip>
+      <Tooltip content={ariaLabel} mini>{speechButtonTarget}</Tooltip>
     </div>
   );
 };
