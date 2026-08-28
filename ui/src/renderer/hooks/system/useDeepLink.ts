@@ -3,6 +3,7 @@
 import { useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
+import { useSupportChat } from '@/renderer/features/supportChat/SupportChatProvider';
 
 /**
  * Deep link event payload from main process
@@ -51,9 +52,15 @@ const ALLOWED_NAVIGATE_PATTERNS = [
  */
 export const useDeepLink = () => {
   const navigate = useNavigate();
+  const { openSupportChat } = useSupportChat();
 
   const handler = useCallback(
     (payload: DeepLinkPayload) => {
+      if (payload.action === 'support') {
+        openSupportChat();
+        return;
+      }
+
       // Support both formats: "add-provider" and "provider/add" (one-api style)
       if (payload.action === 'add-provider' || payload.action === 'provider/add') {
         pendingDeepLinkData = {
@@ -102,7 +109,7 @@ export const useDeepLink = () => {
         void navigate(route);
       }
     },
-    [navigate]
+    [navigate, openSupportChat]
   );
 
   useEffect(() => {

@@ -11,7 +11,7 @@
  *   - RequirementFilters (tag / status / search + batch-delete bar)
  *   - RequirementListView (paginated) OR RequirementBoardView (all matching)
  *   - the unified RequirementDrawer, whose open/mode/target derive purely from
- *     URL params (`new` / `req` / `edit`)
+ *     URL params (`new` / `req` / legacy notification `id` / `edit`)
  *
  * Data flows through `useRequirements`, which already re-subscribes to the five
  * requirements live events and refetches — so this page never double-subscribes;
@@ -144,13 +144,17 @@ const WorkspacePage: React.FC = () => {
   }, []);
 
   // ---- Drawer state derived from URL params --------------------------------
-  // `new=1` → create; `req=<id>` + `edit=1` → edit; `req=<id>` → view; else closed.
+  // `new=1` → create; `req=<id>`/legacy `id=<id>` → view; `edit=1` → edit.
   const reqParam = searchParams.get('req');
   const reqId = tryParseEntityId('requirement', reqParam);
+  // Notification deep links historically use `id`; keep that exact target
+  // meaningful while the drawer's interactive URL uses `req`.
+  const notificationReqId = tryParseEntityId('requirement', searchParams.get('id'));
+  const targetRequirementId = reqId ?? notificationReqId;
   const isNew = searchParams.get('new') === '1';
   const isEdit = searchParams.get('edit') === '1';
 
-  const drawerOpen = isNew || reqId != null;
+  const drawerOpen = isNew || targetRequirementId != null;
   const drawerMode: 'view' | 'edit' | 'create' = isNew ? 'create' : isEdit ? 'edit' : 'view';
 
   const openCreate = useCallback(() => {
@@ -158,6 +162,7 @@ const WorkspacePage: React.FC = () => {
       (prev) => {
         const p = new URLSearchParams(prev);
         p.delete('req');
+        p.delete('id');
         p.delete('edit');
         p.set('new', '1');
         return p;
@@ -173,6 +178,7 @@ const WorkspacePage: React.FC = () => {
           const p = new URLSearchParams(prev);
           p.delete('new');
           p.delete('edit');
+          p.delete('id');
           p.set('req', String(id));
           return p;
         },
@@ -188,6 +194,7 @@ const WorkspacePage: React.FC = () => {
         (prev) => {
           const p = new URLSearchParams(prev);
           p.delete('new');
+          p.delete('id');
           p.set('req', String(id));
           p.set('edit', '1');
           return p;
@@ -204,6 +211,7 @@ const WorkspacePage: React.FC = () => {
         const p = new URLSearchParams(prev);
         p.delete('new');
         p.delete('req');
+        p.delete('id');
         p.delete('edit');
         return p;
       },
@@ -346,7 +354,7 @@ const WorkspacePage: React.FC = () => {
       <RequirementDrawer
         open={drawerOpen}
         mode={drawerMode}
-        requirementId={reqId ?? undefined}
+        requirementId={targetRequirementId ?? undefined}
         onClose={closeDrawer}
         onSaved={() => void refresh()}
       />

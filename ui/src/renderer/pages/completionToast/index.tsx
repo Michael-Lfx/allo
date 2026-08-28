@@ -8,6 +8,7 @@ type CompletionToastPayload = {
   title: string;
   body: string;
   click_target?: string | null;
+  attention_id?: string | null;
 };
 
 const CompletionToastPage: React.FC = () => {

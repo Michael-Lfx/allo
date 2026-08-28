@@ -21,6 +21,9 @@ import {
   subscribeWindowMaximized,
   tauriGetPath,
   tauriGetZoom,
+  tauriClearAllAttention,
+  tauriClearAttention,
+  tauriClearAttentionScope,
   tauriIsAutostartEnabled,
   tauriOpenDialog,
   tauriSaveDialog,
@@ -41,6 +44,7 @@ import {
   tauriWindowUnmaximize,
   type ShellOpenDialogOptions,
   type ShellSaveDialogOptions,
+  type AttentionSource,
   type TauriUpdatePackageState,
 } from './tauriShell';
 import {
@@ -2759,6 +2763,8 @@ export type INotificationOptions = {
   body: string;
   icon?: string;
   conversation_id?: ConversationId;
+  /** Stable native pending-attention identity; generic notifications omit it. */
+  attention_id?: string;
   /** `flowy://navigate?route=…` deep link opened when the toast is clicked. */
   click_target?: string;
 };
@@ -2771,12 +2777,25 @@ export const notification = {
         body: opts.body,
         icon: opts.icon,
         click_target: opts.click_target,
+        attention_id: opts.attention_id,
       }),
     undefined
   ),
   // Click navigation is delivered via deep-link://received (see desktop
   // system_notify + useDeepLink). This emitter stays for legacy callers.
   clicked: noopEmitter<{ conversation_id?: ConversationId }>(),
+};
+
+export const attention = {
+  clear: shellProvider<void, { attention_id: string }>(
+    ({ attention_id }) => tauriClearAttention(attention_id),
+    undefined
+  ),
+  clearScope: shellProvider<void, { source: AttentionSource; entity_id?: string }>(
+    ({ source, entity_id }) => tauriClearAttentionScope(source, entity_id),
+    undefined
+  ),
+  clearAll: shellProvider<void, void>(() => tauriClearAllAttention(), undefined),
 };
 
 // ---------------------------------------------------------------------------
@@ -8038,4 +8057,3 @@ export const meeting = {
   ),
   onEvent: wsEmitter<MeetingEvent>('meeting:event'),
 };
-

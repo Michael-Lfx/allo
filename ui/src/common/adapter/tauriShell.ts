@@ -262,6 +262,7 @@ export async function tauriSendNotification(opts: {
   body: string;
   icon?: string;
   click_target?: string;
+  attention_id?: string;
 }): Promise<void> {
   try {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -269,6 +270,7 @@ export async function tauriSendNotification(opts: {
       title: opts.title,
       body: opts.body,
       clickTarget: opts.click_target ?? null,
+      attentionId: opts.attention_id ?? null,
     });
     return;
   } catch {
@@ -278,6 +280,32 @@ export async function tauriSendNotification(opts: {
   let granted = await mod.isPermissionGranted();
   if (!granted) granted = (await mod.requestPermission()) === 'granted';
   if (granted) mod.sendNotification({ title: opts.title, body: opts.body, icon: opts.icon });
+}
+
+export type AttentionSource = 'conversation' | 'support';
+
+/** Clear one native pending-attention item after its target has loaded. */
+export async function tauriClearAttention(attentionId: string): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('clear_attention_cmd', { attentionId });
+}
+
+/** Clear all pending items for one source scope after its UI has handled them. */
+export async function tauriClearAttentionScope(
+  source: AttentionSource,
+  entityId?: string
+): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('clear_attention_scope_cmd', {
+    source,
+    entityId: entityId ?? null,
+  });
+}
+
+/** Clear native pending attention on logout/account reset only. */
+export async function tauriClearAllAttention(): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('clear_all_attention_cmd');
 }
 
 function parseDeepLink(url: string): { action: string; params: Record<string, string> } {
