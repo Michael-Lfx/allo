@@ -336,7 +336,7 @@ fn create_badge_icon(
         }
 
         let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, SIZE * SIZE);
-        pixels.copy_from_slice(&render_badge_pixels(label, SIZE));
+        pixels.copy_from_slice(&render_badge_pixels(label, SIZE)?);
 
         // 1-bpp mask: 0 = show color pixel. All zeros lets the DIB alpha
         // channel provide the transparent antialiased edge.
@@ -372,7 +372,7 @@ fn create_badge_icon(
 }
 
 #[cfg(windows)]
-fn render_badge_pixels(label: &str, size: usize) -> Vec<u32> {
+fn render_badge_pixels(label: &str, size: usize) -> Result<Vec<u32>, String> {
     const SCALE: usize = 8;
     let high_size = size * SCALE;
     let mut high = vec![[0u8; 4]; high_size * high_size];
@@ -386,7 +386,7 @@ fn render_badge_pixels(label: &str, size: usize) -> Vec<u32> {
             }
         }
     }
-    paint_label(&mut high, high_size, size, label, SCALE);
+    paint_label(&mut high, high_size, size, label, SCALE)?;
 
     let mut output = vec![0u32; size * size];
     for y in 0..size {
@@ -416,7 +416,7 @@ fn render_badge_pixels(label: &str, size: usize) -> Vec<u32> {
             output[y * size + x] = (alpha << 24) | (red << 16) | (green << 8) | blue;
         }
     }
-    output
+    Ok(output)
 }
 
 #[cfg(windows)]
@@ -466,94 +466,160 @@ fn paint_label(
     logical_size: usize,
     label: &str,
     scale: usize,
-) {
-    const GLYPH_W: usize = 5;
-    const GLYPH_H: usize = 8;
-    const COMPACT_GLYPH_W: usize = 4;
+) -> Result<(), String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{COLORREF, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject,
+        DrawTextW, SelectObject, SetBkMode, SetTextColor, ANTIALIASED_QUALITY,
+        BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
+        DIB_RGB_COLORS, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FF_DONTCARE,
+        FW_SEMIBOLD, OUT_TT_ONLY_PRECIS, TRANSPARENT, BI_RGB,
+    };
 
-    fn glyph(ch: char) -> Option<[u8; GLYPH_H]> {
-        Some(match ch {
-            '0' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-            '1' => [0b00110, 0b01110, 0b00110, 0b00110, 0b00110, 0b00110, 0b00110, 0b11111],
-            '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
-            '3' => [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b10001, 0b01110],
-            '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b10010, 0b11111, 0b00010, 0b00010],
-            '5' => [0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b10001, 0b10001, 0b01110],
-            '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b01110],
-            '7' => [0b11111, 0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-            '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110],
-            '9' => [0b01110, 0b10001, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
-            '+' => [0b00000, 0b00100, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
-            _ => return None,
-        })
+    if scale == 0 || pixels.len() != size.saturating_mul(size) {
+        return Err("invalid badge text surface dimensions".to_owned());
     }
 
-    let chars: Vec<char> = label.chars().filter(|ch| glyph(*ch).is_some()).collect();
-    if chars.is_empty() {
-        return;
+    // Draw a real TrueType font into the existing 8x surface. The old custom
+    // 5x8 bitmap was enlarged before downsampling, so its edges stayed visibly
+    // blocky even though the badge background was antialiased.
+    let char_count = label.chars().count();
+    if char_count == 0 {
+        return Ok(());
     }
-    let layout_glyph_width = if chars.len() > 2 { COMPACT_GLYPH_W } else { GLYPH_W };
-    let total_w = chars.len() * layout_glyph_width + chars.len().saturating_sub(1);
-    let origin_x = logical_size.saturating_sub(total_w) / 2;
-    let origin_y = logical_size.saturating_sub(GLYPH_H) / 2;
-    let mut x_offset = origin_x;
+    let glyph_width = char_count * if char_count <= 2 { 5 } else { 4 }
+        + char_count.saturating_sub(1);
+    let horizontal_padding = if char_count <= 2 { 3 } else { 4 };
+    let text_width = if char_count <= 1 {
+        logical_size
+    } else {
+        (glyph_width + horizontal_padding).min(logical_size)
+    };
+    let text_left = (logical_size.saturating_sub(text_width) / 2) * scale;
+    let text_right = text_left + text_width * scale;
+    let font_height = if char_count > 2 { 7 } else { 8 };
 
-    for ch in chars {
-        let Some(rows) = glyph(ch) else {
-            continue;
+    unsafe {
+        let hdc = CreateCompatibleDC(None);
+        if hdc.is_invalid() {
+            return Err("CreateCompatibleDC for badge text failed".to_owned());
+        }
+
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: size as i32,
+                biHeight: -(size as i32), // top-down
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0 as u32,
+                ..Default::default()
+            },
+            ..Default::default()
         };
-        for (row_index, row) in rows.iter().enumerate() {
-            for col in 0..GLYPH_W {
-                if (row >> (GLYPH_W - 1 - col)) & 1 == 0 {
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let hbmp = match CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+            Ok(bitmap) => bitmap,
+            Err(error) => {
+                let _ = DeleteDC(hdc);
+                return Err(format!("CreateDIBSection for badge text: {error}"));
+            }
+        };
+        if bits.is_null() {
+            let _ = DeleteObject(hbmp.into());
+            let _ = DeleteDC(hdc);
+            return Err("CreateDIBSection for badge text returned null bits".to_owned());
+        }
+
+        let mask_pixels = std::slice::from_raw_parts_mut(bits as *mut u32, size * size);
+        mask_pixels.fill(0);
+        let old_bitmap = SelectObject(hdc, hbmp.into());
+        if old_bitmap.is_invalid() {
+            let _ = DeleteObject(hbmp.into());
+            let _ = DeleteDC(hdc);
+            return Err("SelectObject badge text bitmap failed".to_owned());
+        }
+
+        let face_name: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
+        let font = CreateFontW(
+            -((font_height * scale) as i32),
+            0,
+            0,
+            0,
+            FW_SEMIBOLD.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_TT_ONLY_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            ANTIALIASED_QUALITY,
+            DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
+            PCWSTR::from_raw(face_name.as_ptr()),
+        );
+        if font.is_invalid() {
+            let _ = SelectObject(hdc, old_bitmap);
+            let _ = DeleteObject(hbmp.into());
+            let _ = DeleteDC(hdc);
+            return Err("CreateFontW for badge text failed".to_owned());
+        }
+
+        let old_font = SelectObject(hdc, font.into());
+        if old_font.is_invalid() {
+            let _ = DeleteObject(font.into());
+            let _ = SelectObject(hdc, old_bitmap);
+            let _ = DeleteObject(hbmp.into());
+            let _ = DeleteDC(hdc);
+            return Err("SelectObject badge text font failed".to_owned());
+        }
+
+        let _ = SetBkMode(hdc, TRANSPARENT);
+        let _ = SetTextColor(hdc, COLORREF(0x00FF_FFFF));
+        let mut text: Vec<u16> = label.encode_utf16().collect();
+        let mut text_rect = RECT {
+            left: text_left as i32,
+            top: 0,
+            right: text_right as i32,
+            bottom: size as i32,
+        };
+        let draw_result = DrawTextW(
+            hdc,
+            &mut text,
+            &mut text_rect,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+        );
+
+        let text_result = if draw_result <= 0 {
+            Err("DrawTextW for badge text failed".to_owned())
+        } else {
+            // A 32-bit DIB created with BI_RGB does not provide a useful alpha
+            // channel for GDI text. With antialiased quality and a black DIB,
+            // the rendered RGB intensity is the glyph coverage mask.
+            for (index, packed) in mask_pixels.iter().copied().enumerate() {
+                let coverage = ((packed & 0xff)
+                    .max((packed >> 8) & 0xff)
+                    .max((packed >> 16) & 0xff)) as u16;
+                if coverage == 0 || pixels[index][3] == 0 {
                     continue;
                 }
-                let inset = scale as f32 * 0.02;
-                let cell_left = x_offset as f32
-                    + col as f32 * layout_glyph_width as f32 / GLYPH_W as f32;
-                let cell_right = x_offset as f32
-                    + (col + 1) as f32 * layout_glyph_width as f32 / GLYPH_W as f32;
-                let left = cell_left * scale as f32 + inset;
-                let top = (origin_y + row_index) as f32 * scale as f32 + inset;
-                let right = cell_right * scale as f32 - inset;
-                let bottom = (origin_y + row_index + 1) as f32 * scale as f32 - inset;
-                let radius = scale as f32 * 0.10;
-                let min_x = left.max(0.0) as usize;
-                let max_x = right.ceil().min(size as f32) as usize;
-                let min_y = top.max(0.0) as usize;
-                let max_y = bottom.ceil().min(size as f32) as usize;
-                for y in min_y..max_y {
-                    for x in min_x..max_x {
-                        let sample_x = x as f32 + 0.5;
-                        let sample_y = y as f32 + 0.5;
-                        if rounded_rect_contains(sample_x, sample_y, left, top, right, bottom, radius) {
-                            pixels[y * size + x] = ATTENTION_FG;
-                        }
-                    }
+                let inverse = 255 - coverage;
+                for channel in 0..3 {
+                    pixels[index][channel] = ((u16::from(pixels[index][channel]) * inverse
+                        + u16::from(ATTENTION_FG[channel]) * coverage)
+                        / 255) as u8;
                 }
             }
-        }
-        x_offset += layout_glyph_width + 1;
-    }
-}
+            Ok(())
+        };
 
-#[cfg(windows)]
-fn rounded_rect_contains(
-    x: f32,
-    y: f32,
-    left: f32,
-    top: f32,
-    right: f32,
-    bottom: f32,
-    radius: f32,
-) -> bool {
-    if x < left || x > right || y < top || y > bottom {
-        return false;
+        let _ = SelectObject(hdc, old_font);
+        let _ = DeleteObject(font.into());
+        let _ = SelectObject(hdc, old_bitmap);
+        let _ = DeleteObject(hbmp.into());
+        let _ = DeleteDC(hdc);
+        text_result
     }
-    let nearest_x = x.clamp(left + radius, right - radius);
-    let nearest_y = y.clamp(top + radius, bottom - radius);
-    let dx = x - nearest_x;
-    let dy = y - nearest_y;
-    dx * dx + dy * dy <= radius * radius
 }
 
 #[cfg(test)]
@@ -640,7 +706,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn raster_badge_has_antialiased_edges_and_plus_glyph() {
-        let pixels = render_badge_pixels("99+", 16);
+        let pixels = render_badge_pixels("99+", 16).expect("badge text should render");
         assert!(pixels.iter().any(|pixel| {
             let alpha = (pixel >> 24) & 0xff;
             alpha > 0 && alpha < 255
@@ -652,13 +718,29 @@ mod tests {
                 | u32::from(ATTENTION_BG[2]);
             *pixel == expected
         }));
-        let plus = render_badge_pixels("+", 16);
+        let plus = render_badge_pixels("+", 16).expect("badge text should render");
         assert!(plus.iter().any(|pixel| {
             let alpha = (pixel >> 24) & 0xff;
             let red = (pixel >> 16) & 0xff;
             let green = (pixel >> 8) & 0xff;
             let blue = pixel & 0xff;
-            alpha == 255 && red >= 220 && green >= 220 && blue >= 220
+            alpha == 255
+                && red >= u32::from(ATTENTION_BG[0]) + 32
+                && green >= u32::from(ATTENTION_BG[1]) + 32
+                && blue >= u32::from(ATTENTION_BG[2]) + 32
+        }));
+        assert!(plus.iter().any(|pixel| {
+            let alpha = (pixel >> 24) & 0xff;
+            let red = (pixel >> 16) & 0xff;
+            let green = (pixel >> 8) & 0xff;
+            let blue = pixel & 0xff;
+            alpha == 255
+                && red > u32::from(ATTENTION_BG[0])
+                && red < u32::from(ATTENTION_FG[0])
+                && green > u32::from(ATTENTION_BG[1])
+                && green < u32::from(ATTENTION_FG[1])
+                && blue > u32::from(ATTENTION_BG[2])
+                && blue < u32::from(ATTENTION_FG[2])
         }));
     }
 
@@ -675,15 +757,21 @@ mod tests {
                 .map_or(0, |(last, first)| last - first + 1)
         }
 
-        let two_digit_width = alpha_width(&render_badge_pixels("10", 16), 16);
-        let overflow_width = alpha_width(&render_badge_pixels("99+", 16), 16);
+        let two_digit_width = alpha_width(
+            &render_badge_pixels("10", 16).expect("badge text should render"),
+            16,
+        );
+        let overflow_width = alpha_width(
+            &render_badge_pixels("99+", 16).expect("badge text should render"),
+            16,
+        );
         assert!(two_digit_width < overflow_width);
     }
 
     #[cfg(windows)]
     #[test]
     fn raster_single_digit_uses_larger_circle_geometry() {
-        let pixels = render_badge_pixels("1", 16);
+        let pixels = render_badge_pixels("1", 16).expect("badge text should render");
         let occupied: Vec<usize> = (0..16)
             .filter(|x| (0..16).any(|y| pixels[y * 16 + x] >> 24 != 0))
             .collect();
@@ -697,7 +785,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn raster_single_digit_uses_larger_glyph_geometry() {
-        let pixels = render_badge_pixels("1", 16);
+        let pixels = render_badge_pixels("1", 16).expect("badge text should render");
         let foreground: Vec<usize> = pixels
             .iter()
             .enumerate()
@@ -706,7 +794,11 @@ mod tests {
                 let red = (pixel >> 16) & 0xff;
                 let green = (pixel >> 8) & 0xff;
                 let blue = pixel & 0xff;
-                (alpha > 200 && red > 220 && green > 220 && blue > 220).then_some(index)
+                (alpha > 200
+                    && red >= u32::from(ATTENTION_BG[0]) + 32
+                    && green >= u32::from(ATTENTION_BG[1]) + 32
+                    && blue >= u32::from(ATTENTION_BG[2]) + 32)
+                    .then_some(index)
             })
             .collect();
         let rows: Vec<usize> = foreground.iter().map(|index| index / 16).collect();
@@ -715,6 +807,6 @@ mod tests {
             .min()
             .zip(rows.iter().max())
             .map_or(0, |(first, last)| last - first + 1);
-        assert!((8..=9).contains(&height));
+        assert!((6..=9).contains(&height));
     }
 }
