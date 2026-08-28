@@ -860,6 +860,9 @@ pub(crate) struct TurnWritebackAttempt {
     attempt_id: String,
     attempt_generation: u64,
     started_at: i64,
+    /// Wire/billing turn id (`X-Flowy-Turn-Id`). Distinct from `msg_id`
+    /// (the assistant row that owns the write-back chip).
+    billing_turn_id: String,
 }
 
 #[derive(Debug)]
@@ -1053,7 +1056,17 @@ impl TurnWritebackAttempt {
             attempt_generation,
             msg_id,
             started_at,
+            billing_turn_id: String::new(),
         }
+    }
+
+    pub(crate) fn with_billing_turn_id(mut self, turn_id: impl Into<String>) -> Self {
+        let turn_id = turn_id.into();
+        let trimmed = turn_id.trim();
+        if !trimmed.is_empty() && trimmed.len() <= 64 {
+            self.billing_turn_id = trimmed.to_owned();
+        }
+        self
     }
 
     fn durable_state(&self, mut state: Value) -> Value {
@@ -1597,6 +1610,19 @@ async fn persist_turn_writeback_report_terminal(
 }
 
 async fn run_turn_writeback_report_inner(
+    service: Arc<nomifun_knowledge::KnowledgeService>,
+    request: nomifun_knowledge::TurnWritebackRequest,
+    final_text: String,
+    attempt: TurnWritebackAttempt,
+) -> Result<(), DbError> {
+    let billing_turn_id = attempt.billing_turn_id.clone();
+    nomifun_ai_agent::with_flowy_billing_turn_id(billing_turn_id, async move {
+        run_turn_writeback_report_inner_unscoped(service, request, final_text, attempt).await
+    })
+    .await
+}
+
+async fn run_turn_writeback_report_inner_unscoped(
     service: Arc<nomifun_knowledge::KnowledgeService>,
     mut request: nomifun_knowledge::TurnWritebackRequest,
     final_text: String,
@@ -6211,6 +6237,26 @@ mod tests {
             Vec::new(),
             1,
         )
+    }
+
+    #[test]
+    fn writeback_attempt_carries_wire_billing_turn_id() {
+        let attempt = TurnWritebackAttempt::new(
+            Arc::new(RecordingRepo::new()),
+            Arc::new(TestUserEventBus::new(8)),
+            TEST_USER_ID.to_owned(),
+            test_conversation_id(),
+            TEST_ASSISTANT_MESSAGE_ID.to_owned(),
+            TEST_TURN_A.to_owned(),
+            "answer".to_owned(),
+            Vec::new(),
+            Vec::new(),
+            1,
+        )
+        .with_billing_turn_id("wire-turn-id");
+        assert_eq!(attempt.billing_turn_id, "wire-turn-id");
+        let rejected = attempt.with_billing_turn_id("a".repeat(65));
+        assert_eq!(rejected.billing_turn_id, "wire-turn-id");
     }
 
     #[test]

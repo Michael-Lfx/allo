@@ -1528,6 +1528,11 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
 
     async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         let started_at = now_ms();
+        // Prefer a host-scoped wire turn id (conversation spawn wraps this
+        // future with the admission `turn_id`) so failover/continuation
+        // segments still aggregate under GET /credits/usageByTurn.
+        let billing_turn_id = nomi_providers::current_flowy_billing_turn_id()
+            .unwrap_or_else(|| data.msg_id.clone());
         let source_message_id = data
             .source_message_id
             .as_deref()
@@ -1646,7 +1651,10 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
             let preparation = tokio::select! {
                 biased;
                 _ = turn_cancel.cancelled() => break 'accepted None,
-                prepared = prepare_turn => prepared,
+                prepared = nomi_providers::with_flowy_billing_turn_id(
+                    billing_turn_id.clone(),
+                    prepare_turn,
+                ) => prepared,
             };
 
             let (supports_image, image_blocks, image_analysis, knowledge_hits, mut engine) = match preparation {
@@ -1752,10 +1760,10 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                         break 'accepted None;
                     }
                     res = nomi_providers::with_flowy_billing_turn_id(
-                        // Reuse the turn's root msg_id as Flowy billing turnId so
-                        // every model/media call in this Agent Run aggregates under
-                        // the same GET /credits/usageByTurn key.
-                        data.msg_id.clone(),
+                        // Wire/billing root (`X-Flowy-Turn-Id`), not a continuation
+                        // segment id, so every model/media call in this Agent Run
+                        // aggregates under the same GET /credits/usageByTurn key.
+                        billing_turn_id.clone(),
                         engine.execute_turn_with_content_for_source(
                             current_content,
                             &data.msg_id,
@@ -1998,11 +2006,14 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
 
                 let distill_completed = match distill_job {
                     Some((cfg, dir, transcript)) => {
-                        super::distill::run_distill_exact_turn(
-                            &turn_cancel,
-                            cfg,
-                            dir,
-                            transcript,
+                        nomi_providers::with_flowy_billing_turn_id(
+                            billing_turn_id.clone(),
+                            super::distill::run_distill_exact_turn(
+                                &turn_cancel,
+                                cfg,
+                                dir,
+                                transcript,
+                            ),
                         )
                         .await
                     }
@@ -2048,18 +2059,27 @@ impl crate::runtime_handle::AgentRuntimeControl for NomiAgentManager {
                     if !hooks.is_empty() {
                         let conv_id = self.runtime.conversation_id().to_string();
                         let user_prompt = data.content.clone();
+                        let review_billing_turn_id = billing_turn_id.clone();
                         for hook in hooks {
                             let conv_id = conv_id.clone();
                             let user_prompt = user_prompt.clone();
                             let transcript = transcript.clone();
+                            let review_billing_turn_id = review_billing_turn_id.clone();
                             tokio::spawn(async move {
-                                let ctx = TurnContext {
-                                    conversation_id: &conv_id,
-                                    session_id: &conv_id,
-                                    user_prompt: &user_prompt,
-                                    origin_is_human: true,
-                                };
-                                hook.on_post_turn_review(&ctx, &transcript, &[]).await;
+                                nomi_providers::with_flowy_billing_turn_id(
+                                    review_billing_turn_id,
+                                    async {
+                                        let ctx = TurnContext {
+                                            conversation_id: &conv_id,
+                                            session_id: &conv_id,
+                                            user_prompt: &user_prompt,
+                                            origin_is_human: true,
+                                        };
+                                        hook.on_post_turn_review(&ctx, &transcript, &[])
+                                            .await;
+                                    },
+                                )
+                                .await;
                             });
                         }
                     }

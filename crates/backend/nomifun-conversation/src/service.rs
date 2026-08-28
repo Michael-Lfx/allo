@@ -7299,6 +7299,13 @@ impl ConversationService {
         }
         let session_model = runtime_options.model.clone();
         let workspace_binding_lease = runtime_options.workspace_binding_lease.take();
+        let billing_turn_id = assistant_content
+            .get("turn_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty() && id.len() <= 64)
+            .unwrap_or_default()
+            .to_owned();
         let attempt = TurnWritebackAttempt::new(
             Arc::clone(&self.conversation_repo),
             Arc::clone(&self.user_events),
@@ -7310,7 +7317,8 @@ impl ConversationService {
             prior_written,
             prior_failures,
             attempt_generation,
-        );
+        )
+        .with_billing_turn_id(billing_turn_id);
         attempt.persist_started_intent().await.map_err(|error| {
             AppError::Internal(format!(
                 "Failed to persist knowledge write-back retry intent: {error}"
@@ -9894,25 +9902,29 @@ impl ConversationService {
             let title_user_message_id = user_msg_id.clone();
             let title_user_content = req.content.clone();
             let title_session_model = runtime_options.model.clone();
+            let title_billing_turn_id = first_turn_msg_id.clone();
             tokio::spawn(async move {
                 let task = AssertUnwindSafe(
-                    title_service
-                        .maybe_autotitle(
-                            &title_conversation_id,
-                            &title_user_message_id,
-                            title_user_content,
-                            title_session_model,
-                        )
-                        .instrument(info_span!(
-                            "conversation_auto_title",
-                            conversation_id = %title_conversation_id,
-                            user_message_id = %title_user_message_id,
-                            title_attempt_id = %title_attempt_id(
+                    nomifun_ai_agent::with_flowy_billing_turn_id(
+                        title_billing_turn_id,
+                        title_service
+                            .maybe_autotitle(
                                 &title_conversation_id,
                                 &title_user_message_id,
-                            ),
-                            attempt = 1,
-                        )),
+                                title_user_content,
+                                title_session_model,
+                            )
+                            .instrument(info_span!(
+                                "conversation_auto_title",
+                                conversation_id = %title_conversation_id,
+                                user_message_id = %title_user_message_id,
+                                title_attempt_id = %title_attempt_id(
+                                    &title_conversation_id,
+                                    &title_user_message_id,
+                                ),
+                                attempt = 1,
+                            )),
+                    ),
                 );
                 if task.catch_unwind().await.is_err() {
                     let attempt_id = format!(
@@ -10453,6 +10465,7 @@ impl ConversationService {
                 let send_agent = agent.clone();
                 let conv_id_send = conv_id.clone();
                 let send_cancellation = turn_token.clone();
+                let send_billing_turn_id = stable_turn_id.clone();
                 // Phase 3: keep a copy of this turn's send so a pre-response
                 // provider fault can resend the SAME content to the next model.
                 let resend_payload = current_send.clone();
@@ -10463,7 +10476,11 @@ impl ConversationService {
                         let _ = send_error_tx.send(Ok(()));
                         return;
                     }
-                    let send_result = send_agent.send_message(current_send).await;
+                    let send_result = nomifun_ai_agent::with_flowy_billing_turn_id(
+                        send_billing_turn_id,
+                        send_agent.send_message(current_send),
+                    )
+                    .await;
                     if let Err(e) = send_result.as_ref() {
                         error!(conversation_id = %conv_id_send, error = %ErrorChain(e), "Agent send_message failed");
                     }
@@ -10851,7 +10868,8 @@ impl ConversationService {
                         Vec::new(),
                         Vec::new(),
                         1,
-                    );
+                    )
+                    .with_billing_turn_id(stable_turn_id.clone());
                     match attempt.emit_started_intent().await {
                         Ok(()) => {
                             // No workspace binding lease is carried: the

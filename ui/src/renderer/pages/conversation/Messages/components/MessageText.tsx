@@ -117,12 +117,14 @@ const MessageKnowledgeWriteback: React.FC<{
   state: KnowledgeWritebackState;
   conversationId: IMessageText['conversation_id'];
   messageId?: IMessageText['message_id'];
-}> = ({ state, conversationId, messageId }) => {
+  onSettled?: () => void;
+}> = ({ state, conversationId, messageId, onSettled }) => {
   const { t } = useTranslation();
   const [retrying, setRetrying] = useState(false);
   const [watchingRetry, setWatchingRetry] = useState(false);
   const [polledState, setPolledState] = useState<KnowledgeWritebackState>();
   const retryFromAttemptRef = useRef<string | undefined>(undefined);
+  const sawRunningRef = useRef(RUNNING_WRITEBACK_STATUSES.has(state.status));
   const displayState = useMemo(
     () => preferKnowledgeWritebackState(state, polledState) ?? state,
     [polledState, state]
@@ -158,6 +160,16 @@ const MessageKnowledgeWriteback: React.FC<{
     retrying,
     watchingRetry,
   ]);
+
+  useEffect(() => {
+    if (RUNNING_WRITEBACK_STATUSES.has(displayState.status)) {
+      sawRunningRef.current = true;
+      return;
+    }
+    if (!sawRunningRef.current) return;
+    sawRunningRef.current = false;
+    onSettled?.();
+  }, [displayState.status, onSettled]);
 
   // Realtime fan-out is bounded and may drop a frame without disconnecting.
   // Poll this exact durable owner row while it is running (or while a manual
@@ -826,6 +838,18 @@ const MessageText: React.FC<{
             state={writebackState}
             conversationId={message.conversation_id}
             messageId={message.message_id ?? message.msg_id}
+            onSettled={
+              conversationId && turnCreditKey
+                ? () => {
+                    void fetchAndPersistTurnCredits({
+                      conversation_id: conversationId,
+                      turn_id: turnCreditKey,
+                      force: true,
+                      delayMs: 800,
+                    });
+                  }
+                : undefined
+            }
           />
         )}
         {actionsRow}

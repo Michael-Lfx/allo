@@ -67,4 +67,18 @@ mod tests {
         let observed = with_flowy_billing_turn_id(long, async { current_flowy_billing_turn_id() }).await;
         assert!(observed.is_none());
     }
+
+    #[tokio::test]
+    async fn spawned_task_does_not_inherit_turn_id() {
+        let observed = with_flowy_billing_turn_id("turn-parent", async {
+            tokio::spawn(async { current_flowy_billing_turn_id() })
+                .await
+                .expect("join spawned billing probe")
+        })
+        .await;
+        assert!(
+            observed.is_none(),
+            "detached tasks must wrap with_flowy_billing_turn_id themselves"
+        );
+    }
 }

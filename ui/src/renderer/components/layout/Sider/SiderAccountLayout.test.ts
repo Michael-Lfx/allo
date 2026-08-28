@@ -16,6 +16,11 @@ describe('sider account layout stability', () => {
     expect(userMenuSource.includes("!planText && 'invisible'")).toBe(true);
   });
 
+  test('shows a live credits figure next to the expanded account copy', () => {
+    expect(userMenuSource.includes('data-sider-credits')).toBe(true);
+    expect(userMenuSource.includes('{creditsText}')).toBe(true);
+  });
+
   test('locks the expanded footer row height independently of the active route', () => {
     expect(footerSource.includes('data-sider-footer-expanded')).toBe(true);
     expect(footerSource.includes("className='h-40px flex items-center gap-2px min-w-0'")).toBe(true);

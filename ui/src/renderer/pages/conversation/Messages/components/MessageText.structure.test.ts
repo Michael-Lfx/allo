@@ -123,6 +123,12 @@ describe('MessageText process action chrome', () => {
     expect(source.includes("className='block shrink-0'")).toBe(true);
   });
 
+  test('refetches turn credits after knowledge writeback settles', () => {
+    expect(source.includes('onSettled')).toBe(true);
+    expect(source.includes('force: true')).toBe(true);
+    expect(source.includes('sawRunningRef')).toBe(true);
+  });
+
   test('offers coding turn rollback on the latest editable user message when available', () => {
     expect(source.includes("data-testid='message-coding-rollback-action'")).toBe(true);
     expect(source.includes('ipcBridge.conversation.codingTurnRollbackAvailability.invoke')).toBe(true);

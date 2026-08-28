@@ -74,6 +74,7 @@ pub enum ManagedExtractMode {
 }
 pub use nomi_config;
 pub use nomi_types;
+pub use nomi_providers::{current_flowy_billing_turn_id, with_flowy_billing_turn_id};
 
 pub use agent_eval::{
     eval_run_workspace_label, suite_business_label, EvalCaseTurnUsage, EvalLab, EvalSessionBridge,

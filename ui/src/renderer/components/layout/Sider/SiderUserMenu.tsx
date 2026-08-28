@@ -294,6 +294,14 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
           </span>
         </span>
       )}
+      {!collapsed && authenticated && (
+        <span
+          data-sider-credits
+          className='shrink-0 pr-4px text-11px leading-14px text-t-tertiary tabular-nums'
+        >
+          {creditsText}
+        </span>
+      )}
     </div>
   );
 

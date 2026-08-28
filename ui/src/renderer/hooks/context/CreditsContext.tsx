@@ -9,6 +9,7 @@ import React, {
 } from 'react';
 import { ipcBridge } from '@/common';
 import { getCurrentCronTimeZone } from '@renderer/pages/cron/cronUtils';
+import { emitter } from '@/renderer/utils/emitter';
 import { useCloudAuth } from './CloudAuthContext';
 
 // --- Day key (local midnight, YYYYMMDD integer) ------------------------------
@@ -97,13 +98,18 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
   // successful check-in updates lastCheckInDayKey).
   const isFetchingBalanceRef = useRef(false);
   const isCheckingInRef = useRef(false);
+  const pendingBalanceRefreshRef = useRef(false);
   const lastCheckInDayKeyRef = useRef(lastCheckInDayKey);
   useEffect(() => {
     lastCheckInDayKeyRef.current = lastCheckInDayKey;
   }, [lastCheckInDayKey]);
 
   const fetchBalance = useCallback(async () => {
-    if (!isAuthenticated || isFetchingBalanceRef.current) return;
+    if (!isAuthenticated) return;
+    if (isFetchingBalanceRef.current) {
+      pendingBalanceRefreshRef.current = true;
+      return;
+    }
     isFetchingBalanceRef.current = true;
     setIsFetchingBalance(true);
     try {
@@ -116,6 +122,10 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
     } finally {
       isFetchingBalanceRef.current = false;
       setIsFetchingBalance(false);
+      if (pendingBalanceRefreshRef.current) {
+        pendingBalanceRefreshRef.current = false;
+        void fetchBalance();
+      }
     }
   }, [isAuthenticated]);
 
@@ -249,11 +259,24 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
       triggerBalance('polling');
     }, POLLING_INTERVAL_MS);
 
+    let consumptionTimer: ReturnType<typeof setTimeout> | undefined;
+    const onConsumption = () => {
+      if (consumptionTimer) clearTimeout(consumptionTimer);
+      consumptionTimer = setTimeout(() => {
+        void fetchBalance();
+      }, 800);
+    };
+    emitter.on('nomi.credits.balance.refresh', onConsumption);
+    emitter.on('nomi.turn_credits.updated', onConsumption);
+
     return () => {
       window.removeEventListener('focus', onFocus);
       window.clearInterval(intervalId);
+      if (consumptionTimer) clearTimeout(consumptionTimer);
+      emitter.off('nomi.credits.balance.refresh', onConsumption);
+      emitter.off('nomi.turn_credits.updated', onConsumption);
     };
-  }, [isAuthenticated, triggerBalance]);
+  }, [isAuthenticated, triggerBalance, fetchBalance]);
 
   const value = useMemo<CreditsContextValue>(
     () => ({

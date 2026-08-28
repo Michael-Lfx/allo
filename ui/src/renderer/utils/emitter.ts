@@ -25,6 +25,7 @@ interface EventTypes {
   'nomi.turn_credits.updated': [
     { conversation_id: ConversationId; turn_id: MessageId; usage: TurnCreditUsageData }
   ];
+  'nomi.credits.balance.refresh': void;
   'acp.selected.file': [Array<string | FileOrFolderItem>];
   'acp.selected.file.append': [Array<string | FileOrFolderItem>];
   'acp.selected.file.clear': void;
