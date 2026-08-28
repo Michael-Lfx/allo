@@ -312,7 +312,7 @@ fn map_approval_event(event: &EventFrame, our_session_key: Option<&str>) -> Vec<
         .unwrap_or_else(|| vec!["allow-once".into(), "allow-always".into(), "deny".into()])
         .into_iter()
         .map(|decision| ConfirmationOption {
-            label: decision.clone(),
+            label: openclaw_confirmation_label(&decision),
             value: Value::String(decision),
             params: None,
         })
@@ -332,6 +332,20 @@ fn map_approval_event(event: &EventFrame, our_session_key: Option<&str>) -> Vec<
     vec![AgentStreamEvent::AcpPermission(AcpPermissionEventData::Confirmation(
         confirmation,
     ))]
+}
+
+fn openclaw_confirmation_label(decision: &str) -> String {
+    match decision {
+        "allow-once" | "allow_once" | "Allow once" => "messages.confirmation.yesAllowOnce".to_owned(),
+        "allow-always" | "allow_always" | "Allow always" => "messages.confirmation.yesAllowAlways".to_owned(),
+        "deny" | "deny-once" | "deny_once" | "reject" | "reject-once" | "reject_once" | "Reject once" => {
+            "messages.confirmation.rejectOnce".to_owned()
+        }
+        "deny-always" | "deny_always" | "reject-always" | "reject_always" | "Reject always" => {
+            "messages.confirmation.rejectAlways".to_owned()
+        }
+        other => other.to_owned(),
+    }
 }
 
 fn compute_text_delta(message: &Option<Value>, accumulated: &mut String) -> Option<String> {
@@ -713,7 +727,7 @@ mod tests {
                     "commandPreview": "git status",
                     "host": "gateway",
                     "sessionKey": "sk-1",
-                    "allowedDecisions": ["allow-once", "deny"]
+                    "allowedDecisions": ["allow-once", "allow-always", "deny", "reject-always"]
                 },
                 "createdAtMs": 1,
                 "expiresAtMs": 2
@@ -726,10 +740,21 @@ mod tests {
             assert_eq!(conf.call_id, "req-1");
             assert_eq!(conf.action, Some("git status".to_owned()));
             assert_eq!(conf.id, "req-1");
-            assert_eq!(conf.options.len(), 2);
+            assert_eq!(conf.options.len(), 4);
+            assert_eq!(conf.options[0].label, "messages.confirmation.yesAllowOnce");
+            assert_eq!(conf.options[1].label, "messages.confirmation.yesAllowAlways");
+            assert_eq!(conf.options[2].label, "messages.confirmation.rejectOnce");
+            assert_eq!(conf.options[3].label, "messages.confirmation.rejectAlways");
+            assert_eq!(conf.options[0].value, Value::String("allow-once".to_owned()));
+            assert_eq!(conf.options[3].value, Value::String("reject-always".to_owned()));
         } else {
             panic!("Expected AcpPermission(Confirmation)");
         }
+    }
+
+    #[test]
+    fn unknown_openclaw_decision_keeps_agent_label() {
+        assert_eq!(openclaw_confirmation_label("provider-extension"), "provider-extension");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 import type {
   AcpPermissionRequest,
+  AcpPermissionOptionKind,
   PlanUpdate,
   PersistedToolArtifact,
   ToolCallContentItem,
@@ -988,6 +989,16 @@ const normalizePermissionParams = (params: unknown): Record<string, string> | un
   return Object.fromEntries(Object.entries(params).map(([key, value]) => [key, toDisplayText(value)]));
 };
 
+const isLegacyConfirmationContent = (value: unknown): boolean => {
+  // Nomi/OpenClaw currently serialize their generic Confirmation under the
+  // `acp_permission` event name. Native ACP requests have a `tool_call` and
+  // must keep the native renderer/confirmation endpoint.
+  if (!isObject(value) || typeof value.call_id !== 'string' || isObject(value.tool_call)) {
+    return false;
+  }
+  return Array.isArray(value.options);
+};
+
 const normalizePermissionContent = (value: unknown): IConfirmation => {
   const data = isObject(value) ? value : {};
   const options = Array.isArray(data.options)
@@ -1015,7 +1026,7 @@ const normalizePermissionContent = (value: unknown): IConfirmation => {
 
 const normalizeAcpPermissionOptionKind = (
   value: unknown
-): AcpPermissionRequest['options'][number]['kind'] => {
+): AcpPermissionOptionKind | undefined => {
   switch (value) {
     case 'allow_once':
     case 'allow_always':
@@ -1023,7 +1034,7 @@ const normalizeAcpPermissionOptionKind = (
     case 'reject_always':
       return value;
     default:
-      return 'allow_once';
+      return undefined;
   }
 };
 
@@ -1037,11 +1048,14 @@ const normalizeAcpPermissionContent = (value: unknown): AcpPermissionRequest => 
   return {
     session_id: toDisplayText(data.session_id),
     options: Array.isArray(data.options)
-      ? data.options.filter(isObject).map((option, index) => ({
-          option_id: toDisplayText(option.option_id, `option_${index}`),
-          name: toDisplayText(option.name ?? option.label, `Option ${index + 1}`),
-          kind: normalizeAcpPermissionOptionKind(option.kind),
-        }))
+      ? data.options.filter(isObject).map((option, index) => {
+          const kind = normalizeAcpPermissionOptionKind(option.kind);
+          return {
+            option_id: toDisplayText(option.option_id, `option_${index}`),
+            name: toDisplayText(option.name ?? option.label, `Option ${index + 1}`),
+            ...(kind ? { kind } : {}),
+          };
+        })
       : [],
     tool_call: {
       tool_call_id: toDisplayText(toolCall.tool_call_id ?? data.call_id),
@@ -1472,6 +1486,18 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
       };
     }
     case 'acp_permission': {
+      if (isLegacyConfirmationContent(message.data)) {
+        return {
+          id: uuid(),
+          type: 'permission',
+          msg_id: message.msg_id,
+          ...turnIdentity,
+          position: 'left',
+          conversation_id: message.conversation_id,
+          created_at,
+          content: normalizePermissionContent(message.data),
+        };
+      }
       return {
         id: uuid(),
         type: 'acp_permission',

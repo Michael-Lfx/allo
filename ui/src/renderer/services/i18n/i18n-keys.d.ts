@@ -3598,6 +3598,8 @@ export type I18nKey =
   | 'messages.confirmation.applyChange'
   | 'messages.confirmation.no'
   | 'messages.confirmation.proceed'
+  | 'messages.confirmation.rejectAlways'
+  | 'messages.confirmation.rejectOnce'
   | 'messages.confirmation.yesAllowAlways'
   | 'messages.confirmation.yesAllowOnce'
   | 'messages.confirmation.yesAlwaysAllowServer'

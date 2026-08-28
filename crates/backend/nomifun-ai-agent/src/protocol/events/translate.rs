@@ -1310,13 +1310,15 @@ fn map_sdk_permission_tool_kind(kind: Option<&SdkToolKind>) -> AcpToolCallKind {
         .unwrap_or(AcpToolCallKind::Execute)
 }
 
-fn map_sdk_permission_option_kind(kind: SdkPermissionOptionKind) -> AcpPermissionOptionKind {
+fn map_sdk_permission_option_kind(kind: SdkPermissionOptionKind) -> Option<AcpPermissionOptionKind> {
     match kind {
-        SdkPermissionOptionKind::AllowOnce => AcpPermissionOptionKind::AllowOnce,
-        SdkPermissionOptionKind::AllowAlways => AcpPermissionOptionKind::AllowAlways,
-        SdkPermissionOptionKind::RejectOnce => AcpPermissionOptionKind::RejectOnce,
-        SdkPermissionOptionKind::RejectAlways => AcpPermissionOptionKind::RejectAlways,
-        _ => AcpPermissionOptionKind::RejectOnce,
+        SdkPermissionOptionKind::AllowOnce => Some(AcpPermissionOptionKind::AllowOnce),
+        SdkPermissionOptionKind::AllowAlways => Some(AcpPermissionOptionKind::AllowAlways),
+        SdkPermissionOptionKind::RejectOnce => Some(AcpPermissionOptionKind::RejectOnce),
+        SdkPermissionOptionKind::RejectAlways => Some(AcpPermissionOptionKind::RejectAlways),
+        // A future ACP extension must remain unclassified. The option name
+        // is preserved and the renderer will use it as the safe fallback.
+        _ => None,
     }
 }
 
