@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use nomifun_common::{AppError, generate_id, now_ms};
 use serde::{Deserialize, Serialize};
@@ -29,24 +30,39 @@ pub struct MediaServeHead {
     pub mime: String,
     pub bytes: u64,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalTask {
     pub task_id: String,
     pub status: GenerationTaskStatus,
     pub mode: String,
     pub prompt: String,
+    #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
     pub aspect_ratio: Option<String>,
+    #[serde(default)]
     pub resolution: Option<String>,
+    #[serde(default)]
     pub duration_secs: Option<u32>,
+    #[serde(default)]
     pub reference_media_ids: Vec<String>,
+    #[serde(default)]
     pub first_frame_media_id: Option<String>,
+    #[serde(default)]
     pub last_frame_media_id: Option<String>,
+    #[serde(default)]
     pub progress: f32,
+    #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
     pub result_media_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct TaskIndex {
+    items: Vec<InternalTask>,
 }
 
 impl InternalTask {
@@ -113,6 +129,8 @@ pub struct NewGenerationRequest {
 pub struct CanvasService {
     data_dir: PathBuf,
     tasks: RwLock<HashMap<String, InternalTask>>,
+    /// Set after `tasks.json` has been loaded (or confirmed missing).
+    tasks_hydrated: AtomicBool,
     /// Hard-cancel tokens for in-flight Flowy video (and cooperative image) tasks.
     cancels: RwLock<HashMap<String, CancellationToken>>,
 }
@@ -122,6 +140,7 @@ impl CanvasService {
         Arc::new(Self {
             data_dir,
             tasks: RwLock::new(HashMap::new()),
+            tasks_hydrated: AtomicBool::new(false),
             cancels: RwLock::new(HashMap::new()),
         })
     }
@@ -152,6 +171,10 @@ impl CanvasService {
 
     fn vimax_links_path(&self) -> PathBuf {
         self.root().join("vimax_session_links.json")
+    }
+
+    fn task_index_path(&self) -> PathBuf {
+        self.root().join("tasks.json")
     }
 
     pub async fn ensure_dirs(&self) -> Result<(), AppError> {
@@ -704,6 +727,77 @@ impl CanvasService {
 
     // ── generation tasks ────────────────────────────────────────────────────
 
+    async fn write_task_index(&self, tasks: &HashMap<String, InternalTask>) -> Result<(), AppError> {
+        let index = TaskIndex {
+            items: tasks.values().cloned().collect(),
+        };
+        write_json_file(&self.task_index_path(), &index).await
+    }
+
+    async fn persist_tasks(&self) {
+        let snapshot = self.tasks.read().await.clone();
+        if let Err(error) = self.write_task_index(&snapshot).await {
+            tracing::warn!(error = %error, "failed to persist generation tasks");
+        }
+    }
+
+    /// Load `{data_dir}/video-canvas/tasks.json` once. In-flight jobs cannot
+    /// resume after process exit, so queued/running rows become failed history.
+    async fn hydrate_tasks(&self) {
+        if self.tasks_hydrated.load(Ordering::Acquire) {
+            return;
+        }
+        if let Err(error) = self.ensure_dirs().await {
+            tracing::warn!(error = %error, "ensure canvas dirs before hydrating tasks");
+        }
+        let mut guard = self.tasks.write().await;
+        if self.tasks_hydrated.load(Ordering::Acquire) {
+            return;
+        }
+        let path = self.task_index_path();
+        let mut rewritten = false;
+        if path.exists() {
+            match read_json_file::<TaskIndex>(&path).await {
+                Ok(index) => {
+                    let now = now_ms();
+                    for mut task in index.items {
+                        if matches!(
+                            task.status,
+                            GenerationTaskStatus::Queued | GenerationTaskStatus::Running
+                        ) {
+                            task.status = GenerationTaskStatus::Failed;
+                            task.progress = 1.0;
+                            task.error = Some(
+                                "Interrupted when the app exited. The history entry was kept."
+                                    .into(),
+                            );
+                            task.updated_at = now;
+                            rewritten = true;
+                        }
+                        guard.insert(task.task_id.clone(), task);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "failed to load generation task index"
+                    );
+                    self.tasks_hydrated.store(true, Ordering::Release);
+                    return;
+                }
+            }
+        }
+        let snapshot = rewritten.then(|| guard.clone());
+        self.tasks_hydrated.store(true, Ordering::Release);
+        drop(guard);
+        if let Some(snapshot) = snapshot {
+            if let Err(error) = self.write_task_index(&snapshot).await {
+                tracing::warn!(error = %error, "failed to persist interrupted generation tasks");
+            }
+        }
+    }
+
     pub async fn create_generation_task(
         self: &Arc<Self>,
         req: NewGenerationRequest,
@@ -751,8 +845,10 @@ impl CanvasService {
         };
         let view = task.to_view();
         let cancel = CancellationToken::new();
+        self.hydrate_tasks().await;
         self.cancels.write().await.insert(task_id.clone(), cancel);
         self.tasks.write().await.insert(task_id.clone(), task);
+        self.persist_tasks().await;
         let svc = Arc::clone(self);
         tokio::spawn(async move {
             crate::generate::run_generation_task(svc, task_id).await;
@@ -761,6 +857,7 @@ impl CanvasService {
     }
 
     pub async fn task_snapshot(&self, task_id: &str) -> Option<InternalTask> {
+        self.hydrate_tasks().await;
         self.tasks.read().await.get(task_id).cloned()
     }
 
@@ -769,6 +866,7 @@ impl CanvasService {
     }
 
     pub async fn get_task(&self, task_id: &str) -> Result<GenerationTaskView, AppError> {
+        self.hydrate_tasks().await;
         self.tasks
             .read()
             .await
@@ -786,6 +884,7 @@ impl CanvasService {
         limit: usize,
         offset: usize,
     ) -> Vec<GenerationTaskView> {
+        self.hydrate_tasks().await;
         let guard = self.tasks.read().await;
         let mut tasks: Vec<&InternalTask> = guard.values().collect();
         tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -797,21 +896,27 @@ impl CanvasService {
             .collect()
     }
 
-    /// Total count of tasks currently tracked in memory. Used by the UI to
+    /// Total count of persisted generation tasks. Used by the UI to
     /// decide whether more pages can be loaded.
     pub async fn task_count(&self) -> usize {
+        self.hydrate_tasks().await;
         self.tasks.read().await.len()
     }
 
-    /// Drop a finished task from the in-memory index. The result media file
+    /// Drop a finished task from the persisted index. The result media file
     /// (if any) is intentionally kept on disk so the URL stays resolvable for
     /// callers that already cached it.
     pub async fn delete_task(&self, task_id: &str) -> Result<(), AppError> {
-        let mut guard = self.tasks.write().await;
-        guard
-            .remove(task_id)
-            .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
+        self.hydrate_tasks().await;
+        let snapshot = {
+            let mut guard = self.tasks.write().await;
+            guard
+                .remove(task_id)
+                .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
+            guard.clone()
+        };
         self.cancels.write().await.remove(task_id);
+        self.write_task_index(&snapshot).await?;
         Ok(())
     }
 
@@ -844,26 +949,32 @@ impl CanvasService {
         if terminal {
             self.cancels.write().await.remove(task_id);
         }
+        self.persist_tasks().await;
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> Result<GenerationTaskView, AppError> {
+        self.hydrate_tasks().await;
         if let Some(token) = self.cancels.read().await.get(task_id).cloned() {
             token.cancel();
         }
-        let mut guard = self.tasks.write().await;
-        let task = guard
-            .get_mut(task_id)
-            .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
-        match task.status {
-            GenerationTaskStatus::Succeeded
-            | GenerationTaskStatus::Failed
-            | GenerationTaskStatus::Canceled => {}
-            _ => {
-                task.status = GenerationTaskStatus::Canceled;
-                task.updated_at = now_ms();
+        let (view, snapshot) = {
+            let mut guard = self.tasks.write().await;
+            let task = guard
+                .get_mut(task_id)
+                .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
+            match task.status {
+                GenerationTaskStatus::Succeeded
+                | GenerationTaskStatus::Failed
+                | GenerationTaskStatus::Canceled => {}
+                _ => {
+                    task.status = GenerationTaskStatus::Canceled;
+                    task.updated_at = now_ms();
+                }
             }
-        }
-        Ok(task.to_view())
+            (task.to_view(), guard.clone())
+        };
+        self.write_task_index(&snapshot).await?;
+        Ok(view)
     }
 
     /// Concatenate video media clips (order preserved) via local ffmpeg.
@@ -1008,5 +1119,65 @@ mod tests {
         let mut got = Vec::new();
         file.read_to_end(&mut got).await.expect("read stream");
         assert_eq!(got, payload);
+    }
+
+    fn sample_task(id: &str, status: GenerationTaskStatus) -> InternalTask {
+        InternalTask {
+            task_id: id.into(),
+            status,
+            mode: "video".into(),
+            prompt: "a clip".into(),
+            model: None,
+            aspect_ratio: Some("16:9".into()),
+            resolution: Some("720p".into()),
+            duration_secs: Some(5),
+            reference_media_ids: vec![],
+            first_frame_media_id: None,
+            last_frame_media_id: None,
+            progress: 1.0,
+            error: None,
+            result_media_id: Some("media-1".into()),
+            created_at: 1,
+            updated_at: 2,
+        }
+    }
+
+    #[tokio::test]
+    async fn generation_tasks_reload_from_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().to_path_buf();
+        let first = CanvasService::new(path.clone());
+        first
+            .tasks
+            .write()
+            .await
+            .insert("t1".into(), sample_task("t1", GenerationTaskStatus::Succeeded));
+        first.persist_tasks().await;
+
+        let second = CanvasService::new(path);
+        let listed = second.list_tasks(10, 0).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].task_id, "t1");
+        assert_eq!(listed[0].status, GenerationTaskStatus::Succeeded);
+        assert_eq!(listed[0].result_media_id.as_deref(), Some("media-1"));
+        assert_eq!(listed[0].duration_secs, Some(5));
+    }
+
+    #[tokio::test]
+    async fn in_flight_generation_tasks_fail_on_reload() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().to_path_buf();
+        let first = CanvasService::new(path.clone());
+        let mut running = sample_task("t2", GenerationTaskStatus::Running);
+        running.progress = 0.4;
+        running.result_media_id = None;
+        first.tasks.write().await.insert("t2".into(), running);
+        first.persist_tasks().await;
+
+        let second = CanvasService::new(path);
+        let listed = second.list_tasks(10, 0).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].status, GenerationTaskStatus::Failed);
+        assert!(listed[0].error.as_ref().is_some());
     }
 }

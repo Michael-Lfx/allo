@@ -377,8 +377,7 @@ async fn list_tasks(
     Query(params): Query<ListTasksQuery>,
 ) -> Result<Json<ApiResponse<TaskListResponse>>, AppError> {
     // Cap to a sane upper bound so a runaway client can't enumerate everything
-    // in one request — the in-memory store is small today, but this keeps the
-    // contract honest if the persistence layer changes later.
+    // in one request.
     let limit = params.limit.clamp(1, 200);
     let offset = params.offset.min(10_000);
     let tasks = state.service.list_tasks(limit, offset).await;

@@ -174,6 +174,13 @@ export async function listGenerationTasks(limit = 30, offset = 0): Promise<{ tas
   );
 }
 
+export async function deleteGenerationTask(taskId: string): Promise<void> {
+  await httpRequest<unknown>(
+    'DELETE',
+    `/api/video-canvas/tasks/${encodeURIComponent(taskId)}`
+  );
+}
+
 export async function concatCanvasMedia(
   mediaIds: string[],
   title?: string
