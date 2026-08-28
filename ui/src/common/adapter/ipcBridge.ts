@@ -7497,6 +7497,7 @@ export interface ICloudDeviceActivationStatus {
   appVersion?: string;
   activatedForVersion: boolean;
   lastReportedIp?: string;
+  clientId?: string;
 }
 
 export interface ICloudDeviceActivationRetryResponse {

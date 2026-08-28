@@ -77,8 +77,17 @@ NomiFun 交付的是**一个**统一的 Rust 后端（`nomifun-app`，二进制
 | `SHELL` | 智能体引擎（Linux/macOS） | 智能体引擎派生子进程时使用的 shell。在 systemd 下的 Linux 服务器上请显式设置（系统账户通常没有 `$SHELL`）。 |
 | `NOMIFUN_URL` | `nomicore call` | 调用 Remote capability 时使用的运行中实例 base URL。 |
 | `NOMIFUN_COMPANION_TOKEN` | `nomicore call` | 访问 `/v1` Remote capability 路由的 companion access token。 |
+| `SENTRY_DSN` | `nomicore` / 宿主 | 后端 panic 与 tracing 错误的可选 Sentry DSN。未设置则关闭 Rust 崩溃上报。不上报对话正文。 |
 
-代码库不集成 `SENTRY_DSN`：这个环境变量并未被读取。
+## 前端构建变量
+
+这些在 Vite 构建时打进 SPA。未设置密钥则对应 SDK 关闭；用户也可在「设置 → 使用分析」选择退出。
+
+| 环境变量 | 读取方 | 作用 |
+|---|---|---|
+| `VITE_POSTHOG_KEY` | SPA 构建 | PostHog 项目 key。未设置则关闭产品分析。 |
+| `VITE_POSTHOG_HOST` | SPA 构建 | PostHog 上报地址。默认 `https://us.i.posthog.com`。 |
+| `VITE_SENTRY_DSN` | SPA 构建 | 渲染进程崩溃的 Sentry DSN。未设置则关闭 JS 崩溃上报。 |
 
 ## 后端常量
 

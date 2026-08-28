@@ -5,10 +5,11 @@ import type { NormalizedToolStatus } from '@/common/chat/normalizeToolCall';
 import ContextCards, { sourceKindFromPath } from '@renderer/components/beautifulUi/contextCards/ContextCards';
 import { ToolChip } from '@renderer/components/beautifulUi/toolChips/ToolChips';
 import type { ToolChipStatus } from '@renderer/components/beautifulUi/toolChips/ToolChips';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { parseHitCount, parseHits } from './KnowledgeSearchChip.parse';
+import { confirmFirstValue, trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import './MessageToolDetails.css';
 
 const knowledgeChipStatus = (status: NormalizedToolStatus | undefined): ToolChipStatus => {
@@ -36,6 +37,7 @@ const KnowledgeSearchChip: React.FC<{ message: IMessageToolCall }> = ({ message 
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const [typedQuery, setTypedQuery] = useState('');
+  const groundedTracked = useRef(false);
 
   const query = String(message.content.args?.query ?? message.content.input?.query ?? '').trim();
   const normalized = normalizeToolCall(message);
@@ -62,6 +64,10 @@ const KnowledgeSearchChip: React.FC<{ message: IMessageToolCall }> = ({ message 
   useEffect(() => {
     if (status === 'completed' && count != null && count > 0) {
       setExpanded(true);
+      if (!groundedTracked.current) {
+        groundedTracked.current = true;
+        trackFunnelEvent('kb_grounded', { feature: 'knowledge', hit_count: count });
+      }
     }
   }, [status, count]);
 
@@ -98,6 +104,7 @@ const KnowledgeSearchChip: React.FC<{ message: IMessageToolCall }> = ({ message 
                 sourceKind: sourceKindFromPath(hit.path),
                 sourceLabel: hit.path,
                 onOpen: () => {
+                  confirmFirstValue({ feature: 'knowledge', source: 'cite_open' });
                   if (hit.kbId) {
                     navigate(`/knowledge/${hit.kbId}?highlight=${encodeURIComponent(hit.path)}`);
                   } else {

@@ -404,6 +404,7 @@ impl CloudService {
                 app_version: None,
                 activated_for_version: false,
                 last_reported_ip: None,
+                client_id: Some(crate::paths::load_or_create_client_id(&self.data_dir)),
             });
         }
 
@@ -432,6 +433,7 @@ impl CloudService {
             app_version: Some(local.app_version),
             activated_for_version: local.activated_for_version,
             last_reported_ip: local.last_reported_ip,
+            client_id: Some(crate::paths::load_or_create_client_id(&self.data_dir)),
         })
     }
 

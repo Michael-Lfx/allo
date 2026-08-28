@@ -10,6 +10,7 @@ use tracing::{debug, warn};
 use crate::activation::DeviceActivation;
 use crate::flowy::FlowyApiClient;
 use crate::http_service::CloudService;
+use crate::paths::load_or_create_client_id;
 use crate::session::ServerSession;
 
 /// Best-effort device activation + client package report for an existing session.
@@ -39,7 +40,14 @@ pub async fn ensure_device_telemetry(service: &CloudService) {
     if let Err(err) = mgr.ensure_device_activation().await {
         warn!(error = %err, "device activation check on startup failed");
     }
-    if let Err(err) = mgr.api().report_client_package(mgr.session()).await {
+    if let Err(err) = mgr
+        .api()
+        .report_client_package(
+            mgr.session(),
+            Some(load_or_create_client_id(service.data_dir())),
+        )
+        .await
+    {
         warn!(error = %err, "client package report on startup failed");
     }
 }
@@ -68,7 +76,10 @@ pub fn spawn_post_login_telemetry(
         {
             warn!(error = %err, "device activation failed after login");
         }
-        if let Err(err) = api.report_client_package(&session).await {
+        if let Err(err) = api
+            .report_client_package(&session, Some(load_or_create_client_id(&data_dir)))
+            .await
+        {
             warn!(error = %err, "client package report failed after login");
         }
     });
@@ -79,7 +90,14 @@ async fn send_presence_heartbeat(service: &CloudService) {
         Ok(m) => m,
         Err(_) => return,
     };
-    match mgr.api().presence_heartbeat(mgr.session()).await {
+    match mgr
+        .api()
+        .presence_heartbeat(
+            mgr.session(),
+            Some(load_or_create_client_id(service.data_dir())),
+        )
+        .await
+    {
         Ok(()) => debug!("presence heartbeat sent"),
         Err(err) => warn!(error = %err, "presence heartbeat failed"),
     }

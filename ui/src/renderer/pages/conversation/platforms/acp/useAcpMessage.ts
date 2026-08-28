@@ -33,6 +33,10 @@ import {
   resolveVerifiedAuthoritativeTurnStart,
 } from '../authoritativeTurnLifecyclePolicy';
 import { acpTurnReducer, initialAcpTurnState, isAcpTurnBusy } from './acpTurnState';
+import {
+  markTurnFirstToken,
+  markTurnIdle,
+} from '@/renderer/utils/analytics/productFunnel';
 
 export const normalizeAcpSlashCommands = (commands: unknown): SlashCommandItem[] => {
   if (!Array.isArray(commands)) return [];
@@ -320,7 +324,8 @@ export const useAcpMessage = (conversation_id: ConversationId, options?: { skipW
     activeThinkingRef.current = null;
     setActiveRequestMessageId(undefined);
     setHasThinkingMessage(false);
-  }, []);
+    markTurnIdle(conversation_id, 'completed');
+  }, [conversation_id]);
 
   const reconcileAfterStreamTerminal = useCallback(() => {
     const generation = turnLifecycleGenerationRef.current;
@@ -568,6 +573,7 @@ export const useAcpMessage = (conversation_id: ConversationId, options?: { skipW
           // First content token — AI has started responding, clear processing indicator
           if (!hasContentInTurnRef.current) {
             hasContentInTurnRef.current = true;
+            markTurnFirstToken(conversation_id);
           }
           // Auto-recover running state only if turn hasn't finished
           if (!turnFinishedRef.current) {

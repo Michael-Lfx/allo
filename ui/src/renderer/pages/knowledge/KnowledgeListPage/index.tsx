@@ -12,7 +12,7 @@
  * The old Form-based create Modal has been removed; only the edit path (openEdit)
  * retains a simple modal.
  */
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -32,6 +32,7 @@ import { isDesktopShell } from '@renderer/utils/platform';
 import { ipcBridge } from '@/common';
 import type { KnowledgeKindShortcut } from '../KnowledgeEmptyState';
 import type { IKnowledgeBase, IKnowledgeTag } from '@/common/adapter/ipcBridge';
+import { trackFunnelEvent } from '@/renderer/utils/analytics/productFunnel';
 import {
   knowledgeErrorText,
   useKnowledgeBases,
@@ -146,6 +147,10 @@ const KnowledgeListPage: React.FC = () => {
     return m;
   }, [tags]);
 
+  useEffect(() => {
+    trackFunnelEvent('home_viewed', { feature: 'knowledge', source: 'knowledge' });
+  }, []);
+
   // Filtered + sorted result
   const displayBases = useMemo(
     () => sortBases(filterBases(bases, kindFilter ?? 'all', tagFilter, searchQuery), sort),
@@ -165,9 +170,10 @@ const KnowledgeListPage: React.FC = () => {
   const handleStudioCreated = (base: unknown) => {
     setStudioVisible(false);
     void refresh();
-    // Navigate to the new base detail
     if (base && typeof base === 'object' && 'knowledge_base_id' in base) {
-      navigate(`/knowledge/${(base as IKnowledgeBase).knowledge_base_id}`);
+      const created = base as IKnowledgeBase;
+      trackFunnelEvent('kb_created', { feature: 'knowledge', kind: created.kind });
+      navigate(`/knowledge/${created.knowledge_base_id}`);
     }
   };
 

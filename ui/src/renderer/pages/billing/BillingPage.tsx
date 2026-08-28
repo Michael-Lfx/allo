@@ -20,6 +20,7 @@ import {
   persistPendingBillingOrder,
   readPendingBillingCheckout,
 } from './billingAuth';
+import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import {
   availablePlanPeriods,
   isPurchasablePlan,
@@ -145,6 +146,7 @@ const BillingPage: React.FC = () => {
 
   useEffect(() => {
     void loadCatalog();
+    trackFunnelEvent('billing_catalog_viewed', { feature: 'billing' });
   }, [loadCatalog]);
 
   useEffect(() => {
@@ -164,6 +166,10 @@ const BillingPage: React.FC = () => {
     setCouponId(undefined);
     setPayError(null);
     setStep('confirm');
+    trackFunnelEvent('billing_checkout_started', {
+      feature: 'billing',
+      item_type: next.itemType,
+    });
   };
 
   useEffect(() => {
@@ -203,11 +209,14 @@ const BillingPage: React.FC = () => {
           clearPendingBillingOrder();
           setPaySession(null);
           setStep('success');
+          trackFunnelEvent('billing_pay_succeeded', { feature: 'billing' });
           return;
         }
         setPayError(t('billing.pay.failed'));
+        trackFunnelEvent('billing_pay_failed', { feature: 'billing', error_code: 'unpaid' });
       } catch (error) {
         setPayError(errorMessage(error, t('billing.pay.failed')));
+        trackFunnelEvent('billing_pay_failed', { feature: 'billing', error_code: 'exception' });
       } finally {
         if (pollingOrderRef.current === paidOrderNo) {
           pollingOrderRef.current = '';
@@ -225,6 +234,7 @@ const BillingPage: React.FC = () => {
       setPayError(null);
       setPending(false);
       setStep('pay');
+      trackFunnelEvent('billing_pay_started', { feature: 'billing' });
     },
     []
   );

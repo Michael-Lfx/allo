@@ -1,4 +1,5 @@
 import { httpRequest } from '@/common/adapter/httpBridge';
+import { isTelemetryEnabled } from './telemetry';
 import type { FunnelEvent } from './productFunnel';
 
 type GrowthProperty = string | number | boolean | null;
@@ -106,6 +107,7 @@ function sanitizeProperties(
 }
 
 export function enqueueVideoGrowthEvent(event: FunnelEvent): void {
+  if (!isTelemetryEnabled()) return;
   const name = growthEventName(event);
   if (!name) return;
   const queue = readQueue();

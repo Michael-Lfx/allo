@@ -58,6 +58,7 @@ const MeetingCaptionsPage = React.lazy(() => import('@renderer/pages/meetingCapt
 const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
 const LearningSettings = React.lazy(() => import('@renderer/pages/settings/LearningSettings'));
 const InsightsSettings = React.lazy(() => import('@renderer/pages/settings/InsightsSettings'));
+const TelemetrySettings = React.lazy(() => import('@renderer/pages/settings/TelemetrySettings'));
 const MoaSettings = React.lazy(() => import('@renderer/pages/settings/MoaSettings'));
 const MediaSettings = React.lazy(() => import('@renderer/pages/settings/MediaSettings'));
 const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/CloudLoginSettings'));
@@ -345,6 +346,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/poi' element={withRouteFallback(PoiSettings)} />
           <Route path='/settings/learning' element={withRouteFallback(LearningSettings)} />
           <Route path='/settings/insights' element={withRouteFallback(InsightsSettings)} />
+          <Route path='/settings/telemetry' element={withRouteFallback(TelemetrySettings)} />
           <Route path='/settings/moa' element={withRouteFallback(MoaSettings)} />
           <Route path='/settings/media' element={withRouteFallback(MediaSettings)} />
           <Route path='/settings/open-capabilities' element={withRouteFallback(OpenCapabilitiesSettings)} />

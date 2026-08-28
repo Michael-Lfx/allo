@@ -111,6 +111,8 @@ pub struct CloudDeviceActivationStatusResponse {
     pub app_version: Option<String>,
     pub activated_for_version: bool,
     pub last_reported_ip: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -303,6 +303,7 @@ async fn build_work_packages(
         signals.user_turns,
         signals.tool_failures,
         skill_summary.patch_count,
+        super::metrics::session_duration_ms(messages),
     );
 
     let skills_root = data_dir.join("skills");

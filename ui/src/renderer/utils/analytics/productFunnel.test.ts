@@ -12,6 +12,7 @@ import {
   markTurnFirstToken,
   markTurnIdle,
   markTurnStreamFinished,
+  maybeTrackRetention,
   resetFunnelForTests,
   resetTurnTimingForTests,
   trackFunnelEvent,
@@ -20,6 +21,7 @@ import {
   listQueuedVideoGrowthEventsForTests,
   resetVideoGrowthUploadForTests,
 } from './videoGrowthUpload';
+import { resetTelemetryForTests, setTelemetryOptOut } from './telemetry';
 
 describe('product funnel', () => {
   test('records auth and accepted first-task events with a stable cohort', () => {
@@ -56,6 +58,17 @@ describe('product funnel', () => {
     expect(hasFunnelEvent('first_value_confirmed')).toBe(false);
     expect(confirmFirstValue({ source: 'follow_up' })).not.toBeNull();
     expect(hasFunnelEvent('first_value_confirmed')).toBe(true);
+    expect(hasFunnelEvent('value_confirmed')).toBe(true);
+  });
+
+  test('emits app_opened once per session instead of fake d1/d7 flags', () => {
+    resetFunnelForTests();
+    const first = maybeTrackRetention();
+    const second = maybeTrackRetention();
+    expect(first.map((event) => event.name)).toEqual(['app_opened']);
+    expect(second).toEqual([]);
+    expect(hasFunnelEvent('d1_retained')).toBe(false);
+    expect(hasFunnelEvent('d7_retained')).toBe(false);
   });
 
   test('records video value once per session while preserving first-value semantics', () => {
@@ -100,5 +113,18 @@ describe('product funnel', () => {
     expect(queued?.properties.session_id).toBe('session-private');
     expect(queued?.properties.workflow).toBe('idea2video');
     expect('prompt' in (queued?.properties ?? {})).toBe(false);
+  });
+
+  test('opt-out skips first-party video growth upload', () => {
+    resetFunnelForTests();
+    resetVideoGrowthUploadForTests();
+    resetTelemetryForTests();
+    setTelemetryOptOut(true);
+    trackFunnelEvent('render_started', {
+      feature: 'video_generation',
+      session_id: 'session-opt-out',
+    });
+    expect(listQueuedVideoGrowthEventsForTests()).toEqual([]);
+    setTelemetryOptOut(false);
   });
 });

@@ -119,6 +119,8 @@ anyhow = "1"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
+sentry = { version = "0.38", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
+sentry-tracing = "0.38"
 
 # Opus codec for the robot uplink/downlink. `opusic-sys` is used instead of the
 # higher-level `audiopus`/`opus` crates because both of those pull

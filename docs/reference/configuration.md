@@ -73,8 +73,17 @@ These are read by the backend regardless of which host embeds it.
 | `SHELL` | agent engine (Linux/macOS) | Shell used when the agent engine spawns child processes. On Linux servers under systemd, set this explicitly (the system account often has no `$SHELL`). |
 | `NOMIFUN_URL` | `nomicore call` | Base URL for a running instance when invoking Remote capabilities. |
 | `NOMIFUN_COMPANION_TOKEN` | `nomicore call` | Companion access token used against `/v1` Remote capability routes. |
+| `SENTRY_DSN` | `nomicore` / hosts | Optional Sentry DSN for backend panics and tracing errors. Unset disables Rust crash reporting. Conversation bodies are not attached. |
 
-There is no `SENTRY_DSN` integration: the codebase does not read that environment variable.
+## Frontend build variables
+
+These are baked into the SPA at Vite build time. Unset keys disable the corresponding SDK; users can also opt out in Settings → Analytics.
+
+| Env var | Read by | Effect |
+|---|---|---|
+| `VITE_POSTHOG_KEY` | SPA build | PostHog project key. Unset disables product analytics. |
+| `VITE_POSTHOG_HOST` | SPA build | PostHog ingest host. Default `https://us.i.posthog.com`. |
+| `VITE_SENTRY_DSN` | SPA build | Sentry DSN for renderer crashes. Unset disables JS crash reporting. |
 
 ## Backend constants
 

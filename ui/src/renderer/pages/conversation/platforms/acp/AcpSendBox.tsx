@@ -52,6 +52,11 @@ import { iconColors } from '@/renderer/styles/colors';
 import { emitter, useAddEventListener } from '@/renderer/utils/emitter';
 import { mergeFileSelectionItems } from '@/renderer/utils/file/fileSelection';
 import { buildDisplayMessage } from '@/renderer/utils/file/messageFiles';
+import {
+  beginTurnTiming,
+  markTurnAccepted as markFunnelTurnAccepted,
+  markTurnIdle,
+} from '@/renderer/utils/analytics/productFunnel';
 import { Tag } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Brain, Shield } from '@icon-park/react';
@@ -281,6 +286,10 @@ const AcpSendBox: React.FC<{
       // A persisted queue delivery may be a completed replay. Keep the local
       // lifecycle closed until the backend proves this caller won admission.
       if (!deferLocalTurnUntilFresh) setAiProcessing(true);
+      beginTurnTiming(conversation_id, {
+        conversation_type: 'acp',
+        cold_start: !hasHydratedRunningState,
+      });
 
       try {
         // Wait for the server-assigned msg_id before rendering the optimistic
@@ -302,6 +311,7 @@ const AcpSendBox: React.FC<{
             setAiProcessing(true);
           }
           markTurnAccepted(msg_id);
+          markFunnelTurnAccepted(conversation_id, { conversation_type: 'acp' });
           // A Skill-only send persists visible skill_load history but has no
           // user text projection, so do not create an empty optimistic bubble.
           if (displayMessage.trim().length > 0) {
@@ -325,6 +335,7 @@ const AcpSendBox: React.FC<{
         return disposition;
       } catch (error: unknown) {
         if (execution && !execution.isCurrent()) return;
+        markTurnIdle(conversation_id, 'failed');
         const errorMsg =
           getConversationRuntimeWorkspaceErrorMessage(error, t) || parseError(error) || t('common.unknownError');
 
@@ -370,6 +381,7 @@ Please check your local CLI tool authentication status`,
     [
       backend,
       conversation_id,
+      hasHydratedRunningState,
       markTurnAccepted,
       reconcilePublicDeliveryReplay,
       setAiProcessing,

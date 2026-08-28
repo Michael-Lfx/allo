@@ -66,6 +66,10 @@ import { repairAllCronJobTimeZonesOnce } from '@renderer/pages/cron/repairCronJo
 // Components and utilities
 import AppLoader from './components/layout/AppLoader';
 import { maybeTrackRetention } from './utils/analytics/productFunnel';
+import {
+  startProductTelemetry,
+  syncBackendClientId,
+} from './utils/analytics/telemetry';
 import Layout from './components/layout/Layout';
 import RouteErrorBoundary from './components/layout/RouteErrorBoundary';
 import Router from './components/layout/Router';
@@ -82,6 +86,8 @@ import { useAuth } from './hooks/context/AuthContext';
 import { useCloudAuth } from './hooks/context/CloudAuthContext';
 import { ConversationHistoryProvider } from './hooks/context/ConversationHistoryContext';
 import HOC from './utils/ui/HOC';
+
+void startProductTelemetry();
 
 const arcoLocales: Record<string, typeof enUS> = {
   'zh-CN': zhCN,
@@ -352,11 +358,21 @@ const Main = () => {
 
   useEffect(() => {
     if (!ready || status !== 'authenticated') return;
-    // Retention / cron repair can wait until cloud status is known on desktop,
-    // but must not block first paint.
+    void startProductTelemetry().then(async () => {
+      try {
+        const device = await ipcBridgeModule.cloud.deviceStatus.invoke();
+        if (device?.clientId) syncBackendClientId(device.clientId);
+      } catch {
+        // Local identity is enough until the device endpoint is reachable.
+      }
+      maybeTrackRetention();
+    });
+  }, [ready, status]);
+
+  useEffect(() => {
+    if (!ready || status !== 'authenticated') return;
     if (!cloudReady) return;
     void repairAllCronJobTimeZonesOnce();
-    maybeTrackRetention();
   }, [ready, cloudReady, status]);
 
   const router = (

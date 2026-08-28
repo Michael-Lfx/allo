@@ -101,6 +101,7 @@ const GuidPage: React.FC = () => {
     if (!hasFunnelEvent('home_interactive')) {
       trackFunnelEvent('home_interactive', { source: 'guid' });
     }
+    trackFunnelEvent('home_viewed', { feature: 'guid', source: 'guid' });
   }, []);
 
   const location = useLocation();

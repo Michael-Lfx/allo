@@ -247,12 +247,13 @@ impl FlowyApiClient {
     pub async fn report_client_package(
         &self,
         session: &ServerSession,
+        client_id: Option<String>,
     ) -> Result<(), ServerClientError> {
         let body = ClientPackageRequest {
             package_type: "stable".to_string(),
             app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             platform: Some(crate::platform::client_platform()),
-            client_id: None,
+            client_id,
         };
         self.post_no_data("/user/clientPackage", Some(session), &body)
             .await
@@ -261,11 +262,12 @@ impl FlowyApiClient {
     pub async fn presence_heartbeat(
         &self,
         session: &ServerSession,
+        client_id: Option<String>,
     ) -> Result<(), ServerClientError> {
         let body = PresenceHeartbeatRequest {
             platform: Some(crate::platform::client_platform()),
             app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            client_id: None,
+            client_id,
         };
         self.post_no_data("/presence/heartbeat", Some(session), &body)
             .await

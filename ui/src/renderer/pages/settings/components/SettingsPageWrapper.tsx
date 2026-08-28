@@ -5,6 +5,7 @@ import { SettingsViewModeProvider } from '@/renderer/components/settings/Setting
 import {
   BookOpen,
   Brain,
+  ChartHistogram,
   ChartPie,
   CloudStorage,
   Computer,
@@ -41,6 +42,7 @@ const iconByName: Record<Exclude<SettingsNavIcon, 'extension'>, React.ComponentT
   poi: Brain,
   learning: BookOpen,
   insights: ChartPie,
+  telemetry: ChartHistogram,
   moa: TreeDiagram,
   media: Pic,
   presets: Robot,

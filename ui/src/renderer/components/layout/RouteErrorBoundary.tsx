@@ -1,6 +1,7 @@
 
 
 import React from 'react';
+import { captureException } from '@/renderer/utils/analytics/telemetry';
 
 interface RouteErrorBoundaryProps {
   children: React.ReactNode;
@@ -45,6 +46,7 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
       error,
       info.componentStack
     );
+    captureException(error);
     this.setState({ componentStack: info.componentStack ?? null });
   }
 

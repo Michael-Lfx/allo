@@ -13,6 +13,10 @@ import {
 } from '@renderer/hooks/agent/useModelProviderList';
 import { setVideoGrowthCloudAuthenticated } from '@renderer/utils/analytics/videoGrowthUpload';
 import {
+  identifyCloudUser,
+  resetCloudUserIdentity,
+} from '@renderer/utils/analytics/telemetry';
+import {
   classifyCloudModelEnvironment,
   type CloudModelEnvironmentClassification,
 } from './cloudModelEnvironment';
@@ -108,7 +112,14 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
 
   useEffect(() => {
     setVideoGrowthCloudAuthenticated(authState.phase === 'authenticated');
-  }, [authState.phase]);
+    if (authState.phase === 'authenticated') {
+      identifyCloudUser(authState.accountId);
+      return;
+    }
+    if (authState.phase === 'unauthenticated') {
+      resetCloudUserIdentity();
+    }
+  }, [authState]);
 
   const isCurrentRun = useCallback((runId: number, controller: AbortController): boolean => {
     return !controller.signal.aborted && runId === restoreRunRef.current;
