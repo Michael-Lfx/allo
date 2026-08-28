@@ -620,7 +620,9 @@
       "audioPending": "No audio or dialogue description yet",
       "audioEditPlaceholder": "Background music, ambience, or dialogue…",
       "reviseShot": "Revise this shot",
-      "filmstrip": "Storyboard filmstrip"
+      "filmstrip": "Storyboard filmstrip",
+      "filmstripPrev": "Scroll shots left",
+      "filmstripNext": "Scroll shots right"
     }
   },
   "artifacts": {

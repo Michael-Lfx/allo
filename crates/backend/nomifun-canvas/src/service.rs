@@ -60,6 +60,12 @@ impl InternalTask {
             progress: self.progress,
             error: self.error.clone(),
             result_media_id: self.result_media_id.clone(),
+            aspect_ratio: self.aspect_ratio.clone(),
+            resolution: self.resolution.clone(),
+            duration_secs: self.duration_secs,
+            reference_media_ids: self.reference_media_ids.clone(),
+            first_frame_media_id: self.first_frame_media_id.clone(),
+            last_frame_media_id: self.last_frame_media_id.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
