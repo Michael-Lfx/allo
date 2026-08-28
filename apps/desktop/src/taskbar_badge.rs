@@ -295,12 +295,57 @@ fn apply_windows_overlay(
 }
 
 #[cfg(windows)]
+struct DcGuard(windows::Win32::Graphics::Gdi::HDC);
+
+#[cfg(windows)]
+impl Drop for DcGuard {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::DeleteDC(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+struct GdiObjectGuard(windows::Win32::Graphics::Gdi::HGDIOBJ);
+
+#[cfg(windows)]
+impl Drop for GdiObjectGuard {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::DeleteObject(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+struct SelectedObjectGuard {
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    old: windows::Win32::Graphics::Gdi::HGDIOBJ,
+}
+
+#[cfg(windows)]
+impl Drop for SelectedObjectGuard {
+    fn drop(&mut self) {
+        if !self.hdc.is_invalid() && !self.old.is_invalid() {
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::SelectObject(self.hdc, self.old);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
 fn create_badge_icon(
     label: &str,
 ) -> Result<windows::Win32::UI::WindowsAndMessaging::HICON, String> {
     use windows::Win32::Foundation::TRUE;
     use windows::Win32::Graphics::Gdi::{
-        CreateBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, BITMAPINFO,
+        CreateBitmap, CreateCompatibleDC, CreateDIBSection, BITMAPINFO,
         BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, ICONINFO};
@@ -314,6 +359,7 @@ fn create_badge_icon(
         if hdc.is_invalid() {
             return Err("CreateCompatibleDC failed".to_owned());
         }
+        let _dc_guard = DcGuard(hdc);
 
         let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
@@ -330,8 +376,8 @@ fn create_badge_icon(
         let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
         let hbmp = CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
             .map_err(|e| format!("CreateDIBSection: {e}"))?;
+        let _hbmp_guard = GdiObjectGuard(hbmp.into());
         if bits.is_null() {
-            let _ = DeleteDC(hdc);
             return Err("CreateDIBSection returned null bits".to_owned());
         }
 
@@ -350,10 +396,9 @@ fn create_badge_icon(
             Some(mask_buf.as_ptr() as *const _),
         );
         if hmask.is_invalid() {
-            let _ = DeleteObject(hbmp.into());
-            let _ = DeleteDC(hdc);
             return Err("CreateBitmap mask failed".to_owned());
         }
+        let _hmask_guard = GdiObjectGuard(hmask.into());
 
         let info = ICONINFO {
             fIcon: TRUE,
@@ -363,11 +408,7 @@ fn create_badge_icon(
             hbmColor: hbmp,
         };
 
-        let icon = CreateIconIndirect(&info).map_err(|e| format!("CreateIconIndirect: {e}"))?;
-        let _ = DeleteObject(hbmp.into());
-        let _ = DeleteObject(hmask.into());
-        let _ = DeleteDC(hdc);
-        Ok(icon)
+        CreateIconIndirect(&info).map_err(|e| format!("CreateIconIndirect: {e}"))
     }
 }
 
@@ -505,6 +546,7 @@ fn paint_label(
         if hdc.is_invalid() {
             return Err("CreateCompatibleDC for badge text failed".to_owned());
         }
+        let _dc_guard = DcGuard(hdc);
 
         let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
@@ -519,16 +561,10 @@ fn paint_label(
             ..Default::default()
         };
         let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-        let hbmp = match CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
-            Ok(bitmap) => bitmap,
-            Err(error) => {
-                let _ = DeleteDC(hdc);
-                return Err(format!("CreateDIBSection for badge text: {error}"));
-            }
-        };
+        let hbmp = CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+            .map_err(|e| format!("CreateDIBSection for badge text: {e}"))?;
+        let _hbmp_guard = GdiObjectGuard(hbmp.into());
         if bits.is_null() {
-            let _ = DeleteObject(hbmp.into());
-            let _ = DeleteDC(hdc);
             return Err("CreateDIBSection for badge text returned null bits".to_owned());
         }
 
@@ -536,10 +572,12 @@ fn paint_label(
         mask_pixels.fill(0);
         let old_bitmap = SelectObject(hdc, hbmp.into());
         if old_bitmap.is_invalid() {
-            let _ = DeleteObject(hbmp.into());
-            let _ = DeleteDC(hdc);
             return Err("SelectObject badge text bitmap failed".to_owned());
         }
+        let _sel_bmp_guard = SelectedObjectGuard {
+            hdc,
+            old: old_bitmap,
+        };
 
         let face_name: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
         let font = CreateFontW(
@@ -559,20 +597,15 @@ fn paint_label(
             PCWSTR::from_raw(face_name.as_ptr()),
         );
         if font.is_invalid() {
-            let _ = SelectObject(hdc, old_bitmap);
-            let _ = DeleteObject(hbmp.into());
-            let _ = DeleteDC(hdc);
             return Err("CreateFontW for badge text failed".to_owned());
         }
+        let _font_guard = GdiObjectGuard(font.into());
 
         let old_font = SelectObject(hdc, font.into());
         if old_font.is_invalid() {
-            let _ = DeleteObject(font.into());
-            let _ = SelectObject(hdc, old_bitmap);
-            let _ = DeleteObject(hbmp.into());
-            let _ = DeleteDC(hdc);
             return Err("SelectObject badge text font failed".to_owned());
         }
+        let _sel_font_guard = SelectedObjectGuard { hdc, old: old_font };
 
         let _ = SetBkMode(hdc, TRANSPARENT);
         let _ = SetTextColor(hdc, COLORREF(0x00FF_FFFF));
@@ -590,35 +623,28 @@ fn paint_label(
             DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
         );
 
-        let text_result = if draw_result <= 0 {
-            Err("DrawTextW for badge text failed".to_owned())
-        } else {
-            // A 32-bit DIB created with BI_RGB does not provide a useful alpha
-            // channel for GDI text. With antialiased quality and a black DIB,
-            // the rendered RGB intensity is the glyph coverage mask.
-            for (index, packed) in mask_pixels.iter().copied().enumerate() {
-                let coverage = ((packed & 0xff)
-                    .max((packed >> 8) & 0xff)
-                    .max((packed >> 16) & 0xff)) as u16;
-                if coverage == 0 || pixels[index][3] == 0 {
-                    continue;
-                }
-                let inverse = 255 - coverage;
-                for channel in 0..3 {
-                    pixels[index][channel] = ((u16::from(pixels[index][channel]) * inverse
-                        + u16::from(ATTENTION_FG[channel]) * coverage)
-                        / 255) as u8;
-                }
-            }
-            Ok(())
-        };
+        if draw_result <= 0 {
+            return Err("DrawTextW for badge text failed".to_owned());
+        }
 
-        let _ = SelectObject(hdc, old_font);
-        let _ = DeleteObject(font.into());
-        let _ = SelectObject(hdc, old_bitmap);
-        let _ = DeleteObject(hbmp.into());
-        let _ = DeleteDC(hdc);
-        text_result
+        // A 32-bit DIB created with BI_RGB does not provide a useful alpha
+        // channel for GDI text. With antialiased quality and a black DIB,
+        // the rendered RGB intensity is the glyph coverage mask.
+        for (index, packed) in mask_pixels.iter().copied().enumerate() {
+            let coverage = ((packed & 0xff)
+                .max((packed >> 8) & 0xff)
+                .max((packed >> 16) & 0xff)) as u16;
+            if coverage == 0 || pixels[index][3] == 0 {
+                continue;
+            }
+            let inverse = 255 - coverage;
+            for channel in 0..3 {
+                pixels[index][channel] = ((u16::from(pixels[index][channel]) * inverse
+                    + u16::from(ATTENTION_FG[channel]) * coverage)
+                    / 255) as u8;
+            }
+        }
+        Ok(())
     }
 }
 
