@@ -9,7 +9,7 @@ import {
   DURATION_MIN_SECS,
   DURATION_STEP_SECS,
 } from '../durationBounds';
-import styles from '../index.module.css';
+import styles from './durationTimeline.module.css';
 
 export {
   AGENT_TICKS,

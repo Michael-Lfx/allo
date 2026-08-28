@@ -381,7 +381,7 @@ impl VimaxVideo for FlowyVideo {
 
         log_video_create_params(&params, &local_frame_notes, out_path);
 
-        let timeout = self.services.media.video.poll_timeout_seconds.max(600);
+        let timeout = self.services.media.video.poll_timeout_seconds.max(1200);
 
         // Strictly one in-flight video API call process-wide.
         let _permit = global_video_gate()

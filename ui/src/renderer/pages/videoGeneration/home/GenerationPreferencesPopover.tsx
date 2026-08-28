@@ -1,11 +1,10 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, ConfigProvider, Select, Switch } from '@arco-design/web-react';
 import { Down, SettingTwo } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
-import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
-import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
+import { fetchMediaModels, useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { SEEDANCE_ASPECT_RATIOS, type SeedanceAspectRatio } from '../aspectRatios';
 import DurationTimelineBar from '../components/DurationTimelineBar';
 import {
@@ -21,9 +20,8 @@ import {
 } from '../durationBounds';
 import {
   filterAllowedImageModels,
-  pickDefaultLlmModel,
   pickDefaultVideoModel,
-} from '../components/ModelSelectors';
+} from '../components/modelPreferenceDefaults';
 import { normalizeVideoFps,
 normalizeVideoResolution,
 videoModelCapabilities, } from '@renderer/services/videoModelCapabilities'
@@ -127,6 +125,12 @@ const SELECT_POPUP_Z_INDEX = 1600;
 /** Stable global class — Arco Trigger overwrites popupStyle.zIndex from context. */
 const SELECT_POPUP_CLASS = 'video-home-prefs-select-popup';
 
+const PreferencesPlanningModelSelect = lazy(() => import('./PreferencesPlanningModelSelect'));
+
+export function warmGenerationPreferences(): void {
+  void fetchMediaModels();
+}
+
 function isSelectPopupOpen(): boolean {
   return Boolean(
     document.querySelector(
@@ -184,8 +188,8 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   valueRef.current = value;
 
   // Defer catalog network until the panel opens — closed summary only needs
-  // already-persisted preference ids / labels.
-  const llmModels = useGeneratorModels('text', { enabled: open && !videoOnlyMode });
+  // already-persisted preference ids / labels. Planning LLM catalog lives in a
+  // nested chunk so video-generate first open does not parse the model hub.
   const { imageModels, videoModels, isLoading: mediaLoading } = useMediaModels({
     enabled: open,
   });
@@ -244,20 +248,6 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
             : shortModelLabel(value.models.image_model, noModelLabel)
         }`;
 
-  const llmOptions = useMemo(() => {
-    const seen = new Set<string>();
-    const opts: { label: string; value: string }[] = [];
-    for (const model of llmModels.flat) {
-      if (seen.has(model.model)) continue;
-      seen.add(model.model);
-      opts.push({
-        value: model.model,
-        label: `${formatCloudModelLabel(model.model)} · ${model.providerName}`,
-      });
-    }
-    return opts;
-  }, [llmModels.flat]);
-
   const imageOptions = useMemo(
     () =>
       filterAllowedImageModels(imageModels).map((model) => ({
@@ -300,11 +290,6 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     value.models.video_model,
     value.resolution
   );
-  const safeLlmValue = llmOptions.some(
-    (option) => option.value === value.models.llm_model
-  )
-    ? value.models.llm_model
-    : undefined;
 
   const updatePanelPosition = () => {
     const anchor = anchorRef.current;
@@ -424,18 +409,6 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
     const current = valueRef.current;
     const patch: Partial<GenerationPreferences['models']> = {};
-    if (!videoOnlyMode && !current.models.llm_model && llmOptions[0]) {
-      patch.llm_model =
-        pickDefaultLlmModel(llmOptions.map((option) => option.value)) ?? llmOptions[0].value;
-    } else if (
-      !videoOnlyMode &&
-      current.models.llm_model &&
-      llmOptions.length > 0 &&
-      !llmOptions.some((option) => option.value === current.models.llm_model)
-    ) {
-      patch.llm_model =
-        pickDefaultLlmModel(llmOptions.map((option) => option.value)) ?? llmOptions[0].value;
-    }
     if (!videoOnlyMode && !current.models.image_model && imageOptions[0]) {
       patch.image_model = imageOptions[0].value;
     } else if (
@@ -461,11 +434,9 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   }, [
     open,
     mediaLoading,
-    llmOptions,
     imageOptions,
     videoOptions,
     videoModels,
-    value.models.llm_model,
     value.models.image_model,
     value.models.video_model,
     isAction,
@@ -888,29 +859,14 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                     defaultValue: '规划模型',
                   })}
                 </div>
-                <Select
-                  allowClear={false}
-                  disabled={disabled || value.automatic}
-                  placeholder={t('videoGeneration.workspace.models.llmPlaceholder', {
-                    defaultValue: '选择聊天模型',
-                  })}
-                  value={safeLlmValue}
-                  options={llmOptions}
-                  notFoundContent={emptyModelsLabel}
-                  onChange={(next) =>
-                    onChange({
-                      ...value,
-                      models: { ...value.models, llm_model: String(next ?? '') },
-                    })
-                  }
-                  {...selectProps}
-                  triggerProps={{
-                    ...selectProps.triggerProps,
-                    // Near the bottom of the card: open upward so the menu
-                    // sits over the panel instead of under/outside it.
-                    position: 'tl',
-                  }}
-                />
+                <Suspense fallback={null}>
+                  <PreferencesPlanningModelSelect
+                    value={value}
+                    disabled={disabled}
+                    selectProps={selectProps}
+                    onChange={onChange}
+                  />
+                </Suspense>
               </div>
             ) : null}
 

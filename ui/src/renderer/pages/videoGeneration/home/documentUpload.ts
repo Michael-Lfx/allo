@@ -10,7 +10,7 @@ function uploadMessage(key: string, defaultValue: string): string {
     : defaultValue;
 }
 
-export const VIDEO_HOME_UPLOAD_ACCEPT = [
+export const VIDEO_HOME_IMAGE_ACCEPT = [
   'image/png',
   'image/jpeg',
   'image/jpg',
@@ -19,6 +19,9 @@ export const VIDEO_HOME_UPLOAD_ACCEPT = [
   '.jpg',
   '.jpeg',
   '.webp',
+].join(',');
+
+export const VIDEO_HOME_DOC_ACCEPT = [
   '.txt',
   '.md',
   '.markdown',
@@ -27,6 +30,11 @@ export const VIDEO_HOME_UPLOAD_ACCEPT = [
   '.srt',
   '.vtt',
   '.docx',
+].join(',');
+
+export const VIDEO_HOME_UPLOAD_ACCEPT = [
+  VIDEO_HOME_IMAGE_ACCEPT,
+  VIDEO_HOME_DOC_ACCEPT,
 ].join(',');
 
 export const ACTION_CHARACTER_ACCEPT =

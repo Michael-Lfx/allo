@@ -59,114 +59,275 @@
 }
 
 .composerMain {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  align-items: stretch;
-  gap: 14px;
-  min-height: 168px;
-  padding: 16px 16px 10px;
-}
-
-.uploadSlot {
-  position: relative;
   display: flex;
-  width: 88px;
-  height: 88px;
   flex-direction: column;
-  align-self: start;
+  align-items: stretch;
+  min-height: 148px;
+  padding: 16px 18px 8px;
+}
+
+.attachStage {
+  position: relative;
+  z-index: 6;
+  display: flex;
+  flex: none;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  overflow: hidden;
-  border: 1px dashed var(--color-border-3);
-  border-radius: 16px;
-  color: var(--color-text-3);
-  background: var(--color-fill-1);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
+  align-self: start;
+  gap: 8px;
+  height: 64px;
+  padding: 6px 2px 2px 6px;
+}
+
+.attachFan {
+  --stack-step: 8px;
+  --spread-step: 52px;
+  --card-w: 44px;
+  --card-h: 44px;
+  --count: 1;
+  position: relative;
+  width: calc(var(--card-w) + (var(--count) - 1) * var(--stack-step));
+  height: var(--card-h);
+  flex: none;
+}
+
+.attachPhoto {
+  position: absolute;
+  top: 0;
+  left: calc(var(--i, 0) * var(--stack-step));
+  z-index: calc(var(--i, 0) + 1);
+  width: var(--card-w);
+  height: var(--card-h);
+  transform: rotate(var(--tilt, 0deg));
+  transform-origin: 50% 70%;
   transition:
-    border-color 160ms ease,
-    color 160ms ease,
-    background 160ms ease,
-    box-shadow 160ms ease,
-    transform 160ms ease;
+    left 240ms cubic-bezier(0.22, 1.15, 0.36, 1),
+    transform 240ms cubic-bezier(0.22, 1.15, 0.36, 1);
 }
 
-.uploadGlyph {
-  display: grid;
-  place-items: center;
-  color: inherit;
-  transition: color 160ms ease;
+.attachPhotoEnter {
+  animation: attach-deal-in 460ms cubic-bezier(0.22, 1.25, 0.36, 1) both;
 }
 
-.uploadDocIcon {
+.attachPhotoFace {
   display: block;
-  transform-origin: 50% 60%;
-  will-change: transform;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--color-fill-2);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-bg-popup) 82%, transparent),
+    0 6px 14px rgba(15, 23, 42, 0.16);
 }
 
-.uploadGlyphActive {
-  color: rgb(var(--primary-6));
-}
-
-.uploadSlot:hover:not(:disabled) {
-  border-color: rgba(var(--primary-6), 0.5);
-  color: rgb(var(--primary-6));
-  background: rgba(var(--primary-6), 0.04);
-  box-shadow: 0 8px 20px rgba(var(--primary-6), 0.08);
-}
-
-.uploadSlot:hover:not(:disabled) .uploadDocIcon {
-  animation: upload-doc-bounce 620ms cubic-bezier(0.34, 1.45, 0.64, 1);
-}
-
-.uploadSlot:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.uploadSlotFilled {
-  border-style: solid;
-  padding: 0;
-}
-
-.uploadSlotDocument {
-  border-style: solid;
-  border-color: rgba(var(--primary-6), 0.28);
-  color: rgb(var(--primary-6));
-  background: rgba(var(--primary-6), 0.06);
-}
-
-.uploadPreview {
+.attachPhotoFace img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.uploadCount,
-.uploadDocBadge {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  display: inline-flex;
-  min-width: 22px;
-  height: 22px;
+.attachDocPhoto {
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 1px 5px;
-  border-radius: 999px;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.62);
-  font-size: 10px;
-  font-style: normal;
-  text-align: center;
+  gap: 3px;
+  color: var(--color-text-2);
 }
 
-.uploadDocBadge {
-  min-width: 22px;
+.attachDocPhoto em {
+  max-width: 34px;
+  overflow: hidden;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachFanOpen .attachPhoto {
+  left: calc(var(--i, 0) * var(--spread-step));
+  transform: rotate(0deg);
+}
+
+.attachFanOpen .attachPhoto:hover {
+  z-index: 20;
+  transform: rotate(0deg) translateY(-4px) scale(1.04);
+}
+
+.attachRemove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  z-index: 3;
+  display: grid;
+  width: 18px;
+  height: 18px;
   padding: 0;
-  background: rgb(var(--primary-6));
+  border: 0;
+  border-radius: 50%;
+  color: #fff;
+  background: #1a1a1a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  place-items: center;
+  transform: scale(0.82);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease,
+    background 160ms ease;
+}
+
+.attachFanOpen .attachRemove,
+.attachRemove:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+.attachRemove:hover {
+  background: #000;
+}
+
+.attachRemove:disabled {
+  cursor: not-allowed;
+}
+
+.attachPlusBadge {
+  position: absolute;
+  z-index: 40;
+  right: -6px;
+  bottom: -6px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: #5b5b5b;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.18);
+  cursor: pointer;
+  place-items: center;
+  transition:
+    left 240ms cubic-bezier(0.22, 1.15, 0.36, 1),
+    transform 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.attachFanOpen .attachPlusBadge {
+  right: auto;
+  bottom: -6px;
+  left: calc((var(--count) - 1) * var(--spread-step) + var(--card-w) - 11px);
+}
+
+.attachPlusBadge:hover:not(:disabled) {
+  color: #111;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.2);
+  transform: scale(1.06);
+}
+
+.attachPlusBadge:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.attachPlusCard {
+  display: grid;
+  width: 42px;
+  height: 56px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--color-text-3);
+  background:
+    repeating-linear-gradient(
+      -22deg,
+      transparent 0 7px,
+      rgba(255, 255, 255, 0.28) 7px 8px
+    ),
+    var(--color-fill-2);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.07);
+  cursor: pointer;
+  place-items: center;
+  transform: rotate(8deg);
+  transform-origin: 50% 78%;
+  transition:
+    transform 380ms cubic-bezier(0.22, 1.35, 0.36, 1),
+    box-shadow 380ms cubic-bezier(0.22, 1.35, 0.36, 1),
+    color 180ms ease,
+    background 180ms ease;
+}
+
+.attachPlusCardSolo {
+  animation: attach-idle-tilt 3.4s ease-in-out infinite;
+}
+
+.attachPlusCard:hover:not(:disabled) {
+  animation: none;
+  color: var(--color-text-2);
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.14);
+  transform: rotate(13deg) translateY(-5px) scale(1.04);
+}
+
+.attachPlusCard:active:not(:disabled) {
+  animation: none;
+  transform: rotate(6deg) translateY(-1px) scale(0.98);
+}
+
+.attachPlusCard:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+@keyframes attach-idle-tilt {
+  0%,
+  100% {
+    transform: rotate(8deg) translateY(0);
+  }
+
+  50% {
+    transform: rotate(12deg) translateY(-3px);
+  }
+}
+
+@keyframes attach-deal-in {
+  from {
+    opacity: 0;
+    transform: rotate(calc(var(--tilt, 0deg) + 18deg)) translateY(14px) scale(0.78);
+  }
+
+  to {
+    opacity: 1;
+    transform: rotate(var(--tilt, 0deg));
+  }
+}
+
+.composerDropOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  border: 1.5px dashed rgb(var(--primary-6));
+  border-radius: 24px;
+  color: rgb(var(--primary-6));
+  background: color-mix(in srgb, rgb(var(--primary-6)) 10%, var(--color-bg-popup));
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  pointer-events: none;
+  place-items: center;
+}
+
+.composerDropHint {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .actionSlots {
@@ -252,28 +413,6 @@
   background: rgba(0, 0, 0, 0.55);
 }
 
-@keyframes upload-doc-bounce {
-  0% {
-    transform: translateY(0) rotate(0deg) scale(1);
-  }
-
-  28% {
-    transform: translateY(-7px) rotate(-8deg) scale(1.06);
-  }
-
-  52% {
-    transform: translateY(-1px) rotate(4deg) scale(1.02);
-  }
-
-  72% {
-    transform: translateY(-4px) rotate(-3deg) scale(1.04);
-  }
-
-  100% {
-    transform: translateY(0) rotate(0deg) scale(1);
-  }
-}
-
 .promptArea {
   position: relative;
   display: flex;
@@ -289,11 +428,14 @@
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
-  flex-direction: column;
-  gap: 8px;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 12px;
 }
 
 .promptEditor {
+  position: relative;
+  z-index: 1;
   display: flex;
   min-width: 0;
   min-height: 96px;
@@ -1034,7 +1176,7 @@
   overflow: hidden;
   border: 1px solid var(--color-border-2);
   border-radius: 16px;
-  background: var(--color-bg-2);
+  background: var(--color-bg-popup);
   box-shadow:
     0 12px 32px rgba(15, 23, 42, 0.14),
     0 2px 8px rgba(15, 23, 42, 0.06);
@@ -1051,7 +1193,7 @@
   overflow: hidden;
   border: 1px solid var(--color-border-2);
   border-radius: 12px;
-  background: var(--color-bg-2);
+  background: var(--color-bg-popup);
   box-shadow:
     0 12px 32px rgba(15, 23, 42, 0.14),
     0 2px 8px rgba(15, 23, 42, 0.06);
@@ -1457,14 +1599,7 @@
   }
 
   .composerMain {
-    grid-template-columns: 64px minmax(0, 1fr);
-    gap: 10px;
     padding: 12px 12px 8px;
-  }
-
-  .uploadSlot {
-    width: 64px;
-    height: 64px;
   }
 
   .actionSlots {
@@ -1514,15 +1649,18 @@
 
 @media (prefers-reduced-motion: reduce) {
   .composer,
-  .uploadSlot,
+  .attachPlusCard,
+  .attachPhoto,
   .toolbarButton,
   .submitButton,
   .skillCard {
     transition: none;
+    animation: none !important;
   }
 
-  .uploadSlot:hover:not(:disabled) .uploadDocIcon {
-    animation: none;
+  .attachFanOpen .attachPhoto,
+  .attachPlusCard:hover:not(:disabled) {
+    transform: none;
   }
 
   .toolbarButton:hover:not(:disabled),

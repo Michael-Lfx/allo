@@ -1,4 +1,13 @@
-import React, { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Popover } from '@arco-design/web-react';
 import {
   Down,
@@ -14,12 +23,15 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import { isActionImitationWorkflow } from '../workflowKind';
-import { BoldSendArrowIcon } from './ComposerIcons';
+import { AttachPlusIcon, BoldSendArrowIcon } from './ComposerIcons';
 import { ActionUploadSlots } from './ActionUploadSlots';
 import { ModeMenu } from './ModeMenu';
 import { PromptComposer } from './PromptComposer';
 import { SlashSkillMenu } from './SlashSkillMenu';
-import { filesFromClipboardData } from './documentUpload';
+import {
+  filesFromClipboardData,
+  VIDEO_HOME_UPLOAD_ACCEPT,
+} from './documentUpload';
 import { agentModesFor, creationSkillsFor } from './modeCatalog';
 import { useHomeDraft } from './useHomeDraft';
 import { useHomeUpload } from './useHomeUpload';
@@ -39,12 +51,30 @@ import {
   CLIP_DURATION_STEP_SECS,
   clampDuration,
 } from '../durationBounds';
+import {
+  prefetchGenerationPreferencesPanel,
+  prefetchVerticalSkillMenu,
+} from '../prefetch';
 import styles from './home.module.css';
 
 const CameoCastEditor = lazy(() => import('../components/CameoCastEditor'));
-const GenerationPreferencesPopover = lazy(() => import('./GenerationPreferencesPopover'));
+const loadGenerationPreferencesPopover = () => import('./GenerationPreferencesPopover');
+const GenerationPreferencesPopover = lazy(loadGenerationPreferencesPopover);
 const VerticalSkillMenu = lazy(() => import('./VerticalSkillMenu'));
 const VerticalSkillCreateModal = lazy(() => import('./VerticalSkillCreateModal'));
+
+function GenerationPreferencesMount({
+  onMounted,
+  children,
+}: {
+  onMounted: () => void;
+  children: React.ReactNode;
+}) {
+  useLayoutEffect(() => {
+    onMounted();
+  }, [onMounted]);
+  return children;
+}
 
 export { clearVideoHomeDraft } from './homeDraft';
 
@@ -80,6 +110,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setActionCharacter,
     setActionVideo,
     removeCanvasReference,
+    removeCameo,
   } = useHomeUpload({
     draft,
     setDraft,
@@ -90,14 +121,17 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   });
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [prefsModuleReady, setPrefsModuleReady] = useState(false);
-  const pendingOpenRef = useRef(false); // Track if panel should open after module loads
+  const [prefsHydrated, setPrefsHydrated] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [skillHubOpen, setSkillHubOpen] = useState(false);
   const [skillCreateOpen, setSkillCreateOpen] = useState(false);
+  const [fileDragOver, setFileDragOver] = useState(false);
   const [modelMissing, setModelMissing] = useState(false);
   const composerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const {
+    skillCatalog,
     mergeCatalog,
     reloadToken: skillListReloadToken,
     bumpReloadToken,
@@ -298,6 +332,10 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   const getComposerPopupContainer = (node: HTMLElement) =>
     composerRef.current ?? node.parentElement ?? document.body;
 
+  const openFilePicker = () => {
+    fileInputRef.current?.click();
+  };
+
   const placeholder =
     mode === 'generate'
       ? t('videoGeneration.create.composer.generatePlaceholder', {
@@ -361,28 +399,39 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
     setActiveText(activeText.replace(/\/\s*$/, '').trimEnd());
   };
 
-  // Sync panel open state after lazy module loads
-  useLayoutEffect(() => {
-    if (prefsModuleReady && pendingOpenRef.current) {
-      pendingOpenRef.current = false;
-      setPreferencesOpen(true);
+  const markPrefsHydrated = useCallback(() => {
+    setPrefsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const warm = () => {
+      setPrefsModuleReady(true);
+      prefetchGenerationPreferencesPanel();
+      if (mode === 'agent') prefetchVerticalSkillMenu();
+    };
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      const idleId = idleWindow.requestIdleCallback(warm, { timeout: 800 });
+      return () => idleWindow.cancelIdleCallback?.(idleId);
     }
-  }, [prefsModuleReady]);
+    const timer = window.setTimeout(warm, 120);
+    return () => window.clearTimeout(timer);
+  }, [mode]);
 
   const openPreferences = (open: boolean) => {
     if (open) {
       setModeMenuOpen(false);
       setSlashMenuOpen(false);
-      pendingOpenRef.current = true;
-      // Trigger lazy module load; open state will be set after module is ready.
-      if (!prefsModuleReady) {
-        setPrefsModuleReady(true);
-        return;
-      }
-    } else {
-      pendingOpenRef.current = false;
+      setSkillHubOpen(false);
+      setPrefsModuleReady(true);
+      prefetchGenerationPreferencesPanel();
+      setPreferencesOpen(true);
+      return;
     }
-    setPreferencesOpen(open);
+    setPreferencesOpen(false);
   };
 
   const submit = () => {
@@ -488,13 +537,6 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       />
     ) : null;
 
-  const uploadPreview = usesCanvasReferences(mode)
-    ? draft.canvasReferences[0]?.previewUrl
-    : draft.cameos[0]?.previewUrl;
-  const referenceCount = usesCanvasReferences(mode)
-    ? draft.canvasReferences.length
-    : draft.cameos.length;
-
   const prefsSummary = generationPreferencesSummary(
     draft.preferences,
     mode,
@@ -514,7 +556,15 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       disabled={loading}
       aria-expanded={preferencesOpen}
       aria-haspopup='dialog'
-      onClick={() => openPreferences(!preferencesOpen)}
+      onMouseEnter={prefetchGenerationPreferencesPanel}
+      onFocus={prefetchGenerationPreferencesPanel}
+      onClick={() => {
+        if (!prefsHydrated) {
+          openPreferences(true);
+          return;
+        }
+        openPreferences(!preferencesOpen);
+      }}
       aria-label={t('videoGeneration.create.customize', { defaultValue: '自定义生成偏好' })}
     >
       <SettingTwo theme='outline' size={15} />
@@ -562,9 +612,19 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
       <div
         ref={composerRef}
         className={styles.composer}
+        onDragEnter={(event) => {
+          event.preventDefault();
+          setFileDragOver(true);
+        }}
         onDragOver={(event) => event.preventDefault()}
+        onDragLeave={(event) => {
+          const next = event.relatedTarget as Node | null;
+          if (next && composerRef.current?.contains(next)) return;
+          setFileDragOver(false);
+        }}
         onDrop={(event) => {
           event.preventDefault();
+          setFileDragOver(false);
           void handleFiles(filesFromClipboardData(event.dataTransfer));
         }}
         // Capture so pasted images are treated as uploads before the textarea
@@ -577,6 +637,16 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
           void handleFiles(files);
         }}
       >
+        {fileDragOver ? (
+          <div className={styles.composerDropOverlay}>
+            <span className={styles.composerDropHint}>
+              <AttachPlusIcon size={16} />
+              {t('videoGeneration.create.upload.dropHint', {
+                defaultValue: '松开以上传文件',
+              })}
+            </span>
+          </div>
+        ) : null}
         {isAction ? (
           <ActionUploadSlots
             loading={loading ?? false}
@@ -592,17 +662,31 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             loading={loading ?? false}
             documentName={documentName}
             setDocumentName={setDocumentName}
-            uploadPreview={uploadPreview}
-            referenceCount={referenceCount}
             canvasReferences={draft.canvasReferences}
             removeCanvasReference={removeCanvasReference}
+            cameos={draft.cameos}
+            removeCameo={removeCameo}
             selectedVerticalSkills={selectedVerticalSkills}
             removeVerticalSkill={removeVerticalSkill}
             activeText={activeText}
             setActiveText={setActiveText}
             placeholder={placeholder}
             handlePromptKeyDown={handlePromptKeyDown}
-            handleFiles={handleFiles}
+            onRequestUpload={openFilePicker}
+          />
+        )}
+        {isAction ? null : (
+          <input
+            ref={fileInputRef}
+            type='file'
+            accept={VIDEO_HOME_UPLOAD_ACCEPT}
+            multiple
+            hidden
+            disabled={loading}
+            onChange={(event) => {
+              void handleFiles(Array.from(event.target.files ?? []));
+              event.target.value = '';
+            }}
           />
         )}
 
@@ -644,6 +728,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
             </Popover>
             {prefsModuleReady ? (
               <Suspense fallback={prefsTrigger}>
+                <GenerationPreferencesMount onMounted={markPrefsHydrated}>
                 <GenerationPreferencesPopover
                   mode={mode}
                   value={draft.preferences}
@@ -657,6 +742,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   onOpenModelHub={() => navigate('/models')}
                   workflow={isAction ? 'action2video' : draft.workflow}
                 />
+                </GenerationPreferencesMount>
               </Suspense>
             ) : (
               prefsTrigger
@@ -719,22 +805,21 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   setSkillHubOpen(open);
                 }}
                 content={
-                  skillHubOpen ? (
-                    <Suspense fallback={<div className={styles.slashMenu} />}>
-                      <VerticalSkillMenu
-                        selectedIds={draft.verticalSkillIds}
-                        reloadToken={skillListReloadToken}
-                        onChangeSelected={(verticalSkillIds) =>
-                          setDraft((current) => ({ ...current, verticalSkillIds }))
-                        }
-                        onCatalogChange={mergeCatalog}
-                        onRequestCreate={() => {
-                          setSkillHubOpen(false);
-                          setSkillCreateOpen(true);
-                        }}
-                      />
-                    </Suspense>
-                  ) : null
+                  <Suspense fallback={<div className={styles.slashMenu} />}>
+                    <VerticalSkillMenu
+                      selectedIds={draft.verticalSkillIds}
+                      initialSkills={skillCatalog}
+                      reloadToken={skillListReloadToken}
+                      onChangeSelected={(verticalSkillIds) =>
+                        setDraft((current) => ({ ...current, verticalSkillIds }))
+                      }
+                      onCatalogChange={mergeCatalog}
+                      onRequestCreate={() => {
+                        setSkillHubOpen(false);
+                        setSkillCreateOpen(true);
+                      }}
+                    />
+                  </Suspense>
                 }
               >
                 <button
@@ -746,6 +831,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   }`}
                   aria-expanded={skillHubOpen}
                   aria-label={verticalSkillLabel}
+                  onMouseEnter={prefetchVerticalSkillMenu}
+                  onFocus={prefetchVerticalSkillMenu}
                 >
                   <Star size={15} />
                   <span className={styles.toolbarLabel}>{verticalSkillLabel}</span>

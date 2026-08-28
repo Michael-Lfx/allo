@@ -1,147 +1,203 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Input } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import { CloseSmall, FileText } from '@icon-park/react';
-import { SlantedDocIcon } from './ComposerIcons';
-import { displayFileStem, VIDEO_HOME_UPLOAD_ACCEPT } from './documentUpload';
+import { AttachCloseIcon, AttachPlusIcon } from './ComposerIcons';
+import { displayFileStem } from './documentUpload';
+import type { CameoDraftItem } from '../types';
 import type { CanvasReferenceDraft, VideoHomeMode } from './types';
 import { usesCanvasReferences } from './types';
 import styles from './home.module.css';
 
 const TextArea = Input.TextArea;
 
+const FAN_TILTS = [-13, 9, -7, 12, -10, 6, -5, 11];
+
 export interface PromptComposerProps {
   mode: VideoHomeMode;
   loading: boolean;
   documentName: string | null;
   setDocumentName: (name: string | null) => void;
-  uploadPreview: string | undefined;
-  referenceCount: number;
   canvasReferences: CanvasReferenceDraft[];
   removeCanvasReference: (localId: string) => void;
+  cameos: CameoDraftItem[];
+  removeCameo: (localId: string) => void;
   selectedVerticalSkills: ReadonlyArray<{ id: string; label: string }>;
   removeVerticalSkill: (skillId: string) => void;
   activeText: string;
   setActiveText: (value: string) => void;
   placeholder: string;
   handlePromptKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
-  handleFiles: (files: File[]) => Promise<void>;
+  onRequestUpload: () => void;
 }
 
-/** Agent / creation prompt area: upload slot, inline attachments, skill chips, editor. */
+/** Jimeng-style attach: piled cards, overlay-spread on hover, plus on the front card. */
 export function PromptComposer({
   mode,
   loading,
   documentName,
   setDocumentName,
-  uploadPreview,
-  referenceCount,
   canvasReferences,
   removeCanvasReference,
+  cameos,
+  removeCameo,
   selectedVerticalSkills,
   removeVerticalSkill,
   activeText,
   setActiveText,
   placeholder,
   handlePromptKeyDown,
-  handleFiles,
+  onRequestUpload,
 }: PromptComposerProps) {
   const { t } = useTranslation();
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [fanOpen, setFanOpen] = useState(false);
+  const enteredIdsRef = useRef(new Set<string>());
+  const [enteringIds, setEnteringIds] = useState<Set<string>>(() => new Set());
+
+  const imageItems = usesCanvasReferences(mode)
+    ? canvasReferences.map((reference) => ({
+        id: reference.localId,
+        previewUrl: reference.previewUrl,
+        name: reference.file.name,
+        onRemove: () => removeCanvasReference(reference.localId),
+      }))
+    : cameos.flatMap((cameo) =>
+        cameo.previewUrl
+          ? [
+              {
+                id: cameo.localId,
+                previewUrl: cameo.previewUrl,
+                name: cameo.characterName || cameo.file?.name || '',
+                onRemove: () => removeCameo(cameo.localId),
+              },
+            ]
+          : []
+      );
+
+  const stackedCount = imageItems.length + (documentName ? 1 : 0);
+  const itemIdsKey =
+    imageItems.map((item) => item.id).join('|') + (documentName ? '|__doc__' : '');
+
+  useLayoutEffect(() => {
+    const ids = itemIdsKey.length > 0 ? itemIdsKey.split('|') : [];
+    const fresh = ids.filter((id) => !enteredIdsRef.current.has(id));
+    if (fresh.length === 0) return undefined;
+    for (const id of fresh) enteredIdsRef.current.add(id);
+    setEnteringIds(new Set(fresh));
+    const timer = window.setTimeout(() => setEnteringIds(new Set()), 480);
+    return () => window.clearTimeout(timer);
+  }, [itemIdsKey]);
+
+  useEffect(() => {
+    if (stackedCount === 0) setFanOpen(false);
+  }, [stackedCount]);
+
+  const removeWithoutReload = (event: React.MouseEvent, remove: () => void) => {
+    event.preventDefault();
+    event.stopPropagation();
+    remove();
+  };
 
   return (
     <div className={styles.composerMain}>
-      <button
-        type='button'
-        className={`${styles.uploadSlot} ${
-          uploadPreview ? styles.uploadSlotFilled : ''
-        } ${documentName && !uploadPreview ? styles.uploadSlotDocument : ''}`}
-        disabled={loading}
-        onClick={() => fileInputRef.current?.click()}
-        title={t('videoGeneration.create.upload.aria', {
-          defaultValue:
-            '上传参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）',
-        })}
-        aria-label={t('videoGeneration.create.upload.aria', {
-          defaultValue:
-            '上传参考图、剧本或资料文档（PNG / JPEG / WEBP / DOCX / TXT / Markdown 等）',
-        })}
-      >
-        {uploadPreview ? (
-          <img src={uploadPreview} alt='' className={styles.uploadPreview} />
-        ) : (
-          <span
-            className={`${styles.uploadGlyph} ${
-              documentName ? styles.uploadGlyphActive : ''
-            }`}
-            aria-hidden='true'
-          >
-            <SlantedDocIcon size={24} className={styles.uploadDocIcon} />
-          </span>
-        )}
-        {referenceCount > 1 ? (
-          <em className={styles.uploadCount}>+{referenceCount - 1}</em>
-        ) : documentName && uploadPreview ? (
-          <em className={styles.uploadDocBadge} aria-hidden='true'>
-            <FileText size={11} />
-          </em>
-        ) : null}
-      </button>
-      <input
-        ref={fileInputRef}
-        type='file'
-        accept={VIDEO_HOME_UPLOAD_ACCEPT}
-        multiple
-        hidden
-        disabled={loading}
-        onChange={(event) => {
-          void handleFiles(Array.from(event.target.files ?? []));
-          event.target.value = '';
-        }}
-      />
-
       <div className={styles.promptArea}>
         <div className={styles.promptInner}>
-          {(documentName ||
-            (usesCanvasReferences(mode) && canvasReferences.length > 0)) && (
-            <div className={styles.inlineAttachments}>
-              {documentName ? (
-                <span className={styles.documentChip}>
-                  <FileText size={13} />
-                  {displayFileStem(documentName)}
-                  <button
-                    type='button'
-                    aria-label={t('videoGeneration.create.upload.removeDocument', {
-                      defaultValue: '移除文档',
-                    })}
-                    onClick={() => {
-                      setDocumentName(null);
-                      setActiveText('');
+          <div className={styles.attachStage}>
+            {stackedCount > 0 ? (
+              <div
+                className={`${styles.attachFan} ${fanOpen ? styles.attachFanOpen : ''}`}
+                style={{ ['--count' as string]: stackedCount }}
+                onMouseEnter={() => setFanOpen(true)}
+                onMouseLeave={() => setFanOpen(false)}
+              >
+                {imageItems.map((item, index) => (
+                  <span
+                    key={item.id}
+                    className={`${styles.attachPhoto} ${
+                      enteringIds.has(item.id) ? styles.attachPhotoEnter : ''
+                    }`}
+                    style={{
+                      ['--i' as string]: index,
+                      ['--tilt' as string]: `${FAN_TILTS[index % FAN_TILTS.length]}deg`,
                     }}
                   >
-                    <CloseSmall size={12} />
-                  </button>
-                </span>
-              ) : null}
-              {usesCanvasReferences(mode)
-                ? canvasReferences.slice(0, 4).map((reference) => (
-                    <span key={reference.localId} className={styles.referenceThumb}>
-                      <img src={reference.previewUrl} alt={reference.file.name} />
-                      <button
-                        type='button'
-                        aria-label={t('videoGeneration.create.upload.removeReference', {
-                          name: reference.file.name,
-                          defaultValue: '移除 {{name}}',
-                        })}
-                        onClick={() => removeCanvasReference(reference.localId)}
-                      >
-                        <CloseSmall size={12} />
-                      </button>
+                    <span className={styles.attachPhotoFace}>
+                      <img src={item.previewUrl} alt='' />
                     </span>
-                  ))
-                : null}
-            </div>
-          )}
+                    <button
+                      type='button'
+                      className={styles.attachRemove}
+                      disabled={loading}
+                      aria-label={t('videoGeneration.create.upload.removeReference', {
+                        name: item.name,
+                        defaultValue: '移除 {{name}}',
+                      })}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={(event) => removeWithoutReload(event, item.onRemove)}
+                    >
+                      <AttachCloseIcon />
+                    </button>
+                  </span>
+                ))}
+                {documentName ? (
+                  <span
+                    className={`${styles.attachPhoto} ${
+                      enteringIds.has('__doc__') ? styles.attachPhotoEnter : ''
+                    }`}
+                    style={{
+                      ['--i' as string]: imageItems.length,
+                      ['--tilt' as string]: `${FAN_TILTS[imageItems.length % FAN_TILTS.length]}deg`,
+                    }}
+                  >
+                    <span className={`${styles.attachPhotoFace} ${styles.attachDocPhoto}`}>
+                      <FileText size={16} />
+                      <em>{displayFileStem(documentName)}</em>
+                    </span>
+                    <button
+                      type='button'
+                      className={styles.attachRemove}
+                      disabled={loading}
+                      aria-label={t('videoGeneration.create.upload.removeDocument', {
+                        defaultValue: '移除文档',
+                      })}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={(event) =>
+                        removeWithoutReload(event, () => {
+                          setDocumentName(null);
+                          setActiveText('');
+                        })
+                      }
+                    >
+                      <AttachCloseIcon />
+                    </button>
+                  </span>
+                ) : null}
+                <button
+                  type='button'
+                  className={styles.attachPlusBadge}
+                  disabled={loading}
+                  onClick={onRequestUpload}
+                  aria-label={t('videoGeneration.create.upload.addReference', {
+                    defaultValue: '上传文件',
+                  })}
+                >
+                  <AttachPlusIcon size={11} />
+                </button>
+              </div>
+            ) : (
+              <button
+                type='button'
+                className={`${styles.attachPlusCard} ${styles.attachPlusCardSolo}`}
+                disabled={loading}
+                onClick={onRequestUpload}
+                aria-label={t('videoGeneration.create.upload.addReference', {
+                  defaultValue: '上传文件',
+                })}
+              >
+                <AttachPlusIcon size={15} />
+              </button>
+            )}
+          </div>
           <div className={styles.promptEditor}>
             {mode === 'agent' && selectedVerticalSkills.length > 0 ? (
               <div className={styles.skillChips}>

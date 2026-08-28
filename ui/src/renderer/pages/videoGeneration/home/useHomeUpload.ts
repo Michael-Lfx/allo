@@ -44,6 +44,7 @@ export interface HomeUploadApi {
   setActionCharacter: (file: File | null) => void;
   setActionVideo: (file: File | null) => void;
   removeCanvasReference: (localId: string) => void;
+  removeCameo: (localId: string) => void;
 }
 
 /**
@@ -210,6 +211,15 @@ export function useHomeUpload({
     }));
   };
 
+  const removeCameo = (localId: string) => {
+    const target = draft.cameos.find((item) => item.localId === localId);
+    if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+    setDraft((current) => ({
+      ...current,
+      cameos: current.cameos.filter((item) => item.localId !== localId),
+    }));
+  };
+
   return {
     handleFiles,
     uploadError,
@@ -219,5 +229,6 @@ export function useHomeUpload({
     setActionCharacter,
     setActionVideo,
     removeCanvasReference,
+    removeCameo,
   };
 }
