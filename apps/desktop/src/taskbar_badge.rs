@@ -498,7 +498,7 @@ fn paint_label(
     };
     let text_left = (logical_size.saturating_sub(text_width) / 2) * scale;
     let text_right = text_left + text_width * scale;
-    let font_height = if char_count > 2 { 7 } else { 8 };
+    let font_height = if char_count > 2 { 7 } else { 9 };
 
     unsafe {
         let hdc = CreateCompatibleDC(None);
@@ -807,6 +807,6 @@ mod tests {
             .min()
             .zip(rows.iter().max())
             .map_or(0, |(first, last)| last - first + 1);
-        assert!((6..=9).contains(&height));
+        assert!((6..=10).contains(&height));
     }
 }
