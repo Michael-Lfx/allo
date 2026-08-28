@@ -51,6 +51,11 @@ describe('flowy visual system', () => {
     expect(css.includes("body[arco-theme='dark']")).toBe(true);
   });
 
+  test('keeps attention styling in the readable steel blue-gray range', () => {
+    expect(css.includes('--flowy-attention: oklch(56% 0.055 250)')).toBe(true);
+    expect(css.includes('--flowy-attention-fg: oklch(98% 0.01 95)')).toBe(true);
+  });
+
 
   test('keeps semantic surfaces mapped to the established theme contract', () => {
     expect(css.includes('--flowy-canvas: var(--bg-base')).toBe(true);

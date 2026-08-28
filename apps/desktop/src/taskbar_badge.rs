@@ -13,7 +13,7 @@ use tauri::{AppHandle, Manager};
 const MAX_ATTENTION_ID_LENGTH: usize = 512;
 
 #[cfg(windows)]
-const ATTENTION_BG: [u8; 4] = [71, 85, 105, 255]; // Cool graphite, #475569.
+const ATTENTION_BG: [u8; 4] = [91, 108, 132, 255]; // Steel blue-gray, #5B6C84.
 
 #[cfg(windows)]
 const ATTENTION_FG: [u8; 4] = [248, 249, 245, 255]; // Warm white, not pure white.
@@ -430,10 +430,14 @@ fn badge_shape_contains(x: f32, y: f32, size: f32, label: &str) -> bool {
         return dx * dx + dy * dy <= radius * radius;
     }
 
-    // Fit the capsule to the rendered glyphs: two digits get a narrower pill,
-    // while `99+` expands to the available overlay width for readable padding.
-    let glyph_width = label.chars().count() * 4 + label.chars().count().saturating_sub(1);
-    let capsule_width = (glyph_width + 4).min(size as usize) as f32;
+    // Fit the capsule to the rendered glyphs: one or two digits get the larger
+    // glyph treatment, while `99+` keeps the compact layout needed by the
+    // fixed 16px overlay canvas.
+    let char_count = label.chars().count();
+    let glyph_width = char_count * if char_count <= 2 { 5 } else { 4 }
+        + char_count.saturating_sub(1);
+    let horizontal_padding = if char_count <= 2 { 3 } else { 4 };
+    let capsule_width = (glyph_width + horizontal_padding).min(size as usize) as f32;
     let left = (size - capsule_width) / 2.0;
     let right = left + capsule_width;
     let top = 0.35;
@@ -463,22 +467,23 @@ fn paint_label(
     label: &str,
     scale: usize,
 ) {
-    const GLYPH_W: usize = 4;
-    const GLYPH_H: usize = 7;
+    const GLYPH_W: usize = 5;
+    const GLYPH_H: usize = 9;
+    const COMPACT_GLYPH_W: usize = 4;
 
     fn glyph(ch: char) -> Option<[u8; GLYPH_H]> {
         Some(match ch {
-            '0' => [0b0110, 0b1001, 0b1001, 0b1001, 0b1001, 0b1001, 0b0110],
-            '1' => [0b0010, 0b0110, 0b0010, 0b0010, 0b0010, 0b0010, 0b0111],
-            '2' => [0b0110, 0b1001, 0b0001, 0b0010, 0b0100, 0b1000, 0b1111],
-            '3' => [0b0110, 0b1001, 0b0001, 0b0110, 0b0001, 0b1001, 0b0110],
-            '4' => [0b0010, 0b0110, 0b1010, 0b1010, 0b1111, 0b0010, 0b0010],
-            '5' => [0b1111, 0b1000, 0b1110, 0b0001, 0b0001, 0b1001, 0b0110],
-            '6' => [0b0110, 0b1000, 0b1000, 0b1110, 0b1001, 0b1001, 0b0110],
-            '7' => [0b1111, 0b0001, 0b0010, 0b0010, 0b0100, 0b0100, 0b0100],
-            '8' => [0b0110, 0b1001, 0b1001, 0b0110, 0b1001, 0b1001, 0b0110],
-            '9' => [0b0110, 0b1001, 0b1001, 0b0111, 0b0001, 0b0001, 0b0110],
-            '+' => [0b0000, 0b0010, 0b0010, 0b1111, 0b0010, 0b0010, 0b0000],
+            '0' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+            '1' => [0b00110, 0b01110, 0b00110, 0b00110, 0b00110, 0b00110, 0b00110, 0b00110, 0b11111],
+            '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b10000, 0b11111],
+            '3' => [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b00001, 0b10001, 0b10001, 0b01110],
+            '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b10010, 0b11111, 0b00010, 0b00010, 0b00010],
+            '5' => [0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b10001, 0b01110],
+            '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+            '7' => [0b11111, 0b00001, 0b00010, 0b00010, 0b00100, 0b00100, 0b01000, 0b01000, 0b01000],
+            '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+            '9' => [0b01110, 0b10001, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b00010, 0b01100],
+            '+' => [0b00000, 0b00100, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00100, 0b00000],
             _ => return None,
         })
     }
@@ -487,7 +492,8 @@ fn paint_label(
     if chars.is_empty() {
         return;
     }
-    let total_w = chars.len() * GLYPH_W + chars.len().saturating_sub(1);
+    let layout_glyph_width = if chars.len() > 2 { COMPACT_GLYPH_W } else { GLYPH_W };
+    let total_w = chars.len() * layout_glyph_width + chars.len().saturating_sub(1);
     let origin_x = logical_size.saturating_sub(total_w) / 2;
     let origin_y = logical_size.saturating_sub(GLYPH_H) / 2;
     let mut x_offset = origin_x;
@@ -501,12 +507,16 @@ fn paint_label(
                 if (row >> (GLYPH_W - 1 - col)) & 1 == 0 {
                     continue;
                 }
-                let inset = scale as f32 * 0.04;
-                let left = (x_offset + col) as f32 * scale as f32 + inset;
+                let inset = scale as f32 * 0.02;
+                let cell_left = x_offset as f32
+                    + col as f32 * layout_glyph_width as f32 / GLYPH_W as f32;
+                let cell_right = x_offset as f32
+                    + (col + 1) as f32 * layout_glyph_width as f32 / GLYPH_W as f32;
+                let left = cell_left * scale as f32 + inset;
                 let top = (origin_y + row_index) as f32 * scale as f32 + inset;
-                let right = (x_offset + col + 1) as f32 * scale as f32 - inset;
+                let right = cell_right * scale as f32 - inset;
                 let bottom = (origin_y + row_index + 1) as f32 * scale as f32 - inset;
-                let radius = scale as f32 * 0.08;
+                let radius = scale as f32 * 0.10;
                 let min_x = left.max(0.0) as usize;
                 let max_x = right.ceil().min(size as f32) as usize;
                 let min_y = top.max(0.0) as usize;
@@ -522,7 +532,7 @@ fn paint_label(
                 }
             }
         }
-        x_offset += GLYPH_W + 1;
+        x_offset += layout_glyph_width + 1;
     }
 }
 
@@ -636,12 +646,11 @@ mod tests {
             alpha > 0 && alpha < 255
         }));
         assert!(pixels.iter().any(|pixel| {
-            let red = (pixel >> 16) & 0xff;
-            let green = (pixel >> 8) & 0xff;
-            let blue = pixel & 0xff;
-            (45..=100).contains(&red)
-                && (55..=115).contains(&green)
-                && (70..=130).contains(&blue)
+            let expected = (u32::from(ATTENTION_BG[3]) << 24)
+                | (u32::from(ATTENTION_BG[0]) << 16)
+                | (u32::from(ATTENTION_BG[1]) << 8)
+                | u32::from(ATTENTION_BG[2]);
+            *pixel == expected
         }));
         let plus = render_badge_pixels("+", 16);
         assert!(plus.iter().any(|pixel| {
@@ -683,5 +692,29 @@ mod tests {
             .zip(occupied.first())
             .map_or(0, |(last, first)| last - first + 1);
         assert!((15..=16).contains(&width));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn raster_single_digit_uses_larger_glyph_geometry() {
+        let pixels = render_badge_pixels("1", 16);
+        let foreground: Vec<usize> = pixels
+            .iter()
+            .enumerate()
+            .filter_map(|(index, pixel)| {
+                let alpha = (pixel >> 24) & 0xff;
+                let red = (pixel >> 16) & 0xff;
+                let green = (pixel >> 8) & 0xff;
+                let blue = pixel & 0xff;
+                (alpha > 200 && red > 220 && green > 220 && blue > 220).then_some(index)
+            })
+            .collect();
+        let rows: Vec<usize> = foreground.iter().map(|index| index / 16).collect();
+        let height = rows
+            .iter()
+            .min()
+            .zip(rows.iter().max())
+            .map_or(0, |(first, last)| last - first + 1);
+        assert!((9..=10).contains(&height));
     }
 }
