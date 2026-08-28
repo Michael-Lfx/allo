@@ -24,10 +24,17 @@ defaults:
   run:
     shell: bash
 
+env:
+  BUN_VERSION: "1.3.13"
+  PYTHON_VERSION: "3.12"
+  UPLOAD_RETRIES: "5"
+  UPLOAD_RETRY_BASE_SEC: "30"
+
 jobs:
   release-context:
     name: Validate release tag
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
@@ -52,7 +59,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Check out release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ steps.tag.outputs.tag }}
           fetch-depth: 0
@@ -83,21 +90,21 @@ jobs:
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  # ui/dist is platform-independent (JS/CSS + nomifun-build.json), and the SPA
-  # needs more than the ~3-4GB V8 heap a 7GB macOS runner can spare. Build it
-  # once on a 16GB runner and hand it to the macOS job as an artifact.
+  # ui/dist is platform-independent; build once on a 16GB runner for macOS.
   build-ui:
     name: Build SPA
     needs: release-context
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.release-context.outputs.tag }}
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: ${{ env.BUN_VERSION }}
+          cache: true
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -107,44 +114,54 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=8192
         run: bun run build:ui
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ui-dist
           path: ui/dist
-          retention-days: 1
+          retention-days: 3
           if-no-files-found: error
 
-  release-windows:
-    name: Build and publish Windows
+  # ── Windows: build x64 and arm64 in parallel (no shared output) ───────────
+  build-windows:
+    name: Build Windows (${{ matrix.arch }})
     needs: release-context
     runs-on: windows-latest
-    environment: modelscope-alpha
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            rust_targets: x86_64-pc-windows-msvc
+            artifact_name: windows-x64-dist
+          - arch: arm64
+            rust_targets: aarch64-pc-windows-msvc
+            artifact_name: windows-arm64-dist
     defaults:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.release-context.outputs.tag }}
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: ${{ env.BUN_VERSION }}
+          cache: true
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+          targets: ${{ matrix.rust_targets }}
 
-      - uses: actions/setup-python@v5
+      - uses: Swatinem/rust-cache@v2
         with:
-          python-version: "3.12"
+          shared-key: windows-${{ matrix.arch }}-updater
 
       - name: Install dependencies
-        run: |
-          bun install --frozen-lockfile
-          python -m pip install modelscope
+        run: bun install --frozen-lockfile
 
-      - name: Build Windows updater (x64 + arm64)
+      - name: Build Windows updater (${{ matrix.arch }})
         env:
           NODE_OPTIONS: --max-old-space-size=8192
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -153,25 +170,94 @@ jobs:
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
             throw 'TAURI_SIGNING_PRIVATE_KEY is not configured'
           }
-          bun run build:win x64 arm64 --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.windows.conf.json
+          bun run build:win ${{ matrix.arch }} `
+            --config apps/desktop/tauri.updater.conf.json `
+            --config apps/desktop/tauri.channel.windows.conf.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           bun run make:latest --host modelscope --channel windows --collect
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Upload Windows release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/desktop/
+          retention-days: 3
+          if-no-files-found: error
+
+  publish-windows:
+    name: Publish Windows channel
+    needs: [release-context, build-windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: modelscope-alpha
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-context.outputs.tag }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+          cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install upload deps
+        run: |
+          bun install --frozen-lockfile
+          python -m pip install -r scripts/requirements-modelscope.txt
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: windows-x64-dist
+          path: staging/windows-x64
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: windows-arm64-dist
+          path: staging/windows-arm64
+
+      - name: Merge Windows dist and refresh manifest
+        run: |
+          mkdir -p dist/desktop
+          cp -a staging/windows-x64/. dist/desktop/
+          cp -a staging/windows-arm64/. dist/desktop/
+          bun run make:latest --host modelscope --channel windows --collect
+          ls -lah dist/desktop
+
+      - name: Upload Windows artifacts (phase 1)
         env:
           MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: "1"
         run: |
-          if (-not $env:MODELSCOPE_TOKEN) {
-            throw 'MODELSCOPE_TOKEN is not configured'
+          test -n "$MODELSCOPE_TOKEN" || {
+            echo "MODELSCOPE_TOKEN is not configured" >&2
+            exit 1
           }
-          bun run upload:modelscope -- --channel windows
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun scripts/run-upload-modelscope.mjs \
+            --dist-dir dist/desktop/ \
+            --channel windows \
+            --artifacts-only \
+            --retries "$UPLOAD_RETRIES" \
+            --retry-base-sec "$UPLOAD_RETRY_BASE_SEC"
 
-      - name: Verify Windows channel entries
-        shell: bash
+      - name: Publish Windows channel pointer (phase 2)
+        env:
+          MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
+        run: |
+          bun scripts/run-upload-modelscope.mjs \
+            --dist-dir dist/desktop/ \
+            --channel windows \
+            --manifest-only \
+            --retries "$UPLOAD_RETRIES" \
+            --retry-base-sec "$UPLOAD_RETRY_BASE_SEC"
+
+      - name: Verify Windows channel
         env:
           EXPECTED_VERSION: ${{ needs.release-context.outputs.version }}
         run: |
@@ -179,39 +265,49 @@ jobs:
             --channel windows \
             --version "$EXPECTED_VERSION" \
             --platform windows-x86_64 \
-            --platform windows-aarch64
+            --platform windows-aarch64 \
+            --check-artifacts \
+            --metadata dist/desktop/release-metadata.json
 
-  release-macos:
-    name: Build and publish macOS
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-release-metadata
+          path: |
+            dist/desktop/latest.json
+            dist/desktop/channel.yml
+            dist/desktop/release-metadata.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ── macOS ─────────────────────────────────────────────────────────────────
+  build-macos:
+    name: Build macOS
     needs: [release-context, build-ui]
     runs-on: macos-14
-    environment: modelscope-alpha
+    timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.release-context.outputs.tag }}
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: ${{ env.BUN_VERSION }}
+          cache: true
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - uses: actions/setup-python@v5
+      - uses: Swatinem/rust-cache@v2
         with:
-          python-version: "3.12"
+          shared-key: macos-universal-updater
 
       - name: Install dependencies
-        run: |
-          bun install --frozen-lockfile
-          python -m pip install modelscope
+        run: bun install --frozen-lockfile
 
-      # Reuse the SPA built on the 16GB runner; tauri.ci-skip-ui.conf.json keeps
-      # beforeBuildCommand from re-running vite here, where the heap it needs
-      # does not fit (JS heap OOM -> SIGABRT, exit 134).
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: ui-dist
           path: ui/dist
@@ -225,16 +321,50 @@ jobs:
             echo "TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
             exit 1
           }
-          # Universal covers darwin-aarch64 + darwin-x86_64 with one updater
-          # artifact (avoids Flowy.app.tar.gz basename collisions). The Intel
-          # slice omits ort; robot VAD falls back to energy there.
           bun run build:mac universal \
             --config apps/desktop/tauri.updater.conf.json \
             --config apps/desktop/tauri.channel.macos.conf.json \
             --config apps/desktop/tauri.ci-skip-ui.conf.json
           bun run make:latest --host modelscope --channel macos --collect
 
-      - name: Upload macOS release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-dist
+          path: dist/desktop/
+          retention-days: 3
+          if-no-files-found: error
+
+  publish-macos:
+    name: Publish macOS channel
+    needs: [release-context, build-macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: modelscope-alpha
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-context.outputs.tag }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+          cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install upload deps
+        run: |
+          bun install --frozen-lockfile
+          python -m pip install -r scripts/requirements-modelscope.txt
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: macos-dist
+          path: dist/desktop
+
+      - name: Upload macOS artifacts (phase 1)
         env:
           MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
         run: |
@@ -242,9 +372,25 @@ jobs:
             echo "MODELSCOPE_TOKEN is not configured" >&2
             exit 1
           }
-          bun run upload:modelscope -- --channel macos
+          bun scripts/run-upload-modelscope.mjs \
+            --dist-dir dist/desktop/ \
+            --channel macos \
+            --artifacts-only \
+            --retries "$UPLOAD_RETRIES" \
+            --retry-base-sec "$UPLOAD_RETRY_BASE_SEC"
 
-      - name: Verify macOS channel entries
+      - name: Publish macOS channel pointer (phase 2)
+        env:
+          MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+        run: |
+          bun scripts/run-upload-modelscope.mjs \
+            --dist-dir dist/desktop/ \
+            --channel macos \
+            --manifest-only \
+            --retries "$UPLOAD_RETRIES" \
+            --retry-base-sec "$UPLOAD_RETRY_BASE_SEC"
+
+      - name: Verify macOS channel
         env:
           EXPECTED_VERSION: ${{ needs.release-context.outputs.version }}
         run: |
@@ -252,27 +398,42 @@ jobs:
             --channel macos \
             --version "$EXPECTED_VERSION" \
             --platform darwin-aarch64 \
-            --platform darwin-x86_64
+            --platform darwin-x86_64 \
+            --check-artifacts \
+            --metadata dist/desktop/release-metadata.json
 
-  release-linux:
-    name: Build and publish Linux
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: macos-release-metadata
+          path: |
+            dist/desktop/latest.json
+            dist/desktop/channel.yml
+            dist/desktop/release-metadata.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ── Linux ─────────────────────────────────────────────────────────────────
+  build-linux:
+    name: Build Linux
     needs: release-context
     runs-on: ubuntu-24.04
-    environment: modelscope-alpha
+    timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.release-context.outputs.tag }}
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: ${{ env.BUN_VERSION }}
+          cache: true
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/setup-python@v5
+      - uses: Swatinem/rust-cache@v2
         with:
-          python-version: "3.12"
+          shared-key: linux-x64-updater
 
       - name: Install Linux build dependencies
         run: |
@@ -291,9 +452,7 @@ jobs:
             xdg-utils
 
       - name: Install dependencies
-        run: |
-          bun install --frozen-lockfile
-          python -m pip install modelscope
+        run: bun install --frozen-lockfile
 
       - name: Build Linux updater
         env:
@@ -308,7 +467,44 @@ jobs:
           bun run build:linux --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.linux.conf.json
           bun run make:latest --host modelscope --channel linux --collect
 
-      - name: Upload Linux release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-dist
+          path: dist/desktop/
+          retention-days: 3
+          if-no-files-found: error
+
+  publish-linux:
+    name: Publish Linux channel
+    needs: [release-context, build-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: modelscope-alpha
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-context.outputs.tag }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+          cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install upload deps
+        run: |
+          bun install --frozen-lockfile
+          python -m pip install -r scripts/requirements-modelscope.txt
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: linux-dist
+          path: dist/desktop
+
+      - name: Upload Linux artifacts (phase 1)
         env:
           MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
         run: |
@@ -316,13 +512,76 @@ jobs:
             echo "MODELSCOPE_TOKEN is not configured" >&2
             exit 1
           }
-          bun run upload:modelscope -- --channel linux
+          bun scripts/run-upload-modelscope.mjs \
+            --dist-dir dist/desktop/ \
+            --channel linux \
+            --artifacts-only \
+            --retries "$UPLOAD_RETRIES" \
+            --retry-base-sec "$UPLOAD_RETRY_BASE_SEC"
 
-      - name: Verify Linux channel entry
+      - name: Publish Linux channel pointer (phase 2)
+        env:
+          MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+        run: |
+          bun scripts/run-upload-modelscope.mjs \
+            --dist-dir dist/desktop/ \
+            --channel linux \
+            --manifest-only \
+            --retries "$UPLOAD_RETRIES" \
+            --retry-base-sec "$UPLOAD_RETRY_BASE_SEC"
+
+      - name: Verify Linux channel
         env:
           EXPECTED_VERSION: ${{ needs.release-context.outputs.version }}
         run: |
           python scripts/verify-modelscope-release.py \
             --channel linux \
             --version "$EXPECTED_VERSION" \
-            --platform linux-x86_64
+            --platform linux-x86_64 \
+            --check-artifacts \
+            --metadata dist/desktop/release-metadata.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: linux-release-metadata
+          path: |
+            dist/desktop/latest.json
+            dist/desktop/channel.yml
+            dist/desktop/release-metadata.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  release-status:
+    name: Release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [publish-windows, publish-macos, publish-linux]
+    if: always()
+    steps:
+      - name: Require all platform publishes
+        env:
+          WINDOWS: ${{ needs.publish-windows.result }}
+          MACOS: ${{ needs.publish-macos.result }}
+          LINUX: ${{ needs.publish-linux.result }}
+        run: |
+          {
+            echo "### ModelScope release gate"
+            echo ""
+            echo "| Channel | Result |"
+            echo "|---|---|"
+            echo "| windows | \`$WINDOWS\` |"
+            echo "| macos | \`$MACOS\` |"
+            echo "| linux | \`$LINUX\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          ok=1
+          for result in "$WINDOWS" "$MACOS" "$LINUX"; do
+            if [[ "$result" != "success" ]]; then
+              ok=0
+            fi
+          done
+          if [[ "$ok" -ne 1 ]]; then
+            echo "One or more platform publishes did not succeed" >&2
+            exit 1
+          fi
+          echo "All platform channels published successfully"

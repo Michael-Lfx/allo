@@ -1,36 +1,46 @@
 # ModelScope platform release workflow
 
-`release-modelscope.yml` uses one platform-specific tag per build:
+`release-modelscope.yml` publishes per-OS OTA channels to
+`flowy2025/flowyaipc` under `allo/`.
 
-- `vX.Y.Z-windows` builds and uploads Windows x64 to the **windows** OTA channel.
-- `vX.Y.Z-macos` builds and uploads a universal macOS package to the **macos** channel.
-- `vX.Y.Z-linux` builds and uploads Linux x64 to the **linux** channel.
+## Trigger
 
-Each platform has an independent ModelScope manifest and version:
+- Push tag `vX.Y.Z` (no platform suffix), or
+- `workflow_dispatch` with the same tag
 
-- Manifest: `allo/channels/{windows|macos|linux}/latest.json`
-- Artifacts: `allo/{windows|macos|linux}/vX.Y.Z/`
+Tag version must match `[workspace.package].version` on that commit.
 
-Clients embed the matching endpoint via
-`apps/desktop/tauri.channel.{windows|macos|linux}.conf.json` at build time.
-The shared `allo/channels/alpha/latest.json` channel is **deprecated**; new
-installers do not read it.
+## Pipeline shape
 
-Because channels are independent, Windows/macOS/Linux tags may run in parallel
-(concurrency is keyed by the platform tag ref). Cross-platform `--merge-remote`
-is no longer used.
+```
+release-context
+     ├─ build-ui ──────────────────────────────┐
+     ├─ build-windows (matrix: x64 ∥ arm64) ─► publish-windows ─┐
+     ├─ build-macos (needs ui-dist) ──────────► publish-macos ──┼─► release-status
+     └─ build-linux ──────────────────────────► publish-linux ──┘
+```
 
-Tag `X.Y.Z` must match `[workspace.package].version` on the tagged commit. To
-ship different versions per OS, bump Cargo on different commits and tag each
-platform separately (for example `v0.4.2-windows` then later `v0.1.8-macos`).
+- **Build jobs** use `TAURI_SIGNING_*` only and upload `dist/desktop/` as GitHub
+  Artifacts. They do **not** receive `MODELSCOPE_TOKEN`.
+- **Publish jobs** run in the `modelscope-alpha` environment, download build
+  artifacts, then two-phase upload:
+  1. `--artifacts-only` (binaries + `.sig`, per-file retry / skip-existing)
+  2. `--manifest-only` (`latest.json` + `channel.yml` + `history/vX.Y.Z.json`)
+- **release-status** fails unless all three publishes succeeded.
 
-Required repository or `modelscope-alpha` environment secrets:
+## Secrets
 
-- `TAURI_SIGNING_PRIVATE_KEY`: full contents of the updater private key that
-  matches the public key in `apps/desktop/tauri.conf.json`.
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: private-key password. It may be omitted
-  when the key has no password.
-- `MODELSCOPE_TOKEN`: token with write access to `flowy2025/flowyaipc`.
+- `TAURI_SIGNING_PRIVATE_KEY` (+ optional password): build jobs
+- `MODELSCOPE_TOKEN`: publish jobs only (`modelscope-alpha` environment)
 
-Only trusted maintainers should be allowed to create platform release tags or
-approve the `modelscope-alpha` environment.
+## Ops
+
+```bash
+# Roll channel pointer back to a history snapshot written at publish time
+bun run rollback:modelscope -- --channel windows --to-version 1.0.9
+
+# Verify remote manifest (+ optional size check against release-metadata.json)
+bun run verify:modelscope -- --channel linux --version 1.1.0 --platform linux-x86_64 --check-artifacts
+```
+
+Pinned SDK: `scripts/requirements-modelscope.txt`.

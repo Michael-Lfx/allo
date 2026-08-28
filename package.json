@@ -19,6 +19,8 @@
     "build:updater": "CI=true tauri build --config apps/desktop/tauri.conf.json --config '{\"bundle\":{\"createUpdaterArtifacts\":true}}' && bun scripts/prune-build.mjs --post",
     "make:latest": "bun scripts/make-latest-json.mjs",
     "upload:modelscope": "bun scripts/run-upload-modelscope.mjs --dist-dir dist/desktop/",
+    "rollback:modelscope": "python scripts/rollback-modelscope-release.py",
+    "verify:modelscope": "python scripts/verify-modelscope-release.py",
     "release:mac": "bun scripts/run-mac-release.mjs",
     "release:win": "bun scripts/run-win-release.mjs",
     "release:linux": "bun scripts/run-linux-release.mjs",
