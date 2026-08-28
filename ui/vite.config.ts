@@ -140,6 +140,8 @@ export default defineConfig(({ mode }) => {
       outDir: 'dist',
       emptyOutDir: true,
       reportCompressedSize: false,
+      target: 'safari15.5',
+      cssTarget: 'safari15.5',
       rollupOptions: {
         output: {
           // A manual chunk otherwise absorbs transitive imports in Rollup 4.

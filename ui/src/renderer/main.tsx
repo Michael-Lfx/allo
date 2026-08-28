@@ -1,4 +1,5 @@
 // Runtime patches must be imported early
+import './utils/ui/legacyWebKit';
 import './utils/ui/runtimePatches';
 
 // Browser adapter setup
