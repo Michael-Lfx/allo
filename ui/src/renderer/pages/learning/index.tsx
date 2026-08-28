@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Alert, Button, Empty, Input, Modal, Spin, Tabs, Tag, Typography } from '@arco-design/web-react';
@@ -6,15 +6,9 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { learningApi } from './api';
 import { CourseCard, CourseDeleteDialog } from './components/CourseCard';
-import ConceptGraphPanel from './components/ConceptGraphPanel';
-import { CourseJobTable } from './components/CourseJobTable';
 import { CourseWorkspace, DiagnosticModal } from './components/CourseWorkspace';
-import { CreateCourseDialog } from './components/CreateCourseDialog';
 import LearningModelSelector, { useLearningAutogenModel } from './components/LearningModelSelector';
-import { QuestionManager } from './components/QuestionManager';
 import { ReviewBanner } from './components/ReviewBanner';
-import { ReviewSessionModal } from './components/ReviewSession';
-import { TagEditorModal } from './components/TagEditorModal';
 import { EMPTY_PACK, ORPHAN_COURSE_FILTER, REVIEW_BANNER_EXPANDED_KEY, REVIEW_FILTERS_STORAGE_KEY } from './constants';
 import { useCheckinStatus } from './hooks/useCheckinStatus';
 import { useCourseCreation } from './hooks/useCourseCreation';
@@ -25,6 +19,27 @@ import type { CourseDetail, CourseSummary, DueReview, Lesson, LessonStatus, Ques
 import { errorMessage, loadStoredReviewFilters } from './utils';
 
 const { Title, Text, Paragraph } = Typography;
+
+// 页内重型组件按需加载：概念图依赖 @xyflow/react 与 dagre，题目/任务表格
+// 与复习/创建/标签弹窗仅在对应 Tab 或操作打开时才下载执行。路由级 lazy
+// 只拆到整页，这里进一步把非首屏组件拆成独立 chunk，学习页首屏只加载
+// 课程卡片、复习横幅与模型选择器等核心模块，达到秒开。
+const ConceptGraphPanel = lazy(() => import('./components/ConceptGraphPanel'));
+const QuestionManager = lazy(() =>
+  import('./components/QuestionManager').then((m) => ({ default: m.QuestionManager }))
+);
+const CourseJobTable = lazy(() =>
+  import('./components/CourseJobTable').then((m) => ({ default: m.CourseJobTable }))
+);
+const ReviewSessionModal = lazy(() =>
+  import('./components/ReviewSession').then((m) => ({ default: m.ReviewSessionModal }))
+);
+const CreateCourseDialog = lazy(() =>
+  import('./components/CreateCourseDialog').then((m) => ({ default: m.CreateCourseDialog }))
+);
+const TagEditorModal = lazy(() =>
+  import('./components/TagEditorModal').then((m) => ({ default: m.TagEditorModal }))
+);
 
 const LearningPage: React.FC = () => {
   const { id } = useParams<{ id?: string }>();
@@ -326,10 +341,12 @@ const LearningPage: React.FC = () => {
               title={t('learning.questionManagement')}
               destroyOnHide={false}
             >
-              <QuestionManager
-                onMutated={() => void load()}
-                onEditTags={(entry) => void openTagEditor('question', entry)}
-              />
+              <Suspense fallback={<div className='flex justify-center py-32px'><Spin /></div>}>
+                <QuestionManager
+                  onMutated={() => void load()}
+                  onEditTags={(entry) => void openTagEditor('question', entry)}
+                />
+              </Suspense>
             </Tabs.TabPane>
             <Tabs.TabPane
               key='jobs'
@@ -347,16 +364,18 @@ const LearningPage: React.FC = () => {
               }
               destroyOnHide={false}
             >
-              <CourseJobTable
-                jobs={courseJobs.jobs}
-                loading={courseJobs.loading}
-                busyId={busyId}
-                onCancel={courseJobs.cancelJob}
-                onResume={courseJobs.resumeJob}
-                onRetry={courseJobs.retryJob}
-                onDelete={courseJobs.deleteJob}
-                onOpenCourse={(courseId) => navigate(`/learn/${courseId}`)}
-              />
+              <Suspense fallback={<div className='flex justify-center py-32px'><Spin /></div>}>
+                <CourseJobTable
+                  jobs={courseJobs.jobs}
+                  loading={courseJobs.loading}
+                  busyId={busyId}
+                  onCancel={courseJobs.cancelJob}
+                  onResume={courseJobs.resumeJob}
+                  onRetry={courseJobs.retryJob}
+                  onDelete={courseJobs.deleteJob}
+                  onOpenCourse={(courseId) => navigate(`/learn/${courseId}`)}
+                />
+              </Suspense>
             </Tabs.TabPane>
             <Tabs.TabPane
               key='concept-graph'
@@ -370,36 +389,40 @@ const LearningPage: React.FC = () => {
               }
               destroyOnHide={false}
             >
-              <ConceptGraphPanel />
+              <Suspense fallback={<div className='flex justify-center py-32px'><Spin /></div>}>
+                <ConceptGraphPanel />
+              </Suspense>
             </Tabs.TabPane>
           </Tabs>
         </section>
 
-        <ReviewSessionModal
-          key='review-session'
-          open={reviewSession.sessionOpen}
-          queue={reviewSession.sessionQueue}
-          busyId={busyId}
-          onAnswer={reviewSession.answerReview}
-          onForget={reviewSession.forgetReview}
-          onRate={reviewSession.rateReview}
-          onSkip={reviewSession.skipReview}
-          onArchive={reviewSession.archiveReview}
-          onRemove={reviewSession.removeReview}
-          onMarkEdit={reviewSession.markEditPending}
-          onEdited={(updated) => {
-            reviewSession.setSessionQueue((prev) =>
-              prev.map((item) => (item.id === updated.id ? updated : item))
-            );
-          }}
-          onClose={() => {
-            reviewSession.setSessionOpen(false);
-            // 会话结束时刷新列表与打卡状态，让角标与下次入队状态保持一致；
-            // 若本次复习恰好达成今日目标，会触发完成仪式高亮
-            void load();
-            void checkin.refreshAfterSession();
-          }}
-        />
+        <Suspense fallback={null}>
+          <ReviewSessionModal
+            key='review-session'
+            open={reviewSession.sessionOpen}
+            queue={reviewSession.sessionQueue}
+            busyId={busyId}
+            onAnswer={reviewSession.answerReview}
+            onForget={reviewSession.forgetReview}
+            onRate={reviewSession.rateReview}
+            onSkip={reviewSession.skipReview}
+            onArchive={reviewSession.archiveReview}
+            onRemove={reviewSession.removeReview}
+            onMarkEdit={reviewSession.markEditPending}
+            onEdited={(updated) => {
+              reviewSession.setSessionQueue((prev) =>
+                prev.map((item) => (item.id === updated.id ? updated : item))
+              );
+            }}
+            onClose={() => {
+              reviewSession.setSessionOpen(false);
+              // 会话结束时刷新列表与打卡状态，让角标与下次入队状态保持一致；
+              // 若本次复习恰好达成今日目标，会触发完成仪式高亮
+              void load();
+              void checkin.refreshAfterSession();
+            }}
+          />
+        </Suspense>
         {deletingCourse !== null && (
           <CourseDeleteDialog
             course={deletingCourse}
@@ -412,52 +435,56 @@ const LearningPage: React.FC = () => {
         )}
 
         {tagEditor !== null && (
-          <TagEditorModal
-            key={`${tagEditor.kind}:${tagEditor.kind === 'course' ? (tagEditor.target as CourseSummary).id : (tagEditor.target as QuestionEntry).question_id}`}
-            title={
-              tagEditor.kind === 'course'
-                ? t('learning.tagsEditCourseTitle', {
-                    title: (tagEditor.target as CourseSummary).title,
-                  })
-                : t('learning.tagsEditQuestionTitle')
-            }
-            initialTags={tagEditor.target.tags}
-            allTags={allTags}
-            busy={busyId === 'tag-editor'}
-            showApplyToChildren={tagEditor.kind === 'course'}
-            onConfirm={(tags, applyToChildren) => void saveTags(tags, applyToChildren)}
-            onClose={() => setTagEditor(null)}
-          />
+          <Suspense fallback={null}>
+            <TagEditorModal
+              key={`${tagEditor.kind}:${tagEditor.kind === 'course' ? (tagEditor.target as CourseSummary).id : (tagEditor.target as QuestionEntry).question_id}`}
+              title={
+                tagEditor.kind === 'course'
+                  ? t('learning.tagsEditCourseTitle', {
+                      title: (tagEditor.target as CourseSummary).title,
+                    })
+                  : t('learning.tagsEditQuestionTitle')
+              }
+              initialTags={tagEditor.target.tags}
+              allTags={allTags}
+              busy={busyId === 'tag-editor'}
+              showApplyToChildren={tagEditor.kind === 'course'}
+              onConfirm={(tags, applyToChildren) => void saveTags(tags, applyToChildren)}
+              onClose={() => setTagEditor(null)}
+            />
+          </Suspense>
         )}
 
-        <CreateCourseDialog
-          visible={creation.generateVisible}
-          busy={busyId === 'generate' || busyId === 'create-via-agent'}
-          knowledgeLoading={creation.knowledgeLoading}
-          knowledgeBases={creation.knowledgeBases}
-          allKnowledgeBases={creation.allKnowledgeBases}
-          selectedKnowledgeBaseId={creation.selectedKnowledgeBaseId}
-          generationDomain={creation.generationDomain}
-          generationMode={creation.generationMode}
-          modelChoice={creation.modelChoice}
-          creationTab={creation.creationTab}
-          creationDescription={creation.creationDescription}
-          creationBaseMode={creation.creationBaseMode}
-          creationBaseId={creation.creationBaseId}
-          onClose={() => creation.setGenerateVisible(false)}
-          onOk={() => {
-            if (creation.creationTab === 'base') void creation.generateCourse();
-            else void creation.createCourseViaAgent();
-          }}
-          onSelectedBaseChange={creation.setSelectedKnowledgeBaseId}
-          onDomainChange={creation.setGenerationDomain}
-          onGenerationModeChange={creation.setGenerationMode}
-          onModelChange={(choice) => void creation.setModelChoice(choice)}
-          onTabChange={creation.setCreationTab}
-          onDescriptionChange={creation.setCreationDescription}
-          onBaseModeChange={creation.setCreationBaseMode}
-          onCreationBaseIdChange={creation.setCreationBaseId}
-        />
+        <Suspense fallback={null}>
+          <CreateCourseDialog
+            visible={creation.generateVisible}
+            busy={busyId === 'generate' || busyId === 'create-via-agent'}
+            knowledgeLoading={creation.knowledgeLoading}
+            knowledgeBases={creation.knowledgeBases}
+            allKnowledgeBases={creation.allKnowledgeBases}
+            selectedKnowledgeBaseId={creation.selectedKnowledgeBaseId}
+            generationDomain={creation.generationDomain}
+            generationMode={creation.generationMode}
+            modelChoice={creation.modelChoice}
+            creationTab={creation.creationTab}
+            creationDescription={creation.creationDescription}
+            creationBaseMode={creation.creationBaseMode}
+            creationBaseId={creation.creationBaseId}
+            onClose={() => creation.setGenerateVisible(false)}
+            onOk={() => {
+              if (creation.creationTab === 'base') void creation.generateCourse();
+              else void creation.createCourseViaAgent();
+            }}
+            onSelectedBaseChange={creation.setSelectedKnowledgeBaseId}
+            onDomainChange={creation.setGenerationDomain}
+            onGenerationModeChange={creation.setGenerationMode}
+            onModelChange={(choice) => void creation.setModelChoice(choice)}
+            onTabChange={creation.setCreationTab}
+            onDescriptionChange={creation.setCreationDescription}
+            onBaseModeChange={creation.setCreationBaseMode}
+            onCreationBaseIdChange={creation.setCreationBaseId}
+          />
+        </Suspense>
 
         <Modal
           title={t('learning.importTitle')}
