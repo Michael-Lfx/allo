@@ -24,7 +24,7 @@ use nomifun_db::{
     IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
     SqliteCompanionTokenRepository, SqliteConversationRepository, SqliteMcpServerRepository,
     SqliteProviderModelRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
-    SqliteTerminalRepository, SqliteUserRepository,
+    SqliteSettingsRepository, SqliteTerminalRepository, SqliteUserRepository,
 };
 use nomifun_db::{IClientPreferenceRepository, SqliteClientPreferenceRepository};
 use nomifun_realtime::{BroadcastEventBus, WebSocketManager};
@@ -2248,8 +2248,13 @@ impl AppServices {
         )
         .into_arc();
         let system_notifier_slot = Arc::new(nomifun_notify::SystemNotifierSlot::new());
-        let system_notifier =
-            nomifun_notify::SystemCompletionNotifier::new(system_notifier_slot.clone()).into_arc();
+        let settings_repo_for_notifier: Arc<dyn nomifun_db::ISettingsRepository> =
+            Arc::new(SqliteSettingsRepository::new(database.pool().clone()));
+        let system_notifier = nomifun_notify::SystemCompletionNotifier::new(
+            system_notifier_slot.clone(),
+            settings_repo_for_notifier,
+        )
+        .into_arc();
         let completion_notifier = nomifun_requirement::FanOutCompletionNotifier::new(vec![
             webhook_notifier,
             system_notifier,

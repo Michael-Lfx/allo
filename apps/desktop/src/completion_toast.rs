@@ -1,7 +1,8 @@
-//! Always-on-top bottom-right completion popup (interactive toast window).
+//! Always-on-top bottom-right notification popup (interactive toast window).
 //!
-//! Complements the OS Action Center toast: this window stays under Flowy's
-//! control so Focus Assist / banner settings cannot suppress the interactive UI.
+//! This is the fallback surface when the OS notification provider cannot show
+//! a notification. It stays under Flowy's control so Focus Assist / banner
+//! settings cannot suppress the interactive UI.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,6 +24,7 @@ pub struct CompletionToastPayload {
     pub title: String,
     pub body: String,
     pub click_target: Option<String>,
+    pub attention_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -100,9 +102,10 @@ pub fn show_completion_toast(
     title: &str,
     body: &str,
     click_target: Option<&str>,
-) {
+    attention_id: Option<&str>,
+) -> Result<(), String> {
     let Some(state) = app.try_state::<CompletionToastState>() else {
-        return;
+        return Err("completion toast state is unavailable".to_owned());
     };
     let generation = state.next_generation();
     let payload = CompletionToastPayload {
@@ -110,6 +113,7 @@ pub fn show_completion_toast(
         title: title.to_owned(),
         body: body.to_owned(),
         click_target: click_target.map(str::to_owned),
+        attention_id: attention_id.map(str::to_owned),
     };
     state.set_payload(payload.clone());
 
@@ -121,8 +125,9 @@ pub fn show_completion_toast(
             let _ = state_for_show.take_if_generation(generation);
         }
     }) {
+        let _ = state.take_if_generation(generation);
         warn!(%error, "failed to dispatch completion toast show");
-        return;
+        return Err(error.to_string());
     }
 
     let app_for_dismiss = app.clone();
@@ -134,6 +139,7 @@ pub fn show_completion_toast(
         }
         dismiss_toast(&app_for_dismiss, &state_for_dismiss, generation);
     });
+    Ok(())
 }
 
 fn ensure_and_show(app: &AppHandle, payload: &CompletionToastPayload) -> Result<(), String> {
@@ -228,7 +234,6 @@ pub fn activate_completion_toast(app: AppHandle, generation: u64) -> Result<(), 
     if let Some(window) = app.get_webview_window(COMPLETION_TOAST_LABEL) {
         let _ = window.hide();
     }
-    crate::taskbar_badge::clear_badge(&app);
     if let Some(target) = payload.click_target.as_deref() {
         crate::system_notify::emit_notification_deep_link(&app, target);
     } else {
@@ -281,6 +286,7 @@ mod tests {
             title: "a".into(),
             body: "1".into(),
             click_target: None,
+            attention_id: None,
         });
         let g2 = state.next_generation();
         state.set_payload(CompletionToastPayload {
@@ -288,6 +294,7 @@ mod tests {
             title: "b".into(),
             body: "2".into(),
             click_target: Some("flowy://navigate?route=/conversation/x".into()),
+            attention_id: Some("conversation:x:turn:t1".into()),
         });
         assert_eq!(state.current_generation(), Some(g2));
         assert!(state.take_if_generation(g1).is_none());

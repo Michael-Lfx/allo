@@ -1,4 +1,4 @@
-//! Desktop OS toast via `tauri-plugin-notification` (and WinRT on Windows).
+//! Desktop OS notification with an in-app fallback.
 //!
 //! Implements [`SystemTaskNotifier`] so requirement terminal transitions can
 //! surface as native notifications. A Tauri command of the same shape lets the
@@ -29,23 +29,27 @@ impl DesktopTauriNotifier {
 #[async_trait]
 impl SystemTaskNotifier for DesktopTauriNotifier {
     async fn notify(&self, message: &SystemNotification) -> Result<(), NotifyError> {
-        show_os_notification(
+        let attention_id = (message.source == "requirement" && !message.task_id.is_empty())
+            .then(|| format!("requirement:{}", message.task_id));
+        show_os_notification_with_attention(
             &self.app,
             &message.title,
             &message.body_text(),
             message.click_target.as_deref(),
+            attention_id.as_deref(),
         )
     }
 }
 
-/// Show a native OS notification. When `click_target` is set (a `flowy://…`
-/// deep link), clicking the toast brings the main window forward and emits the
-/// deep-link event the renderer already handles.
-pub fn show_os_notification(
+/// Show a native notification and optionally admit one pending-attention item.
+/// The item is admitted before attempting the platform provider so a provider
+/// failure still leaves the user with the badge and the Flowy fallback toast.
+pub fn show_os_notification_with_attention(
     app: &AppHandle,
     title: &str,
     body: &str,
     click_target: Option<&str>,
+    attention_id: Option<&str>,
 ) -> Result<(), NotifyError> {
     // Shutdown in progress: a toast now outlives nothing, and its badge/toast-window
     // work only races the exiting event loop. Suppress it on both entry paths
@@ -56,6 +60,15 @@ pub fn show_os_notification(
     {
         return Ok(());
     }
+
+    if let Some(attention_id) = attention_id {
+        let is_new = crate::taskbar_badge::mark_attention(app, attention_id)
+            .map_err(NotifyError::Platform)?;
+        if !is_new {
+            return Ok(());
+        }
+    }
+
     #[cfg(windows)]
     let result = show_windows_toast(app, title, body, click_target);
     #[cfg(not(windows))]
@@ -68,11 +81,33 @@ pub fn show_os_notification(
             .show()
             .map_err(|error| NotifyError::Platform(error.to_string()))
     };
-    if result.is_ok() {
-        crate::taskbar_badge::on_completion_notified(app);
-        crate::completion_toast::show_completion_toast(app, title, body, click_target);
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(primary_error) => {
+            // The Rust command owns the provider failure boundary. Returning
+            // success after dispatching this fallback prevents tauriShell.ts
+            // from showing a second notification through the plugin path.
+            match crate::completion_toast::show_completion_toast(
+                app,
+                title,
+                body,
+                click_target,
+                attention_id,
+            ) {
+                Ok(()) => {
+                    tracing::warn!(
+                        error = %primary_error,
+                        "OS notification failed; using Flowy notification fallback"
+                    );
+                    Ok(())
+                }
+                Err(fallback_error) => Err(NotifyError::Platform(format!(
+                    "{primary_error}; Flowy fallback failed: {fallback_error}"
+                ))),
+            }
+        }
     }
-    result
 }
 
 // Async so the WinRT toast / taskbar-badge COM calls run on the async runtime
@@ -84,12 +119,19 @@ pub async fn show_os_notification_cmd(
     title: String,
     body: String,
     click_target: Option<String>,
+    attention_id: Option<String>,
 ) -> Result<(), String> {
-    show_os_notification(&app, &title, &body, click_target.as_deref()).map_err(|e| e.to_string())
+    show_os_notification_with_attention(
+        &app,
+        &title,
+        &body,
+        click_target.as_deref(),
+        attention_id.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub(crate) fn emit_notification_deep_link(app: &AppHandle, click_target: &str) {
-    crate::taskbar_badge::clear_badge(app);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
