@@ -359,6 +359,7 @@ const SendBox: React.FC<{
   const historyDraftRef = useRef<string | null>(null);
   const [replyQuote, setReplyQuote] = useState<ReplyQuote | null>(null);
   const [editingMsgId, setEditingMsgId] = useState<MessageId | null>(null);
+  const [isEditResubmitting, setIsEditResubmitting] = useState(false);
   const editingCreatedAtRef = useRef<number>(0);
   const editPrevDraftRef = useRef<string | null>(null);
   // C3: 编辑态 store 的 owner 标识（本实例唯一、仅 owner 可清，双实例护栏）与
@@ -432,6 +433,7 @@ const SendBox: React.FC<{
       editPrevDraftRef.current = latestInputRef.current;
       editingCreatedAtRef.current = payload.createdAt;
       setEditingMsgId(payload.msgId);
+      setIsEditResubmitting(false);
       setReplyQuote(null);
       onSkillChipsChange?.([]);
       setInputRef.current(payload.content);
@@ -1683,6 +1685,7 @@ const SendBox: React.FC<{
     // isLoading. Ignore the cancel click while a resubmit is pending.
     if (isLoading) return;
     setEditingMsgId(null);
+    setIsEditResubmitting(false);
     const prev = editPrevDraftRef.current ?? '';
     editPrevDraftRef.current = null;
     setInput(prev);
@@ -1759,6 +1762,10 @@ const SendBox: React.FC<{
         })
       ) return;
       activeEditOperationRef.current = operationId;
+      // Hide the local edit banner as soon as this submit is admitted. The
+      // durable edit target and operation remain alive for confirmation,
+      // reconciliation, recovery, and conversation remounts.
+      setIsEditResubmitting(true);
       // A double-click can land its second click on the Stop button that
       // replaces Send after this synchronous admission. Keep that click from
       // cancelling the preparation lease of the operation it just created.
@@ -1790,6 +1797,7 @@ const SendBox: React.FC<{
           )
         ) return;
         rememberEditResubmitOperation(committedTerminalOperationsRef.current, operationId);
+        setIsEditResubmitting(false);
         const outcome = resolveEditResubmitOutcome({
           isCurrentOperation: true,
           revisionUnchanged: inputRevisionStateRef.current.current === submittedInputRevision,
@@ -1854,6 +1862,7 @@ const SendBox: React.FC<{
             source: 'edit',
           });
           if (outcome.stale) return;
+          setIsEditResubmitting(false);
           if (outcome.restoreSubmittedInput) setInput(finalMessage);
           // C3: 失败后仍处编辑态，徽章回落为「编辑中」。
           // C3: still editing after a failure — badge drops back to "editing".
@@ -2236,7 +2245,7 @@ const SendBox: React.FC<{
           {/* b-1px 才是 1px 宽度（`b-1` 是 --bg-1 颜色），b-border-2 在 theme 里不存在，
               两者叠加等于「无宽度 + 无颜色」：下面这几条提示条从来没有边框。
               `b-1px` is the width; `b-border-2` names no colour that exists. */}
-          {editingMsgId && (
+          {editingMsgId && !isEditResubmitting && (
             <div className='flex items-center gap-10px mb-8px px-12px py-8px rd-10px bg-fill-1 b-1px b-solid border-arco-2'>
               <span className='text-13px text-t-primary'>{t('conversation.editMessage.banner')}</span>
               <div
