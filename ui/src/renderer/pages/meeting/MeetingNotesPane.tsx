@@ -1,6 +1,5 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Tag } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Copy } from '@icon-park/react';
 import type { MeetingSession } from '@/common/adapter/ipcBridge';
@@ -17,6 +16,7 @@ const MeetingNotesPane: React.FC<MeetingNotesPaneProps> = ({ session, generating
   const notes = session.notes;
   const live = isLiveSession(session);
   const canGenerate = session.status === 'stopped' || session.status === 'failed';
+  const showGenerate = canGenerate && session.notes_status !== 'generating' && !generating;
 
   const handleCopy = async () => {
     try {
@@ -27,29 +27,36 @@ const MeetingNotesPane: React.FC<MeetingNotesPaneProps> = ({ session, generating
     }
   };
 
+  const emptyCopy = live
+    ? t('meeting.notes.emptyLive')
+    : session.status === 'created'
+      ? t('meeting.notes.emptyIdle')
+      : t('meeting.notes.emptyStopped');
+
   return (
     <div className='flex flex-col gap-16px'>
       <div className='flex flex-wrap items-center gap-8px'>
         <div className='text-16px font-semibold text-t-primary'>{t('meeting.notes.title')}</div>
-        <Tag size='small'>{t(`meeting.notes.status.${session.notes_status}`)}</Tag>
-        {notes ? (
-          <span className='text-12px text-t-tertiary'>{t(`meeting.notes.source.${notes.source}`)}</span>
-        ) : null}
-        <div className='ml-auto flex flex-wrap gap-8px'>
+        <div className='ml-auto flex flex-wrap items-center gap-8px'>
           {notes ? (
-            <Button size='small' icon={<Copy theme='outline' size={14} />} onClick={() => void handleCopy()}>
-              {t('meeting.copyNotes')}
-            </Button>
+            <button
+              type='button'
+              className='meeting-notes-icon-btn'
+              onClick={() => void handleCopy()}
+              aria-label={t('meeting.copyNotes')}
+            >
+              <Copy theme='outline' size={14} fill='currentColor' />
+            </button>
           ) : null}
-          {canGenerate ? (
-            <Button type='primary' size='small' loading={generating} onClick={onGenerate}>
-              {t('meeting.notes.generate')}
-            </Button>
+          {notes && showGenerate ? (
+            <button type='button' className='meeting-notes-link' disabled={generating} onClick={onGenerate}>
+              {t('meeting.notes.regenerate')}
+            </button>
           ) : null}
         </div>
       </div>
 
-      {session.notes_status === 'generating' ? (
+      {session.notes_status === 'generating' || (generating && !notes) ? (
         <p className='m-0 text-14px leading-22px text-t-secondary'>{t('meeting.notes.generating')}</p>
       ) : notes ? (
         <div className='flex flex-col gap-20px text-14px leading-24px text-t-primary'>
@@ -105,9 +112,14 @@ const MeetingNotesPane: React.FC<MeetingNotesPaneProps> = ({ session, generating
           ) : null}
         </div>
       ) : (
-        <p className='m-0 max-w-520px text-14px leading-22px text-t-secondary'>
-          {live ? t('meeting.notes.emptyLive') : t('meeting.notes.emptyIdle')}
-        </p>
+        <div className='flex flex-col items-start gap-10px'>
+          <p className='m-0 max-w-520px text-14px leading-22px text-t-secondary'>{emptyCopy}</p>
+          {showGenerate ? (
+            <button type='button' className='meeting-notes-link' onClick={onGenerate}>
+              {t('meeting.notes.generate')}
+            </button>
+          ) : null}
+        </div>
       )}
     </div>
   );

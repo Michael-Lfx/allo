@@ -1,4 +1,4 @@
-import type { MeetingSession } from '@/common/adapter/ipcBridge';
+import type { MeetingSegment, MeetingSession } from '@/common/adapter/ipcBridge';
 
 export const formatMs = (ms: number): string => {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -84,8 +84,19 @@ export const notesPreview = (session: MeetingSession): string => {
   return line.length > 120 ? `${line.slice(0, 117).trimEnd()}…` : line;
 };
 
-export const isLiveSession = (session: MeetingSession): boolean =>
-  session.status === 'recording' || session.status === 'paused' || session.status === 'stopping';
+export const isLiveStatus = (status: MeetingSession['status']): boolean =>
+  status === 'recording' || status === 'paused' || status === 'stopping';
+
+export const isLiveSession = (session: MeetingSession): boolean => isLiveStatus(session.status);
+
+export const filterSegments = (segments: MeetingSegment[], query: string): MeetingSegment[] => {
+  const q = query.trim().toLowerCase();
+  if (!q) return segments;
+  return segments.filter(
+    (segment) =>
+      segment.text.toLowerCase().includes(q) || segment.speaker_label.toLowerCase().includes(q)
+  );
+};
 
 export const defaultMeetingTitle = (locale: string, now = new Date()): string => {
   const date = now.toLocaleDateString(locale, { month: 'short', day: 'numeric' });

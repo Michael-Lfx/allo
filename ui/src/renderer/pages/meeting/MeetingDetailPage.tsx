@@ -12,7 +12,7 @@ import MeetingNotesPane from './MeetingNotesPane';
 import MeetingRecordingDock from './MeetingRecordingDock';
 import MeetingTranscriptPanel from './MeetingTranscriptPanel';
 import VoiceprintModal from './VoiceprintModal';
-import { formatRelativeTime, isLiveSession } from './format';
+import { filterSegments, formatRelativeTime, isLiveSession } from './format';
 import { useMeetings } from './useMeetings';
 import './meeting.css';
 
@@ -27,7 +27,6 @@ const MeetingDetailPage: React.FC = () => {
     selected,
     segments,
     segmentsLoading,
-    devices,
     voiceprints,
     capabilityDegrade,
     listenStatus,
@@ -44,13 +43,13 @@ const MeetingDetailPage: React.FC = () => {
     deleteVoiceprint,
     generateNotes,
     editSegment,
-    searchSegments,
     startListen,
     stopListen,
   } = useMeetings({ sessionId });
 
   const [title, setTitle] = useState('');
   const [actionBusy, setActionBusy] = useState(false);
+  const [notesBusy, setNotesBusy] = useState(false);
   const [voiceprintOpen, setVoiceprintOpen] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [transcriptExpanded, setTranscriptExpanded] = useState(false);
@@ -60,14 +59,19 @@ const MeetingDetailPage: React.FC = () => {
   const [editSaving, setEditSaving] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
   const titleTimerRef = useRef<number | null>(null);
-  const searchTimerRef = useRef<number | null>(null);
+  const titleFocusedRef = useRef(false);
   const openedForLiveRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (titleFocusedRef.current) return;
     setTitle(selected?.title ?? '');
+  }, [selected?.session_id, selected?.title]);
+
+  useEffect(() => {
     setTranscriptQuery('');
     setEditingSegmentId(null);
-  }, [selected?.session_id, selected?.title]);
+    setEditingText('');
+  }, [selected?.session_id]);
 
   useEffect(() => {
     if (!selected) return;
@@ -91,7 +95,6 @@ const MeetingDetailPage: React.FC = () => {
   useEffect(() => {
     return () => {
       if (titleTimerRef.current) window.clearTimeout(titleTimerRef.current);
-      if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
     };
   }, []);
 
@@ -100,6 +103,11 @@ const MeetingDetailPage: React.FC = () => {
     const end = selected.ended_at_ms ?? nowMs;
     return Math.max(0, end - selected.started_at_ms);
   }, [nowMs, selected?.ended_at_ms, selected?.started_at_ms]);
+
+  const visibleSegments = useMemo(
+    () => filterSegments(segments, transcriptQuery),
+    [segments, transcriptQuery]
+  );
 
   const activeDegrade =
     capabilityDegrade && selected && capabilityDegrade.session_id === selected.session_id
@@ -137,45 +145,55 @@ const MeetingDetailPage: React.FC = () => {
     [persistTitle]
   );
 
-  const run = useCallback(
-    async (task: () => Promise<unknown>, successMessage?: string) => {
-      setActionBusy(true);
-      try {
-        await task();
-        if (successMessage) Message.success(successMessage);
-      } catch (err) {
-        Message.error(String(err));
-      } finally {
-        setActionBusy(false);
-      }
-    },
-    []
-  );
+  const handleTitleBlur = useCallback(() => {
+    titleFocusedRef.current = false;
+    if (!selected) return;
+    const trimmed = title.trim();
+    if (!trimmed) {
+      setTitle(selected.title);
+      return;
+    }
+    if (titleTimerRef.current) window.clearTimeout(titleTimerRef.current);
+    if (trimmed !== selected.title) {
+      void updateTitle(selected.session_id, trimmed).catch((err) => Message.error(String(err)));
+    }
+  }, [selected, title, updateTitle]);
+
+  const run = useCallback(async (task: () => Promise<unknown>) => {
+    setActionBusy(true);
+    try {
+      await task();
+    } catch (err) {
+      Message.error(String(err));
+    } finally {
+      setActionBusy(false);
+    }
+  }, []);
 
   const handleStart = useCallback(() => {
     if (!selected) return;
     setTranscriptOpen(true);
-    void run(() => startSession(selected.session_id), t('meeting.startSuccess'));
-  }, [run, selected, startSession, t]);
+    void run(() => startSession(selected.session_id));
+  }, [run, selected, startSession]);
 
   const handlePause = useCallback(() => {
     if (!selected) return;
-    void run(() => pauseSession(selected.session_id), t('meeting.pauseSuccess'));
-  }, [pauseSession, run, selected, t]);
+    void run(() => pauseSession(selected.session_id));
+  }, [pauseSession, run, selected]);
 
   const handleResume = useCallback(() => {
     if (!selected) return;
-    void run(() => resumeSession(selected.session_id), t('meeting.resumeSuccess'));
-  }, [resumeSession, run, selected, t]);
+    void run(() => resumeSession(selected.session_id));
+  }, [resumeSession, run, selected]);
 
   const handleStop = useCallback(() => {
     if (!selected) return;
-    void run(() => stopSession(selected.session_id), t('meeting.stopSuccess'));
-  }, [run, selected, stopSession, t]);
+    void run(() => stopSession(selected.session_id));
+  }, [run, selected, stopSession]);
 
   const handleGenerateNotes = useCallback(async () => {
     if (!selected) return;
-    setActionBusy(true);
+    setNotesBusy(true);
     try {
       const result = await generateNotes(selected.session_id);
       const parts = [t('meeting.notes.generateSuccess')];
@@ -187,21 +205,9 @@ const MeetingDetailPage: React.FC = () => {
     } catch (err) {
       Message.error(String(err));
     } finally {
-      setActionBusy(false);
+      setNotesBusy(false);
     }
   }, [generateNotes, selected, t]);
-
-  const handleSearch = useCallback(
-    (value: string) => {
-      setTranscriptQuery(value);
-      if (!selected) return;
-      if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
-      searchTimerRef.current = window.setTimeout(() => {
-        void searchSegments(selected.session_id, value);
-      }, 220);
-    },
-    [searchSegments, selected]
-  );
 
   const beginEditSegment = useCallback((segment: MeetingSegment) => {
     setEditingSegmentId(segment.segment_id);
@@ -213,7 +219,6 @@ const MeetingDetailPage: React.FC = () => {
     setEditSaving(true);
     try {
       await editSegment(selected.session_id, editingSegmentId, editingText);
-      Message.success(t('meeting.editSuccess'));
       setEditingSegmentId(null);
       setEditingText('');
     } catch (err) {
@@ -221,40 +226,44 @@ const MeetingDetailPage: React.FC = () => {
     } finally {
       setEditSaving(false);
     }
-  }, [editSegment, editingSegmentId, editingText, selected, t]);
+  }, [editSegment, editingSegmentId, editingText, selected]);
 
   const missing = !loading && sessionId && !sessions.some((item) => item.session_id === sessionId) && !selected;
+  const notesPadding = transcriptOpen
+    ? transcriptExpanded
+      ? 'calc(min(75vh, 640px) + 88px)'
+      : 'calc(min(50vh, 420px) + 88px)'
+    : '96px';
 
   return (
-    <div className='meeting-detail relative flex h-full min-h-0 w-full flex-1 overflow-hidden'>
+    <div className='meeting-detail relative flex size-full min-h-0 w-full flex-1 flex-col overflow-hidden'>
       {loading && !selected ? (
-        <div className='flex h-full items-center justify-center'>
+        <div className='flex size-full items-center justify-center'>
           <Spin />
         </div>
       ) : missing ? (
-        <div className='flex h-full flex-col items-center justify-center gap-12px'>
+        <div className='flex size-full flex-col items-center justify-center gap-12px'>
           <Empty description={t('meeting.notFound')} />
           <Button onClick={() => navigate('/meeting')}>{t('meeting.back')}</Button>
         </div>
       ) : selected ? (
-        <div
-          className={classNames(
-            'flex h-full min-h-0',
-            isMobile || !transcriptOpen ? 'flex-col' : 'flex-row'
-          )}
-        >
-          <div className='relative min-h-0 min-w-0 flex-1 overflow-y-auto'>
+        <>
+          <div className='meeting-detail-scroll min-h-0 flex-1 overflow-y-auto'>
             <div
               className={classNames(
-                'mx-auto flex w-full max-w-760px flex-col pb-96px',
+                'mx-auto flex w-full max-w-760px flex-col',
                 isMobile ? 'px-16px pt-12px' : 'px-28px pt-20px'
               )}
+              style={{ paddingBottom: notesPadding }}
             >
-              <div className='mb-8px'>
-                <Button type='text' size='small' icon={<Left theme='outline' size={14} />} onClick={() => navigate('/meeting')}>
-                  {t('meeting.back')}
-                </Button>
-              </div>
+              <button
+                type='button'
+                className='meeting-back-link mb-10px inline-flex h-24px items-center gap-6px border-0 bg-transparent p-0 font-[inherit] text-12px text-t-tertiary appearance-none cursor-pointer hover:text-t-primary'
+                onClick={() => navigate('/meeting')}
+              >
+                <Left theme='outline' size={14} />
+                <span>{t('meeting.back')}</span>
+              </button>
 
               {(activeDegrade || sessionCapabilityMessage) && (
                 <Alert
@@ -272,6 +281,10 @@ const MeetingDetailPage: React.FC = () => {
                 className='meeting-title-input w-full bg-transparent text-t-primary'
                 value={title}
                 onChange={(event) => handleTitleChange(event.target.value)}
+                onFocus={() => {
+                  titleFocusedRef.current = true;
+                }}
+                onBlur={handleTitleBlur}
                 placeholder={t('meeting.titlePlaceholder')}
               />
 
@@ -281,20 +294,23 @@ const MeetingDetailPage: React.FC = () => {
                     date: formatRelativeTime(selected.updated_at_ms || selected.created_at_ms, i18n.language),
                   })}
                 </span>
-                <span aria-hidden>·</span>
-                <span>{t(`meeting.status.${selected.status}`)}</span>
+                {selected.status === 'failed' ? (
+                  <>
+                    <span aria-hidden>·</span>
+                    <span>{t('meeting.status.failed')}</span>
+                  </>
+                ) : null}
               </div>
 
               <MeetingNotesPane
                 session={selected}
-                generating={actionBusy || selected.notes_status === 'generating'}
+                generating={notesBusy || selected.notes_status === 'generating'}
                 onGenerate={() => void handleGenerateNotes()}
               />
 
               <div className='mt-28px'>
                 <MeetingAdvancedPanel
                   session={selected}
-                  devices={devices}
                   voiceprints={voiceprints}
                   listenStatus={listenStatus}
                   busy={actionBusy}
@@ -310,7 +326,39 @@ const MeetingDetailPage: React.FC = () => {
                 />
               </div>
             </div>
+          </div>
 
+          <div className='meeting-cluster pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col items-center px-16px pb-20px'>
+            <div
+              className={classNames(
+                'meeting-transcript-overlay',
+                transcriptOpen && 'meeting-transcript-overlay--open',
+                transcriptOpen && transcriptExpanded && 'meeting-transcript-overlay--expanded'
+              )}
+            >
+              {transcriptOpen ? (
+                <MeetingTranscriptPanel
+                  expanded={transcriptExpanded}
+                  segments={visibleSegments}
+                  loading={segmentsLoading}
+                  status={selected.status}
+                  search={transcriptQuery}
+                  onSearchChange={setTranscriptQuery}
+                  onClose={() => setTranscriptOpen(false)}
+                  onToggleExpanded={() => setTranscriptExpanded((value) => !value)}
+                  editingSegmentId={editingSegmentId}
+                  editingText={editingText}
+                  editSaving={editSaving}
+                  onBeginEdit={beginEditSegment}
+                  onEditingTextChange={setEditingText}
+                  onSaveEdit={() => void saveEditSegment()}
+                  onCancelEdit={() => {
+                    setEditingSegmentId(null);
+                    setEditingText('');
+                  }}
+                />
+              ) : null}
+            </div>
             <MeetingRecordingDock
               session={selected}
               elapsedMs={elapsedMs}
@@ -323,39 +371,7 @@ const MeetingDetailPage: React.FC = () => {
               onStop={handleStop}
             />
           </div>
-
-          {transcriptOpen ? (
-            <div
-              className={classNames(
-                'min-h-0 p-12px',
-                isMobile ? 'h-[42vh]' : 'h-full',
-                transcriptExpanded && !isMobile ? 'w-520px' : isMobile ? 'w-full' : 'w-360px'
-              )}
-            >
-              <MeetingTranscriptPanel
-                open={transcriptOpen}
-                expanded={transcriptExpanded}
-                segments={segments}
-                loading={segmentsLoading}
-                status={selected.status}
-                search={transcriptQuery}
-                onSearchChange={handleSearch}
-                onClose={() => setTranscriptOpen(false)}
-                onToggleExpanded={() => setTranscriptExpanded((value) => !value)}
-                editingSegmentId={editingSegmentId}
-                editingText={editingText}
-                editSaving={editSaving}
-                onBeginEdit={beginEditSegment}
-                onEditingTextChange={setEditingText}
-                onSaveEdit={() => void saveEditSegment()}
-                onCancelEdit={() => {
-                  setEditingSegmentId(null);
-                  setEditingText('');
-                }}
-              />
-            </div>
-          ) : null}
-        </div>
+        </>
       ) : null}
 
       <VoiceprintModal

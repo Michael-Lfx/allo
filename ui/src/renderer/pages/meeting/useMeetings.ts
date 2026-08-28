@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ipcBridge } from '@/common';
 import type {
   MeetingDevice,
@@ -121,16 +121,22 @@ export function useMeetings(options: UseMeetingsOptions = {}) {
     [loadListenStatus, loadSegments]
   );
 
+  const preferredIdRef = useRef(preferredId);
+  preferredIdRef.current = preferredId;
+
   const bootstrap = useCallback(async () => {
     setLoading(true);
     try {
       const list = await refreshSessions();
       await Promise.all([refreshDevices(), refreshDetectedApps(), refreshVoiceprints()]);
+      const currentPreferredId = preferredIdRef.current;
       let nextId =
-        preferredId && list.some((item) => item.session_id === preferredId) ? preferredId : null;
-      if (preferredId && !nextId) {
+        currentPreferredId && list.some((item) => item.session_id === currentPreferredId)
+          ? currentPreferredId
+          : null;
+      if (currentPreferredId && !nextId) {
         try {
-          const remote = await ipcBridge.meeting.getSession.invoke({ session_id: preferredId });
+          const remote = await ipcBridge.meeting.getSession.invoke({ session_id: currentPreferredId });
           if (remote) {
             setSessions((prev) => upsertSession(prev, remote));
             nextId = remote.session_id;
@@ -147,7 +153,7 @@ export function useMeetings(options: UseMeetingsOptions = {}) {
         await loadSegments(nextId);
         await loadListenStatus(nextId);
       } else {
-        setSelectedId(preferredId);
+        setSelectedId(currentPreferredId);
         setSegments([]);
         setListenStatus(null);
       }
@@ -158,7 +164,6 @@ export function useMeetings(options: UseMeetingsOptions = {}) {
     autoSelectFirst,
     loadListenStatus,
     loadSegments,
-    preferredId,
     refreshDetectedApps,
     refreshDevices,
     refreshSessions,

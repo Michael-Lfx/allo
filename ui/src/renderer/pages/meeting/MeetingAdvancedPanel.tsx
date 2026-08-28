@@ -1,14 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Collapse, Input, Select, Switch } from '@arco-design/web-react';
+import { Button, Collapse, Input, Switch } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import type { MeetingDevice, MeetingListenStatus, MeetingSession, MeetingVoiceprint, SttBackendChoice } from '@/common/adapter/ipcBridge';
-
-const STT_OPTIONS: SttBackendChoice[] = ['auto', 'local_sherpa', 'cloud_model_invoke'];
+import type { MeetingListenStatus, MeetingSession, MeetingVoiceprint } from '@/common/adapter/ipcBridge';
 
 type MeetingAdvancedPanelProps = {
   session: MeetingSession;
-  devices: MeetingDevice[];
   voiceprints: MeetingVoiceprint[];
   listenStatus: MeetingListenStatus | null;
   busy: boolean;
@@ -19,7 +16,6 @@ type MeetingAdvancedPanelProps = {
 
 const MeetingAdvancedPanel: React.FC<MeetingAdvancedPanelProps> = ({
   session,
-  devices,
   voiceprints,
   listenStatus,
   busy,
@@ -80,32 +76,6 @@ const MeetingAdvancedPanel: React.FC<MeetingAdvancedPanelProps> = ({
               onChange={(checked) => void handleListen(checked)}
             />
             <span className='text-12px text-t-tertiary'>{t('meeting.listen.hint')}</span>
-          </div>
-
-          <div className='flex min-w-0 flex-col gap-4px'>
-            <span className='text-12px text-t-tertiary'>{t('meeting.sttBackend')}</span>
-            <Select disabled value={session.stt_backend} options={STT_OPTIONS.map((value) => ({
-              value,
-              label: t(`meeting.stt.${value}`),
-            }))} />
-          </div>
-
-          <div className='flex flex-col gap-6px'>
-            <div className='text-12px text-t-tertiary'>{t('meeting.devices.title')}</div>
-            {devices.length === 0 ? (
-              <div className='text-13px text-t-secondary'>{t('meeting.devices.empty')}</div>
-            ) : (
-              <ul className='m-0 flex list-none flex-col gap-2px p-0 text-13px text-t-secondary'>
-                {devices.map((device) => (
-                  <li key={device.id}>
-                    {device.kind === 'input' ? t('meeting.devices.input') : t('meeting.devices.output')}
-                    {' · '}
-                    {device.name}
-                    {device.is_default ? ` (${t('meeting.devices.default')})` : ''}
-                  </li>
-                ))}
-              </ul>
-            )}
           </div>
 
           <div className='flex items-center justify-between gap-8px'>

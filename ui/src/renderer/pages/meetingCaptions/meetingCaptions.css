@@ -34,22 +34,6 @@
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
 
-.meeting-captions__previous {
-  margin: 0;
-  max-height: 18px;
-  overflow: hidden;
-  font-size: 12px;
-  line-height: 18px;
-  color: rgba(245, 247, 250, 0.45);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.meeting-captions__previous span {
-  margin-right: 6px;
-  font-weight: 600;
-}
-
 .meeting-captions__row {
   display: flex;
   align-items: center;
@@ -64,10 +48,13 @@
 }
 
 .meeting-captions__text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
   font-size: 17px;
   line-height: 1.35;
   letter-spacing: 0.01em;
-  white-space: pre-wrap;
   word-break: break-word;
 }
 

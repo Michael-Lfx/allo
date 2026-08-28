@@ -2,38 +2,13 @@ import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { Button, Empty, Input, Spin, Tag } from '@arco-design/web-react';
+import { Button, Empty, Input, Spin } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Plus, Search, Voice } from '@icon-park/react';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
-import type { MeetingSession } from '@/common/adapter/ipcBridge';
 import { defaultMeetingTitle, formatRelativeTime, groupSessionsByDate, isLiveSession, notesPreview } from './format';
 import { useMeetings } from './useMeetings';
 import './meeting.css';
-
-const statusColor = (
-  status: MeetingSession['status']
-): 'green' | 'orangered' | 'gray' | 'red' | 'arcoblue' | 'gold' => {
-  switch (status) {
-    case 'recording':
-      return 'green';
-    case 'paused':
-      return 'gold';
-    case 'stopping':
-      return 'orangered';
-    case 'failed':
-      return 'red';
-    case 'stopped':
-      return 'gray';
-    case 'created':
-      return 'arcoblue';
-    default: {
-      const _exhaustive: never = status;
-      void _exhaustive;
-      return 'gray';
-    }
-  }
-};
 
 const MeetingPage: React.FC = () => {
   const layout = useLayoutContext();
@@ -83,15 +58,15 @@ const MeetingPage: React.FC = () => {
     async (title: string, start: boolean) => {
       setCreating(true);
       try {
-      const session = await createSession({ title });
-      if (start) {
-        try {
-          await startSession(session.session_id);
-        } catch (err) {
-          Message.error(String(err));
+        const session = await createSession({ title });
+        if (start) {
+          try {
+            await startSession(session.session_id);
+          } catch (err) {
+            Message.error(String(err));
+          }
         }
-      }
-      navigate(`/meeting/${session.session_id}`);
+        navigate(`/meeting/${session.session_id}`);
       } catch (err) {
         Message.error(String(err));
       } finally {
@@ -128,7 +103,7 @@ const MeetingPage: React.FC = () => {
   return (
     <div
       className={classNames(
-        'meeting-page w-full min-h-full box-border overflow-y-auto',
+        'meeting-page size-full box-border overflow-y-auto',
         isMobile ? 'px-16px py-14px' : 'px-12px py-24px md:px-40px md:py-32px'
       )}
     >
@@ -153,7 +128,7 @@ const MeetingPage: React.FC = () => {
           >
             <span className='meeting-live-dot' />
             <span className='min-w-0 flex-1 truncate text-13px font-medium text-t-primary'>
-              {t(`meeting.status.${liveSession.status}`)} · {liveSession.title}
+              {liveSession.title}
             </span>
             <span className='text-12px text-t-secondary'>{t('meeting.liveBanner.open')}</span>
           </button>
@@ -221,16 +196,15 @@ const MeetingPage: React.FC = () => {
                           onClick={() => openSession(session.session_id)}
                         >
                           <span className='mt-2px flex size-22px items-center justify-center text-t-tertiary'>
-                            {live ? <span className='meeting-live-dot' /> : <Voice theme='outline' size={16} fill='currentColor' />}
+                            {live ? (
+                              <span className='meeting-live-dot' />
+                            ) : (
+                              <Voice theme='outline' size={16} fill='currentColor' />
+                            )}
                           </span>
                           <span className='min-w-0 flex-1'>
-                            <span className='flex items-center gap-8px'>
-                              <span className='min-w-0 truncate text-14px font-medium text-t-primary'>
-                                {session.title || t('meeting.untitled')}
-                              </span>
-                              <Tag size='small' color={statusColor(session.status)}>
-                                {t(`meeting.status.${session.status}`)}
-                              </Tag>
+                            <span className='block truncate text-14px font-medium text-t-primary'>
+                              {session.title || t('meeting.untitled')}
                             </span>
                             <span className='mt-4px flex flex-wrap items-center gap-6px text-12px text-t-tertiary'>
                               <span>
@@ -240,6 +214,11 @@ const MeetingPage: React.FC = () => {
                                 <>
                                   <span aria-hidden>·</span>
                                   <span className='min-w-0 truncate'>{preview}</span>
+                                </>
+                              ) : session.status === 'failed' ? (
+                                <>
+                                  <span aria-hidden>·</span>
+                                  <span>{t('meeting.status.failed')}</span>
                                 </>
                               ) : null}
                             </span>
