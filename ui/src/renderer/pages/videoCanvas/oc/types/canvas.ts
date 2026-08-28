@@ -183,6 +183,8 @@ export type CanvasNodeMetadata = {
     imageBatchExpanded?: boolean;
     storageKey?: string;
     mediaId?: string;
+    /** Exclusive Flowy TV cover. Only one image node should have this set. */
+    tvCover?: boolean;
     mimeType?: string;
     bytes?: number;
     durationMs?: number;

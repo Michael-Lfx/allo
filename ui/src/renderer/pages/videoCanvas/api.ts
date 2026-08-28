@@ -254,3 +254,79 @@ export async function getMediaPath(mediaId: string): Promise<string> {
   return data.path;
 }
 
+export async function exportCanvasProject(
+  projectId: string,
+  destPath: string
+): Promise<{ dest_path: string }> {
+  return httpRequest<{ dest_path: string }>(
+    'POST',
+    `/api/video-canvas/projects/${encodeURIComponent(projectId)}/export`,
+    { dest_path: destPath }
+  );
+}
+
+export async function importCanvasProject(sourcePath: string): Promise<CanvasProjectMeta> {
+  return httpRequest<CanvasProjectMeta>('POST', '/api/video-canvas/projects/import', {
+    source_path: sourcePath,
+  });
+}
+
+export async function publishCanvasProjectToTvShow(
+  projectId: string,
+  body?: { title?: string; description?: string }
+): Promise<{ id: number; status: string; title: string }> {
+  return httpRequest<{ id: number; status: string; title: string }>(
+    'POST',
+    `/api/video-canvas/projects/${encodeURIComponent(projectId)}/tv-show/publish`,
+    body ?? {},
+    // OSS package PUT may take several minutes; abort instead of spinning forever.
+    { timeoutMs: 12 * 60 * 1000 }
+  );
+}
+
+export async function importCanvasTvShow(id: number): Promise<CanvasProjectMeta> {
+  return httpRequest<CanvasProjectMeta>(
+    'POST',
+    `/api/video-canvas/tv-show/${id}/import`,
+    {}
+  );
+}
+
+export async function putCanvasProjectExtras(projectId: string, zip: Blob): Promise<void> {
+  const url = `${getBaseUrl()}/api/video-canvas/projects/${encodeURIComponent(projectId)}/extras`;
+  const headers = { ...buildBackendAuthHeaders('PUT') };
+  delete headers['Content-Type'];
+  delete headers['content-type'];
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers,
+    credentials: 'omit',
+    body: zip,
+  });
+  if (!res.ok) {
+    let message = `extras upload failed (${res.status})`;
+    try {
+      const json = (await res.json()) as { message?: string };
+      if (json.message) message = json.message;
+    } catch {
+      // Keep status text.
+    }
+    throw new Error(message);
+  }
+}
+
+export async function getCanvasProjectExtras(projectId: string): Promise<Blob | null> {
+  const url = `${getBaseUrl()}/api/video-canvas/projects/${encodeURIComponent(projectId)}/extras`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: buildBackendAuthHeaders('GET'),
+    credentials: 'omit',
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`extras download failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  return blob.size > 0 ? blob : null;
+}
+

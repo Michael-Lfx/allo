@@ -1,6 +1,6 @@
 import { AnimatePresence, useReducedMotion } from "motion/react";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { ArrowLeft, Check, ChevronRight, Clipboard, Copy, FolderOpen, FolderPlus, Image as ImageIcon, Layers3, Link2, Maximize2, PanelTop, Pencil, Plus, Redo2, Tags, Trash2, Undo2, Upload, UserRound } from "lucide-react";
+import { ArrowLeft, Bookmark, Check, ChevronRight, Clipboard, Copy, FolderOpen, FolderPlus, Image as ImageIcon, Layers3, Link2, Maximize2, PanelTop, Pencil, Plus, Redo2, Tags, Trash2, Undo2, Upload, UserRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { CanvasCreateMenu, type CanvasCreateCommand } from "@oc/components/canvas/canvas-create-menu";
@@ -58,6 +58,7 @@ type CanvasNodeContextMenuProps = {
     onCopyContent: () => void;
     onCopyMediaUrl: () => void;
     onSetAssetCategory: (category: CanvasAssetCategory) => void;
+    onSetTvCover: (enabled: boolean) => void;
     onToggleFrame: () => void;
 };
 
@@ -91,6 +92,7 @@ export function CanvasNodeContextMenu({
     onCopyContent,
     onCopyMediaUrl,
     onSetAssetCategory,
+    onSetTvCover,
     onToggleFrame,
 }: CanvasNodeContextMenuProps) {
     useTranslation();
@@ -141,6 +143,8 @@ export function CanvasNodeContextMenu({
     const canOpenPreview = Boolean(isMedia && hasNodeContent);
     const canGenerateFromText = Boolean(isText && !isCharacterReference && hasNodeContent);
     const canCopyMediaUrl = Boolean(isMedia && hasNodeContent);
+    const isTvCover = Boolean(isImage && node?.metadata?.tvCover);
+    const canSetCover = Boolean(isImage && (hasNodeContent || node?.metadata?.storageKey || node?.metadata?.mediaId));
     const assetCategory = node ? canvasNodeAssetCategory(node) : "other";
     const position = getContextMenuPosition(menu);
 
@@ -204,6 +208,7 @@ export function CanvasNodeContextMenu({
                                     <MenuSection label={canvasT("videoCanvas.menu.viewArchive", "查看与归档")} />
                                     <MenuButton icon={<Maximize2 />} label={canvasT("videoCanvas.menu.fullscreenPreview", "进入全景预览")} disabled={!canOpenPreview} onClick={() => runAction(onViewMedia)} />
                                     <MenuButton icon={<Tags />} label={canvasT("videoCanvas.menu.setAssetCategory", "设置资产分类")} chevron onClick={() => setCategoryOpen(true)} />
+                                    {isImage ? <MenuButton icon={isTvCover ? <Check /> : <Bookmark />} label={isTvCover ? canvasT("videoCanvas.menu.currentCover", "当前封面") : canvasT("videoCanvas.menu.setAsCover", "设为封面")} active={isTvCover} disabled={!canSetCover && !isTvCover} onClick={() => runAction(() => onSetTvCover(!isTvCover))} /> : null}
                                     <MenuDivider />
                                     <MenuSection label={canvasT("videoCanvas.menu.node", "节点")} />
                                     <MenuButton icon={<Copy />} label={canvasT("videoCanvas.menu.copyNode", "复制节点")} shortcut="⌘C" onClick={() => runAction(onCopyNode)} />

@@ -35,6 +35,7 @@ import { useCanvasMediaTools } from "./use-canvas-media-tools";
 import { useCanvasNodeEditor } from "./use-canvas-node-editor";
 import { useCanvasNodeOperations } from "./use-canvas-node-operations";
 import { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
+import { useCanvasProjectShare } from "./use-canvas-project-share";
 import { useCanvasRenderModel } from "./use-canvas-render-model";
 import { useCanvasSelectionController } from "./use-canvas-selection-controller";
 import { useCanvasShortDrama } from "./use-canvas-short-drama";
@@ -214,6 +215,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         cleanupAssetImages,
         cleanupCanvasFiles,
     });
+    const projectShare = useCanvasProjectShare(currentProject);
     const linkedProjectId = shortDramaEnabled ? currentProject?.projectId || "" : "";
     const linkedProjectQuery = useQuery({ queryKey: ["project", linkedProjectId], queryFn: () => getProject(linkedProjectId), enabled: Boolean(linkedProjectId) });
     useEffect(() => {
@@ -360,6 +362,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         deleteNodes,
         duplicateNode,
         hasCopiedNodes,
+        setTvCoverNode,
         pasteCopiedNodes,
         restoreCopiedNodesFromText,
         releaseCopiedNodesPastePriority,
@@ -836,6 +839,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         setSelectedConnectionId={setSelectedConnectionId}
                         activeStylePresetId={activeStylePresetId}
                         selectCanvasStyle={selectCanvasStyle}
+                        projectShare={projectShare}
                     />
                     <div className="relative flex min-h-0 min-w-0 flex-1">
                         <CanvasProjectStage
@@ -972,6 +976,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         pasteAtPosition={pasteAtPosition}
                         copyNodesToClipboard={copyNodesToClipboard}
                         duplicateNode={duplicateNode}
+                        setTvCoverNode={setTvCoverNode}
                         deleteConnection={deleteConnection}
                         copyNodeContentToClipboard={copyNodeContentToClipboard}
                         copyNodeMediaUrlToClipboard={copyNodeMediaUrlToClipboard}

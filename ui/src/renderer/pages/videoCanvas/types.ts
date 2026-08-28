@@ -72,6 +72,8 @@ export type CanvasNodeMetadata = {
   videoStartFrameNodeId?: string;
   videoEndFrameNodeId?: string;
   mediaId?: string;
+  /** Exclusive Flowy TV cover. Only one image node should have this set. */
+  tvCover?: boolean;
   mimeType?: string;
   durationMs?: number;
   taskId?: string;

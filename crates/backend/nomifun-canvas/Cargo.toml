@@ -24,6 +24,9 @@ mime_guess.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+chrono.workspace = true
+zip.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

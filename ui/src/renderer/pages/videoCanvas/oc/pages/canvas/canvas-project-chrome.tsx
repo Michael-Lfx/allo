@@ -89,6 +89,7 @@ type CanvasProjectCanvasChromeProps = {
     pasteAtPosition: (position: Position) => void;
     copyNodesToClipboard: ReturnType<typeof useCanvasNodeOperations>["copyNodesToClipboard"];
     duplicateNode: ReturnType<typeof useCanvasNodeOperations>["duplicateNode"];
+    setTvCoverNode: ReturnType<typeof useCanvasNodeOperations>["setTvCoverNode"];
     deleteConnection: ReturnType<typeof useCanvasNodeOperations>["deleteConnection"];
     copyNodeContentToClipboard: (node: CanvasNodeData | null) => Promise<void>;
     copyNodeMediaUrlToClipboard: (node: CanvasNodeData | null) => Promise<void>;
@@ -167,6 +168,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         pasteAtPosition,
         copyNodesToClipboard,
         duplicateNode,
+        setTvCoverNode,
         deleteConnection,
         copyNodeContentToClipboard,
         copyNodeMediaUrlToClipboard,
@@ -308,6 +310,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                             void copyNodeMediaUrlToClipboard(node);
                         }}
                         onSetAssetCategory={(nodeId, assetCategory) => handleConfigNodeChange(nodeId, { assetCategory })}
+                        onSetTvCover={setTvCoverNode}
                         onToggleFrame={(node) => toggleFrameCollapsed(node.id)}
                     />
         </>

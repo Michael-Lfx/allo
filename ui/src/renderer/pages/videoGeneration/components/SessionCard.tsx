@@ -5,7 +5,7 @@ import type { TFunction } from 'i18next';
 import { Popconfirm, Tag } from '@arco-design/web-react';
 import { Delete, VideoOne } from '@icon-park/react';
 import type { SessionSummary, VimaxRunStatus, VimaxWorkflow } from '../types';
-import { normalizeWorkflow } from '../workflowKind';
+import { isCanvasTvShow, isCanvasWorkflow, normalizeWorkflow } from '../workflowKind';
 import { loadArtifactMediaUrlCached } from '../api';
 import { stageLabel } from '../stageI18n';
 import styles from '../index.module.css';
@@ -36,9 +36,12 @@ function formatRelativeTime(epochMs: number, t: TFunction): string {
 }
 
 /** Normalize API workflow ids (`novel2_video` → `novel2video`). */
-export { isActionImitationWorkflow, normalizeWorkflow } from '../workflowKind';
+export { isActionImitationWorkflow, isCanvasTvShow, isCanvasWorkflow, normalizeWorkflow } from '../workflowKind';
 
 export function workflowLabel(workflow: VimaxWorkflow | string, t: TFunction): string {
+  if (isCanvasWorkflow(workflow)) {
+    return t('videoGeneration.workflow.canvas.title', { defaultValue: '创作画布' });
+  }
   switch (normalizeWorkflow(workflow)) {
     case 'idea2video':
       return t('videoGeneration.workflow.idea2video.title', { defaultValue: '灵感成片' });
@@ -49,6 +52,16 @@ export function workflowLabel(workflow: VimaxWorkflow | string, t: TFunction): s
     case 'action2video':
       return t('videoGeneration.workflow.action2video.title', { defaultValue: '动作模仿' });
   }
+}
+
+export function tvShowWorkflowLabel(
+  video: { workflow?: string | null; style?: string | null; packageUrl?: string | null },
+  t: TFunction
+): string {
+  if (isCanvasTvShow(video)) {
+    return t('videoGeneration.workflow.canvas.title', { defaultValue: '创作画布' });
+  }
+  return workflowLabel(String(video.workflow ?? ''), t);
 }
 
 export function statusTagColor(status: VimaxRunStatus | null | undefined): string {

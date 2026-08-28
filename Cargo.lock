@@ -7009,6 +7009,7 @@ version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "chrono",
  "futures",
  "mime_guess",
  "nomi-config",
@@ -7017,6 +7018,7 @@ dependencies = [
  "nomifun-auth",
  "nomifun-cloud",
  "nomifun-common",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -7025,6 +7027,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "zip 2.4.2",
 ]
 
 [[package]]

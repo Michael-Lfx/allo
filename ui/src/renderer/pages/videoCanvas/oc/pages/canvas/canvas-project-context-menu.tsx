@@ -35,6 +35,7 @@ type CanvasProjectContextMenuProps = {
     onCopyContent: (node: CanvasNodeData | null) => void;
     onCopyMediaUrl: (node: CanvasNodeData | null) => void;
     onSetAssetCategory: (nodeId: string, category: CanvasAssetCategory) => void;
+    onSetTvCover: (nodeId: string, enabled: boolean) => void;
     onToggleFrame: (node: CanvasNodeData) => void;
 };
 
@@ -94,6 +95,9 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
             onCopyMediaUrl={() => props.onCopyMediaUrl(node)}
             onSetAssetCategory={(category) => {
                 if (menu.type === "node") props.onSetAssetCategory(menu.nodeId, category);
+            }}
+            onSetTvCover={(enabled) => {
+                if (menu.type === "node") props.onSetTvCover(menu.nodeId, enabled);
             }}
             onToggleFrame={() => {
                 if (node?.type === CanvasNodeType.Frame) props.onToggleFrame(node);

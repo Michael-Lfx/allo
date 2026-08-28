@@ -10,7 +10,7 @@ describe('video generation home entry chunk', () => {
     const upload = source('./home/documentUpload.ts');
 
     expect(page.includes("from './components/DurationTimelineBar'")).toBe(false);
-    expect(page.includes("from '../videoCanvas/api'")).toBe(false);
+    expect(/\bimport\s+(?!type\b)[^;]*from '\.\.\/videoCanvas\/api'/.test(page)).toBe(false);
     expect(page.includes("from './components/SessionCard'")).toBe(false);
     expect(page.includes("from './components/TvShowPanel'")).toBe(false);
     expect(page.includes("from '@/common'")).toBe(false);

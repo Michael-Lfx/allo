@@ -38,7 +38,7 @@ function formatUpdatedAt(ms: number, t: TFunction): string {
   return t('videoGeneration.time.weeksAgo', { defaultValue: '上周' });
 }
 
-const CanvasProjectGallery: React.FC = () => {
+const CanvasProjectGallery: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [message, messageHolder] = useArcoMessage();
@@ -140,22 +140,10 @@ const CanvasProjectGallery: React.FC = () => {
   };
 
   return (
-    <section className={styles.gallerySection}>
+    <section className={embedded ? undefined : styles.gallerySection}>
       {messageHolder}
-      <div className={styles.galleryHeader}>
-        <div>
-          <h2>
-            {t('videoGeneration.create.gallery.title', {
-              defaultValue: '最近画布',
-            })}
-          </h2>
-          <p>
-            {t('videoGeneration.create.gallery.subtitle', {
-              defaultValue: '继续编辑已有项目，或从一个空白画布开始。',
-            })}
-          </p>
-        </div>
-        <div className={styles.galleryActions}>
+      {embedded ? (
+        <div className={styles.galleryActions} style={{ marginBottom: 12, justifyContent: 'flex-end' }}>
           {projects.length > 0 ? (
             <label className={styles.gallerySearch}>
               <Search size={14} />
@@ -183,7 +171,50 @@ const CanvasProjectGallery: React.FC = () => {
             </span>
           </Button>
         </div>
-      </div>
+      ) : (
+        <div className={styles.galleryHeader}>
+          <div>
+            <h2>
+              {t('videoGeneration.create.gallery.title', {
+                defaultValue: '最近画布',
+              })}
+            </h2>
+            <p>
+              {t('videoGeneration.create.gallery.subtitle', {
+                defaultValue: '继续编辑已有项目，或从一个空白画布开始。',
+              })}
+            </p>
+          </div>
+          <div className={styles.galleryActions}>
+            {projects.length > 0 ? (
+              <label className={styles.gallerySearch}>
+                <Search size={14} />
+                <input
+                  value={query}
+                  placeholder={t('videoGeneration.create.gallery.searchPlaceholder', {
+                    defaultValue: '搜索画布…',
+                  })}
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+              </label>
+            ) : null}
+            <Button
+              type='outline'
+              size='small'
+              loading={creating}
+              disabled={Boolean(openingId)}
+              onClick={() => void createBlankCanvas()}
+            >
+              <span className='inline-flex items-center gap-5px'>
+                <Plus size={14} />
+                {t('videoGeneration.create.gallery.createBlank', {
+                  defaultValue: '新建空白画布',
+                })}
+              </span>
+            </Button>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className={styles.galleryCenter}>

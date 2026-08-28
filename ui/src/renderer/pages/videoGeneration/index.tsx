@@ -52,7 +52,7 @@ import {
   rememberVideoGenerationTask,
 } from './routeMemory';
 import { isInsufficientCreditsError } from './creditsError';
-import { listGenerationTasks, deleteGenerationTask, type GenerationTaskView } from '../videoCanvas/api';
+import type { GenerationTaskView } from '../videoCanvas/api';
 import styles from './index.module.css';
 
 /**
@@ -160,6 +160,7 @@ const VideoGenerationListPage: React.FC = () => {
   const refreshTasks = useCallback(async () => {
     setLoadingTasks(true);
     try {
+      const { listGenerationTasks } = await import('../videoCanvas/api');
       const result = await listGenerationTasks(30, 0);
       setGenerationTasks(result.tasks);
       setError(null);
@@ -628,6 +629,7 @@ const VideoGenerationListPage: React.FC = () => {
       if (deletingId) return;
       setDeletingId(task.task_id);
       try {
+        const { deleteGenerationTask } = await import('../videoCanvas/api');
         await deleteGenerationTask(task.task_id);
         clearVideoGenerationSessionMemory(task.task_id);
         setGenerationTasks((prev) => prev.filter((item) => item.task_id !== task.task_id));
@@ -698,6 +700,53 @@ const VideoGenerationListPage: React.FC = () => {
     }
   }, [creating, importing, message, navigate, t]);
 
+  const handleImportCanvasProject = useCallback(async () => {
+    if (importing || creating) return;
+    if (!isDesktopShell()) {
+      message.info(
+        t('videoGeneration.list.importDesktopOnly', {
+          defaultValue: '导入工程仅桌面端可用。',
+        })
+      );
+      return;
+    }
+    const { dialog } = await import('@/common/adapter/ipcBridge');
+    const paths = await dialog.showOpen.invoke({
+      properties: ['openFile'],
+      filters: [
+        {
+          name: t('videoGeneration.actions.exportCanvasFilter', {
+            defaultValue: 'Flowy 画布工程',
+          }),
+          extensions: ['nomiccanvas'],
+        },
+      ],
+    });
+    const source = paths?.[0];
+    if (!source) return;
+    setImporting(true);
+    try {
+      const { importCanvasProject } = await import('../videoCanvas/api');
+      const imported = await importCanvasProject(source);
+      trackFunnelEvent('task_accepted', {
+        feature: 'video_generation',
+        workflow: 'canvas',
+        session_id: imported.project_id,
+        source: 'project_import',
+      });
+      message.success(t('videoGeneration.list.importOk', { defaultValue: '工程已导入' }));
+      navigate(`/video-generation/canvas/${encodeURIComponent(imported.project_id)}`);
+    } catch (e) {
+      message.error(
+        `${t('videoGeneration.list.importFailed', { defaultValue: '导入失败' })}: ${
+          e instanceof Error ? e.message : String(e)
+        }`
+      );
+    } finally {
+      setImporting(false);
+    }
+  }, [creating, importing, message, navigate, t]);
+
   return (
     <div
       ref={pageScrollRef}
@@ -718,18 +767,7 @@ const VideoGenerationListPage: React.FC = () => {
           onSubmitGenerate={(draft) => void handleCreateGenerate(draft)}
         />
 
-        {workMode === 'creation' ? (
-          <Suspense
-            fallback={
-              <div className='flex justify-center py-38px'>
-                <Spin />
-              </div>
-            }
-          >
-            <CanvasProjectGallery />
-          </Suspense>
-        ) : (
-          <section className='flex flex-col gap-12px'>
+        <section className='flex flex-col gap-12px'>
             <div className='flex flex-wrap items-center justify-between gap-12px'>
               <div>
                 <div className='mb-8px'>
@@ -743,6 +781,10 @@ const VideoGenerationListPage: React.FC = () => {
                 <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
                   {listTab === 'tvShow'
                     ? t('videoGeneration.tvShow.title', { defaultValue: 'Flowy TV' })
+                    : workMode === 'creation'
+                    ? t('videoGeneration.list.creationRecentTitle', {
+                        defaultValue: '最近创作',
+                      })
                     : workMode === 'generate'
                     ? t('videoGeneration.list.generateRecentTitle', {
                         defaultValue: '最近视频',
@@ -759,6 +801,10 @@ const VideoGenerationListPage: React.FC = () => {
                   {listTab === 'tvShow'
                     ? t('videoGeneration.tvShow.subtitle', {
                         defaultValue: '浏览社区已上架的作品，或查看你的发布审核状态。',
+                      })
+                    : workMode === 'creation'
+                    ? t('videoGeneration.list.creationRecentSubtitle', {
+                        defaultValue: '继续编辑画布，或导入一份分享来的画布工程。',
                       })
                     : workMode === 'generate'
                     ? t('videoGeneration.list.generateRecentSubtitle', {
@@ -780,7 +826,11 @@ const VideoGenerationListPage: React.FC = () => {
                     size='small'
                     loading={importing}
                     disabled={creating || importing}
-                    onClick={() => void handleImportProject()}
+                    onClick={() =>
+                      void (workMode === 'creation'
+                        ? handleImportCanvasProject()
+                        : handleImportProject())
+                    }
                   >
                     <span className='inline-flex items-center gap-4px'>
                       <Upload theme='outline' size={14} fill='currentColor' />
@@ -789,7 +839,7 @@ const VideoGenerationListPage: React.FC = () => {
                       })}
                     </span>
                   </Button>
-                  {!error && sessions.length > 0 ? (
+                  {workMode !== 'creation' && !error && sessions.length > 0 ? (
                     <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
                       <Search
                         theme='outline'
@@ -820,6 +870,16 @@ const VideoGenerationListPage: React.FC = () => {
                   }
                 >
                   <TvShowPanel enabled />
+                </Suspense>
+              ) : workMode === 'creation' ? (
+                <Suspense
+                  fallback={
+                    <div className='flex justify-center py-38px'>
+                      <Spin />
+                    </div>
+                  }
+                >
+                  <CanvasProjectGallery embedded />
                 </Suspense>
               ) : workMode === 'generate' ? (
                 // Video generation mode - show generation tasks
@@ -958,7 +1018,6 @@ const VideoGenerationListPage: React.FC = () => {
               )}
             </div>
           </section>
-        )}
       </div>
     </div>
   );

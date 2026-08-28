@@ -89,22 +89,22 @@ impl InternalTask {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct MediaIndex {
-    items: Vec<MediaIndexEntry>,
+pub(crate) struct MediaIndex {
+    pub(crate) items: Vec<MediaIndexEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct MediaIndexEntry {
-    media_id: String,
-    kind: String,
-    title: String,
-    mime: String,
-    ext: String,
-    bytes: u64,
-    width: Option<u32>,
-    height: Option<u32>,
-    duration_ms: Option<u64>,
-    created_at: i64,
+pub(crate) struct MediaIndexEntry {
+    pub(crate) media_id: String,
+    pub(crate) kind: String,
+    pub(crate) title: String,
+    pub(crate) mime: String,
+    pub(crate) ext: String,
+    pub(crate) bytes: u64,
+    pub(crate) width: Option<u32>,
+    pub(crate) height: Option<u32>,
+    pub(crate) duration_ms: Option<u64>,
+    pub(crate) created_at: i64,
 }
 
 /// session_id → canvas project_id for idempotent Agent→Canvas opens.
@@ -149,7 +149,7 @@ impl CanvasService {
         &self.data_dir
     }
 
-    fn root(&self) -> PathBuf {
+    pub(crate) fn root(&self) -> PathBuf {
         self.data_dir.join(CANVAS_REL_DIR)
     }
 
@@ -157,11 +157,11 @@ impl CanvasService {
         self.root().join("projects")
     }
 
-    fn project_dir(&self, id: &str) -> PathBuf {
+    pub(crate) fn project_dir(&self, id: &str) -> PathBuf {
         self.projects_dir().join(id)
     }
 
-    fn media_dir(&self) -> PathBuf {
+    pub(crate) fn media_dir(&self) -> PathBuf {
         self.root().join("media")
     }
 
@@ -480,7 +480,7 @@ impl CanvasService {
 
     // ── media ───────────────────────────────────────────────────────────────
 
-    async fn load_media_index(&self) -> Result<MediaIndex, AppError> {
+    pub(crate) async fn load_media_index(&self) -> Result<MediaIndex, AppError> {
         self.ensure_dirs().await?;
         match read_json_file::<MediaIndex>(&self.media_index_path()).await {
             Ok(idx) => Ok(idx),
@@ -1039,7 +1039,7 @@ impl CanvasService {
     }
 }
 
-fn validate_project_id(id: &str) -> Result<(), AppError> {
+pub(crate) fn validate_project_id(id: &str) -> Result<(), AppError> {
     if id.is_empty()
         || id.contains("..")
         || id.contains('/')
