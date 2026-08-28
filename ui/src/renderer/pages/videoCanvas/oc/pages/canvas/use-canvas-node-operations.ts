@@ -7,6 +7,7 @@ import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, FRAME_HEADER_HEIGHT, g
 import { alignCanvasNodes, layoutCanvasFlow, layoutCanvasNodes, nextCanvasVersionLabel, type CanvasAlignmentMode } from "@oc/lib/canvas/canvas-layout";
 import { createCanvasNode, removeCanvasNodes } from "@oc/lib/canvas/canvas-project-domain";
 import { isolateCopiedNodeMetadata } from "@oc/lib/canvas/canvas-node-copy";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ContextMenuState, type Position } from "@oc/types/canvas";
 import { cloneCanvasDrawing } from "@oc/lib/canvas/canvas-drawing-storage";
@@ -297,6 +298,23 @@ export function useCanvasNodeOperations({
         setContextMenu((current) => current?.type === "connection" && current.connectionId === connectionId ? null : current);
     }, [commitConnections, connectionsRef, setContextMenu, setSelectedConnectionId]);
 
+    const setTvCoverNode = useCallback((nodeId: string, enabled = true) => {
+        const source = nodesRef.current.find((node) => node.id === nodeId);
+        if (!source || source.type !== CanvasNodeType.Image) return;
+        commitNodes(nodesRef.current.map((node) => {
+            if (node.type !== CanvasNodeType.Image) return node;
+            const nextCover = enabled && node.id === nodeId;
+            if (Boolean(node.metadata?.tvCover) === nextCover) return node;
+            const metadata = { ...node.metadata };
+            if (nextCover) metadata.tvCover = true;
+            else delete metadata.tvCover;
+            return { ...node, metadata };
+        }));
+        message.success(enabled
+            ? canvasT("videoCanvas.share.coverSet", "已设为 Flowy TV 封面")
+            : canvasT("videoCanvas.share.coverCleared", "已取消封面，发布时将自动选择图片"));
+    }, [commitNodes, message, nodesRef]);
+
     const duplicateNode = useCallback((nodeId: string) => {
         const source = nodesRef.current.find((node) => node.id === nodeId);
         if (!source) return;
@@ -498,6 +516,7 @@ export function useCanvasNodeOperations({
         restoreCopiedNodesFromText,
         releaseCopiedNodesPastePriority,
         setPrimaryVersion,
+        setTvCoverNode,
         shouldPreferCopiedNodes,
         toggleNodeLocked,
     };

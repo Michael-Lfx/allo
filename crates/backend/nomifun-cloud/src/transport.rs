@@ -1,14 +1,14 @@
 //! HTTP transport with auth injection, tracing headers, and retry policy.
 
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nomi_config::ServerConfig;
 use reqwest::header::{
     AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
 };
 use reqwest::{Client, Method, Response};
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::error::ServerClientError;
 use crate::session::ServerSession;
@@ -28,6 +28,40 @@ fn shared_client() -> Result<Client, ServerClientError> {
         .get_or_init(|| Client::builder().build().map_err(|e| e.to_string()))
         .clone()
         .map_err(|e| ServerClientError::Http(format!("build client: {e}")))
+}
+
+/// Dedicated client for OSS presigned PUT.
+///
+/// Cover + package uploads must not reuse the shared Flowy connection pool:
+/// a stalled idle connection after the small cover PUT can make the large
+/// package PUT hang with no response until the 10-minute timeout.
+static OSS_PUT_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+
+fn oss_put_client() -> Result<Client, ServerClientError> {
+    OSS_PUT_CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .connect_timeout(Duration::from_secs(20))
+                .tcp_nodelay(true)
+                .pool_max_idle_per_host(0)
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .clone()
+        .map_err(|e| ServerClientError::Http(format!("build OSS client: {e}")))
+}
+
+fn request_host(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .map(|parsed| {
+            let host = parsed.host_str().unwrap_or("unknown");
+            match parsed.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host.to_string(),
+            }
+        })
+        .unwrap_or_else(|| "invalid-url".into())
 }
 
 /// Shared HTTP client for server auth and LLM calls.
@@ -272,9 +306,16 @@ impl HttpTransport {
         const OSS_PUT_TIMEOUT_SECS: u64 = 600;
         let timeout = Duration::from_secs(OSS_PUT_TIMEOUT_SECS).max(self.timeout);
         let bytes = body.len();
-        debug!(%url, bytes, timeout_secs = timeout.as_secs(), "external http PUT (presigned)");
+        let host = request_host(url);
+        info!(
+            host,
+            bytes,
+            timeout_secs = timeout.as_secs(),
+            "OSS presigned PUT starting"
+        );
+        let started = Instant::now();
 
-        self.client
+        let response = oss_put_client()?
             .put(url)
             .timeout(timeout)
             .headers(headers)
@@ -282,17 +323,30 @@ impl HttpTransport {
             .send()
             .await
             .map_err(|e| {
+                let elapsed_ms = started.elapsed().as_millis();
                 if e.is_timeout() {
                     ServerClientError::Http(format!(
-                        "OSS PUT timed out after {}s while uploading {bytes} bytes to {url}",
+                        "OSS PUT timed out after {}s ({elapsed_ms}ms elapsed) while uploading {bytes} bytes to {host}",
                         timeout.as_secs()
+                    ))
+                } else if e.is_connect() {
+                    ServerClientError::Http(format!(
+                        "OSS PUT connect failed after {elapsed_ms}ms while uploading {bytes} bytes to {host}: {e}"
                     ))
                 } else {
                     ServerClientError::Http(format!(
-                        "OSS PUT failed while uploading {bytes} bytes: {e}"
+                        "OSS PUT failed after {elapsed_ms}ms while uploading {bytes} bytes to {host}: {e}"
                     ))
                 }
-            })
+            })?;
+        info!(
+            host,
+            bytes,
+            status = response.status().as_u16(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "OSS presigned PUT finished"
+        );
+        Ok(response)
     }
 }
 

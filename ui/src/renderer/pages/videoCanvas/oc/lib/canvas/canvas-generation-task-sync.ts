@@ -7,6 +7,7 @@ import { parseBackendGenerationResult } from "@oc/services/api/generation-task";
 import type { GenerationTask } from "@oc/services/api/task-center";
 import { resolveMediaUrl, type UploadedFile } from "@oc/services/file-storage";
 import { resolveImageUrl, uploadImage, type UploadedImage } from "@oc/services/image-storage";
+import { resourceIdFromStorageKey } from "@oc/services/api/resources";
 import { useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata } from "@oc/types/canvas";
 
@@ -40,7 +41,21 @@ export function generationTaskCanReloadResource(task: GenerationTask) {
 }
 
 export function imageMetadata(image: UploadedImage): CanvasNodeMetadata {
-    return { content: image.url, storageKey: image.storageKey, status: "success", naturalWidth: image.width, naturalHeight: image.height, bytes: image.bytes, mimeType: image.mimeType, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined };
+    const mediaId = resourceIdFromStorageKey(image.storageKey) || undefined;
+    return {
+        content: image.url,
+        storageKey: image.storageKey,
+        mediaId,
+        status: "success",
+        naturalWidth: image.width,
+        naturalHeight: image.height,
+        bytes: image.bytes,
+        mimeType: image.mimeType,
+        errorDetails: undefined,
+        generationErrorCode: undefined,
+        failedPromptFingerprint: undefined,
+        resourceReloadAvailable: undefined,
+    };
 }
 
 export function videoMetadata(video: UploadedFile): CanvasNodeMetadata {

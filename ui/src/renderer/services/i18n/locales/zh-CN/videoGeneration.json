@@ -29,6 +29,8 @@
     "createFirst": "新建第一个任务",
     "recentTitle": "最近创作",
     "recentSubtitle": "继续分镜、渲染或查看已经完成的影片。",
+    "creationRecentTitle": "最近创作",
+    "creationRecentSubtitle": "继续编辑画布，或导入一份分享来的画布工程。",
     "generateRecentTitle": "最近视频",
     "generateRecentSubtitle": "继续视频创作。",
     "actionRecentTitle": "动作模仿",
@@ -79,7 +81,7 @@
       "plazaTitle": "广场暂无作品",
       "plazaDesc": "审核通过的作品会出现在这里。",
       "mineTitle": "还没有发布作品",
-      "mineDesc": "在已完成的视频详情页点击「发布到 Flowy TV」。"
+      "mineDesc": "在短剧工作区或创作画布里点击「发布到 Flowy TV」。"
     },
     "authRequired": {
       "title": "登录后观看 Flowy TV",
@@ -290,6 +292,10 @@
     "action2video": {
       "title": "动作模仿",
       "desc": "上传角色图和参考视频，让角色模仿动作生成成片。"
+    },
+    "canvas": {
+      "title": "创作画布",
+      "desc": "无限画布自由编排图、视频与生成链路。"
     }
   },
   "status": {
@@ -376,6 +382,7 @@
     "exportOk": "工程已导出",
     "exportFailed": "导出失败",
     "exportFilter": "Flowy 视频工程",
+    "exportCanvasFilter": "Flowy 画布工程",
     "openInCanvas": "打开到 Canvas",
     "openInCanvasOk": "已打开到 Canvas：{{shots}} 镜 · {{media}} 个媒体",
     "openInCanvasReused": "已打开该工程对应的 Canvas（未新建）",

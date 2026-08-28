@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, Bot, Clapperboard, Coins, Focus, FolderKanban, Gauge, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Settings2, Sparkles, Trash2, Undo2, Upload } from "lucide-react";
+import { ArrowLeft, Bot, Clapperboard, Coins, Download, Focus, FolderKanban, Gauge, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Settings2, Share2, Sparkles, Trash2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -40,6 +40,10 @@ type CanvasTopBarProps = {
     projectContext?: CanvasContextSummary & { projectId: string; projectName: string };
     onEnterFocusMode: () => void;
     shortDramaGuide?: { progress: CanvasShortDramaProgress; collapsed: boolean; onToggle: () => void };
+    onExportProject: () => void;
+    onPublishTvShow: () => void;
+    exporting: boolean;
+    publishing: boolean;
 };
 
 export function CanvasTopBar({
@@ -69,6 +73,10 @@ export function CanvasTopBar({
     projectContext,
     onEnterFocusMode,
     shortDramaGuide,
+    onExportProject,
+    onPublishTvShow,
+    exporting,
+    publishing,
 }: CanvasTopBarProps) {
     const { i18n } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -122,6 +130,8 @@ export function CanvasTopBar({
                                 { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: canvasT("videoCanvas.chrome.deleteCanvas", "删除当前画布"), onClick: onDeleteProject },
                                 { type: "divider" },
                                 { key: "import", icon: <Upload className="size-4" />, label: canvasT("videoCanvas.chrome.importMedia", "导入素材"), onClick: onImportImage },
+                                { key: "export-project", icon: <Download className="size-4" />, label: canvasT("videoCanvas.chrome.exportProject", "导出工程"), disabled: exporting, onClick: onExportProject },
+                                { key: "publish-tv", icon: <Share2 className="size-4" />, label: canvasT("videoCanvas.chrome.publishTv", "发布到 Flowy TV"), disabled: publishing, onClick: onPublishTvShow },
                                 { key: "search", icon: <Search className="size-4" />, label: <MenuLabel text={canvasT("videoCanvas.chrome.searchNodes", "搜索节点")} shortcut="⌘ K" />, onClick: onOpenSearch },
                                 {
                                     key: "performance",
@@ -251,6 +261,32 @@ export function CanvasTopBar({
                         </Tooltip>
                     ) : null}
                     <span className="h-6 w-px" style={{ background: theme.toolbar.border }} />
+                    <Tooltip title={canvasT("videoCanvas.chrome.exportProject", "导出工程")}>
+                        <Button
+                            type="text"
+                            className="!h-10 !rounded-xl !px-3 !font-medium"
+                            style={{ color: theme.node.text, background: theme.toolbar.panel }}
+                            icon={<Download className="size-4" />}
+                            loading={exporting}
+                            onClick={onExportProject}
+                            aria-label={canvasT("videoCanvas.chrome.exportProject", "导出工程")}
+                        >
+                            <span className="hidden lg:inline">{canvasT("videoCanvas.chrome.exportProject", "导出工程")}</span>
+                        </Button>
+                    </Tooltip>
+                    <Tooltip title={canvasT("videoCanvas.chrome.publishTv", "发布到 Flowy TV")}>
+                        <Button
+                            type="text"
+                            className="!h-10 !rounded-xl !px-3 !font-medium"
+                            style={{ color: theme.node.text, background: theme.toolbar.panel }}
+                            icon={<Share2 className="size-4" />}
+                            loading={publishing}
+                            onClick={onPublishTvShow}
+                            aria-label={canvasT("videoCanvas.chrome.publishTv", "发布到 Flowy TV")}
+                        >
+                            <span className="hidden lg:inline">{canvasT("videoCanvas.chrome.publishTv", "发布到 Flowy TV")}</span>
+                        </Button>
+                    </Tooltip>
                     <Button
                         type="text"
                         className="!h-10 !rounded-xl !px-3 !font-medium"

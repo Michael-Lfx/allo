@@ -29,6 +29,8 @@
     "createFirst": "Create your first session",
     "recentTitle": "Recent projects",
     "recentSubtitle": "Continue storyboarding, rendering, or revisit a finished film.",
+    "creationRecentTitle": "Recent canvases",
+    "creationRecentSubtitle": "Keep editing a canvas, or import a shared canvas project.",
     "generateRecentTitle": "Recent Videos",
     "generateRecentSubtitle": "Continue video creation.",
     "actionRecentTitle": "Action Imitation",
@@ -79,7 +81,7 @@
       "plazaTitle": "No films on the plaza yet",
       "plazaDesc": "Approved submissions will show up here.",
       "mineTitle": "You haven’t published yet",
-      "mineDesc": "Open a finished film and tap “Publish to Flowy TV”."
+      "mineDesc": "Publish from a finished short-drama workspace or a creation canvas."
     },
     "authRequired": {
       "title": "Sign in to watch Flowy TV",
@@ -290,6 +292,10 @@
     "action2video": {
       "title": "Action Imitation",
       "desc": "Upload a character still and a reference video to imitate the motion."
+    },
+    "canvas": {
+      "title": "Creation canvas",
+      "desc": "Freeform infinite canvas for images, video, and generation graphs."
     }
   },
   "status": {
@@ -376,6 +382,7 @@
     "exportOk": "Project exported",
     "exportFailed": "Export failed",
     "exportFilter": "Flowy video project",
+    "exportCanvasFilter": "Flowy canvas project",
     "openInCanvas": "Open in Canvas",
     "openInCanvasOk": "Opened in Canvas: {{shots}} shots · {{media}} media",
     "openInCanvasReused": "Opened existing Canvas for this project",

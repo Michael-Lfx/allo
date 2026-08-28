@@ -12,6 +12,7 @@ import type { useCanvasUpload } from "./use-canvas-upload";
 import type { useCanvasAssistantVisibility } from "./use-canvas-assistant-visibility";
 import type { useCanvasShortDrama } from "./use-canvas-short-drama";
 import type { useCanvasStyleWorkflow } from "./use-canvas-style-workflow";
+import type { useCanvasProjectShare } from "./use-canvas-project-share";
 import type { CanvasHistoryActions, CanvasAssistantState } from "./canvas-project-bundles";
 
 type CanvasProjectTopChromeProps = {
@@ -58,6 +59,7 @@ type CanvasProjectTopChromeProps = {
     selectCanvasStyle: ReturnType<typeof useCanvasStyleWorkflow>["selectCanvasStyle"];
     historyActions: CanvasHistoryActions;
     assistant: CanvasAssistantState;
+    projectShare: ReturnType<typeof useCanvasProjectShare>;
 };
 
 export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
@@ -105,6 +107,7 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
         selectCanvasStyle,
         historyActions,
         assistant,
+        projectShare,
     } = props;
     const { historyState, undoCanvas, redoCanvas } = historyActions;
     const { assistantOpen, closeAgent, openAgent } = assistant;
@@ -146,6 +149,10 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
                             }
                             onEnterFocusMode={enterFocusMode}
                             shortDramaGuide={shortDramaGuide}
+                            onExportProject={() => void projectShare.exportProject()}
+                            onPublishTvShow={() => void projectShare.publishToTvShow()}
+                            exporting={projectShare.exporting}
+                            publishing={projectShare.publishing}
                         />
                     ) : null}
 

@@ -17,8 +17,9 @@ import {
   listTvShow,
   unlikeTvShow,
 } from '../api';
+import { importCanvasTvShow } from '../../videoCanvas/api';
 import type { TvShowVideo } from '../types';
-import { workflowLabel, normalizeWorkflow } from './SessionCard';
+import { isCanvasTvShow, tvShowWorkflowLabel } from './SessionCard';
 import TvShowCard from './TvShowCard';
 
 type TvShowScope = 'plaza' | 'mine';
@@ -201,6 +202,15 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     if (!detail || importing) return;
     setImporting(true);
     try {
+      if (isCanvasTvShow(detail)) {
+        const imported = await importCanvasTvShow(detail.id);
+        message.success(
+          t('videoGeneration.tvShow.actions.importOk', { defaultValue: '工程已导入到本地' })
+        );
+        setDetail(null);
+        navigate(`/video-generation/canvas/${encodeURIComponent(imported.project_id)}`);
+        return;
+      }
       const imported = await importTvShow(detail.id);
       message.success(
         t('videoGeneration.tvShow.actions.importOk', { defaultValue: '工程已导入到本地' })
@@ -321,7 +331,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
             <div className='mt-2px text-12px text-[var(--color-text-3)]'>
               {scope === 'mine'
                 ? t('videoGeneration.tvShow.empty.mineDesc', {
-                    defaultValue: '在已完成的视频详情页点击「发布到 Flowy TV」。',
+                    defaultValue: '在短剧工作区或创作画布里点击「发布到 Flowy TV」。',
                   })
                 : t('videoGeneration.tvShow.empty.plazaDesc', {
                     defaultValue: '审核通过的作品会出现在这里。',
@@ -370,7 +380,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
               />
             ) : null}
             <div className='text-13px text-[var(--color-text-3)]'>
-              {workflowLabel(normalizeWorkflow(String(detail.workflow)), t)}
+              {tvShowWorkflowLabel(detail, t)}
               {detail.author?.name ? ` · ${detail.author.name}` : ''}
             </div>
             {detail.description ? (

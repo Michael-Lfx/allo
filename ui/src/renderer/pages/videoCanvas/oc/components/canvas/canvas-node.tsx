@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Clock3, FileText, Image as ImageIcon, LoaderCircle, Lock, Maximize2, Music2, Pencil, Play, Download, Plus, RefreshCw, Replace, Settings2, Square, Star, Type, Video } from "lucide-react";
+import { AlertCircle, BookOpenCheck, Bookmark, CheckCircle2, ChevronRight, Clapperboard, Clock3, FileText, Image as ImageIcon, LoaderCircle, Lock, Maximize2, Music2, Pencil, Play, Download, Plus, RefreshCw, Replace, Settings2, Square, Star, Type, Video } from "lucide-react";
 
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
@@ -166,7 +166,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     const isGeneratingNode = data.type !== CanvasNodeType.Frame && data.metadata?.status === "loading";
     const isBatchRoot = data.type === CanvasNodeType.Image && Boolean(data.metadata?.isBatchRoot) && batchCount > 1;
     const isBatchChild = data.type === CanvasNodeType.Image && Boolean(data.metadata?.batchRootId);
-    const showStatusTrack = Boolean(resourceLabel || data.metadata?.locked || isBatchRoot || (isBatchChild && !readOnly) || (hasMediaContent && !readOnly));
+    const showStatusTrack = Boolean(resourceLabel || data.metadata?.locked || data.metadata?.tvCover || isBatchRoot || (isBatchChild && !readOnly) || (hasMediaContent && !readOnly));
     const isActive = isConnectionTarget || isSelected || isFocusRelated;
     const flushMediaContent = hasImageContent || hasVideoContent;
     const mediaBorderColor = isActive ? theme.accent.primary : isRelated && !isBatchChild ? theme.accent.primary : "transparent";
@@ -510,6 +510,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 {showStatusTrack ? (
                     <div className={`absolute right-3 top-3 z-[var(--node-z-overlay)] flex min-w-0 items-center justify-end gap-1 ${data.metadata?.versionLabel ? "max-w-[calc(100%-104px)]" : "max-w-[calc(100%-24px)]"}`}>
                         {resourceLabel && data.type !== CanvasNodeType.Image ? <ResourceLabelBadge reference={resourceLabel} theme={theme} /> : null}
+                        {data.metadata?.tvCover && data.type === CanvasNodeType.Image ? <TvCoverBadge theme={theme} /> : null}
                         {hasMediaContent && !readOnly ? <ResourceStorageBadge storageKey={data.metadata?.storageKey} active={isActive} theme={theme} /> : null}
                         {isBatchRoot ? <BatchToggleBadge count={batchCount} expanded={batchExpanded} theme={theme} onToggle={() => onToggleBatch?.(data.id)} /> : null}
                         {isBatchChild && !readOnly ? <BatchPrimaryBadge visible={batchPrimary || hovered || isSelected} selected={batchPrimary} theme={theme} onSelect={() => onSetBatchPrimary?.(data)} /> : null}
@@ -863,6 +864,20 @@ function ResourceLabelBadge({ reference, theme }: { reference: CanvasResourceRef
     return (
         <span className="pointer-events-none min-w-0 max-w-28 truncate rounded-md px-1.5 py-1 text-[var(--fs-tiny)] font-medium leading-none text-white shadow-sm" style={{ background: reference.active ? theme.accent.primary : "rgba(0,0,0,.35)", opacity: reference.active ? 1 : 0.75 }} title={reference.title || reference.label}>
             {reference.label}
+        </span>
+    );
+}
+
+function TvCoverBadge({ theme }: { theme: CanvasTheme }) {
+    return (
+        <span
+            className="pointer-events-none inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-1.5 text-[var(--fs-tiny)] font-medium leading-none backdrop-blur-md"
+            style={{ background: theme.accent.primarySoft, borderColor: theme.accent.primary, color: theme.accent.primary }}
+            title={canvasT("videoCanvas.nodeUi.tvCoverAria", "Flowy TV 封面")}
+            aria-label={canvasT("videoCanvas.nodeUi.tvCoverAria", "Flowy TV 封面")}
+        >
+            <Bookmark className="size-3 fill-current" />
+            {canvasT("videoCanvas.nodeUi.tvCover", "封面")}
         </span>
     );
 }

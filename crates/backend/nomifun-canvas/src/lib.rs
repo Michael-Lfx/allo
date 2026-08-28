@@ -7,11 +7,14 @@
 //! On-disk layout under `{data_dir}/video-canvas/`:
 //! - `projects/{id}/meta.json` — gallery metadata
 //! - `projects/{id}/doc.json` — opaque frontend canvas document
+//! - `projects/{id}/sidecar.json` — chat / director extras (export sidecar)
+//! - `projects/{id}/drawings/` — drawing documents + previews
 //! - `media/{id}.{ext}` — uploaded / generated binaries
 //! - `media/index.json` — media index
 //! - `tasks.json` — video-generation task history ("最近创作")
 //! - `vimax_session_links.json` — session_id → project_id (idempotent materialize)
 
+mod archive;
 mod dto;
 mod fsio;
 mod generate;
