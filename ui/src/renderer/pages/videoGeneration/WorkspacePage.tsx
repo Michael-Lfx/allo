@@ -5,12 +5,12 @@
  *
  * Sections (one job each):
  * 1. Header — title + locked workflow badge + status
- * 2. Technical artifacts — tree + editable preview (top)
- * 4. Active status (Planning / Rendering) — above the story brief
- * 5. Source input — idea / script / novel + Plan
- * 6. Render CTA — above storyboard once planned
- * 7. Storyboard — inline shot revise + filmstrip
- * 8. Final video player when done
+ * 2. User-action panels — plan / render CTA / action assets
+ * 3. Active status (Planning / Rendering)
+ * 4. Storyboard — inline shot revise + filmstrip
+ * 5. Final video player when done
+ * 6. Source / model settings (collapsed after planning)
+ * 7. Technical artifacts — tree + editable preview (bottom)
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -1361,133 +1361,6 @@ const WorkspacePage: React.FC = () => {
           variant={isAction ? 'action' : 'film'}
         />
 
-        {artifacts.length > 0 ? (
-          <details
-            className={`${styles.studioPanel} px-14px py-12px`}
-            open={artifactsPanelOpen}
-            onToggle={(event) => {
-              setArtifactsPanelOpen((event.currentTarget as HTMLDetailsElement).open);
-            }}
-          >
-            <summary className='cursor-pointer list-none marker:content-none'>
-              <div className='flex flex-wrap items-center justify-between gap-8px'>
-                <div>
-                  <div className='text-14px font-650 text-[var(--color-text-1)]'>
-                    {t('videoGeneration.studio.technicalDetails', {
-                      defaultValue: '技术产物与运行文件',
-                    })}
-                  </div>
-                  <div className='mt-2px text-12px text-[var(--color-text-3)]'>
-                    {t('videoGeneration.studio.technicalDetailsHint', {
-                      defaultValue:
-                        '审阅参考图分类、定妆图、环境/道具板与工程文件，再生成成片。',
-                    })}
-                  </div>
-                </div>
-                <Tag size='small' color='orangered'>
-                  {t('videoGeneration.studio.technicalDetailsBadge', {
-                    defaultValue: '建议先检查',
-                  })}
-                </Tag>
-              </div>
-            </summary>
-            <div
-              className={[
-                'mt-12px grid min-h-240px gap-12px',
-                isMobile ? 'grid-cols-1' : 'grid-cols-[240px_1fr]',
-              ].join(' ')}
-            >
-              <div className='flex max-h-420px min-h-200px flex-col overflow-hidden rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)]'>
-                <ArtifactTree
-                  tree={artifacts}
-                  selectedPath={selectedPath}
-                  onSelect={setSelectedPath}
-                />
-              </div>
-              <ArtifactPreviewPanel
-                sessionId={sessionId}
-                selectedPath={selectedPath}
-                preview={preview}
-                previewLoading={previewLoading}
-                disabled={busy}
-                onChanged={handleArtifactsChanged}
-                onRequestRegenerate={() => void handleRender()}
-              />
-            </div>
-          </details>
-        ) : null}
-
-        {finalBlobUrl ? (
-          <section className={`${styles.studioPanel} overflow-hidden`}>
-            <div className='flex flex-wrap items-center justify-between gap-10px px-16px py-13px'>
-              <div>
-                <div className='flex flex-wrap items-center gap-7px text-14px font-650 text-[var(--color-text-1)]'>
-                  <VideoOne
-                    theme='outline'
-                    size={16}
-                    className='text-[rgb(var(--primary-6))]'
-                  />
-                  {t('videoGeneration.studio.filmReady', { defaultValue: '成片已就绪' })}
-                  {videoCreditsConsumed > 0 ? (
-                    <span
-                      data-testid='session-video-credits'
-                      className='text-12px font-500 tabular-nums text-[var(--color-text-3)]'
-                    >
-                      {t('videoGeneration.studio.creditsConsumed', {
-                        credits: videoCreditsConsumed,
-                        defaultValue: '消耗 {{credits}} 积分',
-                      })}
-                    </span>
-                  ) : null}
-                </div>
-                <div className='mt-2px text-11px text-[var(--color-text-3)]'>
-                  {t('videoGeneration.studio.filmReadyHint', {
-                    defaultValue: '播放检查，或打开视频所在文件夹。',
-                  })}
-                </div>
-              </div>
-              <Button type='primary' onClick={() => void handleRevealFilm()}>
-                <span className='inline-flex items-center gap-6px'>
-                  <FolderOpen theme='outline' size={14} />
-                  {t('videoGeneration.studio.reveal', { defaultValue: '打开视频所在位置' })}
-                </span>
-              </Button>
-            </div>
-            <video
-              key={finalBlobUrl}
-              src={finalBlobUrl}
-              poster={coverBlobUrl ?? undefined}
-              controls
-              playsInline
-              onPlay={() =>
-                confirmFirstValue({
-                  feature: 'video_generation',
-                  source: 'film_play',
-                  session_id: sessionId,
-                })
-              }
-              className='block w-full max-h-620px bg-black'
-            />
-          </section>
-        ) : null}
-
-        {busy || isFailed ? (
-          <section
-            className={[
-              styles.studioPanel,
-              busy ? styles.progressGlow : '',
-              'p-16px',
-            ].join(' ')}
-          >
-            <ProgressTimeline
-              onCancel={() => void handleCancel()}
-              cancelling={cancelling}
-              models={models}
-              creditsConsumed={videoCreditsConsumed}
-            />
-          </section>
-        ) : null}
-
         {isAction ? (
           <section className={`${styles.studioPanel} p-16px md:p-20px`}>
             <div className='mb-14px flex flex-wrap items-start justify-between gap-10px'>
@@ -1681,54 +1554,6 @@ const WorkspacePage: React.FC = () => {
             </details>
           </section>
         ) : (
-          <details className={`${styles.studioPanel} px-14px py-11px`}>
-            <summary className='cursor-pointer text-12px font-600 text-[var(--color-text-2)]'>
-              {t('videoGeneration.studio.briefAndModels', {
-                defaultValue: '创意简报与模型设置',
-              })}
-            </summary>
-            <div className='mt-12px flex flex-col gap-10px'>
-              <TextArea
-                value={sourceText}
-                onChange={setSourceText}
-                autoSize={{ minRows: 3, maxRows: 10 }}
-                disabled={busy}
-              />
-              <div className={`grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
-                <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
-                  <span>
-                    {t('videoGeneration.workspace.source.aspectLabel', {
-                      defaultValue: '视频比例',
-                    })}
-                  </span>
-                  <AspectRatioPicker value={aspectRatio} onChange={setAspectRatio} disabled />
-                  <span className='text-11px text-[var(--color-text-4)]'>
-                    {t('videoGeneration.workspace.source.aspectLockedHint', {
-                      defaultValue: '规划后画幅已锁定，同时作用于成片与海报封面',
-                    })}
-                  </span>
-                </div>
-              </div>
-              <ModelSelectors
-                value={models}
-                onChange={setModels}
-                disabled={busy}
-                isMobile={isMobile}
-              />
-              <VideoQualityPickers
-                videoModel={models.video_model}
-                value={{ resolution, fps }}
-                onChange={({ resolution: nextRes, fps: nextFps }) => {
-                  setResolution(nextRes);
-                  setFps(nextFps);
-                }}
-                disabled={busy}
-              />
-            </div>
-          </details>
-        )}
-
-        {!isAction && hasStoryboard ? (
           <section className={`${styles.studioPanel} ${styles.studioCtaPanel}`}>
             {plannedIdle ? (
               <div className='w-full rd-8px px-12px py-10px border border-solid border-[rgba(var(--primary-6),0.35)] bg-[rgba(var(--primary-6),0.06)]'>
@@ -1741,7 +1566,7 @@ const WorkspacePage: React.FC = () => {
                 <div className='mt-2px text-12px leading-18px text-[var(--color-text-3)]'>
                   {t('videoGeneration.studio.portraitReviewHint', {
                     defaultValue:
-                      '规划阶段已生成全局角色定妆图与环境/道具参考图。建议先在上方「技术产物与运行文件」中检查它们，满意后再生成成片（高成本、不可逆）。',
+                      '规划阶段已生成全局角色定妆图与环境/道具参考图。建议先在下方「技术产物与运行文件」中检查它们，满意后再生成成片（高成本、不可逆）。',
                   })}
                 </div>
               </div>
@@ -1792,6 +1617,23 @@ const WorkspacePage: React.FC = () => {
               </div>
             </div>
           </section>
+        )}
+
+        {busy || isFailed ? (
+          <section
+            className={[
+              styles.studioPanel,
+              busy ? styles.progressGlow : '',
+              'p-16px',
+            ].join(' ')}
+          >
+            <ProgressTimeline
+              onCancel={() => void handleCancel()}
+              cancelling={cancelling}
+              models={models}
+              creditsConsumed={videoCreditsConsumed}
+            />
+          </section>
         ) : null}
 
         {!isAction && hasStoryboard ? (
@@ -1819,6 +1661,164 @@ const WorkspacePage: React.FC = () => {
               onSaveSceneDescriptions={handleSaveSceneDescriptions}
             />
           </section>
+        ) : null}
+
+        {finalBlobUrl ? (
+          <section className={`${styles.studioPanel} overflow-hidden`}>
+            <div className='flex flex-wrap items-center justify-between gap-10px px-16px py-13px'>
+              <div>
+                <div className='flex flex-wrap items-center gap-7px text-14px font-650 text-[var(--color-text-1)]'>
+                  <VideoOne
+                    theme='outline'
+                    size={16}
+                    className='text-[rgb(var(--primary-6))]'
+                  />
+                  {t('videoGeneration.studio.filmReady', { defaultValue: '成片已就绪' })}
+                  {videoCreditsConsumed > 0 ? (
+                    <span
+                      data-testid='session-video-credits'
+                      className='text-12px font-500 tabular-nums text-[var(--color-text-3)]'
+                    >
+                      {t('videoGeneration.studio.creditsConsumed', {
+                        credits: videoCreditsConsumed,
+                        defaultValue: '消耗 {{credits}} 积分',
+                      })}
+                    </span>
+                  ) : null}
+                </div>
+                <div className='mt-2px text-11px text-[var(--color-text-3)]'>
+                  {t('videoGeneration.studio.filmReadyHint', {
+                    defaultValue: '播放检查，或打开视频所在文件夹。',
+                  })}
+                </div>
+              </div>
+              <Button type='primary' onClick={() => void handleRevealFilm()}>
+                <span className='inline-flex items-center gap-6px'>
+                  <FolderOpen theme='outline' size={14} />
+                  {t('videoGeneration.studio.reveal', { defaultValue: '打开视频所在位置' })}
+                </span>
+              </Button>
+            </div>
+            <video
+              key={finalBlobUrl}
+              src={finalBlobUrl}
+              poster={coverBlobUrl ?? undefined}
+              controls
+              playsInline
+              onPlay={() =>
+                confirmFirstValue({
+                  feature: 'video_generation',
+                  source: 'film_play',
+                  session_id: sessionId,
+                })
+              }
+              className='block w-full max-h-620px bg-black'
+            />
+          </section>
+        ) : null}
+
+        {!isAction && hasStoryboard ? (
+          <details className={`${styles.studioPanel} px-14px py-11px`}>
+            <summary className='cursor-pointer text-12px font-600 text-[var(--color-text-2)]'>
+              {t('videoGeneration.studio.briefAndModels', {
+                defaultValue: '创意简报与模型设置',
+              })}
+            </summary>
+            <div className='mt-12px flex flex-col gap-10px'>
+              <TextArea
+                value={sourceText}
+                onChange={setSourceText}
+                autoSize={{ minRows: 3, maxRows: 10 }}
+                disabled={busy}
+              />
+              <div className={`grid gap-10px ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                <div className='flex flex-col gap-6px text-12px text-[var(--color-text-3)]'>
+                  <span>
+                    {t('videoGeneration.workspace.source.aspectLabel', {
+                      defaultValue: '视频比例',
+                    })}
+                  </span>
+                  <AspectRatioPicker value={aspectRatio} onChange={setAspectRatio} disabled />
+                  <span className='text-11px text-[var(--color-text-4)]'>
+                    {t('videoGeneration.workspace.source.aspectLockedHint', {
+                      defaultValue: '规划后画幅已锁定，同时作用于成片与海报封面',
+                    })}
+                  </span>
+                </div>
+              </div>
+              <ModelSelectors
+                value={models}
+                onChange={setModels}
+                disabled={busy}
+                isMobile={isMobile}
+              />
+              <VideoQualityPickers
+                videoModel={models.video_model}
+                value={{ resolution, fps }}
+                onChange={({ resolution: nextRes, fps: nextFps }) => {
+                  setResolution(nextRes);
+                  setFps(nextFps);
+                }}
+                disabled={busy}
+              />
+            </div>
+          </details>
+        ) : null}
+
+        {artifacts.length > 0 ? (
+          <details
+            className={`${styles.studioPanel} px-14px py-12px`}
+            open={artifactsPanelOpen}
+            onToggle={(event) => {
+              setArtifactsPanelOpen((event.currentTarget as HTMLDetailsElement).open);
+            }}
+          >
+            <summary className='cursor-pointer list-none marker:content-none'>
+              <div className='flex flex-wrap items-center justify-between gap-8px'>
+                <div>
+                  <div className='text-14px font-650 text-[var(--color-text-1)]'>
+                    {t('videoGeneration.studio.technicalDetails', {
+                      defaultValue: '技术产物与运行文件',
+                    })}
+                  </div>
+                  <div className='mt-2px text-12px text-[var(--color-text-3)]'>
+                    {t('videoGeneration.studio.technicalDetailsHint', {
+                      defaultValue:
+                        '审阅参考图分类、定妆图、环境/道具板与工程文件，再生成成片。',
+                    })}
+                  </div>
+                </div>
+                <Tag size='small' color='orangered'>
+                  {t('videoGeneration.studio.technicalDetailsBadge', {
+                    defaultValue: '建议先检查',
+                  })}
+                </Tag>
+              </div>
+            </summary>
+            <div
+              className={[
+                'mt-12px grid min-h-240px gap-12px',
+                isMobile ? 'grid-cols-1' : 'grid-cols-[240px_1fr]',
+              ].join(' ')}
+            >
+              <div className='flex max-h-420px min-h-200px flex-col overflow-hidden rd-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-fill-1)]'>
+                <ArtifactTree
+                  tree={artifacts}
+                  selectedPath={selectedPath}
+                  onSelect={setSelectedPath}
+                />
+              </div>
+              <ArtifactPreviewPanel
+                sessionId={sessionId}
+                selectedPath={selectedPath}
+                preview={preview}
+                previewLoading={previewLoading}
+                disabled={busy}
+                onChanged={handleArtifactsChanged}
+                onRequestRegenerate={() => void handleRender()}
+              />
+            </div>
+          </details>
         ) : null}
       </div>
     </div>

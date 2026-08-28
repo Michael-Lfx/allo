@@ -598,7 +598,7 @@
     "renderTitle": "Happy with the storyboard?",
     "renderHint": "Rendering creates keyframes, shot videos, and assembles the final film.",
     "portraitReviewTitle": "Planning done — review the cast before rendering",
-    "portraitReviewHint": "The plan also generates global character sheets plus environment / prop reference images. Check them under \"Technical artifacts & run files\" above first — rendering is expensive and irreversible.",
+    "portraitReviewHint": "The plan also generates global character sheets plus environment / prop reference images. Check them under \"Technical artifacts & run files\" below first — rendering is expensive and irreversible.",
     "renderCta": "Generate film",
     "technicalDetails": "Technical artifacts & run files",
     "technicalDetailsHint": "Review and edit cast plates, environment / prop refs, and project files before rendering.",
