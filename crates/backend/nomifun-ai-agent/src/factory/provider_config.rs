@@ -530,10 +530,11 @@ pub async fn one_shot_completion_no_thinking_text_or_reasoning(
         system: system.to_owned(),
         messages,
         tools: vec![],
-        max_tokens,
+        max_tokens: Some(max_tokens),
         thinking: Some(ThinkingConfig::Disabled),
         reasoning_effort: None,
         temperature: None,
+        retain_provider_round: false,
     };
 
     let rx = provider
