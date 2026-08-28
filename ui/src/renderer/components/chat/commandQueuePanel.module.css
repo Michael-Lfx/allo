@@ -1,16 +1,17 @@
-/* Radius scale with the composer (20px pill): panel 16px, row 8px, control 6px. */
+/* Radius: composer 20px pill, panel 12px, row 6px, control 6px. */
 
 .root {
   position: relative;
   z-index: 1;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .card {
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--color-border-2, #e5e6eb) 80%, transparent);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--color-fill-2, #f2f3f5) 70%, var(--color-bg-1, #fff));
+  border: 1px solid color-mix(in srgb, var(--color-border-2, #e5e6eb) 72%, transparent);
+  border-radius: 12px;
+  background: var(--dialog-fill-0, var(--color-bg-1, #fff));
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-1, #1d2129) 5%, transparent);
 }
 
 .header {
@@ -18,12 +19,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 12px 6px;
+  padding: 5px 8px 2px;
 }
 
 .count,
-.headerAction {
-  color: var(--color-text-3, #86909c);
+.card button.headerAction,
+.card button.headerAction span {
+  color: var(--color-text-2, #4e5969);
   font-size: 12px;
   font-weight: 400;
   line-height: 16px;
@@ -38,27 +40,33 @@
   align-items: center;
   gap: 2px;
   margin: 0;
-  padding: 2px 4px;
+  padding: 1px 2px;
   border: none;
   border-radius: 6px;
   background: transparent;
-  font: inherit;
+  appearance: none;
+  -webkit-appearance: none;
   cursor: pointer;
   transition: color 140ms cubic-bezier(0.16, 1, 0.3, 1), background-color 140ms cubic-bezier(0.16, 1, 0.3, 1),
     transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.headerAction:hover,
-.headerAction:focus-visible {
-  color: var(--color-text-2, #4e5969);
-  background: color-mix(in srgb, var(--color-bg-1, #fff) 55%, transparent);
+.card button.headerAction:hover,
+.card button.headerAction:focus-visible {
+  color: var(--color-text-1, #1d2129);
+  background: transparent;
+}
+
+.card button.headerAction:hover span,
+.card button.headerAction:focus-visible span {
+  color: var(--color-text-1, #1d2129);
 }
 
 .headerAction:active {
   transform: scale(0.98);
 }
 
-.headerAction:focus-visible {
+.card button.headerAction:focus-visible {
   outline: 2px solid var(--color-primary-6, #165dff);
   outline-offset: 2px;
 }
@@ -66,54 +74,52 @@
 .list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 0 8px 8px;
+  gap: 2px;
+  padding: 0 5px 5px;
 }
 
 .item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  min-height: 32px;
-  padding: 5px 6px 5px 12px;
+  min-height: 26px;
+  padding: 1px 4px 1px 4px;
   border: 1px solid transparent;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-fill-3, #e5e6eb) 35%, var(--color-fill-2, #f2f3f5));
+  border-radius: 6px;
+  background: transparent;
   transition: background-color 160ms cubic-bezier(0.16, 1, 0.3, 1), border-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
     box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .item:focus-within {
-  background: color-mix(in srgb, var(--color-bg-1, #fff) 72%, var(--color-fill-2, #f2f3f5));
-  border-color: color-mix(in srgb, var(--color-border-2, #e5e6eb) 55%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-bg-1, #fff) 80%, transparent);
+  background: var(--color-fill-2, #f2f3f5);
 }
 
 .item.itemDragging,
 .item.itemDragging:hover,
 .item.itemDragging:focus-within {
   background: var(--color-bg-1, #fff);
-  border-color: color-mix(in srgb, var(--color-border-2, #e5e6eb) 70%, transparent);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--color-text-1, #1d2129) 8%, transparent);
+  border-color: color-mix(in srgb, var(--color-border-2, #e5e6eb) 60%, transparent);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-1, #1d2129) 6%, transparent);
 }
 
 .body {
   display: flex;
   align-items: center;
+  gap: 6px;
   min-width: 0;
   flex: 1 1 auto;
-  position: relative;
 }
 
 .dragSlot {
-  position: absolute;
-  left: -6px;
-  top: 50%;
-  width: 14px;
-  height: 18px;
-  transform: translateY(-50%);
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  position: relative;
+  overflow: hidden;
 }
 
 .dragHandle {
@@ -122,9 +128,12 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 16px;
+  height: 16px;
   margin: 0;
   padding: 0;
   border: none;
+  overflow: hidden;
   background: transparent;
   color: var(--color-text-3, #86909c);
   outline: none;
@@ -171,7 +180,7 @@
   overflow: hidden;
   color: var(--color-text-1, #1d2129);
   font-size: 13px;
-  line-height: 20px;
+  line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -180,19 +189,19 @@
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
-  padding: 0 6px;
+  padding: 0 5px;
   border-radius: 999px;
   color: var(--color-text-3, #86909c);
-  background: color-mix(in srgb, var(--color-fill-3, #e5e6eb) 55%, transparent);
+  background: color-mix(in srgb, var(--color-fill-3, #e5e6eb) 40%, transparent);
   font-size: 10px;
-  line-height: 16px;
+  line-height: 14px;
 }
 
 .actions {
   display: flex;
   align-items: center;
   flex-shrink: 0;
-  gap: 2px;
+  gap: 0;
 }
 
 .sendNow,
@@ -204,9 +213,10 @@
 .sendNow {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
+  height: 20px;
   margin: 0;
-  padding: 4px 8px;
+  padding: 0 6px;
   border: none;
   border-radius: 6px;
   background: transparent;
@@ -226,7 +236,7 @@
 .sendNow:hover,
 .sendNow:focus-visible {
   color: var(--color-text-1, #1d2129);
-  background: color-mix(in srgb, var(--color-fill-2, #f2f3f5) 80%, transparent);
+  background: color-mix(in srgb, var(--color-fill-3, #e5e6eb) 35%, transparent);
 }
 
 .sendNow:active,
@@ -244,8 +254,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   margin: 0;
   padding: 0;
   border: none;
@@ -258,20 +268,22 @@
 .iconBtn:hover,
 .iconBtn:focus-visible {
   color: var(--color-text-1, #1d2129);
-  background: color-mix(in srgb, var(--color-fill-2, #f2f3f5) 90%, var(--color-bg-1, #fff));
+  background: color-mix(in srgb, var(--color-fill-3, #e5e6eb) 35%, transparent);
 }
 
 .iconBtnDanger:hover,
 .iconBtnDanger:focus-visible {
-  color: rgb(var(--danger-6));
-  background: color-mix(in srgb, rgb(var(--danger-6)) 10%, var(--color-bg-1, #fff));
+  color: var(--color-danger-6, #f53f3f);
+  background: color-mix(in srgb, var(--color-fill-3, #e5e6eb) 35%, transparent);
+}
+
+.iconBtn :global(svg) {
+  color: inherit;
 }
 
 @media (hover: hover) {
   .item:hover {
-    background: color-mix(in srgb, var(--color-bg-1, #fff) 72%, var(--color-fill-2, #f2f3f5));
-    border-color: color-mix(in srgb, var(--color-border-2, #e5e6eb) 55%, transparent);
-    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-bg-1, #fff) 80%, transparent);
+    background: var(--color-fill-2, #f2f3f5);
   }
 }
 

@@ -129,7 +129,7 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
               onSortableDragHandlePointerDown?.(event);
             }}
           >
-            <Drag theme='outline' size='12' strokeWidth={1.5} aria-hidden='true' />
+            <Drag theme='outline' size='11' strokeWidth={1.5} aria-hidden='true' />
           </button>
         </div>
         <div className={styles.preview}>
@@ -147,7 +147,7 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
           onClick={() => onSendNow(item.id)}
         >
           <span>{t('conversation.commandQueue.sendNow', { defaultValue: 'Send now' })}</span>
-          <CornerDownLeft theme='outline' size='12' strokeWidth={1.5} aria-hidden='true' />
+          <CornerDownLeft theme='outline' size='11' strokeWidth={1.5} aria-hidden='true' />
         </button>
         {onEdit ? (
           <button
@@ -156,7 +156,7 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
             aria-label={t('conversation.commandQueue.edit', { defaultValue: 'Edit' })}
             onClick={() => onEdit(item)}
           >
-            <Edit theme='outline' size='13' strokeWidth={1.5} aria-hidden='true' />
+            <Edit theme='outline' size='12' strokeWidth={1.5} aria-hidden='true' />
           </button>
         ) : null}
         <button
@@ -165,7 +165,7 @@ const QueueItemCard: React.FC<QueueItemCardProps> = ({
           aria-label={t('conversation.commandQueue.remove', { defaultValue: 'Remove' })}
           onClick={() => onRemove(item.id)}
         >
-          <Delete theme='outline' size='13' strokeWidth={1.5} aria-hidden='true' />
+          <Delete theme='outline' size='12' strokeWidth={1.5} aria-hidden='true' />
         </button>
       </div>
     </div>

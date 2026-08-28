@@ -21,7 +21,15 @@ describe('CommandQueuePanel Cursor-like queue card', () => {
     expect(source.includes('MoreOne')).toBe(false);
     expect(source.includes('mb--12px')).toBe(false);
     expect(source.includes('rd-t-18px')).toBe(false);
-    expect(css.includes('border-radius: 16px')).toBe(true);
+    expect(css.includes('border-radius: 12px')).toBe(true);
+    expect(css.includes('var(--dialog-fill-0')).toBe(true);
+    expect(css.includes('var(--color-fill-2')).toBe(true);
+    expect(css.includes('min-height: 26px')).toBe(true);
+    expect(/\.item \{[\s\S]*?background: transparent/.test(css)).toBe(true);
+    expect(css.includes('left: -6px')).toBe(false);
+    expect(css.includes('flex: 0 0 16px')).toBe(true);
+    expect(css.includes('overflow: hidden')).toBe(true);
+    expect(css.includes('button.headerAction')).toBe(true);
     expect(css.includes('scale(0.96)')).toBe(true);
     expect(css.includes('scale(0.98)')).toBe(true);
     expect(css.includes('@media (hover: hover)')).toBe(true);
