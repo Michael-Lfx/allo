@@ -161,7 +161,7 @@ fn permission_decision_from_acp(d: &AcpPermissionEventData) -> DecisionPrompt {
             let safe_value = if safe_tool {
                 req.options
                     .iter()
-                    .find(|o| matches!(o.kind, AcpPermissionOptionKind::AllowOnce))
+                    .find(|o| matches!(o.kind, Some(AcpPermissionOptionKind::AllowOnce)))
                     .map(|o| o.option_id.clone())
             } else {
                 None
