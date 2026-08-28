@@ -2,7 +2,7 @@ import { ipcBridge } from '@/common';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import useSWR from 'swr';
 import ChatConversation from './components/ChatConversation';
 import MessageListSkeleton from './Messages/components/MessageListSkeleton';
@@ -16,13 +16,58 @@ const ChatConversationIndex: React.FC = () => {
   // keeps the same canonical conversation entity ID.
   const conversationId = id != null ? parseConversationId(id) : undefined;
   const { t } = useTranslation();
+  const location = useLocation();
   const navigate = useNavigate();
   const notFoundHandledIdRef = useRef<string | undefined>(undefined);
   const deletedHandledIdRef = useRef<string | undefined>(undefined);
+  const clearedAttentionKeyRef = useRef<string | undefined>(undefined);
 
   const { data, isLoading, mutate } = useSWR(id ? `conversation/${id}` : null, () => {
     return getConversationOrNull(conversationId!);
   });
+
+  useEffect(() => {
+    if (!conversationId || isLoading || !data) return;
+    const clearCurrentConversationAttention = () => {
+      const requestedAttentionId = new URLSearchParams(location.search).get('attention_id');
+      const exactAttentionId = requestedAttentionId?.startsWith(`conversation:${conversationId}:`)
+        ? requestedAttentionId
+        : undefined;
+      // A supplied but foreign/malformed attention id must never fall back to
+      // a conversation-wide clear: another turn may still need attention.
+      if (requestedAttentionId !== null && !exactAttentionId) return;
+      const clearKey = exactAttentionId ?? `conversation-scope:${conversationId}`;
+      if (clearedAttentionKeyRef.current === clearKey) return;
+      clearedAttentionKeyRef.current = clearKey;
+      void (exactAttentionId
+        ? ipcBridge.attention.clear.invoke({ attention_id: exactAttentionId })
+        : ipcBridge.attention.clearScope.invoke({
+            source: 'conversation',
+            entity_id: String(conversationId),
+          })
+      ).catch(() => {
+        // Keep native attention if the renderer cannot confirm the page load.
+        if (clearedAttentionKeyRef.current === clearKey) {
+          clearedAttentionKeyRef.current = undefined;
+        }
+      });
+    };
+
+    // If a completion arrived while another app had focus, the page was
+    // already mounted and the initial load effect has nothing new to observe.
+    // Retry the precise conversation clear when the user returns to this page.
+    clearCurrentConversationAttention();
+    const onWindowFocus = () => clearCurrentConversationAttention();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') clearCurrentConversationAttention();
+    };
+    window.addEventListener('focus', onWindowFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', onWindowFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [conversationId, data, isLoading, location.search]);
 
   useEffect(() => {
     if (!id) return;

@@ -2388,7 +2388,6 @@ fn complete_main_thread_setup(
 
 /// Bring the main window back from the tray: show if hidden, restore if minimized, then focus.
 fn show_main_window(app: &tauri::AppHandle) {
-    taskbar_badge::clear_badge(app);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -3082,6 +3081,9 @@ fn main() -> std::process::ExitCode {
             meeting_tray::set_tray_labels,
             restart_application,
             system_notify::show_os_notification_cmd,
+            taskbar_badge::clear_attention_cmd,
+            taskbar_badge::clear_attention_scope_cmd,
+            taskbar_badge::clear_all_attention_cmd,
             completion_toast::activate_completion_toast,
             completion_toast::dismiss_completion_toast
         ])
@@ -3104,9 +3106,6 @@ fn main() -> std::process::ExitCode {
                         api.prevent_close();
                         let _ = window.hide();
                     }
-                }
-                tauri::WindowEvent::Focused(true) => {
-                    taskbar_badge::clear_badge(window.app_handle());
                 }
                 _ => {}
             }

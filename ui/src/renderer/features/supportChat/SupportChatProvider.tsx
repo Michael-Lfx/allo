@@ -19,6 +19,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useTranslation } from 'react-i18next';
 import { ipcBridge } from '@/common';
 import { isAuthExpiredHttpError } from '@/common/adapter/httpBridge';
+import { configService } from '@/common/config/configService';
 import type {
   ICloudImAttachmentPayload,
   ICloudImConversation,
@@ -46,6 +47,7 @@ import { createPendingMessage } from './state/supportMessageMerge';
 import { supportImagePreviewCache } from './state/supportImagePreviewCache';
 import { initialSupportChatState, supportChatReducer } from './state/supportChatReducer';
 import SupportChatModal from './components/SupportChatModal';
+import { supportAttentionId, supportNotifyDeepLink } from '@renderer/hooks/system/desktopNotifyDeepLink';
 
 export type SupportOutgoingImage = {
   file: Blob;
@@ -163,11 +165,17 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (nextNotifiedSeq > lastNotifiedSeq) {
         writeNotifiedSeq(localStorage, userId, nextNotifiedSeq);
       }
+      // Keep the cursor moving while notifications are disabled so re-enabling
+      // the setting does not replay a stale backlog as new attention.
+      if (configService.get('system.notificationEnabled') === false) return;
       for (const message of toNotify) {
+        const attentionId = supportAttentionId(message.seq);
         void ipcBridge.notification.show
           .invoke({
             title: '客服回复了你',
             body: truncateNotificationBody(message.content),
+            attention_id: attentionId,
+            click_target: supportNotifyDeepLink(attentionId),
           })
           .catch(() => {
             // Permission denied or unsupported — badge remains the fallback.
@@ -221,6 +229,11 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
               .then((conversation) => {
                 dispatch({ type: 'conversation-updated', conversation });
                 dispatch({ type: 'set-unread', unreadCount: 0 });
+                void ipcBridge.attention.clearScope
+                  .invoke({ source: 'support' })
+                  .catch(() => {
+                    // Keep the native badge if the clear command cannot reach the shell.
+                  });
               })
               .catch(() => {
                 dispatch({ type: 'sync-warning', syncWarning: true });
@@ -321,6 +334,11 @@ export const SupportChatProvider: React.FC<{ children: React.ReactNode }> = ({ c
             .then((updated) => {
               dispatch({ type: 'conversation-updated', conversation: updated });
               dispatch({ type: 'set-unread', unreadCount: 0 });
+              void ipcBridge.attention.clearScope
+                .invoke({ source: 'support' })
+                .catch(() => {
+                  // Keep the native badge if the clear command cannot reach the shell.
+                });
             })
             .catch(() => {
               dispatch({ type: 'sync-warning', syncWarning: true });

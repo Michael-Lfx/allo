@@ -9,6 +9,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   tauriDownloadUpdate,
   tauriInstallUpdate,
+  tauriSendNotification,
   type TauriDownloadUpdateProgress,
 } from './tauriShell';
 
@@ -94,5 +95,31 @@ describe('native update commands', () => {
     });
 
     expect(errorMessage).toBe('native updater failed');
+  });
+
+  test('notification forwards the pending-attention id to Rust', async () => {
+    const calls: Array<{ command: string; args: unknown }> = [];
+    await withTauriInternals(async (command, args) => {
+      calls.push({ command, args });
+    }, async () => {
+      await tauriSendNotification({
+        title: '客服回复了你',
+        body: '你好',
+        attention_id: 'support:7',
+        click_target: 'flowy://support?attention_id=support%3A7',
+      });
+    });
+
+    expect(calls).toEqual([
+      {
+        command: 'show_os_notification_cmd',
+        args: {
+          title: '客服回复了你',
+          body: '你好',
+          clickTarget: 'flowy://support?attention_id=support%3A7',
+          attentionId: 'support:7',
+        },
+      },
+    ]);
   });
 });

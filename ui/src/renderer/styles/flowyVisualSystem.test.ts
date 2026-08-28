@@ -30,6 +30,8 @@ const REQUIRED_TOKENS = [
   '--flowy-interactive',
   '--flowy-selected-bg',
   '--flowy-text-primary',
+  '--flowy-attention',
+  '--flowy-attention-fg',
   '--flowy-border-structural',
   '--flowy-shadow-focus',
 ];
@@ -47,6 +49,11 @@ describe('flowy visual system', () => {
     }
     expect(css.includes("[data-theme='dark']")).toBe(true);
     expect(css.includes("body[arco-theme='dark']")).toBe(true);
+  });
+
+  test('keeps attention styling in the readable steel blue-gray range', () => {
+    expect(css.includes('--flowy-attention: oklch(56% 0.055 250)')).toBe(true);
+    expect(css.includes('--flowy-attention-fg: oklch(98% 0.01 95)')).toBe(true);
   });
 
 

@@ -6,7 +6,7 @@ import '@/common/adapter/browser';
 
 // React and core dependencies
 import type { PropsWithChildren } from 'react';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 // Context providers
@@ -152,13 +152,54 @@ const StartupRecoveryPanel: React.FC<{
 };
 
 const Main = () => {
-  const { ready, status } = useAuth();
-  const { ready: cloudReady, refresh: refreshCloudAuth, logout: cloudLogout, status: cloudStatus } = useCloudAuth();
+  const { ready, status, user } = useAuth();
+  const {
+    ready: cloudReady,
+    refresh: refreshCloudAuth,
+    logout: cloudLogout,
+    status: cloudStatus,
+    whoami,
+  } = useCloudAuth();
   const { logout: localLogout } = useAuth();
   const [configReady, setConfigReady] = useState(false);
   const [configError, setConfigError] = useState<Error | null>(null);
   const [startupRetryToken, setStartupRetryToken] = useState(0);
   const [logsError, setLogsError] = useState<string | null>(null);
+  const previousSessionRef = useRef<{
+    local: boolean;
+    cloud: boolean;
+    localId?: string;
+    cloudId?: string;
+  }>({ local: false, cloud: false });
+
+  useEffect(() => {
+    const previous = previousSessionRef.current;
+    const localAuthenticated = status === 'authenticated';
+    const cloudAuthenticated = cloudStatus === 'authenticated';
+    const localId = localAuthenticated && user ? String(user.id) : undefined;
+    const cloudId = cloudAuthenticated && whoami
+      ? String(whoami.userId || whoami.email || whoami.username || '') || undefined
+      : undefined;
+    const sessionEnded =
+      (previous.local && !localAuthenticated) ||
+      (previous.cloud && !cloudAuthenticated) ||
+      (previous.localId !== undefined && localId !== undefined && previous.localId !== localId) ||
+      (previous.cloudId !== undefined && cloudId !== undefined && previous.cloudId !== cloudId);
+
+    if (sessionEnded) {
+      void ipcBridgeModule.attention.clearAll.invoke().catch(() => {
+        // The native state is process-local; a failed clear is harmless after
+        // the shell has already gone away, and must not block auth recovery.
+      });
+    }
+
+    previousSessionRef.current = {
+      local: localAuthenticated,
+      cloud: cloudAuthenticated,
+      localId,
+      cloudId,
+    };
+  }, [cloudStatus, status, user, whoami]);
 
   useEffect(() => {
     // Browser sessions must pass the auth probe before any protected startup

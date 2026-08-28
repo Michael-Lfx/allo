@@ -3,7 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { ipcBridge } from '@/common';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
 import { configService } from '@/common/config/configService';
-import { requirementNotifyDeepLink } from '@renderer/hooks/system/desktopNotifyDeepLink';
+import {
+  requirementAttentionId,
+  requirementNotifyDeepLink,
+} from '@renderer/hooks/system/desktopNotifyDeepLink';
 
 /**
  * Web / non-desktop OS notifications for requirement terminal status.
@@ -30,10 +33,12 @@ export const useAutoWorkDesktopNotify = () => {
       const body = req.title
         ? `${req.tag ? `[${req.tag}] ` : ''}${req.title}`
         : String(req.requirement_id);
+      const attentionId = requirementAttentionId(String(req.requirement_id));
       void ipcBridge.notification.show
         .invoke({
           title,
           body,
+          attention_id: attentionId,
           click_target: requirementNotifyDeepLink(req.tag, String(req.requirement_id)),
         })
         .catch(() => {

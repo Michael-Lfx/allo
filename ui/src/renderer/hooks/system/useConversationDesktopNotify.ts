@@ -6,7 +6,10 @@ import { useLocation } from 'react-router-dom';
 import { ipcBridge } from '@/common';
 import { configService } from '@/common/config/configService';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
-import { conversationNotifyDeepLink } from '@renderer/hooks/system/desktopNotifyDeepLink';
+import {
+  conversationAttentionId,
+  conversationNotifyDeepLink,
+} from '@renderer/hooks/system/desktopNotifyDeepLink';
 
 /**
  * Desktop OS notification when a conversation turn finishes.
@@ -45,13 +48,23 @@ export const useConversationDesktopNotify = () => {
         const title =
           conversation.name?.trim() ||
           t('conversation.notify.fallbackTitle', { defaultValue: '对话' });
+        if (event.turn_id == null) {
+          console.warn(
+            '[DesktopNotification] conversation completion is missing turn_id; using conversation latest attention'
+          );
+        }
+        const attentionId = conversationAttentionId(
+          String(conversationId),
+          event.turn_id == null ? undefined : String(event.turn_id)
+        );
 
         await ipcBridge.notification.show
           .invoke({
             title,
             body,
             conversation_id: conversationId as ConversationId,
-            click_target: conversationNotifyDeepLink(String(conversationId)),
+            attention_id: attentionId,
+            click_target: conversationNotifyDeepLink(String(conversationId), attentionId),
           })
           .catch(() => {
             /* permission / unsupported host */

@@ -18,6 +18,8 @@ describe('support chat structure', () => {
     expect(source.includes('contactSupport')).toBe(true);
     expect(source.includes('hasUnread')).toBe(true);
     expect(source.includes('openSupportChat')).toBe(true);
+    expect(source.includes('min-w-20px h-20px')).toBe(true);
+    expect(source.includes('text-11px font-600 leading-20px')).toBe(true);
 
     const menuSection = source.slice(source.indexOf('const menuContent'));
     const skinIndex = menuSection.indexOf('common.userMenu.changeSkin');
