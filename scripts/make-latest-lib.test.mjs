@@ -4,6 +4,7 @@ import { platformKeysForArtifactName } from './make-latest-lib.mjs';
 describe('platformKeysForArtifactName', () => {
   test('maps Windows setup exes to arch keys', () => {
     expect(platformKeysForArtifactName('Flowy_1.1.0_x64-setup.exe')).toEqual(['windows-x86_64']);
+    expect(platformKeysForArtifactName('Flowy_1.1.1_arm64-setup.exe')).toEqual(['windows-aarch64']);
     expect(platformKeysForArtifactName('Flowy_1.1.0_aarch64-setup.exe')).toEqual(['windows-aarch64']);
   });
 

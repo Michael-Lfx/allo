@@ -113,6 +113,19 @@ def infer_channel_from_manifest(manifest: dict) -> str | None:
     return None
 
 
+def platform_folder_for_artifact_name(artifact_name: str) -> str | None:
+    """Infer allo/{platform} from a Tauri updater filename when URL match fails."""
+    base = artifact_name[:-4] if artifact_name.endswith(".sig") else artifact_name
+    lower = base.lower()
+    if lower.endswith("-setup.exe") or lower.endswith(".exe") or lower.endswith(".msi"):
+        return "windows"
+    if lower.endswith(".app.tar.gz"):
+        return "macos"
+    if lower.endswith(".appimage") or lower.endswith(".deb") or lower.endswith(".rpm"):
+        return "linux"
+    return None
+
+
 def remote_dir_for_artifact(
     manifest: dict, artifact_name: str, prefix: str, version_tag: str
 ) -> str:
@@ -121,6 +134,9 @@ def remote_dir_for_artifact(
     for key, entry in (manifest.get("platforms") or {}).items():
         if artifact_basename_from_url(str(entry.get("url", ""))) == base:
             return f"{prefix}/{platform_folder_for_key(key)}/{version_tag}"
+    folder = platform_folder_for_artifact_name(artifact_name)
+    if folder:
+        return f"{prefix}/{folder}/{version_tag}"
     raise SystemExit(
         f"ERROR: cannot map artifact {artifact_name} to allo/{{platform}}/{version_tag} "
         "via latest.json platform URLs"

@@ -5,7 +5,8 @@
 export function platformKeysForArtifactName(name) {
   const lower = name.toLowerCase();
   if (lower.endsWith('-setup.exe') || lower.endsWith('.exe') || lower.endsWith('.msi')) {
-    if (/aarch64/i.test(name)) return ['windows-aarch64'];
+    // Tauri NSIS names ARM as `_arm64-setup.exe`; keep `_aarch64` for older/local builds.
+    if (/_aarch64(?:-|_|\.)|_arm64(?:-|_|\.)/i.test(name)) return ['windows-aarch64'];
     if (/_x64(?:-|_|\.)|_x86_64|_amd64/i.test(name)) return ['windows-x86_64'];
     return [];
   }

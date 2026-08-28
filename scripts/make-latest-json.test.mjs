@@ -11,7 +11,7 @@ describe('make:latest --from-dir', () => {
   test('rebuilds a windows channel manifest from flat signed artifacts', () => {
     const dir = mkdtempSync(join(tmpdir(), 'make-latest-from-dir-'));
     const x64 = 'Flowy_1.2.3_x64-setup.exe';
-    const arm = 'Flowy_1.2.3_aarch64-setup.exe';
+    const arm = 'Flowy_1.2.3_arm64-setup.exe';
     writeFileSync(join(dir, x64), 'x64-bin');
     writeFileSync(join(dir, `${x64}.sig`), 'x64-sig');
     writeFileSync(join(dir, arm), 'arm-bin');

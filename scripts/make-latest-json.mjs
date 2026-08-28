@@ -64,7 +64,7 @@ function assertFlowyArtifactName(key, name) {
   if (key.startsWith('windows-')) {
     if (!name.startsWith(`${PRODUCT}_`) || !lower.endsWith('-setup.exe')) {
       throw new Error(
-        `${key} 产物名非法: ${name}（期望 ${PRODUCT}_{version}_x64-setup.exe 或 …_aarch64-setup.exe）`,
+        `${key} 产物名非法: ${name}（期望 ${PRODUCT}_{version}_x64-setup.exe 或 …_arm64-setup.exe）`,
       );
     }
     return;

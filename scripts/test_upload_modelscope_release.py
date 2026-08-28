@@ -73,6 +73,25 @@ class UploadHelpersTest(unittest.TestCase):
             self.assertEqual(set(filtered["platforms"]), {"windows-x86_64"})
             self.assertEqual(dropped, ["windows-aarch64"])
 
+    def test_remote_dir_maps_tauri_arm64_setup_exe(self):
+        manifest = {
+            "version": "1.1.1",
+            "platforms": {
+                "windows-x86_64": {
+                    "url": "https://modelscope.cn/api/v1/models/r/repo?FilePath=allo/windows/v1.1.1/Flowy_1.1.1_x64-setup.exe",
+                    "signature": "s",
+                }
+            },
+        }
+        self.assertEqual(
+            mod.remote_dir_for_artifact(manifest, "Flowy_1.1.1_arm64-setup.exe", "allo", "v1.1.1"),
+            "allo/windows/v1.1.1",
+        )
+        self.assertEqual(
+            mod.remote_dir_for_artifact(manifest, "Flowy_1.1.1_arm64-setup.exe.sig", "allo", "v1.1.1"),
+            "allo/windows/v1.1.1",
+        )
+
     def test_channel_yml_and_sha256(self):
         yml = mod.build_channel_yml({"version": "1.0.0", "pub_date": "t", "notes": "n"}, "linux")
         self.assertIn('version: "1.0.0"', yml)
