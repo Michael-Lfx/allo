@@ -224,7 +224,7 @@ jobs:
           mkdir -p dist/desktop
           cp -a staging/windows-x64/. dist/desktop/
           cp -a staging/windows-arm64/. dist/desktop/
-          bun run make:latest --host modelscope --channel windows --collect
+          bun run make:latest --host modelscope --channel windows --from-dir dist/desktop --collect
           ls -lah dist/desktop
 
       - name: Upload Windows artifacts (phase 1)

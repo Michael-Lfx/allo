@@ -4,6 +4,7 @@
  *
  *   bun run make:latest --host modelscope --collect
  *   bun run make:latest --host modelscope --channel windows --collect
+ *   bun run make:latest --host modelscope --channel windows --from-dir dist/desktop --collect
  *   bun run make:latest --version 0.4.2 --host modelscope --channel macos --collect
  *
  * ModelScope 三端独立渠道（版本可长期不同步）：
@@ -19,6 +20,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, copyFileSync } from 'node:fs';
 import { dirname, join, basename, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { platformKeysForArtifactName } from './make-latest-lib.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_REPO = 'nomifun/nomifun-tauri';
@@ -137,8 +139,23 @@ const defaultOut =
     ? join(ROOT, 'apps/desktop/updater', `latest.${msChannel}.json`)
     : join(ROOT, 'apps/desktop/updater', 'latest.json');
 const out = flag('out', defaultOut);
-const channelYmlPath = join(ROOT, 'apps/desktop/updater', `channel.${msChannel}.yml`);
+const channelYmlArg = flag('channel-yml', join(ROOT, 'apps/desktop/updater', `channel.${msChannel}.yml`));
+if (typeof channelYmlArg !== 'string') {
+  console.error('✗ --channel-yml 需要文件路径。');
+  process.exit(1);
+}
+const channelYmlPath = isAbsolute(channelYmlArg) ? channelYmlArg : resolve(ROOT, channelYmlArg);
 const collect = flag('collect', false) === true;
+const fromDirArg = flag('from-dir');
+if (fromDirArg !== undefined && typeof fromDirArg !== 'string') {
+  console.error('✗ --from-dir 需要目录路径。');
+  process.exit(1);
+}
+const FROM_DIR = fromDirArg
+  ? isAbsolute(fromDirArg)
+    ? fromDirArg
+    : resolve(ROOT, fromDirArg)
+  : null;
 const targetDirArg = flag('target-dir', join(ROOT, 'target'));
 if (typeof targetDirArg !== 'string') {
   console.error('✗ --target-dir 需要目录路径。');
@@ -290,46 +307,69 @@ function collectCandidate(key, candidate) {
   collected[key] = kept;
 }
 
-// ── 扫描 target/ ────────────────────────────────────────────────────────────
-if (!existsSync(TARGET)) {
-  console.error(`✗ 找不到 target/（${rel(TARGET)}）。先构建更新产物：bun run build:updater`);
-  process.exit(1);
-}
-
-const bundleDirs = [];
-const directDefault = join(TARGET, 'release', 'bundle');
-if (existsSync(directDefault)) bundleDirs.push({ dir: directDefault, triple: hostTriple() });
-for (const entry of listDirs(TARGET)) {
-  if (entry === 'release' || entry === 'debug') continue;
-  const nested = join(TARGET, entry, 'release', 'bundle');
-  if (existsSync(nested)) bundleDirs.push({ dir: nested, triple: entry });
+function ingestSigPair(artifact, sig, keys) {
+  const name = basename(artifact);
+  const signature = readFileSync(sig, 'utf8').trim();
+  for (const key of keys) {
+    collectCandidate(key, { url: artifactDownloadUrl(name, key), signature, artifact, sig });
+  }
+  uploads.add(artifact);
+  uploads.add(sig);
 }
 
 const uploads = new Set();
-for (const { dir, triple } of bundleDirs) {
-  let keys = platformKeysFor(triple);
-  if (host === 'modelscope') {
-    keys = keys.filter((key) => channelKeySet.has(key));
+
+if (FROM_DIR) {
+  if (!existsSync(FROM_DIR) || !statSync(FROM_DIR).isDirectory()) {
+    console.error(`✗ --from-dir 不是目录：${rel(FROM_DIR)}`);
+    process.exit(1);
   }
-  if (keys.length === 0) {
-    console.warn(`  ! 跳过与当前托管/渠道无关的 triple: ${triple}`);
-    continue;
-  }
-  for (const { artifact, sig } of findSigs(dir)) {
-    const name = basename(artifact);
-    const signature = readFileSync(sig, 'utf8').trim();
-    for (const key of keys) {
-      const url = artifactDownloadUrl(name, key);
-      collectCandidate(key, { url, signature, artifact, sig });
+  for (const { artifact, sig } of findSigs(FROM_DIR)) {
+    let keys = platformKeysForArtifactName(basename(artifact));
+    if (host === 'modelscope') {
+      keys = keys.filter((key) => channelKeySet.has(key));
     }
-    uploads.add(artifact);
-    uploads.add(sig);
+    if (keys.length === 0) {
+      console.warn(`  ! 跳过无法映射到当前渠道的产物: ${basename(artifact)}`);
+      continue;
+    }
+    ingestSigPair(artifact, sig, keys);
+  }
+} else {
+  // ── 扫描 target/ ────────────────────────────────────────────────────────────
+  if (!existsSync(TARGET)) {
+    console.error(`✗ 找不到 target/（${rel(TARGET)}）。先构建更新产物：bun run build:updater`);
+    process.exit(1);
+  }
+
+  const bundleDirs = [];
+  const directDefault = join(TARGET, 'release', 'bundle');
+  if (existsSync(directDefault)) bundleDirs.push({ dir: directDefault, triple: hostTriple() });
+  for (const entry of listDirs(TARGET)) {
+    if (entry === 'release' || entry === 'debug') continue;
+    const nested = join(TARGET, entry, 'release', 'bundle');
+    if (existsSync(nested)) bundleDirs.push({ dir: nested, triple: entry });
+  }
+
+  for (const { dir, triple } of bundleDirs) {
+    let keys = platformKeysFor(triple);
+    if (host === 'modelscope') {
+      keys = keys.filter((key) => channelKeySet.has(key));
+    }
+    if (keys.length === 0) {
+      console.warn(`  ! 跳过与当前托管/渠道无关的 triple: ${triple}`);
+      continue;
+    }
+    for (const { artifact, sig } of findSigs(dir)) {
+      ingestSigPair(artifact, sig, keys);
+    }
   }
 }
 
 const foundKeys = Object.keys(collected);
 if (foundKeys.length === 0) {
-  console.error(`✗ 在 target/ 下没找到渠道 ${msChannel} 的更新产物（*.sig）。先构建带更新签名的产物：`);
+  const scanRoot = FROM_DIR ? `--from-dir ${rel(FROM_DIR)}` : `target/`;
+  console.error(`✗ 在 ${scanRoot} 下没找到渠道 ${msChannel} 的更新产物（*.sig）。先构建带更新签名的产物：`);
   console.error(
     '    macOS:   bun run build:mac universal --config apps/desktop/tauri.updater.conf.json --config apps/desktop/tauri.channel.macos.conf.json',
   );
@@ -401,7 +441,10 @@ if (host === 'modelscope') {
 
 if (collect) {
   mkdirSync(distDir, { recursive: true });
-  for (const f of uploads) copyFileSync(f, join(distDir, basename(f)));
+  for (const f of uploads) {
+    const dest = join(distDir, basename(f));
+    if (resolve(f) !== resolve(dest)) copyFileSync(f, dest);
+  }
   writeFileSync(join(distDir, 'latest.json'), JSON.stringify(manifest, null, 2) + '\n');
   writeFileSync(join(distDir, 'channel.yml'), channelYml);
 }
