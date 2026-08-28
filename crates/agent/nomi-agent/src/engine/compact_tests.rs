@@ -143,6 +143,7 @@ fn make_compact_engine_with_output(
         steering_inbox: None,
         system_resource_inbox: None,
         frozen_provider_tools: None,
+        sent_prefix_len: 0,
         process_supervisor: None,
         editable_turn: None,
         observation: None,
@@ -335,6 +336,49 @@ fn prune_old_tool_images_drops_individually_oversized_legacy_image() {
     assert_eq!(content.matches("payload budget").count(), 1);
 }
 
+#[test]
+fn prune_old_tool_images_does_not_rewrite_sent_prefix() {
+    let mut engine = make_compact_engine(
+        CompactConfig::default(),
+        CompactState::new(),
+        (0..5)
+            .map(|i| tool_result_msg_with_image(&format!("call_{i}")))
+            .collect(),
+    );
+    engine.messages[0].provider_round_id = Some("resp_frozen".to_owned());
+    engine.max_recent_images = 3;
+    engine.sent_prefix_len = engine.messages.len();
+    engine.prune_old_tool_images();
+    assert_eq!(count_images(&engine.messages), 5);
+    assert_eq!(
+        engine.messages[0].provider_round_id.as_deref(),
+        Some("resp_frozen")
+    );
+}
+
+#[test]
+fn prune_old_tool_images_strips_only_unsent_over_budget() {
+    let mut messages: Vec<_> = (0..3)
+        .map(|i| tool_result_msg_with_image(&format!("old_{i}")))
+        .collect();
+    messages.push(tool_result_msg_with_image("new"));
+    let mut engine = make_compact_engine(CompactConfig::default(), CompactState::new(), messages);
+    engine.messages[0].provider_round_id = Some("resp_frozen".to_owned());
+    engine.max_recent_images = 3;
+    engine.sent_prefix_len = 3;
+    engine.prune_old_tool_images();
+    assert_eq!(count_images(&engine.messages[..3]), 3);
+    assert_eq!(count_images(&engine.messages[3..]), 0);
+    assert_eq!(
+        engine.messages[0].provider_round_id.as_deref(),
+        Some("resp_frozen")
+    );
+    let ContentBlock::ToolResult { content, .. } = &engine.messages[3].content[0] else {
+        unreachable!();
+    };
+    assert!(content.contains("attachment(s)"));
+}
+
 #[tokio::test]
 async fn first_request_prunes_images_from_preloaded_or_resumed_history() {
     let mut message = tool_result_msg_with_image("legacy-batch");
@@ -451,6 +495,37 @@ fn abort_current_turn_redacts_an_image_before_any_assistant_response() {
         .all(|block| !matches!(block, ContentBlock::Image { .. })));
     assert!(engine.messages[0].content.iter().any(|block| {
         matches!(block, ContentBlock::Text { text } if text == USER_IMAGE_HISTORY_PLACEHOLDER)
+    }));
+}
+
+#[test]
+fn abort_current_turn_keeps_already_sent_user_image() {
+    let mut engine = make_compact_engine(
+        CompactConfig::default(),
+        CompactState::new(),
+        vec![Message::new(
+            Role::User,
+            vec![
+                ContentBlock::Text {
+                    text: "inspect this".to_string(),
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".to_string(),
+                    data: "large-base64-payload".to_string(),
+                },
+            ],
+        )],
+    );
+    engine.sent_prefix_len = 1;
+
+    engine.abort_current_turn("Canceled by user");
+
+    assert!(engine.messages[0].content.iter().any(|block| {
+        matches!(
+            block,
+            ContentBlock::Image { media_type, data }
+                if media_type == "image/png" && data == "large-base64-payload"
+        )
     }));
 }
 

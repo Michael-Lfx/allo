@@ -109,24 +109,26 @@ fn turn_tail_text_block(ctx: &str) -> nomi_types::message::ContentBlock {
     }
 }
 
-/// Persist `turn_tail_context` onto the last user message in `messages`.
+/// Persist `turn_tail_context` onto the live transcript.
 ///
-/// If the last message is a `Role::User`, the context is prepended as a new
-/// `Text` block at position 0 — including pure tool-result user messages so
-/// we do not invent a second consecutive User `[Context]` message (which
-/// confuses coding agents into another exploration loop). If the last
-/// message is not a user message, a new `Role::User` message with the
-/// context is appended.
+/// `frozen_len` is the count of messages already included in a prior
+/// provider request (`0..frozen_len` must stay byte-identical).
 ///
-/// Already-composed last users keep a single `[Context]` block: identical
-/// text is a no-op (retries), a different text replaces the block so new
-/// extras (plan mode, round ledger) still reach the model without adding a
-/// second consecutive user message. Earlier messages are never touched.
+/// Unsent last user (`index >= frozen_len`): prepend or replace a single
+/// `[Context]` block. Identical text is a no-op.
+///
+/// Already-sent last user (`index < frozen_len`): never mutate. If extras
+/// differ, append a new `Role::User` `[Context]` message so the sent prefix
+/// stays cache-stable (midnight date, plan mode, resource notices).
+///
+/// If the last message is not a user message, a new `Role::User` message
+/// with the context is appended.
 ///
 /// If `turn_tail_context` is `None` or empty, `messages` is left unchanged.
 pub fn persist_turn_tail_context(
     messages: &mut Vec<nomi_types::message::Message>,
     turn_tail_context: Option<String>,
+    frozen_len: usize,
 ) {
     use nomi_types::message::{ContentBlock, Message, Role};
 
@@ -139,18 +141,25 @@ pub fn persist_turn_tail_context(
     }
 
     let text_block = turn_tail_text_block(ctx);
+    let frozen_len = frozen_len.min(messages.len());
 
-    if let Some(last) = messages.last_mut()
-        && last.role == Role::User
-    {
-        if let Some(ContentBlock::Text { text: existing }) = last.content.first() {
-            if existing == text_of(&text_block) {
-                return;
-            }
-            if is_turn_tail_context_text(existing) {
-                last.content[0] = text_block;
-                return;
-            }
+    if messages.last().is_some_and(|last| last.role == Role::User) {
+        let last_idx = messages.len() - 1;
+        if let Some(ContentBlock::Text { text: existing }) = messages[last_idx].content.first()
+            && existing == text_of(&text_block)
+        {
+            return;
+        }
+        if last_idx < frozen_len {
+            messages.push(Message::new(Role::User, vec![text_block]));
+            return;
+        }
+        let last = &mut messages[last_idx];
+        if let Some(ContentBlock::Text { text: existing }) = last.content.first()
+            && is_turn_tail_context_text(existing)
+        {
+            last.content[0] = text_block;
+            return;
         }
         last.content.insert(0, text_block);
         return;
@@ -174,7 +183,7 @@ pub fn inject_turn_tail_context(
     mut messages: Vec<nomi_types::message::Message>,
     turn_tail_context: Option<String>,
 ) -> Vec<nomi_types::message::Message> {
-    persist_turn_tail_context(&mut messages, turn_tail_context);
+    persist_turn_tail_context(&mut messages, turn_tail_context, 0);
     messages
 }
 
@@ -347,8 +356,8 @@ mod tests {
             Role::User,
             vec![ContentBlock::Text { text: "hello".into() }],
         )];
-        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-01".into()));
-        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-01".into()));
+        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-01".into()), 0);
+        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-01".into()), 0);
         assert_eq!(msgs[0].content.len(), 2);
         match &msgs[0].content[0] {
             ContentBlock::Text { text } => {
@@ -365,8 +374,8 @@ mod tests {
             Role::User,
             vec![ContentBlock::Text { text: "hello".into() }],
         )];
-        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-01".into()));
-        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-02".into()));
+        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-01".into()), 0);
+        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-02".into()), 0);
         assert_eq!(msgs[0].content.len(), 2);
         match &msgs[0].content[0] {
             ContentBlock::Text { text } => {
@@ -384,7 +393,7 @@ mod tests {
             Role::User,
             vec![ContentBlock::Text { text: "first".into() }],
         )];
-        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-01".into()));
+        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-01".into()), 0);
         msgs.push(Message::new(
             Role::Assistant,
             vec![ContentBlock::Text { text: "ok".into() }],
@@ -398,7 +407,7 @@ mod tests {
                 images: Vec::new(),
             }],
         ));
-        persist_turn_tail_context(&mut msgs, Some("plan mode".into()));
+        persist_turn_tail_context(&mut msgs, Some("plan mode".into()), 0);
         match &msgs[0].content[0] {
             ContentBlock::Text { text } => {
                 assert!(text.contains("date: 2025-01-01"));
@@ -414,6 +423,47 @@ mod tests {
             }
             _ => panic!("expected persisted context on the new last user"),
         }
+    }
+
+    #[test]
+    fn persist_appends_when_last_user_already_sent() {
+        use nomi_types::message::{ContentBlock, Message, Role};
+        let mut msgs = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text { text: "hello".into() }],
+        )];
+        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-01".into()), 0);
+        let frozen = msgs.len();
+        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-02".into()), frozen);
+        assert_eq!(msgs.len(), 2);
+        match &msgs[0].content[0] {
+            ContentBlock::Text { text } => {
+                assert!(text.contains("date: 2025-01-01"));
+                assert!(!text.contains("date: 2025-01-02"));
+            }
+            _ => panic!("sent last user must stay frozen"),
+        }
+        match &msgs[1].content[0] {
+            ContentBlock::Text { text } => {
+                assert!(is_turn_tail_context_text(text));
+                assert!(text.contains("date: 2025-01-02"));
+            }
+            _ => panic!("expected appended [Context] user"),
+        }
+    }
+
+    #[test]
+    fn persist_is_noop_when_frozen_context_matches() {
+        use nomi_types::message::{ContentBlock, Message, Role};
+        let mut msgs = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text { text: "hello".into() }],
+        )];
+        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-01".into()), 0);
+        let frozen = msgs.len();
+        persist_turn_tail_context(&mut msgs, Some("date: 2025-01-01".into()), frozen);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content.len(), 2);
     }
 
     #[test]

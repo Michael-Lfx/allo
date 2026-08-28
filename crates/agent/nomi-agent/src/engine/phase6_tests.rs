@@ -68,6 +68,7 @@ fn make_engine(model: &str, allow_list: Vec<String>) -> super::AgentEngine {
         steering_inbox: None,
         system_resource_inbox: None,
         frozen_provider_tools: None,
+        sent_prefix_len: 0,
         process_supervisor: None,
         editable_turn: None,
         observation: None,

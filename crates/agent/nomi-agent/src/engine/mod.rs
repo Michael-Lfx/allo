@@ -278,9 +278,23 @@ fn sort_tools_by_name(tools: &mut [nomi_types::tool::ToolDef]) {
     tools.sort_by(|a, b| a.name.cmp(&b.name));
 }
 
-/// Durable transcript marker used after the current turn has finished seeing
-/// an attached image. Keeping the text marker preserves conversational meaning
-/// without re-sending a large base64 payload on every later provider request.
+fn tool_result_image_payload(messages: &[Message]) -> (usize, usize) {
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    for msg in messages {
+        for block in &msg.content {
+            if let ContentBlock::ToolResult { images, .. } = block {
+                count += images.len();
+                bytes += images.iter().map(|image| image.data.len()).sum::<usize>();
+            }
+        }
+    }
+    (count, bytes)
+}
+
+/// Durable transcript marker used when an unsent user image is dropped
+/// (abort before the first provider stream, or truncation of an unsent
+/// tail). Already-sent images stay on the wire until compact.
 const USER_IMAGE_HISTORY_PLACEHOLDER: &str = "[Image attachment omitted after processing.]";
 
 /// Render the conversation history as a role-tagged plain-text transcript for
@@ -604,6 +618,11 @@ pub struct AgentEngine {
     system_resource_inbox: Option<Arc<Mutex<std::collections::VecDeque<String>>>>,
     /// Provider-visible tool table frozen after the first non-empty advertise.
     frozen_provider_tools: Option<Vec<nomi_types::tool::ToolDef>>,
+    /// Count of messages included in the last actually streamed provider
+    /// request. Messages `0..sent_prefix_len` are byte-frozen for prefix
+    /// cache: persist, prune, and image redaction must not rewrite them.
+    /// Reset to 0 after compact / clear; clamped on rewind.
+    sent_prefix_len: usize,
     /// Owns every supervised command launched by this engine's command tools.
     /// Bootstrap installs it; direct/test constructors leave it empty.
     process_supervisor: Option<Arc<nomi_process_runtime::ProcessSupervisor>>,
@@ -685,6 +704,7 @@ impl AgentEngine {
             steering_inbox: None,
             system_resource_inbox: None,
             frozen_provider_tools: None,
+            sent_prefix_len: 0,
             process_supervisor: None,
             editable_turn: None,
             observation: None,
@@ -727,6 +747,7 @@ impl AgentEngine {
                 !checkpoint.source_message_id.is_empty()
                     && checkpoint.start_len <= session.messages.len()
             });
+        let sent_prefix_len = session.messages.len();
 
         Self {
             provider,
@@ -771,6 +792,7 @@ impl AgentEngine {
             steering_inbox: None,
             system_resource_inbox: None,
             frozen_provider_tools: None,
+            sent_prefix_len,
             process_supervisor: None,
             editable_turn,
             observation: None,
@@ -1323,6 +1345,7 @@ impl AgentEngine {
         let result = cmd.execute(&mut ctx, args).await;
         if result.is_ok() && matches!(name, "clear" | "compact") {
             self.editable_turn = None;
+            self.sent_prefix_len = 0;
             if name == "clear" {
                 self.frozen_provider_tools = None;
             }
@@ -1371,7 +1394,6 @@ impl AgentEngine {
         msg_id: &str,
         source_message_id: &str,
     ) -> Result<AgentResult, AgentError> {
-        let first_new_message = self.messages.len();
         let session_id = self
             .current_session
             .as_ref()
@@ -1403,13 +1425,12 @@ impl AgentEngine {
         .instrument(span)
         .await;
 
-        // Keep the image available for every provider/tool iteration in this
-        // turn execution, then remove it before the engine is reused. `execute_turn_inner`
-        // has several success/error return paths and may already have persisted
-        // the original turn, so perform the cleanup in this outer finally-like
-        // wrapper and save the redacted transcript once more. If the host drops
-        // this future during non-cooperative cancellation, `abort_current_turn`
-        // performs the same cleanup explicitly.
+        // Provider/tool iterations in this turn keep live images on the wire.
+        // Already-sent user images stay in history so the next request can
+        // replay them as a prefix-cache hit; compact is the expected miss
+        // that drops them. Failed turns roll the transcript back below.
+        // If the host drops this future during non-cooperative cancellation,
+        // `abort_current_turn` redacts only unsent images.
         if result.is_err() && turn_started {
             self.messages = safe_messages;
             if matches!(
@@ -1420,8 +1441,6 @@ impl AgentEngine {
             ) {
                 self.strip_tool_images_after_provider_error();
             }
-            self.save_session();
-        } else if self.redact_user_images_since(first_new_message) {
             self.save_session();
         }
         result
@@ -1604,6 +1623,9 @@ impl AgentEngine {
                     harness.begin_forced_finalize(reason.to_string());
                 }
                 if let Some(reason) = harness.forced_finalize_reason() {
+                    // Empty tools JSON is an accepted one-time miss. Do not
+                    // freeze the empty list; the next non-finalize request
+                    // restores `frozen_provider_tools`.
                     tools.clear();
                     tool_authority = ProviderToolAuthority::from_request_tools(&tools);
                     turn_tail_extras.push(nomi_coding::forced_finalize_instruction(reason));
@@ -1681,6 +1703,7 @@ impl AgentEngine {
             crate::context_contributor::persist_turn_tail_context(
                 &mut self.messages,
                 turn_tail.clone(),
+                self.sent_prefix_len,
             );
             let messages = self.messages.clone();
 
@@ -1760,7 +1783,12 @@ impl AgentEngine {
             )
             .await
             {
-                Ok(rx) => rx,
+                Ok(rx) => {
+                    // The request that just started streaming is the new frozen
+                    // prefix. Compact-before-turn `continue` never reaches here.
+                    self.sent_prefix_len = self.messages.len();
+                    rx
+                }
                 Err(e) if e.is_context_overflow() && !overflow_retried => {
                     overflow_retried = true;
                     self.run_compaction(CompactReason::EmergencyRecovery)
@@ -2430,22 +2458,21 @@ impl AgentEngine {
                     debug_assert_eq!(dropped.role, Role::Assistant);
                     let dropped_draft_bytes = assistant_text.len();
                     round.begin_attempt();
-                    // Keep exactly one live copy of each image on the wire: the
-                    // re-pushed requirement below. Same call and same rationale
-                    // as the abort path.
-                    self.redact_user_images_since(0);
+                    // Already-sent images stay in the prefix. Redact only
+                    // unsent copies so a truncation restart can still replay
+                    // request N-1 byte-for-byte.
+                    self.redact_user_images_since(self.sent_prefix_len);
                     // Re-push the requirement only when it is not already the
                     // tail, so a first-pass truncation does not send the same
                     // request twice in a row.
                     //
-                    // Compared AFTER redaction, which is what makes this correct
-                    // for all three shapes. Text-only and still at the tail: the
-                    // values match and nothing is appended. Multimodal: the
-                    // history copy now holds placeholders while the requirement
-                    // holds real images, so they differ and the live payload is
-                    // restored at the tail. Tail is a tool result or a steering
+                    // Text-only and still at the tail: the values match and
+                    // nothing is appended. Multimodal first pass: the sent
+                    // user still holds the live image, so it matches and is
+                    // not duplicated. Tail is a tool result or a steering
                     // interjection: they differ, and the requirement is
-                    // re-stated where the model will actually act on it.
+                    // re-stated at the tail (a duplicate image there is an
+                    // append, not a prefix rewrite).
                     //
                     // Compared through `serde_json::Value` because `ContentBlock`
                     // does not implement `PartialEq`. Only ever reached on a
@@ -3065,11 +3092,20 @@ impl AgentEngine {
     /// Keep at most `max_recent_images` individual images, additionally bounded
     /// by the strictest supported provider request limit. The text part of each
     /// result is preserved.
+    ///
+    /// Already-sent messages (`0..sent_prefix_len`) are never rewritten: their
+    /// images occupy budget first, and only unsent results are stripped.
     fn prune_old_tool_images(&mut self) {
-        let mut remaining_count = self.max_recent_images.min(MAX_PROVIDER_REQUEST_IMAGES);
-        let mut remaining_data_bytes = MAX_PROVIDER_REQUEST_IMAGE_DATA_BYTES;
+        let frozen = self.sent_prefix_len.min(self.messages.len());
+        let (frozen_count, frozen_bytes) = tool_result_image_payload(&self.messages[..frozen]);
+        let mut remaining_count = self
+            .max_recent_images
+            .min(MAX_PROVIDER_REQUEST_IMAGES)
+            .saturating_sub(frozen_count);
+        let mut remaining_data_bytes =
+            MAX_PROVIDER_REQUEST_IMAGE_DATA_BYTES.saturating_sub(frozen_bytes);
         let mut changed = false;
-        for msg in self.messages.iter_mut().rev() {
+        for msg in self.messages[frozen..].iter_mut().rev() {
             for block in msg.content.iter_mut().rev() {
                 if let ContentBlock::ToolResult {
                     content, images, ..
@@ -3097,7 +3133,7 @@ impl AgentEngine {
             }
         }
         if changed {
-            clear_provider_round_ids(&mut self.messages);
+            clear_provider_round_ids(&mut self.messages[frozen..]);
         }
     }
 
@@ -3129,9 +3165,10 @@ impl AgentEngine {
         }
     }
 
-    /// Replace top-level user image blocks added by the current turn execution
-    /// with one small marker per message. Nested tool-result images are owned by
-    /// `prune_old_tool_images` and deliberately remain untouched.
+    /// Replace top-level user image blocks from `first_message` onward with
+    /// one small marker per message. Messages before that index are the sent
+    /// prefix and stay untouched. Nested tool-result images are owned by
+    /// `prune_old_tool_images`.
     fn redact_user_images_since(&mut self, first_message: usize) -> bool {
         let mut changed = false;
         for message in self.messages.iter_mut().skip(first_message) {
@@ -3162,7 +3199,8 @@ impl AgentEngine {
             message.content = redacted;
         }
         if changed {
-            clear_provider_round_ids(&mut self.messages);
+            let start = first_message.min(self.messages.len());
+            clear_provider_round_ids(&mut self.messages[start..]);
         }
         changed
     }
@@ -3292,6 +3330,7 @@ impl AgentEngine {
         }
         let result = micro::microcompact(&mut self.messages, &self.compact_config);
         if result.cleared_count > 0 {
+            self.sent_prefix_len = 0;
             clear_provider_round_ids(&mut self.messages);
             self.output.emit_info(&format!(
                 "Microcompact: cleared {} tool results (~{} tokens freed)",
@@ -3366,6 +3405,7 @@ impl AgentEngine {
                     ));
                     self.messages = result.messages;
                     self.editable_turn = None;
+                    self.sent_prefix_len = 0;
                     self.cache_detector.notify_compaction();
                     if let Some(harness) = self.coding_harness.as_ref() {
                         let reinject = harness.post_compact_reinject();
@@ -3495,6 +3535,7 @@ impl AgentEngine {
         self.messages.clear();
         self.editable_turn = None;
         self.frozen_provider_tools = None;
+        self.sent_prefix_len = 0;
         self.compact_state = CompactState::new();
         self.total_usage = TokenUsage::default();
         self.save_session();
@@ -3532,6 +3573,7 @@ impl AgentEngine {
             return false;
         }
         self.messages.truncate(checkpoint.start_len);
+        self.sent_prefix_len = self.sent_prefix_len.min(self.messages.len());
         self.editable_turn = None;
         self.save_session();
         true
@@ -3586,10 +3628,12 @@ impl AgentEngine {
             changed = true;
         }
 
-        // Top-level user images are ephemeral transport payloads. Redact all of
-        // them here rather than relying on the rewind anchor: compaction may
-        // legitimately clear that anchor while a run is still in flight.
-        changed |= self.redact_user_images_since(0);
+        // Top-level user images on unsent messages are ephemeral transport
+        // payloads. Already-sent images stay so the next request can replay
+        // the prefix. Compaction may clear the rewind anchor while a run is
+        // still in flight, so this uses `sent_prefix_len` rather than that
+        // anchor.
+        changed |= self.redact_user_images_since(self.sent_prefix_len);
         if changed {
             self.save_session();
         }

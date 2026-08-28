@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 
 use super::{
     AgentError, MAX_PROVIDER_TURN_TOOL_CALLS, SYSTEM_RESOURCE_CONTEXT_HEADER,
-    USER_IMAGE_HISTORY_PLACEHOLDER,
 };
 use nomi_protocol::events::ToolCategory;
 use nomi_providers::{LlmProvider, ProviderError};
@@ -996,6 +995,7 @@ fn make_engine(model: &str) -> super::AgentEngine {
         steering_inbox: None,
         system_resource_inbox: None,
         frozen_provider_tools: None,
+        sent_prefix_len: 0,
         process_supervisor: None,
         editable_turn: None,
         observation: None,
@@ -1107,7 +1107,7 @@ async fn system_resource_notice_rides_turn_tail_not_system_prompt() {
 }
 
 #[tokio::test]
-async fn execute_turn_with_content_sends_image_once_then_redacts_it_from_history() {
+async fn execute_turn_with_content_replays_image_on_follow_up() {
     let mut engine = make_engine("vision-model");
     let provider = Arc::new(RecordingProvider::successful());
     engine.provider = provider.clone();
@@ -1142,12 +1142,12 @@ async fn execute_turn_with_content_sends_image_once_then_redacts_it_from_history
     }));
 
     assert_eq!(engine.messages[0].role, Role::User);
-    assert!(engine.messages[0]
-        .content
-        .iter()
-        .all(|block| !matches!(block, ContentBlock::Image { .. })));
     assert!(engine.messages[0].content.iter().any(|block| {
-        matches!(block, ContentBlock::Text { text } if text == USER_IMAGE_HISTORY_PLACEHOLDER)
+        matches!(
+            block,
+            ContentBlock::Image { media_type, data }
+                if media_type == "image/png" && data == "cG5n"
+        )
     }));
 
     engine
@@ -1156,17 +1156,16 @@ async fn execute_turn_with_content_sends_image_once_then_redacts_it_from_history
         .expect("follow-up turn should run");
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
-    assert!(requests[1].messages.iter().all(|message| {
-        message
-            .content
-            .iter()
-            .all(|block| !matches!(block, ContentBlock::Image { .. }))
-    }));
-    assert!(requests[1].messages.iter().any(|message| {
-        message.content.iter().any(|block| {
-            matches!(block, ContentBlock::Text { text } if text == USER_IMAGE_HISTORY_PLACEHOLDER)
-        })
-    }));
+    assert!(
+        requests[1].messages[0].content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Image { media_type, data }
+                    if media_type == "image/png" && data == "cG5n"
+            )
+        }),
+        "follow-up must replay the sent image as prefix, not a placeholder"
+    );
 }
 
 #[tokio::test]
