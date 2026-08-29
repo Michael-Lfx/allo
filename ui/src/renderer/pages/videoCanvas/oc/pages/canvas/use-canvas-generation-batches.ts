@@ -209,7 +209,7 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, modelCata
                 const controller = new AbortController();
                 controllersRef.current.set(key, controller);
                 updateBatch(batch.sourceNodeId, batch.id, (current) => withUpdatedItem(current, item.id, { status: "submitting", errorDetails: undefined }));
-                void handleGenerateNode(node.id, generationMode, prompt, { controller, waitForTaskCapacity: true }).finally(() => {
+                void handleGenerateNode(node.id, generationMode, prompt, { controller, waitForTaskCapacity: true, skipDuplicateConfirmation: true }).finally(() => {
                     controllersRef.current.delete(key);
                     reconcileBatches();
                 });

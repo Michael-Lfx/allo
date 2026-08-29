@@ -37,7 +37,7 @@ export function generationTaskMode(task: GenerationTask, fallback?: CanvasGenera
 /** 任务已在当前服务端成功且仍保留媒体结果时，允许按原 taskId 重新落盘，避免再跑一遍生成。 */
 export function generationTaskCanReloadResource(task: GenerationTask) {
     const mode = generationTaskMode(task);
-    return task.status === "succeeded" && (mode === "image" || mode === "video" || mode === "audio") && (Boolean(task.resultJson) || Boolean(task.outputs?.length));
+    return task.status === "succeeded" && (mode === "image" || mode === "video" || mode === "audio") && Boolean(task.resultJson);
 }
 
 export function imageMetadata(image: UploadedImage): CanvasNodeMetadata {

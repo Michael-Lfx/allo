@@ -7,6 +7,7 @@ import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { canvasResourceMentionToken, type CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { CanvasNodeType } from "@oc/types/canvas";
+import { useResolvedCanvasResourceReferences } from "./use-resolved-canvas-resource-references";
 
 type MentionState = {
     start: number;
@@ -55,14 +56,15 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     const lastRenderedValueRef = useRef("");
     const [mention, setMention] = useState<MentionState | null>(null);
     const [activeIndex, setActiveIndex] = useState(0);
+    const canvasReferences = useResolvedCanvasResourceReferences(references);
     const candidates = useMemo(() => {
         if (!mention) return [];
         const query = mention.query.trim().toLowerCase();
-        const activeItems = references.filter((item) => item.active);
+        const activeItems = canvasReferences.filter((item) => item.active);
         if (!query) return activeItems;
         return activeItems.filter((item) => `${item.label} ${item.title} ${item.kind} ${item.text || ""}`.toLowerCase().includes(query));
-    }, [mention, references]);
-    const activeReferences = useMemo(() => (highlightLabels ? references.filter((item) => item.active) : []), [highlightLabels, references]);
+    }, [mention, canvasReferences]);
+    const activeReferences = useMemo(() => (highlightLabels ? canvasReferences.filter((item) => item.active) : []), [highlightLabels, canvasReferences]);
     const useRichEditor = Boolean(activeReferences.length);
     const reportContentSize = useCallback((element: HTMLElement | null) => {
         if (!element || !onContentSizeChange) return;

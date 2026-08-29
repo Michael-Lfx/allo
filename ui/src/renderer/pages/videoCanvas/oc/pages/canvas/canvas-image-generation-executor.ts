@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { canGenerateImageInPlace, findAvailableGenerationGroupPosition, imageGenerationChildPosition, imageGenerationGroupSize } from "@oc/lib/canvas/canvas-generation-layout";
+import { buildImageGenerationNodeTitle } from "@oc/lib/canvas/canvas-generation-title";
 import { imageMetadata } from "@oc/lib/canvas/canvas-generation-task-sync";
 import { fitNodeSize, nodeSizeFromRatio } from "@oc/lib/canvas/canvas-node-size";
 import { buildImageGenerationMetadata, getGenerationCount, isGenerationCanceled, runBackendCanvasGenerationTask } from "@oc/lib/canvas/canvas-project-generation";
@@ -73,7 +74,7 @@ export async function executeImageGeneration({
     const rootNode: CanvasNodeData = {
         id: rootId,
         type: CanvasNodeType.Image,
-        title: effectivePrompt.slice(0, 32) || "Generated Image",
+        title: buildImageGenerationNodeTitle(effectivePrompt, sourceNode),
         position: rootPosition,
         width: rootWidth,
         height: rootHeight,
@@ -94,7 +95,7 @@ export async function executeImageGeneration({
     const childNodes: CanvasNodeData[] = childIds.map((id, index) => ({
         id,
         type: CanvasNodeType.Image,
-        title: effectivePrompt.slice(0, 32) || "Generated Image",
+        title: buildImageGenerationNodeTitle(effectivePrompt, sourceNode, index, count),
         position: imageGenerationChildPosition(rootNode.position, rootNode.width, outputNodeSize, index),
         width: outputNodeSize.width,
         height: outputNodeSize.height,

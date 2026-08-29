@@ -13,6 +13,7 @@ import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type Posi
 
 type UseCanvasNodeEditorOptions = {
     canvasId: string;
+    canvasTitle: string;
     domainProjectId?: string;
     nodesRef: { current: CanvasNodeData[] };
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
@@ -26,6 +27,7 @@ type UseCanvasNodeEditorOptions = {
 
 export function useCanvasNodeEditor({
     canvasId,
+    canvasTitle,
     domainProjectId,
     nodesRef,
     setNodes,
@@ -173,7 +175,7 @@ export function useCanvasNodeEditor({
         }
         const hide = message.loading(node.type === CanvasNodeType.Video ? "正在保存视频…" : node.type === CanvasNodeType.Audio ? "正在保存音频…" : "正在保存图片…", 0);
         try {
-            const result = await downloadCanvasNodeMedia(node);
+            const result = await downloadCanvasNodeMedia(node, { canvasTitle });
             if (result === "saved") message.success("文件已保存");
             else message.success("已开始下载，请在浏览器下载栏查看");
         } catch (error) {
@@ -182,7 +184,7 @@ export function useCanvasNodeEditor({
         } finally {
             hide();
         }
-    }, [message]);
+    }, [canvasTitle, message]);
 
     const saveNodeAsset = useCallback(async (node: CanvasNodeData) => {
         if (node.type !== CanvasNodeType.Text && node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) return message.error("当前节点类型不能保存为素材");

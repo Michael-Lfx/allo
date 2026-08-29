@@ -1,4 +1,5 @@
 import { audioExtension, imageExtension } from "@oc/lib/canvas/canvas-project-generation";
+import { buildCanvasMediaDownloadFileName } from "@oc/lib/canvas/canvas-media-download";
 import { getMediaBlob } from "@oc/services/file-storage";
 import { getImageBlob } from "@oc/services/image-storage";
 import { resourceIdFromStorageKey, resourceStorageKey } from "@oc/services/api/resources";
@@ -148,11 +149,13 @@ function triggerAnchorDownload(blob: Blob, fileName: string) {
  * Opens the save picker first (while the click still counts as user activation),
  * then fetches bytes and writes them. Falls back to an object-URL anchor download.
  */
-export async function downloadCanvasNodeMedia(node: CanvasNodeData): Promise<"saved" | "triggered"> {
+export async function downloadCanvasNodeMedia(node: CanvasNodeData, options?: { canvasTitle?: string }): Promise<"saved" | "triggered"> {
     if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) {
         throw new Error("当前节点类型不支持下载");
     }
-    const fileName = canvasNodeDownloadFileName(node);
+    const fileName = options?.canvasTitle
+        ? buildCanvasMediaDownloadFileName(options.canvasTitle, node)
+        : canvasNodeDownloadFileName(node);
 
     let fileHandle: FileSystemFileHandle | null = null;
     try {

@@ -149,9 +149,17 @@ export function normalizeVideoValue(profile: VideoCapabilityConfig, value: { sec
     const duration = profile.duration.selection === "enum"
         ? (profile.duration.values || []).includes(Number(value.seconds)) ? Number(value.seconds) : profile.duration.default
         : normalizeRangeDuration(profile, Number(value.seconds));
-    const ratio = profile.ratios.includes(value.ratio || "") ? value.ratio! : profile.defaultRatio;
-    const resolution = matchProfileResolution(profile.resolutions, value.resolution) || profile.defaultResolution;
+    const ratio = resolveVideoRatioValue(profile, value.ratio);
+    const resolution = resolveVideoResolutionValue(profile, value.resolution);
     return { seconds: String(duration), ratio, resolution };
+}
+
+export function resolveVideoRatioValue(profile: VideoCapabilityConfig, value: string | undefined) {
+    return profile.ratios.includes(value || "") ? value! : profile.defaultRatio || profile.ratios[0] || "";
+}
+
+export function resolveVideoResolutionValue(profile: VideoCapabilityConfig, value: string | undefined) {
+    return matchProfileResolution(profile.resolutions, value) || profile.defaultResolution || profile.resolutions[0] || "";
 }
 
 /** Match stored `vquality` against profile allow-list (case / `p` suffix tolerant). */

@@ -19,7 +19,6 @@ import type { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import type { useCanvasUpload } from "./use-canvas-upload";
 import type { useCanvasHistory } from "./use-canvas-history";
 import type { useCanvasNodeOperations } from "./use-canvas-node-operations";
-import type { useCanvasDirector } from "./use-canvas-director";
 import type { CanvasRenderModel, CanvasHistoryActions, CanvasAssistantState } from "./canvas-project-bundles";
 
 type CanvasProjectStageProps = Omit<ComponentProps<typeof CanvasProjectWorldLayers>, "connectionLayerBounds" | "displayConnections" | "nodeById" | "visibleNodes" | "frameChildrenById" | "batchChildCountById" | "batchMotionById" | "reduceMediaEffects" | "resourceReferenceByNodeId" | "mentionReferencesByNodeId" | "selectedNodeBounds"> & {
@@ -58,7 +57,7 @@ type CanvasProjectStageProps = Omit<ComponentProps<typeof CanvasProjectWorldLaye
     setShowImageInfo: Dispatch<SetStateAction<boolean>>;
     createNode: ReturnType<typeof useCanvasNodeOperations>["createNode"];
     createFolder: ReturnType<typeof useCanvasNodeOperations>["createFolder"];
-    createDirectorShot: ReturnType<typeof useCanvasDirector>["createDirectorShot"];
+    setDirectorTemplateRequest: Dispatch<SetStateAction<{ position?: Position } | null>>;
     handleUploadRequest: ReturnType<typeof useCanvasUpload>["handleUploadRequest"];
     deleteNodes: ReturnType<typeof useCanvasNodeOperations>["deleteNodes"];
     setClearConfirmOpen: Dispatch<SetStateAction<boolean>>;
@@ -143,7 +142,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
         setShowImageInfo,
         createNode,
         createFolder,
-        createDirectorShot,
+        setDirectorTemplateRequest,
         handleUploadRequest,
         deleteNodes,
         setClearConfirmOpen,
@@ -309,7 +308,7 @@ export function CanvasProjectStage(props: CanvasProjectStageProps) {
                                     onAddFrame={() => createNode(CanvasNodeType.Frame)}
                                     onAddFolder={createFolder}
                                     onAddDrawing={() => createNode(CanvasNodeType.Drawing)}
-                                    onOpenDirector={() => createDirectorShot()}
+                                    onOpenDirector={() => setDirectorTemplateRequest({})}
                                     onAddExtensionNode={(type) => createNode(type)}
                                     onUndo={undoCanvas}
                                     onRedo={redoCanvas}

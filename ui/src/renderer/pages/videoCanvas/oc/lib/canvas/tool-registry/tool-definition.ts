@@ -86,7 +86,7 @@ export type ToolbarHandlers = {
     onNodeSuperResolve: (node: CanvasNodeData) => void;
     onNodeAngle: (node: CanvasNodeData) => void;
     onNodeViewImage: (node: CanvasNodeData) => void;
-    onNodeExtractVideoLastFrame: (node: CanvasNodeData) => void;
+    onNodeExtractVideoFrames: (node: CanvasNodeData) => void;
     onNodeReversePrompt: (node: CanvasNodeData) => void;
     onNodeToggleFreeResize: (node: CanvasNodeData) => void;
     onNodeToggleLocked: (node: CanvasNodeData) => void;
@@ -109,7 +109,7 @@ export type ToolContext = {
     node?: CanvasNodeData;
     /** 便捷访问 node.metadata（node 为空时为 undefined） */
     nodeMetadata?: CanvasNodeMetadata;
-    /** 视频尾帧提取中（节点悬停工具栏用） */
+    /** 视频画面提取中（节点悬停工具栏用） */
     extractingVideoFrame: boolean;
     /** 合并视频中（多选工具栏用） */
     mergingVideos: boolean;

@@ -3,9 +3,10 @@ import { CanvasTopBar } from "./canvas-project-top-bar";
 import { CanvasNodeSearchModal } from "@oc/components/canvas/canvas-node-search-modal";
 import { CanvasShortDramaGuide } from "@oc/components/canvas/canvas-short-drama-entry";
 import { CanvasStylePickerModal } from "@oc/components/canvas/canvas-style-picker-modal";
+import { CanvasDirectorTemplateModal } from "@oc/components/canvas/director/canvas-director-template-modal";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { summarizeCanvasContext } from "@oc/lib/canvas/canvas-context-summary";
-import type { CanvasNodeData, CanvasWorkspaceMode, CanvasMediaPerformanceMode } from "@oc/types/canvas";
+import type { CanvasNodeData, CanvasWorkspaceMode, CanvasMediaPerformanceMode, Position } from "@oc/types/canvas";
 import type { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import type { useCanvasHistory } from "./use-canvas-history";
 import type { useCanvasUpload } from "./use-canvas-upload";
@@ -13,6 +14,7 @@ import type { useCanvasAssistantVisibility } from "./use-canvas-assistant-visibi
 import type { useCanvasShortDrama } from "./use-canvas-short-drama";
 import type { useCanvasStyleWorkflow } from "./use-canvas-style-workflow";
 import type { useCanvasProjectShare } from "./use-canvas-project-share";
+import type { useCanvasDirector } from "./use-canvas-director";
 import type { CanvasHistoryActions, CanvasAssistantState } from "./canvas-project-bundles";
 
 type CanvasProjectTopChromeProps = {
@@ -55,6 +57,9 @@ type CanvasProjectTopChromeProps = {
     activateShortDramaStep: ReturnType<typeof useCanvasShortDrama>["activateStep"];
     stylePickerOpen: boolean;
     setStylePickerOpen: Dispatch<SetStateAction<boolean>>;
+    directorTemplateRequest: { position?: Position } | null;
+    setDirectorTemplateRequest: Dispatch<SetStateAction<{ position?: Position } | null>>;
+    createDirectorShot: ReturnType<typeof useCanvasDirector>["createDirectorShot"];
     activeStylePresetId: string | undefined;
     selectCanvasStyle: ReturnType<typeof useCanvasStyleWorkflow>["selectCanvasStyle"];
     historyActions: CanvasHistoryActions;
@@ -103,6 +108,9 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
         activateShortDramaStep,
         stylePickerOpen,
         setStylePickerOpen,
+        directorTemplateRequest,
+        setDirectorTemplateRequest,
+        createDirectorShot,
         activeStylePresetId,
         selectCanvasStyle,
         historyActions,
@@ -179,6 +187,11 @@ export function CanvasProjectTopChrome(props: CanvasProjectTopChromeProps) {
                     ) : null}
 
                     <CanvasStylePickerModal open={stylePickerOpen} value={activeStylePresetId} onClose={() => setStylePickerOpen(false)} onSelect={selectCanvasStyle} />
+                    <CanvasDirectorTemplateModal
+                        open={Boolean(directorTemplateRequest)}
+                        onClose={() => setDirectorTemplateRequest(null)}
+                        onSelect={(templateId) => createDirectorShot(templateId, directorTemplateRequest?.position)}
+                    />
         </>
     );
 }

@@ -95,8 +95,18 @@ export function isConnectionErrorMessage(item: AgentChatItem) {
 const TOOL_NAME_KEYS: Record<string, string> = {
     canvas_apply_ops: "canvas_apply_ops",
     canvas_get_state: "canvas_get_state",
+    canvas_get_context: "canvas_get_context",
+    canvas_find_nodes: "canvas_find_nodes",
+    canvas_get_node: "canvas_get_node",
+    canvas_get_connection: "canvas_get_connection",
+    canvas_get_generation_tasks: "canvas_get_generation_tasks",
+    canvas_get_resources: "canvas_get_resources",
+    canvas_validate_ops: "canvas_validate_ops",
+    canvas_list_skills: "canvas_list_skills",
+    canvas_get_skill: "canvas_get_skill",
     canvas_get_selection: "canvas_get_selection",
     canvas_export_snapshot: "canvas_export_snapshot",
+    canvas_create_workflow: "canvas_create_workflow",
     canvas_create_node: "canvas_create_node",
     canvas_create_text_node: "canvas_create_text_node",
     canvas_create_text_nodes: "canvas_create_text_nodes",
@@ -130,8 +140,18 @@ const TOOL_NAME_KEYS: Record<string, string> = {
 const TOOL_NAME_DEFAULTS: Record<string, string> = {
     canvas_apply_ops: "画布操作",
     canvas_get_state: "读取画布",
+    canvas_get_context: "读取上下文",
+    canvas_find_nodes: "检索节点",
+    canvas_get_node: "读取节点",
+    canvas_get_connection: "读取连线",
+    canvas_get_generation_tasks: "读取生成任务",
+    canvas_get_resources: "读取资源",
+    canvas_validate_ops: "校验操作",
+    canvas_list_skills: "列出技能",
+    canvas_get_skill: "加载技能",
     canvas_get_selection: "读取选区",
     canvas_export_snapshot: "导出快照",
+    canvas_create_workflow: "创建工作流",
     canvas_create_node: "创建节点",
     canvas_create_text_node: "创建文本",
     canvas_create_text_nodes: "批量创建文本",
@@ -169,7 +189,7 @@ export function toolName(name: string) {
 }
 
 function isReadTool(name: string) {
-    return name === "canvas_get_state" || name === "canvas_get_selection" || name === "canvas_export_snapshot" || isProjectAgentReadTool(name);
+    return name === "canvas_get_state" || name === "canvas_get_context" || name === "canvas_find_nodes" || name === "canvas_get_node" || name === "canvas_get_connection" || name === "canvas_get_generation_tasks" || name === "canvas_get_resources" || name === "canvas_validate_ops" || name === "canvas_list_skills" || name === "canvas_get_skill" || name === "canvas_get_selection" || name === "canvas_export_snapshot" || isProjectAgentReadTool(name);
 }
 
 function isMcpToolItem(item?: AgentEventItem) {

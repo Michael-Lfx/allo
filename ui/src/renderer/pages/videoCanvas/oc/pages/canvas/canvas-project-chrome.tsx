@@ -16,7 +16,6 @@ import type { useCanvasNodeEditor } from "./use-canvas-node-editor";
 import type { useCanvasNodeOperations } from "./use-canvas-node-operations";
 import type { useCanvasViewportController } from "./use-canvas-viewport-controller";
 import type { useCanvasGenerationRetry } from "./use-canvas-generation-retry";
-import type { useCanvasDirector } from "./use-canvas-director";
 import type { useCanvasHistory } from "./use-canvas-history";
 import type { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import type { CanvasRenderModel, CanvasHistoryActions, CanvasAgentOps } from "./canvas-project-bundles";
@@ -45,14 +44,14 @@ type CanvasProjectCanvasChromeProps = {
     setAnnotationNodeId: SetNodeId;
     setMaskEditNodeId: SetNodeId;
     setEmotionNodeId: SetNodeId;
-    generatePortraitTextureNode: ReturnType<typeof useCanvasMediaTools>["generatePortraitTextureNode"];
+    openPortraitTextureEditor: ReturnType<typeof useCanvasMediaTools>["openPortraitTextureEditor"];
     setCropNodeId: SetNodeId;
     setSplitNodeId: SetNodeId;
     setUpscaleNodeId: SetNodeId;
     setSuperResolveNodeId: SetNodeId;
     setAngleNodeId: SetNodeId;
     setPreviewNodeId: SetNodeId;
-    extractVideoLastFrame: ReturnType<typeof useCanvasMediaTools>["extractVideoLastFrame"];
+    openVideoFrameExtractor: ReturnType<typeof useCanvasMediaTools>["openVideoFrameExtractor"];
     extractingVideoFrameNodeId: string | null;
     createImageReversePromptNodes: ReturnType<typeof useCanvasMediaTools>["createImageReversePromptNodes"];
     handleRetryNode: ReturnType<typeof useCanvasGenerationRetry>;
@@ -83,7 +82,7 @@ type CanvasProjectCanvasChromeProps = {
     createNode: ReturnType<typeof useCanvasNodeOperations>["createNode"];
     createFolder: ReturnType<typeof useCanvasNodeOperations>["createFolder"];
     setStylePickerOpen: Dispatch<SetStateAction<boolean>>;
-    createDirectorShot: ReturnType<typeof useCanvasDirector>["createDirectorShot"];
+    setDirectorTemplateRequest: Dispatch<SetStateAction<{ position?: Position } | null>>;
     openAssetsAtPosition: ReturnType<typeof useCanvasUpload>["openAssetsAtPosition"];
     openProjectAssets: (initialCategory?: string, position?: Position) => void;
     pasteAtPosition: (position: Position) => void;
@@ -124,14 +123,14 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         setAnnotationNodeId,
         setMaskEditNodeId,
         setEmotionNodeId,
-        generatePortraitTextureNode,
+        openPortraitTextureEditor,
         setCropNodeId,
         setSplitNodeId,
         setUpscaleNodeId,
         setSuperResolveNodeId,
         setAngleNodeId,
         setPreviewNodeId,
-        extractVideoLastFrame,
+        openVideoFrameExtractor,
         extractingVideoFrameNodeId,
         createImageReversePromptNodes,
         handleRetryNode,
@@ -162,7 +161,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
         createNode,
         createFolder,
         setStylePickerOpen,
-        createDirectorShot,
+        setDirectorTemplateRequest,
         openAssetsAtPosition,
         openProjectAssets,
         pasteAtPosition,
@@ -220,7 +219,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                             setDialogNodeId(null);
                             setEmotionNodeId((current) => (current === node.id ? null : node.id));
                         }}
-                        onPortraitTexture={generatePortraitTextureNode}
+                        onPortraitTexture={openPortraitTextureEditor}
                         onCrop={(node) => setCropNodeId(node.id)}
                         onSplit={(node) => setSplitNodeId(node.id)}
                         onUpscale={(node) => setUpscaleNodeId(node.id)}
@@ -230,7 +229,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                             setAngleNodeId((current) => (current === node.id ? null : node.id));
                         }}
                         onViewImage={(node) => setPreviewNodeId(node.id)}
-                        onExtractVideoLastFrame={(node) => void extractVideoLastFrame(node)}
+                        onExtractVideoFrames={(node) => openVideoFrameExtractor(node)}
                         extractingVideoFrame={toolbarNode?.id === extractingVideoFrameNodeId}
                         onReversePrompt={createImageReversePromptNodes}
                         onRetry={(node) => void handleRetryNode(node)}
@@ -285,7 +284,7 @@ export function CanvasProjectCanvasChrome(props: CanvasProjectCanvasChromeProps)
                         onAddNode={(type, position) => createNode(type, position)}
                         onAddFolder={(position) => createFolder(position)}
                         onChooseStyle={() => setStylePickerOpen(true)}
-                        onOpenDirector={createDirectorShot}
+                        onOpenDirector={(position) => setDirectorTemplateRequest({ position })}
                         onUpload={(nodeId, position) => handleUploadRequest(nodeId, position)}
                         onOpenAssets={openAssetsAtPosition}
                         onOpenProjectCharacters={(position) => openProjectAssets("character", position)}

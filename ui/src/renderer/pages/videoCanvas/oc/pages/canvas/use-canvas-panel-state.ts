@@ -11,6 +11,7 @@ export function useCanvasDialogState() {
     const [characterReferenceNodeId, setCharacterReferenceNodeId] = useState<string | null>(null);
     const [drawingNodeId, setDrawingNodeId] = useState<string | null>(null);
     const [stylePickerOpen, setStylePickerOpen] = useState(false);
+    const [directorTemplateRequest, setDirectorTemplateRequest] = useState<{ position?: Position } | null>(null);
     const [projectAssetOpen, setProjectAssetOpen] = useState(false);
     const [projectAssetInitialCategory, setProjectAssetInitialCategory] = useState("all");
     const [projectAssetInsertPosition, setProjectAssetInsertPosition] = useState<Position | undefined>();
@@ -51,6 +52,8 @@ export function useCanvasDialogState() {
         setDrawingNodeId,
         stylePickerOpen,
         setStylePickerOpen,
+        directorTemplateRequest,
+        setDirectorTemplateRequest,
         projectAssetOpen,
         setProjectAssetOpen,
         projectAssetInitialCategory,

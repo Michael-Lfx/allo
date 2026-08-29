@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { stampCanvasNodeChanges } from "@oc/lib/canvas/canvas-node-timestamps";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "react-router-dom";
 import { useConfigStore, useEffectiveConfig } from "@oc/stores/use-config-store";
@@ -112,9 +113,24 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
     const assets = useAssetStore((state) => state.assets);
     const cleanupAssetImages = useAssetStore((state) => state.cleanupImages);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const user = useUserStore((state) => state.user);
     const defaultDrawingEngine = useUserStore((state) => state.drawingEngine.defaultEngine);
     const shortDramaEnabled = useUserStore((state) => state.features.shortDramaEnabled);
-    const [nodes, setNodes] = useState<CanvasNodeData[]>([]);
+    const nodesRef = useRef<CanvasNodeData[]>([]);
+    const [nodes, setNodesState] = useState<CanvasNodeData[]>([]);
+    const setNodes = useCallback<Dispatch<SetStateAction<CanvasNodeData[]>>>((value) => {
+        if (typeof value === "function") {
+            setNodesState((current) => {
+                const next = stampCanvasNodeChanges(current, value(current));
+                nodesRef.current = next;
+                return next;
+            });
+            return;
+        }
+        const next = stampCanvasNodeChanges(nodesRef.current, value);
+        nodesRef.current = next;
+        setNodesState(next);
+    }, []);
     const [connections, setConnections] = useState<CanvasConnection[]>([]);
     const [chatSessions, setChatSessions] = useState<CanvasAssistantSession[]>([]);
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -161,7 +177,6 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
 
     useCanvasChromeEffects({ projectId, didInitialCenterRef, workspaceMode, mediaPerformanceMode, focusMode, dialogNodeId, searchParams, projectLoaded, openAgent, setAgentMode, closeAgent, setNodeSearchOpen, setIsMiniMapOpen, setFocusDockRevealed, setNodeImageSettingsOpen });
 
-    const nodesRef = useRef(nodes);
     const connectionsRef = useRef(connections);
     const selectedNodeIdsRef = useRef(selectedNodeIds);
     const viewportRef = useRef(viewport);
@@ -300,11 +315,14 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         emotionNodeId,
         annotationNodeId,
         createImageReversePromptNodes,
-        generatePortraitTextureNode,
+        openPortraitTextureEditor,
         cropImageNode,
         cropNodeId,
-        extractVideoLastFrame,
+        closeFrameDialog,
+        extractVideoFrames,
         extractingVideoFrameNodeId,
+        frameDialogNodeId,
+        openVideoFrameExtractor,
         generateAngleNode,
         generateEmotionNode,
         maskEditImageNode,
@@ -336,8 +354,8 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         bindGenerationTask,
     });
     const mediaSetters = { setAngleNodeId, setAnnotationNodeId, setCropNodeId, setEmotionNodeId, setMaskEditNodeId, setSplitNodeId, setUpscaleNodeId };
-    const mediaActions = { generateAngleNode, generateEmotionNode, generatePortraitTextureNode, createImageReversePromptNodes, extractVideoLastFrame, extractingVideoFrameNodeId, mergeSelectedVideos, mergeVideoProgress, mergeVideosByIds };
-    const mediaDialogs = { cropImageNode, saveAnnotatedImageNode, maskEditImageNode, splitImageNode, upscaleImageNode };
+    const mediaActions = { generateAngleNode, generateEmotionNode, openPortraitTextureEditor, createImageReversePromptNodes, openVideoFrameExtractor, extractingVideoFrameNodeId, mergeSelectedVideos, mergeVideoProgress, mergeVideosByIds };
+    const mediaDialogs = { cropImageNode, saveAnnotatedImageNode, maskEditImageNode, splitImageNode, upscaleImageNode, extractVideoFrames, closeFrameDialog, frameDialogNodeId };
     const { handleNodesDeleted } = useCanvasNodeDeletion({
         ...interactionSetters,
         ...mediaSetters,
@@ -467,6 +485,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         ...canvasRefs,
         canvasId: projectId,
         domainProjectId: linkedProjectId,
+        canvasTitle: currentProject?.title || canvasT("videoCanvas.chrome.untitled", "未命名画布"),
         onAssetSaved: () => openAssetsAtPosition(),
     });
     const editorActions = { handleConfigNodeChange, handleFontSizeChange, handleNodePromptChange, handleNodeResize, downloadNodeImage, saveNodeAsset, toggleNodeFreeResize, toggleNodeLocked };
@@ -593,6 +612,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         focusMode,
         exitFocusMode,
         toggleFocusMode,
+        onOpenSearch: () => setNodeSearchOpen(true),
         beginBatchConnection: () => beginBatchConnectionMode(Array.from(selectedNodeIdsRef.current)),
     });
     const handleAssistantSessionsChange = useCallback((sessions: CanvasAssistantSession[], activeId: string | null) => {
@@ -739,7 +759,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
         onToggleBatch: toggleBatchExpanded,
         onSetBatchPrimary: setBatchPrimary,
         onRetry: retryCanvasNode,
-        onReloadResource: (node) => { void reloadCanvasNodeResource(node); },
+        onReloadResource: (node: CanvasNodeData) => { void reloadCanvasNodeResource(node); },
         onCancelTask: cancelNodeTask,
         onOpenTaskDetails: openCanvasNodeTaskDetails,
         onOpenVersions: openCanvasNodeVersions,
@@ -809,6 +829,7 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         {...shortDramaActions}
                         {...viewportActions}
                         {...titleEditingState}
+                        {...directorActions}
                         historyActions={historyActions}
                         assistant={assistant}
                         {...dialogState}
@@ -1020,6 +1041,8 @@ function InfiniteCanvasPage({ modelCatalogReady }: CanvasPageProps) {
                         handleProjectAssetsInsert={handleProjectAssetsInsert}
                         codexCompactAgent={codexCompactAgent}
                         codexAutoConnect={codexAutoConnect}
+                        deleteNodes={deleteNodes}
+                        directorOnboardingScope={user?.id?.trim() || ""}
                     />
                 </section>
             </main>

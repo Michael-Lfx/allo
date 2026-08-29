@@ -7,6 +7,7 @@ import { Button } from "antd";
 import { VideoSettingsPanel, videoResolutionLabel, videoSecondsLabel, videoSizeLabel } from "@oc/components/video-settings-panel";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
+import { modelCapabilityConfigFor, resolveVideoRatioValue, resolveVideoResolutionValue } from "@oc/lib/model-capabilities";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { AiConfig } from "@oc/stores/use-config-store";
 
@@ -24,7 +25,16 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
     const panelRef = useRef<HTMLDivElement>(null);
     const [open, setOpen] = useState(false);
     const [buttonRect, setButtonRect] = useState<DOMRect | null>(null);
-    const summary = `${videoResolutionLabel(config.vquality)} · ${videoSizeLabel(config.size)} · ${videoSecondsLabel(config.videoSeconds)}`;
+    const videoProfile = modelCapabilityConfigFor(config, config.model).video;
+    const resolutionSupported = Boolean(videoProfile?.resolutions.length);
+    const sizeSupported = Boolean(videoProfile?.ratios.length);
+    const resolution = videoProfile ? resolveVideoResolutionValue(videoProfile, config.vquality) : "";
+    const size = videoProfile ? resolveVideoRatioValue(videoProfile, config.size) : "";
+    const summary = [
+        ...(resolutionSupported ? [videoResolutionLabel(resolution)] : []),
+        ...(sizeSupported ? [videoSizeLabel(size)] : []),
+        videoSecondsLabel(config.videoSeconds),
+    ].join(" · ");
 
     useEffect(() => {
         if (!open) return;
