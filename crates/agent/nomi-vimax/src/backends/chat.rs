@@ -293,6 +293,8 @@ mod tests {
             anthropic_endpoint: String::new(),
             icon: String::new(),
             category: 1,
+            catalog_family: None,
+            catalog_auto_tier: None,
         }
     }
 

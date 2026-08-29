@@ -236,7 +236,7 @@ impl ScriptFilmPipeline {
         emit_pct(
             &progress,
             "cameo_bind",
-            "正在绑定用户角色参考图（有真人脸才做隐私换脸）",
+            "正在绑定用户角色参考图（仅真实照片人脸才做隐私换脸）",
             18.0,
         );
         apply_session_cameos(

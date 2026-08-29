@@ -43,7 +43,7 @@ Main Characters Introduction: Briefly introduce the core characters, including t
 - Logical Consistency: Ensure that event progression and character actions within the story have logical motives and internal consistency, avoiding abrupt or contradictory plots.
 - Show, Don't Tell: Reveal characters' personalities and emotions through their actions, dialogues, and details, rather than stating them flatly. For example, use "He clenched his fist, nails digging deep into his palm" instead of "He was very angry."
 - Information Density (CRITICAL for short video): Every scene must contain at least one conflict escalation AND one distinct visual surprise (prop reveal, spatial change, light shift, unexpected gesture). Ban filler wandering, repeated establishing, and long empty waiting.
-- Dialogue Economy: Prefer short, punchy spoken lines that fit clear on-camera delivery. Do not write monologues that would force rushed speech in a ≤15s clip.
+- Dialogue Economy: Prefer short, punchy spoken lines that fit clear on-camera delivery. Do not write monologues that would force rushed speech in a ≤12s clip (Chinese ~3.3 chars/sec, English ~2.3 words/sec).
 - Visual Motif: Plant one recurring visual motif that can be recognized across scenes (object, gesture, color cue, sound cue).
 - Music Mood: Briefly imply one continuous underscore arc for the film (e.g. intimate piano → tense pulse → warm resolve). Do not invent a new music genre per scene.
 - Originality & Compliance: Generate original content based on the user's idea, avoiding direct plagiarism of well-known existing works. The generated content must be positive, healthy, and comply with general content safety policies.

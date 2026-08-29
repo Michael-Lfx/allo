@@ -138,7 +138,7 @@ impl Script2VideoPipeline {
         emit_pct(
             &progress,
             "cameo_bind",
-            "正在绑定用户角色参考图（有真人脸才做隐私换脸）",
+            "正在绑定用户角色参考图（仅真实照片人脸才做隐私换脸）",
             18.0,
         );
         apply_session_cameos(
@@ -1091,11 +1091,10 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 progress,
                 "video_duration",
                 &format!(
-                    "Shot {}: render {}s (need≈{}s from audio/motion, +{}s splice tail ≤{}s)",
+                    "Shot {}: render {}s (need≈{}s from audio/motion, ≤{}s Seedance max)",
                     shot.idx,
                     duration_secs,
                     needs.get(i).copied().unwrap_or(duration_secs),
-                    crate::planning::SHOT_SPLICE_TAIL_PADDING_SECS,
                     crate::planning::MAX_CLIP_DURATION_SECS,
                 ),
             );
@@ -2854,16 +2853,14 @@ Ignore any conflicting voice-color stage directions in the audio line — VOICE 
     };
     format!(
         "{style_clause} {identity}{voice_lock}{audio_ref_clause}{ref_clause}{continuity_clause}\
-DURATION: target length is about {duration_secs}s. Speak clearly at a natural conversational pace — \
-do NOT rush, speed-read, chipmunk, swallow syllables, or time-compress dialogue to cram lines in. \
-Leave a short breath before the first word; finish the last syllable cleanly, then land on a visible \
-reaction/action beat (no empty static hold after speech). Keep motion purposeful for the full clip.\n\
+{}\n\
 {voice_continuity}{music_continuity}\
 PLOT LOCK: stay on this scene — {plot}.{end_plot} \
 Do not invent new characters, locations, outfits, or story beats.\n\
 Motion: {motion}\n\
 Throughout: {audio_block}\n\
-Keep it subtitle-free. Do not generate on-screen captions, logos, or watermarks."
+Keep it subtitle-free. Do not generate on-screen captions, logos, or watermarks.",
+        crate::planning::i2v_duration_pacing_clause(duration_secs),
     )
 }
 
@@ -3433,6 +3430,13 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         assert!(prompt.contains("Throughout:"));
         assert!(prompt.contains("underscore"));
         assert!(prompt.contains("MUSIC CONTINUITY"));
+        assert!(prompt.contains("DURATION:"));
+        assert!(prompt.contains("Chinese"));
+        assert!(prompt.contains("English"));
+        assert!(
+            !prompt.contains("Keep motion purposeful for the full clip"),
+            "must not ask Seedance to pad motion to fill the clock"
+        );
     }
 
     #[test]

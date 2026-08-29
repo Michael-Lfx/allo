@@ -21,7 +21,7 @@ The user will provide the following input.
     - Desired number of shots (e.g., "not more than 10 shots").
     - Target total video duration and pacing notes (optional). When absent, choose shot count from the script — do not pad to a runtime quota.
     - Other specific instructions (e.g., emphasize the characters' actions).
-    - CRITICAL duration rules may appear under [VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW] or [VIDEO_PACING — MUST FOLLOW], plus [DIRECTOR_DENSITY] / [BGM_CONTINUITY]. Obey them strictly: each rendered clip is 5–12 seconds (Seedance). Prefer purposeful cuts that raise information density; silent/action beats may be 5–10s with rich in-shot motion, but MUST split dialogue that cannot be spoken clearly inside one ≤12s clip. If a HARD UPPER BOUND shot count is given, NEVER exceed it.
+    - CRITICAL duration rules may appear under [VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW] or [VIDEO_PACING — MUST FOLLOW], plus [DIRECTOR_DENSITY] / [BGM_CONTINUITY]. Obey them strictly: each rendered clip is 5–12 seconds (Seedance). Match clip length to the beat (typically 6–10s). Silent/action beats may be 5–10s with rich in-shot motion, but MUST split dialogue that cannot be spoken clearly inside one ≤12s clip. If a HARD UPPER BOUND shot count is given, NEVER exceed it — that is a cap, not a target.
 
 [Output]
 {format_instructions}
@@ -31,17 +31,17 @@ The user will provide the following input.
 - Each shot must have a clear narrative purpose—such as establishing the setting, showing character relationships, or highlighting reactions. Every shot must CHANGE something visible or audible (new info / emotion / action). Ban back-to-back redundant wide establishes and empty "looks around slowly" holds.
 - Use cinematic language deliberately: close-ups for emotion, wide shots for context, and varied angles to direct audience attention.
 - When designing a new shot, first consider whether it can be filmed using an existing camera position. Introduce a new one only if the shot size, angle, and focus differ significantly. If the camera undergoes significant movement, it cannot be used thereafter.
-- **PACING OPTIMIZATION (CRITICAL)**: Good pacing comes from content density, not clip length.
-  - RECOMMENDED: 6-10s clips with rich visual/action content
-  - AVOID: stretching thin content to 12s just to fill time
-  - Empty holds, slow pans, and "character looks around" actions are FORBIDDEN
-  - Each clip should feel purposeful and content-rich
+- **PACING (CRITICAL)**: Clip length follows the beat — not a shot-count quota and not a 12s fill.
+  - A glance or reaction may be 5s; a spoken line or single action typically 6–10s; 11–12s only when the words or a continuous camera move actually need it.
+  - Do NOT stretch thin content to 12s. Do NOT split one beat into micro-cuts just to raise shot count.
+  - Empty holds, slow pans, and "character looks around" actions are FORBIDDEN.
+  - Match the user's language: Chinese ~3.3 chars/sec, English ~2.3 words/sec (clear — not rushed, not drawn-out).
 - **ONE STRONG VISUAL EVENT PER CLIP**: Every clip must contain exactly ONE clear visual action that advances the story. Examples:
   - Character opens door and sees something surprising
   - Two characters exchange a meaningful glance
   - Expression changes from neutral to shocked
   DO NOT include multiple unrelated actions in one clip.
-- Plan visual_desc and audio_desc as a pair for the SAME duration: spoken lines in audio_desc MUST be finishable clearly inside that shot (Seedance 5–12s hard max). Clear pacing: ~1.9 Chinese chars/sec or ~1.5 English words/sec, plus ~1s lead-in before speech and ~2s tail after the last word, then land on a visible reaction/action beat (avoids rush / 吞字 AND avoids 磨叽 empty waiting). Hard spoken budget for a 12s clip is roughly ≤17 Chinese chars or ≤14 English words inside quotes. If a speech beat is longer, SPLIT into another shot or shorten the line — never leave unfinished sentences, dangling mid-actions, or dialogue that forces time-compressed speech.
+- Plan visual_desc and audio_desc as a pair for the SAME duration: spoken lines in audio_desc MUST be finishable clearly inside that shot (Seedance 5–12s hard max). Put dialogue in 「」 / quotes so duration estimation ignores SFX/BGM. Typical spoken budget for an 8s beat is ≲20 Chinese chars / ≲14 English words; hard max for a 12s clip is ≲33 Chinese chars / ≲23 English words (after ~1s lead-in + ~1s tail). If a speech beat is longer, SPLIT into another shot or shorten the line — never leave unfinished sentences, dangling mid-actions, or dialogue that forces time-compressed speech.
 - audio_desc is REQUIRED on every shot (never null/empty). Include spoken dialogue when present; otherwise write ambient SFX + BGM intent. Do NOT leave dialogue only in visual_desc.
 - BGM CONTINUITY (CRITICAL): All shots in this scene share ONE continuous underscore. Reuse the SAME music phrase (motif / tempo / instrumentation / volume intent) in every audio_desc. Forbidden: inventing a new music style, key, or energy per shot that would make cuts feel musically abrupt.
 - When a character speaks, ALWAYS prefix the line with their identifier_in_scene (e.g. 李薇：「……」 / Alice: "…") so downstream voice locking can keep the same timbre across shots.

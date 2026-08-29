@@ -74,38 +74,33 @@ impl CharacterPortraitsGenerator {
 
         // Drop leftover discrete views from older pipelines.
         Self::cleanup_legacy_files(character_dir).await;
-        // Migrate legacy generic `three_view.png` → meaningful name.
+        // Migrate legacy generic `three_view.png` / CJK-stripped `asset_three_view.png`.
         let legacy = character_dir.join("three_view.png");
         if !sheet.exists() && legacy.exists() {
             let _ = tokio::fs::rename(&legacy, &sheet).await;
         }
+        let asset_legacy = character_dir.join("asset_three_view.png");
+        if id_safe != "asset" && !sheet.exists() && asset_legacy.exists() {
+            let _ = tokio::fs::rename(&asset_legacy, &sheet).await;
+        }
+        // Prompt sidecars are not user-facing assets — drop leftovers.
+        let _ = tokio::fs::remove_file(
+            character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt")),
+        )
+        .await;
+        let _ = tokio::fs::remove_file(
+            character_dir.join("asset_three_view_generation_prompt.txt"),
+        )
+        .await;
 
         if !sheet.exists() {
             let prompt = Self::prompt_with_look_refs(character, style, style_refs);
-            let _ = crate::session::write_text_artifact(
-                &character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt")),
-                &prompt,
-            )
-            .await;
             self.image.generate(&prompt, style_refs, &sheet).await?;
         } else if !crate::media_local::is_usable_image_file(&sheet) {
             // e.g. JPEG bytes saved as .png without decode support — regenerate.
             let _ = tokio::fs::remove_file(&sheet).await;
             let prompt = Self::prompt_with_look_refs(character, style, style_refs);
-            let _ = crate::session::write_text_artifact(
-                &character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt")),
-                &prompt,
-            )
-            .await;
             self.image.generate(&prompt, style_refs, &sheet).await?;
-        } else {
-            // Backfill editable prompt for sheets generated before sidecar support.
-            let sidecar =
-                character_dir.join(format!("{id_safe}_three_view_generation_prompt.txt"));
-            if !sidecar.is_file() {
-                let prompt = Self::build_three_view_prompt(character, style);
-                let _ = crate::session::write_text_artifact(&sidecar, &prompt).await;
-            }
         }
 
         let id = &character.identifier_in_scene;
@@ -156,22 +151,33 @@ pub fn three_view_image_prompt(identifier: &str, features: &str, style: &str) ->
 }
 
 fn safe_file_stem(s: &str) -> String {
-    let raw: String = s
+    let mut out: String = s
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || is_path_safe_ideograph(c) {
                 c
             } else {
                 '_'
             }
         })
         .collect();
-    let trimmed = raw.trim_matches('_');
-    if trimmed.is_empty() {
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    let out = out.trim_matches('_').chars().take(80).collect::<String>();
+    if out.is_empty() {
         "asset".into()
     } else {
-        trimmed.chars().take(48).collect()
+        out
     }
+}
+
+fn is_path_safe_ideograph(c: char) -> bool {
+    let u = c as u32;
+    (0x4E00..=0x9FFF).contains(&u)
+        || (0x3400..=0x4DBF).contains(&u)
+        || (0x3040..=0x30FF).contains(&u)
+        || (0xAC00..=0xD7AF).contains(&u)
 }
 
 fn view_item(path: &Path, description: &str) -> HashMap<String, String> {
@@ -300,5 +306,12 @@ mod tests {
         assert!(prompt.contains("人物安全约束"));
         assert!(prompt.contains("一定要使用AI人脸"));
         assert!(prompt.contains("蓝色拓扑网格"));
+    }
+
+    #[test]
+    fn cjk_character_id_keeps_readable_three_view_stem() {
+        assert_eq!(safe_file_stem("小表姐"), "小表姐");
+        assert_ne!(safe_file_stem("小表姐"), "asset");
+        assert_eq!(safe_file_stem("Alice"), "Alice");
     }
 }
