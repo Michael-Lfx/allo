@@ -11,6 +11,7 @@ mod channel;
 mod cloud;
 mod cloud_billing;
 mod cloud_im;
+mod campaign;
 mod tv_show;
 mod vimax_skill_hub;
 mod vimax;
@@ -135,6 +136,10 @@ pub use cloud_billing::{
 pub use cloud_im::{
     CloudImAttachmentPayload, CloudImConversation, CloudImLogUploadResponse, CloudImMessage,
     CloudImMessageList, CloudImReadRequest, CloudImSendMessageRequest,
+};
+pub use campaign::{
+    CampaignCarouselItem, CampaignCarouselResponse, CampaignDetail, CampaignListResponse,
+    CampaignPhase, CampaignSummary,
 };
 pub use tv_show::{
     TvShowAuthor, TvShowLikeResponse, TvShowListResponse, TvShowPublishRequest,

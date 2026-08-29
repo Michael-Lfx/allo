@@ -66,6 +66,7 @@
     "searchPlaceholder": "Search films...",
     "scope": {
       "plaza": "Plaza",
+      "campaign": "Campaigns",
       "mine": "My posts"
     },
     "status": {
@@ -110,6 +111,60 @@
       "busy": "Finish planning or rendering before publishing.",
       "ok": "Submitted for review. It will appear on the Flowy TV plaza after approval.",
       "failed": "Publish failed"
+    }
+  },
+  "campaign": {
+    "subtitle": "Join official campaigns, submit a film, and see the winners.",
+    "carouselDots": "Campaign carousel",
+    "canSubmit": "Open for entries",
+    "back": "Back to campaigns",
+    "notFound": "Campaign not found",
+    "loadMore": "Load more",
+    "countdown": "Starts in {{days}}d {{hours}}h",
+    "phase": {
+      "upcoming": "Upcoming",
+      "ongoing": "Live",
+      "ended": "Ended"
+    },
+    "range": {
+      "current": "Live",
+      "ended": "Past"
+    },
+    "empty": {
+      "title": "No campaigns yet",
+      "desc": "New campaigns will show up here once they go live.",
+      "endedDesc": "No past campaigns yet."
+    },
+    "authRequired": {
+      "title": "Sign in to view campaigns",
+      "desc": "A cloud account is required to browse and enter campaigns."
+    },
+    "cta": {
+      "submit": "Enter now",
+      "submitAgain": "Update entry",
+      "upcoming": "Not started",
+      "winners": "View winners",
+      "mine": "View my entry"
+    },
+    "winnersTitle": "Winners",
+    "submissionsTitle": "Campaign films",
+    "submissionsEmpty": "No published entries yet. Approved films will appear here.",
+    "mineTitle": "My entries",
+    "award": {
+      "first": "1st prize",
+      "second": "2nd prize",
+      "third": "3rd prize",
+      "merit": "Merit",
+      "featured": "Featured"
+    },
+    "submit": {
+      "title": "Choose a finished project",
+      "empty": "No finished films yet. Complete a short drama or canvas project first.",
+      "goCreate": "Start creating",
+      "ok": "Submitted for review. It will appear in the campaign feed after approval.",
+      "failed": "Could not submit",
+      "sessionKind": "Short drama",
+      "canvasKind": "Creation canvas"
     }
   },
   "create": {

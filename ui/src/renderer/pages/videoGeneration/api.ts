@@ -21,6 +21,10 @@ import type {
   TvShowListResult,
   TvShowPublishResult,
   TvShowVideo,
+  CampaignCarouselItem,
+  CampaignCarouselResult,
+  CampaignDetail,
+  CampaignListResult,
   VerticalSkillDetail,
   VerticalSkillDraft,
   VerticalSkillSummary,
@@ -37,6 +41,8 @@ import type {
 
 const BASE = '/api/vimax';
 const SESSION_LIST_CACHE_TTL_MS = 4_000;
+const CAMPAIGN_CAROUSEL_CACHE_TTL_MS = 60_000;
+const TV_SHOW_PUBLISH_TIMEOUT_MS = 12 * 60 * 1000;
 
 let sessionListCache: { at: number; data: SessionSummary[] } | null = null;
 let sessionListInflight: Promise<SessionSummary[]> | null = null;
@@ -609,10 +615,13 @@ export function uploadActionAssets(
 
 // ── TV Show (cloud plaza via local proxy) ───────────────────────────────────
 
-function tvShowQuery(params: Record<string, string | number | undefined | null>): string {
+function tvShowQuery(
+  params: Record<string, string | number | boolean | undefined | null>
+): string {
   const qs = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value == null || value === '') continue;
+    if (value === false) continue;
     qs.set(key, String(value));
   }
   const s = qs.toString();
@@ -622,12 +631,17 @@ function tvShowQuery(params: Record<string, string | number | undefined | null>)
 /** Coordinate cover + package OSS upload and Flowy publish for a local session. */
 export async function publishSessionToTvShow(
   sessionId: string,
-  body?: { title?: string; description?: string }
+  body?: { title?: string; description?: string; campaignId?: number }
 ): Promise<TvShowPublishResult> {
+  const payload: { title?: string; description?: string; campaignId?: number } = {};
+  if (body?.title) payload.title = body.title;
+  if (body?.description) payload.description = body.description;
+  if (body?.campaignId && body.campaignId > 0) payload.campaignId = body.campaignId;
   return httpRequest<TvShowPublishResult>(
     'POST',
     `${BASE}/sessions/${encodeURIComponent(sessionId)}/tv-show/publish`,
-    body ?? {}
+    payload,
+    { timeoutMs: TV_SHOW_PUBLISH_TIMEOUT_MS }
   );
 }
 
@@ -654,6 +668,7 @@ export async function listMyTvShow(params?: {
   page?: number;
   pageSize?: number;
   status?: string;
+  campaignId?: number;
 }): Promise<TvShowListResult> {
   return httpRequest<TvShowListResult>(
     'GET',
@@ -661,6 +676,7 @@ export async function listMyTvShow(params?: {
       page: params?.page,
       pageSize: params?.pageSize,
       status: params?.status,
+      campaignId: params?.campaignId,
     })}`
   );
 }
@@ -686,6 +702,84 @@ export async function importTvShow(id: number): Promise<SessionSummary> {
   const session = await httpRequest<SessionSummary>('POST', `${BASE}/tv-show/${id}/import`, {});
   invalidateSessionList();
   return session;
+}
+
+// ── Campaigns (cloud marketing via local proxy) ─────────────────────────────
+
+let campaignCarouselCache: { at: number; data: CampaignCarouselItem[] } | null = null;
+let campaignCarouselInflight: Promise<CampaignCarouselItem[]> | null = null;
+
+export function invalidateCampaignCarouselCache(): void {
+  campaignCarouselCache = null;
+}
+
+export async function listCampaignCarousel(force = false): Promise<CampaignCarouselItem[]> {
+  const now = Date.now();
+  if (
+    !force &&
+    campaignCarouselCache &&
+    now - campaignCarouselCache.at < CAMPAIGN_CAROUSEL_CACHE_TTL_MS
+  ) {
+    return campaignCarouselCache.data;
+  }
+  if (!force && campaignCarouselInflight) return campaignCarouselInflight;
+
+  const request = httpRequest<CampaignCarouselResult>('GET', `${BASE}/campaigns/carousel`)
+    .then((data) => {
+      const list = data?.list ?? [];
+      campaignCarouselCache = { at: Date.now(), data: list };
+      return list;
+    })
+    .finally(() => {
+      campaignCarouselInflight = null;
+    });
+  campaignCarouselInflight = request;
+  return request;
+}
+
+export async function listCampaigns(params?: {
+  page?: number;
+  pageSize?: number;
+  includeEnded?: boolean;
+}): Promise<CampaignListResult> {
+  return httpRequest<CampaignListResult>(
+    'GET',
+    `${BASE}/campaigns/list${tvShowQuery({
+      page: params?.page,
+      pageSize: params?.pageSize,
+      includeEnded: params?.includeEnded,
+    })}`
+  );
+}
+
+export async function getCampaignDetail(id: number): Promise<CampaignDetail> {
+  return httpRequest<CampaignDetail>('GET', `${BASE}/campaigns/${id}`);
+}
+
+export async function listCampaignSubmissions(
+  id: number,
+  params?: {
+    page?: number;
+    pageSize?: number;
+    workflow?: string;
+    keyword?: string;
+    sort?: string;
+  }
+): Promise<TvShowListResult> {
+  return httpRequest<TvShowListResult>(
+    'GET',
+    `${BASE}/campaigns/${id}/submissions${tvShowQuery({
+      page: params?.page,
+      pageSize: params?.pageSize,
+      workflow: params?.workflow,
+      keyword: params?.keyword,
+      sort: params?.sort,
+    })}`
+  );
+}
+
+export async function listCampaignWinners(id: number): Promise<TvShowListResult> {
+  return httpRequest<TvShowListResult>('GET', `${BASE}/campaigns/${id}/winners`);
 }
 
 function encodeSkillId(id: string): string {

@@ -97,6 +97,9 @@ export interface TvShowVideo {
   packageSizeBytes?: number | null;
   archiveVersion?: number | null;
   clientSessionId?: string | null;
+  campaignId?: number | null;
+  awardLevel?: string | null;
+  awardLabel?: string | null;
 }
 
 export interface TvShowListResult {
@@ -117,12 +120,62 @@ export interface TvShowPublishResult {
   submittedAt?: string | null;
   publishedAt?: string | null;
   author: TvShowAuthor;
+  campaignId?: number | null;
 }
 
 export interface TvShowLikeResult {
   id: number;
   liked: boolean;
   likeCount: number;
+}
+
+/** Server-computed campaign window. Do not infer from local clocks. */
+export type CampaignPhase = 'upcoming' | 'ongoing' | 'ended' | string;
+
+export interface CampaignCarouselItem {
+  id: number;
+  title: string;
+  mediaType: 'image' | 'video' | string;
+  mediaUrl: string;
+  posterUrl?: string | null;
+  linkUrl?: string | null;
+  showInList: boolean;
+  allowSubmission?: boolean;
+  canSubmit?: boolean;
+  startAt: string;
+  endAt: string;
+  phase: CampaignPhase;
+}
+
+export interface CampaignCarouselResult {
+  list: CampaignCarouselItem[];
+}
+
+export interface CampaignSummary {
+  id: number;
+  title: string;
+  summary?: string | null;
+  coverUrl?: string | null;
+  showInCarousel?: boolean;
+  showInList?: boolean;
+  allowSubmission?: boolean;
+  canSubmit?: boolean;
+  startAt: string;
+  endAt: string;
+  phase: CampaignPhase;
+  listSort?: number | null;
+  updatedAt?: string | null;
+}
+
+export interface CampaignListResult {
+  total: number;
+  page: number;
+  pageSize: number;
+  list: CampaignSummary[];
+}
+
+export interface CampaignDetail extends CampaignSummary {
+  content?: string | null;
 }
 
 /** Flowy cloud Skill Hub status. */

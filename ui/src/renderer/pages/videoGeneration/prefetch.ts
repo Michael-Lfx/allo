@@ -15,6 +15,8 @@ export function prefetchVerticalSkillMenu(): void {
 export function prefetchVideoGenerationHome(): void {
   void import('./index');
   void import('./components/TvShowPanel');
+  void import('./components/CampaignCarousel');
+  void import('./components/CampaignPanel');
   void import('./home/CanvasProjectGallery');
   prefetchGenerationPreferencesPanel();
   prefetchVerticalSkillMenu();

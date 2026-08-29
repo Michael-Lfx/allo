@@ -29,7 +29,16 @@ impl FlowyApiClient {
         keyword: Option<&str>,
         sort: Option<&str>,
     ) -> Result<TvShowListResponse, ServerClientError> {
-        let path = build_tv_show_list_path("/vimax/tv-show/list", page, page_size, workflow, keyword, sort, None);
+        let path = build_tv_show_list_path(
+            "/vimax/tv-show/list",
+            page,
+            page_size,
+            workflow,
+            keyword,
+            sort,
+            None,
+            None,
+        );
         self.get_data(&path, Some(session)).await
     }
 
@@ -39,6 +48,7 @@ impl FlowyApiClient {
         page: Option<i32>,
         page_size: Option<i32>,
         status: Option<&str>,
+        campaign_id: Option<i64>,
     ) -> Result<TvShowListResponse, ServerClientError> {
         let path = build_tv_show_list_path(
             "/vimax/tv-show/mine",
@@ -48,6 +58,7 @@ impl FlowyApiClient {
             None,
             None,
             status,
+            campaign_id,
         );
         self.get_data(&path, Some(session)).await
     }
@@ -122,7 +133,7 @@ impl FlowyApiClient {
     }
 }
 
-fn build_tv_show_list_path(
+pub(super) fn build_tv_show_list_path(
     base: &str,
     page: Option<i32>,
     page_size: Option<i32>,
@@ -130,6 +141,7 @@ fn build_tv_show_list_path(
     keyword: Option<&str>,
     sort: Option<&str>,
     status: Option<&str>,
+    campaign_id: Option<i64>,
 ) -> String {
     let mut pairs: Vec<(String, String)> = Vec::new();
     if let Some(p) = page.filter(|v| *v > 0) {
@@ -149,6 +161,9 @@ fn build_tv_show_list_path(
     }
     if let Some(st) = status.map(str::trim).filter(|s| !s.is_empty()) {
         pairs.push(("status".into(), st.to_string()));
+    }
+    if let Some(cid) = campaign_id.filter(|v| *v > 0) {
+        pairs.push(("campaignId".into(), cid.to_string()));
     }
     if pairs.is_empty() {
         return base.to_string();

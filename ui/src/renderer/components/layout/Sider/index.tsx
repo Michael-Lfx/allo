@@ -133,7 +133,9 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
 
   const activeVideoGenerationSessionId = useMemo(() => {
     const m = pathname.match(/^\/video-generation\/([^/]+)\/?$/);
-    return m?.[1] ? decodeURIComponent(m[1]) : null;
+    const id = m?.[1] ? decodeURIComponent(m[1]) : null;
+    if (!id || id === 'campaigns' || id === 'clip' || id === 'canvas') return null;
+    return id;
   }, [pathname]);
 
   // Match clip task route: /video-generation/clip/:taskId — must NOT match the

@@ -381,7 +381,11 @@ export async function exportCanvasProjectToDisk(
   return result.dest_path;
 }
 
-export async function publishCanvasProject(projectId: string, title?: string): Promise<void> {
+export async function publishCanvasProject(
+  projectId: string,
+  title?: string,
+  campaignId?: number
+): Promise<void> {
   await flushCanvasProjectForShare(projectId);
-  await publishCanvasProjectToTvShow(projectId, { title });
+  await publishCanvasProjectToTvShow(projectId, { title, campaignId });
 }

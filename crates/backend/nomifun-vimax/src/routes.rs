@@ -149,6 +149,14 @@ pub fn vimax_routes(state: VimaxRouterState) -> Router {
             post(tv_show_like).delete(tv_show_unlike),
         )
         .route("/api/vimax/tv-show/{id}/import", post(import_tv_show))
+        .route("/api/vimax/campaigns/carousel", get(campaign_carousel))
+        .route("/api/vimax/campaigns/list", get(campaign_list))
+        .route("/api/vimax/campaigns/{id}", get(campaign_detail))
+        .route(
+            "/api/vimax/campaigns/{id}/submissions",
+            get(campaign_submissions),
+        )
+        .route("/api/vimax/campaigns/{id}/winners", get(campaign_winners))
         .with_state(state)
         .merge(cameo_upload)
         .merge(action_upload)
@@ -794,6 +802,7 @@ struct TvShowListQuery {
     keyword: Option<String>,
     sort: Option<String>,
     status: Option<String>,
+    campaign_id: Option<i64>,
 }
 
 async fn tv_show_list(
@@ -823,7 +832,7 @@ async fn tv_show_mine(
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .tv_show_mine(query.page, query.page_size, query.status)
+            .tv_show_mine(query.page, query.page_size, query.status, query.campaign_id)
             .await?,
     )))
 }
@@ -869,6 +878,77 @@ async fn import_tv_show(
     Path(id): Path<i64>,
 ) -> Result<Json<ApiResponse<nomi_vimax::SessionRecord>>, AppError> {
     Ok(Json(ApiResponse::ok(state.service.import_tv_show(id).await?)))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CampaignListQuery {
+    page: Option<i32>,
+    page_size: Option<i32>,
+    include_ended: Option<bool>,
+}
+
+async fn campaign_carousel(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<nomifun_api_types::CampaignCarouselResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.campaign_carousel().await?,
+    )))
+}
+
+async fn campaign_list(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<CampaignListQuery>,
+) -> Result<Json<ApiResponse<nomifun_api_types::CampaignListResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .campaign_list(query.page, query.page_size, query.include_ended)
+            .await?,
+    )))
+}
+
+async fn campaign_detail(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<nomifun_api_types::CampaignDetail>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.campaign_detail(id).await?,
+    )))
+}
+
+async fn campaign_submissions(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+    Query(query): Query<TvShowListQuery>,
+) -> Result<Json<ApiResponse<nomifun_api_types::TvShowListResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .campaign_submissions(
+                id,
+                query.page,
+                query.page_size,
+                query.workflow,
+                query.keyword,
+                query.sort,
+            )
+            .await?,
+    )))
+}
+
+async fn campaign_winners(
+    State(state): State<VimaxRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<nomifun_api_types::TvShowListResponse>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.campaign_winners(id).await?,
+    )))
 }
 
 #[derive(Deserialize, Default)]

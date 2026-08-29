@@ -799,9 +799,13 @@ const VideoGenerationListPage: React.FC = () => {
                 </h2>
                 <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
                   {listTab === 'tvShow'
-                    ? t('videoGeneration.tvShow.subtitle', {
-                        defaultValue: '浏览社区已上架的作品，或查看你的发布审核状态。',
-                      })
+                    ? searchParams.get('tvScope') === 'campaign'
+                      ? t('videoGeneration.campaign.subtitle', {
+                          defaultValue: '参与官方活动，投稿成片，看看获奖作品。',
+                        })
+                      : t('videoGeneration.tvShow.subtitle', {
+                          defaultValue: '浏览社区已上架的作品，或查看你的发布审核状态。',
+                        })
                     : workMode === 'creation'
                     ? t('videoGeneration.list.creationRecentSubtitle', {
                         defaultValue: '继续编辑画布，或导入一份分享来的画布工程。',
