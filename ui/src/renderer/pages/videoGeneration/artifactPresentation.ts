@@ -7,10 +7,32 @@ export interface StoryboardShot {
   audioDescription?: string;
 }
 
+/** Per-shot generation spec from `shots/N/shot_description.json` (drives I2V). */
+export interface ShotGenerationSpec {
+  path: string;
+  sceneRoot: string;
+  shotIndex: number;
+  firstFrameDescription?: string;
+  lastFrameDescription?: string;
+  motionDescription?: string;
+  audioDescription?: string;
+  /** Copy of the planning brief stored on the spec file. */
+  planningBrief?: string;
+}
+
+export interface StoryboardSceneSave {
+  visualDescription?: string;
+  audioDescription?: string;
+  firstFrameDescription?: string;
+  motionDescription?: string;
+  lastFrameDescription?: string;
+}
+
 export interface StoryboardScene {
   id: string;
   /** Global display order across all pipeline scenes. */
   index: number;
+  /** Planning brief (`storyboard.json` visual_desc) — filmstrip caption. */
   visualDescription: string;
   audioDescription?: string;
   imagePath?: string;
@@ -18,6 +40,11 @@ export interface StoryboardScene {
   revisionPath?: string;
   /** Owning `storyboard.json` path used for direct visual-direction edits. */
   storyboardPath?: string;
+  /** `shots/N/shot_description.json` when present. */
+  generationSpecPath?: string;
+  firstFrameDescription?: string;
+  lastFrameDescription?: string;
+  motionDescription?: string;
   /** Pipeline scene root (e.g. `idea2video/scene_1`); empty for single-scene runs. */
   sceneRoot?: string;
   /** Shot index within its pipeline scene. */
@@ -134,6 +161,7 @@ export function buildStoryboardScenesFromStoryboards(
         videoPath: bestShotFile(videoFiles, sceneRoot, shot.index),
         revisionPath:
           bestShotFile(revisionFiles, sceneRoot, shot.index) ?? board.path,
+        generationSpecPath: bestShotFile(revisionFiles, sceneRoot, shot.index),
         storyboardPath: board.path,
         sceneRoot,
         shotIndex: shot.index,
@@ -169,6 +197,7 @@ export function buildStoryboardScenesFromStoryboards(
       videoPath: bestShotFile(videoFiles, loc.sceneRoot, loc.shotIndex),
       revisionPath:
         bestShotFile(revisionFiles, loc.sceneRoot, loc.shotIndex) ?? fallbackBoard,
+      generationSpecPath: bestShotFile(revisionFiles, loc.sceneRoot, loc.shotIndex),
       storyboardPath: fallbackBoard,
       sceneRoot: loc.sceneRoot,
       shotIndex: loc.shotIndex,
@@ -176,6 +205,134 @@ export function buildStoryboardScenesFromStoryboards(
   }
 
   return scenes;
+}
+
+/** Paths of per-shot `shot_description.json` files, sorted for stable signatures. */
+export function findShotDescriptionPaths(nodes: ArtifactNode[]): string[] {
+  const paths = flattenArtifacts(nodes)
+    .map((file) => file.path.replace(/\\/g, '/'))
+    .filter((path) => /\/shots\/\d+\/shot_description\.json$/i.test(path));
+  return [...new Set(paths)].sort(compareSceneAwarePaths);
+}
+
+/** Shot video paths used to refetch descriptions when a clip lands. */
+export function findShotVideoPaths(nodes: ArtifactNode[]): string[] {
+  const paths = flattenArtifacts(nodes)
+    .map((file) => file.path.replace(/\\/g, '/'))
+    .filter((path) => /\/shots\/\d+\/video\.(mp4|webm|mov)$/i.test(path));
+  return [...new Set(paths)].sort(compareSceneAwarePaths);
+}
+
+export function parseShotGenerationSpec(
+  text: string | undefined,
+  path: string
+): ShotGenerationSpec | null {
+  if (!text) return null;
+  const location = shotLocationFromPath(path.replace(/\\/g, '/'));
+  if (!location) return null;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const value = parsed as Record<string, unknown>;
+    const rawIndex = value.idx ?? value.index ?? value.shot_index;
+    return {
+      path: path.replace(/\\/g, '/'),
+      sceneRoot: location.sceneRoot,
+      shotIndex: typeof rawIndex === 'number' ? rawIndex : location.shotIndex,
+      firstFrameDescription: stringValue(value.ff_desc) ?? stringValue(value.firstFrame),
+      lastFrameDescription: stringValue(value.lf_desc) ?? stringValue(value.lastFrame),
+      motionDescription: stringValue(value.motion_desc) ?? stringValue(value.motion),
+      audioDescription:
+        stringValue(value.audio_desc) ??
+        stringValue(value.audioDescription) ??
+        stringValue(value.audio),
+      planningBrief:
+        stringValue(value.visual_desc) ?? stringValue(value.visualDescription),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Overlay I2V spec fields onto filmstrip scenes keyed by scene root + shot index. */
+export function applyShotGenerationSpecs(
+  scenes: StoryboardScene[],
+  specs: ShotGenerationSpec[]
+): StoryboardScene[] {
+  if (specs.length === 0) return scenes;
+  const byKey = new Map(
+    specs.map((spec) => [shotKey(spec.sceneRoot, spec.shotIndex), spec])
+  );
+  return scenes.map((scene) => {
+    const key = shotKey(scene.sceneRoot ?? '', scene.shotIndex ?? -1);
+    const spec = byKey.get(key);
+    if (!spec) return scene;
+    const planningBrief = scene.visualDescription || spec.planningBrief || '';
+    return {
+      ...scene,
+      visualDescription: planningBrief,
+      audioDescription: spec.audioDescription || scene.audioDescription,
+      firstFrameDescription: spec.firstFrameDescription,
+      lastFrameDescription: spec.lastFrameDescription,
+      motionDescription: spec.motionDescription,
+      generationSpecPath: spec.path,
+      revisionPath: spec.path,
+    };
+  });
+}
+
+export function sceneHasGenerationSpec(
+  scene: Pick<
+    StoryboardScene,
+    'firstFrameDescription' | 'motionDescription' | 'lastFrameDescription'
+  >
+): boolean {
+  return Boolean(
+    scene.firstFrameDescription?.trim() ||
+      scene.motionDescription?.trim() ||
+      scene.lastFrameDescription?.trim()
+  );
+}
+
+/**
+ * Patch `ff_desc` / `motion_desc` / `lf_desc` / `audio_desc` on a per-shot spec.
+ * Does not overwrite `visual_desc` (planning brief).
+ */
+export function patchShotGenerationSpecInArtifact(
+  rawText: string | undefined,
+  descriptions: Pick<
+    StoryboardSceneSave,
+    | 'firstFrameDescription'
+    | 'motionDescription'
+    | 'lastFrameDescription'
+    | 'audioDescription'
+  >
+): string {
+  const parsed = rawText?.trim() ? (JSON.parse(rawText) as unknown) : null;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('shot_description.json must be a JSON object');
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (descriptions.firstFrameDescription !== undefined) {
+    obj.ff_desc = descriptions.firstFrameDescription.trim();
+  }
+  if (descriptions.motionDescription !== undefined) {
+    obj.motion_desc = descriptions.motionDescription.trim();
+  }
+  if (descriptions.lastFrameDescription !== undefined) {
+    obj.lf_desc = descriptions.lastFrameDescription.trim();
+  }
+  if (descriptions.audioDescription !== undefined) {
+    const audio = descriptions.audioDescription.trim();
+    if ('audioDescription' in obj) {
+      obj.audioDescription = audio;
+    }
+    if ('audio' in obj && typeof obj.audio === 'string') {
+      obj.audio = audio;
+    }
+    obj.audio_desc = audio;
+  }
+  return JSON.stringify(obj, null, 2);
 }
 
 /**

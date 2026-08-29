@@ -67,8 +67,12 @@ import VisualStyleSelect from './components/VisualStyleSelect';
 import WorkspaceActionAssets from './components/WorkspaceActionAssets';
 import WorkspaceCameoStrip from './components/WorkspaceCameoStrip';
 import type { VideoCreateDraft } from './home/types';
-import type { StoryboardScene } from './artifactPresentation';
-import { findStoryboardPath, patchShotDescriptionsInArtifact } from './artifactPresentation';
+import type { StoryboardScene, StoryboardSceneSave } from './artifactPresentation';
+import {
+  findStoryboardPath,
+  patchShotDescriptionsInArtifact,
+  patchShotGenerationSpecInArtifact,
+} from './artifactPresentation';
 import { progressStatusText } from './stageI18n';
 import {
   DEFAULT_SEEDANCE_ASPECT_RATIO,
@@ -733,15 +737,24 @@ const WorkspacePage: React.FC = () => {
   ]);
 
   const handleSaveSceneDescriptions = useCallback(
-    async (
-      scene: StoryboardScene,
-      descriptions: { visualDescription: string; audioDescription: string }
-    ) => {
+    async (scene: StoryboardScene, descriptions: StoryboardSceneSave) => {
       if (!sessionId) return;
-      const targetPath =
-        scene.storyboardPath ||
-        (scene.sceneRoot ? `${scene.sceneRoot.replace(/\\/g, '/')}/storyboard.json` : '') ||
-        scene.revisionPath;
+      const specPath = (scene.generationSpecPath || scene.revisionPath || '').replace(
+        /\\/g,
+        '/'
+      );
+      const savingSpec =
+        Boolean(
+          descriptions.firstFrameDescription != null ||
+            descriptions.motionDescription != null
+        ) && /\/shot_description\.json$/i.test(specPath);
+      const targetPath = savingSpec
+        ? specPath
+        : scene.storyboardPath ||
+          (scene.sceneRoot
+            ? `${scene.sceneRoot.replace(/\\/g, '/')}/storyboard.json`
+            : '') ||
+          scene.revisionPath;
       if (!targetPath) {
         message.warning(
           t('videoGeneration.studio.storyboard.visualSaveMissing', {
@@ -753,7 +766,12 @@ const WorkspacePage: React.FC = () => {
       setRevising(true);
       try {
         const current = await getArtifact(sessionId, targetPath);
-        const patched = patchShotDescriptionsInArtifact(current.text, scene, descriptions);
+        const patched = savingSpec
+          ? patchShotGenerationSpecInArtifact(current.text, descriptions)
+          : patchShotDescriptionsInArtifact(current.text, scene, {
+              visualDescription: descriptions.visualDescription ?? '',
+              audioDescription: descriptions.audioDescription,
+            });
         await writeArtifactText(sessionId, targetPath, patched);
         message.success(
           t('videoGeneration.studio.storyboard.visualSaveOk', {
