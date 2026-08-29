@@ -13,6 +13,18 @@ pub const SEEDANCE_ASPECT_RATIOS: &[&str] =
 
 pub const DEFAULT_ASPECT_RATIO: &str = "16:9";
 
+/// Integer parts of a normalized Seedance ratio (`16:9` → `(16, 9)`).
+pub fn aspect_parts(ratio: &str) -> (u32, u32) {
+    match normalize_aspect_ratio(ratio).as_str() {
+        "9:16" => (9, 16),
+        "1:1" => (1, 1),
+        "4:3" => (4, 3),
+        "3:4" => (3, 4),
+        "21:9" => (21, 9),
+        _ => (16, 9),
+    }
+}
+
 /// Read `aspect_ratio.txt` from `dir` or its parent (film root vs scene workdir).
 pub async fn load_aspect_from_dir(dir: &Path) -> String {
     for d in [dir, dir.parent().unwrap_or(dir)] {
@@ -126,6 +138,8 @@ mod tests {
         assert_eq!(normalize_aspect_ratio("nope"), "16:9");
         assert_eq!(normalize_aspect_ratio("16：9"), "16:9");
         assert_eq!(normalize_aspect_ratio("2:3"), "16:9");
+        assert_eq!(aspect_parts("16:9"), (16, 9));
+        assert_eq!(aspect_parts("portrait"), (9, 16));
     }
 
     #[test]

@@ -382,6 +382,17 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
     let _ = tokio::fs::remove_dir_all(&norm_dir).await;
     tokio::fs::create_dir_all(&norm_dir).await?;
 
+    // One film canvas: session aspect, sized so every clip downscales (never
+    // upscales). Same-ratio shots just shrink; a rogue portrait/landscape shot
+    // letterboxes instead of hijacking the whole film's orientation.
+    let (canvas_w, canvas_h) = concat_target_size(&ffmpeg, clip_paths, out_path).await;
+    tracing::info!(
+        canvas_w,
+        canvas_h,
+        clips = clip_paths.len(),
+        "vimax concat canvas"
+    );
+
     let mut normalized: Vec<PathBuf> = Vec::with_capacity(clip_paths.len());
     {
         // Finite parallelism per encoder (NVENC consumer GPUs cap sessions at
@@ -399,7 +410,9 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
                 let _permit = permit.acquire_owned().await.map_err(|_| {
                     VimaxError::Media("normalize semaphore closed".into())
                 })?;
-                normalize_clip_for_concat(&ffmpeg, &input, &dest).await.map(|_| i)
+                normalize_clip_for_concat(&ffmpeg, &input, &dest, canvas_w, canvas_h)
+                    .await
+                    .map(|_| i)
             });
         }
         let mut slots: Vec<Option<PathBuf>> = (0..clip_paths.len()).map(|_| None).collect();
@@ -435,22 +448,31 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
     let fallback = nomi_config::ffmpeg_hw::software_fallback_plan(&plan);
 
     // filter_complex concat keeps each shot's A/V pair locked together.
+    // Re-assert fps/SAR/timebase here (size already unified in normalize).
+    // Parallel HW normalize can still leave mixed timebases which concat rejects.
     let build_filter_args = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> Vec<String> {
         let mut filter = String::new();
         for i in 0..n {
-            filter.push_str(&format!("[{i}:v:0][{i}:a:0]"));
+            filter.push_str(&format!(
+                "[{i}:v:0]fps=24,setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v{i}];[{i}:a:0]aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[a{i}];"
+            ));
+        }
+        for i in 0..n {
+            filter.push_str(&format!("[v{i}][a{i}]"));
         }
         filter.push_str(&format!("concat=n={n}:v=1:a=1[v][a]"));
-        // Encoders that need an hwupload stage (e.g. h264_vaapi) get a second
-        // video label that maps instead of `[v]`.
         let mut map_v = "[v]";
         if let Some(vf) = p.hwupload_vf {
             filter.push_str(&format!(";[v]{vf}[vh]"));
             map_v = "[vh]";
         }
 
-        let mut args: Vec<String> = vec!["-y".into()];
-        // Input-side options (e.g. `-vaapi_device`) must precede the inputs.
+        let mut args: Vec<String> = vec![
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-y".into(),
+        ];
         args.extend(p.input_args.iter().map(|s| (*s).to_string()));
         for norm in &normalized {
             args.push("-i".into());
@@ -466,6 +488,8 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
         ]);
         args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
         args.extend([
+            "-r".into(),
+            "24".into(),
             "-c:a".into(),
             "aac".into(),
             "-ar".into(),
@@ -479,22 +503,25 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
         args
     };
 
+    let mut last_hint: Option<String> = None;
     for (label, p) in [("hw", &plan), ("sw", &fallback)] {
         let args = build_filter_args(p);
-        let status = run_ffmpeg_owned(&ffmpeg, &args).await?;
-        if status.success() {
+        let (ok, err) = run_ffmpeg_owned_capture(&ffmpeg, &args).await?;
+        if ok {
             let _ = tokio::fs::remove_dir_all(&norm_dir).await;
             tracing::info!(out = %out_path.display(), encoder = p.codec, "vimax concat filter re-encode ({label})");
             return Ok(());
         }
+        last_hint = ffmpeg_stderr_hint(&err).or_else(|| {
+            let trimmed = err.trim();
+            (!trimmed.is_empty()).then(|| trimmed.chars().take(240).collect())
+        });
         tracing::warn!(
             label,
-            exit = ?status.code(),
+            hint = last_hint.as_deref().unwrap_or(""),
             "ffmpeg concat filter failed; retrying with software encoder"
         );
         let _ = tokio::fs::remove_file(out_path).await;
-        // Software is the last resort — no third try when the plan was already
-        // libx264.
         if !p.uses_hw {
             break;
         }
@@ -502,9 +529,86 @@ pub async fn concat_videos(clip_paths: &[&Path], out_path: &Path) -> VimaxResult
 
     let _ = tokio::fs::remove_dir_all(&norm_dir).await;
     Err(VimaxError::Media(format!(
-        "ffmpeg concat filter failed for {}",
-        out_path.display()
+        "ffmpeg concat filter failed for {}{}",
+        out_path.display(),
+        last_hint
+            .map(|d| format!(" — ffmpeg: {d}"))
+            .unwrap_or_default()
     )))
+}
+
+fn even_dim(n: u32) -> u32 {
+    (n & !1).max(2)
+}
+
+/// Largest even WxH of aspect `aw:ah` that fits inside `src` (never upscales).
+fn max_aspect_rect_inside(src_w: u32, src_h: u32, aw: u32, ah: u32) -> (u32, u32) {
+    if src_w < 2 || src_h < 2 || aw == 0 || ah == 0 {
+        return (2, 2);
+    }
+    let (w, h) = if (src_w as u64).saturating_mul(ah as u64)
+        <= (src_h as u64).saturating_mul(aw as u64)
+    {
+        let h = ((src_w as u64).saturating_mul(ah as u64) / aw as u64) as u32;
+        (src_w, h)
+    } else {
+        let w = ((src_h as u64).saturating_mul(aw as u64) / ah as u64) as u32;
+        (w, src_h)
+    };
+    (even_dim(w), even_dim(h))
+}
+
+/// Film canvas: session aspect, limited by the smallest clip after fitting
+/// that aspect inside it. Same-ratio 1080p+720p → 720p; a 9:16 stray in a
+/// 16:9 film letterboxes instead of turning the concat vertical.
+fn concat_canvas_for_aspect(sizes: &[(u32, u32)], aspect: &str) -> (u32, u32) {
+    let (aw, ah) = crate::aspect::aspect_parts(aspect);
+    sizes
+        .iter()
+        .copied()
+        .filter(|(w, h)| *w >= 2 && *h >= 2)
+        .map(|(w, h)| max_aspect_rect_inside(w, h, aw, ah))
+        .min_by_key(|(w, h)| w.saturating_mul(*h))
+        .unwrap_or_else(|| {
+            let (w, h) = crate::aspect::aspect_to_upload_dims(aspect);
+            (even_dim(w), even_dim(h))
+        })
+}
+
+async fn concat_target_size(ffmpeg: &Path, clips: &[&Path], out_path: &Path) -> (u32, u32) {
+    let aspect = match out_path.parent() {
+        Some(dir) => crate::aspect::load_aspect_from_dir(dir).await,
+        None => crate::aspect::DEFAULT_ASPECT_RATIO.to_string(),
+    };
+    let mut sizes = Vec::new();
+    for clip in clips {
+        let Some(sig) = nomi_config::ffmpeg_hw::probe_stream_signature(ffmpeg, clip).await else {
+            continue;
+        };
+        sizes.push((sig.width, sig.height));
+    }
+    concat_canvas_for_aspect(&sizes, &aspect)
+}
+
+fn concat_normalize_vf(p: &nomi_config::ffmpeg_hw::VideoEncodePlan, w: u32, h: u32) -> String {
+    let geometry = format!(
+        "fps=24,scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bicubic,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+    );
+    if p.hwupload_vf.is_some() {
+        format!("{geometry},format=nv12,hwupload,setpts=PTS-STARTPTS")
+    } else {
+        format!("{geometry},format=yuv420p,setpts=PTS-STARTPTS")
+    }
+}
+
+/// Concat demuxer list entry. Forward slashes avoid Windows `file 'C:\foo'`
+/// treating `\f` / `\U` as escapes.
+fn ffmpeg_concat_list_line(path: &Path) -> String {
+    let escaped = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace('\'', r"'\''");
+    format!("file '{escaped}'\n")
 }
 
 /// Try joining `clips` with the concat demuxer + full stream copy. Returns true
@@ -521,8 +625,7 @@ async fn try_remux_concat(ffmpeg: &Path, clips: &[PathBuf], out_path: &Path) -> 
     let list_path = out_path.with_extension("concat_remux_list.txt");
     let mut list_body = String::new();
     for p in clips {
-        let escaped = p.display().to_string().replace('\'', "'\\''");
-        list_body.push_str(&format!("file '{escaped}'\n"));
+        list_body.push_str(&ffmpeg_concat_list_line(p));
     }
     let _ = tokio::fs::write(&list_path, &list_body).await;
 
@@ -605,11 +708,14 @@ fn normalize_audio_filter(dur: f64) -> String {
     }
 }
 
-/// Re-encode one shot to CFR 24fps video + stereo AAC matched to video length.
+/// Re-encode one shot to CFR 24fps video + stereo AAC matched to video length,
+/// scaled/padded onto a shared even canvas so concat can join them.
 async fn normalize_clip_for_concat(
     ffmpeg: &Path,
     input: &Path,
     output: &Path,
+    canvas_w: u32,
+    canvas_h: u32,
 ) -> VimaxResult<()> {
     let input_s = input.to_str().unwrap_or("");
     let output_s = output.to_str().unwrap_or("");
@@ -640,11 +746,7 @@ async fn normalize_clip_for_concat(
     // (nv12 → GPU), everything else takes yuv420p software frames. Computing it
     // per plan keeps the software fallback from inheriting VAAPI's hwupload.
     let normalize_vf = |p: &nomi_config::ffmpeg_hw::VideoEncodePlan| -> String {
-        if p.hwupload_vf.is_some() {
-            "fps=24,format=nv12,hwupload,setpts=PTS-STARTPTS".to_string()
-        } else {
-            "fps=24,format=yuv420p,setpts=PTS-STARTPTS".to_string()
-        }
+        concat_normalize_vf(p, canvas_w, canvas_h)
     };
 
     // Path A: clip already has an audio stream.
@@ -666,6 +768,8 @@ async fn normalize_clip_for_concat(
         ]);
         args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
         args.extend([
+            "-r".into(),
+            "24".into(),
             "-c:a".into(),
             "aac".into(),
             "-ar".into(),
@@ -705,6 +809,8 @@ async fn normalize_clip_for_concat(
         ]);
         args.extend(p.encode_args().iter().map(|s| (*s).to_string()));
         args.extend([
+            "-r".into(),
+            "24".into(),
             "-c:a".into(),
             "aac".into(),
             "-ar".into(),
@@ -1536,6 +1642,82 @@ mod tests {
         assert!(
             !mean.contains("-91.") && !mean.contains("-inf"),
             "unexpected mean_volume line: {mean}"
+        );
+    }
+
+    #[test]
+    fn concat_canvas_uses_session_aspect_without_upscaling() {
+        assert_eq!(
+            concat_canvas_for_aspect(&[(1920, 1080), (1280, 720)], "16:9"),
+            (1280, 720)
+        );
+        assert_eq!(
+            concat_canvas_for_aspect(&[(1280, 720), (854, 480), (1920, 1080)], "16:9"),
+            (852, 480)
+        );
+        // Portrait stray in a 16:9 film: fit 9:16 inside 16:9, don't flip the film.
+        let (w, h) = concat_canvas_for_aspect(&[(1920, 1080), (1080, 1920)], "16:9");
+        assert_eq!((w, h), (1080, 606));
+        assert_eq!(concat_canvas_for_aspect(&[], "16:9"), (1280, 720));
+        assert_eq!(concat_canvas_for_aspect(&[(641, 361)], "16:9"), (640, 360));
+    }
+
+    #[test]
+    fn concat_list_uses_forward_slashes_on_windows_paths() {
+        let line = ffmpeg_concat_list_line(Path::new(r"C:\Users\a\script2video\final_video.mp4"));
+        assert!(line.starts_with("file '"));
+        assert!(!line.contains('\\'), "{line}");
+        assert!(line.contains("C:/Users/a/script2video/final_video.mp4"));
+    }
+
+    #[tokio::test]
+    async fn concat_joins_clips_with_mismatched_resolution() {
+        let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
+            eprintln!("skip: ffmpeg not available");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let c0 = dir.path().join("wide.mp4");
+        let c1 = dir.path().join("tall.mp4");
+        for (path, size) in [(&c0, "640x360"), (&c1, "320x240")] {
+            let st = run_ffmpeg(
+                &ffmpeg,
+                &[
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("color=c=green:s={size}:d=1:r=24"),
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=1",
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    path.to_str().unwrap(),
+                ],
+            )
+            .await
+            .unwrap();
+            assert!(st.success(), "failed to mint {size} clip");
+        }
+        let out = dir.path().join("joined.mp4");
+        concat_videos(&[c0.as_path(), c1.as_path()], &out)
+            .await
+            .expect("concat mixed resolutions");
+        assert!(is_usable_video_file(&out));
+        let dur = probe_duration_secs(&ffmpeg, &out).await.expect("probe duration");
+        assert!(
+            (1.5..=2.6).contains(&dur),
+            "joined duration should be ~2s, got {dur}"
         );
     }
 

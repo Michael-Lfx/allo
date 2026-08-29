@@ -4,10 +4,17 @@ import { Button, Input, Spin } from '@arco-design/web-react';
 import { Edit, Left, LoadingFour, Music, Right, VideoOne } from '@icon-park/react';
 import { getArtifact, loadArtifactMediaUrlCached } from '../api';
 import {
+  applyShotGenerationSpecs,
   buildStoryboardScenesFromStoryboards,
+  findShotDescriptionPaths,
+  findShotVideoPaths,
   findStoryboardPaths,
+  parseShotGenerationSpec,
   parseStoryboard,
+  sceneHasGenerationSpec,
+  type ShotGenerationSpec,
   type StoryboardScene,
+  type StoryboardSceneSave,
   type StoryboardShot,
 } from '../artifactPresentation';
 import {
@@ -19,7 +26,24 @@ import type { ArtifactNode } from '../types';
 import { useRunStatusFull } from '../useRunStatusFeed';
 import styles from '../index.module.css';
 
-const TextArea = Input.TextArea;
+const { TextArea } = Input;
+
+const inspectorInputStyle = {
+  color: 'rgba(255,255,255,0.92)',
+  WebkitTextFillColor: 'rgba(255,255,255,0.92)',
+  caretColor: 'rgba(255,255,255,0.92)',
+  background: 'rgba(255,255,255,0.08)',
+} as const;
+
+const InspectorSpecBlock: React.FC<{
+  label: string;
+  body: string;
+}> = ({ label, body }) => (
+  <div className={styles.storyInspectorSpecBlock}>
+    <div className={styles.storyInspectorSubLabel}>{label}</div>
+    <p className='m-0 text-13px leading-21px text-white/90'>{body}</p>
+  </div>
+);
 
 interface StoryboardBoardProps {
   sessionId: string;
@@ -29,7 +53,7 @@ interface StoryboardBoardProps {
   /** Persist edited Visual / audio direction for the active shot. */
   onSaveSceneDescriptions: (
     scene: StoryboardScene,
-    descriptions: { visualDescription: string; audioDescription: string }
+    descriptions: StoryboardSceneSave
   ) => Promise<void> | void;
 }
 
@@ -187,13 +211,23 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   const { t } = useTranslation();
   const runStatus = useRunStatusFull();
   const storyboardPaths = useMemo(() => findStoryboardPaths(artifacts), [artifacts]);
-  const storyboardPathSignature = storyboardPaths.join('|');
+  const specPaths = useMemo(() => findShotDescriptionPaths(artifacts), [artifacts]);
+  const videoPaths = useMemo(() => findShotVideoPaths(artifacts), [artifacts]);
+  const descriptionFetchSignature = [
+    storyboardPaths.join('|'),
+    specPaths.join('|'),
+    videoPaths.join('|'),
+  ].join('||');
   const [storyboardEntries, setStoryboardEntries] = useState<
     Array<{ path: string; shots: StoryboardShot[] }>
   >([]);
+  const [generationSpecs, setGenerationSpecs] = useState<ShotGenerationSpec[]>([]);
   const [activeSceneId, setActiveSceneId] = useState<string>();
   const [editMode, setEditMode] = useState(false);
   const [visualDraft, setVisualDraft] = useState('');
+  const [firstFrameDraft, setFirstFrameDraft] = useState('');
+  const [motionDraft, setMotionDraft] = useState('');
+  const [lastFrameDraft, setLastFrameDraft] = useState('');
   const [audioDraft, setAudioDraft] = useState('');
 
   const generatingTarget = useMemo(
@@ -203,33 +237,52 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   const rendering = runStatus?.status === 'rendering';
 
   useEffect(() => {
-    if (!storyboardPaths.length) {
+    if (!storyboardPaths.length && !specPaths.length) {
       setStoryboardEntries([]);
+      setGenerationSpecs([]);
       return;
     }
     let cancelled = false;
-    void Promise.all(
-      storyboardPaths.map(async (path) => {
-        try {
-          const content = await getArtifact(sessionId, path);
-          return { path, shots: parseStoryboard(content.text) };
-        } catch {
-          return { path, shots: [] as StoryboardShot[] };
-        }
-      })
-    ).then((entries) => {
-      if (!cancelled) setStoryboardEntries(entries);
+    void Promise.all([
+      Promise.all(
+        storyboardPaths.map(async (path) => {
+          try {
+            const content = await getArtifact(sessionId, path);
+            return { path, shots: parseStoryboard(content.text) };
+          } catch {
+            return { path, shots: [] as StoryboardShot[] };
+          }
+        })
+      ),
+      Promise.all(
+        specPaths.map(async (path) => {
+          try {
+            const content = await getArtifact(sessionId, path);
+            return parseShotGenerationSpec(content.text, path);
+          } catch {
+            return null;
+          }
+        })
+      ),
+    ]).then(([boards, specs]) => {
+      if (cancelled) return;
+      setStoryboardEntries(boards);
+      setGenerationSpecs(specs.filter((spec): spec is ShotGenerationSpec => spec != null));
     });
     return () => {
       cancelled = true;
     };
-    // 轮询期间 artifacts 数组每 ~4s 换新身份；以稳定签名为依赖，路径集合未变就不重拉全部分镜。
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- effect 体读取的 storyboardPaths 内容由上方签名完全决定
-  }, [sessionId, storyboardPathSignature]);
+    // 路径集合未变不重拉；镜头视频落地（videoPaths）时再拉一次，避免成片已出、描述还停在规划简述。
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 签名覆盖 storyboard/spec/video 路径集合
+  }, [sessionId, descriptionFetchSignature]);
 
   const scenes = useMemo(
-    () => buildStoryboardScenesFromStoryboards(artifacts, storyboardEntries),
-    [artifacts, storyboardEntries]
+    () =>
+      applyShotGenerationSpecs(
+        buildStoryboardScenesFromStoryboards(artifacts, storyboardEntries),
+        generationSpecs
+      ),
+    [artifacts, storyboardEntries, generationSpecs]
   );
   const activeScene =
     scenes.find((scene) => scene.id === activeSceneId) ??
@@ -238,55 +291,115 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   useEffect(() => {
     setEditMode(false);
     setVisualDraft(activeScene?.visualDescription ?? '');
+    setFirstFrameDraft(activeScene?.firstFrameDescription ?? '');
+    setMotionDraft(activeScene?.motionDescription ?? '');
+    setLastFrameDraft(activeScene?.lastFrameDescription ?? '');
     setAudioDraft(activeScene?.audioDescription ?? '');
-  }, [activeScene?.id, activeScene?.visualDescription, activeScene?.audioDescription]);
+  }, [
+    activeScene?.id,
+    activeScene?.visualDescription,
+    activeScene?.audioDescription,
+    activeScene?.firstFrameDescription,
+    activeScene?.motionDescription,
+    activeScene?.lastFrameDescription,
+  ]);
 
   const canEdit = Boolean(activeScene?.storyboardPath || activeScene?.revisionPath);
+  const editingGenerationSpec = Boolean(
+    activeScene && sceneHasGenerationSpec(activeScene)
+  );
 
   const startEdit = useCallback(() => {
     if (!activeScene) return;
     setVisualDraft(activeScene.visualDescription || '');
+    setFirstFrameDraft(activeScene.firstFrameDescription || '');
+    setMotionDraft(activeScene.motionDescription || '');
+    setLastFrameDraft(activeScene.lastFrameDescription || '');
     setAudioDraft(activeScene.audioDescription || '');
     setEditMode(true);
   }, [activeScene]);
 
   const cancelEdit = useCallback(() => {
     setVisualDraft(activeScene?.visualDescription ?? '');
+    setFirstFrameDraft(activeScene?.firstFrameDescription ?? '');
+    setMotionDraft(activeScene?.motionDescription ?? '');
+    setLastFrameDraft(activeScene?.lastFrameDescription ?? '');
     setAudioDraft(activeScene?.audioDescription ?? '');
     setEditMode(false);
-  }, [activeScene?.audioDescription, activeScene?.visualDescription]);
+  }, [activeScene]);
 
   const handleSave = useCallback(async () => {
-    if (!activeScene || !visualDraft.trim()) return;
-    const nextVisual = visualDraft.trim();
+    if (!activeScene) return;
     const nextAudio = audioDraft.trim();
+    const usingSpec = sceneHasGenerationSpec(activeScene);
+    const nextVisual = visualDraft.trim();
+    const nextFirst = firstFrameDraft.trim();
+    const nextMotion = motionDraft.trim();
+    const nextLast = lastFrameDraft.trim();
+    if (usingSpec) {
+      if (!nextFirst && !nextMotion) return;
+    } else if (!nextVisual) {
+      return;
+    }
     try {
-      await onSaveSceneDescriptions(activeScene, {
-        visualDescription: nextVisual,
-        audioDescription: nextAudio,
-      });
-      setStoryboardEntries((previous) =>
-        previous.map((entry) => {
-          if (entry.path !== activeScene.storyboardPath) return entry;
-          return {
-            ...entry,
-            shots: entry.shots.map((shot) =>
-              shot.index === activeScene.shotIndex
-                ? {
-                    ...shot,
-                    visualDescription: nextVisual,
-                    audioDescription: nextAudio || undefined,
-                  }
-                : shot
-            ),
+      const payload: StoryboardSceneSave = usingSpec
+        ? {
+            audioDescription: nextAudio,
+            firstFrameDescription: nextFirst,
+            motionDescription: nextMotion,
+            lastFrameDescription: nextLast,
+          }
+        : {
+            visualDescription: nextVisual,
+            audioDescription: nextAudio,
           };
-        })
-      );
+      await onSaveSceneDescriptions(activeScene, payload);
+      if (usingSpec) {
+        setGenerationSpecs((previous) =>
+          previous.map((spec) =>
+            spec.path === activeScene.generationSpecPath
+              ? {
+                  ...spec,
+                  firstFrameDescription: nextFirst,
+                  motionDescription: nextMotion,
+                  lastFrameDescription: nextLast,
+                  audioDescription: nextAudio || undefined,
+                }
+              : spec
+          )
+        );
+      } else {
+        setStoryboardEntries((previous) =>
+          previous.map((entry) => {
+            if (entry.path !== activeScene.storyboardPath) return entry;
+            return {
+              ...entry,
+              shots: entry.shots.map((shot) =>
+                shot.index === activeScene.shotIndex
+                  ? {
+                      ...shot,
+                      visualDescription: nextVisual,
+                      audioDescription: nextAudio || undefined,
+                    }
+                  : shot
+              ),
+            };
+          })
+        );
+      }
       setEditMode(false);
     } catch {
       // Parent already surfaces the error toast; keep the editor open.
     }
-  }, [activeScene, audioDraft, onSaveSceneDescriptions, visualDraft]);
+  }, [
+    activeScene,
+    audioDraft,
+    firstFrameDraft,
+    lastFrameDraft,
+    motionDraft,
+    onSaveSceneDescriptions,
+    visualDraft,
+  ]);
 
   const videoStatusFor = useCallback(
     (scene: StoryboardScene): StoryboardVideoSlotStatus =>
@@ -418,22 +531,70 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
           {editMode ? (
             <>
               <div className={`${styles.storyInspectorScroll} ${styles.storyInspectorVisual}`}>
-                <TextArea
-                  value={visualDraft}
-                  onChange={setVisualDraft}
-                  disabled={disabled || revising}
-                  autoSize={{ minRows: 4, maxRows: 12 }}
-                  className={styles.reviseInlineInput}
-                  style={{
-                    color: 'rgba(255,255,255,0.92)',
-                    WebkitTextFillColor: 'rgba(255,255,255,0.92)',
-                    caretColor: 'rgba(255,255,255,0.92)',
-                    background: 'rgba(255,255,255,0.08)',
-                  }}
-                  placeholder={t('videoGeneration.studio.storyboard.visualEditPlaceholder', {
-                    defaultValue: '描述这个镜头的画面…',
-                  })}
-                />
+                {editingGenerationSpec ? (
+                  <div className={styles.storyInspectorSpecStack}>
+                    <div className={styles.storyInspectorSubLabel}>
+                      {t('videoGeneration.studio.storyboard.firstFrameDirection', {
+                        defaultValue: '首帧',
+                      })}
+                    </div>
+                    <TextArea
+                      value={firstFrameDraft}
+                      onChange={setFirstFrameDraft}
+                      disabled={disabled || revising}
+                      autoSize={{ minRows: 3, maxRows: 8 }}
+                      className={styles.reviseInlineInput}
+                      style={inspectorInputStyle}
+                      placeholder={t('videoGeneration.studio.storyboard.firstFramePlaceholder', {
+                        defaultValue: '这一镜开始时的静止画面…',
+                      })}
+                    />
+                    <div className={styles.storyInspectorSubLabel}>
+                      {t('videoGeneration.studio.storyboard.motionDirection', {
+                        defaultValue: '镜头运动',
+                      })}
+                    </div>
+                    <TextArea
+                      value={motionDraft}
+                      onChange={setMotionDraft}
+                      disabled={disabled || revising}
+                      autoSize={{ minRows: 3, maxRows: 8 }}
+                      className={styles.reviseInlineInput}
+                      style={inspectorInputStyle}
+                      placeholder={t('videoGeneration.studio.storyboard.motionPlaceholder', {
+                        defaultValue: '从首帧到结束的镜头与人物运动…',
+                      })}
+                    />
+                    <div className={styles.storyInspectorSubLabel}>
+                      {t('videoGeneration.studio.storyboard.lastFrameDirection', {
+                        defaultValue: '结束画面',
+                      })}
+                    </div>
+                    <TextArea
+                      value={lastFrameDraft}
+                      onChange={setLastFrameDraft}
+                      disabled={disabled || revising}
+                      autoSize={{ minRows: 2, maxRows: 6 }}
+                      className={styles.reviseInlineInput}
+                      style={inspectorInputStyle}
+                      placeholder={t('videoGeneration.studio.storyboard.lastFramePlaceholder', {
+                        defaultValue: '这一镜结束时的静止画面…',
+                      })}
+                    />
+                  </div>
+                ) : (
+                  <TextArea
+                    value={visualDraft}
+                    onChange={setVisualDraft}
+                    disabled={disabled || revising}
+                    autoSize={{ minRows: 4, maxRows: 12 }}
+                    className={styles.reviseInlineInput}
+                    style={inspectorInputStyle}
+                    placeholder={t('videoGeneration.studio.storyboard.visualEditPlaceholder', {
+                      defaultValue: '描述这个镜头的画面…',
+                    })}
+                  />
+                )}
               </div>
               <div className={styles.storyInspectorLabel}>
                 {t('videoGeneration.studio.storyboard.audioDirection', {
@@ -447,12 +608,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                   disabled={disabled || revising}
                   autoSize={{ minRows: 2, maxRows: 10 }}
                   className={styles.reviseInlineInput}
-                  style={{
-                    color: 'rgba(255,255,255,0.92)',
-                    WebkitTextFillColor: 'rgba(255,255,255,0.92)',
-                    caretColor: 'rgba(255,255,255,0.92)',
-                    background: 'rgba(255,255,255,0.08)',
-                  }}
+                  style={inspectorInputStyle}
                   placeholder={t('videoGeneration.studio.storyboard.audioEditPlaceholder', {
                     defaultValue: '背景音乐、环境音或台词…',
                   })}
@@ -471,7 +627,12 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
                   type='primary'
                   size='small'
                   loading={revising}
-                  disabled={disabled || !visualDraft.trim()}
+                  disabled={
+                    disabled ||
+                    (editingGenerationSpec
+                      ? !firstFrameDraft.trim() && !motionDraft.trim()
+                      : !visualDraft.trim())
+                  }
                   onClick={() => void handleSave()}
                 >
                   {t('videoGeneration.artifacts.save', { defaultValue: '保存' })}
@@ -481,12 +642,41 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
           ) : (
             <>
               <div className={`${styles.storyInspectorScroll} ${styles.storyInspectorVisual}`}>
-                <p className='m-0 text-14px leading-23px text-white/90'>
-                  {activeScene.visualDescription ||
-                    t('videoGeneration.studio.storyboard.visualPending', {
-                      defaultValue: '画面生成后将在这里展示。',
-                    })}
-                </p>
+                {editingGenerationSpec ? (
+                  <div className={styles.storyInspectorSpecStack}>
+                    {activeScene.firstFrameDescription ? (
+                      <InspectorSpecBlock
+                        label={t('videoGeneration.studio.storyboard.firstFrameDirection', {
+                          defaultValue: '首帧',
+                        })}
+                        body={activeScene.firstFrameDescription}
+                      />
+                    ) : null}
+                    {activeScene.motionDescription ? (
+                      <InspectorSpecBlock
+                        label={t('videoGeneration.studio.storyboard.motionDirection', {
+                          defaultValue: '镜头运动',
+                        })}
+                        body={activeScene.motionDescription}
+                      />
+                    ) : null}
+                    {activeScene.lastFrameDescription ? (
+                      <InspectorSpecBlock
+                        label={t('videoGeneration.studio.storyboard.lastFrameDirection', {
+                          defaultValue: '结束画面',
+                        })}
+                        body={activeScene.lastFrameDescription}
+                      />
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className='m-0 text-14px leading-23px text-white/90'>
+                    {activeScene.visualDescription ||
+                      t('videoGeneration.studio.storyboard.visualPending', {
+                        defaultValue: '画面生成后将在这里展示。',
+                      })}
+                  </p>
+                )}
               </div>
               <div className='shrink-0 border-t border-white/10' />
               <div className={styles.storyInspectorLabel}>
