@@ -5,6 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.1.3 - 2026-08-29
+
+- Video canvas adds a 3D director workbench and canvas agent tools.
+- Vimax campaign carousel, TV tab, and submit flow. Storyboard shows I2V spec and concatenates mixed-resolution shots.
+- Photographic faces are sanitized for privacy; clip pacing follows speech.
+
 ## v1.1.2 - 2026-08-29
 
 - Fix Windows ARM ModelScope publish: NSIS `_arm64-setup.exe` maps to `windows-aarch64`.
