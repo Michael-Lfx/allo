@@ -308,8 +308,8 @@ pub fn finalize_llm_rewrite(raw: &str, original: &str) -> String {
 
 /// Soften a Seedance video prompt before the first submission.
 ///
-/// Unlike still prompts, video prompts are structural (REFERENCE BINDINGS / PLOT
-/// LOCK / typed audio captions `{…}`, `<…>`, `(…)`), so we only apply in-place
+/// Unlike still prompts, video prompts are structural (`@ImageN` bindings / Motion /
+/// typed audio captions `{…}`, `<…>`, `(…)`), so we only apply in-place
 /// lexical replacements — never reorder, re-prefix, or drop sections.
 pub fn sanitize_video_prompt(prompt: &str) -> String {
     apply_replacements(prompt)

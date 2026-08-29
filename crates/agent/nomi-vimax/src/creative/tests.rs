@@ -169,6 +169,10 @@ fn canvas_doc_preserves_camera_tree_and_voice() {
         video_prompt.contains("FIXED SPEAKER VOICE"),
         "video prompt must inject voice bible: {video_prompt}"
     );
+    assert!(
+        video_prompt.contains("Frame: 16:9 landscape"),
+        "canvas video prompt must use the film's user ratio, not a hardcoded 9:16: {video_prompt}"
+    );
     assert_eq!(row["videoNodeId"].as_str(), Some("vimax-shot-main-0"));
 
     let video = nodes

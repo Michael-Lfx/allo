@@ -472,9 +472,32 @@ pub fn portrait_face_clause_for_character(
 }
 
 /// Heuristic: child / kid / 小孩 / age cues in id or features.
+///
+/// Explicit ages win: `28岁` is an adult even if the prose says 少女/girl.
+/// Bare `岁` is not a child cue — it appears in every Chinese age string.
 pub fn looks_like_child_character(identifier: &str, features: &str) -> bool {
-    let blob = format!("{identifier} {features}").to_ascii_lowercase();
-    const NEEDLES: &[&str] = &[
+    let blob = format!("{identifier} {features}");
+    if let Some(age) = parse_character_age_years(&blob) {
+        return age < 18;
+    }
+    let lower = blob.to_ascii_lowercase();
+    const CJK_NEEDLES: &[&str] = &[
+        "小孩",
+        "儿童",
+        "孩子",
+        "男童",
+        "女童",
+        "男孩",
+        "女孩",
+        "幼儿",
+        "少年",
+        "少女",
+        "小学生",
+    ];
+    if CJK_NEEDLES.iter().any(|n| blob.contains(n)) {
+        return true;
+    }
+    const EN_WORDS: &[&str] = &[
         "child",
         "kid",
         "kids",
@@ -488,20 +511,131 @@ pub fn looks_like_child_character(identifier: &str, features: &str) -> bool {
         "preteen",
         "schoolgirl",
         "schoolboy",
-        "小孩",
-        "儿童",
-        "孩子",
-        "男童",
-        "女童",
-        "男孩",
-        "女孩",
-        "幼儿",
-        "少年",
-        "少女",
-        "小学生",
-        "岁",
     ];
-    NEEDLES.iter().any(|n| blob.contains(n))
+    EN_WORDS.iter().any(|w| has_ascii_word(&lower, w))
+}
+
+/// Parse `28岁` / `8 岁` / `age 7` / `7-year-old`. None when no numeric age is present.
+pub fn parse_character_age_years(text: &str) -> Option<u32> {
+    let chars: Vec<char> = text.chars().collect();
+    for i in 0..chars.len() {
+        if chars[i] != '岁' || i == 0 {
+            continue;
+        }
+        let mut j = i;
+        while j > 0 && chars[j - 1].is_whitespace() {
+            j -= 1;
+        }
+        let end = j;
+        while j > 0 && chars[j - 1].is_ascii_digit() {
+            j -= 1;
+        }
+        if j < end {
+            if let Ok(n) = chars[j..end].iter().collect::<String>().parse::<u32>() {
+                if n > 0 && n < 120 {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    let lower = text.to_ascii_lowercase();
+    for pat in ["year-old", "years old", "years-old"] {
+        if let Some(pos) = lower.find(pat) {
+            if let Some(n) = digits_immediately_before(&lower, pos) {
+                return Some(n);
+            }
+        }
+    }
+    if let Some(pos) = lower.find("age ") {
+        let rest = &lower[pos + 4..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(n) = digits.parse::<u32>() {
+            if n > 0 && n < 120 {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+fn digits_immediately_before(lower: &str, pos: usize) -> Option<u32> {
+    let bytes = lower.as_bytes();
+    let mut i = pos;
+    while i > 0 && (bytes[i - 1].is_ascii_whitespace() || bytes[i - 1] == b'-') {
+        i -= 1;
+    }
+    let end = i;
+    while i > 0 && bytes[i - 1].is_ascii_digit() {
+        i -= 1;
+    }
+    if i >= end {
+        return None;
+    }
+    let n = std::str::from_utf8(&bytes[i..end]).ok()?.parse::<u32>().ok()?;
+    (n > 0 && n < 120).then_some(n)
+}
+
+fn has_ascii_word(haystack: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    let h = haystack.as_bytes();
+    let w = word.as_bytes();
+    let mut i = 0;
+    while i + w.len() <= h.len() {
+        if &h[i..i + w.len()] == w {
+            let before_ok = i == 0 || !h[i - 1].is_ascii_alphabetic();
+            let after = i + w.len();
+            let after_ok = after >= h.len() || !h[after].is_ascii_alphabetic();
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Truncate at a sentence/clause break so Seedance never sees half a CJK word.
+pub fn clip_at_break(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.is_empty() || max == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let taken: String = s.chars().take(max).collect();
+    const BREAKS: &[char] = &['。', '！', '？', '；', '!', '?', ';', '，', ',', '、', '.', '—'];
+    if let Some((idx, ch)) = taken.char_indices().rev().find(|(_, c)| BREAKS.contains(c)) {
+        let keep = idx + ch.len_utf8();
+        if taken[..keep].chars().count() > max / 3 {
+            return taken[..keep].trim().to_string();
+        }
+    }
+    taken.trim().to_string()
+}
+
+/// One-line look for Seedance R2V. Reference images already carry the medium;
+/// stacked "not anime" negatives steal attention from the motion beat.
+pub fn video_style_clause(user_style: &str) -> String {
+    let resolved = resolve_visual_style(user_style);
+    if wants_stylized_non_photoreal(&resolved) {
+        let short = clip_at_break(&resolved, 80);
+        format!("Look: {short}.")
+    } else {
+        let custom = user_style.trim();
+        let lower = custom.to_ascii_lowercase();
+        if custom.is_empty()
+            || lower == "cinematic"
+            || lower.contains("cinematic film look")
+        {
+            "Look: live-action cinematic photography.".into()
+        } else {
+            let short = clip_at_break(&resolved, 72);
+            format!("Look: live-action cinematic photography, {short}.")
+        }
+    }
 }
 
 /// Clamp a user-provided target into a practical range.
@@ -743,6 +877,10 @@ camera move actually need it.\n\
            * Do NOT stretch thin content to {MAX_CLIP_DURATION_SECS}s. Do NOT split one beat into \
 micro-cuts just to raise shot count.\n\
            * Empty holds, slow pans, and \"character looks around\" are FORBIDDEN.\n\
+           * Action-only (no dialogue) shots should usually be {MIN_CLIP_DURATION_SECS}–8s — \
+do not pad a single sit/stand/walk to {MAX_CLIP_DURATION_SECS}s.\n\
+           * When a clip needs ~8s or more, write the motion as timed beats \
+(e.g. 0-3s / 3-8s) so the renderer can pace one event instead of slow-mo padding.\n\
            * Language-aware delivery: Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec, \
 English ~{SPEECH_EN_WORDS_PER_SEC} words/sec (clear — not rushed, not drawn-out).\n"
     )
@@ -1252,16 +1390,19 @@ pub fn estimate_shot_need_secs(
     }
 }
 
-/// I2V motion-prompt duration line: natural pace, no slow-mo pad, language-aware.
-pub fn i2v_duration_pacing_clause(duration_secs: u32) -> String {
-    format!(
-        "DURATION: target length is about {duration_secs}s. Play the beat at a natural conversational \
-pace for the user's language (Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec, English ~{SPEECH_EN_WORDS_PER_SEC} \
-words/sec). Do not rush, speed-read, chipmunk, or swallow syllables — and do not slow-mo, linger, \
-or pad empty holds to fill the clock. Leave a short breath before the first word; finish the last \
-syllable cleanly, then land on a brief visible reaction. Complete the single visual event; extra \
-seconds of waiting or looking around are forbidden."
-    )
+/// Short duration line for Seedance. Speech-pacing lecture only when the shot has dialogue.
+pub fn i2v_duration_pacing_clause(duration_secs: u32, has_dialogue: bool) -> String {
+    if has_dialogue {
+        format!(
+            "About {duration_secs}s. Speak at a natural conversational pace — do not rush or \
+time-compress lines. Finish the last syllable, then a brief visible reaction."
+        )
+    } else {
+        format!(
+            "About {duration_secs}s. One continuous visual event at natural speed — no slow-motion \
+padding, no empty holds."
+        )
+    }
 }
 
 /// True when text carries spoken lines (quotes / dialogue verbs) rather than
@@ -1617,6 +1758,33 @@ mod tests {
         assert!(looks_like_child_character("小明", "8岁男孩，黑短发"));
         assert!(looks_like_child_character("Amy", "a young girl, age 7"));
         assert!(!looks_like_child_character("王经理", "中年男性，西装"));
+        assert!(
+            !looks_like_child_character("林铮", "28 岁中国女性，身高约 172cm"),
+            "adult age must not trip the child lock via a bare 岁"
+        );
+        assert!(!looks_like_child_character("阿强", "boyfriend of the lead, 32"));
+        assert_eq!(parse_character_age_years("28 岁中国女性"), Some(28));
+        assert_eq!(parse_character_age_years("8岁男孩"), Some(8));
+        assert_eq!(parse_character_age_years("a young girl, age 7"), Some(7));
+    }
+
+    #[test]
+    fn clip_at_break_avoids_mid_clause_garbage() {
+        let s = clip_at_break("鹅蛋脸，下颌线清晰，鼻梁高而挺直，嘴唇偏薄。身着战甲。", 18);
+        assert!(!s.ends_with("小"), "{s}");
+        assert!(s.contains('，') || s.contains('。'), "{s}");
+        let short = clip_at_break("短", 80);
+        assert_eq!(short, "短");
+    }
+
+    #[test]
+    fn video_style_clause_is_one_positive_line() {
+        let cine = video_style_clause("cinematic film look");
+        assert!(cine.starts_with("Look:"));
+        assert!(!cine.contains("PRODUCTION LOOK LOCK"));
+        assert!(!cine.to_ascii_lowercase().contains("not anime"));
+        let anime = video_style_clause("stylized anime / animated film look");
+        assert!(anime.to_ascii_lowercase().contains("anim"));
     }
 
     #[test]
