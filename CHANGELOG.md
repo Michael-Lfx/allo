@@ -5,6 +5,10 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.1.4 - 2026-08-30
+
+- Seedance reference-to-video prompts are shorter and honor the user's aspect ratio.
+
 ## v1.1.3 - 2026-08-29
 
 - Video canvas adds a 3D director workbench and canvas agent tools.
