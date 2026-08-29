@@ -273,12 +273,16 @@ export async function importCanvasProject(sourcePath: string): Promise<CanvasPro
 
 export async function publishCanvasProjectToTvShow(
   projectId: string,
-  body?: { title?: string; description?: string }
+  body?: { title?: string; description?: string; campaignId?: number }
 ): Promise<{ id: number; status: string; title: string }> {
+  const payload: { title?: string; description?: string; campaignId?: number } = {};
+  if (body?.title) payload.title = body.title;
+  if (body?.description) payload.description = body.description;
+  if (body?.campaignId && body.campaignId > 0) payload.campaignId = body.campaignId;
   return httpRequest<{ id: number; status: string; title: string }>(
     'POST',
     `/api/video-canvas/projects/${encodeURIComponent(projectId)}/tv-show/publish`,
-    body ?? {},
+    payload,
     // OSS package PUT may take several minutes; abort instead of spinning forever.
     { timeoutMs: 12 * 60 * 1000 }
   );

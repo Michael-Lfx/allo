@@ -10,10 +10,11 @@ use nomi_vimax::{
     VerticalSkillSummary, VimaxService, WorkflowKind,
 };
 use nomifun_api_types::{
-    TvShowLikeResponse, TvShowListResponse, TvShowPublishRequest, TvShowPublishResponse,
-    TvShowPublishSessionRequest, TvShowVideo, VimaxCloudSkill, VimaxCloudSkillInstallResponse,
-    VimaxCloudSkillLikeResponse, VimaxCloudSkillListResponse, VimaxCloudSkillPublishLocalRequest,
-    VimaxCloudSkillPublishRequest, VimaxCloudSkillPublishResponse, VimaxSessionSummary,
+    CampaignCarouselResponse, CampaignDetail, CampaignListResponse, TvShowLikeResponse,
+    TvShowListResponse, TvShowPublishRequest, TvShowPublishResponse, TvShowPublishSessionRequest,
+    TvShowVideo, VimaxCloudSkill, VimaxCloudSkillInstallResponse, VimaxCloudSkillLikeResponse,
+    VimaxCloudSkillListResponse, VimaxCloudSkillPublishLocalRequest, VimaxCloudSkillPublishRequest,
+    VimaxCloudSkillPublishResponse, VimaxSessionSummary,
 };
 use nomifun_cloud::{FlowyApiClient, ServerSession};
 use nomifun_common::AppError;
@@ -579,6 +580,7 @@ impl VimaxApiService {
             package_size_bytes: Some(package_upload.byte_size as i64),
             package_sha256: None,
             archive_version: Some(1),
+            campaign_id: req.campaign_id.filter(|id| *id > 0),
         };
 
         client
@@ -614,10 +616,17 @@ impl VimaxApiService {
         page: Option<i32>,
         page_size: Option<i32>,
         status: Option<String>,
+        campaign_id: Option<i64>,
     ) -> Result<TvShowListResponse, AppError> {
         let (client, session) = self.flowy_client_and_session().await?;
         client
-            .tv_show_mine(&session, page, page_size, status.as_deref())
+            .tv_show_mine(
+                &session,
+                page,
+                page_size,
+                status.as_deref(),
+                campaign_id.filter(|id| *id > 0),
+            )
             .await
             .map_err(map_cloud_err)
     }
@@ -650,6 +659,67 @@ impl VimaxApiService {
         let (client, session) = self.flowy_client_and_session().await?;
         client
             .tv_show_delete(&session, id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn campaign_carousel(&self) -> Result<CampaignCarouselResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .campaign_carousel(&session)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn campaign_list(
+        &self,
+        page: Option<i32>,
+        page_size: Option<i32>,
+        include_ended: Option<bool>,
+    ) -> Result<CampaignListResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .campaign_list(&session, page, page_size, include_ended)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn campaign_detail(&self, id: i64) -> Result<CampaignDetail, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .campaign_detail(&session, id)
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn campaign_submissions(
+        &self,
+        id: i64,
+        page: Option<i32>,
+        page_size: Option<i32>,
+        workflow: Option<String>,
+        keyword: Option<String>,
+        sort: Option<String>,
+    ) -> Result<TvShowListResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .campaign_submissions(
+                &session,
+                id,
+                page,
+                page_size,
+                workflow.as_deref(),
+                keyword.as_deref(),
+                sort.as_deref(),
+            )
+            .await
+            .map_err(map_cloud_err)
+    }
+
+    pub async fn campaign_winners(&self, id: i64) -> Result<TvShowListResponse, AppError> {
+        let (client, session) = self.flowy_client_and_session().await?;
+        client
+            .campaign_winners(&session, id)
             .await
             .map_err(map_cloud_err)
     }

@@ -10,6 +10,7 @@ mod media_types;
 mod model_resolve;
 mod oss;
 mod response;
+mod campaign;
 mod skills;
 mod tv_show;
 mod types;

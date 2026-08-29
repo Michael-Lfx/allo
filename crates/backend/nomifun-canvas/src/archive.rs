@@ -324,6 +324,7 @@ impl CanvasService {
             package_size_bytes: Some(package_upload.byte_size as i64),
             package_sha256: None,
             archive_version: Some(ARCHIVE_VERSION as i32),
+            campaign_id: req.campaign_id.filter(|id| *id > 0),
         };
 
         client

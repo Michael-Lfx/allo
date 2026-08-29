@@ -1,0 +1,234 @@
+.carousel {
+  width: min(100%, 860px);
+  margin: 0 auto 18px;
+}
+
+.carouselViewport {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: clamp(108px, 16vw, 156px);
+  border-radius: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: var(--color-fill-2);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+}
+
+.carouselTrack {
+  display: flex;
+  height: 100%;
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.carouselSlide {
+  position: relative;
+  flex: 0 0 100%;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: #0c0f14;
+  cursor: default;
+  color: inherit;
+  font: inherit;
+}
+
+.carouselSlideClickable {
+  cursor: pointer;
+}
+
+.carouselSlideClickable:focus-visible {
+  outline: 2px solid rgb(var(--primary-6));
+  outline-offset: -2px;
+}
+
+.carouselMedia,
+.carouselVideo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  pointer-events: none;
+}
+
+.carouselGradient {
+  position: absolute;
+  inset: auto 0 0;
+  height: 56%;
+  background: linear-gradient(180deg, transparent, rgba(8, 10, 14, 0.62));
+  pointer-events: none;
+}
+
+.carouselTitle {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 14px;
+  z-index: 1;
+  overflow: hidden;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.carouselDots {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 2;
+  display: flex;
+  gap: 5px;
+  pointer-events: auto;
+}
+
+.carouselDot {
+  width: 6px;
+  height: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.42);
+  cursor: pointer;
+  transition:
+    width 180ms ease,
+    background-color 180ms ease;
+}
+
+.carouselDotActive {
+  width: 16px;
+  background: #fff;
+}
+
+.cardCover {
+  height: 132px;
+}
+
+.phaseTag {
+  pointer-events: none;
+}
+
+.cardSummary {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--color-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.detailHero {
+  overflow: hidden;
+  width: 100%;
+  max-height: 280px;
+  border-radius: 16px;
+  background: var(--color-fill-2);
+}
+
+.detailHeroMedia {
+  display: block;
+  width: 100%;
+  max-height: 280px;
+  object-fit: cover;
+}
+
+.htmlBody {
+  overflow: hidden;
+  color: var(--color-text-2);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.htmlBody :is(img, video) {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 12px 0;
+  border-radius: 10px;
+}
+
+.htmlBody :is(p, li) {
+  margin: 0 0 10px;
+}
+
+.htmlBody a {
+  color: rgb(var(--primary-6));
+}
+
+.awardBadge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  max-width: calc(100% - 20px);
+  padding: 3px 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.awardFirst {
+  background: linear-gradient(135deg, #d4a017, #f3d36b);
+  color: #3a2a00;
+}
+
+.awardSecond {
+  background: linear-gradient(135deg, #8e9aa8, #d7dde4);
+  color: #1f2933;
+}
+
+.awardThird {
+  background: linear-gradient(135deg, #b56a3a, #e2b08a);
+  color: #2a1408;
+}
+
+.pickRow {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 12px;
+  background: var(--color-bg-2);
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.pickRow:hover {
+  border-color: rgba(var(--primary-6), 0.38);
+}
+
+.pickRow:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .carouselTrack {
+    transition: none;
+  }
+}

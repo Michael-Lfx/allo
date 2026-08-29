@@ -1,6 +1,6 @@
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Drawer, Result, Spin } from '@arco-design/web-react';
 import { Download, Like, Search, VideoOne } from '@icon-park/react';
@@ -22,7 +22,9 @@ import type { TvShowVideo } from '../types';
 import { isCanvasTvShow, tvShowWorkflowLabel } from './SessionCard';
 import TvShowCard from './TvShowCard';
 
-type TvShowScope = 'plaza' | 'mine';
+const CampaignPanel = lazy(() => import('./CampaignPanel'));
+
+type TvShowScope = 'plaza' | 'campaign' | 'mine';
 
 const TV_SHOW_INITIAL_PAGE_SIZE = 16;
 
@@ -33,10 +35,13 @@ interface TvShowPanelProps {
 const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { status: cloudStatus, logout } = useCloudAuth();
   const [message, messageHolder] = useArcoMessage();
 
-  const [scope, setScope] = useState<TvShowScope>('plaza');
+  const [scope, setScope] = useState<TvShowScope>(() =>
+    searchParams.get('tvScope') === 'campaign' ? 'campaign' : 'plaza'
+  );
   const [videos, setVideos] = useState<TvShowVideo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +62,10 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
       label: t('videoGeneration.tvShow.scope.plaza', { defaultValue: '广场' }),
     },
     {
+      key: 'campaign',
+      label: t('videoGeneration.tvShow.scope.campaign', { defaultValue: '活动' }),
+    },
+    {
       key: 'mine',
       label: t('videoGeneration.tvShow.scope.mine', { defaultValue: '我的发布' }),
     },
@@ -73,6 +82,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
 
   const refresh = useCallback(async () => {
     if (!enabled) return;
+    if (scope === 'campaign') return;
     if (cloudStatus !== 'authenticated') {
       setVideos([]);
       setError(null);
@@ -103,6 +113,29 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
       setLoading(false);
     }
   }, [cloudStatus, consumeExpiredCloudSession, enabled, keyword, scope]);
+
+  const handleScopeChange = useCallback(
+    (key: string) => {
+      const next = key as TvShowScope;
+      setScope(next);
+      setSearchParams(
+        (prev) => {
+          const nextParams = new URLSearchParams(prev);
+          if (next === 'campaign') nextParams.set('tvScope', 'campaign');
+          else nextParams.delete('tvScope');
+          return nextParams;
+        },
+        { replace: true }
+      );
+    },
+    [setSearchParams]
+  );
+
+  useEffect(() => {
+    if (searchParams.get('tvScope') === 'campaign' && scope !== 'campaign') {
+      setScope('campaign');
+    }
+  }, [searchParams, scope]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -272,8 +305,9 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
           size='sm'
           items={scopeItems}
           activeKey={scope}
-          onChange={(key) => setScope(key as TvShowScope)}
+          onChange={handleScopeChange}
         />
+        {scope === 'campaign' ? null : (
         <div className='flex w-220px items-center gap-8px rd-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-11px py-7px'>
           <Search theme='outline' size={14} className='flex-none text-[var(--color-text-3)]' />
           <input
@@ -296,9 +330,20 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
             }}
           />
         </div>
+        )}
       </div>
 
-      {error ? (
+      {scope === 'campaign' ? (
+        <Suspense
+          fallback={
+            <div className='flex justify-center py-38px'>
+              <Spin />
+            </div>
+          }
+        >
+          <CampaignPanel />
+        </Suspense>
+      ) : error ? (
         <Result
           status='error'
           title={t('videoGeneration.list.loadError', { defaultValue: '加载失败' })}

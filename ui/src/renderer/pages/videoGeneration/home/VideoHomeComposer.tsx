@@ -62,6 +62,7 @@ const loadGenerationPreferencesPopover = () => import('./GenerationPreferencesPo
 const GenerationPreferencesPopover = lazy(loadGenerationPreferencesPopover);
 const VerticalSkillMenu = lazy(() => import('./VerticalSkillMenu'));
 const VerticalSkillCreateModal = lazy(() => import('./VerticalSkillCreateModal'));
+const CampaignCarousel = lazy(() => import('../components/CampaignCarousel'));
 
 function GenerationPreferencesMount({
   onMounted,
@@ -608,6 +609,10 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   })}
         </p>
       </div>
+
+      <Suspense fallback={null}>
+        <CampaignCarousel />
+      </Suspense>
 
       <div
         ref={composerRef}

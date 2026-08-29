@@ -66,6 +66,7 @@
     "searchPlaceholder": "搜索作品...",
     "scope": {
       "plaza": "广场",
+      "campaign": "活动",
       "mine": "我的发布"
     },
     "status": {
@@ -110,6 +111,60 @@
       "busy": "规划或渲染进行中，请完成后再发布。",
       "ok": "已提交审核，通过后会出现在 Flowy TV 广场。",
       "failed": "发布失败"
+    }
+  },
+  "campaign": {
+    "subtitle": "参与官方活动，投稿成片，看看获奖作品。",
+    "carouselDots": "活动轮播",
+    "canSubmit": "可投稿",
+    "back": "返回活动",
+    "notFound": "活动不存在",
+    "loadMore": "加载更多",
+    "countdown": "{{days}} 天 {{hours}} 小时后开始",
+    "phase": {
+      "upcoming": "未开始",
+      "ongoing": "进行中",
+      "ended": "已结束"
+    },
+    "range": {
+      "current": "进行中",
+      "ended": "往期"
+    },
+    "empty": {
+      "title": "暂无活动",
+      "desc": "新活动上架后会出现在这里。",
+      "endedDesc": "还没有往期活动。"
+    },
+    "authRequired": {
+      "title": "登录后查看活动",
+      "desc": "活动浏览与投稿需要云端账号。"
+    },
+    "cta": {
+      "submit": "立即参与",
+      "submitAgain": "更新投稿",
+      "upcoming": "活动未开始",
+      "winners": "查看获奖作品",
+      "mine": "查看我的投稿"
+    },
+    "winnersTitle": "获奖作品",
+    "submissionsTitle": "活动作品",
+    "submissionsEmpty": "还没有上架作品，通过审核后会出现在这里。",
+    "mineTitle": "我的投稿",
+    "award": {
+      "first": "一等奖",
+      "second": "二等奖",
+      "third": "三等奖",
+      "merit": "优秀奖",
+      "featured": "精选"
+    },
+    "submit": {
+      "title": "选择要投稿的成片",
+      "empty": "还没有可投稿的成片。请先完成一支短剧或画布作品。",
+      "goCreate": "去创作",
+      "ok": "已提交审核，通过后会出现在活动作品流。",
+      "failed": "投稿失败",
+      "sessionKind": "短剧工程",
+      "canvasKind": "创作画布"
     }
   },
   "create": {
