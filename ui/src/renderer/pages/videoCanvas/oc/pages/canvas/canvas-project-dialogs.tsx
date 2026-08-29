@@ -12,6 +12,7 @@ import { CanvasProjectStatusDialogs } from "./canvas-project-status-dialogs";
 import { AssetPickerModal } from "@oc/components/canvas/asset-picker-modal";
 import { CanvasProjectAssetModal } from "@oc/components/canvas/canvas-project-asset-modal";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { flushCanvasStorePersistence } from "@oc/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData, type Position, type StoryboardColumn } from "@oc/types/canvas";
 import type { CanvasTheme } from "@oc/lib/canvas-theme";
 import type { ProjectDetail } from "@oc/services/api/projects";
@@ -67,6 +68,8 @@ type CanvasProjectDialogsProps = {
     setDirectorNodeId: SetNodeId;
     saveDirectorScene: ReturnType<typeof useCanvasDirector>["saveDirectorScene"];
     applyDirectorOutput: ReturnType<typeof useCanvasDirector>["applyDirectorOutput"];
+    deleteNodes: ReturnType<typeof useCanvasNodeOperations>["deleteNodes"];
+    directorOnboardingScope: string;
     versionCompareRootId: string | null;
     setVersionCompareRootId: SetNodeId;
     setPrimaryVersion: ReturnType<typeof useCanvasNodeOperations>["setPrimaryVersion"];
@@ -83,6 +86,9 @@ type CanvasProjectDialogsProps = {
     maskEditImageNode: ReturnType<typeof useCanvasMediaTools>["maskEditImageNode"];
     splitImageNode: ReturnType<typeof useCanvasMediaTools>["splitImageNode"];
     upscaleImageNode: ReturnType<typeof useCanvasMediaTools>["upscaleImageNode"];
+    extractVideoFrames: ReturnType<typeof useCanvasMediaTools>["extractVideoFrames"];
+    closeFrameDialog: ReturnType<typeof useCanvasMediaTools>["closeFrameDialog"];
+    frameDialogNodeId: ReturnType<typeof useCanvasMediaTools>["frameDialogNodeId"];
     taskDetail: ReturnType<typeof useCanvasGeneration>["taskDetail"];
     taskDetailLogs: ReturnType<typeof useCanvasGeneration>["taskDetailLogs"];
     taskDetailLoading: ReturnType<typeof useCanvasGeneration>["taskDetailLoading"];
@@ -139,6 +145,8 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
         setDirectorNodeId,
         saveDirectorScene,
         applyDirectorOutput,
+        deleteNodes,
+        directorOnboardingScope,
         versionCompareRootId,
         setVersionCompareRootId,
         setPrimaryVersion,
@@ -155,6 +163,9 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
         maskEditImageNode,
         splitImageNode,
         upscaleImageNode,
+        extractVideoFrames,
+        closeFrameDialog,
+        frameDialogNodeId,
         taskDetail,
         taskDetailLogs,
         taskDetailLoading,
@@ -305,6 +316,9 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
                                 onClose={() => setDirectorNodeId(null)}
                                 onChange={saveDirectorScene}
                                 onApply={applyDirectorOutput}
+                                onDeleteImageNode={(nodeId) => deleteNodes(new Set([nodeId]))}
+                                onFlush={() => flushCanvasStorePersistence()}
+                                onboardingScope={directorOnboardingScope}
                             />
                         </Suspense>
                     ) : null}
@@ -336,6 +350,9 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
                         onMaskEdit={(node, payload) => void maskEditImageNode(node, payload)}
                         onSplit={(node, params) => void splitImageNode(node, params)}
                         onUpscale={(node, params) => void upscaleImageNode(node, params)}
+                        frameNode={frameDialogNodeId ? nodeById.get(frameDialogNodeId) || null : null}
+                        onCloseFrame={closeFrameDialog}
+                        onExtractFrames={(node, params) => void extractVideoFrames(node, params)}
                     />
 
                     <CanvasProjectStatusDialogs

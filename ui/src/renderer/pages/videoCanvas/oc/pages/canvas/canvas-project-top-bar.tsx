@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, Bot, Clapperboard, Coins, Download, Focus, FolderKanban, Gauge, LayoutGrid, LoaderCircle, Menu, Pencil, Plus, Redo2, Search, Settings2, Share2, Sparkles, Trash2, Undo2, Upload } from "lucide-react";
-import { Button, Dropdown, Modal, Tooltip } from "antd";
+import { Button, Dropdown, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { useWalletBalance } from "@oc/hooks/use-wallet-balance";
@@ -12,6 +12,7 @@ import { canvasThemes } from "@oc/lib/canvas-theme";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
 import type { CanvasMediaPerformanceMode, CanvasWorkspaceMode } from "@oc/types/canvas";
+import { CanvasShortcutsModal } from "./canvas-shortcuts-modal";
 
 type CanvasTopBarProps = {
     title: string;
@@ -132,7 +133,7 @@ export function CanvasTopBar({
                                 { key: "import", icon: <Upload className="size-4" />, label: canvasT("videoCanvas.chrome.importMedia", "导入素材"), onClick: onImportImage },
                                 { key: "export-project", icon: <Download className="size-4" />, label: canvasT("videoCanvas.chrome.exportProject", "导出工程"), disabled: exporting, onClick: onExportProject },
                                 { key: "publish-tv", icon: <Share2 className="size-4" />, label: canvasT("videoCanvas.chrome.publishTv", "发布到 Flowy TV"), disabled: publishing, onClick: onPublishTvShow },
-                                { key: "search", icon: <Search className="size-4" />, label: <MenuLabel text={canvasT("videoCanvas.chrome.searchNodes", "搜索节点")} shortcut="⌘ K" />, onClick: onOpenSearch },
+                                { key: "search", icon: <Search className="size-4" />, label: <MenuLabel text={canvasT("videoCanvas.chrome.searchNodes", "搜索节点")} shortcut="⌘ F" />, onClick: onOpenSearch },
                                 {
                                     key: "performance",
                                     icon: <Gauge className="size-4" />,
@@ -298,30 +299,7 @@ export function CanvasTopBar({
                     </Button>
                 </div>
             </div>
-            <Modal title={canvasT("videoCanvas.chrome.shortcuts", "快捷键")} open={shortcutsOpen} onCancel={() => setShortcutsOpen(false)} footer={null} centered>
-                <div className="space-y-2 border-t pt-4 text-sm" style={{ borderColor: theme.node.stroke }}>
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyPan", "空白处左键拖动"), canvasT("videoCanvas.shortcuts.keyPanAlt", "空格 + 左键 / 中键")]} value={canvasT("videoCanvas.shortcuts.pan", "平移视图")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyWheel", "滚轮")]} value={canvasT("videoCanvas.shortcuts.zoom", "缩放画布")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomSlider", "缩放滑杆")]} value={canvasT("videoCanvas.shortcuts.zoomPrecise", "精确调整缩放")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyBoxModifiers", "Shift / Ctrl / Cmd + 左键拖动")]} value={canvasT("videoCanvas.shortcuts.boxSelect", "框选多个节点")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyBoxTool", "工具栏「框选」"), canvasT("videoCanvas.shortcuts.keyDrag", "左键拖动")]} value={canvasT("videoCanvas.shortcuts.boxSelectTool", "框选多个节点，完成后自动回到「移动与选择」")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyModClick", "Shift / Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyClick", "点击")]} value={canvasT("videoCanvas.shortcuts.addSelect", "追加选择节点")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyAlt", "Alt"), canvasT("videoCanvas.shortcuts.keyClickBox", "点击 / 框选")]} value={canvasT("videoCanvas.shortcuts.removeSelect", "移除选择节点")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyZoomNums", "1 / 2 / 3")]} value={canvasT("videoCanvas.shortcuts.zoomPresets", "100% / 适应全部 / 适应选择")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyQuestion", "?")]} value={canvasT("videoCanvas.shortcuts.openShortcuts", "打开快捷键")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyFocus", "Shift / Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyF", "F")]} value={canvasT("videoCanvas.shortcuts.focusToggle", "进入 / 退出专注模式")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyA", "A")]} value={canvasT("videoCanvas.shortcuts.selectAll", "全选节点")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyK", "K")]} value={canvasT("videoCanvas.shortcuts.search", "搜索并定位节点")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyCV", "C / V")]} value={canvasT("videoCanvas.shortcuts.copyPaste", "复制 / 粘贴节点，或粘贴剪切板文本/图片")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyS", "S")]} value={canvasT("videoCanvas.shortcuts.save", "保存画布布局和位置")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyZ", "Z")]} value={canvasT("videoCanvas.shortcuts.undo", "撤销")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyShift", "Shift"), canvasT("videoCanvas.shortcuts.keyZ", "Z")]} value={canvasT("videoCanvas.shortcuts.redo", "重做")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyZoomKeys", "Ctrl / Cmd"), canvasT("videoCanvas.shortcuts.keyY", "Y")]} value={canvasT("videoCanvas.shortcuts.redo", "重做")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyDelete", "Delete / Backspace")]} value={canvasT("videoCanvas.shortcuts.delete", "删除选中")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyEsc", "Esc")]} value={canvasT("videoCanvas.shortcuts.escape", "取消选择并关闭浮层")} />
-                    <Shortcut keys={[canvasT("videoCanvas.shortcuts.keyDrop", "拖入图片/视频/音频")]} value={canvasT("videoCanvas.shortcuts.dropMedia", "上传到画布")} />
-                </div>
-            </Modal>
+            <CanvasShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
         </>
     );
 }
@@ -408,23 +386,5 @@ function CompactAgentStatus({ status, onClick }: { status: { connected: boolean;
             <span className="size-2 rounded-full" style={{ background: dotColor }} />
             <span className="max-w-[180px] truncate">{label}</span>
         </button>
-    );
-}
-
-function Shortcut({ keys, value }: { keys: string[]; value: string }) {
-    return (
-        <div className="grid grid-cols-[minmax(0,1fr)_120px] items-center gap-6 rounded-lg px-1 py-1.5">
-            <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-                {keys.map((key, index) => (
-                    <span key={`${key}-${index}`} className="flex items-center gap-1.5">
-                        {index ? <span className="text-xs opacity-35">+</span> : null}
-                        <kbd className="min-w-9 rounded-md border px-2.5 py-1.5 text-center text-xs font-medium leading-none shadow-[inset_0_-1px_0_rgba(0,0,0,.08),0_1px_2px_rgba(0,0,0,.06)]" style={{ borderColor: "rgba(120,113,108,.28)", background: "linear-gradient(#fff, rgba(245,245,244,.92))", color: "rgb(68,64,60)" }}>
-                            {key}
-                        </kbd>
-                    </span>
-                ))}
-            </span>
-            <span className="text-right text-sm opacity-55">{value}</span>
-        </div>
     );
 }

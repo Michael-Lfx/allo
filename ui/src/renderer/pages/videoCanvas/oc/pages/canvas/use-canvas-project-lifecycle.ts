@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import type { CanvasBackgroundMode } from "@oc/lib/canvas-theme";
 import { removeCanvasDrawing } from "@oc/lib/canvas/canvas-drawing-storage";
 import { hydrateAssistantImages, hydrateCanvasImages, resetInterruptedGeneration } from "@oc/lib/canvas/canvas-project-generation";
+import { normalizeCanvasNodeTimestamps } from "@oc/lib/canvas/canvas-node-timestamps";
 import { listAddedSkills, type Skill } from "@oc/services/api/skills";
 import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow } from "@oc/services/user-data-sync";
 import { flushCanvasStorePersistence, useCanvasStore } from "@oc/stores/canvas/use-canvas-store";
@@ -116,7 +117,10 @@ export function useCanvasProjectLifecycle({
         };
 
         const restore = async () => {
-            const initialNodes = resetInterruptedGeneration(project.nodes);
+            const initialNodes = normalizeCanvasNodeTimestamps(resetInterruptedGeneration(project.nodes), {
+                createdAt: project.createdAt,
+                updatedAt: project.updatedAt,
+            });
             const initialSessions = project.chatSessions || [];
 
             // 先恢复可交互的节点和布局，媒体缓存/资源校验放到后台，避免首屏被远程资源拖住。

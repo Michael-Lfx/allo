@@ -4,7 +4,9 @@ import { nanoid } from "nanoid";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { compactCanvasAgentSnapshot as compactSnapshot } from "@oc/lib/canvas/canvas-agent-snapshot-compact";
 import { isAgentSessionPollingAbort } from "@oc/lib/canvas/canvas-agent-session";
-import { summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { canvasAgentPostconditionMessage, verifyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { buildCanvasAgentContext, findCanvasAgentNodes, getCanvasAgentConnection, getCanvasAgentGenerationTasks, getCanvasAgentNode, getCanvasAgentResources, validateCanvasAgentOps } from "@oc/lib/canvas/canvas-agent-context";
+import { collectCanvasSkills } from "@oc/lib/canvas/canvas-skill-mentions";
 import { canvasAgentPromptCacheKey } from "@oc/lib/openai-prompt-cache";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { requestToolResponse, type ResponseInputMessage, type ResponseToolCall } from "@oc/services/api/image";
@@ -21,6 +23,8 @@ import {
     onlineToolToOps,
     parseToolArguments,
     previewOnlineToolCalls,
+    requireOps,
+    requireString,
     summarizeToolCalls,
     toolCallToResponseInput,
     toolCallsFromDetail,
@@ -172,19 +176,60 @@ export function useCanvasOnlineAgentLoop({
 
     const executeOps = (ops: CanvasAgentOp[]) => {
         const beforeSnapshot = snapshotRef.current;
+        const validation = validateCanvasAgentOps(beforeSnapshot, ops);
+        if (!validation.ok) {
+            throw new Error(`画布操作校验失败：${validation.issues.filter((item) => item.severity === "error").map((item) => item.message).join("；")}`);
+        }
         const before = snapshotSignature(beforeSnapshot);
         const next = onApplyOps(ops);
         snapshotRef.current = next;
+        const verification = verifyCanvasAgentOps(beforeSnapshot, next, ops);
         const ranGeneration = ops.some((op) => op.type === "run_generation" && Boolean(op.nodeId));
-        const changed = before !== snapshotSignature(next) || ranGeneration;
+        const changed = before !== snapshotSignature(next) || ranGeneration || verification.changed;
         const noopReason = changed ? "" : explainNoop(ops, beforeSnapshot);
-        return { changed, ops, ranGeneration, noopReason, before: JSON.parse(before), after: JSON.parse(snapshotSignature(next)) };
+        return { ...verification, verification, snapshot: next, ops, noopReason, before: JSON.parse(before), after: JSON.parse(snapshotSignature(next)) };
     };
 
     const executeOnlineTool = async (sessionId: string, name: string, args: Record<string, unknown>): Promise<OnlineToolResult> => {
         const current = snapshotRef.current;
         try {
+            const expectedRevision = typeof args.expectedRevision === "number" ? args.expectedRevision : undefined;
+            if (expectedRevision !== undefined && expectedRevision !== (current.revision ?? 0)) return { ok: false, message: "画布 revision 已变化，请重新读取 canvas_get_context 后再执行写操作。" };
+            const expectedStateHash = typeof args.expectedStateHash === "string" ? args.expectedStateHash : "";
+            if (expectedStateHash && expectedStateHash !== buildCanvasAgentContext(current).stateHash) return { ok: false, message: "画布状态已变化，请重新读取 canvas_get_context 后再执行写操作。" };
+            if (name === "canvas_list_skills") {
+                const skills = collectCanvasSkills(current.nodes);
+                const data = skills.map((skill) => ({ skillId: skill.skill_id, name: skill.skill_name, description: skill.description, tag: skill.tag }));
+                return { ok: true, message: data.length ? "已列出当前可用技能。" : "当前画布没有技能节点。", data };
+            }
+            if (name === "canvas_get_skill") {
+                const skillId = typeof args.skillId === "string" ? args.skillId : "";
+                const nameQuery = typeof args.name === "string" ? args.name.trim().toLocaleLowerCase() : "";
+                const skill = collectCanvasSkills(current.nodes).find((item) => item.skill_id === skillId || item.skill_name.toLocaleLowerCase() === nameQuery);
+                if (!skill) return { ok: false, message: "未找到画布技能，请先调用 canvas_list_skills。" };
+                return {
+                    ok: true,
+                    message: `已按需加载技能「${skill.skill_name}」。`,
+                    data: { skillId: skill.skill_id, name: skill.skill_name, description: skill.description, instruction: skill.instruction || skill.description, version: skill.update_time },
+                };
+            }
             if (name === "canvas_get_state") return { ok: true, message: describeCanvasSnapshot(current), data: compactSnapshot(current) };
+            if (name === "canvas_get_context") return { ok: true, message: "已读取语义化画布上下文。", data: buildCanvasAgentContext(current) };
+            if (name === "canvas_find_nodes") return { ok: true, message: "已按条件检索真实节点。", data: findCanvasAgentNodes(current, args as Parameters<typeof findCanvasAgentNodes>[1]) };
+            if (name === "canvas_get_node") {
+                const data = getCanvasAgentNode(current, { id: requireString(args.id, "id") });
+                return { ok: true, message: data.found ? "已精确读取节点。" : "未找到指定节点。", data };
+            }
+            if (name === "canvas_get_connection") {
+                const data = getCanvasAgentConnection(current, { id: requireString(args.id, "id") });
+                return { ok: true, message: data.found ? "已精确读取连线。" : "未找到指定连线。", data };
+            }
+            if (name === "canvas_get_generation_tasks") return { ok: true, message: "已读取画布生成任务观察状态。", data: getCanvasAgentGenerationTasks(current, args as Parameters<typeof getCanvasAgentGenerationTasks>[1]) };
+            if (name === "canvas_get_resources") return { ok: true, message: "已读取画布资源清单。", data: getCanvasAgentResources(current, args as Parameters<typeof getCanvasAgentResources>[1]) };
+            if (name === "canvas_validate_ops") {
+                const result = validateCanvasAgentOps(current, requireOps(args.ops));
+                return { ok: result.ok, message: result.ok ? "操作校验通过。" : "操作校验失败。", data: result };
+            }
             if (name === "canvas_export_snapshot") return { ok: true, message: describeCanvasSnapshot(current), data: compactSnapshot(current) };
             if (name === "canvas_get_selection") {
                 const ids = new Set(current.selectedNodeIds || []);
@@ -193,12 +238,12 @@ export function useCanvasOnlineAgentLoop({
             if (name === "canvas_create_cinematic_session") {
                 return {
                     ok: false,
-                    message: "影视会话 Agent 未在 allo 服务端提供；请用客户端画布工具（创建节点 / 生成流程）完成同样目标。",
+                    message: "影视会话 Agent 未在 allo 服务端提供；请用客户端画布工具（创建工作流 / 生成流程）完成同样目标。",
                 };
             }
             const ops = onlineToolToOps(name, args, current, config);
             const result = executeOps(ops);
-            return { ok: result.changed, message: result.changed ? summarizeCanvasAgentOps(ops) || canvasT("videoCanvas.agent.opsAppliedDone", "画布操作已执行。") : result.noopReason, data: result };
+            return { ok: result.ok, message: result.changed ? canvasAgentPostconditionMessage(result) : result.noopReason, data: result };
         } catch (error) {
             if (isAgentSessionPollingAbort(error)) throw error;
             return { ok: false, message: error instanceof Error ? error.message : canvasT("videoCanvas.agent.toolExecFailed", "工具执行失败") };

@@ -145,6 +145,8 @@ export type CanvasNodeMetadata = {
     errorDetails?: string;
     generationErrorCode?: string;
     failedPromptFingerprint?: string;
+    lastGenerationRequestFingerprint?: string;
+    previewContent?: string;
     /**
      * 生成任务已在服务端成功，但结果下载/落盘到本地或现有 OSS 失败。
      * 可基于同一 taskId 向当前服务端重新拉取，无需重新计费生成。
@@ -236,12 +238,15 @@ export type CanvasNodeMetadata = {
     taskStage?: string;
     taskCreatedAt?: string;
     taskUpdatedAt?: string;
+    taskCompletedAt?: string;
     sessionId?: string;
     videoEditOperation?: CanvasVideoEditOperation;
     videoCameraMoveId?: string;
     videoCameraMovePrompt?: string;
     videoStartFrameNodeId?: string;
     videoEndFrameNodeId?: string;
+    videoFrameSourceNodeId?: string;
+    videoFrameTimeMs?: number;
     versionOfNodeId?: string;
     versionLabel?: string;
     versionPrimary?: boolean;
@@ -332,6 +337,8 @@ export type CanvasNodeData = {
     width: number;
     height: number;
     parentId?: string;
+    createdAt?: string;
+    updatedAt?: string;
     metadata?: CanvasNodeMetadata;
 };
 

@@ -1,10 +1,12 @@
 import { Color, Euler, Quaternion } from "three";
 
 import type { DirectorBoneKeyframe, DirectorHumanoidBone, DirectorKeyframe, DirectorPose, DirectorQuat, DirectorTransform, DirectorVec3 } from "@oc/types/director";
+import { DIRECTOR_KEYFRAME_EPSILON, resolveDirectorKeyframeProgress } from "./director-scene-create";
 
 export {
     DIRECTOR_ACTOR_COLORS,
     DIRECTOR_DEFAULT_ACTOR_URL,
+    DIRECTOR_KEYFRAME_EPSILON,
     createDirectorActor,
     createDirectorBillboard,
     createDirectorCamera,
@@ -12,7 +14,15 @@ export {
     createDirectorModel,
     createDirectorObject,
     createDirectorScene,
+    directorFocalLengthToFov,
     directorIdentityTransform,
+    directorTransformPathLength,
+    finiteDirectorTransformKeyframes,
+    removeDirectorBoneKeyframe,
+    removeDirectorKeyframe,
+    removeDirectorSceneKeyframe,
+    resolveDirectorKeyframeProgress,
+    setDirectorSceneKeyframeEasing,
     touchDirectorScene,
     upsertDirectorBoneKeyframe,
     upsertDirectorKeyframe,
@@ -23,7 +33,7 @@ export function interpolateDirectorTransform(base: DirectorTransform, keyframes:
     const previous = [...keyframes].reverse().find((item) => item.time <= time) || keyframes[0];
     const next = keyframes.find((item) => item.time >= time) || keyframes[keyframes.length - 1];
     if (previous.id === next.id) return previous.transform;
-    const progress = Math.max(0, Math.min(1, (time - previous.time) / Math.max(next.time - previous.time, 0.001)));
+    const progress = resolveDirectorKeyframeProgress((time - previous.time) / Math.max(next.time - previous.time, DIRECTOR_KEYFRAME_EPSILON), previous.easing);
     const rotation = new Quaternion().setFromEuler(new Euler(...previous.transform.rotation)).slerp(new Quaternion().setFromEuler(new Euler(...next.transform.rotation)), progress);
     return {
         position: lerpVec3(previous.transform.position, next.transform.position, progress),
@@ -37,12 +47,28 @@ export function interpolateDirectorBoneRotation(base: DirectorQuat, keyframes: D
     const previous = [...keyframes].reverse().find((item) => item.time <= time) || keyframes[0];
     const next = keyframes.find((item) => item.time >= time) || keyframes[keyframes.length - 1];
     if (previous.id === next.id) return previous.rotation;
-    const progress = Math.max(0, Math.min(1, (time - previous.time) / Math.max(next.time - previous.time, 0.001)));
+    const progress = resolveDirectorKeyframeProgress((time - previous.time) / Math.max(next.time - previous.time, DIRECTOR_KEYFRAME_EPSILON), previous.easing);
     return new Quaternion(...previous.rotation).slerp(new Quaternion(...next.rotation), progress).toArray() as DirectorQuat;
 }
 
 export function directorBoneLabel(bone: string) {
-    return ({ hips: "骨盆", spine: "脊柱", chest: "胸腔", neck: "颈部", head: "头部", leftShoulder: "左肩", leftUpperArm: "左上臂", leftLowerArm: "左前臂", leftHand: "左手", rightShoulder: "右肩", rightUpperArm: "右上臂", rightLowerArm: "右前臂", rightHand: "右手", leftUpperLeg: "左大腿", leftLowerLeg: "左小腿", leftFoot: "左脚", rightUpperLeg: "右大腿", rightLowerLeg: "右小腿", rightFoot: "右脚" } as Record<string, string>)[bone] || bone;
+    return ({
+        hips: "骨盆", spine: "脊柱", chest: "胸腔", neck: "颈部", head: "头部",
+        leftShoulder: "左肩", leftUpperArm: "左上臂", leftLowerArm: "左前臂", leftHand: "左手",
+        rightShoulder: "右肩", rightUpperArm: "右上臂", rightLowerArm: "右前臂", rightHand: "右手",
+        leftUpperLeg: "左大腿", leftLowerLeg: "左小腿", leftFoot: "左脚",
+        rightUpperLeg: "右大腿", rightLowerLeg: "右小腿", rightFoot: "右脚",
+        leftThumb1: "左拇指·根", leftThumb2: "左拇指·中", leftThumb3: "左拇指·尖",
+        leftIndex1: "左食指·根", leftIndex2: "左食指·中", leftIndex3: "左食指·尖",
+        leftMiddle1: "左中指·根", leftMiddle2: "左中指·中", leftMiddle3: "左中指·尖",
+        leftRing1: "左无名指·根", leftRing2: "左无名指·中", leftRing3: "左无名指·尖",
+        leftPinky1: "左小指·根", leftPinky2: "左小指·中", leftPinky3: "左小指·尖",
+        rightThumb1: "右拇指·根", rightThumb2: "右拇指·中", rightThumb3: "右拇指·尖",
+        rightIndex1: "右食指·根", rightIndex2: "右食指·中", rightIndex3: "右食指·尖",
+        rightMiddle1: "右中指·根", rightMiddle2: "右中指·中", rightMiddle3: "右中指·尖",
+        rightRing1: "右无名指·根", rightRing2: "右无名指·中", rightRing3: "右无名指·尖",
+        rightPinky1: "右小指·根", rightPinky2: "右小指·中", rightPinky3: "右小指·尖",
+    } as Record<string, string>)[bone] || bone;
 }
 
 export function directorPoseLabel(pose: DirectorPose) {

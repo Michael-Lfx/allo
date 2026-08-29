@@ -99,7 +99,7 @@ export function projectCharacterToInsertPayload(asset: ProjectAsset): InsertAsse
     if (!asset.character) throw new Error("项目角色信息不完整");
     const card = asset.character;
     const definition = card.definition;
-    const cover = card.representations.find((representation) => representation.role === "turnaround_sheet") || card.representations.find((representation) => representation.role === "primary") || card.nxt.find((representation) => representation.role === "front");
+    const cover = card.representations.find((representation) => representation.role === "turnaround_sheet") || card.representations.find((representation) => representation.role === "primary") || card.representations.find((representation) => representation.role === "front");
     return {
         kind: "character",
         title: asset.title,

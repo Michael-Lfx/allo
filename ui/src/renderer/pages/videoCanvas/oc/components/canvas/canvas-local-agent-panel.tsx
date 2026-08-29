@@ -11,10 +11,13 @@ import { createClientId } from "@oc/lib/client-id";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import { useUserStore } from "@oc/stores/use-user-store";
 import { useCanvasAgentStore, type AgentChatItem, type AgentPendingToolCall, type AgentThreadSummary } from "@oc/stores/canvas/use-canvas-agent-store";
-import { previewCanvasAgentOps, summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { previewCanvasAgentOps, canvasAgentPostconditionMessage, summarizeCanvasAgentOps, verifyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { buildCanvasAgentContext, findCanvasAgentNodes, getCanvasAgentConnection, getCanvasAgentGenerationTasks, getCanvasAgentNode, getCanvasAgentResources, validateCanvasAgentOps } from "@oc/lib/canvas/canvas-agent-context";
+import { collectCanvasSkills } from "@oc/lib/canvas/canvas-skill-mentions";
 import { isProjectAgentReadTool, isProjectAgentToolName, runProjectAgentTool } from "@oc/services/api/project-agent-tools";
 import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentPendingToolCard, AgentWorkingMessage } from "./canvas-agent-chat-ui";
 import { compactCanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-snapshot-compact";
+import { requireString } from "./canvas-online-agent-tools";
 import { AgentChatEmptyState } from "./canvas-agent-panel-chrome";
 import { AgentConnectView, AgentHistoryView, AgentLogView } from "./canvas-local-agent-views";
 import { discoverAgentConfig, fetchAgentJson, normalizeHistoryMessages, postState, postToolResult, type AgentThreadResponse, type AgentThreadsResponse } from "./canvas-local-agent-api";
@@ -247,14 +250,63 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({ snaps
 			const projectToolName = isProjectAgentToolName(payload.name) ? payload.name : null;
 			setAgentState({ activity: payload.name === "canvas_apply_ops" ? canvasT(`${LA}.activityApplyingOps`, "执行画布操作") : projectToolName ? canvasT(`${LA}.activityProjectTool`, "执行项目工具") : canvasT(`${LA}.activityReadingCanvas`, "读取画布"), waiting: true });
 			addEventLog(toolName(payload.name), payload, payload);
-			const result = payload.name === "canvas_apply_ops" ? onApplyOpsRef.current((input.ops || []) as CanvasAgentOp[]) : projectToolName ? await runProjectAgentTool(projectToolName, input, snapshotRef.current.domainProjectId) : snapshotRef.current;
+            if (payload.name === "canvas_apply_ops") {
+                const currentSnapshot = snapshotRef.current;
+                if (typeof input.expectedRevision === "number" && input.expectedRevision !== (currentSnapshot.revision ?? 0)) throw new Error(`画布 revision 已从 ${input.expectedRevision} 变为 ${currentSnapshot.revision ?? 0}，请重新读取 canvas_get_context 后再执行写操作`);
+                const expectedStateHash = typeof input.expectedStateHash === "string" ? input.expectedStateHash : "";
+                if (expectedStateHash && expectedStateHash !== buildCanvasAgentContext(currentSnapshot).stateHash) throw new Error("画布状态已变化，请重新读取 canvas_get_context 后再执行写操作。");
+                const validation = validateCanvasAgentOps(currentSnapshot, (input.ops || []) as CanvasAgentOp[]);
+                if (!validation.ok) throw new Error(`画布操作校验失败：${validation.issues.filter((item) => item.severity === "error").map((item) => item.message).join("；")}`);
+            }
+            const result =
+                payload.name === "canvas_apply_ops"
+                    ? (() => {
+                          const before = snapshotRef.current;
+                          const next = onApplyOpsRef.current((input.ops || []) as CanvasAgentOp[]) as CanvasAgentSnapshot;
+                          const verification = verifyCanvasAgentOps(before, next, (input.ops || []) as CanvasAgentOp[]);
+                          return { ok: verification.ok, message: canvasAgentPostconditionMessage(verification), data: { verification, snapshot: next }, snapshot: next };
+                      })()
+                    : payload.name === "canvas_get_state" || payload.name === "canvas_export_snapshot"
+                      ? snapshotRef.current
+                      : payload.name === "canvas_get_context"
+                        ? buildCanvasAgentContext(snapshotRef.current)
+                        : payload.name === "canvas_find_nodes"
+                          ? findCanvasAgentNodes(snapshotRef.current, input as Parameters<typeof findCanvasAgentNodes>[1])
+                          : payload.name === "canvas_get_node"
+                            ? getCanvasAgentNode(snapshotRef.current, { id: requireString(input.id, "id") })
+                            : payload.name === "canvas_get_connection"
+                              ? getCanvasAgentConnection(snapshotRef.current, { id: requireString(input.id, "id") })
+                              : payload.name === "canvas_get_generation_tasks"
+                                ? getCanvasAgentGenerationTasks(snapshotRef.current, input as Parameters<typeof getCanvasAgentGenerationTasks>[1])
+                                : payload.name === "canvas_get_resources"
+                                  ? getCanvasAgentResources(snapshotRef.current, input as Parameters<typeof getCanvasAgentResources>[1])
+                                  : payload.name === "canvas_validate_ops"
+                                    ? validateCanvasAgentOps(snapshotRef.current, (input.ops || []) as CanvasAgentOp[])
+                                    : payload.name === "canvas_list_skills"
+                                      ? collectCanvasSkills(snapshotRef.current.nodes).map((skill) => ({ skillId: skill.skill_id, name: skill.skill_name, description: skill.description, tag: skill.tag }))
+                                      : payload.name === "canvas_get_skill"
+                                        ? (() => {
+                                              const skillId = typeof input.skillId === "string" ? input.skillId : "";
+                                              const nameQuery = typeof input.name === "string" ? input.name.trim().toLocaleLowerCase() : "";
+                                              const skill = collectCanvasSkills(snapshotRef.current.nodes).find((item) => item.skill_id === skillId || item.skill_name.toLocaleLowerCase() === nameQuery);
+                                              if (!skill) throw new Error("未找到画布技能，请先调用 canvas_list_skills。");
+                                              return { skillId: skill.skill_id, name: skill.skill_name, description: skill.description, instruction: skill.instruction || skill.description, version: skill.update_time };
+                                          })()
+                                        : payload.name === "canvas_get_selection"
+                                          ? (() => {
+                                                const ids = new Set(snapshotRef.current.selectedNodeIds || []);
+                                                return { nodes: snapshotRef.current.nodes.filter((node) => ids.has(node.id)) };
+                                            })()
+                                          : projectToolName
+                                            ? await runProjectAgentTool(projectToolName, input, snapshotRef.current.domainProjectId)
+                                            : snapshotRef.current;
             await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, result });
-            if (payload.name === "canvas_apply_ops") void postState(endpoint, token, clientIdRef.current, result as CanvasAgentSnapshot);
+            if (payload.name === "canvas_apply_ops") void postState(endpoint, token, clientIdRef.current, ((result as { snapshot?: CanvasAgentSnapshot }).snapshot || snapshotRef.current) as CanvasAgentSnapshot);
             setAgentState({ activity: canvasT(`${LA}.activityToolDone`, "工具完成"), waiting: true });
-            // 事件日志与聊天记录只留压缩快照；完整结果仅经 postToolResult/postState 发给 Agent。
-            const loggedResult = projectToolName ? result : compactCanvasAgentSnapshot(result as CanvasAgentSnapshot);
+            const applyResult = payload.name === "canvas_apply_ops" ? (result as { snapshot?: CanvasAgentSnapshot; message?: string }) : null;
+            const loggedResult = projectToolName || payload.name !== "canvas_apply_ops" ? result : compactCanvasAgentSnapshot((applyResult?.snapshot || result) as CanvasAgentSnapshot);
             addEventLog(canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), loggedResult, loggedResult);
-            addMessage({ role: "tool", title: canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), text: payload.name === "canvas_apply_ops" ? summarizeCanvasAgentOps((input.ops || []) as CanvasAgentOp[]) || canvasT(`${LA}.canvasOp`, "画布操作") : canvasT(`${LA}.completed`, "已完成"), detail: { requestId: payload.requestId, name: payload.name, input, result: loggedResult } });
+            addMessage({ role: "tool", title: canvasT(`${LA}.toolDone`, "{{name}}完成", { name: toolName(payload.name) }), text: payload.name === "canvas_apply_ops" ? (applyResult?.message || summarizeCanvasAgentOps((input.ops || []) as CanvasAgentOp[]) || canvasT(`${LA}.canvasOp`, "画布操作")) : canvasT(`${LA}.completed`, "已完成"), detail: { requestId: payload.requestId, name: payload.name, input, result: loggedResult } });
         } catch (error) {
             const message = error instanceof Error ? error.message : canvasT(`${LA}.errorCanvasOpFailed`, "画布操作失败");
             setAgentState({ activity: canvasT(`${LA}.activityToolFailed`, "工具失败"), waiting: false });

@@ -6,7 +6,7 @@ import { nanoid } from "nanoid";
 import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, FRAME_HEADER_HEIGHT, getFrameChildIds, getFrameChildren, isFrameNode } from "@oc/lib/canvas/canvas-frame";
 import { alignCanvasNodes, layoutCanvasFlow, layoutCanvasNodes, nextCanvasVersionLabel, type CanvasAlignmentMode } from "@oc/lib/canvas/canvas-layout";
 import { createCanvasNode, removeCanvasNodes } from "@oc/lib/canvas/canvas-project-domain";
-import { isolateCopiedNodeMetadata } from "@oc/lib/canvas/canvas-node-copy";
+import { isolateCopiedNodeMetadata, nextCopiedNodeTitle } from "@oc/lib/canvas/canvas-node-copy";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ContextMenuState, type Position } from "@oc/types/canvas";
@@ -433,8 +433,11 @@ export function useCanvasNodeOperations({
         const dy = center.y - (bounds.top + bounds.bottom) / 2;
         const idMap = new Map(clipboard.nodes.map((node, index) => [node.id, `${node.type}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`]));
         const copiedSourceIds = new Set(clipboard.nodes.map((node) => node.id));
+        const reservedTitles = new Set(nodesRef.current.map((node) => node.title));
         const nextNodes = clipboard.nodes.map((node) => {
             const metadata = isolateCopiedNodeMetadata(node, idMap);
+            const title = nextCopiedNodeTitle(node.title, reservedTitles);
+            reservedTitles.add(title);
             if (node.type === CanvasNodeType.Drawing && metadata) {
                 metadata.drawingId = `${idMap.get(node.id)}-document`;
                 metadata.drawingRevision = 0;
@@ -445,7 +448,7 @@ export function useCanvasNodeOperations({
             return {
                 ...node,
                 id: idMap.get(node.id)!,
-                title: node.title.endsWith(" Copy") ? node.title : `${node.title} Copy`,
+                title,
                 position: { x: node.position.x + dx, y: node.position.y + dy },
                 parentId: node.parentId ? idMap.get(node.parentId) : undefined,
                 metadata,

@@ -3,14 +3,15 @@ import { nanoid } from "nanoid";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { previewCanvasAgentOps, type CanvasAgentOp, type CanvasAgentOperationImpact, type CanvasAgentSnapshot } from "@oc/lib/canvas/canvas-agent-ops";
+import { buildCanvasWorkflowOps, looksLikeWorkflowRequest, type CanvasWorkflowInput } from "@oc/lib/canvas/canvas-agent-workflow";
 import { normalizeModelOptionValue, selectableModelsByCapability, type AiConfig } from "@oc/stores/use-config-store";
 import { type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall } from "@oc/services/api/image";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
 
 export const ONLINE_AGENT_MAX_STEPS = 4;
 export const ONLINE_AGENT_PROMPT =
-    "你是影策网页内置在线画布助手。当前画布 JSON 会随用户消息提供。首轮必须调用工具：只读问题调用 canvas_get_state，需要改动画布时调用和本地 Agent 一致的 infinite-canvas 工具。需要生成内容时直接调用 canvas_generate_text、canvas_generate_image、canvas_generate_video、canvas_generate_audio 或 canvas_create_generation_flow；需要精确批量操作时调用 canvas_apply_ops。不要输出 JSON ops，不要编造执行结果。工具参数涉及已有节点时必须使用当前画布 JSON 中真实存在的 id；缺少必要 id 或用户意图不明确时直接说明需要用户明确选择或说明，不要猜测。工具返回结果后，再根据真实结果回答用户。";
-export const ONLINE_READ_TOOLS = new Set(["canvas_get_state", "canvas_get_selection", "canvas_export_snapshot"]);
+    "你是影策网页内置在线画布助手。首轮必须先调用 canvas_get_context；涉及已有节点时用 canvas_find_nodes 获取真实 id，涉及媒体参考时用 canvas_get_resources。流水线、工作流、管线、节点图或用户要求连线时，必须使用 canvas_create_workflow：把需求拆成有语义的节点类型、真实内容/提示词、边和布局，禁止把业务阶段退化成几个空文本卡片；工具会自动分配 id、布局并建立连线。复杂写操作先 canvas_validate_ops，再执行 canvas_apply_ops。任何写入后都必须检查工具返回的真实节点类型、connectionCount、overlapWarnings 和 verification；没有真实连线时绝不能说已连线，没有生成资源时绝不能说已完成。不要输出 JSON ops、不要猜 id、不要把未就绪资源当作可用素材、不要编造执行结果。需要用户选择时，给出可点击的短选项，不要只让用户输入 1、2、3。技能不是被拼进用户消息的提示词：用户提及技能时，先用 canvas_get_skill 按 id 或名称加载该技能，再按工具返回的技能契约执行。";
+export const ONLINE_READ_TOOLS = new Set(["canvas_list_skills", "canvas_get_skill", "canvas_get_state", "canvas_get_context", "canvas_find_nodes", "canvas_get_node", "canvas_get_connection", "canvas_get_generation_tasks", "canvas_get_resources", "canvas_validate_ops", "canvas_get_selection", "canvas_export_snapshot"]);
 
 export type OnlineToolResult = { ok: true; message: string; data?: unknown } | { ok: false; message: string };
 
@@ -18,6 +19,7 @@ const JSON_RECORD_SCHEMA = { type: "object", additionalProperties: true };
 const POSITION_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"], additionalProperties: false };
 const VIEWPORT_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, k: { type: "number" } }, required: ["x", "y", "k"], additionalProperties: false };
 const NODE_TYPE_SCHEMA = { type: "string", enum: ["image", "text", "skill", "video", "audio"] };
+const WORKFLOW_NODE_KIND_SCHEMA = { type: "string", enum: ["text", "script", "image", "video", "audio", "character_cards", "character_three_view", "storyboard_video"] };
 const GENERATION_MODE_SCHEMA = { type: "string", enum: ["text", "image", "video", "audio"] };
 const GENERATION_OPTION_PROPERTIES = {
     model: { type: "string" },
@@ -75,10 +77,55 @@ function generationToolDefinition(name: string, description: string, mode?: "tex
 }
 
 export const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
+    toolDefinition("canvas_list_skills", "列出当前画布上可按需加载的技能节点；只返回元数据，不返回完整指令。", {}),
+    toolDefinition("canvas_get_skill", "按 skillId 或技能名称按需加载一个画布技能的完整契约。技能正文通过工具结果提供，不会自动注入每条用户消息。", { skillId: { type: "string" }, name: { type: "string" } }),
     toolDefinition("canvas_get_state", "读取当前网页画布的节点、连线、选区和视口。", {}),
+    toolDefinition("canvas_get_context", "读取语义化画布上下文、真实节点 id、连接关系、资源就绪状态和状态哈希。", {}),
+    toolDefinition("canvas_find_nodes", "按标题、内容、提示词、类型、状态或资产检索真实节点。", { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, types: { type: "array", items: { type: "string" } }, statuses: { type: "array", items: { type: "string" } }, resourceOnly: { type: "boolean" }, limit: { type: "number" } }),
+    toolDefinition("canvas_get_node", "按真实节点 id 精确读取单个节点、资源状态和关联连线。", { id: { type: "string" } }, ["id"]),
+    toolDefinition("canvas_get_connection", "按真实连线 id 精确读取端点节点和 handle 信息。", { id: { type: "string" } }, ["id"]),
+    toolDefinition("canvas_get_generation_tasks", "读取当前画布绑定的生成任务观察状态，不主动轮询上游。", { status: { type: "string" }, nodeIds: { type: "array", items: { type: "string" } }, limit: { type: "number" } }),
+    toolDefinition("canvas_get_resources", "读取画布媒体资源引用、类型、尺寸、大小、时长和就绪状态，不返回媒体 URL。", { nodeIds: { type: "array", items: { type: "string" } }, status: { type: "string" }, limit: { type: "number" } }),
+    toolDefinition("canvas_validate_ops", "在写入前校验节点 id、连接关系和批量操作参数。", { ops: { type: "array", items: CANVAS_OP_SCHEMA } }, ["ops"]),
     toolDefinition("canvas_get_selection", "读取当前网页画布选中的节点。", {}),
     toolDefinition("canvas_export_snapshot", "导出当前画布快照，用于理解布局。", {}),
-    toolDefinition("canvas_apply_ops", "批量操作当前网页画布。ops 支持 add_node、update_node、delete_node、delete_connections、connect_nodes、set_viewport、select_nodes、run_generation。", { ops: { type: "array", items: CANVAS_OP_SCHEMA } }, ["ops"], false),
+    toolDefinition("canvas_apply_ops", "批量操作当前网页画布。复杂写操作应先 canvas_validate_ops；可传 canvas_get_context 返回的 expectedStateHash 防止基于过期状态写入。", { ops: { type: "array", items: CANVAS_OP_SCHEMA }, expectedRevision: { type: "number" }, expectedStateHash: { type: "string" } }, ["ops"], false),
+    toolDefinition(
+        "canvas_create_workflow",
+        "创建语义化工作流/流水线：节点使用真实的文本、脚本、图片、视频或音频类型；character_cards=角色拆分图片卡片，character_three_view=角色三视图，storyboard_video=分镜剧情视频。工具会自动生成唯一 id、按节点实际尺寸布局、创建 edges/referenceRefs/referenceNodeIds 连线、选择新节点并复核重叠。媒体节点必须提供有意义的 prompt 或 content；已有素材先 canvas_find_nodes/canvas_get_resources，再把真实 node id 放入 referenceNodeIds。不要用 canvas_create_text_nodes 代替工作流。",
+        {
+            title: { type: "string" },
+            description: { type: "string" },
+            nodes: {
+                type: "array",
+                minItems: 1,
+                items: {
+                    type: "object",
+                    properties: {
+                        ref: { type: "string" },
+                        kind: WORKFLOW_NODE_KIND_SCHEMA,
+                        title: { type: "string" },
+                        content: { type: "string" },
+                        prompt: { type: "string" },
+                        description: { type: "string" },
+                        referenceRefs: { type: "array", items: { type: "string" } },
+                        referenceNodeIds: { type: "array", items: { type: "string" } },
+                        runGeneration: { type: "boolean" },
+                        width: { type: "number" },
+                        height: { type: "number" },
+                    },
+                    required: ["ref", "kind", "title"],
+                    additionalProperties: false,
+                },
+            },
+            edges: { type: "array", items: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"], additionalProperties: false } },
+            direction: { type: "string", enum: ["horizontal", "vertical"] },
+            start: POSITION_SCHEMA,
+            gap: { type: "number" },
+            autoRun: { type: "boolean" },
+        },
+        ["nodes"],
+    ),
     toolDefinition("canvas_create_node", "创建任意类型节点：text、image、video、audio。适合创建文本、媒体占位或自定义 metadata 节点。", { nodeType: NODE_TYPE_SCHEMA, title: { type: "string" }, x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" }, metadata: JSON_RECORD_SCHEMA }, ["nodeType"]),
     toolDefinition("canvas_create_text_node", "在当前画布创建单个文本节点。", { text: { type: "string" }, x: { type: "number" }, y: { type: "number" }, title: { type: "string" }, width: { type: "number" }, height: { type: "number" } }),
     toolDefinition("canvas_create_text_nodes", "批量创建文本节点，适合生成标题、段落、脚本、说明等内容块。", { items: { type: "array", minItems: 1, items: { type: "object", properties: { text: { type: "string" }, title: { type: "string" }, x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, required: ["text"], additionalProperties: false } }, x: { type: "number" }, y: { type: "number" }, gap: { type: "number" }, direction: { type: "string", enum: ["row", "column"] } }, ["items"]),
@@ -112,6 +159,7 @@ export function parseToolArguments(value: string) {
 
 export function onlineToolToOps(name: string, input: Record<string, unknown>, snapshot: CanvasAgentSnapshot, config: AiConfig): CanvasAgentOp[] {
     if (name === "canvas_apply_ops") return requireOps(input.ops);
+    if (name === "canvas_create_workflow") return buildCanvasWorkflowOps(input as unknown as CanvasWorkflowInput, snapshot, config);
     if (name === "canvas_create_node") {
         const nodeType = requireNodeType(input.nodeType);
         const x = numberOr(input.x, nextCanvasX(snapshot));
@@ -121,6 +169,8 @@ export function onlineToolToOps(name: string, input: Record<string, unknown>, sn
     if (name === "canvas_create_text_node") return [textNodeOp(input, numberOr(input.x, nextCanvasX(snapshot)), numberOr(input.y, 0))];
     if (name === "canvas_create_text_nodes") {
         const items = requireRecordArray(input.items, "items");
+        const textBatch = items.map((item) => `${String(item.title || "")} ${String(item.text || "")}`).join(" ");
+        if (looksLikeWorkflowRequest(textBatch)) throw new Error("检测到流水线/工作流意图，请使用 canvas_create_workflow 创建真实类型节点和连线。");
         const x = numberOr(input.x, nextCanvasX(snapshot));
         const y = numberOr(input.y, 0);
         const gap = numberOr(input.gap, 40);
@@ -276,11 +326,21 @@ export function previewOnlineToolCalls(calls: ResponseToolCall[], snapshot: Canv
 }
 
 function toolCallLabel(name: string) {
+    if (name === "canvas_list_skills") return canvasT("videoCanvas.agent.tlListSkills", "列出技能");
+    if (name === "canvas_get_skill") return canvasT("videoCanvas.agent.tlGetSkill", "加载技能");
     if (name === "canvas_apply_ops") return canvasT("videoCanvas.agent.tlApplyOps", "画布操作");
     if (name === "canvas_get_state") return canvasT("videoCanvas.agent.tlGetState", "读取画布");
+    if (name === "canvas_get_context") return canvasT("videoCanvas.agent.tlGetContext", "读取上下文");
+    if (name === "canvas_find_nodes") return canvasT("videoCanvas.agent.tlFindNodes", "检索节点");
+    if (name === "canvas_get_node") return canvasT("videoCanvas.agent.tlGetNode", "读取节点");
+    if (name === "canvas_get_connection") return canvasT("videoCanvas.agent.tlGetConnection", "读取连线");
+    if (name === "canvas_get_generation_tasks") return canvasT("videoCanvas.agent.tlGetGenerationTasks", "读取生成任务");
+    if (name === "canvas_get_resources") return canvasT("videoCanvas.agent.tlGetResources", "读取资源");
+    if (name === "canvas_validate_ops") return canvasT("videoCanvas.agent.tlValidateOps", "校验操作");
     if (name === "canvas_get_selection") return canvasT("videoCanvas.agent.tlGetSelection", "读取选区");
     if (name === "canvas_export_snapshot") return canvasT("videoCanvas.agent.tlExportSnapshot", "导出快照");
     if (name === "canvas_create_cinematic_session") return canvasT("videoCanvas.agent.tlCreateCinematic", "创建影视项目");
+    if (name === "canvas_create_workflow") return canvasT("videoCanvas.agent.tlCreateWorkflow", "创建工作流");
     if (name === "canvas_create_node") return canvasT("videoCanvas.agent.tlCreateNode", "创建节点");
     if (name === "canvas_create_text_node") return canvasT("videoCanvas.agent.tlCreateTextNode", "创建文本");
     if (name === "canvas_create_text_nodes") return canvasT("videoCanvas.agent.tlCreateTextNodes", "批量创建文本");
@@ -349,7 +409,7 @@ function requireRecordArray(value: unknown, field: string): Record<string, unkno
     });
 }
 
-function requireString(value: unknown, field: string) {
+export function requireString(value: unknown, field: string) {
     if (typeof value !== "string" || !value) throw new Error(`${field} 必须是非空字符串`);
     return value;
 }

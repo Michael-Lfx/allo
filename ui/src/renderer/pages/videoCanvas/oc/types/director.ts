@@ -13,27 +13,41 @@ export type DirectorPose = "neutral" | "stand" | "t_pose" | "walk" | "run" | "si
 export type DirectorCameraMove = "static" | "push_in" | "pull_out" | "pan_left" | "pan_right" | "tilt_up" | "tilt_down" | "orbit_left" | "orbit_right" | "handheld";
 export type DirectorShotSize = "extreme_wide" | "wide" | "full" | "medium" | "close_up" | "extreme_close_up";
 export type DirectorRenderMode = "beauty" | "clay" | "depth" | "normal" | "pose";
+export type DirectorKeyframeEasing = "step" | "linear" | "smooth";
 
 export type DirectorKeyframe = {
     id: string;
     time: number;
     transform: DirectorTransform;
-    easing?: "step" | "linear" | "smooth";
+    easing?: DirectorKeyframeEasing;
 };
 
-export type DirectorHumanoidBone = "root" | "hips" | "spine" | "chest" | "neck" | "head" | "leftShoulder" | "leftUpperArm" | "leftLowerArm" | "leftHand" | "rightShoulder" | "rightUpperArm" | "rightLowerArm" | "rightHand" | "leftUpperLeg" | "leftLowerLeg" | "leftFoot" | "rightUpperLeg" | "rightLowerLeg" | "rightFoot";
+export type DirectorFingerBone =
+    | "leftThumb1" | "leftThumb2" | "leftThumb3" | "leftIndex1" | "leftIndex2" | "leftIndex3" | "leftMiddle1" | "leftMiddle2" | "leftMiddle3" | "leftRing1" | "leftRing2" | "leftRing3" | "leftPinky1" | "leftPinky2" | "leftPinky3"
+    | "rightThumb1" | "rightThumb2" | "rightThumb3" | "rightIndex1" | "rightIndex2" | "rightIndex3" | "rightMiddle1" | "rightMiddle2" | "rightMiddle3" | "rightRing1" | "rightRing2" | "rightRing3" | "rightPinky1" | "rightPinky2" | "rightPinky3";
+
+export type DirectorHumanoidBone = "root" | "hips" | "spine" | "chest" | "neck" | "head" | "leftShoulder" | "leftUpperArm" | "leftLowerArm" | "leftHand" | "rightShoulder" | "rightUpperArm" | "rightLowerArm" | "rightHand" | "leftUpperLeg" | "leftLowerLeg" | "leftFoot" | "rightUpperLeg" | "rightLowerLeg" | "rightFoot" | DirectorFingerBone;
 
 export type DirectorBoneKeyframe = {
     id: string;
     time: number;
     rotation: DirectorQuat;
-    easing?: "step" | "linear" | "smooth";
+    easing?: DirectorKeyframeEasing;
 };
 
 export type DirectorBoneTrack = {
     bone: DirectorHumanoidBone;
     keyframes: DirectorBoneKeyframe[];
 };
+
+/**
+ * 时间轴上一个可删除关键帧的定位信息。
+ * 三类覆盖当前时间轴真正可见的关键帧轨道：对象 transform、对象骨骼、摄影机。
+ */
+export type DirectorKeyframeDeleteTarget =
+    | { track: "object-transform"; objectId: string; keyframeId: string }
+    | { track: "object-bone"; objectId: string; bone: DirectorHumanoidBone; keyframeId: string }
+    | { track: "camera"; cameraId: string; keyframeId: string };
 
 export type DirectorRig = {
     status: "unmapped" | "ready";

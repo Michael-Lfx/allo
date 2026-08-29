@@ -43,7 +43,7 @@ type CanvasNodeToolbarProps = {
     onSuperResolve: (node: CanvasNodeData) => void;
     onAngle: (node: CanvasNodeData) => void;
     onViewImage: (node: CanvasNodeData) => void;
-    onExtractVideoLastFrame: (node: CanvasNodeData) => void;
+    onExtractVideoFrames: (node: CanvasNodeData) => void;
     extractingVideoFrame: boolean;
     onReversePrompt: (node: CanvasNodeData) => void;
     onRetry: (node: CanvasNodeData) => void;
@@ -106,7 +106,7 @@ export function CanvasNodeToolbar({
     onSuperResolve,
     onAngle,
     onViewImage,
-    onExtractVideoLastFrame,
+    onExtractVideoFrames,
     extractingVideoFrame,
     onReversePrompt,
     onRetry,
@@ -248,7 +248,7 @@ export function CanvasNodeToolbar({
         onNodeToggleDialog: onToggleDialog, onNodeAnnotate: onAnnotate, onNodeGenerateImage: onGenerateImage, onNodeUpload: onUpload, onNodeDownload: onDownload,
         onNodeSaveAsset: onSaveAsset, onNodeMaskEdit: onMaskEdit, onNodeEmotion: onEmotion, onNodePortraitTexture: onPortraitTexture, onNodeCrop: onCrop,
         onNodeSplit: onSplit, onNodeUpscale: onUpscale, onNodeSuperResolve: onSuperResolve, onNodeAngle: onAngle, onNodeViewImage: onViewImage,
-        onNodeExtractVideoLastFrame: onExtractVideoLastFrame, onNodeReversePrompt: onReversePrompt, onNodeToggleFreeResize: onToggleFreeResize,
+        onNodeExtractVideoFrames: onExtractVideoFrames, onNodeReversePrompt: onReversePrompt, onNodeToggleFreeResize: onToggleFreeResize,
         onNodeToggleLocked: onToggleLocked, onNodeCopyPrompt: copyImagePrompt,
         onNodeSubtitles: onSubtitles, onNodeTimeline: onTimeline,
     } as Partial<ToolbarHandlers> as ToolbarHandlers;
@@ -295,8 +295,8 @@ export function CanvasNodeToolbar({
     const imageEditTools = takeTools(["maskEdit", "crop", "split"]);
     const imagePortraitTools = takeTools(["emotion", "portraitTexture"]).map((tool) => (tool.id === "emotion" ? { ...tool, label: canvasT("videoCanvas.nodeUi.emotionShort", "人物情绪") } : tool));
     const imageAngleTool = toolById.get("angle");
-    const videoTools = takeTools(["delete", "download", "subtitles", "timeline", "extractLastFrame", "uploadVideo"]).map((tool) => {
-        if (tool.id === "extractLastFrame") return { ...tool, label: canvasT("videoCanvas.toolbar.extractFrame", "尾帧") };
+    const videoTools = takeTools(["delete", "download", "subtitles", "timeline", "extractFrames", "uploadVideo"]).map((tool) => {
+        if (tool.id === "extractFrames") return { ...tool, label: canvasT("videoCanvas.toolbar.extractFrame", "画面") };
         return tool;
     });
     const genericTools = takeTools(isAudio ? ["delete", "download", "timeline", "uploadAudio"] : isEditableText ? ["delete", "edit", "editText", "generateImage", "saveAsset"] : ["delete", "info", "config"]);

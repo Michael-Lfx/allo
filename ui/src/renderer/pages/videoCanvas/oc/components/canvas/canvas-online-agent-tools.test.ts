@@ -91,8 +91,23 @@ describe("onlineToolToOps", () => {
         expect(ops).toEqual([{ type: "update_node", id: "n1", patch: { position: { x: 10, y: 5 } } }]);
     });
 
-    test("unknown tool names throw", () => {
-        expect(throws(() => onlineToolToOps("canvas_unknown", {}, snapshot(), defaultConfig))).toBe(true);
+    test("canvas_create_workflow builds typed nodes and connections", () => {
+        const ops = onlineToolToOps("canvas_create_workflow", {
+            title: "角色流水线",
+            nodes: [
+                { ref: "script", kind: "script", title: "剧本", content: "开场" },
+                { ref: "cards", kind: "character_cards", title: "角色卡", prompt: "拆角色" },
+            ],
+            edges: [{ from: "script", to: "cards" }],
+        }, snapshot(), defaultConfig);
+        expect(ops.some((op) => op.type === "add_node" && op.nodeType === CanvasNodeType.Script)).toBe(true);
+        expect(ops.some((op) => op.type === "add_node" && op.nodeType === CanvasNodeType.Image)).toBe(true);
+        expect(ops.some((op) => op.type === "connect_nodes")).toBe(true);
+        expect(ops.some((op) => op.type === "select_nodes")).toBe(true);
+    });
+
+    test("canvas_create_text_nodes rejects workflow-like copy", () => {
+        expect(throws(() => onlineToolToOps("canvas_create_text_nodes", { items: [{ text: "搭一条工作流管线" }] }, snapshot(), defaultConfig))).toBe(true);
     });
 });
 
@@ -107,7 +122,9 @@ describe("requireOps", () => {
 describe("tool call helpers", () => {
     test("isWritableToolCall treats read-only tools as non-writable", () => {
         expect(isWritableToolCall({ id: "1", type: "function", function: { name: "canvas_get_state", arguments: "{}" } })).toBe(false);
+        expect(isWritableToolCall({ id: "1b", type: "function", function: { name: "canvas_get_context", arguments: "{}" } })).toBe(false);
         expect(isWritableToolCall({ id: "2", type: "function", function: { name: "canvas_apply_ops", arguments: "{}" } })).toBe(true);
+        expect(isWritableToolCall({ id: "3", type: "function", function: { name: "canvas_create_workflow", arguments: "{}" } })).toBe(true);
     });
 
     test("toolCallsFromDetail filters malformed entries", () => {
@@ -151,6 +168,9 @@ describe("ONLINE_AGENT_TOOLS", () => {
     test("exposes the full tool surface with strict schemas", () => {
         const names = ONLINE_AGENT_TOOLS.map((tool) => tool.function.name);
         expect(names).toContain("canvas_get_state");
+        expect(names).toContain("canvas_get_context");
+        expect(names).toContain("canvas_create_workflow");
+        expect(names).toContain("canvas_list_skills");
         expect(names).toContain("canvas_apply_ops");
         expect(names).toContain("canvas_generate_audio");
         expect(ONLINE_AGENT_TOOLS.every((tool) => tool.function.parameters.additionalProperties === false)).toBe(true);

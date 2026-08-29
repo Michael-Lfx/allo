@@ -46,8 +46,8 @@ describe("video canvas project entry chunk", () => {
 
     test("director hook factory import does not pull three", () => {
         const directorHook = source("./oc/pages/canvas/use-canvas-director.ts");
+        expect(directorHook.includes("director-templates")).toBe(true);
         expect(directorHook.includes('from "three"')).toBe(false);
-        expect(directorHook.includes("director-scene-create")).toBe(true);
         expect(/from\s+["'][^"']*director-scene["']/.test(directorHook)).toBe(false);
     });
 
